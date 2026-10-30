@@ -3452,6 +3452,17 @@ app.whenReady().then(async () => {
       app.exit(0);
     },
   });
+  // Once per launch, to Sentry Logs: how many machines run a build is what
+  // the beta gate reads before a beta becomes stable.
+  updateLogger.info("app.started", {
+    version: app.getVersion(),
+    runningTrack: updateTrackOfVersion(app.getVersion()),
+    selectedTrack: hasUpdateFeed ? readSavedUpdateTrack()?.track ?? null : null,
+    packageChannel: normalizeAdePackageChannel(process.env.ADE_PACKAGE_CHANNEL) ?? "stable",
+    platform: process.platform,
+    arch: process.arch,
+    afterUpdate: process.argv.includes("--updated"),
+  });
   // Installing a waiting update as ADE quits, and the hidden launch that lands
   // it (`installOnQuit.ts`). The probe and pool are read only once a quit asks.
   const installOnQuit = createInstallOnQuitController({

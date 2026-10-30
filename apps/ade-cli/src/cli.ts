@@ -120,6 +120,8 @@ import {
 } from "../../desktop/src/shared/sentry/diagnostics";
 import { projectRegistryDiagnosticAttachment } from "./services/projects/projectRegistryJournal";
 import { initBrainSentry } from "./sentry/initBrain";
+import { resolveSelectedUpdateTrack } from "./services/runtime/updateTrackStore";
+import { updateTrackOfVersion } from "../../desktop/src/shared/updateTrack";
 import { configureOutboundProxyFromEnv, trustSystemCertificates } from "../../desktop/src/main/services/shared/outboundNetwork";
 import { buildDeeplink, type DeeplinkEnvelope } from "../../desktop/src/shared/deeplinks";
 import { laneIsOnBaseBranch } from "../../desktop/src/shared/laneBaseResolution";
@@ -29114,6 +29116,16 @@ async function runServe(
   headlessProjectLogger.info("brain.listening", {
     socketPath,
     tcpUrl: tcpUrl ?? null,
+  });
+  // Once per brain start, to Sentry Logs: the beta gate counts the machines
+  // whose brain ran a build (`shared/sentry/logBridge.ts`).
+  headlessProjectLogger.info("brain.started", {
+    version: VERSION,
+    runningTrack: updateTrackOfVersion(VERSION),
+    selectedTrack: resolveSelectedUpdateTrack(VERSION),
+    role: options.role,
+    platform: process.platform,
+    arch: process.arch,
   });
   // Compile caches of earlier builds go once the brain is listening. Only the brain's
   // default root is pruned: an explicit NODE_COMPILE_CACHE is the caller's directory.

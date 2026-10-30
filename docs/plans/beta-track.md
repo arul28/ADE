@@ -19,8 +19,12 @@ guard that covers it. Keep it current while the work runs.
   (T3 #20906, #20103, #22219).
 - The old Beta **channel** (`package:beta`, `~/.ade-beta`, `ade-beta`,
   `ADE Beta.app`, `ADE_PACKAGE_CHANNEL=beta`) is removed. Alpha stays.
-- Beta builds run automatically from `main`. Stable promotes the commit of a
-  beta the owner picked with the release agent.
+- Beta builds run automatically from `main`. Stable promotes the commit of
+  the newest beta that passes the Sentry gate
+  (`scripts/release-tools/beta-gate.mjs`): machines ran it, Sentry received
+  errors the whole time it was out, and it brought no new errors. Age is not
+  a measure. The stable tag is pushed by the release agent as the owner,
+  because the tag rule refuses the workflow's own token.
 - iPhone: one TestFlight app. Beta builds go to Internal Testers only; a stable
   release adds the same build to Friends and Public Beta. The phone shows an
   orange "Beta" chip on a machine that runs the Beta track.
@@ -111,7 +115,7 @@ Asset `release-manifest.json`:
    TestFlight builds from CI to Internal Testers.
 9. Resume: cap automatic resumes at 3 in a row (persisted), never resume a
    chat that waits for the user, resume before optional work.
-10. Release skill: stable promotes a chosen beta.
+10. Release skill: stable promotes the newest beta that passes the Sentry gate.
 11. One-time real-machine tests (MacBook, Windows PC, no-app machine).
 
 ## T3 lessons and their guards

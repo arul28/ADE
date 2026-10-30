@@ -10,7 +10,9 @@
  *   - error lines also become an issue, grouped by the log event name, or by
  *     the error when the line carries one.
  * Info and debug stay on disk only; they are too many for the quota and add
- * little to a report.
+ * little to a report. The exception is `RELEASE_HEALTH_EVENTS`: a few info
+ * lines, each once per launch or per update step, that show a build ran and
+ * updated cleanly. The beta gate reads them (`scripts/release-tools/beta-gate.mjs`).
  */
 import { expectedErrorKind } from "../expectedError";
 import { addSentryBreadcrumb, captureError, captureProblem, isSentryActive, sendSentryLog } from "./capture";
@@ -33,6 +35,21 @@ const SKIPPED_EVENTS = new Set<string>([
  */
 const LOG_ONLY_EVENTS = new Set<string>([
   "window.console",
+]);
+
+/**
+ * Info lines sent as Sentry Logs (never issues or breadcrumbs). Each fires at
+ * most a few times per launch, so a release's logs say how many machines ran
+ * it and whether its updates, track switches and restart resumes went through.
+ */
+const RELEASE_HEALTH_EVENTS = new Set<string>([
+  "app.started",
+  "brain.started",
+  "autoUpdate.update_downloaded",
+  "autoUpdate.track_switch_started",
+  "autoUpdate.quit_and_install",
+  "db.snapshot_written",
+  "agent_chat.restart_resume_armed",
 ]);
 
 /**
@@ -92,6 +109,10 @@ export function forwardSignalToSentry(event: string, meta?: Record<string, unkno
 }
 
 export function forwardLogToSentry(level: Level, event: string, meta?: Record<string, unknown>): void {
+  if (level === "info" && RELEASE_HEALTH_EVENTS.has(event)) {
+    if (isSentryActive() && logLimiter.admit(event)) sendSentryLog("info", event, scrubRecord(meta) ?? {});
+    return;
+  }
   if (level !== "warn" && level !== "error") return;
   if (!isSentryActive()) return;
   if (SKIPPED_EVENTS.has(event)) return;
