@@ -5408,7 +5408,7 @@ private struct WorkPrWatchWakeLine: View {
           .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(card.fallbackText)
+        .accessibilityLabel(accessibilityText(text))
         .accessibilityHint(expanded ? "Hides what changed" : "Shows what changed and what the agent was told")
         if let deeplink {
           Text("·").foregroundStyle(ADEColor.textMuted.opacity(0.5))
@@ -5456,6 +5456,18 @@ private struct WorkPrWatchWakeLine: View {
       }
     }
     .padding(.vertical, 4)
+  }
+
+  /// What the line says, for VoiceOver: "Watching PR #1991, 36 passed, 2 failed".
+  private func accessibilityText(_ text: (lead: String, summary: String)) -> String {
+    var parts = [text.lead]
+    if !text.summary.isEmpty && !checksOnly { parts.append(text.summary) }
+    if let progress = card.progress {
+      if progress.passed > 0 { parts.append("\(progress.passed) passed") }
+      if progress.failed > 0 { parts.append("\(progress.failed) failed") }
+      if progress.running + progress.queued > 0 { parts.append("\(progress.running + progress.queued) still running") }
+    }
+    return parts.joined(separator: ", ")
   }
 
   /// "✓ 38  ✕ 2  ◌ 1": the checks behind a checks wake, each count with its glyph.

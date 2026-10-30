@@ -59867,7 +59867,6 @@ export function createAgentChatService(args: {
           const statusCode = typeof eventData.statusCode === "number" ? eventData.statusCode : null;
           if (classifyCopilotError(errorType, errorCode, statusCode) === "unknown") {
             reportCopilotProblem("session_error", {
-              message: diagnostics.message ?? errorType ?? "session.error",
               model: diagnostics.model,
               groupBy: [errorType ?? "none", errorCode ?? String(statusCode ?? "none")],
               tags: { "copilot.error_type": errorType, "copilot.error_code": errorCode, "copilot.status": statusCode },
@@ -60207,6 +60206,20 @@ export function createAgentChatService(args: {
     return { attachments, notes };
   };
 
+  /**
+   * The runtime's own commands and skills, or null when it would not list them
+   * (the built-ins stand in, and the next command asks again).
+   */
+  const listCopilotCommands = async (managed: ManagedChatSession, runtime: CopilotRuntime): Promise<CopilotSlashCommandInfo[] | null> => {
+    try {
+      return await runtime.sdk.listCommands(managed.session.id);
+    } catch (error) {
+      logger.warn("agent_chat.copilot_commands_list_failed", { sessionId: managed.session.id, error: boundedLogText(error instanceof Error ? error.message : String(error)) });
+      reportCopilotProblem("commands_list_failed", { error, model: managed.session.modelId ?? managed.session.model });
+      return null;
+    }
+  };
+
   const runCopilotTurn = async (managed: ManagedChatSession, args: {
     promptText: string; userText?: string; displayText: string; attachments: AgentChatFileRef[];
     contextAttachments: AgentChatContextAttachment[]; resolvedAttachments: ResolvedAgentChatFileRef[];
@@ -60263,11 +60276,7 @@ export function createAgentChatService(args: {
     const runtime = await ensureCopilotRuntime(managed);
     let nativeCommand: { name: string; input: string } | null = null;
     if (typedCommand && !controlReply) {
-      runtime.slashCommands ??= await runtime.sdk.listCommands(managed.session.id).catch((error: unknown) => {
-        logger.warn("agent_chat.copilot_commands_list_failed", { sessionId: managed.session.id, error: boundedLogText(error instanceof Error ? error.message : String(error)) });
-        reportCopilotProblem("commands_list_failed", { error, model: managed.session.modelId ?? managed.session.model });
-        return null;
-      });
+      runtime.slashCommands ??= await listCopilotCommands(managed, runtime);
       const resolved = resolveCopilotSlashCommand(typedCommand.name, runtime.slashCommands);
       if (resolved) nativeCommand = { name: resolved.name, input: typedCommand.input };
     }
@@ -62826,7 +62835,7 @@ export function createAgentChatService(args: {
       const steerCommand = attachments.length ? null : parseCopilotSlashCommand(trimmed);
       if (steerCommand && !copilotAdeOwnedCommandReply(steerCommand.name)) {
         // Whether Copilot allows a command mid-turn is in its list.
-        runtime.slashCommands ??= await runtime.sdk.listCommands(sessionId).catch(() => null);
+        runtime.slashCommands ??= await listCopilotCommands(managed, runtime);
       }
       if (steerCommand) {
         const ownedReply = copilotAdeOwnedCommandReply(steerCommand.name);
@@ -62850,6 +62859,8 @@ export function createAgentChatService(args: {
             options?.onAcceptedDispatch?.();
             return { steerId, queued: false };
           }
+          // The command's prompt runs as Copilot's; this row records who asked.
+          emitChatEvent(managed, { type: "user_message", text: trimmed, turnId });
           await runtime.sdk.send(sessionId, outcome.prompt, [], dispatchMode === "inline" ? "immediate" : "enqueue", outcome.agentMode, outcome.displayPrompt);
           options?.onAcceptedDispatch?.();
           return { steerId, queued: dispatchMode !== "inline" };
@@ -72744,7 +72755,7 @@ export function createAgentChatService(args: {
       // project's prompt and skill files stand in.
       const rt = managed?.runtime?.kind === "copilot" && isCopilotSdkWorkerLive(managed.runtime.sdk.process) ? managed.runtime : null;
       if (rt && managed) {
-        rt.slashCommands = await rt.sdk.listCommands(managed.session.id).catch(() => rt.slashCommands);
+        rt.slashCommands = await listCopilotCommands(managed, rt) ?? rt.slashCommands;
       }
       return rt?.slashCommands?.length
         ? mergeSlashCommands([localCommands, copilotSlashCommandRows(rt.slashCommands)])

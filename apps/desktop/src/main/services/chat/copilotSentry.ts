@@ -12,6 +12,7 @@
  * nobody can fix them in ADE.
  */
 import { addSentryBreadcrumb, captureError, captureProblem } from "../../../shared/sentry/capture";
+import { isExpectedOutcome } from "../../../shared/sentry/expectedFailure";
 import { forwardSignalToSentry } from "../../../shared/sentry/logBridge";
 
 export type CopilotProblemKind =
@@ -58,7 +59,7 @@ function messageOf(error: unknown): string {
 
 export function reportCopilotProblem(kind: CopilotProblemKind, args: {
   error?: unknown;
-  /** Used when there is no error object (a `session.error` event). */
+  /** Groups an issue that has no error object (a worker exit). */
   message?: string;
   model?: string | null;
   /** Narrows the grouping (an error type and code); defaults to the message's cause. */
@@ -66,14 +67,21 @@ export function reportCopilotProblem(kind: CopilotProblemKind, args: {
   tags?: Record<string, string | number | boolean | null | undefined>;
   extra?: Record<string, unknown>;
 }): void {
+  // Not signed in, an offline network: answers the user acts on, which the log
+  // line already records. A runtime that is not downloaded yet is the pinned
+  // tool installer's to report.
+  if (args.error !== undefined && isExpectedOutcome(args.error)) return;
+  if (args.error instanceof Error && args.error.name === "PinnedToolNotReadyError") return;
   const message = args.message ?? messageOf(args.error);
   const context = {
     tags: { provider: "copilot", "copilot.kind": kind, "copilot.model": args.model ?? null, ...args.tags },
     extra: args.extra,
     fingerprint: ["copilot", kind, ...(args.groupBy ?? [copilotFailureCause(message)])],
   };
+  // Without an error object the title is the kind alone: a provider's message
+  // may quote the request, so it stays in the extra (scrubbed of secrets).
   if (args.error instanceof Error) captureError(args.error, context);
-  else captureProblem(`Copilot ${kind.replace(/_/g, " ")}${message ? `: ${copilotFailureCause(message)}` : ""}`, context);
+  else captureProblem(`Copilot ${kind.replace(/_/g, " ")}`, context);
 }
 
 export function reportCopilotSignal(kind: CopilotSignalKind, meta?: Record<string, unknown>): void {

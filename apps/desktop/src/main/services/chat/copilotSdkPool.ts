@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import type { Logger } from "../logging/logger";
 import { captureWorkerFailure } from "../../sentry/workerFailures";
 import { reportCopilotProblem, reportCopilotSignal } from "./copilotSentry";
+import { markExpected } from "../../../shared/expectedError";
 import { resolveCopilotSdkRuntime } from "../ai/acpExecutables";
 import { pinnedToolNotReadyError } from "../ai/pinnedProviderTools";
 import { copilotVersionRejectionMessage, detectCopilotVersionRejection } from "../ai/providerVersionRejection";
@@ -177,7 +178,11 @@ async function create(init: CopilotSdkWorkerInit, logger?: Logger): Promise<Copi
       if (!waiter) return;
       waiters.delete(message.requestId);
       if (message.ok) waiter.resolve(message.result);
-      else waiter.reject(new Error(copilotUpdateRequiredMessage(message.error, logger) ?? `Copilot SDK ${waiter.type} failed: ${message.error}`));
+      else {
+        // A runtime GitHub no longer accepts needs an ADE update, not a bug report.
+        const updateRequired = copilotUpdateRequiredMessage(message.error, logger);
+        waiter.reject(updateRequired ? markExpected(new Error(updateRequired), "environment") : new Error(`Copilot SDK ${waiter.type} failed: ${message.error}`));
+      }
       return;
     }
     if (message.type === "event") { bridge.onEvent?.(message.chatId, message.event); return; }

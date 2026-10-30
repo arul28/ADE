@@ -4,9 +4,10 @@ import type { AdeCardPayload } from "../../../shared/adeCard";
 import { normalizeAdeCardTone } from "../../../shared/adeCard";
 import { navigateToAppTarget } from "../../lib/openExternal";
 import { cn } from "../ui/cn";
+import { CHAT_CARD_BODY_TEXT, CHAT_CARD_WIDTH_CLASS } from "./chatCardPrimitives";
 import { openPrInChatToolsPane } from "./chatPrPaneRequests";
 
-const LINE_TEXT = "font-sans text-[length:calc(var(--chat-font-size)*10.5/14)]";
+const LINE_TEXT = `font-sans ${CHAT_CARD_BODY_TEXT}`;
 
 /**
  * "Watching PR #1991 · 8 new comments", read off a `pr_watch_wake` card. The
@@ -101,7 +102,7 @@ export function PrWatchWakeLine({ card, wakeText, watchId, sessionId }: {
         <span className="h-px flex-1 bg-fg/[0.08]" />
       </div>
       {open ? (
-        <div className={cn("mx-auto flex w-full max-w-[var(--chat-content-width,52rem)] flex-col gap-1.5 text-fg/55", LINE_TEXT)}>
+        <div className={cn("mx-auto flex flex-col gap-1.5 text-fg/55", CHAT_CARD_WIDTH_CLASS, LINE_TEXT)}>
           {rows.length ? (
             <ul className="flex flex-col gap-0.5">
               {rows.map((row, index) => {
