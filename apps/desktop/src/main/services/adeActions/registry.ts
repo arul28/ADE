@@ -226,9 +226,9 @@ import { buildLaneListSnapshots } from "../lanes/laneListSnapshotService";
 import { getErrorMessage, isRecord, nowIso, resolveWithinAllowedRoots } from "../shared/utils";
 import {
   createRemoteWorkCopyService,
+  isRemoteWorkCopyInUse,
   listMachineRemoteWorkCopies,
   measureRemoteWorkCopy,
-  remoteWorkCopiesForRuntime,
 } from "../remoteWork/remoteWorkCopyService";
 import type { RemoteWorkCopyListing } from "../../../shared/types/remoteWork";
 import { parseForeignCallerSessionId } from "../../../shared/runtimeClientNames";
@@ -3640,13 +3640,10 @@ function buildTerminalDomainService(runtime: AdeRuntime): TerminalDomainService 
  * what Settings › Machines lists, and the person's delete.
  */
 function buildRemoteWorkDomainService(runtime: AdeRuntime) {
-  if (!runtime.ptyService) return null;
-  const ptyService = runtime.ptyService;
-  const here = () => remoteWorkCopiesForRuntime({ projectRoot: runtime.projectRoot, logger: runtime.logger, ptyService });
+  const here = () => createRemoteWorkCopyService({ projectRoot: runtime.projectRoot, logger: runtime.logger });
   return {
     /** Every copy on this machine, across its projects; delete each through its own project. */
     async list(): Promise<RemoteWorkCopyListing[]> {
-      here(); // This project's running shells count as use in the list.
       return await Promise.all(listMachineRemoteWorkCopies(undefined, runtime.logger).map(async (copy) => ({
         owner: copy.owner,
         chatSessionId: parseForeignCallerSessionId(copy.owner)?.chatSessionId ?? null,
@@ -3659,7 +3656,7 @@ function buildRemoteWorkDomainService(runtime: AdeRuntime) {
         path: copy.path,
         createdAt: copy.createdAt,
         lastUsedAt: copy.lastUsedAt,
-        running: createRemoteWorkCopyService({ projectRoot: copy.projectRoot }).inUse(copy.owner),
+        running: isRemoteWorkCopyInUse(copy.projectRoot, copy.owner),
         sizeBytes: await measureRemoteWorkCopy(copy.path),
       })));
     },

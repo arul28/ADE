@@ -16,6 +16,7 @@ import {
   automaticProjectRegistrationParams,
   connectMachineRuntimeDaemon,
   executePlan,
+  firstStandalonePositional,
   firstArray,
   getGitRemote,
   isMachineRuntimeScopedMethod,
@@ -145,7 +146,8 @@ export function extractMachineTargeting(parsed: ParsedCli): ParsedCli {
   // copy there unless --lane names a lane there; only those take --no-sync
   // and --discard (`ade apple record-stop --discard` keeps its own meaning).
   const commandFlags = flagNamesOutsideFreeText(command);
-  const subcommand = command[1]?.toLowerCase() ?? "";
+  // The subcommand wherever it sits (`ade shell --machine m start …`).
+  const subcommand = firstStandalonePositional(command.slice(1))?.toLowerCase() ?? "";
   const workCopyVerb = commandFlags.has("--machine")
     && ((primary === "shell" && (subcommand === "start" || subcommand === "create"))
       || (primary === "apple" && APPLE_BUILD_VERBS.has(subcommand)));
@@ -215,7 +217,16 @@ export function extractMachineTargeting(parsed: ParsedCli): ParsedCli {
       allMachines,
       machineProject: machineProject ?? projectAlias,
       machineClone,
-      ...(usesWorkCopy ? { machineWorkCopy: { sync: workCopySync } } : {}),
+      ...(usesWorkCopy
+        ? {
+            machineWorkCopy: {
+              sync: workCopySync,
+              // A shell command's argv (after `--`), sent as argv so the other
+              // machine renders it for its own shell.
+              argv: primary === "shell" && command.includes("--") ? command.slice(command.indexOf("--") + 1) : null,
+            },
+          }
+        : {}),
     },
   };
 }

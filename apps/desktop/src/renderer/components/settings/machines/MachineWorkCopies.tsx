@@ -97,7 +97,7 @@ export function MachineWorkCopies({
               <button
                 type="button"
                 className="ade-mx-srow-link disabled:cursor-not-allowed disabled:opacity-40"
-                disabled={deleting !== null || copy.running === true || unreachable}
+                disabled={deleting !== null || copy.running || unreachable}
                 title={copy.running
                   ? "A command still runs in this copy. Stop it first."
                   : unreachable
@@ -129,7 +129,7 @@ function pinForCopy(
 ): OpenProjectBinding | null | "unreachable" {
   const displayName = copy.projectRoot.split(/[\\/]/).pop() || copy.projectRoot;
   if (pagePin?.kind === "remote") {
-    if (!copy.projectId || pagePin.projectId === copy.projectId) return pagePin;
+    if (pagePin.projectId === copy.projectId) return pagePin;
     return {
       ...pagePin,
       key: remoteProjectBindingKey(pagePin.targetId, copy.projectId),
@@ -139,8 +139,8 @@ function pinForCopy(
     };
   }
   if (!isThisMachine) {
-    // Another machine reached without a remote pin: only its own project's copy, unpinned.
-    return pagePin == null && copy.projectId == null ? null : "unreachable";
+    // Another machine reached without a remote pin: nothing to address it with.
+    return "unreachable";
   }
   if (pagePin?.kind === "local" && arePathsEqual(pagePin.rootPath, copy.projectRoot)) return pagePin;
   return { kind: "local", key: copy.projectRoot, rootPath: copy.projectRoot, displayName };

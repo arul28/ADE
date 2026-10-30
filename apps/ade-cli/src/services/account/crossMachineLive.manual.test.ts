@@ -492,6 +492,11 @@ describe.skipIf(!LIVE)("cross-machine agents, live, two brains in one process", 
       const readBack = await cli(["terminal", "read", shells[0].id, "--machine", "Machine B", "--json"]);
       expect(readBack.stdout).toContain("uncommitted on A");
 
+      // Argv travels as argv: "!" and spaces arrive as written.
+      const quoted = await cli(["shell", "start", "--machine", "Machine B", "--wait", "--text", "--", "node", "-e", "console.log('a b', !0)"]);
+      console.log("[xm-shell] quoted", quoted.status, quoted.stdout.slice(0, 200));
+      expect(quoted.stdout.replace(/\u001b\[[0-9;]*m/g, "")).toContain("a b true");
+
       const failing = await cli(["shell", "start", "--machine", "Machine B", "--wait", "--text", "--", "sh", "-c", "exit 3"]);
       console.log("[xm-shell] failing", failing.status, failing.stdout.slice(-300), failing.stderr.slice(-300));
       expect(failing.status).toBe(3);

@@ -20,8 +20,8 @@ import { CliUsageError, asString, isRecord, type JsonObject } from "./cli";
 /** How a `--machine` call readies the work copy: `--no-sync` → "none", `--discard`, or null for a sync. */
 export type MachineWorkCopySync = "none" | "discard" | null;
 
-/** Apple actions that build the app from the lane's code: they sync the work copy first. */
-const APPLE_BUILD_ACTIONS: ReadonlySet<string> = new Set(["launch", "installApp", "runTests"]);
+/** What `cliMachineTargeting` reads for a call that runs in the work copy. */
+export type MachineWorkCopy = { sync: MachineWorkCopySync; argv?: string[] | null };
 
 /** Apple actions about the machine, not a lane: they never need a work copy. */
 const APPLE_MACHINE_ACTIONS: ReadonlySet<string> = new Set(["getStatus", "runtimeList", "listDevices"]);
@@ -33,7 +33,7 @@ const APPLE_MACHINE_ACTIONS: ReadonlySet<string> = new Set(["getStatus", "runtim
  * (`sync` set by `cliMachineTargeting`, no `--lane`) loses the lane the plan
  * defaulted to and carries the work source instead.
  */
-export function withRemoteShellArgs(params: JsonObject, cwd: string, workCopy: { sync: MachineWorkCopySync } | null): JsonObject {
+export function withRemoteShellArgs(params: JsonObject, cwd: string, workCopy: MachineWorkCopy | null): JsonObject {
   const toolArgs = isRecord(params.arguments) ? params.arguments : {};
   const { chatSessionId: _chatSessionId, ...args } = isRecord(toolArgs.args) ? toolArgs.args : {};
   let nextArgs: JsonObject = args;
@@ -44,6 +44,7 @@ export function withRemoteShellArgs(params: JsonObject, cwd: string, workCopy: {
       remoteWork: {
         ...(workCopy.sync === "none" ? readLocalHead(cwd) : readLocalWorkSource(cwd)),
         ...(workCopy.sync ? { sync: workCopy.sync } : {}),
+        ...(workCopy.argv?.length ? { argv: workCopy.argv } : {}),
         // A command there ends its shell, so the next command can sync.
         ...(asString(args.startupCommand) ? { exitWhenDone: true } : {}),
       },
@@ -57,14 +58,15 @@ export function withRemoteShellArgs(params: JsonObject, cwd: string, workCopy: {
  * this chat's work copy. A build syncs it to this checkout; any other verb
  * uses it as it is (and makes it at this commit when it does not exist yet).
  */
-export function withRemoteAppleArgs(params: JsonObject, cwd: string, workCopy: { sync: MachineWorkCopySync } | null): JsonObject {
+export function withRemoteAppleArgs(params: JsonObject, cwd: string, workCopy: MachineWorkCopy | null): JsonObject {
   const toolArgs = isRecord(params.arguments) ? params.arguments : {};
   if (!isRecord(toolArgs.args) || asString(toolArgs.args.laneId)) return params;
   const action = asString(toolArgs.action) ?? "";
   if (APPLE_MACHINE_ACTIONS.has(action)) return params;
   const sync = workCopy?.sync ?? null;
   const { chatSessionId: _chatSessionId, ...args } = toolArgs.args;
-  const builds = APPLE_BUILD_ACTIONS.has(action) && sync !== "none";
+  // Only a build verb (launch, install, test) gets `workCopy` from cliMachineTargeting.
+  const builds = workCopy != null && sync !== "none";
   return {
     ...params,
     arguments: {

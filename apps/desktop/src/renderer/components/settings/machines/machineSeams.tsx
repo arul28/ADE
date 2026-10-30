@@ -5,9 +5,8 @@
  * placeholders, no invented values. The copies of other machines' work it
  * holds are `MachineWorkCopies.tsx`.
  *
- * Shapes mirror that lane's names where it has them (`RemoteWorkCopy` in
- * `main/services/remoteWork/remoteWorkCopyService.ts`); the rest are the
- * smallest shape the page needs and are expected to be replaced by theirs.
+ * The shapes are the smallest the page needs and are expected to be replaced
+ * by that lane's.
  */
 import type { ReactNode } from "react";
 

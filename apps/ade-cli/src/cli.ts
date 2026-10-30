@@ -106,7 +106,7 @@ import {
 } from "../../desktop/src/shared/sessionStatusNote";
 import { DEMO_STEP_MAX_CHARS, parseDemoStepFocus } from "../../desktop/src/shared/demoVideo/demoContract";
 import { SCENE_PREVIEW_WIDTH } from "../../desktop/src/shared/scenePreview";
-import { commandArrayToLine, quoteShellArg } from "../../desktop/src/shared/shell";
+import { quoteShellArg } from "../../desktop/src/shared/shell";
 import { machineVersionsDrift } from "../../desktop/src/shared/machineVersions";
 import { SCENE_GUIDE } from "../../desktop/src/shared/sceneGuide";
 import { findSettingsEntries, settingsEntryLabel } from "../../desktop/src/shared/settingsManifest";
@@ -653,7 +653,7 @@ export type GlobalOptions = {
    * runs in this chat's work copy there (no `--lane`): how a sync readies it
    * (`--no-sync` → "none", `--discard`), or null for a normal sync.
    */
-  machineWorkCopy?: { sync: "none" | "discard" | null } | null;
+  machineWorkCopy?: { sync: "none" | "discard" | null; argv?: string[] | null } | null;
 };
 
 async function withAdeDefaultRole<T>(
@@ -9417,10 +9417,8 @@ function buildShellPlan(args: string[]): CliPlan {
       ]) ?? process.env.ADE_CHAT_SESSION_ID,
     );
     const startupCommandArgs = takeArgsAfterTerminator(args);
-    // ADE's canonical POSIX line, so a machine running it in another shell
-    // (PowerShell on Windows) can recover the argv (`resolveCanonicalCommandLineLaunch`).
     const startupCommand = startupCommandArgs
-      ? commandArrayToLine(startupCommandArgs, { platform: "linux" })
+      ? startupCommandArgs.map(shellEscapeToken).join(" ")
       : readValue(args, ["--command", "-c"]);
     // Only with --machine (cliMachineTargeting.ts checks): follow the command to its end.
     const wait = readFlag(args, ["--wait"]);
@@ -36817,8 +36815,9 @@ async function followShellToExit(
     // A brain older than the read's status falls back to the terminal list.
     const state = read && typeof read.status === "string"
       ? read
-      : (await call("terminal", "list", { limit: 200 }) as unknown[] | null)
-        ?.find((entry) => isRecord(entry) && entry.terminalId === terminalId);
+      : await call("terminal", "list", { limit: 200 }).then((listed) => (Array.isArray(listed)
+        ? listed.find((entry) => isRecord(entry) && entry.terminalId === terminalId)
+        : null));
     if (!isRecord(state) || state.status !== "running") {
       // One last read: output written just before the end.
       await readMore();

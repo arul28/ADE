@@ -53,7 +53,7 @@ export function RemoteWorkHeaderButton({ session }: { session: AgentChatSessionS
 function RemoteWorkMachine({ use, active }: { use: AgentChatRemoteWorkUse; active: boolean }) {
   const resolvePin = useRemoteWorkPinResolver(active);
   const pin = useMemo(() => resolvePin(use), [resolvePin, use]);
-  const pinKey = pin === "unreachable" ? null : pin?.key ?? null;
+  const pinKey = pin === "unreachable" ? null : pin.key;
   const [shells, setShells] = useState<ChatTerminalSession[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const terminalKey = use.terminalIds.join(",");

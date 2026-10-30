@@ -13,7 +13,7 @@ export type RemoteWorkCopyListing = {
   /** The chat's id on its own machine, when the owner is a chat. */
   chatSessionId: string | null;
   /** The project here that holds the copy; pin delete to it. */
-  projectId: string | null;
+  projectId: string;
   projectRoot: string;
   /** The machine the chat runs on. */
   machineName: string | null;
