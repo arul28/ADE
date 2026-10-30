@@ -1,4 +1,6 @@
 /**
+ * `remote_work.list` answers for the whole machine: every project's copies.
+ *
  * A work copy on this machine for a chat on another machine
  * (`ade shell start --machine`), as Settings › Machines lists it.
  */
@@ -7,6 +9,9 @@ export type RemoteWorkCopyListing = {
   owner: string;
   /** The chat's id on its own machine, when the owner is a chat. */
   chatSessionId: string | null;
+  /** The project here that holds the copy; pin delete to it. */
+  projectId: string | null;
+  projectRoot: string;
   /** The machine the chat runs on. */
   machineName: string | null;
   branch: string | null;
@@ -14,8 +19,8 @@ export type RemoteWorkCopyListing = {
   path: string;
   createdAt: string;
   lastUsedAt: string;
-  /** A command still runs in the copy; delete waits until it ends. */
-  running: boolean;
+  /** A command still runs in the copy (delete waits until it ends); null when that project is not running here. */
+  running: boolean | null;
   /** Bytes on disk with installed deps and build output; null when too large to count quickly. */
   sizeBytes: number | null;
 };

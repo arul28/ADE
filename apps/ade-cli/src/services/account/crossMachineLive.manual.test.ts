@@ -483,6 +483,7 @@ describe.skipIf(!LIVE)("cross-machine agents, live, two brains in one process", 
       console.log("[xm-shell] remote_work.list", rows.slice(0, 500));
       expect(rows).toContain(parent.id);
       expect(rows).toContain('"machineName":"Machine A"');
+      expect(rows).toContain(`"projectId":"${B.projectId}"`);
 
       const listed = await cli(["terminal", "list", "--machine", "Machine B", "--json"]);
       console.log("[xm-shell] terminal list", listed.status, listed.stdout.slice(0, 300), listed.stderr.slice(-300));

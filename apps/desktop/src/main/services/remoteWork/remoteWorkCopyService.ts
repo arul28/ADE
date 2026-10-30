@@ -108,6 +108,8 @@ export function setRemoteWorkOwnerProbe(probe: RemoteWorkOwnerProbe | null): voi
 
 export type RemoteWorkCopyServiceOptions = {
   projectRoot: string;
+  /** The ADE home holding the machine index; defaults to $ADE_HOME or ~/.ade. */
+  adeHome?: string;
   logger?: { info(event: string, data?: Record<string, unknown>): void; warn(event: string, data?: Record<string, unknown>): void };
   /** True while a shell still runs in the copy; a sync then waits for it to end. */
   isInUse?: (copy: { owner: string; path: string }) => boolean;
@@ -123,6 +125,56 @@ function defaultFreeBytes(dir: string): number | null {
   } catch {
     return null;
   }
+}
+
+/** Which projects on this machine hold work copies, so one read finds them all. */
+type MachineIndex = { version: 1; projects: Array<{ projectRoot: string }> };
+
+function defaultAdeHome(): string {
+  const fromEnv = process.env.ADE_HOME?.trim();
+  return path.resolve(fromEnv || path.join(os.homedir(), ".ade"));
+}
+
+function machineIndexPath(adeHome: string): string {
+  return path.join(adeHome, "remote-work", "projects.json");
+}
+
+function readMachineIndex(adeHome: string): MachineIndex {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(machineIndexPath(adeHome), "utf8")) as Partial<MachineIndex>;
+    const projects = Array.isArray(parsed.projects)
+      ? parsed.projects.filter((entry): entry is MachineIndex["projects"][number] =>
+        Boolean(entry) && typeof entry.projectRoot === "string")
+      : [];
+    return { version: 1, projects };
+  } catch {
+    return { version: 1, projects: [] };
+  }
+}
+
+function writeMachineIndexEntry(adeHome: string, projectRoot: string, present: boolean): void {
+  const index = readMachineIndex(adeHome);
+  const root = path.resolve(projectRoot);
+  const others = index.projects.filter((entry) => path.resolve(entry.projectRoot) !== root);
+  const next = present ? [...others, { projectRoot: root }] : others;
+  if (next.length === index.projects.length && present === index.projects.some((entry) => path.resolve(entry.projectRoot) === root)) return;
+  writeTextAtomic(machineIndexPath(adeHome), `${JSON.stringify({ version: 1, projects: next }, null, 2)}\n`);
+}
+
+/** Every work copy on this machine, across its projects, from the index. */
+export function listMachineRemoteWorkCopies(adeHome: string = defaultAdeHome()): Array<RemoteWorkCopy & { projectRoot: string }> {
+  const rows: Array<RemoteWorkCopy & { projectRoot: string }> = [];
+  for (const entry of readMachineIndex(adeHome).projects) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(path.join(entry.projectRoot, ".ade", "remote-work", REGISTRY_FILE), "utf8")) as Partial<Registry>;
+      for (const copy of Array.isArray(parsed.copies) ? parsed.copies.filter(isCopy) : []) {
+        rows.push({ ...copy, projectRoot: entry.projectRoot });
+      }
+    } catch {
+      // A project whose copies are all gone, or whose folder moved.
+    }
+  }
+  return rows;
 }
 
 export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOptions) {
@@ -143,8 +195,14 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
       return { version: 1, copies: [] };
     }
   };
+  const adeHome = options.adeHome ?? defaultAdeHome();
   const writeRegistry = (registry: Registry): void => {
     writeTextAtomic(registryPath, `${JSON.stringify(registry, null, 2)}\n`);
+    try {
+      writeMachineIndexEntry(adeHome, projectRoot, registry.copies.length > 0);
+    } catch (error) {
+      options.logger?.warn("remote_work.index_write_failed", { error: error instanceof Error ? error.message : String(error) });
+    }
   };
   const updateCopy = (owner: string, update: (copy: RemoteWorkCopy | null) => RemoteWorkCopy | null): void => {
     const registry = readRegistry();

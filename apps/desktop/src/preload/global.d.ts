@@ -3962,7 +3962,7 @@ declare global {
       /** Work copies on a machine for chats on other machines (Settings › Machines). */
       remoteWork: {
         list: (pin?: OpenProjectBinding | null) => Promise<RemoteWorkCopyListing[]>;
-        delete: (args: { owner: string }, pin?: OpenProjectBinding | null) => Promise<{ deleted: boolean }>;
+        delete: (args: { owner: string; projectId?: string | null }, pin?: OpenProjectBinding | null) => Promise<{ deleted: boolean }>;
       };
       terminal: {
         list: (

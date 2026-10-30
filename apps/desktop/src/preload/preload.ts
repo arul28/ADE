@@ -10789,7 +10789,7 @@ const adeBridge = {
   remoteWork: {
     list: async (pin?: OpenProjectBinding | null): Promise<RemoteWorkCopyListing[]> =>
       callPinnedOrBoundRuntimeActionOr<RemoteWorkCopyListing[]>(pin, "remote_work", "list", {}, async () => []),
-    delete: async (args: { owner: string }, pin?: OpenProjectBinding | null): Promise<{ deleted: boolean }> =>
+    delete: async (args: { owner: string; projectId?: string | null }, pin?: OpenProjectBinding | null): Promise<{ deleted: boolean }> =>
       callPinnedOrBoundRuntimeActionOr<{ deleted: boolean }>(pin, "remote_work", "delete", { args }, async () => {
         throw new Error("This window has no runtime to delete the work copy on.");
       }),
