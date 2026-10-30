@@ -10,7 +10,7 @@ import { resolveCurrentCliEntry } from "./lib/cliDelegation";
 import { DEMO_STEP_MAX_CHARS, RECORDING_MAX_MS, parseDemoStepFocus } from "../../desktop/src/shared/demoVideo/demoContract";
 import { createDemoEngineSet } from "../../desktop/src/main/services/demoVideo/demoEngines";
 import { reviewProofFile } from "../../desktop/src/main/services/demoVideo/proofReview";
-import { resolveStoredProofFile } from "./proofPublish";
+import { resolveStoredProofFile } from "../../desktop/src/main/services/prs/prBodyProofStaging";
 import { QUESTION_DECLINED_MODEL_MESSAGE, answersForModel } from "../../desktop/src/shared/pendingInputAnswers";
 import { THREAD_COMMENT_ACTION_NAMES } from "../../desktop/src/shared/threadComments";
 import { ownerOnlyProjectConfigChange } from "../../desktop/src/shared/settingsAgentAccess";
@@ -836,6 +836,8 @@ const TOOL_SPECS: ToolSpec[] = [
       additionalProperties: false,
       required: ["text"],
       properties: {
+        // Loose on purpose: the handler refuses a caption over DEMO_STEP_MAX_CHARS
+        // with its length and the limit, which a schema error would not say.
         text: { type: "string", minLength: 1, maxLength: 2000 },
         focus: {
           description: "The region the camera holds on for this step: [x, y, width, height] as fractions of the recorded frame.",
@@ -7713,12 +7715,11 @@ async function runTool(args: {
     const broker = runtime.computerUseArtifactBrokerService;
     const artifact = projectWide
       ? broker.listArtifacts({ artifactId, ...PROOF_LISTING_ARTIFACT_FILTER, limit: 1 })[0]
-      : owners
-        .flatMap((owner) => broker.listArtifacts({ ownerKind: owner.kind, ownerId: owner.id, artifactId, ...PROOF_LISTING_ARTIFACT_FILTER, limit: 1 }))[0];
+      : broker.findProofForOwners({ ids: [artifactId], owners })[0];
     if (!artifact) {
       throw new JsonRpcError(
         JsonRpcErrorCode.invalidParams,
-        `No proof ${artifactId} in this chat's or lane's proof. Copy the id from a cite: line or \`ade proof list --text\`.`,
+        `No proof ${artifactId} in this chat's or lane's proof. Copy the id from a cite: line or the \`id\` field of \`ade proof list --json\`.`,
       );
     }
     const filePath = resolveStoredProofFile(runtime.projectRoot, artifact.uri);

@@ -23,13 +23,6 @@ import {
   type PublishableArtifact,
 } from "../../desktop/src/main/services/prs/prBodyProofStaging";
 
-export {
-  GH_ATTACH_MIN_VERSION,
-  GITHUB_ATTACHMENT_LIMITS,
-  resolveStoredProofFile,
-  type PublishableArtifact,
-} from "../../desktop/src/main/services/prs/prBodyProofStaging";
-
 export type ProofPublishResult = {
   prUrl: string;
   commentUrl: string | null;

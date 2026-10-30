@@ -29,10 +29,6 @@ public enum TypeCommand {
         max(0, min(200, payload["typePaceMs"]?.intValue ?? 0))
     }
 
-    public static func pause(_ milliseconds: Int) {
-        if milliseconds > 0 { usleep(useconds_t(milliseconds) * 1000) }
-    }
-
     /// True when the target half names something to act on.
     public static func hasTarget(_ target: [String: JSONValue]) -> Bool {
         if let handle = target["handle"]?.stringValue, !handle.isEmpty { return true }

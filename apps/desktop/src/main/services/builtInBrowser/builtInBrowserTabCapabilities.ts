@@ -120,13 +120,8 @@ import type {
 } from "./builtInBrowserService";
 import { evaluateInTab } from "./builtInBrowserCdp";
 import { DEMO_RAW_FILE_EXTENSION, type DemoArtifactMetadata, type DemoEngine, type DemoTrackEventKind } from "../../../shared/demoVideo/demoContract";
-import {
-  DEMO_DRAG_PRESS_MS,
-  DEMO_DRAG_SECONDS,
-  DEMO_DRAG_STEP_MS,
-  DEMO_DRAG_STEPS,
-  type DemoPageActionTarget,
-} from "../demoVideo/demoTrackTargets";
+import type { DemoPageActionTarget } from "../demoVideo/demoTrackTargets";
+import { DEMO_DRAG_PRESS_MS, DEMO_DRAG_STEP_MS, DEMO_DRAG_STEPS, demoDragSeconds } from "../demoVideo/demoPacing";
 import { produceDemoVideo } from "../demoVideo/demoRenderService";
 import { watchDemoRecording } from "../demoVideo/demoRecordingGuard";
 import { demoTrackRegistry } from "../demoVideo/demoTrackRegistry";
@@ -1042,13 +1037,14 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
       const to = await resolveDragDestination(tab, input);
       // While the tab records, the drag runs at a pace a viewer can follow,
       // and the track gets its path so the drawn pointer carries the item.
+      const demoSteps = Math.max(DEMO_DRAG_STEPS, Math.min(MAX_DRAG_STEPS, Math.floor(optionalFiniteNumber(input.steps) ?? 0)));
       const recording = (await deps.noteDemoAction?.(tab, input, "drag", {
         point: { x: from.x, y: from.y },
         to,
-        seconds: DEMO_DRAG_SECONDS,
+        seconds: demoDragSeconds(demoSteps),
       })) ?? false;
       const steps = recording
-        ? Math.max(DEMO_DRAG_STEPS, Math.min(MAX_DRAG_STEPS, Math.floor(optionalFiniteNumber(input.steps) ?? 0)))
+        ? demoSteps
         : Math.min(
           MAX_DRAG_STEPS,
           Math.max(1, Math.floor(optionalFiniteNumber(input.steps) ?? DEFAULT_DRAG_STEPS)),

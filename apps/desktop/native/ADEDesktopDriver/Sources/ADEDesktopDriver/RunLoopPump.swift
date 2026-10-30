@@ -19,4 +19,11 @@ enum RunLoopPump {
             RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.02))
         }
     }
+
+    /// The pause between typed characters a recording asked for. It runs the
+    /// main run loop rather than sleeping, so other requests (a health ping,
+    /// another lane) are not held up for the length of the typing.
+    static func typingPause(_ milliseconds: Int) {
+        if milliseconds > 0 { wait(until: { false }, timeout: Double(milliseconds) / 1000) }
+    }
 }

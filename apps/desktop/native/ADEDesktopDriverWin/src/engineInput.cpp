@@ -34,6 +34,12 @@ void raiseOnPrivateSeat(HWND window) {
 }
 }
 
+// The pause between typed characters a running recording asked for
+// (`typePaceMs`), capped so a bad value cannot stall the driver; 0 types at once.
+static DWORD typePaceFrom(const Json& payload) {
+  return static_cast<DWORD>((std::max)(int64_t{0}, (std::min)(int64_t{200}, payload["typePaceMs"].asInt())));
+}
+
 // A lane window named by the payload's `windowId`, or null.
 static HWND payloadWindow(const std::vector<WinInfo>& windows, const Json& payload) {
   if (!payload["windowId"].isNumber()) return nullptr;
@@ -118,7 +124,7 @@ Json Engine::accessibilityInput(Lane& lane, const std::string& command, const Js
     const bool canonicalText = payload["typeText"].isString();
     const std::wstring text = widen(canonicalText ? payload["typeText"].str() : payload["text"].str());
     // A running recording asks for a pause per character so its video shows typing.
-    const DWORD pace = static_cast<DWORD>((std::max)(int64_t{0}, (std::min)(int64_t{200}, payload["typePaceMs"].asInt())));
+    const DWORD pace = typePaceFrom(payload);
     bool clear = payload["clear"].asBool();
     UiaElement e;
     bool haveTarget = false;
@@ -385,7 +391,7 @@ Json Engine::realInput(Lane& lane, const std::string& command, const Json& paylo
       ok = sendKeys(payload["key"].str(), stringList(payload["modifiers"]));
     } else {
       if (payload["clear"].asBool() && !sendKeys("a", {"ctrl"})) failLocked();
-      const DWORD pace = static_cast<DWORD>((std::max)(int64_t{0}, (std::min)(int64_t{200}, payload["typePaceMs"].asInt())));
+      const DWORD pace = typePaceFrom(payload);
       ok = sendText(widen(payload["typeText"].isString() ? payload["typeText"].str() : payload["text"].str()), pace);
     }
     if (user && user != target) {

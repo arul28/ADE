@@ -211,13 +211,12 @@ import {
   DEMO_VIEWPORT_SOURCE,
   demoElementLabel,
   demoTypedLabel,
-  demoTypingPlan,
   demoUrlHost,
   noteDemoPageAction,
   parseDemoViewport,
-  typeDemoPieces,
   type DemoPageActionTarget,
 } from "../demoVideo/demoTrackTargets";
+import { demoTypingPlan, typeDemoText } from "../demoVideo/demoPacing";
 import {
   BuiltInBrowserHandoffActiveError,
   handoffOrigin,
@@ -6110,13 +6109,8 @@ function createBuiltInBrowserWindowService(args: {
 
   /** All at once, or (while the tab records) a few characters at a time, as a person types. */
   async function insertTextForAction(tab: BrowserTabState, text: string, typing: ReturnType<typeof demoTypingPlan> | null): Promise<void> {
-    await withTemporaryDebugger(tab.webContents, async () => {
-      if (!typing) {
-        await sendDebuggerCommand(tab.webContents, "Input.insertText", { text });
-        return;
-      }
-      await typeDemoPieces(typing, (piece) => sendDebuggerCommand(tab.webContents, "Input.insertText", { text: piece }));
-    });
+    await withTemporaryDebugger(tab.webContents, () =>
+      typeDemoText(text, typing, (piece) => sendDebuggerCommand(tab.webContents, "Input.insertText", { text: piece })));
   }
 
   async function typeText(input: BuiltInBrowserTypeTextArgs): Promise<BuiltInBrowserAgentActionResult> {

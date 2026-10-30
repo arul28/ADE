@@ -14,13 +14,13 @@
  *   sprite sequences (both rasterized here), and `drawtext` for captions and the
  *   speed badge. Overlay positions follow the camera through the same
  *   piecewise-linear expressions the camera uses.
- * - `contactSheet` seeks each time as its own input (`-ss` before `-i`, so the
- *   frame is exact), scales the first frame of each, and lays them out with
- *   `xstack` into one PNG.
+ * - `contactSheet` (`ffmpegContactSheet.ts`) seeks each time as its own input,
+ *   scales the first frame of each, and lays them out with `xstack` into one
+ *   PNG.
  *
  * Differences from the other engines, all cosmetic: caption boxes are square,
  * not pills (drawtext cannot round the box it sizes to its text), a top
- * caption's height is estimated from its line count to keep the badge below
+ * caption's height is estimated from its line count to place the badge below
  * it, and on an ffmpeg older than 7 (no `text_align`) wrapped caption lines
  * are left-aligned.
  *
@@ -44,7 +44,6 @@ import zlib from "node:zlib";
 import type {
   DemoAnalysis,
   DemoAnalysisFrame,
-  DemoContactSheetResult,
   DemoEngine,
   DemoPlan,
   DemoRenderRequest,
@@ -63,6 +62,7 @@ import {
 } from "../ai/cliExecutableResolver";
 import { getPinnedToolStatus, resolvePinnedTool } from "../../../../../ade-cli/src/services/tools/pinnedTool";
 import { pinnedToolDownload } from "../../../../../ade-cli/src/services/tools/onDemand";
+import { ffmpegContactSheet } from "./ffmpegContactSheet";
 
 const READABLE_EXTENSIONS = new Set([".mp4", ".mov", ".m4v", ".mkv", ".webm"]);
 const ANALYZE_TIMEOUT_MS = Math.max(120_000, RECORDING_MAX_MS);
@@ -76,13 +76,6 @@ const MAX_RINGS = 60;
 /** How far a simplified key track may stray from the planner's, in its own units. */
 const CAMERA_TOLERANCE = { zoom: 0.004, center: 0.002 };
 const CURSOR_TOLERANCE = 0.0015;
-/** Gap between contact-sheet tiles, in pixels, and the colour behind them. */
-const CONTACT_SHEET_GAP = 6;
-const CONTACT_SHEET_FILL = "0x202020";
-/** Each tile is a decoder of its own; more than this in one sheet is refused. */
-const CONTACT_SHEET_MAX_TILES = 64;
-/** A time past the end shows the frame this far before the end. */
-const CONTACT_SHEET_END_BACKOFF_SECONDS = 0.05;
 
 export type FfmpegTools = { ffmpegPath: string; ffprobePath: string };
 
@@ -345,59 +338,8 @@ export function createFfmpegDemoEngine(deps: FfmpegDemoEngineDeps): DemoEngine {
     },
 
     async contactSheet(request, options) {
-      const count = request.times.length;
-      const columns = Math.floor(request.columns);
-      const tileWidth = Math.round(request.tileWidth);
-      if (!count) throw new Error("A contact sheet needs at least one time.");
-      if (count > CONTACT_SHEET_MAX_TILES) throw new Error(`A contact sheet holds at most ${CONTACT_SHEET_MAX_TILES} frames (asked for ${count}).`);
-      if (!request.times.every(Number.isFinite)) throw new Error("A contact sheet's times must be numbers of seconds.");
-      if (!(columns >= 1)) throw new Error("A contact sheet needs at least one column.");
-      if (!(tileWidth >= 2)) throw new Error("A contact sheet's tiles must be at least 2 px wide.");
       const tools = await deps.resolveTools();
-      const probe = await probeVideo(tools.ffprobePath, request.input, options?.signal);
-      const tileHeight = Math.max(2, Math.round((tileWidth * probe.height) / probe.width));
-      const lastTime = probe.durationSeconds === null ? null : Math.max(0, probe.durationSeconds - CONTACT_SHEET_END_BACKOFF_SECONDS);
-      const times = request.times.map((t) => Math.max(0, lastTime === null ? t : Math.min(t, lastTime)));
-      const cols = Math.min(columns, count);
-      const rows = Math.ceil(count / columns);
-      const width = cols * tileWidth + (cols - 1) * CONTACT_SHEET_GAP;
-      const height = rows * tileHeight + (rows - 1) * CONTACT_SHEET_GAP;
-
-      // Each tile is the first frame at or after its seek point.
-      const chains = times.map((_, index) =>
-        `[${index}:v]trim=end_frame=1,setpts=PTS-STARTPTS,scale=${tileWidth}:${tileHeight},setsar=1,format=rgb24[t${index}]`);
-      if (count === 1) chains.push("[t0]null[out]");
-      else {
-        const layout = times.map((_, index) =>
-          `${(index % columns) * (tileWidth + CONTACT_SHEET_GAP)}_${Math.floor(index / columns) * (tileHeight + CONTACT_SHEET_GAP)}`).join("|");
-        chains.push(`${times.map((_, index) => `[t${index}]`).join("")}xstack=inputs=${count}:layout=${layout}:fill=${CONTACT_SHEET_FILL}[out]`);
-      }
-      const partial = path.join(path.dirname(request.output), `.${path.basename(request.output)}.${process.pid}.partial.png`);
-      try {
-        await runFfmpeg({
-          binaryPath: tools.ffmpegPath,
-          args: [
-            "-hide_banner", "-nostdin", "-loglevel", "error", "-y",
-            ...times.flatMap((t) => ["-ss", t.toFixed(3), "-i", request.input]),
-            "-filter_complex", chains.join(";"),
-            "-map", "[out]",
-            "-frames:v", "1", "-update", "1",
-            "-f", "image2", "-c:v", "png",
-            partial,
-          ],
-          timeoutMs: RENDER_MIN_TIMEOUT_MS,
-          signal: options?.signal,
-          logger,
-          label: "contact sheet",
-        });
-        // ffmpeg exits cleanly with nothing written when a seek finds no frame.
-        if (!fs.existsSync(partial)) throw new Error("ffmpeg contact sheet failed: the video has no frame at the asked times.");
-        await fs.promises.rename(partial, request.output);
-        return { width, height } satisfies DemoContactSheetResult;
-      } catch (error) {
-        await fs.promises.rm(partial, { force: true }).catch(() => undefined);
-        throw error;
-      }
+      return await ffmpegContactSheet(request, { tools, probe: probeVideo, run: runFfmpeg, logger, signal: options?.signal });
     },
   };
 }
@@ -886,6 +828,9 @@ function encodePng(image: Rgba): Buffer {
 // ---------------------------------------------------------------------------
 // Processes
 // ---------------------------------------------------------------------------
+
+export type FfmpegVideoProbe = typeof probeVideo;
+export type FfmpegRun = typeof runFfmpeg;
 
 async function probeVideo(
   ffprobePath: string,

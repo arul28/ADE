@@ -275,17 +275,9 @@ export function readGhPrShellActions(args: {
   if (args.exitCode == null || args.exitCode === 0) {
     for (const entry of invocations) {
       if (entry.verb !== "merge") continue;
-      let target: { owner: string | null; repo: string | null; number: number } | null = null;
-      for (let i = 0; i < entry.args.length; i += 1) {
-        const arg = entry.args[i]!;
-        if (arg.startsWith("-")) {
-          if (MERGE_FLAGS_WITH_VALUE.has(arg)) i += 1;
-          continue;
-        }
-        target = parsePrRef(arg);
-        // A branch name is not something this reader resolves.
-        break;
-      }
+      const positional = firstPositional(entry.args, MERGE_FLAGS_WITH_VALUE);
+      // A branch name is not something this reader resolves.
+      let target = positional === null ? null : parsePrRef(positional);
       if (!target) {
         // No argument merges the current branch's PR; gh names it in its output.
         const said = /pull request (?:([A-Za-z0-9-]+)\/([A-Za-z0-9._-]+))?#(\d{1,9})/i.exec(args.output);
@@ -332,6 +324,22 @@ const EDIT_FLAGS_WITH_VALUE = new Set([
   "--add-reviewer", "--remove-reviewer",
 ]);
 
+const BODY_FLAGS = new Set(["-b", "--body", "-F", "--body-file"]);
+
+/**
+ * The first argument that is not a flag or a flag's value. A flag written as
+ * `--name=value` carries its own value.
+ */
+function firstPositional(args: string[], flagsWithValue: ReadonlySet<string>): string | null {
+  for (let i = 0; i < args.length; i += 1) {
+    const arg = args[i]!;
+    if (!arg.startsWith("-")) return arg;
+    const [name, inline] = arg.split("=", 2);
+    if (inline === undefined && flagsWithValue.has(name!)) i += 1;
+  }
+  return null;
+}
+
 /** A pull request whose text a chat's command replaced. */
 export type GhPrBodyEdit = {
   owner: string | null;
@@ -352,26 +360,17 @@ export function readGhPrBodyEdits(args: { command: string; exitCode?: number | n
   const edits: GhPrBodyEdit[] = [];
   for (const entry of simpleCommands(tokenize(unwrapShell(args.command))).map(readGhPrInvocation)) {
     if (!entry || entry.verb !== "edit") continue;
-    let body = false;
-    let target: GhPrBodyEdit | null = null;
-    let named = false;
-    for (let i = 0; i < entry.args.length; i += 1) {
-      const arg = entry.args[i]!;
-      if (arg.startsWith("-")) {
-        const [name, inline] = arg.split("=", 2);
-        if (name === "-b" || name === "--body" || name === "-F" || name === "--body-file") body = true;
-        if (EDIT_FLAGS_WITH_VALUE.has(name!) && inline === undefined) i += 1;
-        continue;
-      }
-      if (named) continue;
-      named = true;
-      const ref = parsePrRef(arg);
-      if (ref) target = ref;
+    const body = entry.args.some((arg) => BODY_FLAGS.has(arg.split("=", 1)[0]!));
+    if (!body) continue;
+    const positional = firstPositional(entry.args, EDIT_FLAGS_WITH_VALUE);
+    if (positional === null) {
+      // No PR named: gh edited the current branch's.
+      edits.push({ ...splitRepoFlag(entry.repoFlag), number: null });
+      continue;
     }
-    if (!body || (named && !target)) continue;
-    const resolved = target ?? { owner: null, repo: null, number: null };
-    if (!resolved.owner) Object.assign(resolved, splitRepoFlag(entry.repoFlag));
-    edits.push(resolved);
+    const ref = parsePrRef(positional);
+    if (!ref) continue;
+    edits.push(ref.owner ? ref : { ...splitRepoFlag(entry.repoFlag), number: ref.number });
   }
   return edits;
 }

@@ -89,57 +89,6 @@ export async function noteDemoPageAction(args: {
   return true;
 }
 
-// ---------------------------------------------------------------------------
-// Pacing: what a viewer can follow
-// ---------------------------------------------------------------------------
-
-/** One keystroke's worth of time while a recording runs. */
-const TYPING_STEP_MS = 45;
-/** Long text goes in larger pieces, so no typing runs longer than about this. */
-const TYPING_MAX_STEPS = 60;
-
-/**
- * Text a recording will show as typed: the pieces to insert one after another
- * (single characters, or a few at a time for long text) and how long that
- * takes. Instant typing reads as a paste in a video.
- */
-export function demoTypingPlan(text: string): { pieces: string[]; stepMs: number; seconds: number } {
-  const characters = Array.from(text);
-  const size = Math.max(1, Math.ceil(characters.length / TYPING_MAX_STEPS));
-  const pieces: string[] = [];
-  for (let index = 0; index < characters.length; index += size) pieces.push(characters.slice(index, index + size).join(""));
-  return { pieces, stepMs: TYPING_STEP_MS, seconds: (pieces.length * TYPING_STEP_MS) / 1000 };
-}
-
-/**
- * The same pace for a surface whose driver types one character at a time
- * (Mac Desktop, Linux, Windows, the simulator): the pause between characters
- * while it records, and how long the text takes.
- */
-export function demoTypingPace(text: string): { paceMs: number; seconds: number } {
-  const length = Math.max(1, Array.from(text).length);
-  const paceMs = Math.max(1, Math.min(TYPING_STEP_MS, Math.floor((TYPING_STEP_MS * TYPING_MAX_STEPS) / length)));
-  return { paceMs, seconds: (length * paceMs) / 1000 };
-}
-
-/** Inserts the plan's pieces with its pauses between them. */
-export async function typeDemoPieces(
-  plan: { pieces: string[]; stepMs: number },
-  insert: (piece: string) => Promise<unknown>,
-): Promise<void> {
-  for (const [index, piece] of plan.pieces.entries()) {
-    if (index > 0) await new Promise((resolve) => setTimeout(resolve, plan.stepMs));
-    await insert(piece);
-  }
-}
-
-/** A drag a viewer can follow: this many moves, this far apart. */
-export const DEMO_DRAG_STEPS = 24;
-export const DEMO_DRAG_STEP_MS = 25;
-/** The pause after pressing, before moving: drag libraries wait for it too. */
-export const DEMO_DRAG_PRESS_MS = 150;
-export const DEMO_DRAG_SECONDS = (DEMO_DRAG_PRESS_MS + DEMO_DRAG_STEPS * DEMO_DRAG_STEP_MS) / 1000;
-
 /** The element's name as a viewer would say it: "Save", "Email". */
 export function demoElementLabel(element: Pick<AgentElementSnapshot, "label" | "text" | "placeholder" | "testId"> | null): string | undefined {
   const label = element?.label ?? element?.text ?? element?.placeholder ?? element?.testId ?? null;

@@ -9,7 +9,9 @@ import type { AgentChatEventEnvelope } from "../../../shared/types/chat";
 import type { Logger } from "../logging/logger";
 import { getErrorMessage } from "../shared/utils";
 import { setBounded } from "../../../shared/boundedMap";
-import type { ShellPrBodyRepairResult, ShellPrLinkArgs, ShellPrLinkResult } from "./prService";
+import type { ShellPrLinkArgs, ShellPrLinkResult } from "./prService";
+import type { ShellPrBodyRepairArgs, ShellPrBodyRepairResult } from "./prShellBodyRepair";
+import type { PublishableArtifact } from "./prBodyProofStaging";
 
 /** Tool calls waiting for their result, across all chats. Oldest drop first. */
 const PENDING_CALLS_CAP = 256;
@@ -21,13 +23,32 @@ export type PrShellLinkWatcherDeps = {
   subscribeToEvents: (callback: (event: AgentChatEventEnvelope) => void) => () => void;
   linkShellPrAction: (args: ShellPrLinkArgs) => Promise<ShellPrLinkResult>;
   /** Puts back the footer and cited proof a `gh` write of the PR's text left out. */
-  repairShellPrBody?: (args: {
-    sessionId: string;
-    repoOwner: string | null;
-    repoName: string | null;
-    prNumber: number | null;
-  }) => Promise<ShellPrBodyRepairResult>;
+  repairShellPrBody: (args: ShellPrBodyRepairRequest) => Promise<ShellPrBodyRepairResult>;
 };
+
+/** What the watcher knows about a PR whose text a chat's command wrote. */
+export type ShellPrBodyRepairRequest = Omit<ShellPrBodyRepairArgs, "listOwnedProof" | "linkProofToPr">;
+
+/**
+ * The watcher's `repairShellPrBody` for one project: the PR service does the
+ * repair, the proof broker answers which cited proof the chat or lane owns
+ * and records the PR on what went up. The desktop and the brain both use it.
+ */
+export function shellPrBodyRepairVia(deps: {
+  prService: { repairShellPrBody: (args: ShellPrBodyRepairArgs) => Promise<ShellPrBodyRepairResult> };
+  proof: {
+    findProofForOwners: (args: { ids: string[]; owners: Array<{ kind: "chat_session" | "lane"; id: string }> }) => PublishableArtifact[];
+    linkArtifactsToPullRequest: (args: { artifactIds: string[]; prUrl: string }) => unknown;
+  };
+}): (args: ShellPrBodyRepairRequest) => Promise<ShellPrBodyRepairResult> {
+  return (args) => deps.prService.repairShellPrBody({
+    ...args,
+    listOwnedProof: (query) => deps.proof.findProofForOwners(query),
+    linkProofToPr: (link) => {
+      deps.proof.linkArtifactsToPullRequest(link);
+    },
+  });
+}
 
 /**
  * Links the PRs a chat's own shell commands create or merge (`gh pr create`,
@@ -52,12 +73,10 @@ export function createPrShellLinkWatcher(deps: PrShellLinkWatcherDeps) {
     const key = `${sessionId}:${itemId}`;
     if (handled.has(key) || inFlightKeys.has(key)) return;
     const actions = readGhPrShellActions({ command, output, exitCode });
-    const bodies = deps.repairShellPrBody
-      ? [
-          ...actions.filter((action) => action.kind === "create"),
-          ...readGhPrBodyEdits({ command, exitCode }),
-        ]
-      : [];
+    const bodies = [
+      ...actions.filter((action) => action.kind === "create"),
+      ...readGhPrBodyEdits({ command, exitCode }),
+    ];
     if (actions.length === 0 && bodies.length === 0) {
       setBounded(handled, key, true, HANDLED_CAP);
       return;
@@ -93,7 +112,7 @@ export function createPrShellLinkWatcher(deps: PrShellLinkWatcherDeps) {
       // After the links, so a new PR already has its row. A repair of text
       // that needs none changes nothing, so a retried event may run it again.
       for (const body of bodies) {
-        void deps.repairShellPrBody?.({
+        void deps.repairShellPrBody({
           sessionId,
           repoOwner: body.owner,
           repoName: body.repo,

@@ -129,7 +129,9 @@ public struct DemoRing: Codable, Equatable, Sendable {
     }
 }
 
-/// A caption or a badge: text shown from `start` to `end`, output time.
+/// A caption or a badge: text shown from `start` to `end`, output time. A
+/// badge always sits below a top caption while both show, touching or not
+/// (demoContract.ts, `DemoBadge`).
 public struct DemoTextSpan: Codable, Equatable, Sendable {
     public var start: Double
     public var end: Double
@@ -219,7 +221,7 @@ public struct DemoRenderResult: Codable, Equatable, Sendable {
 }
 
 /// `ade-media contact-sheet`: the frames of a finished video at `times`, tiled
-/// into one PNG.
+/// into one PNG. Limits and layout: `ContactSheet` (mirrors demoContract.ts).
 public struct DemoContactSheetRequest: Codable, Equatable, Sendable {
     public var input: String
     public var output: String

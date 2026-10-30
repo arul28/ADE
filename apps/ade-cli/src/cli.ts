@@ -3083,7 +3083,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade proof publish --pr 12 <id> <id>           Post chosen proof to a PR as one comment (gh 2.99+)
     $ ade proof publish --pr 12 --replace <id>      Same, and delete your earlier ADE proof comments on it
     $ ade proof publish --pr 12 --in-body           Upload the proof the PR text cites, in place (gh 2.99+)
-    $ ade proof step "Open the settings page"       Caption the next part of every recording running on this lane (60 chars max)
+    $ ade proof step "Open the settings page"       Caption the next part of every recording running on this lane (${DEMO_STEP_MAX_CHARS} chars max)
     $ ade proof step "Pick a model" --focus 0.6,0.1,0.4,0.8  Same, and hold the camera on that region (x,y,w,h fractions)
     $ ade proof review artifact-id --text           A frame sheet of a video (or a picture's path) to check before publishing
     $ ade proof rm artifact-id                      Delete stored proof and its record
@@ -13903,7 +13903,7 @@ function buildProofPlan(args: string[], explicitProjectRoot: string | null = nul
     // `ade proof review <id>`: a contact sheet (video) or the file (picture)
     // to look at, plus what ADE can tell from the record, before publishing.
     const artifactId = readValue(args, ["--id", "--artifact-id"]) ?? args.find((value) => !value.startsWith("-"));
-    if (!artifactId) throw new CliUsageError("ade proof review needs a proof id: ade proof review <id>. Copy it from a cite: line or `ade proof list --text`.");
+    if (!artifactId) throw new CliUsageError("ade proof review needs a proof id: ade proof review <id>. Copy it from a cite: line or the `id` field of `ade proof list --json`.");
     return {
       kind: "execute",
       label: "proof review",
@@ -13976,7 +13976,7 @@ function buildProofPlan(args: string[], explicitProjectRoot: string | null = nul
         steps: proofIntoPrBodySteps({ pr: () => pr, explicitProjectRoot }),
       };
     }
-    if (!ids.length) throw new CliUsageError("proof publish needs one or more artifact ids. Copy them from the cite: lines or `ade proof list --text`.");
+    if (!ids.length) throw new CliUsageError("proof publish needs one or more artifact ids. Copy them from the cite: lines or the `id` fields of `ade proof list --json`.");
     return {
       kind: "execute",
       label: "proof publish",
@@ -14001,7 +14001,7 @@ function buildProofPlan(args: string[], explicitProjectRoot: string | null = nul
             const missing = ids.filter((id) => !byId.has(id));
             if (missing.length) {
               throw new CliToolError(
-                `proof publish failed — not in this chat's or lane's proof: ${missing.join(", ")}. Copy the id from a cite: line or \`ade proof list --text\`.`,
+                `proof publish failed — not in this chat's or lane's proof: ${missing.join(", ")}. Copy the id from a cite: line or the \`id\` field of \`ade proof list --json\`.`,
                 { missing },
               );
             }
@@ -32751,7 +32751,7 @@ function proofListScopeLabel(value: unknown, artifactCount: number): string {
   return `Proof for ${target}: ${artifactCount} artifact${artifactCount === 1 ? "" : "s"}`;
 }
 
-/** `ade scene preview --text`: the picture's path, timings, then one problem per line. */
+/** `ade proof review --text`: the file, its size and length, the contact sheet, then one finding per line. */
 function formatProofReview(value: unknown): string {
   const record = (unwrapActionEnvelope(value) ?? {}) as Record<string, unknown>;
   const findings = Array.isArray(record.findings) ? record.findings.map(String) : [];
@@ -32774,6 +32774,7 @@ function formatProofReview(value: unknown): string {
   return lines.join("\n");
 }
 
+/** `ade scene preview --text`: the picture's path, timings, then one problem per line. */
 function formatScenePreview(value: unknown): string {
   const record = (value && typeof value === "object" ? value : {}) as Record<string, unknown>;
   const problems = Array.isArray(record.problems) ? record.problems as Array<{ kind?: unknown; message?: unknown }> : [];
@@ -32872,6 +32873,8 @@ function formatProofFiled(value: unknown): string {
       const citation = asString(artifact.citation);
       return citation ? [`cite: ${citation}`] : [];
     }),
+    // Above the confirmation, which stays the last line.
+    ...proofReviewNudgeLines(value),
     "",
     confirmation,
   ].join("\n");
@@ -37335,22 +37338,40 @@ function formatOutput(
       : withoutTarget;
     const noticeText = notices.map((line) => `\nnote: ${line}`).join("");
     const body = formatTextOutput(shown, formatter);
-    return `${targetLine}${body}${noticeText}${proofReviewNudge(body, formatter)}\n`;
+    return `${targetLine}${body}${noticeText}${proofReviewNudge(shown, formatter)}\n`;
   }
   return `${JSON.stringify(value, null, options.pretty ? 2 : 0)}\n`;
 }
 
 /**
- * Every surface's proof command prints a `cite:` line; under it, one line
- * that sends the agent to check the proof before a person sees it. It is
- * here, where every filing passes, because an agent that never opened the
- * proof skill still reads its own command's output.
+ * Under a command that just filed proof, one line that sends the agent to
+ * check it before a person sees it. The ids come from the result's own proof
+ * fields, never from its text, so content a command passes through (a file
+ * read) is left as it is. Listings and reviews of existing proof get none.
  */
-function proofReviewNudge(text: string, formatter?: FormatterId): string {
-  if (formatter === "proof-review" || formatter === "proof-list" || formatter === "proof-published") return "";
-  const ids = [...new Set([...text.matchAll(/\bcite:?\s+!\[[^\]]*\]\(ade-proof:\/\/([0-9a-f-]{8,})\)/g)].map((match) => match[1]!))];
-  if (!ids.length) return "";
-  return `\nnext: for proof a person will see, run ${ids.map((id) => `\`ade proof review ${id} --text\``).join(", ")} and fix what it shows (skill: ade-proof-artifacts)`;
+function proofReviewNudge(value: unknown, formatter?: FormatterId): string {
+  // `proof-filed` prints it itself, above its closing confirmation line.
+  if (formatter === "proof-review" || formatter === "proof-list" || formatter === "proof-published" || formatter === "proof-filed") return "";
+  return proofReviewNudgeLines(value, formatter).map((line) => `\n${line}`).join("");
+}
+
+function proofReviewNudgeLines(value: unknown, formatter?: FormatterId): string[] {
+  const record = unwrapActionEnvelope(value);
+  if (!isRecord(record)) return [];
+  const ids = new Set<string>();
+  const add = (id: unknown) => {
+    const text = asString(id);
+    if (text) ids.add(text);
+  };
+  add(record.proofArtifactId);
+  if (Array.isArray(record.proofArtifactIds)) record.proofArtifactIds.forEach(add);
+  // `screen proof` prints its cite lines from the broker's records, which carry no `citation`.
+  const filedByScreen = formatter === "mac-desktop-proof";
+  for (const artifact of firstArray(record as JsonObject, ["artifacts"])) {
+    if (isRecord(artifact) && (filedByScreen || asString(artifact.citation))) add(artifact.id);
+  }
+  if (!ids.size) return [];
+  return [`next: for proof a person will see, run ${[...ids].map((id) => `\`ade proof review ${id} --text\``).join(", ")} and fix what it shows (skill: ade-proof-artifacts)`];
 }
 
 /** The first line of a browser command's text output: which browser it ran in, when that needs saying. */

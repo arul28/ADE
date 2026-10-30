@@ -44,6 +44,21 @@ final class WorkArtifactVideoPlayerModel: ObservableObject {
   }
 }
 
+private extension View {
+  /// Keeps `model` on `url`, and plays from a chapter start set in `seek`, then clears it.
+  func followsVideo(url: URL, seek: Binding<Double?>?, model: WorkArtifactVideoPlayerModel) -> some View {
+    onChange(of: url) { _, newValue in
+      model.update(url: newValue)
+    }
+    .onChange(of: seek?.wrappedValue) { _, requested in
+      guard let requested else { return }
+      model.player.seek(to: CMTime(seconds: requested, preferredTimescale: 600))
+      model.player.play()
+      seek?.wrappedValue = nil
+    }
+  }
+}
+
 /// AVKit's player, for full-screen proof pages. Never put it in a transcript
 /// row: see `WorkArtifactInlineVideoView`.
 struct WorkArtifactVideoPlayerView: View {
@@ -61,15 +76,7 @@ struct WorkArtifactVideoPlayerView: View {
 
   var body: some View {
     VideoPlayer(player: model.player)
-      .onChange(of: url) { _, newValue in
-        model.update(url: newValue)
-      }
-      .onChange(of: seek?.wrappedValue) { _, requested in
-        guard let requested else { return }
-        model.player.seek(to: CMTime(seconds: requested, preferredTimescale: 600))
-        model.player.play()
-        seek?.wrappedValue = nil
-      }
+      .followsVideo(url: url, seek: seek, model: model)
   }
 }
 
@@ -127,15 +134,7 @@ struct WorkArtifactInlineVideoView: View {
         .padding(8)
         .accessibilityLabel("Open the video full screen")
       }
-      .onChange(of: url) { _, newValue in
-        model.update(url: newValue)
-      }
-      .onChange(of: seek?.wrappedValue) { _, requested in
-        guard let requested else { return }
-        model.player.seek(to: CMTime(seconds: requested, preferredTimescale: 600))
-        model.player.play()
-        seek?.wrappedValue = nil
-      }
+      .followsVideo(url: url, seek: seek, model: model)
       // A row scrolled away (or reused for another) stops its sound.
       .onDisappear { model.player.pause() }
   }

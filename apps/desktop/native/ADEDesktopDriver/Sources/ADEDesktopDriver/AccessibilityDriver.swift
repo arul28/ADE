@@ -565,13 +565,20 @@ final class AccessibilityDriver {
                 // A recording is running: the value grows a character at a
                 // time, so the video shows typing rather than a paste.
                 var typed = ""
-                var delivered = true
                 for character in text {
+                    guard setValue(element, to: existing + typed + String(character)) else { break }
                     typed.append(character)
-                    guard setValue(element, to: existing + typed) else { delivered = false; break }
-                    TypeCommand.pause(paceMs)
+                    RunLoopPump.typingPause(paceMs)
                 }
-                if delivered { return }
+                if typed.count == text.count { return }
+                // Posting the whole text now would type the part already in
+                // the field a second time.
+                if !typed.isEmpty {
+                    throw DriverError(
+                        code: DriverErrorCode.internalError,
+                        message: "The field stopped accepting text after \(typed.count) of \(text.count) characters; observe it before typing again."
+                    )
+                }
             } else if setValue(element, to: existing + text) {
                 return
             }
@@ -724,7 +731,7 @@ final class AccessibilityDriver {
     /// Types a string as unicode key events, so layouts and emoji survive.
     func postText(pid: pid_t, text: String, paceMs: Int = 0) throws {
         for (index, character) in text.enumerated() {
-            if index > 0 { TypeCommand.pause(paceMs) }
+            if index > 0 { RunLoopPump.typingPause(paceMs) }
             var utf16 = Array(String(character).utf16)
             guard let down = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true),
                   let up = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false)

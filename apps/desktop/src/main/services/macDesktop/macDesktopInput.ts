@@ -13,7 +13,8 @@
 
 import type { DemoTrackEventKind } from "../../../shared/demoVideo/demoContract";
 import { demoTrackRegistry } from "../demoVideo/demoTrackRegistry";
-import { demoTypedLabelForField, demoTypingPace } from "../demoVideo/demoTrackTargets";
+import { demoTypedLabelForField } from "../demoVideo/demoTrackTargets";
+import { demoTypingPace } from "../demoVideo/demoPacing";
 import {
   macDesktopNextStep,
   macDesktopOffDisplayRefusalMessage,
@@ -348,6 +349,8 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
     point: { x: number; y: number } | null;
     to?: { x: number; y: number } | null;
     seconds?: number;
+    /** When the input began; an action that takes time is noted after it ends. */
+    atMs?: number;
     by: "agent" | "user";
   }): void => {
     const key = macDesktopDemoKey(laneId);
@@ -370,6 +373,7 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
       ...(frame ? { rect: [nx(frame.x), ny(frame.y), frame.width / display.width, frame.height / display.height] } : {}),
       ...(action.to ? { to: [nx(action.to.x), ny(action.to.y)] as [number, number] } : {}),
       ...(action.seconds ? { seconds: action.seconds } : {}),
+      ...(action.atMs !== undefined ? { atMs: action.atMs } : {}),
       // A type event's label is the typed text itself (already filtered), never
       // the field's name: the caption reads `Type "<label>"`.
       label: action.kind === "type"
@@ -620,6 +624,9 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
         point: pointOf(args.payload),
         to: args.demo.to ?? null,
         seconds: args.demo.seconds,
+        // Paced typing and drags are noted once the driver is done; their
+        // normal-speed window has to start where the input did.
+        ...(args.demo.seconds ? { atMs: startedMs } : {}),
         by: args.controllerId?.trim() ? "user" : "agent",
       });
     }
@@ -825,7 +832,11 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
       const caption = `type · ${args.text.slice(0, 40)}`;
       // While the lane records, the driver types a character at a time (an
       // accessibility value grows by one) so the video shows typing, not a paste.
-      const pace = demoTrackRegistry.isRecording(macDesktopDemoKey(laneId)) ? demoTypingPace(args.text) : null;
+      // A Windows pause lasts at least one timer tick (about 15.6 ms), and
+      // the Linux driver leaves at least 2 ms between keys, so the recorded
+      // time counts that floor.
+      const minKeyGapMs = deps.platform === "win32" ? 16 : deps.platform === "linux" ? 2 : 0;
+      const pace = demoTrackRegistry.isRecording(macDesktopDemoKey(laneId)) ? demoTypingPace(args.text, minKeyGapMs) : null;
       const typed = await runAction({
         laneId,
         action: "type",

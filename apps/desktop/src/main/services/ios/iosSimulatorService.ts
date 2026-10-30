@@ -194,7 +194,7 @@ import {
   type SimHelperTransport,
 } from "./simHelperClient";
 import {
-  appleDemoKey,
+  appleTypingPace,
   createSimRecordingService,
   readArtifactId,
   type AppleInputSource,
@@ -203,8 +203,6 @@ import {
   type SimRecordingServiceDeps,
 } from "./recording/simRecordingService";
 import { createLaneDeviceLifecycle } from "./laneDeviceLifecycle";
-import { demoTrackRegistry } from "../demoVideo/demoTrackRegistry";
-import { demoTypingPace } from "../demoVideo/demoTrackTargets";
 import { createAppleDuoService, parseHelperPosture } from "./appleDuoService";
 import { createAppleDeviceLeases } from "./appleDeviceLease";
 import { normalizeBuildConfiguration, normalizeLaunchArguments } from "./iosLaunchArgs";
@@ -6784,7 +6782,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     const checkFocus = options.checkFocus !== false && input.source !== "user";
     return enqueueControl("text", async () => {
       const focused = checkFocus ? await readFocusedElement(deviceUdid).catch(() => undefined) : undefined;
-      const pace = demoTrackRegistry.isRecording(appleDemoKey(runtime.key)) ? demoTypingPace(input.text) : null;
+      const pace = appleTypingPace(runtime.key, input.text);
       const startedAtMs = Date.now();
       await helperType(deviceUdid, input.text, pace?.paceMs);
       runtime.streamStatus = { ...runtime.streamStatus, inputBackend: "helper" };

@@ -10,7 +10,8 @@
 /// a gate, a second lane's `input {mode:"real"}` posts a `mouseDown` on top of a
 /// held button, a `display.destroy` yanks the display out from under the
 /// gesture, and a `present` drags the same window somewhere else — all *inside*
-/// the drag.
+/// the drag. Typing paced for a recording pumps the same loop between keys,
+/// so it holds the gate too: nothing moves focus in the middle of the text.
 ///
 /// The gate is not a lock. Nothing is blocked and nothing spins: the hazardous
 /// requests are parked in order and replayed the moment the button comes up, so

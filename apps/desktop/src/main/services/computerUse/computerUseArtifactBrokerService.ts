@@ -27,6 +27,7 @@ import type {
   ComputerUseArtifactWorkflowState,
   ComputerUseEventPayload,
 } from "../../../shared/types";
+import { PROOF_LISTING_ARTIFACT_FILTER } from "../../../shared/types/computerUseArtifacts";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 import { pathsEqual } from "../shared/pathCompare";
 import { normalizeComputerUseArtifactKind } from "../../../shared/proofArtifacts";
@@ -1497,6 +1498,86 @@ export function createComputerUseArtifactBrokerService(args: {
     };
   };
 
+  const listArtifacts = (args: ComputerUseArtifactListArgs = {}): ComputerUseArtifactView[] => {
+    // Public callers cap ordinary list responses at 200. Internal proof
+    // maintenance may request up to the broken-record audit ceiling so it
+    // can authorize a bounded batch without one lookup per artifact.
+    const limit = Math.max(1, Math.min(2000, Math.floor(args.limit ?? 50)));
+    // The metadata-kind filters run IN THE QUERY, not over its result: they
+    // interact with `limit`, and filtering afterwards would let 50 scene
+    // stills push every proof row out of a drawer listing that then showed
+    // nothing.
+    const metadataFilter = buildMetadataKindFilter(args);
+    let artifacts: ComputerUseArtifactRecord[] = [];
+    const artifactId = toOptionalString(args.artifactId);
+    const ownerKind = args.owner?.kind ?? args.ownerKind ?? null;
+    const ownerId = args.owner?.id ?? toOptionalString(args.ownerId);
+    if (artifactId) {
+      const record = readArtifactById(artifactId);
+      // A named owner scopes a lookup by id too: callers pass the owner so
+      // that a cited id from another chat or lane comes back as nothing.
+      const owned = !record || !ownerKind || !ownerId
+        || (ownerKind === "lane" && record.laneId === ownerId)
+        || readLinkRows([record.id]).some((link) => link.ownerKind === ownerKind && link.ownerId === ownerId);
+      artifacts = record && owned && matchesMetadataKindFilter(record, args) ? [record] : [];
+    } else {
+    if (ownerKind && ownerId) {
+      artifacts = readArtifactRows(
+        `
+          select distinct a.id, a.artifact_kind, a.backend_style, a.backend_name, a.source_tool_name,
+                 a.original_type, a.title, a.description, a.uri, a.storage_kind, a.mime_type,
+                 a.metadata_json, a.lane_id, a.created_at
+          from computer_use_artifacts a
+          left join computer_use_artifact_links l
+            on l.artifact_id = a.id
+           and l.project_id = ?
+          where a.project_id = ?
+            and (
+              (l.owner_kind = ? and l.owner_id = ?)
+              or (? = 'lane' and a.lane_id = ?)
+            )
+            ${args.kind ? "and a.artifact_kind = ?" : ""}
+            ${metadataFilter.sql("a.")}
+          order by a.created_at desc
+          limit ?
+        `,
+        [
+          projectId,
+          projectId,
+          ownerKind,
+          ownerId,
+          ownerKind,
+          ownerId,
+          ...(args.kind ? [args.kind] : []),
+          ...metadataFilter.params,
+          limit,
+        ],
+      );
+    } else {
+      artifacts = readArtifactRows(
+        `
+          select ${ARTIFACT_SELECT_COLUMNS}
+          from computer_use_artifacts
+          where project_id = ?
+            ${args.kind ? "and artifact_kind = ?" : ""}
+            ${metadataFilter.sql("")}
+          order by created_at desc
+          limit ?
+        `,
+        [projectId, ...(args.kind ? [args.kind] : []), ...metadataFilter.params, limit],
+      );
+    }
+    }
+    const links = readLinkRows(artifacts.map((artifact) => artifact.id));
+    const linksByArtifact = new Map<string, ComputerUseArtifactLink[]>();
+    for (const link of links) {
+      const bucket = linksByArtifact.get(link.artifactId) ?? [];
+      bucket.push(link);
+      linksByArtifact.set(link.artifactId, bucket);
+    }
+    return artifacts.map((artifact) => toArtifactView(artifact, linksByArtifact.get(artifact.id) ?? []));
+  };
+
   return {
     /** The artifact's file on disk, confined to the artifacts directory; null for links or paths outside it. */
     resolveArtifactFilePath(artifact: Pick<ComputerUseArtifactRecord, "storageKind" | "uri">): string | null {
@@ -1537,79 +1618,25 @@ export function createComputerUseArtifactBrokerService(args: {
       resolveChatTurnId = resolver;
     },
 
-    listArtifacts(args: ComputerUseArtifactListArgs = {}): ComputerUseArtifactView[] {
-      // Public callers cap ordinary list responses at 200. Internal proof
-      // maintenance may request up to the broken-record audit ceiling so it
-      // can authorize a bounded batch without one lookup per artifact.
-      const limit = Math.max(1, Math.min(2000, Math.floor(args.limit ?? 50)));
-      // The metadata-kind filters run IN THE QUERY, not over its result: they
-      // interact with `limit`, and filtering afterwards would let 50 scene
-      // stills push every proof row out of a drawer listing that then showed
-      // nothing.
-      const metadataFilter = buildMetadataKindFilter(args);
-      let artifacts: ComputerUseArtifactRecord[] = [];
-      const artifactId = toOptionalString(args.artifactId);
-      if (artifactId) {
-        const record = readArtifactById(artifactId);
-        artifacts = record && matchesMetadataKindFilter(record, args) ? [record] : [];
-      } else {
-      const ownerKind = args.owner?.kind ?? args.ownerKind ?? null;
-      const ownerId = args.owner?.id ?? toOptionalString(args.ownerId);
-      if (ownerKind && ownerId) {
-        artifacts = readArtifactRows(
-          `
-            select distinct a.id, a.artifact_kind, a.backend_style, a.backend_name, a.source_tool_name,
-                   a.original_type, a.title, a.description, a.uri, a.storage_kind, a.mime_type,
-                   a.metadata_json, a.lane_id, a.created_at
-            from computer_use_artifacts a
-            left join computer_use_artifact_links l
-              on l.artifact_id = a.id
-             and l.project_id = ?
-            where a.project_id = ?
-              and (
-                (l.owner_kind = ? and l.owner_id = ?)
-                or (? = 'lane' and a.lane_id = ?)
-              )
-              ${args.kind ? "and a.artifact_kind = ?" : ""}
-              ${metadataFilter.sql("a.")}
-            order by a.created_at desc
-            limit ?
-          `,
-          [
-            projectId,
-            projectId,
-            ownerKind,
-            ownerId,
-            ownerKind,
-            ownerId,
-            ...(args.kind ? [args.kind] : []),
-            ...metadataFilter.params,
-            limit,
-          ],
-        );
-      } else {
-        artifacts = readArtifactRows(
-          `
-            select ${ARTIFACT_SELECT_COLUMNS}
-            from computer_use_artifacts
-            where project_id = ?
-              ${args.kind ? "and artifact_kind = ?" : ""}
-              ${metadataFilter.sql("")}
-            order by created_at desc
-            limit ?
-          `,
-          [projectId, ...(args.kind ? [args.kind] : []), ...metadataFilter.params, limit],
-        );
+    listArtifacts,
+
+    /**
+     * The proof among `ids` that one of `owners` holds: linked to it, or, for
+     * a lane, captured in it. Scene stills are not proof. Each id is read on
+     * its own, so an old item is not lost behind a listing limit.
+     */
+    findProofForOwners(args: { ids: string[]; owners: Array<Pick<ComputerUseArtifactOwner, "kind" | "id">> }): ComputerUseArtifactView[] {
+      const found = new Map<string, ComputerUseArtifactView>();
+      for (const artifactId of new Set(args.ids)) {
+        for (const owner of args.owners) {
+          const [artifact] = listArtifacts({ ownerKind: owner.kind, ownerId: owner.id, artifactId, ...PROOF_LISTING_ARTIFACT_FILTER, limit: 1 });
+          if (artifact) {
+            found.set(artifact.id, artifact);
+            break;
+          }
+        }
       }
-      }
-      const links = readLinkRows(artifacts.map((artifact) => artifact.id));
-      const linksByArtifact = new Map<string, ComputerUseArtifactLink[]>();
-      for (const link of links) {
-        const bucket = linksByArtifact.get(link.artifactId) ?? [];
-        bucket.push(link);
-        linksByArtifact.set(link.artifactId, bucket);
-      }
-      return artifacts.map((artifact) => toArtifactView(artifact, linksByArtifact.get(artifact.id) ?? []));
+      return [...found.values()];
     },
 
 

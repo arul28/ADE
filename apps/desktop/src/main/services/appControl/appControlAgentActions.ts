@@ -80,11 +80,10 @@ import type { DemoTrackEventKind } from "../../../shared/demoVideo/demoContract"
 import {
   demoElementLabel,
   demoTypedLabel,
-  demoTypingPlan,
   noteDemoPageAction,
-  typeDemoPieces,
   type DemoPageActionTarget,
 } from "../demoVideo/demoTrackTargets";
+import { demoTypingPlan, typeDemoText } from "../demoVideo/demoPacing";
 import { appControlRecordingKey } from "./appControlRecording";
 
 /**
@@ -612,15 +611,6 @@ export function createAppControlAgentActions<TClient extends AppControlAgentCdpC
     });
   };
 
-  /** All at once, or (while the lane records) a few characters at a time, as a person types. */
-  const insertText = async (client: TClient, text: string, typing: ReturnType<typeof demoTypingPlan> | null): Promise<void> => {
-    if (!typing) {
-      await client.send("Input.insertText", { text });
-      return;
-    }
-    await typeDemoPieces(typing, (piece) => client.send("Input.insertText", { text: piece }));
-  };
-
   const runAgentAction = async (
     action: string,
     input: AppControlAgentActionArgs,
@@ -713,7 +703,7 @@ export function createAppControlAgentActions<TClient extends AppControlAgentCdpC
         seconds: typing.seconds,
       });
       await deps.enablePageDomain(client);
-      await insertText(client, fillValue, recording ? typing : null);
+      await typeDemoText(fillValue, recording ? typing : null, (piece) => client.send("Input.insertText", { text: piece }));
     });
 
   const agentClear = async (input: AppControlAgentClearArgs): Promise<AppControlAgentActionResult> =>
@@ -735,7 +725,7 @@ export function createAppControlAgentActions<TClient extends AppControlAgentCdpC
       const typing = demoTypingPlan(text);
       const recording = await noteDemoAction(client, session, "type", { seconds: typing.seconds });
       await deps.enablePageDomain(client);
-      await insertText(client, text, recording ? typing : null);
+      await typeDemoText(text, recording ? typing : null, (piece) => client.send("Input.insertText", { text: piece }));
     });
 
   const agentPress = async (input: AppControlAgentPressArgs): Promise<AppControlAgentActionResult> =>

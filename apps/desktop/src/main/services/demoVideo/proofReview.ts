@@ -11,7 +11,10 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import type { DemoEngine } from "../../../shared/demoVideo/demoContract";
+import type { DemoArtifactMetadata, DemoContactSheetRequest, DemoEngine } from "../../../shared/demoVideo/demoContract";
+import { DEMO_CONTACT_SHEET_MAX_FRAMES, DEMO_CONTACT_SHEET_TILE_WIDTH } from "../../../shared/demoVideo/demoContract";
+import { readProofProvenance } from "../../../shared/proofProvenance";
+import { gifDimensions, jpegDimensions, pngDimensions, webpDimensions, type ImageDimensions } from "../shared/imageDimensions";
 import { readDemoMp4 } from "./demoMp4Source";
 
 /** Sheets kept per project; older ones are removed as new ones are written. */
@@ -29,6 +32,12 @@ export type ProofReviewInput = {
   kind: string;
   metadata: Record<string, unknown> | null;
 };
+
+/** The render summary a demo recording's record carries, when it has one. */
+function demoMetadataOf(metadata: Record<string, unknown> | null): Partial<DemoArtifactMetadata> | null {
+  const demo = metadata?.demo;
+  return demo && typeof demo === "object" && !Array.isArray(demo) ? (demo as Partial<DemoArtifactMetadata>) : null;
+}
 
 export type ProofReview = {
   artifactId: string;
@@ -50,37 +59,42 @@ export type ProofReview = {
 
 const VIDEO_EXTENSIONS = new Set([".mp4", ".mov", ".m4v", ".webm"]);
 
-export async function reviewProofFile(args: {
+type ReviewArgs = {
   artifact: ProofReviewInput;
   filePath: string;
   projectRoot: string;
   engines: DemoEngine[];
   now?: () => Date;
   signal?: AbortSignal;
-}): Promise<ProofReview> {
-  const video = VIDEO_EXTENSIONS.has(path.extname(args.filePath).toLowerCase());
-  const metadata = args.artifact.metadata ?? {};
+};
+
+export async function reviewProofFile(args: ReviewArgs): Promise<ProofReview> {
   const findings: string[] = [];
-  if (metadata.recordedBeforeRequest === true) findings.push("Recorded before this request: record it again.");
+  if (readProofProvenance(args.artifact.metadata).recordedBeforeRequest) findings.push("Recorded before this request: record it again.");
+  return VIDEO_EXTENSIONS.has(path.extname(args.filePath).toLowerCase())
+    ? await reviewVideo(args, findings)
+    : reviewImage(args, findings);
+}
 
-  if (!video) {
-    const size = readImageSize(args.filePath);
-    if (size) imageFindings(size, findings);
-    return {
-      artifactId: args.artifact.id,
-      media: "image",
-      path: args.filePath,
-      width: size?.width ?? null,
-      height: size?.height ?? null,
-      durationSeconds: null,
-      sheetPath: null,
-      sheetError: null,
-      frameTimes: [],
-      columns: 0,
-      findings,
-    };
-  }
+function reviewImage(args: ReviewArgs, findings: string[]): ProofReview {
+  const size = readImageSize(args.filePath);
+  if (size) imageFindings(size, findings);
+  return {
+    artifactId: args.artifact.id,
+    media: "image",
+    path: args.filePath,
+    width: size?.width ?? null,
+    height: size?.height ?? null,
+    durationSeconds: null,
+    sheetPath: null,
+    sheetError: null,
+    frameTimes: [],
+    columns: 0,
+    findings,
+  };
+}
 
+async function reviewVideo(args: ReviewArgs, findings: string[]): Promise<ProofReview> {
   let width: number | null = null;
   let height: number | null = null;
   let duration: number | null = null;
@@ -92,9 +106,9 @@ export async function reviewProofFile(args: {
   } catch {
     // A movie this reader does not know (a WebM, HEVC): the sheet engine may still read it.
   }
-  const demo = metadata.demo && typeof metadata.demo === "object" ? (metadata.demo as Record<string, unknown>) : null;
+  const demo = demoMetadataOf(args.artifact.metadata);
   if (duration == null && typeof demo?.outputSeconds === "number") duration = demo.outputSeconds;
-  if (demo?.fallbackReason) findings.push(`Not a demo: ${String(demo.fallbackReason)}. Record it again.`);
+  if (demo?.fallbackReason) findings.push(`Not a demo: ${demo.fallbackReason}. Record it again.`);
   else if (demo?.plain === true) findings.push("A plain recording (no cuts, frame or captions). Fine only when someone asked for it as recorded.");
   if (demo && !demo.plain && Array.isArray(demo.steps) && demo.steps.length === 0) {
     findings.push("No captions. Mark each beat with `ade proof step \"<short caption>\"` while recording.");
@@ -111,10 +125,13 @@ export async function reviewProofFile(args: {
 
   // In engine order; one that fails (an older helper without the command, a
   // codec it cannot read) hands the video to the next.
-  const engines = args.engines.filter((candidate) => candidate.contactSheet && candidate.canRead(args.filePath));
+  const sheetMakers = args.engines.flatMap((engine) => {
+    const contactSheet = engine.contactSheet?.bind(engine);
+    return contactSheet && engine.canRead(args.filePath) ? [{ id: engine.id, contactSheet }] : [];
+  });
   let sheetPath: string | null = null;
   let sheetError: string | null = null;
-  if (!engines.length) {
+  if (!sheetMakers.length) {
     sheetError = "No engine on this machine can read this video for a frame sheet";
   } else if (duration == null) {
     sheetError = "ADE could not read the video's length";
@@ -123,16 +140,18 @@ export async function reviewProofFile(args: {
     fs.mkdirSync(dir, { recursive: true });
     const stamp = (args.now?.() ?? new Date()).toISOString().replace(/[:.]/g, "-");
     const output = path.join(dir, `review-${stamp}-${args.artifact.id.slice(0, 8)}.png`);
-    for (const engine of engines) {
+    const request: DemoContactSheetRequest = { input: args.filePath, output, times: frameTimes, columns, tileWidth };
+    sheetError = contactSheetRequestError(request);
+    for (const maker of sheetError ? [] : sheetMakers) {
       try {
-        await engine.contactSheet!({ input: args.filePath, output, times: frameTimes, columns, tileWidth }, { signal: args.signal });
+        await maker.contactSheet(request, { signal: args.signal });
         sheetPath = output;
         sheetError = null;
         pruneSheets(dir);
         break;
       } catch (error) {
         if (args.signal?.aborted) throw error;
-        sheetError = `${engine.id}: ${error instanceof Error ? error.message.split("\n")[0] : String(error)}`;
+        sheetError = `${maker.id}: ${error instanceof Error ? error.message.split("\n")[0] : String(error)}`;
       }
     }
   }
@@ -149,6 +168,20 @@ export async function reviewProofFile(args: {
     columns,
     findings,
   };
+}
+
+/** Why an engine would refuse this sheet (the contract's limits), or null. */
+function contactSheetRequestError(request: DemoContactSheetRequest): string | null {
+  const count = request.times.length;
+  if (count === 0) return "A contact sheet needs at least one frame time";
+  if (count > DEMO_CONTACT_SHEET_MAX_FRAMES) return `A contact sheet holds at most ${DEMO_CONTACT_SHEET_MAX_FRAMES} frames (asked for ${count})`;
+  if (!request.times.every(Number.isFinite)) return "A contact sheet's frame times must be numbers of seconds";
+  if (!Number.isInteger(request.columns) || request.columns < 1) return "A contact sheet needs a whole number of columns, at least one";
+  const { min, max } = DEMO_CONTACT_SHEET_TILE_WIDTH;
+  if (!Number.isInteger(request.tileWidth) || request.tileWidth < min || request.tileWidth > max) {
+    return `A contact sheet's tiles must be ${min}–${max} px wide (asked for ${request.tileWidth})`;
+  }
+  return null;
 }
 
 function imageFindings(size: { width: number; height: number }, findings: string[]): void {
@@ -175,43 +208,13 @@ function pruneSheets(dir: string): void {
 }
 
 /** Width and height from a PNG, JPEG, GIF or WebP header; null for anything else. */
-export function readImageSize(filePath: string): { width: number; height: number } | null {
+function readImageSize(filePath: string): ImageDimensions | null {
   let fd: number | null = null;
   try {
     fd = fs.openSync(filePath, "r");
     const head = Buffer.alloc(64 * 1024);
-    const length = fs.readSync(fd, head, 0, head.length, 0);
-    const bytes = head.subarray(0, length);
-    if (length >= 24 && bytes.readUInt32BE(0) === 0x89504e47) {
-      return { width: bytes.readUInt32BE(16), height: bytes.readUInt32BE(20) };
-    }
-    if (length >= 10 && bytes.toString("ascii", 0, 3) === "GIF") {
-      return { width: bytes.readUInt16LE(6), height: bytes.readUInt16LE(8) };
-    }
-    if (length >= 30 && bytes.toString("ascii", 0, 4) === "RIFF" && bytes.toString("ascii", 8, 12) === "WEBP") {
-      const chunk = bytes.toString("ascii", 12, 16);
-      if (chunk === "VP8X") return { width: 1 + bytes.readUIntLE(24, 3), height: 1 + bytes.readUIntLE(27, 3) };
-      if (chunk === "VP8L") {
-        const bits = bytes.readUInt32LE(21);
-        return { width: 1 + (bits & 0x3fff), height: 1 + ((bits >> 14) & 0x3fff) };
-      }
-      if (chunk === "VP8 ") return { width: bytes.readUInt16LE(26) & 0x3fff, height: bytes.readUInt16LE(28) & 0x3fff };
-      return null;
-    }
-    if (length >= 4 && bytes[0] === 0xff && bytes[1] === 0xd8) {
-      let offset = 2;
-      while (offset + 9 < length) {
-        if (bytes[offset] !== 0xff) return null;
-        const marker = bytes[offset + 1]!;
-        const segment = bytes.readUInt16BE(offset + 2);
-        // SOF0–SOF15 carry the size, except DHT (C4), JPG (C8) and DAC (CC).
-        if (marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc) {
-          return { width: bytes.readUInt16BE(offset + 7), height: bytes.readUInt16BE(offset + 5) };
-        }
-        offset += 2 + segment;
-      }
-    }
-    return null;
+    const bytes = head.subarray(0, fs.readSync(fd, head, 0, head.length, 0));
+    return pngDimensions(bytes) ?? jpegDimensions(bytes) ?? gifDimensions(bytes) ?? webpDimensions(bytes);
   } catch {
     return null;
   } finally {

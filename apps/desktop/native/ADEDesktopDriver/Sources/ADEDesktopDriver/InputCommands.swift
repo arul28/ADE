@@ -147,12 +147,22 @@ extension DriverRuntime {
             let (element, record) = TypeCommand.hasTarget(target)
                 ? try resolve(payload: target)
                 : try accessibility.focusedElementInNewestObservation()
+            let paceMs = TypeCommand.paceMs(payload)
+            // Paced typing pumps the run loop between keys; held like a drag,
+            // so no other request moves focus or input in the middle of it.
+            if paceMs > 0 { try gestures.begin(laneId: laneId) }
+            defer {
+                if paceMs > 0 {
+                    gestures.end()
+                    scheduleDeferredDrain()
+                }
+            }
             try accessibility.type(
                 element,
                 record: record,
                 text: text,
                 clear: payload["clear"]?.boolValue ?? false,
-                paceMs: TypeCommand.paceMs(payload)
+                paceMs: paceMs
             )
             return ["resolvedIndex": .int(record.index)]
         case "setValue":
@@ -398,12 +408,21 @@ extension DriverRuntime {
                 targetPid: WindowHitTest.frontmostPid(in: hitCandidates())
             )
         case "type":
+            let paceMs = TypeCommand.paceMs(payload)
+            // See the accessibility `type`: paced keys are held like a drag.
+            if paceMs > 0 { try gestures.begin(laneId: laneId) }
+            defer {
+                if paceMs > 0 {
+                    gestures.end()
+                    scheduleDeferredDrain()
+                }
+            }
             try realInput.text(
                 laneId: laneId,
                 holderId: holderId,
                 text: TypeCommand.split(payload).text,
                 targetPid: WindowHitTest.frontmostPid(in: hitCandidates()),
-                paceMs: TypeCommand.paceMs(payload)
+                paceMs: paceMs
             )
         default:
             throw DriverError(

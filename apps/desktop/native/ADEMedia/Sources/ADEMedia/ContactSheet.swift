@@ -11,12 +11,17 @@ import UniformTypeIdentifiers
 /// Each tile is the frame shown at that exact time (AVAssetImageGenerator with
 /// no tolerance), `tileWidth` wide and as tall as the video's aspect makes it
 /// (rounded). Tiles run left to right, top to bottom, `min(columns, times)` per
-/// row, 6 px apart with no outer margin, on `#202020`. A time past the end
+/// row, `gap` px apart with no outer margin, on `fill`. A time past the end
 /// shows the last frame; a negative one shows the first. The PNG is written
 /// beside `output` and renamed onto it, so `output` is never half a file.
 enum ContactSheet {
+    // These mirror demoContract.ts (DEMO_CONTACT_SHEET_GAP, _FILL, _MAX_FRAMES,
+    // _TILE_WIDTH); change both together.
     static let gap = 6
-    static let maxTimes = 1000
+    /// `#202020`.
+    static let fill = (red: 0x20 / 255.0, green: 0x20 / 255.0, blue: 0x20 / 255.0)
+    static let maxTimes = 64
+    static let tileWidthRange = 16...4096
     static let maxSide = 16384
 
     static func make(_ request: DemoContactSheetRequest) async throws -> DemoContactSheetResult {
@@ -24,8 +29,8 @@ enum ContactSheet {
             throw MediaError("A contact sheet needs between 1 and \(maxTimes) times, each a number of seconds.")
         }
         guard request.columns >= 1 else { throw MediaError("A contact sheet needs at least one column.") }
-        guard request.tileWidth >= 16, request.tileWidth <= 4096 else {
-            throw MediaError("A contact sheet's tile width must be 16 to 4096 px, not \(request.tileWidth).")
+        guard tileWidthRange.contains(request.tileWidth) else {
+            throw MediaError("A contact sheet's tile width must be \(tileWidthRange.lowerBound) to \(tileWidthRange.upperBound) px, not \(request.tileWidth).")
         }
 
         let source = try await MediaSource.open(path: request.input)
@@ -72,7 +77,7 @@ enum ContactSheet {
         ) else {
             throw MediaError("Could not allocate a \(sheetWidth)×\(sheetHeight) contact sheet.")
         }
-        context.setFillColor(CGColor(srgbRed: 0x20 / 255.0, green: 0x20 / 255.0, blue: 0x20 / 255.0, alpha: 1))
+        context.setFillColor(CGColor(srgbRed: fill.red, green: fill.green, blue: fill.blue, alpha: 1))
         context.fill(CGRect(x: 0, y: 0, width: sheetWidth, height: sheetHeight))
         context.interpolationQuality = .high
 

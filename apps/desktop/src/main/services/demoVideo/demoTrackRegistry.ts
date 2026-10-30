@@ -28,6 +28,7 @@ import type {
   DemoTrack,
   DemoTrackEvent,
 } from "../../../shared/demoVideo/demoContract";
+import { DEMO_ACTION_MAX_SECONDS } from "../../../shared/demoVideo/demoContract";
 import type { AgentChatEventEnvelope } from "../../../shared/types/chat";
 
 type NotedEvent = Omit<DemoTrackEvent, "t"> & { atMs: number };
@@ -58,8 +59,6 @@ type ChatState = {
 const CHAT_SPAN_RETENTION_MS = 15 * 60 * 1000;
 /** A recording keeps at most this many events; a runaway action loop cannot grow it without bound. */
 const MAX_EVENTS_PER_RECORDING = 5_000;
-/** No single action runs longer on the screen than this. */
-const MAX_ACTION_SECONDS = 10;
 /** Labels are shown in the video; nothing longer is readable there. */
 const MAX_LABEL_LENGTH = 80;
 
@@ -228,7 +227,7 @@ export function createDemoTrackRegistry(deps: { now?: () => number } = {}) {
       const toY = clampUnit(event.to?.[1]);
       const to: DemoTrackEvent["to"] = toX !== undefined && toY !== undefined ? [toX, toY] : undefined;
       const seconds = typeof event.seconds === "number" && Number.isFinite(event.seconds) && event.seconds > 0
-        ? Math.min(event.seconds, MAX_ACTION_SECONDS)
+        ? Math.min(event.seconds, DEMO_ACTION_MAX_SECONDS)
         : undefined;
       entry.events.push({
         kind: event.kind,
@@ -261,9 +260,9 @@ export function createDemoTrackRegistry(deps: { now?: () => number } = {}) {
 
     /**
      * A step caption for every running recording in scope: the lane's, or the
-     * chat's when no lane is given. Returns how many recordings took it.
+     * chat's when no lane is given. `focus` is the region the camera holds on
+     * for this step (normalized). Returns how many recordings took it.
      */
-    /** `focus`: the region the camera holds on for this step (normalized). */
     noteStep(scope: { laneId?: string | null; chatSessionId?: string | null }, text: string, atMs?: number, focus?: DemoTrackEvent["rect"] | null): number {
       const label = cleanLabel(text);
       if (!label) return 0;

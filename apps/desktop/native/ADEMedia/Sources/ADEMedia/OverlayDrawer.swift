@@ -137,12 +137,14 @@ final class OverlayDrawer {
         }
 
         // The caption's box, y-down, whether or not it has faded in yet: the
-        // badge keeps clear of it for the caption's whole span, so it does not
-        // jump during the fade.
+        // badge sits below a top caption for the caption's whole span, so it
+        // does not jump during the fade.
         var captionBox: CGRect?
+        var captionOnTop = false
         if let (index, _) = visible.caption, let caption = captionImage(index, side: side) {
             let margin = plan.style.captionMargin * side
-            let top = plan.captions[index].position == .top
+            captionOnTop = plan.captions[index].position == .top
+            let top = captionOnTop
                 ? margin
                 : Double(height) - margin - caption.height
             captionBox = CGRect(x: (Double(width) - caption.width) / 2, y: top, width: caption.width, height: caption.height)
@@ -151,7 +153,8 @@ final class OverlayDrawer {
         if let index = visible.badge, let badge = badgeImage(index, side: side) {
             let inset = 0.8 * plan.style.badgeFontSize * side
             var box = CGRect(x: Double(width) - inset - badge.width, y: inset, width: badge.width, height: badge.height)
-            if let captionBox, captionBox.intersects(box) { box.origin.y = captionBox.maxY + inset }
+            // Always below a top caption, touching or not, as the other engines do.
+            if let captionBox, captionOnTop { box.origin.y = captionBox.maxY + inset }
             context.draw(badge.image, in: CGRect(x: box.minX, y: flip(box.maxY), width: box.width, height: box.height))
         }
 

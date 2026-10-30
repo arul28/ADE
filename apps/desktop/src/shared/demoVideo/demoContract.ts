@@ -58,6 +58,8 @@ export const RECORDING_MIN_FREE_DISK_BYTES = 5 * 1024 * 1024 * 1024;
  * carries a stop (renderer IPC, the desktop bridge) waits at least this long.
  */
 export const DEMO_RECORDING_STOP_TIMEOUT_MS = 4 * 60_000;
+/** No single action (typing, a drag) runs longer on the screen than this, in seconds. */
+export const DEMO_ACTION_MAX_SECONDS = 10;
 
 // ---------------------------------------------------------------------------
 // The track: what the brain logs while a recording runs
@@ -223,7 +225,16 @@ export type DemoRing = { t: number; x: number; y: number };
  */
 export type DemoCaption = { start: number; end: number; text: string; position?: "top" | "bottom" };
 
-/** The small badge in the top right corner of the output: a speed ("4×") or a key press ("Cmd + K"). */
+/**
+ * The small badge in the top right corner of the output: a speed ("4×") or a
+ * key press ("Cmd + K"). At most one shows at a time. While a top caption
+ * shows, the badge always sits below the caption's box, whether or not the
+ * two would touch, so every engine places it the same way.
+ *
+ * A key badge is only a named key (Enter, Tab, an arrow, F5…) or a press with
+ * Cmd, Ctrl, Alt or Meta: a bare character is never shown, so text typed key
+ * by key (a password) does not appear in the video.
+ */
 export type DemoBadge = { start: number; end: number; text: string };
 
 /**
@@ -296,12 +307,16 @@ export function parseDemoStepFocus(value: unknown): { rect: DemoRect } | { error
   const parts = Array.isArray(value)
     ? value
     : typeof value === "string" ? value.split(",").map((part) => part.trim()) : [];
-  const numbers = parts.map((part) => (typeof part === "number" ? part : Number(part)));
+  // An empty field ("0.4,,0.2,0.3") is a missing number, not 0.
+  const numbers = parts.map((part) => (typeof part === "number" ? part : typeof part === "string" && part.trim() ? Number(part) : Number.NaN));
   const usage = "--focus takes x,y,width,height as fractions of the recorded frame (0–1), e.g. 0.5,0.1,0.5,0.8 for the right half.";
   if (numbers.length !== 4 || numbers.some((n) => !Number.isFinite(n))) return { error: usage };
   const [x, y, w, h] = numbers as [number, number, number, number];
   if (x < 0 || y < 0 || w <= 0 || h <= 0 || x + w > 1.001 || y + h > 1.001) return { error: usage };
-  return { rect: [x, y, Math.min(w, 1 - x), Math.min(h, 1 - y)] };
+  // The tolerance above lets a region start at the very edge; clipped, it must still have an area.
+  const rect: DemoRect = [x, y, Math.min(w, 1 - x), Math.min(h, 1 - y)];
+  if (rect[2] <= 0.001 || rect[3] <= 0.001) return { error: usage };
+  return { rect };
 }
 
 // ---------------------------------------------------------------------------
@@ -342,12 +357,25 @@ export type DemoRenderResult = {
   frames: number;
 };
 
+/** Gap between contact-sheet tiles, in pixels. */
+export const DEMO_CONTACT_SHEET_GAP = 6;
+/** The colour behind contact-sheet tiles, `#RRGGBB`. */
+export const DEMO_CONTACT_SHEET_FILL = "#202020";
+/** Each tile is a decode of its own; a sheet holds at most this many. */
+export const DEMO_CONTACT_SHEET_MAX_FRAMES = 64;
+/** A tile's width in pixels, inclusive. */
+export const DEMO_CONTACT_SHEET_TILE_WIDTH = { min: 16, max: 4096 } as const;
+
 /**
  * A contact sheet of a finished video, for an agent to check its own demo:
- * the frames at `times` (seconds), each scaled to `tileWidth` px wide (height
- * by the video's aspect), laid out left to right, top to bottom, `columns`
- * per row, with a 6 px gap and a `#202020` background, written as a PNG to
- * `output` (its folder exists). A time past the end shows the last frame.
+ * the frames at `times` (seconds, 1 to {@link DEMO_CONTACT_SHEET_MAX_FRAMES}
+ * finite numbers), each scaled to `tileWidth` px wide (an integer within
+ * {@link DEMO_CONTACT_SHEET_TILE_WIDTH}; height by the video's aspect), laid
+ * out left to right, top to bottom, `columns` (an integer ≥ 1) per row, with
+ * a {@link DEMO_CONTACT_SHEET_GAP} px gap and a {@link DEMO_CONTACT_SHEET_FILL}
+ * background, written as a PNG to `output` (its folder exists). A time past
+ * the end shows the last frame. The caller validates a request before it
+ * reaches an engine.
  */
 export type DemoContactSheetRequest = {
   input: string;

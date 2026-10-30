@@ -45,7 +45,7 @@ promotes any of them after the fact.
 | `apps/ade-cli/src/cli.ts`, `apps/ade-cli/src/adeRpcServer.ts` | Typed `ade proof …` commands and JSON-RPC tools. |
 | `apps/desktop/src/renderer/components/chat/ChatComputerUsePanel.tsx` | Full proof drawer, artifact tiles, preview states, and delete action. |
 | `apps/desktop/src/renderer/components/chat/AgentChatMessageList.tsx`, `chatCardPrimitives.tsx` | Turn-time bucketing plus the "N proof filed" count (`ChatProofCount`) that opens the drawer narrowed to a turn. |
-| `apps/desktop/src/shared/demoVideo/demoContract.ts`, `demoPlanner.ts`, `demoProofText.ts` | The demo contract (track, analysis, plan, `.aderaw`, limits), the pure planner, and the proof sentences and chapters every surface shares. |
+| `apps/desktop/src/shared/demoVideo/demoContract.ts`, `demoPlanner.ts`, `demoCameraPlanner.ts`, `demoProofText.ts` | The demo contract (track, analysis, plan, `.aderaw`, limits), the pure planner and its camera, and the proof sentences and chapters every surface shares. |
 | `apps/desktop/src/main/services/demoVideo/` | The track registry, the render service, the recording guard, the engine set, the three engine clients (`swiftDemoEngine.ts`, `chromiumDemoEngine.ts`, `ffmpegDemoEngine.ts`), and `demoMp4Source.ts` (an H.264 MP4, such as the Windows driver's recording, read for the Chromium engine). |
 | `apps/desktop/native/ADEMedia/` | `ade-media`, the macOS demo engine. |
 
@@ -359,8 +359,8 @@ the CDP screencast on Windows and Linux) and the built-in browser.
 | Zoom | Without a focused step, the recording splits into scenes at each navigation or change of the whole screen. In each scene the camera zooms once (at most 2×) to one steady view that holds every action and every change in it, holds that view, and zooms out at the end of the scene. It does not move between actions in a scene. A scene with a short zoom, or one whose view would be almost the whole screen, gets no zoom. A phone recording does not zoom unless it started with `--zoom`; then each tap gets a short 1.3× zoom. |
 | Pointer | Mac Desktop, App Control and the browser get a drawn pointer that glides to each action and hover (quick for a short hop, longer across the screen), carries a drag from its start to its end, and rings each click. The Apple device gets tap rings. |
 | Typing and drags | While a surface records, typed text appears a character at a time (45 ms apart, faster for long text so it takes about 2.7 s at most) instead of all at once: the browser and App Control insert it in pieces; Mac Desktop, Windows and Linux drivers and the simulator pause between keys (`typePaceMs` in the driver payload, `paceMs` to the simulator helper), and a Mac or Windows field that takes its value directly grows by one character at a time. A browser drag moves in eased steps over about 0.75 s. Not recording, all of it stays as fast as before. The time it takes plays at normal speed. |
-| Keys | A key press shows as a badge in the top right corner for 1.3 s ("Enter", "Cmd + K", "↓"); the same key again within a second counts up ("Tab ×3"). |
-| Captions | Each `ade proof step "<text>"` (at most 60 characters; longer is refused) shows from that moment until the next step (at most 5 s), as a dark rounded pill with centered text. It sits at the bottom, or at the top when the actions during it are low in the view and none is high (typing into a prompt box); the badge moves below a top caption it would hit. With no steps there are no captions: an action's own label ("Click Save") reads like a log. A speed-up shows its `4×` badge; a cut shows nothing. |
+| Keys | A named key (Enter, Tab, an arrow, Space, F5…) or a press with Cmd, Ctrl, Alt or Meta shows as a badge in the top right corner for 1.3 s ("Enter", "Cmd + K", "↓"); the same key again within a second counts up ("Tab ×3"). A bare character ("a", "Shift + A") shows nothing, so text typed key by key (a password) never appears. A key pressed during a speed-up interrupts the `4×` badge, which comes back after it. |
+| Captions | Each `ade proof step "<text>"` (at most 60 characters; longer is refused) shows from that moment until the next step (at most 5 s), as a dark rounded pill with centered text. It sits at the bottom, or at the top when the actions during it are low in the view and none is high (typing into a prompt box); while a top caption shows, the badge always sits below it (every engine does the same). With no steps there are no captions: an action's own label ("Click Save") reads like a log. A speed-up shows its `4×` badge; a cut shows nothing. |
 | Size | Every file, plain ones included, ends under 10 MB: GitHub Free's limit for a PR video. The output steps down 1080p30 → 720p30 → 720p15 → 720p10 → 540p10 until the bitrate that fits reads well, then the timing gets stricter. |
 
 `record start --plain` (older name `--keep-idle`) skips everything but the
@@ -448,7 +448,8 @@ metadata on both, not in the MP4 container.
 the proof. For a video it writes a contact sheet (4–12 frames across it, 4 per
 row, 6 for a portrait video) to `.ade/cache/proof-review/` (the newest 20
 kept), made by the first engine with `contactSheet` (`ade-media`, then
-ffmpeg); for a picture it gives the file. Both come with findings from the
+ffmpeg; a request outside the contract's limits, at most 64 frames and tiles
+16–4096 px wide, gets a sheet error instead); for a picture it gives the file. Both come with findings from the
 file and its record: under 3 s, over 90 s, no captions, a plain or fallback
 recording, recorded before the request, a picture under 700 px on its shorter side or a thin
 strip. It reads the caller's own proof only (the listing's owner rule), and a
