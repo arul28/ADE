@@ -3283,6 +3283,10 @@ export type AgentChatRemoteWorkUse = {
   projectRootPath: string | null;
   /** Terminal ids there, newest last (at most a few). */
   terminalIds: string[];
+  /** The work copy's lane id there (`remote-work-…`); what its simulator is keyed by. */
+  workCopyLaneId?: string | null;
+  /** The chat drove a simulator there through its work copy. */
+  usesSimulator?: boolean;
   lastStartedAt: string;
 };
 

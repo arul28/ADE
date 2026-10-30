@@ -1179,21 +1179,40 @@ function readProjectRegistrationIntent(
   return { catalogVisibility, registrationSource };
 }
 
-/** `ade shell start --machine`: a pty.create for the caller's work copy there. */
-function isRemoteWorkShellStart(method: string, params: Record<string, unknown>): boolean {
-  if (method !== "ade/actions/call" || params.name !== "run_ade_action" || !isRecord(params.arguments)) return false;
+/**
+ * A call that runs in the caller's work copy there: `ade shell start
+ * --machine` (pty.create) or a lane-less `ade apple … --machine`. Null for
+ * anything else.
+ */
+function remoteWorkCallKind(method: string, params: Record<string, unknown>): "shell" | "simulator" | null {
+  if (method !== "ade/actions/call" || params.name !== "run_ade_action" || !isRecord(params.arguments)) return null;
   const call = params.arguments;
-  return call.domain === "pty" && call.action === "create" && isRecord(call.args) && isRecord(call.args.remoteWork);
+  if (!isRecord(call.args) || !isRecord(call.args.remoteWork)) return null;
+  if (call.domain === "pty" && call.action === "create") return "shell";
+  if (call.domain === "ios_simulator") return "simulator";
+  return null;
 }
 
-/** The terminal id in a forwarded pty.create answer, through its envelopes. */
-function remoteWorkCreatedTerminalId(result: unknown): string | null {
+/** Walk a forwarded answer's envelopes to the record that has `found`. */
+function findInRemoteAnswer(result: unknown, found: (value: Record<string, unknown>) => boolean): Record<string, unknown> | null {
   let value: unknown = result;
-  for (let depth = 0; depth < 4 && isRecord(value); depth += 1) {
-    if (typeof value.sessionId === "string" && typeof value.ptyId === "string") return value.sessionId;
+  for (let depth = 0; depth < 5 && isRecord(value); depth += 1) {
+    if (found(value)) return value;
     value = "structuredContent" in value ? value.structuredContent : value.result;
   }
   return null;
+}
+
+/** The terminal id in a forwarded pty.create answer. */
+function remoteWorkCreatedTerminalId(result: unknown): string | null {
+  const created = findInRemoteAnswer(result, (value) => typeof value.sessionId === "string" && typeof value.ptyId === "string");
+  return created ? String(created.sessionId) : null;
+}
+
+/** The work copy's lane id there, which that machine returns with the answer (newer ADE only). */
+function remoteWorkCopyLaneId(result: unknown): string | null {
+  const holder = findInRemoteAnswer(result, (value) => isRecord(value.workCopy) && typeof value.workCopy.laneId === "string");
+  return holder && isRecord(holder.workCopy) ? String(holder.workCopy.laneId) : null;
 }
 
 function omitProjectId(
@@ -3057,16 +3076,18 @@ export function createMultiProjectRpcRequestHandler(
         });
         // A shell this chat started in its work copy there: the chat's views
         // show which machine it is working on.
-        if (callerChat && isRemoteWorkShellStart(forwardMethod, forwardParams)) {
-          const created = remoteWorkCreatedTerminalId(answer.result);
+        const remoteWorkKind = callerChat ? remoteWorkCallKind(forwardMethod, forwardParams) : null;
+        if (callerChat && remoteWorkKind) {
           located?.runtime.agentChatService?.noteRemoteWork?.({
+            terminalId: remoteWorkKind === "shell" ? remoteWorkCreatedTerminalId(answer.result) : null,
+            workCopyLaneId: remoteWorkCopyLaneId(answer.result),
+            usesSimulator: remoteWorkKind === "simulator",
             sessionId: callerChat,
             machineKey: answer.machine.machineKey,
             machineName: answer.machine.name,
             machinePlatform: answer.machine.platform ?? null,
             projectId: answer.project?.projectId ?? null,
             projectRootPath: answer.project?.rootPath ?? null,
-            terminalId: created,
           });
         }
         // A child this chat started there: remember it, so that machine's

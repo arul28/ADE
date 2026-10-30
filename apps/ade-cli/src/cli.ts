@@ -644,6 +644,8 @@ export type GlobalOptions = {
   machineProject?: string | null;
   /** `--clone`: set the repository up on that machine when it is missing. */
   machineClone?: boolean;
+  /** `ade apple … --machine` with `--no-sync` or `--discard`: how a build readies the work copy there. */
+  machineWorkCopySync?: "none" | "discard" | null;
 };
 
 async function withAdeDefaultRole<T>(

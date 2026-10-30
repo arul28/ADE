@@ -1,3 +1,4 @@
+import { remoteSimulatorUses } from "../../../shared/chatRemoteWork";
 import {
   useCallback,
   useEffect,
@@ -202,13 +203,15 @@ export function WorkSidebar({
     activeSession && activeSession.id === panelChatSessionId ? activeSession.sideChatSessionId ?? null : null,
   );
   const hasSideChat = sideChat.kind !== "none";
+  const hasRemoteSimulator = remoteSimulatorUses(activeSession).length > 0;
   const toolContext = useMemo(
     () => ({
       ...feedsToolContext,
       ...(laneCloud ? { cloudLane: laneCloud } : {}),
       hasSideChat,
+      ...(hasRemoteSimulator ? { hasRemoteSimulator } : {}),
     }),
-    [feedsToolContext, hasSideChat, laneCloud],
+    [feedsToolContext, hasSideChat, hasRemoteSimulator, laneCloud],
   );
   // An unavailable tool falls back to the PICKER, not to some other tool: being
   // dropped into Git because the simulator is unavailable on this machine is a

@@ -6350,7 +6350,8 @@ async function runTool(args: {
       } else if (action === "create" && isRecord(scopedObjectArgs.remoteWork)) {
         const prepared = await prepareRemoteWorkShell(runtime, session, scopedObjectArgs);
         scopedObjectArgs = prepared.args;
-        transformScopedResult = (value) => (isRecord(value) ? { ...value, workCopy: prepared.workCopy } : value);
+        const laneId = remoteWorkLaneIdFor(asOptionalTrimmedString(session.identity.chatSessionId) ?? "");
+        transformScopedResult = (value) => (isRecord(value) ? { ...value, workCopy: { ...prepared.workCopy, laneId } } : value);
       } else {
         authorizePtyAdeActionInvocation(runtime, session, action, scopedObjectArgs);
       }
@@ -6530,7 +6531,13 @@ async function runTool(args: {
       let appleArgs = requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs);
       // A chat on another machine with no lane here: its work copy stands in
       // for the lane (build root and device owner).
-      if (isRecord(appleArgs.remoteWork)) appleArgs = await prepareRemoteWorkApple(runtime, session, appleArgs);
+      if (isRecord(appleArgs.remoteWork)) {
+        appleArgs = await prepareRemoteWorkApple(runtime, session, appleArgs);
+        // The caller's machine learns which lane here is its work copy, so its
+        // views can show this simulator.
+        const workCopyLaneId = appleArgs.laneId;
+        transformScopedResult = (value) => (isRecord(value) ? { ...value, workCopy: { laneId: workCopyLaneId } } : value);
+      }
       scopedObjectArgs = isUserClient
         ? await scopeUnboundAppleAdeActionArgs(runtime, session, action, appleArgs, toolArgs.callerRoot)
         : scopeAppleAdeActionArgs(runtime, session, action, appleArgs);

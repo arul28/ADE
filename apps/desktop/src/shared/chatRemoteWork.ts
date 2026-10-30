@@ -14,3 +14,15 @@ export function activeRemoteWork(
   return chat.remoteWork.filter((use) =>
     !Number.isFinite(turnStart) || Date.parse(use.lastStartedAt) >= turnStart);
 }
+
+/**
+ * The machines whose simulator this chat drives through its work copy, newest
+ * first. Only those whose machine told us the copy's lane (current ADE there).
+ */
+export function remoteSimulatorUses(
+  session: { remoteWork?: AgentChatRemoteWorkUse[] | null } | null | undefined,
+): AgentChatRemoteWorkUse[] {
+  return (session?.remoteWork ?? [])
+    .filter((use) => use.usesSimulator === true && Boolean(use.workCopyLaneId))
+    .sort((a, b) => Date.parse(b.lastStartedAt) - Date.parse(a.lastStartedAt));
+}

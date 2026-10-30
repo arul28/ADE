@@ -76076,6 +76076,8 @@ export function createAgentChatService(args: {
     projectId: string | null;
     projectRootPath: string | null;
     terminalId: string | null;
+    workCopyLaneId?: string | null;
+    usesSimulator?: boolean;
   }): void => {
     const sessionId = args.sessionId.trim();
     if (!sessionId || !args.machineKey.trim()) return;
@@ -76092,6 +76094,8 @@ export function createAgentChatService(args: {
       projectId: args.projectId ?? previous?.projectId ?? null,
       projectRootPath: args.projectRootPath ?? previous?.projectRootPath ?? null,
       terminalIds,
+      workCopyLaneId: args.workCopyLaneId ?? previous?.workCopyLaneId ?? null,
+      usesSimulator: args.usesSimulator === true || previous?.usesSimulator === true,
       lastStartedAt: new Date().toISOString(),
     };
     const list = [...uses.filter((use) => use.machineKey !== args.machineKey), next].slice(-4);

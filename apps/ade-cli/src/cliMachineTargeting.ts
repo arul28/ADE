@@ -137,6 +137,7 @@ export function extractMachineTargeting(parsed: ParsedCli): ParsedCli {
   let machineProject: string | null = null;
   let projectAlias: string | null = null;
   let machineClone = false;
+  let workCopySync: "none" | "discard" | null = null;
   const command = parsed.command;
   for (let index = 0; index < command.length; index += 1) {
     const token = command[index]!;
@@ -164,6 +165,11 @@ export function extractMachineTargeting(parsed: ParsedCli): ParsedCli {
     if (flag === "--machine-project") { machineProject = takeValue(); continue; }
     if (flag === "--all-machines" && inline == null) { allMachines = true; continue; }
     if (flag === "--clone" && inline == null && primary === "chat") { machineClone = true; continue; }
+    if ((flag === "--no-sync" || flag === "--discard") && inline == null && primary === "apple") {
+      if (workCopySync) throw new CliUsageError("Use --no-sync or --discard, not both.");
+      workCopySync = flag === "--no-sync" ? "none" : "discard";
+      continue;
+    }
     if (flag === "--project" && MACHINE_PROJECT_ALIAS_PRIMARIES.has(primary)) {
       projectAlias = takeValue();
       continue;
@@ -175,6 +181,7 @@ export function extractMachineTargeting(parsed: ParsedCli): ParsedCli {
   }
   if (machine && allMachines) throw new CliUsageError("Use --machine <name> or --all-machines, not both.");
   if (machineClone && !machine) throw new CliUsageError("--clone sets the repository up on another machine; add --machine <name>.");
+  if (workCopySync && !machine) throw new CliUsageError("--no-sync and --discard are for this chat's work copy on another machine: add --machine <name>.");
   if (machineProject && !machine && !allMachines) throw new CliUsageError("--machine-project needs --machine <name>.");
   if (!machine && primary === "shell") {
     const flags = flagNamesOutsideFreeText(parsed.command);
@@ -195,6 +202,7 @@ export function extractMachineTargeting(parsed: ParsedCli): ParsedCli {
       allMachines,
       machineProject: machineProject ?? projectAlias,
       machineClone,
+      machineWorkCopySync: workCopySync,
     },
   };
 }
@@ -440,7 +448,7 @@ export async function createMachineRemoteConnection(
         }
       }
       if (method === "ade/actions/call" && params?.name === "run_ade_action" && isRecord(params.arguments) && params.arguments.domain === "ios_simulator") {
-        return await callRemote(method, withRemoteAppleArgs(params, process.cwd()));
+        return await callRemote(method, withRemoteAppleArgs(params, process.cwd(), options.machineWorkCopySync ?? null));
       }
       if (method === "ade/actions/call" && params?.name === "list_computer_use_artifacts") {
         // A proof command's verify step checks the drawer it filed into: this one.
@@ -465,7 +473,7 @@ const APPLE_BUILD_ACTIONS: ReadonlySet<string> = new Set(["launch", "installApp"
  * this chat's work copy. A build syncs it to this checkout; any other verb
  * uses it as it is (and makes it at this commit when it does not exist yet).
  */
-function withRemoteAppleArgs(params: JsonObject, workspaceRoot: string): JsonObject {
+function withRemoteAppleArgs(params: JsonObject, workspaceRoot: string, sync: "none" | "discard" | null = null): JsonObject {
   const toolArgs = isRecord(params.arguments) ? params.arguments : {};
   if (toolArgs.domain !== "ios_simulator" || !isRecord(toolArgs.args) || asString(toolArgs.args.laneId)) return params;
   const action = asString(toolArgs.action) ?? "";
@@ -477,10 +485,9 @@ function withRemoteAppleArgs(params: JsonObject, workspaceRoot: string): JsonObj
       ...toolArgs,
       args: {
         ...args,
-        remoteWork: {
-          ...readLocalWorkSource(workspaceRoot),
-          ...(APPLE_BUILD_ACTIONS.has(action) ? {} : { sync: "none" }),
-        },
+        remoteWork: APPLE_BUILD_ACTIONS.has(action) && sync !== "none"
+          ? { ...readLocalWorkSource(workspaceRoot), ...(sync ? { sync } : {}) }
+          : { ...readLocalWorkSource(workspaceRoot, { withChanges: false }), sync: "none" },
       },
     },
   };
@@ -540,10 +547,15 @@ function gitHere(cwd: string, args: string[], env?: NodeJS.ProcessEnv): string {
  * change as one binary patch, untracked files included. The checkout's own
  * index is never touched: the patch is staged in a copy of it.
  */
-function readLocalWorkSource(cwd: string): JsonObject {
+function readLocalWorkSource(cwd: string, options: { withChanges?: boolean } = {}): JsonObject {
   const top = gitHere(cwd, ["rev-parse", "--show-toplevel"]).trim();
   const head = gitHere(top, ["rev-parse", "HEAD"]).trim();
   const branch = gitHere(top, ["rev-parse", "--abbrev-ref", "HEAD"]).trim();
+  if (options.withChanges === false) {
+    // A tap or a screenshot: the copy is used as it is, so only what makes a
+    // missing copy (the commit and its branch) is read. No index, no diff.
+    return { head, fetchRef: branch === "HEAD" ? null : branch, branch: branch === "HEAD" ? null : branch };
+  }
   const remoteRefs = gitHere(top, ["branch", "-r", "--contains", "HEAD", "--format=%(refname:short)"])
     .split("\n").map((line) => line.trim()).filter((line) => line.startsWith("origin/") && line !== "origin/HEAD");
   if (!remoteRefs.length) {

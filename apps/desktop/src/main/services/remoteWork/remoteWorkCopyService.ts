@@ -455,13 +455,17 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
           return { path: copyPath, created: true, synced: true };
         }
         if (mode === "none") {
-          updateCopy(owner, (copy) => (copy ? { ...copy, lastUsedAt: timestamp } : copy));
+          // Taps and screenshots come many a minute: note the use at most once a minute.
+          if (now() - Date.parse(existing.lastUsedAt) > 60_000) {
+            updateCopy(owner, (copy) => (copy ? { ...copy, lastUsedAt: timestamp } : copy));
+          }
           return { path: copyPath, created: false, synced: false };
         }
         if (options.isInUse?.({ owner, path: copyPath })) {
           throw new RemoteWorkError(
             "copy_busy",
-            "A command is still running in this chat's work copy. Wait for it to end, stop it, or pass --no-sync to run beside it without a sync.",
+            "A command still runs in this chat's work copy here, so it was not synced. Wait for it to end, or stop it "
+            + "(`ade terminal list --machine <this machine>` shows it). To use the copy as it is, pass --no-sync.",
           );
         }
         if (mode !== "discard") {
@@ -469,7 +473,9 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
           if (reason) {
             throw new RemoteWorkError(
               "copy_has_unsynced_work",
-              `This chat's work copy here was not synced because ${reason}. Run with --no-sync to commit and push that work there, or pass --discard to throw it away.`,
+              `This chat's work copy here was not synced because ${reason}. Pass --no-sync to use the copy as it is `
+              + "(and commit and push that work from there: `ade shell start --machine <this machine> --no-sync -- git push origin HEAD:<branch>`), "
+              + "or --discard to throw it away.",
             );
           }
         }
