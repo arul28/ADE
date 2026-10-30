@@ -141,6 +141,7 @@ export function extractMachineTargeting(parsed: ParsedCli): ParsedCli {
   let projectAlias: string | null = null;
   let machineClone = false;
   let workCopySync: "none" | "discard" | null = null;
+  let terminatorArgs: string[] | null = null;
   const command = parsed.command;
   // A shell start or an Apple build with --machine runs in this chat's work
   // copy there unless --lane names a lane there; only those take --no-sync
@@ -154,6 +155,7 @@ export function extractMachineTargeting(parsed: ParsedCli): ParsedCli {
   for (let index = 0; index < command.length; index += 1) {
     const token = command[index]!;
     if (token === "--") {
+      terminatorArgs = command.slice(index + 1);
       kept.push(...command.slice(index));
       break;
     }
@@ -200,7 +202,7 @@ export function extractMachineTargeting(parsed: ParsedCli): ParsedCli {
   if (machineProject && !machine && !allMachines) throw new CliUsageError("--machine-project needs --machine <name>.");
   if (!machine && primary === "shell") {
     const flags = flagNamesOutsideFreeText(parsed.command);
-    if (parsed.command[1]?.toLowerCase() === "clean") {
+    if (subcommand === "clean") {
       throw new CliUsageError("ade shell clean deletes this chat's work copy on another machine: add --machine <name>.");
     }
     const workCopyFlag = ["--no-sync", "--discard", "--wait"].find((flag) => flags.has(flag));
@@ -223,7 +225,7 @@ export function extractMachineTargeting(parsed: ParsedCli): ParsedCli {
               sync: workCopySync,
               // A shell command's argv (after `--`), sent as argv so the other
               // machine renders it for its own shell.
-              argv: primary === "shell" && command.includes("--") ? command.slice(command.indexOf("--") + 1) : null,
+              argv: primary === "shell" ? terminatorArgs : null,
             },
           }
         : {}),

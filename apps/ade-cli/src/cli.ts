@@ -107,6 +107,7 @@ import {
 import { DEMO_STEP_MAX_CHARS, parseDemoStepFocus } from "../../desktop/src/shared/demoVideo/demoContract";
 import { SCENE_PREVIEW_WIDTH } from "../../desktop/src/shared/scenePreview";
 import { quoteShellArg } from "../../desktop/src/shared/shell";
+import type { MachineWorkCopy } from "./cliRemoteWork";
 import { machineVersionsDrift } from "../../desktop/src/shared/machineVersions";
 import { SCENE_GUIDE } from "../../desktop/src/shared/sceneGuide";
 import { findSettingsEntries, settingsEntryLabel } from "../../desktop/src/shared/settingsManifest";
@@ -653,7 +654,7 @@ export type GlobalOptions = {
    * runs in this chat's work copy there (no `--lane`): how a sync readies it
    * (`--no-sync` → "none", `--discard`), or null for a normal sync.
    */
-  machineWorkCopy?: { sync: "none" | "discard" | null; argv?: string[] | null } | null;
+  machineWorkCopy?: MachineWorkCopy | null;
 };
 
 async function withAdeDefaultRole<T>(

@@ -32,7 +32,6 @@ import {
   type RemoteWorkPrepareResult,
 } from "../../desktop/src/main/services/remoteWork/remoteWorkCopyService";
 import { remoteRunOnceShellLaunch } from "../../desktop/src/main/services/pty/ptyService";
-import { commandArrayToLine } from "../../desktop/src/shared/shell";
 import { externalChatContext } from "../../desktop/src/main/services/chat/externalChats";
 import path from "node:path";
 import { EXTERNAL_SESSION_PROVIDERS } from "../../desktop/src/shared/types/externalSessions";
@@ -2932,6 +2931,23 @@ export async function resolveIngestProvenance(
   };
 }
 
+/** This project's work copies for chats on other machines (remoteWorkCopyService.ts). */
+function workCopiesFor(runtime: AdeRuntime): ReturnType<typeof createRemoteWorkCopyService> {
+  return createRemoteWorkCopyService({ projectRoot: runtime.projectRoot, logger: runtime.logger });
+}
+
+/** The calling chat's owner id for a work copy; only a chat on another machine has one. */
+function workCopyOwner(session: SessionState): string {
+  const owner = asOptionalTrimmedString(session.identity.chatSessionId);
+  if (!owner || !parseForeignCallerSessionId(owner)) {
+    throw new JsonRpcError(
+      JsonRpcErrorCode.invalidParams,
+      "A work copy is for commands sent from another machine (`ade shell start --machine <name>`).",
+    );
+  }
+  return owner;
+}
+
 /**
  * Ready the calling chat's work copy here for one call (`ade shell start
  * --machine`, a lane-less `ade apple … --machine`). Only a chat on another
@@ -2942,15 +2958,9 @@ async function prepareCallerWorkCopy(
   session: SessionState,
   remoteWork: Record<string, unknown>,
 ): Promise<{ owner: string; laneId: string; prepared: RemoteWorkPrepareResult }> {
-  const owner = asOptionalTrimmedString(session.identity.chatSessionId);
-  if (!owner || !parseForeignCallerSessionId(owner)) {
-    throw new JsonRpcError(
-      JsonRpcErrorCode.invalidParams,
-      "A work copy is for commands sent from another machine (`ade shell start --machine <name>`).",
-    );
-  }
+  const owner = workCopyOwner(session);
   try {
-    const prepared = await createRemoteWorkCopyService({ projectRoot: runtime.projectRoot, logger: runtime.logger }).prepare(owner, {
+    const prepared = await workCopiesFor(runtime).prepare(owner, {
       head: asOptionalTrimmedString(remoteWork.head) ?? "",
       fetchRef: asOptionalTrimmedString(remoteWork.fetchRef),
       patchBase64: typeof remoteWork.patchBase64 === "string" ? remoteWork.patchBase64 : null,
@@ -2993,11 +3003,7 @@ async function prepareRemoteWorkShell(
     && remoteWork.argv.every((part) => typeof part === "string")
     ? remoteWork.argv as string[]
     : null;
-  // A shell left open types the line: on Windows the canonical line, which the
-  // terminal re-renders for PowerShell or cmd; elsewhere the caller's POSIX line.
-  let launch: Record<string, unknown> = command
-    ? { startupCommand: argv && process.platform === "win32" ? commandArrayToLine(argv, { platform: "linux" }) : command }
-    : {};
+  let launch: Record<string, unknown> = command ? { startupCommand: command } : {};
   if (remoteWork.exitWhenDone === true && command) {
     let preferredShellPath: string | null = null;
     try {
@@ -6523,8 +6529,8 @@ async function runTool(args: {
       // for the lane (build root and device owner).
       if (isRecord(appleArgs.remoteWork)) {
         const { remoteWork, laneId: _laneId, projectRoot: _projectRoot, ...rest } = appleArgs;
-        const owner = asOptionalTrimmedString(session.identity.chatSessionId) ?? "";
-        const workCopyLaneId = remoteWorkLaneIdFor(owner);
+        // Checked first, so a chat on this machine is told why, not refused a lane it never named.
+        const workCopyLaneId = remoteWorkLaneIdFor(workCopyOwner(session));
         appleArgs = { ...rest, laneId: workCopyLaneId };
         // Readied last, right before the call, so a refusal on the way leaves
         // nothing busy; busy until the call returns (a build runs for its length).
@@ -7627,7 +7633,7 @@ async function runTool(args: {
       throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported tool: ${name}`);
     }
     try {
-      return { released: await createRemoteWorkCopyService({ projectRoot: runtime.projectRoot, logger: runtime.logger }).release(owner) };
+      return { released: await workCopiesFor(runtime).release(owner) };
     } catch (error) {
       if (error instanceof RemoteWorkError) throw new JsonRpcError(JsonRpcErrorCode.invalidRequest, error.message, { code: error.code });
       throw error;

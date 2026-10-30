@@ -107,10 +107,11 @@ on the first command; nothing is installed in advance, and ignored files
 - **The run.** The command runs once in that machine's shell, started clean
   and not interactive (`remoteRunOnceShellLaunch` in `ptyService.ts`: the
   saved terminal shell or Automatic, `-c` on macOS and Linux; on Windows
-  PowerShell with `-EncodedCommand`, or Git Bash when that is the saved shell,
-  never cmd.exe). The CLI sends ADE's canonical POSIX line, which Windows
-  turns back into argv and writes for PowerShell. The shell ends with the
-  command's exit code. `--wait` streams the output
+  PowerShell with `-EncodedCommand` and this run's execution policy bypassed,
+  or Git Bash when that is the saved shell, never cmd.exe). The CLI sends the
+  command's argv (what follows `--`), and the receiving machine renders it for
+  its shell, leading `NAME=value` words included; a `-c "<line>"` command goes
+  to the shell as written. The shell ends with the command's exit code. `--wait` streams the output
   and exits with that code. The shell is owned by the caller's foreign id, so
   only that chat reads, writes or stops it (`ade terminal … --machine`).
 - **Cleanup.** `ade shell clean --machine <name>`; a week unused; the source

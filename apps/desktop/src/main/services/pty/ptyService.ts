@@ -1231,12 +1231,24 @@ export function remoteRunOnceShellLaunch(
   }
   const usePwsh = Boolean(preferred && /pwsh(\.exe)?$/i.test(preferred.file));
   const shellPath = usePwsh ? preferred!.file : "powershell.exe";
-  const body = "argv" in command
-    ? commandArrayToWindowsShellLine(command.argv, { kind: "powershell", shellPath })
-    : command.line;
-  // `$?` is read before anything else runs: the `if` below would reset it. A
-  // command that never ran leaves $LASTEXITCODE null; its success decides then.
-  const script = `${body}; $adeOk = $?; if ($null -eq $LASTEXITCODE) { exit [int](-not $adeOk) }; exit $LASTEXITCODE`;
+  let body: string;
+  if ("argv" in command) {
+    // Leading `NAME=value` words set the command's environment, as in sh.
+    const argv = [...command.argv];
+    const assignments: string[] = [];
+    while (argv.length > 1 && /^[A-Za-z_][A-Za-z0-9_]*=/.test(argv[0]!)) {
+      const word = argv.shift()!;
+      const equals = word.indexOf("=");
+      assignments.push(`$env:${word.slice(0, equals)} = '${word.slice(equals + 1).replace(/'/g, "''")}'`);
+    }
+    body = [...assignments, commandArrayToWindowsShellLine(argv, { kind: "powershell", shellPath })].join("\n");
+  } else {
+    body = command.line;
+  }
+  // One statement per line, so a trailing comment in the command cannot
+  // swallow them. `$?` is read before anything else runs: the `if` would reset
+  // it. A command that never ran leaves $LASTEXITCODE null; its success decides then.
+  const script = `${body}\n$adeOk = $?\nif ($null -eq $LASTEXITCODE) { exit [int](-not $adeOk) }\nexit $LASTEXITCODE`;
   return {
     command: shellPath,
     args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")],
@@ -1245,7 +1257,8 @@ export function remoteRunOnceShellLaunch(
 
 function quotePosixShellArg(value: string): string {
   if (!value.length) return "''";
-  if (/^[a-zA-Z0-9_./:@%+=,-]+$/.test(value)) return value;
+  // A leading `=` or `~` is expanded by zsh and bash even unquoted-looking.
+  if (/^[a-zA-Z0-9_./:@%+=,-]+$/.test(value) && !/^[=~]/.test(value)) return value;
   return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
