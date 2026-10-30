@@ -175,6 +175,10 @@ function createRuntime() {
       list: vi.fn(async () => laneRows),
       getCompareBase: vi.fn(() => "main"),
       ensurePrimaryLane: vi.fn(async () => laneRows[0]),
+      getPrimaryLane: vi.fn(() => {
+        const primary = laneRows.find((row) => row.laneType === "primary");
+        return primary ? { laneId: primary.id, worktreePath: primary.worktreePath, branchRef: primary.branchRef } : null;
+      }),
       getLaneWorktreePath: vi.fn((laneId: string) => {
         const lane = laneRows.find((row) => row.id === laneId) ?? laneRows[0]!;
         return lane.worktreePath;

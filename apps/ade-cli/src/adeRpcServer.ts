@@ -2396,6 +2396,12 @@ function emptyLinearQuickView(connection: LinearConnectionStatus): CtoLinearQuic
 
 async function resolveDefaultLaneId(runtime: AdeRuntime): Promise<string> {
   await runtime.laneService.ensurePrimaryLane().catch(() => {});
+  // Every CTO operator action (chat status, list, transcript, create, send)
+  // asks this. The primary lane's row answers it; a lane list also runs git
+  // and the worktree reconcile, about 80 ms per call on Windows, so it is
+  // only the fallback for a project without an active primary.
+  const primaryLaneId = runtime.laneService.getPrimaryLane()?.laneId?.trim();
+  if (primaryLaneId) return primaryLaneId;
   const lanes = await runtime.laneService.list({ includeArchived: false, includeStatus: false });
   const laneId = (lanes.find((lane) => lane.laneType === "primary") ?? lanes[0])?.id?.trim?.() || "";
   if (!laneId) {
