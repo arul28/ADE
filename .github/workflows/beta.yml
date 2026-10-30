@@ -118,6 +118,7 @@ jobs:
       release_tag: ${{ needs.resolve.outputs.tag }}
       target_ref: ${{ needs.resolve.outputs.sha }}
       preview: ${{ needs.resolve.outputs.preview == 'true' }}
+      beta_notes: ${{ needs.resolve.outputs.preview == 'true' && '' || needs.resolve.outputs.notes }}
     secrets: inherit
 
   # The same gate as release.yml's publish-release, rebuilt from

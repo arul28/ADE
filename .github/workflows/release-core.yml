@@ -20,6 +20,13 @@ on:
         required: false
         default: false
         type: boolean
+      beta_notes:
+        description: >-
+          A beta's GitHub release notes (resolve.mjs). The packaging jobs write
+          them as the beta's What's new notes. Empty for a stable release.
+        required: false
+        default: ""
+        type: string
       preview:
         description: >-
           Build a one-time test version of a commit that has not merged, as a
@@ -309,6 +316,15 @@ jobs:
           set -euo pipefail
           git fetch --no-tags --depth=1 origin main
           git checkout FETCH_HEAD -- changelog
+
+      # A beta has no notes on main; its What's new lists the pull requests
+      # its GitHub release lists. Never for a stable tag or a preview.
+      - name: Write the beta's release notes
+        if: ${{ contains(inputs.release_tag, '-') && inputs.beta_notes != '' }}
+        env:
+          ADE_RELEASE_TAG: ${{ inputs.release_tag }}
+          ADE_BETA_NOTES: ${{ inputs.beta_notes }}
+        run: node scripts/beta/write-beta-changelog.mjs
 
       - name: Reset release output
         run: |
@@ -613,6 +629,15 @@ jobs:
           set -euo pipefail
           git fetch --no-tags --depth=1 origin main
           git checkout FETCH_HEAD -- changelog
+
+      # A beta has no notes on main; its What's new lists the pull requests
+      # its GitHub release lists. Never for a stable tag or a preview.
+      - name: Write the beta's release notes
+        if: ${{ contains(inputs.release_tag, '-') && inputs.beta_notes != '' }}
+        env:
+          ADE_RELEASE_TAG: ${{ inputs.release_tag }}
+          ADE_BETA_NOTES: ${{ inputs.beta_notes }}
+        run: node scripts/beta/write-beta-changelog.mjs
 
       - name: Reset release output
         shell: pwsh
