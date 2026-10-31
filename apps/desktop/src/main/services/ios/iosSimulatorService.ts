@@ -1,3 +1,4 @@
+import { findRemoteWorkCopyForLane, isRemoteWorkLaneId } from "../remoteWork/remoteWorkCopyService";
 import { parseForeignCallerSessionId } from "../../../shared/runtimeClientNames";
 import { externalChatContext } from "../chat/externalChats";
 import { randomUUID } from "node:crypto";
@@ -3616,6 +3617,12 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   const resolveLaneRoot = async (laneId?: string | null): Promise<string | null> => {
     const trimmed = laneId?.trim();
     if (!trimmed) return null;
+    // A chat on another machine builds in its work copy here.
+    if (isRemoteWorkLaneId(trimmed)) {
+      const copy = findRemoteWorkCopyForLane(args.projectRoot, trimmed);
+      if (!copy) throw new IosSimulatorLaneUnresolvedError(trimmed);
+      return path.resolve(copy.path);
+    }
     if (!args.resolveLaneWorktreePath) throw new IosSimulatorLaneUnresolvedError(trimmed);
     let worktreePath: string | undefined;
     try {

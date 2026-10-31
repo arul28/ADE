@@ -27,6 +27,7 @@ import type {
   RecentProjectSummary,
   RemoteRuntimeConnectionStatus,
 } from "../../../shared/types";
+import type { MachinePlacementPreference, MachineStats } from "../../../shared/types/machineStats";
 
 // Machine identity is shared, not per-module: five copies of these constants
 // with two different id values is what made the divergence guard able to warn
@@ -85,6 +86,16 @@ export type LaneMachineOption = {
   project: LaneMachineProjectRef | null;
   /** True for the machine the active project is currently bound to. */
   isBound: boolean;
+  /**
+   * Account machine key (the tile colour key): the paired machine's key, or
+   * the target id for an SSH target; null for This computer until the caller
+   * knows it. Preferences are filed under it.
+   */
+  machineKey?: string | null;
+  /** Its load and capabilities (`machine_stats.get`), once read; null when it could not answer. */
+  stats?: MachineStats | null;
+  /** How often new work should go here. Missing reads as Normal. */
+  preference?: MachinePlacementPreference;
 };
 
 export type LaneMachineDerivationInput = {
@@ -108,6 +119,8 @@ export type LaneMachineDerivationInput = {
   localProjects?: readonly RecentProjectSummary[];
   /** Free disk headroom on this computer, when a caller already has it. */
   thisMachineFreeBytes?: number | null;
+  /** This computer's account machine key, when known. */
+  thisMachineKey?: string | null;
   /**
    * Lanes already in flight per machine id, when the caller has the
    * cross-machine lane union in hand. Optional: with no counts the placement
@@ -347,6 +360,7 @@ function thisMachineOption(input: LaneMachineDerivationInput): LaneMachineOption
     repoMatch: isBound ? "matched" : repoMatchFor(project, canProveAbsence),
     project,
     isBound,
+    machineKey: input.thisMachineKey?.trim() || null,
   };
 }
 
@@ -389,6 +403,7 @@ export function deriveLaneMachineOptions(
         : repoMatchFor(project, !!repoIdentity || !!repoDisplayName),
       project,
       isBound,
+      machineKey: connection.target.pairedMachine?.machineKey?.trim() || connection.target.id,
     });
   }
 
@@ -401,42 +416,89 @@ export function defaultLaneMachineId(options: readonly LaneMachineOption[]): str
 }
 
 /**
- * The machine a load-balanced new lane should land on.
+ * The machine a load-balanced new lane (or chat) should land on.
  *
- * Order of judgement: a machine with healthy disk headroom beats one below the
- * warning threshold; fewer already-running lanes beats more; more free disk
- * beats less; and the machine the tab is already bound to wins a true tie, so
- * balance never moves work off the current machine for no reason.
+ * Machines are classified, never the work: each one gets a headroom score
+ * from what its own brain reports (`machine_stats.get`) — idle CPU, available
+ * memory, a little for more cores, less for builds running there, much less
+ * on battery or for a laptop ADE does not keep awake — scaled by its
+ * placement preference (Prefer ×1.5, Normal ×1, Less often ×0.5). A machine
+ * without stats scores as moderately busy, so a machine that proved it is
+ * idle beats one that did not answer, and one that proved it is busy loses.
  *
- * Degrades to `defaultLaneMachineId` whenever balancing cannot help: fewer than
- * two machines can host this repo (the one-machine and repo-only-on-one cases),
- * or the option list is empty. Offline machines are already absent — only
- * `connected` connections become options.
+ * Order of judgement: healthy disk beats a disk below the warning threshold;
+ * a clearly higher score wins; then fewer running lanes, more free disk, and
+ * the machine the tab is already bound to, so balance never moves work for
+ * nothing.
+ *
+ * "Manual only" machines are never picked, whatever their stats say or
+ * whether they answered at all. With fewer than two machines able to host the
+ * repo there is nothing to balance.
  */
-function chooseLaneMachineByLoad(options: readonly LaneMachineOption[]): string {
-  const eligible = options.filter(canCreateLaneOnMachine);
-  // One machine (or none) is nothing to balance. The single eligible machine is
-  // the answer even when it is not the first option — a repo-missing machine
-  // must never be chosen just because it sorts first.
-  if (eligible.length === 0) return defaultLaneMachineId(options);
+function chooseLaneMachineByLoad(options: readonly LaneMachineOption[]): string | null {
+  const eligible = options.filter(canAutoPlaceOnMachine);
+  if (eligible.length === 0) return null;
   if (eligible.length === 1) return eligible[0]!.id;
-  const best = [...eligible].sort(compareLaneMachineLoad)[0];
-  return best?.id ?? defaultLaneMachineId(options);
+  return [...eligible].sort(compareLaneMachineLoad)[0]?.id ?? null;
 }
 
 /**
  * The machine an "Auto — least loaded" choice would pick, or null when fewer
- * than two machines can host this repo and there is nothing to balance.
+ * than two machines can host this repo (nothing to balance) or every one that
+ * can is Manual only.
  */
 export function autoLaneMachine(options: readonly LaneMachineOption[]): LaneMachineOption | null {
   if (options.filter(canCreateLaneOnMachine).length < 2) return null;
   const id = chooseLaneMachineByLoad(options);
-  return options.find((machine) => machine.id === id) ?? null;
+  return id ? options.find((machine) => machine.id === id) ?? null : null;
+}
+
+/** A machine automatic placement may choose: it can host the lane and is not Manual only. */
+export function canAutoPlaceOnMachine(option: LaneMachineOption): boolean {
+  return canCreateLaneOnMachine(option) && option.preference !== "manual";
+}
+
+const PREFERENCE_WEIGHT: Record<Exclude<MachinePlacementPreference, "manual">, number> = {
+  prefer: 1.5,
+  normal: 1,
+  "less-often": 0.5,
+};
+
+/** What a machine that has not answered counts as: moderately busy. */
+const UNKNOWN_HEADROOM = 0.35;
+/** Scores closer than this are a tie, so two idle machines do not flap. */
+const SCORE_TIE = 0.05;
+
+/**
+ * 0–1: how much room the machine has for one more lane right now, from its
+ * own stats. Null when it has not reported any.
+ */
+function machineHeadroom(stats: MachineStats | null | undefined): number | null {
+  if (!stats) return null;
+  const cpuFree = stats.cpu.busyPercent == null ? 0.5 : 1 - stats.cpu.busyPercent / 100;
+  const memFree = stats.memory.totalBytes > 0
+    ? Math.min(1, Math.max(0, stats.memory.availableBytes / stats.memory.totalBytes))
+    : 0.5;
+  let headroom = cpuFree * 0.6 + memFree * 0.4 + Math.min(stats.cpu.cores, 16) / 160;
+  const builds = stats.builds?.reduce((sum, build) => sum + build.count, 0) ?? 0;
+  headroom -= Math.min(0.45, builds * 0.15);
+  if (stats.power?.onBattery) headroom -= 0.3;
+  else if (stats.power?.hasBattery && stats.sleep && !stats.sleep.keptAwake) headroom -= 0.1;
+  return Math.max(0, Math.min(1, headroom));
+}
+
+/** Headroom scaled by the machine's preference; what "Least loaded" compares. */
+function machinePlacementScore(option: Pick<LaneMachineOption, "stats" | "preference">): number {
+  const preference = option.preference ?? "normal";
+  if (preference === "manual") return 0;
+  return (machineHeadroom(option.stats) ?? UNKNOWN_HEADROOM) * PREFERENCE_WEIGHT[preference];
 }
 
 function compareLaneMachineLoad(a: LaneMachineOption, b: LaneMachineOption): number {
-  const lowDiskDelta = Number(isLowLaneMachineDisk(a.freeBytes)) - Number(isLowLaneMachineDisk(b.freeBytes));
+  const lowDiskDelta = Number(isLowLaneMachineDisk(laneMachineFreeBytes(a))) - Number(isLowLaneMachineDisk(laneMachineFreeBytes(b)));
   if (lowDiskDelta !== 0) return lowDiskDelta;
+  const scoreDelta = machinePlacementScore(b) - machinePlacementScore(a);
+  if (Math.abs(scoreDelta) > SCORE_TIE) return scoreDelta;
   // A missing count is not a count of zero. Only compare load when BOTH
   // machines report one; otherwise an uncounted machine would sort as idle and
   // win the tie, which the input contract forbids. Fall through to disk.
@@ -444,11 +506,42 @@ function compareLaneMachineLoad(a: LaneMachineOption, b: LaneMachineOption): num
     const loadDelta = a.activeLaneCount - b.activeLaneCount;
     if (loadDelta !== 0) return loadDelta;
   }
-  const freeDelta = (typeof b.freeBytes === "number" ? b.freeBytes : 0)
-    - (typeof a.freeBytes === "number" ? a.freeBytes : 0);
-  if (freeDelta !== 0) return freeDelta;
   if (a.isBound !== b.isBound) return a.isBound ? -1 : 1;
+  const freeDelta = (laneMachineFreeBytes(b) ?? 0) - (laneMachineFreeBytes(a) ?? 0);
+  if (freeDelta !== 0) return freeDelta;
   return 0;
+}
+
+/** Free disk from the snapshot, else from the machine's own stats. */
+export function laneMachineFreeBytes(option: Pick<LaneMachineOption, "freeBytes" | "stats">): number | null {
+  return option.freeBytes ?? option.stats?.disk?.freeBytes ?? null;
+}
+
+/**
+ * The pin that reaches a machine's brain for its stats: null for the machine
+ * the tab is bound to (the unpinned path), that machine's checkout otherwise,
+ * "unreachable" when no checkout of it is known. Stats are machine-wide, so
+ * any project there answers the same.
+ */
+export function laneMachineStatsPin(option: LaneMachineOption): OpenProjectBinding | null | "unreachable" {
+  if (option.isBound) return null;
+  const checkout = option.project;
+  if (option.targetId) {
+    if (!checkout?.projectId) return "unreachable";
+    return {
+      kind: "remote",
+      key: remoteProjectBindingKey(option.targetId, checkout.projectId),
+      targetId: option.targetId,
+      runtimeName: option.name,
+      ...(option.transport ? { transport: option.transport } : {}),
+      ...(option.hostname ? { hostname: option.hostname } : {}),
+      projectId: checkout.projectId,
+      rootPath: checkout.rootPath,
+      displayName: checkout.displayName,
+    };
+  }
+  if (!checkout?.rootPath) return "unreachable";
+  return { kind: "local", key: `local:${checkout.rootPath}`, rootPath: checkout.rootPath, displayName: checkout.displayName };
 }
 
 /** A machine can host a new lane unless we know the repo isn't there. */

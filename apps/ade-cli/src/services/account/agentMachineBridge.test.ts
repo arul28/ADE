@@ -137,7 +137,7 @@ describe("agent machine bridge", () => {
     expect(forwarded?.params.remoteCaller).toMatchObject({ chatSessionId: "chat-a", permissionLevel: "full-auto" });
     if (wakeToken) expect(forwarded?.params.remoteCaller).toMatchObject({ wakeToken });
     else expect(forwarded?.params.remoteCaller).not.toHaveProperty("wakeToken");
-    expect(answer.machine).toEqual({ machineKey: "machine-b", name: "Mac mini" });
+    expect(answer.machine).toEqual({ machineKey: "machine-b", name: "Mac mini", platform: "darwin" });
   });
 
   it("refuses a secret-bearing action before anything is sent", async () => {

@@ -1,3 +1,4 @@
+import { activeRemoteWorkOnRow, remoteSimulatorUses } from "../../../shared/chatRemoteWork";
 import {
   useCallback,
   useEffect,
@@ -202,13 +203,15 @@ export function WorkSidebar({
     activeSession && activeSession.id === panelChatSessionId ? activeSession.sideChatSessionId ?? null : null,
   );
   const hasSideChat = sideChat.kind !== "none";
+  const hasRemoteSimulator = remoteSimulatorUses(activeSession).length > 0;
   const toolContext = useMemo(
     () => ({
       ...feedsToolContext,
       ...(laneCloud ? { cloudLane: laneCloud } : {}),
       hasSideChat,
+      ...(hasRemoteSimulator ? { hasRemoteSimulator } : {}),
     }),
-    [feedsToolContext, hasSideChat, laneCloud],
+    [feedsToolContext, hasSideChat, hasRemoteSimulator, laneCloud],
   );
   // An unavailable tool falls back to the PICKER, not to some other tool: being
   // dropped into Git because the simulator is unavailable on this machine is a
@@ -319,6 +322,7 @@ export function WorkSidebar({
     prSessionId: panelSessionId,
     activeTool: tool,
     appleDeviceRefreshKey,
+    remoteShellCount: activeRemoteWorkOnRow(activeSession).reduce((total, use) => total + use.terminalIds.length, 0),
   });
 
   // No lane warning: every tool here is this lane's own. Another lane's App

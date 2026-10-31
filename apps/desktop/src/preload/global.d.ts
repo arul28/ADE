@@ -1,3 +1,5 @@
+import type { RemoteWorkCopyListing } from "../shared/types/remoteWork";
+import type { MachineStats } from "../shared/types/machineStats";
 import type { NewLaneDefaults } from "../shared/laneStart";
 import type { UpdateTrack } from "../shared/updateTrack";
 import type { MuseBinaryStatus } from "../shared/museBinary";
@@ -3969,6 +3971,15 @@ declare global {
           cb: (ev: BuiltInBrowserRemoteCall) => void,
           pin?: OpenProjectBinding | null,
         ) => () => void;
+      };
+      /** Work copies on a machine for chats on other machines (Settings › Machines). */
+      remoteWork: {
+        list: (pin?: OpenProjectBinding | null) => Promise<RemoteWorkCopyListing[]>;
+        delete: (args: { owner: string; projectId?: string | null }, pin?: OpenProjectBinding | null) => Promise<{ deleted: boolean }>;
+      };
+      /** A machine's load and capabilities, read by its own brain (Settings › Machines, "Least loaded"). */
+      machineStats?: {
+        get: (pin?: OpenProjectBinding | null) => Promise<MachineStats | null>;
       };
       terminal: {
         list: (

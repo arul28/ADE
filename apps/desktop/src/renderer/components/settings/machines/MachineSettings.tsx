@@ -31,7 +31,8 @@ import { machineSectionAvailable, type SettingsMachinePage } from "../SettingsMa
 import { osLabel, platformWord, type MachineFacts } from "./machineFacts";
 import { useSettingsMachines } from "./settingsMachinesContext";
 import type { useThisComputerFacts } from "./useThisComputerFacts";
-import { MachineCapabilitiesArea, MachinePreferenceRow, MachineWorkCopies } from "./machineSeams";
+import { MachineCapabilitiesArea, MachinePreferenceRow } from "./machineSeams";
+import { MachineWorkCopies } from "./MachineWorkCopies";
 
 /**
  * Everything Settings knows or can change about one machine, in four groups
@@ -131,14 +132,14 @@ export function MachineSettings({
         {!isThis && connection?.target.hostname ? (
           <MachineRow icon={<PlugsConnected size={14} />} title="Address" value={connection.target.hostname} />
         ) : null}
-        {/* How often other machines send work here, once it can be read and set. */}
-        <MachinePreferenceRow preference={null} />
+        {/* How often "Least loaded" sends new work here (kept in the account). */}
+        <MachinePreferenceRow machineKey={fact?.colorKey ?? null} name={name} />
       </MachineGroup>
 
-      {/* What the machine can run, and the copies of other machines' work it
-          holds, once its brain reports them (lane 8fbb5263). */}
-      <MachineCapabilitiesArea capabilities={null} />
-      <MachineWorkCopies copies={null} />
+      {/* How busy the machine is and what it can run, from its own brain,
+          and the copies of other machines' work it holds. */}
+      <MachineCapabilitiesArea pin={scope.pin} reach={reach && (scope.online || isThis)} isThisMachine={isThis} />
+      <MachineWorkCopies pin={scope.pin} reach={reach} isThisMachine={isThis} />
     </div>
   );
 }

@@ -80,6 +80,7 @@ import {
 import { createOAuthRedirectService } from "../../desktop/src/main/services/lanes/oauthRedirectService";
 import { createRuntimeDiagnosticsService } from "../../desktop/src/main/services/lanes/runtimeDiagnosticsService";
 import { createDiskPressureMonitor } from "../../desktop/src/main/services/storage/diskPressure";
+import { registerRemoteWorkShellCheck } from "../../desktop/src/main/services/remoteWork/remoteWorkCopyService";
 import { createStorageInsightsService } from "../../desktop/src/main/services/storage/storageInsightsService";
 import {
   createProjectHealthService,
@@ -187,6 +188,7 @@ import {
   captureClaudeHooksIgnoredAnalytics,
   captureClaudePluginsIgnoredAnalytics,
   captureCrossMachineMoveAnalytics,
+  captureRemoteWorkAnalytics,
   captureSessionMetadataRegeneratedAnalytics,
 } from "../../desktop/src/main/services/analytics/agentTurnProductAnalytics";
 import {
@@ -1651,6 +1653,11 @@ export async function createAdeRuntime(args: {
       loadPty: ptyBackend ?? (() => nodePty),
       disposePtyBackend: ptyBackend?.dispose
     });
+    // A chat on another machine runs commands in a work copy here; its shells
+    // are this runtime's terminals (remoteWorkCopyService.ts).
+    // A row still marked running after its PTY ended does not count: only a live PTY does.
+    teardown.push(registerRemoteWorkShellCheck(projectRoot, (owner) =>
+      ptyService.list({ chatSessionId: owner, status: "running", limit: null }).some((row) => ptyService.hasLivePty(row.id))));
     ptyServiceForSessionChanges = ptyService;
     teardown.push(() => ptyService.disposeAll());
 
@@ -2657,6 +2664,13 @@ export async function createAdeRuntime(args: {
           analytics: productAnalyticsService,
           projectId,
           event: { handoffId, outcome },
+        }),
+        // This brain forwards the chat's calls to the other machine, so it
+        // records that the chat used one.
+        onRemoteWorkStarted: (event) => captureRemoteWorkAnalytics({
+          analytics: productAnalyticsService,
+          projectId,
+          event,
         }),
         onCompactionOutcome: (event) => captureChatCompactionAnalytics({
           analytics: productAnalyticsService,

@@ -1045,13 +1045,13 @@ describe("ADE CLI", () => {
     });
     expect(buildCliPlan(["brain", "pin", "generate"])).toEqual({
       kind: "execute",
-      label: "sync pin generate",
+      label: "brain pin generate",
       formatter: "sync-pin",
       steps: [{ key: "result", method: "sync.generatePin" }],
     });
     expect(buildCliPlan(["brain", "pin", "set", "123456"])).toEqual({
       kind: "execute",
-      label: "sync pin set",
+      label: "brain pin set",
       formatter: "sync-pin",
       steps: [
         { key: "result", method: "sync.setPin", params: { pin: "123456" } },
@@ -1059,7 +1059,7 @@ describe("ADE CLI", () => {
     });
     expect(buildCliPlan(["brain", "pin", "clear"])).toEqual({
       kind: "execute",
-      label: "sync pin clear",
+      label: "brain pin clear",
       formatter: "sync-pin",
       steps: [{ key: "result", method: "sync.clearPin" }],
     });
@@ -2158,7 +2158,7 @@ describe("ADE CLI", () => {
     ).toThrow(/--confirm RECLAIM/);
   });
 
-  it("builds sync status and pairing PIN commands", () => {
+  it("builds sync status and web pairing commands", () => {
     const status = buildCliPlan([
       "sync",
       "status",
@@ -2220,27 +2220,6 @@ describe("ADE CLI", () => {
     );
     expect(webWithFlags.syncWebOpen).toBe(true);
     expect(webWithFlags.syncWebNoClipboard).toBe(true);
-
-    const setPin = buildCliPlan(["sync", "pin", "set", "123456"]);
-    expect(setPin.kind).toBe("execute");
-    if (setPin.kind !== "execute") return;
-    expect(setPin.steps).toEqual([
-      {
-        key: "result",
-        method: "sync.setPin",
-        params: { pin: "123456" },
-      },
-    ]);
-
-    const generatePin = buildCliPlan(["sync", "pin", "generate"]);
-    expect(generatePin.kind).toBe("execute");
-    if (generatePin.kind !== "execute") return;
-    expect(generatePin.steps).toEqual([
-      {
-        key: "result",
-        method: "sync.generatePin",
-      },
-    ]);
   });
 
   it("reads SSH pairing requests only from stdin and allows socketless machine recovery", () => {
@@ -2531,8 +2510,8 @@ describe("ADE CLI", () => {
     const output = formatOutput(result, { text: true } as any, inferFormatter(plan));
     expect(output).toContain("  Code   (PIN configured but hidden after runtime restart)");
     expect(output).toContain("  Known  Use the existing code if you already know it.");
-    expect(output).toContain("  New    ade sync pin generate");
-    expect(output).toContain("  Set    ade sync pin set <6-digit-code>");
+    expect(output).toContain("  New    ade brain pin generate");
+    expect(output).toContain("  Set    ade brain pin set <6-digit-code>");
     expect(output).toContain(
       "Open the link and enter the existing code if you know it. " +
         "Generate or set a new code only if you need ADE to display or copy one.",
@@ -2540,16 +2519,16 @@ describe("ADE CLI", () => {
     expect(output).not.toContain("no PIN set");
   });
 
-  it("says the pairing code in words for both shapes sync pin returns", () => {
-    const getPlan = expectExecutePlan(buildCliPlan(["sync", "pin", "get"]));
+  it("says the pairing code in words for both shapes brain pin returns", () => {
+    const getPlan = expectExecutePlan(buildCliPlan(["brain", "pin", "get"]));
     expect(inferFormatter(getPlan)).toBe("sync-pin");
     expect(formatOutput({ pin: "123456" }, { text: true } as any, inferFormatter(getPlan)))
       .toContain("Pairing code 123456");
     expect(formatOutput({ pin: null }, { text: true } as any, inferFormatter(getPlan)))
-      .toContain("No pairing code is set — run: ade sync pin generate");
+      .toContain("No pairing code is set — run: ade brain pin generate");
 
     // generate/set/clear answer with the whole snapshot, not { pin }.
-    const generatePlan = expectExecutePlan(buildCliPlan(["sync", "pin", "generate"]));
+    const generatePlan = expectExecutePlan(buildCliPlan(["brain", "pin", "generate"]));
     expect(
       formatOutput(
         { pairingPin: "654321", pairingPinConfigured: true, pairingConnectInfo: { port: 8787 } },
@@ -2564,14 +2543,14 @@ describe("ADE CLI", () => {
         inferFormatter(generatePlan),
       ),
     ).toContain("ADE cannot show it");
-    const clearPlan = expectExecutePlan(buildCliPlan(["sync", "pin", "clear"]));
+    const clearPlan = expectExecutePlan(buildCliPlan(["brain", "pin", "clear"]));
     expect(
       formatOutput(
         { pairingPin: null, pairingPinConfigured: false, pairingConnectInfo: { port: 8787 } },
         { text: true } as any,
         inferFormatter(clearPlan),
       ),
-    ).toContain("No pairing code is set — run: ade sync pin generate");
+    ).toContain("No pairing code is set — run: ade brain pin generate");
   });
 
   it("reports pairing state in sync status --text for a machine with no project", () => {
@@ -2598,7 +2577,7 @@ describe("ADE CLI", () => {
     expect(output).toContain("mode");
     expect(output).toContain("standalone");
     expect(output).toContain("pairing code");
-    expect(output).toContain("not set — run: ade sync pin generate");
+    expect(output).toContain("not set — run: ade brain pin generate");
     expect(output).toContain("This machine hosts phone sync without an open project.");
 
     const paired = formatOutput(
@@ -2613,7 +2592,7 @@ describe("ADE CLI", () => {
     const plan = expectExecutePlan(buildCliPlan(["sync", "devices"]));
     expect(inferFormatter(plan)).toBe("sync-devices");
     expect(formatOutput([], { text: true } as any, inferFormatter(plan)))
-      .toContain("No paired devices yet — run: ade sync pin generate");
+      .toContain("No paired devices yet — run: ade brain pin generate");
     expect(
       formatOutput(
         [{ name: "Arul's iPhone", deviceType: "phone", platform: "iOS", lastSeenAt: "2026-08-06T00:00:00.000Z" }],
@@ -3926,7 +3905,7 @@ describe("ADE CLI", () => {
       "droid",
       "--permissions",
       "default",
-      "--droid-autonomy",
+      "--droid-permission-mode",
       "agi",
       "--prompt",
       "Run the Droid child.",
@@ -3948,9 +3927,9 @@ describe("ADE CLI", () => {
   it("rejects invalid Droid autonomy values on every chat planning surface", () => {
     const invalid = "not-a-droid-tier";
     const plans = [
-      ["chat", "create", "--lane", "lane-1", "--provider", "droid", "--droid-autonomy", invalid],
-      ["chat", "create", "--personal", "--provider", "droid", "--model", "droid/model", "--droid-autonomy", invalid],
-      ["chat", "update", "personal-1", "--personal", "--droid-autonomy", invalid],
+      ["chat", "create", "--lane", "lane-1", "--provider", "droid", "--droid-permission-mode", invalid],
+      ["chat", "create", "--personal", "--provider", "droid", "--model", "droid/model", "--droid-permission-mode", invalid],
+      ["chat", "update", "personal-1", "--personal", "--droid-permission-mode", invalid],
       ["shell", "start-cli", "--lane", "lane-1", "--provider", "droid", "--droid-autonomy", invalid],
     ];
 
@@ -4030,7 +4009,7 @@ describe("ADE CLI", () => {
 
   it.each([
     { surface: "chat create", args: ["chat", "create", "--lane", "lane-1", "--provider", "antigravity", "--print-config"], accepts: true },
-    { surface: "chat launch", args: ["chat", "launch", "prompt", "--provider", "antigravity", "--dry-run"], accepts: true },
+    { surface: "chat launch", args: ["chat", "launch", "prompt", "--provider", "antigravity", "--print-config"], accepts: true },
     { surface: "terminal launch", args: ["shell", "create", "--lane", "lane-1", "--provider", "antigravity", "--print-config"], accepts: false },
   ])("validates Antigravity as a chat-only provider on $surface", ({ args, accepts }) => {
     if (accepts) {
@@ -4100,7 +4079,7 @@ describe("ADE CLI", () => {
         "lane-1",
         "--provider",
         "droid",
-        "--droid-autonomy",
+        "--droid-permission-mode",
         "auto-medium",
         "--arg",
         "provider=claude",
@@ -4526,7 +4505,7 @@ describe("ADE CLI", () => {
       "--reasoning-effort",
       "high",
       "--fast",
-      "--dry-run",
+      "--print-config",
     ]));
     const value = staticPlan.value as {
       input: Record<string, unknown>;
@@ -4556,18 +4535,18 @@ describe("ADE CLI", () => {
 
   it("asks for Codex Ultrafast with --ultrafast, which means Fast on", () => {
     const base = ["chat", "create", "--lane", "lane-1", "--provider", "codex", "--model", "openai/gpt-6.1-sol"];
-    const value = expectStaticPlan(buildCliPlan([...base, "--ultrafast", "--dry-run"])).value as {
+    const value = expectStaticPlan(buildCliPlan([...base, "--ultrafast", "--print-config"])).value as {
       input: Record<string, unknown>;
     };
     expect(value.input).toMatchObject({ provider: "codex", fastMode: true, fastTier: "ultrafast" });
 
-    const plainFast = expectStaticPlan(buildCliPlan([...base, "--fast", "--dry-run"])).value as {
+    const plainFast = expectStaticPlan(buildCliPlan([...base, "--fast", "--print-config"])).value as {
       input: Record<string, unknown>;
     };
     expect(plainFast.input.fastMode).toBe(true);
     expect(plainFast.input).not.toHaveProperty("fastTier");
 
-    expect(() => buildCliPlan([...base, "--ultrafast", "--standard", "--dry-run"])).toThrow(/not both/);
+    expect(() => buildCliPlan([...base, "--ultrafast", "--standard", "--print-config"])).toThrow(/not both/);
   });
 
   // ADE-135: `ade prs checks` printed nothing but the row table, so three
@@ -5116,15 +5095,8 @@ describe("ADE CLI", () => {
       expect(help.text).toContain("ade chat generate-names");
       expect(help.text).toContain("ade chat demote");
       expect(help.text).toContain("ade chat promote");
-      // Settling is user-/PR-merge-driven only; the help must say so rather
-      // than advertise a command that no longer exists.
-      expect(help.text).toContain("'chat settle' / 'chat unsettle' were removed");
       expect(help.text).toContain("--session <id>");
     }
-    expect(() => buildCliPlan(["chat", "settle"]))
-      .toThrow(/only the user .* settles a session.*chat note/i);
-    expect(() => buildCliPlan(["chat", "unsettle"]))
-      .toThrow(/only the user .* settles a session.*chat note/i);
   });
 
   it("rejects extra options in chat move status and retry modes", () => {
@@ -6432,48 +6404,31 @@ describe("ADE CLI", () => {
     }
   });
 
-  it("rejects reasoning effort on legacy agent spawn", () => {
+  it("rejects --prompt together with --no-kickoff on chat create", () => {
     expect(() =>
       buildCliPlan([
-        "agent",
-        "spawn",
+        "chat",
+        "create",
         "--lane",
         "lane-1",
         "--prompt",
-        "fix",
-        "--reasoning-effort",
-        "xhigh",
+        "Fix the tests",
+        "--no-kickoff",
       ]),
-    ).toThrow(/agent spawn does not support reasoning effort/);
-  });
-
-  it("rejects conflicting chat create kickoff aliases and no-kickoff flags", () => {
-    for (const kickoffFlag of ["--prompt", "--kickoff", "--kickoff-prompt"]) {
-      expect(() =>
-        buildCliPlan([
-          "chat",
-          "create",
-          "--lane",
-          "lane-1",
-          kickoffFlag,
-          "Fix the tests",
-          "--no-kickoff",
-        ]),
-      ).toThrow(/--no-kickoff cannot be used with --prompt\/--kickoff/);
-      expect(() =>
-        buildCliPlan([
-          "chat",
-          "create",
-          "--lane",
-          "lane-1",
-          "--from-linear-issue",
-          "ENG-431",
-          kickoffFlag,
-          "Fix the tests",
-          "--no-kickoff",
-        ]),
-      ).toThrow(/--no-kickoff cannot be used with --prompt\/--kickoff/);
-    }
+    ).toThrow(/--no-kickoff cannot be used with --prompt/);
+    expect(() =>
+      buildCliPlan([
+        "chat",
+        "create",
+        "--lane",
+        "lane-1",
+        "--from-linear-issue",
+        "ENG-431",
+        "--prompt",
+        "Fix the tests",
+        "--no-kickoff",
+      ]),
+    ).toThrow(/--no-kickoff cannot be used with --prompt/);
   });
 
   it("rejects --print=value on chat send", () => {
@@ -6692,7 +6647,7 @@ describe("ADE CLI", () => {
     expect(() => buildCliPlan(["chat", "launch"])).toThrow(/prompt/);
     expect(() => buildCliPlan(["chat", "launch", "hi", "--launch-id", "nope"])).toThrow(/--launch-id must be a UUID/);
     expect(() => buildCliPlan(["chat", "launch", "hi", "--provider", "shell"])).toThrow();
-    const dryRun = buildCliPlan(["chat", "launch", "hi", "--dry-run"]);
+    const dryRun = buildCliPlan(["chat", "launch", "hi", "--print-config"]);
     expect(dryRun.kind).toBe("static");
   });
 
@@ -6718,7 +6673,7 @@ describe("ADE CLI", () => {
       error: /disagree/,
     },
   ])("chat launch $label", ({ args, error, provider }) => {
-    const build = () => buildCliPlan(["chat", "launch", "prompt", "--dry-run", ...args]);
+    const build = () => buildCliPlan(["chat", "launch", "prompt", "--print-config", ...args]);
     if (error) {
       expect(build).toThrow(error);
       return;
@@ -8601,7 +8556,7 @@ describe("ADE CLI", () => {
     ["inline machine", ["--machine=Mac mini", "chat-1"]],
     // A prompt that reads like a flag is text, not --cancel.
     ["prompt that looks like a flag", ["chat-1", "--machine", "Mac mini", "--prompt", "--cancel"]],
-    ["handoff note that looks like a flag", ["chat-1", "--machine", "Mac mini", "--handoff-note", "--cancel"]],
+    ["note that looks like a flag", ["chat-1", "--machine", "Mac mini", "--note", "--cancel"]],
     ["prompt that names a setting flag", ["chat-1", "--machine", "Mac mini", "--prompt", "--fork"]],
   ])("builds a move to another machine with the %s", (_label, head) => {
     const move = expectExecutePlan(buildCliPlan([
@@ -8716,9 +8671,9 @@ describe("ADE CLI", () => {
     });
   });
 
-  it("builds typed chat schedules pause/resume/inspect commands", () => {
-    const pause = expectExecutePlan(buildCliPlan(["chat", "schedules", "chat-1", "--pause"]));
-    expect(pause.label).toBe("chat schedules pause");
+  it("builds typed chat scheduled-work pause/resume/status commands", () => {
+    const pause = expectExecutePlan(buildCliPlan(["chat", "scheduled-work", "pause", "chat-1"]));
+    expect(pause.label).toBe("chat scheduled-work pause");
     expect(pause.steps[0]?.params).toEqual({
       name: "run_ade_action",
       arguments: {
@@ -8728,8 +8683,8 @@ describe("ADE CLI", () => {
       },
     });
 
-    const resume = expectExecutePlan(buildCliPlan(["chat", "schedules", "chat-1", "--resume"]));
-    expect(resume.label).toBe("chat schedules resume");
+    const resume = expectExecutePlan(buildCliPlan(["chat", "scheduled-work", "resume", "chat-1"]));
+    expect(resume.label).toBe("chat scheduled-work resume");
     expect(resume.steps[0]?.params).toMatchObject({
       arguments: {
         domain: "chat",
@@ -8738,8 +8693,8 @@ describe("ADE CLI", () => {
       },
     });
 
-    const inspect = expectExecutePlan(buildCliPlan(["chat", "schedules", "chat-1"]));
-    expect(inspect.label).toBe("chat schedules");
+    const inspect = expectExecutePlan(buildCliPlan(["chat", "scheduled-work", "status", "chat-1"]));
+    expect(inspect.label).toBe("chat scheduled-work status");
     expect(inspect.steps[0]?.params).toMatchObject({
       arguments: {
         domain: "chat",
@@ -8748,8 +8703,8 @@ describe("ADE CLI", () => {
       },
     });
 
-    expect(() => buildCliPlan(["chat", "schedules", "chat-1", "--pause", "--resume"])).toThrow(
-      /either --pause or --resume/,
+    expect(() => buildCliPlan(["chat", "scheduled-work", "chat-1"])).toThrow(
+      /needs one of: list, create, cancel, status, pause, resume/,
     );
 
     const list = expectExecutePlan(buildCliPlan(["chat", "scheduled-work", "list", "chat-1", "--all"]));
@@ -8924,23 +8879,6 @@ describe("ADE CLI", () => {
       "--cron",
       "0 * * * *",
     ])).toThrow(/prompt is required/);
-
-    for (const alias of ["schedule", "schedules"]) {
-      expect(expectExecutePlan(buildCliPlan(["chat", alias, "list", "chat-1"])).steps[0]?.params)
-        .toMatchObject({
-          arguments: {
-            action: "listScheduledWork",
-            args: { sessionId: "chat-1" },
-          },
-        });
-      expect(expectExecutePlan(buildCliPlan(["chat", alias, "cancel", "chat-1", "cron-1"])).steps[0]?.params)
-        .toMatchObject({
-          arguments: {
-            action: "cancelScheduledWork",
-            args: { sessionId: "chat-1", scheduleId: "cron-1" },
-          },
-        });
-    }
 
     const cancel = expectExecutePlan(buildCliPlan([
       "chat",
@@ -9306,9 +9244,6 @@ describe("ADE CLI", () => {
     expect(() => buildCliPlan(["chat", "send", "hello"])).toThrow(
       /message text is required/,
     );
-    expect(() =>
-      buildCliPlan(["agent", "spawn", "--prompt", "fix it"]),
-    ).toThrow(/laneId is required/);
     expect(() => buildCliPlan(["tests", "run", "--lane", "main"])).toThrow(
       /--suite <id> or --command/,
     );
@@ -11702,7 +11637,7 @@ describe("ADE CLI", () => {
       /provider must be one of/,
     );
     expect(() =>
-      buildCliPlan([...baseArgs, "--provider", "claude", "--droid-autonomy", "agi"]),
+      buildCliPlan([...baseArgs, "--provider", "claude", "--droid-permission-mode", "agi"]),
     ).toThrow(/Droid autonomy is only supported for Droid sessions/);
     expect(() =>
       buildCliPlan([...baseArgs, "--provider", "claude", "--permission-mode", "bogus"]),
@@ -16014,10 +15949,6 @@ describe("ADE CLI", () => {
         keepSimulatorInBackground: true,
       });
       expect(launchArgsFor(["ios-sim", "launch"]).openDrawer).toBeUndefined();
-      // Back-compat: --background was the old opt-in and must stay harmless.
-      expect(launchArgsFor(["ios-sim", "launch", "--background"])).toMatchObject({
-        keepSimulatorInBackground: true,
-      });
       expect(launchArgsFor(["ios-sim", "launch", "--foreground"])).toMatchObject({
         keepSimulatorInBackground: false,
       });
@@ -16470,11 +16401,6 @@ describe("ADE CLI", () => {
       name: "run_ade_action",
       arguments: { domain: "usage", action: "getTurnUsageSummary", args: {} },
     });
-
-    // `ledger` and `router` were never documented; only `turns` names the command.
-    for (const alias of ["ledger", "router"]) {
-      expect(JSON.stringify(buildCliPlan(["usage", alias]))).not.toContain("getTurnUsageSummary");
-    }
 
     // Only `--group-by` names the grouping; `--by` is not an alias for it.
     const byAlias = buildCliPlan(["usage", "turns", "--by", "provider"]);
@@ -17461,6 +17387,10 @@ describe("--machine targeting", () => {
     const targeted = extractMachineTargeting(parseCliArgs(["lanes", "list", "--machine", "Studio"]));
     expect(targeted.command).toEqual(["lanes", "list"]);
     expect(targeted.options.machine).toBe("Studio");
+    // Every spelling of the lane screen targets a machine, not only the Mac one.
+    for (const screen of ["screen", "mac-desktop", "windows-desktop"]) {
+      expect(extractMachineTargeting(parseCliArgs([screen, "status", "--machine", "Studio"])).options.machine).toBe("Studio");
+    }
     // A command whose own --machine means something else keeps its flag.
     expect(extractMachineTargeting(parseCliArgs(["drafts", "list", "--machine", "Studio"])).options.machine)
       .toBeUndefined();

@@ -97,9 +97,8 @@ Agents deliberately **cannot settle**. `ade chat settle`, `ade chat unsettle`,
 `ade session settle`, and `ade session unsettle` were removed in 2026-07:
 whether work is actually finished is a subjective judgment agents are
 unreliable at, and a chat that settles itself disappears from the user's active
-list on the agent's say-so. Invoking a removed command exits 2 with a message
-naming the two remaining paths — the user settling the row in ADE, and the
-deterministic `autoSettleLaneSessionsOnPrMerge` policy. Nothing derives a
+list on the agent's say-so. Two paths remain — the user settling the row in
+ADE, and the deterministic `autoSettleLaneSessionsOnPrMerge` policy. Nothing derives a
 settle either: a completed turn or a clean CLI exit leaves the row
 active/ended, never settled.
 

@@ -8,6 +8,7 @@ import type {
 } from "../../../shared/types";
 import { sanitizeResumeTargetId } from "../../utils/terminalSessionSignals";
 import { getErrorMessage } from "../shared/utils";
+import { activeRemoteWork } from "../../../shared/chatRemoteWork";
 
 type ChatProjectionServices = {
   sessionService: {
@@ -150,6 +151,7 @@ export function projectChatOntoSession(
    */
   parentIdentityKey?: string | null,
 ): TerminalSessionSummary {
+  const activeMachineKeys = activeRemoteWork(chat).map((use) => use.machineKey);
   const base: TerminalSessionSummary = {
     ...session,
     currentTurnStartedAt: chat.currentTurnStartedAt ?? null,
@@ -201,6 +203,10 @@ export function projectChatOntoSession(
       : {}),
     ...(chat.spawnKind ? { spawnKind: chat.spawnKind } : {}),
     ...(chat.sideChatSessionId ? { sideChatSessionId: chat.sideChatSessionId } : {}),
+    // Recent commands on other machines (their shells), and which machines the
+    // current turn uses right now (the card's mark).
+    ...(chat.remoteWork?.length ? { remoteWork: chat.remoteWork } : {}),
+    ...(activeMachineKeys.length ? { remoteWorkActiveMachineKeys: activeMachineKeys } : {}),
     ...(chat.steeringInput ? { steeringInput: true } : {}),
     ...(chat.asyncQuestion ? { asyncQuestion: true } : {}),
     ...(chat.promptCache ? { chatPromptCache: chat.promptCache } : {}),

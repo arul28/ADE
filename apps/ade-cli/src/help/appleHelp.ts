@@ -77,7 +77,6 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
                                 is validated before the owner is evicted.
     --mode snapshot|live        Inspector launch mode; default live.
     --foreground                Bring Simulator.app to the front; default is background.
-    --background                Accepted, no-op: background is the default.
     --open-drawer               Also open the iOS drawer for the user.
     --follow                    Announce the wait up front; per-step progress is
                                 not streamed, the summary prints at the end.

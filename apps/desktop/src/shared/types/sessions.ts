@@ -18,6 +18,7 @@ import type {
   AgentChatUsageLimitResume,
   WorkBoardColumn,
   WorkBoardMoveTarget,
+  AgentChatRemoteWorkUse,
 } from "./chat";
 import type { ClaudePromptCache } from "../claudePromptCache";
 import type { ModelId } from "./core";
@@ -513,6 +514,10 @@ export type TerminalSessionSummary = {
   spawnKind?: AgentChatSpawnKind;
   /** The chat's side chat (`shared/sideChat.ts`), while it has one. Drives the session card's side-chat mark. */
   sideChatSessionId?: string;
+  /** Other machines the chat ran commands on (`ade shell start --machine`); their shells join the terminal tool. */
+  remoteWork?: AgentChatRemoteWorkUse[];
+  /** Of those, the machines the current turn uses right now (`shared/chatRemoteWork.ts`). Drives the card's mark. */
+  remoteWorkActiveMachineKeys?: string[];
   /**
    * Identity key of the spawn parent, when the parent is an IDENTITY
    * session rather than an ordinary chat (today the only one is the CTO, whose
@@ -823,6 +828,10 @@ export type ChatTerminalReadResult = {
   terminalId: string;
   data: string;
   nextSince: number;
+  /** The terminal's state when read (older brains omit it). */
+  status?: TerminalSessionStatus;
+  /** Its exit code once it ended; null while it runs or when unknown. */
+  exitCode?: number | null;
 };
 
 export type ChatTerminalWriteArgs = {

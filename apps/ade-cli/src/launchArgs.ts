@@ -124,7 +124,7 @@ const SPAWN_PARENT_REQUIRED_MESSAGE =
 
 /**
  * The Droid autonomy and permission-mode enum messages, for the same reason:
- * `--droid-autonomy bogus` and `--arg droidPermissionMode=bogus` are the same
+ * `--droid-permission-mode bogus` and `--arg droidPermissionMode=bogus` are the same
  * mistake, and so are `--permissions bogus` and `--arg permissionMode=bogus`.
  */
 export const DROID_PERMISSION_MODE_ENUM_MESSAGE =
@@ -280,7 +280,7 @@ export type LaunchArgRuleOptions = {
  * Every rule a *merged* launch arg bag has to satisfy, in one block.
  *
  * `--arg provider=…` / `--input-json` write the same wire fields the
- * `--provider`, `--instance`, `--permission-mode`, `--droid-autonomy` and
+ * `--provider`, `--instance`, `--permission-mode`, `--droid-permission-mode` and
  * spawn-lineage flags fill, and they win the merge — so this is the one place
  * every merged-value rule is enforced: the profile itself must be usable, an
  * `--instance` must belong to a profile that has accounts, a Droid autonomy
@@ -290,8 +290,8 @@ export type LaunchArgRuleOptions = {
  * launched under an unknown, mis-cased or non-string profile, or with an
  * `--instance` the profile cannot use: a `--provider cursor --arg instanceId=work`
  * is rejected exactly like `--provider cursor --instance work`, and
- * `--provider droid --droid-autonomy agi --arg provider=claude` is rejected
- * exactly like `--provider claude --droid-autonomy agi`.
+ * `--provider droid --droid-permission-mode agi --arg provider=claude` is rejected
+ * exactly like `--provider claude --droid-permission-mode agi`.
  *
  * It takes a plain object, not an arg list, so the rules can be read — and
  * tested — without building a command line around them. Every value it sees has
@@ -320,8 +320,8 @@ export function assertMergedLaunchArgs(
   }
   // Droid autonomy, on the merged pair for the same reason: `--arg provider=…`
   // wins the merge, so checking the flag's provider would let
-  // `--provider droid --droid-autonomy agi --arg provider=claude` ship a Droid
-  // tier on a Claude launch. Every flag site folds its own `--droid-autonomy`
+  // `--provider droid --droid-permission-mode agi --arg provider=claude` ship a Droid
+  // tier on a Claude launch. Every flag site folds its own `--droid-permission-mode`
   // into `base`, so the merged bag is the whole channel.
   if (merged.droidPermissionMode !== undefined && provider && provider !== "droid") {
     throw new CliUsageError("Droid autonomy is only supported for Droid sessions.");

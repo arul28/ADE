@@ -322,7 +322,7 @@ edit cites current file:line.
 1. **Add `ade brain` subcommand** (`cli.ts` dispatch near `primary === "serve"`):
    - `ade brain start|stop|status` (wraps the service-managed runtime; reuse
      `runtime`/service-manager handlers).
-   - `ade brain pin set|generate|clear` (alias of `ade sync pin …`,
+   - `ade brain pin set|generate|clear` (formerly also `ade sync pin …`,
      `cli.ts:11892-11926`).
    - Optional `ade brain show` — print websocket connect details (port + address
      candidates + ComputerName) for phone pairing.
@@ -377,7 +377,7 @@ identity and keeping the copy machine-centric.
    - **Desktop:** the "Pair a phone" panel shows the **machine's brain + its
      websocket connect details** + a PIN editor (generate/set/clear),
      `SyncDevicesSection.tsx:613-660`. Reframe copy to brain/machine.
-   - **CLI:** `ade brain pin set|generate|clear` (alias of `ade sync pin …`).
+   - **CLI:** `ade brain pin set|generate|clear` (formerly also `ade sync pin …`; that spelling is gone).
 7. **Friendly "no PIN set" path:** when a machine has no PIN, the phone shows the
    "Set a PIN" screen with the exact command (`ade brain pin generate`) + the
    desktop Settings path, instead of a cryptic error. (Exists: `SettingsPinSetupSheet`

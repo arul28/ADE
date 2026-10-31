@@ -75,13 +75,13 @@ function runCommand(command: string, args: string[], timeoutMs: number): Promise
 }
 
 /** A command's output; fails only when it produced nothing and could not run (or timed out). */
-async function runText(command: string, args: string[], timeoutMs = 6_000): Promise<string> {
+export async function runText(command: string, args: string[], timeoutMs = 6_000): Promise<string> {
   const result = await runCommand(command, args, timeoutMs);
   if (result.error && !result.stdout) throw result.error;
   return result.stdout;
 }
 
-function windowsSystemTool(name: string): string {
+export function windowsSystemTool(name: string): string {
   // Never PATH's copy: a planted netstat.exe would run on every scan.
   return path.win32.join(process.env.SystemRoot || "C:\\Windows", "System32", name);
 }
@@ -93,7 +93,7 @@ function windowsSystemTool(name: string): string {
  * UTF-8. When the System32 path cannot sit unquoted on a command line, the
  * plain call is used and non-ASCII names may read wrong.
  */
-function runTasklistCsv(timeoutMs = 6_000): Promise<string> {
+export function runTasklistCsv(timeoutMs = 6_000): Promise<string> {
   const tasklist = windowsSystemTool("tasklist.exe");
   const chcp = windowsSystemTool("chcp.com");
   if (/[\s"&^%|<>()]/.test(tasklist + chcp)) return runText(tasklist, ["/FO", "CSV", "/NH"], timeoutMs);

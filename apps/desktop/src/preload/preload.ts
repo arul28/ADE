@@ -1,4 +1,6 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from "electron";
+import type { RemoteWorkCopyListing } from "../shared/types/remoteWork";
+import type { MachineStats } from "../shared/types/machineStats";
 import type { HostReachabilityReport } from "../shared/connectionDiagnosis";
 import type { NewLaneDefaults } from "../shared/laneStart";
 import { resolveUpdateTrackFromArgv, type UpdateTrack } from "../shared/updateTrack";
@@ -10797,6 +10799,22 @@ const adeBridge = {
     onEvent: subscribeBuiltInBrowserEvents,
     onRemoteRequest: subscribeBuiltInBrowserRemoteRequests,
     onRemoteCall: subscribeBuiltInBrowserRemoteCalls,
+  },
+  // Work copies on a machine for chats on other machines (Settings › Machines).
+  // Pinned to that machine's project; nothing runs without a runtime.
+  remoteWork: {
+    list: async (pin?: OpenProjectBinding | null): Promise<RemoteWorkCopyListing[]> =>
+      callPinnedOrBoundRuntimeActionOr<RemoteWorkCopyListing[]>(pin, "remote_work", "list", {}, async () => []),
+    delete: async (args: { owner: string; projectId?: string | null }, pin?: OpenProjectBinding | null): Promise<{ deleted: boolean }> =>
+      callPinnedOrBoundRuntimeActionOr<{ deleted: boolean }>(pin, "remote_work", "delete", { args }, async () => {
+        throw new Error("This window has no runtime to delete the work copy on.");
+      }),
+  },
+  // A machine's load and capabilities (Settings › Machines, "Least loaded"),
+  // read by that machine's brain through its pin. Null without a runtime.
+  machineStats: {
+    get: async (pin?: OpenProjectBinding | null): Promise<MachineStats | null> =>
+      callPinnedOrBoundRuntimeActionOr<MachineStats | null>(pin, "machine_stats", "get", {}, async () => null),
   },
   terminal: {
     list: async (

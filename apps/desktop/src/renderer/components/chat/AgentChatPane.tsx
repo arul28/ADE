@@ -315,6 +315,7 @@ import { navigateToSpawnedChat } from "./spawnNavigation";
 import { requestChatActionsPane, takeChatActionsPaneRequest } from "./chatActionsPaneRequests";
 import { AgentBrowserPresenceHeaderButton } from "../terminals/AgentBrowserPresenceBadge";
 import { SideChatHeaderButton } from "./SideChatBadge";
+import { RemoteWorkHeaderButton } from "./RemoteWorkMarks";
 import {
   noteSideChat,
   noteSideChatStartFailed,
@@ -391,6 +392,9 @@ import {
 } from "../lanes/CreateLaneDialogHost";
 import { peekNewLaneDefaultsCached, useNewLaneDefaults } from "../../lib/newLaneDefaultsCache";
 import { describeAutoCreateStart } from "../lanes/laneStartOptions";
+import { autoLaneMachine } from "../lanes/laneMachines";
+import { autoPickSummary } from "../lanes/machineLoadText";
+import { useMachinePlacement } from "../lanes/useMachinePlacement";
 import { chatLaunchLaneStart } from "../../../shared/chatLaunch";
 import { DEFAULT_LANE_START } from "../../../shared/laneStart";
 import {
@@ -7875,7 +7879,10 @@ export function AgentChatPane({
     if (devinCloudAuthConfigured !== null) return;
     refetchDevinCloudAuth();
   }, [devinCloudAuthConfigured, refetchDevinCloudAuth]);
+  // "Least loaded" reads machine stats only once the machine menu has opened.
+  const [draftMachinePickerOpened, setDraftMachinePickerOpened] = useState(false);
   const handleDraftMachinePickerOpen = useCallback(() => {
+    setDraftMachinePickerOpened(true);
     refetchCursorCloudRepos();
     if (laneGitRemoteStatus === "error") refetchLaneGitRemote();
     refetchDevinCloudAuth();
@@ -10622,6 +10629,7 @@ export function AgentChatPane({
         if (meta.subagentTakeoverPromptShownAt !== undefined) {
           summaryPatch.subagentTakeoverPromptShownAt = meta.subagentTakeoverPromptShownAt;
         }
+        if (meta.remoteWork !== undefined) summaryPatch.remoteWork = meta.remoteWork;
         if (Object.keys(summaryPatch).length > 0) {
           patchSessionSummary(envelope.sessionId, summaryPatch);
         }
@@ -10641,6 +10649,7 @@ export function AgentChatPane({
           && key !== "orchestrationParentSessionId"
           && key !== "subagentTakeoverPromptShownAt"
           && key !== "usageLimitResume"
+          && key !== "remoteWork"
         );
         if (
           modeChanged
@@ -16408,6 +16417,11 @@ export function AgentChatPane({
     parallelChatMode,
     selectedDraftMachineId,
   ]);
+  const placedDraftMachines = useMachinePlacement(laneMachineOptions, draftMachinePickerOpened && showDraftLaunchControls);
+  const draftAutoMachine = useMemo(() => {
+    const machine = autoLaneMachine(placedDraftMachines);
+    return machine ? { machineId: machine.id, summary: autoPickSummary(machine) } : null;
+  }, [placedDraftMachines]);
   const draftShelfMachineValue = cursorCloudMode
     ? CURSOR_CLOUD_MACHINE_ID
     : devinCloudMode
@@ -17407,6 +17421,7 @@ export function AgentChatPane({
         revealRequest={terminalRevealRequest}
         runtimePin={chatRuntimePin}
         runtimeScopeKey={workRuntimeScopeKey(chatRuntimePin, projectBinding)}
+        remoteWork={selectedSession?.remoteWork ?? null}
       />
     </Suspense>
   ) : null;
@@ -17655,6 +17670,9 @@ export function AgentChatPane({
     workSidebar.setTool,
     selectedSession?.sideChatParentSessionId,
     selectedSession?.sideChatSessionId,
+    selectedSession?.remoteWork,
+    selectedSession?.status,
+    selectedSession?.currentTurnStartedAt,
     laneId,
     hasAttachedTerminal,
     chatActionsAvailable,
@@ -17669,6 +17687,7 @@ export function AgentChatPane({
         chatSessionId={selectedSessionId}
         onClick={() => workSidebar.setTool("browser")}
       />
+      <RemoteWorkHeaderButton session={selectedSession} />
       <SideChatHeaderButton
         mainSessionId={selectedSession?.sideChatParentSessionId ? null : selectedSessionId}
         rowSideChatSessionId={selectedSession?.sideChatSessionId ?? null}
@@ -19448,6 +19467,7 @@ export function AgentChatPane({
                                 onChange={handleDraftShelfMachineChange}
                                 disabled={shellLaunchBusy}
                                 onOpen={handleDraftMachinePickerOpen}
+                                autoPick={draftAutoMachine}
                               />
                               <LaneCombobox
                                 lanes={draftShelfLanes}

@@ -685,6 +685,7 @@ import type {
   AgentChatPendingSettingAfterBackground,
   AgentChatReasoningEffortChange,
   AgentChatSessionSummary,
+  AgentChatRemoteWorkUse,
   AgentChatSetClaudeOutputStyleArgs,
   AgentChatCancelScheduledWorkArgs,
   AgentChatCancelScheduledWorkResult,
@@ -11821,6 +11822,11 @@ export function createAgentChatService(args: {
     handoffId: string;
     outcome: CrossMachineMoveOutcome;
   }) => void;
+  /**
+   * Content-free hook fired when this chat starts work on another machine (a
+   * command or a simulator there). Never the machine, the command, or the path.
+   */
+  onRemoteWorkStarted?: (event: { sessionId: string; machineKey: string }) => void;
   /** Content-free hook fired after an explicit session-metadata generation request. */
   onSessionMetadataRegenerated?: (event: {
     sessionId: string;
@@ -11938,6 +11944,7 @@ export function createAgentChatService(args: {
     onSideChatOutcome,
     onCompactionOutcome,
     onCrossMachineMoveOutcome,
+    onRemoteWorkStarted,
     onSessionMetadataRegenerated,
     onAutoResumeOutcome,
     onPendingInputDismissed,
@@ -13411,6 +13418,8 @@ export function createAgentChatService(args: {
   const listMcpAppGrants = async (args: McpAppGrantsArgs): Promise<McpAppGrantsResult> => mcpApps.grants(args);
   const revokeMcpAppGrant = async (args: McpAppRevokeGrantArgs): Promise<McpAppGrantsResult> => mcpApps.revokeGrant(args);
 
+  /** Other machines each chat ran commands on; live only. See `noteRemoteWork`. */
+  const remoteWorkBySession = new Map<string, AgentChatRemoteWorkUse[]>();
   /** Assigned once the handoff helpers below exist; hooks before that no-op. */
   let crossMachineHandoff: CrossMachineHandoffOrchestrator | null = null;
   let crossMachineHandoffSweepTimer: ReturnType<typeof setTimeout> | null = null;
@@ -66602,7 +66611,9 @@ export function createAgentChatService(args: {
     const summaryMcpServers = liveSession?.mcpServers ?? persisted?.mcpServers;
     const crossMachineMove = scope.crossMachineMove(row.id)?.record ?? null;
     const crossMachineBatchApproval = scope.crossMachineBatchApproval(row.id);
+    const remoteWork = remoteWorkBySession.get(row.id) ?? null;
     return {
+      ...(remoteWork?.length ? { remoteWork } : {}),
       sessionId: row.id,
       laneId: row.laneId,
       provider,
@@ -76143,6 +76154,58 @@ export function createAgentChatService(args: {
     return { provider, laneId, laneWorktreePath: cwd, parts, adeSkillRoots: skillRoots, mcpServers, providerHomeEnv };
   };
 
+  /**
+   * This chat started a shell on another machine (`ade shell start --machine`,
+   * recorded by this brain as it forwards the call). Open views get the whole
+   * list at once, so the header can show where the chat is working.
+   */
+  const noteRemoteWork = (args: {
+    sessionId: string;
+    machineKey: string;
+    machineName: string;
+    machinePlatform: string | null;
+    projectId: string | null;
+    projectRootPath: string | null;
+    terminalId: string | null;
+    workCopyLaneId: string | null;
+    usesSimulator: boolean;
+  }): void => {
+    const sessionId = args.sessionId.trim();
+    if (!sessionId || !args.machineKey.trim()) return;
+    const uses = remoteWorkBySession.get(sessionId) ?? [];
+    // One entry per machine AND project there: a second project on the same
+    // machine keeps its own shells and its own pin.
+    const sameUse = (use: AgentChatRemoteWorkUse) => use.machineKey === args.machineKey && use.projectId === args.projectId;
+    const previous = uses.find(sameUse);
+    const terminalIds = [
+      ...(previous?.terminalIds ?? []).filter((id) => id !== args.terminalId),
+      ...(args.terminalId ? [args.terminalId] : []),
+    // The shells the views read and stop there. The chat's own brain cannot
+    // see whether one still runs, so it keeps many, not a few.
+    ].slice(-20);
+    const next: AgentChatRemoteWorkUse = {
+      machineKey: args.machineKey,
+      machineName: args.machineName,
+      machinePlatform: args.machinePlatform ?? previous?.machinePlatform ?? null,
+      projectId: args.projectId ?? previous?.projectId ?? null,
+      projectRootPath: args.projectRootPath ?? previous?.projectRootPath ?? null,
+      terminalIds,
+      workCopyLaneId: args.workCopyLaneId ?? previous?.workCopyLaneId ?? null,
+      usesSimulator: args.usesSimulator === true || previous?.usesSimulator === true,
+      lastStartedAt: new Date().toISOString(),
+    };
+    // At most six. The oldest entry without a simulator goes first, so the iOS
+    // tool keeps a simulator the chat uses; the entry just recorded always stays.
+    const list = [...uses.filter((use) => !sameUse(use)), next];
+    while (list.length > 6) {
+      const withoutSimulator = list.slice(0, -1).findIndex((use) => !use.usesSimulator);
+      list.splice(withoutSimulator >= 0 ? withoutSimulator : 0, 1);
+    }
+    remoteWorkBySession.set(sessionId, list);
+    emitTransientChatEnvelope(sessionId, { type: "session_meta_updated", remoteWork: list });
+    onRemoteWorkStarted?.({ sessionId, machineKey: args.machineKey });
+  };
+
   return {
     createSession,
     previewNewChatAdeContext,
@@ -76463,6 +76526,7 @@ export function createAgentChatService(args: {
     deleteSession,
     archiveSession,
     unarchiveSession,
+    noteRemoteWork,
     disposeAll,
     forceDisposeAll,
     updateSession: updateSessionAndRememberDefaults,

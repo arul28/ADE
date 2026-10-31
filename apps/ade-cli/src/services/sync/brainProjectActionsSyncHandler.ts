@@ -413,7 +413,7 @@ export function createBrainProjectActionsSyncHandler(
     24,
     args.legacyBootstrapTokenPath,
   );
-  // Shared with the brain's RPC surface, so `ade sync pin generate` and the
+  // Shared with the brain's RPC surface, so `ade brain pin generate` and the
   // desktop's `ade.sync.setPin` mutate the SAME store this ingress path
   // verifies against — `createSyncPinStore` only shows a plaintext code the
   // instance itself set.

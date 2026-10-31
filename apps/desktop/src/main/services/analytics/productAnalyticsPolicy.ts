@@ -250,6 +250,10 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // cancelled, or unknown (the answer was lost). Never the machine, the reason,
   // the branch, or any capsule content.
   "cross_machine_move",
+  // A chat started work on another of the user's machines (a command or a
+  // simulator there), once per chat and machine an hour. Never the machine,
+  // the command, the path, or the output.
+  "remote_work",
   // How a context compaction ended (completed or failed), and whether it was
   // asked for (`mode: manual`) or not (`automatic`, which includes ADE's own
   // fallback). `compact_first` is the same fact for a compaction the user turned
