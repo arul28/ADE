@@ -3209,6 +3209,9 @@ struct WorkChatInfoDetailsSheet: View {
   /// Inside the Duo's tools pane: no navigation stack of its own (it would
   /// take over the chat's title and rail); the pane header names it.
   var embedded = false
+  /// Pinned below the sections and never scrolled away: the chat's account
+  /// row (desktop's drawer footer). Shown with the empty line too.
+  var accountFooter: AnyView? = nil
   @AppStorage private var paneUiRaw: String
   @AppStorage private var paneClearedRaw: String
   @State private var showAllSections: Set<String> = []
@@ -3246,8 +3249,10 @@ struct WorkChatInfoDetailsSheet: View {
     onStopTask: (@MainActor (String) async -> Void)? = nil,
     proof: [ComputerUseArtifactSummary] = [],
     onShowProof: (() -> Void)? = nil,
-    embedded: Bool = false
+    embedded: Bool = false,
+    accountFooter: AnyView? = nil
   ) {
+    self.accountFooter = accountFooter
     self.proof = sections.contains(.agents) ? proof : []
     self.onShowProof = onShowProof
     self.embedded = embedded
@@ -3495,7 +3500,7 @@ struct WorkChatInfoDetailsSheet: View {
             if let taskList {
               infoSection(first: true) {
                 VStack(alignment: .leading, spacing: 6) {
-                  plainHeader(title: "Tasks", tone: ADEColor.accent, hint: "\(taskList.completedCount)/\(taskList.items.count)")
+                  plainHeader(title: "Tasks", tone: ADEColor.warning, hint: "\(taskList.completedCount)/\(taskList.items.count)")
                   ForEach(visibleTaskItems) { item in
                     WorkChatTaskListItemRow(item: item)
                   }
@@ -3510,6 +3515,7 @@ struct WorkChatInfoDetailsSheet: View {
                 section(
                   title: "Subagents",
                   tone: ADEColor.accent,
+                  onlyEarlier: subagentPartition.active.isEmpty && !subagentPartition.earlier.isEmpty,
                   hint: sectionHint(
                     active: subagentPartition.active.count,
                     earlier: subagentPartition.earlier.count,
@@ -3531,7 +3537,8 @@ struct WorkChatInfoDetailsSheet: View {
               infoSection(first: taskList == nil && subagents.isEmpty) {
                 section(
                   title: "Background",
-                  tone: ADEColor.warning,
+                  tone: ADEColor.seriesTokenCache,
+                  onlyEarlier: backgroundPartition.active.isEmpty && !backgroundPartition.earlier.isEmpty,
                   hint: sectionHint(
                     active: backgroundPartition.active.count,
                     earlier: backgroundPartition.earlier.count,
@@ -3561,7 +3568,8 @@ struct WorkChatInfoDetailsSheet: View {
               infoSection(first: taskList == nil && subagents.isEmpty && backgroundItems.isEmpty) {
                 section(
                   title: "Schedule",
-                  tone: ADEColor.success,
+                  tone: ADEColor.info,
+                  onlyEarlier: schedulePartition.active.isEmpty && !schedulePartition.earlier.isEmpty,
                   hint: sectionHint(
                     active: schedulePartition.active.count,
                     earlier: schedulePartition.earlier.count,
@@ -3607,7 +3615,7 @@ struct WorkChatInfoDetailsSheet: View {
             if !sourceRefs.isEmpty || omittedSourceRefCount > 0 {
               infoSection(first: taskList == nil && subagents.isEmpty && backgroundItems.isEmpty && scheduleItems.isEmpty && proof.isEmpty) {
                 VStack(alignment: .leading, spacing: 6) {
-                  plainHeader(title: "Sources", tone: ADEColor.textMuted, hint: "\(sourceRefs.count + omittedSourceRefCount)")
+                  plainHeader(title: "Sources", tone: ADEColor.tintGraph, hint: "\(sourceRefs.count + omittedSourceRefCount)")
                   ForEach(Array(visibleSourceRefs), id: \.self) { source in
                     WorkChatSourceRowView(source: source, faviconDataURL: sourceFavicon(for: source))
                   }
@@ -3629,6 +3637,12 @@ struct WorkChatInfoDetailsSheet: View {
         .padding(.bottom, 16)
       }
       .scrollIndicators(.hidden)
+      .safeAreaInset(edge: .bottom, spacing: 0) {
+        if let accountFooter {
+          accountFooter
+            .background(workChatCanvasBackground.ignoresSafeArea(edges: .bottom))
+        }
+      }
       .background(workChatCanvasBackground.ignoresSafeArea())
       .task(id: visibleSourceHosts.joined(separator: "|")) {
         guard !visibleSourceHosts.isEmpty, let onResolveSourceFavicons else { return }
@@ -3649,7 +3663,7 @@ struct WorkChatInfoDetailsSheet: View {
   /// holds the rest.
   private var proofSection: some View {
     VStack(alignment: .leading, spacing: 6) {
-      plainHeader(title: "Proof", tone: ADEColor.purpleAccent, hint: "\(proof.count)")
+      plainHeader(title: "Proof", tone: ADEColor.success, hint: "\(proof.count)")
       let latest = proof.sorted { $0.createdAt > $1.createdAt }.prefix(3)
       ForEach(Array(latest), id: \.id) { artifact in
         let row = WorkProofRowModel(artifact: artifact)
@@ -3658,22 +3672,22 @@ struct WorkChatInfoDetailsSheet: View {
         } label: {
           HStack(spacing: 10) {
             Image(systemName: row.isVideo ? "video" : "photo")
-              .font(.system(size: 14, weight: .medium))
-              .foregroundStyle(ADEColor.purpleAccent)
-              .frame(width: 30, height: 30)
-              .background(ADEColor.purpleAccent.opacity(0.12), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+              .font(.system(size: 12, weight: .medium))
+              .foregroundStyle(ADEColor.success)
+              .frame(width: 26, height: 26)
+              .background(ADEColor.success.opacity(0.12), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
             VStack(alignment: .leading, spacing: 1) {
               Text(row.title)
-                .font(.subheadline)
+                .font(.footnote)
                 .foregroundStyle(ADEColor.textPrimary)
               Text(row.subtitle)
-                .font(.caption)
-                .foregroundStyle(ADEColor.textSecondary)
+                .font(.caption2)
+                .foregroundStyle(ADEColor.textMuted)
             }
             .lineLimit(1)
             Spacer(minLength: 0)
           }
-          .frame(minHeight: 40)
+          .frame(minHeight: 36)
           .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -3740,11 +3754,17 @@ struct WorkChatInfoDetailsSheet: View {
     visible: (visible: [Item], hiddenCount: Int),
     @ViewBuilder row: @escaping (Item, _ isEarlier: Bool) -> Row
   ) -> some View {
+    // Nothing live, only finished rows: the header line ("Subagents · 2
+    // done") is the toggle, so no second "Completed (n)" line (desktop's
+    // `onlyEarlier` fold).
+    let onlyEarlier = partition.active.isEmpty && !partition.earlier.isEmpty
     VStack(alignment: .leading, spacing: spacing) {
       if partition.active.isEmpty && partition.earlier.isEmpty && partition.clearedCount > 0 { allClearRow(title) }
       ForEach(visible.visible) { item in row(item, false) }
       showAllButton(section: sectionKey, hiddenCount: visible.hiddenCount)
-      earlierButton(section: sectionKey, count: partition.earlier.count, clearedCount: partition.clearedCount)
+      if !onlyEarlier {
+        earlierButton(section: sectionKey, count: partition.earlier.count, clearedCount: partition.clearedCount)
+      }
       if paneFlag("earlier", section: sectionKey) {
         ForEach(partition.earlier) { item in row(item, true) }
         restoreButton(section: sectionKey, count: partition.clearedCount)
@@ -3763,32 +3783,61 @@ struct WorkChatInfoDetailsSheet: View {
           .frame(height: 0.5)
       }
       content()
-        .padding(.vertical, 10)
+        .padding(.top, 6)
+        .padding(.bottom, 10)
     }
   }
 
-  /// Desktop's section label: small uppercase text after a tone dot, count on
-  /// the right.
+  /// Each section's icon, as desktop's `SECTION_ICON` draws it left of the label.
+  private func sectionSymbol(_ title: String) -> String {
+    switch title {
+    case "Tasks": return "checklist"
+    case "Subagents": return "point.3.filled.connected.trianglepath.dotted"
+    case "Background": return "terminal"
+    case "Schedule": return "clock"
+    case "Proof": return "photo.on.rectangle"
+    case "Sources": return "link"
+    default: return "circle.dashed"
+    }
+  }
+
+  /// Desktop's section label: small uppercase text after the section's icon in
+  /// its tone, count on the right.
   private func headerLabel(title: String, tone: Color) -> some View {
     HStack(spacing: 6) {
-      Circle().fill(tone).frame(width: 5, height: 5)
+      Image(systemName: sectionSymbol(title))
+        .font(.system(size: 10, weight: .semibold))
+        .foregroundStyle(tone.opacity(0.85))
+        .frame(width: 14)
       Text(title)
-        .font(.caption2.weight(.semibold))
+        .font(.caption2.weight(.medium))
         .tracking(0.6)
         .textCase(.uppercase)
+        .foregroundStyle(ADEColor.textMuted)
     }
-    .foregroundStyle(ADEColor.textMuted)
+  }
+
+  private func headerHint(_ hint: String) -> some View {
+    Text(hint)
+      .font(.caption2.monospacedDigit())
+      .foregroundStyle(ADEColor.textMuted)
+      .lineLimit(1)
+  }
+
+  /// Holds the chevron's column on a header that does not fold, so every
+  /// section's icon lines up.
+  private var chevronGutter: some View {
+    Color.clear.frame(width: 9, height: 1)
   }
 
   private func plainHeader(title: String, tone: Color, hint: String) -> some View {
-    HStack {
+    HStack(spacing: 5) {
+      chevronGutter
       headerLabel(title: title, tone: tone)
       Spacer(minLength: 0)
-      Text(hint)
-        .font(.caption2.weight(.semibold).monospacedDigit())
-        .foregroundStyle(ADEColor.textMuted)
+      headerHint(hint)
     }
-    .frame(minHeight: 32)
+    .frame(minHeight: 30)
   }
 
   private func quietButton(_ title: String, action: @escaping () -> Void) -> some View {
@@ -3802,6 +3851,7 @@ struct WorkChatInfoDetailsSheet: View {
   private func section<Content: View>(
     title: String,
     tone: Color,
+    onlyEarlier: Bool = false,
     hint: String,
     key: String,
     collapsible: Bool,
@@ -3811,42 +3861,50 @@ struct WorkChatInfoDetailsSheet: View {
     headerAccessory: AnyView? = nil,
     @ViewBuilder content: () -> Content
   ) -> some View {
-    let collapsed = collapsible && paneFlag("collapsed", section: key)
-    VStack(alignment: .leading, spacing: 4) {
+    // An idle section folds to its header line, which opens the finished list.
+    let earlierOpen = paneFlag("earlier", section: key)
+    let foldable = onlyEarlier || collapsible
+    let collapsed = onlyEarlier ? !earlierOpen : collapsible && paneFlag("collapsed", section: key)
+    let shownHint = allClear ? "all clear" : onlyEarlier ? "\(clearIds.count) done" : hint
+    VStack(alignment: .leading, spacing: 2) {
       HStack(spacing: 8) {
-        if collapsible {
+        if foldable {
           Button {
-            withPaneAnimation { setPaneFlag("collapsed", section: key, value: !collapsed) }
+            withPaneAnimation {
+              if onlyEarlier {
+                setPaneFlag("earlier", section: key, value: !earlierOpen)
+              } else {
+                setPaneFlag("collapsed", section: key, value: !collapsed)
+              }
+            }
           } label: {
-            HStack(spacing: 6) {
+            HStack(spacing: 5) {
               Image(systemName: collapsed ? "chevron.right" : "chevron.down")
-                .font(.system(size: 9, weight: .bold))
-                .foregroundStyle(ADEColor.textMuted)
+                .font(.system(size: 8, weight: .bold))
+                .foregroundStyle(ADEColor.textMuted.opacity(0.7))
+                .frame(width: 9)
               headerLabel(title: title, tone: tone)
               Spacer(minLength: 0)
-              Text(hint)
-                .font(.caption2.weight(.semibold).monospacedDigit())
-                .foregroundStyle(ADEColor.textMuted)
+              headerHint(shownHint)
             }
             .contentShape(.rect)
           }
           .buttonStyle(.plain)
           .frame(maxWidth: .infinity, minHeight: 36)
+          .accessibilityLabel("\(title), \(shownHint)")
+          .accessibilityHint(collapsed ? "Shows the rows" : "Hides the rows")
         } else {
-          headerLabel(title: title, tone: tone)
+          HStack(spacing: 5) {
+            chevronGutter
+            headerLabel(title: title, tone: tone)
+          }
           Spacer(minLength: 0)
-          Text(allClear ? "all clear" : hint)
-            .font(.caption2.weight(.semibold).monospacedDigit())
-            .foregroundStyle(ADEColor.textMuted)
+          headerHint(shownHint)
         }
-        if allClear {
-          Button("Restore (\(clearedCount))") { restore(key) }
-            .font(.caption)
-            .foregroundStyle(ADEColor.textMuted)
-        } else if !clearIds.isEmpty && paneFlag("earlier", section: key) {
-          Button("Clear") { clear(key, ids: clearIds) }
-            .font(.caption)
-            .foregroundStyle(ADEColor.textMuted)
+        if allClear || (onlyEarlier && !earlierOpen && clearedCount > 0) {
+          headerAction("Restore (\(clearedCount))") { restore(key) }
+        } else if !clearIds.isEmpty && earlierOpen {
+          headerAction("Clear") { clear(key, ids: clearIds) }
         }
         if let headerAccessory {
           headerAccessory
@@ -3855,6 +3913,17 @@ struct WorkChatInfoDetailsSheet: View {
       .frame(minHeight: 36)
       if !collapsed { content() }
     }
+  }
+
+  /// Desktop's `PaneTextAction`: a quiet word beside the header.
+  private func headerAction(_ title: String, action: @escaping () -> Void) -> some View {
+    Button(title, action: action)
+      .buttonStyle(.plain)
+      .font(.caption2.weight(.medium))
+      .foregroundStyle(ADEColor.textSecondary)
+      .padding(.horizontal, 8)
+      .frame(minHeight: 36)
+      .contentShape(.rect)
   }
 
   @ViewBuilder
@@ -3874,15 +3943,19 @@ struct WorkChatInfoDetailsSheet: View {
       Button {
         withPaneAnimation { setPaneFlag("earlier", section: section, value: !expanded) }
       } label: {
-        Label(
-          "Completed (\(count))\(clearedCount > 0 ? " · \(clearedCount) hidden" : "")",
-          systemImage: expanded ? "chevron.down" : "chevron.right"
-        )
+        HStack(spacing: 5) {
+          Image(systemName: expanded ? "chevron.down" : "chevron.right")
+            .font(.system(size: 8, weight: .bold))
+            .frame(width: 9)
+          Text("Completed (\(count))\(clearedCount > 0 ? " · \(clearedCount) hidden" : "")")
+          Spacer(minLength: 0)
+        }
+        .contentShape(.rect)
       }
       .buttonStyle(.plain)
-      .font(.caption)
+      .font(.caption2)
       .foregroundStyle(ADEColor.textMuted)
-      .frame(maxWidth: .infinity, minHeight: 36, alignment: .leading)
+      .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
     }
   }
 
@@ -3994,8 +4067,8 @@ private struct WorkChatInfoSubagentRow: View {
           HStack(spacing: 10) {
             if !treePrefix.isEmpty {
               Text(treePrefix)
-                .font(.caption.monospaced())
-                .foregroundStyle(ADEColor.textMuted)
+                .font(.caption2.monospaced())
+                .foregroundStyle(ADEColor.textMuted.opacity(0.6))
             }
             WorkSubagentGlyph(id: snapshot.agentId ?? snapshot.taskId, status: snapshot.status)
             if let provider = trimmedNonEmpty(snapshot.provider) {
@@ -4004,7 +4077,7 @@ private struct WorkChatInfoSubagentRow: View {
             }
             VStack(alignment: .leading, spacing: 2) {
               Text(workSubagentMeaningfulName(snapshot))
-                .font(.subheadline.weight(.semibold))
+                .font(.footnote.weight(.medium))
                 .foregroundStyle(titleColor)
                 .lineLimit(1)
                 .truncationMode(.tail)
@@ -4018,9 +4091,14 @@ private struct WorkChatInfoSubagentRow: View {
             Spacer(minLength: 0)
             HStack(spacing: 6) {
               if snapshot.background {
-                Text("bg")
-                  .font(.caption2.weight(.medium))
-                  .foregroundStyle(ADEColor.textMuted)
+                Text("BG")
+                  .font(.system(size: 9, weight: .semibold))
+                  .tracking(0.4)
+                  .foregroundStyle(ADEColor.seriesTokenCache)
+                  .padding(.horizontal, 4)
+                  .padding(.vertical, 1.5)
+                  .background(ADEColor.seriesTokenCache.opacity(0.12), in: RoundedRectangle(cornerRadius: 3, style: .continuous))
+                  .accessibilityLabel("background")
               }
               if snapshot.spawnKind == .peer {
                 Text("peer")
@@ -4049,7 +4127,7 @@ private struct WorkChatInfoSubagentRow: View {
             .padding(.leading, 34)
           }
         }
-        .padding(.vertical, 7)
+        .padding(.vertical, 5)
         .contentShape(.rect)
       }
       .buttonStyle(.plain)
@@ -4123,7 +4201,8 @@ private struct WorkChatInfoSubagentRow: View {
     switch snapshot.status {
     case .running: return ADEColor.accent
     case .failed: return ADEColor.danger
-    case .succeeded: return ADEColor.textPrimary
+    // Finished rows step back, as desktop's do.
+    case .succeeded: return ADEColor.textSecondary
     case .stopped: return ADEColor.textMuted
     }
   }
@@ -4180,7 +4259,7 @@ private struct WorkBackgroundWorkRow: View {
             .font(.caption.monospaced().weight(.bold))
             .foregroundStyle(ADEColor.textMuted)
           Text(workRedactCommandLine(presentation.label.isEmpty ? item.title : presentation.label))
-            .font(.caption.monospaced())
+            .font(.system(size: 11.5, design: .monospaced))
             .foregroundStyle(ADEColor.textPrimary)
             .lineLimit(expanded ? nil : 1)
             .truncationMode(.middle)
@@ -4260,13 +4339,13 @@ private struct WorkScheduledWorkRow: View {
     VStack(alignment: .leading, spacing: 8) {
       HStack(alignment: .top, spacing: 10) {
         Image(systemName: workScheduledWorkStatusSymbol(status))
-          .font(.system(size: 13, weight: .semibold))
+          .font(.system(size: 11, weight: .semibold))
           .foregroundStyle(tint)
-          .frame(width: 24, height: 24)
+          .frame(width: 20, height: 20)
           .background(tint.opacity(0.12), in: Circle())
-        VStack(alignment: .leading, spacing: 3) {
+        VStack(alignment: .leading, spacing: 2) {
           Text(item.title)
-            .font(.subheadline.weight(.semibold))
+            .font(.footnote.weight(.medium))
             .foregroundStyle(ADEColor.textPrimary)
             .lineLimit(2)
           if !metadata.isEmpty {

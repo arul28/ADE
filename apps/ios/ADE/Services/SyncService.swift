@@ -16543,6 +16543,25 @@ final class SyncService: ObservableObject {
     )
   }
 
+  /// `chat.switchAccount` — move the chat to another signed-in Claude/Codex
+  /// account on its own machine: same chat, same thread, next turn on the other
+  /// login. Owner-only on the host. A refusal comes back as `ok: false` with the
+  /// host's sentence, not as a thrown error.
+  func switchChatAccount(sessionId: String, instanceId: String) async throws -> AgentChatSwitchAccountResult {
+    let action = chatActionName("chat.switchAccount", sessionId: sessionId)
+    if remoteChatConnection(for: sessionId) == nil {
+      try requireInvokableRemoteAction(action)
+    }
+    let scope = chatCommandScope(for: sessionId)
+    return try await sendDecodableChatCommand(
+      action: action,
+      payload: ["sessionId": sessionId, "instanceId": instanceId],
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath,
+      as: AgentChatSwitchAccountResult.self
+    )
+  }
+
   func archiveChatSession(sessionId: String) async throws {
     let scope = chatCommandScope(for: sessionId)
     _ = try await sendChatCommand(

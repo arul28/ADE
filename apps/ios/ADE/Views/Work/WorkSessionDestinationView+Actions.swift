@@ -415,6 +415,25 @@ extension WorkSessionDestinationView {
     }
   }
 
+  /// Move this chat to another signed-in account on its machine. Returns the
+  /// sentence the account row shows when the chat did not move.
+  @MainActor
+  func switchChatAccount(to instanceId: String) async -> String? {
+    do {
+      let result = try await syncService.switchChatAccount(sessionId: sessionId, instanceId: instanceId)
+      await refreshChatStateAfterAction(forceRemote: true)
+      if let refusal = result.refusalMessage {
+        ADEHaptics.error()
+        return refusal
+      }
+      ADEHaptics.success()
+      return nil
+    } catch {
+      ADEHaptics.error()
+      return error.localizedDescription
+    }
+  }
+
   @MainActor
   func stopChatTask(taskId: String) async {
     do {
