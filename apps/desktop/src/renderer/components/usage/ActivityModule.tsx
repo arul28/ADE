@@ -135,7 +135,9 @@ function skylineDays(daily: readonly AdeUsageDailyPoint[]): ContributionDay[] {
       prs > 0 ? `${prs} ${prs === 1 ? "PR" : "PRs"}` : null,
       point.totalTokens > 0 ? `${formatCompact(point.totalTokens)} tokens` : null,
     ].filter(Boolean);
-    return { date: point.date, count: point.sessions + commits + prs, detail: parts.length > 0 ? parts.join(" · ") : undefined };
+    // A day with only token usage (no chat row) still stands as a tower.
+    const count = Math.max(point.sessions + commits + prs, point.totalTokens > 0 ? 1 : 0);
+    return { date: point.date, count, detail: parts.length > 0 ? parts.join(" · ") : undefined };
   });
 }
 
@@ -300,6 +302,9 @@ function DayTooltip({
  */
 const MIN_BAR_SLOTS = 14;
 
+/** Days drawn only to fill a short timeline: they carry no data, so no tooltip. */
+const PADDING_DAYS = new WeakSet<AdeUsageDailyPoint>();
+
 /** An empty day, `daysBefore` days before `date` (YYYY-MM-DD). */
 function emptyDayBefore(date: string, daysBefore: number): AdeUsageDailyPoint {
   return {
@@ -323,7 +328,9 @@ function useChartPoints(points: AdeUsageDailyPoint[], maxBars: number): AdeUsage
     const first = source[0];
     if (first && source.length < MIN_BAR_SLOTS) {
       const missing = MIN_BAR_SLOTS - source.length;
-      return [...Array.from({ length: missing }, (_, i) => emptyDayBefore(first.date, missing - i)), ...source];
+      const padding = Array.from({ length: missing }, (_, i) => emptyDayBefore(first.date, missing - i));
+      for (const day of padding) PADDING_DAYS.add(day);
+      return [...padding, ...source];
     }
     if (source.length <= maxBars) return source;
     const size = Math.ceil(source.length / maxBars);
@@ -423,6 +430,16 @@ function codeLegendItems(points: AdeUsageDailyPoint[], palette: Record<SeriesKey
   ];
 }
 
+/** Hover and click open the day's tooltip; a padding day has none. */
+function dayTooltipHandlers(point: AdeUsageDailyPoint, tooltip: ReturnType<typeof useDayTooltip>) {
+  if (PADDING_DAYS.has(point)) return {};
+  return {
+    onPointerEnter: (event: React.PointerEvent<HTMLElement>) => tooltip.show(point, event.currentTarget),
+    onPointerLeave: tooltip.hide,
+    onClick: (event: React.MouseEvent<HTMLElement>) => tooltip.toggle(point, event.currentTarget),
+  };
+}
+
 function TokenBars({
   points,
   height,
@@ -462,9 +479,7 @@ function TokenBars({
                 background: total > 0 ? undefined : EMPTY_TILE_BG,
                 transition: reduced ? undefined : "height 160ms ease",
               }}
-              onPointerEnter={(event) => tooltip.show(point, event.currentTarget)}
-              onPointerLeave={tooltip.hide}
-              onClick={(event) => tooltip.toggle(point, event.currentTarget)}
+              {...dayTooltipHandlers(point, tooltip)}
             >
               <span style={{ height: seg(point.inputTokens), background: palette.input }} />
               <span style={{ height: seg(point.outputTokens), background: palette.output }} />
@@ -517,9 +532,7 @@ function CodeBars({
             <div
               key={point.date}
               className="relative flex min-w-[3px] flex-1 items-end"
-              onPointerEnter={(event) => tooltip.show(point, event.currentTarget)}
-              onPointerLeave={tooltip.hide}
-              onClick={(event) => tooltip.toggle(point, event.currentTarget)}
+              {...dayTooltipHandlers(point, tooltip)}
             >
               {githubHeight > 0 ? (
                 <span

@@ -138,6 +138,8 @@ private struct WorkUsageVisualBucket: Identifiable {
   /// Legacy hosts send only per-day totalTokens; this carries the portion not
   /// covered by the input/output/cache split so total-only days still render.
   var unsplitTokens: Int
+  /// Only days before the range, drawn to fill the timeline: no data, no tap.
+  var isPadding = false
 
   var tokens: Int { inputTokens + outputTokens + cachedTokens + unsplitTokens }
   var code: Int { insertions + deletions }
@@ -183,8 +185,9 @@ private func workUsagePaddedDays(_ ordered: [MobileAdeUsageDailyPoint], minimum:
 }
 
 private func workUsageBuckets(_ points: [MobileAdeUsageDailyPoint], maxCount: Int) -> [WorkUsageVisualBucket] {
-  let ordered = workUsagePaddedDays(points.sorted { $0.date < $1.date }, minimum: workUsageMinBarSlots)
-  guard !ordered.isEmpty else { return [] }
+  let sorted = points.sorted { $0.date < $1.date }
+  let ordered = workUsagePaddedDays(sorted, minimum: workUsageMinBarSlots)
+  guard let firstReal = sorted.first?.date else { return [] }
   let chunkSize = max(1, Int(ceil(Double(ordered.count) / Double(maxCount))))
   return stride(from: 0, to: ordered.count, by: chunkSize).map { start in
     let chunk = ordered[start..<min(start + chunkSize, ordered.count)]
@@ -208,7 +211,8 @@ private func workUsageBuckets(_ points: [MobileAdeUsageDailyPoint], maxCount: In
       unsplitTokens: chunk.reduce(0) { sum, point in
         let split = (point.inputTokens ?? 0) + (point.outputTokens ?? 0) + (point.cachedTokens ?? 0)
         return sum + max(0, (point.totalTokens ?? 0) - split)
-      }
+      },
+      isPadding: (chunk.last?.date ?? "") < firstReal
     )
   }
 }
@@ -658,7 +662,7 @@ private struct WorkUsageBars: View {
     .frame(maxWidth: .infinity)
     .frame(height: max(barHeight, githubHeight), alignment: .bottom)
     .contentShape(Rectangle())
-    .onTapGesture { onSelect(detail(bucket)) }
+    .onTapGesture { if !bucket.isPadding { onSelect(detail(bucket)) } }
     .animation(reduceMotion ? nil : .snappy(duration: 0.4).delay(Double(min(index, 24)) * 0.008), value: total)
   }
 

@@ -62,7 +62,8 @@ func workUsageSkylineDay(_ point: MobileAdeUsageDailyPoint) -> WorkUsageSkylineD
   if tokens > 0 { parts.append("\(adeUsageCompact(tokens)) tokens") }
   return WorkUsageSkylineDay(
     date: point.date,
-    count: sessions + commits + prs,
+    // A day with only token usage (no chat row) still stands as a tower.
+    count: max(sessions + commits + prs, tokens > 0 ? 1 : 0),
     detail: parts.isEmpty ? nil : parts.joined(separator: " · ")
   )
 }

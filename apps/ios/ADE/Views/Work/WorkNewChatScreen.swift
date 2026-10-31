@@ -2356,17 +2356,27 @@ enum WorkNewChatPreviewFixtures {
         "filesChanged": quiet ? 0 : 2 + seed % 12,
       ])
     }
-    let payload: [String: Any] = [
-      "generatedAt": iso(Date()),
-      "summary": [
+    let activeDaily = daily.filter { ($0["totalTokens"] as? Int ?? 0) > 0 }
+    let summary: [String: Any] = sparse
+      ? [
+        "totalTokens": activeDaily.reduce(0) { $0 + ($1["totalTokens"] as? Int ?? 0) },
+        "chatSessions": activeDaily.reduce(0) { $0 + ($1["sessions"] as? Int ?? 0) },
+        "terminalSessions": 0,
+        "activeDays": activeDaily.count,
+        "totalInteractions": activeDaily.reduce(0) { $0 + ($1["interactions"] as? Int ?? 0) },
+      ]
+      : [
         "totalTokens": 48_200_000,
         "chatSessions": 212,
         "terminalSessions": 41,
         "activeDays": 57,
         "totalInteractions": 1_930,
-      ],
+      ]
+    let payload: [String: Any] = [
+      "generatedAt": iso(Date()),
+      "summary": summary,
       "clients": sparse
-        ? [["client": "desktop", "interactions": 46, "activeDays": fixtureDays, "sessions": 5]]
+        ? [["client": "desktop", "interactions": 46, "activeDays": activeDaily.count, "sessions": 5]]
         : [
           ["client": "desktop", "interactions": 1_240, "activeDays": 55, "sessions": 180],
           ["client": "mobile", "interactions": 410, "activeDays": 31, "sessions": 52],

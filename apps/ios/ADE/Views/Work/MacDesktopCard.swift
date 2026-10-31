@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 import UIKit
 
@@ -35,7 +36,10 @@ struct MacDesktopCard: View {
       .onAppear { updateLiveLifecycle() }
       .onDisappear { stopLiveSession() }
       .onChange(of: scenePhase) { _, _ in updateLiveLifecycle() }
-      .onChange(of: syncService.connectionState) { _, _ in updateLiveLifecycle() }
+      // Every transition, from the service itself: through the menu-safe
+      // publisher a drop and reconnect under an open menu could coalesce
+      // into no change, and the stream would not restart.
+      .onReceive(syncService.$connectionState.removeDuplicates().receive(on: DispatchQueue.main)) { _ in updateLiveLifecycle() }
       .onChange(of: isLiveCapable) { _, _ in updateLiveLifecycle() }
       .onChange(of: macDesktopViewerPresented) { _, _ in updateLiveLifecycle() }
       .onChange(of: refreshTick) { _, _ in

@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 import UIKit
 
@@ -148,7 +149,10 @@ struct MacDesktopViewer: View {
     }
     .onChange(of: controlling) { _, next in controlOrientationChanged(next) }
     .onChange(of: scenePhase) { _, _ in updateLifecycle() }
-    .onChange(of: syncService.connectionState) { _, _ in updateLifecycle() }
+    // Every transition, from the service itself: through the menu-safe
+    // publisher a drop and reconnect under an open menu could coalesce
+    // into no change, and the stream would not restart.
+    .onReceive(syncService.$connectionState.removeDuplicates().receive(on: DispatchQueue.main)) { _ in updateLifecycle() }
     .onChange(of: isLiveCapable) { _, _ in updateLifecycle() }
   }
 

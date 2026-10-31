@@ -1210,8 +1210,9 @@ iPhone are `compact` and use the same views stacked, never an older design.
   per change.
 - **Fixtures.** `-adePreviewScreen duo-*` opens a fixture screen on any
   simulator (`DuoPreviews.swift`, `DuoSplitPreviews.swift`).
-- **Hinge angle.** `DuoHingeObserver` moves `\.duoLayout.hingeAngle` only
-  once the hinge has turned 5° (flat snaps to 180). The sensor reports every
+- **Hinge angle.** `DuoHingeObserver` keeps `\.duoLayout.hingeAngle` on a 5°
+  grid (flat is 180), with hysteresis so a hinge held on a boundary does not
+  flip between two steps. The sensor reports every
   fraction of a degree and an open phone in the hand never holds still; each
   raw value re-rendered the whole app, which made the unfolded Duo laggy.
 

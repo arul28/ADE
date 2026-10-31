@@ -200,9 +200,11 @@ private struct DuoHingeObserver: ViewModifier {
           if angle != nil { angle = nil }
           return
         }
-        // Flat snaps to 180 at once, so `bend` is exactly 0 there.
-        let next = raw >= 180 - Self.angleStep / 2 ? 180 : raw
-        if let angle, angle == next || (next != 180 && abs(next - angle) < Self.angleStep) { return }
+        // On a `angleStep` grid, flat (180) included, so leaving flat moves
+        // the angle as soon as the hinge passes the first step. Hysteresis
+        // keeps a hinge held on a step's boundary from flipping between two.
+        let next = (raw / Self.angleStep).rounded() * Self.angleStep
+        if let angle, angle == next || abs(raw - angle) < Self.angleStep * 0.6 { return }
         angle = next
       }
     } else {
