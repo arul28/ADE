@@ -674,6 +674,9 @@ apps/ios/
 │   │   │                            # WorkUsageActivityCarousel (Limits/Activity
 │   │   │                            #   tab switch over host quota limits +
 │   │   │                            #   cross-client activity charts),
+│   │   │                            # WorkUsageSkyline (the Activity tab: the
+│   │   │                            #   desktop 3D contribution skyline, one
+│   │   │                            #   cached Canvas, one-shot rise),
 │   │   │                            # WorkUsageLimitsModule (the Limits tab:
 │   │   │                            #   per-provider headroom cards, one
 │   │   │                            #   segment per account, account detail
@@ -4244,6 +4247,13 @@ otherwise be 300 view identities SwiftUI diffs on every state change, including
 the pace-bar touch that dims the other series. Touching a pace bar keeps that
 provider lit and fades the rest so one provider's days stand out in a busy
 chart.
+
+The new-chat card's Activity tab is the desktop skyline (`WorkUsageSkyline`).
+Its street starts a week before the first active day, so a short history is a
+compact block, not a few towers at the end of an empty year. With little data
+the Tokens and Code bars still draw two weeks of day slots (empty days are a
+faint track), and one client gets a caption naming its actions and days; the
+desktop card (`ActivityModule.tsx`) does the same.
 
 `ADEUsageDesign.swift` is the iOS counterpart of the desktop `usageDesign.ts`:
 the same five type steps, the same section and card rhythm, the same pressure
