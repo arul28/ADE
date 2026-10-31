@@ -213,7 +213,8 @@ function defaultFreeBytes(dir: string, logger?: RemoteWorkLogger): number | null
 }
 
 /** Which projects on this machine hold work copies, so one read finds them all. */
-type MachineIndex = { version: 1; projects: Array<{ projectRoot: string }> };
+/** `rebuilt`: read back from ADE's project list because the file was damaged; never written. */
+type MachineIndex = { version: 1; projects: Array<{ projectRoot: string }>; rebuilt?: true };
 
 function defaultAdeHome(): string {
   const fromEnv = process.env.ADE_HOME?.trim();
@@ -238,7 +239,7 @@ function readMachineIndex(adeHome: string, logger?: RemoteWorkLogger): MachineIn
     // Damaged: rebuild it from ADE's project list, so the next write keeps
     // every project that holds copies, not just the one writing.
     logger?.warn("remote_work.index_unreadable", { error: error instanceof Error ? error.message : String(error) });
-    return { version: 1, projects: projectsWithCopies(adeHome, logger) };
+    return { version: 1, projects: projectsWithCopies(adeHome, logger), rebuilt: true };
   }
 }
 
@@ -259,7 +260,8 @@ function projectsWithCopies(adeHome: string, logger?: RemoteWorkLogger): Machine
 function writeMachineIndexEntry(adeHome: string, projectRoot: string, present: boolean, logger?: RemoteWorkLogger): void {
   const index = readMachineIndex(adeHome, logger);
   const listed = index.projects.some((entry) => pathsEqual(entry.projectRoot, projectRoot));
-  if (listed === present) return;
+  // A rebuilt index is written even when this project's entry is right: the file is still damaged.
+  if (listed === present && !index.rebuilt) return;
   const next = present
     ? [...index.projects, { projectRoot: path.resolve(projectRoot) }]
     : index.projects.filter((entry) => !pathsEqual(entry.projectRoot, projectRoot));
