@@ -2623,6 +2623,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
 
   const readBrainMetadata = (): SyncPeerMetadata => {
     const localDevice = args.deviceRegistryService?.ensureLocalDevice();
+    const brainVersion = args.runtimeVersion?.trim();
     return {
       deviceId: localDevice?.deviceId ?? args.db.sync.getSiteId(),
       deviceName: localDevice?.name ?? os.hostname(),
@@ -2630,6 +2631,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       deviceType: localDevice?.deviceType ?? "desktop",
       siteId: localDevice?.siteId ?? args.db.sync.getSiteId(),
       dbVersion: args.db.sync.getDbVersion(),
+      // The brain's own ADE version. A phone reads its update track from it
+      // (the "Beta" chip). Additive: older phones ignore it.
+      ...(brainVersion ? { appVersion: brainVersion } : {}),
     };
   };
 

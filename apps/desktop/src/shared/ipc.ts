@@ -1286,6 +1286,17 @@ export const IPC = {
   // About the ADE.app on THIS computer only, so these take no remote pin.
   appBundleOwnershipGetStatus: "ade.appBundleOwnership.getStatus",
   appBundleOwnershipFix: "ade.appBundleOwnership.fix",
+  // The "ADE could not start" window and the database copies on THIS
+  // computer. Local disk and this app's own installer, so no remote pin.
+  startupRecoveryGetState: "ade.startupRecovery.getState",
+  startupRecoveryAction: "ade.startupRecovery.action",
+  /** Main → recovery window: the state changed (a go-back's progress). */
+  startupRecoveryState: "ade.startupRecovery.state",
+  /** Recovery window → main: the height its content needs. */
+  startupRecoveryFit: "ade.startupRecovery.fit",
+  databaseCopiesList: "ade.databaseCopies.list",
+  databaseCopiesReveal: "ade.databaseCopies.reveal",
+  databaseCopiesDelete: "ade.databaseCopies.delete",
   transcriptionTranscribe: "ade.transcription.transcribe",
   transcriptionStatus: "ade.transcription.status",
   transcriptionRequestMicAccess: "ade.transcription.requestMicAccess",

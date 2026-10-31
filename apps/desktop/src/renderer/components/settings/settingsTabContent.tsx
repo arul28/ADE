@@ -2,6 +2,7 @@ import React, { useCallback } from "react";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import {
   CaretLeft,
+  Database,
   Gauge,
   GithubLogo,
   ShieldCheck,
@@ -35,6 +36,7 @@ import { BrowserAgentAccessSection } from "./BrowserAgentAccessSection";
 import { BrowserAutoGrantSection, BrowserSettingsSection } from "./BrowserSettingsSection";
 import { DiagnosticsSharingSection } from "./DiagnosticsSharingSection";
 import { ResetAdeSection } from "./ResetAdeSection";
+import { DatabaseCopiesSection } from "./DatabaseCopiesSection";
 import { ProvidersSection } from "./ProvidersSection";
 import { ProviderAccountsPanel } from "./providers/accounts/ProviderAccountsPanel";
 import { SettingsManagerPage } from "./primitives/SettingsManagerPage";
@@ -314,6 +316,12 @@ const TAB_GROUPS = {
     icon: <ShieldCheck size={15} weight="duotone" />,
     tone: "teal",
   },
+  data: {
+    title: "Your data",
+    description: "The copies ADE keeps before an update changes your databases.",
+    icon: <Database size={15} weight="duotone" />,
+    tone: "amber",
+  },
   danger: {
     title: "Danger zone",
     description: "Can't be undone. Read what it removes before you go on.",
@@ -402,6 +410,14 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
       machine: "local",
       title: "Send a report to ADE",
       group: "privacy",
+    },
+    // Files beside this computer's databases: plain IPC, no pin, so `local`.
+    {
+      entryIds: ["advanced.database-copies"],
+      render: () => <DatabaseCopiesSection />,
+      machine: "local",
+      title: "Database copies",
+      group: "data",
     },
     // Last on purpose: the hard reset is its own section at the very bottom,
     // never a routine control.

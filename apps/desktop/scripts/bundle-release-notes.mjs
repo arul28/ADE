@@ -21,25 +21,34 @@ const pkg = JSON.parse(await readFile(path.join(appDir, "package.json"), "utf8")
 // ADE_RELEASE_NOTES_VERSION previews another version's notes in a dev build.
 const version = (process.env.ADE_RELEASE_NOTES_VERSION || (typeof pkg.version === "string" ? pkg.version : "")).trim().replace(/^v/i, "");
 
+/** `1.2.127` or `1.2.128-beta.3`: the numbers and the beta number (null for a stable version). */
 function parseVersion(value) {
-  const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(value);
-  return match ? match.slice(1, 4).map(Number) : null;
+  const match = /^(\d+)\.(\d+)\.(\d+)(?:-beta\.(\d+))?$/.exec(value);
+  return match ? [...match.slice(1, 4).map(Number), match[4] === undefined ? null : Number(match[4])] : null;
 }
 
+/** A beta comes before the stable release of its numbers. */
 function compareVersions(a, b) {
   for (let index = 0; index < 3; index += 1) {
     if (a[index] !== b[index]) return a[index] - b[index];
   }
-  return 0;
+  if (a[3] === b[3]) return 0;
+  if (a[3] === null) return 1;
+  if (b[3] === null) return -1;
+  return a[3] - b[3];
 }
 
 const current = parseVersion(version);
 let history = [];
 if (current) {
   const files = await readdir(changelogDir).catch(() => []);
+  // Stable notes up to this version, plus this beta's own notes: a beta build
+  // gets them from scripts/beta/write-beta-changelog.mjs; no other beta's
+  // notes are in changelog/.
   const versions = files
-    .map((name) => /^v(\d+\.\d+\.\d+)\.mdx$/.exec(name)?.[1])
-    .filter((entry) => entry && compareVersions(parseVersion(entry), current) <= 0)
+    .map((name) => /^v(\d+\.\d+\.\d+(?:-beta\.\d+)?)\.mdx$/.exec(name)?.[1])
+    .filter((entry) => entry && (parseVersion(entry)[3] === null || entry === version))
+    .filter((entry) => compareVersions(parseVersion(entry), current) <= 0)
     .sort((a, b) => compareVersions(parseVersion(b), parseVersion(a)))
     .slice(0, HISTORY_LIMIT);
   history = await Promise.all(versions.map(async (entry) => ({

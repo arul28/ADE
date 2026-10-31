@@ -526,7 +526,7 @@ none of it can fail or block a release:
 - **Web client and Workers** (`deploy-web.yml`): release
   `ade@<git describe>`, maps uploaded to `ade-web` / `ade-workers`, and the
   web client's maps deleted before the Pages deploy.
-- **iOS** (`ios-testflight.sh` and the TestFlight workflow, both through
+- **iOS** (`ios-testflight.sh`, `ios-testflight-ci.sh` and the TestFlight workflows, all through
   `scripts/release-tools/upload-ios-dsyms.sh`): dSYMs uploaded to `ade-ios`
   after the archive. Run by hand, the token comes from `SENTRY_AUTH_TOKEN` or
   the ADE project secret of that name.
@@ -884,6 +884,11 @@ treat a failed tap bump as a desktop-leg failure.
 Do this only if iOS scope is `yes`. Start it after the docs commit and
 tag (or immediately on an iOS-only release). Do **not** wait for the
 desktop draft, undraft, npm publish, or brew tap — see **Parallel schedule**.
+
+Beta builds do not come through here. `ios-testflight.yml` builds each beta
+that changed iOS on a GitHub Mac and gives it to Internal Testers only
+(docs/plans/beta-track.md, "iOS TestFlight from CI"). This phase is the
+stable path, which serves every group.
 
 Preflight:
 

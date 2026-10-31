@@ -65,6 +65,11 @@ extension and releases its handles immediately, including on Windows.
 | `apps/desktop/src/main/services/chat/agentChatService.ts` | Persists chat metadata and transcripts, records provider-pointer transitions to the bounded thread-pointer ledger, reconciles missing pointers from ledger/resume command/transcript, gates new turns on disk pressure (`canPerform("chat_turn")`), and implements explicit `recoverContinuity` modes. |
 | `apps/desktop/src/main/services/chat/threadPointerLedger.ts` | Standalone append-only continuity ledger (`thread-pointers.jsonl`): typed `ThreadPointerLedgerEntry` records, tolerant parse that drops only a torn tail line, newest-per-session read, and 64 KiB self-compaction (newest records first) via an atomic rewrite. |
 | `apps/desktop/src/main/services/chat/providerResumeClassifier.ts` | Classifies a provider resume failure as missing thread, provider environment, transient transport, or unknown without treating every provider error as lost continuity. |
+| `apps/desktop/src/main/services/startupRecovery/startupRecovery.ts` | The "ADE could not start" controller: which failure signals open the window (once per launch), the Go back flow (target check, download through the updater, restore in the install hook) and the Copy details text. Every step is a `startupRecovery.*` info line in `desktop-main.jsonl`; `startupRecovery.went_back` is a release-health event. |
+| `apps/desktop/src/main/services/startupRecovery/goBackPlan.ts` | Pure: reads a copy's name (`pre-<to>-from-<from>`, `_2` for a repeat; `unknown` and `before-…` carry no version) and picks the version to go back to and one copy per database. |
+| `apps/desktop/src/main/services/startupRecovery/databaseCopies.ts` | Lists this computer's databases and their copies, deletes a copy (checked against a fresh listing), and restores a plan by moving files only: the current database and its journal files go aside as a copy, then the copy takes its place. |
+| `apps/desktop/src/main/services/startupRecovery/startupRecoveryWindow.ts`, `desktopStartupRecovery.ts`, `registerDatabaseCopiesIpc.ts`, `preload/startupRecoveryPreload.ts` | The window (a static page with its own sandboxed preload, so it opens when the app's renderer broke), the Electron wiring, and the Settings IPC (local only, no pin). |
+| `apps/desktop/src/renderer/components/settings/DatabaseCopiesSection.tsx` | Settings › Advanced › Database copies: which database, from which version to which, when, size, Reveal and Delete (confirmed). Renders only for This computer. |
 | `apps/desktop/src/main/services/runtime/lastFailureStore.ts` | Stores typed project/machine failures, keeps one previous report, counts repeated signatures, and computes crash-loop startup backoff. A brain failure records its `socketPath`, and the backoff counts only failures on the starting brain's own socket (a record without one is read as the primary socket's), so a desktop's isolated brain does not sleep for the service brain's crash loop. |
 | `apps/ade-cli/src/services/runtime/failureLogDeduper.ts` | Emits the first repeated brain failure immediately and only periodic occurrence summaries afterward. `note(signature, message, meta)` and the `log` callback carry a `FailureLogMeta` bag alongside the human sentence, so the structured event and the stderr line a reader correlates share one cadence instead of drifting apart. |
 | `apps/ade-cli/src/services/runtime/startupTeardown.ts` | `createTeardownStack()` — the LIFO release stack a half-built runtime unwinds. Each acquisition in `createAdeRuntime` registers its own release at the point it acquires, `drain()` pops in reverse order, and a release that throws is caught so it neither stops the drain nor replaces the original startup failure. `runtime.dispose` is now the same `drain()`, which is what stops the failure path and the shutdown path from drifting apart the way two hand-maintained lists always did. |
@@ -411,6 +416,23 @@ recovery screen is up, and while the desktop's own fallback brain is serving
 (`AppFallbackBanner` says what is missing and offers the same Fix it). On Windows the blocked cause never appears (it comes only
 from the macOS Background Items reading), so the copy is the platform-neutral
 "didn't start"; Restart ADE and Reset ADE work on both.
+
+### "ADE could not start" after an update
+
+When an update leaves ADE unable to start, a small window of its own says
+what failed and offers Try again, Go back to the previous version, Open logs
+folder and Copy details. It opens once per launch, for a project database
+that does not open or a brain that keeps crashing before any project opened
+(only after an update), or for a main window whose renderer gave up. Go back
+asks first, then installs the version the app came from and puts back this
+computer's database, the personal chats' database and the project database
+that failed, as they were before the update; other projects stay as they are.
+The current databases are kept as copies, moved and never overwritten, and
+the restore is all or nothing. The triggers, the version choice and
+each step are in [docs/plans/beta-track.md](../../plans/beta-track.md#startup-recovery).
+
+The project recovery screen above still handles everything else, and every
+failure that is not tied to an update.
 
 ### Login Items ("Allow in the Background")
 
@@ -1056,6 +1078,7 @@ into this strip via `#/settings?tab=storage#diagnostics`.
 | Thread-pointer ledger | 64 KiB | Compacts to the newest valid record per session; a malformed tail is ignored. |
 | Last-failure reports | Current + 1 previous | Repeated same-signature failures increment the current report; a changed signature rotates current to previous. |
 | Database migration backup | 1 | `<db>.pre-crsqlite-w1.bak` is created once and only with sufficient headroom. |
+| Update copies | 1 per database | `<db>.pre-<to>-from-<from>.bak`, taken before a new version first opens the database. A new copy deletes the older ones; the copy itself goes at a clean open 24 hours after that version first opened the file cleanly. What "Go back" set aside (`…_kept.bak`, with its `-wal`/`-shm`/`-journal`) goes 7 days after. Only names that parse as copies are deleted; a locked file is retried on a later open. Settings › Advanced › Database copies deletes one by hand. |
 | Automation ingress events | 7 days / 2,000 rows per project | Age-pruned at write time and by the doctor; the newest 2,000 non-`dispatched` rows per project are kept regardless of age (dispatched rows are age-pruned only). Raw webhook payloads are no longer persisted. |
 | PR snapshots | 60 days | `pull_request_snapshots` not updated within the window are deleted (re-fetchable from GitHub). |
 | AI usage log | 90 days | `ai_usage_log` rows older than the cutoff are deleted in paced batches. Stats and the daily budget check read a shorter window than this. |

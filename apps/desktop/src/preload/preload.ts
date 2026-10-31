@@ -1243,6 +1243,7 @@ import { MUSIC_IPC, type MusicBridge, type MusicState } from "../shared/types/mu
 import { HARNESS_PRESETS_SETTING_KEY, normalizeHarnessPresetList } from "../shared/harnessPresets";
 import { isRoutePresetId } from "../shared/harnessRoutes";
 import type { AppBundleOwnershipBridge } from "../shared/types/appBundleOwnership";
+import type { DatabaseCopiesBridge } from "../shared/types/startupRecovery";
 import { HOME_WIDGETS_IPC, type HomeClipboardState, type HomeNowPlayingCommand, type HomeNowPlayingState, type HomeWidgetsBridge } from "../shared/types/homeWidgets";
 
 // Renderer errors reach Sentry through main over this bridge, so the
@@ -14086,6 +14087,12 @@ const adeBridge = {
     getStatus: (args?: { refresh?: boolean }) => ipcRenderer.invoke(IPC.appBundleOwnershipGetStatus, args ?? {}),
     fix: () => ipcRenderer.invoke(IPC.appBundleOwnershipFix),
   } satisfies AppBundleOwnershipBridge,
+  // The database copies on this computer only; no pin (see registerDatabaseCopiesIpc).
+  databaseCopies: {
+    list: () => ipcRenderer.invoke(IPC.databaseCopiesList),
+    reveal: (path: string) => ipcRenderer.invoke(IPC.databaseCopiesReveal, { path }),
+    delete: (path: string) => ipcRenderer.invoke(IPC.databaseCopiesDelete, { path }),
+  } satisfies DatabaseCopiesBridge,
   home: {
     clipboard: {
       getState: () => ipcRenderer.invoke(HOME_WIDGETS_IPC.clipboardGetState),

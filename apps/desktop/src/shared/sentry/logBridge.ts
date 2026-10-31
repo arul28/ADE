@@ -50,6 +50,8 @@ const RELEASE_HEALTH_EVENTS = new Set<string>([
   "autoUpdate.quit_and_install",
   "db.snapshot_written",
   "agent_chat.restart_resume_armed",
+  // A machine left this build from the "ADE could not start" window.
+  "startupRecovery.went_back",
 ]);
 
 /**

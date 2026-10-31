@@ -6,11 +6,17 @@ ADE already publishes macOS and standalone runtime files through GitHub Releases
 
 After setup, a normal release is:
 
-1. A maintainer tags an approved commit.
-2. GitHub Actions builds, signs, and validates every platform from that tag,
-   including Windows.
-3. GitHub Actions creates one unpublished GitHub Release.
+1. `beta.yml` builds, signs, and publishes a beta (`vX.Y.Z-beta.N`) from a
+   green `main` commit, Windows included.
+2. A maintainer picks the newest beta that passes the Sentry gate
+   (`bash scripts/release-tools/betas.sh`) and pushes the stable tag at that
+   beta's commit.
+3. GitHub Actions builds, signs, and validates every platform from that tag,
+   including Windows, and creates one unpublished GitHub Release.
 4. A maintainer checks it and makes it public.
+
+The release skill (`.agents/skills/release/SKILL.md`) runs these steps. This
+guide holds the Windows-specific setup, checks, and failure handling.
 
 Nobody builds or uploads the Windows installer by hand.
 
@@ -321,10 +327,22 @@ Use this process for the first Windows release and every later release.
 
 ### 1. Approve the commit and version
 
+The commit is the commit of the beta you promote. Find it:
+
+```bash
+bash scripts/release-tools/betas.sh                          # the recommended: line names the beta
+node scripts/release-tools/beta-gate.mjs v<VERSION>-beta.<N>  # exit 0 is PASS
+RELEASE_SHA=$(git rev-list -n 1 v<VERSION>-beta.<N>)
+```
+
+Do not promote a beta that the gate failed (exit 1) or could not check
+(exit 2).
+
 Confirm:
 
 - The commit is on `main`.
-- The normal `ci-pass` check succeeded for that exact commit.
+- The normal `ci-pass` check succeeded for that exact commit. Betas are built
+  only from such a commit.
 - The version tag does not already exist.
 - `ADE_WINDOWS_PUBLIC_RELEASE_ENABLED` is `1`.
 - The four Windows signing secrets are still present, and the
@@ -341,8 +359,9 @@ Confirm the current value before tagging:
 gh variable list --repo arul28/ADE | grep ADE_WINDOWS_
 ```
 
-Run the non-publishing dry run for the exact version and commit first. With the
-gate on it builds, signs, and validates Windows too:
+The beta already built, signed, and validated Windows from this commit, so a
+dry run is optional. Run it when the Windows signing setup changed since that
+beta. With the gate on it builds, signs, and validates Windows too:
 
 ```bash
 VERSION="<VERSION>"
@@ -357,9 +376,14 @@ gh workflow run prepare-release.yml \
 Add `-f windows_proof=true` when you also want a fresh clean-host proof bundle
 for this commit. That is the recommended regression check, not a requirement.
 
-Do not tag until that run succeeds for `RELEASE_SHA`.
+If you run it, do not tag until that run succeeds for `RELEASE_SHA`.
 
 ### 2. Tag the approved commit
+
+Push the tag yourself. The "Protect release tags" rule lets only an admin
+create a stable `v*` tag. Do not dispatch `release.yml` with `target_sha`
+instead: the workflow's own token cannot create the tag, and its publish step
+fails with HTTP 422. A dispatch and a push together also start two runs.
 
 ```bash
 VERSION="<VERSION>"
@@ -450,6 +474,12 @@ public signed release as an ongoing regression check.
 
 - Before publication: keep Windows and the website link disabled, fix the problem, and repeat the failed test.
 - Existing macOS or standalone runtime job fails: stop the release and fix the shared workflow.
+- Publish step fails with `Reference update failed (HTTP 422)`: the run tried
+  to create the stable tag itself. Push `v<VERSION>` at the run's commit
+  (Publish step 2), then `gh run rerun <RUN_ID> --failed`.
+- A fix to the source reaches a stable release only through a new beta: merge
+  the fix to `main`, let `beta.yml` publish the next beta, and promote that
+  beta when it passes the gate.
 - `build-win-release` fails while the gate is on: no draft is created, because
   the publish gate in `release.yml` requires a successful Windows build. Fix the source, choose a
   higher version, and tag again. Do not turn the gate off to force a draft out.

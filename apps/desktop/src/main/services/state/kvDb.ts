@@ -9,7 +9,7 @@ import type { Logger } from "../logging/logger";
 import { isSqliteBusyOrLockedError } from "./sqliteErrors";
 import { safeJsonParse } from "../shared/utils";
 import { isNoSpaceError, readVolumeSpace } from "../storage/volume";
-import { snapshotDatabaseBeforeVersionChange, writeDbCompatRecord } from "./dbCompatRecord";
+import { clearProvenDatabaseCopies, snapshotDatabaseBeforeVersionChange, writeDbCompatRecord } from "./dbCompatRecord";
 import { classifyStorageFault } from "../storage/storageErrnoClassifier";
 import { resolveCrsqliteExtensionPath } from "./crsqliteExtension";
 import {
@@ -5125,7 +5125,12 @@ export async function openKvDb(
     logger.error("db.init_failed", { dbPath, error: err, errorText: String(err) });
     throw err;
   }
-  if (appVersion) writeDbCompatRecord(dbPath, appVersion, logger);
+  if (appVersion) {
+    const record = writeDbCompatRecord(dbPath, appVersion, logger);
+    // A day after this version first opened the file cleanly, its update
+    // copy goes. Reads nothing until then; never throws.
+    if (record) clearProvenDatabaseCopies(dbPath, record, logger);
+  }
 
   const getString = (key: string): string | null => {
     const row = getRow<{ value: string }>(db, "select value from kv where key = ? limit 1", [key]);

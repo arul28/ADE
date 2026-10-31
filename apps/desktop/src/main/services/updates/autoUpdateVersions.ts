@@ -14,6 +14,8 @@ export function buildReleaseNotesUrl(
   const normalizedVersion = version.trim().replace(/^v/i, "");
   const normalizedBaseUrl = baseUrl.trim().replace(/\/+$/, "");
   if (!normalizedVersion || !normalizedBaseUrl) return null;
+  // The website has stable notes only; a beta's are on its GitHub release.
+  if (normalizedVersion.includes("-")) return null;
   return `${normalizedBaseUrl}/docs/changelog/${encodeURIComponent(`v${normalizedVersion}`)}`;
 }
 

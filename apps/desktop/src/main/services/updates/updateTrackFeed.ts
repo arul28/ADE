@@ -41,6 +41,11 @@ export function createTrackFeedPolicy(args: {
   /** `owner/repo` of the stable feed. */
   releaseRepository: string;
   readSelectedTrack: (() => UpdateTrack | null) | undefined;
+  /**
+   * A build this machine went back from (`startupRecovery.ts`). An ordinary
+   * check never offers it again; a newer build is offered as usual.
+   */
+  skippedVersion?: string | null;
   logger: Logger;
 }) {
   const { updater, currentVersion, overrideFeedUrl, logger } = args;
@@ -67,13 +72,17 @@ export function createTrackFeedPolicy(args: {
   // Whether this launch pointed the updater at the Beta feed. Kept apart from
   // `feedTrack`, which a switch clears to force a new setup.
   let pointedAtBetaFeed = false;
+  // Set only while this launch goes back to the build it came from: the feed
+  // is that build's own release, and only that build is accepted.
+  let goingBack: { version: string; url: string } | null = null;
+  const skippedVersion = args.skippedVersion?.trim() || null;
 
   /** The track whose builds this launch takes: a switch's target, else the choice. */
   const targetTrack = (): UpdateTrack => switching ?? selected;
 
   function configure(): void {
     const track = targetTrack();
-    if (overrideFeedUrl || feedTrack === track) return;
+    if (goingBack || overrideFeedUrl || feedTrack === track) return;
     try {
       if (track === "beta") {
         updater.setFeedURL?.({ provider: "generic", url: BETA_FEED_BASE_URL });
@@ -119,7 +128,9 @@ export function createTrackFeedPolicy(args: {
 
     /** Whether a build the feed answered with may be offered in this launch. */
     acceptsOffer(version: string): boolean {
+      if (goingBack) return version === goingBack.version;
       if (overrideFeedUrl) return true;
+      if (skippedVersion && version === skippedVersion) return false;
       if (switching && updateTrackOfVersion(version) === switching) {
         // The switch target itself, or a newer build on that track.
         return version !== currentVersion;
@@ -134,7 +145,8 @@ export function createTrackFeedPolicy(args: {
      * is gone, which is a real failure.
      */
     isMissingFeed(error: unknown, phase: AutoUpdatePhase): boolean {
-      if (targetTrack() !== "beta" || overrideFeedUrl) return false;
+      // A release that is gone is the answer to a go-back, not "nothing new".
+      if (goingBack || targetTrack() !== "beta" || overrideFeedUrl) return false;
       if ((error as { code?: unknown } | null)?.code === "ERR_UPDATER_CHANNEL_FILE_NOT_FOUND") return true;
       return phase === "check" && /\b404\b/.test(errorText(error));
     },
@@ -145,7 +157,33 @@ export function createTrackFeedPolicy(args: {
 
     /** The feed a network probe should ask: the Beta feed while it is in use. */
     genericFeedUrl(): string | undefined {
+      if (goingBack) return goingBack.url;
       return overrideFeedUrl ?? (targetTrack() === "beta" ? BETA_FEED_BASE_URL : undefined);
+    },
+
+    /** The build a go-back installs, or null. */
+    goingBackTo(): string | null {
+      return goingBack?.version ?? null;
+    },
+
+    /**
+     * Points the feed at one release, `version`'s own (`releaseUrl` ends in
+     * `/releases/download/v<version>/`), and accepts only that build, older
+     * or newer, from either track. It lasts for the rest of this launch; the
+     * install that follows ends it.
+     */
+    beginGoBack(version: string, releaseUrl: string): void {
+      goingBack = { version, url: releaseUrl };
+      switching = null;
+      feedTrack = null;
+      try {
+        updater.setFeedURL?.({ provider: "generic", url: releaseUrl });
+        updater.allowPrerelease = false;
+        updater.allowDowngrade = true;
+        logger.info("autoUpdate.go_back_feed_configured", { version, url: releaseUrl, runningTrack });
+      } catch (error) {
+        logger.warn("autoUpdate.go_back_feed_config_failed", { version, message: errorText(error) });
+      }
     },
 
     /** Points the feed at `target` for this launch. Back to the running track cancels a switch. */

@@ -1,0 +1,222 @@
+name: iOS TestFlight
+
+# Builds ADE for iPhone on a GitHub-hosted Mac and gives the build to the
+# Internal Testers group on TestFlight. beta.yml calls it after each real beta
+# is public; it can also be dispatched by hand. See docs/plans/beta-track.md
+# (work item 8). scripts/release-tools/ios-testflight-ci.sh does the work.
+#
+# It runs only when iOS code changed since the last iOS build (the newest
+# ios-v*-build* tag, the base scope.sh uses), so a beta that left iOS alone
+# makes no TestFlight build. The base is the last iOS build, not the previous
+# beta: a beta whose TestFlight build failed must not hide its iOS changes
+# from the next one.
+#
+# It never fails or blocks the desktop beta. The feed does not wait for it,
+# the TestFlight step and its job continue on error, and a failure opens (or
+# comments on) the "iOS TestFlight failed" issue instead of the desktop's
+# "Beta build failed" one.
+#
+# Signing: the App Store Connect API key (APPLE_API_KEY_*) signs through
+# Xcode's -allowProvisioningUpdates. With no IOS_SIGNING_P12_BASE64 secret
+# that is cloud signing, which needs an Admin-role key; the script's header
+# lists what each mode needs.
+
+on:
+  workflow_call:
+    inputs:
+      label:
+        description: The beta tag this build belongs to (vX.Y.Z-beta.N).
+        required: true
+        type: string
+      sha:
+        description: The commit to build.
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      git_ref:
+        description: Branch or commit to build.
+        required: false
+        default: main
+        type: string
+      force:
+        description: Build even when iOS did not change since the last iOS build.
+        required: false
+        default: false
+        type: boolean
+      dry_run:
+        description: Archive and export only. Uploads and tags nothing.
+        required: false
+        default: false
+        type: boolean
+
+permissions: {}
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    # Like the build job: a failure here must not fail the beta run.
+    continue-on-error: true
+    permissions:
+      contents: read
+    outputs:
+      run: ${{ steps.gate.outputs.run }}
+      sha: ${{ steps.gate.outputs.sha }}
+      label: ${{ steps.gate.outputs.label }}
+    steps:
+      # Full history and every tag: the base is the newest ios-v*-build* tag.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Decide whether iOS changed
+        id: gate
+        env:
+          INPUT_SHA: ${{ inputs.sha }}
+          INPUT_LABEL: ${{ inputs.label }}
+          INPUT_REF: ${{ inputs.git_ref }}
+          FORCE: ${{ inputs.force && 'true' || '' }}
+        run: |
+          set -euo pipefail
+          if [ -n "$INPUT_SHA" ]; then
+            sha="$INPUT_SHA"
+            label="$INPUT_LABEL"
+          else
+            ref="${INPUT_REF:-main}"
+            if ! [[ "$ref" =~ ^[0-9A-Za-z._/-]+$ ]] || [[ "$ref" == *..* ]]; then
+              echo "::error::$ref is not a branch name or a commit sha."
+              exit 1
+            fi
+            sha="$(git rev-parse --verify --quiet "refs/remotes/origin/$ref^{commit}" || git rev-parse --verify "$ref^{commit}")"
+            label="manual build of $ref"
+          fi
+          [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::Could not resolve $sha to a commit."; exit 1; }
+          # The paths that change the iPhone app: its sources, and this
+          # pipeline. Generated iOS files are committed under apps/ios.
+          paths=(apps/ios .github/workflows/ios-testflight.yml scripts/release-tools/ios-testflight-ci.sh)
+          base_tag="$(git tag --list 'ios-v*-build*' --sort=-creatordate | head -n 1)"
+          if [ -z "$base_tag" ]; then
+            changed=1
+            reason="no earlier iOS build tag"
+          else
+            changed="$(git diff --name-only "$base_tag..$sha" -- "${paths[@]}" | wc -l | tr -d ' ')"
+            reason="$changed iOS files changed since $base_tag"
+          fi
+          run=false
+          if [ -n "$FORCE" ] || [ "$changed" -gt 0 ]; then run=true; fi
+          [ -n "$FORCE" ] && reason="forced; $reason"
+          {
+            echo "run=$run"
+            echo "sha=$sha"
+            echo "label=$label"
+          } >> "$GITHUB_OUTPUT"
+          echo "### iOS TestFlight: $([ "$run" = true ] && echo build || echo skipped)" >> "$GITHUB_STEP_SUMMARY"
+          echo "$reason (${sha:0:9}, $label)" >> "$GITHUB_STEP_SUMMARY"
+
+  testflight:
+    needs: gate
+    if: ${{ needs.gate.outputs.run == 'true' }}
+    runs-on: macos-26
+    timeout-minutes: 150
+    # A broken runner or setup step must not fail the beta run either.
+    continue-on-error: true
+    # App Store Connect hands out build numbers; one build at a time.
+    concurrency:
+      group: ios-testflight
+      cancel-in-progress: false
+    permissions:
+      # Pushes the ios-v<mv>-build<n> tag.
+      contents: write
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+
+      - name: Select Xcode 26
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC2012 # Xcode app names have no odd characters.
+          latest=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1 || true)
+          if [[ -n "$latest" ]]; then
+            sudo xcode-select -s "$latest/Contents/Developer"
+          fi
+          xcodebuild -version
+
+      # The asc version ios-testflight.sh runs with, pinned by checksum.
+      - name: Install asc
+        env:
+          ASC_VERSION: 1.2.3
+          ASC_SHA256: 754b42e7ff126c49ae975f5ddf3302e58cc0695cf6d266a59ed2907336a87575
+        run: |
+          set -euo pipefail
+          bin="$RUNNER_TEMP/bin"
+          mkdir -p "$bin"
+          curl -fsSL --retry 3 -o "$bin/asc" \
+            "https://github.com/rudrankriyam/App-Store-Connect-CLI/releases/download/$ASC_VERSION/asc_${ASC_VERSION}_macOS_arm64"
+          echo "$ASC_SHA256  $bin/asc" | shasum -a 256 -c -
+          chmod +x "$bin/asc"
+          echo "$bin" >> "$GITHUB_PATH"
+
+      - name: Build and give to Internal Testers
+        id: build
+        continue-on-error: true
+        env:
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          IOS_SIGNING_P12_BASE64: ${{ secrets.IOS_SIGNING_P12_BASE64 }}
+          IOS_SIGNING_P12_PASSWORD: ${{ secrets.IOS_SIGNING_P12_PASSWORD }}
+          ADE_POSTHOG_PROJECT_TOKEN: ${{ secrets.ADE_POSTHOG_PROJECT_TOKEN }}
+          ADE_POSTHOG_HOST: ${{ secrets.ADE_POSTHOG_HOST }}
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          LABEL: ${{ needs.gate.outputs.label }}
+          SHA: ${{ needs.gate.outputs.sha }}
+          DRY_RUN: ${{ inputs.dry_run && 'true' || '' }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          args=(--label "$LABEL" --sha "$SHA")
+          [ -n "$DRY_RUN" ] && args+=(--dry-run)
+          bash scripts/release-tools/ios-testflight-ci.sh "${args[@]}"
+
+      - name: Report the result
+        if: ${{ always() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          OUTCOME: ${{ steps.build.outcome }}
+          LABEL: ${{ needs.gate.outputs.label }}
+          SHA: ${{ needs.gate.outputs.sha }}
+          BUILD: ${{ steps.build.outputs.marketing_version }} (${{ steps.build.outputs.build_number }})
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          DRY_RUN: ${{ inputs.dry_run && 'true' || '' }}
+        run: |
+          set -euo pipefail
+          if [ -n "$DRY_RUN" ]; then
+            echo "Dry run for $LABEL: $OUTCOME. Nothing was uploaded." >> "$GITHUB_STEP_SUMMARY"
+            [ "$OUTCOME" = success ] || echo "::warning::The dry run did not finish ($OUTCOME)."
+            exit 0
+          fi
+          title="iOS TestFlight failed"
+          gh label create beta --color FB8C00 --description "Beta track builds" >/dev/null 2>&1 || true
+          issue="$(gh issue list --state open --label beta --limit 100 --json number,title \
+            --jq "[.[] | select(.title == \"$title\")][0].number // empty")"
+          if [ "$OUTCOME" = success ]; then
+            echo "TestFlight build $BUILD for $LABEL is with Internal Testers." >> "$GITHUB_STEP_SUMMARY"
+            if [ -n "$issue" ]; then
+              gh issue comment "$issue" --body "Fixed: build $BUILD for $LABEL reached Internal Testers. $RUN_URL"
+              gh issue close "$issue"
+            fi
+            exit 0
+          fi
+          echo "::warning::The TestFlight build for $LABEL did not finish ($OUTCOME). The desktop beta is not affected."
+          body="$(printf 'Run: %s\nFor: %s\nCommit: %s\nStep outcome: %s\n\nThe desktop beta is not affected. The step log names the failing stage (archive, export, upload, processing or groups).\n' \
+            "$RUN_URL" "$LABEL" "$SHA" "$OUTCOME")"
+          if [ -n "$issue" ]; then
+            gh issue comment "$issue" --body "$body"
+          else
+            gh issue create --title "$title" --label beta --body "$body"
+          fi

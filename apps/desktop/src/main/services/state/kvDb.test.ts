@@ -1461,7 +1461,7 @@ describe("CREATE TABLE constraint stripping", () => {
 // compatibility level that ran its migrations, which a Beta-to-Stable switch
 // checks. A real file on disk, through the real open.
 describe("openKvDb version copies and compatibility records", () => {
-  it("copies a database before a new version opens it, keeps one copy per move, and never lowers the recorded level", async () => {
+  it("copies a database before a new version opens it, keeps one copy, deletes it once the update proved itself, and never lowers the recorded level", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-kvdb-version-copy-"));
     const dbPath = path.join(dir, "ade.db");
     const copies = () => fs.readdirSync(dir).filter((name) => /^ade\.db\.pre-\d.*\.bak$/.test(name)).sort();
@@ -1490,15 +1490,44 @@ describe("openKvDb version copies and compatibility records", () => {
     copy.close();
     expect(JSON.parse(fs.readFileSync(`${dbPath}.compat.json`, "utf8"))).toMatchObject({ level: 5, lastOpenedVersion: "1.2.128-beta.1" });
 
-    // The same version again takes no copy; going back takes a new one.
+    // The same version again takes no copy; going back takes a new one, which
+    // replaces the older copy: one copy per database. What "Go back" set
+    // aside, and kvDb's one-time backup, are never replaced.
     db = await open("1.2.128-beta.1");
     db.close();
     expect(copies()).toHaveLength(1);
+    const kept = path.join(dir, "ade.db.pre-1.2.127-from-1.2.128-beta.1_kept.bak");
+    fs.writeFileSync(kept, "set aside");
+    fs.writeFileSync(`${kept}-wal`, "its journal");
+    fs.writeFileSync(path.join(dir, "ade.db.pre-crsqlite-w1.bak"), "one-time backup");
     db = await open("1.2.127");
     db.close();
-    expect(copies()).toEqual([
-      "ade.db.pre-1.2.127-from-1.2.128-beta.1.bak",
-      "ade.db.pre-1.2.128-beta.1-from-1.2.127.bak",
-    ]);
+    expect(copies()).toEqual(["ade.db.pre-1.2.127-from-1.2.128-beta.1.bak", "ade.db.pre-1.2.127-from-1.2.128-beta.1_kept.bak"]);
+    expect(fs.existsSync(`${kept}-wal`)).toBe(true);
+
+    // Not yet a day since 1.2.127 first opened it cleanly: the copy stays.
+    db = await open("1.2.127");
+    db.close();
+    expect(copies()).toEqual(["ade.db.pre-1.2.127-from-1.2.128-beta.1.bak", "ade.db.pre-1.2.127-from-1.2.128-beta.1_kept.bak"]);
+
+    const backdate = (ms: number) => {
+      const record = JSON.parse(fs.readFileSync(`${dbPath}.compat.json`, "utf8"));
+      fs.writeFileSync(`${dbPath}.compat.json`, JSON.stringify({ ...record, firstOpenedAt: new Date(Date.now() - ms).toISOString() }));
+    };
+    // A clean open a day later: the update proved itself, its copy goes.
+    backdate(25 * 60 * 60 * 1000);
+    db = await open("1.2.127");
+    db.close();
+    expect(copies()).toEqual(["ade.db.pre-1.2.127-from-1.2.128-beta.1_kept.bak"]);
+    // A week later, what Go back set aside goes too, with its journal.
+    backdate(8 * 24 * 60 * 60 * 1000);
+    db = await open("1.2.127");
+    expect(db.getJson("track:probe")).toContain("written by 1.2.127");
+    db.close();
+    expect(copies()).toEqual([]);
+    expect(fs.existsSync(`${kept}-wal`)).toBe(false);
+    // Only copies: the live database and the one-time backup stay.
+    expect(fs.existsSync(dbPath)).toBe(true);
+    expect(fs.existsSync(path.join(dir, "ade.db.pre-crsqlite-w1.bak"))).toBe(true);
   });
 });

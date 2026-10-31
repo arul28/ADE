@@ -11,7 +11,9 @@ name: Beta
 # It is published as a GitHub prerelease (release-publish.yml): a draft until
 # every asset is attached, then public, never "latest". Only then does the
 # feed job point the fixed beta-feed prerelease at it, which is what Beta
-# machines read. Old betas are pruned last.
+# machines read. Old betas are pruned last. Beside the feed, ios-testflight.yml
+# builds the iPhone app for TestFlight's Internal Testers when iOS changed;
+# its failures never fail the beta.
 #
 # workflow_dispatch:
 # - force: ignore the 3 h gap and the "nothing that ships changed" skip.
@@ -118,6 +120,7 @@ jobs:
       release_tag: ${{ needs.resolve.outputs.tag }}
       target_ref: ${{ needs.resolve.outputs.sha }}
       preview: ${{ needs.resolve.outputs.preview == 'true' }}
+      beta_notes: ${{ needs.resolve.outputs.preview == 'true' && '' || needs.resolve.outputs.notes }}
     secrets: inherit
 
   # The same gate as release.yml's publish-release, rebuilt from
@@ -225,6 +228,25 @@ jobs:
             exit 1
           fi
           echo "beta-feed now serves $TAG_NAME" >> "$GITHUB_STEP_SUMMARY"
+
+  # The iPhone build for this beta, to TestFlight's Internal Testers only. It
+  # runs beside the feed, never before it, and the report job does not wait for
+  # it: a TestFlight failure reports on its own issue and leaves the desktop
+  # beta alone. Previews never get one. The called workflow skips the build
+  # when iOS did not change since the last iOS build.
+  ios:
+    if: ${{ !cancelled() && needs.publish.result == 'success' && needs.resolve.outputs.preview == 'false' }}
+    needs:
+      - resolve
+      - publish
+    permissions:
+      contents: write
+      issues: write
+    uses: ./.github/workflows/ios-testflight.yml
+    with:
+      label: ${{ needs.resolve.outputs.tag }}
+      sha: ${{ needs.resolve.outputs.sha }}
+    secrets: inherit
 
   prune:
     if: ${{ !cancelled() && needs.feed.result == 'success' }}

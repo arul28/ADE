@@ -2702,7 +2702,6 @@ private enum WorkSideChatPreviewData {
     ]
   }
 }
-#endif
 
 /// Rows hosted the way `WorkChatTranscriptCollectionView` hosts them: a
 /// collection view whose cells carry a `UIHostingConfiguration`.
@@ -2741,3 +2740,4 @@ struct WorkPreviewTranscriptList: UIViewRepresentable {
     }
   }
 }
+#endif

@@ -2048,7 +2048,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
 
   Notes:
     "start" enables and loads the login service.
-    "stop" disables and unloads the login service.
+    "stop" disables and unloads the login service. An open ADE app starts
+    it again; quit the app to keep the brain stopped.
     "update" downloads the standalone runtime for this channel, stages it under
     ADE_HOME, then hands off to a detached helper that restarts the brain.
     With the ADE app installed it updates the app too, and the brain runs
@@ -26671,7 +26672,13 @@ async function runBrainCommand(
 
   if (sub === "stop") {
     const { uninstallRuntimeService } = await import("./serviceManager");
-    return uninstallRuntimeService();
+    const stopped = await uninstallRuntimeService();
+    // An open ADE app needs its brain: it puts the service back within about
+    // a minute (`tryRepairServiceConnection`). Say so, so the stop does not
+    // seem to have failed.
+    return stopped.ok
+      ? { ...stopped, message: `${stopped.message} An open ADE app starts the brain again; quit the app to keep it stopped.` }
+      : stopped;
   }
 
   if (sub === "restart") {
@@ -27957,6 +27964,7 @@ async function runServe(
       secretsDir: layout.secretsDir,
       localDeviceIdPath,
       localSiteIdPath: path.join(layout.secretsDir, "sync-site-id"),
+      appVersion: VERSION,
       // A computer whose owner turned ADE Relay off never offers the route.
       getCloudRelayWssUrl: () => machineCloudRelayStore.isRelayEnabled()
         ? machineCloudRelayStore.getRelayWssUrl()
