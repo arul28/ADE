@@ -233,12 +233,26 @@ function readMachineIndex(adeHome: string, logger?: RemoteWorkLogger): MachineIn
       : [];
     return { version: 1, projects };
   } catch (error) {
-    // Missing: no copies yet. Damaged: the next copy written rebuilds it, and
-    // until then the other projects' copies are not listed or swept.
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-      logger?.warn("remote_work.index_unreadable", { error: error instanceof Error ? error.message : String(error) });
-    }
-    return { version: 1, projects: [] };
+    // Missing: no copies yet.
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { version: 1, projects: [] };
+    // Damaged: rebuild it from ADE's project list, so the next write keeps
+    // every project that holds copies, not just the one writing.
+    logger?.warn("remote_work.index_unreadable", { error: error instanceof Error ? error.message : String(error) });
+    return { version: 1, projects: projectsWithCopies(adeHome, logger) };
+  }
+}
+
+/** Every project ADE knows on this machine (`<ADE_HOME>/projects.json`) that has a work copy list. */
+function projectsWithCopies(adeHome: string, logger?: RemoteWorkLogger): MachineIndex["projects"] {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(path.join(adeHome, "projects.json"), "utf8")) as { projects?: Array<{ rootPath?: unknown }> };
+    return (Array.isArray(parsed.projects) ? parsed.projects : [])
+      .map((entry) => entry?.rootPath)
+      .filter((root): root is string => typeof root === "string" && fs.existsSync(registryPathFor(root)))
+      .map((root) => ({ projectRoot: path.resolve(root) }));
+  } catch (error) {
+    logger?.warn("remote_work.index_rebuild_failed", { error: error instanceof Error ? error.message : String(error) });
+    return [];
   }
 }
 
