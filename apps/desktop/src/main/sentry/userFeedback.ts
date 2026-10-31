@@ -19,7 +19,7 @@ export const USER_FEEDBACK_MAX_CHARS = 2_000;
 /** A "Try again" within this window resends the report, not the note. */
 const RETRY_WINDOW_MS = 10 * 60_000;
 
-let lastSent: { message: string; atMs: number } | null = null;
+let lastSent: { message: string; atMs: number; referenced: boolean } | null = null;
 
 /** Returns the feedback id, or null when nothing was sent. */
 export function sendSentryUserFeedback(args: {
@@ -33,13 +33,21 @@ export function sendSentryUserFeedback(args: {
   const message = scrubFreeText(args.message.trim().slice(0, USER_FEEDBACK_MAX_CHARS), {
     maxLength: USER_FEEDBACK_MAX_CHARS,
   });
-  // "Try again" after a failed upload sends the report again, not the note.
-  if (!message || (lastSent?.message === message && Date.now() - lastSent.atMs < RETRY_WINDOW_MS)) return null;
+  if (!message) return null;
   const tags: Record<string, string> = {};
   for (const [key, value] of Object.entries(args.tags ?? {})) {
     // Feedback skips `beforeSend`, so the renderer-supplied labels are scrubbed here too.
     if (typeof value === "string" && value.trim()) tags[key] = scrubString(value.trim().slice(0, 200));
   }
+  // "Try again" sends the report again, not the note, unless the note went
+  // out without a report reference and this attempt has one: then it goes
+  // again, so the report that arrived has its note.
+  const referenced = Boolean(tags["report.reference"]);
+  if (
+    lastSent?.message === message
+    && Date.now() - lastSent.atMs < RETRY_WINDOW_MS
+    && (lastSent.referenced || !referenced)
+  ) return null;
   const feedbackId = captureUserFeedback({
     message,
     source: "send_a_report",
@@ -47,6 +55,6 @@ export function sendSentryUserFeedback(args: {
     tags,
     onError: args.onError,
   });
-  if (feedbackId) lastSent = { message, atMs: Date.now() };
+  if (feedbackId) lastSent = { message, atMs: Date.now(), referenced };
   return feedbackId;
 }

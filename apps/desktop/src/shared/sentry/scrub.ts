@@ -30,7 +30,8 @@ const SECRET_PATTERNS: readonly RegExp[] = [
   ...SECRET_TOKEN_PATTERNS,
   /\b(Bearer|Basic|token)\s+[A-Za-z0-9._~+/=-]{12,}/gi,
   // `key=value` and `"key": "value"` pairs whose key names a secret.
-  /((?:api[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|client[_-]?secret|secret|password|passwd|authorization|cookie|session[_-]?token|private[_-]?key)["']?\s*[:=]\s*["']?)[^\s"',;&]+/gi,
+  // A quoted value goes whole, spaces and all.
+  /((?:api[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|client[_-]?secret|secret|password|passwd|authorization|cookie|session[_-]?token|private[_-]?key)["']?\s*[:=]\s*)(?:"[^"\n]*"?|'[^'\n]*'?|[^\s"',;&]+)/gi,
   // Credentials embedded in URLs: https://user:pass@host
   /(\b[a-z][a-z0-9+.-]*:\/\/)[^\s/@:]+:[^\s/@]+@/gi,
 ];
@@ -86,10 +87,12 @@ export function scrubString(input: string, options?: { maxLength?: number }): st
 }
 
 const EMAIL = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
-// An absolute or home-relative path with at least one folder. The lookbehind
-// keeps URL paths (`https://host/a/b`) and relative paths (`src/a.ts`) whole.
-const POSIX_ABSOLUTE_PATH = /(?<![\w.:/\\~-])~?\/(?:[^\s/"'`<>]+\/)+[^\s/"'`<>]*/g;
-const WINDOWS_ABSOLUTE_PATH = /(?:\b[A-Za-z]:|\\\\[^\s\\"'`]+)\\[^\s"'`<>]*/g;
+// A home path (`~/x`), or an absolute path with at least one folder, also
+// after a colon (`path:/Users/a/b`). The lookbehind keeps relative paths
+// (`src/a.ts`) whole, and a URL's `//` never starts a folder, so its path stays.
+const POSIX_ABSOLUTE_PATH = /(?<![\w./\\~-])(?:~\/[^\s"'`<>]+|\/(?:[^\s/"'`<>]+\/)+[^\s/"'`<>]*)/g;
+// `C:\a`, `C:/a` (not `C://`, a URL) and `\\server\share`.
+const WINDOWS_ABSOLUTE_PATH = /(?:\b[A-Za-z]:(?=\\|\/(?!\/))|\\\\[^\s\\"'`]+(?=\\))[\\/][^\s"'`<>]*/g;
 
 /**
  * Text a person typed and chose to send (a survey answer, a note on a report).

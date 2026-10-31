@@ -1374,6 +1374,9 @@ describe("productAnalyticsService", () => {
       ["home", "my config in ~/work/client-repo broke", "my config in [path] broke"],
       ["windows", "C:\\Users\\alice\\repo failed", "[path] failed"],
       ["unc", "the share \\\\fileserver\\team\\repo hung", "the share [path] hung"],
+      ["slashes", "C:/Users/alice/demo and path:/Users/alice/project", "[path] and path:[path]"],
+      ["homeOnly", "lost ~/client-repo again", "lost [path] again"],
+      ["quoted", 'password="hunter two" leaked', "password=[redacted] leaked"],
       ["kept", "see https://ade-app.dev/docs and src/app.ts", "see https://ade-app.dev/docs and src/app.ts"],
     ];
     const harness = makeHarness();
