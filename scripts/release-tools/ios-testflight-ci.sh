@@ -72,6 +72,11 @@ retry() {
 [ "$(git rev-parse HEAD)" = "$(git rev-parse "$SHA^{commit}")" ] || fail "check out $SHA first"
 for cmd in xcodebuild jq git; do command -v "$cmd" > /dev/null || fail "missing $cmd"; done
 [ "$DRY_RUN" = 1 ] || command -v asc > /dev/null || fail "missing asc"
+# The Duo layout and the other iOS 27 code sit behind `#if compiler(>=6.4)`.
+# An older Xcode still builds the app, but without them, so stop here.
+swift_version="$(xcrun swift -version 2>&1 | sed -nE 's/.*Apple Swift version ([0-9]+\.[0-9]+).*/\1/p' | head -1)"
+awk -v v="${swift_version:-0.0}" 'BEGIN { split(v, a, "."); exit !(a[1] > 6 || (a[1] == 6 && a[2] >= 4)) }' \
+  || fail "Xcode builds with Swift ${swift_version:-?}; ADE needs Swift 6.4 or newer (Xcode 27). Older compilers leave out the Duo layout and the other iOS 27 code."
 
 # --- API key ---------------------------------------------------------------
 [ -n "${APPLE_API_KEY_ID:-}" ] && [ -n "${APPLE_API_ISSUER:-}" ] && [ -n "${APPLE_API_KEY_P8:-}" ] \

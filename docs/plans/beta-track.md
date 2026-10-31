@@ -337,7 +337,7 @@ How the pipeline is built, and what is still open.
   script changed since the newest `ios-v*-build*` tag, the base `scope.sh`
   uses. Not the previous beta: a beta whose TestFlight build failed would
   otherwise hide its iOS changes from the next one.
-- The `testflight` job (`macos-26`, Xcode 26, `asc` 1.2.3 pinned by checksum)
+- The `testflight` job (`xcode-27` runner, Xcode 27.1, `asc` 1.2.3 pinned by checksum)
   runs `scripts/release-tools/ios-testflight-ci.sh`: next build number from
   App Store Connect, `xcodebuild archive` and `-exportArchive` with
   `-allowProvisioningUpdates` and the API key, IPA check (app, App Clip,
