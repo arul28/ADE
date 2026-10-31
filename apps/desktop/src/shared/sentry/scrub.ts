@@ -91,6 +91,8 @@ const EMAIL = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
 // after a colon (`path:/Users/a/b`). The lookbehind keeps relative paths
 // (`src/a.ts`) whole, and a URL's `//` never starts a folder, so its path stays.
 const POSIX_ABSOLUTE_PATH = /(?<![\w./\\~-])(?:~\/[^\s"'`<>]+|\/(?:[^\s/"'`<>]+\/)+[^\s/"'`<>]*)/g;
+// A `file:` URL, as Node and Electron stack frames print it, is a path too.
+const FILE_URL = /\bfile:\/\/[^\s"'`<>]*/gi;
 // `C:\a`, `C:/a` (not `C://`, a URL) and `\\server\share`.
 const WINDOWS_ABSOLUTE_PATH = /(?:\b[A-Za-z]:(?=\\|\/(?!\/))|\\\\[^\s\\"'`]+(?=\\))[\\/][^\s"'`<>]*/g;
 
@@ -102,6 +104,7 @@ const WINDOWS_ABSOLUTE_PATH = /(?:\b[A-Za-z]:(?=\\|\/(?!\/))|\\\\[^\s\\"'`]+(?=\
 export function scrubFreeText(input: string, options?: { maxLength?: number }): string {
   return scrubString(input, options)
     .replace(EMAIL, "[email]")
+    .replace(FILE_URL, "[path]")
     .replace(WINDOWS_ABSOLUTE_PATH, "[path]")
     .replace(POSIX_ABSOLUTE_PATH, "[path]");
 }

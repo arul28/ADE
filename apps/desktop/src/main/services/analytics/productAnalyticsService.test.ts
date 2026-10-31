@@ -1370,7 +1370,7 @@ describe("productAnalyticsService", () => {
   it("sends a typed survey answer without emails, absolute paths, or secrets, and keeps links and relative paths", () => {
     const answers: Array<[string, string, string]> = [
       ["email", "write me at alice.smith+ade@example.co.uk please", "write me at [email] please"],
-      ["posix", "crashed opening /Users/alice/secret-project/src/a.ts", "crashed opening [path]"],
+      ["posix", "crashed opening /Users/alice/secret-project/src/a.ts at file:///Users/alice/x.ts", "crashed opening [path] at [path]"],
       ["home", "my config in ~/work/client-repo broke", "my config in [path] broke"],
       ["windows", "C:\\Users\\alice\\repo failed", "[path] failed"],
       ["unc", "the share \\\\fileserver\\team\\repo hung", "the share [path] hung"],
