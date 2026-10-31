@@ -31,6 +31,7 @@ enum WorkSettingsCatalog {
     "general.update-other-machines": Setting(path: "General › Updates on every machine", locked: true),
     "general.ade-cli": Setting(path: "System › Advanced › ADE command line", locked: true),
     "general.diagnostics-sharing": Setting(path: "System › Advanced › Send a report to ADE", locked: true),
+    "advanced.database-copies": Setting(path: "System › Advanced › Database copies", locked: false),
     "general.reset": Setting(path: "System › Advanced › Reset ADE", locked: true),
     "machines.list": Setting(path: "System › Machines", locked: false),
     "general.keep-awake": Setting(path: "App › Behaviour › Keep this computer awake", locked: true),
