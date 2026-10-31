@@ -532,7 +532,8 @@ struct WorkCrossMachineHandoffTarget: Identifiable, Equatable {
 
 struct WorkCrossMachineHandoffSheet: View {
   @Environment(\.dismiss) private var dismiss
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
 
   let target: WorkCrossMachineHandoffTarget
   /// DEBUG fixture seam: renders these options without asking a brain.

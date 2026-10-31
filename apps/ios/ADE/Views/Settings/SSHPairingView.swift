@@ -3,7 +3,8 @@ import UniformTypeIdentifiers
 
 struct SSHPairingView: View {
   @Environment(\.dismiss) private var dismiss
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
   @StateObject private var model: SSHPairingViewModel
   @State private var host = ""
   @State private var port = 22

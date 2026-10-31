@@ -3,7 +3,8 @@ import SwiftUI
 /// The global Cursor Cloud pane: a full-screen sheet hosting a `NavigationStack`
 /// with the grouped fleet list, mirroring the Linear pane's presentation.
 struct CursorCloudPaneSheet: View {
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
   @Environment(\.dismiss) private var dismiss
   @StateObject private var store: CursorCloudPaneStore
   @State private var path: [CursorCloudRoute] = []
@@ -34,7 +35,8 @@ struct CursorCloudPaneSheet: View {
 /// missing key renders an honest connect prompt — but no advertisement means
 /// every command would fail).
 struct CursorCloudPaneToolbarButton: View {
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
 
   var body: some View {
     if syncService.activeProjectId != nil,

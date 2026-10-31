@@ -255,7 +255,8 @@ struct WorkChatLanePrPolicy {
 }
 
 struct WorkSessionDestinationView: View {
-  @EnvironmentObject var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  var syncService: SyncService { syncPublishes.service }
   /// Observed so a mute toggled anywhere (Work-list row menu, settings) flows
   /// into `headerMenuModel` and re-renders the equatable-gated header menu.
   @ObservedObject private var pushNotificationService = PushNotificationService.shared

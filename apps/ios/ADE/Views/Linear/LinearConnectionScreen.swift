@@ -7,7 +7,8 @@ import SwiftUI
 /// dead end.
 struct LinearConnectionScreen: View {
   @ObservedObject var store: LinearPaneStore
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
   @Environment(\.dismiss) private var dismiss
 
   @StateObject private var runner = LinearOAuthRunner()
@@ -258,7 +259,8 @@ struct LinearConnectActions: View {
   @ObservedObject var store: LinearPaneStore
   var onConnected: (LinearConnectionStatus) -> Void = { _ in }
 
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
   @StateObject private var runner = LinearOAuthRunner()
   @State private var showApiKey = false
   @State private var apiKey = ""

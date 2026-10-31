@@ -510,7 +510,8 @@ struct FilesInlineDiffView: View {
 
 struct FilesProofArtifactSheet: View {
   @Environment(\.dismiss) private var dismiss
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
 
   let artifact: ComputerUseArtifactSummary
 

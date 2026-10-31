@@ -184,12 +184,28 @@ private struct DuoEdgeBarAlignedBottom: ViewModifier {
 
 private struct DuoHingeObserver: ViewModifier {
   @Binding var angle: Double?
+  static let angleStep = 5.0
 
   func body(content: Content) -> some View {
     #if compiler(>=6.4)
     if #available(iOS 27.1, *) {
       content.onHingeChange { _, context in
-        angle = context.hinge?.angle.degrees
+        // Only once it has moved `angleStep`. The sensor reports every
+        // fraction of a degree, and an open phone in the hand never holds
+        // still: each new value changed `\.duoLayout` and re-rendered the
+        // whole app (the unfolded Duo felt laggy, the folded one did not).
+        // Nothing reads the angle finer (`bend` picks a family and shades
+        // the fold).
+        guard let raw = context.hinge?.angle.degrees else {
+          if angle != nil { angle = nil }
+          return
+        }
+        // On a `angleStep` grid, flat (180) included, so leaving flat moves
+        // the angle as soon as the hinge passes the first step. Hysteresis
+        // keeps a hinge held on a step's boundary from flipping between two.
+        let next = (raw / Self.angleStep).rounded() * Self.angleStep
+        if let angle, angle == next || abs(raw - angle) < Self.angleStep * 0.6 { return }
+        angle = next
       }
     } else {
       content

@@ -11,7 +11,8 @@ import UIKit
 /// stays neutral and the one signal is a small flat count badge for needs-you
 /// rows.
 struct ActivityBellButton: View {
-    @EnvironmentObject private var syncService: SyncService
+    @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+    private var syncService: SyncService { syncPublishes.service }
     @EnvironmentObject private var drawer: ActivityDrawerModel
 
     private var hasUnread: Bool { drawer.unreadCount > 0 }

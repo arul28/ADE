@@ -48,7 +48,8 @@ struct ProviderAccountsMachineOption: Identifiable, Equatable {
 /// default and smart balance; the picker switches between them without
 /// changing which machine is primary.
 struct SettingsProviderAccountsPage: View {
-  @ObservedObject var syncService: SyncService
+  let syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
   @EnvironmentObject private var fleet: MachineFleet
   @State private var provider: ProviderAccountProvider
   @State private var selectedMachineId: String?

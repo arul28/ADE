@@ -5,7 +5,8 @@ struct LaneDetailScreen: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @Environment(\.dismiss) private var dismiss
   @Environment(\.duoLayout) private var duoLayout
-  @EnvironmentObject var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  var syncService: SyncService { syncPublishes.service }
 
   let laneId: String
   let initialSnapshot: LaneListSnapshot

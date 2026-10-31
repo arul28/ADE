@@ -43,7 +43,8 @@ private struct LinearLaunchKickoffAccessibilityMarker: UIViewRepresentable {
 /// navigate to the new session. Model/permission controls reuse the Work
 /// composer's catalog + wire-field helpers so provider-native mapping matches.
 struct LinearLaunchScreen: View {
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
 
   let issue: NormalizedLinearIssue
   /// "Link to new lane" entry — locks to lane-only (no agent config).

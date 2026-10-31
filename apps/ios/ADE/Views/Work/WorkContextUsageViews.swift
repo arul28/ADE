@@ -419,7 +419,8 @@ struct WorkCompactFirstPill: View {
 struct WorkProviderCompactionSettings: View {
   let provider: String
   let sessionId: String
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
   @Environment(\.dismiss) private var dismiss
   @State private var settings: [String: Any] = [:]
   @State private var tokens = ""

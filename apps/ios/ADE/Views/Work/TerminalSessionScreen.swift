@@ -5,7 +5,8 @@ import UIKit
 /// streamed PTY output, tap-to-focus keyboard input, on-demand scrollback
 /// paging, and phone-driven PTY resize.
 struct TerminalSessionScreen: View {
-  @EnvironmentObject var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  var syncService: SyncService { syncPublishes.service }
   @Environment(\.dismiss) private var dismiss
 
   let session: TerminalSessionSummary

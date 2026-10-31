@@ -1,7 +1,8 @@
 import SwiftUI
 
 struct PersonalChatsScreen: View {
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
   @EnvironmentObject private var machineFleet: MachineFleet
   /// The Duo's two-column Chats window: a row picks the chat for the detail
   /// column instead of pushing it. Nil everywhere else.
@@ -607,7 +608,8 @@ func makePersonalChatSessionStub(_ summary: AgentChatSessionSummary) -> Terminal
 }
 
 struct PersonalChatNewScreen: View {
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
   @EnvironmentObject private var machineFleet: MachineFleet
   @State private var provider = "claude"
   @State private var modelId = "claude-sonnet-5"

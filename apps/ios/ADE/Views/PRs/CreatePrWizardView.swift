@@ -4,7 +4,8 @@ import SwiftUI
 // MARK: - Public view
 
 struct CreatePrWizardView: View {
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
   @Environment(\.dismiss) private var dismiss
 
   let lanes: [LaneSummary]

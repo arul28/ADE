@@ -429,7 +429,8 @@ struct MacDesktopControlPicture: View {
   /// can say "you have control" without owning the lease itself.
   var onControlChange: ((Bool) -> Void)?
 
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
   @Environment(\.scenePhase) private var scenePhase
   @FocusState private var focused: Bool
 

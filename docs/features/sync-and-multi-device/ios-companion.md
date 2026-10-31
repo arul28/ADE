@@ -674,6 +674,9 @@ apps/ios/
 │   │   │                            # WorkUsageActivityCarousel (Limits/Activity
 │   │   │                            #   tab switch over host quota limits +
 │   │   │                            #   cross-client activity charts),
+│   │   │                            # WorkUsageSkyline (the Activity tab: the
+│   │   │                            #   desktop 3D contribution skyline, one
+│   │   │                            #   cached Canvas, one-shot rise),
 │   │   │                            # WorkUsageLimitsModule (the Limits tab:
 │   │   │                            #   per-provider headroom cards, one
 │   │   │                            #   segment per account, account detail
@@ -1207,6 +1210,11 @@ iPhone are `compact` and use the same views stacked, never an older design.
   per change.
 - **Fixtures.** `-adePreviewScreen duo-*` opens a fixture screen on any
   simulator (`DuoPreviews.swift`, `DuoSplitPreviews.swift`).
+- **Hinge angle.** `DuoHingeObserver` keeps `\.duoLayout.hingeAngle` on a 5°
+  grid (flat is 180), with hysteresis so a hinge held on a boundary does not
+  flip between two steps. The sensor reports every
+  fraction of a degree and an open phone in the hand never holds still; each
+  raw value re-rendered the whole app, which made the unfolded Duo laggy.
 
 ### Connection status UI
 
@@ -4241,6 +4249,13 @@ the pace-bar touch that dims the other series. Touching a pace bar keeps that
 provider lit and fades the rest so one provider's days stand out in a busy
 chart.
 
+The new-chat card's Activity tab is the desktop skyline (`WorkUsageSkyline`).
+Its street starts a week before the first active day, so a short history is a
+compact block, not a few towers at the end of an empty year. With little data
+the Tokens and Code bars still draw two weeks of day slots (empty days are a
+faint track), and one client gets a caption naming its actions and days; the
+desktop card (`ActivityModule.tsx`) does the same.
+
 `ADEUsageDesign.swift` is the iOS counterpart of the desktop `usageDesign.ts`:
 the same five type steps, the same section and card rhythm, the same pressure
 thresholds, and the same "top N providers plus a merged neutral Other" chart
@@ -4311,6 +4326,18 @@ the stats and shows update guidance.
 
 ## Gotchas
 
+- **Screens observe `SyncMenuSafePublisher`, not `SyncService`.** SwiftUI
+  rebuilds an open `Menu` (toolbar, header or picker) whenever a view above it
+  re-renders, so at a connected phone's ~15 publishes a second a long menu
+  flickered and snapped back to its top while scrolled. Views read
+  `syncService` through `SyncMenuSafePublisher.shared`, which forwards every
+  publish except while UIKit's context-menu container is on screen, then sends
+  one when it closes. Declare new observers the same way
+  (`@ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared`
+  plus `var syncService: SyncService { syncPublishes.service }`), never
+  `@EnvironmentObject var syncService`, and use `syncService.bindings.x` for a
+  binding. `ADEApp` holds its services in `@State` so the app root does not
+  re-evaluate on every publish either.
 - **Phones never become the runtime.** Any future feature that needs to run on the
   phone should be implemented as a controller operation that sends a
   command to the runtime. Agent processes, PTYs, worktrees, and workers

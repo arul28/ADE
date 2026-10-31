@@ -3136,7 +3136,8 @@ private struct WorkChatComposerDraftInput: View {
   /// and shows no failure, because nothing was sent.
   var sendGate: (@MainActor (String) async -> Bool)? = nil
 
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
   @Environment(\.colorScheme) private var colorScheme
   @StateObject private var draftState = WorkChatComposerDraftState()
   @StateObject private var suggestionController = WorkComposerSuggestionController()

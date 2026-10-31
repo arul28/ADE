@@ -56,7 +56,10 @@ private enum RootTab: String, Hashable, CaseIterable, Identifiable {
 }
 
 struct ContentView: View {
-  @EnvironmentObject private var syncService: SyncService
+  /// `SyncService`, observed through the menu-safe publisher: every screen's
+  /// menus sit under the root (see `SyncMenuSafePublisher`).
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
   @EnvironmentObject private var accountService: AccountService
   @EnvironmentObject private var appUpdateAdvisor: AppUpdateAdvisor
   @State private var selectedTab: RootTab = {
@@ -157,11 +160,11 @@ struct ContentView: View {
       // inner display a two-column window, an inspector column and a
       // three-pane window (Views/Duo/DuoWindows.swift).
       .modifier(DuoWindowPresentations(syncService: syncService, appUpdateAdvisor: appUpdateAdvisor))
-      .sheet(isPresented: $syncService.cursorCloudPanePresented) {
+      .sheet(isPresented: syncService.bindings.cursorCloudPanePresented) {
         CursorCloudPaneSheet(syncService: syncService)
           .environmentObject(syncService)
       }
-      .sheet(isPresented: $syncService.githubIssuesPanePresented) {
+      .sheet(isPresented: syncService.bindings.githubIssuesPanePresented) {
         GitHubIssuesPaneSheet(syncService: syncService)
           .environmentObject(syncService)
       }
@@ -404,7 +407,8 @@ struct ContentView: View {
 /// tabs below keep their cached rows, so this banner is what says the machine
 /// is not answering yet — and offers the same retry the recovery screen runs.
 private struct ProjectHostStartingBanner: View {
-  @ObservedObject var syncService: SyncService
+  let syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
   /// What the rows under this banner are, so the stale marker names them.
   /// `nil` on tabs that show nothing this machine's project services own.
   let staleContentNoun: String?
@@ -525,7 +529,8 @@ private struct AppUpdateBanner: View {
 /// phone's own controls do. Only the outer display shows the tab bar, so this
 /// is inert there (`DuoAppTabsToolbar` draws nothing in compact).
 private struct DuoAppNavigationSync: ViewModifier {
-  @ObservedObject var syncService: SyncService
+  let syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
   @ObservedObject var drawer: ActivityDrawerModel
   @Binding var selectedTab: RootTab
 
@@ -622,7 +627,8 @@ extension View {
 /// Kept out of ContentView's already-long modifier chain so SwiftUI does not
 /// have to infer the entire app root and the cold-start task in one expression.
 private struct WorkSessionNavigationModifier: ViewModifier {
-  @ObservedObject var syncService: SyncService
+  let syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
   @Binding var selectedTab: RootTab
 
   func body(content: Content) -> some View {

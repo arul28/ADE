@@ -46,7 +46,8 @@ struct LanesRootInputs: Equatable {
 /// `LanesRootInputs`; the screen behind it is `.equatable()` on them (the
 /// Work tab's pattern).
 struct LanesTabShell: View {
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
   @EnvironmentObject private var machineFleet: MachineFleet
   var isActive = true
 

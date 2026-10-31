@@ -591,7 +591,8 @@ private enum DuoWorkPreviewPreset {
 /// real sessions column, the real chat destination (with a seeded transcript),
 /// the real tools pane and the real rail.
 private struct DuoWorkPreviewHost: View {
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
   let preset: DuoWorkPreviewPreset
   @State private var seeded = false
 
@@ -610,6 +611,9 @@ private struct DuoWorkPreviewHost: View {
     guard !seeded else { return }
     syncService.pinActiveProjectForPreview(projectId: WorkListPreviewData.projectId)
     WorkRootPreviewFixture.active = WorkListPreviewData.duoFixture()
+    // The new-chat column's usage card, as the phone's new-chat fixture has it.
+    MobileUsageQuotaStore.shared.pinPreviewSnapshot(WorkNewChatPreviewFixtures.quotaSnapshot())
+    WorkUsageActivityCarousel.previewStats = WorkNewChatPreviewFixtures.stats()
     // The session menu's lifecycle, hand-off and tag items, and the sheets
     // they open, need these advertised as a connected host would.
     syncService.seedRemoteCommandActionsForPreview(WorkListPreviewData.sessionMenuActions)

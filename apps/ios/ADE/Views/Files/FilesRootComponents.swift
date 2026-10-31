@@ -4,7 +4,8 @@ import SwiftUI
 /// then search where the screen has no other search button, and ⋯ (Activity,
 /// Settings) — Lanes' and Work's header grammar.
 struct FilesTreeHeaderRow: View {
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
   let workspaces: [FilesWorkspace]
   let lanes: [LaneSummary]
   @Binding var selectedWorkspaceId: String

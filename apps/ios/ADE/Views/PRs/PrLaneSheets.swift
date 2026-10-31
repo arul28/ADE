@@ -15,7 +15,8 @@ import UIKit
 
 struct PrAutoMapSheet: View {
   @Environment(\.dismiss) private var dismiss
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
   let item: GitHubPrListItem
   /// Least busy first. Empty means the focused machine only.
   let machines: [PrLaneMachine]

@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 import UIKit
 
@@ -29,7 +30,8 @@ struct MacDesktopViewer: View {
   /// tools sheet: this is a surface the user opened to watch.
   private static let refreshInterval: Duration = .seconds(3)
 
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
   @Environment(\.dismiss) private var dismiss
   @Environment(\.scenePhase) private var scenePhase
 
@@ -147,7 +149,10 @@ struct MacDesktopViewer: View {
     }
     .onChange(of: controlling) { _, next in controlOrientationChanged(next) }
     .onChange(of: scenePhase) { _, _ in updateLifecycle() }
-    .onChange(of: syncService.connectionState) { _, _ in updateLifecycle() }
+    // Every transition, from the service itself: through the menu-safe
+    // publisher a drop and reconnect under an open menu could coalesce
+    // into no change, and the stream would not restart.
+    .onReceive(syncService.$connectionState.removeDuplicates().receive(on: DispatchQueue.main)) { _ in updateLifecycle() }
     .onChange(of: isLiveCapable) { _, _ in updateLifecycle() }
   }
 

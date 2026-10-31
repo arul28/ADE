@@ -36,6 +36,7 @@ import {
 } from "./ActivityHeatmap";
 import { USAGE_OVERLAY_CLASS } from "./usageDesign";
 import ContributionSkyline, { ContributionSkylineToggle, type ContributionDay } from "../ui/ContributionSkyline";
+import { DAY_MS, dayMs, toKey } from "../ui/contributionSkylineModel";
 import "./usageSurfaces.css";
 import { fgTint } from "../lanes/laneDesignTokens";
 
@@ -134,8 +135,24 @@ function skylineDays(daily: readonly AdeUsageDailyPoint[]): ContributionDay[] {
       prs > 0 ? `${prs} ${prs === 1 ? "PR" : "PRs"}` : null,
       point.totalTokens > 0 ? `${formatCompact(point.totalTokens)} tokens` : null,
     ].filter(Boolean);
-    return { date: point.date, count: point.sessions + commits + prs, detail: parts.length > 0 ? parts.join(" · ") : undefined };
+    // A day with only token usage (no chat row) still stands as a tower.
+    const count = Math.max(point.sessions + commits + prs, point.totalTokens > 0 ? 1 : 0);
+    return { date: point.date, count, detail: parts.length > 0 ? parts.join(" · ") : undefined };
   });
+}
+
+/**
+ * Weeks the card's skyline spans: from a week before the first active day to
+ * where the street ends (today, or a later reported day), 20 weeks at least
+ * (the card is wide) and a year at most. A short history no longer sits as a
+ * few towers at the far end of an empty year.
+ */
+function skylineWeeks(days: readonly ContributionDay[]): number {
+  const active = days.filter((day) => day.count > 0).map((day) => dayMs(day.date));
+  if (active.length === 0) return 53;
+  const end = Math.max(dayMs(new Date()), ...days.map((day) => dayMs(day.date)));
+  const span = Math.floor((end - Math.min(...active)) / DAY_MS / 7) + 2;
+  return Math.max(20, Math.min(53, span));
 }
 
 /** Skyline band height on the home card: tall enough for the isometric rise, still a strip under the prompt. */
@@ -278,10 +295,43 @@ function DayTooltip({
 // Chart primitives
 // ---------------------------------------------------------------------------
 
+/**
+ * Fewest day slots a bar chart draws. A short history (a new install, the
+ * Today or 7d range) padded out to two weeks reads as a timeline with a few
+ * busy days, instead of two or three slabs stretched across the card.
+ */
+const MIN_BAR_SLOTS = 14;
+
+/** Days drawn only to fill a short timeline: they carry no data, so no tooltip. */
+const PADDING_DAYS = new WeakSet<AdeUsageDailyPoint>();
+
+/** An empty day, `daysBefore` days before `date` (YYYY-MM-DD). */
+function emptyDayBefore(date: string, daysBefore: number): AdeUsageDailyPoint {
+  return {
+    date: toKey(dayMs(date) - daysBefore * DAY_MS),
+    inputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 0,
+    commits: 0,
+    prs: 0,
+    insertions: 0,
+    deletions: 0,
+    filesChanged: 0,
+    sessions: 0,
+  };
+}
+
 /** Downsamples a daily series so wide ranges stay legible as fixed-count bars. */
 function useChartPoints(points: AdeUsageDailyPoint[], maxBars: number): AdeUsageDailyPoint[] {
   return useMemo(() => {
     const source = [...points].sort((a, b) => a.date.localeCompare(b.date));
+    const first = source[0];
+    if (first && source.length < MIN_BAR_SLOTS) {
+      const missing = MIN_BAR_SLOTS - source.length;
+      const padding = Array.from({ length: missing }, (_, i) => emptyDayBefore(first.date, missing - i));
+      for (const day of padding) PADDING_DAYS.add(day);
+      return [...padding, ...source];
+    }
     if (source.length <= maxBars) return source;
     const size = Math.ceil(source.length / maxBars);
     const merged: AdeUsageDailyPoint[] = [];
@@ -380,6 +430,16 @@ function codeLegendItems(points: AdeUsageDailyPoint[], palette: Record<SeriesKey
   ];
 }
 
+/** Hover and click open the day's tooltip; a padding day has none. */
+function dayTooltipHandlers(point: AdeUsageDailyPoint, tooltip: ReturnType<typeof useDayTooltip>) {
+  if (PADDING_DAYS.has(point)) return {};
+  return {
+    onPointerEnter: (event: React.PointerEvent<HTMLElement>) => tooltip.show(point, event.currentTarget),
+    onPointerLeave: tooltip.hide,
+    onClick: (event: React.MouseEvent<HTMLElement>) => tooltip.toggle(point, event.currentTarget),
+  };
+}
+
 function TokenBars({
   points,
   height,
@@ -408,16 +468,18 @@ function TokenBars({
       <ChartFrame height={height} ariaLabel="Token usage by day, split by input, output, and cache">
         {points.map((point) => {
           const total = Math.max(0, point.inputTokens + point.outputTokens + (point.cachedTokens ?? 0));
-          const barHeight = total > 0 ? Math.max(3, (total / max) * height) : 0;
+          const barHeight = total > 0 ? Math.max(3, (total / max) * height) : EMPTY_DAY_TRACK;
           const seg = (value: number) => (total > 0 ? `${(value / total) * 100}%` : "0%");
           return (
             <div
               key={point.date}
               className="relative flex min-w-[3px] flex-1 flex-col-reverse overflow-hidden rounded-t-[2px]"
-              style={{ height: barHeight, transition: reduced ? undefined : "height 160ms ease" }}
-              onPointerEnter={(event) => tooltip.show(point, event.currentTarget)}
-              onPointerLeave={tooltip.hide}
-              onClick={(event) => tooltip.toggle(point, event.currentTarget)}
+              style={{
+                height: barHeight,
+                background: total > 0 ? undefined : EMPTY_TILE_BG,
+                transition: reduced ? undefined : "height 160ms ease",
+              }}
+              {...dayTooltipHandlers(point, tooltip)}
             >
               <span style={{ height: seg(point.inputTokens), background: palette.input }} />
               <span style={{ height: seg(point.outputTokens), background: palette.output }} />
@@ -462,17 +524,15 @@ function CodeBars({
       <ChartFrame height={height} ariaLabel="Code changes by day, additions and deletions">
         {points.map((point) => {
           const total = Math.max(0, point.insertions + point.deletions);
-          const barHeight = total > 0 ? Math.max(3, (total / max) * height) : 0;
-          const seg = (value: number) => (total > 0 ? `${(value / total) * 100}%` : "0%");
           const githubTotal = (point.githubAdditions ?? 0) + (point.githubDeletions ?? 0);
+          const barHeight = total > 0 ? Math.max(3, (total / max) * height) : githubTotal > 0 ? 0 : EMPTY_DAY_TRACK;
+          const seg = (value: number) => (total > 0 ? `${(value / total) * 100}%` : "0%");
           const githubHeight = anyGithub && githubTotal > 0 ? Math.max(2, (githubTotal / max) * height) : 0;
           return (
             <div
               key={point.date}
               className="relative flex min-w-[3px] flex-1 items-end"
-              onPointerEnter={(event) => tooltip.show(point, event.currentTarget)}
-              onPointerLeave={tooltip.hide}
-              onClick={(event) => tooltip.toggle(point, event.currentTarget)}
+              {...dayTooltipHandlers(point, tooltip)}
             >
               {githubHeight > 0 ? (
                 <span
@@ -482,7 +542,11 @@ function CodeBars({
               ) : null}
               <span
                 className="relative flex w-full flex-col-reverse overflow-hidden rounded-t-[2px]"
-                style={{ height: barHeight, transition: reduced ? undefined : "height 160ms ease" }}
+                style={{
+                  height: barHeight,
+                  background: total > 0 ? undefined : EMPTY_TILE_BG,
+                  transition: reduced ? undefined : "height 160ms ease",
+                }}
               >
                 <span style={{ height: seg(point.insertions), background: palette.insertions }} />
                 <span style={{ height: seg(point.deletions), background: palette.deletions }} />
@@ -566,8 +630,18 @@ function ClientMix({ stats }: { stats: AdeUsageStats }) {
           </div>
         ))}
       </div>
+      {clients.length === 1 ? (
+        // One client is a full bar that says little; say what it holds.
+        <p className="usage-client-caption">{singleClientCaption(clients[0]!)}</p>
+      ) : null}
     </div>
   );
+}
+
+function singleClientCaption(client: AdeUsageClientSummary): string {
+  const actions = `${formatCompact(client.interactions)} ${client.interactions === 1 ? "action" : "actions"}`;
+  const days = `${client.activeDays} active ${client.activeDays === 1 ? "day" : "days"}`;
+  return `All in ${CLIENT_LABELS[client.client]}: ${actions} over ${days}`;
 }
 
 function Legend({ items }: { items: Array<{ color: string; label: string }> }) {
@@ -608,6 +682,8 @@ const EMPTY_BAR_HEIGHTS = [0.35, 0.55, 0.4, 0.7, 0.5, 0.62, 0.44, 0.58, 0.48, 0.
 const EMPTY_GRID_COLUMNS = 14;
 const EMPTY_GRID_ROWS = 7;
 const EMPTY_TILE_BG = fgTint(8);
+/** A day with nothing on it: a low track, so the timeline still reads. */
+const EMPTY_DAY_TRACK = 2;
 
 /**
  * A day with no data still has a shape. The activity tab previews the grid it
@@ -952,6 +1028,7 @@ export function ActivityModule({
       <div className="usage-activity-skyline" style={{ height: SKYLINE_HEIGHT }}>
         <ContributionSkyline
           data={skyDays}
+          maxWeeks={skylineWeeks(skyDays)}
           view="3d"
           showToggle={false}
           showStats={false}

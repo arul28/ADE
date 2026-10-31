@@ -4,7 +4,8 @@ import SwiftUI
 /// connection status, and a "what the CTO remembers" memory summary. Presented
 /// as a sheet from the CTO tab's gear button.
 struct CtoSettingsScreen: View {
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
   @EnvironmentObject private var machineFleet: MachineFleet
   @Environment(\.dismiss) private var dismiss
   @State private var homeMachineError: String?

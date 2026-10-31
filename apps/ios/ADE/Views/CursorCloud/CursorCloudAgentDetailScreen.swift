@@ -5,7 +5,8 @@ import UIKit
 /// action bar (Open in ADE / Stop / Pull into lane / Open on cursor.com).
 /// Every action executes host-side through SyncService.
 struct CursorCloudAgentDetailScreen: View {
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
   @Environment(\.dismiss) private var dismiss
 
   let entry: CursorCloudFleetEntry

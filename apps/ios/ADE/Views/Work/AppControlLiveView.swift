@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 import UIKit
 
@@ -327,7 +328,8 @@ struct AppControlCard: View {
   let refreshTick: Int
   @Binding var viewerPresented: Bool
 
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
   @Environment(\.scenePhase) private var scenePhase
 
   @State private var liveSession: AppControlLiveSession?
@@ -351,7 +353,10 @@ struct AppControlCard: View {
     .onAppear { updateLiveLifecycle() }
     .onDisappear { stopLiveSession() }
     .onChange(of: scenePhase) { _, _ in updateLiveLifecycle() }
-    .onChange(of: syncService.connectionState) { _, _ in updateLiveLifecycle() }
+    // Every transition, from the service itself: through the menu-safe
+    // publisher a drop and reconnect under an open menu could coalesce
+    // into no change, and the stream would not restart.
+    .onReceive(syncService.$connectionState.removeDuplicates().receive(on: DispatchQueue.main)) { _ in updateLiveLifecycle() }
     .onChange(of: isLiveCapable) { _, _ in updateLiveLifecycle() }
     .onChange(of: viewerPresented) { _, _ in updateLiveLifecycle() }
     .onChange(of: refreshTick) { _, _ in retryEndedSessionIfNeeded() }
@@ -546,7 +551,8 @@ struct AppControlViewer: View {
 
   private static let refreshInterval: Duration = .seconds(3)
 
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
   @Environment(\.dismiss) private var dismiss
   @Environment(\.scenePhase) private var scenePhase
 
@@ -633,7 +639,10 @@ struct AppControlViewer: View {
       restoreOrientationOnClose()
     }
     .onChange(of: scenePhase) { _, _ in updateLifecycle() }
-    .onChange(of: syncService.connectionState) { _, _ in updateLifecycle() }
+    // Every transition, from the service itself: through the menu-safe
+    // publisher a drop and reconnect under an open menu could coalesce
+    // into no change, and the stream would not restart.
+    .onReceive(syncService.$connectionState.removeDuplicates().receive(on: DispatchQueue.main)) { _ in updateLifecycle() }
     .onChange(of: isLiveCapable) { _, _ in updateLifecycle() }
   }
 

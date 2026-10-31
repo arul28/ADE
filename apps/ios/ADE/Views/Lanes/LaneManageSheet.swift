@@ -2,7 +2,8 @@ import SwiftUI
 
 struct LaneManageSheet: View {
   @Environment(\.dismiss) private var dismiss
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
 
   let snapshot: LaneListSnapshot
   let allLaneSnapshots: [LaneListSnapshot]

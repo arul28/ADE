@@ -16,7 +16,8 @@ import WidgetKit
 struct ActivityDrawerSheet: View {
     @EnvironmentObject private var drawer: ActivityDrawerModel
     @EnvironmentObject private var accountService: AccountService
-    @EnvironmentObject private var syncService: SyncService
+    @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+    private var syncService: SyncService { syncPublishes.service }
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var bucket: ActivityBucket = .sessions

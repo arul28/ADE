@@ -3,7 +3,8 @@ import SwiftUI
 /// Issue detail: description, labels, properties, sub-issues, comments, and the
 /// primary "Launch" action. Comments load lazily on appear.
 struct LinearIssueDetailScreen: View {
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
   @Environment(\.openURL) private var openURL
   @Environment(\.linearIssueSelection) private var linearSelection
 

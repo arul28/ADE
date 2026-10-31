@@ -250,7 +250,8 @@ struct DuoHomeWide<Title: View, Projects: View, Composer: View, ChatsDestination
   @ViewBuilder var chatsDestination: () -> ChatsDestination
 
   @Environment(\.duoLayout) private var duo
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
   @State private var agentFilter: HubRosterFilter?
   /// The filter row's bottom edge in the window, so the agent list can start
   /// below the rail's capsule where it runs under the rail's column.
@@ -614,7 +615,8 @@ private enum DuoConnectFixtures {
 
 private struct DuoConnectGateFixture: View {
   let sheet: DuoConnectFixtures.Sheet?
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
   @State private var presented: DuoConnectFixtures.Sheet?
 
   var body: some View {
@@ -659,7 +661,8 @@ private struct DuoHomeFixtureScreen: View {
   /// The filter a fixture opens on; nil is each layout's default.
   var initialFilter: HubRosterFilter?
   var opensChats = false
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
   @Environment(\.duoLayout) private var duo
   @State private var composerExpanded = false
   @State private var rosterFilter: HubRosterFilter = .all

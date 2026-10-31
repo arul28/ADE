@@ -475,7 +475,8 @@ struct DuoChatHeaderCapsules: View {
 /// ‹ and the project's logo inside a header capsule's leading end: back to
 /// the Hub.
 private struct DuoHubBackInCapsule: View {
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
 
   var body: some View {
     Button {

@@ -6,7 +6,8 @@ import SwiftUI
 /// resolves connection state itself (issues when connected, a "connect Linear on
 /// your machine" prompt otherwise), so the button needs no pre-check.
 struct LinearPaneToolbarButton: View {
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
 
   var body: some View {
     if syncService.activeProjectId != nil {

@@ -225,9 +225,12 @@ func hubStatusBandLeadingWidth(_ proxy: GeometryProxy) -> CGFloat? {
   guard !proxy.isLandscapeIgnoringKeyboard, proxy.safeAreaInsets.top >= 64 else { return nil }
   #if compiler(>=6.4)
   guard #available(iOS 27.1, *) else { return nil }
+  // Its bottom is not checked: with the ringer silenced the phone stacks a
+  // bell over the clock, and the block can reach below the inset. The header
+  // only needs the band to its leading side.
   let status = proxy.reservedRegions(kind: .occlusion).filter { region in
     let frame = region.frame
-    return region.isActive && frame.minY < 0 && frame.maxY <= 1 && frame.minX > proxy.size.width * 0.4
+    return region.isActive && frame.minY < 0 && frame.minX > proxy.size.width * 0.4
   }
   guard let leading = status.map(\.frame.minX).min(), leading >= 220 else { return nil }
   return leading
@@ -551,7 +554,8 @@ struct HubMachinesMenuContent: View {
 
 /// `HubConnectionMenu` over the live connection and fleet.
 struct HubLiveConnectionMenu: View {
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
   @EnvironmentObject private var machineFleet: MachineFleet
   @ObservedObject private var account = AccountService.shared
 
@@ -1584,7 +1588,8 @@ struct HubChatRow: View, Equatable {
 // MARK: - State cards
 
 struct HubConnectingCard: View {
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
 
   var body: some View {
     VStack(spacing: 16) {
@@ -1604,7 +1609,8 @@ struct HubConnectingCard: View {
 }
 
 struct HubEmptyProjectsCard: View {
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
   var body: some View {
     VStack(spacing: 6) {
       Image(systemName: "folder.badge.plus")
@@ -1656,7 +1662,8 @@ struct HubCenteredPage<Content: View>: View {
 // MARK: - No-machine state (preserves the old project hub landing)
 
 struct HubNoMachineState: View {
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
   @ObservedObject private var account = AccountService.shared
   var onConnectSuccess: () -> Void = {}
 
