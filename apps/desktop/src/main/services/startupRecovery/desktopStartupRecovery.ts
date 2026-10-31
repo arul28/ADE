@@ -36,6 +36,12 @@ export function createDesktopStartupRecovery(args: {
 }): StartupRecovery {
   const { logger, runningVersion, globalStatePath } = args;
   const logsFolder = resolveMachineAdeLayout().runtimeDir;
+  // A clean open, not one "Go back" set up (`firstOpenedAt` stays null until the open).
+  const fileOpenedOnRunningVersion = (dbPath: string): boolean => {
+    const record = readDbCompatRecord(dbPath);
+    return record != null && record !== "unreadable"
+      && record.lastOpenedVersion === runningVersion && record.firstOpenedAt != null;
+  };
   let recovery: StartupRecovery | null = null;
   const window = createStartupRecoveryWindow({
     logger,
@@ -59,13 +65,10 @@ export function createDesktopStartupRecovery(args: {
     readProjectFailure: (projectRoot) => readLastFailure({ kind: "project", projectRoot }),
     classifyDatabaseError: (error, projectRoot) =>
       classifySqliteOpenError(error, { path: resolveAdeLayout(projectRoot).dbPath }),
-    openedOnRunningVersion: (projectRoot) => {
-      const dbPath = projectRoot ? resolveAdeLayout(projectRoot).dbPath : path.join(resolveMachineAdeLayout().adeDir, "ade.db");
-      const record = readDbCompatRecord(dbPath);
-      // A clean open, not one "Go back" set up (`firstOpenedAt` stays null until the open).
-      return record != null && record !== "unreadable"
-        && record.lastOpenedVersion === runningVersion && record.firstOpenedAt != null;
-    },
+    openedOnRunningVersion: (projectRoot) => fileOpenedOnRunningVersion(
+      projectRoot ? resolveAdeLayout(projectRoot).dbPath : path.join(resolveMachineAdeLayout().adeDir, "ade.db"),
+    ),
+    fileOpenedOnRunningVersion,
     findProjectDatabase: (projectRoot, databases) => {
       const dbPath = resolveAdeLayout(projectRoot).dbPath;
       return databases.find((database) => database.kind === "project" && pathsEqual(database.dbPath, dbPath)) ?? null;
@@ -78,7 +81,7 @@ export function createDesktopStartupRecovery(args: {
     dbCompatLevelOf,
     updates: args.updates,
     releaseDatabases: args.releaseDatabases,
-    restoreCopies: (plan) => restoreDatabaseCopies({ plan, runningVersion, logger }),
+    restoreCopies: (plan, targetLevel) => restoreDatabaseCopies({ plan, runningVersion, targetLevel, logger }),
     recordWentBack: ({ fromVersion, toVersion }) => {
       // Read-modify-write that refuses a corrupt file rather than replacing it.
       // Builds from before `wentBackFrom` (1.2.127, the stable at the time)

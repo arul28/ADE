@@ -24,8 +24,14 @@ function copy(
   };
 }
 
-function database(kind: LocalDatabaseKind, dbPath: string, copies: DatabaseCopyInfo[], label: string = kind): GoBackDatabase {
-  return { kind, label, dbPath, copies };
+function database(
+  kind: LocalDatabaseKind,
+  dbPath: string,
+  copies: DatabaseCopyInfo[],
+  label: string = kind,
+  openedOnRunningVersion = false,
+): GoBackDatabase {
+  return { kind, label, dbPath, copies, openedOnRunningVersion };
 }
 
 describe("parseDatabaseCopyName", () => {
@@ -113,6 +119,27 @@ describe("chooseGoBackPlan", () => {
       databases: [database("project", project, [copy(project, running, "1.2.128-beta.2", 300)])],
       failed: null,
       target: null,
+    },
+    {
+      // A late crash after this version worked: its work lives only in the file.
+      name: "a database the running version already opened cleanly is never a way back",
+      record: null,
+      databases: [
+        database("machine", machine, [copy(machine, running, "1.2.128-beta.2", 300)], "machine", true),
+        database("personal", personal, [copy(personal, running, "1.2.128-beta.2", 300)], "personal", true),
+      ],
+      failed: null,
+      target: null,
+    },
+    {
+      name: "only databases not opened cleanly yet choose the version",
+      record: null,
+      databases: [
+        database("machine", machine, [copy(machine, running, "1.2.128-beta.2", 500)], "machine", true),
+        database("personal", personal, [copy(personal, running, "1.2.128-beta.1", 100)]),
+      ],
+      failed: null,
+      target: "1.2.128-beta.1",
     },
     {
       name: "the project that failed is",

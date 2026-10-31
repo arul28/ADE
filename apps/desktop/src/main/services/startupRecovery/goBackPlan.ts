@@ -60,6 +60,12 @@ export type GoBackDatabase = {
   label: string;
   dbPath: string;
   copies: readonly DatabaseCopyInfo[];
+  /**
+   * The running version already opened this file cleanly (its compat record
+   * says so). Work done since then lives only in it, so it is never put back,
+   * whatever made the window appear.
+   */
+  openedOnRunningVersion: boolean;
 };
 
 export type GoBackPlan = {
@@ -77,9 +83,12 @@ export type GoBackPlan = {
  * Which databases go back with the app: this computer's own database and the
  * personal chats', always; a project's only when it is the one that failed.
  * A project database syncs with other machines, and putting back one that
- * works would drop what was done in it since the update.
+ * works would drop what was done in it since the update. None that the
+ * running version already opened cleanly: that open proved the update for
+ * that file, and what was done since would be lost.
  */
 function restorable(database: GoBackDatabase, failedDbPath: string | null): boolean {
+  if (database.openedOnRunningVersion) return false;
   return database.kind !== "project" || (failedDbPath != null && database.dbPath === failedDbPath);
 }
 

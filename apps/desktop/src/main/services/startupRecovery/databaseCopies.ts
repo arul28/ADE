@@ -227,9 +227,11 @@ type DoneMove = { entry: GoBackPlan["restores"][number]; liveParts: string[]; ke
 export function restoreDatabaseCopies(args: {
   plan: GoBackPlan;
   runningVersion: string;
+  /** The target build's `dbCompat`: the level of the older files put back. */
+  targetLevel: number;
   logger: Logger;
 }): DatabaseRestoreResult[] {
-  const { plan, runningVersion, logger } = args;
+  const { plan, runningVersion, targetLevel, logger } = args;
   for (const entry of plan.restores) {
     if (!fs.existsSync(entry.copy.path)) {
       logger.warn("startupRecovery.database_copy_missing", { dbPath: entry.dbPath, copy: entry.copy.path });
@@ -268,8 +270,10 @@ export function restoreDatabaseCopies(args: {
   const results: DatabaseRestoreResult[] = [];
   for (const { entry, keptAs } of done) {
     // The target opens it next. `cleanOpen: false`: it has not opened it yet,
-    // so its one-day clock starts at that open, not now.
-    writeDbCompatRecord(entry.dbPath, plan.targetVersion, logger, new Date(), { cleanOpen: false });
+    // so its one-day clock starts at that open, not now. The file is the
+    // target's own copy now, so it is recorded at the target's level, not at
+    // the level of the build that is leaving.
+    writeDbCompatRecord(entry.dbPath, plan.targetVersion, logger, new Date(), { cleanOpen: false, restoredLevel: targetLevel });
     logger.info("startupRecovery.database_restored", {
       dbPath: entry.dbPath,
       restoredFrom: entry.copy.path,

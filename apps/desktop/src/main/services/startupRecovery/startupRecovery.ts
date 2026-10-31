@@ -40,9 +40,11 @@ import { chooseGoBackPlan, type GoBackPlan } from "./goBackPlan";
  * screen already offers the right fixes, and nothing here shows. A database
  * the running version already opened cleanly (its compat record says so)
  * failed later, not because of the update, so it does not count either. The
- * same clean open is what starts the one day after which that database's copy
- * is deleted (`clearProvenDatabaseCopies`), so the window never offers a copy
- * that cleanup could take.
+ * plan itself never puts back such a database, whatever the trigger
+ * (`goBackPlan.ts`); that same clean open starts the one day after which its
+ * copy is deleted (`clearProvenDatabaseCopies`), so Go back never offers a
+ * copy that cleanup could take. A window failure after a project opened on
+ * this launch shows the window without Go back.
  *
  * Problems the person can fix (disk full, an unreadable cloud folder, data
  * that was moved, macOS blocking the service) never show it: going back
@@ -112,6 +114,8 @@ export type StartupRecoveryDeps = {
    * machine database.
    */
   openedOnRunningVersion: (projectRoot: string | null) => boolean;
+  /** The same, for any database file: the plan never puts such a file back. */
+  fileOpenedOnRunningVersion: (dbPath: string) => boolean;
   /** The database of a project, as `listDatabases` names it (same path, same case). */
   findProjectDatabase: (projectRoot: string, databases: readonly LocalDatabase[]) => LocalDatabase | null;
   listDatabases: () => LocalDatabase[];
@@ -123,7 +127,8 @@ export type StartupRecoveryDeps = {
   /** Stops everything that holds a database open: the owned brain child and this app's project contexts. */
   releaseDatabases: () => Promise<void>;
   /** Throws `DatabaseRestoreError` (a `RestoreFailure`) when it stops. */
-  restoreCopies: (plan: GoBackPlan) => Array<{ dbPath: string; keptAs: string | null }>;
+  /** `targetLevel`: the target's `dbCompat`, recorded for every file put back. */
+  restoreCopies: (plan: GoBackPlan, targetLevel: number) => Array<{ dbPath: string; keptAs: string | null }>;
   /**
    * Saves the version gone back from, so ordinary checks skip it, and turns
    * automatic install off until a newer build lands (older builds read only
@@ -186,7 +191,11 @@ export function createStartupRecovery(deps: StartupRecoveryDeps) {
   let plan: GoBackPlan | null = null;
   let phase: StartupRecoveryPhase = { state: "idle" };
   /** Set once the go-back download started; the install hook acts only for it. */
+  /** False when the window showed for a failure that going back cannot be offered for. */
+  let goBackAllowed = true;
   let armed: GoBackPlan | null = null;
+  /** The armed target's `dbCompat`, read from its release manifest. */
+  let armedLevel = LEGACY_DB_COMPAT_LEVEL;
   let stopWatchingUpdates: (() => void) | null = null;
   let installRequested = false;
 
@@ -197,7 +206,7 @@ export function createStartupRecovery(deps: StartupRecoveryDeps) {
   };
 
   const readPlan = (): GoBackPlan | null => {
-    if (deps.install === "unsupported") return null;
+    if (deps.install === "unsupported" || !goBackAllowed) return null;
     try {
       const listed = deps.listDatabases();
       const failed = trigger?.kind === "database" ? deps.findProjectDatabase(trigger.projectRoot, listed) : null;
@@ -206,6 +215,7 @@ export function createStartupRecovery(deps: StartupRecoveryDeps) {
         label: database.label,
         dbPath: database.dbPath,
         copies: deps.listCopies(database),
+        openedOnRunningVersion: deps.fileOpenedOnRunningVersion(database.dbPath),
       }));
       return chooseGoBackPlan({
         runningVersion,
@@ -240,10 +250,17 @@ export function createStartupRecovery(deps: StartupRecoveryDeps) {
     deps.window.update(windowState());
   };
 
-  /** Shows the window for `next`, unless one already showed this launch. */
-  const show = (next: StartupRecoveryTrigger, { needsUpdate }: { needsUpdate: boolean }): void => {
+  /**
+   * Shows the window for `next`, unless one already showed this launch.
+   * `goBack: false` shows it with Try again, logs and details only.
+   */
+  const show = (
+    next: StartupRecoveryTrigger,
+    { needsUpdate, goBack = true }: { needsUpdate: boolean; goBack?: boolean },
+  ): void => {
     if (trigger) return;
     trigger = next;
+    goBackAllowed = goBack;
     const nextPlan = readPlan();
     if (needsUpdate) {
       const record = deps.readUpdateRecord();
@@ -284,22 +301,28 @@ export function createStartupRecovery(deps: StartupRecoveryDeps) {
    * one first opened on the running version) must be at or below its
    * `dbCompat` (T3 #4374).
    */
-  const checkTarget = async (target: GoBackPlan): Promise<{ message: string; next: string } | null> => {
+  const checkTarget = async (
+    target: GoBackPlan,
+  ): Promise<{ ok: true; level: number } | { ok: false; message: string; next: string }> => {
     let raw: unknown | null;
     try {
       raw = await deps.fetchReleaseManifest(target.targetVersion);
     } catch (error) {
       logger.warn("startupRecovery.go_back_manifest_failed", { version: target.targetVersion, error: errorText(error) });
       return {
+        ok: false,
         message: `ADE couldn't reach GitHub to get ${target.targetVersion}.`,
         next: `Check your internet connection. ${AGAIN}`,
       };
     }
+    // No manifest (a 404): a stable from before manifests, which is level 1.
+    // A manifest that names no level is not trusted with the data, as for a
+    // track switch (trackSwitchGuard.ts).
     let targetLevel = LEGACY_DB_COMPAT_LEVEL;
     if (raw !== null) {
       const manifest = parseReleaseManifest(raw);
       if (!manifest || manifest.version !== target.targetVersion || manifest.dbCompat == null) {
-        return { message: `ADE couldn't read the details of ${target.targetVersion}, so it didn't go back.`, next: SUPPORT };
+        return { ok: false, message: `ADE couldn't read the details of ${target.targetVersion}, so it didn't go back.`, next: SUPPORT };
       }
       targetLevel = manifest.dbCompat;
     }
@@ -308,12 +331,13 @@ export function createStartupRecovery(deps: StartupRecoveryDeps) {
       if (level === "unreadable" || level > targetLevel) {
         logger.warn("startupRecovery.go_back_blocked", { dbPath: database.dbPath, level, targetLevel });
         return {
+          ok: false,
           message: `${target.targetVersion} can't open “${database.label}” after ${runningVersion} changed it, so ADE didn't go back.`,
           next: `Press Try again. If ADE still can't start, ${SUPPORT.charAt(0).toLowerCase()}${SUPPORT.slice(1)}`,
         };
       }
     }
-    return null;
+    return { ok: true, level: targetLevel };
   };
 
   const startInstall = (version: string): void => {
@@ -396,12 +420,13 @@ export function createStartupRecovery(deps: StartupRecoveryDeps) {
       return;
     }
     setPhase({ state: "checking" });
-    const blocked = await checkTarget(current);
-    if (blocked) {
-      failGoBack(blocked.message, blocked.next, { reason: "target_check" });
+    const checked = await checkTarget(current);
+    if (!checked.ok) {
+      failGoBack(checked.message, checked.next, { reason: "target_check" });
       return;
     }
     armed = current;
+    armedLevel = checked.level;
     installRequested = false;
     watchUpdates(current.targetVersion);
     const started = await deps.updates.startGoBack(current.targetVersion);
@@ -502,7 +527,9 @@ export function createStartupRecovery(deps: StartupRecoveryDeps) {
     },
 
     noteWindowFailed(kind: "window_crashed" | "window_load_failed", detail: string | null): void {
-      show({ kind, detail }, { needsUpdate: false });
+      // After a project opened on this launch, ADE did start: the window says
+      // what broke, but going back is not offered for a crash that came later.
+      show({ kind, detail }, { needsUpdate: false, goBack: !projectOpened });
     },
 
     async handleAction(action: StartupRecoveryAction): Promise<void> {
@@ -548,7 +575,7 @@ export function createStartupRecovery(deps: StartupRecoveryDeps) {
       if (installing !== target.targetVersion) return;
       try {
         await deps.releaseDatabases();
-        const restored = deps.restoreCopies(target);
+        const restored = deps.restoreCopies(target, armedLevel);
         try {
           deps.recordWentBack({ fromVersion: runningVersion, toVersion: target.targetVersion });
         } catch (error) {

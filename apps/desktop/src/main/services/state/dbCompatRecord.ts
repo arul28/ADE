@@ -97,14 +97,22 @@ export function writeDbCompatRecord(
   appVersion: string,
   logger: Logger,
   now = new Date(),
-  options: { cleanOpen?: boolean } = {},
+  options: {
+    cleanOpen?: boolean;
+    /**
+     * "Go back" replaced the file with an older copy: record that copy's
+     * level (the target build's), even when it is lower. The one place a
+     * level is lowered, because the file itself is a different one now.
+     */
+    restoredLevel?: number;
+  } = {},
 ): DbCompatRecord | null {
   const cleanOpen = options.cleanOpen !== false;
   const read = readDbCompatRecord(dbPath);
   const previous = read && read !== "unreadable" ? read : null;
   const sameVersion = previous?.lastOpenedVersion === appVersion;
   const record: DbCompatRecord = {
-    level: Math.max(previous?.level ?? 0, DB_COMPAT_LEVEL),
+    level: options.restoredLevel ?? Math.max(previous?.level ?? 0, DB_COMPAT_LEVEL),
     lastOpenedVersion: appVersion,
     updatedAt: now.toISOString(),
     // A record from before this field starts its clock now: later, never sooner.

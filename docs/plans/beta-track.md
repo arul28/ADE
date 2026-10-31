@@ -133,8 +133,8 @@ signals ADE already had:
 |---|---|---|
 | `database` | Before any project opened this launch, a project open fails with `db_integrity`, `migration_incomplete` or `migration_unknown_state` (from the error's code, or `classifySqliteOpenError` for a raw SQLite error), or the brain wrote a `project_db_open` last-failure record during this launch | yes |
 | `brain` | A project open fails with `brain_crash_looping`, or the post-update transaction fails at `service`, `restart` or `health` and the brain recorded a `brain_startup` or `project_db_open` failure during this launch | yes |
-| `window_crashed` | The main window's renderer crashed until its recovery budget ran out | no |
-| `window_load_failed` | The main window's renderer never loaded | no |
+| `window_crashed` | The main window's renderer crashed until its recovery budget ran out | no (no Go back once a project opened this launch) |
+| `window_load_failed` | The main window's renderer never loaded | no (no Go back once a project opened this launch) |
 
 "Needs an update" means the update record (`recentlyInstalledUpdate`) names
 the running version, or a database copy names a move into it. Without one,
@@ -162,7 +162,10 @@ databases that go back count. This computer's database and the personal
 chats' database always go back; a project's database only when it is the
 one that failed to open. A project database syncs with other machines, and
 putting back one that works would drop what was done in it since the update.
-Among those, the copies whose name moves into the running version
+None goes back that the running version already opened cleanly (its compat
+record names the running version and has `firstOpenedAt`), whatever the
+trigger: its work since then lives only in it. If that leaves nothing to put
+back, there is no Go back. Among those, the copies whose name moves into the running version
 (`pre-<running>-from-<V>`) from a release version are the way back.
 `unknown`, `before-1.2.127` and `_kept` copies are not. The update record's
 `fromVersion` wins when a copy for that move exists; otherwise the newest
@@ -174,9 +177,11 @@ by `<V>` (below).
 1. Read the target's `release-manifest.json`. A database that is not
    restored must be at or below its `dbCompat` (T3 #4374); a 404 is a
    pre-manifest stable at level 1.
-2. Point the updater at that release (`/releases/download/v<V>/`, generic
-   provider, `allowDowngrade`) and accept only `<V>`. A track switch is
-   refused meanwhile.
+2. Wait for any check or download already running (the update check's own,
+   or the re-download of a vanished staged archive) to settle, drop whatever
+   it staged, then point the updater at that release
+   (`/releases/download/v<V>/`, generic provider, `allowDowngrade`) and
+   accept only `<V>`. A track switch is refused meanwhile.
 3. When it is downloaded, the ordinary `quitAndInstall` runs. Its prepare
    step stops the service brain, then the go-back stops the app's own brain
    child and closes the open projects, checks every copy is still there
@@ -189,7 +194,10 @@ by `<V>` (below).
    cannot open is kept as it is, and renames need no free space. A failed
    restore stops the install; ADE stays open and the service comes back.
 4. The compat record is rewritten for `<V>` with no `firstOpenedAt` (its
-   day starts at `<V>`'s first clean open). `wentBackFrom` is saved so
+   day starts at `<V>`'s first clean open) and at `<V>`'s own level from its
+   manifest (level 1 for a stable from before manifests). This is the one
+   place a level is lowered: the file is now the older copy. Every normal
+   open still never lowers it. `wentBackFrom` is saved so
    ordinary checks never offer that build again, automatic install is
    turned off (below), and `startupRecovery.went_back` is logged (a
    release-health event the beta gate can read). Then the existing installer
