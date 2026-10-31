@@ -35,7 +35,8 @@ struct AppleDeviceViewer: View {
   var preview: AppleDeviceViewerPreview?
   #endif
 
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
   @Environment(\.dismiss) private var dismiss
   @Environment(\.scenePhase) private var scenePhase
 

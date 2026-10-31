@@ -327,7 +327,8 @@ struct AppControlCard: View {
   let refreshTick: Int
   @Binding var viewerPresented: Bool
 
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
   @Environment(\.scenePhase) private var scenePhase
 
   @State private var liveSession: AppControlLiveSession?
@@ -546,7 +547,8 @@ struct AppControlViewer: View {
 
   private static let refreshInterval: Duration = .seconds(3)
 
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
   @Environment(\.dismiss) private var dismiss
   @Environment(\.scenePhase) private var scenePhase
 

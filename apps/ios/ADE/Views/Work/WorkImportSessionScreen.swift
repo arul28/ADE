@@ -84,7 +84,8 @@ extension SyncService {
 /// side. Compact (any iPhone, the Duo's outer display): the list, then the
 /// preview as a step.
 struct WorkImportSessionScreen: View {
-  @EnvironmentObject var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  var syncService: SyncService { syncPublishes.service }
   @Environment(\.dismiss) private var dismiss
   @Environment(\.horizontalSizeClass) private var horizontalSizeClass
   @Environment(\.workImportClaimsFullWidth) private var claimsFullWidth

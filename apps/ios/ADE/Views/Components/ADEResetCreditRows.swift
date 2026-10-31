@@ -38,7 +38,8 @@ struct ADEResetCreditRows: View {
   /// Accounts on this provider with a credit banked. Empty renders nothing.
   let accounts: [MobileUsageAccount]
 
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
   @State private var spendingAccountIds: Set<String> = []
   @State private var resetOutcomes: [String: String] = [:]
 

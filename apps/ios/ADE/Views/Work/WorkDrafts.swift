@@ -87,7 +87,8 @@ enum WorkDraftFilter: String, CaseIterable, Identifiable {
 }
 
 struct WorkComposerOverflowButton: View {
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
   @StateObject private var drafts = WorkDraftController()
   @State private var schedulePresented = false
   @Binding var presentedPicker: WorkComposerPicker?

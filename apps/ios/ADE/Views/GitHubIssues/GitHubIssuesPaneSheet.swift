@@ -214,7 +214,8 @@ struct GitHubIssueLabelPill: View {
 // MARK: - Detail
 
 struct GitHubIssueDetailScreen: View {
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
 
   let repo: GitHubRepoRefDTO
   /// Read live: the write-access check can finish after this screen opens.

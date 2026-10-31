@@ -280,7 +280,8 @@ func projectHostIneligibleGuidance(_ snapshot: SyncHostReadinessSnapshot?) -> St
 }
 
 struct ProjectHostRecoveryScreen: View {
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
 
   var body: some View {
     let snapshot = syncService.projectHostSnapshot

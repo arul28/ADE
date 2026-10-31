@@ -24,7 +24,8 @@ struct FilesSearchScreen: View {
   var initialQuery: String = ""
   let onOpenFile: (_ path: String, _ focusLine: Int?) -> Void
 
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
   @Environment(\.dismiss) private var dismiss
   @FocusState private var searchFieldFocused: Bool
 

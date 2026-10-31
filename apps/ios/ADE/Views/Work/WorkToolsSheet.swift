@@ -45,7 +45,8 @@ struct WorkToolsSheet: View {
   /// cellular link, fast enough that switching tools on the Mac reads as live.
   private static let refreshInterval: Duration = .seconds(3)
 
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
   @Environment(\.dismiss) private var dismiss
   /// The Duo's outer display, upright: its trailing column is the edge rail.
   @State private var displayHasEdgeRail = false

@@ -29,7 +29,8 @@ struct MacDesktopViewer: View {
   /// tools sheet: this is a surface the user opened to watch.
   private static let refreshInterval: Duration = .seconds(3)
 
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
   @Environment(\.dismiss) private var dismiss
   @Environment(\.scenePhase) private var scenePhase
 

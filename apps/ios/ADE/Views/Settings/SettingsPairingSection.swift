@@ -357,7 +357,8 @@ private func syncIsLoopbackAddress(_ address: String) -> Bool {
 }
 
 struct DiscoverHostsSheet: View {
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
   @Environment(\.dismiss) private var dismiss
 
   let onPick: (DiscoveredSyncHost) -> Void

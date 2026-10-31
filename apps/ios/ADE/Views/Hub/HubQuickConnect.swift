@@ -17,7 +17,8 @@ func hubSavedMachineIsRecentlyReachable(
 /// machines. Directory/discovery presence is only a hint; saved secure records
 /// remain attemptable without claiming the computer is currently reachable.
 struct HubQuickConnectSection: View {
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
   @ObservedObject private var account = AccountService.shared
   var onConnectSuccess: () -> Void = {}
 

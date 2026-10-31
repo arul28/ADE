@@ -63,7 +63,8 @@ private let workDraftScheduleClockFormatter: DateFormatter = {
 /// happens if the machine is late, and the config it will run under. Every
 /// choice is explicit — the sheet never guesses a chat or a lane.
 struct WorkDraftScheduleSheet: View {
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
   @EnvironmentObject private var machineFleet: MachineFleet
   @Environment(\.dismiss) private var dismiss
 

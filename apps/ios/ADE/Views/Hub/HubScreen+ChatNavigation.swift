@@ -17,7 +17,8 @@ extension View {
 
 private struct HubChatCoverModifier: ViewModifier {
   @Binding var target: HubChatTarget?
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
   @EnvironmentObject private var dictationController: DictationController
 
   func body(content: Content) -> some View {

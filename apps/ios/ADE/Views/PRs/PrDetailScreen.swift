@@ -5,7 +5,8 @@ struct PrDetailView: View {
   @Environment(\.dismiss) private var dismiss
   @Environment(\.duoLayout) private var duoLayout
   @Environment(\.scenePhase) private var scenePhase
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
   let prId: String
   let transitionNamespace: Namespace.ID?
   let requestedRepoOwner: String?

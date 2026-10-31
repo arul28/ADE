@@ -591,7 +591,8 @@ private enum DuoWorkPreviewPreset {
 /// real sessions column, the real chat destination (with a seeded transcript),
 /// the real tools pane and the real rail.
 private struct DuoWorkPreviewHost: View {
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
   let preset: DuoWorkPreviewPreset
   @State private var seeded = false
 

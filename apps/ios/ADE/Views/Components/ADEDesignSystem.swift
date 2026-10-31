@@ -919,7 +919,8 @@ extension Image {
 }
 
 struct ADEHubBackButton: View {
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
 
   var body: some View {
     Button {
@@ -956,7 +957,8 @@ struct ADEHubBackButton: View {
 }
 
 struct ADERootToolbarControls: View {
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
   @EnvironmentObject private var drawer: ActivityDrawerModel
 
   /// Disambiguator folded into inspector ids so two simultaneous instances of

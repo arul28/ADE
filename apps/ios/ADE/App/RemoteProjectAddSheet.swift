@@ -25,7 +25,8 @@ private enum RemoteProjectChoiceIcon {
 }
 
 struct RemoteProjectAddSheet: View {
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
   @Environment(\.dismiss) private var dismiss
 
   @State private var screen: RemoteProjectAddScreen = .chooser
@@ -297,7 +298,8 @@ private enum RemoteProjectDirectoryBrowserMode {
 }
 
 private struct RemoteProjectDirectoryBrowser: View {
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
 
   let mode: RemoteProjectDirectoryBrowserMode
   @Binding var path: String
@@ -535,7 +537,8 @@ private enum ProjectCloneTab: String, CaseIterable, Identifiable {
 }
 
 private struct RemoteProjectCloneForm: View {
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
 
   @Binding var tab: ProjectCloneTab
   @Binding var url: String

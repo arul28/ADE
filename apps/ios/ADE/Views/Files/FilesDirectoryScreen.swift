@@ -5,7 +5,8 @@ import SwiftUI
 /// what this lane has changed (from the lane's cached detail; no request) and
 /// what was read here recently.
 struct FilesNoFileOpenView: View {
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
 
   let workspace: FilesWorkspace?
   let recentPaths: [String]

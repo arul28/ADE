@@ -11,7 +11,8 @@ import SwiftUI
 /// first page loads, or when the call fails, it is the list's sampled
 /// messages. Every read goes to the machine that has the session (`source`).
 struct WorkImportSessionPreview: View {
-  @EnvironmentObject var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  var syncService: SyncService { syncPublishes.service }
 
   let session: ExternalSessionSummary
   let source: WorkImportSource

@@ -9,7 +9,8 @@ import SwiftUI
 
 /// The chat before its agent starts. Same session id as the chat it becomes.
 struct WorkChatLaunchPendingScreen: View {
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
   @ObservedObject var store: ChatLaunchStore
   let launchId: String
   var navigationChrome: WorkSessionNavigationChrome = .pushedDetail
@@ -375,7 +376,8 @@ func workChatLaunchGateCanHandOver(launch: ChatLaunchSnapshot?, launchesHydrated
 /// for the same session id. Once handed over (see
 /// `workChatLaunchGateCanHandOver`) it never flips back.
 struct WorkChatLaunchGate<Content: View>: View {
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
   @Environment(\.dismiss) private var dismiss
   let sessionId: String
   var navigationChrome: WorkSessionNavigationChrome = .pushedDetail

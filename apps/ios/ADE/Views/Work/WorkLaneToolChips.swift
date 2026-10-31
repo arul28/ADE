@@ -383,7 +383,8 @@ struct WorkLaneToolsPresenter: ViewModifier {
   #if DEBUG
   var preview: WorkLaneToolsPreview?
   #endif
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
 
   func body(content: Content) -> some View {
     content

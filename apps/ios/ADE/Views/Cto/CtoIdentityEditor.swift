@@ -4,7 +4,8 @@ struct CtoIdentityEditor: View {
   let snapshot: CtoSnapshot?
   let onSaved: (CtoSnapshot) -> Void
 
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
   @Environment(\.dismiss) private var dismiss
 
   @State private var localName: String = ""

@@ -9,7 +9,8 @@ struct FilesProofArtifactsReloadKey: Hashable {
 struct FilesRootScreen: View {
   @Environment(\.accessibilityReduceMotion) var reduceMotion
   @Environment(\.duoLayout) var duoLayout
-  @EnvironmentObject var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  var syncService: SyncService { syncPublishes.service }
   @Namespace var fileTransitionNamespace
   var isTabActive = true
   /// Set by the Work tools pane: the same browser, scoped to a chat's lane

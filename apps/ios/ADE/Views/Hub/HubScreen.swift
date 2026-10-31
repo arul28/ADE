@@ -11,7 +11,8 @@ import SwiftUI
 // Replaces the connected-state layout of the old `project hub`; the
 // no-machine / connecting states are preserved here.
 struct HubScreen: View {
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
   @EnvironmentObject private var machineFleet: MachineFleet
   // Every other machine's projects, lanes and chats folded into this one list
   // (one list of projects, chats from all machines inside).

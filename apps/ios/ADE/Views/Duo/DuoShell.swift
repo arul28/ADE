@@ -375,7 +375,8 @@ struct DuoHubBackToolbarItem: ToolbarContent {
 }
 
 private struct DuoHubBackButton: View {
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
 
   var body: some View {
     WorkHeaderProjectButton(iconDataUrl: syncService.activeProject?.iconDataUrl) {

@@ -52,7 +52,8 @@ private func runLaneDeleteOperation<Value>(
 
 struct LaneBatchManageSheet: View {
   @Environment(\.dismiss) private var dismiss
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
 
   let snapshots: [LaneListSnapshot]
   let onComplete: @MainActor () async -> Void

@@ -309,7 +309,8 @@ struct WorkRootSyncInputs: Equatable {
 /// It also owns the navigation path, so "is the list on screen" (tab active and
 /// nothing pushed) is known here, where the inputs are narrowed.
 struct WorkRootScreen: View {
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
   @EnvironmentObject private var machineFleet: MachineFleet
   @EnvironmentObject private var dictationController: DictationController
   var isTabActive = true
@@ -2081,6 +2082,11 @@ struct WorkRootListScreen: View, Equatable {
         .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.hidden, for: .navigationBar)
+        // From inside this stack: nothing here puts items in the bottom bar,
+        // and the root's hide (on the tab, outside the stack) does not reach
+        // it. The inner display's app tabs, left in it after a fold, showed on
+        // the outer display as an empty glass capsule over the list's end.
+        .toolbar(.hidden, for: .bottomBar)
         .safeAreaInset(edge: .top, spacing: 0) {
           // One row: project / back, title, search with the filter chip inside it,
           // then new chat and the overflow menu. No attention rollup lives here —

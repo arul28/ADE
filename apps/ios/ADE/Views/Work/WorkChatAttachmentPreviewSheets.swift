@@ -209,7 +209,8 @@ func workChatMaterializeAttachmentForPreview(
 struct WorkChatAttachmentPreviewSheet: View {
   let request: WorkChatAttachmentPreviewRequest
 
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
   @Environment(\.dismiss) private var dismiss
   @State private var fileURL: URL?
   @State private var failure: String?

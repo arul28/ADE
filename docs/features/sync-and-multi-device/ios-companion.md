@@ -1207,6 +1207,10 @@ iPhone are `compact` and use the same views stacked, never an older design.
   per change.
 - **Fixtures.** `-adePreviewScreen duo-*` opens a fixture screen on any
   simulator (`DuoPreviews.swift`, `DuoSplitPreviews.swift`).
+- **Hinge angle.** `DuoHingeObserver` moves `\.duoLayout.hingeAngle` only
+  once the hinge has turned 5° (flat snaps to 180). The sensor reports every
+  fraction of a degree and an open phone in the hand never holds still; each
+  raw value re-rendered the whole app, which made the unfolded Duo laggy.
 
 ### Connection status UI
 
@@ -4311,6 +4315,18 @@ the stats and shows update guidance.
 
 ## Gotchas
 
+- **Screens observe `SyncMenuSafePublisher`, not `SyncService`.** SwiftUI
+  rebuilds an open `Menu` (toolbar, header or picker) whenever a view above it
+  re-renders, so at a connected phone's ~15 publishes a second a long menu
+  flickered and snapped back to its top while scrolled. Views read
+  `syncService` through `SyncMenuSafePublisher.shared`, which forwards every
+  publish except while UIKit's context-menu container is on screen, then sends
+  one when it closes. Declare new observers the same way
+  (`@ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared`
+  plus `var syncService: SyncService { syncPublishes.service }`), never
+  `@EnvironmentObject var syncService`, and use `syncService.bindings.x` for a
+  binding. `ADEApp` holds its services in `@State` so the app root does not
+  re-evaluate on every publish either.
 - **Phones never become the runtime.** Any future feature that needs to run on the
   phone should be implemented as a controller operation that sends a
   command to the runtime. Agent processes, PTYs, worktrees, and workers

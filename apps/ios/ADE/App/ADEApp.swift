@@ -4,17 +4,21 @@ import SwiftUI
 struct ADEApp: App {
   @UIApplicationDelegateAdaptor(ADEAppDelegate.self) private var appDelegate
   @Environment(\.scenePhase) private var scenePhase
-  @StateObject private var syncService = SyncService()
+  // Owned here, not observed: the app's body only hands these to the
+  // environment, and an observing root re-evaluated the whole scene on every
+  // publish (a live machine publishes several times a second), which also
+  // rebuilt any open menu under it. The screens observe what they read.
+  @State private var syncService = SyncService()
   /// Roster connections to every paired machine other than the focused one.
-  @StateObject private var machineFleet = MachineFleet()
+  @State private var machineFleet = MachineFleet()
   /// App-level dictation singleton. Owning the single `SpeechDictationService`
   /// here (rather than per-composer) lets recording survive navigation and
   /// drive the global in-app recording pill.
-  @StateObject private var dictationController = DictationController()
+  @State private var dictationController = DictationController()
   /// ClerkKit-backed account state (identity + directory machines). A singleton
   /// so it's reachable from sheets without threading it through the environment.
-  @StateObject private var accountService = AccountService.shared
-  @StateObject private var appUpdateAdvisor = AppUpdateAdvisor()
+  @State private var accountService = AccountService.shared
+  @State private var appUpdateAdvisor = AppUpdateAdvisor()
   @State private var didBootstrapSync = false
   @State private var lastActivationSyncAt = Date.distantPast
   @State private var didEnterBackground = false

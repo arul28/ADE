@@ -24,7 +24,8 @@ import UIKit
 /// column would leave the app too narrow to use; Linear is a full-screen
 /// window in both holds.
 struct DuoWindowPresentations: ViewModifier {
-  @ObservedObject var syncService: SyncService
+  let syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
   let appUpdateAdvisor: AppUpdateAdvisor
 
   @Environment(\.duoLayout) private var duo
@@ -76,21 +77,21 @@ struct DuoWindowPresentations: ViewModifier {
     } action: { landscape in
       isLandscape = landscape
     }
-    .sheet(isPresented: shown($syncService.settingsPresented, when: !settingsWindow)) {
+    .sheet(isPresented: shown(syncService.bindings.settingsPresented, when: !settingsWindow)) {
       settings
     }
-    .fullScreenCover(isPresented: shown($syncService.settingsPresented, when: settingsWindow)) {
+    .fullScreenCover(isPresented: shown(syncService.bindings.settingsPresented, when: settingsWindow)) {
       settings
     }
-    .sheet(isPresented: shown($syncService.attentionDrawerPresented, when: activitySheet)) {
+    .sheet(isPresented: shown(syncService.bindings.attentionDrawerPresented, when: activitySheet)) {
       ActivityDrawerSheet()
         .environmentObject(syncService)
         .environmentObject(syncService.attentionDrawer)
     }
-    .sheet(isPresented: shown($syncService.linearPanePresented, when: !duo.isWide)) {
+    .sheet(isPresented: shown(syncService.bindings.linearPanePresented, when: !duo.isWide)) {
       linear
     }
-    .fullScreenCover(isPresented: shown($syncService.linearPanePresented, when: duo.isWide)) {
+    .fullScreenCover(isPresented: shown(syncService.bindings.linearPanePresented, when: duo.isWide)) {
       linear
     }
   }
@@ -594,7 +595,8 @@ private struct DuoPresentationFixture: View {
   enum Surface { case activity, settings }
   let surface: Surface
 
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
   @StateObject private var advisor = AppUpdateAdvisor()
 
   var body: some View {

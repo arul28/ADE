@@ -4,7 +4,8 @@ import AVKit
 
 struct WorkSessionSettingsSheet: View {
   @Environment(\.dismiss) var dismiss
-  @EnvironmentObject var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  var syncService: SyncService { syncPublishes.service }
 
   let sessionId: String
   let laneName: String

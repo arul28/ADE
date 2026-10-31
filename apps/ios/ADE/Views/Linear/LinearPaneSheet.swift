@@ -18,7 +18,8 @@ struct LinearLaunchDestination: View {
 /// (issue list → detail → launch). Presented from the Work top-bar Linear
 /// button and by `ade://linear-issue/<IDENT>` deep links. Active-project scoped.
 struct LinearPaneSheet: View {
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
   @Environment(\.duoLayout) private var duo
   @StateObject private var store: LinearPaneStore
   @State private var path: [LinearRoute] = []

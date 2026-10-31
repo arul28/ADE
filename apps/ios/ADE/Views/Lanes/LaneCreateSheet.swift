@@ -61,7 +61,8 @@ func laneStartSentence(_ on: LaneStart.On, sourceBranch: String) -> String {
 
 struct LaneCreateSheet: View {
   @Environment(\.dismiss) private var dismiss
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
 
   let primaryLane: LaneSummary?
   let lanes: [LaneSummary]

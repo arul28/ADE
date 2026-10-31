@@ -47,7 +47,8 @@ struct PrsRootInputs: Equatable {
 /// The PRs tab: a thin shell over `PrsRootInputs`; the screen behind it is
 /// `.equatable()` on them (the Work tab's pattern).
 struct PRsTabShell: View {
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
   @EnvironmentObject private var machineFleet: MachineFleet
   var isActive = true
 

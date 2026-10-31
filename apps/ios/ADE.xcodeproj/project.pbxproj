@@ -130,6 +130,7 @@
 		26C8992F8D661707E9360503 /* Database.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51942BAC0965C7D0CCE6E8B8 /* Database.swift */; };
 		E20000000000000000000C10 /* ChatLogStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000C10 /* ChatLogStore.swift */; };
 		E2000000000000000000C9F1 /* ScrollDiagnostics.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000C9F1 /* ScrollDiagnostics.swift */; };
+		E30000000000000000005C02 /* SyncMenuSafePublisher.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000005C02 /* SyncMenuSafePublisher.swift */; };
 		E20000000000000000000C20 /* ChatThreadTypes.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000C20 /* ChatThreadTypes.swift */; };
 		E20000000000000000000C21 /* ChatThreadEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000C21 /* ChatThreadEngine.swift */; };
 		E20000000000000000000C22 /* ChatThreadModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000C22 /* ChatThreadModel.swift */; };
@@ -395,6 +396,7 @@
 		T3F002B00000000000000000 /* WorkMessageLinks.swift in Sources */ = {isa = PBXBuildFile; fileRef = T3F002F00000000000000000 /* WorkMessageLinks.swift */; };
 		E10000000000000000000041 /* WorkNewChatScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000041 /* WorkNewChatScreen.swift */; };
 		E30000000000000000000041 /* WorkUsageActivityCarousel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000041 /* WorkUsageActivityCarousel.swift */; };
+		E30000000000000000005C01 /* WorkUsageSkyline.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000005C01 /* WorkUsageSkyline.swift */; };
 		E30000000000000000000042 /* WorkUsageLimitsModule.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000042 /* WorkUsageLimitsModule.swift */; };
 		E3000000000000000051DE01 /* WorkSideChat.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3000000000000000051DE01 /* WorkSideChat.swift */; };
 		E10000000000000000000056 /* WorkImportSessionScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000056 /* WorkImportSessionScreen.swift */; };
@@ -690,6 +692,7 @@
 		T3F002F00000000000000000 /* WorkMessageLinks.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkMessageLinks.swift; path = ADE/Views/Work/WorkMessageLinks.swift; sourceTree = "<group>"; };
 		D10000000000000000000041 /* WorkNewChatScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkNewChatScreen.swift; path = ADE/Views/Work/WorkNewChatScreen.swift; sourceTree = "<group>"; };
 		D30000000000000000000041 /* WorkUsageActivityCarousel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkUsageActivityCarousel.swift; path = ADE/Views/Work/WorkUsageActivityCarousel.swift; sourceTree = "<group>"; };
+		D30000000000000000005C01 /* WorkUsageSkyline.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkUsageSkyline.swift; path = ADE/Views/Work/WorkUsageSkyline.swift; sourceTree = "<group>"; };
 		D30000000000000000000042 /* WorkUsageLimitsModule.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkUsageLimitsModule.swift; path = ADE/Views/Work/WorkUsageLimitsModule.swift; sourceTree = "<group>"; };
 		D3000000000000000051DE01 /* WorkSideChat.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkSideChat.swift; path = ADE/Views/Work/WorkSideChat.swift; sourceTree = "<group>"; };
 		D10000000000000000000056 /* WorkImportSessionScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkImportSessionScreen.swift; path = ADE/Views/Work/WorkImportSessionScreen.swift; sourceTree = "<group>"; };
@@ -786,6 +789,7 @@
 		51942BAC0965C7D0CCE6E8B8 /* Database.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = Database.swift; path = ADE/Services/Database.swift; sourceTree = "<group>"; };
 		D20000000000000000000C10 /* ChatLogStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ChatLogStore.swift; path = ADE/Services/ChatLogStore.swift; sourceTree = "<group>"; };
 		D2000000000000000000C9F1 /* ScrollDiagnostics.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ScrollDiagnostics.swift; path = ADE/Services/ScrollDiagnostics.swift; sourceTree = "<group>"; };
+		D30000000000000000005C02 /* SyncMenuSafePublisher.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SyncMenuSafePublisher.swift; path = ADE/Services/SyncMenuSafePublisher.swift; sourceTree = "<group>"; };
 		D20000000000000000000C20 /* ChatThreadTypes.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ChatThreadTypes.swift; path = ADE/Services/ChatThread/ChatThreadTypes.swift; sourceTree = "<group>"; };
 		D20000000000000000000C21 /* ChatThreadEngine.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ChatThreadEngine.swift; path = ADE/Services/ChatThread/ChatThreadEngine.swift; sourceTree = "<group>"; };
 		D20000000000000000000C22 /* ChatThreadModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ChatThreadModel.swift; path = ADE/Services/ChatThread/ChatThreadModel.swift; sourceTree = "<group>"; };
@@ -1250,6 +1254,7 @@
 				D10000000000000000000041 /* WorkNewChatScreen.swift */,
 				D20000000000000000000F32 /* WorkNewChatMachinePicker.swift */,
 				D30000000000000000000041 /* WorkUsageActivityCarousel.swift */,
+				D30000000000000000005C01 /* WorkUsageSkyline.swift */,
 				D30000000000000000000042 /* WorkUsageLimitsModule.swift */,
 				D3000000000000000051DE01 /* WorkSideChat.swift */,
 				CA1A00000000000000000004 /* WorkChatLaunchViews.swift */,
@@ -1392,6 +1397,7 @@
 				51942BAC0965C7D0CCE6E8B8 /* Database.swift */,
 				D20000000000000000000C10 /* ChatLogStore.swift */,
 				D2000000000000000000C9F1 /* ScrollDiagnostics.swift */,
+				D30000000000000000005C02 /* SyncMenuSafePublisher.swift */,
 				D20000000000000000000C2F /* ChatThread */,
 				B5D5B5B87564C73F2FF34B0D /* KeychainService.swift */,
 				A90000000000000000000011 /* ProductAnalytics.swift */,
@@ -2024,6 +2030,7 @@
 				26C8992F8D661707E9360503 /* Database.swift in Sources */,
 				E20000000000000000000C10 /* ChatLogStore.swift in Sources */,
 				E2000000000000000000C9F1 /* ScrollDiagnostics.swift in Sources */,
+				E30000000000000000005C02 /* SyncMenuSafePublisher.swift in Sources */,
 				E20000000000000000000C20 /* ChatThreadTypes.swift in Sources */,
 				E20000000000000000000C21 /* ChatThreadEngine.swift in Sources */,
 				E20000000000000000000C22 /* ChatThreadModel.swift in Sources */,
@@ -2203,6 +2210,7 @@
 				E10000000000000000000041 /* WorkNewChatScreen.swift in Sources */,
 				E20000000000000000000F32 /* WorkNewChatMachinePicker.swift in Sources */,
 				E30000000000000000000041 /* WorkUsageActivityCarousel.swift in Sources */,
+				E30000000000000000005C01 /* WorkUsageSkyline.swift in Sources */,
 				E30000000000000000000042 /* WorkUsageLimitsModule.swift in Sources */,
 				E3000000000000000051DE01 /* WorkSideChat.swift in Sources */,
 				CA1A00000000000000000014 /* WorkChatLaunchViews.swift in Sources */,

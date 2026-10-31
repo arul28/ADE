@@ -2,7 +2,8 @@ import SwiftUI
 
 struct LaneDiffScreen: View {
   @Environment(\.dismiss) private var dismiss
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
 
   let request: LaneDiffRequest
   /// The Duo's git column: the diff replaces the git list in place, with a

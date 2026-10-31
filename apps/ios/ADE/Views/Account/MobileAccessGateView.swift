@@ -11,7 +11,8 @@ struct MobileAccessGateView: View {
   var credentialUnreadable: Bool = false
   let onContinue: () -> Void
 
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
   @State private var presentedSheet: MobileAccessGateSheet?
   @State private var accountConnectionError: String?
   @State private var pinPreset: PinPreset?

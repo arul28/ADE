@@ -60,7 +60,8 @@ struct HubInlineComposer: View {
   /// the box up with something else (`duoEdgeBarAlignedBottom`).
   static let bottomPadding: CGFloat = 8
 
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
   @EnvironmentObject private var machineFleet: MachineFleet
 
   /// Owned by the hub so taps on the list behind the composer can collapse it.

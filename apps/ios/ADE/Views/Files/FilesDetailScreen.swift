@@ -2,7 +2,8 @@ import SwiftUI
 import UIKit
 
 struct FilesDetailScreen: View {
-  @EnvironmentObject var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  var syncService: SyncService { syncPublishes.service }
   /// Held landscape on a phone (the Duo's closed display included) the
   /// rail has little height: Changes moves into ⋯ so the tabs keep room.
   @Environment(\.verticalSizeClass) var verticalSizeClass

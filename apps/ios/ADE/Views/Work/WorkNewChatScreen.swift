@@ -644,7 +644,8 @@ enum WorkNewChatHeaderTier: Int, Comparable {
 /// navigation path so the screen flows straight into the live chat instead
 /// of bouncing back to the sidebar.
 struct WorkNewChatScreen: View {
-  @EnvironmentObject var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  var syncService: SyncService { syncPublishes.service }
   @EnvironmentObject private var machineFleet: MachineFleet
   @Environment(\.dismiss) private var dismiss
 
@@ -2000,7 +2001,8 @@ private struct WorkNewChatComposerBar: View {
   let onOpenModelPicker: () -> Void
   let onSubmit: @MainActor (String, [WorkChatInputAttachment]) async -> Bool
 
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
   @State private var draft: String = ""
   @State private var attachments: [WorkChatInputAttachment] = []
   /// Set by a tap on an image or file pill; the tray opens that preview.
@@ -2185,7 +2187,8 @@ struct WorkNewChatRoute: Hashable {
 /// screenshot it with no pairing. Reached with `-adePreviewScreen new-chat`.
 /// `-adePreviewFocusComposer` opens it with the composer expanded.
 struct WorkNewChatPreviewHost: View {
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
 
   /// `new-chat-deepseek`: start the composer on a gateway-routed model
   /// (`opencode/opencode-go/deepseek-v4.1-flash`), seed the live catalog that
@@ -2323,13 +2326,16 @@ enum WorkNewChatPreviewFixtures {
     )
   }
 
+  /// `-adeUsageFixtureDays <n>`: a short history (a new install), one client.
   static func stats() -> MobileAdeUsageStats? {
     let calendar = Calendar(identifier: .gregorian)
     let formatter = DateFormatter()
     formatter.locale = Locale(identifier: "en_US_POSIX")
     formatter.dateFormat = "yyyy-MM-dd"
+    let fixtureDays = UserDefaults.standard.integer(forKey: "adeUsageFixtureDays")
+    let sparse = fixtureDays > 0
     var daily: [[String: Any]] = []
-    for offset in stride(from: 69, through: 0, by: -1) {
+    for offset in stride(from: (sparse ? fixtureDays : 70) - 1, through: 0, by: -1) {
       guard let day = calendar.date(byAdding: .day, value: -offset, to: Date()) else { continue }
       let seed = (offset * 37 + 11) % 100
       let quiet = seed < 18
@@ -2359,11 +2365,13 @@ enum WorkNewChatPreviewFixtures {
         "activeDays": 57,
         "totalInteractions": 1_930,
       ],
-      "clients": [
-        ["client": "desktop", "interactions": 1_240, "activeDays": 55, "sessions": 180],
-        ["client": "mobile", "interactions": 410, "activeDays": 31, "sessions": 52],
-        ["client": "cli", "interactions": 280, "activeDays": 18, "sessions": 21],
-      ],
+      "clients": sparse
+        ? [["client": "desktop", "interactions": 46, "activeDays": fixtureDays, "sessions": 5]]
+        : [
+          ["client": "desktop", "interactions": 1_240, "activeDays": 55, "sessions": 180],
+          ["client": "mobile", "interactions": 410, "activeDays": 31, "sessions": 52],
+          ["client": "cli", "interactions": 280, "activeDays": 18, "sessions": 21],
+        ],
       "daily": daily,
     ]
     guard let data = try? JSONSerialization.data(withJSONObject: payload) else { return nil }

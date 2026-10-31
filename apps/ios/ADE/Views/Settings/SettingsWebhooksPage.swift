@@ -139,7 +139,8 @@ extension SyncService {
 // MARK: - Views
 
 struct SettingsWebhooksPage: View {
-  @ObservedObject var syncService: SyncService
+  let syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
   @State private var automations: [MobileWebhookAutomation]?
   @State private var errorMessage: String?
 
@@ -241,7 +242,8 @@ struct WebhookAutomationRow: View {
 }
 
 struct WebhookAutomationDetailPage: View {
-  @ObservedObject var syncService: SyncService
+  let syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
   let automation: MobileWebhookAutomation
   @State private var deliveries: [MobileWebhookDeliverySummary]?
   @State private var errorMessage: String?
@@ -385,7 +387,8 @@ struct WebhookDeliveryRow: View {
 }
 
 struct WebhookDeliveryDetailView: View {
-  @ObservedObject var syncService: SyncService
+  let syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
   let summary: MobileWebhookDeliverySummary
   @State private var delivery: MobileWebhookDelivery?
   @State private var loaded = false

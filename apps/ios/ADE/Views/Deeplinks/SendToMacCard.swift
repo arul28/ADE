@@ -268,7 +268,8 @@ struct SendToMacCard: View {
   let target: SendToMacTarget
   let onDismiss: () -> Void
 
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
   @State private var isSending = false
   @State private var sendCompleted = false
   @State private var sendOutcome: SyncRemoteCommandDelivery?
@@ -546,7 +547,8 @@ struct SendToMacCard: View {
 /// second step to describe. Reads `SyncService` live rather than taking a
 /// snapshot, so the same card carries the tap through to its outcome.
 struct MachineWakeCard: View {
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   var body: some View {

@@ -2085,7 +2085,8 @@ private enum WorkQueuedSteerPreviewData {
 /// screenshot exercises the real list, the real filter row, and the real
 /// placement of anything that sits above the lane groups.
 struct WorkConnectivityBannerPreviewHost: View {
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
   @StateObject private var drawer = ActivityDrawerModel()
   @State private var seeded = false
 
@@ -2186,7 +2187,8 @@ final class WorkRootPreviewFixture {
 ///     -adeWorkFixturePushChatAfter <s>   push the first chat after <s> seconds
 ///     -adeWorkFixtureUnread 0            no unread Activity item (badge off)
 struct WorkListPreviewHost: View {
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
   @StateObject private var drawer = ActivityDrawerModel()
   @State private var seeded = false
   @State private var burstTimer: Timer?

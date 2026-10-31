@@ -263,7 +263,8 @@ struct WorkArtifactPlayPlaceholder: View {
 /// output through the terminal emulator, and forwards typed bytes back to the
 /// host as `terminal_input`.
 struct WorkTerminalSessionView: View {
-  @EnvironmentObject var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  var syncService: SyncService { syncPublishes.service }
   let session: TerminalSessionSummary
   let transitionNamespace: Namespace.ID?
   let onOpenLane: (() -> Void)?

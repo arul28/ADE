@@ -11,7 +11,8 @@ struct CtoSessionDestinationView: View {
     case failed(String)
   }
 
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
 
   var navigationChrome: WorkSessionNavigationChrome = .pushedDetail
   /// A wide display: the thread with Work's chat chrome (title pill, rail,

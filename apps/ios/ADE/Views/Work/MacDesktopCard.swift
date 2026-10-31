@@ -18,7 +18,8 @@ struct MacDesktopCard: View {
   @Binding var loadedMacDesktopFramePath: String?
   @Binding var isLiveMacDesktopMounted: Bool
 
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
   @Environment(\.scenePhase) private var scenePhase
 
   @State private var liveSession: MacDesktopLiveSession?

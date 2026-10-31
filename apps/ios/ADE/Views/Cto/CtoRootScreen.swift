@@ -6,7 +6,8 @@ import UIKit
 /// model that can steer a live turn has been picked, a picker card takes the
 /// thread's place.
 struct CtoRootScreen: View {
-  @EnvironmentObject private var syncService: SyncService
+  @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
+  private var syncService: SyncService { syncPublishes.service }
   @Environment(\.duoLayout) private var duo
   var isTabActive = true
 
