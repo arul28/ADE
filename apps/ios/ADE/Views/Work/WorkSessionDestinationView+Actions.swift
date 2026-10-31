@@ -415,6 +415,57 @@ extension WorkSessionDestinationView {
     }
   }
 
+  /// The machine this chat lives on: a roster machine for a chat on another
+  /// machine, else the focused one.
+  var chatMachineKey: String {
+    syncService.routedRemoteMachineChat(sessionId)?.machineKey ?? syncService.focusedMachineKey ?? "focused"
+  }
+
+  /// Reads the chat machine's accounts for the account row, or nil when the
+  /// provider has one identity per machine or the machine cannot list them.
+  func chatAccountRegistryLoader(provider: String) -> (@MainActor () async throws -> WorkChatAccountRegistry)? {
+    let remote = syncService.remoteChatConnection(for: sessionId)
+    // A chat on a machine with no connection must not read this machine's accounts.
+    if remote == nil && syncService.isRemoteMachineChat(sessionId: sessionId) { return nil }
+    let host: ProviderAccountsHost = remote ?? syncService
+    guard let accountProvider = ProviderAccountProvider(rawValue: provider), host.supportsProviderAccounts else { return nil }
+    return {
+      let client = ProviderAccountsClient(host: host)
+      let accounts = try await client.list(accountProvider)
+      // Room left beside each account is a nicety; the list stands without it.
+      let quota = try? await client.quotaSnapshot(refresh: false)
+      return WorkChatAccountRegistry(accounts: accounts, quota: quota)
+    }
+  }
+
+  /// The account row's switch, when this device may move the chat.
+  var chatAccountSwitchAction: (@MainActor (String) async -> String?)? {
+    // A same-machine quick look at another project's chat stays read-only
+    // until it activates, like its composer.
+    if isCrossProject && !isRemoteMachineChat { return nil }
+    guard syncService.canInvokeChatRemoteAction("chat.switchAccount", sessionId: sessionId) else { return nil }
+    return { instanceId in await switchChatAccount(to: instanceId) }
+  }
+
+  /// Move this chat to another signed-in account on its machine. Returns the
+  /// sentence the account row shows when the chat did not move.
+  @MainActor
+  func switchChatAccount(to instanceId: String) async -> String? {
+    do {
+      let result = try await syncService.switchChatAccount(sessionId: sessionId, instanceId: instanceId)
+      await refreshChatStateAfterAction(forceRemote: true)
+      if let refusal = result.refusalMessage {
+        ADEHaptics.error()
+        return refusal
+      }
+      ADEHaptics.success()
+      return nil
+    } catch {
+      ADEHaptics.error()
+      return error.localizedDescription
+    }
+  }
+
   @MainActor
   func stopChatTask(taskId: String) async {
     do {

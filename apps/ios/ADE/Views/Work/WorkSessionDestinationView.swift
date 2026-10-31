@@ -1001,8 +1001,29 @@ struct WorkSessionDestinationView: View {
           closeChatInfoThen { artifactDrawerPresented = true }
         }
       },
-      embedded: embedded
+      embedded: embedded,
+      accountFooter: chatAccountFooter
     )
+  }
+
+  /// Which login this chat runs on, and the switch to another one, both on the
+  /// chat's own machine. Nil before the chat has a summary.
+  private var chatAccountFooter: AnyView? {
+    guard let summary = composerChatSummary else { return nil }
+    let provider = summary.provider.lowercased()
+    let status: String = normalizedWorkChatSessionStatus(session: session ?? initialSession, summary: chatSummary ?? initialChatSummary)
+    let note = WorkChatAccountNote(
+      provider: provider,
+      instanceId: summary.instanceId,
+      presetId: summary.presetId,
+      credentialId: summary.credentialId,
+      cacheKey: "\(chatMachineKey)|\(provider)",
+      loadAccounts: chatAccountRegistryLoader(provider: provider),
+      // The live turn flag wins; the session row lags it after a turn ends.
+      busy: liveTurnActiveHint ?? (status == "active"),
+      onSwitch: chatAccountSwitchAction
+    )
+    return AnyView(note)
   }
 
   /// The chat's pull request, as the PRs tab shows it (Overview / Files /

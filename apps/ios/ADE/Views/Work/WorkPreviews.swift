@@ -2562,6 +2562,8 @@ enum WorkListPreviewData {
 /// simulator screenshot shows the sheet as a real chat fills it.
 struct WorkChatInfoPreviewHost: View {
   @State private var expanded: Set<String> = []
+  /// The fixture chat's bound account; the footer's switch moves it.
+  @State private var instanceId = "claude"
 
   private struct Derived {
     var sessionId = "preview"
@@ -2604,7 +2606,29 @@ struct WorkChatInfoPreviewHost: View {
       onSelect: { _ in },
       onCancelScheduledWork: { _ in },
       onSetScheduledWorkPaused: { _ in },
-      onStopTask: { _ in }
+      onStopTask: { _ in },
+      proof: WorkProofPreviewData.turnArtifacts,
+      onShowProof: {},
+      accountFooter: AnyView(
+        WorkChatAccountNote(
+          provider: "claude",
+          instanceId: instanceId,
+          presetId: nil,
+          credentialId: nil,
+          cacheKey: "preview|claude",
+          loadAccounts: {
+            WorkChatAccountRegistry(
+              accounts: ProviderAccountsPreviewData.accounts,
+              quota: ProviderAccountsPreviewData.snapshot()
+            )
+          },
+          onSwitch: { id in
+            try? await Task.sleep(for: .milliseconds(600))
+            instanceId = id
+            return nil
+          }
+        )
+      )
     )
   }
 }

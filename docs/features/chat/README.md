@@ -4804,7 +4804,9 @@ represented by a synthetic single entry.
   mid-switch waits for it, so it never relaunches on the old account. The first turn after a switch has no prompt cache. A switch is refused
   while a turn runs ("Wait for this turn to finish."), and it cancels any armed
   usage-limit resume, since that limit belonged to the old account. CLI:
-  `ade chat switch-account <session> --account <id>`. Chats on a saved key or custom provider have no account to
+  `ade chat switch-account <session> --account <id>`. The phone's Chat Info
+  has the same row and menu; the sync command is controller-allowed, so the
+  owner's phone may call it and other peers may not. Chats on a saved key or custom provider have no account to
   switch, and the switch is refused for them.
 - **A Claude resume never quietly starts blank.** Before a resume, a thread
   missing from the chat's account home is copied in from whichever account

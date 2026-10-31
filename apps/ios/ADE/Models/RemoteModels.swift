@@ -1170,6 +1170,32 @@ struct AgentChatResumeUsageLimitNowResult: Decodable, Equatable {
   }
 }
 
+/// Result of `chat.switchAccount` / `personalChats.switchAccount`. Mirrors the
+/// desktop `AgentChatSwitchAccountResult` union in
+/// `apps/desktop/src/shared/types/chat.ts`: a refusal (`busy`, `signed_out`,
+/// `failed`) is an ordinary answer with a ready-to-render sentence.
+struct AgentChatSwitchAccountResult: Decodable, Equatable {
+  var ok: Bool
+  var message: String?
+
+  private enum CodingKeys: String, CodingKey {
+    case ok, message
+  }
+
+  init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    // A malformed answer is a refusal, never an apparent success.
+    ok = (try? c.decodeIfPresent(Bool.self, forKey: .ok)) ?? false
+    message = (try? c.decodeIfPresent(String.self, forKey: .message)) ?? nil
+  }
+
+  /// The sentence to show, or nil when the chat moved.
+  var refusalMessage: String? {
+    guard !ok else { return nil }
+    return nonEmptyTrimmed(message) ?? "This chat couldn\u{2019}t switch accounts."
+  }
+}
+
 /// `ttl` is "5m" or "1h"; `since` is when Claude started that lifetime (the
 /// start of the turn's last request), absent when the host did not see one.
 struct AgentChatPromptCache: Codable, Equatable {

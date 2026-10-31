@@ -13740,7 +13740,9 @@ final class SyncService: ObservableObject {
   func canInvokeChatRemoteAction(_ projectAction: String, sessionId: String) -> Bool {
     let action = chatActionName(projectAction, sessionId: sessionId)
     if let connection = remoteChatConnection(for: sessionId) {
-      return connection.isLive && connection.supportsAction(action)
+      // The same phone policy as the focused machine: an advertised command a
+      // phone may not call is refused by that host.
+      return connection.isLive && connection.commandDescriptor(for: action)?.policy.allowsPhone == true
     }
     return canInvokeRemoteAction(action)
   }
@@ -16545,6 +16547,26 @@ final class SyncService: ObservableObject {
       targetProjectId: scope.projectId,
       targetProjectRootPath: scope.rootPath,
       as: AgentChatResumeUsageLimitNowResult.self
+    )
+  }
+
+  /// `chat.switchAccount` — move the chat to another signed-in Claude/Codex
+  /// account on its own machine: same chat, same thread, next turn on the other
+  /// login. Hosts allow it from the owner's phone, not from other peers. A
+  /// refusal comes back as `ok: false` with the host's sentence, not as a
+  /// thrown error.
+  func switchChatAccount(sessionId: String, instanceId: String) async throws -> AgentChatSwitchAccountResult {
+    let action = chatActionName("chat.switchAccount", sessionId: sessionId)
+    if remoteChatConnection(for: sessionId) == nil {
+      try requireInvokableRemoteAction(action)
+    }
+    let scope = chatCommandScope(for: sessionId)
+    return try await sendDecodableChatCommand(
+      action: action,
+      payload: ["sessionId": sessionId, "instanceId": instanceId],
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath,
+      as: AgentChatSwitchAccountResult.self
     )
   }
 
