@@ -1162,28 +1162,23 @@ struct AgentChatResumeUsageLimitNowResult: Decodable, Equatable {
 /// `failed`) is an ordinary answer with a ready-to-render sentence.
 struct AgentChatSwitchAccountResult: Decodable, Equatable {
   var ok: Bool
-  var reason: String?
   var message: String?
-  var instanceId: String?
 
   private enum CodingKeys: String, CodingKey {
-    case ok, reason, message, instanceId
+    case ok, message
   }
 
   init(from decoder: Decoder) throws {
     let c = try decoder.container(keyedBy: CodingKeys.self)
     // A malformed answer is a refusal, never an apparent success.
     ok = (try? c.decodeIfPresent(Bool.self, forKey: .ok)) ?? false
-    reason = (try? c.decodeIfPresent(String.self, forKey: .reason)) ?? nil
     message = (try? c.decodeIfPresent(String.self, forKey: .message)) ?? nil
-    instanceId = (try? c.decodeIfPresent(String.self, forKey: .instanceId)) ?? nil
   }
 
   /// The sentence to show, or nil when the chat moved.
   var refusalMessage: String? {
     guard !ok else { return nil }
-    let trimmed = message?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    return trimmed.isEmpty ? "This chat couldn\u{2019}t switch accounts." : trimmed
+    return nonEmptyTrimmed(message) ?? "This chat couldn\u{2019}t switch accounts."
   }
 }
 

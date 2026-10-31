@@ -1006,43 +1006,22 @@ struct WorkSessionDestinationView: View {
     )
   }
 
-  /// Which login this chat runs on, and the switch to another one, read from
-  /// and sent to the chat's own machine (a roster connection for a chat on
-  /// another machine, else the focused one). Nil before the chat has a summary.
+  /// Which login this chat runs on, and the switch to another one, both on the
+  /// chat's own machine. Nil before the chat has a summary.
   private var chatAccountFooter: AnyView? {
     guard let summary = composerChatSummary else { return nil }
-    let remote = syncService.remoteChatConnection(for: sessionId)
-    let host: ProviderAccountsHost = remote ?? syncService
-    let machineKey = syncService.routedRemoteMachineChat(sessionId)?.machineKey ?? syncService.focusedMachineKey ?? "focused"
-    let provider = summary.provider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-    let accountProvider = ProviderAccountProvider(rawValue: provider)
-    let loadAccounts: (@MainActor () async throws -> WorkChatAccountRegistry)?
-    if let accountProvider, host.supportsProviderAccounts {
-      loadAccounts = {
-        let client = ProviderAccountsClient(host: host)
-        let accounts = try await client.list(accountProvider)
-        // Room left beside each account is a nicety; the list stands without it.
-        let quota = try? await client.quotaSnapshot(refresh: false)
-        return WorkChatAccountRegistry(accounts: accounts, quota: quota)
-      }
-    } else {
-      loadAccounts = nil
-    }
-    var onSwitch: (@MainActor (String) async -> String?)?
-    if syncService.canInvokeChatRemoteAction("chat.switchAccount", sessionId: sessionId) {
-      onSwitch = { (instanceId: String) async -> String? in await switchChatAccount(to: instanceId) }
-    }
+    let provider = summary.provider.lowercased()
     let status: String = normalizedWorkChatSessionStatus(session: session ?? initialSession, summary: chatSummary ?? initialChatSummary)
-    let busy = liveTurnActiveHint == true || status == "active"
     let note = WorkChatAccountNote(
       provider: provider,
       instanceId: summary.instanceId,
       presetId: summary.presetId,
       credentialId: summary.credentialId,
-      cacheKey: "\(machineKey)|\(provider)",
-      loadAccounts: loadAccounts,
-      busy: busy,
-      onSwitch: onSwitch
+      cacheKey: "\(chatMachineKey)|\(provider)",
+      loadAccounts: chatAccountRegistryLoader(provider: provider),
+      // The live turn flag wins; the session row lags it after a turn ends.
+      busy: liveTurnActiveHint ?? (status == "active"),
+      onSwitch: chatAccountSwitchAction
     )
     return AnyView(note)
   }

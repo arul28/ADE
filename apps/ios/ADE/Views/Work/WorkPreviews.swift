@@ -2623,7 +2623,7 @@ struct WorkChatInfoPreviewHost: View {
             )
           },
           onSwitch: { id in
-            try? await Task.sleep(nanoseconds: 600_000_000)
+            try? await Task.sleep(for: .milliseconds(600))
             instanceId = id
             return nil
           }

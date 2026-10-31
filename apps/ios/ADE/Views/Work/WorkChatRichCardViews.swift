@@ -3166,6 +3166,36 @@ struct WorkChatInfoSections: OptionSet, Equatable {
   }
 }
 
+/// A Chat Info section's label, icon and tone: desktop's `SECTION_ICON`.
+struct WorkChatInfoSectionStyle {
+  let title: String
+  let symbol: String
+  let tone: Color
+
+  static let tasks = WorkChatInfoSectionStyle(title: "Tasks", symbol: "checklist", tone: ADEColor.warning)
+  static let subagents = WorkChatInfoSectionStyle(title: "Subagents", symbol: "point.3.filled.connected.trianglepath.dotted", tone: ADEColor.accent)
+  static let background = WorkChatInfoSectionStyle(title: "Background", symbol: "terminal", tone: ADEColor.seriesTokenCache)
+  static let schedule = WorkChatInfoSectionStyle(title: "Schedule", symbol: "clock", tone: ADEColor.info)
+  static let proof = WorkChatInfoSectionStyle(title: "Proof", symbol: "photo.on.rectangle", tone: ADEColor.success)
+  static let sources = WorkChatInfoSectionStyle(title: "Sources", symbol: "link", tone: ADEColor.tintGraph)
+}
+
+/// The rule between Chat Info's sections, and above its account row.
+struct WorkChatInfoHairline: View {
+  var body: some View {
+    Rectangle()
+      .fill(ADEColor.border.opacity(0.35))
+      .frame(height: 0.5)
+  }
+}
+
+/// Nothing live, only finished rows: the section folds to its header line
+/// ("Subagents · 2 done"), which opens the finished list (desktop's
+/// `onlyEarlier`). The finished count, or nil when the section does not fold.
+private func workChatInfoFoldedCount<Item>(_ partition: (active: [Item], earlier: [Item], clearedCount: Int)) -> Int? {
+  partition.active.isEmpty && !partition.earlier.isEmpty ? partition.earlier.count : nil
+}
+
 /// The Chat info sheet's own navigation stack, and its absence in a pane.
 private struct WorkChatInfoStackChrome: ViewModifier {
   let embedded: Bool
@@ -3500,7 +3530,7 @@ struct WorkChatInfoDetailsSheet: View {
             if let taskList {
               infoSection(first: true) {
                 VStack(alignment: .leading, spacing: 6) {
-                  plainHeader(title: "Tasks", tone: ADEColor.warning, hint: "\(taskList.completedCount)/\(taskList.items.count)")
+                  plainHeader(.tasks, hint: "\(taskList.completedCount)/\(taskList.items.count)")
                   ForEach(visibleTaskItems) { item in
                     WorkChatTaskListItemRow(item: item)
                   }
@@ -3513,9 +3543,8 @@ struct WorkChatInfoDetailsSheet: View {
             if !subagents.isEmpty {
               infoSection(first: taskList == nil) {
                 section(
-                  title: "Subagents",
-                  tone: ADEColor.accent,
-                  onlyEarlier: subagentPartition.active.isEmpty && !subagentPartition.earlier.isEmpty,
+                  style: .subagents,
+                  foldedCount: workChatInfoFoldedCount(subagentPartition),
                   hint: sectionHint(
                     active: subagentPartition.active.count,
                     earlier: subagentPartition.earlier.count,
@@ -3536,9 +3565,8 @@ struct WorkChatInfoDetailsSheet: View {
             if !backgroundItems.isEmpty {
               infoSection(first: taskList == nil && subagents.isEmpty) {
                 section(
-                  title: "Background",
-                  tone: ADEColor.seriesTokenCache,
-                  onlyEarlier: backgroundPartition.active.isEmpty && !backgroundPartition.earlier.isEmpty,
+                  style: .background,
+                  foldedCount: workChatInfoFoldedCount(backgroundPartition),
                   hint: sectionHint(
                     active: backgroundPartition.active.count,
                     earlier: backgroundPartition.earlier.count,
@@ -3567,9 +3595,8 @@ struct WorkChatInfoDetailsSheet: View {
             if !scheduleItems.isEmpty {
               infoSection(first: taskList == nil && subagents.isEmpty && backgroundItems.isEmpty) {
                 section(
-                  title: "Schedule",
-                  tone: ADEColor.info,
-                  onlyEarlier: schedulePartition.active.isEmpty && !schedulePartition.earlier.isEmpty,
+                  style: .schedule,
+                  foldedCount: workChatInfoFoldedCount(schedulePartition),
                   hint: sectionHint(
                     active: schedulePartition.active.count,
                     earlier: schedulePartition.earlier.count,
@@ -3615,7 +3642,7 @@ struct WorkChatInfoDetailsSheet: View {
             if !sourceRefs.isEmpty || omittedSourceRefCount > 0 {
               infoSection(first: taskList == nil && subagents.isEmpty && backgroundItems.isEmpty && scheduleItems.isEmpty && proof.isEmpty) {
                 VStack(alignment: .leading, spacing: 6) {
-                  plainHeader(title: "Sources", tone: ADEColor.tintGraph, hint: "\(sourceRefs.count + omittedSourceRefCount)")
+                  plainHeader(.sources, hint: "\(sourceRefs.count + omittedSourceRefCount)")
                   ForEach(Array(visibleSourceRefs), id: \.self) { source in
                     WorkChatSourceRowView(source: source, faviconDataURL: sourceFavicon(for: source))
                   }
@@ -3663,7 +3690,7 @@ struct WorkChatInfoDetailsSheet: View {
   /// holds the rest.
   private var proofSection: some View {
     VStack(alignment: .leading, spacing: 6) {
-      plainHeader(title: "Proof", tone: ADEColor.success, hint: "\(proof.count)")
+      plainHeader(.proof, hint: "\(proof.count)")
       let latest = proof.sorted { $0.createdAt > $1.createdAt }.prefix(3)
       ForEach(Array(latest), id: \.id) { artifact in
         let row = WorkProofRowModel(artifact: artifact)
@@ -3754,10 +3781,8 @@ struct WorkChatInfoDetailsSheet: View {
     visible: (visible: [Item], hiddenCount: Int),
     @ViewBuilder row: @escaping (Item, _ isEarlier: Bool) -> Row
   ) -> some View {
-    // Nothing live, only finished rows: the header line ("Subagents · 2
-    // done") is the toggle, so no second "Completed (n)" line (desktop's
-    // `onlyEarlier` fold).
-    let onlyEarlier = partition.active.isEmpty && !partition.earlier.isEmpty
+    // A folded section's header is its toggle: no second "Completed (n)" line.
+    let onlyEarlier = workChatInfoFoldedCount(partition) != nil
     VStack(alignment: .leading, spacing: spacing) {
       if partition.active.isEmpty && partition.earlier.isEmpty && partition.clearedCount > 0 { allClearRow(title) }
       ForEach(visible.visible) { item in row(item, false) }
@@ -3778,9 +3803,7 @@ struct WorkChatInfoDetailsSheet: View {
   private func infoSection<Content: View>(first: Bool, @ViewBuilder content: () -> Content) -> some View {
     VStack(alignment: .leading, spacing: 0) {
       if !first {
-        Rectangle()
-          .fill(ADEColor.border.opacity(0.35))
-          .frame(height: 0.5)
+        WorkChatInfoHairline()
       }
       content()
         .padding(.top, 6)
@@ -3788,28 +3811,15 @@ struct WorkChatInfoDetailsSheet: View {
     }
   }
 
-  /// Each section's icon, as desktop's `SECTION_ICON` draws it left of the label.
-  private func sectionSymbol(_ title: String) -> String {
-    switch title {
-    case "Tasks": return "checklist"
-    case "Subagents": return "point.3.filled.connected.trianglepath.dotted"
-    case "Background": return "terminal"
-    case "Schedule": return "clock"
-    case "Proof": return "photo.on.rectangle"
-    case "Sources": return "link"
-    default: return "circle.dashed"
-    }
-  }
-
   /// Desktop's section label: small uppercase text after the section's icon in
   /// its tone, count on the right.
-  private func headerLabel(title: String, tone: Color) -> some View {
+  private func headerLabel(_ style: WorkChatInfoSectionStyle) -> some View {
     HStack(spacing: 6) {
-      Image(systemName: sectionSymbol(title))
+      Image(systemName: style.symbol)
         .font(.system(size: 10, weight: .semibold))
-        .foregroundStyle(tone.opacity(0.85))
+        .foregroundStyle(style.tone.opacity(0.85))
         .frame(width: 14)
-      Text(title)
+      Text(style.title)
         .font(.caption2.weight(.medium))
         .tracking(0.6)
         .textCase(.uppercase)
@@ -3824,16 +3834,25 @@ struct WorkChatInfoDetailsSheet: View {
       .lineLimit(1)
   }
 
-  /// Holds the chevron's column on a header that does not fold, so every
-  /// section's icon lines up.
-  private var chevronGutter: some View {
-    Color.clear.frame(width: 9, height: 1)
+  private let chevronColumn: CGFloat = 9
+
+  /// The fold chevron, or (`open == nil`) its empty column on a header that
+  /// does not fold, so every section's icon lines up.
+  @ViewBuilder
+  private func chevron(open: Bool?) -> some View {
+    if let open {
+      Image(systemName: open ? "chevron.down" : "chevron.right")
+        .font(.system(size: 8, weight: .bold))
+        .frame(width: chevronColumn)
+    } else {
+      Color.clear.frame(width: chevronColumn, height: 1)
+    }
   }
 
-  private func plainHeader(title: String, tone: Color, hint: String) -> some View {
+  private func plainHeader(_ style: WorkChatInfoSectionStyle, hint: String) -> some View {
     HStack(spacing: 5) {
-      chevronGutter
-      headerLabel(title: title, tone: tone)
+      chevron(open: nil)
+      headerLabel(style)
       Spacer(minLength: 0)
       headerHint(hint)
     }
@@ -3849,9 +3868,8 @@ struct WorkChatInfoDetailsSheet: View {
 
   @ViewBuilder
   private func section<Content: View>(
-    title: String,
-    tone: Color,
-    onlyEarlier: Bool = false,
+    style: WorkChatInfoSectionStyle,
+    foldedCount: Int?,
     hint: String,
     key: String,
     collapsible: Bool,
@@ -3861,14 +3879,14 @@ struct WorkChatInfoDetailsSheet: View {
     headerAccessory: AnyView? = nil,
     @ViewBuilder content: () -> Content
   ) -> some View {
-    // An idle section folds to its header line, which opens the finished list.
+    // A folded section's header opens the finished list.
+    let onlyEarlier = foldedCount != nil
     let earlierOpen = paneFlag("earlier", section: key)
-    let foldable = onlyEarlier || collapsible
     let collapsed = onlyEarlier ? !earlierOpen : collapsible && paneFlag("collapsed", section: key)
-    let shownHint = allClear ? "all clear" : onlyEarlier ? "\(clearIds.count) done" : hint
+    let shownHint = allClear ? "all clear" : foldedCount.map { "\($0) done" } ?? hint
     VStack(alignment: .leading, spacing: 2) {
       HStack(spacing: 8) {
-        if foldable {
+        if collapsible {
           Button {
             withPaneAnimation {
               if onlyEarlier {
@@ -3879,11 +3897,9 @@ struct WorkChatInfoDetailsSheet: View {
             }
           } label: {
             HStack(spacing: 5) {
-              Image(systemName: collapsed ? "chevron.right" : "chevron.down")
-                .font(.system(size: 8, weight: .bold))
+              chevron(open: !collapsed)
                 .foregroundStyle(ADEColor.textMuted.opacity(0.7))
-                .frame(width: 9)
-              headerLabel(title: title, tone: tone)
+              headerLabel(style)
               Spacer(minLength: 0)
               headerHint(shownHint)
             }
@@ -3891,12 +3907,12 @@ struct WorkChatInfoDetailsSheet: View {
           }
           .buttonStyle(.plain)
           .frame(maxWidth: .infinity, minHeight: 36)
-          .accessibilityLabel("\(title), \(shownHint)")
+          .accessibilityLabel("\(style.title), \(shownHint)")
           .accessibilityHint(collapsed ? "Shows the rows" : "Hides the rows")
         } else {
           HStack(spacing: 5) {
-            chevronGutter
-            headerLabel(title: title, tone: tone)
+            chevron(open: nil)
+            headerLabel(style)
           }
           Spacer(minLength: 0)
           headerHint(shownHint)
@@ -3944,9 +3960,7 @@ struct WorkChatInfoDetailsSheet: View {
         withPaneAnimation { setPaneFlag("earlier", section: section, value: !expanded) }
       } label: {
         HStack(spacing: 5) {
-          Image(systemName: expanded ? "chevron.down" : "chevron.right")
-            .font(.system(size: 8, weight: .bold))
-            .frame(width: 9)
+          chevron(open: expanded)
           Text("Completed (\(count))\(clearedCount > 0 ? " · \(clearedCount) hidden" : "")")
           Spacer(minLength: 0)
         }

@@ -29,11 +29,6 @@ struct WorkChatAccountRegistry: Equatable {
   var quota: MobileUsageQuotaSnapshot?
 }
 
-private func workChatAccountClean(_ value: String?) -> String? {
-  let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-  return trimmed.isEmpty ? nil : trimmed
-}
-
 func workChatAccountNoteModel(
   provider rawProvider: String?,
   instanceId: String?,
@@ -41,21 +36,21 @@ func workChatAccountNoteModel(
   credentialId: String?,
   accounts: [ProviderAccount]?
 ) -> WorkChatAccountNoteModel? {
-  guard let provider = workChatAccountClean(rawProvider)?.lowercased() else { return nil }
+  guard let provider = nonEmptyTrimmed(rawProvider)?.lowercased() else { return nil }
   // A saved key or custom provider pays for the turns: no account to switch.
-  if workChatAccountClean(credentialId) != nil {
+  if nonEmptyTrimmed(credentialId) != nil {
     return WorkChatAccountNoteModel(provider: provider, primary: "API key", current: nil, targets: [])
   }
-  if workChatAccountClean(presetId) != nil {
+  if nonEmptyTrimmed(presetId) != nil {
     return WorkChatAccountNoteModel(provider: provider, primary: "Custom provider", current: nil, targets: [])
   }
   guard ProviderAccountProvider(rawValue: provider) != nil, let accounts else { return nil }
   let forProvider = accounts.filter { $0.provider == provider }
-  let boundId = workChatAccountClean(instanceId) ?? provider
+  let boundId = nonEmptyTrimmed(instanceId) ?? provider
   // An id that no longer names an account falls back to the default at launch.
   guard let current = forProvider.first(where: { $0.id == boundId })
     ?? forProvider.first(where: \.isDefault) else { return nil }
-  guard let primary = current.email ?? workChatAccountClean(current.label) else { return nil }
+  guard let primary = current.email ?? nonEmptyTrimmed(current.label) else { return nil }
   // Copies of one login are one account.
   let targets = forProvider.filter { $0.id != current.id && $0.signedIn && $0.sameLoginAs == nil }
   return WorkChatAccountNoteModel(provider: provider, primary: primary, current: current, targets: targets)
@@ -87,12 +82,14 @@ struct WorkChatAccountNote: View {
 
   @MainActor private static var cache: [String: WorkChatAccountRegistry] = [:]
 
-  @State private var registry: WorkChatAccountRegistry?
+  /// The last read, with the key it was read for: another machine's accounts
+  /// never stand in for this one's.
+  @State private var registry: (key: String, value: WorkChatAccountRegistry)?
   @State private var pendingId: String?
   @State private var errorMessage: String?
 
   private var resolvedRegistry: WorkChatAccountRegistry? {
-    registry ?? Self.cache[cacheKey]
+    registry?.key == cacheKey ? registry?.value : Self.cache[cacheKey]
   }
 
   private var model: WorkChatAccountNoteModel? {
@@ -112,9 +109,7 @@ struct WorkChatAccountNote: View {
       if let model {
         // The divider belongs to the row: a chat with nothing to name leaves
         // no line behind (desktop's footer rule).
-        Rectangle()
-          .fill(ADEColor.border.opacity(0.35))
-          .frame(height: 0.5)
+        WorkChatInfoHairline()
         VStack(alignment: .leading, spacing: 0) {
           if let onSwitch, let current = model.current, !model.targets.isEmpty {
             switcher(model: model, current: current, onSwitch: onSwitch)
@@ -141,14 +136,17 @@ struct WorkChatAccountNote: View {
     // Read again when the bound account changes (a move) or the chat does.
     .task(id: "\(cacheKey)|\(instanceId ?? "")") {
       guard let loadAccounts else { return }
+      let key = cacheKey
       do {
         let next = try await loadAccounts()
         guard !Task.isCancelled else { return }
-        Self.cache[cacheKey] = next
-        registry = next
+        Self.cache[key] = next
+        registry = (key, next)
+      } catch is CancellationError {
       } catch {
         // The row is decoration on a working chat: a failed read leaves the
-        // last answer (or nothing) on screen.
+        // last answer (or nothing) on screen, and a breadcrumb behind.
+        CrashReporting.breadcrumb("chat.account", message: "account read failed", data: ["error": error.localizedDescription])
       }
     }
   }
@@ -185,6 +183,7 @@ struct WorkChatAccountNote: View {
     .contentShape(.rect)
     .accessibilityElement(children: .ignore)
     .accessibilityLabel(accessibilityLabel(model))
+    .accessibilityValue(pendingId == nil ? "" : "Switching")
   }
 
   private func accessibilityLabel(_ model: WorkChatAccountNoteModel) -> String {
@@ -205,6 +204,7 @@ struct WorkChatAccountNote: View {
           Label(current.displayName, systemImage: "checkmark")
           if let side = roomLabel(current, quota: quota) { Text(side) }
         }
+        .accessibilityAddTraits(.isSelected)
         ForEach(model.targets) { target in
           Button {
             switchTo(target, onSwitch: onSwitch)

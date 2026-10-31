@@ -5270,8 +5270,10 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
     requireService(args.agentChatService, "Agent chat service not available.").continueUsageLimitOnAlternate({
       sessionId: requireString(payload.sessionId, "chat.continueUsageLimitOnAlternate requires sessionId."),
     }));
-  // Owner-only: it changes which login pays for the chat's next turn.
-  register("chat.switchAccount", { viewerAllowed: false, queueable: false }, async (payload) =>
+  // The owner's own controller devices only (the phone's Chat Info account
+  // row): it changes which login pays for the chat's next turn, but spends
+  // nothing itself.
+  register("chat.switchAccount", { viewerAllowed: false, controllerAllowed: true, queueable: false }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").switchAccount({
       sessionId: requireString(payload.sessionId, "chat.switchAccount requires sessionId."),
       instanceId: requireString(payload.instanceId, "chat.switchAccount requires instanceId."),
