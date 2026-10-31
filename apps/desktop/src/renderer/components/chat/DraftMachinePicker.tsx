@@ -1,4 +1,4 @@
-import { CaretDown, Check, CloudArrowUp, DesktopTower } from "@phosphor-icons/react";
+import { CaretDown, Check, CloudArrowUp, DesktopTower, Scales } from "@phosphor-icons/react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { useState } from "react";
 
@@ -59,6 +59,7 @@ export function DraftMachinePicker({
   tooltipDescription,
   triggerLabel = "Choose machine",
   showWhenSingle = false,
+  autoPick = null,
 }: {
   machines: readonly DraftMachineOption[];
   selectedMachineId: string | null;
@@ -74,6 +75,12 @@ export function DraftMachinePicker({
    * rendering nothing: a surface where the choice would otherwise look missing.
    */
   showWhenSingle?: boolean;
+  /**
+   * "Least loaded": the machine new work would go to by its load and its
+   * placement preference (`autoLaneMachine`), offered above the machines.
+   * Picking it picks that machine; nothing moves later by itself.
+   */
+  autoPick?: { machineId: string; summary: string } | null;
 }) {
   const [open, setOpen] = useState(false);
   const selected = machines.find((machine) => machine.id === selectedMachineId) ?? null;
@@ -194,6 +201,23 @@ export function DraftMachinePicker({
           sideOffset={4}
           collisionPadding={8}
         >
+          {autoPick ? (
+            <>
+              <DropdownMenu.Item
+                className={cn(MENU_ITEM_CLASS, "items-start text-[11px] text-fg/75")}
+                onSelect={() => {
+                  if (autoPick.machineId !== selectedMachineId) onChange(autoPick.machineId);
+                }}
+              >
+                <Scales size={12} weight="duotone" className="mt-[1px] shrink-0 text-muted-fg/80" aria-hidden />
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate">Least loaded</span>
+                  <span className="block truncate text-[10px] text-muted-fg/60">{autoPick.summary}</span>
+                </span>
+              </DropdownMenu.Item>
+              <DropdownMenu.Separator className="my-1 h-px bg-fg/[0.06]" />
+            </>
+          ) : null}
           <DropdownMenu.RadioGroup
             value={selectedMachineId ?? ""}
             onValueChange={(machineId) => {

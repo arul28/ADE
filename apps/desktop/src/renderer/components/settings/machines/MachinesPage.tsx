@@ -1,4 +1,4 @@
-import type { CSSProperties } from "react";
+import { useMemo, type CSSProperties } from "react";
 import { useSearchParams } from "react-router-dom";
 import { ArrowRight, CaretRight } from "@phosphor-icons/react";
 import { THIS_MACHINE_NAME } from "../../../../shared/machineIdentity";
@@ -8,7 +8,12 @@ import { UpdateTrackChip } from "../../app/ChannelBadge";
 import { MachineAvatar, machineFormFactor, useMachineColor } from "../../remoteTargets/MachineIdentity";
 import { FreeSpaceMeter } from "../health/healthCharts";
 import { formatBytes, freeSpaceLevel } from "../storage/storageView";
-import type { SettingsMachinePage } from "../SettingsMachinesNav";
+import { machineSectionAvailable, settingsMachinePageFor, type SettingsMachinePage } from "../SettingsMachinesNav";
+import type { MachineStats } from "../../../../shared/types/machineStats";
+import { useMachineStatsMap, type MachineStatsRequest } from "../../../state/machineStats";
+import { useMachinePlacementPreferences } from "../../../state/machinePlacement";
+import { placementTag } from "../../lanes/machineLoadText";
+import { headroomLevel, Meter, powerWords } from "./machineSeams";
 import { machineUpdateTargetVersion } from "../../remoteTargets/remoteMachineModel";
 import { useKnownAdeVersions } from "../../remoteTargets/machineUpdates";
 import { osLabel, platformWord, useMachineFacts, type MachineFacts } from "./machineFacts";
@@ -37,6 +42,14 @@ function MachinesList() {
   const facts = useMachineFacts(machines, update.currentVersion || null);
   const local = useThisComputerFacts();
   const known = useKnownAdeVersions();
+  // Each machine's load, read through its own pin once when the list opens.
+  const statsRequests = useMemo<MachineStatsRequest[]>(() => machines.flatMap((machine) => {
+    if (!machine.online && !machine.isThisMachine) return [];
+    const page = settingsMachinePageFor(machine);
+    return machineSectionAvailable("routed", page) ? [{ id: machine.machineId, pin: page.pin }] : [];
+  }), [machines]);
+  const { stats } = useMachineStatsMap(statsRequests, true);
+  const { preferenceOf } = useMachinePlacementPreferences();
   const online = machines.filter((machine) => machine.online || machine.isThisMachine).length;
   const onBeta = machines.filter((machine) => facts.get(machine.machineId)?.track === "beta").length;
   const behind = machines.filter((machine) => {
@@ -93,6 +106,8 @@ function MachinesList() {
             fact={facts.get(machine.machineId)}
             local={machine.isThisMachine ? local : null}
             known={known}
+            stats={stats.get(machine.machineId) ?? null}
+            preferenceTag={placementTag({ preference: preferenceOf(facts.get(machine.machineId)?.colorKey) })}
             onOpen={() => openMachine(machine.machineId)}
           />
         ))}
@@ -121,6 +136,8 @@ function MachineListRow({
   fact,
   local,
   known,
+  stats,
+  preferenceTag,
   onOpen,
 }: {
   machine: ProjectMachine;
@@ -128,13 +145,22 @@ function MachineListRow({
   fact: MachineFacts | undefined;
   local: ReturnType<typeof useThisComputerFacts> | null;
   known: readonly string[];
+  stats: MachineStats | null;
+  /** "Preferred", "Less often", "Manual only"; null for Normal. */
+  preferenceTag: string | null;
   onOpen: () => void;
 }) {
   const offline = !machine.online && !machine.isThisMachine;
   const status = presence(machine, local);
   const target = fact?.connected && machine.online ? machineUpdateTargetVersion(fact.connected, known) : null;
   const os = machine.isThisMachine ? osLabel(local?.info?.platform) : platformWord(fact?.platform);
-  const pressure = local?.pressure ?? null;
+  const pressure = local?.pressure ?? (stats?.disk ? { freeBytes: stats.disk.freeBytes, totalBytes: stats.disk.totalBytes } : null);
+  const busy = stats?.cpu.busyPercent ?? null;
+  const builds = stats?.builds?.reduce((sum, build) => sum + build.count, 0) ?? 0;
+  const busyNotes = offline ? [] : [
+    builds > 0 ? (builds === 1 ? "1 build" : `${builds} builds`) : null,
+    stats?.power?.onBattery ? powerWords(stats.power) : null,
+  ];
   return (
     <button type="button" role="listitem" className="ade-mx-row" data-offline={offline ? "true" : undefined} onClick={onOpen}>
       <MachineAvatar
@@ -147,18 +173,31 @@ function MachineListRow({
       />
       <span className="ade-mx-row-id">
         <span className="ade-mx-row-name">
-          {name}
+          <span className="ade-mx-row-name-text">{name}</span>
           {machine.isThisMachine ? <span className="kit-tag">This machine</span> : null}
         </span>
         <span className="ade-mx-row-sub">
           <span className="kit-dot" data-state={status.state} aria-hidden />
-          {[status.word, os].filter(Boolean).join(" · ")}
+          <span className="ade-mx-row-sub-text">{[status.word, os, ...busyNotes].filter(Boolean).join(" · ")}</span>
+          {preferenceTag ? <span className="kit-tag" data-tone={preferenceTag === "Manual only" ? "warn" : undefined} title="New work: how often Least loaded picks this machine">{preferenceTag}</span> : null}
         </span>
       </span>
       <span className="ade-mx-row-facts">
+        {stats && !offline && busy != null ? (
+          <span
+            className="ade-mx-row-load"
+            title={`CPU ${busy}% busy over ${stats.cpu.cores} cores · ${formatBytes(stats.memory.availableBytes)} of ${formatBytes(stats.memory.totalBytes)} memory free`}
+          >
+            <span className="ade-mx-row-load-line">
+              <span className="kit-num">CPU {busy}%</span>
+              <span className="kit-num">{formatBytes(stats.memory.availableBytes)} memory</span>
+            </span>
+            <Meter percent={busy} level={headroomLevel(100 - busy)} label="CPU busy" />
+          </span>
+        ) : null}
         {pressure && pressure.totalBytes > 0 ? (
           <span className="ade-mx-row-disk" title={`${formatBytes(pressure.freeBytes)} free`}>
-            <span className="kit-num">{formatBytes(pressure.freeBytes)} free</span>
+            <span className="kit-num">{formatBytes(pressure.freeBytes)} disk free</span>
             <FreeSpaceMeter freeBytes={pressure.freeBytes} totalBytes={pressure.totalBytes} level={freeSpaceLevel(pressure.freeBytes, pressure.totalBytes)} />
           </span>
         ) : null}

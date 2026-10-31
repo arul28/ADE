@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from "electron";
 import type { RemoteWorkCopyListing } from "../shared/types/remoteWork";
+import type { MachineStats } from "../shared/types/machineStats";
 import type { HostReachabilityReport } from "../shared/connectionDiagnosis";
 import type { NewLaneDefaults } from "../shared/laneStart";
 import { resolveUpdateTrackFromArgv, type UpdateTrack } from "../shared/updateTrack";
@@ -10807,6 +10808,12 @@ const adeBridge = {
       callPinnedOrBoundRuntimeActionOr<{ deleted: boolean }>(pin, "remote_work", "delete", { args }, async () => {
         throw new Error("This window has no runtime to delete the work copy on.");
       }),
+  },
+  // A machine's load and capabilities (Settings › Machines, "Least loaded"),
+  // read by that machine's brain through its pin. Null without a runtime.
+  machineStats: {
+    get: async (pin?: OpenProjectBinding | null): Promise<MachineStats | null> =>
+      callPinnedOrBoundRuntimeActionOr<MachineStats | null>(pin, "machine_stats", "get", {}, async () => null),
   },
   terminal: {
     list: async (

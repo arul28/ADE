@@ -531,6 +531,11 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "delete",
     ],
   },
+  machine_stats: {
+    live: "all",
+    read: ["get"],
+    write: [],
+  },
   work_tools: {
     live: "all",
     read: [

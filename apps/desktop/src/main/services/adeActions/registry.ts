@@ -231,6 +231,7 @@ import {
   measureRemoteWorkCopy,
 } from "../remoteWork/remoteWorkCopyService";
 import type { RemoteWorkCopyListing } from "../../../shared/types/remoteWork";
+import { machineStatsReader } from "../machineStats/machineStatsService";
 import { parseForeignCallerSessionId } from "../../../shared/runtimeClientNames";
 import { parseLinearGraphQLInput } from "../cto/linearGraphQLInput";
 import type { CtoMemoryTags } from "../cto/ctoMemoryService";
@@ -3673,6 +3674,15 @@ function buildRemoteWorkDomainService(runtime: AdeRuntime) {
   };
 }
 
+/** This machine's load and capabilities (machineStatsService.ts), one cache per brain. */
+function buildMachineStatsDomainService(runtime: AdeRuntime) {
+  const reader = machineStatsReader({
+    keepAwake: async () => (await runtime.keepAwakeService?.getSnapshot()) ?? null,
+    logger: runtime.logger,
+  });
+  return { get: () => reader.get() };
+}
+
 function requireTerminalWatchService(runtime: AdeRuntime): NonNullable<AdeRuntime["terminalWatchService"]> {
   if (!runtime.terminalWatchService) {
     throw new Error("Terminal watches are not available on this runtime: it does not run chats.");
@@ -4045,6 +4055,7 @@ export function getAdeActionDomainServices(
     layout: toService(buildLayoutDomainService(runtime)),
     tiling_tree: toService(buildTilingTreeDomainService(runtime)),
     remote_work: toService(buildRemoteWorkDomainService(runtime)),
+    machine_stats: toService(buildMachineStatsDomainService(runtime)),
     work_tools: toService(runtime.workToolsStateService),
     computer_use_artifacts: toService(buildComputerUseArtifactsDomainService(runtime)),
     ios_simulator: toService(runtime.iosSimulatorService),
