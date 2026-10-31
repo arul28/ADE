@@ -424,9 +424,11 @@ what failed and offers Try again, Go back to the previous version, Open logs
 folder and Copy details. It opens once per launch, for a project database
 that does not open or a brain that keeps crashing before any project opened
 (only after an update), or for a main window whose renderer gave up. Go back
-installs the version the app came from and puts back the database copies
-taken before this version first opened them; the current databases are kept
-as copies, moved and never overwritten. The triggers, the version choice and
+asks first, then installs the version the app came from and puts back this
+computer's database, the personal chats' database and the project database
+that failed, as they were before the update; other projects stay as they are.
+The current databases are kept as copies, moved and never overwritten, and
+the restore is all or nothing. The triggers, the version choice and
 each step are in [docs/plans/beta-track.md](../../plans/beta-track.md#startup-recovery).
 
 The project recovery screen above still handles everything else, and every
@@ -1076,7 +1078,7 @@ into this strip via `#/settings?tab=storage#diagnostics`.
 | Thread-pointer ledger | 64 KiB | Compacts to the newest valid record per session; a malformed tail is ignored. |
 | Last-failure reports | Current + 1 previous | Repeated same-signature failures increment the current report; a changed signature rotates current to previous. |
 | Database migration backup | 1 | `<db>.pre-crsqlite-w1.bak` is created once and only with sufficient headroom. |
-| Update copies | 3 per database | `<db>.pre-<to>-from-<from>.bak`, taken before a new version first opens the database, and the current database kept by "Go back" (with its `-wal`/`-shm`/`-journal`). The newest 3 stay; a pruned copy takes its journal files with it. Settings › Advanced › Database copies deletes one by hand. |
+| Update copies | 1 per database | `<db>.pre-<to>-from-<from>.bak`, taken before a new version first opens the database. A new copy deletes the older ones; the copy itself goes at a clean open 24 hours after that version first opened the file cleanly. What "Go back" set aside (`…_kept.bak`, with its `-wal`/`-shm`/`-journal`) goes 7 days after. Only names that parse as copies are deleted; a locked file is retried on a later open. Settings › Advanced › Database copies deletes one by hand. |
 | Automation ingress events | 7 days / 2,000 rows per project | Age-pruned at write time and by the doctor; the newest 2,000 non-`dispatched` rows per project are kept regardless of age (dispatched rows are age-pruned only). Raw webhook payloads are no longer persisted. |
 | PR snapshots | 60 days | `pull_request_snapshots` not updated within the window are deleted (re-fetchable from GitHub). |
 | AI usage log | 90 days | `ai_usage_log` rows older than the cutoff are deleted in paced batches. Stats and the daily budget check read a shorter window than this. |
