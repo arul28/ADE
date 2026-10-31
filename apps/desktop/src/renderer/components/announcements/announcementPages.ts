@@ -33,16 +33,16 @@ export type AnnouncementPageDef = {
 
 export const ANNOUNCEMENT_PAGES: readonly AnnouncementPageDef[] = [
   {
+    id: "performance-vs-t3-code",
+    added: "2026-10-31",
+    title: "Faster than T3 Code",
+    Page: lazy(() => import("./pages/PerformanceAnnouncement")),
+  },
+  {
     id: "manage-provider-accounts",
     added: "2026-10-28",
     title: "Manage your accounts in detail",
     Page: lazy(() => import("./pages/ProviderAccountsAnnouncement")),
-  },
-  {
-    id: "performance-wins",
-    added: "2026-10-28",
-    title: "Performance wins",
-    Page: lazy(() => import("./pages/PerformanceAnnouncement")),
   },
   {
     id: "side-chats",
