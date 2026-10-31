@@ -1292,6 +1292,8 @@ export const IPC = {
   startupRecoveryAction: "ade.startupRecovery.action",
   /** Main → recovery window: the state changed (a go-back's progress). */
   startupRecoveryState: "ade.startupRecovery.state",
+  /** Recovery window → main: the height its content needs. */
+  startupRecoveryFit: "ade.startupRecovery.fit",
   databaseCopiesList: "ade.databaseCopies.list",
   databaseCopiesReveal: "ade.databaseCopies.reveal",
   databaseCopiesDelete: "ade.databaseCopies.delete",

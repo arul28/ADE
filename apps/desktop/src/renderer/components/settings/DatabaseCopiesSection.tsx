@@ -18,14 +18,22 @@ function takenAt(ms: number): string {
 }
 
 function moveText(copy: DatabaseCopyInfo): string {
+  if (copy.kept) {
+    return copy.fromVersion
+      ? `Set aside when ADE went back from ${copy.fromVersion} to ${copy.toVersion}`
+      : `Set aside when ADE went back to ${copy.toVersion}`;
+  }
   return copy.fromVersion
-    ? `From ${copy.fromVersion} to ${copy.toVersion}`
-    : `Before ${copy.toVersion}`;
+    ? `Before the update from ${copy.fromVersion} to ${copy.toVersion}`
+    : `Before the update to ${copy.toVersion}`;
 }
 
 /**
- * Settings › Advanced › Database copies: the copies ADE takes before a new
- * version first opens a database (docs/plans/beta-track.md).
+ * Settings › Advanced › Database copies: the copy ADE takes before a new
+ * version first opens a database, and what "Go back" set aside
+ * (docs/plans/beta-track.md). ADE deletes them itself
+ * (`clearProvenDatabaseCopies`); Delete here is for the person who wants the
+ * space now.
  *
  * This computer only. The list, reveal and delete are plain IPC to this
  * desktop's main process (no pin), so the section renders nothing when
@@ -71,7 +79,9 @@ export function DatabaseCopiesSection() {
   const remove = useCallback(async (copy: DatabaseCopyInfo) => {
     const confirmed = await confirmDialog({
       title: "Delete this copy?",
-      message: `${databaseName(copy)}, ${moveText(copy).toLowerCase()}, taken ${takenAt(copy.takenAt)}. ADE can't go back to this data without it.`,
+      message: copy.kept
+        ? `${databaseName(copy)}: what the newer version left when ADE went back, saved ${takenAt(copy.takenAt)}. ADE support may ask for it.`
+        : `${databaseName(copy)}: your data from before the update to ${copy.toVersion}, saved ${takenAt(copy.takenAt)}. Without it, ADE can't go back to that version if the update breaks.`,
       confirmLabel: "Delete",
       destructive: true,
     });
@@ -96,14 +106,14 @@ export function DatabaseCopiesSection() {
       group="Database copies"
       anchor="database-copies"
       title="Database copies"
-      hint="ADE copies each database before a new version first opens it. Going back to an older version puts the copy back."
+      hint="ADE keeps one copy of each database from the last update, and deletes it once the update has worked for a day."
     >
       {error ? <Banner layout="inline" model={{ id: "database-copies-error", tone: "error", title: error }} /> : null}
       <ModernRows>
         {copies === null ? (
           <ModernRow title="Loading…" />
         ) : copies.length === 0 ? (
-          <ModernRow title="No copies yet" hint="ADE makes one the next time an update opens your data." />
+          <ModernRow title="No copies right now" hint="ADE makes one the next time an update changes your data." />
         ) : (
           copies.map((copy) => (
             <ModernRow

@@ -123,9 +123,12 @@ export type GlobalState = {
   /**
    * The build "Go back" left because it could not start
    * (`startupRecovery.ts`). Ordinary update checks never offer that build
-   * again; a newer one is offered as usual.
+   * again; a newer one is offered as usual. Go back also turned automatic
+   * install off (older builds read only that); `pausedAutomaticInstall` says
+   * it was on, and the first build newer than `version` turns it back on and
+   * drops this record.
    */
-  wentBackFrom?: { version: string; toVersion: string; at: string };
+  wentBackFrom?: { version: string; toVersion: string; at: string; pausedAutomaticInstall?: boolean };
   autoUpdatePreferences?: AutoUpdatePreferences;
   /** Whether ADE may hold this machine awake while agents run. Default: never. */
   keepAwakePreferences?: KeepAwakePreferences;

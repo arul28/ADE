@@ -39,7 +39,10 @@ import { chooseGoBackPlan, type GoBackPlan } from "./goBackPlan";
  * database copy names a move into it. Without one, the project recovery
  * screen already offers the right fixes, and nothing here shows. A database
  * the running version already opened cleanly (its compat record says so)
- * failed later, not because of the update, so it does not count either.
+ * failed later, not because of the update, so it does not count either. The
+ * same clean open is what starts the one day after which that database's copy
+ * is deleted (`clearProvenDatabaseCopies`), so the window never offers a copy
+ * that cleanup could take.
  *
  * Problems the person can fix (disk full, an unreadable cloud folder, data
  * that was moved, macOS blocking the service) never show it: going back
@@ -61,7 +64,7 @@ const FAILURE_RECORD_CODES: ReadonlySet<AdeRecoveryErrorCode> = new Set([
 const BRAIN_TRANSACTION_STEPS: ReadonlySet<string> = new Set(["service", "restart", "health"]);
 
 export type StartupRecoveryTrigger =
-  | { kind: "database"; label: string; code: string; detail: string | null }
+  | { kind: "database"; label: string; projectRoot: string; code: string; detail: string | null }
   | { kind: "brain"; code: string; detail: string | null; failedStep: string | null }
   | { kind: "window_crashed"; detail: string | null }
   | { kind: "window_load_failed"; detail: string | null };
@@ -77,6 +80,9 @@ export type StartupRecoveryWindow = {
   show(state: StartupRecoveryWindowState): void;
   update(state: StartupRecoveryWindowState): void;
 };
+
+/** What the restore reports when it stops (`DatabaseRestoreError`). */
+type RestoreFailure = { rolledBack: boolean; copyMissing: boolean };
 
 export type StartupRecoveryDeps = {
   logger: Logger;
@@ -101,11 +107,13 @@ export type StartupRecoveryDeps = {
   classifyDatabaseError: (error: unknown, projectRoot: string) => string | null;
   /**
    * Whether the running version already opened this database cleanly once
-   * (its compat record names it). Then a failure now is not the update's, and
+   * (its compat record says so). Then a failure now is not the update's, and
    * going back would throw away what was done since. `null` asks about the
    * machine database.
    */
   openedOnRunningVersion: (projectRoot: string | null) => boolean;
+  /** The database of a project, as `listDatabases` names it (same path, same case). */
+  findProjectDatabase: (projectRoot: string, databases: readonly LocalDatabase[]) => LocalDatabase | null;
   listDatabases: () => LocalDatabase[];
   listCopies: (database: LocalDatabase) => DatabaseCopyInfo[];
   /** The target's `release-manifest.json`: parsed JSON, null for a 404; throws when GitHub cannot be reached. */
@@ -114,8 +122,13 @@ export type StartupRecoveryDeps = {
   updates: StartupRecoveryUpdates;
   /** Stops everything that holds a database open: the owned brain child and this app's project contexts. */
   releaseDatabases: () => Promise<void>;
+  /** Throws `DatabaseRestoreError` (a `RestoreFailure`) when it stops. */
   restoreCopies: (plan: GoBackPlan) => Array<{ dbPath: string; keptAs: string | null }>;
-  /** Saves the version gone back from, so ordinary checks skip it. */
+  /**
+   * Saves the version gone back from, so ordinary checks skip it, and turns
+   * automatic install off until a newer build lands (older builds read only
+   * that switch).
+   */
   recordWentBack: (args: { fromVersion: string; toVersion: string }) => void;
   window: StartupRecoveryWindow;
   relaunch: () => Promise<boolean>;
@@ -133,19 +146,37 @@ function errorCodeOf(error: unknown): AdeRecoveryErrorCode | null {
   return toAdeRecoveryErrorCode((error as { code?: unknown } | null)?.code);
 }
 
-/** One plain line: what failed. */
+function restoreFailureOf(error: unknown): RestoreFailure | null {
+  if (!error || typeof error !== "object") return null;
+  const candidate = error as Partial<RestoreFailure>;
+  return typeof candidate.rolledBack === "boolean"
+    ? { rolledBack: candidate.rolledBack, copyMissing: candidate.copyMissing === true }
+    : null;
+}
+
+/** One plain sentence: what happened. */
 export function startupRecoveryLine(trigger: StartupRecoveryTrigger, runningVersion: string): string {
   switch (trigger.kind) {
     case "database":
-      return `ADE couldn't open ${trigger.label} after updating to ${runningVersion}.`;
+      return `After updating to ${runningVersion}, ADE couldn't open the data for “${trigger.label}”.`;
     case "brain":
-      return `ADE's background service keeps stopping after the update to ${runningVersion}.`;
+      return `After updating to ${runningVersion}, ADE's background service keeps stopping.`;
     case "window_crashed":
-      return "ADE's window keeps crashing.";
+      return "ADE's window keeps crashing, so it can't show your work.";
     case "window_load_failed":
-      return "ADE's window didn't load.";
+      return "ADE's window didn't load, so it can't show your work.";
   }
 }
+
+/** What a restored database is, in the person's words. */
+function putsBackText(entry: GoBackPlan["restores"][number]): string {
+  if (entry.kind === "machine") return "ADE's own data on this computer";
+  if (entry.kind === "personal") return "your chats that aren't in a project";
+  return `the project “${entry.label}”`;
+}
+
+const AGAIN = "Press Go back to try again.";
+const SUPPORT = "Copy the details and send them to ADE support.";
 
 export function createStartupRecovery(deps: StartupRecoveryDeps) {
   const { logger, runningVersion } = deps;
@@ -168,12 +199,20 @@ export function createStartupRecovery(deps: StartupRecoveryDeps) {
   const readPlan = (): GoBackPlan | null => {
     if (deps.install === "unsupported") return null;
     try {
-      const databases = deps.listDatabases().map((database) => ({
+      const listed = deps.listDatabases();
+      const failed = trigger?.kind === "database" ? deps.findProjectDatabase(trigger.projectRoot, listed) : null;
+      const databases = listed.map((database) => ({
+        kind: database.kind,
         label: database.label,
         dbPath: database.dbPath,
         copies: deps.listCopies(database),
       }));
-      return chooseGoBackPlan({ runningVersion, updateRecord: deps.readUpdateRecord(), databases });
+      return chooseGoBackPlan({
+        runningVersion,
+        updateRecord: deps.readUpdateRecord(),
+        databases,
+        failedDbPath: failed?.dbPath ?? null,
+      });
     } catch (error) {
       logger.warn("startupRecovery.plan_failed", { error: errorText(error) });
       return null;
@@ -183,7 +222,14 @@ export function createStartupRecovery(deps: StartupRecoveryDeps) {
   const windowState = (): StartupRecoveryWindowState => ({
     line: trigger ? startupRecoveryLine(trigger, runningVersion) : "",
     runningVersion,
-    goBack: plan ? { version: plan.targetVersion, dataFrom: plan.dataFrom } : null,
+    goBack: plan
+      ? {
+          version: plan.targetVersion,
+          dataFrom: plan.dataFrom,
+          putsBack: plan.restores.map(putsBackText),
+          projectsLeftAlone: plan.untouched.filter((entry) => entry.kind === "project").length,
+        }
+      : null,
     phase,
   });
 
@@ -197,119 +243,162 @@ export function createStartupRecovery(deps: StartupRecoveryDeps) {
   /** Shows the window for `next`, unless one already showed this launch. */
   const show = (next: StartupRecoveryTrigger, { needsUpdate }: { needsUpdate: boolean }): void => {
     if (trigger) return;
+    trigger = next;
     const nextPlan = readPlan();
     if (needsUpdate) {
       const record = deps.readUpdateRecord();
       const afterUpdate = nextPlan != null || (record != null && record.version === runningVersion);
       if (!afterUpdate) {
+        trigger = null;
         logger.info("startupRecovery.not_shown", { kind: next.kind, reason: "no_update" });
         return;
       }
     }
-    trigger = next;
     plan = nextPlan;
     logger.info("startupRecovery.shown", {
       kind: next.kind,
       code: "code" in next ? next.code : null,
       runningVersion,
       goBackVersion: plan?.targetVersion ?? null,
-      copies: plan?.restores.length ?? 0,
+      restores: plan?.restores.map((entry) => entry.copy.fileName) ?? [],
     });
     deps.window.show(windowState());
   };
 
-  const failGoBack = (message: string, meta: Record<string, unknown> = {}): void => {
-    logger.warn("startupRecovery.go_back_failed", { message, toVersion: armed?.targetVersion ?? plan?.targetVersion ?? null, ...meta });
+  const failGoBack = (message: string, next: string, meta: Record<string, unknown> = {}): void => {
+    logger.warn("startupRecovery.go_back_failed", {
+      message,
+      toVersion: armed?.targetVersion ?? plan?.targetVersion ?? null,
+      ...meta,
+    });
     stopWatchingUpdates?.();
     stopWatchingUpdates = null;
     armed = null;
     installRequested = false;
-    setPhase({ state: "failed", message });
+    setPhase({ state: "failed", message, next });
   };
 
   /**
    * Can the target build open every database it will find? The restored ones
-   * are the files it left, so yes. The others (a project first opened on the
-   * running version, say) must be at or below its `dbCompat` (T3 #4374).
+   * are the files it left, so yes. The others (projects it leaves alone, or
+   * one first opened on the running version) must be at or below its
+   * `dbCompat` (T3 #4374).
    */
-  const checkTarget = async (target: GoBackPlan): Promise<string | null> => {
+  const checkTarget = async (target: GoBackPlan): Promise<{ message: string; next: string } | null> => {
     let raw: unknown | null;
     try {
       raw = await deps.fetchReleaseManifest(target.targetVersion);
     } catch (error) {
       logger.warn("startupRecovery.go_back_manifest_failed", { version: target.targetVersion, error: errorText(error) });
-      return `ADE couldn't reach GitHub to get ${target.targetVersion}. Check your connection and try again.`;
+      return {
+        message: `ADE couldn't reach GitHub to get ${target.targetVersion}.`,
+        next: `Check your internet connection. ${AGAIN}`,
+      };
     }
     let targetLevel = LEGACY_DB_COMPAT_LEVEL;
     if (raw !== null) {
       const manifest = parseReleaseManifest(raw);
       if (!manifest || manifest.version !== target.targetVersion || manifest.dbCompat == null) {
-        return `ADE couldn't read the details of ${target.targetVersion}, so it won't go back to it.`;
+        return { message: `ADE couldn't read the details of ${target.targetVersion}, so it didn't go back.`, next: SUPPORT };
       }
       targetLevel = manifest.dbCompat;
     }
     for (const database of target.untouched) {
       const level = deps.dbCompatLevelOf(database.dbPath);
-      if (level === "unreadable") {
-        return `ADE couldn't read the data version of ${database.label}, so it won't go back.`;
-      }
-      if (level > targetLevel) {
-        return `${runningVersion} already updated ${database.label} in a way ${target.targetVersion} can't read, so ADE won't go back.`;
+      if (level === "unreadable" || level > targetLevel) {
+        logger.warn("startupRecovery.go_back_blocked", { dbPath: database.dbPath, level, targetLevel });
+        return {
+          message: `${target.targetVersion} can't open “${database.label}” after ${runningVersion} changed it, so ADE didn't go back.`,
+          next: `Press Try again. If ADE still can't start, ${SUPPORT.charAt(0).toLowerCase()}${SUPPORT.slice(1)}`,
+        };
       }
     }
     return null;
+  };
+
+  const startInstall = (version: string): void => {
+    if (installRequested) return;
+    installRequested = true;
+    logger.info("startupRecovery.go_back_download_ready", { toVersion: version });
+    setPhase({ state: "installing" });
+    void deps.updates.quitAndInstall(false).then(
+      (started) => {
+        // A restore that stopped the install has already said what happened.
+        if (started || currentPhase().state === "failed") return;
+        failGoBack(`ADE couldn't install ${version}.`, `${AGAIN} If it fails twice, ${SUPPORT.charAt(0).toLowerCase()}${SUPPORT.slice(1)}`);
+      },
+      (error) => {
+        if (currentPhase().state === "failed") return;
+        failGoBack(`ADE couldn't install ${version}.`, AGAIN, { error: errorText(error) });
+      },
+    );
   };
 
   const watchUpdates = (version: string): void => {
     stopWatchingUpdates?.();
     stopWatchingUpdates = deps.updates.onStateChange((snapshot) => {
       if (!armed) return;
+      const state = currentPhase().state;
       if (snapshot.status === "downloading") {
+        if (state !== "checking" && state !== "downloading") return;
         const percent = typeof snapshot.progressPercent === "number" ? Math.round(snapshot.progressPercent) : null;
-        if (phase.state !== "downloading" || phase.percent !== percent) setPhase({ state: "downloading", percent });
+        const current = currentPhase();
+        if (current.state !== "downloading" || current.percent !== percent) setPhase({ state: "downloading", percent });
         return;
       }
-      if (snapshot.status === "error") {
-        failGoBack(`ADE couldn't download ${version}. Check your connection and try again.`, {
+      if (snapshot.status === "error" && (state === "checking" || state === "downloading")) {
+        failGoBack(`ADE couldn't download ${version}.`, `Check your internet connection. ${AGAIN}`, {
           error: snapshot.error ?? null,
         });
         return;
       }
-      if (snapshot.status === "ready" && snapshot.version === version && !installRequested) {
-        installRequested = true;
-        logger.info("startupRecovery.go_back_download_ready", { toVersion: version });
-        setPhase({ state: "installing" });
-        void deps.updates.quitAndInstall(false).then((started) => {
-          if (started) return;
-          failGoBack(`ADE couldn't install ${version}. Try again.`);
-        }, (error) => failGoBack(`ADE couldn't install ${version}. Try again.`, { error: errorText(error) }));
-      }
+      if (snapshot.status === "ready" && snapshot.version === version) startInstall(version);
     });
   };
 
+  /** "Go back" pressed: show what will happen. Nothing changes yet. */
+  const askGoBack = (): void => {
+    const state = currentPhase().state;
+    if (state === "checking" || state === "downloading" || state === "installing") return;
+    // Read again: a copy can have changed since the window opened.
+    plan = readPlan();
+    if (!plan) {
+      failGoBack(
+        "ADE no longer has a copy of your data from before the update, so it can't go back.",
+        `Press Try again. If ADE still can't start, ${SUPPORT.charAt(0).toLowerCase()}${SUPPORT.slice(1)}`,
+      );
+      return;
+    }
+    setPhase({ state: "confirm" });
+  };
+
   const goBack = async (): Promise<void> => {
-    if (phase.state === "checking" || phase.state === "downloading" || phase.state === "installing") return;
-    // Read again: a copy can have been deleted since the window opened.
+    if (currentPhase().state !== "confirm") return;
     const current = readPlan();
+    const agreed = plan;
     plan = current;
-    if (!current) {
-      failGoBack("There is no copy of your data from the previous version, so ADE can't go back.");
+    // What the person agreed to must be what happens.
+    const sameRestores = (left: GoBackPlan | null, right: GoBackPlan | null) =>
+      left != null && right != null && left.targetVersion === right.targetVersion
+      && left.restores.map((entry) => entry.copy.path).join("\n") === right.restores.map((entry) => entry.copy.path).join("\n");
+    if (!current || !sameRestores(agreed, current)) {
+      failGoBack("What ADE can put back changed a moment ago.", "Press Go back to see it again.");
       return;
     }
     logger.info("startupRecovery.go_back_started", {
       fromVersion: runningVersion,
       toVersion: current.targetVersion,
-      restores: current.restores.map((entry) => entry.copy.fileName),
+      restores: current.restores.map((entry) => entry.copy.path),
       untouched: current.untouched.length,
     });
     if (deps.install === "dev_build") {
-      failGoBack("Going back needs an installed ADE. This is a development build.");
+      failGoBack("Going back only works in an installed copy of ADE.", "This is a development build.");
       return;
     }
     setPhase({ state: "checking" });
     const blocked = await checkTarget(current);
     if (blocked) {
-      failGoBack(blocked, { reason: "target_check" });
+      failGoBack(blocked.message, blocked.next, { reason: "target_check" });
       return;
     }
     armed = current;
@@ -317,20 +406,14 @@ export function createStartupRecovery(deps: StartupRecoveryDeps) {
     watchUpdates(current.targetVersion);
     const started = await deps.updates.startGoBack(current.targetVersion);
     if (!started.ok) {
-      failGoBack(started.reason, { reason: "updater_refused" });
+      failGoBack(started.reason, "Wait a moment, then press Go back again.", { reason: "updater_refused" });
       return;
     }
-    // The update listener may already have moved the phase on.
     if (currentPhase().state === "checking") setPhase({ state: "downloading", percent: null });
-    // Already staged (a second press after a failed install): the listener
+    // Already downloaded (a second try after a failed install): the listener
     // only hears changes, so start the install here.
     const snapshot = deps.updates.getSnapshot();
-    if (snapshot.status === "ready" && snapshot.version === current.targetVersion && !installRequested) {
-      installRequested = true;
-      setPhase({ state: "installing" });
-      const installing = await deps.updates.quitAndInstall(false).catch(() => false);
-      if (!installing) failGoBack(`ADE couldn't install ${current.targetVersion}. Try again.`);
-    }
+    if (snapshot.status === "ready" && snapshot.version === current.targetVersion) startInstall(current.targetVersion);
   };
 
   const details = (): string => {
@@ -358,10 +441,12 @@ export function createStartupRecovery(deps: StartupRecoveryDeps) {
     if (plan) {
       lines.push(`Go back to: ${plan.targetVersion}`);
       for (const entry of plan.restores) lines.push(`  Puts back: ${entry.copy.path} (${new Date(entry.copy.takenAt).toISOString()})`);
+      for (const entry of plan.untouched) lines.push(`  Leaves as is: ${entry.dbPath}`);
     } else {
       lines.push("Go back: no matching database copy");
     }
-    if (phase.state === "failed") lines.push(`Last attempt: ${phase.message}`);
+    const latest = currentPhase();
+    if (latest.state === "failed") lines.push(`Last attempt: ${latest.message} ${latest.next}`);
     lines.push(`Logs: ${deps.logsFolder}`);
     return lines.filter((line, index) => line !== "" || index === 2).join("\n");
   };
@@ -384,7 +469,7 @@ export function createStartupRecovery(deps: StartupRecoveryDeps) {
       }
       if (deps.openedOnRunningVersion(args.projectRoot)) return;
       if (code && DATABASE_CODES.has(code)) {
-        show({ kind: "database", label: args.label, code, detail }, { needsUpdate: true });
+        show({ kind: "database", label: args.label, projectRoot: args.projectRoot, code, detail }, { needsUpdate: true });
         return;
       }
       // The brain classified nothing it could name, but it wrote down that
@@ -392,7 +477,13 @@ export function createStartupRecovery(deps: StartupRecoveryDeps) {
       const record = deps.readProjectFailure(args.projectRoot);
       if (isFresh(record) && record.component === "project_db_open" && FAILURE_RECORD_CODES.has(record.code)) {
         show(
-          { kind: "database", label: args.label, code: record.code, detail: record.detail ?? record.message },
+          {
+            kind: "database",
+            label: args.label,
+            projectRoot: args.projectRoot,
+            code: record.code,
+            detail: record.detail ?? record.message,
+          },
           { needsUpdate: true },
         );
       }
@@ -415,7 +506,7 @@ export function createStartupRecovery(deps: StartupRecoveryDeps) {
     },
 
     async handleAction(action: StartupRecoveryAction): Promise<void> {
-      logger.info("startupRecovery.action", { action, phase: phase.state });
+      logger.info("startupRecovery.action", { action, phase: currentPhase().state });
       switch (action) {
         case "try_again": {
           const relaunching = await deps.relaunch();
@@ -423,7 +514,13 @@ export function createStartupRecovery(deps: StartupRecoveryDeps) {
           return;
         }
         case "go_back":
+          askGoBack();
+          return;
+        case "confirm_go_back":
           await goBack();
+          return;
+        case "cancel_go_back":
+          if (currentPhase().state === "confirm") setPhase({ state: "idle" });
           return;
         case "open_logs": {
           const error = await deps.openLogsFolder();
@@ -471,7 +568,22 @@ export function createStartupRecovery(deps: StartupRecoveryDeps) {
         });
         logger.flushSync?.();
       } catch (error) {
-        failGoBack(errorText(error), { reason: "restore" });
+        const failure = restoreFailureOf(error);
+        if (failure?.copyMissing) {
+          failGoBack("What ADE can put back changed while it was downloading.", "Press Go back to see it again.", { reason: "copy_missing" });
+        } else if (failure && !failure.rolledBack) {
+          failGoBack(
+            "ADE couldn't finish putting your data back. Nothing was deleted: your data is in copies on this computer.",
+            `Don't use ADE yet. ${SUPPORT}`,
+            { reason: "restore_partial", error: errorText(error) },
+          );
+        } else {
+          failGoBack(
+            `ADE couldn't put your data back, so it stayed on ${runningVersion}. Nothing was changed.`,
+            `Close any other copy of ADE, and any terminal running the ade command. ${AGAIN}`,
+            { reason: "restore", error: errorText(error) },
+          );
+        }
         throw error;
       }
     },

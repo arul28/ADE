@@ -7,6 +7,7 @@ import { DB_COMPAT_LEVEL, LEGACY_DB_COMPAT_LEVEL } from "../../../shared/release
 import { compareUpdateVersions } from "../../../shared/updateVersions";
 import type { Logger } from "../logging/logger";
 import { readVolumeSpace } from "../storage/volume";
+import { parseDatabaseCopyName } from "../startupRecovery/goBackPlan";
 
 /**
  * What the newest build that opened a database left beside it, in
@@ -18,6 +19,12 @@ import { readVolumeSpace } from "../storage/volume";
  * - `lastOpenedVersion`: the app version that last opened it. A different
  *   version on the next open means an update ran, so the file is copied
  *   before its migrations run.
+ * - `firstOpenedAt`: when `lastOpenedVersion` first opened it cleanly. Null
+ *   right after "Go back" put a copy in place, until that version opens it.
+ *   A day later the update has proven itself for this file, and its copy is
+ *   deleted (`clearProvenDatabaseCopies`).
+ * - `copiesClearedAt` / `keptClearedAt`: when that cleanup finished for this
+ *   version, so later opens do not read the folder again.
  *
  * Beside the file rather than inside it: the guard reads it without opening
  * the database (the brain may hold it), and it describes this copy of the
@@ -27,7 +34,14 @@ export type DbCompatRecord = {
   level: number;
   lastOpenedVersion: string | null;
   updatedAt: string | null;
+  firstOpenedAt: string | null;
+  copiesClearedAt: string | null;
+  keptClearedAt: string | null;
 };
+
+function optionalString(value: unknown): string | null {
+  return typeof value === "string" ? value : null;
+}
 
 export function dbCompatRecordPath(dbPath: string): string {
   return `${dbPath}.compat.json`;
@@ -52,8 +66,11 @@ export function readDbCompatRecord(dbPath: string): DbCompatRecord | null | "unr
     if (typeof level !== "number" || !Number.isInteger(level) || level < 1) return "unreadable";
     return {
       level,
-      lastOpenedVersion: typeof parsed.lastOpenedVersion === "string" ? parsed.lastOpenedVersion : null,
-      updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : null,
+      lastOpenedVersion: optionalString(parsed.lastOpenedVersion),
+      updatedAt: optionalString(parsed.updatedAt),
+      firstOpenedAt: optionalString(parsed.firstOpenedAt),
+      copiesClearedAt: optionalString(parsed.copiesClearedAt),
+      keptClearedAt: optionalString(parsed.keptClearedAt),
     };
   } catch {
     return "unreadable";
@@ -69,18 +86,36 @@ export function dbCompatLevelOf(dbPath: string): number | "unreadable" {
 }
 
 /**
- * Called after migrations ran. Never lowers the level: an older build that
- * opens the file (it may, when nothing it needs changed) must not erase what
- * a newer build did to it.
+ * Called after migrations ran (a clean open), or by "Go back" after it put a
+ * copy in place (`cleanOpen: false`: that version has not opened it yet).
+ * Never lowers the level: an older build that opens the file (it may, when
+ * nothing it needs changed) must not erase what a newer build did to it.
+ * Returns what it wrote, or null when it could not write.
  */
-export function writeDbCompatRecord(dbPath: string, appVersion: string, logger: Logger, now = new Date()): void {
-  const previous = readDbCompatRecord(dbPath);
-  const previousLevel = previous && previous !== "unreadable" ? previous.level : 0;
+export function writeDbCompatRecord(
+  dbPath: string,
+  appVersion: string,
+  logger: Logger,
+  now = new Date(),
+  options: { cleanOpen?: boolean } = {},
+): DbCompatRecord | null {
+  const cleanOpen = options.cleanOpen !== false;
+  const read = readDbCompatRecord(dbPath);
+  const previous = read && read !== "unreadable" ? read : null;
+  const sameVersion = previous?.lastOpenedVersion === appVersion;
   const record: DbCompatRecord = {
-    level: Math.max(previousLevel, DB_COMPAT_LEVEL),
+    level: Math.max(previous?.level ?? 0, DB_COMPAT_LEVEL),
     lastOpenedVersion: appVersion,
     updatedAt: now.toISOString(),
+    // A record from before this field starts its clock now: later, never sooner.
+    firstOpenedAt: cleanOpen ? (sameVersion && previous?.firstOpenedAt) || now.toISOString() : null,
+    copiesClearedAt: cleanOpen && sameVersion ? previous?.copiesClearedAt ?? null : null,
+    keptClearedAt: cleanOpen && sameVersion ? previous?.keptClearedAt ?? null : null,
   };
+  return writeRecordFile(dbPath, record, logger) ? record : null;
+}
+
+function writeRecordFile(dbPath: string, record: DbCompatRecord, logger: Logger): boolean {
   // Written with a plain rename that replaces the old file, never delete-then-
   // rename (writeJsonAtomic's Windows path): between those two steps the
   // switch guard would read "no record" and take the level for 1. On Windows
@@ -96,7 +131,9 @@ export function writeDbCompatRecord(dbPath: string, appVersion: string, logger: 
       dbPath,
       error: error instanceof Error ? error.message : String(error),
     });
+    return false;
   }
+  return true;
 }
 
 const RENAME_ATTEMPTS = 5;
@@ -117,7 +154,6 @@ function renameReplacing(from: string, to: string): void {
 const SNAPSHOT_SUFFIX = ".bak";
 /** 1.2.127 is the first release that writes the compat record. */
 const UNRECORDED_VERSION_LABEL = "before-1.2.127";
-const SNAPSHOTS_KEPT = 3;
 const SNAPSHOT_HEADROOM_BYTES = 256 * 1024 * 1024;
 /** Pages copied per step; small steps keep the event loop free on big files. */
 const SNAPSHOT_PAGES_PER_STEP = 256;
@@ -142,19 +178,18 @@ function resolveSqliteBackup(): SqliteBackup | null {
 }
 
 /**
- * Copy the database before the first open by a new app version, so a broken
- * migration can be undone by hand (Settings, or support). Runs before the
- * migrations, on the connection that will run them.
+ * Copy the database before the first open by a new app version, so "Go back"
+ * in the "ADE could not start" window can undo a broken update. Runs before
+ * the migrations, on the connection that will run them.
  *
  * The copy uses SQLite's online backup in small steps, so a large project
  * database does not freeze the process that opens it. It is best effort by
  * design: no space, an older Node, or a failed copy is logged and the open
  * continues. Refusing to open would turn a missing safety copy into a broken
- * app. The newest two copies per database are kept.
+ * app.
  *
- * A project database syncs with other machines, so restoring its copy is a
- * last resort that support decides on; the safe recovery is to take the data
- * back from another machine. The machine database can simply be put back.
+ * One copy per database: a new copy deletes the older ones, and the copy
+ * itself goes once the update has proven itself (`clearProvenDatabaseCopies`).
  */
 export async function snapshotDatabaseBeforeVersionChange(args: {
   db: DatabaseSyncType;
@@ -219,48 +254,141 @@ export async function snapshotDatabaseBeforeVersionChange(args: {
     sizeBytes: size,
     durationMs: Date.now() - startedAt,
   });
-  await pruneDatabaseSnapshots(dbPath, logger);
+  deleteSupersededCopies(dbPath, destination, logger);
   return destination;
 }
 
-/** Newest first, by modification time. */
-function listDatabaseSnapshots(dbPath: string): Array<{ path: string; modifiedAt: number; sizeBytes: number }> {
+/**
+ * The journal files a database set aside by "Go back" keeps beside its copy.
+ * A copy SQLite's backup wrote is one file and has none.
+ */
+const COPY_SIDE_FILES = ["-wal", "-shm", "-journal"] as const;
+/** A version that opened a database cleanly this long ago has proven itself for it. */
+export const COPY_PROVEN_AFTER_MS = 24 * 60 * 60 * 1000;
+/** What "Go back" set aside stays this long after going back worked, for support. */
+export const KEPT_COPY_FOR_MS = 7 * 24 * 60 * 60 * 1000;
+
+type CopyFile = { path: string; kept: boolean } | { path: string; orphanSideOf: string };
+
+/**
+ * The copies in the database's own folder, by exact name only: a version copy
+ * (`parseDatabaseCopyName`), or a journal file left beside a copy that is
+ * gone. Never the live database or its journal files, never kvDb's one-time
+ * `.pre-crsqlite-w1.bak`, never a half-written `.tmp`. Null when the folder
+ * cannot be read.
+ */
+function listCopyFiles(dbPath: string): CopyFile[] | null {
   const directory = path.dirname(dbPath);
-  const prefix = snapshotPrefix(dbPath);
+  const databaseFileName = path.basename(dbPath);
   let names: string[];
   try {
     names = fs.readdirSync(directory);
   } catch {
-    return [];
+    return null;
   }
-  const snapshots: Array<{ path: string; modifiedAt: number; sizeBytes: number }> = [];
+  const present = new Set(names);
+  const files: CopyFile[] = [];
   for (const name of names) {
-    if (!name.startsWith(prefix) || !name.endsWith(SNAPSHOT_SUFFIX)) continue;
-    // Only version copies (`.pre-1.2.128-beta.3.bak`). kvDb's one-time
-    // `.pre-crsqlite-w1.bak` shares the prefix and is never pruned.
-    if (!/^\d/.test(name.slice(prefix.length))) continue;
-    const fullPath = path.join(directory, name);
-    try {
-      const stat = fs.statSync(fullPath);
-      snapshots.push({ path: fullPath, modifiedAt: stat.mtimeMs, sizeBytes: stat.size });
-    } catch {
-      // Removed between the listing and the stat.
+    const parsed = parseDatabaseCopyName(databaseFileName, name);
+    if (parsed) {
+      files.push({ path: path.join(directory, name), kept: parsed.kept });
+      continue;
+    }
+    const side = COPY_SIDE_FILES.find((suffix) => name.endsWith(suffix));
+    if (!side) continue;
+    const base = name.slice(0, -side.length);
+    if (!present.has(base) && parseDatabaseCopyName(databaseFileName, base)) {
+      files.push({ path: path.join(directory, name), orphanSideOf: base });
     }
   }
-  return snapshots.sort((left, right) => right.modifiedAt - left.modifiedAt);
+  return files;
 }
 
-async function pruneDatabaseSnapshots(dbPath: string, logger: Logger): Promise<void> {
-  for (const stale of listDatabaseSnapshots(dbPath).slice(SNAPSHOTS_KEPT)) {
-    try {
-      // A database kept aside by "Go back" keeps its journal files beside it.
-      for (const side of ["-wal", "-shm", "-journal"]) await fsp.rm(`${stale.path}${side}`, { force: true });
-      await fsp.rm(stale.path, { force: true });
-    } catch (error) {
-      logger.warn("db.snapshot_prune_failed", {
-        snapshot: stale.path,
-        error: error instanceof Error ? error.message : String(error),
-      });
+/**
+ * Deletes one copy: the copy first, then its journal files, so a copy whose
+ * delete fails keeps everything it needs. A file another process holds (a
+ * Windows lock) is skipped and tried again on a later open; it never throws.
+ */
+function deleteCopyFile(file: CopyFile, reason: string, logger: Logger): boolean {
+  try {
+    fs.rmSync(file.path, { force: true });
+    if (!("orphanSideOf" in file)) {
+      for (const side of COPY_SIDE_FILES) fs.rmSync(`${file.path}${side}`, { force: true });
     }
+  } catch (error) {
+    logger.warn("db.copy_delete_skipped", {
+      copy: file.path,
+      reason,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return false;
+  }
+  logger.info("db.copy_deleted", { copy: file.path, reason });
+  return true;
+}
+
+/**
+ * A new copy supersedes the older ones of the same database: they undo an
+ * earlier update, and going back that far is not offered. What "Go back" set
+ * aside is not superseded; it waits for `clearProvenDatabaseCopies`.
+ */
+function deleteSupersededCopies(dbPath: string, newest: string, logger: Logger): void {
+  try {
+    for (const file of listCopyFiles(dbPath) ?? []) {
+      if (file.path === newest || ("kept" in file && file.kept)) continue;
+      deleteCopyFile(file, "superseded", logger);
+    }
+  } catch (error) {
+    logger.warn("db.copy_cleanup_failed", { dbPath, error: error instanceof Error ? error.message : String(error) });
+  }
+}
+
+/**
+ * After a clean open: once the running version has opened this database
+ * cleanly for a day (`firstOpenedAt` at least `COPY_PROVEN_AFTER_MS` ago),
+ * the update has proven itself here and its copy goes. What "Go back" set
+ * aside goes a week after (`KEPT_COPY_FOR_MS`).
+ *
+ * That day is also what keeps the copy while the "ADE could not start" window
+ * can offer it: the window never offers Go back for a database the running
+ * version has already opened cleanly, and nothing here deletes a copy before
+ * such an open. Reads the folder only when something is due, and records when
+ * it is done, so a normal open reads nothing. Never throws.
+ */
+export function clearProvenDatabaseCopies(
+  dbPath: string,
+  record: DbCompatRecord,
+  logger: Logger,
+  now = new Date(),
+): void {
+  try {
+    if (!record.firstOpenedAt || !record.lastOpenedVersion) return;
+    const age = now.getTime() - Date.parse(record.firstOpenedAt);
+    if (!Number.isFinite(age)) return;
+    const copiesDue = age >= COPY_PROVEN_AFTER_MS && !record.copiesClearedAt;
+    const keptDue = age >= KEPT_COPY_FOR_MS && !record.keptClearedAt;
+    if (!copiesDue && !keptDue) return;
+    const files = listCopyFiles(dbPath);
+    if (!files) return;
+    let copiesDone = copiesDue;
+    let keptDone = keptDue;
+    for (const file of files) {
+      const kept = "kept" in file ? file.kept : false;
+      if (kept ? !keptDue : !copiesDue) continue;
+      const deleted = deleteCopyFile(file, kept ? "kept_copy_expired" : "update_proven", logger);
+      if (!deleted) {
+        if (kept) keptDone = false;
+        else copiesDone = false;
+      }
+    }
+    if (!copiesDone && !keptDone) return;
+    const stamp = now.toISOString();
+    writeRecordFile(dbPath, {
+      ...record,
+      copiesClearedAt: copiesDone ? stamp : record.copiesClearedAt,
+      keptClearedAt: keptDone ? stamp : record.keptClearedAt,
+    }, logger);
+  } catch (error) {
+    logger.warn("db.copy_cleanup_failed", { dbPath, error: error instanceof Error ? error.message : String(error) });
   }
 }

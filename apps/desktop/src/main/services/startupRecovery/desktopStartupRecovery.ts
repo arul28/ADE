@@ -4,9 +4,11 @@ import { clipboard, shell } from "electron";
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import { fetchReleaseManifestJson } from "../../../../../ade-cli/src/lib/releaseAssets";
 import { RELEASE_MANIFEST_ASSET } from "../../../shared/updateTrack";
+import { DEFAULT_AUTO_UPDATE_PREFERENCES } from "../../../shared/types/core";
 import type { Logger } from "../logging/logger";
 import { readLastFailure } from "../runtime/lastFailureStore";
 import { readGlobalState, readGlobalStateForUpdate, writeGlobalState } from "../state/globalState";
+import { pathsEqual } from "../shared/pathCompare";
 import { dbCompatLevelOf, readDbCompatRecord } from "../state/dbCompatRecord";
 import { classifySqliteOpenError } from "../state/kvDb";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
@@ -60,7 +62,13 @@ export function createDesktopStartupRecovery(args: {
     openedOnRunningVersion: (projectRoot) => {
       const dbPath = projectRoot ? resolveAdeLayout(projectRoot).dbPath : path.join(resolveMachineAdeLayout().adeDir, "ade.db");
       const record = readDbCompatRecord(dbPath);
-      return record != null && record !== "unreadable" && record.lastOpenedVersion === runningVersion;
+      // A clean open, not one "Go back" set up (`firstOpenedAt` stays null until the open).
+      return record != null && record !== "unreadable"
+        && record.lastOpenedVersion === runningVersion && record.firstOpenedAt != null;
+    },
+    findProjectDatabase: (projectRoot, databases) => {
+      const dbPath = resolveAdeLayout(projectRoot).dbPath;
+      return databases.find((database) => database.kind === "project" && pathsEqual(database.dbPath, dbPath)) ?? null;
     },
     listDatabases: () => listLocalDatabases(),
     listCopies: listDatabaseCopies,
@@ -73,11 +81,28 @@ export function createDesktopStartupRecovery(args: {
     restoreCopies: (plan) => restoreDatabaseCopies({ plan, runningVersion, logger }),
     recordWentBack: ({ fromVersion, toVersion }) => {
       // Read-modify-write that refuses a corrupt file rather than replacing it.
+      // Builds from before `wentBackFrom` (1.2.127, the stable at the time)
+      // read only this switch: with automatic install off they download and
+      // offer an update but never install it by themselves, so they cannot
+      // put the broken build back unasked. A build newer than `fromVersion`
+      // turns it back on (autoUpdateService).
       const state = readGlobalStateForUpdate(globalStatePath);
+      // Absent means the default, which is off in 1.2.127 and since.
+      const automaticInstall = state.autoUpdatePreferences?.automaticInstall === true;
       writeGlobalState(globalStatePath, {
         ...state,
-        wentBackFrom: { version: fromVersion, toVersion, at: new Date().toISOString() },
+        autoUpdatePreferences: {
+          automaticInstall: false,
+          onlyWhenIdle: state.autoUpdatePreferences?.onlyWhenIdle ?? DEFAULT_AUTO_UPDATE_PREFERENCES.onlyWhenIdle,
+        },
+        wentBackFrom: {
+          version: fromVersion,
+          toVersion,
+          at: new Date().toISOString(),
+          pausedAutomaticInstall: automaticInstall,
+        },
       });
+      logger.info("startupRecovery.automatic_install_paused", { fromVersion, toVersion, wasOn: automaticInstall });
     },
     window,
     relaunch: args.relaunch,

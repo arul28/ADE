@@ -102,6 +102,7 @@ export function listDatabaseCopies(database: LocalDatabase): DatabaseCopyInfo[] 
       databasePath: database.dbPath,
       toVersion: parsed.toVersion,
       fromVersion: parsed.fromVersion,
+      kept: parsed.kept,
       takenAt: stat.mtimeMs,
       sizeBytes: stat.size + SIDE_FILES.reduce((sum, side) => sum + fileSize(`${copyPath}${side}`), 0),
     });
@@ -128,8 +129,9 @@ export function deleteDatabaseCopy(args: {
   const listed = listAllDatabaseCopies(args.databases).find((copy) => copy.path === args.copyPath);
   if (!listed) return { deleted: false, reason: "That copy is no longer on this computer." };
   try {
-    for (const side of SIDE_FILES) fs.rmSync(`${listed.path}${side}`, { force: true });
+    // The copy first: if it cannot go, its journal files stay with it.
     fs.rmSync(listed.path);
+    for (const side of SIDE_FILES) fs.rmSync(`${listed.path}${side}`, { force: true });
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     args.logger.warn("startupRecovery.database_copy_delete_failed", { copy: listed.path, error: reason });
@@ -182,15 +184,14 @@ function moveDatabaseFiles(from: string, to: string, parts: readonly string[]): 
 }
 
 /**
- * Where the current database is kept: the copy the target version would have
- * taken itself on its first open (`pre-<target>-from-<running>.bak`), so the
- * Settings list reads it as one more copy and the target build does not take
- * another. A second go-back between the same two versions gets `_2`.
+ * Where the current database is set aside: `pre-<target>-from-<running>_kept.bak`
+ * (`_kept2`, … on a repeat). The `_kept` mark keeps it out of the way back and
+ * out of the "superseded" cleanup; it goes a week after going back worked.
  */
 function keepPathFor(dbPath: string, targetVersion: string, runningVersion: string): string {
-  const base = `${dbPath}.pre-${versionLabel(targetVersion)}-from-${versionLabel(runningVersion)}`;
+  const base = `${dbPath}.pre-${versionLabel(targetVersion)}-from-${versionLabel(runningVersion)}_kept`;
   for (let index = 1; ; index += 1) {
-    const candidate = `${base}${index === 1 ? "" : `_${index}`}.bak`;
+    const candidate = `${base}${index === 1 ? "" : index}.bak`;
     if (existingParts(candidate).length === 0) return candidate;
   }
 }
@@ -198,16 +199,30 @@ function keepPathFor(dbPath: string, targetVersion: string, runningVersion: stri
 export type DatabaseRestoreResult = { dbPath: string; restoredFrom: string; keptAs: string | null };
 
 /**
- * Puts back the copies of a go-back plan. Every process that has these files
- * open must be stopped first; on Windows a held file makes the rename fail,
- * which stops the restore before anything changed.
+ * A restore that did not finish. `rolledBack`: every database is exactly as
+ * it was before the restore began. `copyMissing`: a copy disappeared after
+ * the person agreed, so nothing was moved.
+ */
+export class DatabaseRestoreError extends Error {
+  constructor(message: string, readonly rolledBack: boolean, readonly copyMissing = false) {
+    super(message);
+    this.name = "DatabaseRestoreError";
+  }
+}
+
+type DoneMove = { entry: GoBackPlan["restores"][number]; liveParts: string[]; keptAs: string | null; copyParts: string[] };
+
+/**
+ * Puts back the copies of a go-back plan, all or nothing. Every process that
+ * has these files open must be stopped first; on Windows a held file makes a
+ * rename fail, which is caught here.
  *
  * Moves only, never copies or overwrites (T3 #20906): the current database,
- * even one ADE cannot open, is kept as another copy, then the copy takes its
- * place. Renames are instant and need no free space, so a large project does
- * not stall the install that waits on this. One database that fails to move is
- * put back as it was and stops the restore; the ones already restored stay
- * restored, and the error says so.
+ * even one ADE cannot open, is set aside whole (journal files too), then the
+ * copy takes its place. Renames are instant and need no free space, so a large
+ * project does not stall the install that waits on this. When one database
+ * fails to move, every database already moved is moved back, and the error
+ * says whether that worked. Records are written only once every move is done.
  */
 export function restoreDatabaseCopies(args: {
   plan: GoBackPlan;
@@ -217,49 +232,71 @@ export function restoreDatabaseCopies(args: {
   const { plan, runningVersion, logger } = args;
   for (const entry of plan.restores) {
     if (!fs.existsSync(entry.copy.path)) {
-      throw new Error(`The copy of ${entry.label} is gone: ${entry.copy.path}`);
+      logger.warn("startupRecovery.database_copy_missing", { dbPath: entry.dbPath, copy: entry.copy.path });
+      throw new DatabaseRestoreError(`The copy of ${entry.label} is gone: ${entry.copy.path}`, true, true);
     }
   }
-  const results: DatabaseRestoreResult[] = [];
+  const done: DoneMove[] = [];
   for (const entry of plan.restores) {
     const { dbPath } = entry;
     const liveParts = existingParts(dbPath);
+    const copyParts = existingParts(entry.copy.path);
     const keptAs = liveParts.length > 0 ? keepPathFor(dbPath, plan.targetVersion, runningVersion) : null;
     try {
-      if (keptAs) {
-        moveDatabaseFiles(dbPath, keptAs, liveParts);
-        logger.info("startupRecovery.database_kept", { dbPath, keptAs, files: liveParts.length });
-      }
+      if (keptAs) moveDatabaseFiles(dbPath, keptAs, liveParts);
       try {
-        moveDatabaseFiles(entry.copy.path, dbPath, existingParts(entry.copy.path));
+        moveDatabaseFiles(entry.copy.path, dbPath, copyParts);
       } catch (error) {
         if (keptAs) moveDatabaseFiles(keptAs, dbPath, liveParts);
         throw error;
       }
+      logger.info("startupRecovery.database_moved", { dbPath, keptAs, restoredFrom: entry.copy.path });
+      done.push({ entry, liveParts, keptAs, copyParts });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      const rolledBack = undoMoves(done, logger);
       logger.error("startupRecovery.database_restore_failed", {
         dbPath,
         copy: entry.copy.path,
-        restoredBefore: results.length,
+        movedBefore: done.length,
+        rolledBack,
         error: message,
       });
-      throw new Error(
-        results.length > 0
-          ? `ADE put back ${results.length} of ${plan.restores.length} databases, then couldn't move ${entry.label}: ${message}`
-          : `ADE couldn't move ${entry.label}: ${message}`,
-      );
+      throw new DatabaseRestoreError(`ADE couldn't move ${entry.label}: ${message}`, rolledBack);
     }
-    // The record beside the file names the build that last opened it. The
-    // target opens it next, and it already has the current file kept.
-    writeDbCompatRecord(dbPath, plan.targetVersion, logger);
+  }
+  const results: DatabaseRestoreResult[] = [];
+  for (const { entry, keptAs } of done) {
+    // The target opens it next. `cleanOpen: false`: it has not opened it yet,
+    // so its one-day clock starts at that open, not now.
+    writeDbCompatRecord(entry.dbPath, plan.targetVersion, logger, new Date(), { cleanOpen: false });
     logger.info("startupRecovery.database_restored", {
-      dbPath,
+      dbPath: entry.dbPath,
       restoredFrom: entry.copy.path,
       keptAs,
       takenAt: new Date(entry.copy.takenAt).toISOString(),
     });
-    results.push({ dbPath, restoredFrom: entry.copy.path, keptAs });
+    results.push({ dbPath: entry.dbPath, restoredFrom: entry.copy.path, keptAs });
   }
   return results;
+}
+
+/** Moves finished databases back, newest first. True when all of them went back. */
+function undoMoves(done: readonly DoneMove[], logger: Logger): boolean {
+  let ok = true;
+  for (const move of [...done].reverse()) {
+    try {
+      moveDatabaseFiles(move.entry.dbPath, move.entry.copy.path, move.copyParts);
+      if (move.keptAs) moveDatabaseFiles(move.keptAs, move.entry.dbPath, move.liveParts);
+      logger.info("startupRecovery.database_move_undone", { dbPath: move.entry.dbPath });
+    } catch (error) {
+      ok = false;
+      logger.error("startupRecovery.database_move_undo_failed", {
+        dbPath: move.entry.dbPath,
+        keptAs: move.keptAs,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+  return ok;
 }

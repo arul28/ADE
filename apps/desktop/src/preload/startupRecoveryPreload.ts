@@ -11,6 +11,7 @@ import type { StartupRecoveryAction, StartupRecoveryWindowState } from "../share
 contextBridge.exposeInMainWorld("adeStartupRecovery", {
   getState: (): Promise<StartupRecoveryWindowState> => ipcRenderer.invoke(IPC.startupRecoveryGetState),
   act: (action: StartupRecoveryAction): Promise<void> => ipcRenderer.invoke(IPC.startupRecoveryAction, { action }),
+  fit: (height: number): void => ipcRenderer.send(IPC.startupRecoveryFit, height),
   onState: (cb: (state: StartupRecoveryWindowState) => void): (() => void) => {
     const listener = (_event: Electron.IpcRendererEvent, state: StartupRecoveryWindowState) => cb(state);
     ipcRenderer.on(IPC.startupRecoveryState, listener);
