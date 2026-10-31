@@ -80,6 +80,7 @@ function readAccount(): Promise<void> {
         emit();
       }
     })
+    // The local copy stays in use; main reports the failed IPC call itself (ipcCapture.ts).
     .catch(() => undefined)
     .finally(() => {
       accountRead = null;
@@ -131,7 +132,8 @@ export async function setMachinePlacementPreference(
   try {
     const result = await api.set({ scope: ACCOUNT_SCOPE_ALL, key, value: record });
     return { synced: result.ok === true };
-  } catch {
+  } catch (error) {
+    console.warn("machine_placement.account_save_failed", error instanceof Error ? error.message : String(error));
     return { synced: false };
   }
 }

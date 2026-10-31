@@ -4,6 +4,7 @@ import { formatBytes } from "../../lib/format";
 import { LABEL_CLASS_NAME, SECTION_CLASS_NAME, CARD_CLASS_NAME, CARD_ACTIVE_CLASS_NAME } from "./laneDialogTokens";
 import {
   autoLaneMachine,
+  canAutoPlaceOnMachine,
   canCreateLaneOnMachine,
   isLowLaneMachineDisk,
   laneMachineFreeBytes,
@@ -40,7 +41,8 @@ export function LaneMachineSelector({
    * one. With fewer than two machines able to host this repo there is nothing
    * to balance, so the card is absent.
    */
-  const eligibleCount = machines.filter(canCreateLaneOnMachine).length;
+  // Only machines automatic placement may choose: a Manual only one is not balanced across.
+  const eligibleCount = machines.filter(canAutoPlaceOnMachine).length;
   const autoMachine = autoLaneMachine(machines);
   return (
     <section className={SECTION_CLASS_NAME} data-tour="lanes.createDialog.machine">

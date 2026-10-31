@@ -473,7 +473,7 @@ const SCORE_TIE = 0.05;
  * 0–1: how much room the machine has for one more lane right now, from its
  * own stats. Null when it has not reported any.
  */
-export function machineHeadroom(stats: MachineStats | null | undefined): number | null {
+function machineHeadroom(stats: MachineStats | null | undefined): number | null {
   if (!stats) return null;
   const cpuFree = stats.cpu.busyPercent == null ? 0.5 : 1 - stats.cpu.busyPercent / 100;
   const memFree = stats.memory.totalBytes > 0
@@ -488,7 +488,7 @@ export function machineHeadroom(stats: MachineStats | null | undefined): number 
 }
 
 /** Headroom scaled by the machine's preference; what "Least loaded" compares. */
-export function machinePlacementScore(option: Pick<LaneMachineOption, "stats" | "preference">): number {
+function machinePlacementScore(option: Pick<LaneMachineOption, "stats" | "preference">): number {
   const preference = option.preference ?? "normal";
   if (preference === "manual") return 0;
   return (machineHeadroom(option.stats) ?? UNKNOWN_HEADROOM) * PREFERENCE_WEIGHT[preference];

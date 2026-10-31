@@ -84,7 +84,7 @@ function baseName(command: string): string {
 }
 
 /** Build tools by name from a list of process names. */
-export function countBuildTools(names: Iterable<string>): Array<{ tool: string; count: number }> {
+function countBuildTools(names: Iterable<string>): Array<{ tool: string; count: number }> {
   const counts = new Map<string, number>();
   for (const name of names) {
     const tool = BUILD_TOOLS[baseName(name)];
@@ -94,7 +94,7 @@ export function countBuildTools(names: Iterable<string>): Array<{ tool: string; 
 }
 
 /** `vm_stat`: free + inactive + speculative pages, what macOS can hand out without swapping. */
-export function parseVmStatAvailable(text: string): number | null {
+function parseVmStatAvailable(text: string): number | null {
   const pageSize = Number(/page size of (\d+) bytes/.exec(text)?.[1]);
   if (!Number.isFinite(pageSize) || pageSize <= 0) return null;
   const pages = (label: string) => Number(new RegExp(`Pages ${label}:\\s+(\\d+)`).exec(text)?.[1] ?? 0);
@@ -103,7 +103,7 @@ export function parseVmStatAvailable(text: string): number | null {
 }
 
 /** `pmset -g batt`. */
-export function parsePmsetBattery(text: string): MachineStats["power"] {
+function parsePmsetBattery(text: string): MachineStats["power"] {
   const onBattery = /'Battery Power'/.test(text);
   const percent = /InternalBattery[^\n]*?\t(\d{1,3})%/.exec(text)?.[1];
   const hasBattery = /InternalBattery/.test(text);
@@ -232,10 +232,10 @@ async function readWindowsBattery(): Promise<MachineStats["power"]> {
   );
   if (!out.trim()) return { hasBattery: false, onBattery: false, batteryPercent: null };
   const parsed = JSON.parse(out) as { EstimatedChargeRemaining?: number; BatteryStatus?: number };
-  // BatteryStatus 1 is "discharging"; 2 and up are on AC (charging, full…).
+  // BatteryStatus 1, 4 (low) and 5 (critical) are on battery; the rest are on AC (charging, full…).
   return {
     hasBattery: true,
-    onBattery: parsed.BatteryStatus === 1,
+    onBattery: parsed.BatteryStatus === 1 || parsed.BatteryStatus === 4 || parsed.BatteryStatus === 5,
     batteryPercent: typeof parsed.EstimatedChargeRemaining === "number" ? parsed.EstimatedChargeRemaining : null,
   };
 }
@@ -250,8 +250,8 @@ async function readLinuxBattery(): Promise<MachineStats["power"]> {
   return { hasBattery: true, onBattery: status === "Discharging", batteryPercent: Number.isFinite(capacity) ? capacity : null };
 }
 
-async function readWorkCopies(): Promise<MachineStats["workCopies"]> {
-  const copies = listMachineRemoteWorkCopies();
+async function readWorkCopies(logger?: Logger): Promise<MachineStats["workCopies"]> {
+  const copies = listMachineRemoteWorkCopies(undefined, logger ? { info: () => {}, warn: logger.warn } : undefined);
   let sizeBytes: number | null = 0;
   for (const copy of copies) {
     const size = await measureRemoteWorkCopy(copy.path);
@@ -289,6 +289,12 @@ export function createMachineStatsReader(deps: MachineStatsReaderDeps = {}) {
     return busyBetween(before, after);
   };
 
+  /** A reading that failed shows as unknown; the log says why. */
+  const unknownAfter = (part: string) => (error: unknown): null => {
+    deps.logger?.warn(`machine_stats.${part}_failed`, { error: error instanceof Error ? error.message : String(error) });
+    return null;
+  };
+
   const readMedium = (): Promise<Medium> => {
     if (medium && now() - medium.at < MEDIUM_TTL_MS) return Promise.resolve(medium.value);
     mediumInFlight ??= (async () => {
@@ -296,13 +302,13 @@ export function createMachineStatsReader(deps: MachineStatsReaderDeps = {}) {
         (platform === "win32"
           ? runTasklistCsv(6_000).then((text) => countBuildTools([...parseTasklist(text).values()].map((row) => row.name)))
           : runText(platform === "darwin" ? "/bin/ps" : "ps", ["-A", "-o", "comm="], 4_000).then((text) => countBuildTools(text.split("\n"))))
-          .catch(() => null),
+          .catch(unknownAfter("builds")),
         (platform === "darwin"
           ? runText("/usr/bin/pmset", ["-g", "batt"], 3_000).then(parsePmsetBattery)
           : platform === "linux" ? readLinuxBattery() : Promise.resolve(null))
-          .catch(() => null),
+          .catch(unknownAfter("battery")),
         platform === "darwin"
-          ? runText("/usr/bin/vm_stat", [], 3_000).then(parseVmStatAvailable).catch(() => null)
+          ? runText("/usr/bin/vm_stat", [], 3_000).then(parseVmStatAvailable).catch(unknownAfter("memory"))
           : Promise.resolve(null),
       ]);
       const value: Medium = { builds, power, availableBytes };
@@ -318,11 +324,12 @@ export function createMachineStatsReader(deps: MachineStatsReaderDeps = {}) {
     if (slowInFlight || (slow && now() - slow.at < SLOW_TTL_MS)) return;
     slowInFlight = (async () => {
       const [clis, xcode, osName, workCopies, power] = await Promise.all([
-        readCliSignIns(platform).catch(() => null),
-        platform === "darwin" ? readXcode().catch(() => null) : Promise.resolve(null),
-        readOsName(platform).catch(() => null),
-        readWorkCopies().catch(() => null),
-        platform === "win32" ? readWindowsBattery().catch(() => null) : Promise.resolve(null),
+        readCliSignIns(platform).catch(unknownAfter("cli_sign_ins")),
+        // No Xcode is an ordinary answer (readXcode returns null for it); anything else is logged.
+        platform === "darwin" ? readXcode().catch(unknownAfter("xcode")) : Promise.resolve(null),
+        readOsName(platform).catch(unknownAfter("os_name")),
+        readWorkCopies(deps.logger).catch(unknownAfter("work_copies")),
+        platform === "win32" ? readWindowsBattery().catch(unknownAfter("battery")) : Promise.resolve(null),
       ]);
       slow = { at: now(), value: { clis, xcode, osName, workCopies, power } };
     })()
@@ -333,7 +340,7 @@ export function createMachineStatsReader(deps: MachineStatsReaderDeps = {}) {
   };
 
   const readSleep = async (): Promise<MachineStats["sleep"]> => {
-    const snapshot = await deps.keepAwake?.().catch(() => null);
+    const snapshot = await deps.keepAwake?.().catch(unknownAfter("sleep"));
     if (!snapshot) return null;
     const level = snapshot.preferences.level;
     const inForce = snapshot.levelError == null;
@@ -347,7 +354,7 @@ export function createMachineStatsReader(deps: MachineStatsReaderDeps = {}) {
       readCpu(),
       fs.statfs(os.homedir())
         .then((stats) => (stats.blocks > 0 ? { freeBytes: stats.bavail * stats.bsize, totalBytes: stats.blocks * stats.bsize } : null))
-        .catch(() => null),
+        .catch(unknownAfter("disk")),
       readSleep(),
       // The first read waits a beat for the process scan; later ones have it cached.
       Promise.race([mediumRead, new Promise<null>((resolve) => setTimeout(() => resolve(null), MEDIUM_WAIT_MS).unref?.())]),

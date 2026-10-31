@@ -8,6 +8,7 @@ import type { LaneTemplate } from "../../../shared/types";
 import type { CreateLaneMode } from "./CreateLaneDialog";
 import {
   autoLaneMachine,
+  canAutoPlaceOnMachine,
   canCreateLaneOnMachine,
   isLowLaneMachineDisk,
   laneMachineFreeBytes,
@@ -154,7 +155,8 @@ export function LaneMachineChip({
   disabled: boolean;
 }) {
   const close = () => popover.onOpenChange(false);
-  const eligibleCount = machines.filter(canCreateLaneOnMachine).length;
+  // Only machines automatic placement may choose: a Manual only one is not balanced across.
+  const eligibleCount = machines.filter(canAutoPlaceOnMachine).length;
   const autoMachine = autoLaneMachine(machines);
   const selectedMachine = machines.find((machine) => machine.id === selectedMachineId) ?? null;
   return (

@@ -40,6 +40,7 @@ export function readMachineStats(
   if (!options?.fresh && hit && Date.now() - hit.at < TTL_MS) return hit.value;
   const api = typeof window === "undefined" ? undefined : window.ade?.machineStats;
   const value = typeof api?.get === "function"
+    // A failed call shows as unknown here; main reports the failed IPC call itself (ipcCapture.ts).
     ? Promise.resolve().then(() => api.get(pin)).catch(() => null)
     : Promise.resolve(null);
   cache.set(key, { at: Date.now(), value });
@@ -86,12 +87,15 @@ export function useMachineStatsMap(
           return rows;
         });
     };
-    void readAll(fresh).then((rows) => {
-      if (cancelled || !rows.some(([, value]) => value && value.slowAt == null)) return;
+    // The slow readings (Xcode, simulators, work copies) can take longer than
+    // one wait on a cold machine: read again until they arrive, a few times at most.
+    const followSlow = (rows: ReadonlyArray<readonly [string, MachineStats | null]>, triesLeft: number) => {
+      if (cancelled || triesLeft <= 0 || !rows.some(([, value]) => value && value.slowAt == null)) return;
       followUp = setTimeout(() => {
-        void readAll(true);
+        void readAll(true).then((next) => followSlow(next, triesLeft - 1));
       }, SLOW_FOLLOW_UP_MS);
-    });
+    };
+    void readAll(fresh).then((rows) => followSlow(rows, 3));
     return () => {
       cancelled = true;
       if (followUp) clearTimeout(followUp);
