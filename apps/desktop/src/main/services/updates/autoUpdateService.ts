@@ -2574,10 +2574,18 @@ export function createAutoUpdateService({
     if (snapshot.status === "installing" || quitAndInstallPromise != null || installQuitArmed) {
       return { ok: false, reason: "An update is installing. Wait for ADE to restart." };
     }
-    // A check or download already running finishes first; whatever it staged
-    // is dropped below.
-    if (checkPromise) await checkPromise.catch(() => undefined);
-    if (snapshot.status === "ready" && snapshot.version && snapshot.version !== version) {
+    // A check, its download, or a staged-archive restore already running
+    // finishes first, on the feed it started on; whatever it staged is dropped
+    // below. Both downloads live inside these two promises. Nothing awaits
+    // between the last one settling and `beginGoBack`, so no new one can start
+    // on the old feed in between.
+    while (checkPromise || restorePromise) {
+      await Promise.allSettled([checkPromise, restorePromise].filter((pending) => pending != null));
+    }
+    const stagedOther = snapshot.version != null
+      && snapshot.version !== version
+      && (snapshot.status === "ready" || snapshot.status === "error" || downloadedFilePath != null);
+    if (stagedOther) {
       logger.info("autoUpdate.go_back_discarded_staged_update", { version: snapshot.version, target: version });
       downloadedFilePath = null;
       compressedUpdateBytes = null;

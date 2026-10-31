@@ -3763,6 +3763,54 @@ describe("update tracks", () => {
     expect(readGlobalState(statePath).wentBackFrom).toBeUndefined();
     fixed.service.dispose();
   });
+
+  // A download already running (here, the re-download of a staged archive
+  // that vanished) must finish on its own feed before Go back points the
+  // updater at another release, and what it staged is dropped.
+  it("going back waits for a download in flight, then drops what it staged", async () => {
+    vi.useFakeTimers();
+    const updaterCacheDir = makeEmptyUpdaterCacheDir();
+    const downloadedFile = path.join(updaterCacheDir, "update.zip");
+    let finishDownload: (() => void) | null = null;
+    const updater = Object.assign(new FakeAutoUpdater(), {
+      setFeedURL: vi.fn(),
+      downloadUpdate: vi.fn(() => new Promise<void>((resolve) => {
+        finishDownload = () => {
+          fs.writeFileSync(downloadedFile, "restored", "utf8");
+          updater.emit("update-downloaded", { version: "1.2.3", downloadedFile });
+          resolve();
+        };
+      })),
+    });
+    const service = createAutoUpdateService({
+      logger: makeLogger(),
+      currentVersion: "1.2.2",
+      globalStatePath: makeStatePath(),
+      updaterCacheDir,
+      getDiskSpace: plentyOfDisk,
+      startupDelayMs: 60_000,
+      periodicCheckMs: 1_000,
+      autoCheckEnabled: true,
+      autoApplyEnabled: false,
+      updater,
+    });
+    updater.emit("update-downloaded", { version: "1.2.3" });
+    await vi.advanceTimersByTimeAsync(1_000);
+    await vi.waitFor(() => expect(updater.downloadUpdate).toHaveBeenCalledTimes(1));
+    expect(service.getSnapshot().status).toBe("downloading");
+
+    const goBackUrl = "https://github.com/arul28/ADE/releases/download/v1.2.1/";
+    const goingBack = service.startGoBack("1.2.1");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(updater.setFeedURL).not.toHaveBeenCalledWith({ provider: "generic", url: goBackUrl });
+
+    finishDownload!();
+    await expect(goingBack).resolves.toEqual({ ok: true });
+    expect(updater.setFeedURL).toHaveBeenLastCalledWith({ provider: "generic", url: goBackUrl });
+    expect(service.getSnapshot().version).not.toBe("1.2.3");
+    service.dispose();
+    vi.useRealTimers();
+  });
 });
 
 // The data guard before a track switch: it reads real `<db>.compat.json`
