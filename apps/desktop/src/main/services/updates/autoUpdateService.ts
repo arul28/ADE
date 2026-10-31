@@ -705,6 +705,30 @@ export function createAutoUpdateService({
     });
   }
 
+  // Past the build "Go back" left: the skip is no longer needed, and
+  // automatic install comes back on if Go back is what turned it off.
+  const wentBackFrom = initialState.state.wentBackFrom;
+  if (
+    wentBackFrom
+    && typeof wentBackFrom.version === "string"
+    && compareUpdateVersions(currentVersion, wentBackFrom.version) > 0
+  ) {
+    const resume = wentBackFrom.pausedAutomaticInstall === true
+      && initialState.state.autoUpdatePreferences?.automaticInstall === false;
+    initialState.state = {
+      ...initialState.state,
+      wentBackFrom: undefined,
+      ...(resume
+        ? { autoUpdatePreferences: { ...initialState.state.autoUpdatePreferences!, automaticInstall: true } }
+        : {}),
+    };
+    try {
+      writeGlobalState(globalStatePath, initialState.state);
+      logger.info("autoUpdate.went_back_cleared", { leftVersion: wentBackFrom.version, currentVersion, automaticInstallResumed: resume });
+    } catch (error) {
+      logger.warn("autoUpdate.went_back_clear_failed", { message: formatErrorMessage(error) });
+    }
+  }
   let autoUpdatePreferences = normalizeAutoUpdatePreferences(
     initialState.state.autoUpdatePreferences,
   );

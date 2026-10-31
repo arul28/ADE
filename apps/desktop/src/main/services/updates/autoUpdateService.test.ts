@@ -3738,6 +3738,31 @@ describe("update tracks", () => {
     expect(relaunched.getSnapshot().track).toEqual({ selected: "stable", running: "stable", switching: null });
     relaunched.dispose();
   });
+
+  // "Go back" (startupRecovery.ts) leaves `wentBackFrom` and turns automatic
+  // install off. The build it went back to must never take the broken build
+  // again by itself; the first build newer than it turns automatic install
+  // back on.
+  it("after going back, the build left is not offered again, and only a newer build resumes automatic install", async () => {
+    const statePath = makeStatePath();
+    writeGlobalState(statePath, {
+      autoUpdatePreferences: { automaticInstall: false, onlyWhenIdle: true },
+      wentBackFrom: { version: "1.2.128-beta.3", toVersion: "1.2.128-beta.2", at: new Date().toISOString(), pausedAutomaticInstall: true },
+    });
+
+    const back = trackService({ currentVersion: "1.2.128-beta.2", offer: "1.2.128-beta.3", statePath });
+    await back.service.checkForUpdates();
+    expect(back.service.getSnapshot().status).not.toBe("ready");
+    expect(back.updater.downloadUpdate).not.toHaveBeenCalled();
+    expect(back.service.getPreferences().automaticInstall).toBe(false);
+    back.service.dispose();
+    expect(readGlobalState(statePath).wentBackFrom?.version).toBe("1.2.128-beta.3");
+
+    const fixed = trackService({ currentVersion: "1.2.128-beta.4", offer: "1.2.128-beta.4", statePath });
+    expect(fixed.service.getPreferences().automaticInstall).toBe(true);
+    expect(readGlobalState(statePath).wentBackFrom).toBeUndefined();
+    fixed.service.dispose();
+  });
 });
 
 // The data guard before a track switch: it reads real `<db>.compat.json`
