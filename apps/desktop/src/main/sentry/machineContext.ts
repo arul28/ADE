@@ -1,14 +1,26 @@
 /** Tags and context every Node-side Sentry client (main, brain) sets the same way. */
 import os from "node:os";
 import zlib from "node:zlib";
-import { sentryChannelTag } from "../../shared/sentry/config";
+import type { ReleaseChannel } from "../../shared/packageChannel";
+import { sentryChannelTag, sentryCommonTags } from "../../shared/sentry/config";
 import { enableSentryDiagnostics, registerSentryDiagnosticContext, toMegabytes } from "../../shared/sentry/diagnostics";
+import { isInternalInstall } from "./priorOptOut";
 
-export function sentryProcessTags(processName: string): Record<string, string> {
+export function sentryProcessTags(args: {
+  processName: string;
+  surface: "desktop" | "brain";
+  releaseChannel: ReleaseChannel;
+}): Record<string, string> {
   return {
-    process: processName,
+    ...sentryCommonTags({
+      surface: args.surface,
+      client: args.surface === "desktop" ? "desktop" : "runtime",
+      releaseChannel: args.releaseChannel,
+      isInternal: isInternalInstall(),
+      arch: process.arch,
+    }),
+    process: args.processName,
     "os.release": os.release(),
-    arch: process.arch,
     "package.channel": sentryChannelTag(process.env),
   };
 }

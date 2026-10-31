@@ -30,7 +30,8 @@ const SECRET_PATTERNS: readonly RegExp[] = [
   ...SECRET_TOKEN_PATTERNS,
   /\b(Bearer|Basic|token)\s+[A-Za-z0-9._~+/=-]{12,}/gi,
   // `key=value` and `"key": "value"` pairs whose key names a secret.
-  /((?:api[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|client[_-]?secret|secret|password|passwd|authorization|cookie|session[_-]?token|private[_-]?key)["']?\s*[:=]\s*["']?)[^\s"',;&]+/gi,
+  // A quoted value goes whole, spaces and all.
+  /((?:api[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|client[_-]?secret|secret|password|passwd|authorization|cookie|session[_-]?token|private[_-]?key)["']?\s*[:=]\s*)(?:"[^"\n]*"?|'[^'\n]*'?|[^\s"',;&]+)/gi,
   // Credentials embedded in URLs: https://user:pass@host
   /(\b[a-z][a-z0-9+.-]*:\/\/)[^\s/@:]+:[^\s/@]+@/gi,
 ];
@@ -83,6 +84,29 @@ export function scrubString(input: string, options?: { maxLength?: number }): st
   // Only inside URLs: a file path such as `src/host/tunnel.ts` must stay whole.
   output = output.replace(URL_WITH_PATH, (url) => scrubRelayPath(url));
   return output;
+}
+
+const EMAIL = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
+// A home path (`~/x`), or an absolute path with at least one folder, also
+// after a colon (`path:/Users/a/b`). The lookbehind keeps relative paths
+// (`src/a.ts`) whole, and a URL's `//` never starts a folder, so its path stays.
+const POSIX_ABSOLUTE_PATH = /(?<![\w./\\~-])(?:~\/[^\s"'`<>]+|\/(?:[^\s/"'`<>]+\/)+[^\s/"'`<>]*)/g;
+// A `file:` URL, as Node and Electron stack frames print it, is a path too.
+const FILE_URL = /\bfile:\/\/[^\s"'`<>]*/gi;
+// `C:\a`, `C:/a` (not `C://`, a URL) and `\\server\share`.
+const WINDOWS_ABSOLUTE_PATH = /(?:\b[A-Za-z]:(?=\\|\/(?!\/))|\\\\[^\s\\"'`]+(?=\\))[\\/][^\s"'`<>]*/g;
+
+/**
+ * Text a person typed and chose to send (a survey answer, a note on a report).
+ * On top of {@link scrubString}'s secrets, it removes email addresses and
+ * absolute paths, which name the person or their machine.
+ */
+export function scrubFreeText(input: string, options?: { maxLength?: number }): string {
+  return scrubString(input, options)
+    .replace(EMAIL, "[email]")
+    .replace(FILE_URL, "[path]")
+    .replace(WINDOWS_ABSOLUTE_PATH, "[path]")
+    .replace(POSIX_ABSOLUTE_PATH, "[path]");
 }
 
 export function scrubValue(value: unknown, depth = 0, key?: string): unknown {

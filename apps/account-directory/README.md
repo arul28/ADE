@@ -768,6 +768,28 @@ logged or stored. Failures that are ADE's to fix (no key, a refused key, the
 spend cap, the fleet cap, TypeSafe failing or throttling) are also Sentry
 issues, one per reason.
 
+## Sign-up analytics
+
+`POST /webhooks/clerk` takes Clerk's `user.created` and `user.deleted`
+webhooks (Svix-signed with the secret `CLERK_WEBHOOK_SIGNING_SECRET`) and
+sends one PostHog event each, `ade_signed_up` or `ade_account_deleted`, with
+the secret-free project token `POSTHOG_PROJECT_TOKEN`. The Clerk webhook must
+subscribe to both event types. The event uuid comes from the Clerk user id, so
+a retry, or the weekly backfill, never makes a second copy. An account whose
+Clerk private or public metadata holds `ade_internal: true` (tests, smoke
+users, the team) is sent with `is_internal: true`. Details and the weekly
+reconcile (`scripts/analytics/reconcile-signups.mjs`,
+`.github/workflows/analytics-reconcile.yml`) are in `docs/logging.md`,
+"Sign-up (server-side)".
+
+## Sentry
+
+Only `production` reports: `env.production` sets `SENTRY_ENVIRONMENT`, and
+anything else (this development Worker, `wrangler dev`) is `development`,
+which `src/sentry.ts` never sends. The minute cron checks in to one Sentry
+cron monitor, `account-directory-cleanup` (`CLEANUP_MONITOR_CONFIG` in
+`src/index.ts`); change its schedule with `triggers.crons`.
+
 ## Local checks
 
 ```sh

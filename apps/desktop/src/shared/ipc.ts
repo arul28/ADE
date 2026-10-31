@@ -114,6 +114,8 @@ export const IPC = {
   analyticsCapture: "ade.analytics.capture",
   analyticsGetStatus: "ade.analytics.getStatus",
   analyticsSetEnabled: "ade.analytics.setEnabled",
+  analyticsGetEligibleSurvey: "ade.analytics.getEligibleSurvey",
+  analyticsSurveyEvent: "ade.analytics.surveyEvent",
   projectOpenRepo: "ade.project.openRepo",
   projectChooseDirectory: "ade.project.chooseDirectory",
   projectBrowseDirectories: "ade.project.browseDirectories",

@@ -4,7 +4,7 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "wrangler dev",
+    "dev": "wrangler dev --var SENTRY_ENVIRONMENT:development",
     "deploy": "wrangler deploy",
     "test": "npm run test:unit && npm run test:workerd",
     "test:unit": "vitest run --config vitest.unit.config.ts",

@@ -1,0 +1,102 @@
+# Checks that every Clerk account has its `ade_signed_up` event in PostHog,
+# and sends the ones that are missing.
+#
+# The account-directory Worker records sign-ups from Clerk's webhook
+# (apps/account-directory/src/signupAnalytics.ts). This weekly run is the
+# check on that path: it backfills what the webhook missed (same uuid, so
+# never a second copy), then runs the check again and goes red if anything is
+# still missing. A manual run only checks unless `apply` is ticked.
+#
+# Secrets: CLERK_PROD_SECRET_KEY (Clerk production Backend API key),
+# POSTHOG_RECONCILE_API_KEY (PostHog personal key, query:read only; when it is
+# not set the run is skipped with a notice and stays green),
+# ADE_POSTHOG_PROJECT_TOKEN (the public phc_ token). The report holds counts
+# only: no email, no Clerk user id.
+name: Analytics reconcile
+
+on:
+  schedule:
+    # Monday 14:00 UTC.
+    - cron: "0 14 * * 1"
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: "Send the missing sign-ups before checking"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: analytics-reconcile
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CLERK_SECRET_KEY: ${{ secrets.CLERK_PROD_SECRET_KEY }}
+      POSTHOG_PERSONAL_API_KEY: ${{ secrets.POSTHOG_RECONCILE_API_KEY }}
+      POSTHOG_PROJECT_TOKEN: ${{ secrets.ADE_POSTHOG_PROJECT_TOKEN }}
+      APPLY: ${{ github.event_name == 'schedule' || inputs.apply == true }}
+    steps:
+      # Safety net: should the PostHog query key ever be removed, the run is
+      # skipped with a notice instead of going red.
+      - name: Check for the PostHog query key
+        id: key
+        run: |
+          if [ -z "$POSTHOG_PERSONAL_API_KEY" ]; then
+            echo "skipped: add POSTHOG_RECONCILE_API_KEY (PostHog personal key, Query read, project 510983) to enable" >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice::Analytics reconcile skipped: POSTHOG_RECONCILE_API_KEY is not set."
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.key.outputs.present == 'true'
+        with:
+          sparse-checkout: scripts/analytics
+          # The job never pushes; keep the token out of git config, beside the Clerk and PostHog secrets.
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        if: steps.key.outputs.present == 'true'
+        with:
+          node-version: 24
+
+      - name: Backfill missing sign-ups
+        if: steps.key.outputs.present == 'true' && env.APPLY == 'true'
+        run: |
+          {
+            echo "### Backfill"
+            node scripts/analytics/reconcile-signups.mjs --apply
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Check every account has its sign-up
+        if: steps.key.outputs.present == 'true'
+        run: |
+          # After a backfill PostHog needs a little while to ingest, so the
+          # check is retried for a few minutes before it counts as a failure.
+          attempts=1
+          if [ "$APPLY" = "true" ]; then attempts=6; fi
+          for attempt in $(seq 1 "$attempts"); do
+            status=0
+            node scripts/analytics/reconcile-signups.mjs > "$RUNNER_TEMP/report.md" || status=$?
+            if [ "$status" -eq 0 ]; then
+              { echo "### Check"; cat "$RUNNER_TEMP/report.md"; } >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            # 2 is a request or configuration failure: retrying will not help.
+            if [ "$status" -ne 1 ] || [ "$attempt" -eq "$attempts" ]; then break; fi
+            echo "Still missing after attempt $attempt; checking again in 60 seconds."
+            sleep 60
+          done
+          { echo "### Check (failed)"; cat "$RUNNER_TEMP/report.md"; } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$status" -eq 1 ]; then
+            echo "::error::Sign-ups are missing from PostHog; see the run summary."
+          else
+            echo "::error::The check could not reach Clerk or PostHog (exit $status): a key may be expired or an API failed. See the step log."
+          fi
+          exit 1

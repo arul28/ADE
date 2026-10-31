@@ -22,11 +22,14 @@ export const EVENTS = Object.freeze({
   UPDATE_PROMPTED: "ade_update_prompted",
   TOOL_FETCHED: "ade_tool_fetched",
   BRAIN_RECOVERED: "ade_brain_recovered",
+  RENDERER_RECOVERED: "ade_renderer_recovered",
+  BRAIN_ACTION_FAILED: "ade_brain_action_failed",
   PUBLISH_FAILING: "ade_publish_failing",
   RELAY_SUPPRESSED: "ade_relay_suppressed",
   ACCOUNT_SESSION_UNREADABLE: "ade_account_session_unreadable",
   // Recorded server-side by the account-directory Worker's Clerk webhook.
   SIGNED_UP: "ade_signed_up",
+  ACCOUNT_DELETED: "ade_account_deleted",
   MARKETING_APP_OPENED: "ade_marketing_app_opened",
   MARKETING_SCREEN_VIEWED: "ade_marketing_screen_viewed",
   MARKETING_CTA_CLICKED: "ade_marketing_cta_clicked",
@@ -36,11 +39,19 @@ export const EVENTS = Object.freeze({
   MOBILE_APP_OPENED: "ade_mobile_app_opened",
   MOBILE_SCREEN_VIEWED: "ade_mobile_screen_viewed",
   MOBILE_FEATURE_USED: "ade_mobile_feature_used",
+  MOBILE_SIGN_IN_OUTCOME: "ade_mobile_sign_in_outcome",
+  MOBILE_MACHINE_ADOPTION_OUTCOME: "ade_mobile_machine_adoption_outcome",
+  MOBILE_PAIRING_OUTCOME: "ade_mobile_pairing_outcome",
+  MOBILE_QUICK_CONNECT_USED: "ade_mobile_quick_connect_used",
   MOBILE_ERROR: "ade_mobile_error",
   MOBILE_ANALYTICS_BUDGET: "ade_mobile_analytics_budget",
+  // PostHog's own survey events, recorded by the desktop survey service.
+  SURVEY_SHOWN: "survey shown",
+  SURVEY_DISMISSED: "survey dismissed",
+  SURVEY_SENT: "survey sent",
 });
 
-const ALL_INGESTED_EVENTS = Object.freeze([...Object.values(EVENTS), ...SYSTEM_EVENTS]);
+export const ALL_INGESTED_EVENTS = Object.freeze([...Object.values(EVENTS), ...SYSTEM_EVENTS]);
 const INGESTED_EVENT_CHUNKS = Object.freeze(
   Array.from({ length: Math.ceil(ALL_INGESTED_EVENTS.length / 26) }, (_, index) =>
     Object.freeze(ALL_INGESTED_EVENTS.slice(index * 26, (index + 1) * 26))),
@@ -77,6 +88,25 @@ export const PROPERTIES = Object.freeze({
   UTM_SOURCE: "utm_source",
   FIRST_OPEN: "first_open",
   POSITION: "position",
+  SOURCE: "source",
+  CLIENT: "client",
+  INTERACTIVE: "interactive",
+  IS_INTERNAL: "is_internal",
+  SIGNUP_METHOD: "signup_method",
+  SURVEY_NAME: "$survey_name",
+  SURVEY_RESPONSE: "$survey_response",
+});
+
+/**
+ * Every app insight leaves out ADE's own team installs and accounts. `is_not`
+ * keeps events that lack the property (older builds, iOS, the marketing
+ * site), so only events that say `is_internal: true` drop out.
+ */
+const EXCLUDE_INTERNAL = Object.freeze({
+  key: "is_internal",
+  value: ["true"],
+  operator: "is_not",
+  type: "event",
 });
 
 const dateRange = (dateFrom) => ({ date_from: dateFrom, explicitDate: false });
@@ -115,6 +145,7 @@ function trends({
   formula,
   aggregationAxisFormat = "numeric",
   goalLines,
+  includeInternal = false,
 }) {
   return {
     kind: "InsightVizNode",
@@ -123,7 +154,7 @@ function trends({
       series,
       interval,
       dateRange: dateRange(dateFrom),
-      properties,
+      properties: includeInternal ? properties : [...properties, EXCLUDE_INTERNAL],
       trendsFilter: {
         display,
         showLegend: !formula && (series.length > 1 || Boolean(breakdown)),
@@ -153,7 +184,7 @@ function funnel({ series, dateFrom = "-90d", windowInterval = 7, windowUnit = "d
       kind: "FunnelsQuery",
       series,
       dateRange: dateRange(dateFrom),
-      properties: [],
+      properties: [EXCLUDE_INTERNAL],
       funnelsFilter: {
         layout: "horizontal",
         funnelVizType: "steps",
@@ -167,7 +198,14 @@ function funnel({ series, dateFrom = "-90d", windowInterval = 7, windowUnit = "d
   };
 }
 
-function retention({ event, dateFrom = "-12w", period = "Week", intervals = 12 }) {
+function retention({
+  event,
+  returning = null,
+  dateFrom = "-12w",
+  period = "Week",
+  intervals = 12,
+  retentionType = "retention_recurring",
+}) {
   const entity = {
     kind: "EventsNode",
     id: event,
@@ -181,12 +219,12 @@ function retention({ event, dateFrom = "-12w", period = "Week", intervals = 12 }
     source: {
       kind: "RetentionQuery",
       dateRange: dateRange(dateFrom),
-      properties: [],
+      properties: [EXCLUDE_INTERNAL],
       retentionFilter: {
         period,
         targetEntity: entity,
-        returningEntity: entity,
-        retentionType: "retention_recurring",
+        returningEntity: returning ?? entity,
+        retentionType,
         retentionReference: "total",
         totalIntervals: intervals,
       },
@@ -195,8 +233,73 @@ function retention({ event, dateFrom = "-12w", period = "Week", intervals = 12 }
   };
 }
 
+/** A table of recent events, newest first: the open-text survey answers. */
+function eventsTable({ event, select, properties = [], dateFrom = "-90d", limit = 100 }) {
+  return {
+    kind: "DataTableNode",
+    source: {
+      kind: "EventsQuery",
+      event,
+      select,
+      properties: [...properties, EXCLUDE_INTERNAL],
+      after: dateFrom,
+      orderBy: ["timestamp DESC"],
+      limit,
+    },
+  };
+}
+
+/** Any interactive event from an ADE app: no marketing-site visits, no account webhooks. */
+const RETURNING_APP_USE = Object.freeze({
+  kind: "EventsNode",
+  id: null,
+  name: "All events",
+  type: "events",
+  properties: [
+    // `is_not false`, not `exact true`: builds before 2026-10-29 send no
+    // `interactive` property, and their app use must still count.
+    eventProperty(PROPERTIES.INTERACTIVE, ["false"], "is_not"),
+    eventProperty(PROPERTIES.CLIENT, ["account"], "is_not"),
+  ],
+});
+
+const PMF_SURVEY = eventProperty(PROPERTIES.SURVEY_NAME, "[ade:pmf]", "icontains");
+
 function insight(key, name, description, query) {
   return { key, name, description, query };
+}
+
+/**
+ * PostHog formulas address series as A…Z, so the closed catalog is split into
+ * groups of 26. Billing counts every event, so these cards keep ADE's own
+ * installs (`includeInternal`).
+ */
+function volumeInsights() {
+  return INGESTED_EVENT_CHUNKS.map((events, index) => {
+    const first = index === 0;
+    const last = index === INGESTED_EVENT_CHUNKS.length - 1;
+    const from = index * 26 + 1;
+    return insight(
+      first ? "monthly-analytics-volume" : index === 1 ? "monthly-analytics-volume-overflow" : `monthly-analytics-volume-${index + 1}`,
+      first
+        ? "30-day ingested analytics volume · events 1–26"
+        : last
+          ? "30-day ingested analytics volume · remaining events"
+          : `30-day ingested analytics volume · events ${from}–${from + 25}`,
+      first
+        ? "First segment of PostHog's actual ingested count across ADE's closed event catalog, team installs included. Add the companion segments for the total. The goal line marks the current 1,000,000-event monthly Product Analytics free allowance."
+        : "Companion segment for further ADE events, including pseudonymous identify calls and survey events. Add every segment for the total.",
+      trends({
+        series: events.map((event) => eventNode(event, event)),
+        formula: eventFormula(events),
+        interval: "month",
+        dateFrom: "-30d",
+        display: "BoldNumber",
+        includeInternal: true,
+        ...(first ? { goalLines: [{ label: "PostHog free allowance", value: 1_000_000 }] } : {}),
+      }),
+    );
+  });
 }
 
 export const dashboardSpec = Object.freeze({
@@ -274,7 +377,7 @@ export const dashboardSpec = Object.freeze({
         insight(
           "active-installations-by-surface",
           "Feature-active installations by surface",
-          "Unique installations with successful feature activity on desktop, mobile, CLI, web, or API surfaces. Before the CLI surface was renamed it was reported as `tui`.",
+          "Unique installations with successful feature activity on desktop, mobile, CLI, web, or API surfaces.",
           trends({
             series: [eventNode(EVENTS.FEATURE_USED, "Feature-active installations", { math: "dau" })],
             breakdown: PROPERTIES.SURFACE,
@@ -380,6 +483,28 @@ export const dashboardSpec = Object.freeze({
           trends({
             series: [eventNode(EVENTS.MOBILE_FEATURE_USED, "Native control outcomes")],
             breakdown: PROPERTIES.OUTCOME,
+          }),
+        ),
+        insight(
+          "native-mobile-connection-outcomes",
+          "Native mobile sign-in, pairing and adoption outcomes",
+          "How iOS sign-in, pairing a computer, and adopting a machine end (each by its closed outcome), plus Quick Connect uses by source.",
+          trends({
+            series: [
+              eventNode(EVENTS.MOBILE_SIGN_IN_OUTCOME, "Sign-in"),
+              eventNode(EVENTS.MOBILE_PAIRING_OUTCOME, "Pairing"),
+              eventNode(EVENTS.MOBILE_MACHINE_ADOPTION_OUTCOME, "Machine adoption"),
+            ],
+            breakdown: PROPERTIES.OUTCOME,
+          }),
+        ),
+        insight(
+          "native-mobile-quick-connect",
+          "Native mobile Quick Connect uses",
+          "Weekly Quick Connect uses on iOS, by where the person started it.",
+          trends({
+            series: [eventNode(EVENTS.MOBILE_QUICK_CONNECT_USED, "Quick Connect")],
+            breakdown: PROPERTIES.SOURCE,
           }),
         ),
         insight(
@@ -590,10 +715,12 @@ export const dashboardSpec = Object.freeze({
         insight(
           "reliability-incidents",
           "Reliability incidents",
-          "Brain wedge recoveries, sustained route-publish failures, unreadable brain account sessions, relay suppression by a rival process, and update-flow aborts/escalations. Coarse counts only; command names are closed action slugs and no payload content is ever attached.",
+          "Brain wedge recoveries, lost window renderers, failed brain actions, sustained route-publish failures, unreadable brain account sessions, relay suppression by a rival process, and update-flow aborts/escalations. Coarse counts only; command names are closed action slugs and no payload content is ever attached.",
           trends({
             series: [
               eventNode(EVENTS.BRAIN_RECOVERED, "Brain recovered from wedge"),
+              eventNode(EVENTS.RENDERER_RECOVERED, "Window renderer lost"),
+              eventNode(EVENTS.BRAIN_ACTION_FAILED, "Brain action failed"),
               eventNode(EVENTS.PUBLISH_FAILING, "Route publish failing"),
               eventNode(EVENTS.RELAY_SUPPRESSED, "Relay suppressed by rival process"),
               eventNode(EVENTS.ACCOUNT_SESSION_UNREADABLE, "Brain account session unreadable"),
@@ -654,29 +781,177 @@ export const dashboardSpec = Object.freeze({
             breakdown: PROPERTIES.DROP_REASON,
           }),
         ),
+        ...volumeInsights(),
+      ],
+    },
+    {
+      key: "signups-activation",
+      name: "ADE · Sign-ups & activation",
+      description: "New ADE accounts (Clerk is the source of truth; `ade_signed_up` mirrors it and is reconciled weekly by scripts/analytics/reconcile-signups.mjs), whether they reach a first completed work session, and how the desktop sign-in goes.",
+      pinned: true,
+      insights: [
         insight(
-          "monthly-analytics-volume",
-          "30-day ingested analytics volume · events 1–26",
-          "First segment of PostHog's actual ingested count across ADE's closed event catalog. Add this value to the companion segment for the total. The goal line marks the current 1,000,000-event monthly Product Analytics free allowance.",
+          "weekly-signups",
+          "Weekly sign-ups",
+          "New ADE accounts each week, from the account directory's Clerk webhook. Team accounts are left out.",
           trends({
-            series: INGESTED_EVENT_CHUNKS[0].map((event) => eventNode(event, event)),
-            formula: eventFormula(INGESTED_EVENT_CHUNKS[0]),
-            interval: "month",
-            dateFrom: "-30d",
-            display: "BoldNumber",
-            goalLines: [{ label: "PostHog free allowance", value: 1_000_000 }],
+            series: [eventNode(EVENTS.SIGNED_UP, "Sign-ups")],
+            dateFrom: "-180d",
           }),
         ),
         insight(
-          "monthly-analytics-volume-overflow",
-          "30-day ingested analytics volume · remaining events",
-          "Companion segment for the remaining ADE events, including pseudonymous identify calls. Add this value to events 1–26 for the total.",
+          "signup-activation-funnel",
+          "Sign-up to activation funnel",
+          "People who signed up → identified an ADE app with that account → completed a first work session, within 14 days. Person-based: the identify merges the app's install into the account.",
+          funnel({
+            series: [
+              eventNode(EVENTS.SIGNED_UP, "Signed up"),
+              eventNode("$identify", "Signed in to an ADE app"),
+              eventNode(EVENTS.ACTIVATED, "Completed a first work session"),
+            ],
+            windowInterval: 14,
+          }),
+        ),
+        insight(
+          "desktop-sign-in-funnel",
+          "Desktop sign-in funnel",
+          "ADE account sign-ins started on desktop or the CLI → completed, within one day (`ade_feature_used`, feature `account_sign_in`).",
+          funnel({
+            series: [
+              eventNode(EVENTS.FEATURE_USED, "Sign-in started", {
+                properties: [
+                  eventProperty(PROPERTIES.FEATURE, "account_sign_in"),
+                  eventProperty(PROPERTIES.OUTCOME, "started"),
+                ],
+              }),
+              eventNode(EVENTS.FEATURE_USED, "Sign-in completed", {
+                properties: [
+                  eventProperty(PROPERTIES.FEATURE, "account_sign_in"),
+                  eventProperty(PROPERTIES.OUTCOME, "completed"),
+                ],
+              }),
+            ],
+            windowInterval: 1,
+          }),
+        ),
+        insight(
+          "desktop-sign-in-outcomes",
+          "Desktop sign-in outcomes",
+          "How each account sign-in attempt ended: completed, failed or cancelled (started is the denominator).",
           trends({
-            series: INGESTED_EVENT_CHUNKS[1].map((event) => eventNode(event, event)),
-            formula: eventFormula(INGESTED_EVENT_CHUNKS[1]),
+            series: [eventNode(EVENTS.FEATURE_USED, "Sign-in attempts", {
+              properties: [eventProperty(PROPERTIES.FEATURE, "account_sign_in")],
+            })],
+            breakdown: PROPERTIES.OUTCOME,
+          }),
+        ),
+        insight(
+          "signups-by-method",
+          "Sign-ups by method",
+          "New accounts each week by how they signed up (Google, GitHub, email, ...).",
+          trends({
+            series: [eventNode(EVENTS.SIGNED_UP, "Sign-ups")],
+            breakdown: PROPERTIES.SIGNUP_METHOD,
+            dateFrom: "-180d",
+          }),
+        ),
+      ],
+    },
+    {
+      key: "retention-churn",
+      name: "ADE · Retention & churn",
+      description: "Whether new accounts keep using ADE, how many installs are active each week, account deletions, and how many people answer the in-app surveys about it.",
+      pinned: true,
+      insights: [
+        insight(
+          "signup-weekly-retention",
+          "Weekly retention after sign-up",
+          "People who signed up, and whether they used an ADE app (any interactive event from desktop, CLI, iOS or the hosted web client; never the marketing site) in each later week.",
+          retention({
+            event: EVENTS.SIGNED_UP,
+            returning: RETURNING_APP_USE,
+            retentionType: "retention_first_time",
+          }),
+        ),
+        insight(
+          "weekly-active-installs",
+          "Weekly active installs",
+          "Installs that opened ADE in each week. PostHog's lifecycle chart cannot be used here: it needs person profiles, and ADE's ordinary events have person processing off. Pair this with the retention card above; the in-app `[ade:returning]` survey asks people who come back what pulled them away.",
+          trends({
+            series: [eventNode(EVENTS.APP_OPENED, "Active installs", { math: "dau" })],
+            interval: "week",
+          }),
+        ),
+        insight(
+          "weekly-account-deletions",
+          "Weekly account deletions",
+          "Accounts deleted each week, from the account directory's Clerk webhook. The deletion carries no internal flag of its own, so ADE's own accounts are left out by the `is_internal` person property their sign-up set.",
+          trends({
+            series: [eventNode(EVENTS.ACCOUNT_DELETED, "Accounts deleted")],
+            dateFrom: "-180d",
+            properties: [{ key: PROPERTIES.IS_INTERNAL, value: ["true"], operator: "is_not", type: "person" }],
+          }),
+        ),
+        insight(
+          "survey-responses-weekly",
+          "In-app survey responses",
+          "Survey answers sent each week, by survey. The free plan allows 1,500 responses a month.",
+          trends({
+            series: [eventNode(EVENTS.SURVEY_SENT, "Responses")],
+            breakdown: PROPERTIES.SURVEY_NAME,
+          }),
+        ),
+      ],
+    },
+    {
+      key: "feedback",
+      name: "ADE · Feedback",
+      description: "What people tell ADE in the in-app surveys: product-market fit, why they left and came back, and what almost made them quit. Surveys are PostHog API surveys named `[ade:pmf]`, `[ade:returning]` or `[ade:early]`.",
+      pinned: true,
+      insights: [
+        insight(
+          "survey-responses-by-survey",
+          "Responses by survey",
+          "Answers sent per survey over the last 90 days.",
+          trends({
+            series: [eventNode(EVENTS.SURVEY_SENT, "Responses")],
+            dateFrom: "-90d",
             interval: "month",
-            dateFrom: "-30d",
-            display: "BoldNumber",
+            display: "ActionsBarValue",
+            breakdown: PROPERTIES.SURVEY_NAME,
+          }),
+        ),
+        insight(
+          "survey-show-dismiss-send",
+          "Survey shown, dismissed and sent",
+          "How often a survey card was seen, waved away with Not now, or answered. Sent over shown is the response rate.",
+          trends({
+            series: [
+              eventNode(EVENTS.SURVEY_SHOWN, "Shown"),
+              eventNode(EVENTS.SURVEY_DISMISSED, "Dismissed"),
+              eventNode(EVENTS.SURVEY_SENT, "Sent"),
+            ],
+          }),
+        ),
+        insight(
+          "pmf-answer-distribution",
+          "Product-market fit answers",
+          "\"How would you feel if you could no longer use ADE?\" by answer, from the `[ade:pmf]` survey's first question. Very disappointed at 40% or more is the Sean Ellis bar.",
+          trends({
+            series: [eventNode(EVENTS.SURVEY_SENT, "PMF answers", { properties: [PMF_SURVEY] })],
+            dateFrom: "-90d",
+            interval: "month",
+            display: "ActionsPie",
+            breakdown: PROPERTIES.SURVEY_RESPONSE,
+          }),
+        ),
+        insight(
+          "recent-survey-answers",
+          "Recent survey answers",
+          "The newest answers, first question shown. Every question's answer is in PostHog's Surveys page for the survey.",
+          eventsTable({
+            event: EVENTS.SURVEY_SENT,
+            select: ["timestamp", "properties.$survey_name", "properties.$survey_response", "properties.app_version"],
           }),
         ),
       ],

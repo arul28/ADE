@@ -9,6 +9,12 @@ import type { ToolErrorKind } from "../../../shared/types";
 import { JEV_FEATURES, JEV_KEY_SKIP_REASONS } from "../../../shared/types/jev";
 import { ADE_ACTION_DOMAIN_NAMES } from "../adeActions/domains";
 import { APPLE_DEVICE_ANALYTICS_OUTCOMES } from "../../../shared/types/iosSimulator";
+import { scrubFreeText } from "../../../shared/sentry/scrub";
+import {
+  PRODUCT_SURVEY_EVENTS,
+  SURVEY_RESPONSE_MAX_LENGTH,
+  type ProductSurveyEventPayload,
+} from "../../../shared/types/productSurveys";
 import type {
   ProductAnalyticsCapture,
   ProductAnalyticsEventName,
@@ -44,6 +50,9 @@ export const INTERNAL_ONLY_EVENTS = new Set<ProductAnalyticsEventName>([
   "ade_account_session_unreadable",
   "ade_tool_fetched",
   "ade_brain_action_failed",
+  // Survey events come only from the main process's survey service, which
+  // checks every answer against the survey it showed.
+  "survey shown", "survey dismissed", "survey sent",
 ]);
 
 export const EVENT_DAILY_BUDGETS: Record<ProductAnalyticsEventName, number> = {
@@ -78,6 +87,11 @@ export const EVENT_DAILY_BUDGETS: Record<ProductAnalyticsEventName, number> = {
   // whole day's budget. The emitter dedupes per domain+code per hour, so 20 is
   // roughly "twenty distinct failure shapes a day", not twenty failures.
   ade_brain_action_failed: 20,
+  // At most one survey shows per 21 days; these caps only stop a broken
+  // renderer from repeating one.
+  "survey shown": 3,
+  "survey dismissed": 3,
+  "survey sent": 3,
 };
 
 export const EVENT_MINUTE_BUDGETS: Record<ProductAnalyticsEventName, number> = {
@@ -111,6 +125,9 @@ export const EVENT_MINUTE_BUDGETS: Record<ProductAnalyticsEventName, number> = {
   // A brain that fails every action fails it in a tight loop; the per-minute
   // ceiling is what stops the first minute of an outage from spending the day.
   ade_brain_action_failed: 3,
+  "survey shown": 2,
+  "survey dismissed": 2,
+  "survey sent": 2,
 };
 
 const STRING_PROPERTIES = new Set([
@@ -273,6 +290,11 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   "credential_removed",
   "preset_created",
   "preset_deleted",
+  // Also the ADE account sign-in funnel (feature "account_sign_in"): one
+  // `started` per attempt, then one of completed | failed | cancelled, with
+  // `source` browser | device_code and a coarse `error_kind` on failure
+  // (`accountSignInAnalytics.ts`), never per poll. Never the account, the code,
+  // the URL, or the error text.
   "sign_in",
   "start",
   "stop",
@@ -336,6 +358,8 @@ const EVENT_PROPERTY_KEYS: Record<ProductAnalyticsEventName, ReadonlySet<string>
   ade_project_opened: new Set(["route_kind", "source", "mode", "connection_state"]),
   ade_feature_used: new Set([
     "feature", "action", "outcome", "source", "mode", "provider", "model_family", "duration_bucket", "connection_state",
+    // Coarse buckets only (`coarseErrorKind`); the account sign-in funnel's failures.
+    "error_kind",
     "bytes_freed", "files_compressed", "count_bucket",
     // Why the account directory refused to register this machine. Its own key
     // rather than `code`, which is unallowlisted free-slug shared with the
@@ -380,6 +404,11 @@ const EVENT_PROPERTY_KEYS: Record<ProductAnalyticsEventName, ReadonlySet<string>
   // attached. Reusing it would also put a new high-volume emitter inside
   // `ade_error`'s 20/day cap and dilute the one signal that already works.
   ade_brain_action_failed: new Set(["action_domain", "error_code"]),
+  // Survey properties are PostHog's `$survey_*` set, built from the survey
+  // payload by `sanitizeSurveyEventProperties`, never from `properties`.
+  "survey shown": new Set(),
+  "survey dismissed": new Set(),
+  "survey sent": new Set(),
 };
 
 const SLUG_VALUE = /^[a-z0-9][a-z0-9._+-]*$/i;
@@ -443,6 +472,8 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     "ade_mcp",
     // Jev's model and effort hint in the chat composer.
     "model_hint",
+    // The ADE account sign-in funnel (action "sign_in").
+    "account_sign_in",
   ]),
   outcome: new Set([
     "success", "started", "completed", "failure", "timeout", "opened", "cancelled", "approved", "denied",
@@ -562,13 +593,16 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
   ]),
   source: new Set([
     "mutation", "runtime", "renderer_route", "renderer_project", "renderer_startup", "ipc",
+    // How an account sign-in ran: the browser on this machine, or a code
+    // entered on another device.
+    "browser", "device_code",
   ]),
   mode: new Set(["direct", "relay", "local", "remote", "manual", "automatic", "attached", "embedded"]),
   entry_point: new Set([
     "project_file", "environment", "app_icon", "machine_runtime", "project_runtime", "hosted_web_client",
     "local", "remote",
   ]),
-  release_channel: new Set(["stable", "beta", "development", "unknown"]),
+  release_channel: new Set(["stable", "beta", "alpha", "development", "unknown"]),
   summary_kind: new Set(["overall", "client", "provider", "model", "jev"]),
   reason: new Set(AUTO_UPDATE_INSTALL_ABORT_REASONS),
   // Derived from the normalizer's own enum so the two cannot drift. Deliberately
@@ -617,6 +651,7 @@ function coarseErrorKind(value: ProductAnalyticsPropertyValue): string | null {
   const normalized = value.trim().toLowerCase();
   if (!normalized) return null;
   if (normalized.includes("timeout")) return "timeout";
+  if (normalized.includes("expired")) return "expired";
   if (normalized.includes("abort") || normalized.includes("cancel")) return "cancelled";
   if (normalized.includes("permission") || normalized.includes("auth")) return "permission";
   if (["network", "socket", "fetch", "connect"].some((part) => normalized.includes(part))) return "network";
@@ -705,4 +740,89 @@ export function sanitizeProductAnalyticsProperties(
     }
   }
   return sanitized;
+}
+
+const SURVEY_EVENT_SET: ReadonlySet<string> = new Set(PRODUCT_SURVEY_EVENTS);
+const SURVEY_ID_VALUE = /^[A-Za-z0-9-]{1,64}$/;
+const SURVEY_NAME_PREFIX = /^\[ade:[a-z]+\]/i;
+const MAX_SURVEY_QUESTIONS = 10;
+const MAX_SURVEY_CHOICES = 20;
+
+export function isSurveyAnalyticsEvent(event: ProductAnalyticsEventName): boolean {
+  return SURVEY_EVENT_SET.has(event);
+}
+
+/**
+ * The person's own words, which they chose to send. Secrets, email addresses
+ * and absolute paths are removed ({@link scrubFreeText}), and the text is cut
+ * at {@link SURVEY_RESPONSE_MAX_LENGTH}.
+ */
+export function scrubSurveyText(value: unknown, maxLength = SURVEY_RESPONSE_MAX_LENGTH): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim().slice(0, maxLength);
+  if (!trimmed) return null;
+  return scrubFreeText(trimmed, { maxLength }).slice(0, maxLength);
+}
+
+/**
+ * PostHog's survey properties (`$survey_id`, `$survey_name`,
+ * `$survey_response_<question id>`, `$survey_questions`, ...), rebuilt from a
+ * main-process payload. Anything malformed is left out; a payload without a
+ * survey id or an ADE survey name yields null and the event is dropped.
+ */
+export function sanitizeSurveyEventProperties(
+  event: ProductAnalyticsEventName,
+  payload: ProductSurveyEventPayload | undefined,
+): Record<string, unknown> | null {
+  if (!isSurveyAnalyticsEvent(event) || !payload || typeof payload !== "object") return null;
+  if (typeof payload.surveyId !== "string" || !SURVEY_ID_VALUE.test(payload.surveyId)) return null;
+  const name = scrubSurveyText(payload.surveyName, 200);
+  if (!name || !SURVEY_NAME_PREFIX.test(name)) return null;
+  const properties: Record<string, unknown> = {
+    $survey_id: payload.surveyId,
+    $survey_name: name,
+  };
+  if (typeof payload.iteration === "number" && Number.isInteger(payload.iteration) && payload.iteration > 0) {
+    properties.$survey_iteration = Math.min(payload.iteration, 10_000);
+  }
+  if (event === "survey shown") return properties;
+
+  const questions = (Array.isArray(payload.questions) ? payload.questions : [])
+    .slice(0, MAX_SURVEY_QUESTIONS)
+    .flatMap((question) => {
+      const text = scrubSurveyText(question?.question, 500);
+      return typeof question?.id === "string" && SURVEY_ID_VALUE.test(question.id) && text
+        ? [{ id: question.id, question: text }]
+        : [];
+    });
+  properties.$survey_questions = questions;
+  if (event === "survey dismissed") {
+    properties.$survey_partially_completed = payload.partiallyCompleted === true;
+    return properties;
+  }
+
+  if (typeof payload.submissionId !== "string" || !/^[0-9a-f-]{36}$/i.test(payload.submissionId)) return null;
+  properties.$survey_submission_id = payload.submissionId.toLowerCase();
+  properties.$survey_completed = payload.completed !== false;
+  const responses = payload.responses && typeof payload.responses === "object" ? payload.responses : {};
+  questions.forEach((question, index) => {
+    if (!Object.prototype.hasOwnProperty.call(responses, question.id)) return;
+    const raw = responses[question.id];
+    let value: string | string[] | null = null;
+    if (Array.isArray(raw)) {
+      const items = raw.slice(0, MAX_SURVEY_CHOICES).flatMap((item) => {
+        const safe = scrubSurveyText(item, 500);
+        return safe ? [safe] : [];
+      });
+      value = items.length > 0 ? items : null;
+    } else {
+      value = scrubSurveyText(raw);
+    }
+    if (value == null) return;
+    properties[`$survey_response_${question.id}`] = value;
+    // PostHog's index-based key for the first question: dashboards break a
+    // survey down by it without knowing the question's id.
+    if (index === 0) properties.$survey_response = value;
+  });
+  return properties;
 }

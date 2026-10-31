@@ -19,13 +19,31 @@ function recordedDisabled(filePath: string): boolean {
   }
 }
 
+function secretsDir(): string {
+  return path.join(resolveMachineAdeLayout().adeDir, "secrets");
+}
+
 export function hasPriorTelemetryOptOut(): boolean {
   try {
-    const secretsDir = path.join(resolveMachineAdeLayout().adeDir, "secrets");
-    const analyticsState = path.join(secretsDir, "product-analytics.json");
+    const analyticsState = path.join(secretsDir(), "product-analytics.json");
     return fs.existsSync(`${analyticsState}.disabled`)
       || recordedDisabled(analyticsState)
-      || recordedDisabled(path.join(secretsDir, "diagnostics-autosend.json"));
+      || recordedDisabled(path.join(secretsDir(), "diagnostics-autosend.json"));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * An ADE team install, as product analytics marks it (`is_internal`):
+ * `ADE_ANALYTICS_INTERNAL=1`, or an empty `product-analytics.json.internal`
+ * beside the analytics state file. Read once per process, for Sentry's
+ * `is_internal` tag.
+ */
+export function isInternalInstall(): boolean {
+  if (process.env.ADE_ANALYTICS_INTERNAL === "1") return true;
+  try {
+    return fs.existsSync(path.join(secretsDir(), "product-analytics.json.internal"));
   } catch {
     return false;
   }

@@ -10,6 +10,9 @@
     // Public Sentry DSN of the ade-workers project. Not a secret (it only lets
     // events in). SENTRY_RELEASE is set at deploy, not here.
     "SENTRY_DSN": "https://7b05312b178df4f7d294794aa9ff7cde@o4512249455640576.ingest.us.sentry.io/4512249615024128",
+    // This config is the deployed one, so it reports as `production`.
+    // `npm run dev` passes `development`, which src/sentry.ts never sends.
+    "SENTRY_ENVIRONMENT": "production",
     // Public (PKCE) client id of the ADE Linear app; refreshes Linear agent app tokens.
     "LINEAR_APP_CLIENT_ID": "e552c738cd63ea5967f08bbc9c09b54c",
     // The desktop app's public Clerk OAuth client (account tokens carry it as client_id).

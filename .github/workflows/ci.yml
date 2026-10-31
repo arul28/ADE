@@ -986,6 +986,9 @@ jobs:
       - run: node scripts/check-source-nul-bytes.mjs
       # The four Workers' Sentry scrubbers and transient-failure helpers are files kept in four places.
       - run: node scripts/check-worker-sentry-scrub.mjs
+      # Every PostHog event a surface sends is in docs/analytics/tracking-plan.json,
+      # every planned event is sent, and the dashboards only use sent events.
+      - run: node scripts/check-analytics-tracking-plan.mjs
 
   # ── Gate: all jobs must pass ──────────────────────────────────────────
   ci-pass:

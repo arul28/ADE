@@ -1,3 +1,5 @@
+import { updateTrackOfVersion } from "./updateTrack";
+
 /**
  * The package channel a build was made for.
  *
@@ -11,6 +13,24 @@
  * from the version (`updateTrack.ts`).
  */
 export type AppPackageChannel = "stable" | "alpha";
+
+/**
+ * Which build this is, as analytics and error reports name it: `development`
+ * for an unpackaged build, `alpha` for an Alpha package, else the update track
+ * the version belongs to (`beta` or `stable`). PostHog's `release_channel` and
+ * Sentry's `release_channel` tag and environment all read it from here.
+ */
+export type ReleaseChannel = "stable" | "beta" | "alpha" | "development";
+
+export function resolveReleaseChannel(args: {
+  env: Record<string, string | undefined>;
+  packaged: boolean;
+  version?: string | null;
+}): ReleaseChannel {
+  if (!args.packaged) return "development";
+  if (normalizeAppPackageChannel(args.env.ADE_PACKAGE_CHANNEL) === "alpha") return "alpha";
+  return updateTrackOfVersion(args.version);
+}
 
 /** Prefix used to hand the channel to the preload over `additionalArguments`. */
 export const PACKAGE_CHANNEL_ARGV_PREFIX = "--ade-package-channel=";

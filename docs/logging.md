@@ -31,7 +31,7 @@ Sentry is part of ADE on every surface, with no setting and no notice. The organ
 | `ade-workers` | push-relay, tunnel-relay, webhook-relay, account-directory (tag `worker`) | each Worker's `src/sentry.ts` |
 | `ade-ios` | the iOS app (not the widgets or App Clip) | `apps/ios/ADE/Services/CrashReporting.swift` |
 
-**When it runs.** Packaged builds only. Dev builds, source-checkout brains and tests are silent. `ADE_SENTRY_DEV=1` (web: `?ade_sentry_dev=1`) turns it on for testing the wiring and reports as `development`. `DO_NOT_TRACK` or `ADE_SENTRY_DISABLED` set to `1`, `true` or `yes` turns it off, and so does an analytics or automatic-diagnostics opt-out recorded by an earlier build (`main/sentry/priorOptOut.ts`; on the web client, the stored analytics opt-out). iOS ignores a stored opt-out: only `DO_NOT_TRACK=1` or `ADE_SENTRY_DISABLED=1` in an Xcode launch turns it off. The forked SDK workers (Cursor, Droid, Pi, Copilot, pty host) carry no SDK, because loading one costs hundreds of milliseconds per spawn on Windows; their failures reach the parent process, which reports them (`main/sentry/workerFailures.ts`, and `pty.host_fatal` through the logger).
+**When it runs.** Packaged builds only. The Workers report only where their deployed config sets `SENTRY_ENVIRONMENT` to `production` (each `wrangler.jsonc`; account-directory's `env.production`); `wrangler dev`, `npm run dev` and the development account-directory Worker are `development` and send nothing. Account-directory's minute cron checks in to the organization's one included cron monitor, `account-directory-cleanup` (`src/index.ts`); `cronTriggersIntegration` stays off because it would add a billed monitor per trigger. Dev builds, source-checkout brains and tests are silent. `ADE_SENTRY_DEV=1` (web: `?ade_sentry_dev=1`) turns it on for testing the wiring and reports as `development`. `DO_NOT_TRACK` or `ADE_SENTRY_DISABLED` set to `1`, `true` or `yes` turns it off, and so does an analytics or automatic-diagnostics opt-out recorded by an earlier build (`main/sentry/priorOptOut.ts`; on the web client, the stored analytics opt-out). iOS ignores a stored opt-out: only `DO_NOT_TRACK=1` or `ADE_SENTRY_DISABLED=1` in an Xcode launch turns it off. The forked SDK workers (Cursor, Droid, Pi, Copilot, pty host) carry no SDK, because loading one costs hundreds of milliseconds per spawn on Windows; their failures reach the parent process, which reports them (`main/sentry/workerFailures.ts`, and `pty.host_fatal` through the logger).
 
 **What is sent.** Error messages, stack traces, file paths, ids (lane, chat session, project, account hash), counts, durations, OS, architecture, CPU, memory, locale and timezone, the package channel, and breadcrumbs of what happened before (slow or failed IPC calls with their channel or brain action, provider health changes, warnings from ADE's logger). Native crash minidumps are uploaded. The user is the same pseudonymous id PostHog uses as `distinct_id` (`setSentryUserResolver` in `shared/sentry/eventFilter.ts`): the hashed account when signed in, else the install's random id, and none when product analytics is off.
 
@@ -82,7 +82,13 @@ The log tails go as ADE wrote them, on purpose: they hold paths, action argument
 
 **Quota.** The Team plan (since 2026-10-30) allows 50,000 errors, 5 GB of logs, 50 replays and 1 GB of attachments a month for the whole organization. Over the error quota, Sentry drops every error (`error_usage_exceeded`), as it did from 2026-10-26 to 2026-10-30 on the Developer plan's 5,000; the beta gate fails while that happens, because a build's error count means nothing then. It has no server-side rate limits, so every process keeps its own budget (`shared/sentry/guardrails.ts`): at most 5 events per fingerprint and 60 in total per hour, and 15 per fingerprint and 150 in total per day, and crashes (`fatal`) on a budget of their own, 10 per fingerprint and 30 per hour (30 and 100 per day), so they never compete with ordinary errors. Attachments have their own 1 GB a month for the organization, of which minidumps used about 100 MB in October 2026: each process attaches files to the first event of an issue each day only, to at most 15 events a day, and to at most 1 MB a day after gzip (`DEFAULT_DIAGNOSTIC_ATTACHMENT_BUDGET`). The files are built only when the budget has room. Contexts and breadcrumbs cost nothing against either quota; Sentry Logs are capped at 20 per log event name and 400 in total per hour, because some warnings repeat every second while a condition lasts. `forwardSignalToSentry` events have a budget of their own per event name, so a noisy one never starves another: 2 per key and 10 in total per hour, 6 per key and 30 in total per day. Expected outcomes (aborted navigations, user cancels, EPIPE, ResizeObserver, and the list above) are dropped. The web client also drops `AdeUnavailableError`, the rejection of a desktop-only `window.ade` member called on web (`webclient/sentry.ts`). The Workers group Cloudflare's own D1 and Durable Object failures into one issue per kind (each carries a fresh `reference`; the kinds live in each Worker's `src/cloudflareTransient.ts`), and drop Durable Object resets caused by a deploy. A request that hits one is retried where that is safe and otherwise answered `503` with `Retry-After`, logged as `cloudflare_transient` and not sent to Sentry. Traces are sampled at 5% on desktop and brain (Workers 1%, push-relay 0.1%, tunnel frames never); the web client reports errors only, because browser tracing would add about a third to the chunk its cold-load budget counts. No profiling. iOS tags every event with the display layout (`display.family`, `display.edge_bar`, `display.fold`, set by `CrashReporting.setDisplayLayout` on change only, with one `layout` breadcrumb), so an iPhone Duo crash names its posture without an event of its own. iOS keeps session replay for errors only, fully masked, and drops an app hang (fatal or not) whose main thread was idle in its run loop (the app was suspended, not blocked), judged on library names and in-app flags because the phone sends no function names; a hang with real work on the stack is kept, however long it claims to be. iOS does not report hangs that did not fully block the main thread; MetricKit reports those from the system.
 
+**Alerts and monitors (Sentry account, not code).** Every project keeps Sentry's default "high priority issue" email. On top of it, three org alerts email the owner: `ADE · Regressions in production (all projects)` (a resolved issue comes back), `ADE · Issue hitting 5+ users in an hour (production)`, and `ADE · Uptime: account directory down`. The plan's one uptime monitor checks `GET /health` on `ade-account-directory-production` every five minutes (`ade-workers`, three failures open an issue), and its one cron monitor is `account-directory-cleanup`, the Worker's scheduled sweep (`Sentry.withMonitor`). Spike protection is on for every project. Nothing paid is enabled: pay-as-you-go stays at $0, so data over a quota is dropped, never billed, and Seer, profiling and extra monitors stay off. Check the settings with `GET /api/0/organizations/ade-app/workflows/`, `/detectors/` and `GET /api/0/customers/ade-app/` (plan, trial end, on-demand budget).
+
 **Readable stack traces.** Release builds set `ADE_BUILD_SOURCEMAPS=1`, inject Sentry debug ids into the shipped bundles, upload the maps and delete them before packaging or deploy, so no map reaches a user. Releases are named `ade@<version>` from the `v*` tag (deploys from `main` between releases use `git describe`, for example `1.2.102-4-g3137fc9b9`), with a `dist` per artifact (`win-x64`, `mac-arm64`, `linux-x64`, `web`, `worker-<name>`). The standalone runtime (the brain on Linux, and `ade` installs without the desktop app) is a Node SEA: `build-static.mjs` stamps the bundle's debug id and writes a map for the SEA entry, moved down by the require shim's lines, to `dist-static/.sentry/<target>/` (outside the SEA work folder the build removes), and the runtime build job uploads that pair to `ade-brain` with `sentry-release.mjs upload --dir`. Uploads cost storage, not event quota. iOS keeps `<bundle id>@<version>+<build>`, and `scripts/release-tools/upload-ios-dsyms.sh` uploads each archive's dSYMs (run by `ios-testflight.sh` and the TestFlight workflow). Uploads need the `SENTRY_AUTH_TOKEN` repository secret and are skipped, never failed, without it. A release's commits are read from the checkout's git history (`set-commits --local`), because the `arul28` GitHub account is linked to another Sentry organization and sharing it needs a Business plan.
+
+**Tags on every event.** Each client sets the same scope tags (`sentryCommonTags` in `shared/sentry/config.ts`; Swift in `CrashReporting.start`): `surface` (`desktop`, `brain`, `web`, `ios`), `client` (`desktop`, `runtime` for the brain, `web`, `ios`), `release_channel` (`stable`, `beta`, `alpha`, `development`; iOS reads TestFlight as `beta`), `is_internal` (`true`/`false`, desktop and brain only, from the same marker PostHog reads; a browser and a phone cannot know) and `arch` (desktop and brain). The OS is Sentry's own `os` tag from each event's OS context. Renderer events carry main's tags, because they travel through main's client. Desktop and brain keep `process`, `os.release` and `package.channel`; the web client keeps `process: web-client` (its `surface` tag was `web-client` before 2026-10-30). The web client's user is the same account hash, computed in the browser from the signed-in account; signed out it has none.
+
+**User Feedback.** Settings › Send a report has an optional note, shown only where main's Sentry client runs (`diagnostics.userFeedbackAvailable`). The note goes to `ade-desktop` as Sentry User Feedback from the desktop main process (`main/sentry/userFeedback.ts`), scrubbed with `scrubString`, at most 2,000 characters, with the same user id, the common tags, `report.surface`, `report.code` and `report.reference` (the R2 report's reference), linked to the newest event that process reported. The R2 report is unchanged and never contains the note; a send the local daily limit refused sends no note either. Feedback skips `beforeSend` and its budget, so the manual-send limit is its only bound. The report describes this computer whatever machine a screen showed, so the note always goes from this app, never through a pin.
 
 **Instrumenting new code.** Use `captureError(error, context)` and `captureProblem(message, context)` from `apps/desktop/src/shared/sentry/capture.ts` (Swift: `CrashReporting.capture`). They are no-ops where Sentry is not running, so never guard them. Set a `fingerprint` that names the failure (`["provider", provider, kind]`) so repeats are one issue and one budget. Tags are low-cardinality labels (provider, channel, action); detail goes in `extra`. A caught error the app recovers from silently is still a failure: report it, or log it with `logger.warn` or `logger.error` so the bridge does. Never pass user content, and never raise the budget to fit a noisy call site; fix the noise.
 
@@ -439,8 +445,9 @@ The public contract is `apps/desktop/src/shared/types/productAnalytics.ts`. Ever
 
 #### Properties on every event, milestones, and first opens
 
-The service adds three properties to every event it sends, so active-user
-counts can be cut by app and stripped of activity no person caused. None
+The service adds these properties to every event it sends (beside
+`app_version`, `runtime_mode`, `platform` and `arch`), so active-user counts
+can be cut by app and build and stripped of activity no person caused. None
 adds an event.
 
 - `client` — the app a person used: `desktop`, `web`, `cli` (the `ade` command line), `ios` (a
@@ -460,6 +467,24 @@ adds an event.
   `ADE_ANALYTICS_INTERNAL=1` in the environment or an empty
   `secrets/product-analytics.json.internal` file beside the state file. Read
   once per process. Desktop `$identify` also sets it on the person.
+- `release_channel` — `stable`, `beta` (a Beta-track version), `alpha` (an
+  Alpha package), `development` (an unpackaged app or a source-checkout
+  brain), or `unknown` (a caller that passed none). `resolveReleaseChannel` in
+  `shared/packageChannel.ts`, the same function Sentry's environment and
+  `release_channel` tag use. Events the brain records for the web client or
+  the phone carry the brain's channel.
+
+The ADE account sign-in funnel is `ade_feature_used` with
+`feature: "account_sign_in"`, `action: "sign_in"`, `outcome` `started` and
+then one of `completed`, `failed` (with a coarse `error_kind`: `expired`,
+`network`, `permission`, `timeout`, `other`, ...) or `cancelled`, and
+`source` `browser` or `device_code` (`accountSignInAnalytics.ts`). One start
+and one end per attempt, keyed by the login session id, never per poll. The
+desktop main process records its own sign-ins (`surface: desktop`), the brain
+records `ade login` (`surface: cli`, one attempt per command even though it
+runs a browser and a device sign-in side by side) and skips desktop callers.
+It runs while the person is anonymous; the `$identify` after a completed
+sign-in merges the id.
 
 `ade_app_installed` and `ade_activated` are once per installation, and a
 milestone counts as sent only once delivery is confirmed. The service sends it
@@ -497,12 +522,39 @@ Clerk's `user.created` webhook, Svix-signed with
 `CLERK_WEBHOOK_SIGNING_SECRET`, becomes one event per account under the same
 `ade_user_…` hash the apps identify with. It carries `signup_method` (`github`,
 `google`, `apple`, `microsoft`, `gitlab`, `discord`, `linear`, `other_oauth`,
-or `email`), `client: "account"`, and `$set_once` `clerk_user_id` and
-`signed_up_at`; never the email or name. A retried delivery keeps its
-`svix-id`, which derives the event uuid, so PostHog keeps one. It needs
-`CLERK_WEBHOOK_SIGNING_SECRET` and `POSTHOG_PROJECT_TOKEN` set on the Worker
-and a Clerk webhook subscribed to `user.created`; until then the route answers
-503 and records nothing. Volume is one event per new account.
+or `email`), `client: "account"`, `is_internal`, `$set` `is_internal`, and
+`$set_once` `clerk_user_id` and `signed_up_at`; never the email or name. Its
+timestamp is the account's Clerk `created_at`.
+
+- **One per account.** The uuid is derived from the Clerk user id
+  (`signupEventUuid`), so a retried delivery and the backfill below give the
+  same uuid and PostHog keeps one. (Events sent before 2026-10-30 used the
+  `svix-id` instead; the backfill skips accounts that already have one.)
+- **Internal accounts.** `ade_internal: true` in an account's Clerk private or
+  public metadata (tests, the push-relay smoke users, the team) makes
+  `is_internal: true`; dashboards filter on the person property. The flag is
+  read once, when the sign-up is sent: set it before the backfill sends an
+  older account, and for an account already in PostHog set the person
+  property there too.
+- **Deletion.** Clerk's `user.deleted` becomes `ade_account_deleted` on the
+  same distinct id: `client: "account"`, `interactive: true`, no person
+  properties, uuid from the user id (`accountDeletedEventUuid`).
+- **Reconcile.** `scripts/analytics/reconcile-signups.mjs` lists every Clerk
+  account and compares it with the distinct ids that have `ade_signed_up`:
+  Clerk and PostHog totals, missing, extra (in PostHog but not Clerk, usually
+  deleted), by month, internal counts. `--apply` sends the missing ones through
+  `/batch/` exactly as the webhook would, plus `backfilled: true`; `--since`,
+  `--json` and `--max-missing` (default 0; a check run over it exits 1) are
+  the other options. It prints counts only. `.github/workflows/analytics-reconcile.yml`
+  runs it every Monday at 14:00 UTC (backfill, then a check that goes red if
+  anything is still missing), with the secrets `CLERK_PROD_SECRET_KEY`,
+  `POSTHOG_RECONCILE_API_KEY` (a personal key with query read only) and
+  `ADE_POSTHOG_PROJECT_TOKEN`.
+
+It needs `CLERK_WEBHOOK_SIGNING_SECRET` and `POSTHOG_PROJECT_TOKEN` set on the
+Worker and a Clerk webhook subscribed to `user.created` and `user.deleted`;
+until then the route answers 503 and records nothing. Volume is one event per
+new or deleted account.
 
 The new product facts reuse `ade_feature_used`; they do not add an event name or
 raise a ceiling. The taxonomy is closed at the producer and again by
@@ -1622,7 +1674,7 @@ untouched — no card asks that question yet.
 
 Native UI analytics lives in `apps/ios/ADE/Services/ProductAnalytics.swift`. It uses a separate installation identity and `ade_mobile_*` event namespace so phone engagement cannot inflate desktop activation or retention. After sign-in, it sends the same one-way account hash used by desktop in a quota-counted `$identify` event; the raw account ID is never sent, and sign-out rotates the anonymous installation identity.
 
-Every native event carries `client: "ios"` and `interactive` (`false` only for `ade_mobile_analytics_budget`). The app-open event carries `distribution` (`testflight`, `app_store`, or `development`, read from the App Store receipt name), and the first open of a new install also carries `first_open: true`, once; an install that already has a stored budget from an earlier build reports none. Both are properties of the existing `ade_mobile_app_opened` and add no event.
+Every native event carries `client: "ios"`, `interactive` (`false` only for `ade_mobile_analytics_budget`), `app_version` (`CFBundleShortVersionString`), `build_number` (`CFBundleVersion`), `distribution` (`testflight`, `app_store`, or `development`, read from the App Store receipt name) and `release_channel` (`beta` for TestFlight, `stable` for the App Store, `development`). There is no `is_internal`: a phone has no team-install marker. The first open of a new install also carries `first_open: true`, once; an install that already has a stored budget from an earlier build reports none. Both are properties of the existing `ade_mobile_app_opened` and add no event.
 
 iOS analytics is default-on when the public capture configuration is present; the former affirmative opt-in, its consent prompt, and its Settings opt-out have been removed. A stored `ade.analytics.enabled` false from an earlier build is ignored; only `DO_NOT_TRACK=1` in the launch environment turns it off. Its restart-safe ceiling remains 20 events per UTC day, with the existing event-specific limits of 3 app opens, 10 screen views, 7 feature events, 2 coarse errors, and 1 budget summary. Sign-in, machine-adoption, pairing, and quick-connect events use separate `ade_mobile_*` names with closed coarse enum properties and a limit of 2 events each. Foreground duplicate screens and outcomes are suppressed. The transport has no retry loop, redirects, cookies, cache, credential storage, background session, or persistent event queue.
 
@@ -1680,7 +1732,7 @@ The browser sends events directly to `https://us.i.posthog.com/i/v0/e/`. It does
 ## Consent and kill switches
 
 - Product analytics and automatic diagnostic reports are part of ADE and on by default on every surface. No Settings, web, or iOS control turns them on or off, and there is no consent prompt.
-- Two opt-outs are honored everywhere, silently: `DO_NOT_TRACK=1` in the environment (desktop and brain: PostHog and automatic diagnostic reports), and a persisted explicit opt-out from an earlier build (the desktop `secrets/product-analytics.json` `enabled: false` or its `.disabled` marker, the automatic-send ledger's `enabled: false`, and the hosted-web `ade:web-product-analytics-enabled` "false" preference). Nothing in the app can change either one. iOS honors only `DO_NOT_TRACK=1`.
+- Two opt-outs are honored everywhere, silently: `DO_NOT_TRACK=1` in the environment (desktop and brain: PostHog and automatic diagnostic reports), and a persisted explicit opt-out from an earlier build (the desktop `secrets/product-analytics.json` `enabled: false` or its `.disabled` marker, the automatic-send ledger's `enabled: false`, and the hosted-web `ade:web-product-analytics-enabled` "false" preference). Nothing in the app can change either one. iOS honors only `DO_NOT_TRACK=1`. The note a person types into Send a report follows Sentry's switches: where Sentry is off the field is not shown and nothing is sent.
 - The desktop machine-wide disable marker immediately stops all local clients and cancels queued delivery.
 - Native iOS honors only `DO_NOT_TRACK=1` and has no in-app control; a stored opt-out from an earlier build is ignored. The public marketing site keeps its own browser-local opt-out on `/privacy`, separate from ADE's product analytics.
 - `ADE_DISABLE_PRODUCT_ANALYTICS=1` disables the desktop/runtime service.
@@ -1707,15 +1759,22 @@ The full-access personal key belongs only in encrypted ADE secrets. When running
 
 ## PostHog dashboards
 
-`scripts/posthog/dashboard-spec.mjs` is the declarative source of truth. `scripts/posthog/provision.mjs` validates and idempotently upserts the managed objects. The project currently has five managed dashboards and thirty-seven managed insights:
+`scripts/posthog/dashboard-spec.mjs` is the declarative source of truth. `scripts/posthog/provision.mjs` validates and idempotently upserts the managed objects. The project currently has eight managed dashboards and fifty-two managed insights:
 
 - ADE · Growth and retention
 - ADE · Surface and feature adoption
 - ADE · Native mobile engagement
 - ADE · Marketing acquisition
 - ADE · Reliability and analytics budget
+- ADE · Sign-ups & activation
+- ADE · Retention & churn
+- ADE · Feedback (in-app survey answers)
 
-The 30-day volume cards split the closed ingested catalog into groups of at most 26 series because PostHog formulas address series by letters `A`…`Z`. Their sum is the total tracked volume; the overflow card includes `$identify` so identity enrichment is not treated as free. When an event or property contract changes, update the dashboard spec and its tests in the same change. Run the provisioner in `--validate` mode locally. A live provisioning run requires the personal management key and should be idempotent: an immediate second run must report no changes.
+Every insight except the volume cards leaves out events with `is_internal: true` (an `is_not` filter, so events without the property still count). The 30-day volume cards split the closed ingested catalog into groups of at most 26 series because PostHog formulas address series by letters `A`…`Z`, and keep internal events because billing counts them. Their sum is the total tracked volume; the overflow card includes `$identify` and the survey events so neither is treated as free. `docs/analytics/tracking-plan.json` lists every event; `node scripts/check-analytics-tracking-plan.mjs` (CI) fails when it, the code and this spec disagree.
+
+### In-app surveys
+
+The desktop app shows PostHog **API** surveys in its own corner card (no posthog-js, no session replay). `main/services/analytics/surveyService.ts` reads the project's active surveys from PostHog's public endpoint (`GET /api/surveys/?token=<public project token>`) at most once a day, and only when this install already qualifies locally. A survey is eligible only when its name starts with `[ade:pmf]`, `[ade:returning]` or `[ade:early]`; the key's rule, a 21-day per-install cooldown, never in the first session or during onboarding, and never the same survey twice are all decided on the machine from `<ade>/secrets/product-analytics-surveys.json` (local active days, last activity, launch count, shown surveys, cached survey list). Answers go out as PostHog's `survey shown` / `survey dismissed` / `survey sent` events through the product analytics service, so consent, `DO_NOT_TRACK`, the daily budget and the dev-build gate all apply; with analytics off nothing is recorded, fetched or shown. Typed answers are scrubbed for secrets and home-folder paths and capped at 2,000 characters. The hosted web client and iOS show no surveys. How to write a survey ADE will show is in `docs/analytics/README.md`. When an event or property contract changes, update the dashboard spec and its tests in the same change. Run the provisioner in `--validate` mode locally. A live provisioning run requires the personal management key and should be idempotent: an immediate second run must report no changes.
 
 ## How to instrument new code
 

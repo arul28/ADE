@@ -18,11 +18,16 @@ const WORKER_NAME = "ade-account-directory";
 const PUSH_RELAY_HOST = "ade-push-relay.arulsharma1028.workers.dev";
 
 export function sentryOptions(env: SentryEnv): CloudflareOptions {
+  // `SENTRY_ENVIRONMENT` is set to `production` only in the deployed config
+  // (wrangler.jsonc). Anything else, `wrangler dev` included, is
+  // `development` and sends nothing, so local runs never spend the quota.
+  const environment = env.SENTRY_ENVIRONMENT?.trim() || "development";
   return {
     dsn: env.SENTRY_DSN,
     release: env.SENTRY_RELEASE,
     dist: `worker-${WORKER_NAME}`,
-    environment: env.SENTRY_ENVIRONMENT ?? "production",
+    environment,
+    enabled: environment !== "development",
     initialScope: { tags: { worker: WORKER_NAME } },
     tracesSampleRate: 0.01,
     tracePropagationTargets: [PUSH_RELAY_HOST],

@@ -218,7 +218,21 @@ export class PostHogApi {
     return new URL(pathname.replace(/^\/+/, ""), this.projectBase);
   }
 
-  async request(urlOrPath, { method = "GET", body } = {}) {
+  async request(urlOrPath, options = {}) {
+    // A full run makes ~120 requests, past PostHog's per-key burst limit; a 429
+    // names its wait in Retry-After (or the body), so wait that long and retry.
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        return await this.requestOnce(urlOrPath, options);
+      } catch (error) {
+        const waitSeconds = error?.retryAfterSeconds;
+        if (!Number.isFinite(waitSeconds) || attempt >= 6) throw error;
+        await new Promise((resolve) => setTimeout(resolve, Math.min(Math.max(waitSeconds, 1), 60) * 1_000));
+      }
+    }
+  }
+
+  async requestOnce(urlOrPath, { method = "GET", body } = {}) {
     const url = urlOrPath instanceof URL ? urlOrPath : this.projectPath(urlOrPath);
     if (url.origin !== this.host.origin) fail("Refusing to send a PostHog credential to a different origin.");
 
@@ -239,7 +253,13 @@ export class PostHogApi {
       if (!response.ok) {
         const responseText = redact((await response.text()).slice(0, 2_000), [this.apiKey]);
         const suffix = responseText ? `: ${responseText}` : "";
-        fail(`PostHog ${method} ${url.pathname} failed with ${response.status}${suffix}`);
+        const error = new Error(`PostHog ${method} ${url.pathname} failed with ${response.status}${suffix}`);
+        if (response.status === 429) {
+          const header = Number(response.headers?.get?.("retry-after"));
+          const fromBody = Number(/available in (\d+) second/i.exec(responseText)?.[1]);
+          error.retryAfterSeconds = Number.isFinite(header) && header > 0 ? header : Number.isFinite(fromBody) ? fromBody : 5;
+        }
+        throw error;
       }
       if (response.status === 204) return null;
       const text = await response.text();

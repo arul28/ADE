@@ -1367,6 +1367,46 @@ describe("productAnalyticsService", () => {
     fs.rmSync(harness.root, { recursive: true, force: true });
   });
 
+  it("sends a typed survey answer without emails, absolute paths, or secrets, and keeps links and relative paths", () => {
+    const answers: Array<[string, string, string]> = [
+      ["email", "write me at alice.smith+ade@example.co.uk please", "write me at [email] please"],
+      ["posix", "crashed opening /Users/alice/secret-project/src/a.ts at file:///Users/alice/x.ts", "crashed opening [path] at [path]"],
+      ["home", "my config in ~/work/client-repo broke", "my config in [path] broke"],
+      ["windows", "C:\\Users\\alice\\repo failed", "[path] failed"],
+      ["unc", "the share \\\\fileserver\\team\\repo hung", "the share [path] hung"],
+      ["slashes", "C:/Users/alice/demo and path:/Users/alice/project", "[path] and path:[path]"],
+      ["homeOnly", "lost ~/client-repo again", "lost [path] again"],
+      ["quoted", 'password="hunter two" leaked', "password=[redacted] leaked"],
+      ["kept", "see https://ade-app.dev/docs and src/app.ts", "see https://ade-app.dev/docs and src/app.ts"],
+    ];
+    const harness = makeHarness();
+    expect(harness.service.captureInternal({
+      event: "survey sent",
+      surface: "desktop",
+      survey: {
+        surveyId: "01a18eaa-49f4-0000-0000-000000000000",
+        surveyName: "[ade:pmf] Product fit",
+        iteration: null,
+        questions: [
+          ...answers.map(([id]) => ({ id, question: `Question ${id}` })),
+          { id: "secret", question: "Anything else?" },
+        ],
+        submissionId: "22222222-2222-4222-8222-222222222222",
+        completed: true,
+        responses: {
+          ...Object.fromEntries(answers.map(([id, raw]) => [id, raw])),
+          secret: "token ghp_abcdefghijklmnopqrstuvwxyz0123456789",
+        },
+      },
+    })).toEqual({ accepted: true, reason: "accepted" });
+
+    const properties = harness.messages[0]?.properties as Record<string, unknown>;
+    for (const [id, , expected] of answers) expect(properties[`$survey_response_${id}`]).toBe(expected);
+    expect(properties.$survey_response_secret).not.toContain("ghp_abcdefghijklmnopqrstuvwxyz0123456789");
+    expect(JSON.stringify(harness.messages)).not.toMatch(/alice|fileserver|client-repo/);
+    fs.rmSync(harness.root, { recursive: true, force: true });
+  });
+
   it("captures install and activation milestones only once across restarts", () => {
     let nowMs = Date.parse("2026-07-13T12:00:00.000Z");
     const first = makeHarness({ now: () => nowMs });

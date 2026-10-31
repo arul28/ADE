@@ -5,6 +5,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { Logger } from "../logging/logger";
 import { safeJsonParse, writeTextAtomic } from "../shared/utils";
 import { doNotTrackRequested } from "../../../shared/doNotTrack";
+import type { ReleaseChannel } from "../../../shared/packageChannel";
 import { normalizeAdeUsageClientSurface } from "../../../shared/types/usage";
 import {
   PRODUCT_ANALYTICS_EVENTS,
@@ -21,12 +22,14 @@ import {
   EVENT_DAILY_BUDGETS,
   EVENT_MINUTE_BUDGETS,
   INTERNAL_ONLY_EVENTS,
+  isSurveyAnalyticsEvent,
   MAX_HISTORICAL_EVENT_AGE_MS,
   MAX_LOCAL_IDENTIFIER_LENGTH,
   PROCESS_INGRESS_LIMIT_PER_MINUTE,
   productAnalyticsEventContext,
   safeProductAnalyticsString,
   sanitizeProductAnalyticsProperties,
+  sanitizeSurveyEventProperties,
 } from "./productAnalyticsPolicy";
 
 declare const __ADE_POSTHOG_PROJECT_TOKEN__: string | undefined;
@@ -110,6 +113,8 @@ type ProductAnalyticsServiceArgs = {
   logger: Pick<Logger, "debug" | "warn">;
   appVersion?: string | null;
   runtimeMode: string;
+  /** `resolveReleaseChannel` for this process; `unknown` when a caller has none. */
+  releaseChannel?: ReleaseChannel | null;
   projectToken?: string | null;
   host?: string | null;
   dailyBudget?: number;
@@ -127,6 +132,20 @@ function bundledProjectToken(): string {
 function normalizeProjectToken(value: string | null | undefined): string {
   const token = value?.trim() ?? "";
   return /^phc_[A-Za-z0-9_-]{8,}$/.test(token) ? token : "";
+}
+
+/**
+ * The public project token and capture host this build sends to, or null when
+ * analytics is not configured. The survey service reads active surveys with
+ * the same public token; it is never a secret.
+ */
+export function resolveProductAnalyticsEndpoint(args: {
+  projectToken?: string | null;
+  host?: string | null;
+} = {}): { token: string; host: string } | null {
+  const token = normalizeProjectToken(args.projectToken?.trim() || bundledProjectToken());
+  const host = normalizeHost(args.host ?? bundledHost());
+  return token && host ? { token, host } : null;
 }
 
 function bundledHost(): string {
@@ -593,6 +612,7 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
   const token = normalizeProjectToken(args.projectToken?.trim() || bundledProjectToken());
   const host = normalizeHost(args.host ?? bundledHost());
   const appVersion = safeProductAnalyticsString(args.appVersion?.trim() ?? "") ?? "unknown";
+  const releaseChannel: ReleaseChannel | "unknown" = args.releaseChannel ?? "unknown";
   const dailyBudget = Math.max(25, Math.min(2_000, Math.floor(args.dailyBudget ?? DEFAULT_DAILY_BUDGET)));
   // State stays lazy so builds without a valid public project token have zero
   // analytics filesystem or module-startup cost. Every configured path catches
@@ -744,6 +764,7 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
           surface: "api",
           ...productAnalyticsEventContext("ade_analytics_budget", "api", null),
           is_internal: isInternalInstall(),
+          release_channel: releaseChannel,
           sent_count: summary.sentCount,
           dropped_count: summary.droppedCount,
           drop_reason: summary.dropReason,
@@ -1031,11 +1052,16 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
         if (previous != null && nowMs - previous < minimumIntervalMs) return drop("duplicate");
       }
 
+      const surveyProperties = isSurveyAnalyticsEvent(input.event)
+        ? sanitizeSurveyEventProperties(input.event, input.survey)
+        : null;
+      if (isSurveyAnalyticsEvent(input.event) && !surveyProperties) return drop("invalid_event");
       const properties: Record<string, unknown> = {
-        ...sanitizeProductAnalyticsProperties(input.event, input.properties),
+        ...(surveyProperties ?? sanitizeProductAnalyticsProperties(input.event, input.properties)),
         surface,
         ...productAnalyticsEventContext(input.event, surface, input.properties?.feature),
         is_internal: isInternalInstall(),
+        release_channel: releaseChannel,
         app_version: appVersion,
         runtime_mode: safeProductAnalyticsString(args.runtimeMode) ?? "unknown",
         platform: process.platform,
@@ -1309,6 +1335,14 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
       return new Date(state.enabledSinceMs).toISOString();
     },
     hashProjectId: (value: string) => opaqueId("project", value),
+    /**
+     * When this installation first ran ADE with analytics state, or null while
+     * analytics is off. Read by the survey service for "days since first open".
+     */
+    getInstalledAtMs: (): number | null => {
+      const status = getStatus();
+      return status.effective ? state.installedAtMs : null;
+    },
     /**
      * The id PostHog sees as `distinct_id` for anonymous events from this
      * installation. Surfaced so a diagnostic report a user files by hand can be

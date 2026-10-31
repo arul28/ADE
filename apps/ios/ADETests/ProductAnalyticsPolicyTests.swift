@@ -442,6 +442,10 @@ final class ProductAnalyticsPolicyTests: XCTestCase {
       "platform",
       "client",
       "interactive",
+      "app_version",
+      "build_number",
+      "distribution",
+      "release_channel",
       "$process_person_profile",
       "$geoip_disable",
     ]))
@@ -575,6 +579,10 @@ final class ProductAnalyticsPolicyTests: XCTestCase {
         "platform",
         "client",
         "interactive",
+        "app_version",
+        "build_number",
+        "distribution",
+        "release_channel",
         "$process_person_profile",
         "$geoip_disable",
       ])

@@ -123,6 +123,8 @@ import { projectRegistryDiagnosticAttachment } from "./services/projects/project
 import { initBrainSentry } from "./sentry/initBrain";
 import { resolveSelectedUpdateTrack } from "./services/runtime/updateTrackStore";
 import { updateTrackOfVersion } from "../../desktop/src/shared/updateTrack";
+import { resolveReleaseChannel } from "../../desktop/src/shared/packageChannel";
+import { isSourceCheckoutRuntimeModule } from "./runtimePackaging";
 import { configureOutboundProxyFromEnv, trustSystemCertificates } from "../../desktop/src/main/services/shared/outboundNetwork";
 import { buildDeeplink, type DeeplinkEnvelope } from "../../desktop/src/shared/deeplinks";
 import { laneIsOnBaseBranch } from "../../desktop/src/shared/laneBaseResolution";
@@ -27213,6 +27215,14 @@ async function runServe(
       logger: headlessProjectLogger,
       appVersion: VERSION,
       runtimeMode: "brain",
+      // Where this bundle runs, as `initBrainSentry` decides it.
+      releaseChannel: resolveReleaseChannel({
+        env: process.env,
+        packaged: !isSourceCheckoutRuntimeModule(
+          typeof __filename === "string" ? __filename : process.argv[1] ?? "",
+        ),
+        version: VERSION,
+      }),
     }),
   );
   /**

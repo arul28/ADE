@@ -27,6 +27,9 @@ regexes = [
   '''0123456789abcdef0123456789abcdef''',
   '''phc_abcdefgh12345678''',
   '''phx_personalkey123''',
+  # The fake GitHub token in productAnalyticsService.test.ts that proves a
+  # typed survey answer is scrubbed of secrets before it reaches PostHog.
+  '''ghp_abcdefghijklmnopqrstuvwxyz0123456789''',
   # The machine key store's file NAME, "api-keys.v1.bin". A path segment, not a
   # key: it appears as a literal in `apiKeyStore.ts` and its test, and gitleaks'
   # generic-api-key rule fires on it because the surrounding identifier says

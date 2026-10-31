@@ -75,6 +75,16 @@ enum CrashReporting {
           : nil
       }
     }
+    // The tags every ADE Sentry project carries (`sentryCommonTags` in
+    // `shared/sentry/config.ts`). No `is_internal`: a phone has no team-install
+    // marker. The OS is Sentry's own `os` tag.
+    let distribution = ADEAnalyticsDistribution.current
+    SentrySDK.configureScope { scope in
+      scope.setTag(value: "ios", key: "surface")
+      scope.setTag(value: "ios", key: "client")
+      scope.setTag(value: isDevelopmentRun ? "development" : distribution.releaseChannel, key: "release_channel")
+      scope.setTag(value: distribution.rawValue, key: "distribution")
+    }
     setUser(accountId: nil)
   }
 

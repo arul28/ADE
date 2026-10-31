@@ -34,7 +34,8 @@ export function setSentryUserResolver(resolver: (() => string | null | undefined
   resolveUserId = resolver;
 }
 
-function currentUserId(): string | null {
+/** The user `beforeSend` puts on an event; for events that skip it (User Feedback). */
+export function resolveSentryUserId(): string | null {
   try {
     return resolveUserId?.() ?? null;
   } catch {
@@ -90,7 +91,7 @@ export function createSentryEventHooks(budget?: SentryBudget) {
         ? fatalLimiter.admit(budgetKey)
         : limiter.admit(budgetKey);
       if (!admitted) return null;
-      const userId = currentUserId();
+      const userId = resolveSentryUserId();
       if (userId) candidate.user = { ...(candidate.user ?? {}), id: userId };
       // A no-op outside main and the brain (`enableSentryDiagnostics`).
       applySentryDiagnostics(candidate, hint, budgetKey);

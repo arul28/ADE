@@ -188,6 +188,8 @@ import {
   type ProductAnalyticsStatus,
 } from "../../../shared/types/productAnalytics";
 import type { ProductAnalyticsService } from "../analytics/productAnalyticsService";
+import { createAccountSignInAnalytics } from "../analytics/accountSignInAnalytics";
+import { sendSentryUserFeedback } from "../../sentry/userFeedback";
 import {
   brainActionErrorCode,
   createMachineRegisterRefusalObserver,
@@ -1114,6 +1116,7 @@ import type {
   DiagnosticReportPayload,
   DiagnosticReportRequestPayload,
   DiagnosticsAutoSentPayload,
+  DiagnosticsManualSendOptions,
   DiagnosticsManualSendResult,
   DiagnosticsSharingStatus,
 } from "../../../shared/types/diagnostics";
@@ -5184,9 +5187,30 @@ export function registerIpc({
    */
   ipcMain.handle(
     IPC.diagnosticsSendManual,
-    async (_event, arg: DiagnosticReportRequestPayload | undefined): Promise<DiagnosticsManualSendResult> => {
+    async (
+      _event,
+      arg: DiagnosticReportRequestPayload | undefined,
+      options?: DiagnosticsManualSendOptions,
+    ): Promise<DiagnosticsManualSendResult> => {
       const context = arg && typeof arg === "object" ? readDiagnosticReportContext(arg) : undefined;
       const result = (await autoDiagnosticsService?.sendManual(context)) ?? { ok: false, reason: "failed" };
+      // The person's own note goes to Sentry as User Feedback, from this app's
+      // main process (the report is about this computer, whatever machine the
+      // screen showed). The R2 report above stays as it was. Skipped when this
+      // computer's own guard refused the send, so the daily limit holds.
+      if (typeof options?.userMessage === "string" && !(!result.ok && result.reason === "local_limit")) {
+        sendSentryUserFeedback({
+          onError: (error) => getCtx().logger.warn("diagnostics.user_feedback_failed", {
+            errorKind: error instanceof Error ? error.name : "unknown",
+          }),
+          message: options.userMessage,
+          tags: {
+            "report.surface": context?.surface ?? "settings_manual",
+            "report.code": context?.code ?? null,
+            "report.reference": result.ok ? result.reference : null,
+          },
+        });
+      }
       // "Report issue" sends here first now, so its one coarse fact moved with
       // it: `success` is a report ADE received, next to `opened` for the GitHub
       // path. Settings' send (no context) is not a Report issue press.
@@ -12383,14 +12407,34 @@ export function registerIpc({
     },
   );
 
+  // The sign-in funnel (`ade_feature_used`, feature `account_sign_in`): one
+  // `started` per attempt and one end, keyed by the login session id, so the
+  // renderer's polls never count. Device sign-in runs in this machine's brain,
+  // which leaves desktop callers to this one.
+  const accountSignInAnalytics = createAccountSignInAnalytics({
+    capture: (input) => productAnalyticsService?.capture(input),
+    surface: "desktop",
+    onCaptureError: (error) => getCtx().logger.warn("account.sign_in_analytics_failed", {
+      errorKind: error instanceof Error ? error.name : "unknown",
+    }),
+  });
+
   ipcMain.handle(IPC.accountStartLogin, async (): Promise<AdeAccountLoginStart> => {
-    return accountBridge.startLogin();
+    try {
+      const started = await accountBridge.startLogin();
+      accountSignInAnalytics.started("browser", started.sessionId);
+      return started;
+    } catch (error) {
+      accountSignInAnalytics.startFailed("browser", error);
+      throw error;
+    }
   });
 
   ipcMain.handle(
     IPC.accountPollLogin,
     async (_event, arg: { sessionId?: string }): Promise<AdeAccountLoginPoll> => {
       const result = await accountBridge.pollLogin(arg?.sessionId ?? "");
+      accountSignInAnalytics.polled(arg?.sessionId, result.status, result.message);
       if (result.authStatus.signedIn) {
         productAnalyticsService?.identifyAccount(result.authStatus.userId);
       }
@@ -12403,6 +12447,7 @@ export function registerIpc({
     IPC.accountCancelLogin,
     async (_event, arg: { sessionId?: string }): Promise<AdeAccountStatus> => {
       accountBridge.cancelLogin(arg?.sessionId ?? "");
+      accountSignInAnalytics.cancelled(arg?.sessionId);
       return accountBridge.status();
     },
   );
@@ -12414,7 +12459,14 @@ export function registerIpc({
   ipcMain.handle(
     IPC.accountStartDeviceLogin,
     async (): Promise<AdeAccountDeviceLoginStart> => {
-      return await accountBridge.startDeviceLogin();
+      try {
+        const started = await accountBridge.startDeviceLogin();
+        accountSignInAnalytics.started("device_code", started.sessionId);
+        return started;
+      } catch (error) {
+        accountSignInAnalytics.startFailed("device_code", error);
+        throw error;
+      }
     },
   );
 
@@ -12422,6 +12474,7 @@ export function registerIpc({
     IPC.accountPollDeviceLogin,
     async (_event, arg: { sessionId?: string }): Promise<AdeAccountDeviceLoginPoll> => {
       const result = await accountBridge.pollDeviceLogin(arg?.sessionId ?? "");
+      accountSignInAnalytics.polled(arg?.sessionId, result.status, result.message);
       if (result.authStatus.signedIn) {
         productAnalyticsService?.identifyAccount(result.authStatus.userId);
       }
@@ -12434,6 +12487,7 @@ export function registerIpc({
     IPC.accountCancelDeviceLogin,
     async (_event, arg: { sessionId?: string }): Promise<AdeAccountStatus> => {
       await accountBridge.cancelDeviceLogin(arg?.sessionId ?? "");
+      accountSignInAnalytics.cancelled(arg?.sessionId);
       return accountBridge.status();
     },
   );

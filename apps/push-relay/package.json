@@ -4,7 +4,7 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "wrangler dev",
+    "dev": "wrangler dev --var SENTRY_ENVIRONMENT:development",
     "deploy": "npm run validate:migrations && npm run verify:auth-preflight && npm run d1:migrate:remote && node scripts/wrangler-deploy.mjs && npm run verify:auth-health && npm run verify:auth-account",
     "deploy:ci": "node scripts/deploy-with-smoke-auth.mjs",
     "d1:migrations:local": "wrangler d1 migrations apply ade-push-relay --local",

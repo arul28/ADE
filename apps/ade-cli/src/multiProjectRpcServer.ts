@@ -103,6 +103,11 @@ import {
   type AccountAuthService,
 } from "./services/account/accountAuthService";
 import {
+  createSharedAttemptSignInAnalytics,
+  type AccountSignInAnalytics,
+} from "../../desktop/src/main/services/analytics/accountSignInAnalytics";
+import type { ProductAnalyticsCapture } from "../../desktop/src/shared/types/productAnalytics";
+import {
   getSharedAccountAttestationConfig,
   getSharedAccountDirectoryBaseUrl,
   getSharedAccountAuthService,
@@ -361,7 +366,10 @@ export type MultiProjectRpcHandlerOptions = {
     "getSnapshot" | "setLevel" | "migrateLegacyPreference" | "fixSystemSleep"
   > | null;
   accountAuthService?: AccountAuthService;
-  productAnalyticsService?: AccountAnalyticsIdentity;
+  productAnalyticsService?: AccountAnalyticsIdentity & {
+    /** Present on the real service; records the account sign-in funnel. */
+    capture?(input: ProductAnalyticsCapture): unknown;
+  };
   getAccountDirectoryHealth?: () => SyncAccountDirectoryHealth;
   /** Truthful sync status for a brain hosting (or not hosting) sync with no project scope. */
   getProjectlessSyncSnapshot?: () => SyncRoleSnapshot;
@@ -590,6 +598,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function safeParams(value: unknown): Record<string, unknown> {
   return isRecord(value) ? value : {};
 }
+
+/** Which sign-in an account action belongs to, for the sign-in funnel. */
+const SIGN_IN_SOURCE_BY_ACTION: Readonly<Record<string, "browser" | "device_code">> = {
+  startLogin: "browser",
+  pollLogin: "browser",
+  startDeviceLogin: "device_code",
+  pollDeviceLogin: "device_code",
+};
 
 const machineProjectLogger: Logger = {
   debug: () => {},
@@ -1351,6 +1367,25 @@ export function createMultiProjectRpcRequestHandler(
     isRecord(initializedParams) && typeof initializedParams.clientName === "string"
       ? initializedParams.clientName
       : null;
+  /**
+   * The account sign-in funnel for `ade login` and any other non-desktop
+   * caller (`accountSignInAnalytics.ts`). One connection is one attempt: the
+   * command runs its browser and device sign-ins side by side. A desktop
+   * caller is left out, because the desktop records its own sign-ins.
+   */
+  let accountSignInAnalytics: AccountSignInAnalytics | null = null;
+  const accountSignInAnalyticsForCaller = (): AccountSignInAnalytics | null => {
+    const analytics = options.productAnalyticsService;
+    if (!analytics?.capture || isDesktopClientName(callerClientName())) return null;
+    accountSignInAnalytics ??= createSharedAttemptSignInAnalytics({
+      capture: (input) => analytics.capture?.(input),
+      surface: "cli",
+      onCaptureError: (error) => machineProjectLogger.warn("account.sign_in_analytics_failed", {
+        errorKind: error instanceof Error ? error.name : "unknown",
+      }),
+    });
+    return accountSignInAnalytics;
+  };
   /** The chat this connection's caller claims to be, as every local `ade` call does. */
   const callerChatSessionId = (): string | null => {
     const identity = callerIdentity();
@@ -2531,12 +2566,34 @@ export function createMultiProjectRpcRequestHandler(
         );
         return { domain: "account", action, result, statusHints: {} };
       }
-      const response = await callAccountAction({
-        service: accountAuthService,
-        analytics: options.productAnalyticsService,
-        action,
-        actionArgs: isRecord(params.args) ? params.args : {},
-      });
+      const accountActionArgs = isRecord(params.args) ? params.args : {};
+      const signIn = accountSignInAnalyticsForCaller();
+      const signInSource = SIGN_IN_SOURCE_BY_ACTION[action] ?? null;
+      let response: Awaited<ReturnType<typeof callAccountAction>>;
+      try {
+        response = await callAccountAction({
+          service: accountAuthService,
+          analytics: options.productAnalyticsService,
+          action,
+          actionArgs: accountActionArgs,
+        });
+      } catch (error) {
+        if (signInSource && (action === "startLogin" || action === "startDeviceLogin")) {
+          signIn?.startFailed(signInSource, error);
+        }
+        throw error;
+      }
+      if (signIn) {
+        const result = isRecord(response.result) ? response.result : {};
+        const sessionId = typeof accountActionArgs.sessionId === "string" ? accountActionArgs.sessionId : null;
+        if (signInSource && (action === "startLogin" || action === "startDeviceLogin")) {
+          signIn.started(signInSource, typeof result.sessionId === "string" ? result.sessionId : null);
+        } else if (action === "pollLogin" || action === "pollDeviceLogin") {
+          signIn.polled(sessionId, result.status, typeof result.message === "string" ? result.message : null);
+        } else if (action === "cancelLogin") {
+          signIn.cancelled(sessionId);
+        }
+      }
       const completedLogin = (
         action === "pollLogin" || action === "pollDeviceLogin"
       ) && isRecord(response.result) && response.result.status === "signed_in";
