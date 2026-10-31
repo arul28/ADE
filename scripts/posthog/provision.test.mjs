@@ -24,8 +24,13 @@ function findInsight(key) {
   throw new Error(`Missing insight ${key}`);
 }
 
+// What a first run must create: every dashboard plus every insight in the spec.
+const SPEC_INSIGHTS = dashboardSpec.dashboards.reduce((total, dashboard) => total + dashboard.insights.length, 0);
+const SPEC_OBJECTS = dashboardSpec.dashboards.length + SPEC_INSIGHTS;
+const NOT_INTERNAL = { key: "is_internal", value: ["true"], operator: "is_not", type: "event" };
+
 test("dashboard spec is valid and excludes replay queries", () => {
-  assert.deepEqual(validateDashboardSpec(), { dashboards: 5, insights: 37 });
+  assert.deepEqual(validateDashboardSpec(), { dashboards: dashboardSpec.dashboards.length, insights: SPEC_INSIGHTS });
   assert.doesNotMatch(JSON.stringify(dashboardSpec), /\$snapshot|session replay|recording_property/i);
 });
 
@@ -45,9 +50,9 @@ test("dashboard queries match the bounded instrumentation semantics", () => {
   assert.equal(outcomes.query.source.breakdownFilter.breakdown, "outcome");
 
   const provider = findInsight("provider-adoption");
-  assert.deepEqual(provider.query.source.properties, [{ key: "summary_kind", value: "provider", operator: "exact", type: "event" }]);
+  assert.deepEqual(provider.query.source.properties, [{ key: "summary_kind", value: "provider", operator: "exact", type: "event" }, NOT_INTERNAL]);
   const model = findInsight("model-family-adoption");
-  assert.deepEqual(model.query.source.properties, [{ key: "summary_kind", value: "model", operator: "exact", type: "event" }]);
+  assert.deepEqual(model.query.source.properties, [{ key: "summary_kind", value: "model", operator: "exact", type: "event" }, NOT_INTERNAL]);
 
   const budget = findInsight("analytics-sent-vs-dropped");
   assert.match(budget.description, /accepted means admitted.+not confirmed delivered/i);
@@ -172,7 +177,7 @@ test("dry run plans every object without issuing writes", async () => {
     output: { write(chunk) { output += chunk; } },
   });
 
-  assert.deepEqual(summary, { created: 42, updated: 0, unchanged: 0 });
+  assert.deepEqual(summary, { created: SPEC_OBJECTS, updated: 0, unchanged: 0 });
   assert.equal(writes.length, 0);
   assert.match(output, /would create dashboard: ADE · Growth and retention/);
   assert.match(output, /would create dashboard: ADE · Marketing acquisition/);
@@ -226,11 +231,11 @@ test("managed objects that already match are not rewritten", async () => {
   };
 
   const first = await provisionDashboards({ api, output: { write() {} } });
-  assert.deepEqual(first, { created: 42, updated: 0, unchanged: 0 });
-  assert.equal(writes.length, 42);
+  assert.deepEqual(first, { created: SPEC_OBJECTS, updated: 0, unchanged: 0 });
+  assert.equal(writes.length, SPEC_OBJECTS);
 
   writes.length = 0;
   const second = await provisionDashboards({ api, output: { write() {} } });
-  assert.deepEqual(second, { created: 0, updated: 0, unchanged: 42 });
+  assert.deepEqual(second, { created: 0, updated: 0, unchanged: SPEC_OBJECTS });
   assert.equal(writes.length, 0);
 });
