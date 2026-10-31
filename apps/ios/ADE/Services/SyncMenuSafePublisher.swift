@@ -24,7 +24,7 @@ final class SyncMenuSafePublisher: ObservableObject {
   private weak var attachedService: SyncService?
   private var subscription: AnyCancellable?
   private var heldPublish: Task<Void, Never>?
-  private static let maxHold: Duration = .seconds(10)
+  private static let maxHold: Duration = .seconds(60)
 
   /// The app's sync service (`SyncService.shared`), observed through this
   /// publisher.
@@ -51,7 +51,8 @@ final class SyncMenuSafePublisher: ObservableObject {
     }
     // One publish stands for every change made while the menu was up. Held
     // `maxHold` at most, so a menu container that lingers can never freeze
-    // the screens: they then update at that pace instead.
+    // the screens: they then update at that pace instead. Long, because the
+    // release itself rebuilds an open menu (10 s cut a reader off mid-menu).
     heldPublish = Task { @MainActor [weak self] in
       let started = ContinuousClock.now
       while Self.menuIsPresented(), ContinuousClock.now - started < Self.maxHold {
