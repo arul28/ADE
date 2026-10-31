@@ -103,10 +103,6 @@ enum ADEColor {
   /// Nothing here borrows the theme accent (violet on dark, green on light):
   /// a ramp built on it would swap hue families between appearances and land on
   /// exactly the generic violet this product avoids.
-  static let heatmapLevel1 = adaptiveColor(light: hex(0xBCCEDA), dark: hex(0x3A4E63))
-  static let heatmapLevel2 = adaptiveColor(light: hex(0x79ABA5), dark: hex(0x2F7A80))
-  static let heatmapLevel3 = adaptiveColor(light: hex(0xC96C1E), dark: hex(0xDE6039))
-  static let heatmapLevel4 = adaptiveColor(light: hex(0xB23A20), dark: hex(0xFF9A3D))
   static let ctoAccent = Color(red: 0xA7 / 255.0, green: 0x8B / 255.0, blue: 0xFA / 255.0)  // #A78BFA
 
   static let tintProject = purpleAccent

@@ -77,9 +77,9 @@ private enum WorkUsageColors {
   ]
 }
 
-/// Single source of truth for a day's activity magnitude. Both the heatmap
-/// intensity (bucket `activity`) and the has-activity predicate derive from
-/// this, so the two can never drift over which daily-point dimensions count.
+/// Single source of truth for a day's activity magnitude: the card's
+/// has-activity predicate derives from it, so it can never drift over which
+/// daily-point dimensions count.
 /// Every dimension is covered — tokens, sessions, interactions, local git
 /// commits/PRs/files/lines, and the GitHub-reported counterparts — with counts
 /// weighted heavier than raw additive line counts. Kept internal (not private)
@@ -142,15 +142,6 @@ private struct WorkUsageVisualBucket: Identifiable {
   var tokens: Int { inputTokens + outputTokens + cachedTokens + unsplitTokens }
   var code: Int { insertions + deletions }
   var githubCode: Int { githubAdditions + githubDeletions }
-  var activity: Int {
-    workUsageActivityScore(
-      tokens: tokens, sessions: sessions, interactions: interactions,
-      commits: commits, prs: prs, filesChanged: filesChanged,
-      insertions: insertions, deletions: deletions,
-      githubCommits: githubCommits, githubPrs: githubPrs,
-      githubAdditions: githubAdditions, githubDeletions: githubDeletions
-    )
-  }
 }
 
 /// Compact day detail surfaced by a tap on a bar or a skyline tower.
@@ -181,19 +172,12 @@ private let workUsageMinBarSlots = 14
 
 /// `ordered` (sorted by date) with empty days before it, up to `minimum` days.
 private func workUsagePaddedDays(_ ordered: [MobileAdeUsageDailyPoint], minimum: Int) -> [MobileAdeUsageDailyPoint] {
-  guard let first = ordered.first, ordered.count < minimum else { return ordered }
-  var calendar = Calendar(identifier: .gregorian)
-  calendar.timeZone = TimeZone(identifier: "UTC")!
-  let formatter = DateFormatter()
-  formatter.calendar = calendar
-  formatter.timeZone = calendar.timeZone
-  formatter.locale = Locale(identifier: "en_US_POSIX")
-  formatter.dateFormat = "yyyy-MM-dd"
-  guard let start = formatter.date(from: String(first.date.prefix(10))) else { return ordered }
+  guard let first = ordered.first, ordered.count < minimum,
+        let start = SkylineMath.dayNumber(first.date)
+  else { return ordered }
   let missing = minimum - ordered.count
-  let padding = (1...missing).reversed().compactMap { back -> MobileAdeUsageDailyPoint? in
-    guard let day = calendar.date(byAdding: .day, value: -back, to: start) else { return nil }
-    return MobileAdeUsageDailyPoint(date: formatter.string(from: day))
+  let padding = (1...missing).reversed().map { back in
+    MobileAdeUsageDailyPoint(date: SkylineMath.dayKey(start - back))
   }
   return padding + ordered
 }

@@ -13,6 +13,10 @@ import UIKit
 /// that while a menu is up it holds them and sends one when the menu closes.
 /// Only those screens wait: rows and panes under them that observe
 /// `SyncService` themselves stay live.
+///
+/// It always reads `SyncService.shared` (the app's one instance); an
+/// `.environmentObject(syncService)` injection does not reach a view that
+/// observes this, so a fixture with its own service must be the last created.
 @MainActor
 final class SyncMenuSafePublisher: ObservableObject {
   static let shared = SyncMenuSafePublisher()
@@ -20,6 +24,7 @@ final class SyncMenuSafePublisher: ObservableObject {
   private weak var attachedService: SyncService?
   private var subscription: AnyCancellable?
   private var heldPublish: Task<Void, Never>?
+  private static let maxHold: Duration = .seconds(10)
 
   /// The app's sync service (`SyncService.shared`), observed through this
   /// publisher.
@@ -44,9 +49,12 @@ final class SyncMenuSafePublisher: ObservableObject {
       objectWillChange.send()
       return
     }
-    // One publish stands for every change made while the menu was up.
+    // One publish stands for every change made while the menu was up. Held
+    // `maxHold` at most, so a menu container that lingers can never freeze
+    // the screens: they then update at that pace instead.
     heldPublish = Task { @MainActor [weak self] in
-      while Self.menuIsPresented() {
+      let started = ContinuousClock.now
+      while Self.menuIsPresented(), ContinuousClock.now - started < Self.maxHold {
         try? await Task.sleep(for: .milliseconds(150))
       }
       guard let self else { return }

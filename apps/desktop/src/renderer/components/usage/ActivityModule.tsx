@@ -36,6 +36,7 @@ import {
 } from "./ActivityHeatmap";
 import { USAGE_OVERLAY_CLASS } from "./usageDesign";
 import ContributionSkyline, { ContributionSkylineToggle, type ContributionDay } from "../ui/ContributionSkyline";
+import { DAY_MS, dayMs, toKey } from "../ui/contributionSkylineModel";
 import "./usageSurfaces.css";
 import { fgTint } from "../lanes/laneDesignTokens";
 
@@ -139,16 +140,16 @@ function skylineDays(daily: readonly AdeUsageDailyPoint[]): ContributionDay[] {
 }
 
 /**
- * Weeks the card's skyline spans: back to a week before the first active day,
- * 20 weeks at least (the card is wide) and a year at most. A short history no
- * longer sits as a few towers at the far end of an empty year.
+ * Weeks the card's skyline spans: from a week before the first active day to
+ * where the street ends (today, or a later reported day), 20 weeks at least
+ * (the card is wide) and a year at most. A short history no longer sits as a
+ * few towers at the far end of an empty year.
  */
 function skylineWeeks(days: readonly ContributionDay[]): number {
-  const active = days.filter((day) => day.count > 0).map((day) => day.date).sort();
-  const first = active[0];
-  const last = active.at(-1);
-  if (!first || !last) return 53;
-  const span = Math.floor((Date.parse(last) - Date.parse(first)) / 86400000 / 7) + 2;
+  const active = days.filter((day) => day.count > 0).map((day) => dayMs(day.date));
+  if (active.length === 0) return 53;
+  const end = Math.max(dayMs(new Date()), ...days.map((day) => dayMs(day.date)));
+  const span = Math.floor((end - Math.min(...active)) / DAY_MS / 7) + 2;
   return Math.max(20, Math.min(53, span));
 }
 
@@ -292,7 +293,6 @@ function DayTooltip({
 // Chart primitives
 // ---------------------------------------------------------------------------
 
-/** Downsamples a daily series so wide ranges stay legible as fixed-count bars. */
 /**
  * Fewest day slots a bar chart draws. A short history (a new install, the
  * Today or 7d range) padded out to two weeks reads as a timeline with a few
@@ -302,10 +302,8 @@ const MIN_BAR_SLOTS = 14;
 
 /** An empty day, `daysBefore` days before `date` (YYYY-MM-DD). */
 function emptyDayBefore(date: string, daysBefore: number): AdeUsageDailyPoint {
-  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(date);
-  const ms = match ? Date.UTC(+match[1]!, +match[2]! - 1, +match[3]! - daysBefore) : 0;
   return {
-    date: new Date(ms).toISOString().slice(0, 10),
+    date: toKey(dayMs(date) - daysBefore * DAY_MS),
     inputTokens: 0,
     outputTokens: 0,
     totalTokens: 0,
@@ -318,6 +316,7 @@ function emptyDayBefore(date: string, daysBefore: number): AdeUsageDailyPoint {
   };
 }
 
+/** Downsamples a daily series so wide ranges stay legible as fixed-count bars. */
 function useChartPoints(points: AdeUsageDailyPoint[], maxBars: number): AdeUsageDailyPoint[] {
   return useMemo(() => {
     const source = [...points].sort((a, b) => a.date.localeCompare(b.date));

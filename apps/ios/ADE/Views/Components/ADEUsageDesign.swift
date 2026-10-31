@@ -78,50 +78,9 @@ enum ADEUsageChartStyle {
   static var otherColor: Color { ADEColor.textMuted }
 }
 
-// MARK: - Activity heatmap
+// MARK: - Day keys
 
-/// The heatmap's five-step scale, shared with desktop (`activityIntensity.ts`
-/// for the buckets, `HEATMAP_RAMP` in `ActivityHeatmap.tsx` for the colours) so
-/// a busy Tuesday looks the same on both products.
-enum ADEUsageHeatmap {
-  /// 0 = no activity; 1–4 = quartile of the non-zero distribution.
-  ///
-  /// A linear value/max ramp is useless here: one 35.9B-token session is
-  /// entirely normal, and that single outlier pushes every other day onto the
-  /// floor tone. Quartiles are computed over the NON-ZERO days only, so empty
-  /// days never dilute the distribution, and the busiest day always lands at
-  /// level 4 even when the range is flat or carries a single spike.
-  static func levels(_ scores: [Int]) -> [Int] {
-    let active = scores.filter { $0 > 0 }.sorted()
-    guard let maximum = active.last else { return scores.map { _ in 0 } }
-
-    func percentile(_ fraction: Double) -> Int {
-      let rank = Int(ceil(fraction * Double(active.count))) - 1
-      return active[min(active.count - 1, max(0, rank))]
-    }
-    let thresholds = [percentile(0.25), percentile(0.5), percentile(0.75)]
-
-    return scores.map { score in
-      guard score > 0 else { return 0 }
-      if score >= maximum { return 4 }
-      var level = 1
-      for threshold in thresholds where score > threshold { level += 1 }
-      return min(4, level)
-    }
-  }
-
-  /// Fill for a level. Level 0 is structure, not damage — a visible tile rather
-  /// than a hole in the card.
-  static func fill(level: Int) -> Color {
-    switch level {
-    case 1: return ADEColor.heatmapLevel1
-    case 2: return ADEColor.heatmapLevel2
-    case 3: return ADEColor.heatmapLevel3
-    case let value where value >= 4: return ADEColor.heatmapLevel4
-    default: return ADEColor.textMuted.opacity(0.14)
-    }
-  }
-
+enum ADEUsageDay {
   /// Local calendar day as `yyyy-MM-dd`, matching the daily-point key format,
   /// so today's cell can be anchored without re-parsing every key.
   static func localDayKey(_ now: Date = Date()) -> String {

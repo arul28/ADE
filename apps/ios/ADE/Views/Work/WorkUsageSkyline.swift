@@ -86,6 +86,7 @@ struct WorkUsageSkyline: View, Equatable {
   @Environment(\.colorScheme) private var colorScheme
   @Environment(\.colorSchemeContrast) private var contrast
   @State private var size: CGSize = .zero
+  @State private var today = ADEUsageDay.localDayKey()
   @State private var layout: WorkUsageSkylineLayout?
   @State private var rise: Double = 0
   @State private var hasRisen = false
@@ -109,9 +110,18 @@ struct WorkUsageSkyline: View, Equatable {
     .frame(maxWidth: .infinity, maxHeight: .infinity)
     .onGeometryChange(for: CGSize.self) { $0.size } action: { size = $0 }
     .onChange(
-      of: WorkUsageSkylineInput(points: points, width: Int(size.width.rounded()), height: Int(size.height.rounded())),
+      of: WorkUsageSkylineInput(
+        points: points,
+        width: Int(size.width.rounded()),
+        height: Int(size.height.rounded()),
+        today: today
+      ),
       initial: true
     ) { _, input in rebuild(input) }
+    // The street ends today: a card left open past midnight moves on a day.
+    .onReceive(NotificationCenter.default.publisher(for: UIApplication.significantTimeChangeNotification)) { _ in
+      today = ADEUsageDay.localDayKey()
+    }
     .contentShape(Rectangle())
     .onTapGesture(coordinateSpace: .local) { location in
       guard let layout else { return }
@@ -154,7 +164,7 @@ struct WorkUsageSkyline: View, Equatable {
       points: input.points,
       width: Double(input.width),
       height: Double(input.height),
-      today: ADEUsageHeatmap.localDayKey()
+      today: input.today
     )
     layout = next
     // One rise per appearance, the first time there is something to draw.
@@ -174,6 +184,7 @@ private struct WorkUsageSkylineInput: Equatable {
   var points: [MobileAdeUsageDailyPoint]
   var width: Int
   var height: Int
+  var today: String
 }
 
 /// The drawing half. `rise` is the morph's linear time (0 flat, 1 risen);
@@ -210,7 +221,7 @@ private struct WorkUsageSkylineCanvas: View, Animatable {
 
 // MARK: - Maths (contributionSkylineModel.ts)
 
-private enum SkylineMath {
+enum SkylineMath {
   static let elev3D = 34.0 * .pi / 180
   static let yawMax = 82.0 * .pi / 180
   /// Share of the morph each bar spends waiting: the wave sweeps oldest week → newest.
@@ -274,6 +285,12 @@ private enum SkylineMath {
     let doy = (153 * mp + 2) / 5 + day - 1
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy
     return era * 146_097 + doe - 719_468
+  }
+
+  /// `yyyy-MM-dd` for a day number.
+  static func dayKey(_ dayNumber: Int) -> String {
+    let date = civil(dayNumber)
+    return String(format: "%04d-%02d-%02d", date.year, date.month, date.day)
   }
 
   static func civil(_ dayNumber: Int) -> (year: Int, month: Int, day: Int) {
@@ -401,7 +418,7 @@ struct WorkUsageSkylineLayout {
     for offset in 0..<cellCount {
       let number = start + offset
       let civil = SkylineMath.civil(number)
-      let key = String(format: "%04d-%02d-%02d", civil.year, civil.month, civil.day)
+      let key = SkylineMath.dayKey(number)
       let entry = byDay[number]
       indexByDate[key] = offset
       days.append(WorkUsageSkylineDay(date: key, count: entry?.count ?? 0, detail: entry?.detail))
