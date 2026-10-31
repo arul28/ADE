@@ -143,9 +143,12 @@ struct WorkChatAccountNote: View {
         Self.cache[key] = next
         registry = (key, next)
       } catch is CancellationError {
+      } catch let decodeError as DecodingError {
+        // The host and the phone disagree on the account list's shape: a bug.
+        CrashReporting.capture(decodeError, context: ["area": "chat.account_list"])
       } catch {
-        // The row is decoration on a working chat: a failed read leaves the
-        // last answer (or nothing) on screen, and a breadcrumb behind.
+        // Offline, refused or an older host: the row is decoration on a
+        // working chat, so the last answer (or nothing) stays on screen.
         CrashReporting.breadcrumb("chat.account", message: "account read failed", data: ["error": error.localizedDescription])
       }
     }

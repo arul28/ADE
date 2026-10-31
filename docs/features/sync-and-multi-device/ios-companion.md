@@ -164,6 +164,25 @@ personal chat, `chatActionName` maps Cancel and Pause/Resume to the matching
 runtime-scoped `personalChats.*` descriptors, so the same UI works without a
 project binding.
 
+Chat Info ends with the chat's account row (`WorkChatAccountNote`), pinned
+below the sections like desktop's drawer footer: the provider logo and the
+email of the Claude or Codex account the chat is bound to (its `instanceId`,
+resolved against `providerAccounts.list` on the chat's own machine, which is a
+roster connection for a chat on another machine; a chat whose machine has no
+connection shows no row). A chat on a saved key or custom provider reads "API
+key" or "Custom provider". When the host lets this device call
+`chat.switchAccount` (controller-allowed: the owner's phone, not other peers)
+and another signed-in account exists, the row opens "Run this chat on" with
+each account's room left, and picking one moves the chat. It waits while a
+turn runs, and a same-machine quick look at another project's chat stays
+read-only until it activates. For a chat on another machine,
+`canInvokeChatRemoteAction` reads that host's phone policy, not only whether
+the command is advertised.
+
+Chat Info sections follow desktop's drawer: each header carries the section's
+icon and tone, and a section with only finished rows folds to its header line
+("Subagents · 2 done"), which opens the finished list.
+
 The Settings machine card mirrors this state through
 `SettingsConnectionHeader`: connected limited hosts show a compact "Machine
 update recommended" warning while staying connected, so users can still browse
@@ -675,6 +694,8 @@ apps/ios/
 │   │   │                            #   searchable lane list; reports its
 │   │   │                            #   presentation state so a caller can
 │   │   │                            #   park and restore composer focus),
+│   │   │                            # WorkChatAccountNote (Chat Info's
+│   │   │                            #   account row and switch menu),
 │   │   │                            # WorkChatRichCardViews (de-glassed,
 │   │   │                            #   centered compact tool-call /
 │   │   │                            #   file-change summary rows that expand

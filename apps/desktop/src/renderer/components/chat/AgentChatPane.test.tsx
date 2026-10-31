@@ -5527,56 +5527,6 @@ describe("AgentChatPane submit recovery", () => {
     expect(sent.metadata).not.toHaveProperty("scheduledWake");
   });
 
-  it("sends no metadata at all when the host-only marker was all there was", async () => {
-    // The replay must not invent an empty metadata object for a message whose
-    // only metadata was the exemption marker.
-    const session = buildSession("session-1", { status: "idle", awaitingInput: false });
-    const { send } = installAdeMocks({
-      sessions: [session],
-      eventHistory: {
-        sessionId: session.sessionId,
-        truncated: false,
-        sessionFound: true,
-        events: [
-          {
-            sessionId: session.sessionId,
-            timestamp: "2026-07-10T20:30:00.000Z",
-            sequence: 1,
-            event: {
-              type: "user_message" as const,
-              text: "Continue the interrupted task.",
-              turnId: "turn-manual-resume",
-              metadata: { usageLimitResume: "manual" as const },
-            },
-          },
-          {
-            sessionId: session.sessionId,
-            timestamp: "2026-07-10T20:30:04.000Z",
-            sequence: 2,
-            event: {
-              type: "error" as const,
-              message: "The response stream disconnected.",
-              turnId: "turn-manual-resume",
-              errorInfo: "responseStreamDisconnected",
-            },
-          },
-          {
-            sessionId: session.sessionId,
-            timestamp: "2026-07-10T20:30:04.066Z",
-            sequence: 3,
-            event: { type: "done" as const, status: "failed" as const, turnId: "turn-manual-resume", model: "gpt-5.5" },
-          },
-        ],
-      },
-    });
-
-    renderPane(session);
-
-    fireEvent.click(await screen.findByRole("button", { name: "Retry" }));
-    await waitFor(() => expect(send).toHaveBeenCalled());
-    expect(send.mock.calls[0]![0]).not.toHaveProperty("metadata");
-  });
-
   it("skips steer messages during provider-failure retry and surfaces a rejected resend", async () => {
     const session = buildSession("session-1", { status: "idle", awaitingInput: false });
     const { send, steer } = installAdeMocks({

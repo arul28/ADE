@@ -6595,6 +6595,8 @@ describe("CTO-gated Linear sync commands", () => {
         "macDesktop.input",
         "workTools.closeBrowserTab",
         "chat.mcpAppRequest",
+        // The phone's Chat Info account row moves a chat to another account.
+        "chat.switchAccount",
       ]);
 
       // Provider-account changes, and a running sign-in's status, are for a
