@@ -1206,9 +1206,9 @@ Controls and summaries project this runtime state rather than owning it:
   provider-aware cancellation path. The equivalent generic actions are
   `chat.createScheduledWork`, `chat.listScheduledWork`, and
   `chat.cancelScheduledWork`; pause/resume is
-  `ade chat schedules <session> --pause|--resume` or
-  `chat.setScheduledWorkPaused`; omitting the flag reads the same pause/next-wake
-  state through `chat.getScheduledWorkState`. In an ADE-launched chat or tracked provider CLI,
+  `ade chat scheduled-work pause|resume <session>` or
+  `chat.setScheduledWorkPaused`; `ade chat scheduled-work status <session>` reads
+  the same pause/next-wake state through `chat.getScheduledWorkState`. In an ADE-launched chat or tracked provider CLI,
   create/list/cancel default an omitted `sessionId` to `ADE_CHAT_SESSION_ID`;
   the daemon rejects a bound agent that names another session and rejects an
   external caller with no bound session. An ended tracked CLI remains a valid

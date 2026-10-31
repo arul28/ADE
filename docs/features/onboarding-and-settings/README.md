@@ -103,9 +103,13 @@ Main process:
   `machines/machineSeams.tsx` — System → Machines: every machine on one page,
   and a page per machine (`?machine=<id>`) that lists what Settings knows or
   can change about it, each row acting through that machine's pin or saying
-  where it is changed. `machineSeams.tsx` holds typed, empty slots for the
-  personal-mesh work (capabilities, work preference, work copies) that render
-  nothing until a real source feeds them.
+  where it is changed. `machines/MachineWorkCopies.tsx` is its "Work from
+  other machines" group: the work copies this machine keeps for chats
+  elsewhere, read with `remote_work.list` and deleted with
+  `remote_work.delete` (see `docs/features/sync-and-multi-device/cross-machine-agents.md`).
+  `machineSeams.tsx` holds typed, empty slots for the rest of the
+  personal-mesh work (capabilities, work preference) that render nothing
+  until a real source feeds them.
 - `apps/desktop/src/renderer/components/settings/ContinueAfterRestartSection.tsx`
   — Settings › Chat › Restarts: **Continue chats after restarts**, one value
   per machine (`~/.ade/continue-after-restart.json`, read by that machine's

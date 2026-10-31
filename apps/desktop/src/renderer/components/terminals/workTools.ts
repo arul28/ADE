@@ -288,6 +288,12 @@ export type WorkToolContext = {
    * chat tool exists only for that chat, and only while it has one.
    */
   hasSideChat?: boolean;
+  /**
+   * The chat drives a simulator on another machine through its work copy
+   * (`ade apple … --machine`). The iOS tool then shows that simulator, so it
+   * stays even on a host that cannot run one.
+   */
+  hasRemoteSimulator?: boolean;
 };
 
 export type WorkToolAvailability =
@@ -374,6 +380,7 @@ export function workToolAvailability(
     return { available: false, reason: reason || "This lane's host isn't a Mac" };
   }
   if (isReadOnlyWorkTool(id, context)) return AVAILABLE;
+  if (id === "ios" && context.hasRemoteSimulator) return AVAILABLE;
   // The HOST's platform, not this one. The reason says so, because "macOS only"
   // on a Mac desktop watching a Linux runtime reads as a bug in ADE — and "not
   // a Mac" on a Mac without simulators is just as wrong.
@@ -406,7 +413,7 @@ export function isHostMismatchWorkTool(id: WorkSidebarTab, context: WorkToolCont
   if (id === "windows-desktop") return platform !== "win32";
   // A Linux host's lane screen is the Mac Desktop pane, named for Linux.
   if (id === "mac-desktop") return platform !== "darwin" && platform !== "linux";
-  if (id === "ios") return platform !== "darwin";
+  if (id === "ios") return platform !== "darwin" && context.hasRemoteSimulator !== true;
   return false;
 }
 

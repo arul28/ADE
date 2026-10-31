@@ -717,7 +717,7 @@ gh pr create --base "$SHIP_BASE_BRANCH" --head "$CURRENT_BRANCH" --fill
 PR_NUMBER=$(gh pr view --json number -q .number)
 ```
 
-Record in the state file which path was used (`prCreatedVia: "ade" | "gh"`). If the `gh` path fired, mention it in the final summary so the user can run `ade prs inventory <PR_NUMBER>` to reconcile.
+Record in the state file which path was used (`prCreatedVia: "ade" | "gh"`). If the `gh` path fired, mention it in the final summary so the user can run `ade prs link --lane <lane> --number <PR_NUMBER>` to point the lane at it.
 
 ### 0.4 Post initial bot pings
 

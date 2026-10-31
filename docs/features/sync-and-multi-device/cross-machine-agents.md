@@ -73,6 +73,114 @@ shows them. A machine older than it answers "isn't available", reported as
 "no answer". Through ADE MCP the CLI does not look anywhere else; ADE MCP
 finds the computer and forwards the call itself (docs/features/ade-mcp).
 
+## Running a command in a work copy there
+
+`ade shell start --machine <name> [--wait] -- <command>` runs one command on
+another machine for this chat, without a lane or a chat there. The other
+machine keeps a **work copy** for the chat
+(`apps/desktop/src/main/services/remoteWork/remoteWorkCopyService.ts`): a plain
+git worktree under `<project>/.ade/remote-work/`, detached at the chat's commit,
+with the chat's uncommitted changes applied as one binary patch. It is created
+on the first command; nothing is installed in advance, and ignored files
+(installed deps, build output) survive between runs.
+
+- **Git moves code.** The CLI (`cliRemoteWork.ts`, `readLocalWorkSource`)
+  sends the commit, the remote branch that holds it, and the patch as bytes
+  (base64, 16 MiB at most), made with fixed diff options so the user's diff
+  settings cannot break it. A commit that is not on origin is refused here:
+  "Push it first". `--no-sync` and `--discard` are read only for a shell start
+  or an Apple build with `--machine` and no `--lane`.
+- **Never lose work there.** Before a sync the copy is compared with what the
+  last sync wrote and with its checked-out commit. Unpushed commits, or files
+  changed there and not committed, refuse the sync and name the files.
+  `--no-sync` runs in the copy as it is (to commit and push from there);
+  `--discard` resets anyway.
+- **One command at a time.** A copy is busy from its sync until the command
+  it was readied for has started (an Apple build: until the call returns), and
+  while a shell runs in it. A synced command is refused while it is busy;
+  `--no-sync` runs beside it. Another chat on the machine cannot read, type
+  into or stop such a shell, and lane-wide terminal lists leave it out.
+- **Limits.** Submodules are not initialised in a copy. Untracked files that
+  are not ignored travel in the patch, so a large one must be committed or
+  ignored. The copy follows the chat's commit, not a branch: commit and push
+  from there with `git push origin HEAD:<branch>`.
+- **The run.** The command runs once in that machine's shell, started clean
+  and not interactive (`remoteRunOnceShellLaunch` in `ptyService.ts`: the
+  saved terminal shell or Automatic, `-c` on macOS and Linux; on Windows
+  PowerShell with `-EncodedCommand` and this run's execution policy bypassed,
+  or Git Bash when that is the saved shell, never cmd.exe). The CLI sends the
+  command's argv (what follows `--`), and the receiving machine renders it for
+  its shell, leading `NAME=value` words included; a `-c "<line>"` command goes
+  to the shell as written. The shell ends with the command's exit code. `--wait` streams the output
+  and exits with that code. The shell is owned by the caller's foreign id, so
+  only that chat reads, writes or stops it (`ade terminal … --machine`).
+- **Cleanup.** `ade shell clean --machine <name>`; a week unused; the source
+  chat deleted or archived on its own machine; a low disk deletes other idle
+  copies, oldest first, before a new copy is refused. The brain sweeps every
+  project in `<ADE_HOME>/remote-work/projects.json` a minute after it starts
+  and then hourly (`sweepMachineRemoteWork`), asking the chat's machine with
+  `chats.locate` (which says `archived` when the project is running there);
+  silence never deletes. The week-unused, low-disk and archived-chat cleanups
+  keep a copy that holds work nobody pushed (an archived chat can come back);
+  a deleted chat's copy goes with it. A copy in use is never deleted. An unreadable
+  `copies.json` stops every change rather than being read as empty.
+- **The simulator.** `ade apple … --machine <name>` with no `--lane` uses the
+  work copy as its lane there: the lane id is `remote-work-<hash>`
+  (`remoteWorkLaneIdFor`), its build root is the copy, and the device registry
+  treats it as live while the copy exists. Its first device is one of the
+  user's own simulators on that machine that no lane holds (shut-down ones
+  first; never an ADE device, which a lane's end would delete), attached so
+  ADE never deletes it; only when none is free does ADE make one. `launch`, `installApp` and `runTests`
+  sync the copy first; other verbs use it as it is. When the copy goes, the
+  cleanup pass gives the device back.
+- **Where it shows.** The chat's own brain records each shell and each
+  simulator call as it forwards it (`noteRemoteWork`, in memory only, so a
+  restart of that brain forgets it). The other machine returns its work
+  copy's lane id with each answer (`workCopy.laneId`); an older machine does
+  not, and then only the shells show. The chat header and session card show
+  that machine's logo while the current turn uses it, with the commands and
+  Stop. The terminal tool adds those commands, each with the machine's logo,
+  read and stopped through that machine's pin. The iOS tool offers
+  "Simulator · <machine>" beside "This lane" and stays visible on a host that
+  cannot run a simulator; it never starts a device there, and says so when
+  there is none. Settings › Machines reads `remote_work.list` (every project on that
+  machine, from `<ADE_HOME>/remote-work/projects.json`) and deletes with
+  `remote_work.delete` (desktop only).
+
+## Choosing a machine for new work
+
+All your machines act as one pool, but nothing moves by itself: "Least loaded"
+picks a machine only when a person (or an agent offering a choice the person
+approves) starts new work. Running work stays where it is.
+
+- **Each machine reads itself.** `machine_stats.get` (domain `machine_stats`,
+  read, open to agents; `main/services/machineStats/machineStatsService.ts`)
+  answers from that machine's own brain through its pin: whole-host CPU over a
+  200 ms sample (`os.cpus()` deltas, the same on Windows), memory available
+  (`vm_stat` on a Mac, where `os.freemem()` counts only free pages), disk,
+  build tools running (`ps` / `tasklist`), battery and keep-awake, and in the
+  background at most every 3 minutes: the CLIs signed in there (yes or no from
+  their config files, never a token), Xcode and simulators, the OS name and
+  the work copies it keeps. One reader per brain, answers cached 5 s; nothing
+  runs unless someone asks. Preload: `window.ade.machineStats.get(pin)`; CLI:
+  `ade actions run machine_stats.get [--machine <name>]`.
+- **Each machine has a preference.** Prefer, Normal, Less often or Manual only,
+  set on its page in Settings › Machines. It lives in the account settings
+  store (scope `all`, key `machine.placement.<machineKey>`, one key per machine
+  so two devices never overwrite each other), with this computer's
+  localStorage first so a signed-out machine or an SSH target (no account key)
+  keeps its own. No setting reads as Normal.
+- **"Least loaded"** (`autoLaneMachine` in `renderer/components/lanes/laneMachines.ts`)
+  scores each machine's headroom from its stats (idle CPU, free memory, a
+  little for more cores, less per running build, much less on battery or for
+  a laptop ADE does not keep awake), scales it by the preference (×1.5, ×1,
+  ×0.5) and picks the best; low disk still loses first, and close scores fall
+  back to running lanes and then the machine the tab is on. A machine with no
+  stats counts as moderately busy. **Manual only is never picked
+  automatically**, with or without stats. The new-lane machine menu, the
+  batch launch and the new-chat machine picker offer it; they read stats only
+  while open, and only when two or more machines can host the repo.
+
 ## Moving a chat to another machine
 
 `ade chat handoff <session> --machine <name>` moves a chat FROM this machine TO

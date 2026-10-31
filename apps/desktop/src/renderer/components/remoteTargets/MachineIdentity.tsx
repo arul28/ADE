@@ -1,6 +1,6 @@
 import "./machines.css";
 import { useState, useSyncExternalStore, type CSSProperties } from "react";
-import { AppleLogo as PhosphorAppleLogo, LinuxLogo, WindowsLogo } from "@phosphor-icons/react";
+import { AppleLogo as PhosphorAppleLogo, Desktop, LinuxLogo, WindowsLogo } from "@phosphor-icons/react";
 import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
 
 /**
@@ -129,12 +129,28 @@ function tint(color: string, alpha: number): string {
   return `color-mix(in srgb, ${color} ${Math.round(alpha * 100)}%, transparent)`;
 }
 
-function PlatformLogo({ platform, size }: { platform: MachinePlatform; size: number }) {
-  const props = { size, weight: "fill" as const };
-  if (platform === "mac") return <PhosphorAppleLogo {...props} />;
-  if (platform === "windows") return <WindowsLogo {...props} />;
-  if (platform === "linux") return <LinuxLogo {...props} />;
-  return null;
+/**
+ * A machine's platform logo. `platform` is a `MachinePlatform` or any raw hint
+ * `machinePlatform` reads ("darwin", "win32-x64"…). An unknown platform draws
+ * `fallback` (a plain desktop when `true`), else nothing.
+ */
+export function MachinePlatformLogo({
+  platform,
+  size,
+  weight = "fill",
+  fallback = false,
+}: {
+  platform: string | null | undefined;
+  size: number;
+  weight?: "fill" | "bold";
+  fallback?: boolean;
+}) {
+  const props = { size, weight };
+  const kind = machinePlatform(platform);
+  if (kind === "mac") return <PhosphorAppleLogo {...props} />;
+  if (kind === "windows") return <WindowsLogo {...props} />;
+  if (kind === "linux") return <LinuxLogo {...props} />;
+  return fallback ? <Desktop {...props} /> : null;
 }
 
 /**
@@ -190,7 +206,7 @@ function DeviceGlyph({ platform, formFactor, size }: { platform: MachinePlatform
             placeItems: "center",
           }}
         >
-          <PlatformLogo platform={platform} size={logoSize} />
+          <MachinePlatformLogo platform={platform} size={logoSize} />
         </span>
       ) : null}
     </span>

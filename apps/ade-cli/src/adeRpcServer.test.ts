@@ -1273,13 +1273,23 @@ describe("adeRpcServer", () => {
       ownerPid: 54_321,
       chatSessionId: null,
     };
+    // A shell a chat on another machine started here: in the caller's lane, but that chat's alone.
+    const foreign = {
+      id: "foreign-session",
+      laneId: "lane-1",
+      ptyId: "pty-foreign",
+      status: "running",
+      ownerPid: 54_322,
+      chatSessionId: "remote:mac-mini:chat-9",
+    };
     runtime.sessionService.get.mockImplementation((sessionId: string) => {
       if (sessionId === owned.id) return owned;
       if (sessionId === peer.id) return peer;
+      if (sessionId === foreign.id) return foreign;
       return null;
     });
     runtime.ptyService.list.mockImplementation((args: { laneId?: string } = {}) =>
-      [owned, peer].filter((session) => !args.laneId || session.laneId === args.laneId));
+      [owned, peer, foreign].filter((session) => !args.laneId || session.laneId === args.laneId));
     await initialize(handler, { role: "agent", chatSessionId: owned.id });
 
     await expect(handler({
@@ -1336,6 +1346,13 @@ describe("adeRpcServer", () => {
       id: 9,
       method: "pty.dispose",
       params: { args: { ptyId: peer.ptyId, sessionId: owned.id } },
+    })).rejects.toMatchObject({ code: JsonRpcErrorCode.policyDenied });
+
+    await expect(handler({
+      jsonrpc: "2.0",
+      id: 10,
+      method: "pty.write",
+      params: { args: { ptyId: foreign.ptyId, data: "x" } },
     })).rejects.toMatchObject({ code: JsonRpcErrorCode.policyDenied });
 
     expect(runtime.ptyService.create).not.toHaveBeenCalled();

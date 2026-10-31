@@ -1,8 +1,12 @@
-import React, { memo, useCallback, useEffect, useRef, useState } from "react";
+import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Terminal as TerminalIcon, Eraser, Plus, Power, Rows, X } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
 import type { AppControlSession, ChatTerminalSession, OpenProjectBinding, PtyExitEvent } from "../../../shared/types";
 import { clearTerminalRuntimeScrollback, TerminalView } from "../terminals/TerminalView";
+import type { AgentChatRemoteWorkUse } from "../../../shared/types/chat";
+import { listRemoteWorkShells, useRemoteWorkPinResolver } from "../../lib/remoteWorkPins";
+import { remoteWorkUseKey } from "../../../shared/chatRemoteWork";
+import { MachinePlatformLogo } from "../remoteTargets/MachineIdentity";
 import {
   WORK_TOOL_CHROME_ROW,
   WORK_TOOL_PRIMARY_BUTTON,
@@ -81,6 +85,12 @@ type ChatTerminalDrawerProps = {
   createRequestNonce?: number;
   disposeTabsOnUnmount?: boolean;
   onCreateError?: (message: string) => void;
+  /**
+   * Machines this chat runs commands on (`ade shell start --machine`). Their
+   * shells join the strip, labelled with the machine, and are read, drawn
+   * and stopped through that machine's own pin.
+   */
+  remoteWork?: AgentChatRemoteWorkUse[] | null;
   revealRequest?: {
     terminalId: string;
     ptyId: string;
@@ -95,6 +105,8 @@ type TabEntry = {
   sessionId: string;
   label: string;
   exited: boolean;
+  /** A shell on another machine: its pin (the drawer's own pin otherwise) and machine. */
+  remote?: { pin: OpenProjectBinding; useKey: string; machineName: string; platform: string | null };
 };
 
 type DrawerUiState = {
@@ -165,6 +177,7 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
   createRequestNonce = 0,
   disposeTabsOnUnmount = false,
   onCreateError,
+  remoteWork = null,
   revealRequest,
 }: ChatTerminalDrawerProps) {
   const pin = runtimePin ?? null;
@@ -457,6 +470,7 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
   useEffect(() => () => {
     if (!disposeTabsOnUnmount) return;
     for (const tab of tabsRef.current) {
+      if (tab.remote) continue; // Another machine's command is not this drawer's to end.
       window.ade.pty.dispose({ ptyId: tab.ptyId, sessionId: tab.sessionId }, pin).catch(() => {});
     }
   }, [disposeTabsOnUnmount, pin]);
@@ -517,10 +531,67 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
     };
   }, [laneId, open, pin]);
 
+  // Shells this chat runs on other machines, read through each machine's pin.
+  const resolveRemotePin = useRemoteWorkPinResolver(open && Boolean(remoteWork?.length));
+  const remoteTargets = useMemo(() => (remoteWork ?? []).flatMap((use) => {
+    const remotePin = resolveRemotePin(use);
+    return remotePin === "unreachable" || use.terminalIds.length === 0 ? [] : [{ use, pin: remotePin }];
+  }), [remoteWork, resolveRemotePin]);
+  const remoteTargetsKey = remoteTargets.map(({ use, pin: remotePin }) => `${remotePin.key}|${use.terminalIds.join(",")}`).join(";");
+  const remoteTargetsRef = useRef(remoteTargets);
+  remoteTargetsRef.current = remoteTargets;
+  useEffect(() => {
+    if (!open) return undefined;
+    if (!remoteTargetsKey) {
+      // No machine to reach any more (disconnected, or the work is gone): drop its tabs.
+      setTabs((prev) => (prev.some((tab) => tab.remote) ? prev.filter((tab) => !tab.remote) : prev));
+      return undefined;
+    }
+    let cancelled = false;
+    void Promise.all(remoteTargetsRef.current.map(async ({ use, pin: remotePin }) => {
+      let rows: ChatTerminalSession[];
+      try {
+        rows = await listRemoteWorkShells(use, remotePin);
+      } catch (error) {
+        // A failed read keeps what the strip already shows for that machine.
+        console.warn(`[remote-work] could not list the shells on ${use.machineName}`, error);
+        return { useKey: remoteWorkUseKey(use), tabs: null };
+      }
+      return { useKey: remoteWorkUseKey(use), tabs: rows.filter((row) => row.ptyId).map((row): TabEntry => ({
+        id: `remote-term-${remoteWorkUseKey(use)}-${row.terminalId}`,
+        ptyId: row.ptyId!,
+        sessionId: row.terminalId,
+        label: row.title || "Command",
+        exited: row.status !== "running",
+        remote: { pin: remotePin, useKey: remoteWorkUseKey(use), machineName: use.machineName, platform: use.machinePlatform ?? null },
+      })) };
+    })).then((lists) => {
+      if (cancelled) return;
+      setTabs((prev) => {
+        const local = prev.filter((tab) => !tab.remote);
+        // Running commands first (per machine), so the strip opens on one that is working.
+        const remoteTabs = lists.flatMap(({ useKey, tabs: loaded }) =>
+          loaded ?? prev.filter((tab) => tab.remote?.useKey === useKey));
+        return [...local, ...remoteTabs];
+      });
+    });
+    return () => { cancelled = true; };
+  }, [open, remoteTargetsKey]);
+  // A remote shell's exit arrives on its own machine's pump.
+  useEffect(() => {
+    const ptyBridge = window.ade?.pty;
+    if (!ptyBridge?.onExit || !remoteTargetsKey) return undefined;
+    const pins = new Map(remoteTargetsRef.current.map(({ pin: remotePin }) => [remotePin.key, remotePin]));
+    const unsubscribers = [...pins.values()].map((remotePin) => ptyBridge.onExit((ev: PtyExitEvent) => {
+      setTabs((prev) => prev.map((tab) => (tab.remote && tab.ptyId === ev.ptyId ? { ...tab, exited: true } : tab)));
+    }, remotePin));
+    return () => { for (const unsubscribe of unsubscribers) unsubscribe?.(); };
+  }, [remoteTargetsKey]);
+
   const closeTab = useCallback((tabId: string) => {
     const entry = tabsRef.current.find((tab) => tab.id === tabId);
     if (entry) {
-      window.ade.pty.dispose({ ptyId: entry.ptyId, sessionId: entry.sessionId }, pin).catch(() => {});
+      window.ade.pty.dispose({ ptyId: entry.ptyId, sessionId: entry.sessionId }, entry.remote?.pin ?? pin).catch(() => {});
     }
 
     setSplitTabId((current) => (current === tabId ? null : current));
@@ -604,14 +675,20 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
               ? "bg-fg/[0.04] text-fg/75"
               : "text-muted-fg hover:bg-fg/[0.05] hover:text-fg/85",
         )}
-        title={appControlTone ? appControlTabState?.title : undefined}
+        title={tab.remote ? `${tab.label} · on ${tab.remote.machineName}` : appControlTone ? appControlTabState?.title : undefined}
       >
-        <TerminalIcon
-          size={12}
-          weight="regular"
-          aria-hidden
-          className={cn("shrink-0", tabIconColorClass(tab.exited, appControlTone))}
-        />
+        {tab.remote ? (
+          <span aria-hidden className={cn("inline-flex shrink-0", tabIconColorClass(tab.exited, null))}>
+            <MachinePlatformLogo platform={tab.remote.platform} size={12} weight="bold" fallback />
+          </span>
+        ) : (
+          <TerminalIcon
+            size={12}
+            weight="regular"
+            aria-hidden
+            className={cn("shrink-0", tabIconColorClass(tab.exited, appControlTone))}
+          />
+        )}
         <button
           type="button"
           onClick={() => setActiveTabId(tab.id)}
@@ -709,7 +786,7 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
               <TerminalView
                 ptyId={activeTab.ptyId}
                 sessionId={activeTab.sessionId}
-                runtimePin={pin}
+                runtimePin={activeTab.remote?.pin ?? pin}
                 isActive
                 isVisible
                 className="h-full w-full"
@@ -720,7 +797,7 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
                 <TerminalView
                   ptyId={splitTab.ptyId}
                   sessionId={splitTab.sessionId}
-                  runtimePin={pin}
+                  runtimePin={splitTab.remote?.pin ?? pin}
                   isActive={false}
                   isVisible
                   className="h-full w-full"

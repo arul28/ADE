@@ -867,6 +867,22 @@ dashboard spec is untouched until a product question needs it. The
 orchestrator's local operational lines (`agent_chat.cross_machine_handoff_*`),
 which carry session and handoff ids, are not PostHog events.
 
+A chat that starts work on another machine (`ade shell start --machine` or an
+`ade apple` call there, run in that machine's work copy) records one coarse fact
+on `ade_feature_used` with `feature: "chat"`, `action: "remote_work"`,
+`outcome: "started"` and `source: "runtime"`. The chat's brain records it as it
+forwards a call that succeeded (`noteRemoteWork` in `agentChatService.ts`,
+through `onRemoteWorkStarted` and `captureRemoteWorkAnalytics`, wired in the
+brain's bootstrap). The product question is only whether people use their other
+machines from a chat, so nothing finer crosses: no machine, no command, no path,
+no output, and no shell or simulator split, because no closed key holds it. A
+`remote_work:<sessionId>:<machineKey>` deduplication key (hashed locally, never
+sent) with a one-hour minimum interval counts each chat once an hour for each
+machine, however many commands it runs there. Realistic volume is a few events
+per installation per day, inside the existing `ade_feature_used` limits and the
+shared 200-event ceiling. No ceiling was raised and no PostHog definition
+changed.
+
 ### Jev decisions
 
 The shared Jev helper (`apps/desktop/src/main/services/jev/jevService.ts`) writes local operational lines to the project runtime's `ade-cli.jsonl`. The OpenCode Zen token, the ADE account bearer, the asked state and the answers are never logged. Its only PostHog fact is one `ade_daily_usage_summary` row per project and completed day with `summary_kind: "jev"` (`captureDailyJevAnalytics`): counts only, at most one a day per project under the daily summary's dedupe, never a prompt, a model, or a route's URL. It carries `call_count`, `error_count`, `input_token_count`, `output_token_count`, `jev_wanted_count`, `jev_ok_count`, `jev_cached_count`, `jev_answered_free_count`, `jev_answered_zen_credit_count`, `jev_answered_bonus_count` (answers per route), one count per fallback reason, `jev_breaker_open_count`, `jev_unsent_input_token_estimate`, `jev_latency_avg_ms`, `jev_slow_count`, `jev_sent_<feature>` and `jev_unsent_<feature>` per feature, and `jev_key_skip_<reason>` per reason a call with no answer never reached the ADE bonus (`key_spent`, `key_failing`, `key_rejected`, `signed_out`, `no_account_token`, `no_account_server`, `out_of_time`).

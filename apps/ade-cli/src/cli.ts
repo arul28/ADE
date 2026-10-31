@@ -107,6 +107,7 @@ import {
 import { DEMO_STEP_MAX_CHARS, parseDemoStepFocus } from "../../desktop/src/shared/demoVideo/demoContract";
 import { SCENE_PREVIEW_WIDTH } from "../../desktop/src/shared/scenePreview";
 import { quoteShellArg } from "../../desktop/src/shared/shell";
+import type { MachineWorkCopy } from "./cliRemoteWork";
 import { machineVersionsDrift } from "../../desktop/src/shared/machineVersions";
 import { SCENE_GUIDE } from "../../desktop/src/shared/sceneGuide";
 import { findSettingsEntries, settingsEntryLabel } from "../../desktop/src/shared/settingsManifest";
@@ -650,6 +651,12 @@ export type GlobalOptions = {
   machineProject?: string | null;
   /** `--clone`: set the repository up on that machine when it is missing. */
   machineClone?: boolean;
+  /**
+   * Set by `cliMachineTargeting` when a `--machine` shell start or Apple call
+   * runs in this chat's work copy there (no `--lane`): how a sync readies it
+   * (`--no-sync` → "none", `--discard`), or null for a normal sync.
+   */
+  machineWorkCopy?: MachineWorkCopy | null;
 };
 
 async function withAdeDefaultRole<T>(
@@ -908,6 +915,11 @@ export type CliPlan =
       machineList?: "chats" | "inbox" | "lanes" | "projects" | "usageLimits";
       /** `--machine a,b` starts this plan once per machine (`chat create`). */
       machineFanOut?: boolean;
+      /**
+       * `shell start --wait`: after the shell starts, follow its output until
+       * it ends, and exit with its exit code (see `followShellToExit`).
+       */
+      followShell?: boolean;
       /** `chat create`: what to compare after the chat exists (see `chatCreateNotices`). */
       chatCreateCheck?: {
         laneId: string | null;
@@ -1323,7 +1335,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade init [path]                               Register a project with this machine brain
     $ ade projects list                             List projects registered on this machine
     $ ade sync web [--open] [--no-clipboard]        Print (and copy) the web client pairing link + code
-    $ ade sync status | pin generate                Manage machine sync and phone pairing
+    $ ade sync status | devices                     Machine sync and paired devices (pair a phone: ade brain pin generate)
     $ ade doctor [--online]                         Inspect installed app and machine-brain health
     $ ade report-issue [--open] [--send]            Print a redacted diagnostic report; --send hands it to ADE
     $ ade triage [--agent] [--provider <name>]      Build a triage context + playbook and hand the repair to your coding agent
@@ -1359,7 +1371,6 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
                                                     Create, read, and edit GitHub issues
     $ ade github app-auth login | status | clear    Authorize the machine ADE GitHub App (device flow)
     $ ade automations list | create | run | runs    Manage automation rules
-    $ ade coordinator <tool>                        Call coordinator runtime tools
     $ ade tests list | run | stop | runs | logs     Run configured test suites
     $ ade proof status | list | screenshot | record Manage proof and computer-use artifacts
     $ ade apple devices | apps | launch | tap      Control Apple simulators, capture, and input
@@ -1497,8 +1508,6 @@ function helpKeyWithSubcommand(primaryKey: string, args: readonly string[]): str
   const subcommand = args.find((arg) => arg !== "--" && !arg.startsWith("-"));
   if (!subcommand) return primaryKey;
   const normalizedSubcommand = subcommand.toLowerCase();
-  if (primaryKey === "chat" && normalizedSubcommand === "spawn") return "chat create";
-  if (primaryKey === "agent" && normalizedSubcommand === "start") return "agent spawn";
   if (primaryKey === "new" && normalizedSubcommand === "cli") return "new chat";
   return `${primaryKey} ${normalizedSubcommand}`;
 }
@@ -1513,7 +1522,6 @@ export const CLI_COMMAND_ALIASES: Record<string, string> = {
   term: "terminal",
   chats: "chat",
   work: "chat",
-  agents: "agent",
   test: "tests",
   computer: "proof",
   "computer-use": "proof",
@@ -1536,7 +1544,6 @@ export const CLI_COMMAND_ALIASES: Record<string, string> = {
   setting: "settings",
   config: "settings",
   action: "actions",
-  coord: "coordinator",
   automation: "automations",
   "auto-update": "update",
   updates: "update",
@@ -1550,7 +1557,6 @@ export const CLI_COMMAND_ALIASES: Record<string, string> = {
   archived: "archive",
   skills: "skill",
   gh: "github",
-  create: "new",
   login: "auth",
   logout: "auth",
 };
@@ -2058,7 +2064,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     the app's runtime: on macOS the open app installs its own update, a
     closed one is replaced after its checksum and signature are checked; on
     Windows the app's installer runs. If the app can't be updated, nothing is.
-    Pairing PIN commands are aliases for the machine sync PIN.
+    "pin" sets the code a phone or the web client types to pair with this machine.
 `,
   tools: `${ADE_BANNER}
   ADE Agent Tools
@@ -2165,7 +2171,6 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     --permissions <mode>   default | auto | plan | edit | full-auto | config-toml.
     --droid-permission-mode <m>
                            Droid only: read-only | auto-low | auto-medium | auto-high | agi.
-                           Aliases: --droid-autonomy, --autonomy.
     --copilot-permission-mode <m>
                            Copilot only: plan | ask | assisted | auto-edit | full-auto.
     --copilot-context-tier <t>
@@ -2185,7 +2190,6 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   Compatibility:
     ade chat create still creates persistent Work chats.
     ade shell start-cli still starts tracked provider CLI sessions.
-    ade agent spawn is the older agent launcher and should not be used for new flows.
 `,
   "new chat": `${ADE_BANNER}
   New chat / CLI session
@@ -2441,6 +2445,13 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   After start, use the returned session id with:
     $ ade terminal read --terminal <session-id> --text
 
+  On another machine (this chat's work copy there: a hidden worktree at your
+  commit, which must be on origin, with your uncommitted changes applied):
+    $ ade shell start --machine <name> --wait -- npm test   Stream the output, exit with its code
+    $ ade shell start --machine <name> --no-sync -- git status   Run in the copy as it is
+    $ ade shell start --machine <name> --discard --wait -- npm test   Throw away unpushed work there first
+    $ ade shell clean --machine <name>               Delete this chat's work copy there
+
   Provider CLI launches accept --instance for Claude/Codex accounts and
   --preset or --credential for saved harness brains.
 
@@ -2618,8 +2629,6 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                                                     (--session <subagent>), never one the user raised.
                                                     Clear it when you asked and then kept working anyway, so the
                                                     row stops saying "Needs you" about a question nobody is on.
-                                                    'chat settle' / 'chat unsettle' were removed: only the user (or a
-                                                    merged PR) settles a session — report your outcome with 'chat note'.
     $ ade chat inbox --text                         Every chat in the project that waits on you, each with its question
                                                     or approval inline and the exact 'chat respond' that answers it
                                                     (--all-machines: every machine on your account)
@@ -2724,8 +2733,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade chat rewind-files <session> --message <user-message-id> --dry-run
                                                     Preview or apply file/context rewind
     $ ade chat subagents <session> --text           List child agents for a chat
-    $ ade chat schedules <session> --pause           Pause this agent session's durable wakeups/cron/loops
-    $ ade chat schedules <session>                   Inspect pause state + next armed wake (--resume to re-arm)
+    $ ade chat scheduled-work pause <session>        Pause this agent session's durable wakeups/cron/loops
+    $ ade chat scheduled-work status <session>       Inspect pause state + next armed wake (resume to re-arm)
     $ ade chat scheduled-work list [session]         List durable jobs (--all includes recent history)
     $ ade chat scheduled-work create --in 12m --prompt "<text>"
                                                     Relative one-shot; supports s, m, h, d, w
@@ -2785,8 +2794,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     --fast                  Request fast service tier when the model advertises it.
     --ultrafast             Codex: Fast at the Ultrafast tier, on models whose catalog offers it.
     --no-fast, --standard   Disable fast mode explicitly.
-    --print-config          Print the createSession payload and permission mapping.
-    --dry-run               Alias for --print-config; does not create a chat.
+    --print-config          Print the createSession payload and permission mapping;
+                            does not create a chat.
     --parent <sessionId>    Link the new chat as a child of that session.
                             Defaults to $ADE_CHAT_SESSION_ID in tracked agent shells.
     --no-parent             Create the chat without a parent link. From an agent
@@ -2843,11 +2852,10 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     --effort <v>            Alias for --reasoning-effort.
                             Common tiers: minimal, low, medium, high, xhigh, ultra, ultracode.
     --prompt <text>         Create the chat, then send this as the first message.
-    --kickoff <text>        Alias for --prompt.
     --prompt-file <path|->  Read the first message from a file, or stdin with -.
                             Use it for long or multi-line text: on Windows,
                             ade.cmd cuts an argument at its first line break.
-                            Alias: --kickoff-file. Not with --prompt.
+                            Not with --prompt.
     --instance <id>         Which provider account to sign in as (ade usage limits
                             and ade providers accounts list show the ids).
     --credential <id>       A saved API credential for the provider.
@@ -2859,7 +2867,6 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                             parent. chat create then prints a note on stderr.
     --droid-permission-mode <m>
                             Droid only: read-only | auto-low | auto-medium | auto-high | agi.
-                            Aliases: --droid-autonomy, --autonomy.
     --copilot-permission-mode <m>
                             Copilot only: plan | ask | assisted | auto-edit | full-auto.
     --copilot-context-tier <t>
@@ -2869,8 +2876,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     --ultrafast             Codex: Fast at the Ultrafast tier, on models whose catalog offers it.
     --no-fast, --standard   Disable fast mode explicitly.
     --print                 Start the session runtime in print mode.
-    --print-config          Print the resolved CLI launch config.
-    --dry-run               Alias for --print-config; no session is created.
+    --print-config          Print the resolved CLI launch config; no session is created.
     --parent <sessionId>    Link the new chat as a child of that session.
                             Defaults to $ADE_CHAT_SESSION_ID when run from a
                             tracked agent shell (the spawning chat).
@@ -2973,59 +2979,6 @@ export const HELP_BY_COMMAND: Record<string, string> = {
 
   The target is always explicit: name --target or --new-chat --lane, or the command fails.
   Output is a readable table by default; --text is one line per row; --json is structured.
-`,
-  agent: `${ADE_BANNER}
-  Agent sessions
-
-  Compatibility path for older agent launches. Prefer:
-    $ ade new chat --mode cli --lane <lane> --provider codex --no-parent --prompt "Fix the failing test"
-
-    $ ade agent spawn --lane <lane> --prompt "Fix the failing test"
-    $ ade agent spawn --lane <lane> --provider codex --model openai/gpt-5.6-sol --permissions full-auto
-    $ ade agent spawn --lane <lane> --context-file docs/context.md --prompt "continue"
-    $ ade agent spawn --lane <lane> --tool=git --tool=files --prompt "review changes"
-
-  Spawn flags:
-    --provider <name>       codex | claude. Defaults to codex.
-    --model <id>            Provider CLI model id.
-    --permissions <mode>    Alias for --permission-mode.
-    --permission-mode <m>   default | auto | plan | edit | full-auto | config-toml.
-                            auto is Claude-only; config-toml is Codex-only here.
-    --context-file <path>   Include a file as extra context for the prompt.
-    --tool <name>           Add an allowlisted tool hint.
-
-  Reasoning effort:
-    ade agent spawn launches the older CLI-session agent tool and does not
-    support reasoning effort. Use ade new chat --mode chat for persistent Work
-    chats or ade new chat --mode cli for tracked CLI sessions.
-`,
-  "agent spawn": `${ADE_BANNER}
-  Agent spawn
-
-  Compatibility path for older Codex or Claude CLI-session agents. Prefer
-  ade new chat --mode cli, which supports the desktop New Chat CLI mode and
-  reasoning/fast launch settings. This command does not support reasoning effort.
-
-    $ ade agent spawn --lane <lane> --provider codex --model openai/gpt-5.6-sol --permissions full-auto --prompt "Fix the failing test"
-    $ ade agent spawn --lane <lane> --provider claude --model claude-opus-5 --permissions plan --prompt "Review the diff"
-
-  Flags:
-    --lane <lane>           Required lane/worktree.
-    --prompt <text>         Initial task prompt.
-    --provider <name>       codex | claude. Defaults to codex.
-    --model <id>            Provider CLI model id.
-    --permissions <mode>    Alias for --permission-mode.
-    --permission-mode <m>   default | auto | plan | edit | full-auto | config-toml.
-    --context-file <path>   Include a file as extra context for the prompt.
-    --tool <name>           Add an allowlisted tool hint.
-
-  Permission mode values:
-    default, plan, edit, full-auto work for Codex and Claude.
-    auto is Claude-only. config-toml is Codex-only.
-
-  Not supported:
-    --reasoning-effort / --effort. Use ade chat create or
-    ade shell start-cli when the launch must set a reasoning tier.
 `,
   proof: `${ADE_BANNER}
   Proof and computer use
@@ -4002,7 +3955,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
 
   Archiving hides an item; it is never deleted on its own. Archived chats and
   shells are left out of 'ade chat list', 'ade terminal list', and search unless
-  you pass --include-archived. Read one by id with 'ade chat get' / 'ade terminal
+  you pass --include-archived. Read one by id with 'ade chat show' / 'ade terminal
   read' any time. Refs are <kind>:<id>, where kind is lane, chat, or shell.
 
     $ ade archive list --text                       Everything archived, newest first
@@ -4237,15 +4190,6 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                                                     Search issues for the lane Linear-issue picker
     $ ade --role cto linear issue-comments --issue-id <id>
                                                     Fetch comments on a Linear issue
-`,
-  coordinator: `${ADE_BANNER}
-  Coordinator runtime tools
-
-  Coordinator tools expose orchestration operations used by agent runtimes.
-  List available tool names with:
-    $ ade actions list --text
-
-    $ ade coordinator <tool-name> --input-json '{"key":"value"}'
 `,
   actions: `${ADE_BANNER}
   ADE actions
@@ -4490,6 +4434,9 @@ function parseRuntimeProfile(value: string | null | undefined): "embedded" | und
   );
 }
 
+// The two old spellings are refused on chat launches (REMOVED_LAUNCH_FLAGS);
+// they stay here only for `ade shell start-cli`, which goes away with the shell
+// launch cleanup.
 const DROID_PERMISSION_MODE_FLAGS = [
   "--droid-permission-mode",
   "--droid-autonomy",
@@ -4577,6 +4524,53 @@ export function findFlagName(args: string[], names: readonly string[]): string |
     if (matched) return matched;
   }
   return null;
+}
+
+/** Launch flag spellings that were removed, and the one spelling that stays. */
+const REMOVED_LAUNCH_FLAGS: Readonly<Record<string, string>> = {
+  "--model-id": "--model",
+  "--reasoning": "--reasoning-effort",
+  "--dry-run": "--print-config",
+  "--kickoff": "--prompt",
+  "--kickoff-prompt": "--prompt",
+  "--kickoff-file": "--prompt-file",
+  "--droid-autonomy": "--droid-permission-mode",
+  "--autonomy": "--droid-permission-mode",
+};
+/** `chat handoff` / `chat fork` flag spellings that were removed. */
+const REMOVED_HANDOFF_FLAGS: Readonly<Record<string, string>> = {
+  "--model-id": "--model",
+  "--to-machine": "--machine",
+  "--where": "--options",
+  "--handoff-note": "--note",
+  "--from-turn": "--through-turn",
+  "--bring-changes": "--include-changes",
+  "--after-turn": "--when-turn-ends",
+};
+
+/**
+ * Refuses a removed flag spelling by naming the one that replaced it. These
+ * commands ignore flags they do not know, so without this an old `--kickoff`
+ * would start a chat with no prompt and an old `--dry-run` would start one for
+ * real.
+ */
+function refuseRemovedFlags(args: readonly string[], removed: Readonly<Record<string, string>>): void {
+  for (const name of flagNamesOutsideFreeText(args)) {
+    const replacement = Object.hasOwn(removed, name) ? removed[name] : undefined;
+    if (replacement) throw new CliUsageError(`${name} is not a flag here; use ${replacement}.`);
+  }
+}
+
+/**
+ * An unknown subcommand is an error, never a raw action call: a typo must not
+ * reach a service action, and every subcommand an agent can run is one the
+ * help documents. The action door stays open by name.
+ */
+function refuseUnknownSubcommand(command: string, domain: string, sub: string): never {
+  throw new CliUsageError(
+    `'ade ${command} ${sub}' is not a command; see 'ade help ${command}'. `
+    + `To call a service action by name: ade actions run ${domain}.<action> (ade actions list --domain ${domain}).`,
+  );
 }
 
 /**
@@ -5912,8 +5906,8 @@ const SECRETS_VALUE_FLAGS: ReadonlySet<string> = new Set([
   "--name", "--value", "--value-file", "--secret", "--secret-file", "--reason", "--session", "--timeout",
 ]);
 const CHAT_VALUE_FLAGS: ReadonlySet<string> = new Set([
-  "--text", "--prompt", "--kickoff", "--kickoff-prompt", "--note", "--handoff-note", "--message",
-  "--prompt-file", "--kickoff-file", "--text-file",
+  "--text", "--prompt", "--note", "--message",
+  "--prompt-file", "--text-file",
   "--question", "--objective", "--goal", "--set", "--title", "--reason", "--steer",
   "--answer", "--option", "--response",
 ]);
@@ -6875,11 +6869,7 @@ function buildLanePlan(args: string[]): CliPlan {
       ],
     };
   }
-  return {
-    kind: "execute",
-    label: `lane ${sub}`,
-    steps: [actionStep("result", "lane", sub, collectGenericObjectArgs(args))],
-  };
+  return refuseUnknownSubcommand("lanes", "lane", sub);
 }
 
 /**
@@ -6888,7 +6878,8 @@ function buildLanePlan(args: string[]): CliPlan {
  * daemon can fall back to its own defaults.
  */
 function readChatLaunchConfig(args: string[]): JsonObject {
-  const modelArg = readValue(args, ["--model", "--model-id"]);
+  refuseRemovedFlags(args, REMOVED_LAUNCH_FLAGS);
+  const modelArg = readValue(args, ["--model"]);
   const fastMode = readFastModeFlag(args);
   const config: JsonObject = {};
   maybePut(config, "provider", readValue(args, ["--provider"]));
@@ -6996,7 +6987,7 @@ function routePresetIdFromFlags(
   // Peek, never consume: the launch command still reads --provider and
   // --model itself (the model rides the chat as its display id).
   const harness = (consumed.provider ?? peekValue(args, ["--provider", "--harness"]))?.trim();
-  const model = (consumed.model ?? peekValue(args, ["--model", "--model-id"]))?.trim();
+  const model = (consumed.model ?? peekValue(args, ["--model"]))?.trim();
   if (!harness || !isHarnessPresetBody(harness)) {
     throw new CliUsageError(`--via needs --provider <harness> (${ROUTABLE_HARNESSES.join(", ")}).`);
   }
@@ -7108,7 +7099,8 @@ function readFastTierFlag(args: string[]): "ultrafast" | undefined {
  * the caller adds the session and the `--input-json` / `--arg` passthrough.
  */
 function readChatUpdateFields(args: string[]): JsonObject {
-  const model = readValue(args, ["--model", "--model-id"]);
+  refuseRemovedFlags(args, REMOVED_LAUNCH_FLAGS);
+  const model = readValue(args, ["--model"]);
   const title = readValue(args, ["--title"]);
   // Claude-only session tag mirrored to the SDK. Pass `--tag ""` to clear it.
   // Rejected at runtime for non-Claude sessions or before a Claude turn exists.
@@ -7149,7 +7141,7 @@ function readNewChatPrompt(args: string[]): string | null {
   const promptArgs = takeArgsAfterTerminator(args);
   const prompt = promptArgs
     ? promptArgs.join(" ").trim()
-    : readValue(args, ["--prompt", "--message", "--initial-input", "--kickoff"]);
+    : readValue(args, ["--prompt", "--message", "--initial-input"]);
   return prompt?.trim() || null;
 }
 
@@ -7255,13 +7247,14 @@ function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan 
   const prompt = readNewChatPrompt(args);
   const lane = resolveNewChatLaneArgs(args, prompt);
   const providerRaw = readValue(args, ["--provider"]);
-  const modelArg = readValue(args, ["--model", "--model-id"]);
-  const reasoningEffort = readValue(args, ["--reasoning-effort", "--effort", "--reasoning"]);
+  refuseRemovedFlags(args, REMOVED_LAUNCH_FLAGS);
+  const modelArg = readValue(args, ["--model"]);
+  const reasoningEffort = readValue(args, ["--reasoning-effort", "--effort"]);
   const permissionMode = readValue(args, ["--permission-mode", "--permissions"]);
   const droidPermissionMode = readDroidPermissionMode(args);
   const fastMode = readFastModeFlag(args);
   const title = readValue(args, ["--title"]);
-  const printConfig = readFlag(args, ["--print-config", "--dry-run"]);
+  const printConfig = readFlag(args, ["--print-config"]);
 
   // One options object per surface, so the profile the flag is checked against
   // and the profile the merged arg bag is checked against cannot drift.
@@ -7712,7 +7705,7 @@ function buildCreateLaneFromLinearPlan(args: string[], issue: JsonObject): CliPl
 
   const startChat = readFlag(args, ["--start-chat", "--launch", "--start-agent"]);
   const kickoff =
-    readValue(args, ["--prompt", "--kickoff", "--kickoff-prompt"]) ??
+    readValue(args, ["--prompt"]) ??
     deriveLinearKickoffPrompt(issue);
   if (!startChat) {
     const stranded = findFlagName(args, CHAT_ONLY_LINEAGE_FLAGS);
@@ -8440,15 +8433,7 @@ function buildGitPlan(args: string[]): CliPlan {
       ],
     };
   }
-  const actionAliases: Record<string, string> = {
-    commits: "listRecentCommits",
-    sync: "sync",
-  };
-  return {
-    kind: "execute",
-    label: `git ${sub}`,
-    steps: [actionStep("result", "git", actionAliases[sub] ?? sub, withLane())],
-  };
+  return refuseUnknownSubcommand("git", "git", sub);
 }
 
 function buildDiffPlan(args: string[]): CliPlan {
@@ -8522,11 +8507,7 @@ function buildDiffPlan(args: string[]): CliPlan {
       ],
     };
   }
-  return {
-    kind: "execute",
-    label: `diff ${sub}`,
-    steps: [actionStep("result", "diff", sub, withLane())],
-  };
+  return refuseUnknownSubcommand("diff", "diff", sub);
 }
 
 /**
@@ -9397,11 +9378,7 @@ function buildPrPlan(args: string[], explicitProjectRoot: string | null = null):
     };
   }
 
-  return {
-    kind: "execute",
-    label: `PR ${sub}`,
-    steps: [actionStep("result", "pr", sub, withPr())],
-  };
+  return refuseUnknownSubcommand("prs", "pr", sub);
 }
 
 function buildShellPlan(args: string[]): CliPlan {
@@ -9414,6 +9391,20 @@ function buildShellPlan(args: string[]): CliPlan {
     };
   if (sub === "start-cli" || sub === "cli" || sub === "agent-cli") {
     return buildCliSessionStartPlan(args);
+  }
+  if (sub === "clean") {
+    // Only with --machine (cliMachineTargeting.ts): delete this chat's work copy there.
+    return {
+      kind: "execute",
+      label: "shell clean",
+      steps: [actionCallStep("result", "release_remote_work_copy", {})],
+      formatText: (result: unknown) => {
+        const value = unwrapActionEnvelope(result);
+        return isRecord(value) && value.released === true
+          ? "Deleted this chat's work copy on that machine."
+          : "This chat had no work copy on that machine.";
+      },
+    };
   }
   if (sub === "start" || sub === "create") {
     const provider = readValue(args, ["--provider", "--profile"]);
@@ -9433,6 +9424,9 @@ function buildShellPlan(args: string[]): CliPlan {
     const startupCommand = startupCommandArgs
       ? startupCommandArgs.map(shellEscapeToken).join(" ")
       : readValue(args, ["--command", "-c"]);
+    // Only with --machine (cliMachineTargeting.ts checks): follow the command to its end.
+    const wait = readFlag(args, ["--wait"]);
+    if (wait && !startupCommand) throw new CliUsageError("--wait needs a command: ade shell start --machine <name> --wait -- <command>.");
     const input = collectGenericObjectArgs(args, {
       ...(laneId ? { laneId } : {}),
       ...(chatSessionId ? { chatSessionId } : {}),
@@ -9447,8 +9441,26 @@ function buildShellPlan(args: string[]): CliPlan {
     // A tracked shell belongs to a lane. Without --lane, the shell's own lane
     // (an agent's), else the project's primary lane: its main checkout. So an
     // app or script can run a command in a project without making a lane.
+    // With --machine and no --lane the command runs in this chat's work copy
+    // there instead (cliMachineTargeting.ts replaces the lane).
     const ownLane = laneId ?? (process.env.ADE_LANE_ID?.trim() || null);
-    const shellStart = { kind: "execute", label: "shell start", formatter: "pty-create" } as const;
+    const followPlan = wait
+      ? {
+          followShell: true,
+          formatter: undefined,
+          formatText: (result: unknown) => {
+            const record = isRecord(result) ? result : {};
+            const code = typeof record.exitCode === "number" ? record.exitCode : null;
+            return `\n[shell ended${code === null ? "" : ` with exit code ${code}`} · terminal ${asString(record.terminalId) ?? "?"}]`;
+          },
+          exitCodeFromResult: (result: unknown) => {
+            const code = isRecord(result) ? result.exitCode : null;
+            // A negative code (killed, disposed) is a failure, never success.
+            return typeof code === "number" ? (code < 0 ? 1 : Math.min(code, 255)) : 1;
+          },
+        }
+      : {};
+    const shellStart = { kind: "execute", label: "shell start", formatter: "pty-create", ...followPlan } as const;
     if (ownLane) {
       return { ...shellStart, steps: [actionStep("result", "pty", "create", { ...input, laneId: ownLane })] };
     }
@@ -10201,8 +10213,9 @@ const CHAT_LAUNCH_TERMINAL_PHASES = new Set(["completed", "failed", "cancelled"]
  * parented child chat in a fresh lane stays `ade new chat --lane auto`.
  */
 function buildChatLaunchPlan(args: string[]): CliPlan {
-  const modelArg = readValue(args, ["--model", "--model-id"]);
-  const reasoningEffort = readValue(args, ["--reasoning-effort", "--effort", "--reasoning"]);
+  refuseRemovedFlags(args, REMOVED_LAUNCH_FLAGS);
+  const modelArg = readValue(args, ["--model"]);
+  const reasoningEffort = readValue(args, ["--reasoning-effort", "--effort"]);
   const permissionMode = readValue(args, ["--permission-mode", "--permissions"]);
   const droidPermissionMode = readDroidPermissionMode(args);
   const fastMode = readFastModeFlag(args);
@@ -10216,7 +10229,7 @@ function buildChatLaunchPlan(args: string[]): CliPlan {
   const laneIdFlag = readValue(args, ["--lane-id"]);
   const foreground = readFlag(args, ["--foreground"]);
   const wait = readFlag(args, ["--wait"]);
-  const printConfig = readFlag(args, ["--print-config", "--dry-run"]);
+  const printConfig = readFlag(args, ["--print-config"]);
   const timeoutMs = readIntOption(args, ["--timeout-ms", "--timeout"], 10 * 60 * 1000) ?? 10 * 60 * 1000;
   const pollIntervalMs = readIntOption(args, ["--poll-interval-ms", "--interval-ms"], 1_000) ?? 1_000;
   if (timeoutMs <= 0) throw new CliUsageError("chat launch --timeout-ms must be greater than zero.");
@@ -10502,7 +10515,7 @@ function readHandoffTarget(args: string[], sub: string): {
     throw new CliUsageError("chat handoff --mode must be brief or fork.");
   }
   const targetModelId = requireValue(
-    readValue(args, ["--target-model", "--target-model-id", "--model", "--model-id", "--target"]) ??
+    readValue(args, ["--target-model", "--target-model-id", "--model", "--target"]) ??
       firstStandalonePositional(args),
     "targetModelId",
   );
@@ -10621,6 +10634,9 @@ function buildChatRespondPlan(args: string[], sessionId: string): CliPlan {
   };
 }
 
+/** What `ade chat scheduled-work <operation>` can do. */
+const SCHEDULED_WORK_OPERATIONS: ReadonlySet<string> = new Set(["list", "create", "cancel", "status", "pause", "resume"]);
+
 function buildChatPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "list";
   if (readFlag(args, ["--personal"])) {
@@ -10632,11 +10648,6 @@ function buildChatPlan(args: string[]): CliPlan {
   // and report to a chat that does not exist there.
   if (CHAT_SELF_REPORT_SUBCOMMANDS.has(sub) && process.env.ADE_CHAT_SCOPE?.trim() === "personal") {
     return buildPersonalChatPlan(sub, args);
-  }
-  if (sub === "settle" || sub === "unsettle") {
-    throw new CliUsageError(
-      "'chat settle' / 'chat unsettle' were removed: only the user (or a merged PR) settles a session — report your outcome with 'chat note'.",
-    );
   }
   if (sub === "actions")
     return {
@@ -10718,12 +10729,8 @@ function buildChatPlan(args: string[]): CliPlan {
     sub === "linear-issues" ||
     sub === "list-linear-issues" ||
     sub === "issues";
-  const scheduledWorkOperation = (
-    sub === "scheduled-work"
-    || sub === "schedules"
-    || sub === "schedule"
-  )
-    && (args[0] === "list" || args[0] === "create" || args[0] === "cancel")
+  const scheduledWorkOperation = sub === "scheduled-work"
+    && SCHEDULED_WORK_OPERATIONS.has(args[0] ?? "")
     ? firstStandalonePositional(args)
     : null;
   // `ask` / `note` take free text, not a session positional — they default to
@@ -10748,7 +10755,8 @@ function buildChatPlan(args: string[]): CliPlan {
     });
   const requireSession = () => requireValue(sessionId, "sessionId");
   if (sub === "ask" || sub === "unask") {
-    if (sub === "unask" || args.includes("--clear") || args.includes("--retract")) {
+    if (args.includes("--retract")) throw new CliUsageError("--retract is not a flag here; use --clear.");
+    if (sub === "unask" || args.includes("--clear")) {
       return {
         kind: "execute",
         label: "chat ask --clear",
@@ -10852,7 +10860,7 @@ function buildChatPlan(args: string[]): CliPlan {
     }
     const laneId = readLaneId(args);
     // Archived chats are hidden unless asked for: agents read this list, and
-    // an archived chat is one the user put away. `ade chat get <id>` still
+    // an archived chat is one the user put away. `ade chat show <id>` still
     // reads one by id. (The service's own default stays "include" for the
     // desktop UI, so the CLI always says which it wants.)
     const input = collectGenericObjectArgs(args, {
@@ -11122,15 +11130,16 @@ function buildChatPlan(args: string[]): CliPlan {
       exitCodeFromResult: (result) => (isRecord(result) && typeof result.launchId === "string" ? 0 : 1),
     };
   }
-  if (sub === "create" || sub === "spawn") {
-    const modelArg = readValue(args, ["--model", "--model-id"]);
+  if (sub === "create") {
+    refuseRemovedFlags(args, REMOVED_LAUNCH_FLAGS);
+    const modelArg = readValue(args, ["--model"]);
     const reasoningEffort = readValue(args, ["--reasoning-effort", "--effort"]);
     const fastMode = readFastModeFlag(args);
     // `--print` opts the session's app-server initialize handshake into
     // print-mode (suppresses delta notification streams). Must be set at create
     // time because the handshake runs once when the runtime starts.
     const createRuntimeMode = readFlag(args, ["--print"]) ? "print" : undefined;
-    const printConfig = readFlag(args, ["--print-config", "--dry-run"]);
+    const printConfig = readFlag(args, ["--print-config"]);
     // `--from-linear-issue <id>` / `--linear-issue-json` start the chat with an
     // attached issue: create the session, attach the issue to it, then send an
     // issue-grounded kickoff (skipped with --no-kickoff). Read these before
@@ -11152,10 +11161,10 @@ function buildChatPlan(args: string[]): CliPlan {
     }
     const noKickoff = readFlag(args, ["--no-kickoff"]);
     const explicitKickoff =
-      readChatTextFile(args, ["--prompt-file", "--kickoff-file"], ["--prompt", "--kickoff", "--kickoff-prompt"])
-      ?? readValue(args, ["--prompt", "--kickoff", "--kickoff-prompt"]);
+      readChatTextFile(args, ["--prompt-file"], ["--prompt"])
+      ?? readValue(args, ["--prompt"]);
     if (noKickoff && explicitKickoff) {
-      throw new CliUsageError("--no-kickoff cannot be used with --prompt/--kickoff.");
+      throw new CliUsageError("--no-kickoff cannot be used with --prompt.");
     }
     const attachmentFlags = linearIssue ? readLinearAttachmentFlags(args) : {};
     // Checked before the lineage read, which consumes `--no-parent`. An agent
@@ -11395,7 +11404,7 @@ function buildChatPlan(args: string[]): CliPlan {
       ],
     };
   }
-  if (sub === "message" || sub === "tell" || sub === "notify") {
+  if (sub === "message") {
     const imageUrl = readValue(args, ["--image-url"]);
     const kindFlag = readValue(args, ["--kind", "--delivery"]);
     const queueFlag = readFlag(args, ["--queue", "--steer"]);
@@ -11503,7 +11512,7 @@ function buildChatPlan(args: string[]): CliPlan {
     maybePut(input, "sessionId", sessionId ?? asString(process.env.ADE_CHAT_SESSION_ID) ?? undefined);
     return { kind: "execute", label: "chat waits", steps: [actionStep("result", "chat", "listWaits", input)] };
   }
-  if ((sub === "wait" || sub === "watch") && readFlag(args, ["--background"])) {
+  if (sub === "wait" && readFlag(args, ["--background"])) {
     // Wake me when my background jobs end: every running job, or the ones
     // named with --job id[,id].
     const jobs = (readValue(args, ["--job", "--jobs", "--task"]) ?? "")
@@ -11518,7 +11527,7 @@ function buildChatPlan(args: string[]): CliPlan {
       })],
     };
   }
-  if (sub === "wait" || sub === "watch") {
+  if (sub === "wait") {
     const cancelId = readValue(args, ["--cancel", "--cancel-wait"]);
     if (cancelId) {
       return { kind: "execute", label: "chat wait cancel", steps: [actionStep("result", "chat", "cancelWait", { waiterId: cancelId })] };
@@ -11778,17 +11787,18 @@ function buildChatPlan(args: string[]): CliPlan {
       steps: [actionStep("result", "chat", "clearCodexGoal", withSession({ sessionId: requireSession() }))],
     };
   }
+  if (sub === "handoff" || sub === "fork") refuseRemovedFlags(args, REMOVED_HANDOFF_FLAGS);
   if (sub === "handoff") {
     // The first control flag present wins. --machine with any of them is
     // refused earlier, by extractMachineTargeting.
     const controls = [
       { flags: ["--cancel"], label: "chat handoff cancel", action: "cancelCrossMachineHandoff" },
       { flags: ["--retry"], label: "chat handoff retry", action: "retryCrossMachineHandoff" },
-      { flags: ["--options", "--where"], label: "chat handoff options", action: "getCrossMachineHandoffOptions" },
+      { flags: ["--options"], label: "chat handoff options", action: "getCrossMachineHandoffOptions" },
     ];
     const flagNames = flagNamesOutsideFreeText(args);
     const control = controls.find((entry) => entry.flags.some((flag) => flagNames.has(flag))) ?? null;
-    const handoffMachine = readValue(args, ["--machine", "--to-machine"]);
+    const handoffMachine = readValue(args, ["--machine"]);
     if (handoffMachine !== null && !handoffMachine.trim()) {
       throw new CliUsageError("--machine needs a machine name or key (see `ade machines list`).");
     }
@@ -11804,7 +11814,7 @@ function buildChatPlan(args: string[]): CliPlan {
       // move (crossMachineHandoffOrchestrator); the chat's banner shows it.
       // Never forwarded: --machine names the destination (cliMachineTargeting).
       // Free text first: a prompt of "--fork" is text, not a flag.
-      const continuationPrompt = readValue(args, ["--prompt", "--note", "--handoff-note"]);
+      const continuationPrompt = readValue(args, ["--prompt", "--note"]);
       if (readValue(args, ["--target-lane", "--target-lane-id"]) !== null) {
         throw new CliUsageError("--target-lane is for a handoff on this machine. The other machine picks or creates the lane.");
       }
@@ -11820,9 +11830,9 @@ function buildChatPlan(args: string[]): CliPlan {
             targetModelId: target.targetModelId,
             ...target.settings,
             ...(continuationPrompt !== null ? { continuationPrompt } : {}),
-            ...(readFlag(args, ["--include-changes", "--bring-changes"]) ? { includeChanges: true } : {}),
+            ...(readFlag(args, ["--include-changes"]) ? { includeChanges: true } : {}),
             ...(readFlag(args, ["--clone"]) ? { clone: true } : {}),
-            ...(readFlag(args, ["--when-turn-ends", "--after-turn"]) ? { whenTurnEnds: true } : {}),
+            ...(readFlag(args, ["--when-turn-ends"]) ? { whenTurnEnds: true } : {}),
           }),
         ],
       };
@@ -11830,13 +11840,13 @@ function buildChatPlan(args: string[]): CliPlan {
   }
   if (sub === "handoff" || sub === "fork") {
     // Free text first: a note of "--fork" is text, not a flag.
-    const handoffNote = readValue(args, ["--handoff-note", "--note"]);
+    const handoffNote = readValue(args, ["--note"]);
     const { mode, targetModelId, settings } = readHandoffTarget(args, sub);
     const targetLaneId = readValue(args, ["--target-lane", "--target-lane-id"]);
     if (targetLaneId !== null && mode === "fork") {
       throw new CliUsageError("chat fork stays in the source lane; --target-lane is only valid for brief handoffs.");
     }
-    const throughTurnId = readValue(args, ["--through-turn", "--from-turn"]);
+    const throughTurnId = readValue(args, ["--through-turn"]);
     if (throughTurnId !== null && mode !== "fork") {
       throw new CliUsageError("--through-turn only applies to chat fork.");
     }
@@ -11923,8 +11933,6 @@ function buildChatPlan(args: string[]): CliPlan {
     };
   }
   if (
-    sub === "schedules" ||
-    sub === "schedule" ||
     sub === "scheduled-work"
   ) {
     if (scheduledWorkOperation === "create") {
@@ -12019,18 +12027,18 @@ function buildChatPlan(args: string[]): CliPlan {
         ],
       };
     }
+    if (scheduledWorkOperation === null) {
+      throw new CliUsageError(
+        "chat scheduled-work needs one of: list, create, cancel, status, pause, resume. Run 'ade help chat'.",
+      );
+    }
     // Per-session scheduled-work control. The state query works for both chat
     // sessions and tracked provider CLI terminals.
     const targetSession = requireValue(sessionId, "sessionId");
-    const pause = readFlag(args, ["--pause", "--pause-scheduled-work"]);
-    const resume = readFlag(args, ["--resume", "--unpause"]);
-    if (pause && resume) {
-      throw new CliUsageError("Use either --pause or --resume, not both.");
-    }
-    if (!pause && !resume) {
+    if (scheduledWorkOperation === "status") {
       return {
         kind: "execute",
-        label: "chat schedules",
+        label: "chat scheduled-work status",
         steps: [
           actionStep("result", "chat", "getScheduledWorkState", {
             sessionId: targetSession,
@@ -12038,9 +12046,10 @@ function buildChatPlan(args: string[]): CliPlan {
         ],
       };
     }
+    const pause = scheduledWorkOperation === "pause";
     return {
       kind: "execute",
-      label: pause ? "chat schedules pause" : "chat schedules resume",
+      label: pause ? "chat scheduled-work pause" : "chat scheduled-work resume",
       steps: [
         actionStep(
           "result",
@@ -12197,11 +12206,7 @@ function buildChatPlan(args: string[]): CliPlan {
       steps: [actionStep("result", "chat", "updateSession", update)],
     };
   }
-  return {
-    kind: "execute",
-    label: `chat ${sub}`,
-    steps: [actionStep("result", "chat", sub, withSession())],
-  };
+  return refuseUnknownSubcommand("chat", "chat", sub);
 }
 
 /* ──────────────────────────────────────────────────────────────────────────
@@ -12839,7 +12844,8 @@ function buildPersonalSelfReportPlan(
     "sessionId",
   );
   if (sub === "ask" || sub === "unask") {
-    if (sub === "unask" || args.includes("--clear") || args.includes("--retract")) {
+    if (args.includes("--retract")) throw new CliUsageError("--retract is not a flag here; use --clear.");
+    if (sub === "unask" || args.includes("--clear")) {
       return {
         ...base,
         label: "personal chat ask --clear",
@@ -12952,10 +12958,11 @@ function buildPersonalChatPlan(sub: string, args: string[]): CliPlan {
     };
   }
 
-  if (sub === "create" || sub === "spawn") {
-    const model = readValue(args, ["--model", "--model-id"]);
+  if (sub === "create") {
+    refuseRemovedFlags(args, REMOVED_LAUNCH_FLAGS);
+    const model = readValue(args, ["--model"]);
     const provider = readValue(args, ["--provider"]);
-    const prompt = readValue(args, ["--prompt", "--kickoff", "--kickoff-prompt"]);
+    const prompt = readValue(args, ["--prompt"]);
     const droidPermissionMode = readDroidPermissionMode(args);
     const copilotFlags = readCopilotLaunchFlags(args, provider ?? "");
     const fastMode = readFastModeFlag(args);
@@ -13349,11 +13356,7 @@ function buildTestsPlan(args: string[]): CliPlan {
         ),
       ],
     };
-  return {
-    kind: "execute",
-    label: `tests ${sub}`,
-    steps: [actionStep("result", "tests", sub, collectGenericObjectArgs(args))],
-  };
+  return refuseUnknownSubcommand("tests", "tests", sub);
 }
 
 function readFileTextInput(args: string[]): string | undefined {
@@ -13735,11 +13738,7 @@ function buildFilesPlan(args: string[]): CliPlan {
       ],
     };
   }
-  return {
-    kind: "execute",
-    label: `files ${sub}`,
-    steps: [actionStep("result", "file", sub, withWorkspace())],
-  };
+  return refuseUnknownSubcommand("files", "file", sub);
 }
 
 export function readProofOwnerBase(args: string[]): JsonObject {
@@ -14256,18 +14255,7 @@ function buildProofPlan(args: string[], explicitProjectRoot: string | null = nul
       ],
       preferHeadless: true,
     };
-  return {
-    kind: "execute",
-    label: `proof ${sub}`,
-    steps: [
-      actionStep(
-        "result",
-        "computer_use_artifacts",
-        sub,
-        collectGenericObjectArgs(args),
-      ),
-    ],
-  };
+  return refuseUnknownSubcommand("proof", "computer_use_artifacts", sub);
 }
 
 /**
@@ -14820,11 +14808,8 @@ function buildIosSimulatorPlan(
   }
   if (sub === "launch" || sub === "open") {
     // Agent launches must not steal the user's screen, so the CLI parks
-    // Simulator.app in the background unless asked otherwise. `--background`
-    // stays accepted as a no-op alias for callers written against the old
-    // opt-in behaviour.
+    // Simulator.app in the background unless asked otherwise.
     const foreground = readFlag(args, ["--foreground", "--open-simulator"]);
-    readFlag(args, ["--background", "--keep-background"]);
     const openDrawer = readFlag(args, ["--open-drawer", "--drawer"]);
     const follow = readFlag(args, ["--follow"]);
     // Takeover of another chat's simulator session. The service validates the
@@ -18779,18 +18764,7 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
       "ADE's browser does not run page JavaScript for agents. Read the page with `ade browser snapshot --tab <tab-id> --text`, then act with click, fill, type, select-option, scroll, key or wait.",
     );
   }
-  return {
-    kind: "execute",
-    label: `browser ${sub}`,
-    steps: [
-      actionStep(
-        "result",
-        "built_in_browser",
-        sub,
-        collectGenericObjectArgs(args),
-      ),
-    ],
-  };
+  return refuseUnknownSubcommand("browser", "built_in_browser", sub);
 }
 
 type SettingsFindRow = {
@@ -18896,21 +18870,7 @@ function buildSettingsPlan(args: string[]): CliPlan {
       connectRole: "cto",
       steps: [buildActionRunStep(["project_config", ...args])],
     };
-  return {
-    kind: "execute",
-    label: `settings ${sub}`,
-    // Only the user changes this, so the user's own terminal asserts the
-    // operator role, as `ade logout` does; an agent's shell is held to agent.
-    connectRole: "cto",
-    steps: [
-      actionStep(
-        "result",
-        "project_config",
-        sub,
-        collectGenericObjectArgs(args),
-      ),
-    ],
-  };
+  return refuseUnknownSubcommand("settings", "project_config", sub);
 }
 
 function buildActionStatusArgs(
@@ -18963,7 +18923,7 @@ function buildOperationsPlan(args: string[]): CliPlan {
       ],
     };
   }
-  if (sub === "wait" || sub === "watch") {
+  if (sub === "wait") {
     return {
       kind: "execute",
       label: "action status",
@@ -19390,11 +19350,7 @@ function buildUsagePlan(args: string[]): CliPlan {
     }
     throw new CliUsageError("usage budget supports get, set, check, or cumulative.");
   }
-  return {
-    kind: "execute",
-    label: `usage ${sub}`,
-    steps: [actionStep("result", "usage", sub, collectGenericObjectArgs(args))],
-  };
+  return refuseUnknownSubcommand("usage", "usage", sub);
 }
 
 function parseArchiveCliKind(value: string, label: string): ArchiveItemKind {
@@ -19985,7 +19941,7 @@ function buildActionsPlan(args: string[]): CliPlan {
         ),
       ],
     };
-  if (sub === "wait" || sub === "watch")
+  if (sub === "wait")
     return {
       kind: "execute",
       label: "action status",
@@ -19998,68 +19954,6 @@ function buildActionsPlan(args: string[]): CliPlan {
       ],
     };
   throw new CliUsageError("actions supports list, describe, run, call, status, or wait.");
-}
-
-function buildAgentPlan(args: string[]): CliPlan {
-  const sub = firstPositional(args) ?? "spawn";
-  if (sub === "spawn" || sub === "start") {
-    const toolWhitelist = args
-      .filter(
-        (entry) =>
-          entry.startsWith("--tool=") || entry.startsWith("--allow-tool="),
-      )
-      .map((entry) => entry.slice(entry.indexOf("=") + 1).trim())
-      .filter(Boolean);
-    const laneId = requireValue(readLaneId(args), "laneId");
-    const prompt = requireValue(
-      readValue(args, ["--prompt"]) ?? args.join(" "),
-      "prompt",
-    );
-    const unsupportedReasoningEffort = readValue(args, ["--reasoning-effort", "--reasoning", "--effort"]);
-    if (unsupportedReasoningEffort != null) {
-      throw new CliUsageError(
-        "agent spawn does not support reasoning effort. Use `ade chat create --reasoning-effort <tier>` for Work chats or `ade shell start-cli ... --reasoning-effort <tier>` for tracked CLI sessions.",
-      );
-    }
-    return {
-      kind: "execute",
-      label: "agent spawn",
-      steps: [
-        actionCallStep(
-          "result",
-          "spawn_agent",
-          collectGenericObjectArgs(args, {
-            laneId,
-            provider: readValue(args, ["--provider"]) ?? "codex",
-            model: readValue(args, ["--model"]),
-            title: readValue(args, ["--title"]),
-            prompt,
-            permissionMode: readValue(args, [
-              "--permission-mode",
-              "--permissions",
-            ]),
-            contextFilePath: readValue(args, ["--context-file"]),
-            runId: readValue(args, ["--run", "--run-id"]),
-            stepId: readValue(args, ["--step", "--step-id"]),
-            attemptId: readValue(args, ["--attempt", "--attempt-id"]),
-            maxPromptChars: readIntOption(args, ["--max-prompt-chars"]),
-            ...(toolWhitelist.length ? { toolWhitelist } : {}),
-          }),
-        ),
-      ],
-    };
-  }
-  return {
-    kind: "execute",
-    label: `agent ${sub}`,
-    steps: [
-      actionCallStep(
-        "result",
-        sub.replace(/-/g, "_"),
-        collectGenericObjectArgs(args),
-      ),
-    ],
-  };
 }
 
 function parseDraftInput(args: string[]): JsonObject {
@@ -21028,7 +20922,7 @@ function buildLinearPlan(args: string[]): CliPlan {
       steps: [actionArgsListStep("result", "linear_issue_tracker", "createComment", [issueId, body])],
     };
   }
-  if (sub === "set-state" || sub === "status" || sub === "state" || sub === "move") {
+  if (sub === "set-state" || sub === "status" || sub === "state") {
     const { issueId, value } = resolveLinearWriteCommand(args, ["--state-id", "--state", "--status"]);
     const state = requireValue(value, "state name or id");
     // A state id goes straight through; a name ("In Progress") is matched
@@ -21328,18 +21222,6 @@ function buildLinearPlan(args: string[]): CliPlan {
   );
 }
 
-function buildCoordinatorPlan(args: string[]): CliPlan {
-  const toolName = requireValue(
-    firstPositional(args),
-    "coordinator tool",
-  ).replace(/-/g, "_");
-  return {
-    kind: "execute",
-    label: `coordinator ${toolName}`,
-    steps: [actionCallStep("result", toolName, collectGenericObjectArgs(args))],
-  };
-}
-
 function buildUpdatePlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "status";
   if (sub === "actions")
@@ -21413,13 +21295,7 @@ function buildUpdatePlan(args: string[]): CliPlan {
       ],
     };
   }
-  return {
-    kind: "execute",
-    label: `update ${sub}`,
-    steps: [
-      actionStep("result", "update", sub, collectGenericObjectArgs(args)),
-    ],
-  };
+  return refuseUnknownSubcommand("update", "update", sub);
 }
 
 /**
@@ -21603,7 +21479,6 @@ const VALUE_CARRIER_FLAGS: ValueCarrierFlags = new Set([
   // is not extracted for forwarding); a session given after it must not be
   // read as the machine's value.
   "--machine",
-  "--to-machine",
   "--additional-instructions",
   "--app",
   "--accent",
@@ -21619,7 +21494,6 @@ const VALUE_CARRIER_FLAGS: ValueCarrierFlags = new Set([
   "--attempt",
   "--attempt-id",
   "--automation",
-  "--autonomy",
   "--backend",
   "--base",
   "--base-branch",
@@ -21664,7 +21538,6 @@ const VALUE_CARRIER_FLAGS: ValueCarrierFlags = new Set([
   "--duration-ms",
   "--description",
   "--domain",
-  "--droid-autonomy",
   "--droid-permission-mode",
   "--duration-sec",
   "--enabled",
@@ -21698,7 +21571,6 @@ const VALUE_CARRIER_FLAGS: ValueCarrierFlags = new Set([
   "--from-file",
   // `chat create|send|message|steer`: the text's file, or `-` for stdin.
   "--prompt-file",
-  "--kickoff-file",
   "--text-file",
   "--group",
   "--group-id",
@@ -21881,10 +21753,8 @@ const VALUE_CARRIER_FLAGS: ValueCarrierFlags = new Set([
   "--sandbox",
   "--codex-config-source",
   "--config-source",
-  "--handoff-note",
   "--note",
   "--through-turn",
-  "--from-turn",
   "--target-model",
   "--target-model-id",
 ]);
@@ -22061,7 +21931,8 @@ function buildCliPlan(
   if (primary === "brain") {
     const sub = firstStandalonePositional([...args]) ?? "status";
     if (sub === "pin") {
-      return buildSyncPlan(args);
+      // `brain pin generate`: the plan reads what follows "pin".
+      return buildBrainPinPlan(args.slice(args.indexOf("pin") + 1));
     }
     return { kind: "brain", rest: args };
   }
@@ -22090,7 +21961,7 @@ function buildCliPlan(
   if (primary === "machines" || primary === "machine") {
     return buildMachinesPlan(args);
   }
-  if (primary === "new" || primary === "create") {
+  if (primary === "new") {
     return buildNewPlan(args);
   }
   if (primary === "sync") {
@@ -22279,29 +22150,11 @@ function buildCliPlan(
   // is deliberately no `ade sends`.
   if (primary === "drafts")
     return buildDraftsPlan(args);
-  if (primary === "agent" || primary === "agents") return buildAgentPlan(args);
   if (primary === "linear") return buildLinearPlan(args);
   if (primary === "automations" || primary === "automation") {
     assertAutomationsCliEnabled();
     return buildAutomationsPlan(args);
   }
-  if (primary === "coordinator" || primary === "coord")
-    return buildCoordinatorPlan(args);
-  if (primary === "ask")
-    return {
-      kind: "execute",
-      label: "ask user",
-      steps: [
-        actionCallStep(
-          "result",
-          "ask_user",
-          collectGenericObjectArgs(args, {
-            title: readValue(args, ["--title"]) ?? "ADE question",
-            body: readValue(args, ["--body", "--question"]) ?? args.join(" "),
-          }),
-        ),
-      ],
-    };
   if (primary === "tests" || primary === "test") return buildTestsPlan(args);
   if (primary === "scene" || primary === "scenes") return buildScenePlan(args);
   if (
@@ -24242,6 +24095,52 @@ function buildMachinesPlan(args: string[]): CliPlan {
   throw new CliUsageError("machines supports list, show, rename, remove, reconnect, or connect.");
 }
 
+/**
+ * `ade brain pin get|set|generate|clear`: the code a phone or the web client
+ * types to pair with this machine. The iOS app tells the person to run
+ * `ade brain pin generate`, so that spelling must stay.
+ */
+function buildBrainPinPlan(args: string[]): CliPlan {
+  const action = firstPositional(args) ?? "get";
+  if (action === "get" || action === "show") {
+    return {
+      kind: "execute",
+      label: "brain pin get",
+      formatter: "sync-pin",
+      steps: [{ key: "result", method: "sync.getPin" }],
+    };
+  }
+  if (action === "set") {
+    const pin = requireValue(
+      readValue(args, ["--pin"]) ?? firstPositional(args),
+      "pin",
+    );
+    return {
+      kind: "execute",
+      label: "brain pin set",
+      formatter: "sync-pin",
+      steps: [{ key: "result", method: "sync.setPin", params: { pin } }],
+    };
+  }
+  if (action === "generate" || action === "new") {
+    return {
+      kind: "execute",
+      label: "brain pin generate",
+      formatter: "sync-pin",
+      steps: [{ key: "result", method: "sync.generatePin" }],
+    };
+  }
+  if (action === "clear" || action === "remove") {
+    return {
+      kind: "execute",
+      label: "brain pin clear",
+      formatter: "sync-pin",
+      steps: [{ key: "result", method: "sync.clearPin" }],
+    };
+  }
+  throw new CliUsageError(`Unsupported brain pin action: ${action}`);
+}
+
 function buildSyncPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "status";
   if (sub === "help") {
@@ -24253,10 +24152,6 @@ Usage:
   ade sync web [--open] [--no-clipboard]   Print (and copy) the web client pairing link + code
   ade sync refresh
   ade sync devices
-  ade sync pin get
-  ade sync pin generate
-  ade sync pin set <6-digit-pin>
-  ade sync pin clear
   ade sync name <name>              Name this runtime for easy identification
   ade sync name get
   ade sync name clear
@@ -24337,46 +24232,6 @@ Usage:
       formatter: "sync-devices",
       steps: [{ key: "result", method: "sync.listDevices" }],
     };
-  }
-  if (sub === "pin") {
-    const action = firstPositional(args) ?? "get";
-    if (action === "get" || action === "show") {
-      return {
-        kind: "execute",
-        label: "sync pin get",
-        formatter: "sync-pin",
-        steps: [{ key: "result", method: "sync.getPin" }],
-      };
-    }
-    if (action === "set") {
-      const pin = requireValue(
-        readValue(args, ["--pin"]) ?? firstPositional(args),
-        "pin",
-      );
-      return {
-        kind: "execute",
-        label: "sync pin set",
-        formatter: "sync-pin",
-        steps: [{ key: "result", method: "sync.setPin", params: { pin } }],
-      };
-    }
-    if (action === "generate" || action === "new") {
-      return {
-        kind: "execute",
-        label: "sync pin generate",
-        formatter: "sync-pin",
-        steps: [{ key: "result", method: "sync.generatePin" }],
-      };
-    }
-    if (action === "clear" || action === "remove") {
-      return {
-        kind: "execute",
-        label: "sync pin clear",
-        formatter: "sync-pin",
-        steps: [{ key: "result", method: "sync.clearPin" }],
-      };
-    }
-    throw new CliUsageError(`Unsupported sync pin action: ${action}`);
   }
   if (sub === "name") {
     // `ade sync name <name>` names THIS runtime for easy identification (so two
@@ -28255,6 +28110,32 @@ async function runServe(
     });
     externalChats.setExternalParentRouter(crossScopeChats.router);
     crossScopeChats.start();
+    // Work copies here for chats on other machines: a sweep a minute after
+    // start and then hourly deletes copies unused for a week and copies whose
+    // chat its own machine says is deleted or archived.
+    const sweepWorkCopies = async (): Promise<void> => {
+      const [{ sweepMachineRemoteWork }, { parseForeignCallerSessionId }] = await Promise.all([
+        import("../../desktop/src/main/services/remoteWork/remoteWorkCopyService"),
+        import("../../desktop/src/shared/runtimeClientNames"),
+      ]);
+      await sweepMachineRemoteWork({
+        logger: headlessProjectLogger,
+        ownerGone: async (owner) => {
+          const chatSessionId = parseForeignCallerSessionId(owner)?.chatSessionId ?? null;
+          const machineKey = externalChats.externalChatContext(owner)?.machineKey ?? null;
+          if (!chatSessionId || !machineKey) return null;
+          const answer = await (await getAgentMachineBridge()).locateChat(machineKey, chatSessionId);
+          return answer ? { gone: !answer.found || answer.archived, archived: answer.archived } : null;
+        },
+      });
+    };
+    const runWorkCopySweep = () => {
+      void sweepWorkCopies().catch((error) => {
+        headlessProjectLogger.warn("remote_work.sweep_failed", { error: error instanceof Error ? error.message : String(error) });
+      });
+    };
+    setTimeout(runWorkCopySweep, 60_000).unref?.();
+    setInterval(runWorkCopySweep, 60 * 60_000).unref?.();
   }
 
   const createHandler = (context?: { peerDeviceId: string | null }) =>
@@ -31042,27 +30923,27 @@ function describeSyncPairingCode(snapshot: JsonObject): string | null {
   const pin = asString(snapshot.pairingPin);
   if (pin) return pin;
   if (snapshot.pairingPinConfigured === true) {
-    return "set — hidden since the brain restarted (ade sync pin generate for a new one)";
+    return "set — hidden since the brain restarted (ade brain pin generate for a new one)";
   }
   if (snapshot.pairingConnectInfo == null) return null;
-  return "not set — run: ade sync pin generate";
+  return "not set — run: ade brain pin generate";
 }
 
 /**
- * `ade sync pin …` in words.
+ * `ade brain pin …` in words.
  *
  * `get` answers with `{ pin }`; set/generate/clear answer with the whole sync
  * snapshot. Both land here, so the operator reads one line either way instead
  * of the first two dozen keys of a snapshot.
  */
 function formatSyncPin(value: unknown): string {
-  const noCode = "No pairing code is set — run: ade sync pin generate";
+  const noCode = "No pairing code is set — run: ade brain pin generate";
   if (!isRecord(value)) return noCode;
   const pin = asString(value.pin) ?? asString(value.pairingPin);
   if (pin) return `Pairing code ${pin}\n\nEnter it on the phone or web client. Show the link too: ade sync web`;
   if (value.pairingPinConfigured === true) {
     return "A pairing code is set, but ADE cannot show it — only the run that set it knows the digits."
-      + "\n\nUse the code you already have, or set a new one: ade sync pin generate";
+      + "\n\nUse the code you already have, or set a new one: ade brain pin generate";
   }
   if ("pairingConnectInfo" in value && value.pairingConnectInfo == null) {
     return "This machine is not hosting pairing right now — check: ade sync status --text";
@@ -31081,7 +30962,7 @@ function formatSyncDevices(value: unknown): string {
       asString(device.platform) ?? "",
       asString(device.lastSeenAt) ?? "",
     ]),
-    "No paired devices yet — run: ade sync pin generate",
+    "No paired devices yet — run: ade brain pin generate",
   );
 }
 
@@ -31102,14 +30983,14 @@ function formatSyncWebPairing(value: unknown): string {
     codeLines = [
       "  Code   (PIN configured but hidden after runtime restart)",
       "  Known  Use the existing code if you already know it.",
-      "  New    ade sync pin generate",
-      "  Set    ade sync pin set <6-digit-code>",
+      "  New    ade brain pin generate",
+      "  Set    ade brain pin set <6-digit-code>",
     ];
     nextStep =
       "Open the link and enter the existing code if you know it. " +
       "Generate or set a new code only if you need ADE to display or copy one.";
   } else {
-    codeLines = ["  Code   (no PIN set — run: ade sync pin generate)"];
+    codeLines = ["  Code   (no PIN set — run: ade brain pin generate)"];
     nextStep = "Generate or set a new code on this machine, then run ade sync web again.";
   }
   return [
@@ -36915,6 +36796,64 @@ function chatCreateNotices(plan: CliPlan & { kind: "execute" }, values: JsonObje
   return notices;
 }
 
+/** How often `shell start --wait` reads the shell; the output itself streams as it comes. */
+const FOLLOW_SHELL_POLL_MS = 1_000;
+/** The most output `shell start --wait --json` keeps (the end of it). */
+const FOLLOW_SHELL_MAX_OUTPUT_CHARS = 1024 * 1024;
+
+/**
+ * Follow a shell `shell start` just started until it ends: print its output as
+ * it arrives (text mode), then answer with its exit code. Works the same for a
+ * shell on another machine, because every call goes over `connection`.
+ */
+async function followShellToExit(
+  connection: CliConnection,
+  started: unknown,
+  options: GlobalOptions,
+): Promise<JsonObject> {
+  const createdValue = unwrapActionEnvelope(started);
+  const created = isRecord(createdValue) ? createdValue : {};
+  const terminalId = asString(created.sessionId);
+  if (!terminalId) throw new CliExecutionError("The shell started, but ADE did not say which terminal it is.", { result: created });
+  const call = async (domain: string, action: string, args: JsonObject): Promise<unknown> =>
+    unwrapActionEnvelope(unwrapToolResult(await connection.request("ade/actions/call", { name: "run_ade_action", arguments: { domain, action, args } })));
+  let since: number | undefined;
+  let output = "";
+  const readMore = async (): Promise<JsonObject | null> => {
+    const read = await call("terminal", "read", { terminalId, ...(since !== undefined ? { since } : {}) });
+    if (!isRecord(read)) return null;
+    const data = typeof read.data === "string" ? read.data : "";
+    if (data) {
+      if (options.text) process.stdout.write(data);
+      output = `${output}${data}`.slice(-FOLLOW_SHELL_MAX_OUTPUT_CHARS);
+    }
+    if (typeof read.nextSince === "number") since = read.nextSince;
+    return read;
+  };
+  for (;;) {
+    const read = await readMore();
+    // A brain older than the read's status falls back to the terminal list.
+    const state = read && typeof read.status === "string"
+      ? read
+      : await call("terminal", "list", { limit: 200 }).then((listed) => (Array.isArray(listed)
+        ? listed.find((entry) => isRecord(entry) && entry.terminalId === terminalId)
+        : null));
+    if (!isRecord(state) || state.status !== "running") {
+      // One last read: output written just before the end.
+      await readMore();
+      const exitCode = isRecord(state) && typeof state.exitCode === "number" ? state.exitCode : null;
+      return {
+        ...created,
+        terminalId,
+        status: isRecord(state) ? state.status ?? null : "missing",
+        exitCode,
+        ...(options.text ? {} : { output }),
+      };
+    }
+    await new Promise((resolve) => setTimeout(resolve, FOLLOW_SHELL_POLL_MS));
+  }
+}
+
 async function executePlan(
   plan: CliPlan & { kind: "execute" },
   options: GlobalOptions,
@@ -37052,6 +36991,11 @@ async function executePlan(
           error: error instanceof Error ? error.message : String(error),
         };
       }
+    }
+    if (plan.followShell) {
+      // A followed command prints as it runs, so it is text unless --json was asked for.
+      if (!options.json) options.text = true;
+      values.result = await followShellToExit(connection, values.result, options);
     }
     const ownerWarning = chatOwnerSocketWarning(values, connection);
     if (ownerWarning) process.stderr.write(`${ownerWarning}\n`);
@@ -37718,7 +37662,7 @@ async function runParsedCli(
     plan.kind === "runtime" ||
     plan.kind === "serve" ||
     (plan.kind === "execute" &&
-      /^(agent spawn|chat create|personal chat create|new chat|shell start cli)\b/.test(plan.label))
+      /^(chat create|personal chat create|new chat|shell start cli)\b/.test(plan.label))
   ) {
     cleanupLegacyBundledAdeSkillsForCli();
   }

@@ -783,6 +783,12 @@ jobs:
           src/shared/pathContainment.test.ts
           src/shared/artifactStreamUrl.test.ts
 
+      # A command a chat on another machine runs here once goes through
+      # PowerShell's -EncodedCommand; only a real PowerShell proves its words
+      # and exit code arrive unchanged.
+      - name: Test Windows remote run-once command launch
+        run: cd apps/desktop && npx vitest run src/main/services/pty/ptyService.test.ts -t "another machine runs here once"
+
       # Covers the Windows runtime startup timing and `connectSpawnedRuntime`
       # retry path. This suite spawns real `ade serve` daemons and connects to
       # them over the platform transport, so on this runner it is the only gate

@@ -108,6 +108,8 @@ import { AgentBrowserPresenceBadge } from "./AgentBrowserPresenceBadge";
 import { SessionDevServerBadge } from "./SessionDevServerBadge";
 import { isTrackedAgentCliToolType } from "../../../shared/types/sessions";
 import { SideChatBadge } from "../chat/SideChatBadge";
+import { RemoteWorkBadge } from "../chat/RemoteWorkMarks";
+import { activeRemoteWorkOnRow } from "../../../shared/chatRemoteWork";
 import { SessionStatusLabel } from "./SessionStatusLabel";
 import { GitHubStackBadge } from "../prs/shared/GitHubStackBadge";
 import {
@@ -1404,6 +1406,7 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
         size={11}
       />
       <SideChatBadge mainSessionId={session.id} rowSideChatSessionId={session.sideChatSessionId ?? null} size={11} />
+      <RemoteWorkBadge uses={activeRemoteWorkOnRow(session)} size={11} />
     </>
   );
   const gridIndicator = gridBadge ? (

@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { withRemoteAppleArgs, withRemoteShellArgs } from "./cliRemoteWork";
 import { THIS_MACHINE_NAME } from "../../desktop/src/shared/machineIdentity";
 import { pickLiveCheckout } from "../../desktop/src/shared/crossMachineHandoff";
 import { gitRemoteIdentity } from "../../desktop/src/main/services/github/githubSshAlias";
@@ -8,12 +9,14 @@ import { samePathOnPlatform } from "../../desktop/src/shared/pathContainment";
 import {
   CLI_COMMAND_ALIASES,
   CliExecutionError,
+  CliToolError,
   CliUsageError,
   VALUE_CARRIER_FLAGS,
   asString,
   automaticProjectRegistrationParams,
   connectMachineRuntimeDaemon,
   executePlan,
+  firstStandalonePositional,
   firstArray,
   getGitRemote,
   isMachineRuntimeScopedMethod,
@@ -44,15 +47,24 @@ import {
    See docs/features/sync-and-multi-device/cross-machine-agents.md.
    ────────────────────────────────────────────────────────────────────────── */
 
+/** `ade apple` verbs that build the app: with --machine and no --lane they sync the work copy first. */
+const APPLE_BUILD_VERBS: ReadonlySet<string> = new Set(["launch", "open", "install", "install-app", "test", "tests"]);
+
 /** Commands that can run on another machine with `--machine`. */
 const MACHINE_TARGETABLE_PRIMARIES: ReadonlySet<string> = new Set([
   "chat",
   "new",
   "lanes",
   "lane",
+  "shell",
+  "terminal",
   "projects",
   "apple",
   "mac-desktop",
+  // `screen` and its Windows spellings run the same plan as `mac-desktop`.
+  "screen",
+  "windows-desktop",
+  "windows-desk",
   "app-control",
   "usage",
 ]);
@@ -64,7 +76,7 @@ const OWN_MACHINE_FLAG_PRIMARIES: ReadonlySet<string> = new Set(["drafts", "mach
 /** Where `--project` means "the project on that machine" (apple uses it for an Xcode project). */
 const MACHINE_PROJECT_ALIAS_PRIMARIES: ReadonlySet<string> = new Set(["chat", "lanes", "lane"]);
 /** Flags whose value is free text that may itself look like a flag. */
-export const FREE_TEXT_VALUE_FLAGS: ReadonlySet<string> = new Set(["--text", "--prompt", "--message", "--note", "--handoff-note", "--title", "--reason"]);
+export const FREE_TEXT_VALUE_FLAGS: ReadonlySet<string> = new Set(["--text", "--prompt", "--message", "--note", "--title", "--reason"]);
 
 /**
  * The flag names in `args`, skipping each value-carrying flag's value: in
@@ -106,7 +118,7 @@ export function extractMachineTargeting(parsed: ParsedCli): ParsedCli {
       }
       throw new CliUsageError(
         `ade ${typed} runs on this machine only; --machine and --all-machines don't apply to it. `
-        + "Commands that run on another machine: chat, lanes, projects, usage, apple, mac-desktop, app-control.",
+        + "Commands that run on another machine: chat, lanes, shell, terminal, projects, usage, apple, screen (mac-desktop, windows-desktop), app-control.",
       );
     }
     return parsed;
@@ -117,8 +129,8 @@ export function extractMachineTargeting(parsed: ParsedCli): ParsedCli {
   // so --machine with them is a mistake, not a target.
   if (primary === "chat" && parsed.command[1]?.toLowerCase() === "handoff") {
     const flags = flagNamesOutsideFreeText(parsed.command);
-    if ((flags.has("--machine") || flags.has("--to-machine")) && ["--cancel", "--retry", "--options", "--where"].some((flag) => flags.has(flag))) {
-      throw new CliUsageError("--machine names the destination of a move; drop it for --cancel/--retry/--options/--where.");
+    if (flags.has("--machine") && ["--cancel", "--retry", "--options"].some((flag) => flags.has(flag))) {
+      throw new CliUsageError("--machine names the destination of a move; drop it for --cancel/--retry/--options.");
     }
     return parsed;
   }
@@ -128,10 +140,22 @@ export function extractMachineTargeting(parsed: ParsedCli): ParsedCli {
   let machineProject: string | null = null;
   let projectAlias: string | null = null;
   let machineClone = false;
+  let workCopySync: "none" | "discard" | null = null;
+  let terminatorArgs: string[] | null = null;
   const command = parsed.command;
+  // A shell start or an Apple build with --machine runs in this chat's work
+  // copy there unless --lane names a lane there; only those take --no-sync
+  // and --discard (`ade apple record-stop --discard` keeps its own meaning).
+  const commandFlags = flagNamesOutsideFreeText(command);
+  // The subcommand wherever it sits (`ade shell --machine m start …`).
+  const subcommand = firstStandalonePositional(command.slice(1))?.toLowerCase() ?? "";
+  const workCopyVerb = commandFlags.has("--machine")
+    && ((primary === "shell" && (subcommand === "start" || subcommand === "create"))
+      || (primary === "apple" && APPLE_BUILD_VERBS.has(subcommand)));
   for (let index = 0; index < command.length; index += 1) {
     const token = command[index]!;
     if (token === "--") {
+      terminatorArgs = command.slice(index + 1);
       kept.push(...command.slice(index));
       break;
     }
@@ -155,6 +179,11 @@ export function extractMachineTargeting(parsed: ParsedCli): ParsedCli {
     if (flag === "--machine-project") { machineProject = takeValue(); continue; }
     if (flag === "--all-machines" && inline == null) { allMachines = true; continue; }
     if (flag === "--clone" && inline == null && primary === "chat") { machineClone = true; continue; }
+    if ((flag === "--no-sync" || flag === "--discard") && inline == null && workCopyVerb) {
+      if (workCopySync) throw new CliUsageError("Use --no-sync or --discard, not both.");
+      workCopySync = flag === "--no-sync" ? "none" : "discard";
+      continue;
+    }
     if (flag === "--project" && MACHINE_PROJECT_ALIAS_PRIMARIES.has(primary)) {
       projectAlias = takeValue();
       continue;
@@ -166,7 +195,21 @@ export function extractMachineTargeting(parsed: ParsedCli): ParsedCli {
   }
   if (machine && allMachines) throw new CliUsageError("Use --machine <name> or --all-machines, not both.");
   if (machineClone && !machine) throw new CliUsageError("--clone sets the repository up on another machine; add --machine <name>.");
+  const usesWorkCopy = workCopyVerb && !commandFlags.has("--lane") && !commandFlags.has("--lane-id");
+  if (workCopySync && !usesWorkCopy) {
+    throw new CliUsageError("--no-sync and --discard are for this chat's work copy there; leave out --lane to use it.");
+  }
   if (machineProject && !machine && !allMachines) throw new CliUsageError("--machine-project needs --machine <name>.");
+  if (!machine && primary === "shell") {
+    const flags = flagNamesOutsideFreeText(parsed.command);
+    if (subcommand === "clean") {
+      throw new CliUsageError("ade shell clean deletes this chat's work copy on another machine: add --machine <name>.");
+    }
+    const workCopyFlag = ["--no-sync", "--discard", "--wait"].find((flag) => flags.has(flag));
+    if (workCopyFlag) {
+      throw new CliUsageError(`${workCopyFlag} is for a command on another machine: add --machine <name>. Here, run the command in your own shell.`);
+    }
+  }
   if (!machine && !allMachines) return parsed;
   return {
     command: kept,
@@ -176,6 +219,16 @@ export function extractMachineTargeting(parsed: ParsedCli): ParsedCli {
       allMachines,
       machineProject: machineProject ?? projectAlias,
       machineClone,
+      ...(usesWorkCopy
+        ? {
+            machineWorkCopy: {
+              sync: workCopySync,
+              // A shell command's argv (after `--`), sent as argv so the other
+              // machine renders it for its own shell.
+              argv: primary === "shell" ? terminatorArgs : null,
+            },
+          }
+        : {}),
     },
   };
 }
@@ -410,6 +463,21 @@ export async function createMachineRemoteConnection(
       if (method === "ade/actions/call" && params && isAppControlCaptureProof(params)) {
         return await fileRemoteAppControlProofHere(params);
       }
+      if (method === "ade/actions/call" && params && isShellOrTerminalAction(params)) {
+        // The checkout the command runs from: the lane worktree, or the project
+        // --project-root names (whose remote picked the project there).
+        const shellParams = withRemoteShellArgs(params, roots.workspaceRoot, options.machineWorkCopy ?? null);
+        try {
+          return await callRemote(method, shellParams);
+        } catch (error) {
+          // The other machine said no (busy copy, unpushed work there, low
+          // disk): its sentence is the whole answer, not a connection problem.
+          throw new CliToolError(error instanceof Error ? error.message : String(error), { machine });
+        }
+      }
+      if (method === "ade/actions/call" && params?.name === "run_ade_action" && isRecord(params.arguments) && params.arguments.domain === "ios_simulator") {
+        return await callRemote(method, withRemoteAppleArgs(params, roots.workspaceRoot, options.machineWorkCopy ?? null));
+      }
       if (method === "ade/actions/call" && (params?.name === "list_computer_use_artifacts" || params?.name === "review_computer_use_artifact")) {
         // A proof command's verify step checks the drawer it filed into, and a
         // review reads proof from it: this one.
@@ -419,6 +487,11 @@ export async function createMachineRemoteConnection(
     },
     close: () => socketClient.close(),
   };
+}
+
+function isShellOrTerminalAction(params: JsonObject): boolean {
+  const toolArgs = isRecord(params.arguments) ? params.arguments : null;
+  return params.name === "run_ade_action" && (toolArgs?.domain === "pty" || toolArgs?.domain === "terminal");
 }
 
 function isAppControlCaptureProof(params: JsonObject | undefined): boolean {

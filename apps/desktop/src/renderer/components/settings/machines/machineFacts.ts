@@ -4,7 +4,7 @@ import type { RemoteRuntimeConnectionStatus } from "../../../../shared/types";
 import { updateTrackOfVersion, type UpdateTrack } from "../../../../shared/updateTrack";
 import { rendererRuntimeTarget } from "../../../lib/platform";
 import { useRemoteConnectionSnapshot, type ProjectMachine } from "../../../state/projectMachines";
-import { connectedMachinesFromSnapshot, type ConnectedMachine } from "../../remoteTargets/remoteMachineModel";
+import { connectedMachinesFromSnapshot, machineColorKey, type ConnectedMachine } from "../../remoteTargets/remoteMachineModel";
 import { machinePlatform, type MachinePlatform } from "../../remoteTargets/MachineIdentity";
 
 /**
@@ -108,7 +108,12 @@ export function useMachineFacts(
       const connection = connected.get(machine.machineId) ?? null;
       const version = connection?.version ?? machine.version;
       facts.set(machine.machineId, {
-        colorKey: connection?.colorKey ?? machine.machineId,
+        // The paired key even while the machine is offline: the pickers read
+        // its preference under that key, not under the local target id.
+        colorKey: connection?.colorKey ?? (() => {
+          const target = connections.get(machine.machineId)?.target;
+          return target ? machineColorKey(target) : machine.machineId;
+        })(),
         platform: machinePlatform(connection?.arch ?? null, machine.hostname),
         version,
         versionLabel: connection?.versionLabel ?? version,

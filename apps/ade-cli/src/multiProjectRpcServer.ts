@@ -1209,6 +1209,42 @@ function readProjectRegistrationIntent(
   return { catalogVisibility, registrationSource };
 }
 
+/**
+ * A call that runs in the caller's work copy there: `ade shell start
+ * --machine` (pty.create) or a lane-less `ade apple … --machine`. Null for
+ * anything else.
+ */
+function remoteWorkCallKind(method: string, params: Record<string, unknown>): "shell" | "simulator" | null {
+  if (method !== "ade/actions/call" || params.name !== "run_ade_action" || !isRecord(params.arguments)) return null;
+  const call = params.arguments;
+  if (!isRecord(call.args) || !isRecord(call.args.remoteWork)) return null;
+  if (call.domain === "pty" && call.action === "create") return "shell";
+  if (call.domain === "ios_simulator") return "simulator";
+  return null;
+}
+
+/** The action's own result in a forwarded `ade/actions/call` answer (`{ structuredContent: { result } }`, or older shapes). */
+function remoteActionResult(answer: unknown): Record<string, unknown> | null {
+  const structured = isRecord(answer) && isRecord(answer.structuredContent) ? answer.structuredContent : null;
+  for (const candidate of [structured?.result, isRecord(answer) ? answer.result : null, structured, answer]) {
+    if (isRecord(candidate) && !("structuredContent" in candidate)) return candidate;
+  }
+  return null;
+}
+
+/** The terminal id in a forwarded pty.create answer. */
+function remoteWorkCreatedTerminalId(answer: unknown): string | null {
+  const created = remoteActionResult(answer);
+  return created && typeof created.sessionId === "string" && typeof created.ptyId === "string" ? created.sessionId : null;
+}
+
+/** The work copy's lane id there, which that machine returns with the answer (newer ADE only). */
+function remoteWorkCopyLaneId(answer: unknown): string | null {
+  const result = remoteActionResult(answer);
+  const workCopy = result && isRecord(result.workCopy) ? result.workCopy : null;
+  return workCopy && typeof workCopy.laneId === "string" ? workCopy.laneId : null;
+}
+
 function omitProjectId(
   params: Record<string, unknown>,
 ): Record<string, unknown> {
@@ -3109,6 +3145,28 @@ export function createMultiProjectRpcRequestHandler(
           timeoutMs: typeof params.timeoutMs === "number" ? params.timeoutMs : undefined,
           clone: params.clone === true,
         });
+        // A shell this chat started in its work copy there: the chat's views
+        // show which machine it is working on.
+        const remoteWorkKind = callerChat ? remoteWorkCallKind(forwardMethod, forwardParams) : null;
+        // Bookkeeping for the chat's views: the call already ran there, so a
+        // failure here is logged and never turns it into a failed call.
+        if (callerChat && remoteWorkKind) {
+          try {
+            located?.runtime.agentChatService?.noteRemoteWork({
+              terminalId: remoteWorkKind === "shell" ? remoteWorkCreatedTerminalId(answer.result) : null,
+              workCopyLaneId: remoteWorkCopyLaneId(answer.result),
+              usesSimulator: remoteWorkKind === "simulator",
+              sessionId: callerChat,
+              machineKey: answer.machine.machineKey,
+              machineName: answer.machine.name,
+              machinePlatform: answer.machine.platform ?? null,
+              projectId: answer.project?.projectId ?? null,
+              projectRootPath: answer.project?.rootPath ?? null,
+            });
+          } catch (error) {
+            console.warn("[remote-work] could not record the chat's work on another machine", error);
+          }
+        }
         // A child this chat started there: remember it, so that machine's
         // report of its finished turns is accepted here and nowhere else.
         const childSessionId = startsOwnChild ? createdChatSessionId(answer.result) : null;
@@ -3168,8 +3226,17 @@ export function createMultiProjectRpcRequestHandler(
       if (!scope) return { found: false };
       if (scope.kind === "personal") return { found: true, scope: { kind: "personal" } };
       const record = projectRegistry.list().find((entry) => entry.projectId === scope.projectId);
+      // Archived only when the project is already running here: never a boot.
+      // A failed read leaves `archived` out, so the other machine keeps its copy.
+      const archivedReadFailed = (error: unknown) => {
+        machineProjectLogger.warn("chats.locate_archived_read_failed", { sessionId, error: error instanceof Error ? error.message : String(error) });
+        return null;
+      };
+      const booted = await scopeRegistry.getIfBooted(scope.projectId)?.catch(archivedReadFailed);
+      const summary = await booted?.runtime?.agentChatService?.getSessionSummary?.(sessionId).catch(archivedReadFailed);
       return {
         found: true,
+        ...(summary?.archivedAt ? { archived: true } : {}),
         scope: { kind: "project", projectId: scope.projectId, name: record?.displayName ?? null, rootPath: record?.rootPath ?? null },
       };
     }

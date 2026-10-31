@@ -201,6 +201,33 @@ export function captureCrossMachineMoveAnalytics(args: {
 }
 
 /**
+ * A chat started work on another machine: a command or a simulator there.
+ *
+ * The product question is whether people use their other machines from a
+ * chat. The session and machine only key the local dedupe (hashed, never
+ * sent), so each chat counts at most once an hour for each machine.
+ */
+export function captureRemoteWorkAnalytics(args: {
+  analytics: AgentTurnAnalytics;
+  projectId: string;
+  event: { sessionId: string; machineKey: string };
+}): void {
+  args.analytics.captureInternal({
+    event: "ade_feature_used",
+    surface: "api",
+    projectId: args.projectId,
+    dedupeKey: `remote_work:${args.event.sessionId}:${args.event.machineKey}`,
+    minimumIntervalMs: 60 * 60_000,
+    properties: {
+      feature: "chat",
+      action: "remote_work",
+      outcome: "started",
+      source: "runtime",
+    },
+  });
+}
+
+/**
  * One coarse fact per auto-resume transition, so the product question — does
  * auto-resume actually rescue a chat a usage limit stopped? — can be answered
  * from `armed` versus `resumed` versus `paused`.
