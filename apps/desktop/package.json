@@ -96,7 +96,7 @@
     "@linear/sdk": "^84.0.0",
     "@lobehub/emojilib": "^1.0.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "@openai/codex": "0.164.0",
+    "@openai/codex": "0.166.0",
     "@opencode/cli": "2.0.29",
     "@xterm/addon-serialize": "^0.14.0",
     "@xterm/headless": "^6.0.0",
