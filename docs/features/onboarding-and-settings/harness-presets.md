@@ -209,7 +209,8 @@ it.
   drops an uploaded logo over 200 KB with a note saying so.
 - **Import** reads a file and opens the wizard prefilled, listing anything this
   computer does not have: a provider account it does not hold, a key it does not
-  hold, or a proxy sign-in it cannot perform. Nothing lands in the list until
+  hold, or a provider sign-in (Grok, Kimi, Devin, Muse) this computer is not
+  signed in to. Nothing lands in the list until
   you save it, and importing the same file twice makes two presets rather than
   one that silently overwrites itself.
 

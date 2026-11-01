@@ -9,25 +9,24 @@ import { paletteFromTint, rgbCss } from "../../account/useProfilePalette";
 import { bodyLogoFamily } from "./presetFacts";
 
 /**
- * The Custom banner: the provider pages' and Account page's banner, painted
+ * The Custom hero: the kit's `.kit-hero` (the Account page's banner), painted
  * from one colour. The section uses it for its empty state and the editor for
  * a live preview of what is being built.
  */
 
-/** The banner's colour stops, as the CSS variables `customProviders.css` reads. */
-export function customBannerStyle(color: string): CSSProperties {
-  const [base, deep, mid, bright, light] = paletteFromTint(color).ramp;
+/** The hero's colour stops (`.kit-hero` reads `--hero-*`) and the accent the editor wears. */
+export function customHeroStyle(color: string): CSSProperties {
+  const [, deep, mid, bright, light] = paletteFromTint(color).ramp;
   return {
-    "--cp-base": rgbCss(base!),
-    "--cp-deep": rgbCss(deep!),
-    "--cp-mid": rgbCss(mid!),
-    "--cp-bright": rgbCss(bright!),
-    "--cp-light": rgbCss(light!),
+    "--hero-deep": rgbCss(deep!),
+    "--hero-mid": rgbCss(mid!),
+    "--hero-bright": rgbCss(bright!),
+    "--hero-light": rgbCss(light!),
     "--cp-accent": color,
   } as CSSProperties;
 }
 
-export function CustomBanner({
+export function CustomHero({
   color,
   children,
   label,
@@ -37,19 +36,19 @@ export function CustomBanner({
   label?: string;
 }) {
   return (
-    <section className="ade-cp-banner" style={customBannerStyle(color)} aria-label={label}>
-      <div className="ade-cp-banner-wash" />
-      <div className="ade-cp-banner-shade" />
-      <div className="ade-cp-banner-row">{children}</div>
+    <section className="kit-hero ade-cp-hero" style={customHeroStyle(color)} aria-label={label}>
+      <div className="kit-hero-wash" />
+      <div className="kit-hero-shade" />
+      <div className="kit-hero-row">{children}</div>
     </section>
   );
 }
 
 /**
- * A preset's mark standing on the banner as a raised glass tile. The default
- * mark draws white here: in the accent it would vanish into its own banner.
+ * A preset's mark standing on the hero as a raised glass tile. The default
+ * mark draws white here: in the accent it would vanish into its own hero.
  */
-export function CustomBannerMark({ logo }: { logo: HarnessPresetLogo }) {
+export function CustomHeroMark({ logo }: { logo: HarnessPresetLogo }) {
   return (
     <div className="ade-cp-mark" aria-hidden>
       <div className="ade-cp-mark-face">

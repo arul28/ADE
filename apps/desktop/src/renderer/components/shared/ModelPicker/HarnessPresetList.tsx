@@ -4,11 +4,11 @@ import {
   HARNESS_PRESET_AGENT_KEYS,
   HARNESS_PRESET_AGENT_LABELS,
   harnessBodyLabel,
-  openCodeSourceLabel,
   presetLabel,
   presetSourceLabel,
+  presetSourceLogo,
+  presetSourceSummary,
   type HarnessPreset,
-  type HarnessPresetSource,
 } from "../../../../shared/harnessPresets";
 import { harnessModelLabel } from "../../settings/harnesses/harnessModels";
 import { loadHarnessAccounts } from "../../settings/harnesses/harnessSources";
@@ -36,11 +36,6 @@ import { cn } from "../../ui/cn";
  * chosen at launch in the composer, so a setup that also stored one could only
  * disagree with the live choice.
  */
-
-/** The provider whose mark a source wears. Key sources name their own. */
-function sourceLogoFamily(source: HarnessPresetSource): string {
-  return source.kind === "opencode" ? source.providerId : source.provider;
-}
 
 /** A labelled line in the expanded details: label, mark, value. */
 function DetailRow({
@@ -140,7 +135,7 @@ export const HarnessPresetRow = memo(function HarnessPresetRow({
               </span>
             </span>
             <span className="block truncate text-[10px] font-normal leading-snug text-muted-fg/55">
-              {`${harnessModelLabel(preset.model, catalogScopeKey)} · ${presetSourceShort(preset.source)}`}
+              {`${harnessModelLabel(preset.model, catalogScopeKey)} · ${presetSourceSummary(preset.source).title}`}
             </span>
           </span>
         </button>
@@ -164,7 +159,7 @@ export const HarnessPresetRow = memo(function HarnessPresetRow({
           <DetailRow label="Harness" value={<PresetAgent harness={preset.harness} size={12} />} />
           <DetailRow
             label="Source"
-            mark={<ProviderLogo family={sourceLogoFamily(preset.source)} size={12} />}
+            mark={<ProviderLogo family={presetSourceLogo(preset.source)} size={12} />}
             value={presetSourceLabel(preset.source, accountLabel)}
           />
           <dt className="self-start text-muted-fg/55">Models</dt>
@@ -185,20 +180,6 @@ export const HarnessPresetRow = memo(function HarnessPresetRow({
     </div>
   );
 });
-
-/** Whose plan pays, in a few words: the row's second fact after the model. */
-function presetSourceShort(source: HarnessPreset["source"]): string {
-  switch (source.kind) {
-    case "account":
-      return `your ${source.provider === "claude" ? "Claude" : "Codex"} account`;
-    case "subscription":
-      return `your ${harnessBodyLabel(source.provider)} sign-in`;
-    case "key":
-      return "API key";
-    case "opencode":
-      return openCodeSourceLabel(source.providerId);
-  }
-}
 
 /**
  * Instance-id → account name, read once per open picker.

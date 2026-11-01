@@ -16,16 +16,9 @@ import { originUrlForBinding } from "../components/lanes/laneMachines";
 import { MODEL_REGISTRY, type ModelDescriptor } from "../../shared/modelRegistry";
 import {
   normalizeHarnessPresetList,
-  unreadableHarnessPresetEntries,
   type HarnessPreset,
 } from "../../shared/harnessPresets";
-
-/**
- * Presets a newer ADE synced that this build cannot read. They are not shown
- * or launched here, but every write of the list (to disk and to the account)
- * carries them, so editing another preset on this machine never deletes them.
- */
-let unreadableHarnessPresets: unknown[] = [];
+import { readHarnessPresetList, withUnreadableHarnessPresets } from "../lib/harnessPresetCarry";
 import {
   DEFAULT_APPLE_DEVICE_PREFERENCES,
   normalizeAppleDevicePreferences,
@@ -1147,10 +1140,7 @@ function readUnifiedUserPreferences(): PersistedUserPreferences | null {
       chatTranscriptDensity: normalizeChatTranscriptDensity(parsed.chatTranscriptDensity),
       chatChromeTint: coercePersistedChatChromeTint(parsed as Record<string, unknown>),
       chatShellGeometry: normalizeChatShellGeometry(parsed.chatShellGeometry),
-      harnessPresets: (() => {
-        unreadableHarnessPresets = unreadableHarnessPresetEntries(parsed.harnessPresets);
-        return normalizeHarnessPresetList(parsed.harnessPresets);
-      })(),
+      harnessPresets: readHarnessPresetList(parsed.harnessPresets),
       appleDevice: normalizeAppleDevicePreferences(
         (parsed as { apple?: unknown; appleDevice?: unknown }).apple
           ?? (parsed as { appleDevice?: unknown }).appleDevice,
@@ -1274,26 +1264,17 @@ function persistUserPreferencesFrom(state: {
     chatShellGeometry: state.chatShellGeometry,
     // Stored with the rows this build cannot read; the loader normalizes and
     // sets those aside again, so only storage ever holds them.
+    // `PersistedUserPreferences` types the list as read back (normalized), so
+    // the rows carried through unread are cast in for the write only.
     harnessPresets: withUnreadableHarnessPresets(state.harnessPresets) as HarnessPreset[],
     appleDevice: state.appleDevice,
     userOverrodeChatFontSize: state.userOverrodeChatFontSize,
   });
 }
 
-/** The list to store or sync: this build's presets plus the ones it cannot read. */
-export function withUnreadableHarnessPresets(presets: readonly HarnessPreset[]): unknown[] {
-  if (unreadableHarnessPresets.length === 0) return [...presets];
-  const ids = new Set(presets.map((preset) => preset.id));
-  return [
-    ...presets,
-    ...unreadableHarnessPresets.filter((entry) => !ids.has(String((entry as { id?: unknown }).id).trim())),
-  ];
-}
-
 /** Take the account's list as it is, remembering the rows this build cannot read. */
 export function applyAccountHarnessPresets(state: Pick<AppState, "setHarnessPresets">, value: unknown): void {
-  unreadableHarnessPresets = unreadableHarnessPresetEntries(value);
-  state.setHarnessPresets(normalizeHarnessPresetList(value));
+  state.setHarnessPresets(readHarnessPresetList(value));
 }
 
 /**

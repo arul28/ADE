@@ -24,7 +24,9 @@
 
 import {
   HARNESS_PRESET_BODIES,
+  harnessAccountProviderLabel,
   harnessBodyLabel,
+  presetSourceSummary,
   type HarnessPresetAccountProvider,
   type HarnessPresetBody,
   type HarnessPresetSource,
@@ -53,7 +55,6 @@ import type { AgentChatModelCatalog } from "../../../../shared/types";
 import { descriptorsFromAgentChatModelCatalog } from "../../shared/ModelPicker/modelCatalog";
 import { DEFAULT_RUNTIME_CATALOG_SCOPE } from "../../shared/ModelPicker/runtimeCatalogCache";
 import type { HarnessAccountSource } from "./harnessSources";
-import { defaultProviderInstanceId } from "../../../../shared/types/providerInstances";
 
 /** One model a harness can run, with the route it takes. */
 export type ReachableModel = {
@@ -174,10 +175,6 @@ export function nativeModelsForProvider(
 /** The id a launch passes for a model; owned by `shared/harnessRoutes.ts`. */
 export { launchModelIdFor };
 
-function accountProviderLabel(provider: HarnessPresetAccountProvider): string {
-  return provider === "claude" ? "Claude" : "Codex";
-}
-
 function nativeRow(groupKey: string, model: NativeModel, route: HarnessRoute): ReachableModel {
   return {
     key: `${groupKey}::${model.id}`,
@@ -206,7 +203,7 @@ export function buildReachableGroups(harness: HarnessPresetBody, inputs: Harness
       groups.push({
         key,
         kind: "native",
-        label: `${accountProviderLabel(harness)} · ${account.label}`,
+        label: `${harnessAccountProviderLabel(harness)} · ${account.label}`,
         detail: account.loginBroken
           ? [account.email, "Signed out"].filter(Boolean).join(" · ")
           : account.signedIn ? "Signed in" : "Not signed in yet",
@@ -275,7 +272,7 @@ export function buildReachableGroups(harness: HarnessPresetBody, inputs: Harness
         nativeRow(key, model, resolveHarnessRoute({ harness, source, modelId: model.id })),
       );
       if (models.length === 0) continue;
-      const providerLabel = accountProviderLabel(account.provider);
+      const providerLabel = harnessAccountProviderLabel(account.provider);
       groups.push({
         key,
         kind: "subscription",
@@ -290,7 +287,8 @@ export function buildReachableGroups(harness: HarnessPresetBody, inputs: Harness
         accountLabel: account.label,
         plan: account.plan ?? null,
         ...(!account.signedIn || account.loginBroken ? { signedOut: true } : {}),
-        ...(account.instanceId === defaultProviderInstanceId(account.provider) ? { defaultAccount: true } : {}),
+        // The launch lends an old `subscription` preset the user's default account.
+        ...(account.isDefault ? { defaultAccount: true } : {}),
       });
     }
   }
@@ -348,8 +346,7 @@ export function findReachable(
  */
 export function sourceSummary(group: ReachableGroup): { title: string; detail: string | null } {
   if (group.source.kind === "account") {
-    const provider = accountProviderLabel(group.source.provider);
-    return { title: group.plan?.trim() || provider, detail: group.accountLabel ?? null };
+    return presetSourceSummary(group.source, { label: group.accountLabel, plan: group.plan });
   }
   return { title: group.label, detail: null };
 }
@@ -406,7 +403,9 @@ function formatTokenCount(value: number): string {
 
 /** The short harness name used inside a default preset name. */
 export function harnessShortLabel(harness: HarnessPresetBody): string {
-  return harness === "codex" ? "Codex" : harnessBodyLabel(harness);
+  if (harness === "codex") return "Codex";
+  if (harness === "copilot") return "Copilot";
+  return harnessBodyLabel(harness);
 }
 
 /** "DeepSeek V4.1 Flash in Claude Code" — the name a preset gets when none is typed. */

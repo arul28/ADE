@@ -29,7 +29,7 @@
 
 import { createHash } from "node:crypto";
 import fs from "node:fs";
-import os from "node:os";
+import { codexConfigHome as defaultCodexHome } from "../shared/providerConfigHomes";
 import path from "node:path";
 
 import {
@@ -120,6 +120,7 @@ import {
   type PrivateFileSecurityOptions as HarnessPrivateFileSecurity,
 } from "../../../../../ade-cli/src/lib/trustedWindowsTools";
 import {
+  borrowFailureMessage,
   defaultReadProxyConnection,
   type ProxySubscriptionConnectionParts,
   type ProxySubscriptionConnectionUnavailable,
@@ -448,7 +449,6 @@ export function resolveHarnessPresetPlan(
     : null;
 
   if (accountInstance && !borrowedAccount) {
-    const instance = accountInstance;
     const extras = claudeExtras();
     /* A Codex account preset runs in that account's own CODEX_HOME, which ADE
        does not own: an `[agents]` block written there would follow the user
@@ -464,15 +464,15 @@ export function resolveHarnessPresetPlan(
     }
     return {
       ...(codexAccountSubagents ? withoutSubagentSettings(base) : base),
-      instanceId: instance.id,
+      instanceId: accountInstance.id,
       env: {
         // The base identity inherits the environment (`isBaseProviderInstance`);
         // only a second account gets its config home exported.
-        ...(isBaseProviderInstance(instance)
+        ...(isBaseProviderInstance(accountInstance)
           ? {}
-          : instance.provider === "claude"
-            ? { CLAUDE_CONFIG_DIR: instance.configHome }
-            : { CODEX_HOME: instance.configHome }),
+          : accountInstance.provider === "claude"
+            ? { CLAUDE_CONFIG_DIR: accountInstance.configHome }
+            : { CODEX_HOME: accountInstance.configHome }),
         ...extras.env,
       },
       ...(extras.claudeAgents ? { claudeAgents: extras.claudeAgents } : {}),
@@ -480,17 +480,27 @@ export function resolveHarnessPresetPlan(
     };
   }
 
-  if (preset.source.kind === "subscription" || borrowedAccount) {
-    const subscriptionProvider: ProxySubscriptionProvider = borrowedAccount?.provider
-      ?? (preset.source.kind === "subscription" ? preset.source.provider : "claude");
-    const borrowedInstanceId = borrowedAccount?.instanceId ?? null;
+  // The login the proxy runs this preset on: another provider's account, or a
+  // subscription (an old Claude/Codex one runs on that provider's default account).
+  const lent: { provider: ProxySubscriptionProvider; instanceId: string | null } | null = borrowedAccount
+    ?? (preset.source.kind === "subscription" ? { provider: preset.source.provider, instanceId: null } : null);
+  if (lent) {
+    const subscriptionProvider = lent.provider;
+    const borrowedInstanceId = lent.instanceId;
     // macOS only: elsewhere ADE reads Codex's keyring copy (codexKeyringAuth.ts).
     const codexKeyringBlocksLending = (): boolean => {
       if (subscriptionProvider !== "codex" || process.platform !== "darwin") return false;
       const home = accountInstance && !isBaseProviderInstance(accountInstance)
         ? accountInstance.configHome
-        : process.env.CODEX_HOME?.trim() || path.join(os.homedir(), ".codex");
+        : defaultCodexHome();
       return codexLoginInKeyring(home);
+    };
+    const unavailableMessage = (connection: ProxySubscriptionConnectionUnavailable | null): string => {
+      if (connection?.reason === "proxy-stopped") return "ADE's proxy is stopped; start it and try again.";
+      if (codexKeyringBlocksLending()) {
+        return "Codex keeps this login in the macOS Keychain, where only Codex can read it, so ADE cannot lend it to another harness. Set `cli_auth_credentials_store = \"file\"` in Codex's config.toml and sign in to Codex again.";
+      }
+      return borrowFailureMessage(subscriptionProvider);
     };
     const loginUnavailable = (
       connection: ProxySubscriptionConnectionUnavailable | null,
@@ -498,11 +508,7 @@ export function resolveHarnessPresetPlan(
       status: "unsupported",
       presetId: preset.id,
       provider: harness,
-      unsupported: connection?.reason === "proxy-stopped"
-        ? "ADE's proxy is stopped; start it and try again."
-        : codexKeyringBlocksLending()
-          ? "Codex keeps this login in the macOS Keychain, where only Codex can read it, so ADE cannot lend it to another harness. Set `cli_auth_credentials_store = \"file\"` in Codex's config.toml and sign in to Codex again."
-          : `ADE could not borrow your ${harnessBodyLabel(subscriptionProvider)} sign-in. Sign in to ${harnessBodyLabel(subscriptionProvider)} under Settings › Providers, then try again.`,
+      unsupported: unavailableMessage(connection),
       // The launch's async prepare step starts the proxy and lends this
       // machine's logins, then resolves again.
       reasonCode: "proxy-not-ready",
@@ -555,25 +561,24 @@ export function resolveHarnessPresetPlan(
     const readConnection = deps.readProxyConnection ?? defaultReadProxyConnection(adeHome);
     const connection = readConnection(subscriptionProvider, borrowedInstanceId);
     if (!connection || "reason" in connection) return loginUnavailable(connection);
-    const parts = connection;
     let proxy: ProxySubscriptionEnvironment;
     try {
       proxy = proxyEnvForSubscription(
         subscriptionProvider,
         harness,
-        { ...parts, model: preset.model },
+        { ...connection, model: preset.model },
       );
-    } catch {
+    } catch (error) {
       return {
         status: "unsupported",
         presetId: preset.id,
         provider: harness,
-        unsupported: "Sign-in through ADE's proxy is not available yet.",
+        unsupported: `${harnessBodyLabel(harness)} cannot run your ${harnessBodyLabel(subscriptionProvider)} sign-in: ${error instanceof Error ? error.message : String(error)}`,
       };
     }
     // The proxy routes a subscription by its login's prefix, so a pinned
     // subagent model and the built-in pins must carry it as the main model does.
-    const extras = claudeExtras(`${parts.prefix}/`);
+    const extras = claudeExtras(`${connection.prefix}/`);
     const env: Record<string, string> = { ...proxy.env, ...extras.env };
     const configureSubscriptionConfig = () => {
       let codexConfigHome: string | undefined;

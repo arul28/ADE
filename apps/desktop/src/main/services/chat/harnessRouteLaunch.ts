@@ -234,6 +234,23 @@ export const PI_ROUTE_PROVIDER_ID = "ade";
 /** The provider id a routed Kimi launch files its endpoint under in `config.toml`. */
 const KIMI_ROUTE_PROVIDER_ID = "ade";
 
+/** Each harness's name for the wire protocol a route speaks. */
+const KIMI_PROVIDER_TYPES: Record<RouteProtocol, string> = {
+  anthropic: "anthropic",
+  "openai-responses": "openai_responses",
+  "openai-chat": "openai",
+};
+const PI_PROVIDER_APIS: Record<RouteProtocol, string> = {
+  anthropic: "anthropic-messages",
+  "openai-responses": "openai-responses",
+  "openai-chat": "openai-completions",
+};
+
+/** An Anthropic client adds `/v1` itself; an OpenAI one is given it. */
+function vendorBaseUrl(protocol: RouteProtocol, baseUrl: string): string {
+  return protocol === "anthropic" ? stripTrailingV1(baseUrl) : baseUrl;
+}
+
 /** Context and output limits for a routed model, from whatever ADE has cached. */
 export function lookupRouteModelLimits(sourceProvider: string, modelId: string): RouteModelLimits {
   const provider = canonicalSourceProvider(sourceProvider);
@@ -466,7 +483,6 @@ function buildHarnessEndpointEnv(args: {
       // its alias `ade/<model>`: ADE passes a Kimi model with a `/` through
       // untouched (`resolveKimiCliModelForLaunch` prefixes any other with
       // `kimi-code/`), and Kimi resolves the alias to the real model id.
-      const anthropic = protocol === "anthropic";
       const alias = `${KIMI_ROUTE_PROVIDER_ID}/${model}`;
       if (args.writeConfig) {
         ensurePrivateDirectory(args.configHome, args.security);
@@ -475,8 +491,8 @@ function buildHarnessEndpointEnv(args: {
           `default_model = ${tomlString(alias)}`,
           "",
           `[providers.${KIMI_ROUTE_PROVIDER_ID}]`,
-          `type = ${tomlString(anthropic ? "anthropic" : protocol === "openai-responses" ? "openai_responses" : "openai")}`,
-          `base_url = ${tomlString(anthropic ? stripTrailingV1(baseUrl) : baseUrl)}`,
+          `type = ${tomlString(KIMI_PROVIDER_TYPES[protocol])}`,
+          `base_url = ${tomlString(vendorBaseUrl(protocol, baseUrl))}`,
           `api_key = ${tomlString(token)}`,
           "",
           `[models.${tomlString(alias)}]`,
@@ -494,14 +510,13 @@ function buildHarnessEndpointEnv(args: {
       // `settings.json`, both in PI_CODING_AGENT_DIR. Pointing that at an
       // ADE-owned folder leaves the user's own `~/.pi/agent` untouched; a Pi
       // chat with no model of its own starts on the default named here.
-      const anthropic = protocol === "anthropic";
       if (args.writeConfig) {
         ensurePrivateDirectory(args.configHome, args.security);
         writePrivateFile(path.join(args.configHome, "models.json"), `${JSON.stringify({
           providers: {
             [PI_ROUTE_PROVIDER_ID]: {
-              baseUrl: anthropic ? stripTrailingV1(baseUrl) : baseUrl,
-              api: anthropic ? "anthropic-messages" : protocol === "openai-responses" ? "openai-responses" : "openai-completions",
+              baseUrl: vendorBaseUrl(protocol, baseUrl),
+              api: PI_PROVIDER_APIS[protocol],
               apiKey: token,
               models: [{
                 id: model,
@@ -529,7 +544,7 @@ function buildHarnessEndpointEnv(args: {
       return {
         status: "ready",
         env: {
-          COPILOT_PROVIDER_BASE_URL: anthropic ? stripTrailingV1(baseUrl) : baseUrl,
+          COPILOT_PROVIDER_BASE_URL: vendorBaseUrl(protocol, baseUrl),
           COPILOT_PROVIDER_TYPE: anthropic ? "anthropic" : "openai",
           COPILOT_PROVIDER_API_KEY: token,
           COPILOT_PROVIDER_WIRE_API: protocol === "openai-responses" ? "responses" : "completions",

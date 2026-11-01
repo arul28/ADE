@@ -432,46 +432,15 @@
 /* The provider pages' banner (providerPage.css), painted from the profile
    picture's own colours: the --ah-* stops come from useProfilePalette. */
 
+/* The banner itself is the kit's `.kit-hero`; it reads these stops. */
 .ade-ah {
-  position: relative;
-  border-radius: var(--radius-lg, 14px);
-  overflow: hidden;
-  isolation: isolate;
-  color: #fff;
-  box-shadow:
-    0 0 0 1px color-mix(in srgb, var(--ah-mid) 40%, transparent),
-    0 22px 44px -28px color-mix(in srgb, var(--ah-mid) 80%, transparent);
+  --hero-deep: var(--ah-deep);
+  --hero-mid: var(--ah-mid);
+  --hero-bright: var(--ah-bright);
+  --hero-light: var(--ah-light);
 }
 .ade-ah > .ade-tool-picker-backdrop { z-index: 0; }
 .ade-ah > .ade-tool-picker-backdrop .ade-tool-picker-static { background: transparent; }
-.ade-ah-wash {
-  position: absolute;
-  inset: 0;
-  z-index: 0;
-  background:
-    radial-gradient(60% 90% at 12% 20%, var(--ah-bright), transparent 70%),
-    radial-gradient(55% 80% at 88% 10%, var(--ah-light), transparent 72%),
-    radial-gradient(70% 90% at 70% 100%, var(--ah-mid), transparent 70%),
-    var(--ah-deep);
-}
-.ade-ah-shade {
-  position: absolute;
-  inset: 0;
-  z-index: 0;
-  pointer-events: none;
-  background:
-    linear-gradient(90deg, rgba(0, 0, 0, 0.40) 0%, rgba(0, 0, 0, 0.10) 50%, rgba(0, 0, 0, 0.30) 100%),
-    linear-gradient(0deg, rgba(0, 0, 0, 0.26), transparent 60%);
-}
-.ade-ah-row {
-  position: relative;
-  z-index: 1;
-  display: flex;
-  align-items: center;
-  gap: 22px;
-  padding: 18px 18px 18px 28px;
-  box-sizing: border-box;
-}
 
 /* The floating avatar coin. */
 .ade-ah-avatar { flex: none; position: relative; width: 88px; height: 88px; perspective: 600px; }
@@ -646,7 +615,7 @@
 .ade-ah-route[data-tone="off"] { opacity: 0.6; }
 
 @container modernpage (max-width: 760px) {
-  .ade-ah-row { flex-wrap: wrap; padding: 18px; }
+  .ade-ah .kit-hero-row { flex-wrap: wrap; padding: 18px; }
   .ade-ah-panel { width: 100%; }
 }
 

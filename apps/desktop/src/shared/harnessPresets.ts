@@ -4,7 +4,8 @@
  * ADE can run ten agent harnesses (Claude Code, Codex, OpenCode, Droid, Pi, and
  * the ACP CLIs) and each of them can be pointed at several different sources of
  * intelligence: a native sign-in held in its own config home, a stored API key,
- * or a subscription borrowed through ADE's proxy. Choosing that pair correctly
+ * or another provider's sign-in, which ADE's proxy runs on the login the
+ * provider's own CLI already has. Choosing that pair correctly
  * is four separate controls in the composer today, and nothing remembers the
  * combination you settled on. A preset is that combination, named, with a logo,
  * so "Opus on my work account, plan mode, subagents on Haiku" is one row in a
@@ -104,9 +105,10 @@ export function isHarnessPresetAccountProvider(value: unknown): value is Harness
  *
  * - `account` — a native sign-in ADE already holds, named by provider instance.
  * - `key` — a credential in the API-key store, named by id. Never the value.
- * - `subscription` — a Claude or Codex subscription used from *another* harness
- *   through ADE's proxy. That needs a second sign-in the proxy holds, which is
- *   why an imported preset can report it as missing.
+ * - `subscription` — a provider's sign-in (Grok, Kimi, Devin, Muse; or an older
+ *   Claude or Codex one) used from *another* harness through ADE's proxy, on
+ *   the login that provider's CLI already has here. A machine without that
+ *   login reports it missing on import.
  * - `opencode` — a provider signed in *inside OpenCode* (OpenCode Zen, OpenCode
  *   Go, or any provider connected there), named by OpenCode's provider id. The
  *   token stays in OpenCode's own store and is read at launch on the machine
@@ -583,7 +585,7 @@ export function unreadableHarnessPresetEntries(value: unknown): unknown[] {
   return value.filter((entry) => {
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) return false;
     const id = (entry as { id?: unknown }).id;
-    return typeof id === "string" && id.trim().length > 0 && !readable.has(id.trim()) && !normalizeHarnessPreset(entry);
+    return typeof id === "string" && id.trim().length > 0 && !readable.has(id.trim());
   });
 }
 
@@ -647,23 +649,53 @@ export function presetSummary(
   return `${harnessBodyLabel(preset.harness)} · ${model}`;
 }
 
-/** One phrase naming the brain, for the list page's source column. */
+/** "Claude" or "Codex": a provider that holds accounts, by its plain name. */
+export function harnessAccountProviderLabel(provider: HarnessPresetAccountProvider): string {
+  return provider === "claude" ? "Claude" : "Codex";
+}
+
+/**
+ * Who pays for a source, in two short parts every list says the same way: a
+ * title people recognise ("ChatGPT Plus", "Codex account", "Grok sign-in",
+ * "API key", "OpenCode Go") and the sign-in or key it is, when known.
+ */
+export function presetSourceSummary(
+  source: HarnessPresetSource,
+  account?: { label?: string | null; plan?: string | null } | null,
+): { title: string; detail: string | null } {
+  switch (source.kind) {
+    case "account":
+      return {
+        title: account?.plan?.trim() || `${harnessAccountProviderLabel(source.provider)} account`,
+        detail: account?.label?.trim() || null,
+      };
+    case "subscription":
+      return {
+        title: isHarnessPresetAccountProvider(source.provider)
+          ? `${harnessAccountProviderLabel(source.provider)} account`
+          : `${harnessBodyLabel(source.provider)} sign-in`,
+        detail: null,
+      };
+    case "key":
+      return { title: "API key", detail: source.label };
+    case "opencode":
+      return { title: openCodeSourceLabel(source.providerId), detail: "OpenCode sign-in" };
+  }
+}
+
+/** The provider whose mark a source wears. */
+export function presetSourceLogo(source: HarnessPresetSource): string {
+  return source.kind === "opencode" ? source.providerId : source.provider;
+}
+
+/** The source as one phrase ("Codex account · you@example.com"). */
 export function presetSourceLabel(
   source: HarnessPresetSource,
   resolveAccountLabel?: (instanceId: string) => string | null | undefined,
 ): string {
-  if (source.kind === "account") {
-    const label = resolveAccountLabel?.(source.instanceId)?.trim();
-    const provider = harnessBodyLabel(source.provider);
-    return label ? `${provider} account · ${label}` : `${provider} account`;
-  }
-  if (source.kind === "key") {
-    return `API key · ${source.label}`;
-  }
-  if (source.kind === "opencode") {
-    return `${openCodeSourceLabel(source.providerId)} · via OpenCode sign-in`;
-  }
-  return `${harnessBodyLabel(source.provider)} subscription`;
+  const account = source.kind === "account" ? { label: resolveAccountLabel?.(source.instanceId) } : null;
+  const { title, detail } = presetSourceSummary(source, account);
+  return detail ? `${title} · ${detail}` : title;
 }
 
 /** Subagent row copy. `"inherit"` reads as the sentence, not as the token. */
@@ -811,10 +843,10 @@ export type HarnessPresetImportContext = {
   /** Credential ids in this machine's API-key store. */
   credentialIds?: readonly string[];
   /** Whether ADE's proxy can run on this host. */
-  proxySignInAvailable?: boolean;
+  proxyAvailable?: boolean;
   /**
-   * Providers signed in on this machine whose login the proxy can borrow
-   * (Claude, Codex, Grok). A subscription source for any other is missing.
+   * Providers signed in on this machine whose login the proxy can borrow. A
+   * subscription source for any other is missing.
    */
   subscriptionProviders?: readonly string[];
   /** OpenCode provider ids signed in on this machine. */
@@ -886,7 +918,7 @@ export function importHarnessPreset(
   }
   if (
     source.kind === "subscription"
-    && (context.proxySignInAvailable !== true
+    && (context.proxyAvailable !== true
       || (context.subscriptionProviders !== undefined && !context.subscriptionProviders.includes(source.provider)))
   ) {
     missing.push("subscription-signin");

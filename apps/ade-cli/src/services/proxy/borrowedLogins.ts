@@ -1,7 +1,8 @@
 /**
- * Lend ADE's subscription proxy the Claude, Codex and Grok logins this
- * machine already has, so a subscription runs in another harness with no
- * second sign-in.
+ * Lend ADE's subscription proxy the logins this machine already has (every
+ * Claude and Codex account, and the Grok, Kimi, Devin and Muse CLI logins), so
+ * a subscription runs in another harness with no second sign-in. Antigravity is
+ * never lent: its CLI keeps only a refresh token.
  *
  * Only the ACCESS token is lent. Each vendor rotates the refresh token on every
  * use, so a proxy holding a copy of it would sign the user's own CLI out the
@@ -21,7 +22,6 @@
  * `ade-<provider>-<account>`. A login the user signed in to the proxy itself
  * (the older flow) is never touched here.
  */
-import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -36,18 +36,26 @@ import { resolveCodexExecutable } from "../../../../desktop/src/main/services/ai
 import { readCodexKeyringAuth } from "../../../../desktop/src/main/services/ai/codexKeyringAuth";
 import { resolveGrokExecutable } from "../../../../desktop/src/main/services/ai/acpExecutables";
 import {
+  codexConfigHome,
   devinCredentialFiles,
   grokConfigHome,
   kimiCodeConfigHome,
   museConfigDir,
 } from "../../../../desktop/src/main/services/shared/providerConfigHomes";
 import { resolveKimiCodeLogin } from "../../../../desktop/src/main/services/shared/kimiCodeLogin";
-import { terminateProcessTree } from "../../../../desktop/src/main/services/shared/processExecution";
+import { spawnOffThread, terminateOffThreadChildTree } from "../../../../desktop/src/main/services/shared/offThreadSpawn";
 import { providerSelfUpdateEnv } from "../../../../desktop/src/shared/pinnedToolSpawnEnv";
+import {
+  HARNESS_PRESET_SUBSCRIPTION_PROVIDERS,
+  type HarnessPresetSubscriptionProvider,
+} from "../../../../desktop/src/shared/harnessPresets";
 import type { ProviderInstance } from "../../../../desktop/src/shared/types/providerInstances";
+import { captureError } from "../../../../desktop/src/shared/sentry/capture";
 import { ensurePrivateDirectory, writePrivateFile, type PrivateFileSecurityOptions } from "../../lib/trustedWindowsTools";
 
-export type BorrowableProvider = "claude" | "codex" | "grok" | "kimi" | "devin" | "muse";
+/** Every provider whose login can be lent: the subscription sources a preset can name. */
+export type BorrowableProvider = HarnessPresetSubscriptionProvider;
+const BORROWABLE_PROVIDERS: readonly BorrowableProvider[] = HARNESS_PRESET_SUBSCRIPTION_PROVIDERS;
 
 /** Providers ADE knows one login for per machine (not a provider-instance account). */
 export const CLI_LOGIN_PROVIDERS = ["grok", "kimi", "devin", "muse"] as const satisfies readonly BorrowableProvider[];
@@ -55,6 +63,9 @@ export const CLI_LOGIN_PROVIDERS = ["grok", "kimi", "devin", "muse"] as const sa
 export type BorrowableAccount = Pick<ProviderInstance, "id" | "configHome" | "isDefault"> & {
   provider: BorrowableProvider;
 };
+
+/** A one-per-machine CLI login (Grok, Kimi, Devin, Muse) as a lendable account. */
+export type CliLoginAccount = BorrowableAccount & { provider: (typeof CLI_LOGIN_PROVIDERS)[number] };
 
 type CliLogin = {
   accessToken: string;
@@ -114,9 +125,11 @@ const LOCK_STALE_MS = 2 * 60_000;
 
 function safeSegment(value: string): string {
   const cleaned = value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
-  // An id that cleans to nothing, or collides after cleaning, still gets a
-  // stable distinct name.
-  return cleaned || createHash("sha256").update(value).digest("hex").slice(0, 8);
+  if (cleaned === value) return cleaned;
+  // An id the cleaning changed ("Work Mac" and "work-mac" both clean to
+  // "work-mac") carries a hash of the raw id, so two ids never share a name.
+  const hash = createHash("sha256").update(value).digest("hex").slice(0, 8);
+  return cleaned ? `${cleaned}-${hash}` : hash;
 }
 
 export function borrowedLoginFileName(provider: BorrowableProvider, instanceId: string): string {
@@ -130,6 +143,13 @@ export function borrowedLoginPrefix(provider: BorrowableProvider, instanceId: st
 
 export function isBorrowedLoginFileName(name: string): boolean {
   return name.startsWith(BORROWED_FILE_PREFIX) && name.toLowerCase().endsWith(".json");
+}
+
+/** The provider a lent file was written for, from its name; null for any other file. */
+function borrowedLoginFileProvider(name: string): BorrowableProvider | null {
+  if (!isBorrowedLoginFileName(name)) return null;
+  const rest = name.slice(BORROWED_FILE_PREFIX.length);
+  return BORROWABLE_PROVIDERS.find((provider) => rest.startsWith(`${provider}-`)) ?? null;
 }
 
 function jwtClaims(token: string | undefined): Record<string, unknown> | null {
@@ -148,20 +168,29 @@ function stringField(record: Record<string, unknown> | null | undefined, key: st
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
-/** The default Codex account follows `CODEX_HOME`, as the Codex reader does. */
-function codexHomeFor(account: BorrowableAccount, env: NodeJS.ProcessEnv): string {
-  if (!account.isDefault) return path.resolve(account.configHome);
-  return env.CODEX_HOME?.trim() || path.join(os.homedir(), ".codex");
+/**
+ * The machine's own login: the account whose id is the provider slug. It reads
+ * and renews with no config-home variable, exactly as ADE launches it
+ * (`isBaseProviderInstance`). Not `isDefault`, which is the account the user
+ * picked for new chats and can be any of them.
+ */
+function isBaseLogin(account: BorrowableAccount): boolean {
+  return account.id === account.provider;
 }
 
-function readCodexLogin(account: BorrowableAccount, env: NodeJS.ProcessEnv, fresh = false): CliLogin | null {
+/** The base Codex account follows `CODEX_HOME`, as the Codex reader does. */
+function codexHomeFor(account: BorrowableAccount, env: NodeJS.ProcessEnv): string {
+  return isBaseLogin(account) ? codexConfigHome({ env }) : path.resolve(account.configHome);
+}
+
+async function readCodexLogin(account: BorrowableAccount, env: NodeJS.ProcessEnv, fresh = false): Promise<CliLogin | null> {
   const codexHome = codexHomeFor(account, env);
   let parsed: Record<string, unknown>;
   try {
     parsed = JSON.parse(fs.readFileSync(path.join(codexHome, "auth.json"), "utf8")) as Record<string, unknown>;
   } catch {
     // Codex set to keep its login in the OS keyring has no `auth.json`.
-    const fromKeyring = readCodexKeyringAuth(codexHome, { fresh });
+    const fromKeyring = await readCodexKeyringAuth(codexHome, { fresh });
     if (!fromKeyring) return null;
     try {
       parsed = JSON.parse(fromKeyring) as Record<string, unknown>;
@@ -186,10 +215,10 @@ function readCodexLogin(account: BorrowableAccount, env: NodeJS.ProcessEnv, fres
 async function readClaudeLogin(account: BorrowableAccount): Promise<CliLogin | null> {
   const credentials = await readClaudeCredentials({
     // Claude Code writes its Keychain item through `security` itself, so this
-    // read raises no macOS prompt. The default account reads the bare item.
+    // read raises no macOS prompt. The base account reads the bare item.
     allowKeychain: true,
     skipMissCache: true,
-    ...(account.isDefault ? {} : { configHome: account.configHome }),
+    ...(isBaseLogin(account) ? {} : { configHome: account.configHome }),
   });
   if (!credentials?.accessToken) return null;
   return {
@@ -301,7 +330,7 @@ function kimiLoginUsable(env: NodeJS.ProcessEnv): boolean {
 
 function readLogin(account: BorrowableAccount, env: NodeJS.ProcessEnv, fresh = false): Promise<CliLogin | null> {
   switch (account.provider) {
-    case "codex": return Promise.resolve(readCodexLogin(account, env, fresh));
+    case "codex": return readCodexLogin(account, env, fresh);
     case "grok": return Promise.resolve(readGrokLogin(account));
     case "kimi": return Promise.resolve(readKimiLogin(env));
     case "devin": return Promise.resolve(readDevinLogin(env));
@@ -316,7 +345,7 @@ function readLogin(account: BorrowableAccount, env: NodeJS.ProcessEnv, fresh = f
  * here; Kimi's is also checked for expiry, because nothing can renew it
  * headlessly and an expired one would be offered and then fail at launch.
  */
-export function cliLoginBorrowableAccounts(env: NodeJS.ProcessEnv = process.env): BorrowableAccount[] {
+export function cliLoginBorrowableAccounts(env: NodeJS.ProcessEnv = process.env): CliLoginAccount[] {
   const present: Record<(typeof CLI_LOGIN_PROVIDERS)[number], { home: string; found: boolean }> = {
     grok: { home: grokConfigHome({ env }), found: fs.existsSync(path.join(grokConfigHome({ env }), "auth.json")) },
     kimi: { home: kimiCodeConfigHome({ env }), found: kimiLoginUsable(env) },
@@ -341,28 +370,28 @@ function exchange(args: {
   return new Promise((resolve) => {
     let settled = false;
     let stdout = "";
-    const child = spawn(args.command, args.argv, {
+    // Off the event loop: renewals run on the keeper's timer inside the brain,
+    // where a direct spawn blocks every chat for the whole CreateProcess.
+    const child = spawnOffThread(args.command, args.argv, {
       env: args.env,
       cwd: os.tmpdir(),
-      stdio: ["pipe", "pipe", "ignore"],
-      windowsHide: true,
+      keepStdinOpen: true,
     });
     const finish = (ok: boolean) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      terminateProcessTree(child);
+      terminateOffThreadChildTree(child);
       resolve(ok);
     };
     const timer = setTimeout(() => finish(false), RENEW_TIMEOUT_MS);
     child.on("error", () => finish(false));
-    child.on("exit", (code) => finish(args.done(stdout) || (args.exitZeroIsDone === true && code === 0)));
+    child.on("close", (code: number | null) => finish(args.done(stdout) || (args.exitZeroIsDone === true && code === 0)));
     child.stdout?.on("data", (chunk: Buffer) => {
       stdout += chunk.toString("utf8");
       if (args.done(stdout)) finish(true);
     });
-    child.stdin?.on("error", () => undefined);
-    for (const line of args.writes) child.stdin?.write(`${line}\n`);
+    for (const line of args.writes) child.stdin.write(`${line}\n`);
   });
 }
 
@@ -386,12 +415,14 @@ function renewClaudeLogin(account: BorrowableAccount, env: NodeJS.ProcessEnv): P
   const executable = resolveClaudeCodeExecutable({ env });
   if (!executable.path) return Promise.resolve(false);
   const childEnv: NodeJS.ProcessEnv = { ...env, ...providerSelfUpdateEnv("claude") };
-  // The default login is the unscoped one; a scoped account names its folder.
-  if (account.isDefault) delete childEnv.CLAUDE_CONFIG_DIR;
+  // The base login is the unscoped one; a scoped account names its folder.
+  if (isBaseLogin(account)) delete childEnv.CLAUDE_CONFIG_DIR;
   else childEnv.CLAUDE_CONFIG_DIR = account.configHome;
   return exchange({
     command: executable.path,
-    argv: ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose"],
+    // No MCP servers, hooks or settings: the handshake only has to load the
+    // login (which is when Claude Code renews it), not start the user's setup.
+    argv: ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--strict-mcp-config", "--setting-sources", ""],
     env: childEnv,
     writes: [JSON.stringify({ type: "control_request", request_id: "ade-renew", request: { subtype: "initialize" } })],
     done: (stdout) => stdout.includes("\"ade-renew\""),
@@ -485,7 +516,18 @@ async function withRenewLock<T>(authDir: string, run: () => Promise<T>): Promise
   const lockPath = path.join(authDir, ".ade-borrow-renew.lock");
   try {
     const stat = fs.statSync(lockPath);
-    if (Date.now() - stat.mtimeMs > LOCK_STALE_MS) removeQuietly(lockPath);
+    if (Date.now() - stat.mtimeMs > LOCK_STALE_MS) {
+      // Steal a crashed holder's lock by renaming it: a rename succeeds for one
+      // process only, so two that both saw it stale cannot both clear it (a
+      // plain remove could delete the fresh lock the other just took).
+      const claimed = `${lockPath}.${process.pid}.${Date.now()}.stale`;
+      try {
+        fs.renameSync(lockPath, claimed);
+        removeQuietly(claimed);
+      } catch {
+        // Another process stole it first; its own lock now stands.
+      }
+    }
   } catch {
     // No lock.
   }
@@ -537,7 +579,7 @@ export async function syncBorrowedLogins(args: {
     if (login && args.renew && nearExpiry(login)) {
       const ok = await withRenewLock(args.authDir, () => renew(account, env));
       if (ok) {
-        if (account.provider === "claude") invalidateCachedClaudeCredentials(account.isDefault ? undefined : account.configHome);
+        if (account.provider === "claude") invalidateCachedClaudeCredentials(isBaseLogin(account) ? undefined : account.configHome);
         const after = await readLogin(account, env, true);
         renewed = Boolean(after && after.accessToken !== login.accessToken);
         login = after ?? login;
@@ -569,9 +611,11 @@ export async function syncBorrowedLogins(args: {
     outcomes.push({ provider: account.provider, instanceId: account.id, status: renewed ? "renewed" : "lent" });
   }
 
-  // Every machine has a default Claude and Codex account, so an empty list is a
-  // failed registry read, not "no accounts": keep what is lent.
-  if (args.accounts.length === 0) return outcomes;
+  // Sweep only the providers this pass was given: a provider missing from the
+  // list (a registry that could not be read) keeps what it has lent, and every
+  // machine has a base Claude and Codex account, so a listed provider is never
+  // listed empty.
+  const listed = new Set<string>(args.accounts.map((account) => account.provider));
   let entries: string[] = [];
   try {
     entries = fs.readdirSync(args.authDir);
@@ -579,7 +623,8 @@ export async function syncBorrowedLogins(args: {
     entries = [];
   }
   for (const name of entries) {
-    if (isBorrowedLoginFileName(name) && !kept.has(name)) removeQuietly(path.join(args.authDir, name));
+    const provider = borrowedLoginFileProvider(name);
+    if (provider && listed.has(provider) && !kept.has(name)) removeQuietly(path.join(args.authDir, name));
   }
   return outcomes;
 }
@@ -603,7 +648,7 @@ export function writeBorrowedModelCache(proxyDir: string, listed: ReadonlyArray<
     if (!rawId) continue;
     const slash = rawId.indexOf("/");
     const prefixed = slash > 0 ? rawId.slice(0, slash) : "";
-    const prefixProvider = /^ade-(claude|codex|grok|kimi|devin|muse)-/.exec(prefixed)?.[1] as BorrowableProvider | undefined;
+    const prefixProvider = BORROWABLE_PROVIDERS.find((candidate) => prefixed.startsWith(`ade-${candidate}-`));
     const provider = prefixProvider
       ?? (prefixed ? undefined : ownerProvider[typeof entry.owned_by === "string" ? entry.owned_by : ""]);
     if (!provider) continue;
@@ -616,14 +661,15 @@ export function writeBorrowedModelCache(proxyDir: string, listed: ReadonlyArray<
       path.join(proxyDir, BORROWED_MODELS_FILE),
       `${JSON.stringify({ updatedAt: new Date().toISOString(), providers: byProvider }, null, 2)}\n`,
     );
-  } catch {
+  } catch (error) {
     // A list that could not be written is re-read on the next pass.
+    captureError(error, { tags: { feature: "proxy", stage: "borrow_models_cache" } });
   }
 }
 
 /** The models the proxy last served for each lent provider; empty lists before the first pass. */
 export function readBorrowedModels(proxyDir: string): Record<BorrowableProvider, BorrowedModel[]> {
-  const result: Record<BorrowableProvider, BorrowedModel[]> = { claude: [], codex: [], grok: [], kimi: [], devin: [], muse: [] };
+  const result = Object.fromEntries(BORROWABLE_PROVIDERS.map((provider) => [provider, [] as BorrowedModel[]])) as Record<BorrowableProvider, BorrowedModel[]>;
   let providers: Record<string, unknown> | undefined;
   try {
     providers = (JSON.parse(fs.readFileSync(path.join(proxyDir, BORROWED_MODELS_FILE), "utf8")) as {

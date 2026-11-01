@@ -3,13 +3,14 @@ import { ArrowRight, DotsThree, PencilSimple, Plus } from "@phosphor-icons/react
 import type { AiSettingsStatus } from "../../../../shared/types";
 import type { ApiCredentialSummary } from "../../../../shared/types/apiCredentials";
 import {
+  DEFAULT_HARNESS_PRESET_ACCENT,
   HARNESS_PRESET_NAME_MAX_LENGTH,
   HarnessPresetImportError,
   exportHarnessPreset,
   importHarnessPreset,
-  harnessBodyLabel,
   presetLabel,
-  presetSourceLabel,
+  presetSourceLogo,
+  presetSourceSummary,
   type HarnessPreset,
   type HarnessPresetDraft,
   type HarnessPresetMissing,
@@ -31,7 +32,7 @@ import "./customProviders.css";
 import { useSettingsMachineScope } from "../SettingsMachineScope";
 import { useApiCredentialsPin } from "../providers/keys/useApiCredentials";
 import { bodyLogoFamily } from "./presetFacts";
-import { CustomBanner, CustomEquation } from "./CustomProviderBanner";
+import { CustomHero, CustomEquation } from "./CustomProviderHero";
 import { harnessModelFamily, harnessModelLabel, providerFamilyForSource } from "./harnessModels";
 import { readStoredKeySources } from "./harnessSources";
 import { CustomProviderDialog, emptyCustomProviderDraft } from "./CustomProviderDialog";
@@ -40,6 +41,7 @@ import { harnessShortLabel, sourceSummary, starterSuggestions, type StarterSugge
 import { routeTestKey, useHarnessReach, type HarnessReach, type HarnessRouteTestState } from "./useHarnessReach";
 import { useHarnessPresets } from "./useHarnessPresets";
 import { isAdeAvailable } from "../../../lib/adeAvailability";
+import { modelMentionEffortLabel } from "../../../../shared/modelMentions";
 
 /**
  * Settings › Providers › Custom.
@@ -57,8 +59,8 @@ import { isAdeAvailable } from "../../../lib/adeAvailability";
 const CUSTOM_HELP =
   "A custom provider runs any harness on any model you have connected: another provider's sign-in (no extra login), an OpenCode sign-in, or a stored API key. Pick one in any model picker.";
 
-/** The section's own colour: Custom's mark, so the banner reads as "yours", not a vendor's. */
-const CUSTOM_BANNER_COLOR = "#8b5cf6";
+/** The section's own colour: a custom provider's default accent, so the hero reads as "yours", not a vendor's. */
+const CUSTOM_BANNER_COLOR = DEFAULT_HARNESS_PRESET_ACCENT;
 
 type DialogState =
   | { mode: "closed" }
@@ -171,7 +173,7 @@ export function CustomProvidersSection({
           ...keySources.map((entry) => entry.credentialId),
           ...catalogSources.flatMap((entry) => (entry.source.kind === "key" ? [entry.source.credentialId] : [])),
         ],
-        proxySignInAvailable: reach.proxyAvailable,
+        proxyAvailable: reach.proxyAvailable,
         subscriptionProviders: [
           ...reach.accounts.filter((entry) => entry.signedIn && !entry.loginBroken).map((entry) => entry.provider),
           ...catalogSources.flatMap((entry) => (entry.source.kind === "subscription" ? [entry.source.provider] : [])),
@@ -277,24 +279,24 @@ export function CustomProvidersSection({
 
       {presets.length === 0 ? (
         <div data-custom-empty="" style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
-          <CustomBanner color={CUSTOM_BANNER_COLOR} label="Custom providers">
+          <CustomHero color={CUSTOM_BANNER_COLOR} label="Custom providers">
             <CustomEquation />
-            <div className="ade-cp-banner-id">
-              <span className="ade-cp-banner-title">Any harness. Any model you pay for.</span>
-              <span className="ade-cp-banner-copy">
+            <div className="ade-cp-hero-id">
+              <span className="ade-cp-hero-title">Any harness. Any model you pay for.</span>
+              <span className="ade-cp-hero-copy">
                 Run Claude Code on your ChatGPT plan, or Codex on your Claude plan. ADE uses the sign-ins you
                 already have, so there is nothing new to log in to.
               </span>
-              <div className="ade-cp-banner-actions">
-                <button type="button" className="ade-cp-banner-btn" data-primary="true" onClick={openCreate}>
+              <div className="ade-cp-hero-actions">
+                <button type="button" className="ade-cp-hero-btn" data-primary="true" onClick={openCreate}>
                   <Plus size={12} weight="bold" /> Create one
                 </button>
-                <button type="button" className="ade-cp-banner-btn" onClick={() => importInputRef.current?.click()}>
+                <button type="button" className="ade-cp-hero-btn" onClick={() => importInputRef.current?.click()}>
                   Import a file
                 </button>
               </div>
             </div>
-          </CustomBanner>
+          </CustomHero>
           {starters.length > 0 ? (
             <>
               <div className="ade-cp-eyebrow-row">
@@ -329,7 +331,7 @@ export function CustomProvidersSection({
               onDelete={() => void handleDelete(preset)}
             />
           ))}
-          <button type="button" className="ade-cp-card" data-new="true" onClick={openCreate} style={{ "--cp-accent": CUSTOM_BANNER_COLOR } as React.CSSProperties}>
+          <button type="button" className="ade-pv-open ade-cp-card" data-new="true" onClick={openCreate} style={{ "--cp-accent": CUSTOM_BANNER_COLOR } as React.CSSProperties}>
             <Plus size={16} />
             <span style={{ fontSize: 12.5, fontWeight: 500 }}>New custom provider</span>
           </button>
@@ -372,25 +374,14 @@ export function CustomProvidersSection({
   );
 }
 
-/** "ChatGPT Plus · you@example.com", "Your Grok sign-in", "API key · Work". */
+/** "ChatGPT Plus · you@example.com", "Grok sign-in", "API key · Work". */
 function presetSourceText(preset: HarnessPreset, reach: HarnessReach): string {
   const source = preset.source;
-  if (source.kind === "account") {
-    const account = reach.accounts.find((entry) => entry.instanceId === source.instanceId);
-    const provider = source.provider === "claude" ? "Claude" : "Codex";
-    if (!account) return `${provider} account`;
-    return [account.plan?.trim() || provider, account.label].filter(Boolean).join(" · ");
-  }
-  if (source.kind === "subscription") {
-    return source.provider === "claude" || source.provider === "codex"
-      ? `Your ${source.provider === "claude" ? "Claude" : "Codex"} account`
-      : `Your ${harnessBodyLabel(source.provider)} sign-in`;
-  }
-  return presetSourceLabel(source);
-}
-
-function sourceLogo(source: HarnessPreset["source"]): string {
-  return source.kind === "opencode" ? source.providerId : source.provider;
+  const account = source.kind === "account"
+    ? reach.accounts.find((entry) => entry.instanceId === source.instanceId)
+    : null;
+  const { title, detail } = presetSourceSummary(source, account);
+  return detail ? `${title} · ${detail}` : title;
 }
 
 /** Harness + model, as two chips: what this custom provider is made of. */
@@ -421,7 +412,7 @@ function StarterCard({ starter, onCreate }: { starter: StarterSuggestion; onCrea
   return (
     <button
       type="button"
-      className="ade-cp-card"
+      className="ade-pv-open ade-cp-card"
       data-starter="true"
       data-custom-starter={starter.key}
       onClick={onCreate}
@@ -487,7 +478,7 @@ function CustomProviderRow({
   const subagents = preset.subagentModel !== "inherit" ? harnessModelLabel(preset.subagentModel) : null;
   // Only what differs from the defaults: a quiet card says "nothing special".
   const meta = [
-    preset.reasoningEffort ? `${preset.reasoningEffort === "xhigh" ? "Extra high" : preset.reasoningEffort.charAt(0).toUpperCase() + preset.reasoningEffort.slice(1)} effort` : null,
+    preset.reasoningEffort ? `${modelMentionEffortLabel(preset.reasoningEffort)} effort` : null,
     subagents ? `subagents on ${subagents}` : null,
   ].filter(Boolean).join(" · ");
 
@@ -520,7 +511,7 @@ function CustomProviderRow({
   return (
     <div
       data-custom-preset-row={preset.id}
-      className="ade-cp-card"
+      className="ade-pv-open ade-cp-card"
       style={{ "--cp-accent": preset.accentColor } as React.CSSProperties}
     >
       <div className="ade-cp-card-top">
@@ -573,7 +564,7 @@ function CustomProviderRow({
       </div>
       <PairChips harness={preset.harness} modelId={preset.model} modelLabel={harnessModelLabel(preset.model)} family={family} />
       <div className="ade-cp-card-foot">
-        <ProviderLogo family={sourceLogo(source)} size={12} />
+        <ProviderLogo family={presetSourceLogo(source)} size={12} />
         <span className="ade-cp-card-source" title={sourceText}>{sourceText}</span>
         <RouteTestBadge state={testState} />
         {testable ? (

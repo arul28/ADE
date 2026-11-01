@@ -34,6 +34,8 @@ import {
   type BorrowableAccount,
   type BorrowedLoginOutcome,
 } from "./borrowedLogins";
+import { captureError } from "../../../../desktop/src/shared/sentry/capture";
+import { isHarnessPresetAccountProvider, type HarnessPresetAccountProvider } from "../../../../desktop/src/shared/harnessPresets";
 import { getMachineProviderInstanceStore } from "../providerInstances/providerInstanceStore";
 import {
   captureFeatureUsedAnalytics,
@@ -50,13 +52,23 @@ export const PROXY_AUTH_POLL_INTERVAL_MS = 1_000;
  */
 export const PROXY_BORROW_KEEPER_INTERVAL_MS = 10 * 60_000;
 const PROXY_BORROW_KEEPER_MIN_DELAY_MS = 5_000;
+/**
+ * After a pass that left a token still due (offline, a refresh error, the
+ * pinned CLI still downloading), the next pass waits this long, doubling up to
+ * the regular interval: retrying at the floor would spawn the provider's CLI
+ * every few seconds for as long as the failure lasts (Codex's window is a day).
+ * 30 s still lands two tries inside Claude Code's ~110 s renew window.
+ */
+const PROXY_BORROW_KEEPER_RETRY_MS = 30_000;
 
 /**
  * Which service keeps each auth folder's lent logins. Every project runtime in
  * the brain makes its own service for the one machine-level proxy, and one
- * keeper per folder is enough; another service takes over when this one stops.
+ * keeper per folder is enough. The others wait in `keeperWaiters`; when the
+ * keeper's service is disposed, the first one waiting takes over.
  */
 const keeperOwners = new Map<string, symbol>();
+const keeperWaiters = new Map<string, Map<symbol, () => void>>();
 
 type ProxyManagementClient = Pick<
   CliProxyApiManagementClient,
@@ -198,19 +210,25 @@ function defaultBorrowableAccounts(): BorrowableAccount[] {
   return [...providerInstanceAccounts(), ...cliLoginBorrowableAccounts()];
 }
 
+/**
+ * The Claude and Codex accounts, or nothing when the registry cannot be read:
+ * the lend pass then keeps those providers' lent files as they are rather than
+ * sweeping them as gone (`syncBorrowedLogins` only sweeps providers it was given).
+ */
 function providerInstanceAccounts(): BorrowableAccount[] {
   try {
     return getMachineProviderInstanceStore()
       .list()
-      .filter((instance): instance is typeof instance & { provider: "claude" | "codex" } =>
-        (instance.provider === "claude" || instance.provider === "codex") && Boolean(instance.configHome?.trim()))
+      .filter((instance): instance is typeof instance & { provider: HarnessPresetAccountProvider } =>
+        isHarnessPresetAccountProvider(instance.provider) && Boolean(instance.configHome?.trim()))
       .map((instance) => ({
         id: instance.id,
         provider: instance.provider,
         configHome: instance.configHome,
         isDefault: instance.isDefault,
       }));
-  } catch {
+  } catch (error) {
+    captureError(error, { tags: { feature: "proxy", stage: "borrow_list_accounts" } });
     return [];
   }
 }
@@ -268,6 +286,8 @@ export function createProxyService(options: ProxyServiceOptions = {}): ProxyServ
   let keeper: ReturnType<typeof setTimeout> | null = null;
   const keeperIdentity = Symbol("proxy-borrow-keeper");
   let keeperAuthDir: string | null = null;
+  let keeperRetryMs = PROXY_BORROW_KEEPER_RETRY_MS;
+  let disposed = false;
 
   // The proxy's auth folder sits beside its config (`pathsFor`).
   const authDirFor = (status: CliProxyApiSupervisorStatus): string => path.join(path.dirname(status.configPath), "auth");
@@ -287,7 +307,10 @@ export function createProxyService(options: ProxyServiceOptions = {}): ProxyServ
         if (outcomes.some((outcome) => outcome.status !== "unchanged")) await refreshModelCache(status);
         return outcomes;
       })
-      .catch(() => [] as BorrowedLoginOutcome[])
+      .catch((error: unknown) => {
+        captureError(error, { tags: { feature: "proxy", stage: "borrow_sync" } });
+        return [] as BorrowedLoginOutcome[];
+      })
       .finally(() => {
         borrowing = null;
       });
@@ -301,8 +324,17 @@ export function createProxyService(options: ProxyServiceOptions = {}): ProxyServ
 
   const releaseKeeper = (): void => {
     stopKeeper();
-    if (keeperAuthDir && keeperOwners.get(keeperAuthDir) === keeperIdentity) keeperOwners.delete(keeperAuthDir);
+    const authDir = keeperAuthDir;
     keeperAuthDir = null;
+    if (!authDir || keeperOwners.get(authDir) !== keeperIdentity) return;
+    keeperOwners.delete(authDir);
+    // Hand the folder to a service that was waiting for it.
+    const waiting = keeperWaiters.get(authDir);
+    const next = waiting?.entries().next().value;
+    if (waiting && next) {
+      waiting.delete(next[0]);
+      next[1]();
+    }
   };
 
   // Runs only while the proxy runs and holds a lent login, so a machine that
@@ -310,9 +342,15 @@ export function createProxyService(options: ProxyServiceOptions = {}): ProxyServ
   // lent token's renew window, or the regular interval, whichever is first.
   const scheduleKeeper = (status: CliProxyApiSupervisorStatus): void => {
     stopKeeper();
+    if (disposed) return;
     const authDir = authDirFor(status);
     const owner = keeperOwners.get(authDir);
-    if (owner && owner !== keeperIdentity) return;
+    if (owner && owner !== keeperIdentity) {
+      const waiting = keeperWaiters.get(authDir) ?? new Map<symbol, () => void>();
+      waiting.set(keeperIdentity, () => scheduleKeeper(status));
+      keeperWaiters.set(authDir, waiting);
+      return;
+    }
     if (!hasBorrowedLogins(authDir)) {
       releaseKeeper();
       return;
@@ -320,10 +358,12 @@ export function createProxyService(options: ProxyServiceOptions = {}): ProxyServ
     keeperOwners.set(authDir, keeperIdentity);
     keeperAuthDir = authDir;
     const due = nextBorrowRenewalAt(authDir);
-    const delay = Math.max(
-      PROXY_BORROW_KEEPER_MIN_DELAY_MS,
-      Math.min(keeperIntervalMs, due === null ? keeperIntervalMs : due - now()),
-    );
+    // A token already past its renew time after a pass did not renew: back off.
+    const overdue = due !== null && due <= now();
+    const delay = overdue
+      ? Math.min(keeperIntervalMs, keeperRetryMs)
+      : Math.max(PROXY_BORROW_KEEPER_MIN_DELAY_MS, Math.min(keeperIntervalMs, due === null ? keeperIntervalMs : due - now()));
+    keeperRetryMs = overdue ? Math.min(keeperIntervalMs, keeperRetryMs * 2) : PROXY_BORROW_KEEPER_RETRY_MS;
     keeper = setTimeout(() => {
       keeper = null;
       const current = supervisor.getStatus();
@@ -471,6 +511,7 @@ export function createProxyService(options: ProxyServiceOptions = {}): ProxyServ
 
     async signOut(args) {
       const loginId = requireNonEmptyString(args?.loginId, "loginId");
+      requireOwnLogin(loginId);
       const status = await ensureRunningStatus();
       const { client } = await findLogin(status, loginId);
       await client.deleteAuthFile(loginId);
@@ -480,6 +521,7 @@ export function createProxyService(options: ProxyServiceOptions = {}): ProxyServ
     async setDisabled(args) {
       const loginId = requireNonEmptyString(args?.loginId, "loginId");
       const disabled = requireBoolean(args?.disabled, "disabled");
+      requireOwnLogin(loginId);
       const status = await ensureRunningStatus();
       const { client, file } = await findLogin(status, loginId);
       await client.setAuthFileStatus({ name: loginId, disabled });
@@ -487,6 +529,8 @@ export function createProxyService(options: ProxyServiceOptions = {}): ProxyServ
     },
 
     async dispose() {
+      disposed = true;
+      for (const waiting of keeperWaiters.values()) waiting.delete(keeperIdentity);
       releaseKeeper();
       managementClient = null;
       managementConnection = null;
@@ -495,6 +539,18 @@ export function createProxyService(options: ProxyServiceOptions = {}): ProxyServ
   };
 
   return service;
+}
+
+/**
+ * A lent login belongs to its provider's own CLI, and every lend pass writes it
+ * back as it is there (enabled, current token). Removing or disabling it in the
+ * proxy would last only until the next pass, so it is refused with where to go.
+ */
+function requireOwnLogin(loginId: string): void {
+  if (!isBorrowedLoginFileName(loginId)) return;
+  throw new Error(
+    "This sign-in is lent to the proxy from your own provider login and comes back on the next pass. Sign out of that provider (Settings › Providers) to stop it.",
+  );
 }
 
 export function createProxyActionDomainService(service: ProxyService): ProxyActionDomainService {

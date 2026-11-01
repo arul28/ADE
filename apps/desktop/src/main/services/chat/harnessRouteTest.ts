@@ -30,7 +30,7 @@ import {
   type RouteProtocol,
 } from "../../../shared/harnessRoutes";
 import {
-  harnessBodyLabel,
+  isHarnessPresetAccountProvider,
   isHarnessPresetBody,
   isHarnessPresetSubscriptionProvider,
   type HarnessPresetBody,
@@ -39,7 +39,7 @@ import {
 import { resolveMachineAdeDir } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import { readRouteProbe, recordRouteProbe } from "./harnessRouteProbes";
 import { startHarnessProxy } from "./harnessLaunchPrepare";
-import { defaultReadProxyConnection } from "./harnessPresetProxyConnection";
+import { borrowFailureMessage, defaultReadProxyConnection } from "./harnessPresetProxyConnection";
 import { OPENCODE_SESSION_HEADER, resolveRouteSource } from "./harnessRouteLaunch";
 
 /** The one validator every entry point (IPC and the action bus) runs. */
@@ -63,7 +63,7 @@ export function requireHarnessRouteSource(value: unknown): HarnessRouteSource["s
   }
   if (
     raw.kind === "account"
-    && (raw.provider === "claude" || raw.provider === "codex")
+    && isHarnessPresetAccountProvider(raw.provider)
     && typeof raw.instanceId === "string" && raw.instanceId.trim()
   ) {
     return { kind: "account", provider: raw.provider, instanceId: raw.instanceId.trim() };
@@ -102,13 +102,12 @@ async function testLentLogin(args: {
     connection = read(args.source.provider, instanceId);
   }
   if (!connection || "reason" in connection) {
-    const label = harnessBodyLabel(args.source.provider);
     return {
       ok: false,
       protocol: null,
       latencyMs: null,
       route: "proxy",
-      error: `ADE could not borrow your ${label} sign-in. Sign in to ${label} under Settings › Providers, then try again.`,
+      error: borrowFailureMessage(args.source.provider),
     };
   }
   const result = await pingProtocol({

@@ -135,7 +135,8 @@ never offered as a reachable choice in another harness (the editor still lists
 them, greyed, with the reason). The same goes for an OpenCode sign-in that is
 measured as a subscription-only login — an OpenAI sign-in there is a ChatGPT
 subscription whose token no outside client can use; route it with an OpenAI API
-key or a Codex subscription through ADE's proxy instead.
+key, or with your Codex account (`--via account:codex:<id>`), which runs in any
+harness on the login Codex already has.
 
 Cursor has no key path at all, in either mode: it holds one key at a time in
 its own store, so a per-preset key would change every other Cursor session on

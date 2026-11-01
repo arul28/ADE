@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CaretRight, Check, Terminal, UploadSimple } from "@phosphor-icons/react";
+import { CaretRight, Terminal, UploadSimple } from "@phosphor-icons/react";
 import type { AiSettingsStatus } from "../../../../shared/types";
 import {
   DEFAULT_HARNESS_PRESET_ACCENT,
@@ -14,7 +14,6 @@ import {
   type HarnessPresetDraft,
   type HarnessPresetLogo,
   type HarnessPresetMissing,
-  type HarnessPresetSource,
 } from "../../../../shared/harnessPresets";
 import { getModelById } from "../../../../shared/modelRegistry";
 import { COLORS, SANS_FONT } from "../../lanes/laneDesignTokens";
@@ -25,15 +24,15 @@ import {
   type HarnessPresetAgentKey,
 } from "../../../../shared/harnessPresets";
 import { HarnessLogo } from "../../shared/HarnessLogo";
-import { ProviderLogo } from "../../shared/ProviderLogos";
 import { Dialog } from "../../ui/dialog";
 import { Banner } from "../../ui/notice";
 import { showToast } from "../../app/toast/toastStore";
 import { copyTextToClipboard } from "../../../lib/launchPromptClipboard";
 import { SettingsDisclosure } from "../primitives/SettingsDisclosure";
 import { SettingsSelect } from "../primitives/SettingsControls";
-import { CustomBanner, CustomBannerMark, RecipeCard } from "./CustomProviderBanner";
-import { bodyLogoFamily } from "./presetFacts";
+import { CustomHero, CustomHeroMark, RecipeCard } from "./CustomProviderHero";
+import { ACCENT_SWATCHES, EffortPills, HarnessTiles, StepHead, recipeFor } from "./CustomProviderEditorParts";
+import { ModernRow, ModernRows } from "../primitives/SettingsModern";
 import { CustomProviderModelPane } from "./CustomProviderModelPane";
 import { harnessAvailability } from "./harnessAvailability";
 import { compactHarnessPresetLogo } from "../../../lib/harnessLogoCompaction";
@@ -46,7 +45,6 @@ import {
   harnessChipOptions,
   harnessShortLabel,
   reachableKeyFor,
-  sourceSummary,
   type ReachableGroup,
   type ReachableModel,
 } from "./harnessReach";
@@ -399,24 +397,7 @@ export function CustomProviderDialog({
       : []),
   ];
 
-  // What the preview says. The model and its source come from the list when
-  // it is there, and from the draft when it is not (an import, a key removed).
-  const recipeModel = selected
-    ? { label: selected.model.label, id: selected.model.id, family: selected.model.family ?? null }
-    : draft.model
-      ? { label: modelLabel, id: draft.model, family: getModelById(draft.model)?.family ?? null }
-      : null;
-  const recipeSource = selected
-    ? { ...sourceSummary(selected.group), logoProvider: selected.group.logoProvider }
-    : draft.model
-      ? { title: presetSourceLabel(draft.source), detail: null, logoProvider: sourceLogoProvider(draft.source) }
-      : null;
-  const recipeNote = selected && selected.model.route.kind === "proxy"
-    && (selected.group.source.kind === "account" || selected.group.source.kind === "subscription")
-    ? "Runs on the sign-in you already have. No extra login."
-    : selected?.group.source.kind === "key"
-      ? "Billed to this API key."
-      : null;
+  const recipe = recipeFor(draft, selected, modelLabel);
   const mainTiers = registryTiers.length > 0 ? registryTiers : listedTiers;
   const subagentsCustomised = draft.subagentModel !== HARNESS_PRESET_SUBAGENT_INHERIT
     || Boolean(draft.subagentEffort)
@@ -513,10 +494,10 @@ export function CustomProviderDialog({
             ...accentStyle,
           }}
         >
-          <CustomBanner color={draft.accentColor} label="Preview">
-            <CustomBannerMark logo={draft.logo} />
-            <div className="ade-cp-banner-id">
-              <span className="ade-cp-banner-eyebrow">{editingPresetId ? "Custom provider" : "New custom provider"}</span>
+          <CustomHero color={draft.accentColor} label="Preview">
+            <CustomHeroMark logo={draft.logo} />
+            <div className="ade-cp-hero-id">
+              <span className="ade-cp-hero-eyebrow">{editingPresetId ? "Custom provider" : "New custom provider"}</span>
               <input
                 id="custom-provider-name"
                 className="ade-cp-name"
@@ -526,12 +507,12 @@ export function CustomProviderDialog({
                 aria-label="Name"
                 spellCheck={false}
               />
-              <span className="ade-cp-banner-copy">
+              <span className="ade-cp-hero-copy">
                 One pick in every model picker, on every computer you sign in to.
               </span>
             </div>
-            <RecipeCard harness={draft.harness} model={recipeModel} source={recipeSource} note={recipeNote} />
-          </CustomBanner>
+            <RecipeCard harness={draft.harness} model={recipe.model} source={recipe.source} note={recipe.note} />
+          </CustomHero>
           {errors.name && draft.name.trim() ? <FieldError>{errors.name}</FieldError> : null}
 
           {accountError ? (
@@ -559,30 +540,7 @@ export function CustomProviderDialog({
 
           <section aria-label="Harness" className="ade-cp-step">
             <StepHead n={1} done title="Harness" hint="The coding agent that runs the chat." />
-            <div role="radiogroup" aria-label="Harness" data-harness-chip-row="" className="ade-cp-harness-grid">
-              {chipOptions.map(({ harness, disabledReason }) => {
-                const active = harness === draft.harness;
-                const disabled = disabledReason != null && !active;
-                return (
-                  <button
-                    key={harness}
-                    type="button"
-                    role="radio"
-                    aria-checked={active}
-                    aria-disabled={disabled || undefined}
-                    data-harness-chip={harness}
-                    title={disabledReason ?? harnessBodyLabel(harness)}
-                    className="ade-cp-harness"
-                    onClick={() => {
-                      if (!disabled) chooseHarness(harness);
-                    }}
-                  >
-                    <span className="ade-cp-harness-logo"><ProviderLogo family={bodyLogoFamily(harness)} size={14} /></span>
-                    <span>{harness === "copilot" ? "Copilot" : harnessShortLabel(harness)}</span>
-                  </button>
-                );
-              })}
-            </div>
+            <HarnessTiles options={chipOptions} selected={draft.harness} onSelect={chooseHarness} />
             {!availability.available ? (
               <Banner
                 layout="inline"
@@ -630,22 +588,20 @@ export function CustomProviderDialog({
           {draft.model ? (
             <section aria-label="Thinking" className="ade-cp-step">
               <StepHead n={3} done title="Thinking" hint="How hard it thinks, and what its helpers use." />
-              <div className="ade-cp-rows">
-                <div className="ade-cp-row">
-                  <span className="ade-cp-row-label">
-                    <span className="ade-cp-row-title">Effort</span>
-                    <span className="ade-cp-row-hint">Default lets the model decide.</span>
-                  </span>
-                  {mainTiers.length > 0 ? (
+              <ModernRows>
+                <ModernRow
+                  title="Effort"
+                  hint="Default lets the model decide."
+                  control={mainTiers.length > 0 ? (
                     <EffortPills
                       tiers={mainTiers}
                       value={draft.reasoningEffort ?? ""}
                       onChange={(value) => patch({ reasoningEffort: value || undefined })}
                     />
                   ) : (
-                    <span className="ade-cp-row-hint">Model default</span>
+                    <span style={noteStyle}>Model default</span>
                   )}
-                </div>
+                />
                 {subagentSupport.model ? (
                   <details className="ade-cp-more" open={subagentsCustomised || undefined}>
                     <summary>
@@ -749,11 +705,9 @@ export function CustomProviderDialog({
                     </div>
                   </details>
                 ) : (
-                  <div className="ade-cp-row">
-                    <span className="ade-cp-row-hint">{harnessSubagentInheritNote(draft.harness, "model")}</span>
-                  </div>
+                  <ModernRow title="Subagents" hint={harnessSubagentInheritNote(draft.harness, "model")} />
                 )}
-              </div>
+              </ModernRows>
             </section>
           ) : null}
 
@@ -901,84 +855,3 @@ const linkButtonStyle: React.CSSProperties = {
   fontSize: 11.5,
   cursor: "pointer",
 };
-
-/** Tier ids as words; an unknown tier shows as its id. */
-const EFFORT_LABELS: Record<string, string> = {
-  minimal: "Minimal",
-  low: "Low",
-  medium: "Medium",
-  high: "High",
-  xhigh: "Extra high",
-  max: "Max",
-};
-
-/** A short palette, so picking a colour is one click; the last swatch opens any colour. */
-const ACCENT_SWATCHES: readonly string[] = [
-  "#8b5cf6",
-  "#6366f1",
-  "#0ea5e9",
-  "#14b8a6",
-  "#22c55e",
-  "#eab308",
-  "#f97316",
-  "#ef4444",
-  "#ec4899",
-];
-
-/** The mark a source wears when the list no longer has it (an import, a key removed). */
-function sourceLogoProvider(source: HarnessPresetSource): string {
-  switch (source.kind) {
-    case "account":
-    case "subscription":
-    case "key":
-      return source.provider;
-    case "opencode":
-      return source.providerId;
-  }
-}
-
-/** A step's number, title and one-line hint. */
-function StepHead({ n, done, title, hint }: { n: number; done: boolean; title: string; hint: string }) {
-  return (
-    <div className="ade-cp-step-head">
-      <span className="ade-cp-step-num" data-done={done ? "true" : undefined} aria-hidden>
-        {done ? <Check size={11} weight="bold" /> : n}
-      </span>
-      <span className="ade-cp-step-title">{title}</span>
-      <span className="ade-cp-step-hint">{hint}</span>
-    </div>
-  );
-}
-
-/**
- * The model's own thinking tiers as one row of pills. A handful of tiers reads
- * faster as buttons than behind a dropdown, and "Model default" stays one
- * click away.
- */
-function EffortPills({
-  tiers,
-  value,
-  onChange,
-}: {
-  tiers: readonly string[];
-  value: string;
-  onChange: (value: string) => void;
-}) {
-  const options = [{ value: "", label: "Default" }, ...tiers.map((tier) => ({ value: tier, label: EFFORT_LABELS[tier] ?? tier }))];
-  return (
-    <div role="radiogroup" aria-label="Effort" className="kit-seg" data-case="sentence">
-      {options.map((option) => (
-        <button
-          key={option.value || "default"}
-          type="button"
-          role="radio"
-          aria-checked={option.value === value}
-          onClick={() => onChange(option.value)}
-          style={option.value ? { textTransform: "capitalize" } : undefined}
-        >
-          {option.label}
-        </button>
-      ))}
-    </div>
-  );
-}

@@ -1,13 +1,10 @@
 import { memo, useMemo, useState, type ReactNode } from "react";
 import { CheckCircle, CircleNotch } from "@phosphor-icons/react";
-import { harnessBodyLabel, type HarnessPresetBody } from "../../../../shared/harnessPresets";
 import type { ProviderFamily } from "../../../../shared/modelRegistry";
 import { cn } from "../../ui/cn";
 import { ModelRowLogo, ProviderLogo } from "../ProviderLogos";
-import { bodyLogoFamily } from "../../settings/harnesses/presetFacts";
 import {
   formatModelLimits,
-  type HarnessChipOption,
   type ReachableGroup,
   type ReachableModel,
 } from "../../settings/harnesses/harnessReach";
@@ -25,7 +22,7 @@ import { InlineErrorNotice } from "../../ui/notice";
  * label. A caller can hang a Test button off each row for a live check.
  *
  * Grouped by source, because the source is the thing you pay: your Claude
- * account, OpenCode Go, a DeepSeek key, a subscription through the proxy. A
+ * account, OpenCode Go, a DeepSeek key, your ChatGPT plan in another harness. A
  * group shows its first few models and says how many more it has; a search
  * shows every match.
  */
@@ -42,7 +39,7 @@ export type ReachableModelListProps = {
   onTest?: (group: ReachableGroup, model: ReachableModel) => void;
   testStateFor?: (group: ReachableGroup, model: ReachableModel) => HarnessRouteTestState | undefined;
   /**
-   * Hide each group's header (mark, label, detail, sign-in button) and its
+   * Hide each group's header (mark, label, detail) and its
    * unreachable count. The Custom provider wizard shows one source at a time
    * behind its own source rail, which already names it.
    */
@@ -288,71 +285,3 @@ const ReachableModelRow = memo(function ReachableModelRow({
     </div>
   );
 });
-
-/**
- * The harness chips: real provider marks, one row.
- *
- * A chip that cannot be chosen stays visible and says why on hover, so the
- * row answers "where is Cursor" instead of leaving the reader to wonder.
- *
- * The wizard's harness step is its only caller: a model *picker* does not build
- * a pairing, it picks one that was already saved.
- */
-export function HarnessChipRow({
-  options,
-  selected,
-  onSelect,
-  size = "sm",
-  label = "Harness",
-}: {
-  options: readonly HarnessChipOption[];
-  selected: HarnessPresetBody | null;
-  onSelect: (harness: HarnessPresetBody) => void;
-  size?: "sm" | "md";
-  label?: string;
-}) {
-  const md = size === "md";
-  return (
-    <div role="radiogroup" aria-label={label} data-harness-chip-row="" className="flex flex-wrap items-center gap-1">
-      {options.map(({ harness, disabledReason }) => {
-        const active = harness === selected;
-        const disabled = disabledReason != null && !active;
-        return (
-          <button
-            key={harness}
-            type="button"
-            role="radio"
-            aria-checked={active}
-            aria-disabled={disabled || undefined}
-            data-harness-chip={harness}
-            title={disabledReason ?? harnessBodyLabel(harness)}
-            onClick={() => {
-              if (!disabled) onSelect(harness);
-            }}
-            className={cn(
-              "inline-flex shrink-0 items-center gap-1.5 rounded-md border font-medium leading-none transition-colors",
-              md ? "h-7 px-2.5 text-[11.5px]" : "h-6 px-2 text-[10.5px]",
-              active
-                ? "border-violet-400/35 bg-violet-500/[0.12] text-fg"
-                : "border-fg/[0.08] bg-fg/[0.02] text-fg/75 hover:border-fg/[0.14] hover:text-fg",
-              disabled && "cursor-not-allowed opacity-40 hover:border-fg/[0.08] hover:text-fg/75",
-            )}
-          >
-            <ProviderLogo family={bodyLogoFamily(harness)} size={md ? 13 : 11} />
-            {/* Unavailable chips shrink to their mark: they are there to be
-                explained, not read. */}
-            {disabled && !md ? null : harnessChipLabel(harness, !md)}
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
-function harnessChipLabel(harness: HarnessPresetBody, compact: boolean): string {
-  if (compact && harness === "claude") return "Claude";
-  if (harness === "codex") return "Codex";
-  if (harness === "qwen") return "Qwen";
-  if (harness === "copilot") return "Copilot";
-  return harnessBodyLabel(harness);
-}

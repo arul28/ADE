@@ -26,7 +26,7 @@ import {
   type HarnessRouteSource,
 } from "../../../shared/harnessRoutes";
 import { AdeExpectedError } from "../../../shared/expectedError";
-import { harnessBodyLabel, openCodeSourceLabel, type HarnessPresetBody, type HarnessPresetSource } from "../../../shared/harnessPresets";
+import { harnessBodyLabel, isHarnessPresetAccountProvider, openCodeSourceLabel, type HarnessPresetBody, type HarnessPresetSource } from "../../../shared/harnessPresets";
 import { providerLabel } from "../../../shared/modelCatalog";
 import { decodeOpenCodeRegistryId, MODEL_REGISTRY, type ProviderFamily } from "../../../shared/modelRegistry";
 import { listApiCredentials } from "../ai/apiKeyStore";
@@ -206,8 +206,8 @@ function registryLabel(id: string): string | null {
 }
 
 /**
- * Every Claude and Codex account, and this machine's Grok login: each runs in
- * another harness through ADE's proxy on its own login, lent to the proxy
+ * Every Claude and Codex account, and this machine's Grok, Kimi, Devin and Muse
+ * logins: each runs in another harness through ADE's proxy on its own login, lent to the proxy
  * (`borrowedLogins.ts`). The editor builds its Claude/Codex rows from the
  * accounts it already loads, so it skips the `account` rows here; the CLI's
  * `harness routes` lists them.
@@ -235,7 +235,7 @@ function lentLoginSources(adeHome: string): HarnessRouteSource[] {
     });
   }
   for (const login of cliLoginBorrowableAccounts()) {
-    const provider = login.provider as Exclude<BorrowableProvider, "claude" | "codex">;
+    const provider = login.provider;
     const source = { kind: "subscription" as const, provider };
     const models = lentModels(served[provider], provider);
     if (models.length === 0) continue;
@@ -263,9 +263,8 @@ function lentLoginSources(adeHome: string): HarnessRouteSource[] {
 export function isPresetSourceAvailableLocally(source: HarnessPresetSource): boolean {
   try {
     if (source.kind === "subscription") {
-      return source.provider === "claude" || source.provider === "codex"
-        ? true
-        : cliLoginBorrowableAccounts().some((login) => login.provider === source.provider);
+      return isHarnessPresetAccountProvider(source.provider)
+        || cliLoginBorrowableAccounts().some((login) => login.provider === source.provider);
     }
     if (source.kind === "opencode") {
       return readOpenCodeSignedInProviderIds().includes(source.providerId.trim());

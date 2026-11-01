@@ -74,6 +74,51 @@ html[data-scene="image"][data-theme="light"] {
   letter-spacing: 0;
 }
 
+/* A coloured page header: the Account banner and the Custom providers banner.
+   A wash painted from five colour stops (`--hero-deep`, `--hero-mid`,
+   `--hero-bright`, `--hero-light`), a shade so white text reads on any of
+   them, and a row on top. The caller sets the stops (from a picture or one
+   colour, `paletteFromTint`). White text in either theme. */
+.kit-hero {
+  position: relative;
+  border-radius: var(--radius-lg, 14px);
+  overflow: hidden;
+  isolation: isolate;
+  color: #fff;
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--hero-mid) 40%, transparent),
+    0 22px 44px -28px color-mix(in srgb, var(--hero-mid) 80%, transparent);
+}
+.kit-hero-wash {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  background:
+    radial-gradient(60% 90% at 12% 20%, var(--hero-bright), transparent 70%),
+    radial-gradient(55% 80% at 88% 10%, var(--hero-light), transparent 72%),
+    radial-gradient(70% 90% at 70% 100%, var(--hero-mid), transparent 70%),
+    var(--hero-deep);
+}
+.kit-hero-shade {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(90deg, rgba(0, 0, 0, 0.40) 0%, rgba(0, 0, 0, 0.10) 50%, rgba(0, 0, 0, 0.30) 100%),
+    linear-gradient(0deg, rgba(0, 0, 0, 0.26), transparent 60%);
+}
+.kit-hero-row {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 22px;
+  min-width: 0;
+  padding: 18px 18px 18px 28px;
+  box-sizing: border-box;
+}
+
 .kit-card {
   position: relative;
   display: flex;

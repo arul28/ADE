@@ -15,6 +15,7 @@
  * starter simply skips the step; the resolver then returns its reason.
  */
 
+import { captureError } from "../../../shared/sentry/capture";
 import { resolveLaunchBrain } from "./harnessPresetLaunch";
 
 type ProxyStarter = () => Promise<unknown>;
@@ -48,7 +49,9 @@ export async function startHarnessProxy(): Promise<boolean> {
   try {
     await proxyStarter();
     return true;
-  } catch {
+  } catch (error) {
+    // The launch then reports the resolver's own reason; record why it failed.
+    captureError(error, { tags: { feature: "proxy", stage: "launch_start" } });
     return false;
   }
 }
@@ -67,8 +70,7 @@ export async function prepareHarnessLaunch(args: {
   const presetId = args.presetId?.trim() || null;
   const credentialId = args.credentialId?.trim() || null;
   if (!presetId && !credentialId) return false;
-  const proxyStarter = [...proxyStarters].at(-1) ?? processProxyStarter;
-  if (!proxyStarter) return false;
+  if (![...proxyStarters].at(-1) && !processProxyStarter) return false;
   let needsProxy = false;
   try {
     const dry = resolveLaunchBrain({ provider: args.provider, presetId, credentialId }, { writeConfig: false });
@@ -77,10 +79,5 @@ export async function prepareHarnessLaunch(args: {
     return false;
   }
   if (!needsProxy) return false;
-  try {
-    await proxyStarter();
-    return true;
-  } catch {
-    return false;
-  }
+  return startHarnessProxy();
 }

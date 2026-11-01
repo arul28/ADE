@@ -47,7 +47,8 @@ import type {
 } from "../../shared/types/accountSettings";
 import { HARNESS_PRESETS_SETTING_KEY } from "../../shared/harnessPresets";
 import type { SettingScope } from "../components/settings/settingsManifest";
-import { applyAccountHarnessPresets, withUnreadableHarnessPresets, type AppState } from "../state/appStore";
+import { applyAccountHarnessPresets, type AppState } from "../state/appStore";
+import { withUnreadableHarnessPresets } from "./harnessPresetCarry";
 import { mergeStarPillPrefs } from "./starPill";
 
 /** How often a signed-in machine reconciles with the account. */

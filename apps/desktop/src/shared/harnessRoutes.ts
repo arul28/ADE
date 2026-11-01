@@ -326,6 +326,12 @@ export type HarnessRoute =
  * shared, because a translated request can lose fidelity (thinking blocks,
  * cache hints) and the proxy is one more process that has to be running.
  */
+/** The protocol the proxy speaks upstream for a lent login (every other provider: OpenAI chat). */
+const LENT_UPSTREAM_PROTOCOL: Partial<Record<string, RouteProtocol>> = {
+  claude: "anthropic",
+  codex: "openai-responses",
+};
+
 export function resolveHarnessRoute(args: {
   harness: HarnessPresetBody;
   source: HarnessPresetSource;
@@ -353,14 +359,13 @@ export function resolveHarnessRoute(args: {
     if (reason) return { kind: "impossible", reason };
   }
   if (source.kind === "subscription" || source.kind === "account") {
-    // A subscription in another harness runs through the proxy, which holds the
-    // login: one the user signed in to the proxy, or (an `account` source, or a
-    // subscription with no such sign-in) the account's own login, lent to it.
-    // The harness talks to the proxy in its own protocol.
+    // A subscription in another harness runs through the proxy on the login the
+    // provider's own CLI already has, lent to it. The harness talks to the
+    // proxy in its own protocol.
     return {
       kind: "proxy",
       harnessProtocol: HARNESS_ROUTE_PROTOCOLS[harness][0]!,
-      upstreamProtocol: source.provider === "claude" ? "anthropic" : source.provider === "codex" ? "openai-responses" : "openai-chat",
+      upstreamProtocol: LENT_UPSTREAM_PROTOCOL[source.provider] ?? "openai-chat",
       upstreamBaseUrl: "",
     };
   }

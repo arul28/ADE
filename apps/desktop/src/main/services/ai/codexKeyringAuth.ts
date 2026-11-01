@@ -1,7 +1,8 @@
-import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { execFileOffThread } from "../shared/offThreadSpawn";
+import { windowsPowerShellCommand } from "../shared/processExecution";
 
 /**
  * Codex's login when it keeps it in the OS keyring instead of `auth.json`
@@ -22,6 +23,8 @@ import path from "node:path";
  * launch say why the login cannot be lent and how to change it.
  *
  * Read-only, and only the raw JSON: the caller parses it like `auth.json`.
+ * The read is a process (`secret-tool`, or the trusted PowerShell), spawned off
+ * the event loop: it runs on a lend pass inside the brain.
  */
 const SERVICE = "Codex Auth";
 const READ_TIMEOUT_MS = 5_000;
@@ -33,6 +36,7 @@ const READ_TIMEOUT_MS = 5_000;
 const MISS_TTL_MS = 10 * 60_000;
 const HIT_TTL_MS = 60_000;
 const cache = new Map<string, { value: string | null; until: number }>();
+const inFlight = new Map<string, Promise<string | null>>();
 
 export function codexKeyringAccount(codexHome: string): string {
   let canonical = codexHome;
@@ -83,37 +87,38 @@ export function codexLoginInKeyring(codexHome: string): boolean {
 }
 
 /** The keyring copy of Codex's `auth.json` for this CODEX_HOME, or null (always null on macOS). */
-export function readCodexKeyringAuth(
+export async function readCodexKeyringAuth(
   codexHome: string,
   options: { platform?: NodeJS.Platform; fresh?: boolean } = {},
-): string | null {
+): Promise<string | null> {
   const platform = options.platform ?? process.platform;
+  if (platform !== "linux" && platform !== "win32") return null;
   const account = codexKeyringAccount(codexHome);
   const cached = cache.get(account);
   if (!options.fresh && cached && cached.until > Date.now()) return cached.value;
-  const value = readFromKeyring(account, platform);
-  cache.set(account, { value, until: Date.now() + (value ? HIT_TTL_MS : MISS_TTL_MS) });
-  return value;
+  const pending = inFlight.get(account);
+  if (pending) return pending;
+  const read = readFromKeyring(account, platform)
+    .then((value) => {
+      cache.set(account, { value, until: Date.now() + (value ? HIT_TTL_MS : MISS_TTL_MS) });
+      return value;
+    })
+    .finally(() => inFlight.delete(account));
+  inFlight.set(account, read);
+  return read;
 }
 
-function readFromKeyring(account: string, platform: NodeJS.Platform): string | null {
-  let result: ReturnType<typeof spawnSync>;
-  if (platform === "linux") {
-    result = spawnSync("secret-tool", ["lookup", "service", SERVICE, "username", account], {
-      encoding: "utf8",
-      timeout: READ_TIMEOUT_MS,
-    });
-  } else if (platform === "win32") {
-    result = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", WINDOWS_CRED_READ], {
-      encoding: "utf8",
-      timeout: READ_TIMEOUT_MS * 3,
-      windowsHide: true,
-      env: { ...process.env, ADE_CODEX_CRED_TARGET: `${account}.${SERVICE}` },
-    });
-  } else {
-    return null;
-  }
-  if (result.error || result.status !== 0) return null;
-  const text = String(result.stdout ?? "").trim();
+async function readFromKeyring(account: string, platform: NodeJS.Platform): Promise<string | null> {
+  const result = platform === "linux"
+    ? await execFileOffThread("secret-tool", ["lookup", "service", SERVICE, "username", account], {
+      timeoutMs: READ_TIMEOUT_MS,
+    })
+    : await execFileOffThread(
+      windowsPowerShellCommand(platform),
+      ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", WINDOWS_CRED_READ],
+      { timeoutMs: READ_TIMEOUT_MS * 3, envPatch: { ADE_CODEX_CRED_TARGET: `${account}.${SERVICE}` } },
+    );
+  if (result.error || result.exitCode !== 0) return null;
+  const text = result.stdout.trim();
   return text.startsWith("{") ? text : null;
 }
