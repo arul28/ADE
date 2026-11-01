@@ -36,6 +36,8 @@ export type HarnessAccountSource = {
   signedIn: boolean;
   /** The account is known but its saved login stopped working. */
   loginBroken?: boolean;
+  /** The account the user picked for new chats (an old `subscription` preset runs on it). */
+  isDefault?: boolean;
 };
 
 /** One stored-key row. `credentialId` is the reference a preset saves. */
@@ -62,6 +64,7 @@ function accountFromInstance(instance: ProviderInstance): HarnessAccountSource {
     ...(instance.account?.plan ? { plan: instance.account.plan } : {}),
     signedIn: instance.signedIn === true,
     ...(instance.loginBroken ? { loginBroken: true } : {}),
+    ...(instance.isDefault ? { isDefault: true } : {}),
   };
 }
 

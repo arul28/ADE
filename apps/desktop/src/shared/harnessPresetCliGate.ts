@@ -20,7 +20,7 @@
  */
 
 /** Harnesses whose CLI cannot be pointed at a preset's brain. */
-export const CLI_PRESET_GATED_HARNESSES = ["cursor", "copilot", "kimi"] as const;
+export const CLI_PRESET_GATED_HARNESSES = ["cursor"] as const;
 
 export type CliPresetGatedHarness = (typeof CLI_PRESET_GATED_HARNESSES)[number];
 
@@ -30,8 +30,6 @@ export function isCliPresetGatedHarness(provider: string): provider is CliPreset
 
 const GATE_REASONS: Record<CliPresetGatedHarness, string> = {
   cursor: "The Cursor CLI signs in with the one key its own store holds, so this session runs on Cursor's own sign-in.",
-  copilot: "The Copilot CLI signs in through GitHub itself, so this session runs on Copilot's own sign-in.",
-  kimi: "The Kimi CLI reads its own config home, so this session runs on Kimi's own sign-in.",
 };
 
 /**

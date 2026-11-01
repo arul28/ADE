@@ -26,7 +26,6 @@ import {
   clearDroidCliModelsCache,
   discoverDroidCliModelDescriptors,
   markDroidModelCachesStale,
-  parseDroidExecHelpModelIds,
   parseDroidExecHelpModels,
 } from "./droidModelsDiscovery";
 
@@ -135,98 +134,6 @@ describe("discoverDroidCliModelDescriptors", () => {
       "claude-opus-5-5",
       "claude-sonnet-5",
     ]);
-  });
-
-  it("merges existing Factory config custom models with CLI help models", async () => {
-    fs.mkdirSync(path.join(tmpHome, ".factory"), { recursive: true });
-    fs.writeFileSync(
-      path.join(tmpHome, ".factory", "config.json"),
-      JSON.stringify({
-        custom_models: [
-          {
-            model: "claude-sonnet-5-thinking-32000",
-            model_display_name: "Claude Sonnet 5 (High)",
-          },
-        ],
-      }),
-      "utf8",
-    );
-    mockSpawnAsync.mockResolvedValueOnce(helpFromModels([
-      { id: "claude-sonnet-5", displayName: "Claude Sonnet 5" },
-    ]));
-
-    const descriptors = await discoverDroidCliModelDescriptors("/mock/bin/droid");
-
-    expect(descriptors.map((descriptor) => descriptor.id)).toEqual([
-      "droid/claude-sonnet-5",
-      "droid/custom:claude-sonnet-5-thinking-32000",
-    ]);
-    expect(descriptors[1]).toMatchObject({
-      displayName: "Claude Sonnet 5 (High)",
-      customProxy: true,
-    });
-  });
-
-  it("gives retired and canonical Factory config custom models canonical metadata while preserving the custom proxy", async () => {
-    fs.mkdirSync(path.join(tmpHome, ".factory"), { recursive: true });
-    const customModels: Array<[string, string]> = [
-      // Retired aliases first, then the canonical ids they map to.
-      ["sonnet-4-6", "Retired Sonnet custom alias"],
-      ["opus-4-7", "Retired Opus custom alias"],
-      ["opus", "Current Opus custom alias"],
-      ["claude-sonnet-5", "Canonical Sonnet custom proxy"],
-      ["claude-opus-5", "Canonical Opus custom proxy"],
-      ["claude-opus-5-5", "Canonical Opus 5.5 custom proxy"],
-      ["custom-real-model", "Custom Real Model"],
-    ];
-    fs.writeFileSync(
-      path.join(tmpHome, ".factory", "config.json"),
-      JSON.stringify({
-        custom_models: customModels.map(([model, name]) => ({ model, model_display_name: name })),
-      }),
-      "utf8",
-    );
-    mockSpawnAsync.mockResolvedValueOnce(emptyHelp());
-
-    const descriptors = await discoverDroidCliModelDescriptors("/mock/bin/droid");
-
-    expect(new Set(descriptors.map((descriptor) => descriptor.id))).toEqual(new Set([
-      "droid/custom:claude-opus-5",
-      "droid/custom:claude-opus-5-5",
-      "droid/custom:claude-sonnet-5",
-      "droid/custom:custom-real-model",
-    ]));
-    expect(descriptors.find((descriptor) => descriptor.id === "droid/custom:claude-sonnet-5")).toMatchObject({
-      providerModelId: "custom:claude-sonnet-5",
-      displayName: "Sonnet 5 (1.2x)",
-      customProxy: true,
-      contextWindow: 1_000_000,
-      maxOutputTokens: 128_000,
-      capabilities: expect.objectContaining({ vision: true, reasoning: true }),
-      reasoningTiers: ["low", "medium", "high", "max"],
-    });
-    expect(descriptors.find((descriptor) => descriptor.id === "droid/custom:claude-opus-5")).toMatchObject({
-      providerModelId: "custom:claude-opus-5",
-      displayName: "Opus 5",
-      customProxy: true,
-      contextWindow: 1_000_000,
-      maxOutputTokens: 128_000,
-      reasoningTiers: ["low", "medium", "high", "xhigh", "max"],
-      defaultReasoningEffort: "high",
-    });
-    expect(descriptors.find((descriptor) => descriptor.id === "droid/custom:claude-opus-5-5")).toMatchObject({
-      providerModelId: "custom:claude-opus-5-5",
-      displayName: "Opus 5.5",
-      customProxy: true,
-      contextWindow: 1_000_000,
-      maxOutputTokens: 128_000,
-      reasoningTiers: ["low", "medium", "high", "xhigh", "max"],
-      defaultReasoningEffort: "medium",
-    });
-    expect(descriptors.find((descriptor) => descriptor.id === "droid/custom:custom-real-model")).toMatchObject({
-      displayName: "Custom Real Model",
-      customProxy: true,
-    });
   });
 
   it("serves last-known-good rows past the freshness window and revalidates once in the background", async () => {

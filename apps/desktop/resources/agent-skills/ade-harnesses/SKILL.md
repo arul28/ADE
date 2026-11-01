@@ -8,8 +8,13 @@ description: Use this skill to run a chat, CLI session or subagent on a specific
 ADE separates the **harness** (which agent runs: Claude Code, Codex, Droid,
 OpenCode, …) from the **model provider** (where it gets its intelligence: a
 native sign-in, a provider signed in to OpenCode — OpenCode Go, Zen, or any
-provider connected there — a stored API key, or a subscription borrowed
-through ADE's proxy). Any routable harness can run any model its sources serve:
+provider connected there — a stored API key, or a sign-in already on this
+machine, which ADE's proxy runs in any other harness with no extra sign-in.
+`--via account:<claude|codex>:<accountId>` picks one named Claude or Codex
+account. `--via subscription:<claude|codex|grok|kimi|devin|muse>` uses that
+provider's sign-in on this machine and takes no account id (for Claude and
+Codex, the default account); it is the only form for Grok, Kimi, Devin and
+Muse. Any routable harness can run any model its sources serve:
 ADE points the harness straight at the source when they speak the same API, and
 translates through its local proxy when they do not.
 
@@ -120,25 +125,29 @@ runs subagents on the main model takes neither.
 
 ## What does not take a preset
 
-Three CLIs read their identity from their own sign-in and accept no key or
-endpoint from the launch: **Cursor**, **Copilot**, **Kimi**. A preset on one of
-them in CLI mode is dropped and the native CLI starts — a working session on
-the harness's own account, with the reason recorded. (Grok used to be here; it
-now runs routed models from an ADE-owned `GROK_HOME`.)
+One CLI reads its identity from its own sign-in and accepts no key or endpoint
+from the launch: **Cursor**. A preset on it in CLI mode is dropped and the
+native CLI starts — a working session on the harness's own account, with the
+reason recorded. (Grok, Copilot, Kimi and Pi used to be here; each now runs
+routed models: Grok from an ADE-owned `GROK_HOME`, Copilot through its
+`COPILOT_PROVIDER_*` BYOK switches, Kimi from an ADE-owned `KIMI_CODE_HOME`,
+Pi from an ADE-owned `PI_CODING_AGENT_DIR`.)
 
 OpenCode's **free** Zen models only answer inside OpenCode itself, so they are
 never offered as a reachable choice in another harness (the editor still lists
 them, greyed, with the reason). The same goes for an OpenCode sign-in that is
 measured as a subscription-only login — an OpenAI sign-in there is a ChatGPT
 subscription whose token no outside client can use; route it with an OpenAI API
-key or a Codex subscription through ADE's proxy instead.
+key, or with your Codex account (`--via account:codex:<id>`), which runs in any
+harness on the login Codex already has.
 
-Two more have no key path at all, in either mode:
+Cursor has no key path at all, in either mode: it holds one key at a time in
+its own store, so a per-preset key would change every other Cursor session on
+the machine.
 
-- **Pi** reads its endpoints and model ids from its own `models.json`. Add the
-  provider in Pi; a preset key has nowhere to go.
-- **Cursor** holds one key at a time in its own store, so a per-preset key would
-  change every other Cursor session on the machine.
+Antigravity's sign-in is never lent to the proxy: its CLI stores only a
+long-lived refresh token, and Google has suspended accounts that used it
+through other clients.
 
 When a preset cannot be honoured, the chat says which capability was dropped and
 runs on the harness's own sign-in. It never fails the launch.

@@ -11,6 +11,7 @@
 import {
   DEFAULT_HARNESS_PRESET_ACCENT,
   presetLabel,
+  presetSourceLogo,
   type HarnessPreset,
   type HarnessPresetBody,
   type HarnessPresetLogo,
@@ -52,21 +53,9 @@ export function harnessAccentColor(harness: HarnessPresetBody | string): string 
     ?? DEFAULT_HARNESS_PRESET_ACCENT;
 }
 
-/**
- * The mark a source wears — who the model actually comes from.
- *
- * An opencode source names its provider id (`opencode-go`, `opencode-zen`);
- * every other kind names the provider the credential or subscription belongs
- * to. Both are the same vocabulary `ProviderLogo` and the preset wizard's
- * source rows already use.
- */
-export function sourceLogoFamily(source: HarnessPresetSource): string {
-  return source.kind === "opencode" ? source.providerId : source.provider;
-}
-
 /** The accent a source wears. Its brand colour where there is one, else the harness's. */
 function sourceAccentColor(source: HarnessPresetSource, harness: HarnessPresetBody): string {
-  const family = sourceLogoFamily(source);
+  const family = presetSourceLogo(source);
   const branded = (PROVIDER_CHAT_ACCENTS as Record<string, string | undefined>)[family];
   return branded ?? harnessAccentColor(harness);
 }
@@ -93,7 +82,7 @@ export function resolveHarnessLaunchTarget(
       // provider in everything but name, and the harness is the half the person
       // picked for convenience rather than the half that identifies the model.
       // The harness stays in the name and in the tooltip every row carries.
-      logo: { kind: "provider", providerId: sourceLogoFamily(spec.source) },
+      logo: { kind: "provider", providerId: presetSourceLogo(spec.source) },
       accentColor: sourceAccentColor(spec.source, spec.harness),
       adHoc: true,
     };

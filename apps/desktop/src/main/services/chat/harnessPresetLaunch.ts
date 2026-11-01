@@ -72,6 +72,8 @@ import type { ApiCredentialSummary } from "../../../shared/types/apiCredentials"
 import { getApiCredentialKey, getApiCredentialSummary } from "../ai/apiKeyStore";
 import { resolveProviderInstanceForLaunch } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
 import { isBaseProviderInstance } from "../../../shared/types/providerInstances";
+import { codexConfigHome as defaultCodexHome } from "../shared/providerConfigHomes";
+import { codexLoginInKeyring } from "../ai/codexKeyringAuth";
 import { resolveMachineAdeDir } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import {
   isProxySubscriptionHarness,
@@ -100,6 +102,7 @@ import {
   type RouteReasonCode,
 } from "./harnessRouteLaunch";
 import {
+  NON_ROUTABLE_KEY_PROVIDERS,
   decodeRoutePresetId,
   harnessAcceptsRoutes,
   isRoutePresetId,
@@ -118,6 +121,7 @@ import {
   type PrivateFileSecurityOptions as HarnessPrivateFileSecurity,
 } from "../../../../../ade-cli/src/lib/trustedWindowsTools";
 import {
+  borrowFailureMessage,
   defaultReadProxyConnection,
   type ProxySubscriptionConnectionParts,
   type ProxySubscriptionConnectionUnavailable,
@@ -203,11 +207,13 @@ export type HarnessPresetLaunchDeps = {
   ) => { id: string; provider: "claude" | "codex"; configHome: string } | null;
   /**
    * The proxy connection for one provider: port + shared api key + the login's
-   * routing prefix. `proxy-stopped` is distinct from a live proxy with no
-   * matching login, so a subscription launch can tell the user what to fix.
+   * routing prefix. With an account id, only that account's lent login.
+   * `proxy-stopped` is distinct from a live proxy with no lent login, so a
+   * subscription launch can tell the user what to fix.
    */
   readProxyConnection?: (
     provider: ProxySubscriptionProvider,
+    instanceId?: string | null,
   ) => ProxySubscriptionConnectionParts | ProxySubscriptionConnectionUnavailable | null;
   /** Security seams are injectable so Windows ACL behavior is testable off-host. */
   platform?: NodeJS.Platform;
@@ -426,28 +432,24 @@ export function resolveHarnessPresetPlan(
   const claudeExtras = (modelPrefix = ""): Pick<HarnessPresetLaunchPlan, "claudeAgents"> & { env: Record<string, string> } =>
     harness !== "claude" ? { env: {} } : claudeSubagentLaunchExtras(preset, subagentModel, modelPrefix);
 
-  if (preset.source.kind === "account") {
-    const resolveInstance = deps.resolveInstance ?? resolveProviderInstanceForLaunch;
-    const instance = resolveInstance(preset.source.provider, preset.source.instanceId);
-    if (!instance) {
-      return {
-        status: "unsupported",
-        presetId: preset.id,
-        provider: harness,
-        unsupported: "The account this preset signs in with is no longer on this machine.",
-      };
-    }
-    if (instance.provider !== harness) {
-      // A Claude account cannot sign a Codex harness in. The proxy exists for
-      // exactly that case, and this preset did not ask for it.
-      return {
-        status: "unsupported",
-        presetId: preset.id,
-        provider: harness,
-        unsupported:
-          `A ${instance.provider} account cannot sign ${harness} in directly. Use a subscription source to borrow it through ADE's proxy.`,
-      };
-    }
+  const accountInstance = preset.source.kind === "account"
+    ? (deps.resolveInstance ?? resolveProviderInstanceForLaunch)(preset.source.provider, preset.source.instanceId)
+    : null;
+  if (preset.source.kind === "account" && !accountInstance) {
+    return {
+      status: "unsupported",
+      presetId: preset.id,
+      provider: harness,
+      unsupported: "The account this preset signs in with is no longer on this machine.",
+    };
+  }
+  // A Claude or Codex account in another harness runs on that account's own
+  // login, which ADE's proxy borrows (borrowedLogins.ts) in the branch below.
+  const borrowedAccount = accountInstance && accountInstance.provider !== harness
+    ? { provider: accountInstance.provider, instanceId: accountInstance.id }
+    : null;
+
+  if (accountInstance && !borrowedAccount) {
     const extras = claudeExtras();
     /* A Codex account preset runs in that account's own CODEX_HOME, which ADE
        does not own: an `[agents]` block written there would follow the user
@@ -463,15 +465,15 @@ export function resolveHarnessPresetPlan(
     }
     return {
       ...(codexAccountSubagents ? withoutSubagentSettings(base) : base),
-      instanceId: instance.id,
+      instanceId: accountInstance.id,
       env: {
         // The base identity inherits the environment (`isBaseProviderInstance`);
         // only a second account gets its config home exported.
-        ...(isBaseProviderInstance(instance)
+        ...(isBaseProviderInstance(accountInstance)
           ? {}
-          : instance.provider === "claude"
-            ? { CLAUDE_CONFIG_DIR: instance.configHome }
-            : { CODEX_HOME: instance.configHome }),
+          : accountInstance.provider === "claude"
+            ? { CLAUDE_CONFIG_DIR: accountInstance.configHome }
+            : { CODEX_HOME: accountInstance.configHome }),
         ...extras.env,
       },
       ...(extras.claudeAgents ? { claudeAgents: extras.claudeAgents } : {}),
@@ -479,7 +481,39 @@ export function resolveHarnessPresetPlan(
     };
   }
 
-  if (preset.source.kind === "subscription") {
+  // The login the proxy runs this preset on: another provider's account, or a
+  // subscription (an old Claude/Codex one runs on that provider's default account).
+  const lent: { provider: ProxySubscriptionProvider; instanceId: string | null } | null = borrowedAccount
+    ?? (preset.source.kind === "subscription" ? { provider: preset.source.provider, instanceId: null } : null);
+  if (lent) {
+    const subscriptionProvider = lent.provider;
+    const borrowedInstanceId = lent.instanceId;
+    // macOS only: elsewhere ADE reads Codex's keyring copy (codexKeyringAuth.ts).
+    const codexKeyringBlocksLending = (): boolean => {
+      if (subscriptionProvider !== "codex" || process.platform !== "darwin") return false;
+      const home = accountInstance && !isBaseProviderInstance(accountInstance)
+        ? accountInstance.configHome
+        : defaultCodexHome();
+      return codexLoginInKeyring(home);
+    };
+    const unavailableMessage = (connection: ProxySubscriptionConnectionUnavailable | null): string => {
+      if (connection?.reason === "proxy-stopped") return "ADE's proxy is stopped; start it and try again.";
+      if (codexKeyringBlocksLending()) {
+        return "Codex keeps this login in the macOS Keychain, where only Codex can read it, so ADE cannot lend it to another harness. Set `cli_auth_credentials_store = \"file\"` in Codex's config.toml and sign in to Codex again.";
+      }
+      return borrowFailureMessage(subscriptionProvider);
+    };
+    const loginUnavailable = (
+      connection: ProxySubscriptionConnectionUnavailable | null,
+    ): HarnessPresetLaunchResult => ({
+      status: "unsupported",
+      presetId: preset.id,
+      provider: harness,
+      unsupported: unavailableMessage(connection),
+      // The launch's async prepare step starts the proxy and lends this
+      // machine's logins, then resolves again.
+      reasonCode: "proxy-not-ready",
+    });
     // These subscription-native harnesses are handled by proxyEnvForSubscription.
     // Grok, Droid and Qwen accept the same proxy login through their own
     // config/env shape, so the route writer builds those launches below.
@@ -496,19 +530,8 @@ export function resolveHarnessPresetPlan(
       // Grok, Droid and Qwen take an endpoint through their own config/env
       // shape, which the route writer already knows; the proxy holds the login.
       const readConnection = deps.readProxyConnection ?? defaultReadProxyConnection(adeHome);
-      const connection = readConnection(preset.source.provider);
-      if (!connection || "reason" in connection) {
-        return {
-          status: "unsupported",
-          presetId: preset.id,
-          provider: harness,
-          unsupported: !connection
-            ? "Sign-in through ADE's proxy is not available yet."
-            : "Sign-in through ADE's proxy is stopped; start the proxy and try again.",
-          ...(connection ? { reasonCode: "proxy-not-ready" as const } : {}),
-        };
-      }
-      const subscriptionProvider = preset.source.provider;
+      const connection = readConnection(subscriptionProvider, borrowedInstanceId);
+      if (!connection || "reason" in connection) return loginUnavailable(connection);
       const built = runRouteBuild(writeConfig, () => buildSubscriptionRouteLaunch({
         harness,
         provider: subscriptionProvider,
@@ -537,43 +560,26 @@ export function resolveHarnessPresetPlan(
       };
     }
     const readConnection = deps.readProxyConnection ?? defaultReadProxyConnection(adeHome);
-    const connection = readConnection(preset.source.provider);
-    if (!connection) {
-      return {
-        status: "unsupported",
-        presetId: preset.id,
-        provider: harness,
-        unsupported: "Sign-in through ADE's proxy is not available yet.",
-      };
-    }
-    if ("reason" in connection && connection.reason === "proxy-stopped") {
-      return {
-        status: "unsupported",
-        presetId: preset.id,
-        provider: harness,
-        unsupported: "Sign-in through ADE's proxy is stopped; start the proxy and try again.",
-        reasonCode: "proxy-not-ready",
-      };
-    }
-    const parts = connection as ProxySubscriptionConnectionParts;
+    const connection = readConnection(subscriptionProvider, borrowedInstanceId);
+    if (!connection || "reason" in connection) return loginUnavailable(connection);
     let proxy: ProxySubscriptionEnvironment;
     try {
       proxy = proxyEnvForSubscription(
-        preset.source.provider,
+        subscriptionProvider,
         harness,
-        { ...parts, model: preset.model },
+        { ...connection, model: preset.model },
       );
-    } catch {
+    } catch (error) {
       return {
         status: "unsupported",
         presetId: preset.id,
         provider: harness,
-        unsupported: "Sign-in through ADE's proxy is not available yet.",
+        unsupported: `${harnessBodyLabel(harness)} cannot run your ${harnessBodyLabel(subscriptionProvider)} sign-in: ${error instanceof Error ? error.message : String(error)}`,
       };
     }
     // The proxy routes a subscription by its login's prefix, so a pinned
     // subagent model and the built-in pins must carry it as the main model does.
-    const extras = claudeExtras(`${parts.prefix}/`);
+    const extras = claudeExtras(`${connection.prefix}/`);
     const env: Record<string, string> = { ...proxy.env, ...extras.env };
     const configureSubscriptionConfig = () => {
       let codexConfigHome: string | undefined;
@@ -670,10 +676,12 @@ export function resolveHarnessPresetPlan(
     };
   }
 
-  // Kimi and Copilot take no endpoint, only their vendor's key in an env var,
-  // so their key presets keep the plain key path below rather than a route.
+  // A key that only signs its own tool in (a Copilot or Cursor key) keeps the
+  // plain key path below; any other key on a harness that takes an endpoint
+  // routes, Copilot and Kimi included.
   const routable = harnessAcceptsRoutes(harness) && harness !== "opencode";
-  if (preset.source.kind === "opencode" || (preset.source.kind === "key" && routable)) {
+  const vendorOnlyKey = preset.source.kind === "key" && NON_ROUTABLE_KEY_PROVIDERS.has(preset.source.provider.trim().toLowerCase());
+  if (preset.source.kind === "opencode" || (preset.source.kind === "key" && routable && !vendorOnlyKey)) {
     const routeSource = preset.source;
     const routed = runRouteBuild(writeConfig, () => buildRouteLaunch({
       harness,

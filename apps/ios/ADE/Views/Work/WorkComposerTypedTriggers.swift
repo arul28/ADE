@@ -608,7 +608,7 @@ enum WorkModelMentionDetector {
       ]
     case "droid", "factory":
       return [
-        PermissionOption(value: "read-only", label: "Read-only"),
+        PermissionOption(value: "read-only", label: "Plan"),
         PermissionOption(value: "auto-low", label: "Auto low"),
         PermissionOption(value: "auto-medium", label: "Auto medium"),
         PermissionOption(value: "auto-high", label: "Auto high"),

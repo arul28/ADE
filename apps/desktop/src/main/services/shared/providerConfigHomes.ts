@@ -226,7 +226,13 @@ export function devinCredentialFiles(args: HomeArg & { platform?: NodeJS.Platfor
   const platform = args.platform ?? process.platform;
   const xdgData = trimmed(env.XDG_DATA_HOME);
   if (platform === "win32") {
-    return [path.join(trimmed(env.LOCALAPPDATA) ?? path.join(home, "AppData", "Local"), "devin", "credentials.toml")];
+    // Devin's own docs (docs.devin.ai/cli/enterprise/windsurf-auth) and its
+    // `auth status` name `%APPDATA%`; the `%LOCALAPPDATA%` path ADE read
+    // before stays as a fallback.
+    return [
+      path.join(trimmed(env.APPDATA) ?? path.join(home, "AppData", "Roaming"), "devin", "credentials.toml"),
+      path.join(trimmed(env.LOCALAPPDATA) ?? path.join(home, "AppData", "Local"), "devin", "credentials.toml"),
+    ];
   }
   const dataHome = xdgData ? path.resolve(xdgData) : path.join(home, ".local", "share");
   return [path.join(dataHome, "devin", "credentials.toml")];

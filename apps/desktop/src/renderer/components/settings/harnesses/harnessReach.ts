@@ -14,16 +14,19 @@
  *    `unreachable` entry with the route decision's reason (the wizard lists
  *    those greyed under the source, instead of silently dropping them); only a
  *    source that supplies nothing at all is absent.
- * 3. Claude and Codex subscriptions borrowed through ADE's proxy, for every
- *    other harness that takes an endpoint.
+ * 3. Every Claude and Codex account on this machine, in every other harness
+ *    that takes an endpoint. ADE's proxy runs it on that account's own login,
+ *    lent to it (`ade-cli/src/services/proxy/borrowedLogins.ts`), so there is
+ *    no second sign-in.
  *
  * Pure: no React, no IPC. The hook in `useHarnessReach.ts` gathers the inputs.
  */
 
 import {
-  HARNESS_PRESET_ACCOUNT_PROVIDERS,
   HARNESS_PRESET_BODIES,
+  harnessAccountProviderLabel,
   harnessBodyLabel,
+  presetSourceSummary,
   type HarnessPresetAccountProvider,
   type HarnessPresetBody,
   type HarnessPresetSource,
@@ -90,10 +93,20 @@ export type ReachableGroup = {
   models: ReachableModel[];
   /** Models this source serves that cannot run in this harness, with reasons. */
   unreachable: UnreachableModel[];
-  /** A subscription the proxy has not been signed in to yet. */
-  needsProxySignIn?: boolean;
+  /**
+   * The provider's default account in another harness. A preset saved with a
+   * `subscription` source (before accounts were lent) runs on it, so it opens
+   * here.
+   */
+  defaultAccount?: boolean;
   /** The catalog source behind a `source` group — what the Test button checks. */
   routeSource?: HarnessRouteSource;
+  /** An account group's sign-in (its email, or its name before sign-in). */
+  accountLabel?: string;
+  /** An account group's plan ("ChatGPT Plus"), when the account says. */
+  plan?: string | null;
+  /** An account group whose login is missing or broken: listed, not usable yet. */
+  signedOut?: boolean;
 };
 
 /** A native model list for one account provider, with limits. */
@@ -112,8 +125,6 @@ export type NativeModel = {
 export type HarnessReachInputs = {
   catalog: HarnessRouteCatalog | null;
   accounts: readonly HarnessAccountSource[];
-  /** Providers signed in to ADE's proxy; null while unknown. */
-  proxyLogins: ReadonlySet<string> | null;
   nativeModels: Readonly<Record<HarnessPresetAccountProvider, readonly NativeModel[]>>;
 };
 
@@ -164,10 +175,6 @@ export function nativeModelsForProvider(
 /** The id a launch passes for a model; owned by `shared/harnessRoutes.ts`. */
 export { launchModelIdFor };
 
-function accountProviderLabel(provider: HarnessPresetAccountProvider): string {
-  return provider === "claude" ? "Claude" : "Codex";
-}
-
 function nativeRow(groupKey: string, model: NativeModel, route: HarnessRoute): ReachableModel {
   return {
     key: `${groupKey}::${model.id}`,
@@ -193,24 +200,31 @@ export function buildReachableGroups(harness: HarnessPresetBody, inputs: Harness
       const source: HarnessPresetSource = { kind: "account", provider: harness, instanceId: account.instanceId };
       const key = `account:${account.instanceId}`;
       // The label is already the email (or the id before sign-in).
-      const facts = [account.plan, account.email ? account.instanceId : null].filter(Boolean).join(" · ");
       groups.push({
         key,
         kind: "native",
-        label: `${accountProviderLabel(harness)} · ${account.label}`,
+        label: `${harnessAccountProviderLabel(harness)} · ${account.label}`,
         detail: account.loginBroken
           ? [account.email, "Signed out"].filter(Boolean).join(" · ")
-          : facts || (account.signedIn ? "Your account" : "Not signed in yet"),
+          : account.signedIn ? "Signed in" : "Not signed in yet",
         logoProvider: harness,
         source,
         models: inputs.nativeModels[harness].map((model) => nativeRow(key, model, { kind: "native" })),
         unreachable: [],
+        accountLabel: account.label,
+        plan: account.plan ?? null,
+        ...(!account.signedIn || account.loginBroken ? { signedOut: true } : {}),
       });
     }
   }
 
-  // 2 — OpenCode sign-ins and stored keys.
+  // 2 — OpenCode sign-ins, stored keys, and borrowed subscriptions (Grok).
+  // Claude and Codex accounts come from section 1 and 3 instead, built from the
+  // accounts this hook already loads; a subscription is never offered inside
+  // its own harness.
   for (const routeSource of inputs.catalog?.sources ?? []) {
+    if (routeSource.source.kind === "account") continue;
+    if (routeSource.source.kind === "subscription" && routeSource.source.provider === harness) continue;
     const models: ReachableModel[] = [];
     const unreachable: UnreachableModel[] = [];
     for (const model of routeSource.models) {
@@ -237,7 +251,7 @@ export function buildReachableGroups(harness: HarnessPresetBody, inputs: Harness
     if (models.length === 0 && unreachable.length === 0) continue;
     groups.push({
       key: routeSource.key,
-      kind: "source",
+      kind: routeSource.source.kind === "subscription" ? "subscription" : "source",
       label: routeSource.label,
       detail: routeSource.detail,
       logoProvider: routeSource.logoProvider,
@@ -248,27 +262,33 @@ export function buildReachableGroups(harness: HarnessPresetBody, inputs: Harness
     });
   }
 
-  // 3 — subscriptions through the proxy, for every harness that is not their own.
+  // 3 — every other provider's accounts, on their own lent login.
   if (harnessAcceptsRoutes(harness)) {
-    for (const provider of HARNESS_PRESET_ACCOUNT_PROVIDERS) {
-      if (provider === harness) continue;
-      const source: HarnessPresetSource = { kind: "subscription", provider };
-      const key = `subscription:${provider}`;
-      const signedIn = inputs.proxyLogins ? inputs.proxyLogins.has(provider) : null;
-      const models = inputs.nativeModels[provider].map((model) =>
+    for (const account of inputs.accounts) {
+      if (account.provider === harness) continue;
+      const source: HarnessPresetSource = { kind: "account", provider: account.provider, instanceId: account.instanceId };
+      const key = `account:${account.instanceId}`;
+      const models = inputs.nativeModels[account.provider].map((model) =>
         nativeRow(key, model, resolveHarnessRoute({ harness, source, modelId: model.id })),
       );
       if (models.length === 0) continue;
+      const providerLabel = harnessAccountProviderLabel(account.provider);
       groups.push({
         key,
         kind: "subscription",
-        label: `${harnessBodyLabel(provider)} subscription`,
-        detail: signedIn === false ? "Sign in once through ADE's proxy to use it here" : "Your subscription, through ADE's proxy",
-        logoProvider: provider,
+        label: `${providerLabel} · ${account.label}`,
+        detail: account.signedIn && !account.loginBroken
+          ? "Your sign-in, no extra login"
+          : `Signed out · sign in to ${providerLabel} under Providers to use it here`,
+        logoProvider: account.provider,
         source,
         models,
         unreachable: [],
-        ...(signedIn === false ? { needsProxySignIn: true } : {}),
+        accountLabel: account.label,
+        plan: account.plan ?? null,
+        ...(!account.signedIn || account.loginBroken ? { signedOut: true } : {}),
+        // The launch lends an old `subscription` preset the user's default account.
+        ...(account.isDefault ? { defaultAccount: true } : {}),
       });
     }
   }
@@ -295,7 +315,11 @@ export function reachableKeyFor(
   const id = model.trim();
   if (!id) return null;
   for (const group of groups) {
-    if (!sameSource(group.source, source)) continue;
+    const legacySubscription = source.kind === "subscription"
+      && group.defaultAccount === true
+      && group.source.kind === "account"
+      && group.source.provider === source.provider;
+    if (!sameSource(group.source, source) && !legacySubscription) continue;
     const row = group.models.find((entry) => entry.id === id || entry.launchModelId === id);
     if (row) return row.key;
   }
@@ -312,6 +336,19 @@ export function findReachable(
     if (model) return { group, model };
   }
   return null;
+}
+
+/**
+ * Who a group's models are paid by, in two short parts: a title a person
+ * recognises ("ChatGPT Plus", "Claude", "OpenCode Go") and the sign-in or key
+ * it is ("you@example.com"). The rail, the preview and the saved cards say it
+ * the same way.
+ */
+export function sourceSummary(group: ReachableGroup): { title: string; detail: string | null } {
+  if (group.source.kind === "account") {
+    return presetSourceSummary(group.source, { label: group.accountLabel, plan: group.plan });
+  }
+  return { title: group.label, detail: null };
 }
 
 // ---------------------------------------------------------------------------
@@ -366,7 +403,9 @@ function formatTokenCount(value: number): string {
 
 /** The short harness name used inside a default preset name. */
 export function harnessShortLabel(harness: HarnessPresetBody): string {
-  return harness === "codex" ? "Codex" : harnessBodyLabel(harness);
+  if (harness === "codex") return "Codex";
+  if (harness === "copilot") return "Copilot";
+  return harnessBodyLabel(harness);
 }
 
 /** "DeepSeek V4.1 Flash in Claude Code" — the name a preset gets when none is typed. */
@@ -407,10 +446,14 @@ const PREFERRED_STARTER_MODELS = [
   "glm-5.3",
   "qwen3.8-max",
   "minimax-m3",
+  "gpt-6.1-sol",
+  "gpt-6-sol",
+  "claude-sonnet-5-5",
+  "claude-opus-5-5",
   "gpt-5.6-luna",
 ];
 
-const STARTER_HARNESSES: readonly HarnessPresetBody[] = ["claude", "codex", "opencode"];
+const STARTER_HARNESSES: readonly HarnessPresetBody[] = ["claude", "codex", "opencode", "droid"];
 
 /**
  * Two or three one-click combos built from what this computer has connected.
@@ -419,7 +462,9 @@ const STARTER_HARNESSES: readonly HarnessPresetBody[] = ["claude", "codex", "ope
  * route to a proxied one, and prefers a model people actually pick
  * (DeepSeek V4.1 Flash in Claude Code, when OpenCode Go is signed in). Only
  * outside sources are suggested: a Claude account in Claude Code is already
- * the default and needs no saved setup.
+ * the default and needs no saved setup. Another provider's signed-in account
+ * counts (GPT in Claude Code on a ChatGPT plan): for someone with just Claude
+ * and ChatGPT, that is the whole point, and it needs no new sign-in.
  */
 export function starterSuggestions(inputs: HarnessReachInputs, limit = 3): StarterSuggestion[] {
   const out: StarterSuggestion[] = [];
@@ -431,7 +476,8 @@ export function starterSuggestions(inputs: HarnessReachInputs, limit = 3): Start
   for (const harness of STARTER_HARNESSES) {
     if (out.length >= limit) break;
     const groups = buildReachableGroups(harness, inputs).filter(
-      (group) => group.kind === "source" && !(harness === "opencode" && group.source.kind === "opencode"),
+      (group) => (group.kind === "source" || (group.kind === "subscription" && !group.signedOut))
+        && !(harness === "opencode" && group.source.kind === "opencode"),
     );
     let best: { group: ReachableGroup; model: ReachableModel; score: number } | null = null;
     for (const group of groups) {

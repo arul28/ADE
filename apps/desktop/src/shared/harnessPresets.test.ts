@@ -200,12 +200,14 @@ describe("importHarnessPreset", () => {
     expect(importHarnessPreset(exported, { credentialIds: ["cred_x"] }).missing).toEqual([]);
   });
 
-  it("reports a proxy sign-in the host cannot perform", () => {
+  it("reports a subscription this host cannot run: no proxy, or no such sign-in here", () => {
     const exported = exportHarnessPreset(
-      preset({ harness: "droid", source: { kind: "subscription", provider: "claude" } }),
+      preset({ harness: "droid", source: { kind: "subscription", provider: "grok" } }),
     );
     expect(importHarnessPreset(exported).missing).toEqual(["subscription-signin"]);
-    expect(importHarnessPreset(exported, { proxySignInAvailable: true }).missing).toEqual([]);
+    expect(importHarnessPreset(exported, { proxyAvailable: true, subscriptionProviders: ["codex"] }).missing)
+      .toEqual(["subscription-signin"]);
+    expect(importHarnessPreset(exported, { proxyAvailable: true, subscriptionProviders: ["grok"] }).missing).toEqual([]);
   });
 
   it("accepts the JSON text a file picker hands back", () => {
@@ -236,11 +238,12 @@ describe("labels", () => {
   });
 
   it("names the source in the user's terms", () => {
-    expect(presetSourceLabel(preset().source, () => "Work")).toBe("Claude Code account · Work");
+    expect(presetSourceLabel(preset().source, () => "Work")).toBe("Claude account · Work");
     expect(
       presetSourceLabel({ kind: "key", provider: "openai", credentialId: "c", label: "OpenAI ••••4f2a" }),
     ).toBe("API key · OpenAI ••••4f2a");
-    expect(presetSourceLabel({ kind: "subscription", provider: "codex" })).toBe("Codex CLI subscription");
+    expect(presetSourceLabel({ kind: "subscription", provider: "codex" })).toBe("Codex account");
+    expect(presetSourceLabel({ kind: "subscription", provider: "grok" })).toBe("Grok sign-in");
   });
 
   it("reads the inherit token as a sentence", () => {

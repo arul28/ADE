@@ -1,47 +1,6 @@
 /* Settings › Providers › Custom, in the modern settings look. */
 
-.ade-custom-empty {
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
-  padding: 14px;
-  border-radius: var(--radius-lg);
-  border: 1px solid var(--kit-panel-edge);
-  background: var(--kit-panel-bg);
-}
 .ade-custom-empty-copy { margin: 6px 0 0; font-size: 12.5px; line-height: 1.45; color: var(--color-muted-fg); }
-
-.ade-custom-starter {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  height: 28px;
-  padding: 0 11px;
-  border-radius: 999px;
-  border: 1px solid color-mix(in srgb, var(--color-fg) 12%, transparent);
-  background: color-mix(in srgb, var(--color-fg) 3%, transparent);
-  color: var(--color-fg);
-  font: inherit;
-  font-size: 12px;
-  cursor: pointer;
-  transition: background-color 100ms ease, border-color 100ms ease;
-}
-.ade-custom-starter:hover { background: color-mix(in srgb, var(--color-fg) 7%, transparent); border-color: color-mix(in srgb, var(--color-fg) 20%, transparent); }
-.ade-custom-starter:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
-
-.ade-custom-row {
-  display: grid;
-  /* Small minimums: at 150% zoom the pane is ~700px, and a row that cannot
-     shrink is what makes the page scroll sideways. */
-  grid-template-columns: minmax(120px, 1.1fr) minmax(86px, 0.7fr) minmax(150px, 1.3fr) auto;
-  gap: 12px;
-  align-items: center;
-  min-width: 0;
-  padding: 12px 14px;
-  font-size: 12px;
-  color: var(--color-fg);
-}
-.ade-custom-row + .ade-custom-row { border-top: 1px solid color-mix(in srgb, var(--color-fg) 7%, transparent); }
 
 /* The Custom provider editor's model-search field. The input itself carries no
    outline — the field's frame is the affordance — so the frame shows the kit's
@@ -50,4 +9,391 @@
 .ade-cp-search:focus-within {
   outline: 2px solid color-mix(in srgb, var(--color-fg) 60%, transparent);
   outline-offset: 1px;
+}
+
+/* ── Hero ────────────────────────────────────────────────────────────
+   The kit's `.kit-hero` (the Account banner), painted from one colour: the
+   section's own or a custom provider's accent (`customHeroStyle`). CSS only,
+   no mesh, so an open editor costs nothing idle. */
+
+.ade-cp-hero { container: cphero / inline-size; }
+.ade-cp-hero .kit-hero-wash { transition: background 260ms ease; }
+.ade-cp-hero-id { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1 1 auto; }
+.ade-cp-hero-eyebrow {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  opacity: 0.72;
+}
+.ade-cp-hero-title {
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+  text-shadow: 0 1px 14px rgba(0, 0, 0, 0.3);
+}
+.ade-cp-hero-copy { font-size: 12.5px; line-height: 1.5; opacity: 0.88; max-width: 52ch; }
+
+/* The name, typed straight onto the banner. */
+.ade-cp-name {
+  width: 100%;
+  min-width: 0;
+  margin: 0 0 0 -6px;
+  padding: 2px 6px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: #fff;
+  font: inherit;
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+  text-shadow: 0 1px 14px rgba(0, 0, 0, 0.3);
+  outline: none;
+  transition: border-color 120ms ease, background-color 120ms ease;
+}
+.ade-cp-name::placeholder { color: rgba(255, 255, 255, 0.62); }
+.ade-cp-name:hover { border-color: rgba(255, 255, 255, 0.22); }
+.ade-cp-name:focus { border-color: rgba(255, 255, 255, 0.45); background: rgba(0, 0, 0, 0.18); }
+
+/* The mark, standing on the banner as a raised tile. */
+.ade-cp-mark {
+  flex: none;
+  position: relative;
+  width: 76px;
+  height: 76px;
+  perspective: 520px;
+}
+.ade-cp-mark-face {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  border-radius: 22px;
+  background: linear-gradient(150deg, rgba(255, 255, 255, 0.26), rgba(255, 255, 255, 0.08));
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  transform: rotateX(12deg) rotateY(-18deg);
+  transition: transform 420ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  box-shadow:
+    inset 0 1.5px 0 rgba(255, 255, 255, 0.5),
+    1px 1px 0 color-mix(in srgb, var(--hero-mid) 70%, #000),
+    2px 2px 0 color-mix(in srgb, var(--hero-mid) 62%, #000),
+    3px 3px 0 color-mix(in srgb, var(--hero-mid) 54%, #000),
+    4px 4px 0 color-mix(in srgb, var(--hero-mid) 46%, #000),
+    5px 5px 0 color-mix(in srgb, var(--hero-mid) 40%, #000),
+    6px 6px 0 color-mix(in srgb, var(--hero-mid) 34%, #000),
+    12px 18px 26px rgba(0, 0, 0, 0.42);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+.ade-cp-mark-face > * { filter: drop-shadow(0 2px 2px rgba(0, 0, 0, 0.3)); }
+.ade-cp-mark:hover .ade-cp-mark-face { transform: rotateX(4deg) rotateY(-6deg) translateY(-2px); }
+@media (prefers-reduced-motion: reduce) {
+  .ade-cp-mark-face, .ade-cp-hero .kit-hero-wash { transition: none; }
+}
+
+/* The frosted recipe card: harness, model, who pays. */
+.ade-cp-recipe {
+  flex: 0 1 auto;
+  width: min(330px, 46%);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: rgba(10, 10, 14, 0.38);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  backdrop-filter: blur(14px) saturate(1.2);
+  -webkit-backdrop-filter: blur(14px) saturate(1.2);
+}
+.ade-cp-recipe-row {
+  display: grid;
+  grid-template-columns: 74px 18px minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+  min-height: 26px;
+  font-size: 12px;
+}
+.ade-cp-recipe-row + .ade-cp-recipe-row { border-top: 1px solid rgba(255, 255, 255, 0.08); }
+.ade-cp-recipe-key {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  opacity: 0.66;
+}
+.ade-cp-recipe-logo { display: inline-grid; place-items: center; }
+.ade-cp-recipe-value { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.ade-cp-recipe-value[data-empty="true"] { font-weight: 400; opacity: 0.6; font-style: italic; }
+.ade-cp-recipe-note { margin-top: 4px; font-size: 10.5px; opacity: 0.7; line-height: 1.4; }
+
+/* The section's empty banner: harness + model = yours. */
+.ade-cp-equation { display: flex; align-items: center; gap: 10px; flex: none; }
+.ade-cp-equation-tile {
+  display: grid;
+  place-items: center;
+  width: 46px;
+  height: 46px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.92);
+  color: #141414;
+  box-shadow: 0 10px 22px -10px rgba(0, 0, 0, 0.55), inset 0 -2px 0 rgba(0, 0, 0, 0.08);
+}
+.ade-cp-equation-tile[data-glass="true"] {
+  background: rgba(255, 255, 255, 0.16);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+}
+.ade-cp-equation-op { font-size: 18px; font-weight: 600; opacity: 0.75; }
+.ade-cp-hero-actions { display: flex; align-items: center; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+.ade-cp-hero-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 12px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+.ade-cp-hero-btn:hover { background: rgba(255, 255, 255, 0.22); }
+.ade-cp-hero-btn[data-primary="true"] { background: #fff; color: #17121f; border-color: #fff; }
+.ade-cp-hero-btn[data-primary="true"]:hover { background: rgba(255, 255, 255, 0.88); }
+.ade-cp-hero-btn:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+
+@container cphero (max-width: 620px) {
+  .ade-cp-hero .kit-hero-row { flex-wrap: wrap; }
+  .ade-cp-recipe { width: 100%; }
+  .ade-cp-equation { display: none; }
+}
+
+/* ── Editor steps ───────────────────────────────────────────────────── */
+
+.ade-cp-step { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.ade-cp-step-head { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.ade-cp-step-num {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 700;
+  color: var(--color-fg);
+  background: color-mix(in srgb, var(--cp-accent, var(--color-accent)) 22%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--cp-accent, var(--color-accent)) 45%, transparent);
+}
+.ade-cp-step-num[data-done="true"] { background: var(--cp-accent, var(--color-accent)); color: #fff; box-shadow: none; }
+.ade-cp-step-title { font-size: 13px; font-weight: 600; color: var(--color-fg); }
+.ade-cp-step-hint { font-size: 12px; color: var(--kit-text-2, var(--color-muted-fg)); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Harness tiles. */
+.ade-cp-harness-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(112px, 1fr));
+  gap: 6px;
+}
+.ade-cp-harness {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  height: 38px;
+  padding: 0 8px;
+  border-radius: 10px;
+  border: 1px solid var(--kit-panel-edge);
+  background: var(--kit-panel-bg);
+  color: var(--color-fg);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 120ms ease, background-color 120ms ease;
+}
+.ade-cp-harness > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ade-cp-harness:hover { border-color: color-mix(in srgb, var(--color-fg) 20%, transparent); }
+.ade-cp-harness[aria-checked="true"] {
+  border-color: color-mix(in srgb, var(--cp-accent, var(--color-accent)) 70%, transparent);
+  background: color-mix(in srgb, var(--cp-accent, var(--color-accent)) 14%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--cp-accent, var(--color-accent)) 14%, transparent);
+}
+.ade-cp-harness[aria-disabled="true"] { opacity: 0.4; cursor: not-allowed; }
+.ade-cp-harness:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.ade-cp-harness-logo {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--color-fg) 6%, transparent);
+}
+
+/* The Thinking step's subagent fold, a row of its own in the `ModernRows` panel. */
+.ade-modern-rows > details.ade-cp-more { border-top: 1px solid var(--kit-rule, color-mix(in srgb, var(--color-fg) 7%, transparent)); }
+.ade-cp-more > summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 38px;
+  padding: 0 12px;
+  font-size: 12px;
+  color: var(--kit-text-2, var(--color-muted-fg));
+  cursor: pointer;
+  list-style: none;
+}
+.ade-cp-more > summary::-webkit-details-marker { display: none; }
+.ade-cp-more > summary:hover { color: var(--color-fg); }
+.ade-cp-more[open] > summary svg { transform: rotate(90deg); }
+.ade-cp-more > summary svg { transition: transform 120ms ease; }
+.ade-cp-more-body { display: flex; flex-direction: column; gap: 10px; padding: 0 12px 12px; }
+
+/* Look: logo choices and colour swatches. */
+.ade-cp-look { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.ade-cp-swatches { display: flex; align-items: center; gap: 6px; }
+.ade-cp-swatch {
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background: var(--swatch);
+  cursor: pointer;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.18);
+}
+.ade-cp-swatch[aria-checked="true"] { border-color: var(--color-fg); box-shadow: 0 0 0 2px var(--color-bg) inset; }
+.ade-cp-swatch:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.ade-cp-swatch-custom {
+  position: relative;
+  width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: conic-gradient(from 0deg, #f87171, #fbbf24, #4ade80, #22d3ee, #818cf8, #e879f9, #f87171);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.18);
+}
+.ade-cp-swatch-custom[data-active="true"] { outline: 2px solid var(--color-fg); outline-offset: 1px; }
+.ade-cp-swatch-custom input { position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%; height: 100%; border: 0; padding: 0; }
+.ade-cp-logo-choice {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid var(--kit-panel-edge);
+  background: var(--kit-panel-bg);
+  color: var(--color-fg);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.ade-cp-logo-choice[aria-checked="true"] {
+  border-color: color-mix(in srgb, var(--cp-accent, var(--color-accent)) 70%, transparent);
+  background: color-mix(in srgb, var(--cp-accent, var(--color-accent)) 14%, transparent);
+}
+.ade-cp-logo-choice:disabled { opacity: 0.55; cursor: progress; }
+
+/* ── Saved custom providers and starters, as cards ─────────────────── */
+
+.ade-cp-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 12px;
+}
+/* A card is the provider grid's card (`.ade-pv-open`, ProvidersSection.css)
+   tinted with the custom provider's own colour. */
+.ade-cp-card {
+  position: relative;
+  gap: 12px;
+  background:
+    radial-gradient(120% 90% at 0% 0%, color-mix(in srgb, var(--cp-accent) 14%, transparent), transparent 62%),
+    var(--kit-panel-bg);
+}
+div.ade-cp-card { cursor: default; }
+/* Keep the tint on hover: the provider card's own hover sets a flat fill. */
+.ade-cp-card:hover {
+  background:
+    radial-gradient(120% 90% at 0% 0%, color-mix(in srgb, var(--cp-accent) 18%, transparent), transparent 62%),
+    var(--kit-panel-bg);
+}
+.ade-cp-card:hover { border-color: color-mix(in srgb, var(--cp-accent) 38%, var(--kit-panel-edge)); }
+.ade-cp-card-top { display: flex; align-items: flex-start; gap: 10px; min-width: 0; }
+.ade-cp-card-logo {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 34px;
+  height: 34px;
+  border-radius: 11px;
+  background: color-mix(in srgb, var(--cp-accent) 16%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--cp-accent) 30%, transparent);
+}
+.ade-cp-card-id { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; padding-top: 1px; }
+.ade-cp-card-name { font-size: 13px; font-weight: 600; line-height: 1.3; overflow-wrap: anywhere; }
+.ade-cp-card-meta { font-size: 11.5px; color: var(--kit-text-2, var(--color-muted-fg)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ade-cp-card-actions { display: flex; align-items: center; gap: 2px; flex: none; margin: -4px -6px 0 0; }
+.ade-cp-pair { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 12px; }
+.ade-cp-pair-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  height: 26px;
+  padding: 0 9px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--color-fg) 5%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-fg) 7%, transparent);
+}
+.ade-cp-pair-chip > span:last-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ade-cp-pair-chip:first-child { flex: none; }
+.ade-cp-pair-op { color: var(--kit-text-3, var(--color-muted-fg)); font-size: 12px; flex: none; }
+.ade-cp-card-foot { display: flex; align-items: center; gap: 8px; min-height: 22px; margin-top: auto; min-width: 0; }
+.ade-cp-card-source { font-size: 11px; color: var(--kit-text-2, var(--color-muted-fg)); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+
+/* A starter: the same card, one click to create. */
+.ade-cp-card[data-starter="true"] .ade-cp-card-cta {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: color-mix(in srgb, var(--cp-accent) 75%, var(--color-fg));
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+.ade-cp-card[data-new="true"] {
+  align-items: center;
+  justify-content: center;
+  border-style: dashed;
+  background: transparent;
+  color: var(--kit-text-2, var(--color-muted-fg));
+  min-height: 118px;
+}
+.ade-cp-card[data-new="true"]:hover { color: var(--color-fg); }
+.ade-cp-eyebrow-row { display: flex; align-items: center; gap: 8px; margin: 18px 0 10px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .ade-cp-harness, .ade-cp-name { transition: none; }
+}
+
+/* Inside the editor, a selection wears the custom provider's own colour (the
+   shared list and rail draw the app accent elsewhere). */
+[data-custom-provider-editor] [data-reachable-model]:has(> button[aria-selected="true"]) {
+  border-color: color-mix(in srgb, var(--cp-accent) 55%, transparent);
+  background: color-mix(in srgb, var(--cp-accent) 13%, transparent);
+}
+[data-custom-provider-editor] [data-custom-source][aria-selected="true"] {
+  border-color: color-mix(in srgb, var(--cp-accent) 55%, transparent) !important;
+  background: color-mix(in srgb, var(--cp-accent) 14%, transparent) !important;
 }

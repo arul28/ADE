@@ -2495,7 +2495,7 @@ const HANDOFF_MUSE_MODES: Array<{ value: AgentChatMusePermissionMode; label: str
   .map((value) => ({ value, label: AGENT_CHAT_MUSE_PERMISSION_MODE_DETAILS[value].label }));
 
 const HANDOFF_DROID_MODES: Array<{ value: AgentChatDroidPermissionMode; label: string }> = [
-  { value: "read-only", label: "Read-only" },
+  { value: "read-only", label: "Plan" },
   { value: "auto-low", label: "Auto low" },
   { value: "auto-medium", label: "Auto medium" },
   { value: "auto-high", label: "Auto high" },

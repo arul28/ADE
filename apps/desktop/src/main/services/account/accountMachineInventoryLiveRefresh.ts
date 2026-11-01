@@ -89,7 +89,7 @@ export async function readLocalMachineInventoryDetail(args: {
     if (preset.source.kind === "account" && args.providerInstanceStore.get(preset.source.instanceId)) {
       boundPresetIds.add(preset.id);
     }
-    if ((preset.source.kind === "key" || preset.source.kind === "opencode") && isPresetSourceAvailableLocally(preset.source)) {
+    if (preset.source.kind !== "account" && isPresetSourceAvailableLocally(preset.source)) {
       boundPresetIds.add(preset.id);
     }
   }

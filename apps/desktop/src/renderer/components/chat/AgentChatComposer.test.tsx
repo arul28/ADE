@@ -2247,7 +2247,7 @@ describe("AgentChatComposer", () => {
 
     const autonomyTrigger = screen.getByRole("button", { name: "Droid autonomy mode" });
     fireEvent.click(autonomyTrigger);
-    expect(screen.getByRole("option", { name: "Read-only" })).toBeTruthy();
+    expect(screen.getByRole("option", { name: "Plan" })).toBeTruthy();
     expect(screen.getByRole("option", { name: "Auto low" })).toBeTruthy();
     expect(screen.getByRole("option", { name: "Auto medium" })).toBeTruthy();
     expect(screen.getByRole("option", { name: "Auto high" })).toBeTruthy();

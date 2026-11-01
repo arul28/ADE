@@ -25,6 +25,7 @@ import {
   HARNESS_PRESET_BODIES,
   type HarnessPresetBody,
   type HarnessPresetSource,
+  isHarnessPresetSubscriptionProvider,
 } from "./harnessPresets";
 
 export const ROUTE_PROTOCOLS = ["anthropic", "openai-chat", "openai-responses"] as const;
@@ -48,17 +49,14 @@ export const HARNESS_ROUTE_PROTOCOLS: Record<HarnessPresetBody, readonly RoutePr
   droid: ["anthropic", "openai-chat"],
   qwen: ["openai-chat"],
   grok: ["anthropic", "openai-responses", "openai-chat"],
-  kimi: [],
-  copilot: [],
+  kimi: ["openai-chat", "anthropic", "openai-responses"],
+  copilot: ["openai-chat", "openai-responses", "anthropic"],
   cursor: [],
-  pi: [],
+  pi: ["openai-chat", "openai-responses", "anthropic"],
 };
 
 const NO_ROUTE_REASONS: Partial<Record<HarnessPresetBody, string>> = {
   cursor: "Cursor signs in with one key at a time from its own store, so it only runs on its own sign-in.",
-  pi: "Pi reads its endpoints from its own models.json, so it only runs on its own providers.",
-  copilot: "The Copilot CLI signs in through GitHub itself, so it only runs on its own sign-in.",
-  kimi: "The Kimi CLI reads its own config home, so it only runs on its own sign-in.",
 };
 
 /** Harnesses that can run a model from another source at all. */
@@ -259,7 +257,7 @@ export type HarnessSourceSignInKind = "key" | "oauth" | "external";
  */
 const OPENCODE_SUBSCRIPTION_ONLY_REASONS: Readonly<Record<string, string>> = {
   openai:
-    "The OpenAI sign-in inside OpenCode is a ChatGPT subscription; it only answers inside OpenCode. Use an OpenAI API key, or sign the account in through ADE's proxy as a Codex subscription.",
+    "The OpenAI sign-in inside OpenCode is a ChatGPT subscription; it only answers inside OpenCode. Use an OpenAI API key, or pick your Codex account's ChatGPT sign-in instead: it works in any harness with no extra login.",
 };
 
 /** Why an OpenCode sign-in cannot leave OpenCode, or null when it can. */
@@ -320,6 +318,19 @@ export type HarnessRoute =
   | { kind: "proxy"; harnessProtocol: RouteProtocol; upstreamProtocol: RouteProtocol; upstreamBaseUrl: string }
   | { kind: "impossible"; reason: string };
 
+/** Key-store providers whose keys never route: they sign their own tool in. */
+export const NON_ROUTABLE_KEY_PROVIDERS: ReadonlySet<string> = new Set([
+  "cursor", "devin", "factory", "droid", "copilot", "github-copilot",
+  // Antigravity's Gemini and Agent Platform keys are read only by its own agent.
+  "antigravity-gemini", "antigravity-agent-platform",
+]);
+/** The protocol the proxy speaks upstream for a lent login
+ (every other provider: OpenAI chat). */
+const LENT_UPSTREAM_PROTOCOL: Partial<Record<string, RouteProtocol>> = {
+  claude: "anthropic",
+  codex: "openai-responses",
+};
+
 /**
  * The route for one harness + source + model.
  *
@@ -343,14 +354,7 @@ export function resolveHarnessRoute(args: {
   sourceSignInKind?: HarnessSourceSignInKind;
 }): HarnessRoute {
   const { harness, source } = args;
-  if (source.kind === "account") {
-    return source.provider === harness
-      ? { kind: "native" }
-      : {
-        kind: "impossible",
-        reason: `A ${source.provider === "claude" ? "Claude" : "Codex"} account signs in its own harness; borrow it as a subscription to use it elsewhere.`,
-      };
-  }
+  if (source.kind === "account" && source.provider === harness) return { kind: "native" };
   if (source.kind === "opencode" && harness === "opencode") {
     // OpenCode already holds this sign-in; the model is one of its own.
     return { kind: "native" };
@@ -361,13 +365,14 @@ export function resolveHarnessRoute(args: {
     const reason = openCodeSubscriptionSignInReason(source.providerId);
     if (reason) return { kind: "impossible", reason };
   }
-  if (source.kind === "subscription") {
-    // Subscriptions only exist inside the proxy; the harness talks to the proxy
-    // in its own protocol and the proxy holds the login.
+  if (source.kind === "subscription" || source.kind === "account") {
+    // A subscription in another harness runs through the proxy on the login the
+    // provider's own CLI already has, lent to it. The harness talks to the
+    // proxy in its own protocol.
     return {
       kind: "proxy",
       harnessProtocol: HARNESS_ROUTE_PROTOCOLS[harness][0]!,
-      upstreamProtocol: source.provider === "claude" ? "anthropic" : "openai-responses",
+      upstreamProtocol: LENT_UPSTREAM_PROTOCOL[source.provider] ?? "openai-chat",
       upstreamBaseUrl: "",
     };
   }
@@ -518,20 +523,12 @@ function parseSourceReference(value: unknown): HarnessPresetSource | null {
   if (raw.kind === "opencode" && str(raw.providerId)) {
     return { kind: "opencode", providerId: str(raw.providerId)! };
   }
-  if (raw.kind === "subscription" && (raw.provider === "claude" || raw.provider === "codex")) {
+  if (raw.kind === "subscription" && isHarnessPresetSubscriptionProvider(raw.provider)) {
     return { kind: "subscription", provider: raw.provider };
   }
   return null;
 }
 
-// ---------------------------------------------------------------------------
-// Labels
-// ---------------------------------------------------------------------------
-
-export function routeKindLabel(route: HarnessRoute): string | null {
-  if (route.kind === "proxy") return "via ADE proxy";
-  return null;
-}
 
 // ---------------------------------------------------------------------------
 // What main reports to the renderer: every source a harness could draw on
@@ -551,9 +548,16 @@ export type HarnessRouteModel = {
 
 /** One source (an OpenCode sign-in or a stored key) and the models it serves. */
 export type HarnessRouteSource = {
-  /** Stable key for grouping: `opencode:<id>` or `key:<provider>:<credentialId>`. */
+  /**
+   * Stable key for grouping: `opencode:<id>`, `key:<provider>:<credentialId>`,
+   * `account:<instanceId>` or `subscription:<provider>`.
+   */
   key: string;
-  source: Extract<HarnessPresetSource, { kind: "key" } | { kind: "opencode" }>;
+  /**
+   * An `account` or `subscription` source runs in another harness through ADE's
+   * proxy on a login lent from the provider's own CLI; it has no endpoints.
+   */
+  source: HarnessPresetSource;
   label: string;
   /** Short second line: "via OpenCode sign-in", "API key ••••1234". */
   detail: string;
@@ -577,9 +581,12 @@ export type HarnessRouteCatalog = {
 };
 
 export function harnessRouteSourceKey(source: HarnessRouteSource["source"]): string {
-  return source.kind === "opencode"
-    ? `opencode:${source.providerId}`
-    : `key:${source.provider}:${source.credentialId}`;
+  switch (source.kind) {
+    case "opencode": return `opencode:${source.providerId}`;
+    case "key": return `key:${source.provider}:${source.credentialId}`;
+    case "account": return `account:${source.instanceId}`;
+    case "subscription": return `subscription:${source.provider}`;
+  }
 }
 
 /** The route for one listed model in one harness. */

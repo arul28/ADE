@@ -18,45 +18,45 @@ export type CliProxyApiRelease = {
   assets: Readonly<Record<CliProxyApiPlatformKey, CliProxyApiReleaseAsset>>;
 };
 
-export const version = "7.3.7" as const;
+export const version = "8.0.48" as const;
 
-const releaseBaseUrl = "https://github.com/router-for-me/CLIProxyAPI/releases/download/v7.3.7";
+const releaseBaseUrl = "https://github.com/router-for-me/CLIProxyAPI/releases/download/v8.0.48";
 
-// CLIProxyAPI v7.3.7 publishes checksums.txt alongside these official assets.
+// CLIProxyAPI v8.0.48 publishes checksums.txt alongside these official assets.
 export const assets = {
   "darwin-arm64": {
-    url: `${releaseBaseUrl}/CLIProxyAPI_7.3.7_darwin_aarch64.tar.gz`,
-    sha256: "15269902173e99b834b8577a520ddf8f89fbb4a224afd2230384c1890b06875f",
+    url: `${releaseBaseUrl}/CLIProxyAPI_8.0.48_darwin_aarch64.tar.gz`,
+    sha256: "543bdbc6f8384fecd033bf7398236e46279962a80dbc909cf8d8e6ee94ccfc04",
     archive: "tar.gz",
     binaryName: "cli-proxy-api",
   },
   "darwin-amd64": {
-    url: `${releaseBaseUrl}/CLIProxyAPI_7.3.7_darwin_amd64.tar.gz`,
-    sha256: "7b20a8988afe1dff0a5f3cd3d7fd30300576d630506d747e74ce25dfc46bb2af",
+    url: `${releaseBaseUrl}/CLIProxyAPI_8.0.48_darwin_amd64.tar.gz`,
+    sha256: "97f662d40bc3da1bd6bb0f9188ba803d11e0cb29dfc037376bb655bf3f437781",
     archive: "tar.gz",
     binaryName: "cli-proxy-api",
   },
   "linux-amd64": {
-    url: `${releaseBaseUrl}/CLIProxyAPI_7.3.7_linux_amd64.tar.gz`,
-    sha256: "3391dff672abccffce5f9259b7ce1e12cee7b0a8aa3f5b2280406484f59f37ba",
+    url: `${releaseBaseUrl}/CLIProxyAPI_8.0.48_linux_amd64.tar.gz`,
+    sha256: "095c46e7165842cf563f9665be86cf24a29ba94e57ab9bd67588fe5cc4c7125c",
     archive: "tar.gz",
     binaryName: "cli-proxy-api",
   },
   "linux-arm64": {
-    url: `${releaseBaseUrl}/CLIProxyAPI_7.3.7_linux_aarch64.tar.gz`,
-    sha256: "442aad130260cc22a75d2b230826e0b2185e92baf5ef8ae57b849ae694dddf2a",
+    url: `${releaseBaseUrl}/CLIProxyAPI_8.0.48_linux_aarch64.tar.gz`,
+    sha256: "9ed7c06aa96d9cc6736ddfc897de07b8b6085731785087f6701f07ec9ec198dd",
     archive: "tar.gz",
     binaryName: "cli-proxy-api",
   },
   "windows-amd64": {
-    url: `${releaseBaseUrl}/CLIProxyAPI_7.3.7_windows_amd64.zip`,
-    sha256: "da5466b81beb7c769b99e26a5f6f41d9999a07be7c36be170167f10a2a6ecfc7",
+    url: `${releaseBaseUrl}/CLIProxyAPI_8.0.48_windows_amd64.zip`,
+    sha256: "6806d1ff586a33da9a470d4b6f119d73dd00743c5282d62e7df4d32a2a2a6aef",
     archive: "zip",
     binaryName: "cli-proxy-api.exe",
   },
   "windows-arm64": {
-    url: `${releaseBaseUrl}/CLIProxyAPI_7.3.7_windows_aarch64.zip`,
-    sha256: "e940427e0e09afe9b92b5902dc357a96581cd03bd820aaea72566b5844b493ea",
+    url: `${releaseBaseUrl}/CLIProxyAPI_8.0.48_windows_aarch64.zip`,
+    sha256: "6f248b60e6e4d634ca4bc155e22e5392bcdca4e8eeb633f3cc9acad6766efa5e",
     archive: "zip",
     binaryName: "cli-proxy-api.exe",
   },

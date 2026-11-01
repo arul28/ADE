@@ -29,6 +29,7 @@ import {
 import { isRoutePresetId } from "../../shared/harnessRoutes";
 import { rootAppStoreApi } from "../state/appStore";
 import { flushAccountSettingKey } from "./accountSettingsFlush";
+import { withUnreadableHarnessPresets } from "./harnessPresetCarry";
 
 export type HarnessPresetAccountSyncOutcome = {
   /** False when the brain could not be reached or refused the write. */
@@ -88,7 +89,8 @@ function samePresetOnBothSides(local: HarnessPreset, machine: HarnessPreset | nu
 export async function saveHarnessPresetsToAccount(): Promise<HarnessPresetAccountSyncOutcome> {
   // The account refuses a setting over its cap, and only after the save has
   // already looked done. Said here, where the user is still looking.
-  if (JSON.stringify(rootAppStoreApi.getState().harnessPresets).length > HARNESS_PRESETS_SYNC_MAX_CHARS) {
+  // What is uploaded: this build's presets plus the rows it carries unread.
+  if (JSON.stringify(withUnreadableHarnessPresets(rootAppStoreApi.getState().harnessPresets)).length > HARNESS_PRESETS_SYNC_MAX_CHARS) {
     return {
       ok: false,
       message: "Saved on this computer only: your custom providers are too large to sync to your other machines. Remove a logo or a provider you no longer use.",

@@ -125,7 +125,7 @@ export function AccountHero({
 
   return (
     <section
-      className="ade-ah"
+      className="ade-ah kit-hero"
       style={{
         "--ah-base": rgbCss(base!),
         "--ah-deep": rgbCss(deep!),
@@ -135,11 +135,11 @@ export function AccountHero({
       } as CSSProperties}
     >
       {/* CSS paints first; the mesh covers it once WebGL has drawn. */}
-      <div className="ade-ah-wash" />
+      <div className="kit-hero-wash" />
       {/* Always the dark mesh: the banner is a coloured surface with white text in either theme. */}
       <WorkToolPickerBackdrop theme="dark" colors={palette} />
-      <div className="ade-ah-shade" />
-      <div className="ade-ah-row">
+      <div className="kit-hero-shade" />
+      <div className="kit-hero-row">
         <FloatingAvatar status={status} image={avatarImage} broken={avatarBroken} onError={onAvatarError} edge={rgbCss(deep!)} />
         <div className="ade-ah-id">
           <div className="ade-ah-name">{status.name || status.email || "Your account"}</div>

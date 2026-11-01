@@ -14,6 +14,7 @@ import { captureError } from "../../../shared/sentry/capture";
 import { credentialStoreProviderForHarness } from "../../../shared/harnessCredentialProviders";
 import { readHarnessPresetsFromMachine } from "./harnessPresetSettings";
 import type { HarnessPreset } from "../../../shared/harnessPresets";
+import { stripTrailingV1 } from "../../../shared/harnessRoutes";
 import {
   codexSubagentConfigTomlLines,
   type HarnessSubagentLaunch,
@@ -469,6 +470,33 @@ export function userGrokMcpServersToml(): string {
   return kept.length ? `${kept.join("\n").trimEnd()}\n` : "";
 }
 
+/**
+ * One entry of Droid's `customModels` in `.factory/settings.json`. Droid reads
+ * only this camelCase key (checked against CLI 0.244.0 and 1.0.0); the older
+ * snake_case `custom_models` is ignored there, and a session on an unknown
+ * custom model quietly runs Droid's default model on Factory instead. Droid
+ * appends `/v1/messages` to an Anthropic base itself, so that base drops a
+ * trailing `/v1`, and an Anthropic entry with no base uses Droid's default.
+ */
+export function droidCustomModelEntry(args: {
+  model: string;
+  protocol: "anthropic" | "openai-chat";
+  baseUrl?: string | null;
+  apiKey: string;
+  maxOutputTokens: number;
+}): Record<string, unknown> {
+  const anthropic = args.protocol === "anthropic";
+  const baseUrl = args.baseUrl?.trim() || (anthropic ? "" : "https://api.openai.com/v1");
+  return {
+    model: args.model,
+    displayName: args.model,
+    ...(baseUrl ? { baseUrl: anthropic ? stripTrailingV1(baseUrl) : baseUrl } : {}),
+    apiKey: args.apiKey,
+    provider: anthropic ? "anthropic" : "generic-chat-completion-api",
+    maxOutputTokens: args.maxOutputTokens,
+  };
+}
+
 export function writeDroidPresetSettings(
   configHome: string,
   credential: ApiCredentialSummary,
@@ -477,7 +505,6 @@ export function writeDroidPresetSettings(
 ): void {
   const factoryDir = path.join(configHome, ".factory");
   ensurePrivateDirectory(factoryDir, security);
-  const baseUrl = credential.baseUrl?.trim();
   const settingsPath = path.join(factoryDir, "settings.json");
   let existing: Record<string, unknown> = {};
   try {
@@ -488,13 +515,14 @@ export function writeDroidPresetSettings(
   } catch {
     // A missing or unreadable file is the normal first-launch case.
   }
-  const customModels = (credential.models ?? []).map((modelId) => ({
-    model_display_name: modelId,
+  const customModels = (credential.models ?? []).map((modelId) => droidCustomModelEntry({
     model: modelId,
-    base_url: baseUrl || "https://api.openai.com/v1",
-    api_key: key,
-    provider: credential.protocol === "anthropic" ? "anthropic" : "generic-chat-completion-api",
-    max_tokens: 8192,
+    protocol: credential.protocol === "anthropic" ? "anthropic" : "openai-chat",
+    baseUrl: credential.baseUrl,
+    apiKey: key,
+    maxOutputTokens: 8192,
   }));
-  writePrivateFile(settingsPath, `${JSON.stringify({ ...existing, custom_models: customModels }, null, 2)}\n`, security);
+  // A home written before Droid's camelCase key carries the dead snake_case one.
+  const { custom_models: _legacy, ...kept } = existing;
+  writePrivateFile(settingsPath, `${JSON.stringify({ ...kept, customModels }, null, 2)}\n`, security);
 }

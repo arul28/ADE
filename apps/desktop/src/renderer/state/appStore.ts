@@ -14,7 +14,11 @@ import { recentProjectStateKey } from "../../shared/projectIdentity";
 import { THIS_MACHINE_ID } from "../../shared/machineIdentity";
 import { originUrlForBinding } from "../components/lanes/laneMachines";
 import { MODEL_REGISTRY, type ModelDescriptor } from "../../shared/modelRegistry";
-import { normalizeHarnessPresetList, type HarnessPreset } from "../../shared/harnessPresets";
+import {
+  normalizeHarnessPresetList,
+  type HarnessPreset,
+} from "../../shared/harnessPresets";
+import { readHarnessPresetList, withUnreadableHarnessPresets } from "../lib/harnessPresetCarry";
 import {
   DEFAULT_APPLE_DEVICE_PREFERENCES,
   normalizeAppleDevicePreferences,
@@ -1157,7 +1161,7 @@ function readUnifiedUserPreferences(): PersistedUserPreferences | null {
       chatTranscriptDensity: normalizeChatTranscriptDensity(parsed.chatTranscriptDensity),
       chatChromeTint: coercePersistedChatChromeTint(parsed as Record<string, unknown>),
       chatShellGeometry: normalizeChatShellGeometry(parsed.chatShellGeometry),
-      harnessPresets: normalizeHarnessPresetList(parsed.harnessPresets),
+      harnessPresets: readHarnessPresetList(parsed.harnessPresets),
       appleDevice: normalizeAppleDevicePreferences(
         (parsed as { apple?: unknown; appleDevice?: unknown }).apple
           ?? (parsed as { appleDevice?: unknown }).appleDevice,
@@ -1279,10 +1283,19 @@ function persistUserPreferencesFrom(state: {
     chatTranscriptDensity: state.chatTranscriptDensity,
     chatChromeTint: state.chatChromeTint,
     chatShellGeometry: state.chatShellGeometry,
-    harnessPresets: state.harnessPresets,
+    // Stored with the rows this build cannot read; the loader normalizes and
+    // sets those aside again, so only storage ever holds them.
+    // `PersistedUserPreferences` types the list as read back (normalized), so
+    // the rows carried through unread are cast in for the write only.
+    harnessPresets: withUnreadableHarnessPresets(state.harnessPresets) as HarnessPreset[],
     appleDevice: state.appleDevice,
     userOverrodeChatFontSize: state.userOverrodeChatFontSize,
   });
+}
+
+/** Take the account's list as it is, remembering the rows this build cannot read. */
+export function applyAccountHarnessPresets(state: Pick<AppState, "setHarnessPresets">, value: unknown): void {
+  state.setHarnessPresets(readHarnessPresetList(value));
 }
 
 /**

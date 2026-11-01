@@ -15,6 +15,7 @@
  * starter simply skips the step; the resolver then returns its reason.
  */
 
+import { captureError } from "../../../shared/sentry/capture";
 import { resolveLaunchBrain } from "./harnessPresetLaunch";
 
 type ProxyStarter = () => Promise<unknown>;
@@ -36,6 +37,23 @@ export function setHarnessProxyStarter(starter: ProxyStarter | null): void {
   processProxyStarter = starter;
 }
 
+/**
+ * Start ADE's proxy, which lends this machine's logins to it, through this
+ * process's registered starter. False when no starter is registered or it
+ * failed; never throws.
+ */
+export async function startHarnessProxy(): Promise<boolean> {
+  const proxyStarter = [...proxyStarters].at(-1) ?? processProxyStarter;
+  if (!proxyStarter) return false;
+  try {
+    await proxyStarter();
+    return true;
+  } catch (error) {
+    // The launch then reports the resolver's own reason; record why it failed.
+    captureError(error, { tags: { feature: "proxy", stage: "launch_start" }, fingerprint: ["proxy.launch_start"] });
+    return false;
+  }
+}
 
 /**
  * Start ADE's proxy when this launch needs it. Returns true when it started it
@@ -51,8 +69,7 @@ export async function prepareHarnessLaunch(args: {
   const presetId = args.presetId?.trim() || null;
   const credentialId = args.credentialId?.trim() || null;
   if (!presetId && !credentialId) return false;
-  const proxyStarter = [...proxyStarters].at(-1) ?? processProxyStarter;
-  if (!proxyStarter) return false;
+  if (proxyStarters.size === 0 && !processProxyStarter) return false;
   let needsProxy = false;
   try {
     const dry = resolveLaunchBrain({ provider: args.provider, presetId, credentialId }, { writeConfig: false });
@@ -61,10 +78,5 @@ export async function prepareHarnessLaunch(args: {
     return false;
   }
   if (!needsProxy) return false;
-  try {
-    await proxyStarter();
-    return true;
-  } catch {
-    return false;
-  }
+  return startHarnessProxy();
 }

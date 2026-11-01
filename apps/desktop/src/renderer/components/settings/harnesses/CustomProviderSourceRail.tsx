@@ -3,7 +3,7 @@ import { WarningCircle } from "@phosphor-icons/react";
 import { COLORS, SANS_FONT } from "../../lanes/laneDesignTokens";
 import { ProviderLogo } from "../../shared/ProviderLogos";
 import { railNavIndex } from "../../shared/ModelPicker/railNav";
-import type { ReachableGroup } from "./harnessReach";
+import { sourceSummary, type ReachableGroup } from "./harnessReach";
 
 /**
  * The Custom provider wizard's source rail.
@@ -59,7 +59,7 @@ export const CustomProviderSourceRail = memo(function CustomProviderSourceRail({
         display: "flex",
         flexDirection: "column",
         gap: 2,
-        width: 196,
+        width: 212,
         flexShrink: 0,
         overflowY: "auto",
         padding: 6,
@@ -69,7 +69,11 @@ export const CustomProviderSourceRail = memo(function CustomProviderSourceRail({
       {groups.map((group, index) => {
         const selected = group.key === activeKey;
         const servesNothing = group.models.length === 0 && group.unreachable.length > 0;
-        const reason = servesNothing ? group.unreachable[0]?.reason : undefined;
+        const reason = servesNothing ? group.unreachable[0]?.reason : group.signedOut ? group.detail : undefined;
+        // An account reads as its plan and its email ("ChatGPT Plus",
+        // "you@example.com"), not "Codex · you@example.com" cut off mid-address.
+        const summary = sourceSummary(group);
+        const subline = group.source.kind === "account" ? summary.detail ?? group.detail : group.detail;
         return (
           <button
             key={group.key}
@@ -113,7 +117,7 @@ export const CustomProviderSourceRail = memo(function CustomProviderSourceRail({
                   whiteSpace: "nowrap",
                 }}
               >
-                {group.label}
+                {summary.title}
               </span>
               <span
                 style={{
@@ -126,10 +130,10 @@ export const CustomProviderSourceRail = memo(function CustomProviderSourceRail({
                   whiteSpace: "nowrap",
                 }}
               >
-                {group.detail}
+                {subline}
               </span>
             </span>
-            {servesNothing ? (
+            {servesNothing || group.signedOut ? (
               <WarningCircle size={12} color={COLORS.warning} weight="fill" aria-label="Cannot run in this harness" />
             ) : null}
           </button>

@@ -1,4 +1,8 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { borrowedLoginFileName, syncBorrowedLogins } from "./borrowedLogins";
 
 import type { CliProxyApiAuthFile } from "./cliProxyApiManagement";
 import { createProxyActionDomainService, createProxyService } from "./proxyService";
@@ -143,8 +147,8 @@ describe("proxy action handlers", () => {
 });
 
 describe("CLIProxyAPI release pin", () => {
-  it("pins the v7.3.7 assets and checksums", () => {
-    expect(version).toBe("7.3.7");
+  it("pins a checksum and a download of the pinned version for every platform", () => {
+    expect(version).toMatch(/^\d+\.\d+\.\d+$/);
     expect(CLI_PROXY_API_RELEASE.version).toBe(version);
     expect(Object.keys(assets)).toEqual([
       "darwin-arm64",
@@ -156,7 +160,7 @@ describe("CLIProxyAPI release pin", () => {
     ]);
     for (const asset of Object.values(assets)) {
       expect(asset.sha256).toMatch(/^[0-9a-f]{64}$/);
-      expect(asset.url).toContain("/releases/download/v7.3.7/");
+      expect(asset.url).toContain(`/releases/download/v${version}/`);
       expect(asset.binaryName).toMatch(/^cli-proxy-api(?:\.exe)?$/);
     }
     expect(assets["darwin-arm64"].url).toContain("darwin_aarch64.tar.gz");
@@ -208,5 +212,104 @@ describe("proxyEnvForSubscription", () => {
         model: "sub-ab12cd34/sonnet",
       },
     });
+  });
+});
+
+/**
+ * Lent logins: what each lend pass keeps, which account's login it lends, and
+ * how often the keeper re-runs a pass. Real files in a scratch auth folder; the
+ * provider CLIs are never started (no renewal, or an injected pass).
+ */
+describe("lent logins", () => {
+  const scratch = () => fs.mkdtempSync(path.join(os.tmpdir(), "ade-lent-"));
+  const jwt = (claims: Record<string, unknown>) =>
+    `h.${Buffer.from(JSON.stringify(claims)).toString("base64url")}.s`;
+  const writeCodexLogin = (home: string, accessToken: string) => {
+    fs.mkdirSync(home, { recursive: true });
+    fs.writeFileSync(path.join(home, "auth.json"), JSON.stringify({ tokens: { access_token: accessToken } }));
+  };
+
+  it("keeps Claude and Codex logins when the account list could not be read, but drops a signed-out CLI login", async () => {
+    const authDir = scratch();
+    const lentClaude = path.join(authDir, borrowedLoginFileName("claude", "claude"));
+    const lentGrok = path.join(authDir, borrowedLoginFileName("grok", "grok"));
+    const proxyOwnLogin = path.join(authDir, "claude-user@example.test.json");
+    for (const file of [lentClaude, lentGrok, proxyOwnLogin]) fs.writeFileSync(file, "{}");
+
+    // No accounts: the registry read failed, and no Grok login is on disk.
+    const outcomes = await syncBorrowedLogins({ authDir, accounts: [], renew: false });
+
+    expect(outcomes).toEqual([]);
+    expect(fs.existsSync(lentClaude)).toBe(true);
+    expect(fs.existsSync(lentGrok)).toBe(false);
+    expect(fs.existsSync(proxyOwnLogin)).toBe(true);
+  });
+
+  it("lends each Codex account its own login, whichever one the user made the default", async () => {
+    const root = scratch();
+    const authDir = path.join(root, "auth");
+    const baseHome = path.join(root, "codex-base");
+    const workHome = path.join(root, "codex-work");
+    const exp = Math.floor(Date.now() / 1000) + 3_600;
+    writeCodexLogin(baseHome, jwt({ exp, who: "base" }));
+    writeCodexLogin(workHome, jwt({ exp, who: "work" }));
+
+    await syncBorrowedLogins({
+      authDir,
+      renew: false,
+      env: { ...process.env, CODEX_HOME: baseHome },
+      accounts: [
+        // "work" is the user's default for new chats; "codex" is the machine's own login.
+        { id: "codex", provider: "codex", configHome: path.join(root, "unused"), isDefault: false },
+        { id: "work", provider: "codex", configHome: workHome, isDefault: true },
+      ],
+    });
+
+    const lent = (id: string) =>
+      JSON.parse(fs.readFileSync(path.join(authDir, borrowedLoginFileName("codex", id)), "utf8")) as { access_token: string };
+    expect(lent("work").access_token).toBe(jwt({ exp, who: "work" }));
+    expect(lent("codex").access_token).toBe(jwt({ exp, who: "base" }));
+    expect(lent("work").access_token).not.toBe(lent("codex").access_token);
+  });
+
+  it("backs off a login whose renewal keeps failing without missing another login's renew window", async () => {
+    vi.useFakeTimers();
+    try {
+      const root = scratch();
+      const authDir = path.join(root, "auth");
+      fs.mkdirSync(authDir);
+      const now = Date.now();
+      const lend = (provider: "codex" | "claude", expiresInMs: number) =>
+        fs.writeFileSync(
+          path.join(authDir, borrowedLoginFileName(provider, provider)),
+          JSON.stringify({ ade_provider: provider, expired: new Date(now + expiresInMs).toISOString() }),
+        );
+      lend("codex", 60 * 60_000); // inside Codex's day-long renew window: overdue, and its renewal fails
+      lend("claude", 145_000); // Claude's renew time is 100 s before expiry: 45 s from now
+      const syncLogins = vi.fn(async () => []);
+      const service = createProxyService({
+        supervisor: {
+          getStatus: () => ({ ...makeStatus(), configPath: path.join(root, "config.yaml") }),
+          ensureRunning: async () => ({ ...makeStatus(), configPath: path.join(root, "config.yaml") }),
+          stop: async () => undefined,
+        },
+        managementClientFactory: () => ({ listAuthFiles: async () => [] } as never),
+        listBorrowableAccounts: () => [],
+        syncLogins,
+        fetchModels: null,
+      });
+
+      await service.ensureRunning();
+      expect(syncLogins).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(29_000);
+      // A failing renewal is retried on a backoff, not every few seconds.
+      expect(syncLogins).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(21_000);
+      // The retry at 30 s, then Claude's own renew time at 45 s, despite the backoff.
+      expect(syncLogins).toHaveBeenCalledTimes(3);
+      await service.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

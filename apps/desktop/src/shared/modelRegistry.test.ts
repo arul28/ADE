@@ -955,12 +955,11 @@ describe("modelRegistry", () => {
     expect(opus5?.serviceTiers).toBeUndefined();
   });
 
-  it("does not advertise unsupported Fast mode for Droid Opus 5 custom proxies", () => {
+  it("does not advertise unsupported Fast mode for a Droid Opus 5 custom model", () => {
     const descriptor = createDynamicDroidCliModelDescriptor(
       "custom:claude-opus-5",
       "Opus 5",
       {
-        customProxy: true,
         reasoningTiers: ["low", "medium", "high", "xhigh", "max"],
         defaultReasoningEffort: "high",
         serviceTiers: ["fast"],
@@ -970,13 +969,11 @@ describe("modelRegistry", () => {
     expect(descriptor).toMatchObject({
       id: "droid/custom:claude-opus-5",
       providerModelId: "custom:claude-opus-5",
-      customProxy: true,
       reasoningTiers: ["low", "medium", "high", "xhigh", "max"],
       defaultReasoningEffort: "high",
     });
     expect(descriptor.serviceTiers).toBeUndefined();
   });
-
 
   it("keeps Droid custom models in their own picker group", () => {
     expect(droidCliLineGroupFromModelId("custom:claude-sonnet-5-thinking-32000")).toBe("custom");

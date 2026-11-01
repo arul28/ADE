@@ -208,14 +208,16 @@ export function abortedBefore(work: Promise<unknown>, signal: AbortSignal): Prom
  * Takes the enum table rather than the SDK module so it stays a pure mapping.
  */
 export function droidInteractionModeValue<T>(
-  table: { Auto: T; Spec: T; AGI: T },
+  table: { Auto: T; Spec: T; AGI: T; Mission?: T },
   mode: DroidSdkInteractionMode | undefined,
 ): T | undefined {
   switch (mode) {
     case "spec":
       return table.Spec;
     case "agi":
-      return table.AGI;
+      // SDK 0.10 renamed AGI to Mission and keeps `agi` only as a deprecated
+      // alias; send the current name whenever the SDK has it.
+      return table.Mission ?? table.AGI;
     case "auto":
       return table.Auto;
     default:

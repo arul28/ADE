@@ -1,23 +1,25 @@
 import React, { useCallback, useMemo, useRef, useState } from "react";
-import { DotsThree, PencilSimple, Plus } from "@phosphor-icons/react";
+import { ArrowRight, DotsThree, PencilSimple, Plus } from "@phosphor-icons/react";
 import type { AiSettingsStatus } from "../../../../shared/types";
 import type { ApiCredentialSummary } from "../../../../shared/types/apiCredentials";
 import {
+  DEFAULT_HARNESS_PRESET_ACCENT,
   HARNESS_PRESET_NAME_MAX_LENGTH,
   HarnessPresetImportError,
   exportHarnessPreset,
   importHarnessPreset,
   presetLabel,
-  presetSourceLabel,
+  presetSourceLogo,
+  presetSourceSummary,
   type HarnessPreset,
   type HarnessPresetDraft,
   type HarnessPresetMissing,
 } from "../../../../shared/harnessPresets";
 import { COLORS, SANS_FONT, formatTimestamp } from "../../lanes/laneDesignTokens";
-import { CustomToolMark } from "../../shared/CustomToolMark";
 import { HarnessLogo } from "../../shared/HarnessLogo";
 import { RouteTestBadge } from "../../shared/ModelPicker/ReachableModelList";
-import { ProviderLogo } from "../../shared/ProviderLogos";
+import { ModelRowLogo, ProviderLogo } from "../../shared/ProviderLogos";
+import { providerColor } from "../../usage/providerColors";
 import { AnchoredMenu } from "../../ui/AnchoredMenu";
 import { Z_LAYERS } from "../../ui/zLayers";
 import { confirmDialog, promptDialog } from "../../ui/dialog";
@@ -29,14 +31,17 @@ import { ModernSection } from "../primitives/SettingsModern";
 import "./customProviders.css";
 import { useSettingsMachineScope } from "../SettingsMachineScope";
 import { useApiCredentialsPin } from "../providers/keys/useApiCredentials";
-import { bodyLogoFamily, PresetAgent, PresetModels } from "./presetFacts";
+import { bodyLogoFamily } from "./presetFacts";
+import { CustomHero, CustomEquation } from "./CustomProviderHero";
+import { harnessModelFamily, harnessModelLabel, providerFamilyForSource } from "./harnessModels";
 import { readStoredKeySources } from "./harnessSources";
 import { CustomProviderDialog, emptyCustomProviderDraft } from "./CustomProviderDialog";
 import { buildTerminalLauncher } from "./harnessLauncher";
-import { starterSuggestions, type StarterSuggestion } from "./harnessReach";
+import { harnessShortLabel, sourceSummary, starterSuggestions, type StarterSuggestion } from "./harnessReach";
 import { routeTestKey, useHarnessReach, type HarnessReach, type HarnessRouteTestState } from "./useHarnessReach";
 import { useHarnessPresets } from "./useHarnessPresets";
 import { isAdeAvailable } from "../../../lib/adeAvailability";
+import { modelMentionEffortLabel } from "../../../../shared/modelMentions";
 
 /**
  * Settings › Providers › Custom.
@@ -52,7 +57,10 @@ import { isAdeAvailable } from "../../../lib/adeAvailability";
  */
 
 const CUSTOM_HELP =
-  "A custom provider runs any harness on any model you have connected — an OpenCode sign-in, a stored key, or a subscription through ADE's proxy. Pick one in any model picker.";
+  "A custom provider runs any harness on any model you have connected: another provider's sign-in (no extra login), an OpenCode sign-in, or a stored API key. Pick one in any model picker.";
+
+/** The section's own colour: a custom provider's default accent, so the hero reads as "yours", not a vendor's. */
+const CUSTOM_BANNER_COLOR = DEFAULT_HARNESS_PRESET_ACCENT;
 
 type DialogState =
   | { mode: "closed" }
@@ -113,11 +121,6 @@ export function CustomProvidersSection({
     }
   }, [credentialPin]);
 
-  const accountLabel = useCallback(
-    (instanceId: string) => reach.accounts.find((entry) => entry.instanceId === instanceId)?.label ?? null,
-    [reach.accounts],
-  );
-
   const starters = useMemo(() => (presets.length === 0 ? starterSuggestions(reach) : []), [presets.length, reach]);
 
   const openCreate = useCallback(() => {
@@ -170,7 +173,11 @@ export function CustomProvidersSection({
           ...keySources.map((entry) => entry.credentialId),
           ...catalogSources.flatMap((entry) => (entry.source.kind === "key" ? [entry.source.credentialId] : [])),
         ],
-        proxySignInAvailable: reach.proxyAvailable,
+        proxyAvailable: reach.proxyAvailable,
+        subscriptionProviders: [
+          ...reach.accounts.filter((entry) => entry.signedIn && !entry.loginBroken).map((entry) => entry.provider),
+          ...catalogSources.flatMap((entry) => (entry.source.kind === "subscription" ? [entry.source.provider] : [])),
+        ],
         openCodeProviderIds: catalogSources.flatMap((entry) =>
           entry.source.kind === "opencode" ? [entry.source.providerId] : [],
         ),
@@ -270,43 +277,46 @@ export function CustomProvidersSection({
       />
 
       {presets.length === 0 ? (
-        <div data-custom-empty="" className="ade-custom-empty">
-          <span className="ade-modern-glyph" aria-hidden><CustomToolMark size={16} /></span>
-          <div style={{ display: "flex", flexDirection: "column", gap: 10, minWidth: 0, flex: 1 }}>
-          <p className="ade-custom-empty-copy">
-            {starters.length > 0
-              ? "Nothing saved yet. Start from something this computer already has connected:"
-              : "Nothing saved yet. Add one to pair a harness with a model you already pay for."}
-          </p>
-          {starters.length > 0 ? (
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-              {starters.map((starter) => (
-                <button
-                  key={starter.key}
-                  type="button"
-                  data-custom-starter={starter.key}
-                  onClick={() => createFromStarter(starter)}
-                  title={`${starter.group.label} · ${starter.group.detail}`}
-                  className="ade-custom-starter"
-                >
-                  <ProviderLogo family={bodyLogoFamily(starter.harness)} size={14} />
-                  <span style={{ fontWeight: 500 }}>{starter.name}</span>
-                  <span style={{ color: "var(--color-muted-fg)" }}>· {starter.group.label}</span>
+        <div data-custom-empty="" style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
+          <CustomHero color={CUSTOM_BANNER_COLOR} label="Custom providers">
+            <CustomEquation />
+            <div className="ade-cp-hero-id">
+              <span className="ade-cp-hero-title">Any harness. Any model you pay for.</span>
+              <span className="ade-cp-hero-copy">
+                Run Claude Code on your ChatGPT plan, or Codex on your Claude plan. ADE uses the sign-ins you
+                already have, so there is nothing new to log in to.
+              </span>
+              <div className="ade-cp-hero-actions">
+                <button type="button" className="ade-cp-hero-btn" data-primary="true" onClick={openCreate}>
+                  <Plus size={12} weight="bold" /> Create one
                 </button>
-              ))}
+                <button type="button" className="ade-cp-hero-btn" onClick={() => importInputRef.current?.click()}>
+                  Import a file
+                </button>
+              </div>
             </div>
+          </CustomHero>
+          {starters.length > 0 ? (
+            <>
+              <div className="ade-cp-eyebrow-row">
+                <span className="kit-eyebrow">Or start from what you have</span>
+              </div>
+              <div className="ade-cp-grid">
+                {starters.map((starter) => (
+                  <StarterCard key={starter.key} starter={starter} onCreate={() => createFromStarter(starter)} />
+                ))}
+              </div>
+            </>
           ) : null}
-          </div>
         </div>
       ) : (
-        <div data-custom-preset-list="" className="ade-modern-rows">
-          {presets.map((preset, index) => (
+        <div data-custom-preset-list="" className="ade-cp-grid">
+          {presets.map((preset) => (
             <CustomProviderRow
               key={preset.id}
               preset={preset}
-              first={index === 0}
               reach={reach}
-              accountLabel={accountLabel}
+              sourceText={presetSourceText(preset, reach)}
               onEdit={() => setDialog({ mode: "edit", presetId: preset.id, draft: draftOf(preset) })}
               onRename={() => void handleRename(preset)}
               onDuplicate={() => {
@@ -320,6 +330,10 @@ export function CustomProvidersSection({
               onDelete={() => void handleDelete(preset)}
             />
           ))}
+          <button type="button" className="ade-pv-open ade-cp-card" data-new="true" onClick={openCreate} style={{ "--cp-accent": CUSTOM_BANNER_COLOR } as React.CSSProperties}>
+            <Plus size={16} />
+            <span style={{ fontSize: 12.5, fontWeight: 500 }}>New custom provider</span>
+          </button>
         </div>
       )}
 
@@ -359,11 +373,78 @@ export function CustomProvidersSection({
   );
 }
 
+/** "ChatGPT Plus · you@example.com", "Grok sign-in", "API key · Work". */
+function presetSourceText(preset: HarnessPreset, reach: HarnessReach): string {
+  const source = preset.source;
+  const account = source.kind === "account"
+    ? reach.accounts.find((entry) => entry.instanceId === source.instanceId)
+    : null;
+  const { title, detail } = presetSourceSummary(source, account);
+  return detail ? `${title} · ${detail}` : title;
+}
+
+/** Harness + model, as two chips: what this custom provider is made of. */
+function PairChips({ harness, modelId, modelLabel, family }: {
+  harness: HarnessPreset["harness"];
+  modelId: string;
+  modelLabel: string;
+  family: ReturnType<typeof harnessModelFamily>;
+}) {
+  return (
+    <div className="ade-cp-pair">
+      <span className="ade-cp-pair-chip" data-preset-agent={harness}>
+        <ProviderLogo family={bodyLogoFamily(harness)} size={13} />
+        <span>{harnessShortLabel(harness)}</span>
+      </span>
+      <span className="ade-cp-pair-op">+</span>
+      <span className="ade-cp-pair-chip" data-preset-model="main" style={{ flex: "0 1 auto" }}>
+        {family ? <ModelRowLogo modelFamily={family} modelId={modelId} size={13} /> : null}
+        <span>{modelLabel}</span>
+      </span>
+    </div>
+  );
+}
+
+/** One click to create a combo this computer can already run. */
+function StarterCard({ starter, onCreate }: { starter: StarterSuggestion; onCreate: () => void }) {
+  const summary = sourceSummary(starter.group);
+  return (
+    <button
+      type="button"
+      className="ade-pv-open ade-cp-card"
+      data-starter="true"
+      data-custom-starter={starter.key}
+      onClick={onCreate}
+      title={`Create ${starter.name}`}
+      style={{ "--cp-accent": providerColor(starter.harness) } as React.CSSProperties}
+    >
+      <span className="ade-cp-card-top">
+        <span className="ade-cp-card-logo"><ProviderLogo family={bodyLogoFamily(starter.harness)} size={18} /></span>
+        <span className="ade-cp-card-id">
+          <span className="ade-cp-card-name">{starter.name}</span>
+          <span className="ade-cp-card-meta">{summary.detail ? `${summary.title} · ${summary.detail}` : summary.title}</span>
+        </span>
+      </span>
+      <PairChips
+        harness={starter.harness}
+        modelId={starter.model.id}
+        modelLabel={starter.model.label}
+        family={starter.model.family ?? null}
+      />
+      <span className="ade-cp-card-foot">
+        <span className="ade-cp-card-source">
+          {starter.model.route.kind === "proxy" && starter.group.kind === "subscription" ? "No extra login" : starter.group.detail}
+        </span>
+        <span className="ade-cp-card-cta">Create <ArrowRight size={11} weight="bold" /></span>
+      </span>
+    </button>
+  );
+}
+
 function CustomProviderRow({
   preset,
-  first,
   reach,
-  accountLabel,
+  sourceText,
   onEdit,
   onRename,
   onDuplicate,
@@ -372,9 +453,8 @@ function CustomProviderRow({
   onDelete,
 }: {
   preset: HarnessPreset;
-  first: boolean;
   reach: HarnessReach;
-  accountLabel: (instanceId: string) => string | null;
+  sourceText: string;
   onEdit: () => void;
   onRename: () => void;
   onDuplicate: () => void;
@@ -393,6 +473,13 @@ function CustomProviderRow({
     ? reach.testState[routeTestKey(preset.harness, source, preset.model)]
     : undefined;
   const hasLauncher = buildTerminalLauncher({ presetId: preset.id, harness: preset.harness, model: preset.model, source: preset.source }) != null;
+  const family = harnessModelFamily(preset.model) ?? providerFamilyForSource(preset.source);
+  const subagents = preset.subagentModel !== "inherit" ? harnessModelLabel(preset.subagentModel) : null;
+  // Only what differs from the defaults: a quiet card says "nothing special".
+  const meta = [
+    preset.reasoningEffort ? `${modelMentionEffortLabel(preset.reasoningEffort)} effort` : null,
+    subagents ? `subagents on ${subagents}` : null,
+  ].filter(Boolean).join(" · ");
 
   const item = (label: string, onClick: () => void, danger = false) => (
     <button
@@ -423,31 +510,61 @@ function CustomProviderRow({
   return (
     <div
       data-custom-preset-row={preset.id}
-      className="ade-custom-row"
-      data-first={first ? "true" : undefined}
+      className="ade-pv-open ade-cp-card"
+      style={{ "--cp-accent": preset.accentColor } as React.CSSProperties}
     >
-      <span style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
-        <HarnessLogo logo={preset.logo} size={22} accentColor={preset.accentColor} />
-        <span style={{ minWidth: 0 }}>
-          <span
-            style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: 500, fontSize: 13 }}
-            title={`Updated ${formatTimestamp(preset.updatedAt)}`}
-          >
-            {name}
-          </span>
-          <span
-            style={{ display: "block", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 11.5, color: "var(--color-muted-fg)", marginTop: 2 }}
-          >
-            {presetSourceLabel(preset.source, accountLabel)}
-          </span>
+      <div className="ade-cp-card-top">
+        <span className="ade-cp-card-logo"><HarnessLogo logo={preset.logo} size={20} /></span>
+        <span className="ade-cp-card-id">
+          <span className="ade-cp-card-name" title={`Updated ${formatTimestamp(preset.updatedAt)}`}>{name}</span>
+          {meta ? <span className="ade-cp-card-meta">{meta}</span> : null}
         </span>
-      </span>
-
-      <PresetAgent harness={preset.harness} />
-
-      <PresetModels preset={preset} />
-
-      <span style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 6 }}>
+        <span className="ade-cp-card-actions">
+          <button type="button" aria-label={`Edit ${name}`} title="Edit" onClick={onEdit} className="ade-modern-btn" data-variant="ghost" data-icon="true">
+            <PencilSimple size={13} weight="bold" />
+          </button>
+          <button
+            ref={menuButtonRef}
+            type="button"
+            aria-label={`More actions for ${name}`}
+            aria-haspopup="menu"
+            aria-expanded={menuOpen}
+            onClick={() => setMenuOpen((openNow) => !openNow)}
+            className="ade-modern-btn"
+            data-variant="ghost"
+            data-icon="true"
+          >
+            <DotsThree size={14} weight="bold" />
+          </button>
+          <AnchoredMenu
+            open={menuOpen}
+            anchorRef={menuButtonRef}
+            onClose={() => setMenuOpen(false)}
+            placement="bottom-end"
+            zIndex={Z_LAYERS.popover}
+            role="menu"
+            aria-label={`${name} actions`}
+            style={{
+              minWidth: 170,
+              padding: "4px 0",
+              background: COLORS.cardBgSolid,
+              border: `1px solid ${COLORS.outlineBorder}`,
+              borderRadius: 8,
+              boxShadow: "0 14px 36px -20px rgba(0,0,0,0.85)",
+            }}
+          >
+            {item("Rename", onRename)}
+            {item("Duplicate", onDuplicate)}
+            {hasLauncher ? item("Copy terminal launcher", onCopyLauncher) : null}
+            {item("Export", onExport)}
+            {item("Delete", onDelete, true)}
+          </AnchoredMenu>
+        </span>
+      </div>
+      <PairChips harness={preset.harness} modelId={preset.model} modelLabel={harnessModelLabel(preset.model)} family={family} />
+      <div className="ade-cp-card-foot">
+        <ProviderLogo family={presetSourceLogo(source)} size={12} />
+        <span className="ade-cp-card-source" title={sourceText}>{sourceText}</span>
         <RouteTestBadge state={testState} />
         {testable ? (
           <button
@@ -456,50 +573,12 @@ function CustomProviderRow({
             disabled={testState?.status === "testing"}
             onClick={() => void reach.testRoute(preset.harness, source, preset.model)}
             className="ade-modern-btn"
+            data-size="sm"
           >
             Test
           </button>
         ) : null}
-        <button type="button" aria-label={`Edit ${name}`} title="Edit" onClick={onEdit} className="ade-modern-btn" data-variant="ghost" data-icon="true">
-          <PencilSimple size={13} weight="bold" />
-        </button>
-        <button
-          ref={menuButtonRef}
-          type="button"
-          aria-label={`More actions for ${name}`}
-          aria-haspopup="menu"
-          aria-expanded={menuOpen}
-          onClick={() => setMenuOpen((openNow) => !openNow)}
-          className="ade-modern-btn"
-          data-variant="ghost"
-          data-icon="true"
-        >
-          <DotsThree size={14} weight="bold" />
-        </button>
-        <AnchoredMenu
-          open={menuOpen}
-          anchorRef={menuButtonRef}
-          onClose={() => setMenuOpen(false)}
-          placement="bottom-end"
-          zIndex={Z_LAYERS.popover}
-          role="menu"
-          aria-label={`${name} actions`}
-          style={{
-            minWidth: 170,
-            padding: "4px 0",
-            background: COLORS.cardBgSolid,
-            border: `1px solid ${COLORS.outlineBorder}`,
-            borderRadius: 8,
-            boxShadow: "0 14px 36px -20px rgba(0,0,0,0.85)",
-          }}
-        >
-          {item("Rename", onRename)}
-          {item("Duplicate", onDuplicate)}
-          {hasLauncher ? item("Copy terminal launcher", onCopyLauncher) : null}
-          {item("Export", onExport)}
-          {item("Delete", onDelete, true)}
-        </AnchoredMenu>
-      </span>
+      </div>
     </div>
   );
 }

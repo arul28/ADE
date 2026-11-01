@@ -51,7 +51,12 @@ export async function flushAccountSettingKey(
     };
   }
   try {
-    return await current.flushKey(key);
+    const result = await current.flushKey(key);
+    // The runtime's own wording names an internal action domain; say what it means.
+    if (!result.ok && /^Domain '[^']+' is unavailable in this runtime/.test(result.message ?? "")) {
+      return { ...result, message: "ADE's background service on this computer is not syncing with your account." };
+    }
+    return result;
   } catch (error) {
     return {
       ok: false,

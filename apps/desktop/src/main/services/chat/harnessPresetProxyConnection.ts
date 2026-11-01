@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
+import { harnessAccountProviderLabel, harnessBodyLabel, isHarnessPresetAccountProvider } from "../../../shared/harnessPresets";
 
 import type {
   ProxySubscriptionProvider,
@@ -10,6 +11,11 @@ import {
   ownedAuthDir,
   probeProxyHealthSync,
 } from "../../../../../ade-cli/src/services/proxy/cliProxyApiSupervisor";
+import {
+  BORROW_MIN_REMAINING_MS,
+  borrowedLoginFileName,
+  isBorrowedLoginFileName,
+} from "../../../../../ade-cli/src/services/proxy/borrowedLogins";
 import {
   readCliProxyApiState,
   writeCliProxyApiState,
@@ -21,8 +27,20 @@ export type ProxySubscriptionConnectionParts = {
   prefix: string;
 };
 
+/** Why a lent login could not be used, and what to do; one sentence for a launch and a route test. */
+export function borrowFailureMessage(provider: string): string {
+  // "Claude" and "Codex" for an account; the CLI's own name for the others.
+  const label = isHarnessPresetAccountProvider(provider) ? harnessAccountProviderLabel(provider) : harnessBodyLabel(provider);
+  return `ADE could not borrow your ${label} sign-in. Sign in to ${label} under Settings › Providers, then try again.`;
+}
+
+/**
+ * `login-not-lent`: no current login of this provider (or of the named
+ * account) is lent to the proxy yet. The launch's async prepare step lends it
+ * (`ProxyService.ensureRunning`) and resolves again.
+ */
 export type ProxySubscriptionConnectionUnavailable = {
-  reason: "proxy-stopped";
+  reason: "proxy-stopped" | "login-not-lent";
 };
 
 export type ProxyEndpointParts = {
@@ -123,6 +141,10 @@ export function defaultReadProxyEndpoint(
 /**
  * Read the proxy's connection for one provider straight off this machine.
  *
+ * With an account id, only that account's lent login answers. Without one (a
+ * `subscription` source), a login signed in to the proxy itself wins, then the
+ * default account's lent login, then any other lent one.
+ *
  * A persisted PID is only a process-existence hint. The supervisor records a
  * recent successful health response as well, which prevents PID reuse or a
  * hung process from receiving provider credentials. Tests can inject a live
@@ -130,36 +152,68 @@ export function defaultReadProxyEndpoint(
  */
 export function defaultReadProxyConnection(
   adeHome: string,
-  options: { healthCheck?: (port: number) => boolean } = {},
-): (provider: ProxySubscriptionProvider) => ProxySubscriptionConnectionParts | ProxySubscriptionConnectionUnavailable | null {
+  options: { healthCheck?: (port: number) => boolean; now?: () => number } = {},
+): (
+  provider: ProxySubscriptionProvider,
+  instanceId?: string | null,
+) => ProxySubscriptionConnectionParts | ProxySubscriptionConnectionUnavailable | null {
   const readEndpoint = defaultReadProxyEndpoint(adeHome, options);
-  return (provider) => {
-    const endpoint = readEndpoint();
-    if (!endpoint || "reason" in endpoint) return endpoint;
-    const { port, apiKey, authDir } = endpoint;
-
-    let entries: string[];
-    try {
-      entries = fs.readdirSync(authDir).filter((name) => name.toLowerCase().endsWith(".json"));
-    } catch {
-      return null;
-    }
-    for (const entry of entries) {
+  const now = options.now ?? Date.now;
+  type AuthFile = { name: string; body: Record<string, unknown> };
+  const readAuthFile = (authDir: string, name: string): AuthFile | null => {
+    // The proxy rewrites auth files in place (it adds its own fields), so a read
+    // can land mid-write and see a truncated file; read again before giving up.
+    for (let attempt = 0; attempt < 3; attempt += 1) {
       try {
-        const file = JSON.parse(fs.readFileSync(path.join(authDir, entry), "utf8")) as {
-          provider?: unknown;
-          prefix?: unknown;
-          disabled?: unknown;
-        };
-        if (file.provider !== provider) continue;
-        if (file.disabled === true) continue;
-        const prefix = typeof file.prefix === "string" ? file.prefix.trim() : "";
-        if (!prefix) continue;
-        return { port, apiKey, prefix };
-      } catch {
+        const body = JSON.parse(fs.readFileSync(path.join(authDir, name), "utf8")) as unknown;
+        return body && typeof body === "object" && !Array.isArray(body)
+          ? { name, body: body as Record<string, unknown> }
+          : null;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
         // One unreadable auth file must not hide the others.
       }
     }
     return null;
+  };
+  const prefixOf = (file: AuthFile): string => (typeof file.body.prefix === "string" ? file.body.prefix.trim() : "");
+  const usable = (file: AuthFile, provider: string): boolean => {
+    // A lent login names ADE's provider in `ade_provider` (Grok's proxy type is
+    // `xai`); a login signed in to the proxy itself carries its own.
+    if ((file.body.ade_provider ?? file.body.provider ?? file.body.type) !== provider) return false;
+    if (file.body.disabled === true || !prefixOf(file)) return false;
+    if (!isBorrowedLoginFileName(file.name)) return true;
+    // A lent token is handed out only while it has time left; the keeper and
+    // the launch's prepare step lend a fresh one before it lapses.
+    const expires = typeof file.body.expired === "string" ? Date.parse(file.body.expired) : Number.NaN;
+    return Number.isNaN(expires) || expires - now() > BORROW_MIN_REMAINING_MS;
+  };
+  return (provider, instanceId) => {
+    const endpoint = readEndpoint();
+    if (!endpoint || "reason" in endpoint) return endpoint;
+    const { port, apiKey, authDir } = endpoint;
+    const connect = (file: AuthFile) => ({ port, apiKey, prefix: prefixOf(file) });
+
+    const account = instanceId?.trim();
+    if (account) {
+      const file = readAuthFile(authDir, borrowedLoginFileName(provider, account));
+      return file && usable(file, provider) ? connect(file) : { reason: "login-not-lent" };
+    }
+
+    let names: string[];
+    try {
+      names = fs.readdirSync(authDir).filter((name) => name.toLowerCase().endsWith(".json"));
+    } catch {
+      return { reason: "login-not-lent" };
+    }
+    const files = names
+      .map((name) => readAuthFile(authDir, name))
+      .filter((file): file is AuthFile => file !== null && usable(file, provider));
+    const signedIn = files.find((file) => !isBorrowedLoginFileName(file.name));
+    const lent = files
+      .filter((file) => isBorrowedLoginFileName(file.name))
+      .sort((a, b) => Number(b.body.ade_default === true) - Number(a.body.ade_default === true));
+    const chosen = signedIn ?? lent[0];
+    return chosen ? connect(chosen) : { reason: "login-not-lent" };
   };
 }

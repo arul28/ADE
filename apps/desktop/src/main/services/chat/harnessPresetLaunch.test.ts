@@ -232,15 +232,17 @@ describe("buildKeySourceLaunch", () => {
     if (result.status !== "ready") throw new Error("expected ready");
     const home = presetConfigHome(adeHome, "hp_droid");
     expect(result.env.FACTORY_HOME_OVERRIDE).toBe(home);
+    // Droid reads only the camelCase `customModels` key.
     const settings = JSON.parse(
       fs.readFileSync(path.join(home, ".factory", "settings.json"), "utf8"),
-    ) as { custom_models: Array<{ model: string; base_url: string; api_key: string }> };
-    expect(settings.custom_models).toHaveLength(1);
-    expect(settings.custom_models[0]).toMatchObject({
+    ) as { customModels: Array<{ model: string; baseUrl: string; apiKey: string }>; custom_models?: unknown };
+    expect(settings.customModels).toHaveLength(1);
+    expect(settings.customModels[0]).toMatchObject({
       model: "gw-model",
-      base_url: "https://gw.example.com/v1",
-      api_key: "sk-factory",
+      baseUrl: "https://gw.example.com/v1",
+      apiKey: "sk-factory",
     });
+    expect(settings.custom_models).toBeUndefined();
   });
 
   it("applies owner-only ACLs to every credential-bearing home and file on Windows", () => {
@@ -287,7 +289,7 @@ describe("buildKeySourceLaunch", () => {
     });
     const settings = JSON.parse(fs.readFileSync(path.join(home, ".factory", "settings.json"), "utf8")) as Record<string, unknown>;
     expect(settings.theme).toBe("dark");
-    expect(settings.custom_models).toBeDefined();
+    expect(settings.customModels).toEqual([expect.objectContaining({ model: "gw-model" })]);
   });
 
   it("turns a private-home security failure into an unsupported launch", () => {
@@ -457,22 +459,27 @@ describe("resolveHarnessPresetPlan — unsupported sources", () => {
   // back to native sign-in instead of starting on the wrong identity.
   const liveProxy = () => ({ port: 8123, apiKey: "k", prefix: "anth" });
   it.each<[string, Partial<HarnessPreset>, Partial<HarnessPresetLaunchDeps>, string | RegExp]>([
-    ["a cross-provider account",
+    // Another provider's account runs on its own login, lent to the proxy;
+    // until that login is lent, the launch waits for the prepare step to lend it.
+    ["a cross-provider account whose login is not lent yet",
       { harness: "codex", source: { kind: "account", provider: "claude", instanceId: "work" } },
-      { resolveInstance: () => ({ id: "work", provider: "claude", configHome: "/tmp/claude" }) },
-      /cannot sign codex in directly/],
+      {
+        resolveInstance: () => ({ id: "work", provider: "claude", configHome: "/tmp/claude" }),
+        readProxyConnection: () => ({ reason: "login-not-lent" }),
+      },
+      /could not borrow your Claude sign-in/],
     ["a removed account",
       { source: { kind: "account", provider: "claude", instanceId: "gone" } },
       { resolveInstance: () => null },
       "The account this preset signs in with is no longer on this machine."],
     ["a proxy with no login for the provider",
-      { source: { kind: "subscription", provider: "claude" } },
-      {},
-      "Sign-in through ADE's proxy is not available yet."],
+      { harness: "codex", source: { kind: "subscription", provider: "grok" } },
+      { readProxyConnection: () => ({ reason: "login-not-lent" }) },
+      /could not borrow your Grok/],
     ["a stopped proxy, distinct from a missing login",
-      { source: { kind: "subscription", provider: "claude" } },
+      { harness: "codex", source: { kind: "subscription", provider: "grok" } },
       { readProxyConnection: () => ({ reason: "proxy-stopped" }) },
-      "Sign-in through ADE's proxy is stopped; start the proxy and try again."],
+      /proxy is stopped/],
     ["a preset key missing from the store",
       {},
       { getCredentialSummary: () => null },
@@ -594,7 +601,7 @@ describe("defaultReadProxyConnection", () => {
     writeProxyConfig();
     writeAuthFile("a.json", { id: "a", provider: "codex", prefix: "oai" });
     writeAuthFile("b.json", { id: "b", provider: "claude", prefix: "anth", disabled: true });
-    expect(defaultReadProxyConnection(adeHome)("claude")).toBeNull();
+    expect(defaultReadProxyConnection(adeHome)("claude")).toEqual({ reason: "login-not-lent" });
   });
 
   it("does not follow an auth-dir outside the ADE-owned proxy tree", () => {
@@ -611,7 +618,8 @@ describe("defaultReadProxyConnection", () => {
       `api-keys:\n  - k\nauth-dir: ${outsideAuthDir}\n`,
     );
 
-    expect(defaultReadProxyConnection(adeHome)("claude")).toBeNull();
+    // The login outside ADE's tree is never read, so nothing is lent.
+    expect(defaultReadProxyConnection(adeHome)("claude")).toEqual({ reason: "login-not-lent" });
   });
 
   it("reads the port, key and prefix off disk without touching the network", () => {

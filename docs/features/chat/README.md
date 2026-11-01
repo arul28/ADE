@@ -144,7 +144,7 @@ switching projects so they cannot populate the new project's panes.
 | `apps/desktop/src/main/services/chat/droidSdkWorker.ts` | Node worker that hosts `@factory/droid-sdk/node` (0.9.x moved the Node session APIs off the package root). Streams SDK events back to the main process and forwards permission / ask-user prompts back through the JSON-line protocol. User images are materialized here from attachment paths (`workerAttachmentImages.ts`) rather than as base64 on the JSON IPC pipe. |
 | `apps/desktop/src/main/services/chat/droidSdkProtocol.ts` | Worker IPC types: `DroidSdkSessionSettings` (autonomy level, interaction mode, reasoning effort), `DroidSdkReasoningEffort`, `DroidSdkPermissionRequest`/`Decision`, `DroidSdkAskUserRequest`/`Response`, `DroidSdkReady` (handshake with the SDK session id and resolved model; `availableModels` is retained on the wire but stays empty since 0.9.x removed the `initResult` surface), and `DroidSdkSendPrompt`. User images on send are path (or tiny inline `data`) references (`DroidSdkUserImage`), not inlined screenshot bytes; remote `url` images are not part of the union because Droid's stream API has no URL form. |
 | `apps/desktop/src/main/services/chat/droidSdkEventMapper.ts` | Per-session `DroidSdkEventMapperState` + `mapDroidSdkMessageToChatEvents` / `mapDroidSdkRunResultToDoneEvent`. Tracks streaming text/thinking/image item ids, maps tool calls and results, maps `mission_worker_started` / `mission_worker_completed` notifications to provider-neutral subagent lifecycle events keyed by worker session id, surfaces image content as compact generation rows, and reports token usage. Replaces the deleted `droidAcpPool.ts` + `droidAcpEventMapper` path. |
-| `apps/desktop/src/main/services/chat/droidModelsDiscovery.ts` | SDK-driven model probe (`listDroidModelsFromSdk`) plus the `<factoryConfigHome>/config.json` custom-proxy merge (`~/.factory` unless `FACTORY_HOME_OVERRIDE` is set — see [Provider config homes](agent-routing.md#provider-config-homes)). Normalizes the generic `opus` row to Opus 5.5 with its `medium` default reasoning effort, while retired factory Claude ids still resolve forward (Sonnet 4.6 -> Sonnet 5, Opus 4.8 / basic Opus 4.7 / Opus 4.7 1M -> Opus 5) before descriptors reach desktop or mobile model pickers. Exposes `discoverDroidSdkModelDescriptors` (alias for the legacy `discoverDroidCliModelDescriptors` while callers migrate). |
+| `apps/desktop/src/main/services/chat/droidModelsDiscovery.ts` | SDK-driven model probe (`listDroidModelsFromSdk`). A user's own custom models (`customModels` in `<factoryConfigHome>/settings.json`, `~/.factory` unless `FACTORY_HOME_OVERRIDE` is set — see [Provider config homes](agent-routing.md#provider-config-homes)) come back from the SDK itself. Normalizes the generic `opus` row to Opus 5.5 with its `medium` default reasoning effort, while retired factory Claude ids still resolve forward (Sonnet 4.6 -> Sonnet 5, Opus 4.8 / basic Opus 4.7 / Opus 4.7 1M -> Opus 5) before descriptors reach desktop or mobile model pickers. Exposes `discoverDroidSdkModelDescriptors` (alias for the legacy `discoverDroidCliModelDescriptors` while callers migrate). |
 | `apps/desktop/src/main/services/chat/piSdkPool.ts` | Pi adapter. Forks `piSdkWorker` per session key, exposes `acquirePiSdkConnection` / `releasePiSdkConnection`, and proxies prompts, model/thinking changes, compaction, inventory reads, `login` / `cancelLogin`, `fork` (copy a session into a new one, see [agent-routing](agent-routing.md#pi)), and `respondToUi`. Also routes the reverse-RPC UI channel onto `bridge.onUiRequest` / `onUiNotice` / `onUiCancel`; when no `onUiRequest` handler is installed the pool answers `{ ok: false }` immediately, so an unattended worker fails closed instead of hanging a turn. |
 | `apps/desktop/src/main/services/chat/chatProviderFork.ts` | The per-provider native fork table (`createChatProviderFork`: Codex, OpenCode, Droid, Copilot, Muse, Pi, Kimi) that Fork (`handoffSession`) and side chats share. Returns how to point the new chat at the fork; the callers' real differences (Codex goal order, `beforeTurnId`, Muse `session/sideChat`, Pi's cut entry, error text) are options. |
 | `apps/desktop/src/main/services/chat/claudeMcpConfigFile.ts` | Moves the Agent SDK's inline `--mcp-config` JSON (MCP headers and env values) off the Claude command line into a private file under `<ADE home>/mcp-launch/chat`, deleted when the process exits; used by `claudeSubprocessReaper.spawnClaudeCodeProcess`, with a startup sweep for files no running process names. |
@@ -4890,17 +4890,19 @@ For chat, three things matter.
 | Claude Code | Yes | Yes | Yes | Yes (`CLAUDE_CODE_SUBAGENT_MODEL` + `_FORCE`, plus per-built-in `agents` pins) |
 | Codex CLI | Yes (preset-owned `CODEX_HOME` + `config.toml`) | Yes | Yes | No |
 | OpenCode | Yes (config provider block; needs an endpoint) | Yes | Yes | No |
-| Droid | Yes (`FACTORY_HOME_OVERRIDE` + `custom_models`) | No | Yes | No |
-| Qwen Code | Yes | No | Yes | No |
-| Kimi | Yes | No | **No** — native CLI | No |
-| Grok | Yes | No | **No** — native CLI | No |
-| GitHub Copilot CLI | Yes | No | **No** — native CLI | No |
+| Droid | Yes (`FACTORY_HOME_OVERRIDE` + `customModels`) | Yes (via proxy) | Yes | No |
+| Qwen Code | Yes | Yes (via proxy) | Yes | No |
+| Kimi | Yes (preset-owned `KIMI_CODE_HOME` + `config.toml`) | Yes (via proxy) | Yes | No |
+| Grok | Yes (preset-owned `GROK_HOME` + `config.toml`) | Yes (via proxy) | Yes | Yes (`[subagents.models]`) |
+| GitHub Copilot CLI | Yes (`COPILOT_PROVIDER_*`; chats pass it as the session `provider`) | Yes (via proxy) | Yes | No |
 | Cursor | No — one key in its own store | No | **No** — native CLI | No |
-| Pi | No — its own `models.json` | No | Yes (no effect) | No |
+| Pi | Yes (preset-owned `PI_CODING_AGENT_DIR` with `models.json` + `settings.json`) | Yes (via proxy) | Yes | No |
 
-The CLI-mode column is the locked gate: those four binaries take no key from the
+The CLI-mode column is the locked gate: the Cursor CLI takes no key from the
 launch, so a preset is dropped with its reason and the native CLI starts rather
-than the launch failing. CLI-mode surfaces do not list presets at all.
+than the launch failing. (`CLI_PRESET_GATED_HARNESSES` in
+`shared/harnessPresetCliGate.ts`; Copilot and Kimi left it once they took
+routed endpoints.) CLI-mode surfaces do not list presets at all.
 
 ## Configuration
 
