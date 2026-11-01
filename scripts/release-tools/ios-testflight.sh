@@ -34,6 +34,11 @@ retry() {
 
 [ "$(uname -s)" = Darwin ] || { echo "iOS releases need a macOS host"; exit 1; }
 [ "$(git rev-parse HEAD)" = "$(git rev-parse "$SHA")" ] || { echo "check out $SHA first"; exit 1; }
+# The Duo layout and the other iOS 27 code sit behind `#if compiler(>=6.4)`.
+# An older Xcode still builds the app, but without them, so stop here.
+swift_version="$(xcrun swift -version 2>&1 | sed -nE 's/.*Apple Swift version ([0-9]+\.[0-9]+).*/\1/p' | head -1)"
+awk -v v="${swift_version:-0.0}" 'BEGIN { split(v, a, "."); exit !(a[1] > 6 || (a[1] == 6 && a[2] >= 4)) }' \
+  || { echo "Xcode builds with Swift ${swift_version:-?}; ADE needs Swift 6.4 or newer (Xcode 27). Older compilers leave out the Duo layout and the other iOS 27 code."; exit 1; }
 
 C=~/.asc/config.json
 KP="$(jq -r '.profiles.ade.keyPath // .keyPath // .privateKeyPath // .private_key_path // empty' "$C")"

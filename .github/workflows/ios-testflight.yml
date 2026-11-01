@@ -20,6 +20,12 @@ name: iOS TestFlight
 # Xcode's -allowProvisioningUpdates. With no IOS_SIGNING_P12_BASE64 secret
 # that is cloud signing, which needs an Admin-role key; the script's header
 # lists what each mode needs.
+#
+# Xcode: 27.1, the version the iPhone app is built with on the owner's Mac.
+# The Duo layout and the other iOS 27 code compile only with Swift 6.4 or
+# newer (`#if compiler(>=6.4)`). An Xcode 26 build still compiles, but it
+# leaves that code out, so an iPhone Duo shows the plain iPhone layout. Only
+# the `xcode-27` runner image has Xcode 27; macos-26 stops at 26.6.
 
 on:
   workflow_call:
@@ -117,7 +123,7 @@ jobs:
   testflight:
     needs: gate
     if: ${{ needs.gate.outputs.run == 'true' }}
-    runs-on: macos-26
+    runs-on: xcode-27
     timeout-minutes: 150
     # A broken runner or setup step must not fail the beta run either.
     continue-on-error: true
@@ -134,14 +140,15 @@ jobs:
         with:
           ref: ${{ needs.gate.outputs.sha }}
 
-      - name: Select Xcode 26
+      - name: Select Xcode 27.1
         run: |
           set -euo pipefail
-          # shellcheck disable=SC2012 # Xcode app names have no odd characters.
-          latest=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1 || true)
-          if [[ -n "$latest" ]]; then
-            sudo xcode-select -s "$latest/Contents/Developer"
+          xcode=/Applications/Xcode_27.1.app
+          if [[ ! -d "$xcode" ]]; then
+            echo "::error::$xcode is not on this runner. The Duo layout needs Xcode 27 (Swift 6.4)."
+            exit 1
           fi
+          sudo xcode-select -s "$xcode/Contents/Developer"
           xcodebuild -version
 
       # The asc version ios-testflight.sh runs with, pinned by checksum.
