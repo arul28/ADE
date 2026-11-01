@@ -4,6 +4,7 @@ import {
   HARNESS_PRESET_AGENT_KEYS,
   HARNESS_PRESET_AGENT_LABELS,
   harnessBodyLabel,
+  openCodeSourceLabel,
   presetLabel,
   presetSourceLabel,
   type HarnessPreset,
@@ -139,7 +140,7 @@ export const HarnessPresetRow = memo(function HarnessPresetRow({
               </span>
             </span>
             <span className="block truncate text-[10px] font-normal leading-snug text-muted-fg/55">
-              {harnessModelLabel(preset.model, catalogScopeKey)}
+              {`${harnessModelLabel(preset.model, catalogScopeKey)} · ${presetSourceShort(preset.source)}`}
             </span>
           </span>
         </button>
@@ -184,6 +185,20 @@ export const HarnessPresetRow = memo(function HarnessPresetRow({
     </div>
   );
 });
+
+/** Whose plan pays, in a few words: the row's second fact after the model. */
+function presetSourceShort(source: HarnessPreset["source"]): string {
+  switch (source.kind) {
+    case "account":
+      return `your ${source.provider === "claude" ? "Claude" : "Codex"} account`;
+    case "subscription":
+      return `your ${harnessBodyLabel(source.provider)} sign-in`;
+    case "key":
+      return "API key";
+    case "opencode":
+      return openCodeSourceLabel(source.providerId);
+  }
+}
 
 /**
  * Instance-id → account name, read once per open picker.

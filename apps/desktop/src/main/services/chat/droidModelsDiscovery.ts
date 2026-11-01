@@ -1,5 +1,3 @@
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   createDynamicDroidCliModelDescriptor,
@@ -8,13 +6,10 @@ import {
   type ModelDescriptor,
 } from "../../../shared/modelRegistry";
 import { spawnAsync } from "../shared/utils";
-import { factoryConfigHome } from "../shared/providerConfigHomes";
 
 export type DroidExecHelpModelRow = {
   id: string;
   displayName: string;
-  /** True when sourced from ~/.factory/config.json (vibeproxy / custom proxy). */
-  customProxy?: boolean;
   reasoningTiers?: string[];
   defaultReasoningEffort?: string;
   serviceTiers?: string[];
@@ -184,13 +179,8 @@ async function listDroidModelsFromCliInner(droidPath: string): Promise<DroidExec
   return [];
 }
 
-function canonicalDroidReplacementForAlias(
-  id: string,
-  options?: { customProxy?: boolean },
-): DroidExecHelpModelRow | null {
+function canonicalDroidReplacementForAlias(id: string): DroidExecHelpModelRow | null {
   const normalized = id.trim().toLowerCase();
-  const idPrefix = options?.customProxy ? "custom:" : "";
-  const customProxy = options?.customProxy ? { customProxy: true } : {};
   if (
     normalized === "claude-fable-5"
     || normalized === "fable"
@@ -198,12 +188,10 @@ function canonicalDroidReplacementForAlias(
     || normalized === "fable-5.0"
     || normalized === "fable-5.1"
     || normalized === "fable-5-1"
-    || (options?.customProxy && normalized === "claude-fable-5-1")
   ) {
     return {
-      id: `${idPrefix}claude-fable-5-1`,
+      id: `claude-fable-5-1`,
       displayName: "Fable 5.1",
-      ...customProxy,
       contextWindow: 1_000_000,
       maxOutputTokens: 128_000,
       capabilities: CANONICAL_DROID_ANTHROPIC_CAPABILITIES,
@@ -214,43 +202,25 @@ function canonicalDroidReplacementForAlias(
   if (
     normalized === "claude-sonnet-4-6"
     || normalized === "sonnet-4-6"
-    || (options?.customProxy && normalized === "claude-sonnet-5")
   ) {
     return {
-      id: `${idPrefix}claude-sonnet-5`,
+      id: `claude-sonnet-5`,
       displayName: "Sonnet 5 (1.2x)",
-      ...customProxy,
       contextWindow: 1_000_000,
       maxOutputTokens: 128_000,
       capabilities: CANONICAL_DROID_ANTHROPIC_CAPABILITIES,
       reasoningTiers: ["low", "medium", "high", "max"],
     };
   }
-  if (
-    normalized === "opus"
-    || (options?.customProxy && normalized === "claude-opus-5-5")
-  ) {
+  if (normalized === "opus") {
     return {
-      id: `${idPrefix}claude-opus-5-5`,
+      id: `claude-opus-5-5`,
       displayName: "Opus 5.5",
-      ...customProxy,
       contextWindow: 1_000_000,
       maxOutputTokens: 128_000,
       capabilities: CANONICAL_DROID_ANTHROPIC_CAPABILITIES,
       reasoningTiers: ["low", "medium", "high", "xhigh", "max"],
       defaultReasoningEffort: "medium",
-    };
-  }
-  if (options?.customProxy && normalized === "claude-opus-5") {
-    return {
-      id: `${idPrefix}claude-opus-5`,
-      displayName: "Opus 5",
-      ...customProxy,
-      contextWindow: 1_000_000,
-      maxOutputTokens: 128_000,
-      capabilities: CANONICAL_DROID_ANTHROPIC_CAPABILITIES,
-      reasoningTiers: ["low", "medium", "high", "xhigh", "max"],
-      defaultReasoningEffort: "high",
     };
   }
   if (
@@ -270,9 +240,8 @@ function canonicalDroidReplacementForAlias(
     || normalized === "opus[1m]"
   ) {
     return {
-      id: `${idPrefix}claude-opus-5`,
+      id: `claude-opus-5`,
       displayName: "Opus 5",
-      ...customProxy,
       contextWindow: 1_000_000,
       maxOutputTokens: 128_000,
       capabilities: CANONICAL_DROID_ANTHROPIC_CAPABILITIES,
@@ -284,12 +253,7 @@ function canonicalDroidReplacementForAlias(
 }
 
 function normalizeDroidDiscoveredModel(row: DroidExecHelpModelRow): DroidExecHelpModelRow {
-  const id = row.id.trim().toLowerCase();
-  const customProxy = row.customProxy === true && id.startsWith("custom:");
-  const normalizedCustomId = customProxy ? id.slice("custom:".length) : id;
-  const replacement = canonicalDroidReplacementForAlias(normalizedCustomId, { customProxy });
-  if (replacement) return replacement;
-  return row;
+  return canonicalDroidReplacementForAlias(row.id) ?? row;
 }
 
 async function listDroidModelsFromSdk(droidPath: string): Promise<DroidExecHelpModelRow[]> {
@@ -348,38 +312,6 @@ function getCachedDroidModels(droidPathForRevalidate?: string | null): DroidExec
   return null;
 }
 
-/**
- * Read custom models from `~/.factory/config.json`.
- *
- * Vibeproxy (and other tools) inject custom models into the Droid CLI by
- * writing entries to this file.  Each entry carries the raw model ID, a
- * human-readable display name, and a `custom:` prefixed ID that the CLI
- * uses internally.
- */
-async function readFactoryConfigCustomModels(): Promise<DroidExecHelpModelRow[]> {
-  try {
-    const configPath = join(factoryConfigHome(), "config.json");
-    const raw = await readFile(configPath, "utf-8");
-    const parsed = JSON.parse(raw) as Record<string, unknown>;
-    const customModels = parsed.custom_models;
-    if (!Array.isArray(customModels)) return [];
-    const rows: DroidExecHelpModelRow[] = [];
-    for (const entry of customModels) {
-      if (!entry || typeof entry !== "object") continue;
-      const e = entry as Record<string, unknown>;
-      const model = typeof e.model === "string" ? e.model.trim() : "";
-      const displayName = typeof e.model_display_name === "string" ? e.model_display_name.trim() : "";
-      if (!model) continue;
-      // The droid CLI wraps custom models with a "custom:" prefix.
-      const id = `custom:${model}`;
-      rows.push({ id, displayName: displayName || id, customProxy: true });
-    }
-    return rows;
-  } catch {
-    return [];
-  }
-}
-
 export async function discoverDroidCliModelDescriptors(
   droidPath: string,
   options?: { mode?: DroidCliModelDiscoveryMode },
@@ -390,22 +322,20 @@ export async function discoverDroidCliModelDescriptors(
   if (!fromSdk.length && options?.mode === "cached-or-fallback") {
     warmDroidModels(droidPath);
   }
+  // Droid's own `--help` lists the custom models it can run (its
+  // `.factory/settings.json` `customModels`); it no longer reads the old
+  // `config.json` `custom_models`, so ADE does not either.
   const baseRows: DroidExecHelpModelRow[] = fromSdk;
-
-  // Merge custom models from ~/.factory/config.json so vibeproxy-injected
-  // models appear even when the CLI help output doesn't list them.
-  const customRows = await readFactoryConfigCustomModels();
 
   const descriptors: ModelDescriptor[] = [];
   const descriptorIds = new Map<string, number>();
   const descriptorPreferredDuplicateSources = new Map<string, boolean>();
-  for (const rawRow of [...baseRows, ...customRows]) {
+  for (const rawRow of baseRows) {
     const row = normalizeDroidDiscoveredModel(rawRow);
     const trimmed = String(row.id ?? "").trim();
     if (!trimmed) continue;
     const preferredDuplicateSource = rawRow.id.trim().toLowerCase() === trimmed.toLowerCase();
     const descriptor = createDynamicDroidCliModelDescriptor(trimmed, row.displayName, {
-      customProxy: row.customProxy,
       ...(row.reasoningTiers?.length ? { reasoningTiers: row.reasoningTiers } : {}),
       ...(row.defaultReasoningEffort ? { defaultReasoningEffort: row.defaultReasoningEffort } : {}),
       ...(row.serviceTiers?.length ? { serviceTiers: row.serviceTiers } : {}),

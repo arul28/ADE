@@ -21,6 +21,29 @@ function reasoningEffort(value: string | null | undefined): ReasoningEffort | un
 type UserInputResponse = { answer: string; wasFreeform: boolean };
 type McpAuthResult = { kind: "cancelled" } | { kind: "token"; accessToken: string; expiresIn: number };
 let client: Client | null = null;
+/**
+ * A Custom provider's endpoint for this runtime's sessions, from the
+ * `COPILOT_PROVIDER_*` env its preset set (harnessRouteLaunch.ts). The Copilot
+ * CLI reads those itself; the SDK runtime does not (it still asks for a GitHub
+ * login), so every session it creates or resumes names the provider instead.
+ */
+let customProvider: CopilotSdk.SessionConfig["provider"] | undefined;
+
+function providerFromEnv(env: Record<string, string | undefined>): CopilotSdk.SessionConfig["provider"] | undefined {
+  const baseUrl = env.COPILOT_PROVIDER_BASE_URL?.trim();
+  if (!baseUrl) return undefined;
+  const type = env.COPILOT_PROVIDER_TYPE === "anthropic" || env.COPILOT_PROVIDER_TYPE === "azure" ? env.COPILOT_PROVIDER_TYPE : "openai";
+  const maxPrompt = Number(env.COPILOT_PROVIDER_MAX_PROMPT_TOKENS);
+  const maxOutput = Number(env.COPILOT_PROVIDER_MAX_OUTPUT_TOKENS);
+  return {
+    type,
+    baseUrl,
+    ...(env.COPILOT_PROVIDER_API_KEY ? { apiKey: env.COPILOT_PROVIDER_API_KEY } : {}),
+    ...(type !== "anthropic" ? { wireApi: env.COPILOT_PROVIDER_WIRE_API === "responses" ? "responses" as const : "completions" as const } : {}),
+    ...(Number.isFinite(maxPrompt) && maxPrompt > 0 ? { maxPromptTokens: maxPrompt } : {}),
+    ...(Number.isFinite(maxOutput) && maxOutput > 0 ? { maxOutputTokens: maxOutput } : {}),
+  } as CopilotSdk.SessionConfig["provider"];
+}
 const sessions = new Map<string, Session>();
 const waiters = new Map<string, { chatId: string; type: CopilotSdkWaiterType; resolve: (value: unknown) => void }>();
 let disposed = false;
@@ -130,6 +153,7 @@ function sessionConfig(config: CopilotSdkSessionConfig): CopilotSdk.SessionConfi
     // Interactive chats inherit workspace `.mcp.json` like the Copilot CLI.
     // Utility sessions must remain isolated from user/workspace/plugin MCP.
     enableConfigDiscovery: !config.utility,
+    ...(customProvider ? { provider: customProvider } : {}),
     // Rewind needs Copilot to snapshot file changes per turn.
     enableFileChangeTracking: !config.utility,
     infiniteSessions: config.utility
@@ -185,6 +209,7 @@ function watchSession(chatId: string, session: Session): void {
 
 async function initialize(payload: CopilotSdkWorkerInit): Promise<unknown> {
   const sdk = await loadCopilotSdk();
+  customProvider = providerFromEnv(payload.baseEnv);
   client = new sdk.CopilotClient({
     connection: sdk.RuntimeConnection.forStdio({
       path: payload.cliPath,

@@ -30,7 +30,7 @@ import path from "node:path";
 import {
   harnessBodyLabel,
   openCodeSourceLabel,
-  type HarnessPresetAccountProvider,
+  type HarnessPresetSubscriptionProvider,
   type HarnessPresetBody,
   type HarnessPresetSource,
 } from "../../../shared/harnessPresets";
@@ -72,7 +72,7 @@ import {
   type ProxySubscriptionConnectionUnavailable,
 } from "./harnessPresetProxyConnection";
 import { readRouteProbe } from "./harnessRouteProbes";
-import { mirrorUserDroidMcpConfig, userGrokMcpServersToml } from "./harnessPresetConfigHomes";
+import { droidCustomModelEntry, mirrorUserDroidMcpConfig, userGrokMcpServersToml } from "./harnessPresetConfigHomes";
 import {
   codexSubagentConfigTomlLines,
   grokSubagentConfigTomlLines,
@@ -228,6 +228,11 @@ export function resolveRouteSource(
 }
 
 export type RouteModelLimits = { contextWindow?: number; maxOutputTokens?: number };
+
+/** The provider id a routed Pi launch files its endpoint under in `models.json`. */
+export const PI_ROUTE_PROVIDER_ID = "ade";
+/** The provider id a routed Kimi launch files its endpoint under in `config.toml`. */
+const KIMI_ROUTE_PROVIDER_ID = "ade";
 
 /** Context and output limits for a routed model, from whatever ADE has cached. */
 export function lookupRouteModelLimits(sourceProvider: string, modelId: string): RouteModelLimits {
@@ -453,6 +458,89 @@ function buildHarnessEndpointEnv(args: {
       }
       return { status: "ready", env, model };
     }
+    case "kimi": {
+      // Kimi Code reads providers, model aliases and its default model from
+      // `config.toml` in KIMI_CODE_HOME (2.3.1's schema: `type` anthropic |
+      // openai | openai_responses). An ADE-owned home leaves the user's own
+      // `~/.kimi-code` and its login untouched. The launch names the model by
+      // its alias `ade/<model>`: ADE passes a Kimi model with a `/` through
+      // untouched (`resolveKimiCliModelForLaunch` prefixes any other with
+      // `kimi-code/`), and Kimi resolves the alias to the real model id.
+      const anthropic = protocol === "anthropic";
+      const alias = `${KIMI_ROUTE_PROVIDER_ID}/${model}`;
+      if (args.writeConfig) {
+        ensurePrivateDirectory(args.configHome, args.security);
+        writePrivateFile(path.join(args.configHome, "config.toml"), [
+          "# Written by ADE for a Custom provider. Edits here are overwritten on launch.",
+          `default_model = ${tomlString(alias)}`,
+          "",
+          `[providers.${KIMI_ROUTE_PROVIDER_ID}]`,
+          `type = ${tomlString(anthropic ? "anthropic" : protocol === "openai-responses" ? "openai_responses" : "openai")}`,
+          `base_url = ${tomlString(anthropic ? stripTrailingV1(baseUrl) : baseUrl)}`,
+          `api_key = ${tomlString(token)}`,
+          "",
+          `[models.${tomlString(alias)}]`,
+          `provider = ${tomlString(KIMI_ROUTE_PROVIDER_ID)}`,
+          `model = ${tomlString(model)}`,
+          `max_context_size = ${limits.contextWindow ?? 128_000}`,
+          ...(limits.maxOutputTokens ? [`max_output_size = ${limits.maxOutputTokens}`] : []),
+          "",
+        ].join("\n"), args.security);
+      }
+      return { status: "ready", env: { KIMI_CODE_HOME: args.configHome }, model: alias };
+    }
+    case "pi": {
+      // Pi reads its providers from `models.json` and its default model from
+      // `settings.json`, both in PI_CODING_AGENT_DIR. Pointing that at an
+      // ADE-owned folder leaves the user's own `~/.pi/agent` untouched; a Pi
+      // chat with no model of its own starts on the default named here.
+      const anthropic = protocol === "anthropic";
+      if (args.writeConfig) {
+        ensurePrivateDirectory(args.configHome, args.security);
+        writePrivateFile(path.join(args.configHome, "models.json"), `${JSON.stringify({
+          providers: {
+            [PI_ROUTE_PROVIDER_ID]: {
+              baseUrl: anthropic ? stripTrailingV1(baseUrl) : baseUrl,
+              api: anthropic ? "anthropic-messages" : protocol === "openai-responses" ? "openai-responses" : "openai-completions",
+              apiKey: token,
+              models: [{
+                id: model,
+                name: args.label ? `${model} (${args.label})` : model,
+                input: ["text"],
+                ...(limits.contextWindow ? { contextWindow: limits.contextWindow } : {}),
+                ...(limits.maxOutputTokens ? { maxTokens: limits.maxOutputTokens } : {}),
+              }],
+            },
+          },
+        }, null, 2)}\n`, args.security);
+        writePrivateFile(path.join(args.configHome, "settings.json"), `${JSON.stringify({
+          defaultProvider: PI_ROUTE_PROVIDER_ID,
+          defaultModel: model,
+        }, null, 2)}\n`, args.security);
+      }
+      return { status: "ready", env: { PI_CODING_AGENT_DIR: args.configHome }, model };
+    }
+    case "copilot": {
+      // The Copilot runtime's own BYOK switches (`copilot help environment`,
+      // CLI 1.0.105): with a provider base URL it skips GitHub's model routing
+      // and needs no GitHub sign-in. Read by the SDK runtime behind Copilot
+      // chats and by the terminal CLI alike, since both inherit this env.
+      const anthropic = protocol === "anthropic";
+      return {
+        status: "ready",
+        env: {
+          COPILOT_PROVIDER_BASE_URL: anthropic ? stripTrailingV1(baseUrl) : baseUrl,
+          COPILOT_PROVIDER_TYPE: anthropic ? "anthropic" : "openai",
+          COPILOT_PROVIDER_API_KEY: token,
+          COPILOT_PROVIDER_WIRE_API: protocol === "openai-responses" ? "responses" : "completions",
+          COPILOT_MODEL: model,
+          COPILOT_PROVIDER_WIRE_MODEL: model,
+          ...(limits.contextWindow ? { COPILOT_PROVIDER_MAX_PROMPT_TOKENS: String(limits.contextWindow) } : {}),
+          ...(limits.maxOutputTokens ? { COPILOT_PROVIDER_MAX_OUTPUT_TOKENS: String(limits.maxOutputTokens) } : {}),
+        },
+        model,
+      };
+    }
     case "qwen": {
       if (protocol !== "openai-chat") break;
       return {
@@ -468,14 +556,13 @@ function buildHarnessEndpointEnv(args: {
         writePrivateFile(
           path.join(args.configHome, ".factory", "settings.json"),
           `${JSON.stringify({
-            custom_models: [{
-              model_display_name: model,
+            customModels: [droidCustomModelEntry({
               model,
-              base_url: protocol === "anthropic" ? stripTrailingV1(baseUrl) : baseUrl,
-              api_key: token,
-              provider: protocol === "anthropic" ? "anthropic" : "generic-chat-completion-api",
-              max_tokens: Math.min(limits.maxOutputTokens ?? 32_000, 128_000),
-            }],
+              protocol,
+              baseUrl,
+              apiKey: token,
+              maxOutputTokens: Math.min(limits.maxOutputTokens ?? 32_000, 128_000),
+            })],
           }, null, 2)}\n`,
           args.security,
         );
@@ -702,7 +789,7 @@ export function buildRouteLaunch(args: {
  */
 export function buildSubscriptionRouteLaunch(args: {
   harness: HarnessPresetBody;
-  provider: HarnessPresetAccountProvider;
+  provider: HarnessPresetSubscriptionProvider;
   model: string;
   configHome: string;
   /** The proxy login's routing prefix. */

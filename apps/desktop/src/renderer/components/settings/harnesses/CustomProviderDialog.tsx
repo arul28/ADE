@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Terminal, UploadSimple } from "@phosphor-icons/react";
+import { CaretRight, Check, Terminal, UploadSimple } from "@phosphor-icons/react";
 import type { AiSettingsStatus } from "../../../../shared/types";
 import {
   DEFAULT_HARNESS_PRESET_ACCENT,
@@ -14,6 +14,7 @@ import {
   type HarnessPresetDraft,
   type HarnessPresetLogo,
   type HarnessPresetMissing,
+  type HarnessPresetSource,
 } from "../../../../shared/harnessPresets";
 import { getModelById } from "../../../../shared/modelRegistry";
 import { COLORS, SANS_FONT } from "../../lanes/laneDesignTokens";
@@ -25,14 +26,14 @@ import {
 } from "../../../../shared/harnessPresets";
 import { HarnessLogo } from "../../shared/HarnessLogo";
 import { ProviderLogo } from "../../shared/ProviderLogos";
-import { ReasoningEffortPicker } from "../../shared/ModelPicker/ReasoningEffortPicker";
-import { HarnessChipRow } from "../../shared/ModelPicker/ReachableModelList";
 import { Dialog } from "../../ui/dialog";
 import { Banner } from "../../ui/notice";
 import { showToast } from "../../app/toast/toastStore";
 import { copyTextToClipboard } from "../../../lib/launchPromptClipboard";
 import { SettingsDisclosure } from "../primitives/SettingsDisclosure";
-import { SettingsSelect, SettingsTextField } from "../primitives/SettingsControls";
+import { SettingsSelect } from "../primitives/SettingsControls";
+import { CustomBanner, CustomBannerMark, RecipeCard } from "./CustomProviderBanner";
+import { bodyLogoFamily } from "./presetFacts";
 import { CustomProviderModelPane } from "./CustomProviderModelPane";
 import { harnessAvailability } from "./harnessAvailability";
 import { compactHarnessPresetLogo } from "../../../lib/harnessLogoCompaction";
@@ -43,12 +44,14 @@ import {
   defaultPresetName,
   findReachable,
   harnessChipOptions,
+  harnessShortLabel,
   reachableKeyFor,
+  sourceSummary,
   type ReachableGroup,
   type ReachableModel,
 } from "./harnessReach";
 import { routeTestKey, type HarnessReach } from "./useHarnessReach";
-import { FieldError, SectionLabel } from "./wizardPrimitives";
+import { FieldError } from "./wizardPrimitives";
 
 /**
  * Create or edit a Custom provider, on one page.
@@ -203,7 +206,16 @@ export function CustomProviderDialog({
    */
   const activeGroup = useMemo(() => {
     const browsed = browsedSourceKey ? groups.find((group) => group.key === browsedSourceKey) : undefined;
-    return browsed ?? selected?.group ?? groups.find((group) => group.models.length > 0) ?? groups[0] ?? null;
+    // With nothing picked yet, open on another provider's models: the
+    // harness's own account is what its built-in picker already offers, and
+    // a new custom provider is usually about mixing the two.
+    return browsed
+      ?? selected?.group
+      ?? groups.find((group) => group.kind === "subscription" && group.source.kind === "account" && !group.signedOut && group.models.length > 0)
+      ?? groups.find((group) => group.models.length > 0 && group.kind !== "native" && !group.signedOut)
+      ?? groups.find((group) => group.models.length > 0)
+      ?? groups[0]
+      ?? null;
   }, [browsedSourceKey, groups, selected]);
   const availability = harnessAvailability(draft.harness, status);
   const chipOptions = useMemo(() => harnessChipOptions("chat"), []);
@@ -378,14 +390,38 @@ export function CustomProviderDialog({
   // is still named, so the reader knows what the preset points at.
   const orphaned = Boolean(draft.model) && !selected && !reach.loading;
 
-  const tiles: Array<{ id: HarnessPresetLogo["kind"]; label: string; onSelect: () => void }> = [
-    { id: "ade", label: "Default", onSelect: () => selectLogo({ kind: "ade" }) },
-    { id: "provider", label: "Harness mark", onSelect: () => selectLogo({ kind: "provider", providerId: draft.harness }) },
+  const logoChoices: Array<{ id: HarnessPresetLogo["kind"]; label: string; onSelect: () => void }> = [
+    { id: "ade", label: "Custom", onSelect: () => selectLogo({ kind: "ade" }) },
+    { id: "provider", label: harnessShortLabel(draft.harness), onSelect: () => selectLogo({ kind: "provider", providerId: draft.harness }) },
     { id: "upload", label: "Upload", onSelect: () => fileInputRef.current?.click() },
     ...(typeof generate === "function"
       ? [{ id: "generated" as const, label: generating ? "Generating…" : "Generate", onSelect: () => void handleGenerate() }]
       : []),
   ];
+
+  // What the preview says. The model and its source come from the list when
+  // it is there, and from the draft when it is not (an import, a key removed).
+  const recipeModel = selected
+    ? { label: selected.model.label, id: selected.model.id, family: selected.model.family ?? null }
+    : draft.model
+      ? { label: modelLabel, id: draft.model, family: getModelById(draft.model)?.family ?? null }
+      : null;
+  const recipeSource = selected
+    ? { ...sourceSummary(selected.group), logoProvider: selected.group.logoProvider }
+    : draft.model
+      ? { title: presetSourceLabel(draft.source), detail: null, logoProvider: sourceLogoProvider(draft.source) }
+      : null;
+  const recipeNote = selected && selected.model.route.kind === "proxy"
+    && (selected.group.source.kind === "account" || selected.group.source.kind === "subscription")
+    ? "Runs on the sign-in you already have. No extra login."
+    : selected?.group.source.kind === "key"
+      ? "Billed to this API key."
+      : null;
+  const mainTiers = registryTiers.length > 0 ? registryTiers : listedTiers;
+  const subagentsCustomised = draft.subagentModel !== HARNESS_PRESET_SUBAGENT_INHERIT
+    || Boolean(draft.subagentEffort)
+    || Object.keys(draft.agentOverrides).length > 0;
+  const accentStyle = { "--cp-accent": draft.accentColor } as React.CSSProperties;
 
   return (
     <>
@@ -395,9 +431,9 @@ export function CustomProviderDialog({
           if (!next) onClose();
         }}
         title={editingPresetId ? `Edit ${initialDraft.name || "custom provider"}` : "New custom provider"}
-        description="A harness and the model it runs on, saved as one choice for any model picker."
-        size="lg"
-        maxHeight="min(760px, calc(100vh - 48px))"
+        hideHeader
+        width={800}
+        maxHeight="min(820px, calc(100vh - 40px))"
         testId="custom-provider-dialog"
         footerStart={launcher ? (
           <button
@@ -468,14 +504,36 @@ export function CustomProviderDialog({
           style={{
             display: "flex",
             flexDirection: "column",
-            gap: 18,
+            gap: 22,
             fontFamily: SANS_FONT,
             minWidth: 0,
             margin: 0,
             padding: 0,
             border: "none",
+            ...accentStyle,
           }}
         >
+          <CustomBanner color={draft.accentColor} label="Preview">
+            <CustomBannerMark logo={draft.logo} />
+            <div className="ade-cp-banner-id">
+              <span className="ade-cp-banner-eyebrow">{editingPresetId ? "Custom provider" : "New custom provider"}</span>
+              <input
+                id="custom-provider-name"
+                className="ade-cp-name"
+                value={draft.name}
+                onChange={(event) => patch({ name: event.target.value.slice(0, HARNESS_PRESET_NAME_MAX_LENGTH) })}
+                placeholder={fallbackName || "Name it"}
+                aria-label="Name"
+                spellCheck={false}
+              />
+              <span className="ade-cp-banner-copy">
+                One pick in every model picker, on every computer you sign in to.
+              </span>
+            </div>
+            <RecipeCard harness={draft.harness} model={recipeModel} source={recipeSource} note={recipeNote} />
+          </CustomBanner>
+          {errors.name && draft.name.trim() ? <FieldError>{errors.name}</FieldError> : null}
+
           {accountError ? (
             <Banner
               layout="inline"
@@ -499,9 +557,32 @@ export function CustomProviderDialog({
             />
           ) : null}
 
-          <section aria-label="Harness" style={sectionStyle}>
-            <SectionLabel>Harness</SectionLabel>
-            <HarnessChipRow options={chipOptions} selected={draft.harness} onSelect={chooseHarness} size="md" label="Harness" />
+          <section aria-label="Harness" className="ade-cp-step">
+            <StepHead n={1} done title="Harness" hint="The coding agent that runs the chat." />
+            <div role="radiogroup" aria-label="Harness" data-harness-chip-row="" className="ade-cp-harness-grid">
+              {chipOptions.map(({ harness, disabledReason }) => {
+                const active = harness === draft.harness;
+                const disabled = disabledReason != null && !active;
+                return (
+                  <button
+                    key={harness}
+                    type="button"
+                    role="radio"
+                    aria-checked={active}
+                    aria-disabled={disabled || undefined}
+                    data-harness-chip={harness}
+                    title={disabledReason ?? harnessBodyLabel(harness)}
+                    className="ade-cp-harness"
+                    onClick={() => {
+                      if (!disabled) chooseHarness(harness);
+                    }}
+                  >
+                    <span className="ade-cp-harness-logo"><ProviderLogo family={bodyLogoFamily(harness)} size={14} /></span>
+                    <span>{harness === "copilot" ? "Copilot" : harnessShortLabel(harness)}</span>
+                  </button>
+                );
+              })}
+            </div>
             {!availability.available ? (
               <Banner
                 layout="inline"
@@ -514,18 +595,13 @@ export function CustomProviderDialog({
             ) : null}
           </section>
 
-          <section aria-label="Model" style={sectionStyle}>
-            <div style={{ display: "flex", alignItems: "center", gap: 10, minHeight: 20 }}>
-              <SectionLabel>Model</SectionLabel>
-              {selected ? (
-                <span data-custom-selected-model="true" style={selectedSummaryStyle}>
-                  <ProviderLogo family={selected.group.logoProvider} size={12} />
-                  <strong style={{ color: COLORS.textPrimary, fontWeight: 600 }}>{selected.model.label}</strong>
-                  <span>{`· ${selected.group.label}`}</span>
-                  {selected.model.route.kind === "proxy" ? <span>· via ADE proxy</span> : null}
-                </span>
-              ) : null}
-            </div>
+          <section aria-label="Model" className="ade-cp-step">
+            <StepHead
+              n={2}
+              done={Boolean(selected)}
+              title="Model"
+              hint={`Anything you already pay for, running inside ${harnessShortLabel(draft.harness)}.`}
+            />
             <CustomProviderModelPane
               groups={groups}
               activeGroup={activeGroup}
@@ -537,9 +613,6 @@ export function CustomProviderDialog({
               onTest={handleTest}
               testStateFor={testStateFor}
               loading={reach.loading}
-              proxyAvailable={reach.proxyAvailable}
-              proxySigningIn={reach.proxySigningIn}
-              proxySignIn={(provider) => void reach.proxySignIn(provider)}
               harnessLabel={harnessBodyLabel(draft.harness)}
             />
             {orphaned ? (
@@ -555,211 +628,203 @@ export function CustomProviderDialog({
           </section>
 
           {draft.model ? (
-            <section aria-label="Thinking" style={{ ...sectionStyle, gap: 10 }}>
-              <SectionLabel>Thinking</SectionLabel>
-              <div style={rowStyle}>
-                <span style={rowLabelStyle}>Effort</span>
-                {registryTiers.length > 0 ? (
-                  <ReasoningEffortPicker
-                    modelId={draft.model}
-                    reasoningEffort={draft.reasoningEffort ?? null}
-                    useFamilyDefaults={false}
-                    onChange={(effort) => patch({ reasoningEffort: effort || undefined })}
-                  />
-                ) : listedTiers.length > 0 ? (
-                  <EffortPills
-                    tiers={listedTiers}
-                    value={draft.reasoningEffort ?? ""}
-                    onChange={(value) => patch({ reasoningEffort: value || undefined })}
-                  />
-                ) : (
-                  <span style={{ fontSize: 11.5, color: COLORS.textMuted }}>Model default</span>
-                )}
-              </div>
-              {subagentSupport.model ? (
-                <>
-                  <div style={rowStyle}>
-                    <label htmlFor="custom-provider-subagents" style={rowLabelStyle}>Subagents</label>
-                    <SettingsSelect
-                      id="custom-provider-subagents"
-                      ariaLabel="Subagent model"
-                      value={draft.subagentModel}
-                      options={[
-                        { value: HARNESS_PRESET_SUBAGENT_INHERIT, label: "Same as main" },
-                        ...subagentChoices.map((choice) => ({ value: choice.id, label: choice.label })),
-                      ]}
-                      onChange={(value) => patch({
-                        subagentModel: value,
-                        ...(value === HARNESS_PRESET_SUBAGENT_INHERIT ? { subagentEffort: undefined } : {}),
-                      })}
+            <section aria-label="Thinking" className="ade-cp-step">
+              <StepHead n={3} done title="Thinking" hint="How hard it thinks, and what its helpers use." />
+              <div className="ade-cp-rows">
+                <div className="ade-cp-row">
+                  <span className="ade-cp-row-label">
+                    <span className="ade-cp-row-title">Effort</span>
+                    <span className="ade-cp-row-hint">Default lets the model decide.</span>
+                  </span>
+                  {mainTiers.length > 0 ? (
+                    <EffortPills
+                      tiers={mainTiers}
+                      value={draft.reasoningEffort ?? ""}
+                      onChange={(value) => patch({ reasoningEffort: value || undefined })}
                     />
-                  </div>
-                  {subagentSupport.effort ? (
-                    <div style={rowStyle}>
-                      <span style={rowLabelStyle}>Subagent effort</span>
-                      {subagentEffortTiers.length > 0 ? (
-                        <EffortPills
-                          tiers={subagentEffortTiers}
-                          value={draft.subagentEffort ?? ""}
-                          onChange={(value) => patch({ subagentEffort: value || undefined })}
-                        />
-                      ) : (
-                        <span style={{ fontSize: 11.5, color: COLORS.textMuted }}>Model default</span>
-                      )}
-                    </div>
                   ) : (
-                    <p style={{ margin: 0, fontSize: 10.5, lineHeight: 1.5, color: COLORS.textMuted }}>
-                      {harnessSubagentInheritNote(draft.harness, "effort")}
-                    </p>
+                    <span className="ade-cp-row-hint">Model default</span>
                   )}
-                  {subagentSupport.agentTypes.length > 0 ? (
-                    <SettingsDisclosure summary="Subagent naming" gap={10}>
-                      {subagentSupport.agentTypes.map(({ key, label }) => {
-                        const value = draft.agentOverrides[key] ?? ADVANCED_FOLLOWS;
-                        const effort = draft.agentEfforts[key] ?? "";
-                        return (
-                          <div key={key} style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                            <div style={rowStyle}>
-                              <label htmlFor={`custom-provider-agent-${key}`} style={rowLabelStyle}>
-                                {label}
-                              </label>
-                              <SettingsSelect
-                                id={`custom-provider-agent-${key}`}
-                                ariaLabel={`${label} model`}
-                                value={value}
-                                options={[
-                                  { value: ADVANCED_FOLLOWS, label: "Follows subagents" },
-                                  ...subagentChoices.map((choice) => ({ value: choice.id, label: choice.label })),
-                                ]}
-                                onChange={(next) => {
-                                  const overrides = { ...draft.agentOverrides };
-                                  if (next === ADVANCED_FOLLOWS) delete overrides[key];
-                                  else overrides[key] = next;
-                                  const efforts = { ...draft.agentEfforts };
-                                  if (next === ADVANCED_FOLLOWS) delete efforts[key];
-                                  patch({ agentOverrides: overrides, agentEfforts: efforts });
-                                }}
-                              />
-                            </div>
-                            {subagentSupport.effort && value !== ADVANCED_FOLLOWS ? (
-                              <div style={rowStyle}>
-                                <span style={{ ...rowLabelStyle, color: COLORS.textMuted }}>Effort</span>
-                                {agentEffortTiers(value).length > 0 ? (
-                                  <EffortPills
-                                    tiers={agentEffortTiers(value)}
-                                    value={effort}
+                </div>
+                {subagentSupport.model ? (
+                  <details className="ade-cp-more" open={subagentsCustomised || undefined}>
+                    <summary>
+                      <CaretRight size={11} weight="bold" />
+                      Subagents
+                      <span style={{ marginLeft: "auto", color: COLORS.textMuted }}>
+                        {draft.subagentModel === HARNESS_PRESET_SUBAGENT_INHERIT
+                          ? "Same as main"
+                          : subagentChoices.find((choice) => choice.id === draft.subagentModel)?.label ?? draft.subagentModel}
+                      </span>
+                    </summary>
+                    <div className="ade-cp-more-body">
+                      <div style={rowStyle}>
+                        <label htmlFor="custom-provider-subagents" style={rowLabelStyle}>Model</label>
+                        <SettingsSelect
+                          id="custom-provider-subagents"
+                          ariaLabel="Subagent model"
+                          value={draft.subagentModel}
+                          options={[
+                            { value: HARNESS_PRESET_SUBAGENT_INHERIT, label: "Same as main" },
+                            ...subagentChoices.map((choice) => ({ value: choice.id, label: choice.label })),
+                          ]}
+                          onChange={(value) => patch({
+                            subagentModel: value,
+                            ...(value === HARNESS_PRESET_SUBAGENT_INHERIT ? { subagentEffort: undefined } : {}),
+                          })}
+                        />
+                      </div>
+                      {subagentSupport.effort ? (
+                        <div style={rowStyle}>
+                          <span style={rowLabelStyle}>Effort</span>
+                          {subagentEffortTiers.length > 0 ? (
+                            <EffortPills
+                              tiers={subagentEffortTiers}
+                              value={draft.subagentEffort ?? ""}
+                              onChange={(value) => patch({ subagentEffort: value || undefined })}
+                            />
+                          ) : (
+                            <span style={{ fontSize: 11.5, color: COLORS.textMuted }}>Model default</span>
+                          )}
+                        </div>
+                      ) : (
+                        <p style={noteStyle}>{harnessSubagentInheritNote(draft.harness, "effort")}</p>
+                      )}
+                      {subagentSupport.agentTypes.length > 0 ? (
+                        <SettingsDisclosure summary="Per subagent" gap={10}>
+                          {subagentSupport.agentTypes.map(({ key, label }) => {
+                            const value = draft.agentOverrides[key] ?? ADVANCED_FOLLOWS;
+                            const effort = draft.agentEfforts[key] ?? "";
+                            return (
+                              <div key={key} style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                                <div style={rowStyle}>
+                                  <label htmlFor={`custom-provider-agent-${key}`} style={rowLabelStyle}>
+                                    {label}
+                                  </label>
+                                  <SettingsSelect
+                                    id={`custom-provider-agent-${key}`}
+                                    ariaLabel={`${label} model`}
+                                    value={value}
+                                    options={[
+                                      { value: ADVANCED_FOLLOWS, label: "Follows subagents" },
+                                      ...subagentChoices.map((choice) => ({ value: choice.id, label: choice.label })),
+                                    ]}
                                     onChange={(next) => {
+                                      const overrides = { ...draft.agentOverrides };
+                                      if (next === ADVANCED_FOLLOWS) delete overrides[key];
+                                      else overrides[key] = next;
                                       const efforts = { ...draft.agentEfforts };
-                                      if (next) efforts[key] = next;
-                                      else delete efforts[key];
-                                      patch({ agentEfforts: efforts });
+                                      if (next === ADVANCED_FOLLOWS) delete efforts[key];
+                                      patch({ agentOverrides: overrides, agentEfforts: efforts });
                                     }}
                                   />
-                                ) : (
-                                  <span style={{ fontSize: 11.5, color: COLORS.textMuted }}>Follows subagents</span>
-                                )}
+                                </div>
+                                {subagentSupport.effort && value !== ADVANCED_FOLLOWS ? (
+                                  <div style={rowStyle}>
+                                    <span style={{ ...rowLabelStyle, color: COLORS.textMuted }}>Effort</span>
+                                    {agentEffortTiers(value).length > 0 ? (
+                                      <EffortPills
+                                        tiers={agentEffortTiers(value)}
+                                        value={effort}
+                                        onChange={(next) => {
+                                          const efforts = { ...draft.agentEfforts };
+                                          if (next) efforts[key] = next;
+                                          else delete efforts[key];
+                                          patch({ agentEfforts: efforts });
+                                        }}
+                                      />
+                                    ) : (
+                                      <span style={{ fontSize: 11.5, color: COLORS.textMuted }}>Follows subagents</span>
+                                    )}
+                                  </div>
+                                ) : null}
+                                {value !== ADVANCED_FOLLOWS ? (
+                                  <p style={noteStyle}>{harnessPresetAgentOverrideNote(key)}</p>
+                                ) : null}
                               </div>
-                            ) : null}
-                            {value !== ADVANCED_FOLLOWS ? (
-                              <p style={{ margin: 0, fontSize: 10.5, lineHeight: 1.5, color: COLORS.textMuted }}>
-                                {harnessPresetAgentOverrideNote(key)}
-                              </p>
-                            ) : null}
-                          </div>
-                        );
-                      })}
-                    </SettingsDisclosure>
-                  ) : null}
-                </>
-              ) : (
-                <p style={{ margin: 0, fontSize: 10.5, lineHeight: 1.5, color: COLORS.textMuted }}>
-                  {harnessSubagentInheritNote(draft.harness, "model")}
-                </p>
-              )}
+                            );
+                          })}
+                        </SettingsDisclosure>
+                      ) : null}
+                    </div>
+                  </details>
+                ) : (
+                  <div className="ade-cp-row">
+                    <span className="ade-cp-row-hint">{harnessSubagentInheritNote(draft.harness, "model")}</span>
+                  </div>
+                )}
+              </div>
             </section>
           ) : null}
 
-          <section aria-label="Name and look" style={{ ...sectionStyle, gap: 10 }}>
-            <SectionLabel>Name and look</SectionLabel>
-            <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-              <HarnessLogo logo={draft.logo} size={26} accentColor={draft.accentColor} />
-              <div style={{ flex: "1 1 220px", minWidth: 0 }}>
-                <SettingsTextField
-                  id="custom-provider-name"
-                  value={draft.name}
-                  onChange={(value) => patch({ name: value.slice(0, HARNESS_PRESET_NAME_MAX_LENGTH) })}
-                  placeholder={fallbackName || "Name"}
-                  ariaLabel="Name"
-                />
-              </div>
-              <input
-                type="color"
-                aria-label="Accent"
-                title="Accent"
-                value={draft.accentColor}
-                onChange={(event) => {
-                  accentTouchedRef.current = true;
-                  patch({ accentColor: event.target.value.toLowerCase() });
-                }}
-                style={{
-                  width: 34,
-                  height: 28,
-                  padding: 0,
-                  border: `1px solid ${COLORS.outlineBorder}`,
-                  borderRadius: 7,
-                  background: "transparent",
-                  cursor: "pointer",
-                }}
-              />
-            </div>
-            {errors.name && draft.name.trim() ? <FieldError>{errors.name}</FieldError> : null}
-            {errors.accentColor ? <FieldError>{errors.accentColor}</FieldError> : null}
-            <div role="radiogroup" aria-label="Logo" style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-              {tiles.map((tile) => {
-                const isSelected = draft.logo.kind === tile.id;
-                return (
+          <section aria-label="Look" className="ade-cp-step">
+            <StepHead n={draft.model ? 4 : 3} done title="Look" hint="How it shows up in model pickers." />
+            <div className="ade-cp-look">
+              <div role="radiogroup" aria-label="Logo" style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                {logoChoices.map((choice) => (
                   <button
-                    key={tile.id}
+                    key={choice.id}
                     type="button"
                     role="radio"
-                    aria-checked={isSelected}
-                    data-custom-logo-tile={tile.id}
-                    onClick={tile.onSelect}
-                    disabled={tile.id === "generated" && generating}
-                    style={{
-                      display: "inline-flex",
-                      alignItems: "center",
-                      gap: 6,
-                      height: 28,
-                      padding: "0 10px",
-                      borderRadius: 7,
-                      cursor: "pointer",
-                      fontFamily: SANS_FONT,
-                      fontSize: 11,
-                      color: COLORS.textPrimary,
-                      border: `1px solid ${isSelected ? draft.accentColor : COLORS.outlineBorder}`,
-                      background: isSelected ? `color-mix(in srgb, ${draft.accentColor} 12%, transparent)` : "transparent",
-                    }}
+                    aria-checked={draft.logo.kind === choice.id}
+                    data-custom-logo-tile={choice.id}
+                    onClick={choice.onSelect}
+                    disabled={choice.id === "generated" && generating}
+                    className="ade-cp-logo-choice"
                   >
-                    {tile.id === "upload" ? (
+                    {choice.id === "upload" ? (
                       <UploadSimple size={13} />
                     ) : (
                       <HarnessLogo
                         logo={
-                          tile.id === "provider"
+                          choice.id === "provider"
                             ? { kind: "provider", providerId: draft.harness }
-                            : tile.id === "generated" && draft.logo.kind === "generated"
+                            : choice.id === "generated" && draft.logo.kind === "generated"
                               ? draft.logo
                               : { kind: "ade" }
                         }
                         size={14}
+                        {...(choice.id === "ade" ? { accentColor: null } : {})}
                       />
                     )}
-                    {tile.label}
+                    {choice.label}
                   </button>
-                );
-              })}
+                ))}
+              </div>
+              <div role="radiogroup" aria-label="Colour" className="ade-cp-swatches">
+                {ACCENT_SWATCHES.map((swatch) => (
+                  <button
+                    key={swatch}
+                    type="button"
+                    role="radio"
+                    aria-checked={draft.accentColor === swatch}
+                    aria-label={`Colour ${swatch}`}
+                    className="ade-cp-swatch"
+                    style={{ "--swatch": swatch } as React.CSSProperties}
+                    onClick={() => {
+                      accentTouchedRef.current = true;
+                      patch({ accentColor: swatch });
+                    }}
+                  />
+                ))}
+                <label
+                  className="ade-cp-swatch-custom"
+                  data-active={ACCENT_SWATCHES.includes(draft.accentColor) ? undefined : "true"}
+                  title="Any colour"
+                >
+                  <input
+                    type="color"
+                    aria-label="Accent"
+                    value={draft.accentColor}
+                    onChange={(event) => {
+                      accentTouchedRef.current = true;
+                      patch({ accentColor: event.target.value.toLowerCase() });
+                    }}
+                  />
+                </label>
+              </div>
             </div>
+            {errors.accentColor ? <FieldError>{errors.accentColor}</FieldError> : null}
             <input
               ref={fileInputRef}
               type="file"
@@ -821,9 +886,9 @@ export function CustomProviderDialog({
   );
 }
 
-const sectionStyle: React.CSSProperties = { display: "flex", flexDirection: "column", gap: 8, minWidth: 0 };
 const rowStyle: React.CSSProperties = { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, minWidth: 0 };
-const rowLabelStyle: React.CSSProperties = { fontSize: 12, fontWeight: 600, color: COLORS.textPrimary };
+const rowLabelStyle: React.CSSProperties = { fontSize: 12, fontWeight: 500, color: COLORS.textPrimary };
+const noteStyle: React.CSSProperties = { margin: 0, fontSize: 11, lineHeight: 1.5, color: COLORS.textMuted };
 const linkButtonStyle: React.CSSProperties = {
   display: "inline-flex",
   alignItems: "center",
@@ -836,20 +901,54 @@ const linkButtonStyle: React.CSSProperties = {
   fontSize: 11.5,
   cursor: "pointer",
 };
-/** The chosen model, stated once beside the section label. */
-const selectedSummaryStyle: React.CSSProperties = {
-  display: "inline-flex",
-  alignItems: "center",
-  gap: 6,
-  marginLeft: "auto",
-  minWidth: 0,
-  fontSize: 11.5,
-  color: COLORS.textSecondary,
-  whiteSpace: "nowrap",
-  overflow: "hidden",
-  textOverflow: "ellipsis",
+
+/** Tier ids as words; an unknown tier shows as its id. */
+const EFFORT_LABELS: Record<string, string> = {
+  minimal: "Minimal",
+  low: "Low",
+  medium: "Medium",
+  high: "High",
+  xhigh: "Extra high",
+  max: "Max",
 };
 
+/** A short palette, so picking a colour is one click; the last swatch opens any colour. */
+const ACCENT_SWATCHES: readonly string[] = [
+  "#8b5cf6",
+  "#6366f1",
+  "#0ea5e9",
+  "#14b8a6",
+  "#22c55e",
+  "#eab308",
+  "#f97316",
+  "#ef4444",
+  "#ec4899",
+];
+
+/** The mark a source wears when the list no longer has it (an import, a key removed). */
+function sourceLogoProvider(source: HarnessPresetSource): string {
+  switch (source.kind) {
+    case "account":
+    case "subscription":
+    case "key":
+      return source.provider;
+    case "opencode":
+      return source.providerId;
+  }
+}
+
+/** A step's number, title and one-line hint. */
+function StepHead({ n, done, title, hint }: { n: number; done: boolean; title: string; hint: string }) {
+  return (
+    <div className="ade-cp-step-head">
+      <span className="ade-cp-step-num" data-done={done ? "true" : undefined} aria-hidden>
+        {done ? <Check size={11} weight="bold" /> : n}
+      </span>
+      <span className="ade-cp-step-title">{title}</span>
+      <span className="ade-cp-step-hint">{hint}</span>
+    </div>
+  );
+}
 
 /**
  * The model's own thinking tiers as one row of pills. A handful of tiers reads
@@ -865,35 +964,21 @@ function EffortPills({
   value: string;
   onChange: (value: string) => void;
 }) {
-  const options = [{ value: "", label: "Default" }, ...tiers.map((tier) => ({ value: tier, label: tier }))];
+  const options = [{ value: "", label: "Default" }, ...tiers.map((tier) => ({ value: tier, label: EFFORT_LABELS[tier] ?? tier }))];
   return (
-    <div role="radiogroup" aria-label="Effort" style={{ display: "inline-flex", gap: 4 }}>
-      {options.map((option) => {
-        const active = option.value === value;
-        return (
-          <button
-            key={option.value || "default"}
-            type="button"
-            role="radio"
-            aria-checked={active}
-            onClick={() => onChange(option.value)}
-            style={{
-              height: 26,
-              padding: "0 10px",
-              borderRadius: 6,
-              border: `1px solid ${active ? COLORS.accent : COLORS.outlineBorder}`,
-              background: active ? COLORS.accentSubtle : "transparent",
-              color: active ? COLORS.textPrimary : COLORS.textSecondary,
-              fontFamily: SANS_FONT,
-              fontSize: 11.5,
-              textTransform: option.value ? "capitalize" : "none",
-              cursor: "pointer",
-            }}
-          >
-            {option.label}
-          </button>
-        );
-      })}
+    <div role="radiogroup" aria-label="Effort" className="kit-seg" data-case="sentence">
+      {options.map((option) => (
+        <button
+          key={option.value || "default"}
+          type="button"
+          role="radio"
+          aria-checked={option.value === value}
+          onClick={() => onChange(option.value)}
+          style={option.value ? { textTransform: "capitalize" } : undefined}
+        >
+          {option.label}
+        </button>
+      ))}
     </div>
   );
 }

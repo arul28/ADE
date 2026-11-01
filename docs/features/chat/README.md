@@ -4880,17 +4880,19 @@ For chat, three things matter.
 | Claude Code | Yes | Yes | Yes | Yes (`CLAUDE_CODE_SUBAGENT_MODEL` + `_FORCE`, plus per-built-in `agents` pins) |
 | Codex CLI | Yes (preset-owned `CODEX_HOME` + `config.toml`) | Yes | Yes | No |
 | OpenCode | Yes (config provider block; needs an endpoint) | Yes | Yes | No |
-| Droid | Yes (`FACTORY_HOME_OVERRIDE` + `custom_models`) | No | Yes | No |
-| Qwen Code | Yes | No | Yes | No |
-| Kimi | Yes | No | **No** — native CLI | No |
-| Grok | Yes | No | **No** — native CLI | No |
-| GitHub Copilot CLI | Yes | No | **No** — native CLI | No |
+| Droid | Yes (`FACTORY_HOME_OVERRIDE` + `customModels`) | Yes (via proxy) | Yes | No |
+| Qwen Code | Yes | Yes (via proxy) | Yes | No |
+| Kimi | Yes (preset-owned `KIMI_CODE_HOME` + `config.toml`) | Yes (via proxy) | Yes | No |
+| Grok | Yes (preset-owned `GROK_HOME` + `config.toml`) | Yes (via proxy) | Yes | Yes (`[subagents.models]`) |
+| GitHub Copilot CLI | Yes (`COPILOT_PROVIDER_*`; chats pass it as the session `provider`) | Yes (via proxy) | Yes | No |
 | Cursor | No — one key in its own store | No | **No** — native CLI | No |
-| Pi | No — its own `models.json` | No | Yes (no effect) | No |
+| Pi | Yes (preset-owned `PI_CODING_AGENT_DIR` with `models.json` + `settings.json`) | Yes (via proxy) | Yes | No |
 
-The CLI-mode column is the locked gate: those four binaries take no key from the
+The CLI-mode column is the locked gate: the Cursor CLI takes no key from the
 launch, so a preset is dropped with its reason and the native CLI starts rather
-than the launch failing. CLI-mode surfaces do not list presets at all.
+than the launch failing. (`CLI_PRESET_GATED_HARNESSES` in
+`shared/harnessPresetCliGate.ts`; Copilot and Kimi left it once they took
+routed endpoints.) CLI-mode surfaces do not list presets at all.
 
 ## Configuration
 

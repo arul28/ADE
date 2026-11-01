@@ -25,7 +25,7 @@ provider list — and appear as the first tab of every model picker.
 | Field | Meaning |
 |---|---|
 | Harness | One of `claude`, `codex`, `opencode`, `droid`, `pi`, `qwen`, `kimi`, `grok`, `copilot`, `cursor`. |
-| Source | `account` (a provider sign-in named by instance id), `key` (a credential in the API-key store, named by id), `opencode` (a provider signed in *inside OpenCode* — OpenCode Go, Zen, or anything connected there — named by OpenCode's provider id; a sign-in there that is measured as a subscription-only login routes only inside OpenCode), or `subscription` (a Claude or Codex subscription borrowed inside another harness through ADE's proxy). |
+| Source | `account` (a provider sign-in named by instance id), `key` (a credential in the API-key store, named by id), `opencode` (a provider signed in *inside OpenCode* — OpenCode Go, Zen, or anything connected there — named by OpenCode's provider id; a sign-in there that is measured as a subscription-only login routes only inside OpenCode), or `subscription` (older presets: a Claude or Codex subscription in another harness, now served by the provider's default account). An `account` in a harness that is not its own (a Codex account in Droid) runs through ADE's proxy on that account's own login. |
 | Model | A model id. The wizard reads the same live catalog the composer's picker uses, so a runtime-discovered provider (Cursor, OpenCode, Pi, the ACP providers) lists its real models. Free text survives for exactly two cases: a key pointing at a custom OpenAI-compatible endpoint that declares no models of its own, and a first-class key provider that neither the static registry nor the catalog can enumerate (OpenRouter, Google, DeepSeek, Mistral, Groq, Together). |
 | Effort | The model's thinking tier, when it offers tiers. |
 | Subagents | A model id, or `Same as main`, and — where the harness takes one — its own thinking level. |
@@ -102,12 +102,11 @@ thinks, and what it is called.
    computer.
 2. **Pick a source, then a model.** A source rail lists every provider this
    computer could draw on — the harness's own accounts, the OpenCode sign-ins
-   and stored keys, and the Claude/Codex subscriptions the proxy holds — and
+   and stored keys, and every other Claude and Codex account on this machine — and
    selecting one scopes the model pane beside it, the same way the composer's
    picker rails by provider. The search field spans every source. Accounts
-   list their email and plan, keys their label and masked tail. A subscription
-   row signs in from the pane's own button; when the host exposes no proxy
-   sign-in the button is disabled and says why, and ADE never fakes it. A
+   list their email and plan, keys their label and masked tail. A signed-out
+   account says to sign it in under Providers. A
    source that can serve nothing in this harness stays in the rail with a
    warning mark, and its pane says so: the models, under **N models can't run
    in {harness}**, each with the route decision's reason (a ChatGPT sign-in
@@ -123,18 +122,76 @@ thinks, and what it is called.
    PNG), and Generate when the host exposes a generator. A live preview chip
    shows the result.
 
-## Subscription sources
+## Your accounts in other harnesses
 
-Choose a subscription source when a preset should use a Claude or Codex
-subscription on this machine. Select the provider's subscription in the source
-rail and choose **Sign in**. ADE opens the provider sign-in page and waits until
-the sign-in is complete; the editor does not store or display the provider
-credential.
+Every Claude and Codex account already signed in on this machine, and this
+machine's Grok sign-in, is a source in every other harness that takes an
+endpoint (Droid, OpenCode, Grok, Qwen, and Claude Code or Codex for the other
+provider). There is no second sign-in. Claude and Codex appear as `account`
+sources (one per account); Grok as a `subscription` source (`grok`), listed by
+the route catalog with the models the proxy last served for it
+(`<adeHome>/proxy/borrowed-models.json`). On the command line they are
+`--via account:<claude|codex>:<accountId>` and `--via subscription:grok`.
 
-If the host cannot sign in through ADE, the button is disabled and the wizard
-explains why. A signed-in subscription can be checked, disabled, or removed
-with the local proxy controls without deleting the preset. The preset keeps
-using its selected model and source until you edit or delete it.
+ADE's local proxy (CLIProxyAPI) answers for the account, using the account's
+own login, lent to it by `ade-cli/src/services/proxy/borrowedLogins.ts`:
+
+- Only the access token is lent, as `ade-borrow-<provider>-<account>.json` in
+  the proxy's auth folder, with the routing prefix `ade-<provider>-<account>`.
+  The refresh token never leaves the CLI. Both vendors rotate it on every use,
+  so a copy in the proxy would sign the user's own CLI out the first time
+  either side renewed.
+- When a lent token nears expiry, ADE asks its pinned copy of that CLI to renew
+  its own login, then lends the new token: Codex through app-server
+  `account/read` with `refreshToken: true` (a day ahead; tokens last 10 days),
+  Claude Code through its SDK-mode startup handshake (100 s ahead: Claude Code
+  2.1.310 renews only in its last ~2 minutes; tokens last ~8 hours), Grok
+  through `grok --no-auto-update models` (200 s ahead: Grok CLI 1.0.46 renews
+  only in its last few minutes; tokens last 6 hours). None is a model request. One renewal runs at a time per machine
+  (`.ade-borrow-renew.lock`).
+- The proxy service lends every account when it starts (`ensureRunning`, which
+  a launch's prepare step calls when its login is not lent yet), then re-lends
+  on a timer aimed at the soonest token's renew window, at most 10 minutes
+  apart, only while logins are lent.
+- The proxy writes its own fields back into a lent file, in place, and can mark
+  it disabled. A pass rewrites a file that is disabled or carries an old token,
+  and readers retry a file caught mid-write.
+- A launch takes a lent token only with more than a minute left; otherwise its
+  prepare step renews it first. A signed-out account's lent file is removed,
+  and the launch says to sign the account in under Providers.
+
+Kimi, Devin and Muse sign-ins are lent the same way, as `subscription`
+sources (`--via subscription:kimi|devin|muse`). They follow CLIProxyAPI
+8.0.48's source and were checked with placeholder logins only (each loaded as
+active and reached its vendor, which refused the placeholder token); no real
+account has run them yet:
+
+| Provider | Read from | Lent as (proxy `type`) | Renewal |
+|---|---|---|---|
+| Kimi | Kimi Code's token file for the region's login slot (`resolveKimiCodeLogin`), plus `<KIMI_CODE_HOME>/device_id` | `kimi`, with `device_id`, `domain`, `base_url` | None: Kimi Code 2.3.1 has no headless renew. A lent token runs until it lapses and is re-lent when the user's own Kimi renews it. |
+| Devin | `credentials.toml` (`windsurf_api_key`) under the XDG data home, or `%APPDATA%` / `%LOCALAPPDATA%` on Windows | `devin`, as `session_token` | None: the token does not expire. |
+| Muse | `<XDG config>/muse/auth.json` `providers` | `meta`, as `api_key` (or `dca_token` for a `dca:` value) | None: a minted key does not expire. |
+
+Antigravity is not lent. Its ACP agent stores only a refresh token (no access
+token), so lending it would hand the proxy the long-lived credential, and
+Google has suspended accounts that used Antigravity's sign-in through other
+clients.
+
+On macOS, a Codex login kept in the Keychain (`cli_auth_credentials_store =
+"keyring"` or `"auto"`) is not read: Codex creates the item so only Codex may
+read it, and any other reader makes macOS ask the user. The launch says so and
+how to switch Codex to `"file"`. On Linux and Windows ADE reads Codex's keyring
+copy (`ai/codexKeyringAuth.ts`), which asks nothing.
+
+A preset saved with a `subscription` source runs on the provider's default
+account, or on a login the user signed in to the proxy itself with
+`ade proxy login` (that login wins when present).
+
+Presets this build cannot read (a newer build's source kind or subscription
+provider) are kept, untouched, in every write of the list to disk and to the
+account (`withUnreadableHarnessPresets` in `appStore.ts`), so editing another
+preset here never deletes them on every machine. Builds before this one do
+drop them on save.
 
 ## Managing them
 
@@ -320,7 +377,7 @@ exists through `ade chat models`, `ade providers accounts list`, or the
 
 | Source | What the launch gets |
 |---|---|
-| `account` | The instance's config home as `CLAUDE_CONFIG_DIR` or `CODEX_HOME`. A Claude account cannot sign Codex in — that is what the subscription source is for. |
+| `account` | In its own harness, the instance's config home as `CLAUDE_CONFIG_DIR` or `CODEX_HOME`. In another harness, the proxy's connection for that account's lent login, shaped like `subscription`. |
 | `key` / `opencode` | The route's endpoint and token, per harness below. Harnesses that read a config file (Codex, Grok, Droid) get one in a home ADE owns at `<adeHome>/provider-homes/preset/<presetId>/`; Claude Code needs none and keeps the user's own config home, so their plugins, skills and MCP servers still load. The OpenCode token is read from OpenCode's store at launch, in the main process only. |
 | `subscription` | The proxy's connection, shaped per harness by `proxyEnv.ts`. The model becomes the proxy's `<prefix>/<model>` routing id. |
 
@@ -331,13 +388,13 @@ exists through `ade chat models`, `ade providers accounts list`, or the
 | Claude Code | `ANTHROPIC_BASE_URL` (no `/v1`), `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY=""` (never inherited — a shell key would reach another vendor as `x-api-key`), `ANTHROPIC_MODEL` and every tier (`ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL`, `ANTHROPIC_SMALL_FAST_MODEL`) pinned to the route's model so background calls do not ask another vendor for Haiku, `CLAUDE_CODE_MAX_CONTEXT_TOKENS` / `CLAUDE_CODE_MAX_OUTPUT_TOKENS` from the model's real limits. | Yes | Yes | Yes |
 | Codex CLI | `CODEX_HOME` plus a `config.toml` ADE writes there naming one `[model_providers.ade]` block (`wire_api = "responses"`, `env_key = "ADE_PRESET_API_KEY"`, `model_context_window` from the model's limits). `~/.codex/config.toml` is never touched. | Yes | Yes (key/subscription; a Codex *account* preset keeps the account's own config) | same |
 | OpenCode | A provider block merged into the session's config, not an env var — OpenCode has no "use this key against this endpoint" variable. Needs an endpoint. | Yes | Yes (`agent.<type>.model`; nothing for a preset running on an OpenCode sign-in, which owns its config) | No |
-| Droid | `FACTORY_HOME_OVERRIDE` at a preset-owned home, with `custom_models` written into its `.factory/settings.json`. | No | No | No |
-| Qwen Code | `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `OPENAI_MODEL`. | No | No | No |
-| Kimi | `MOONSHOT_API_KEY`. | No | No | No |
+| Droid | `FACTORY_HOME_OVERRIDE` at a preset-owned home, with `customModels` (camelCase; Droid ignores snake_case `custom_models`) written into its `.factory/settings.json`. | Yes (via proxy) | No | No |
+| Qwen Code | `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `OPENAI_MODEL`. | Yes (via proxy) | No | No |
+| Kimi | `KIMI_CODE_HOME` at a preset-owned home whose `config.toml` defines `[providers.ade]` (`type` openai, openai_responses or anthropic, `base_url`, `api_key`), a `[models."ade/<model>"]` alias and `default_model`. The launch names the alias, which ADE passes through untouched. Checked with Kimi Code 2.3.1, CLI and ACP. | Yes (via proxy) | No | No |
 | Grok | `GROK_HOME` at a preset-owned home whose `config.toml` defines `[model."<id>"]` with the route's `base_url`, `api_backend` (`messages`, `chat_completions` or `responses`), `env_key` and the session header. | Yes (via proxy) | Yes (`[subagents.models]`) | No |
-| GitHub Copilot | `GITHUB_TOKEN`. | No | No | No |
+| GitHub Copilot | The runtime's BYOK switches: `COPILOT_PROVIDER_BASE_URL`, `COPILOT_PROVIDER_TYPE` (openai or anthropic), `COPILOT_PROVIDER_API_KEY`, `COPILOT_PROVIDER_WIRE_API`, `COPILOT_MODEL`. The CLI reads them itself and needs no GitHub sign-in; the SDK runtime behind Copilot chats does not, so ADE's Copilot worker passes the same endpoint as each session's `provider`. Checked with CLI 1.0.105 and SDK runtime 1.0.22. | Yes (via proxy) | No | No |
 | Cursor | No. Cursor signs in from its own single-slot store, and a per-preset key would change every other Cursor session on the machine. | No | No | No |
-| Pi | No. Pi reads endpoints and model ids from its own `models.json`; add the provider in Pi instead. | No | No | No |
+| Pi | `PI_CODING_AGENT_DIR` at a preset-owned folder whose `models.json` defines provider `ade` (`api` openai-completions, openai-responses or anthropic-messages) and whose `settings.json` makes it the default; a routed Pi chat selects `ade/<model>` explicitly. The user's own `~/.pi/agent` is never touched. Checked with Pi 1.4.0, CLI and chat. | Yes (via proxy) | No | No |
 
 ### Subagents and subagent naming
 
@@ -462,7 +519,7 @@ prints is that machine's.
     rail and model pane, thinking, and name and look. Its unreachable-models
     panel states why a source's models cannot run in the chosen harness.
   - `CustomProviderModelPane.tsx` — the editor's model pane: the source rail,
-    the scoped list, the per-source search, the subscription Sign in, and the
+    the scoped list, the per-source search, and the
     "N models can't run in {harness}" disclosure with the reasons.
   - `CustomProviderSourceRail.tsx` — the provider rail that scopes the model
     pane to one source, with a warning mark on a source that can serve nothing.
@@ -470,12 +527,11 @@ prints is that machine's.
     source, with the routes that work and the models that cannot run (each with
     its reason). The composer picker's rail is not built from this.
   - `useHarnessReach.ts` — gathers those inputs (the route catalog, the
-    accounts, the proxy logins, the runtime catalog) and runs a row's live Test.
+    accounts, the runtime catalog) and runs a row's live Test.
   - `wizardPrimitives.tsx` — the `Row`, `SectionLabel` and `FieldError`
     primitives the dialog shares.
-  - `harnessSources.ts` — reads the provider accounts, the stored keys, and the
-    proxy subscriptions into the rows the rail lists. The renderer-local type is
-    `HarnessModelSource`.
+  - `harnessSources.ts` — reads the provider accounts and the stored keys into
+    the rows the rail lists. The renderer-local type is `HarnessModelSource`.
   - `harnessAvailability.ts` — whether a harness's pinned copy is downloaded and signed in on
     this computer, as a reason string rather than a disabled row.
   - `harnessModels.ts` — pure: source → provider family, the model choices for a

@@ -47,7 +47,7 @@ import type {
 } from "../../shared/types/accountSettings";
 import { HARNESS_PRESETS_SETTING_KEY } from "../../shared/harnessPresets";
 import type { SettingScope } from "../components/settings/settingsManifest";
-import type { AppState } from "../state/appStore";
+import { applyAccountHarnessPresets, withUnreadableHarnessPresets, type AppState } from "../state/appStore";
 import { mergeStarPillPrefs } from "./starPill";
 
 /** How often a signed-in machine reconciles with the account. */
@@ -151,7 +151,12 @@ export const ACCOUNT_SYNCED_SETTINGS: readonly AccountSyncedSetting[] = [
   // unchanged: the whole list is one value under one key, so the newer-wins
   // rule applies to the list as a whole and two machines never interleave
   // half of each other's edits into one preset.
-  pref(HARNESS_PRESETS_SETTING_KEY, (state) => state.harnessPresets, (state, value) => state.setHarnessPresets(value)),
+  // Rows a newer ADE wrote that this build cannot read ride along unchanged.
+  pref(
+    HARNESS_PRESETS_SETTING_KEY,
+    (state) => withUnreadableHarnessPresets(state.harnessPresets),
+    (state, value: unknown) => applyAccountHarnessPresets(state, value),
+  ),
   // The star pill's counters live under their own storage key rather than in
   // the preferences blob (see `STAR_PILL_STORAGE_KEY`). Applying merges rather
   // than replaces: every field only grows, and a whole-value overwrite would

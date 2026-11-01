@@ -308,6 +308,11 @@ const TIP_LIST = [
     action: setting("agents.providers", "Open a provider and add a second account. A chat that hits its limit can continue on it."),
   },
   {
+    id: "custom-provider", group: "agents", icon: ArrowsLeftRight, title: "Any harness on your plan", size: "small",
+    sentence: "Run Claude Code on your ChatGPT plan, or Codex on Claude, with the sign-ins you already have.",
+    action: setting("agents.harnesses", "Pick a harness and a model you already pay for. It shows up in every model picker."),
+  },
+  {
     id: "startup-context", group: "agents", icon: Brain, title: "Understand startup context", size: "small",
     sentence: "See what goes into your agent's context when a new chat starts, and where to change it.",
     action: setting("agents.providers", "Open a provider to see its initial context and where each item is configured."),

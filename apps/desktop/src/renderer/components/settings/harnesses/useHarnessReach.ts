@@ -12,7 +12,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { OpenProjectBinding } from "../../../../shared/types";
-import type { HarnessPresetAccountProvider, HarnessPresetBody } from "../../../../shared/harnessPresets";
+import type { HarnessPresetBody } from "../../../../shared/harnessPresets";
 import {
   harnessRouteSourceKey,
   type HarnessRouteCatalog,
@@ -32,24 +32,13 @@ export type HarnessRouteTestState =
 
 export type HarnessReach = HarnessReachInputs & {
   loading: boolean;
-  /** Whether this host can run ADE's proxy (and therefore sign a subscription in). */
+  /** Whether this host can run ADE's proxy (and therefore lend an account to another harness). */
   proxyAvailable: boolean;
   refresh: () => Promise<void>;
   /** One-token live check. Re-reads the catalog after, so the route tag follows the verdict. */
   testRoute: (harness: HarnessPresetBody, source: HarnessRouteSource["source"], model: string) => Promise<HarnessRouteTestResult | null>;
   testState: Readonly<Record<string, HarnessRouteTestState>>;
-  proxySignIn: (provider: HarnessPresetAccountProvider) => Promise<void>;
-  proxySigningIn: HarnessPresetAccountProvider | null;
 };
-
-type ProxyBridge = {
-  status?: (pin?: OpenProjectBinding | null) => Promise<{ installed?: boolean; logins?: Array<{ provider: string; disabled?: boolean }> }>;
-  signIn?: (args: { provider: HarnessPresetAccountProvider }, pin?: OpenProjectBinding | null) => Promise<{ status: string; error?: string }>;
-};
-
-function proxyBridge(): ProxyBridge | undefined {
-  return (window as unknown as { ade?: { proxy?: ProxyBridge } }).ade?.proxy;
-}
 
 /** The key the test state is filed under. */
 export function routeTestKey(harness: string, source: HarnessRouteSource["source"], model: string): string {
@@ -67,10 +56,8 @@ export function useHarnessReach({
 }): HarnessReach {
   const [catalog, setCatalog] = useState<HarnessRouteCatalog | null>(null);
   const [accounts, setAccounts] = useState<HarnessAccountSource[]>([]);
-  const [proxyLogins, setProxyLogins] = useState<ReadonlySet<string> | null>(null);
   const [loading, setLoading] = useState(enabled);
   const [testState, setTestState] = useState<Record<string, HarnessRouteTestState>>({});
-  const [proxySigningIn, setProxySigningIn] = useState<HarnessPresetAccountProvider | null>(null);
   // The binding object is a routing payload; its key is the reactive input.
   const pinRef = useRef(pin);
   pinRef.current = pin;
@@ -91,40 +78,20 @@ export function useHarnessReach({
     }
   }, []);
 
-  const loadProxy = useCallback(async (seq = ++requestSeqRef.current, binding = pinRef.current) => {
-    const status = proxyBridge()?.status;
-    if (!isAdeAvailable(status)) {
-      if (seq === requestSeqRef.current) setProxyLogins(null);
-      return;
-    }
-    try {
-      const result = await status(binding);
-      const signedIn = new Set(
-        (result?.logins ?? [])
-          .filter((login) => login && login.disabled !== true)
-          .map((login) => String(login.provider).toLowerCase()),
-      );
-      if (seq === requestSeqRef.current) setProxyLogins(signedIn);
-    } catch {
-      if (seq === requestSeqRef.current) setProxyLogins(null);
-    }
-  }, []);
-
   const refresh = useCallback(async () => {
     const seq = ++requestSeqRef.current;
     const binding = pinRef.current;
     setLoading(true);
     try {
-      const [, , accountRows] = await Promise.all([
+      const [, accountRows] = await Promise.all([
         loadCatalog(seq, binding),
-        loadProxy(seq, binding),
         loadHarnessAccounts(binding),
       ]);
       if (seq === requestSeqRef.current) setAccounts(accountRows);
     } finally {
       if (seq === requestSeqRef.current) setLoading(false);
     }
-  }, [loadCatalog, loadProxy]);
+  }, [loadCatalog]);
 
   useEffect(() => {
     if (!enabled) return;
@@ -176,33 +143,16 @@ export function useHarnessReach({
     }
   }, [loadCatalog]);
 
-  const proxySignIn = useCallback(async (provider: HarnessPresetAccountProvider) => {
-    const signIn = proxyBridge()?.signIn;
-    if (!isAdeAvailable(signIn)) return;
-    const seq = requestSeqRef.current;
-    const binding = pinRef.current;
-    setProxySigningIn(provider);
-    try {
-      await signIn({ provider }, binding);
-    } finally {
-      if (seq === requestSeqRef.current) setProxySigningIn(null);
-      await loadProxy(seq, binding);
-    }
-  }, [loadProxy]);
-
-  const proxyAvailable = Boolean(catalog?.proxyAvailable) && isAdeAvailable(proxyBridge()?.signIn);
+  const proxyAvailable = Boolean(catalog?.proxyAvailable);
 
   return {
     catalog,
     accounts,
-    proxyLogins,
     nativeModels,
     loading,
     proxyAvailable,
     refresh,
     testRoute,
     testState,
-    proxySignIn,
-    proxySigningIn,
   };
 }

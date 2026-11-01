@@ -1,21 +1,26 @@
 import React, { useMemo, useState } from "react";
 import { CaretRight, MagnifyingGlass } from "@phosphor-icons/react";
-import type { HarnessPresetAccountProvider } from "../../../../shared/harnessPresets";
 import type { ProviderFamily } from "../../../../shared/modelRegistry";
 import { COLORS, SANS_FONT } from "../../lanes/laneDesignTokens";
 import { ModelRowLogo, ProviderLogo } from "../../shared/ProviderLogos";
-import { ProxySignInButton, ReachableModelList } from "../../shared/ModelPicker/ReachableModelList";
+import { ReachableModelList } from "../../shared/ModelPicker/ReachableModelList";
 import { scoreModelPickerSearch } from "../../shared/ModelPicker/modelPickerSearch";
 import { CustomProviderSourceRail } from "./CustomProviderSourceRail";
-import { formatModelLimits, type ReachableGroup, type ReachableModel, type UnreachableModel } from "./harnessReach";
+import {
+  formatModelLimits,
+  sourceSummary,
+  type ReachableGroup,
+  type ReachableModel,
+  type UnreachableModel,
+} from "./harnessReach";
 import type { HarnessRouteTestState } from "./useHarnessReach";
 
 /**
  * The Custom provider editor's model pane: the source rail on the left, the
  * chosen source's models on the right.
  *
- * It owns the rail-plus-pane composition, the per-source search field, the
- * subscription Sign in, and the disclosure that names the models a source
+ * It owns the rail-plus-pane composition, the per-source search field, and
+ * the disclosure that names the models a source
  * cannot run in this harness. The editor around it owns the draft; a rail click
  * or a model click is reported back through `onSelectSource` / `onSelectModel`,
  * so merely browsing another provider cannot change what would be saved.
@@ -35,9 +40,6 @@ export function CustomProviderModelPane({
   onTest,
   testStateFor,
   loading,
-  proxyAvailable,
-  proxySigningIn,
-  proxySignIn,
   harnessLabel,
 }: {
   groups: readonly ReachableGroup[];
@@ -50,9 +52,6 @@ export function CustomProviderModelPane({
   onTest: (group: ReachableGroup, model: ReachableModel) => void;
   testStateFor: (group: ReachableGroup, model: ReachableModel) => HarnessRouteTestState | undefined;
   loading: boolean;
-  proxyAvailable: boolean;
-  proxySigningIn: HarnessPresetAccountProvider | null;
-  proxySignIn: (provider: HarnessPresetAccountProvider) => void;
   harnessLabel: string;
 }) {
   const queryText = query.trim();
@@ -63,9 +62,6 @@ export function CustomProviderModelPane({
     if (searching) return groups;
     return activeGroup ? [activeGroup] : [];
   }, [searching, groups, activeGroup]);
-  const activeSubscription = activeGroup && activeGroup.source.kind === "subscription"
-    ? activeGroup.source.provider
-    : null;
   /**
    * While searching, the models that cannot run still match — that is exactly
    * the question "can I use this here?" — so each source's unreachable entries
@@ -103,8 +99,8 @@ export function CustomProviderModelPane({
       data-custom-source-pane=""
       style={{
         display: "flex",
-        minHeight: 300,
-        maxHeight: 360,
+        minHeight: 248,
+        maxHeight: 340,
         borderRadius: 10,
         border: `1px solid ${COLORS.borderMuted}`,
         background: COLORS.recessedBg,
@@ -122,20 +118,16 @@ export function CustomProviderModelPane({
           {activeGroup ? <ProviderLogo family={activeGroup.logoProvider} size={14} /> : null}
           <span style={{ minWidth: 0, flex: 1 }}>
             <span style={paneTitleStyle}>
-              {searching ? "Search results" : activeGroup ? activeGroup.label : "Nothing to run yet"}
+              {searching ? "Search results" : activeGroup ? sourceSummary(activeGroup).title : "Nothing to run yet"}
             </span>
             <span style={paneDetailStyle}>
-              {searching ? "Matches across every connected source" : activeGroup?.detail ?? ""}
+              {searching
+                ? "Matches across every connected source"
+                : activeGroup
+                  ? [sourceSummary(activeGroup).detail, activeGroup.detail].filter(Boolean).join(" · ")
+                  : ""}
             </span>
           </span>
-          {!searching && activeGroup?.needsProxySignIn && activeSubscription ? (
-            <ProxySignInButton
-              provider={activeSubscription}
-              available={proxyAvailable}
-              signingIn={proxySigningIn === activeSubscription}
-              onSignIn={proxySignIn}
-            />
-          ) : null}
           <label style={paneSearchStyle} className="ade-cp-search">
             <MagnifyingGlass size={12} style={{ color: COLORS.textMuted, flexShrink: 0 }} />
             <input
@@ -158,13 +150,10 @@ export function CustomProviderModelPane({
             testStateFor={testStateFor}
             standalone
             hideGroupHeader={!searching}
-            onProxySignIn={proxySignIn}
-            proxySignInAvailable={proxyAvailable}
-            proxySigningIn={proxySigningIn}
             emptyState={
               <>
                 {harnessLabel} has nothing to run from your connections yet. Sign in to
-                OpenCode Go or Zen, or store an API key, under Providers.
+                Claude, Codex or OpenCode, or store an API key, under Providers.
               </>
             }
           />

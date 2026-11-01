@@ -29,9 +29,17 @@ import {
   type HarnessRouteTestResult,
   type RouteProtocol,
 } from "../../../shared/harnessRoutes";
-import { isHarnessPresetBody } from "../../../shared/harnessPresets";
+import {
+  harnessBodyLabel,
+  isHarnessPresetBody,
+  isHarnessPresetSubscriptionProvider,
+  type HarnessPresetBody,
+  type HarnessPresetSource,
+} from "../../../shared/harnessPresets";
 import { resolveMachineAdeDir } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import { readRouteProbe, recordRouteProbe } from "./harnessRouteProbes";
+import { startHarnessProxy } from "./harnessLaunchPrepare";
+import { defaultReadProxyConnection } from "./harnessPresetProxyConnection";
 import { OPENCODE_SESSION_HEADER, resolveRouteSource } from "./harnessRouteLaunch";
 
 /** The one validator every entry point (IPC and the action bus) runs. */
@@ -53,7 +61,72 @@ export function requireHarnessRouteSource(value: unknown): HarnessRouteSource["s
       label: typeof raw.label === "string" ? raw.label : raw.provider.trim(),
     };
   }
-  throw new Error("source must be an OpenCode sign-in or a stored key.");
+  if (
+    raw.kind === "account"
+    && (raw.provider === "claude" || raw.provider === "codex")
+    && typeof raw.instanceId === "string" && raw.instanceId.trim()
+  ) {
+    return { kind: "account", provider: raw.provider, instanceId: raw.instanceId.trim() };
+  }
+  if (raw.kind === "subscription" && isHarnessPresetSubscriptionProvider(raw.provider)) {
+    return { kind: "subscription", provider: raw.provider };
+  }
+  throw new Error("source must be an OpenCode sign-in, a stored key, an account or a subscription.");
+}
+
+/**
+ * Check an account or subscription in another harness: one request through
+ * ADE's proxy on the login it lends for that account, starting the proxy (and
+ * lending this machine's logins) first when the login is not lent yet.
+ */
+async function testLentLogin(args: {
+  harness: HarnessPresetBody;
+  source: Extract<HarnessPresetSource, { kind: "account" } | { kind: "subscription" }>;
+  model: string;
+  adeHome: string;
+  fetchImpl: Fetch;
+  timeoutMs: number;
+}): Promise<HarnessRouteTestResult> {
+  const decided = resolveHarnessRoute({ harness: args.harness, source: args.source, modelId: args.model });
+  if (decided.kind === "native") {
+    return { ok: false, protocol: null, latencyMs: null, route: "native", error: "This account signs its own harness in directly; there is nothing to check from here." };
+  }
+  if (decided.kind === "impossible") {
+    return { ok: false, protocol: null, latencyMs: null, route: null, error: decided.reason };
+  }
+  const instanceId = args.source.kind === "account" ? args.source.instanceId : null;
+  const read = defaultReadProxyConnection(args.adeHome);
+  let connection = read(args.source.provider, instanceId);
+  if (!connection || "reason" in connection) {
+    await startHarnessProxy();
+    connection = read(args.source.provider, instanceId);
+  }
+  if (!connection || "reason" in connection) {
+    const label = harnessBodyLabel(args.source.provider);
+    return {
+      ok: false,
+      protocol: null,
+      latencyMs: null,
+      route: "proxy",
+      error: `ADE could not borrow your ${label} sign-in. Sign in to ${label} under Settings › Providers, then try again.`,
+    };
+  }
+  const result = await pingProtocol({
+    protocol: "openai-chat",
+    baseUrl: `http://127.0.0.1:${connection.port}/v1`,
+    token: connection.apiKey,
+    model: `${connection.prefix}/${args.model}`,
+    sessionHeader: null,
+    fetchImpl: args.fetchImpl,
+    timeoutMs: args.timeoutMs,
+  });
+  return {
+    ok: result.ok,
+    protocol: "openai-chat",
+    latencyMs: result.latencyMs,
+    route: "proxy",
+    ...(result.ok ? {} : { error: result.error ?? "The model did not answer." }),
+  };
 }
 
 const PROTOCOL_UNSUPPORTED = /does not support this protocol|unsupported (protocol|endpoint)|not supported on this endpoint/i;
@@ -177,6 +250,16 @@ export async function testHarnessRoute(
     return { ok: false, protocol: null, latencyMs: null, route: null, error: error instanceof Error ? error.message : String(error) };
   }
 
+  if (source.kind === "account" || source.kind === "subscription") {
+    return testLentLogin({
+      harness,
+      source,
+      model,
+      adeHome,
+      fetchImpl: deps.fetchImpl ?? fetch,
+      timeoutMs: deps.timeoutMs ?? 30_000,
+    });
+  }
   const resolved = resolveRouteSource(source, { adeHome });
   if ("unsupported" in resolved) {
     return { ok: false, protocol: null, latencyMs: null, route: null, error: resolved.unsupported };

@@ -53,7 +53,7 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 import {
   createSdkMcpServer as createDroidSdkMcpServer,
-  tool as createDroidSdkTool,
+  type DroidTool as DroidSdkTool,
 } from "@factory/droid-sdk/node";
 import type {
   SDKSessionInfo,
@@ -1358,6 +1358,7 @@ import {
 import { lastOpenCodeDiscoveredLocalModels, peekOpenCodeInventoryCache, probeOpenCodeProviderInventory } from "../opencode/openCodeInventory";
 import { inspectLocalProvider } from "../ai/localModelDiscovery";
 import { resolveDroidExecutable } from "../ai/droidExecutable";
+import { PI_ROUTE_PROVIDER_ID } from "./harnessRouteLaunch";
 import { checkKimiWindowsPrerequisites, resolveAcpExecutable } from "../ai/acpExecutables";
 import { checkGrokPermissionNeutralization } from "../ai/grokPermissionPreflight";
 import { isAcpAuthError, recordAcpAuthProbeResult } from "../ai/acpAuthProbe";
@@ -18635,8 +18636,17 @@ export function createAgentChatService(args: {
     }
     const descriptor = resolveSessionModelDescriptor(managed.session);
     const piProfileId = managed.session.piProfileId?.trim() || descriptor?.piProfileId?.trim() || "default";
-    const piProviderId = managed.session.piProviderId?.trim() || descriptor?.piProviderId?.trim() || null;
-    const piModelId = managed.session.piModelId?.trim() || descriptor?.piModelId?.trim() || null;
+    // A Custom provider routed into Pi files its endpoint under ADE's own
+    // provider id in the preset's agent dir (harnessRouteLaunch.ts), so the
+    // model is that one, whatever the session's model descriptor says.
+    const presetPiPlan = resolveSessionLaunchPlan(managed);
+    const routedPi = presetPiPlan?.env?.PI_CODING_AGENT_DIR?.trim() ? presetPiPlan : null;
+    const piProviderId = routedPi
+      ? PI_ROUTE_PROVIDER_ID
+      : managed.session.piProviderId?.trim() || descriptor?.piProviderId?.trim() || null;
+    const piModelId = routedPi
+      ? routedPi.model
+      : managed.session.piModelId?.trim() || descriptor?.piModelId?.trim() || null;
     if (piProfileId) managed.session.piProfileId = piProfileId;
     if (piProviderId) managed.session.piProviderId = piProviderId;
     if (piModelId) managed.session.piModelId = piModelId;
@@ -27726,22 +27736,25 @@ export function createAgentChatService(args: {
     const server = createDroidSdkMcpServer({
       name: HTTP_MCP_TOOL_SETS[toolSet].serverName,
       version: appVersion,
-      tools: Object.entries(tools).map(([name, toolDefinition]) =>
-        createDroidSdkTool(
-          name,
-          toolDefinition.description,
-          droidMcpInputShapeForTool(toolDefinition) as any,
-          async (args) => {
-            const parsed = await toolDefinition.inputSchema.safeParseAsync(args);
-            if (!parsed.success) return parsed.error.message;
-            try {
-              return stringifyExecutableToolOutput(await executeAdeTool(toolDefinition, parsed.data));
-            } catch (error) {
-              return error instanceof Error ? error.message : String(error);
-            }
-          },
-        ),
-      ),
+      // A plain `DroidTool`, not the SDK's `tool()` helper: since 0.10 that
+      // helper re-parses input with the SDK's own zod 3, which throws on ADE's
+      // zod 4 shapes (`keyValidator._parse is not a function`). The MCP server
+      // validates the shape itself, and the handler parses with ADE's schema.
+      tools: Object.entries(tools).map(([name, toolDefinition]): DroidSdkTool => ({
+        name,
+        description: toolDefinition.description,
+        // Typed as a zod 3 shape; the MCP server it reaches reads zod 4 too.
+        inputSchema: droidMcpInputShapeForTool(toolDefinition) as unknown as DroidSdkTool["inputSchema"],
+        handler: async (args) => {
+          const parsed = await toolDefinition.inputSchema.safeParseAsync(args);
+          if (!parsed.success) return parsed.error.message;
+          try {
+            return stringifyExecutableToolOutput(await executeAdeTool(toolDefinition, parsed.data));
+          } catch (error) {
+            return error instanceof Error ? error.message : String(error);
+          }
+        },
+      })),
     });
     const config = await server.start();
     const lease: HttpMcpLease = { config, close: () => server.close() };
@@ -49685,10 +49698,14 @@ export function createAgentChatService(args: {
     if (provider === "cursor" && !resolvedModelId) {
       throw new Error("Cursor chat requires a known model. Pick a Cursor model from the model list.");
     }
-    if (provider === "droid" && !resolvedModelId) {
+    // A custom provider brings its own model: its launch writes the model into
+    // the harness's own config (Droid's custom models, Pi's `ade` provider),
+    // so a model neither catalog lists (Grok's, run in Pi) is not unknown here.
+    const presetSuppliesModel = Boolean(presetSpec?.model);
+    if (provider === "droid" && !resolvedModelId && !presetSuppliesModel) {
       throw new Error("Droid chat requires a known model. Pick a Droid model from the model list.");
     }
-    if (provider === "pi" && !resolvedModelId) {
+    if (provider === "pi" && !resolvedModelId && !presetSuppliesModel) {
       throw new Error("Pi chat requires a known model. Refresh the Pi model list and select a model.");
     }
 

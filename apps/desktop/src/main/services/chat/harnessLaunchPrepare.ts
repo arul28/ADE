@@ -38,6 +38,22 @@ export function setHarnessProxyStarter(starter: ProxyStarter | null): void {
 
 
 /**
+ * Start ADE's proxy, which lends this machine's logins to it, through this
+ * process's registered starter. False when no starter is registered or it
+ * failed; never throws.
+ */
+export async function startHarnessProxy(): Promise<boolean> {
+  const proxyStarter = [...proxyStarters].at(-1) ?? processProxyStarter;
+  if (!proxyStarter) return false;
+  try {
+    await proxyStarter();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Start ADE's proxy when this launch needs it. Returns true when it started it
  * (the caller should drop any launch plan it cached while the proxy was down).
  * Never throws: a proxy that fails to start leaves the resolver's reason for

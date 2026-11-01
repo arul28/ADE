@@ -14,6 +14,8 @@
  * `harnessRouteProbes.ts`.
  */
 
+import path from "node:path";
+
 import {
   canonicalSourceProvider,
   endpointsForSource,
@@ -24,7 +26,7 @@ import {
   type HarnessRouteSource,
 } from "../../../shared/harnessRoutes";
 import { AdeExpectedError } from "../../../shared/expectedError";
-import { openCodeSourceLabel, type HarnessPresetBody, type HarnessPresetSource } from "../../../shared/harnessPresets";
+import { harnessBodyLabel, openCodeSourceLabel, type HarnessPresetBody, type HarnessPresetSource } from "../../../shared/harnessPresets";
 import { providerLabel } from "../../../shared/modelCatalog";
 import { decodeOpenCodeRegistryId, MODEL_REGISTRY, type ProviderFamily } from "../../../shared/modelRegistry";
 import { listApiCredentials } from "../ai/apiKeyStore";
@@ -34,6 +36,12 @@ import {
 } from "../opencode/openCodeCredentials";
 import { listPersistedOpenCodeProviderModels } from "../opencode/openCodeInventory";
 import { resolveMachineAdeDir } from "../../../../../ade-cli/src/services/projects/machineLayout";
+import { getMachineProviderInstanceStore } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
+import {
+  cliLoginBorrowableAccounts,
+  readBorrowedModels,
+  type BorrowableProvider,
+} from "../../../../../ade-cli/src/services/proxy/borrowedLogins";
 import type { HarnessPresetLaunchResult } from "./harnessPresetLaunch";
 import { readRouteProbe } from "./harnessRouteProbes";
 import { routeSourceKey } from "./harnessRouteLaunch";
@@ -60,7 +68,7 @@ const REGISTRY_FAMILY_FOR_PROVIDER: Record<string, ProviderFamily> = {
 };
 
 function modelsForSource(
-  source: HarnessRouteSource["source"],
+  source: Extract<HarnessPresetSource, { kind: "key" } | { kind: "opencode" }>,
   adeHome: string,
   declared?: readonly string[],
 ): HarnessRouteModel[] {
@@ -159,16 +167,106 @@ export function listHarnessRouteCatalog(deps: { adeHome?: string } = {}): Harnes
     });
   }
 
+  sources.push(...lentLoginSources(adeHome));
+
   return { sources, proxyAvailable: true };
 }
 
+/** The registry's models for a lent provider, until the proxy has served its own list. */
+const LENT_REGISTRY_FAMILY: Record<BorrowableProvider, ProviderFamily> = {
+  claude: "anthropic",
+  codex: "openai",
+  grok: "xai",
+  kimi: "moonshot",
+  devin: "devin",
+  muse: "muse",
+};
+
 /**
- * Whether a key or OpenCode source can back a launch on this machine. The
- * machine inventory uses it so a Custom provider built on a stored key or an
- * OpenCode sign-in reads as usable here, not only account-sourced ones.
+ * The models a lent login answers for: what the proxy last served for it
+ * (`borrowed-models.json`, written after each lend pass), else the registry.
+ */
+function lentModels(served: readonly { id: string; label: string }[], provider: BorrowableProvider): HarnessRouteModel[] {
+  if (served.length > 0) return served.map((model) => ({ id: model.id, label: registryLabel(model.id) ?? model.label }));
+  const family = LENT_REGISTRY_FAMILY[provider];
+  if (!family) return [];
+  return MODEL_REGISTRY
+    .filter((model) => model.family === family && !model.deprecated)
+    .map((model) => ({
+      id: model.providerModelId || model.shortId || model.id,
+      label: model.displayName,
+      ...(model.contextWindow ? { contextWindow: model.contextWindow } : {}),
+      ...(model.maxOutputTokens ? { maxOutputTokens: model.maxOutputTokens } : {}),
+      ...(model.reasoningTiers?.length ? { reasoningTiers: [...model.reasoningTiers] } : {}),
+    }));
+}
+
+function registryLabel(id: string): string | null {
+  return MODEL_REGISTRY.find((model) => model.providerModelId === id || model.shortId === id)?.displayName ?? null;
+}
+
+/**
+ * Every Claude and Codex account, and this machine's Grok login: each runs in
+ * another harness through ADE's proxy on its own login, lent to the proxy
+ * (`borrowedLogins.ts`). The editor builds its Claude/Codex rows from the
+ * accounts it already loads, so it skips the `account` rows here; the CLI's
+ * `harness routes` lists them.
+ */
+function lentLoginSources(adeHome: string): HarnessRouteSource[] {
+  const sources: HarnessRouteSource[] = [];
+  const served = readBorrowedModels(path.join(adeHome, "proxy"));
+  let accounts: ReturnType<ReturnType<typeof getMachineProviderInstanceStore>["list"]> = [];
+  try {
+    accounts = getMachineProviderInstanceStore().list();
+  } catch {
+    accounts = [];
+  }
+  for (const account of accounts) {
+    if (account.provider !== "claude" && account.provider !== "codex") continue;
+    const source = { kind: "account" as const, provider: account.provider, instanceId: account.id };
+    sources.push({
+      key: harnessRouteSourceKey(source),
+      source,
+      label: `${account.provider === "claude" ? "Claude" : "Codex"} · ${account.label}`,
+      detail: "Your sign-in, no extra login",
+      logoProvider: account.provider,
+      endpoints: {},
+      models: lentModels(served[account.provider], account.provider),
+    });
+  }
+  for (const login of cliLoginBorrowableAccounts()) {
+    const provider = login.provider as Exclude<BorrowableProvider, "claude" | "codex">;
+    const source = { kind: "subscription" as const, provider };
+    const models = lentModels(served[provider], provider);
+    if (models.length === 0) continue;
+    const label = harnessBodyLabel(provider);
+    sources.push({
+      key: harnessRouteSourceKey(source),
+      source,
+      label,
+      detail: `Your ${label} sign-in, no extra login`,
+      logoProvider: provider,
+      endpoints: {},
+      models,
+    });
+  }
+  return sources;
+}
+
+/**
+ * Whether a key, OpenCode or subscription source can back a launch on this
+ * machine. The machine inventory uses it so a Custom provider built on one
+ * reads as usable here, not only account-sourced ones. A Claude or Codex
+ * subscription runs on the machine's default account, which always exists;
+ * Grok's needs this machine's Grok sign-in.
  */
 export function isPresetSourceAvailableLocally(source: HarnessPresetSource): boolean {
   try {
+    if (source.kind === "subscription") {
+      return source.provider === "claude" || source.provider === "codex"
+        ? true
+        : cliLoginBorrowableAccounts().some((login) => login.provider === source.provider);
+    }
     if (source.kind === "opencode") {
       return readOpenCodeSignedInProviderIds().includes(source.providerId.trim());
     }

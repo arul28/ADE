@@ -461,7 +461,7 @@ export const AGENT_CHAT_DROID_PERMISSION_MODE_DETAILS: Record<
   AgentChatDroidPermissionMode,
   { label: string; detail: string }
 > = {
-  "read-only": { label: "Read-only", detail: "No auto flag. Droid stays in read-only mode for analysis and planning." },
+  "read-only": { label: "Plan", detail: "Droid's spec mode: it reads and plans, then builds once you approve the plan." },
   "auto-low": { label: "Auto low", detail: "Passes --auto low for safe file edits and low-risk operations." },
   "auto-medium": { label: "Auto medium", detail: "Passes --auto medium for local development operations such as builds, tests, and package installs." },
   "auto-high": { label: "Auto high", detail: "Passes --auto high for broad automation. Use only in trusted workspaces." },

@@ -1,4 +1,5 @@
 import { defineConfig } from "tsup";
+import type { Plugin } from "esbuild";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -11,8 +12,26 @@ const external = [
   "node-pty",
   "node:sqlite",
   "sqlite3",
-  "zod",
 ];
+const ZOD_IMPORT = /^zod(?:\/.*)?$/;
+const DROID_SDK_FILE = /[\\/]node_modules[\\/]@factory[\\/]droid-sdk[\\/]/;
+
+/**
+ * ADE's own `zod` (v4) stays external. The inlined Droid SDK (0.10+) is
+ * written against the zod 3 it ships nested beside itself and breaks on v4
+ * (`.superRefine(...).innerType()` is v3-only), so its zod imports resolve
+ * normally and that copy is bundled. tsup's external check runs before any
+ * user plugin and matches by name alone, so `zod` sits in `noExternal` and
+ * this plugin makes the per-importer call.
+ */
+const droidSdkOwnZod: Plugin = {
+  name: "droid-sdk-own-zod",
+  setup(build) {
+    build.onResolve({ filter: ZOD_IMPORT }, (args) => (
+      DROID_SDK_FILE.test(args.importer) ? undefined : { path: args.path, external: true }
+    ));
+  },
+};
 const packageRoot = path.dirname(fileURLToPath(import.meta.url));
 const cliNodeModules = path.join(packageRoot, "node_modules");
 const packageJson = JSON.parse(readFileSync(path.join(packageRoot, "package.json"), "utf8")) as { version?: string };
@@ -60,11 +79,13 @@ export default defineConfig([
       "yaml",
       "string-width",
       /^@sentry\//,
+      ZOD_IMPORT,
     ],
     outExtension: () => ({
       js: ".cjs"
     }),
     external,
+    esbuildPlugins: [droidSdkOwnZod],
     plugins: [asciiBundleSource()],
     esbuildOptions(options) {
       options.nodePaths = Array.from(new Set([cliNodeModules, ...(options.nodePaths ?? [])]));

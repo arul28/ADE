@@ -1,4 +1,5 @@
-export type ProxySubscriptionProvider = "claude" | "codex";
+/** A subscription the proxy holds: a Claude or Codex login, or one borrowed from a provider's CLI. */
+export type ProxySubscriptionProvider = "claude" | "codex" | "grok" | "kimi" | "devin" | "muse";
 export type ProxySubscriptionHarness = "claude" | "codex" | "opencode";
 
 /**
@@ -81,8 +82,8 @@ export function proxyEnvForSubscription(
   const baseURL = `http://127.0.0.1:${resolved.port}/v1`;
   const model = `${resolved.prefix}/${resolved.model}`;
 
-  if (providerName !== "claude" && providerName !== "codex") {
-    throw new Error("A subscription proxy provider must be claude or codex.");
+  if (!["claude", "codex", "grok", "kimi", "devin", "muse"].includes(providerName)) {
+    throw new Error("A subscription proxy provider must be claude, codex, grok, kimi, devin or muse.");
   }
   if (harnessName === "claude") {
     return {
@@ -101,6 +102,9 @@ export function proxyEnvForSubscription(
       env: {},
       codexConfigToml: [
         "[model_providers.ade-proxy]",
+        // Codex refuses a provider block with no name ("provider name must not
+        // be empty", Codex 0.164.0), so a subscription never started in Codex.
+        'name = "ADE proxy"',
         `base_url = \"${baseURL}\"`,
         'wire_api = "responses"',
         `experimental_bearer_token = \"${resolved.apiKey}\"`,

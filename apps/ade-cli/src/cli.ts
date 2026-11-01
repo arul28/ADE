@@ -487,7 +487,13 @@ import {
   ROUTABLE_HARNESSES,
   type HarnessRouteCatalog,
 } from "../../desktop/src/shared/harnessRoutes";
-import { harnessBodyLabel, isHarnessPresetBody, type HarnessPresetSource } from "../../desktop/src/shared/harnessPresets";
+import {
+  harnessBodyLabel,
+  isHarnessPresetBody,
+  isHarnessPresetSubscriptionProvider,
+  type HarnessPresetSource,
+  type HarnessPresetSubscriptionProvider,
+} from "../../desktop/src/shared/harnessPresets";
 import type { ApiCredentialSummary } from "../../desktop/src/shared/types/apiCredentials";
 import {
   competingSyncHostSkipReason,
@@ -4101,13 +4107,16 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   harness: `${ADE_BANNER}
   ADE custom providers: any model you pay for, inside any harness
 
-  See what each harness can reach (OpenCode sign-ins and stored keys), and how:
+  See what each harness can reach (your Claude, Codex and Grok sign-ins,
+  OpenCode sign-ins, stored keys), and how:
     $ ade harness routes --harness claude --text
 
   Launch ad-hoc, no saved preset (chat or CLI):
     $ ade chat create --lane <lane> --provider claude --via opencode-go --model deepseek-v4.1-flash
     $ ade new chat --mode cli --lane <lane> --provider codex --via opencode-go --model glm-5.3
+    $ ade chat create --lane <lane> --provider droid --via account:codex:codex --model gpt-6-luna
     --via takes opencode-go | opencode | opencode:<provider> | key:<provider>[:<credentialId>]
+      | account:<claude|codex>:<accountId> | subscription:<claude|codex|grok|kimi|devin|muse>
 
   Check one pairing with a one-token request (records the verdict for routing):
     $ ade harness test --harness claude --via opencode-go --model deepseek-v4.1-flash --text
@@ -6943,6 +6952,10 @@ function readLaunchIdentitySelectors(
  * `--via <source>` source specs:
  *   opencode-go | opencode | opencode:<provider>   a provider signed in to OpenCode
  *   key:<provider>[:<credentialId>]                a stored API key
+ *   account:<claude|codex>:<accountId>             a Claude or Codex account on this machine
+ *   subscription:<claude|codex|grok|kimi|devin|muse>  that provider's sign-in on this machine
+ * An account or subscription in another harness runs through ADE's proxy on
+ * the account's own login; there is no extra sign-in.
  */
 export function parseViaSourceSpec(spec: string): HarnessPresetSource {
   const value = spec.trim();
@@ -6954,8 +6967,14 @@ export function parseViaSourceSpec(spec: string): HarnessPresetSource {
     const credentialId = rest[1]?.trim() || "default";
     return { kind: "key", provider, credentialId, label: provider };
   }
+  if (kind === "account" && (rest[0] === "claude" || rest[0] === "codex")) {
+    return { kind: "account", provider: rest[0], instanceId: rest[1]?.trim() || rest[0] };
+  }
+  if (kind === "subscription" && isHarnessPresetSubscriptionProvider(rest[0]?.trim())) {
+    return { kind: "subscription", provider: rest[0]!.trim() as HarnessPresetSubscriptionProvider };
+  }
   throw new CliUsageError(
-    `--via ${value}: use opencode-go, opencode, opencode:<provider>, or key:<provider>[:<credentialId>].`,
+    `--via ${value}: use opencode-go, opencode, opencode:<provider>, key:<provider>[:<credentialId>], account:<claude|codex>:<accountId>, or subscription:<claude|codex|grok|kimi|devin|muse>.`,
   );
 }
 
@@ -6974,7 +6993,8 @@ export function formatViaSourceSpec(source: HarnessPresetSource): string {
   if (source.kind === "key") {
     return source.credentialId === "default" ? `key:${source.provider}` : `key:${source.provider}:${source.credentialId}`;
   }
-  return source.kind;
+  if (source.kind === "account") return `account:${source.provider}:${source.instanceId}`;
+  return `subscription:${source.provider}`;
 }
 
 function routePresetIdFromFlags(
@@ -34361,7 +34381,7 @@ function formatHarnessRoutes(value: unknown): string {
   const catalog = (isRecord(value) ? value : { sources: [] }) as unknown as HarnessRouteCatalog;
   const sources = Array.isArray(catalog.sources) ? catalog.sources : [];
   if (sources.length === 0) {
-    return "No OpenCode sign-ins or stored API keys can be routed yet. Sign in to OpenCode Go/Zen or add a key under Providers.";
+    return "Nothing can be routed yet. Sign in to Claude, Codex or Grok, sign in to OpenCode Go/Zen, or add a key under Providers.";
   }
   const lines: string[] = [];
   const only = catalog.harness;

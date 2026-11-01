@@ -7,6 +7,11 @@ export type SubscriptionProxyLogin = {
   plan: string | null;
   prefix: string | null;
   disabled: boolean;
+  /**
+   * A login ADE lent from the provider's own CLI rather than one signed in to
+   * the proxy. ADE re-lends it on its next pass, so removing it is pointless.
+   */
+  borrowed?: boolean;
 };
 
 export type SubscriptionProxyStatus = {

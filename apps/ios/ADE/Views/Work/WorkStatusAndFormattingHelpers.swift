@@ -1105,7 +1105,7 @@ func workRuntimeModeOptions(provider: String) -> [WorkRuntimeModeOption] {
     ]
   case "droid", "factory":
     return [
-      WorkRuntimeModeOption(id: "read-only", title: "Read-only"),
+      WorkRuntimeModeOption(id: "read-only", title: "Plan"),
       WorkRuntimeModeOption(id: "auto-low", title: "Auto low"),
       WorkRuntimeModeOption(id: "auto-medium", title: "Auto medium"),
       WorkRuntimeModeOption(id: "auto-high", title: "Auto high"),
@@ -1185,7 +1185,7 @@ func workRuntimeModeLabel(provider: String, mode: String) -> String {
     }
   case "droid", "factory":
     switch mode {
-    case "plan", "read-only": return "Read-only"
+    case "plan", "read-only": return "Plan"
     case "edit", "auto-low": return "Auto low"
     case "default", "auto-medium": return "Auto medium"
     case "full-auto", "auto-high": return "Auto high"

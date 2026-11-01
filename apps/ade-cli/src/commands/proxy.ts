@@ -29,7 +29,8 @@ export function formatProxyStatus(value: unknown): string {
     const plan = text(login.plan, "plan unknown");
     const prefix = text(login.prefix, "no prefix");
     const state = login.disabled === true ? "disabled" : "enabled";
-    lines.push(`  ${provider} · ${email} · ${plan} · ${prefix} · ${state} · ${text(login.loginId, "unknown id")}`);
+    const origin = login.borrowed === true ? " · borrowed from your sign-in" : "";
+    lines.push(`  ${provider} · ${email} · ${plan} · ${prefix} · ${state}${origin} · ${text(login.loginId, "unknown id")}`);
   }
 
   return lines.join("\n");

@@ -25,6 +25,7 @@
  */
 
 import { openCodeHouseProviderName } from "./opencodeProviders";
+import { formatPiProviderLabel } from "./modelRegistry";
 
 /** The harnesses a preset can name — the `AgentChatProvider` ids ADE can run. */
 export const HARNESS_PRESET_BODIES = [
@@ -67,7 +68,8 @@ export function harnessBodyLabel(body: string): string {
 /** A provider signed in inside OpenCode, by ADE's name for it. */
 export function openCodeSourceLabel(providerId: string): string {
   const id = providerId.trim();
-  return openCodeHouseProviderName(id) ?? id;
+  // A provider OpenCode signs in itself ("openai", "anthropic") reads as its brand name.
+  return openCodeHouseProviderName(id) ?? (id ? formatPiProviderLabel(id) : id);
 }
 
 /**
@@ -78,6 +80,20 @@ export function openCodeSourceLabel(providerId: string): string {
  */
 export const HARNESS_PRESET_ACCOUNT_PROVIDERS = ["claude", "codex"] as const;
 export type HarnessPresetAccountProvider = (typeof HARNESS_PRESET_ACCOUNT_PROVIDERS)[number];
+
+/**
+ * The subscriptions ADE's proxy can run in another harness: every account
+ * provider, plus a provider whose own CLI login the proxy borrows
+ * (`ade-cli/src/services/proxy/borrowedLogins.ts`). Grok's is checked against
+ * Grok CLI 1.0.46 and CLIProxyAPI 8.0.48; Kimi, Devin and Muse follow
+ * CLIProxyAPI 8.0.48's source and are not yet checked against a real login.
+ */
+export const HARNESS_PRESET_SUBSCRIPTION_PROVIDERS = ["claude", "codex", "grok", "kimi", "devin", "muse"] as const;
+export type HarnessPresetSubscriptionProvider = (typeof HARNESS_PRESET_SUBSCRIPTION_PROVIDERS)[number];
+
+export function isHarnessPresetSubscriptionProvider(value: unknown): value is HarnessPresetSubscriptionProvider {
+  return typeof value === "string" && (HARNESS_PRESET_SUBSCRIPTION_PROVIDERS as readonly string[]).includes(value);
+}
 
 export function isHarnessPresetAccountProvider(value: unknown): value is HarnessPresetAccountProvider {
   return value === "claude" || value === "codex";
@@ -99,7 +115,7 @@ export function isHarnessPresetAccountProvider(value: unknown): value is Harness
 export type HarnessPresetSource =
   | { kind: "account"; provider: HarnessPresetAccountProvider; instanceId: string }
   | { kind: "key"; provider: string; credentialId: string; label: string }
-  | { kind: "subscription"; provider: HarnessPresetAccountProvider }
+  | { kind: "subscription"; provider: HarnessPresetSubscriptionProvider }
   | { kind: "opencode"; providerId: string };
 
 export type HarnessPresetSourceKind = HarnessPresetSource["kind"];
@@ -377,8 +393,8 @@ function validateSource(source: unknown): string | null {
     return null;
   }
   if (candidate.kind === "subscription") {
-    if (!isHarnessPresetAccountProvider(candidate.provider)) {
-      return "Only a Claude or Codex subscription can be borrowed through the proxy.";
+    if (!isHarnessPresetSubscriptionProvider(candidate.provider)) {
+      return "Only a Claude, Codex, Grok, Kimi, Devin or Muse subscription can run through the proxy.";
     }
     return null;
   }
@@ -500,7 +516,7 @@ function normalizeSource(value: unknown): HarnessPresetSource | null {
   if (raw.kind === "opencode") {
     return { kind: "opencode", providerId: String(raw.providerId).trim() };
   }
-  return { kind: "subscription", provider: raw.provider as HarnessPresetAccountProvider };
+  return { kind: "subscription", provider: raw.provider as HarnessPresetSubscriptionProvider };
 }
 
 function normalizeLogo(value: unknown): HarnessPresetLogo {
@@ -553,6 +569,22 @@ export function normalizeHarnessPreset(value: unknown): HarnessPreset | null {
     createdAt,
     updatedAt: isNonEmptyString(raw.updatedAt) ? raw.updatedAt : createdAt,
   };
+}
+
+/**
+ * The stored rows this build cannot read but must not lose: an object with an
+ * id that no readable row has. A newer ADE can write a preset an older one
+ * cannot normalize (a new source kind, a new subscription provider); writing
+ * the list back without it would delete it from the account on every machine.
+ */
+export function unreadableHarnessPresetEntries(value: unknown): unknown[] {
+  if (!Array.isArray(value)) return [];
+  const readable = new Set(normalizeHarnessPresetList(value).map((preset) => preset.id));
+  return value.filter((entry) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return false;
+    const id = (entry as { id?: unknown }).id;
+    return typeof id === "string" && id.trim().length > 0 && !readable.has(id.trim()) && !normalizeHarnessPreset(entry);
+  });
 }
 
 /** Coerce a stored list, dropping unusable rows and duplicate ids. */
@@ -743,7 +775,7 @@ export function exportHarnessPreset(preset: HarnessPreset, now: () => Date = () 
     notes.push("The provider account is named, not included — whoever imports it needs their own sign-in.");
   }
   if (preset.source.kind === "subscription") {
-    notes.push("The subscription sign-in is not in this file — whoever imports it signs in through ADE's proxy.");
+    notes.push("The subscription sign-in is not in this file — whoever imports it uses their own sign-in for that provider.");
   }
   if (preset.source.kind === "opencode") {
     notes.push("The OpenCode sign-in is not in this file — whoever imports it signs in to that provider in OpenCode.");
@@ -778,8 +810,13 @@ export type HarnessPresetImportContext = {
   accountInstanceIds?: readonly string[];
   /** Credential ids in this machine's API-key store. */
   credentialIds?: readonly string[];
-  /** Whether ADE's proxy can hold a subscription sign-in on this host. */
+  /** Whether ADE's proxy can run on this host. */
   proxySignInAvailable?: boolean;
+  /**
+   * Providers signed in on this machine whose login the proxy can borrow
+   * (Claude, Codex, Grok). A subscription source for any other is missing.
+   */
+  subscriptionProviders?: readonly string[];
   /** OpenCode provider ids signed in on this machine. */
   openCodeProviderIds?: readonly string[];
 };
@@ -847,7 +884,11 @@ export function importHarnessPreset(
   if (source.kind === "key" && !(context.credentialIds ?? []).includes(source.credentialId)) {
     missing.push("key");
   }
-  if (source.kind === "subscription" && context.proxySignInAvailable !== true) {
+  if (
+    source.kind === "subscription"
+    && (context.proxySignInAvailable !== true
+      || (context.subscriptionProviders !== undefined && !context.subscriptionProviders.includes(source.provider)))
+  ) {
     missing.push("subscription-signin");
   }
   if (
@@ -891,7 +932,7 @@ export function harnessPresetMissingCopy(missing: HarnessPresetMissing): string 
   if (missing === "opencode-signin") {
     return "This harness uses a provider signed in to OpenCode, and it is not signed in on this computer. Sign in under Providers › OpenCode.";
   }
-  return "This harness borrows a subscription through ADE's proxy, which is not signed in on this computer yet.";
+  return "This harness uses a subscription that is not signed in on this computer. Sign in to that provider under Providers.";
 }
 
 // ---------------------------------------------------------------------------

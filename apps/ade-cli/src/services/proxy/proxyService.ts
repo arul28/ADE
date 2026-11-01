@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import path from "node:path";
 
 import type {
   SubscriptionProxyLogin,
@@ -24,12 +25,38 @@ import {
   type CliProxyApiSupervisorStatus,
 } from "./cliProxyApiSupervisor";
 import {
+  cliLoginBorrowableAccounts,
+  hasBorrowedLogins,
+  isBorrowedLoginFileName,
+  nextBorrowRenewalAt,
+  syncBorrowedLogins,
+  writeBorrowedModelCache,
+  type BorrowableAccount,
+  type BorrowedLoginOutcome,
+} from "./borrowedLogins";
+import { getMachineProviderInstanceStore } from "../providerInstances/providerInstanceStore";
+import {
   captureFeatureUsedAnalytics,
   type FeatureAnalytics,
 } from "../../../../desktop/src/main/services/analytics/featureProductAnalytics";
 
 export const PROXY_AUTH_TIMEOUT_MS = 5 * 60_000;
 export const PROXY_AUTH_POLL_INTERVAL_MS = 1_000;
+/**
+ * The longest a running proxy waits between passes that re-lend this machine's
+ * logins. Each pass reads a file per Codex account and one Keychain item per
+ * Claude account. The next pass is aimed earlier when a lent token enters its
+ * renew window first (Claude Code renews only in its last ~2 minutes).
+ */
+export const PROXY_BORROW_KEEPER_INTERVAL_MS = 10 * 60_000;
+const PROXY_BORROW_KEEPER_MIN_DELAY_MS = 5_000;
+
+/**
+ * Which service keeps each auth folder's lent logins. Every project runtime in
+ * the brain makes its own service for the one machine-level proxy, and one
+ * keeper per folder is enough; another service takes over when this one stops.
+ */
+const keeperOwners = new Map<string, symbol>();
 
 type ProxyManagementClient = Pick<
   CliProxyApiManagementClient,
@@ -60,6 +87,13 @@ export type ProxyServiceOptions = {
    * scope at wiring time. Omitted in isolated CLI tests.
    */
   getAnalytics?: () => FeatureAnalytics | null | undefined;
+  /** The Claude and Codex accounts whose logins the proxy may borrow. */
+  listBorrowableAccounts?: () => BorrowableAccount[];
+  /** Replaces the login sync in tests. */
+  syncLogins?: typeof syncBorrowedLogins;
+  /** The proxy's `/v1/models` list; the default asks the running proxy. */
+  fetchModels?: ((port: number, apiKey: string) => Promise<Array<{ id?: unknown; owned_by?: unknown }>>) | null;
+  keeperIntervalMs?: number;
 };
 
 export type ProxyService = {
@@ -69,6 +103,8 @@ export type ProxyService = {
   signIn(args: SubscriptionProxySignInArgs): Promise<SubscriptionProxySignInResult>;
   signOut(args: SubscriptionProxySignOutArgs): Promise<SubscriptionProxyMutationResult>;
   setDisabled(args: SubscriptionProxySetDisabledArgs): Promise<SubscriptionProxyMutationResult>;
+  /** Lend this machine's current logins to a running proxy, renewing near-expiry ones. */
+  borrowLogins(): Promise<BorrowedLoginOutcome[]>;
   dispose(): Promise<void>;
 };
 
@@ -120,13 +156,15 @@ function authFilePlan(file: CliProxyApiAuthFile): string | null {
 }
 
 function summarizeLogin(file: CliProxyApiAuthFile): SubscriptionProxyLogin {
+  const borrowed = isBorrowedLoginFileName(file.id);
   return {
     loginId: file.id,
-    provider: file.provider,
+    provider: borrowed && typeof file.ade_provider === "string" ? file.ade_provider : file.provider,
     email: optionalString(file.email),
     plan: authFilePlan(file),
     prefix: authFilePrefix(file),
     disabled: file.disabled === true,
+    ...(borrowed ? { borrowed: true } : {}),
   };
 }
 
@@ -154,6 +192,37 @@ async function defaultOpenExternal(url: string, print: (message: string) => void
     }
   }
   print(url);
+}
+
+function defaultBorrowableAccounts(): BorrowableAccount[] {
+  return [...providerInstanceAccounts(), ...cliLoginBorrowableAccounts()];
+}
+
+function providerInstanceAccounts(): BorrowableAccount[] {
+  try {
+    return getMachineProviderInstanceStore()
+      .list()
+      .filter((instance): instance is typeof instance & { provider: "claude" | "codex" } =>
+        (instance.provider === "claude" || instance.provider === "codex") && Boolean(instance.configHome?.trim()))
+      .map((instance) => ({
+        id: instance.id,
+        provider: instance.provider,
+        configHome: instance.configHome,
+        isDefault: instance.isDefault,
+      }));
+  } catch {
+    return [];
+  }
+}
+
+async function fetchProxyModels(port: number, apiKey: string): Promise<Array<{ id?: unknown; owned_by?: unknown }>> {
+  const response = await fetch(`http://127.0.0.1:${port}/v1/models`, {
+    headers: { authorization: `Bearer ${apiKey}` },
+    signal: AbortSignal.timeout(5_000),
+  });
+  if (!response.ok) return [];
+  const body = await response.json() as { data?: unknown };
+  return Array.isArray(body.data) ? body.data as Array<{ id?: unknown; owned_by?: unknown }> : [];
 }
 
 function defaultSleep(milliseconds: number): Promise<void> {
@@ -192,6 +261,80 @@ export function createProxyService(options: ProxyServiceOptions = {}): ProxyServ
   };
   let managementClient: ProxyManagementClient | null = null;
   let managementConnection: string | null = null;
+  const listBorrowableAccounts = options.listBorrowableAccounts ?? defaultBorrowableAccounts;
+  const syncLogins = options.syncLogins ?? syncBorrowedLogins;
+  const keeperIntervalMs = options.keeperIntervalMs ?? PROXY_BORROW_KEEPER_INTERVAL_MS;
+  let borrowing: Promise<BorrowedLoginOutcome[]> | null = null;
+  let keeper: ReturnType<typeof setTimeout> | null = null;
+  const keeperIdentity = Symbol("proxy-borrow-keeper");
+  let keeperAuthDir: string | null = null;
+
+  // The proxy's auth folder sits beside its config (`pathsFor`).
+  const authDirFor = (status: CliProxyApiSupervisorStatus): string => path.join(path.dirname(status.configPath), "auth");
+
+  /** Re-read the models the proxy serves, for the source lists (best effort). */
+  const refreshModelCache = async (status: CliProxyApiSupervisorStatus): Promise<void> => {
+    const fetchModels = options.fetchModels === undefined ? fetchProxyModels : options.fetchModels;
+    if (status.port === null || status.apiKey === null || !fetchModels) return;
+    const listed = await fetchModels(status.port, status.apiKey).catch(() => null);
+    if (listed) writeBorrowedModelCache(path.dirname(status.configPath), listed);
+  };
+
+  /** One pass at a time; a launch that arrives mid-pass waits for it. */
+  const borrowOnce = (status: CliProxyApiSupervisorStatus): Promise<BorrowedLoginOutcome[]> => {
+    borrowing ??= syncLogins({ authDir: authDirFor(status), accounts: listBorrowableAccounts(), renew: true })
+      .then(async (outcomes) => {
+        if (outcomes.some((outcome) => outcome.status !== "unchanged")) await refreshModelCache(status);
+        return outcomes;
+      })
+      .catch(() => [] as BorrowedLoginOutcome[])
+      .finally(() => {
+        borrowing = null;
+      });
+    return borrowing;
+  };
+
+  const stopKeeper = (): void => {
+    if (keeper) clearTimeout(keeper);
+    keeper = null;
+  };
+
+  const releaseKeeper = (): void => {
+    stopKeeper();
+    if (keeperAuthDir && keeperOwners.get(keeperAuthDir) === keeperIdentity) keeperOwners.delete(keeperAuthDir);
+    keeperAuthDir = null;
+  };
+
+  // Runs only while the proxy runs and holds a lent login, so a machine that
+  // never borrows pays nothing. Each pass reschedules itself: at the soonest
+  // lent token's renew window, or the regular interval, whichever is first.
+  const scheduleKeeper = (status: CliProxyApiSupervisorStatus): void => {
+    stopKeeper();
+    const authDir = authDirFor(status);
+    const owner = keeperOwners.get(authDir);
+    if (owner && owner !== keeperIdentity) return;
+    if (!hasBorrowedLogins(authDir)) {
+      releaseKeeper();
+      return;
+    }
+    keeperOwners.set(authDir, keeperIdentity);
+    keeperAuthDir = authDir;
+    const due = nextBorrowRenewalAt(authDir);
+    const delay = Math.max(
+      PROXY_BORROW_KEEPER_MIN_DELAY_MS,
+      Math.min(keeperIntervalMs, due === null ? keeperIntervalMs : due - now()),
+    );
+    keeper = setTimeout(() => {
+      keeper = null;
+      const current = supervisor.getStatus();
+      if (!current.running) {
+        releaseKeeper();
+        return;
+      }
+      void borrowOnce(current).then(() => scheduleKeeper(current));
+    }, delay);
+    keeper.unref?.();
+  };
 
   const clientFor = (status: CliProxyApiSupervisorStatus): ProxyManagementClient => {
     if (status.port === null || status.managementKey === null) {
@@ -251,10 +394,24 @@ export function createProxyService(options: ProxyServiceOptions = {}): ProxyServ
     },
 
     async ensureRunning() {
-      return publicStatus(await ensureRunningStatus());
+      const status = await ensureRunningStatus();
+      if (status.running) {
+        await borrowOnce(status);
+        scheduleKeeper(status);
+      }
+      return publicStatus(status);
+    },
+
+    async borrowLogins() {
+      const status = supervisor.getStatus();
+      if (!status.running) return [];
+      const outcomes = await borrowOnce(status);
+      scheduleKeeper(status);
+      return outcomes;
     },
 
     async stop() {
+      releaseKeeper();
       managementClient = null;
       managementConnection = null;
       await supervisor.stop();
@@ -330,6 +487,7 @@ export function createProxyService(options: ProxyServiceOptions = {}): ProxyServ
     },
 
     async dispose() {
+      releaseKeeper();
       managementClient = null;
       managementConnection = null;
       await supervisor.stop();

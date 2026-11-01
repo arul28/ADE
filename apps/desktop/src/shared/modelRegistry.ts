@@ -132,8 +132,6 @@ export type ModelDescriptor = {
    * such as `high-fast`. Read it through `resolveOpenCodeFastEffortSelection`.
    */
   openCodeFast?: OpenCodeFastRoutes;
-  /** True when the model was injected via a local proxy (e.g. vibeproxy in ~/.factory/config.json). */
-  customProxy?: boolean;
   /**
    * The stored API credential this row is reachable through.
    *
@@ -3022,7 +3020,6 @@ export function createDynamicDroidCliModelDescriptor(
   providerModelId: string,
   cliDisplayName?: string | null,
   options?: {
-    customProxy?: boolean;
     reasoningTiers?: string[];
     defaultReasoningEffort?: string;
     serviceTiers?: string[];
@@ -3082,7 +3079,6 @@ export function createDynamicDroidCliModelDescriptor(
       : {}),
     ...(serviceTiers?.length ? { serviceTiers: [...serviceTiers] } : {}),
     isCliWrapped: true,
-    ...(options?.customProxy ? { customProxy: true } : {}),
   };
 }
 
