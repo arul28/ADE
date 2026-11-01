@@ -228,7 +228,7 @@ function providerInstanceAccounts(): BorrowableAccount[] {
         isDefault: instance.isDefault,
       }));
   } catch (error) {
-    captureError(error, { tags: { feature: "proxy", stage: "borrow_list_accounts" } });
+    captureError(error, { tags: { feature: "proxy", stage: "borrow_list_accounts" }, fingerprint: ["proxy.borrow_list_accounts"] });
     return [];
   }
 }
@@ -308,7 +308,7 @@ export function createProxyService(options: ProxyServiceOptions = {}): ProxyServ
         return outcomes;
       })
       .catch((error: unknown) => {
-        captureError(error, { tags: { feature: "proxy", stage: "borrow_sync" } });
+        captureError(error, { tags: { feature: "proxy", stage: "borrow_sync" }, fingerprint: ["proxy.borrow_sync"] });
         return [] as BorrowedLoginOutcome[];
       })
       .finally(() => {

@@ -125,7 +125,7 @@ describe("model picker custom tab", () => {
     fireEvent.click(screen.getByRole("button", { name: /Show details for Opus on work/ }));
 
     const details = document.querySelector('[data-harness-preset-details="hp_1"]') as HTMLElement;
-    expect(details.textContent).toContain("Claude Code account");
+    expect(details.textContent).toContain("Claude account");
     expect(details.textContent).toContain("Claude Haiku 5.5");
     expect(details.textContent).toContain("Explore: Claude Haiku 5.5");
     // No permission tier here: the tier belongs to the harness and is chosen
@@ -171,7 +171,7 @@ describe("model picker custom tab", () => {
     fireEvent.click(screen.getByRole("button", { name: /Show details for Opus on work/ }));
 
     const details = document.querySelector('[data-harness-preset-details="hp_1"]') as HTMLElement;
-    await waitFor(() => expect(details.textContent).toContain("Claude Code account · Work"));
+    await waitFor(() => expect(details.textContent).toContain("Claude account · Work"));
     delete (window as unknown as { ade?: unknown }).ade;
   });
 

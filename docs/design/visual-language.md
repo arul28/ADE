@@ -69,6 +69,7 @@ wall of utilities.
 | `.kit-btn` | A 30px text button for card surfaces (recovery and error screens). `.kit-btn-primary` is the one filled button per card, in the theme's ink; `.kit-btn-ghost` is borderless. `data-size="sm"` is the 26px row size; `data-size="xs"` is an 18px inline action inside a line of text; `data-tone="crit"` colours a destructive choice's text. |
 | `.kit-input` | A text field or select for card surfaces, the height of a `.kit-btn`. `aria-invalid="true"` tints the border. |
 | `.kit-rule` | A 1px divider. |
+| `.kit-hero` | A coloured page header (the Account and Custom providers banners): `.kit-hero-wash` paints `--hero-deep`, `--hero-mid`, `--hero-bright`, `--hero-light` (from a picture's palette or `paletteFromTint`), `.kit-hero-shade` keeps white text readable, `.kit-hero-row` holds the content. White text in either theme. |
 
 Variables worth knowing: `--kit-text-2` and `--kit-text-3` (secondary and
 tertiary text), `--kit-fill` (a neutral meter fill), `--kit-ok`, `--kit-warn`,

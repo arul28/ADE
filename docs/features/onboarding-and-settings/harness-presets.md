@@ -503,6 +503,10 @@ prints is that machine's.
   launch that checks the machine's copy before the runtime resolves it.
 - `apps/desktop/src/renderer/state/appStore.ts` — the `harnessPresets` slice and
   its setter, persisted into `ade.userPreferences.v1`.
+- `apps/desktop/src/renderer/lib/harnessPresetCarry.ts` — the stored rows this
+  build cannot read (a newer build's source kind). They are set aside on read
+  and written back untouched with every save and sync, so an older build never
+  deletes them from the account.
 - `apps/desktop/src/renderer/lib/accountSettingsSync.ts` — registers
   `harnessPresets` as an account-scoped synced setting.
 - `apps/desktop/src/main/services/chat/harnessPresetSettings.ts` — reads the
@@ -513,12 +517,22 @@ prints is that machine's.
   decoding only safe ids and returning the model catalog used by the picker.
 - `apps/desktop/src/renderer/components/settings/harnesses/` — the settings
   surface:
-  - `CustomProvidersSection.tsx` — the section: the saved list, its row actions,
-    the "?" explainer, and the starter suggestions shown while the list is
-    empty.
-  - `CustomProviderDialog.tsx` — the one-page editor: harness chips, the source
-    rail and model pane, thinking, and name and look. Its unreachable-models
-    panel states why a source's models cannot run in the chosen harness.
+  - `CustomProvidersSection.tsx` — the section. Empty, it is a hero ("Any
+    harness. Any model you pay for.") with one-click starter cards built from
+    this computer's sign-ins and keys; with presets, a grid of cards (harness +
+    model chips, whose plan pays, Test / Edit / ⋯) in the provider-card style.
+  - `CustomProviderDialog.tsx` — the one-page editor: a live preview hero (the
+    mark, the name typed onto it, and a Harness / Model / Uses card), then
+    numbered steps — harness tiles, the source rail and model pane, thinking,
+    and look (logo and colour swatches). It opens on another provider's models,
+    since the harness's own account is what its built-in picker already offers.
+    Its unreachable-models panel states why a source's models cannot run in the
+    chosen harness.
+  - `CustomProviderHero.tsx` — the hero on the kit's `.kit-hero` (shared with
+    the Account page's banner), painted from one colour, plus the preview's
+    mark and recipe card.
+  - `CustomProviderEditorParts.tsx` — the editor's step heads, harness tiles,
+    effort control, colour swatches and what the preview says (`recipeFor`).
   - `CustomProviderModelPane.tsx` — the editor's model pane: the source rail,
     the scoped list, the per-source search, and the
     "N models can't run in {harness}" disclosure with the reasons.
@@ -529,8 +543,7 @@ prints is that machine's.
     its reason). The composer picker's rail is not built from this.
   - `useHarnessReach.ts` — gathers those inputs (the route catalog, the
     accounts, the runtime catalog) and runs a row's live Test.
-  - `wizardPrimitives.tsx` — the `Row`, `SectionLabel` and `FieldError`
-    primitives the dialog shares.
+  - `wizardPrimitives.tsx` — the `FieldError` line the editor's fields share.
   - `harnessSources.ts` — reads the provider accounts and the stored keys into
     the rows the rail lists. The renderer-local type is `HarnessModelSource`.
   - `harnessAvailability.ts` — whether a harness's pinned copy is downloaded and signed in on

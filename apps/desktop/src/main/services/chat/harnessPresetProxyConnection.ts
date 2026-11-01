@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
-import { harnessBodyLabel } from "../../../shared/harnessPresets";
+import { harnessAccountProviderLabel, harnessBodyLabel, isHarnessPresetAccountProvider } from "../../../shared/harnessPresets";
 
 import type {
   ProxySubscriptionProvider,
@@ -29,7 +29,8 @@ export type ProxySubscriptionConnectionParts = {
 
 /** Why a lent login could not be used, and what to do; one sentence for a launch and a route test. */
 export function borrowFailureMessage(provider: string): string {
-  const label = harnessBodyLabel(provider);
+  // "Claude" and "Codex" for an account; the CLI's own name for the others.
+  const label = isHarnessPresetAccountProvider(provider) ? harnessAccountProviderLabel(provider) : harnessBodyLabel(provider);
   return `ADE could not borrow your ${label} sign-in. Sign in to ${label} under Settings › Providers, then try again.`;
 }
 

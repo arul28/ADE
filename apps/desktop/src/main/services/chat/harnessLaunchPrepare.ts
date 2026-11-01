@@ -50,7 +50,7 @@ export async function startHarnessProxy(): Promise<boolean> {
     return true;
   } catch (error) {
     // The launch then reports the resolver's own reason; record why it failed.
-    captureError(error, { tags: { feature: "proxy", stage: "launch_start" } });
+    captureError(error, { tags: { feature: "proxy", stage: "launch_start" }, fingerprint: ["proxy.launch_start"] });
     return false;
   }
 }

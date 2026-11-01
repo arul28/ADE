@@ -677,7 +677,7 @@ export function writeBorrowedModelCache(proxyDir: string, listed: ReadonlyArray<
     );
   } catch (error) {
     // A list that could not be written is re-read on the next pass.
-    captureError(error, { tags: { feature: "proxy", stage: "borrow_models_cache" } });
+    captureError(error, { tags: { feature: "proxy", stage: "borrow_models_cache" }, fingerprint: ["proxy.borrow_models_cache"] });
   }
 }
 

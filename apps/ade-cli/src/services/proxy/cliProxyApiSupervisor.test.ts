@@ -21,6 +21,7 @@ import {
   type CliProxyApiState,
 } from "./cliProxyApiConfig";
 import { defaultExtractArchive, verifySha256 } from "./cliProxyApiInstall";
+import { CLI_PROXY_API_RELEASE } from "./cliProxyApiRelease";
 import { applyWindowsOwnerOnlyAcl } from "../../lib/trustedWindowsTools";
 
 const temporaryDirectories: string[] = [];
@@ -126,7 +127,7 @@ describe("CLIProxyAPI supervisor", () => {
     vi.useFakeTimers();
     try {
       const adeHome = makeTemporaryDirectory();
-      const binaryPath = path.join(adeHome, "proxy", "bin", "7.3.7", "cli-proxy-api");
+      const binaryPath = path.join(adeHome, "proxy", "bin", CLI_PROXY_API_RELEASE.version, "cli-proxy-api");
       fs.mkdirSync(path.dirname(binaryPath), { recursive: true });
       fs.writeFileSync(binaryPath, "fixture");
       const configPath = path.join(adeHome, "proxy", "config.yaml");
@@ -392,7 +393,7 @@ describe("CLIProxyAPI supervisor", () => {
 
   it("keeps the plaintext management key the proxy hashes in its own config", async () => {
     const adeHome = makeTemporaryDirectory();
-    const binaryPath = path.join(adeHome, "proxy", "bin", "7.3.7", "cli-proxy-api");
+    const binaryPath = path.join(adeHome, "proxy", "bin", CLI_PROXY_API_RELEASE.version, "cli-proxy-api");
     fs.mkdirSync(path.dirname(binaryPath), { recursive: true });
     fs.writeFileSync(binaryPath, "fixture");
     const configPath = path.join(adeHome, "proxy", "config.yaml");

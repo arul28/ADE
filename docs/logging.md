@@ -907,6 +907,12 @@ the transition facts to at most 96 accepted events per theoretical two-provider
 day before the existing `ade_feature_used` and shared ceilings; the hard
 event-level bound remains 140 per day and 30 per minute. Proxy status,
 login polling, health probes, and subscription launch reads stay untracked.
+Lending this machine's logins to the proxy (`borrowedLogins.ts`: each lend
+pass, each renewal through a provider's own CLI, the model-list cache) is
+background work on a timer and stays untracked too; its failures go to Sentry
+under one fingerprint each (`proxy.borrow_sync`, `proxy.borrow_list_accounts`,
+`proxy.borrow_models_cache`, and `proxy.launch_start` when a launch could not
+start the proxy), with the stage as a tag and never a token, path or account.
 
 Reset-credit consume outcomes are captured in
 `apps/desktop/src/main/services/usage/usageTrackingService.ts` after the
