@@ -205,8 +205,8 @@ export function getPermissionOptions(opts: {
     return [
       {
         value: "plan",
-        label: "Read-only",
-        shortDesc: "Droid without autonomy",
+        label: "Plan",
+        shortDesc: "Droid reads and plans first",
         detail: "Launches Droid without --auto. Best for inspection, planning, and low-risk review work.",
         allows: ["File reads", "Code search", "Plan generation"],
         gates: ["File writes", "Shell commands"],

@@ -4098,8 +4098,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade new chat --mode cli --lane <lane> --provider claude --preset hp_opus_work
     $ ade chat create --lane <lane> --provider claude --credential openrouter
   --preset and --credential are mutually exclusive. In CLI mode a preset on
-  cursor, copilot or kimi launches the native CLI instead: those binaries take
-  no key or endpoint from the launch.
+  cursor launches the native CLI instead: Cursor takes no key or endpoint from
+  the launch.
 
   Use any model you pay for in any harness, without saving a preset:
     $ ade chat create --lane <lane> --provider claude --via opencode-go --model deepseek-v4.1-flash

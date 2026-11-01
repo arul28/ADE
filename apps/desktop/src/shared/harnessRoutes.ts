@@ -318,7 +318,14 @@ export type HarnessRoute =
   | { kind: "proxy"; harnessProtocol: RouteProtocol; upstreamProtocol: RouteProtocol; upstreamBaseUrl: string }
   | { kind: "impossible"; reason: string };
 
-/** The protocol the proxy speaks upstream for a lent login (every other provider: OpenAI chat). */
+/** Key-store providers whose keys never route: they sign their own tool in. */
+export const NON_ROUTABLE_KEY_PROVIDERS: ReadonlySet<string> = new Set([
+  "cursor", "devin", "factory", "droid", "copilot", "github-copilot",
+  // Antigravity's Gemini and Agent Platform keys are read only by its own agent.
+  "antigravity-gemini", "antigravity-agent-platform",
+]);
+/** The protocol the proxy speaks upstream for a lent login
+ (every other provider: OpenAI chat). */
 const LENT_UPSTREAM_PROTOCOL: Partial<Record<string, RouteProtocol>> = {
   claude: "anthropic",
   codex: "openai-responses",

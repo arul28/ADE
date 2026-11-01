@@ -49691,17 +49691,17 @@ export function createAgentChatService(args: {
     };
     requireProviderAcceptsCallerMcpServers(provider);
 
-    if (provider === "opencode" && !resolvedModelId && !modelId?.endsWith("/auto")) {
+    // A custom provider brings its own model: its launch writes the model into
+    // the harness's own config (OpenCode's provider, Droid's custom models,
+    // Pi's `ade` provider), so a model no catalog lists is not unknown here.
+    const presetSuppliesModel = Boolean(presetSpec?.model);
+    if (provider === "opencode" && !resolvedModelId && !modelId?.endsWith("/auto") && !presetSuppliesModel) {
       throw new Error("OpenCode chat requires a known model ID. Select a model from the registry.");
     }
 
     if (provider === "cursor" && !resolvedModelId) {
       throw new Error("Cursor chat requires a known model. Pick a Cursor model from the model list.");
     }
-    // A custom provider brings its own model: its launch writes the model into
-    // the harness's own config (Droid's custom models, Pi's `ade` provider),
-    // so a model neither catalog lists (Grok's, run in Pi) is not unknown here.
-    const presetSuppliesModel = Boolean(presetSpec?.model);
     if (provider === "droid" && !resolvedModelId && !presetSuppliesModel) {
       throw new Error("Droid chat requires a known model. Pick a Droid model from the model list.");
     }

@@ -8,10 +8,13 @@ description: Use this skill to run a chat, CLI session or subagent on a specific
 ADE separates the **harness** (which agent runs: Claude Code, Codex, Droid,
 OpenCode, …) from the **model provider** (where it gets its intelligence: a
 native sign-in, a provider signed in to OpenCode — OpenCode Go, Zen, or any
-provider connected there — a stored API key, or a Claude or Codex account or
-the Grok sign-in already on this machine, which ADE's proxy runs on that
-login in any other harness, with no extra sign-in: `--via
-account:<claude|codex>:<accountId>`, or `--via subscription:<grok|kimi|devin|muse>`). Any routable harness can run any model its sources serve:
+provider connected there — a stored API key, or a sign-in already on this
+machine, which ADE's proxy runs in any other harness with no extra sign-in.
+`--via account:<claude|codex>:<accountId>` picks one named Claude or Codex
+account. `--via subscription:<claude|codex|grok|kimi|devin|muse>` uses that
+provider's sign-in on this machine and takes no account id (for Claude and
+Codex, the default account); it is the only form for Grok, Kimi, Devin and
+Muse. Any routable harness can run any model its sources serve:
 ADE points the harness straight at the source when they speak the same API, and
 translates through its local proxy when they do not.
 

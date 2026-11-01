@@ -17,6 +17,7 @@
 import path from "node:path";
 
 import {
+  NON_ROUTABLE_KEY_PROVIDERS,
   canonicalSourceProvider,
   endpointsForSource,
   harnessRouteSourceKey,
@@ -47,12 +48,6 @@ import { readRouteProbe } from "./harnessRouteProbes";
 import { routeSourceKey } from "./harnessRouteLaunch";
 import { pinnedCliBinaries, requirePinnedProviderCli, type PinnedProviderCli } from "../pty/pinnedProviderCli";
 
-/** Key-store providers whose keys never route: they sign their own tool in. */
-const NON_ROUTABLE_KEY_PROVIDERS = new Set([
-  "cursor", "devin", "factory", "droid", "copilot", "github-copilot",
-  // Antigravity's Gemini and Agent Platform keys are read only by its own agent.
-  "antigravity-gemini", "antigravity-agent-platform",
-]);
 
 const REGISTRY_FAMILY_FOR_PROVIDER: Record<string, ProviderFamily> = {
   anthropic: "anthropic",

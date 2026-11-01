@@ -102,6 +102,7 @@ import {
   type RouteReasonCode,
 } from "./harnessRouteLaunch";
 import {
+  NON_ROUTABLE_KEY_PROVIDERS,
   decodeRoutePresetId,
   harnessAcceptsRoutes,
   isRoutePresetId,
@@ -675,10 +676,12 @@ export function resolveHarnessPresetPlan(
     };
   }
 
-  // Kimi and Copilot take no endpoint, only their vendor's key in an env var,
-  // so their key presets keep the plain key path below rather than a route.
+  // A key that only signs its own tool in (a Copilot or Cursor key) keeps the
+  // plain key path below; any other key on a harness that takes an endpoint
+  // routes, Copilot and Kimi included.
   const routable = harnessAcceptsRoutes(harness) && harness !== "opencode";
-  if (preset.source.kind === "opencode" || (preset.source.kind === "key" && routable)) {
+  const vendorOnlyKey = preset.source.kind === "key" && NON_ROUTABLE_KEY_PROVIDERS.has(preset.source.provider.trim().toLowerCase());
+  if (preset.source.kind === "opencode" || (preset.source.kind === "key" && routable && !vendorOnlyKey)) {
     const routeSource = preset.source;
     const routed = runRouteBuild(writeConfig, () => buildRouteLaunch({
       harness,
