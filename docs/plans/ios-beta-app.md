@@ -1,7 +1,8 @@
 # iPhone Beta app
 
 Plan for a second iPhone app that gets the Beta builds, beside the normal app.
-Status: **plan, waiting for the owner's approval.** Nothing here is built yet.
+Status: **approved by the owner on 2026-11-01, with the name "ADE Beta".**
+Built on `plan/ios-beta-app` (PR #2008).
 
 ## Why
 
@@ -15,12 +16,12 @@ T3 Code does the same: "T3 Code" and "T3 Code Preview" are two apps with
 different bundle IDs and icons (`apps/mobile/app.config.ts` in
 pingdotgg/t3code).
 
-## Decisions to approve
+## Decisions
 
-1. **Name: "ADE Beta".** The owner said "Preview", and T3 says "Preview". ADE
-   uses "Stable" and "Beta" as the only track names on the desktop (see
-   `beta-track.md`), so "ADE Beta" keeps one word for one thing. The icon is
-   the orange Beta icon, like the desktop Beta build.
+1. **Name: "ADE Beta".** T3 says "Preview", but ADE uses "Stable" and "Beta"
+   as the only track names (see `beta-track.md`), so "ADE Beta" keeps one
+   word for one thing. The icon is the orange Beta icon, like the desktop Beta
+   build (`AppIconBeta`).
 2. **The app variant is not the machine track.** Both apps connect to every
    machine, Stable or Beta. The app only decides which iPhone build runs. See
    "Mixed tracks" below.
@@ -40,32 +41,38 @@ pingdotgg/t3code).
 
 | Event | App | TestFlight groups |
 |---|---|---|
-| A beta with iOS changes | ADE Beta | Internal Testers, Beta public link |
-| A stable release with iOS changes | ADE | Internal Testers, Friends, Public Beta |
+| A beta with iOS changes (CI) | ADE Beta | Internal Testers, Public Beta (after Apple's beta review) |
+| A stable release with iOS changes (release skill) | ADE | Internal Testers, Friends, Public Beta |
 
-Today a stable release gives the same build to more groups. With two apps, a
-stable release builds "ADE" again at the stable commit. That commit is the
-commit of the gated beta, so the code is the same as the Beta app ran.
+Before this, a stable release gave a beta's build to more groups. Now CI
+builds only the Beta app, and the release skill builds "ADE" from the stable
+commit with `ios-testflight.sh`, as it already did for stable releases.
 
 ## Work
 
 ### iOS project (`apps/ios`)
 
-- Add a `Beta` build configuration (a copy of `Release`) for the app and the
-  widgets:
+- A `Beta` build configuration (a copy of `Release`) on every target. On the
+  app and the widgets it sets:
   - `PRODUCT_BUNDLE_IDENTIFIER`: `com.ade.ios.beta`, `com.ade.ios.beta.widgets`.
-  - Display name "ADE Beta", the orange app icon set.
-  - `ADE.Beta.entitlements`: push, Sign in with Apple,
-    `webcredentials:clerk.ade-app.dev`, app group `group.com.ade.ios.beta`. No
-    `applinks` and no App Clip entries.
-  - A Swift flag `ADE_BETA_APP`.
-- Read the app group from one place. Today `ADESharedContainer.swift` and
-  `ClipPairingHandoff.swift` hard-code `group.com.ade.ios`.
-- Leave the App Clip out of the Beta app. If Xcode cannot skip the embed per
-  configuration, a build phase removes `AppClips/` before the app is signed.
-- Turn off the App Store update check (`AppUpdateAdvisor`) in the Beta app.
-- Sentry and PostHog get an `app: beta` tag, so Beta crashes do not look like
-  Stable ones.
+  - `ADE_APP_DISPLAY_NAME` "ADE Beta" and `AppIconBeta` (Info.plist reads
+    both; Debug and Release keep "ADE" and `AppIcon`).
+  - `ADE_URL_SCHEME` `ade-beta`. `DeepLinkRouter` routes `ade-beta://` links
+    like `ade://` ones. Widget and notification links still say `ade://`;
+    iOS gives those to the app that owns the widget or notification.
+  - `ADE.Beta.entitlements` and `ADEWidgets.Beta.entitlements`: push, Sign in
+    with Apple, `webcredentials:clerk.ade-app.dev`, app group
+    `group.com.ade.ios.beta`. No `applinks` and no App Clip entries.
+  - `EXCLUDED_SOURCE_FILE_NAMES = ADEClip.app`, so the App Clip is not
+    embedded.
+  - The Swift flag `ADE_BETA_APP`. `ADESharedContainer` picks the app group
+    with it. `ClipPairingHandoff` keeps the normal app's group; the Beta app
+    has no App Clip to hand off from.
+- The App Store update check needs no change: it looks up the app's own
+  bundle ID, and the App Store has no `com.ade.ios.beta`.
+- `release_channel` (Sentry tag and PostHog property) is "beta" in the Beta
+  app and "stable" in the normal app, on TestFlight too. Sentry release names
+  already differ by bundle ID.
 - Push needs no relay change: the app sends its own bundle ID, and the relay
   already sends to each device's own bundle ID (`apps/push-relay`, including
   Live Activities).
@@ -78,24 +85,32 @@ commit of the gated beta, so the code is the same as the Beta app ran.
 
 ### CI and release
 
-- `ios-testflight.yml` and `ios-testflight-ci.sh`: an `app` input (`beta` or
-  `stable`) picks the configuration, the App Store Connect app, the groups and
-  the tag (`ios-beta-v<mv>-build<n>` or `ios-v<mv>-build<n>`).
-- `beta.yml`: builds the Beta app.
-- The stable release: builds "ADE" when iOS changed since the last `ios-v*`
-  tag. The release skill and `docs/playbooks` change to match.
+- `ios-testflight.yml` and `ios-testflight-ci.sh` build only the Beta app:
+  the `Beta` configuration, the app found by bundle ID, Internal Testers and
+  Public Beta, and the tag `ios-beta-v<mv>-build<n>`. The gate counts iOS
+  changes since the newest `ios-beta-v*` tag.
+- The stable release: unchanged, `ios-testflight.sh` builds "ADE" when
+  `scope.sh` finds iOS changes since the last `ios-v*` tag. The release skill
+  says so.
 
 ### Owner steps (once)
 
-1. Create the app record "ADE Beta" (bundle ID `com.ade.ios.beta`) in App
-   Store Connect. The API key cannot create an app; only the website (or
-   `asc web` with your Apple ID) can.
-2. Add `com.ade.ios.beta` to Clerk's native application settings for Sign in
-   with Apple. I check first whether I can do this with the Clerk API.
-3. Approve the first Beta app build for the public link. Apple reviews the
-   first external build of each version.
+1. Create the app record "ADE Beta" (bundle ID `com.ade.ios.beta`, SKU
+   `ADE-IOS-BETA`) in App Store Connect. The API key cannot create an app;
+   only the website (or `asc web` with an Apple ID) can.
+2. In Clerk (Production): add the iOS app `VQ372F39G6` /
+   `com.ade.ios.beta` under Native applications, and allow the redirect
+   `com.ade.ios.beta://callback` (ClerkKit's default OAuth redirect, the
+   bundle ID plus `://callback`).
+3. Nothing else by hand. The first Public Beta build goes to Apple's beta
+   review by itself.
 
-I create the bundle IDs and their capabilities with the API key.
+Done with the API key on 2026-11-01: the bundle IDs `com.ade.ios.beta` and
+`com.ade.ios.beta.widgets` with push, Sign in with Apple, app groups and
+associated domains. The normal app's ID also has time-sensitive
+notifications, but no entitlements file asks for it, so the Beta IDs do
+without (the API cannot set it). After step 1: the
+"Internal Testers" and "Public Beta" groups and the test information.
 
 ## Mixed tracks
 
