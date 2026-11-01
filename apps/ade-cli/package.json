@@ -51,7 +51,7 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
-    "@muse-code/sdk": "1.4.7",
+    "@muse-code/sdk": "1.4.14",
     "@opencode/client": "2.0.29",
     "@sentry/node": "11.7.0",
     "@types/node": "^24.19.2",
