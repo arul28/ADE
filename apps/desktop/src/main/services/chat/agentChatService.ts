@@ -49695,18 +49695,20 @@ export function createAgentChatService(args: {
     // the harness's own config (Droid's custom models, Pi's `ade` provider), so
     // a model neither catalog lists is not unknown there. OpenCode's runtime
     // starts only on a model the registry knows, so it keeps the check.
+    // The harness that will launch: a preset's own, whatever the caller sent.
     const presetSuppliesModel = Boolean(presetSpec?.model);
-    if (provider === "opencode" && !resolvedModelId && !modelId?.endsWith("/auto")) {
+    const launchingProvider: AgentChatProvider = presetSpec?.harness ?? provider;
+    if (launchingProvider === "opencode" && !resolvedModelId && !modelId?.endsWith("/auto")) {
       throw new Error("OpenCode chat requires a known model ID. Select a model from the registry.");
     }
 
-    if (provider === "cursor" && !resolvedModelId) {
+    if (launchingProvider === "cursor" && !resolvedModelId) {
       throw new Error("Cursor chat requires a known model. Pick a Cursor model from the model list.");
     }
-    if (provider === "droid" && !resolvedModelId && !presetSuppliesModel) {
+    if (launchingProvider === "droid" && !resolvedModelId && !presetSuppliesModel) {
       throw new Error("Droid chat requires a known model. Pick a Droid model from the model list.");
     }
-    if (provider === "pi" && !resolvedModelId && !presetSuppliesModel) {
+    if (launchingProvider === "pi" && !resolvedModelId && !presetSuppliesModel) {
       throw new Error("Pi chat requires a known model. Refresh the Pi model list and select a model.");
     }
 
@@ -49715,7 +49717,7 @@ export function createAgentChatService(args: {
       throw new Error(`Unknown model '${resolvedModelId}'.`);
     }
 
-    if (provider === "cursor") {
+    if (launchingProvider === "cursor") {
       assertCursorChatModelCanUseSdk({
         modelRef: resolvedDescriptor?.providerModelId ?? normalizedInputModel,
         descriptor: resolvedDescriptor,
