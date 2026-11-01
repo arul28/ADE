@@ -31,11 +31,14 @@ const SERVICE = "Codex Auth";
 const READ_TIMEOUT_MS = 5_000;
 /**
  * Background callers (the usage poller) read on a cadence, and a keyring read
- * is a process (PowerShell on Windows). A miss is remembered for 10 minutes and
- * a hit for one; a caller that just had Codex renew its login reads fresh.
+ * is a process (PowerShell on Windows). A hit or a miss is remembered for a
+ * minute, so a sign-in made after a miss is seen on the next pass; a read that
+ * failed (timed out, no `secret-tool`, a locked keyring) only for 15 seconds.
+ * A caller that just had Codex renew its login reads fresh.
  */
-const MISS_TTL_MS = 10 * 60_000;
+const MISS_TTL_MS = 60_000;
 const HIT_TTL_MS = 60_000;
+const FAILED_TTL_MS = 15_000;
 const cache = new Map<string, { value: string | null; until: number }>();
 const inFlight = new Map<string, Promise<string | null>>();
 
@@ -100,8 +103,8 @@ export async function readCodexKeyringAuth(
   const pending = inFlight.get(account);
   if (pending) return pending;
   const read = readFromKeyring(account, platform)
-    .then((value) => {
-      cache.set(account, { value, until: Date.now() + (value ? HIT_TTL_MS : MISS_TTL_MS) });
+    .then(({ value, failed }) => {
+      cache.set(account, { value, until: Date.now() + (value ? HIT_TTL_MS : failed ? FAILED_TTL_MS : MISS_TTL_MS) });
       return value;
     })
     .finally(() => inFlight.delete(account));
@@ -109,7 +112,7 @@ export async function readCodexKeyringAuth(
   return read;
 }
 
-async function readFromKeyring(account: string, platform: NodeJS.Platform): Promise<string | null> {
+async function readFromKeyring(account: string, platform: NodeJS.Platform): Promise<{ value: string | null; failed: boolean }> {
   const stdout = platform === "linux"
     ? await capture("secret-tool", ["lookup", "service", SERVICE, "username", account], READ_TIMEOUT_MS)
     : await capture(
@@ -118,8 +121,9 @@ async function readFromKeyring(account: string, platform: NodeJS.Platform): Prom
       READ_TIMEOUT_MS * 3,
       { ADE_CODEX_CRED_TARGET: `${account}.${SERVICE}` },
     );
-  const text = stdout?.trim() ?? "";
-  return text.startsWith("{") ? text : null;
+  if (stdout === null) return { value: null, failed: true };
+  const text = stdout.trim();
+  return { value: text.startsWith("{") ? text : null, failed: false };
 }
 
 /** A short command's stdout, or null when it failed; off the event loop where ADE does that (Windows). */

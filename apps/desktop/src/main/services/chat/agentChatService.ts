@@ -49692,10 +49692,11 @@ export function createAgentChatService(args: {
     requireProviderAcceptsCallerMcpServers(provider);
 
     // A custom provider brings its own model: its launch writes the model into
-    // the harness's own config (OpenCode's provider, Droid's custom models,
-    // Pi's `ade` provider), so a model no catalog lists is not unknown here.
+    // the harness's own config (Droid's custom models, Pi's `ade` provider), so
+    // a model neither catalog lists is not unknown there. OpenCode's runtime
+    // starts only on a model the registry knows, so it keeps the check.
     const presetSuppliesModel = Boolean(presetSpec?.model);
-    if (provider === "opencode" && !resolvedModelId && !modelId?.endsWith("/auto") && !presetSuppliesModel) {
+    if (provider === "opencode" && !resolvedModelId && !modelId?.endsWith("/auto")) {
       throw new Error("OpenCode chat requires a known model ID. Select a model from the registry.");
     }
 
@@ -60504,7 +60505,9 @@ export function createAgentChatService(args: {
   };
 
   const ensureDroidRuntime = async (managed: ManagedChatSession): Promise<DroidRuntime> => {
-    const launchModelId = resolveDroidRuntimeModelId(managed.session);
+    // A routed custom provider names its own Droid model (`custom:<model>`,
+    // written into the preset's settings.json); the registry may not know it.
+    const launchModelId = resolveSessionLaunchPlan(managed)?.model?.trim() || resolveDroidRuntimeModelId(managed.session);
     const poolKey = droidPoolKeyFor(managed);
     const shouldSyncSessionModel = managed.session.model !== launchModelId || !managed.session.modelId;
     if (shouldSyncSessionModel) {
