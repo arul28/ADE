@@ -37,7 +37,6 @@ export function setHarnessProxyStarter(starter: ProxyStarter | null): void {
   processProxyStarter = starter;
 }
 
-
 /**
  * Start ADE's proxy, which lends this machine's logins to it, through this
  * process's registered starter. False when no starter is registered or it
@@ -70,7 +69,7 @@ export async function prepareHarnessLaunch(args: {
   const presetId = args.presetId?.trim() || null;
   const credentialId = args.credentialId?.trim() || null;
   if (!presetId && !credentialId) return false;
-  if (![...proxyStarters].at(-1) && !processProxyStarter) return false;
+  if (proxyStarters.size === 0 && !processProxyStarter) return false;
   let needsProxy = false;
   try {
     const dry = resolveLaunchBrain({ provider: args.provider, presetId, credentialId }, { writeConfig: false });

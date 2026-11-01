@@ -321,6 +321,12 @@
     var(--kit-panel-bg);
 }
 div.ade-cp-card { cursor: default; }
+/* Keep the tint on hover: the provider card's own hover sets a flat fill. */
+.ade-cp-card:hover {
+  background:
+    radial-gradient(120% 90% at 0% 0%, color-mix(in srgb, var(--cp-accent) 18%, transparent), transparent 62%),
+    var(--kit-panel-bg);
+}
 .ade-cp-card:hover { border-color: color-mix(in srgb, var(--cp-accent) 38%, var(--kit-panel-edge)); }
 .ade-cp-card-top { display: flex; align-items: flex-start; gap: 10px; min-width: 0; }
 .ade-cp-card-logo {

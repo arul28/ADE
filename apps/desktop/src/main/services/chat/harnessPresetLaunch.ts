@@ -29,7 +29,6 @@
 
 import { createHash } from "node:crypto";
 import fs from "node:fs";
-import { codexConfigHome as defaultCodexHome } from "../shared/providerConfigHomes";
 import path from "node:path";
 
 import {
@@ -73,6 +72,7 @@ import type { ApiCredentialSummary } from "../../../shared/types/apiCredentials"
 import { getApiCredentialKey, getApiCredentialSummary } from "../ai/apiKeyStore";
 import { resolveProviderInstanceForLaunch } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
 import { isBaseProviderInstance } from "../../../shared/types/providerInstances";
+import { codexConfigHome as defaultCodexHome } from "../shared/providerConfigHomes";
 import { codexLoginInKeyring } from "../ai/codexKeyringAuth";
 import { resolveMachineAdeDir } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import {

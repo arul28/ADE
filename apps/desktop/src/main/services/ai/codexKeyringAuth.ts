@@ -1,7 +1,8 @@
+import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { execFileOffThread } from "../shared/offThreadSpawn";
+import { execFileOffThread, offThreadSpawnEnabled } from "../shared/offThreadSpawn";
 import { windowsPowerShellCommand } from "../shared/processExecution";
 
 /**
@@ -109,16 +110,35 @@ export async function readCodexKeyringAuth(
 }
 
 async function readFromKeyring(account: string, platform: NodeJS.Platform): Promise<string | null> {
-  const result = platform === "linux"
-    ? await execFileOffThread("secret-tool", ["lookup", "service", SERVICE, "username", account], {
-      timeoutMs: READ_TIMEOUT_MS,
-    })
-    : await execFileOffThread(
+  const stdout = platform === "linux"
+    ? await capture("secret-tool", ["lookup", "service", SERVICE, "username", account], READ_TIMEOUT_MS)
+    : await capture(
       windowsPowerShellCommand(platform),
       ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", WINDOWS_CRED_READ],
-      { timeoutMs: READ_TIMEOUT_MS * 3, envPatch: { ADE_CODEX_CRED_TARGET: `${account}.${SERVICE}` } },
+      READ_TIMEOUT_MS * 3,
+      { ADE_CODEX_CRED_TARGET: `${account}.${SERVICE}` },
     );
-  if (result.error || result.exitCode !== 0) return null;
-  const text = result.stdout.trim();
+  const text = stdout?.trim() ?? "";
   return text.startsWith("{") ? text : null;
+}
+
+/** A short command's stdout, or null when it failed; off the event loop where ADE does that (Windows). */
+async function capture(
+  command: string,
+  args: string[],
+  timeoutMs: number,
+  envPatch?: Record<string, string>,
+): Promise<string | null> {
+  if (offThreadSpawnEnabled()) {
+    const result = await execFileOffThread(command, args, { timeoutMs, ...(envPatch ? { envPatch } : {}) });
+    return result.error || result.exitCode !== 0 ? null : result.stdout;
+  }
+  return new Promise((resolve) => {
+    execFile(
+      command,
+      args,
+      { timeout: timeoutMs, windowsHide: true, encoding: "utf8", ...(envPatch ? { env: { ...process.env, ...envPatch } } : {}) },
+      (error, stdout) => resolve(error ? null : stdout),
+    );
+  });
 }

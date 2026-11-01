@@ -356,13 +356,19 @@ export function createProxyService(options: ProxyServiceOptions = {}): ProxyServ
       return;
     }
     keeperOwners.set(authDir, keeperIdentity);
+    keeperWaiters.get(authDir)?.delete(keeperIdentity);
     keeperAuthDir = authDir;
-    const due = nextBorrowRenewalAt(authDir);
-    // A token already past its renew time after a pass did not renew: back off.
-    const overdue = due !== null && due <= now();
-    const delay = overdue
-      ? Math.min(keeperIntervalMs, keeperRetryMs)
-      : Math.max(PROXY_BORROW_KEEPER_MIN_DELAY_MS, Math.min(keeperIntervalMs, due === null ? keeperIntervalMs : due - now()));
+    const at = now();
+    // A token still past its renew time after a pass (its renewal failed) is
+    // retried on a backoff; every other token keeps its own renew time, so one
+    // stuck login never delays another's short window (Claude's is ~50 s).
+    const soonestDue = nextBorrowRenewalAt(authDir);
+    const overdue = soonestDue !== null && soonestDue <= at;
+    const nextDue = overdue ? nextBorrowRenewalAt(authDir, { after: at }) : soonestDue;
+    const delay = Math.max(
+      PROXY_BORROW_KEEPER_MIN_DELAY_MS,
+      Math.min(keeperIntervalMs, overdue ? keeperRetryMs : keeperIntervalMs, nextDue === null ? keeperIntervalMs : nextDue - at),
+    );
     keeperRetryMs = overdue ? Math.min(keeperIntervalMs, keeperRetryMs * 2) : PROXY_BORROW_KEEPER_RETRY_MS;
     keeper = setTimeout(() => {
       keeper = null;

@@ -75,7 +75,7 @@ html[data-scene="image"][data-theme="light"] {
 }
 
 /* A coloured page header: the Account banner and the Custom providers banner.
-   A wash painted from five colour stops (`--hero-deep`, `--hero-mid`,
+   A wash painted from four colour stops (`--hero-deep`, `--hero-mid`,
    `--hero-bright`, `--hero-light`), a shade so white text reads on any of
    them, and a row on top. The caller sets the stops (from a picture or one
    colour, `paletteFromTint`). White text in either theme. */

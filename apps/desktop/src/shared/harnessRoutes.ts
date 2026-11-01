@@ -318,6 +318,12 @@ export type HarnessRoute =
   | { kind: "proxy"; harnessProtocol: RouteProtocol; upstreamProtocol: RouteProtocol; upstreamBaseUrl: string }
   | { kind: "impossible"; reason: string };
 
+/** The protocol the proxy speaks upstream for a lent login (every other provider: OpenAI chat). */
+const LENT_UPSTREAM_PROTOCOL: Partial<Record<string, RouteProtocol>> = {
+  claude: "anthropic",
+  codex: "openai-responses",
+};
+
 /**
  * The route for one harness + source + model.
  *
@@ -326,12 +332,6 @@ export type HarnessRoute =
  * shared, because a translated request can lose fidelity (thinking blocks,
  * cache hints) and the proxy is one more process that has to be running.
  */
-/** The protocol the proxy speaks upstream for a lent login (every other provider: OpenAI chat). */
-const LENT_UPSTREAM_PROTOCOL: Partial<Record<string, RouteProtocol>> = {
-  claude: "anthropic",
-  codex: "openai-responses",
-};
-
 export function resolveHarnessRoute(args: {
   harness: HarnessPresetBody;
   source: HarnessPresetSource;

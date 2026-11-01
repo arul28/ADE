@@ -22,6 +22,7 @@
  * `ade-<provider>-<account>`. A login the user signed in to the proxy itself
  * (the older flow) is never touched here.
  */
+import { spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -43,7 +44,13 @@ import {
   museConfigDir,
 } from "../../../../desktop/src/main/services/shared/providerConfigHomes";
 import { resolveKimiCodeLogin } from "../../../../desktop/src/main/services/shared/kimiCodeLogin";
-import { spawnOffThread, terminateOffThreadChildTree } from "../../../../desktop/src/main/services/shared/offThreadSpawn";
+import {
+  offThreadSpawnEnabled,
+  spawnOffThread,
+  terminateOffThreadChildTree,
+  type OffThreadChild,
+} from "../../../../desktop/src/main/services/shared/offThreadSpawn";
+import { terminateProcessTree } from "../../../../desktop/src/main/services/shared/processExecution";
 import { providerSelfUpdateEnv } from "../../../../desktop/src/shared/pinnedToolSpawnEnv";
 import {
   HARNESS_PRESET_SUBSCRIPTION_PROVIDERS,
@@ -372,16 +379,16 @@ function exchange(args: {
     let stdout = "";
     // Off the event loop: renewals run on the keeper's timer inside the brain,
     // where a direct spawn blocks every chat for the whole CreateProcess.
-    const child = spawnOffThread(args.command, args.argv, {
-      env: args.env,
-      cwd: os.tmpdir(),
-      keepStdinOpen: true,
-    });
+    const offThread = offThreadSpawnEnabled();
+    const child: OffThreadChild | ChildProcess = offThread
+      ? spawnOffThread(args.command, args.argv, { env: args.env, cwd: os.tmpdir(), keepStdinOpen: true })
+      : spawn(args.command, args.argv, { env: args.env, cwd: os.tmpdir(), stdio: ["pipe", "pipe", "ignore"], windowsHide: true });
     const finish = (ok: boolean) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      terminateOffThreadChildTree(child);
+      if (offThread) terminateOffThreadChildTree(child as OffThreadChild);
+      else terminateProcessTree(child as ChildProcess);
       resolve(ok);
     };
     const timer = setTimeout(() => finish(false), RENEW_TIMEOUT_MS);
@@ -391,7 +398,9 @@ function exchange(args: {
       stdout += chunk.toString("utf8");
       if (args.done(stdout)) finish(true);
     });
-    for (const line of args.writes) child.stdin.write(`${line}\n`);
+    // A direct child's pipe can close under a write; the worker swallows that itself.
+    if (!offThread) (child as ChildProcess).stdin?.on("error", () => undefined);
+    for (const line of args.writes) child.stdin?.write(`${line}\n`);
   });
 }
 
@@ -517,15 +526,20 @@ async function withRenewLock<T>(authDir: string, run: () => Promise<T>): Promise
   try {
     const stat = fs.statSync(lockPath);
     if (Date.now() - stat.mtimeMs > LOCK_STALE_MS) {
-      // Steal a crashed holder's lock by renaming it: a rename succeeds for one
-      // process only, so two that both saw it stale cannot both clear it (a
-      // plain remove could delete the fresh lock the other just took).
+      // Steal a crashed holder's lock by renaming it aside, then check what was
+      // taken: another process that saw the same stale lock may already have
+      // replaced it with its own fresh one, and that one is put back.
       const claimed = `${lockPath}.${process.pid}.${Date.now()}.stale`;
       try {
         fs.renameSync(lockPath, claimed);
-        removeQuietly(claimed);
+        if (Date.now() - fs.statSync(claimed).mtimeMs > LOCK_STALE_MS) {
+          removeQuietly(claimed);
+        } else {
+          fs.renameSync(claimed, lockPath);
+          return null;
+        }
       } catch {
-        // Another process stole it first; its own lock now stands.
+        // Another process moved it first; whatever lock stands now is theirs.
       }
     }
   } catch {
@@ -611,11 +625,11 @@ export async function syncBorrowedLogins(args: {
     outcomes.push({ provider: account.provider, instanceId: account.id, status: renewed ? "renewed" : "lent" });
   }
 
-  // Sweep only the providers this pass was given: a provider missing from the
-  // list (a registry that could not be read) keeps what it has lent, and every
-  // machine has a base Claude and Codex account, so a listed provider is never
-  // listed empty.
-  const listed = new Set<string>(args.accounts.map((account) => account.provider));
+  // Sweep the CLI logins always (a file probe, so a provider missing from the
+  // list is signed out), and Claude and Codex only when the registry listed
+  // them: a registry that could not be read keeps what it has lent, and every
+  // machine has a base Claude and Codex account, so a listed one is never empty.
+  const listed = new Set<string>([...CLI_LOGIN_PROVIDERS, ...args.accounts.map((account) => account.provider)]);
   let entries: string[] = [];
   try {
     entries = fs.readdirSync(args.authDir);
@@ -691,7 +705,7 @@ export function readBorrowedModels(proxyDir: string): Record<BorrowableProvider,
  * When the soonest lent token enters its renew window, or null when nothing is
  * lent. The proxy service aims its next pass at this.
  */
-export function nextBorrowRenewalAt(authDir: string): number | null {
+export function nextBorrowRenewalAt(authDir: string, options: { after?: number } = {}): number | null {
   let soonest: number | null = null;
   let names: string[];
   try {
@@ -706,6 +720,7 @@ export function nextBorrowRenewalAt(authDir: string): number | null {
     const expires = typeof body?.expired === "string" ? Date.parse(body.expired) : Number.NaN;
     if (!provider || Number.isNaN(expires)) continue;
     const due = expires - BORROW_RENEW_AHEAD_MS[provider];
+    if (options.after !== undefined && due <= options.after) continue;
     soonest = soonest === null ? due : Math.min(soonest, due);
   }
   return soonest;

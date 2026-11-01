@@ -1,7 +1,7 @@
-import { harnessBodyLabel } from "../../../shared/harnessPresets";
 import fs from "node:fs";
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
+import { harnessBodyLabel } from "../../../shared/harnessPresets";
 
 import type {
   ProxySubscriptionProvider,
@@ -27,17 +27,17 @@ export type ProxySubscriptionConnectionParts = {
   prefix: string;
 };
 
-/**
- * `login-not-lent`: no current login of this provider (or of the named
- * account) is lent to the proxy yet. The launch's async prepare step lends it
- * (`ProxyService.ensureRunning`) and resolves again.
- */
 /** Why a lent login could not be used, and what to do; one sentence for a launch and a route test. */
 export function borrowFailureMessage(provider: string): string {
   const label = harnessBodyLabel(provider);
   return `ADE could not borrow your ${label} sign-in. Sign in to ${label} under Settings › Providers, then try again.`;
 }
 
+/**
+ * `login-not-lent`: no current login of this provider (or of the named
+ * account) is lent to the proxy yet. The launch's async prepare step lends it
+ * (`ProxyService.ensureRunning`) and resolves again.
+ */
 export type ProxySubscriptionConnectionUnavailable = {
   reason: "proxy-stopped" | "login-not-lent";
 };
