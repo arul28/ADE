@@ -152,7 +152,7 @@ The Worker's cron (`17,47 * * * *`) starts ADE's own Beta workflow
 GitHub's `schedule` trigger ran hours late for the ADE repo and dropped the
 ticks it missed, so betas came every 3.5–7.5 hours instead of at most every 3.
 The workflow still decides whether a beta is due; the timer only starts it,
-and skips a tick while a Beta run is queued or building.
+and skips a tick while a Beta run (not a preview) is queued or building.
 
 It needs one secret, a fine-grained GitHub token for `arul28/ADE` with
 **Actions: read and write** and nothing else:
