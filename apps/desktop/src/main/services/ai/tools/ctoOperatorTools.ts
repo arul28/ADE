@@ -139,7 +139,11 @@ export interface CtoOperatorToolDeps {
     applyProposal: (args: any) => Promise<any>;
     undoProposal: (args: any) => Promise<any>;
   } | null;
-  steerChat: (args: { sessionId: string; instruction: string }) => Promise<{ steerId: string; queued: boolean }>;
+  steerChat: (args: {
+    sessionId: string;
+    instruction: string;
+    dispatchMode?: "inline";
+  }) => Promise<{ steerId: string; queued: boolean; reason?: string }>;
   cancelSteer: (args: { sessionId: string; steerId: string }) => Promise<void>;
   listSubagents: (args: { sessionId: string }) => Promise<any[]>;
   approveToolUse: (args: { sessionId: string; toolUseId: string; decision: "accept" | "accept_for_session" | "decline" | "cancel" }) => Promise<void>;
@@ -303,6 +307,16 @@ const machineArgSchema = z
     "Machine id or name from listMachines (case-insensitive). Omit for this CTO's home machine. "
     + "Lane and chat ids belong to one machine: pass the same machine you created or listed them on.",
   );
+
+/**
+ * The refusal `unsupportedActiveTurnDispatchModeMessage` gives a provider that
+ * cannot take a message mid-turn. It is thrown before anything is delivered.
+ */
+const LIVE_STEER_REFUSED = /active-turn dispatch mode/i;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
 
 /**
  * The closed tag vocabulary, mirrored from `ctoMemoryService`. Facts and
@@ -1117,12 +1131,18 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
   }));
 
   defineLazyTool(tools, "interruptChat", () => core({
-    description: "Interrupt a running ADE chat turn.",
+    description: "Interrupt a running ADE chat turn. Pass machine for a chat on another machine.",
     inputSchema: z.object({
       sessionId: z.string().trim().min(1),
+      machine: machineArgSchema,
     }),
-    execute: async ({ sessionId }) => {
+    execute: async ({ sessionId, machine }) => {
       try {
+        const target = await remoteMachine(machine);
+        if (target) {
+          await runRemote(target, { domain: "chat", action: "interrupt", args: { sessionId } });
+          return { success: true, ...onMachine(target), sessionId };
+        }
         await deps.interruptChat({ sessionId });
         return { success: true, sessionId };
       } catch (error) {
@@ -2423,15 +2443,49 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
   // ---------------------------------------------------------------------------
 
   defineLazyTool(tools, "steerChat", () => core({
-    description: "Inject a steering instruction into an active chat session.",
+    description:
+      "Steer a chat: the instruction goes into the turn that is running now, at the chat's next step, when its "
+      + "provider can take it mid-turn; otherwise it waits for the next turn (`delivery: \"queued\"`). An idle chat "
+      + "starts a turn with it. Pass machine for a chat on another machine.",
     inputSchema: z.object({
       sessionId: z.string().min(1),
       instruction: z.string().min(1),
+      machine: machineArgSchema,
     }),
-    execute: async ({ sessionId, instruction }) => {
+    execute: async ({ sessionId, instruction, machine }) => {
       try {
-        await deps.steerChat({ sessionId, instruction });
-        return { success: true, sessionId };
+        const target = await remoteMachine(machine);
+        // A steer without a dispatch mode is staged until the running turn
+        // ends, which can be minutes. Ask for the live mode first, and stage
+        // only when the chat's provider refuses it; the provider check runs
+        // before anything is delivered, so the retry cannot send twice.
+        const steerOnce = async (dispatchMode?: "inline"): Promise<unknown> => (
+          target
+            ? await runRemote(target, {
+              domain: "chat",
+              action: "steer",
+              args: { sessionId, text: instruction, ...(dispatchMode ? { dispatchMode } : {}) },
+            })
+            : await deps.steerChat({ sessionId, instruction, ...(dispatchMode ? { dispatchMode } : {}) })
+        );
+        let raw: unknown;
+        try {
+          raw = await steerOnce("inline");
+        } catch (error) {
+          if (!LIVE_STEER_REFUSED.test(getErrorMessage(error))) throw error;
+          raw = await steerOnce();
+        }
+        const result = isRecord(raw) ? raw : {};
+        if (result.reason === "queue_full") {
+          return { success: false, sessionId, error: "The chat's message queue is full. Wait for its turn to end, then steer again." };
+        }
+        return {
+          success: true,
+          ...(target ? onMachine(target) : {}),
+          sessionId,
+          steerId: typeof result.steerId === "string" ? result.steerId : null,
+          delivery: result.queued === true ? "queued" : "live",
+        };
       } catch (error) {
         return { success: false, error: getErrorMessage(error) };
       }
@@ -2439,13 +2493,20 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
   }));
 
   defineLazyTool(tools, "cancelSteer", () => core({
-    description: "Cancel a pending steer instruction on a chat session. Pass the steerId returned by steerChat.",
+    description:
+      "Cancel a queued steer instruction on a chat session. Pass the steerId returned by steerChat, and the same machine.",
     inputSchema: z.object({
       sessionId: z.string().min(1),
       steerId: z.string().min(1).describe("The steerId returned by steerChat."),
+      machine: machineArgSchema,
     }),
-    execute: async ({ sessionId, steerId }) => {
+    execute: async ({ sessionId, steerId, machine }) => {
       try {
+        const target = await remoteMachine(machine);
+        if (target) {
+          await runRemote(target, { domain: "chat", action: "cancelSteer", args: { sessionId, steerId } });
+          return { success: true, ...onMachine(target), sessionId };
+        }
         await deps.cancelSteer({ sessionId, steerId });
         return { success: true, sessionId };
       } catch (error) {
