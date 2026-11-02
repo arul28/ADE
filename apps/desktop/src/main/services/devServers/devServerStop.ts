@@ -6,6 +6,7 @@ import type { Logger } from "../logging/logger";
 import { windowsTaskkillInvocation } from "../shared/processExecution";
 import { signalProcessGroup } from "../shared/utils";
 import { listeningPidsOnPort, readProcessChatSessionIds } from "./devServerListenerScan";
+import { runWindowsPortScan } from "./windowsPortScan";
 
 /**
  * Stop a dev server a chat's agent started, and nothing else.
@@ -111,17 +112,27 @@ const WINDOWS_PROCESS_TABLE_QUERY = [
   "[Console]::Out.Write((ConvertTo-Json -InputObject @($rows) -Compress))",
 ].join("; ");
 
-async function readProcessTable(platform: NodeJS.Platform, onError?: (error: unknown) => void): Promise<ProcessTable | null> {
+async function readProcessTable(
+  platform: NodeJS.Platform,
+  onError?: (error: unknown) => void,
+  logger?: Pick<Logger, "warn"> | null,
+): Promise<ProcessTable | null> {
   if (platform === "win32") {
     try {
-      const raw = await runText(
-        resolveTrustedWindowsTool("powershell"),
-        ["-NoProfile", "-NonInteractive", "-Command", WINDOWS_PROCESS_TABLE_QUERY],
-        WINDOWS_PROCESS_TABLE_TIMEOUT_MS,
-      );
-      const parsed: unknown = raw.trim() ? JSON.parse(raw) : [];
+      // `ade-port-scan.exe processes` prints the same rows in a few ms; the
+      // PowerShell query is the fallback when the helper is missing or failed.
+      let rows: unknown[] | null = await runWindowsPortScan(["processes"], logger);
+      if (!rows) {
+        const raw = await runText(
+          resolveTrustedWindowsTool("powershell"),
+          ["-NoProfile", "-NonInteractive", "-Command", WINDOWS_PROCESS_TABLE_QUERY],
+          WINDOWS_PROCESS_TABLE_TIMEOUT_MS,
+        );
+        const parsed: unknown = raw.trim() ? JSON.parse(raw) : [];
+        rows = Array.isArray(parsed) ? parsed : [parsed];
+      }
       const table: ProcessTable = new Map();
-      for (const row of (Array.isArray(parsed) ? parsed : [parsed]) as Array<Record<string, unknown>>) {
+      for (const row of rows as Array<Record<string, unknown>>) {
         const pid = Number(row?.pid);
         if (!Number.isInteger(pid) || pid <= 0) continue;
         const startedMs = Number(row.started);
@@ -287,11 +298,11 @@ export async function stopChatDevServer(input: {
       error: error instanceof Error ? error.message : String(error),
     });
   };
-  const listeners = await listeningPidsOnPort(port, platform, logReadFailure("listeners"));
+  const listeners = await listeningPidsOnPort(port, platform, logReadFailure("listeners"), input.logger);
   if (listeners === null) return refuse("failed", `ADE could not check what is using port ${port}.`);
   if (listeners.length === 0) return { ok: true, port, stopped: [], forced: false, alreadyStopped: true };
 
-  const table = await readProcessTable(platform, logReadFailure("process_table"));
+  const table = await readProcessTable(platform, logReadFailure("process_table"), input.logger);
   if (!table) return refuse("failed", "ADE could not read this computer's process list.");
   const protectedPids = protectedPidsFor(table, process.pid, platform, input.protectedPids);
   const children = childrenIndex(table, platform);
@@ -435,7 +446,7 @@ export async function stopChatDevServer(input: {
   if (alive.length > 0) {
     // Only what is still the SAME process (same start time, not a zombie) is
     // forced; a pid the OS handed to something new in the meantime is left be.
-    const now = await readProcessTable(platform);
+    const now = await readProcessTable(platform, undefined, input.logger);
     const same = new Set(alive.filter((pid) => {
       const entry = now?.get(pid);
       return Boolean(entry && !entry.zombie && entry.started === plan.expected.get(pid));
@@ -452,7 +463,7 @@ export async function stopChatDevServer(input: {
     }
   }
 
-  const stillListening = await listeningPidsOnPort(port, platform, logReadFailure("final_check"));
+  const stillListening = await listeningPidsOnPort(port, platform, logReadFailure("final_check"), input.logger);
   // Could not look: do not claim it stopped, or the row forgets a running server.
   if (stillListening === null) {
     return refuse("failed", `ADE could not confirm that the server on port ${port} stopped.`);

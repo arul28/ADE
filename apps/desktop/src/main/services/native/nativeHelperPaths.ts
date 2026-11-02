@@ -1019,6 +1019,26 @@ export function resolveNowPlayingHelperBinary(input: {
 }
 
 /**
+ * The Windows listener and process scan helper (`native/ADEPortScanWin`), or
+ * `null` when this is not Windows or no copy is on disk (an unbuilt dev tree),
+ * so dev-server discovery keeps its PowerShell query. It runs in the brain,
+ * which has no Electron `app` to ask: the usual daemon search, then the
+ * runtime archive and the installed app for a standalone brain.
+ */
+export function resolveWindowsPortScanBinary(input: {
+  platform?: NodeJS.Platform;
+  env?: NodeJS.ProcessEnv;
+} = {}): string | null {
+  const platform = input.platform ?? process.platform;
+  if (platform !== "win32") return null;
+  const name = "ade-port-scan.exe";
+  return pickNativeHelper(name, dedupePaths([
+    ...daemonNativeCandidates(name),
+    ...standaloneNativeHelperCandidates({ binaryName: name, prefer: "runtime", platform, env: input.env }),
+  ]), existsOnDisk);
+}
+
+/**
  * Where a native helper sits when there is no Electron `app` to ask (the
  * runtime daemon) or when Electron main runs it: the process's resources
  * directory, then every `resources/native` walking up from this module.

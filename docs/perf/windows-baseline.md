@@ -826,6 +826,48 @@ The real cost is a few extra git processes at most once per 10 seconds, so lane 
 
 `changed-file-tree.bench.mts` and `stale-sweep-read.bench.mts` are new; `db-reads.bench.mts` takes `--seed-sessions` / `--seed-running`; `measure-brain.mjs` passes `ADE_DISABLE_OFF_THREAD_SPAWN` through to the brain for attribution runs (spawn traces then show each process's real caller).
 
+## Dev-server port scan (2026-11-02, commit `46734d781`)
+
+Dev-server discovery used to start a new `powershell.exe` for every listener
+scan, every per-port lookup and every Stop's process table. `ade-port-scan.exe`
+(`native/ADEPortScanWin`) prints the same JSON from Win32 calls; PowerShell is
+the fallback. Same PC, 495 processes and 60 listeners, with Docker's
+`qemu-system-x86_64` busy on about 12 cores the whole time, so the PowerShell
+rows run higher than the 1,260 ms measured that morning on a quieter machine.
+One process start per run from a PowerShell harness (`Process.Start`, wall and
+`TotalProcessorTime`, whose resolution is one 15.6 ms clock tick), the two
+sides interleaved in one pass. Median, with the worst run in brackets.
+
+| Row | Before: PowerShell (8 runs) | After: `ade-port-scan.exe` (32 runs) | Ceiling |
+|---|---|---|---|
+| Listener scan (`listeners`), wall | 1,638 ms (2,112) | 43.9 ms (194.7) | *new* 60 ms |
+| Listener scan, CPU | 1,094 ms | ≤ 15.6 ms (one tick) | *new* 31.2 ms |
+| Per-port lookup (`port 445`), wall | 1,098 ms (1,443) | 32.1 ms (982.2) | *new* 45 ms |
+| Stop's process table (`processes`), wall | 810 ms (888) | 45.1 ms (265.7) | *new* 60 ms |
+| Bare `powershell.exe` start, for scale | 427 ms (762) | — | — |
+
+Through the brain's own code (`scanListeningProcesses`, run under `tsx` in one
+Node process, 10 runs): 61 ms wall and a longest event-loop gap of 3.0 ms with
+the helper (it spawns off-thread); the PowerShell fallback measured 1,756 ms
+wall and a 7-13 ms gap. A spawn trace (`scripts/perf/ui/spawn-trace.cjs`) shows
+one process start per scan either way: `ade-port-scan.exe listeners` (175 KB)
+instead of `powershell.exe -NoProfile ...`.
+
+Both outputs, compared after the parse ADE applies: 27 of 27 listening pids
+identical in ports, name, command line and ancestors; 494 of 495 process-table
+rows identical in parent and start time (the other started between the two
+reads). Command lines are read with the access `Win32_Process` needs, so an
+elevated process stays unreadable and lane matching does not change.
+
+With the helper the scan throttle drops from 15 s to the 4 s macOS and Linux
+use: at most 15 scans a minute is about 0.7 s of wall and at most 0.25 s of
+CPU, against 4 scans a minute costing about 4 s of CPU before. While the
+helper is missing or failing, the 15 s throttle stays.
+
+`NtQuerySystemInformation` needed 1.3 MB on this PC. The first build started
+from 1 MB and paid a failed collection (about 9 ms) on every read, so the
+helper now starts at 4 MB.
+
 ## How to measure on Windows
 
 Everything below ran in Git Bash or PowerShell 7 on this PC.
