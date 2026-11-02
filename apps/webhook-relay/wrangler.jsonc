@@ -6,6 +6,10 @@
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": true,
   "preview_urls": false,
+  // Starts ADE's Beta workflow every half hour (src/betaTimer.ts), because
+  // GitHub's own schedule runs hours late. Needs the secret
+  // GITHUB_BETA_DISPATCH_TOKEN (README, "Beta timer"); unset, it does nothing.
+  "triggers": { "crons": ["17,47 * * * *"] },
   "vars": {
     // Public Sentry DSN of the ade-workers project. Not a secret (it only lets
     // events in). SENTRY_RELEASE is set at deploy, not here.
