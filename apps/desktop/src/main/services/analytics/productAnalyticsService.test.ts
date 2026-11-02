@@ -2245,14 +2245,18 @@ describe("product analytics producers", () => {
   });
 
   it.each([
-    ["template_setup_started", "from_banner"],
-    ["template_setup_started", "from_settings"],
-    ["template_suggestion_hidden", "completed"],
-    ["deps_update_started", "completed"],
-    ["deps_update_started", "failed"],
-  ])("keeps the lane setup fact %s / %s unchanged", (action, outcome) => {
+    ["lanes", "template_setup_started", "from_banner"],
+    ["lanes", "template_setup_started", "from_settings"],
+    ["lanes", "template_suggestion_hidden", "completed"],
+    ["lanes", "deps_update_started", "completed"],
+    ["lanes", "deps_update_started", "failed"],
+    ["star_prompt", "star_prompt_shown", "prompt_first"],
+    ["star_prompt", "star_prompt_clicked", "prompt_second"],
+    ["star_prompt", "star_prompt_dismissed", "prompt_first"],
+    ["star_prompt", "repo_starred", "prompt_second"],
+  ])("keeps the renderer fact %s / %s / %s unchanged and nothing private", (feature, action, outcome) => {
     expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
-      feature: "lanes",
+      feature,
       action,
       outcome,
       source: "renderer_route",
@@ -2260,18 +2264,23 @@ describe("product analytics producers", () => {
       path: "/private/project",
       manager: "npm",
       error: "private error text",
-    })).toEqual({ feature: "lanes", action, outcome, source: "renderer_route" });
+    })).toEqual({ feature, action, outcome, source: "renderer_route" });
   });
 
-  it.each(["template_setup_started", "template_suggestion_hidden", "deps_update_started"])(
-    "drops an unknown outcome for lane setup action %s",
-    (action) => {
+  it.each([
+    ["lanes", "template_setup_started"],
+    ["lanes", "template_suggestion_hidden"],
+    ["lanes", "deps_update_started"],
+    ["star_prompt", "star_prompt_shown"],
+  ])(
+    "drops an unknown outcome for renderer fact %s / %s",
+    (feature, action) => {
       expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
-        feature: "lanes",
+        feature,
         action,
         outcome: "private_template_name",
         source: "renderer_route",
-      })).toEqual({ feature: "lanes", action, source: "renderer_route" });
+      })).toEqual({ feature, action, source: "renderer_route" });
     },
   );
 

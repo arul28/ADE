@@ -592,6 +592,7 @@ raise a ceiling. The taxonomy is closed at the producer and again by
 | `lanes` | `template_setup_started` | `from_banner`, `from_settings` | omitted; never the lane, template, or machine |
 | `lanes` | `template_suggestion_hidden` | `completed` | omitted; never the lane, template, or machine |
 | `lanes` | `deps_update_started` | `completed`, `failed` | omitted; never the lane, package details, machine, or error |
+| `star_prompt` | `star_prompt_shown`, `star_prompt_clicked`, `star_prompt_dismissed`, `repo_starred` | `prompt_first`, `prompt_second` (which showing of the pill) | omitted; never the GitHub account, a message count, or the machine |
 
 Every row is passed through `sanitizeProductAnalyticsProperties` in
 `apps/desktop/src/main/services/analytics/productAnalyticsPolicy.ts`, which
@@ -1635,6 +1636,19 @@ lane, path, lockfile name, package manager, folder count, template id or name,
 machine, or error text. A 24-hour per-action-and-outcome key allows at most five
 accepted events per installation per UTC day, inside the existing
 `ade_feature_used` 140-per-day / 30-per-minute limits; no ceiling was raised.
+
+The desktop "Star ADE on GitHub" pill records `star_prompt_shown` when it is
+on screen, `star_prompt_clicked` when its link opens GitHub,
+`star_prompt_dismissed` on `×`, and `repo_starred` when the star check first
+finds a star. The outcome says which showing it was: `prompt_first` before any
+dismissal, `prompt_second` for the one return 20 sent messages later. They are
+emitted from `renderer/lib/starPillActivity.ts` and carry no GitHub account,
+message count, or machine. Volume is bounded for the account's lifetime:
+`star_prompt_shown` fires once per showing (the synced `shownReported` pref,
+so a pill left up never re-sends it), `star_prompt_dismissed` at most twice,
+`repo_starred` once, and `star_prompt_clicked` only on a click. A 24-hour
+per-action-and-outcome dedupe key is a backstop, inside the same
+`ade_feature_used` limits; no ceiling was raised.
 
 Opening the account-wide Activity control (renamed from "Attention" in the UI;
 the analytics taxonomy deliberately keeps the frozen `attention` keys) records

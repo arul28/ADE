@@ -478,7 +478,7 @@ import {
   type ChatLaunchCliParams,
 } from "../../state/chatLaunchStore";
 import { queueChatLaunchMessage, startChatLaunch } from "./launch/chatLaunchActions";
-import { recordStarPillMessageSent, recordStarPillThreadCreated } from "../../lib/starPillActivity";
+import { recordStarPillMessageSent } from "../../lib/starPillActivity";
 import { noteChatSendForSuggestions } from "../app/suggestions/chatSendSignals";
 import {
   COMPOSER_DRAFT_STORAGE_KEY_PREFIX,
@@ -12058,7 +12058,6 @@ export function AgentChatPane({
         throw new Error("The chat was not created: this ADE runtime returned a session with no id.");
       }
       invalidateAgentChatSessionListCache({ laneId: targetLaneId });
-      recordStarPillThreadCreated();
       if (draftKeepsMachineDefaultsRef.current) {
         // ADE's pick launched once; the next draft here remembers again.
         draftKeepsMachineDefaultsRef.current = false;
@@ -13124,9 +13123,6 @@ export function AgentChatPane({
     pendingRendererRef.current = configuredLane;
     void startChatLaunch(launchId, { onUnsupported }).then((outcome) => {
       if (outcome !== "unsupported") pendingRendererRef.current = null;
-      // The unsupported fallback creates its chat through `createSessionForLane`,
-      // which counts it there.
-      if (outcome === "started") recordStarPillThreadCreated();
     });
     return true;
   }, [
@@ -14750,7 +14746,6 @@ export function AgentChatPane({
             ...buildNativeControlPayloadForSlot(slot, provider),
           }, launchBinding);
           sessionByLane.set(childLane.id, created.id);
-          recordStarPillThreadCreated();
         }
 
         if (canRefreshPinnedProject(launchBinding)) {
