@@ -1332,7 +1332,12 @@ check product enablement in the dashboard before debugging the token.
 `17,47 * * * *` (the Beta timer; it also needs the secret
 `GITHUB_BETA_DISPATCH_TOKEN`, see `apps/webhook-relay/README.md`). These deploy with the Worker; confirm the
 deploy output lists them, since a Worker whose scheduled handler silently stopped
-running looks perfectly healthy on every request path.
+running looks perfectly healthy on every request path. For the Beta timer, also
+confirm the secret is bound, because without it the cron runs and does nothing:
+
+```bash
+(cd apps/webhook-relay && npx wrangler secret list --format json | jq -e 'any(.[]; .name == "GITHUB_BETA_DISPATCH_TOKEN")')
+```
 
 ### Step 5: Deploy
 

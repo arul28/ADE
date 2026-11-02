@@ -1,4 +1,7 @@
 name: Beta
+# A preview's title starts with "Beta preview", so the Beta timer
+# (apps/webhook-relay/src/betaTimer.ts) can tell it from a beta.
+run-name: ${{ inputs.preview_ref && format('Beta preview {0}', inputs.preview_ref) || 'Beta' }}
 
 # Builds ADE's Beta track from main. See docs/plans/beta-track.md for the
 # decisions and contracts this implements.

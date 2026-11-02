@@ -44,11 +44,14 @@ export async function runBetaTimer(env: BetaTimerEnv): Promise<void> {
 
   // A beta that is building takes about 40 minutes. A start now would only
   // wait behind it in the workflow's concurrency group, so skip this tick.
-  // A preview run counts too; it only delays the next beta by a tick or two.
+  // Previews have their own group (beta.yml's run-name marks them), so they
+  // never hold a beta back.
   const runs = await fetch(`${WORKFLOW_URL}/runs?per_page=10`, { headers });
   if (!checkResponse(runs, "list runs")) return;
-  const { workflow_runs: recent = [] } = (await runs.json()) as { workflow_runs?: Array<{ status?: string }> };
-  if (recent.some((run) => run.status !== "completed")) {
+  const { workflow_runs: recent = [] } = (await runs.json()) as {
+    workflow_runs?: Array<{ status?: string; display_title?: string }>;
+  };
+  if (recent.some((run) => run.status !== "completed" && !run.display_title?.startsWith("Beta preview"))) {
     console.log("beta_timer.run_active");
     return;
   }
