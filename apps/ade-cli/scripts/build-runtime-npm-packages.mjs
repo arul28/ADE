@@ -363,7 +363,7 @@ file under \`native/\` with your own identity.${target.startsWith("darwin-") ? `
 On macOS, \`signing/manifest.json\` lists every file to sign, in order, and
 \`signing/entitlements.runtime.plist\` holds the only entitlement the binary
 needs (\`com.apple.security.cs.allow-jit\`).` : ""} See the SDK bundling guide:
-https://www.ade-app.dev/docs/sdk/bundling
+https://ade-app.dev/docs/sdk/bundling
 
 ## License
 
@@ -373,7 +373,7 @@ Shipping this binary unmodified inside a larger work, consumed through the
 documented \`@ade-dev/sdk\` interface, does not by itself make that work subject
 to the AGPL. Re-signing it with your own identity does not count as modifying
 it. See \`LICENSE\` and \`${EXCEPTION_FILE_NAME}\` in this package, and
-https://www.ade-app.dev/docs/sdk/license
+https://ade-app.dev/docs/sdk/license
 `;
 }
 
@@ -397,7 +397,7 @@ npm resolves exactly one of the five platform packages through
 network on first run. Pair it with \`allowDownload: false\` so a packaging
 mistake fails loudly rather than working through a silent download.
 
-Bundling and code-signing guide: https://www.ade-app.dev/docs/sdk/bundling
+Bundling and code-signing guide: https://ade-app.dev/docs/sdk/bundling
 
 ## License
 
@@ -406,7 +406,7 @@ AGPL-3.0-only with the ADE Runtime Embedding Exception.
 Shipping the runtime binary unmodified inside a larger work, consumed through
 the documented \`@ade-dev/sdk\` interface, does not by itself make that work
 subject to the AGPL. See \`LICENSE\` and \`${EXCEPTION_FILE_NAME}\` in this
-package, and https://www.ade-app.dev/docs/sdk/license
+package, and https://ade-app.dev/docs/sdk/license
 `;
 }
 

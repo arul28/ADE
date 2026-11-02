@@ -301,8 +301,8 @@ async function validateReleaseDocs({ routeSet, errors }) {
     return;
   }
 
-  const stableChangelogUrl = "https://www.ade-app.dev/docs/changelog";
-  const stableChangelogUrlPattern = /https:\/\/www\.ade-app\.dev\/docs\/changelog\/?(?=$|[\s)"'#?])/;
+  const stableChangelogUrl = "https://ade-app.dev/docs/changelog";
+  const stableChangelogUrlPattern = /https:\/\/(?:www\.)?ade-app\.dev\/docs\/changelog\/?(?=$|[\s)"'#?])/;
   if (!stableChangelogUrlPattern.test(readme)) {
     errors.push(`README.md: missing stable changelog link ${stableChangelogUrl}`);
   }

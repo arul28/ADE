@@ -3,23 +3,23 @@
 Typed Node / Electron-main client that spawns a slim ADE runtime as a sidecar
 and exposes chat as durable named threads.
 
-**Docs:** [ADE SDK](https://www.ade-app.dev/docs/sdk/overview) — install, threads, MCP honesty table, chat UI, runtime, and API reference.
+**Docs:** [ADE SDK](https://ade-app.dev/docs/sdk/overview) — install, threads, MCP honesty table, chat UI, runtime, and API reference.
 
 | Page | What it covers |
 |---|---|
-| [Threads](https://www.ade-app.dev/docs/sdk/threads) | Lifecycle, attachments, paged history, configuration and model switching |
-| [Accounts](https://www.ade-app.dev/docs/sdk/accounts) | Isolated sign-in, provider accounts, credentials, endpoint presets and usage limits |
-| [MCP servers](https://www.ade-app.dev/docs/sdk/mcp) | Injected tools, credentials that change, resource links, and the strict-mode honesty table |
-| [Permissions](https://www.ade-app.dev/docs/sdk/permissions) | The policy object, per-provider enforcement, answering approvals |
-| [Accounts](https://www.ade-app.dev/docs/sdk/accounts) | Isolated sign-in, provider accounts, stored credentials, presets and usage limits |
-| [Chat UI](https://www.ade-app.dev/docs/sdk/chat-ui) | `@ade-dev/chat-ui`, theming, approval cards, provider cards |
-| [Electron](https://www.ade-app.dev/docs/sdk/electron) | The main / preload / renderer bridge under `sandbox: true` |
-| [WebSocket server](https://www.ade-app.dev/docs/sdk/server) | Authorized server bridge and browser remote client |
-| [Testing](https://www.ade-app.dev/docs/sdk/testing) | Mock clients and transcript replay without a runtime or provider tokens |
-| [Bundling](https://www.ade-app.dev/docs/sdk/bundling) | Platform packages, `codesign`, entitlements, electron-builder |
-| [Runtime](https://www.ade-app.dev/docs/sdk/runtime) | The sidecar, exit events and `autoRestart`, version compatibility, and `doctor().runtime` provenance |
-| [Reference](https://www.ade-app.dev/docs/sdk/reference) | Every option, shape, and error code |
-| [License](https://www.ade-app.dev/docs/sdk/license) | What each artifact is licensed under |
+| [Threads](https://ade-app.dev/docs/sdk/threads) | Lifecycle, attachments, paged history, configuration and model switching |
+| [Accounts](https://ade-app.dev/docs/sdk/accounts) | Isolated sign-in, provider accounts, credentials, endpoint presets and usage limits |
+| [MCP servers](https://ade-app.dev/docs/sdk/mcp) | Injected tools, credentials that change, resource links, and the strict-mode honesty table |
+| [Permissions](https://ade-app.dev/docs/sdk/permissions) | The policy object, per-provider enforcement, answering approvals |
+| [Accounts](https://ade-app.dev/docs/sdk/accounts) | Isolated sign-in, provider accounts, stored credentials, presets and usage limits |
+| [Chat UI](https://ade-app.dev/docs/sdk/chat-ui) | `@ade-dev/chat-ui`, theming, approval cards, provider cards |
+| [Electron](https://ade-app.dev/docs/sdk/electron) | The main / preload / renderer bridge under `sandbox: true` |
+| [WebSocket server](https://ade-app.dev/docs/sdk/server) | Authorized server bridge and browser remote client |
+| [Testing](https://ade-app.dev/docs/sdk/testing) | Mock clients and transcript replay without a runtime or provider tokens |
+| [Bundling](https://ade-app.dev/docs/sdk/bundling) | Platform packages, `codesign`, entitlements, electron-builder |
+| [Runtime](https://ade-app.dev/docs/sdk/runtime) | The sidecar, exit events and `autoRestart`, version compatibility, and `doctor().runtime` provenance |
+| [Reference](https://ade-app.dev/docs/sdk/reference) | Every option, shape, and error code |
+| [License](https://ade-app.dev/docs/sdk/license) | What each artifact is licensed under |
 
 ```bash
 npm install @ade-dev/sdk
@@ -74,7 +74,7 @@ provider in a terminal, the sidecar can too. SDK 0.7 defaults to isolated
 provider logins. **BREAKING from SDK 0.6:** pass
 `useMachineLogin: true` to keep relying on the host machine's Claude or Codex
 login, or sign the user in through `ade.accounts.signIn()` (see
-[Accounts](https://www.ade-app.dev/docs/sdk/accounts)).
+[Accounts](https://ade-app.dev/docs/sdk/accounts)).
 
 `ade.providers.status()` reports, per provider, whether a binary was found, at
 which path and version, and whether credentials are present. Read `source`
@@ -131,7 +131,7 @@ absent, so an image reaches the model as an image. `hydrate: false` sends the
 path only and the runtime never reads the bytes. An absolute path must be
 inside the chat's `cwd`, `<home>/personal-chats/state`, or a directory in the
 thread's `attachmentRoots` (0.4, runtime 1.2.82). See
-[Attachments](https://www.ade-app.dev/docs/sdk/threads#attachments) for the
+[Attachments](https://ade-app.dev/docs/sdk/threads#attachments) for the
 size limits.
 
 One refused `attachmentRoots` entry fails the whole open, and a host normally
@@ -275,14 +275,14 @@ const thread = await ade.threads.open("assistant", {
 ```
 
 - **`instructions`** — your own system instructions, never a hidden first
-  message. A bare string means append. See [Threads](https://www.ade-app.dev/docs/sdk/threads).
+  message. A bare string means append. See [Threads](https://ade-app.dev/docs/sdk/threads).
 - **`cwd`** — the absolute directory the provider runs in. Defaults to a scratch
   workspace under `home`. Relative paths and `~` are refused.
 - **`settingSources`** — which on-disk config the provider loads. `"none"` is the
   default and is what every 0.1.x thread got.
 - **`permissions`** — a policy object is the third form, alongside `"default"`
   and `"always-allow"`. `fallback` is required. See
-  [Permissions](https://www.ade-app.dev/docs/sdk/permissions).
+  [Permissions](https://ade-app.dev/docs/sdk/permissions).
 
 Each one reports back what the provider actually did, the same way
 `mcpCapability` does. Read `thread.instructionsCapability`,
@@ -311,7 +311,7 @@ MCP to the servers the policy names — including servers you injected yourself,
 so name those in the policy too. `sandboxRoot` is not applied in that mode: an
 unnamed tool is refused outright rather than contained. Read
 `thread.permissionCapability.residual`, and see
-[Permissions](https://www.ade-app.dev/docs/sdk/permissions).
+[Permissions](https://ade-app.dev/docs/sdk/permissions).
 
 ## Electron
 
@@ -334,7 +334,7 @@ preload, point `webPreferences.preload` at
 prefix), copy the ten-line preload from the docs, or bundle `exposeAdeBridge`
 into one file. `@ade-dev/sdk/electron/preload` alone only exports the function
 and exposes nothing. See
-[Electron](https://www.ade-app.dev/docs/sdk/electron).
+[Electron](https://ade-app.dev/docs/sdk/electron).
 
 The renderer does not configure threads. Pass `openOptions: (key, rendererOptions) => ThreadOpenOptions`
 to `registerAdeIpc` and main decides; without it, only `provider`, `model`,
@@ -353,7 +353,7 @@ To ship the runtime inside a signed app instead of downloading it, install
 `@ade-dev/runtime`, copy it into your resources, and pass
 `...resolvePackagedRuntime(process.resourcesPath)` with `allowDownload: false`.
 `doctor().runtime.source` then reports `"packaged"`. See
-[Bundling](https://www.ade-app.dev/docs/sdk/bundling).
+[Bundling](https://ade-app.dev/docs/sdk/bundling).
 
 ## Runtime exits
 
@@ -369,7 +369,7 @@ When the runtime exits, each live thread gets a synthetic
 `autoRestart` (off by default; `true` = 5 attempts, 1 s doubling backoff)
 respawns the runtime and re-opens every live thread. The client object stays
 the same. A turn in flight is not resumed. See
-[Runtime](https://www.ade-app.dev/docs/sdk/runtime#when-the-runtime-exits).
+[Runtime](https://ade-app.dev/docs/sdk/runtime#when-the-runtime-exits).
 
 ## The live seam test
 

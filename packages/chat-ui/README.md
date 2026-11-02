@@ -2,7 +2,7 @@
 
 Embeddable React chat components over `@ade-dev/sdk`.
 
-**Docs:** [Chat UI](https://www.ade-app.dev/docs/sdk/chat-ui) · [ADE SDK](https://www.ade-app.dev/docs/sdk/overview)
+**Docs:** [Chat UI](https://ade-app.dev/docs/sdk/chat-ui) · [ADE SDK](https://ade-app.dev/docs/sdk/overview)
 
 This package renders an agent conversation for **your** users, not for ADE
 developers. There are no lanes, projects, repos, or worktrees in any prop or

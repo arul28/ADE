@@ -14,7 +14,7 @@
   <a href="https://testflight.apple.com/join/ZSdJGKPy">iOS</a> ·
   <a href="https://app.ade-app.dev">Web</a> ·
   <a href="https://ade-app.dev/docs">Docs</a> ·
-  <a href="https://www.ade-app.dev/docs/changelog">Changelog</a>
+  <a href="https://ade-app.dev/docs/changelog">Changelog</a>
 </p>
 
 <p align="center">
@@ -85,7 +85,7 @@ You can skip the account. ADE still works on that one machine, but you can't rea
 
 **3. Open a client.** Open the desktop app, go to [app.ade-app.dev](https://app.ade-app.dev), or get the [iOS app](https://testflight.apple.com/join/ZSdJGKPy). Your machines are already there.
 
-**4. Open a repo and go.** Open a git repository, make a lane (a git worktree for one task), and ask for a small change. The [quickstart](https://www.ade-app.dev/docs/quickstart) walks through it.
+**4. Open a repo and go.** Open a git repository, make a lane (a git worktree for one task), and ask for a small change. The [quickstart](https://ade-app.dev/docs/quickstart) walks through it.
 
 ## Set up your models
 
@@ -98,7 +98,7 @@ Go to **Settings → AI Providers**.
 
 You don't need to install the agents. ADE downloads them the first time a machine needs one. Model calls go straight from your machine to the provider, not through ADE.
 
-More: [AI providers](https://www.ade-app.dev/docs/configuration/ai-providers).
+More: [AI providers](https://ade-app.dev/docs/configuration/ai-providers).
 
 ## Where it runs
 
@@ -110,7 +110,7 @@ More: [AI providers](https://www.ade-app.dev/docs/configuration/ai-providers).
 | Phone | iOS on [TestFlight](https://testflight.apple.com/join/ZSdJGKPy). App Store and Android coming soon. |
 | Brain only | Linux (x64, arm64), plus everything above |
 
-There's no Linux desktop app yet, but a Linux machine can run the Brain and you can use it from any client. A few Mac features aren't on Windows yet ([details](https://www.ade-app.dev/docs/getting-started/windows)).
+There's no Linux desktop app yet, but a Linux machine can run the Brain and you can use it from any client. A few Mac features aren't on Windows yet ([details](https://ade-app.dev/docs/getting-started/windows)).
 
 ## Handy commands
 
@@ -121,7 +121,7 @@ ade doctor                    # find a problem
 ade help <command>            # help for any command
 ```
 
-Everything else: [CLI reference](apps/ade-cli/README.md) · [install options](https://www.ade-app.dev/docs/getting-started/install) · [connecting machines](https://www.ade-app.dev/docs/getting-started/connect-machine).
+Everything else: [CLI reference](apps/ade-cli/README.md) · [install options](https://ade-app.dev/docs/getting-started/install) · [connecting machines](https://ade-app.dev/docs/getting-started/connect-machine).
 
 ## Work on ADE
 

@@ -1,0 +1,15 @@
+# /open is the "Open in ADE" link on PRs and Linear issues. Each hit is a
+# Vercel function call, so crawlers stay out; link-preview bots keep the
+# rich card.
+User-agent: Twitterbot
+User-agent: facebookexternalhit
+User-agent: Slackbot
+User-agent: Slackbot-LinkExpanding
+User-agent: Discordbot
+User-agent: LinkedInBot
+User-agent: TelegramBot
+User-agent: WhatsApp
+Allow: /
+
+User-agent: *
+Disallow: /open

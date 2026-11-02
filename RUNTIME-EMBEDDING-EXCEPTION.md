@@ -66,5 +66,5 @@ The permission travels with the binary.
 - `packages/sdk/LICENSE` and `packages/chat-ui/LICENSE` — the MIT license that
   covers `@ade-dev/sdk` and `@ade-dev/chat-ui`.
 - `NOTICE` — the third-party components the runtime redistributes.
-- [https://www.ade-app.dev/docs/sdk/license](https://www.ade-app.dev/docs/sdk/license) — the
+- [https://ade-app.dev/docs/sdk/license](https://ade-app.dev/docs/sdk/license) — the
   per-artifact table in plain language.

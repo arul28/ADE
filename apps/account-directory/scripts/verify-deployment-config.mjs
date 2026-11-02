@@ -223,7 +223,7 @@ function exactHttpsOrigin(value) {
   }
 }
 
-/** `ade-app.dev` and `www.ade-app.dev` are one site; the apex redirects to `www`. */
+/** `ade-app.dev` and `www.ade-app.dev` are one site; `www` redirects to the apex. */
 function sameSite(left, right) {
   const bare = (host) => host.replace(/^www\./, "");
   return bare(left.hostname) === bare(right.hostname);
