@@ -186,6 +186,24 @@ function readBehaviorWindow(value: unknown): ClaudeUsageBehaviorWindow | null {
   };
 }
 
+/** Plans that have plan limits; an Enterprise seat can have none. */
+const PLANS_WITH_LIMITS = new Set(["pro", "max", "ultra", "team"]);
+
+/**
+ * Why a subscriber's limits are missing. A refused read still resolves, as
+ * `rate_limits: { error: {...} }`. A plan with limits and
+ * `rate_limits_available: false` is a sign-in without the scope to read them.
+ */
+function claudeLimitsUnreadable(
+  rateLimits: Record<string, unknown> | null,
+  available: boolean,
+  subscriptionType: string | null,
+): ClaudeUsageReport["limitsUnreadable"] {
+  if (asRecord(rateLimits?.error)) return "read_failed";
+  if (!available && subscriptionType && PLANS_WITH_LIMITS.has(subscriptionType.toLowerCase())) return "sign_in";
+  return null;
+}
+
 export function normalizeClaudeUsageReport(value: unknown): ClaudeUsageReport {
   const record = asRecord(value) ?? {};
   const session = asRecord(record.session) ?? {};
@@ -224,14 +242,7 @@ export function normalizeClaudeUsageReport(value: unknown): ClaudeUsageReport {
   const extra = asRecord(rateLimits?.extra_usage);
   const behaviors = asRecord(record.behaviors);
   const subscriptionType = str(record.subscription_type);
-  // A refused read still resolves, as `rate_limits: { error: {...} }`. A
-  // subscriber whose sign-in cannot read limits gets `rate_limits_available:
-  // false` with a plan; only a non-subscriber (no plan) truly has none.
-  const limitsUnreadable: ClaudeUsageReport["limitsUnreadable"] = asRecord(rateLimits?.error)
-    ? "read_failed"
-    : record.rate_limits_available !== true && subscriptionType
-      ? "sign_in"
-      : null;
+  const limitsUnreadable = claudeLimitsUnreadable(rateLimits, record.rate_limits_available === true, subscriptionType);
 
   return {
     session: {

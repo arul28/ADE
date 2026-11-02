@@ -49,7 +49,7 @@ export function claudeCompactWindow(atTokens: number | null | undefined): number
  * Claude reports the real point (`autoCompactThreshold`) in each context
  * snapshot, which replaces this estimate.
  */
-export const CLAUDE_AUTOCOMPACT_BUFFER_TOKENS = 33_000;
+const CLAUDE_AUTOCOMPACT_BUFFER_TOKENS = 33_000;
 
 /** The estimated token count where Claude auto-compacts in a window of `windowTokens`. */
 export function claudeEstimatedCompactAt(windowTokens: number): number {

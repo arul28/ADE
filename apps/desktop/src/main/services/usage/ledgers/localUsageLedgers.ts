@@ -1387,14 +1387,11 @@ export async function scanOpenCodeLogs(dataDir = defaultOpenCodeDataDir()): Prom
       while (rowsRead < LOCAL_SQLITE_SCAN_MAX_ROWS) {
         const limit = Math.min(OPENCODE_USAGE_PAGE_ROWS, LOCAL_SQLITE_SCAN_MAX_ROWS - rowsRead);
         let rows: OpenCodeUsageRow[];
-        if (withSession) {
-          try {
-            rows = selectPage(true, after, limit);
-          } catch {
-            withSession = false;
-            rows = selectPage(false, after, limit);
-          }
-        } else {
+        try {
+          rows = selectPage(withSession, after, limit);
+        } catch (error) {
+          if (!withSession) throw error;
+          withSession = false;
           rows = selectPage(false, after, limit);
         }
         rowsRead += rows.length;

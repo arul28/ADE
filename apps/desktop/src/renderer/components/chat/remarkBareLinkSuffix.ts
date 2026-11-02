@@ -40,10 +40,12 @@ function extendBareLinks(node: MdNode, source: string): void {
     }
     const next = children[index + 1];
     if (next?.type !== "text" || !next.value) continue;
-    const label = child.children?.length === 1 && child.children[0]!.type === "text" ? child.children[0]! : null;
-    const start = child.position?.start.offset;
-    const end = child.position?.end.offset;
-    if (!label?.value || !child.url || start == null || end == null) continue;
+    const only = child.children?.length === 1 ? child.children[0] : undefined;
+    const label = only?.type === "text" ? only : null;
+    const position = child.position;
+    const start = position?.start.offset;
+    const end = position?.end.offset;
+    if (!label?.value || !child.url || !position || start == null || end == null) continue;
     if (!WEB_LINK.test(label.value)) continue;
     // A bare link's source is its label; `[text](url)` and `<url>` are longer.
     if (source.slice(start, end) !== label.value) continue;
@@ -52,7 +54,7 @@ function extendBareLinks(node: MdNode, source: string): void {
     child.url += suffix;
     label.value += suffix;
     next.value = next.value.slice(suffix.length);
-    shiftPoint(child.position!.end, suffix.length);
+    shiftPoint(position.end, suffix.length);
     if (label.position) shiftPoint(label.position.end, suffix.length);
     if (next.position) shiftPoint(next.position.start, suffix.length);
     if (!next.value) {

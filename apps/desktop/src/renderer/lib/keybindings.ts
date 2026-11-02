@@ -78,7 +78,7 @@ function isNonLatinLetterKey(key: string): boolean {
   return /^[\p{L}\p{M}]+$/u.test(key) && !/\p{Script=Latin}/u.test(key);
 }
 
-type LayoutKeyEvent = Pick<KeyboardEvent, "key"> & {
+export type LayoutKeyEvent = Pick<KeyboardEvent, "key"> & {
   code?: string;
   getModifierState?: (key: "AltGraph") => boolean;
 };

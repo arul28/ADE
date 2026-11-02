@@ -130,19 +130,6 @@ export function createProjectScaffoldService({
 
       fs.writeFileSync(path.join(rootPath, "README.md"), `# ${name}\n`, "utf8");
       fs.writeFileSync(path.join(rootPath, ".gitignore"), GITIGNORE_CONTENT, "utf8");
-      // A lane is a worktree of a commit, so a repo with no commit cannot
-      // start one. A failed commit (no git identity set, say) leaves the
-      // project usable; the lane start then says to make a first commit.
-      const stageFirstFiles = await runGit(["add", "--", "README.md", ".gitignore"], { cwd: rootPath, timeoutMs: 15_000 });
-      const firstCommit = stageFirstFiles.exitCode === 0
-        ? await runGit(["commit", "--quiet", "-m", "Initial commit"], { cwd: rootPath, timeoutMs: 15_000 })
-        : stageFirstFiles;
-      if (firstCommit.exitCode !== 0) {
-        logger.warn("project_scaffold.first_commit_failed", {
-          rootPath,
-          stderr: redactGitOutput(firstCommit.stderr.trim()),
-        });
-      }
       initializeOrRepairAdeProject(rootPath, { logger, mode: "shared" });
       await warmLocalDatabase(rootPath, "project_scaffold.local_db_warm_failed");
 

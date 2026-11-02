@@ -229,7 +229,7 @@ import { formatCursorModeLabel } from "../../../shared/cursorModes";
 import { ChatProposedPlanCard } from "./ChatProposedPlanCard";
 import { ChatCommandMenu, type ChatCommandMenuItem, type ChatCommandMenuHandle, type ComposerPrSuggestion } from "./ChatCommandMenu";
 import { isMacPlatform, modifierKeyLabel } from "../../lib/platform";
-import { eventKeyCandidates } from "../../lib/keybindings";
+import { eventKeyCandidates, type LayoutKeyEvent } from "../../lib/keybindings";
 import { canOpenInAdeBrowser, openUrlInAdeBrowser, openLinkFromUi } from "../../lib/openExternal";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { fixedMenuAboveAnchorStyle } from "../../lib/fixedMenuPlacement";
@@ -575,10 +575,7 @@ function isHttpAuthorizationUrl(value: string): boolean {
   }
 }
 
-type PasteShortcutEvent = {
-  key: string;
-  code?: string;
-  getModifierState?: (key: "AltGraph") => boolean;
+type PasteShortcutEvent = LayoutKeyEvent & {
   metaKey: boolean;
   ctrlKey: boolean;
   altKey: boolean;

@@ -3025,7 +3025,14 @@ type ClaudeContextGuardrailState = {
   outputTokens: number;
   totalTokens: number;
   maxTokens: number;
-  compactAtTokens: number;
+  /**
+   * The auto-compact window (the setting, or the model window). Fill episodes
+   * and ADE's fallback `/compact` measure against it, so the fallback fires
+   * only past the point where Claude should already have compacted.
+   */
+  compactWindowTokens: number;
+  /** Claude's own compaction point from its last context snapshot; 0 until one reports it. */
+  claudeCompactAtTokens: number;
   occupancyPct: number | null;
   highWaterEpisode: boolean;
   naturalCompactSeen: boolean;
@@ -25074,6 +25081,12 @@ export function createAgentChatService(args: {
     const maxTokens = guardrail.maxTokens > 0
       ? guardrail.maxTokens
       : resolveSessionModelDescriptor(managed.session)?.contextWindow ?? 0;
+    // Until a context snapshot reports Claude's real compaction point, estimate
+    // it below the window (the setting, capped at the model's). The setting is
+    // the window, not the compaction point.
+    const setting = claudeSettingCompactAt(managed);
+    const estimateWindow = guardrail.compactWindowTokens
+      || (setting && maxTokens > 0 ? Math.min(setting, maxTokens) : setting || maxTokens);
     const category = (name: string, tokens: number) => ({
       name,
       tokens,
@@ -25088,9 +25101,9 @@ export function createAgentChatService(args: {
       ].filter((entry) => entry.tokens > 0),
       totalTokens: Math.max(0, guardrail.totalTokens),
       maxTokens: Math.max(0, maxTokens),
-      rawMaxTokens: Math.max(0, guardrail.compactAtTokens || maxTokens),
-      compactAtTokens: Math.max(0, guardrail.compactAtTokens || claudeEstimatedCompactAtFor(managed, maxTokens)),
-      compactAtSource: claudeSettingCompactAt(managed) ? "setting" : "provider",
+      rawMaxTokens: Math.max(0, guardrail.compactWindowTokens || maxTokens),
+      compactAtTokens: Math.max(0, guardrail.claudeCompactAtTokens || claudeEstimatedCompactAt(estimateWindow)),
+      compactAtSource: setting ? "setting" : "provider",
       percentage: maxTokens > 0
         ? Math.max(0, Math.min(100, (guardrail.totalTokens / maxTokens) * 100))
         : 0,
@@ -25150,14 +25163,15 @@ export function createAgentChatService(args: {
       const guardrail = runtime.contextGuardrail;
       guardrail.totalTokens = usage.totalTokens;
       guardrail.maxTokens ||= resolveSessionModelDescriptor(managed.session)?.contextWindow ?? usage.maxTokens;
-      // Claude's own compaction point, which sits a buffer below the window;
-      // an older CLI that does not report it leaves the window.
-      guardrail.compactAtTokens = Math.min(usage.compactAtTokens ?? usage.rawMaxTokens ?? usage.maxTokens, guardrail.maxTokens);
+      guardrail.compactWindowTokens = Math.min(usage.rawMaxTokens ?? usage.maxTokens, guardrail.maxTokens);
+      // Claude's own compaction point sits a buffer below the window. Claude
+      // leaves it out when auto-compact is off; the window is the limit then.
+      guardrail.claudeCompactAtTokens = Math.min(usage.compactAtTokens || guardrail.compactWindowTokens, guardrail.compactWindowTokens);
       usage.maxTokens = guardrail.maxTokens;
-      usage.compactAtTokens = guardrail.compactAtTokens;
+      usage.compactAtTokens = guardrail.claudeCompactAtTokens;
       usage.compactAtSource = claudeSettingCompactAt(managed) ? "setting" : "provider";
       usage.percentage = usage.maxTokens > 0 ? usage.totalTokens / usage.maxTokens * 100 : 0;
-      updateClaudeContextEpisode(guardrail, guardrail.compactAtTokens > 0 ? usage.totalTokens / guardrail.compactAtTokens * 100 : 0);
+      updateClaudeContextEpisode(guardrail, guardrail.compactWindowTokens > 0 ? usage.totalTokens / guardrail.compactWindowTokens * 100 : 0);
       emitClaudeContextUsageState(managed, runtime, "measured", origin, turnId, usage);
       logger.debug("agent_chat.claude_context_snapshot", {
         ...CLAUDE_AGENT_SDK_TELEMETRY_TAGS,
@@ -25214,8 +25228,8 @@ export function createAgentChatService(args: {
     guardrail.totalTokens = guardrail.inputTokens
       + guardrail.cacheReadTokens
       + guardrail.cacheCreationTokens;
-    guardrail.compactAtTokens ||= claudeEstimatedCompactAtFor(managed, guardrail.maxTokens);
-    const occupancyPct = Math.max(0, Math.min(100, (guardrail.totalTokens / guardrail.compactAtTokens) * 100));
+    guardrail.compactWindowTokens ||= Math.min(claudeSettingCompactAt(managed) || guardrail.maxTokens, guardrail.maxTokens);
+    const occupancyPct = Math.max(0, Math.min(100, (guardrail.totalTokens / guardrail.compactWindowTokens) * 100));
     updateClaudeContextEpisode(guardrail, occupancyPct);
 
     const now = Date.now();
@@ -25290,7 +25304,7 @@ export function createAgentChatService(args: {
       guardrail.totalTokens = Math.max(0, options.postTokens);
       updateClaudeContextEpisode(
         guardrail,
-        Math.max(0, Math.min(100, (guardrail.totalTokens / (guardrail.compactAtTokens || guardrail.maxTokens)) * 100)),
+        Math.max(0, Math.min(100, (guardrail.totalTokens / (guardrail.compactWindowTokens || guardrail.maxTokens)) * 100)),
       );
     }
     if (!options.completed) return;
@@ -44704,16 +44718,6 @@ export function createAgentChatService(args: {
     compactionRuntimeSignature(managed.session.provider ?? "", compactionSettingsFor(managed));
   /** Claude's compaction point from the ADE setting, clamped like the SDK clamps it. */
   const claudeSettingCompactAt = (managed: ManagedChatSession) => claudeCompactWindow(compactionSettingsFor(managed).atTokens);
-  /**
-   * Where Claude should auto-compact until a context snapshot reports the real
-   * point: the window (the setting, capped at the model's) minus Claude's
-   * buffer. The setting is the window, not the compaction point.
-   */
-  const claudeEstimatedCompactAtFor = (managed: ManagedChatSession, modelWindowTokens: number): number => {
-    const setting = claudeSettingCompactAt(managed);
-    const window = setting && modelWindowTokens > 0 ? Math.min(setting, modelWindowTokens) : setting || modelWindowTokens;
-    return claudeEstimatedCompactAt(window);
-  };
   const runtimeCompactionSettings = new WeakMap<object, string>();
   const refreshRuntimeCompactionSettings = (managed: ManagedChatSession): void => {
     const runtime = managed.runtime;
@@ -48102,7 +48106,8 @@ export function createAgentChatService(args: {
         outputTokens: 0,
         totalTokens: 0,
         maxTokens: 0,
-        compactAtTokens: 0,
+        compactWindowTokens: 0,
+        claudeCompactAtTokens: 0,
         occupancyPct: null,
         highWaterEpisode: false,
         naturalCompactSeen: false,
