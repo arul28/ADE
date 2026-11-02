@@ -1740,7 +1740,10 @@ from the landing URL. The landing is read once per tab session
 with; a referrer from this site itself counts as `$direct`. The first source
 the browser ever arrived from rides along as `first_referring_domain` and
 `first_utm_source` / `first_utm_medium` / `first_utm_campaign`
-(localStorage, forgotten on opt-out). These are properties of the existing
+(localStorage, forgotten on opt-out). `$raw_user_agent` (the browser's
+user-agent string, at most 512 characters) lets PostHog's traffic
+classification (`$virt_is_bot`, `$virt_traffic_type`) separate crawlers, link
+scanners and headless browsers from people. These are properties of the existing
 events and add none; the site sends no `$pageview`, because
 `ade_marketing_screen_viewed` already marks each real page view.
 
@@ -1797,7 +1800,7 @@ The full-access personal key belongs only in encrypted ADE secrets. When running
 
 ## PostHog dashboards
 
-`scripts/posthog/dashboard-spec.mjs` is the declarative source of truth. `scripts/posthog/provision.mjs` validates and idempotently upserts the managed objects. The project currently has eight managed dashboards and fifty-three managed insights:
+`scripts/posthog/dashboard-spec.mjs` is the declarative source of truth. `scripts/posthog/provision.mjs` validates and idempotently upserts the managed objects. The project currently has nine managed dashboards and fifty-seven managed insights:
 
 - ADE · Growth and retention
 - ADE · Surface and feature adoption
@@ -1806,6 +1809,7 @@ The full-access personal key belongs only in encrypted ADE secrets. When running
 - ADE · Reliability and analytics budget
 - ADE · Sign-ups & activation
 - ADE · Retention & churn
+- ADE · GitHub star prompt
 - ADE · Feedback (in-app survey answers)
 
 Every insight except the volume cards leaves out events with `is_internal: true` (an `is_not` filter, so events without the property still count). The 30-day volume cards split the closed ingested catalog into groups of at most 26 series because PostHog formulas address series by letters `A`…`Z`, and keep internal events because billing counts them. Their sum is the total tracked volume; the overflow card includes `$identify` and the survey events so neither is treated as free. `docs/analytics/tracking-plan.json` lists every event; `node scripts/check-analytics-tracking-plan.mjs` (CI) fails when it, the code and this spec disagree.
