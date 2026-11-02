@@ -70,7 +70,9 @@ import {
 import { classifyPairedRuntimeEndpoint } from "./pairedRuntimeRoutes";
 import { getSshHostKeyTrustForTarget } from "./sshTransport";
 import { callerReportsFailureParam } from "../../sentry/ipcCallScope";
-import { markExpectedFromWire } from "../../../shared/expectedError";
+import { expectedErrorKind, markExpected, markExpectedFromWire } from "../../../shared/expectedError";
+import { compareUpdateVersions } from "../../../shared/updateVersions";
+import { isPeerVersionGapMessage } from "../../../shared/sentry/expectedFailure";
 
 type PoolEntryBase = {
   client: RuntimeRpcClient;
@@ -176,6 +178,18 @@ function isUserActionConnectFailure(target: RemoteRuntimeTarget, error: unknown)
     && (error.info.kind === "ssh_auth" || error.info.kind === "host_key");
 }
 
+/** The remote machine runs an older ADE: an answer for the user, not a bug here. */
+/**
+ * A peer's "domain unavailable" or "requires projectId" answer is a version
+ * gap only when that peer runs an older ADE (or says nothing of its version);
+ * from a peer on this version or newer it means this side called it wrong,
+ * which stays reportable. A mark the error already carries is kept.
+ */
+function markPeerVersionGap(error: unknown, peerVersion: string | null | undefined, ownVersion: string): unknown {
+  if (!(error instanceof Error) || expectedErrorKind(error) || !isPeerVersionGapMessage(error.message)) return error;
+  if (peerVersion && ownVersion && compareUpdateVersions(peerVersion, ownVersion) >= 0) return error;
+  return markExpected(error, "environment");
+}
 
 function isRemoteRuntimeStreamFailure(error: unknown): boolean {
   return isRemoteRuntimeConnectionError(error) || isRuntimeTransportTimeoutError(error);
@@ -1093,7 +1107,7 @@ export class RemoteConnectionPool {
         this.unsupportedOptionalActionKeys.add(optionalFallbackKey);
         return optionalFallback;
       }
-      throw error;
+      throw markPeerVersionGap(error, entry.result.version, this.appVersion);
     }
 
     if (value && typeof value === "object" && !Array.isArray(value)) {
@@ -1126,7 +1140,7 @@ export class RemoteConnectionPool {
           this.unsupportedOptionalActionKeys.add(optionalFallbackKey);
           return optionalFallback;
         }
-        throw markExpectedFromWire(new Error(message), error.expected);
+        throw markPeerVersionGap(markExpectedFromWire(new Error(message), error.expected), entry.result.version, this.appVersion);
       }
       return {
         domain:

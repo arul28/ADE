@@ -126,6 +126,54 @@ describe("buildSshConfig", () => {
     });
   });
 
+  // How people type a key path in the remote-machine form, mostly on Windows.
+  // Each must reach the private key under the SSH home; a `.pub` they picked
+  // by mistake reaches the private key beside it.
+  it.each([
+    ["%USERPROFILE% reference", "%USERPROFILE%/.ssh/ade_draco"],
+    ["lowercase %home% reference", "%home%/.ssh/ade_draco"],
+    ["PowerShell $env:USERPROFILE", "$env:USERPROFILE/.ssh/ade_draco"],
+    ["bare USERPROFILE prefix", "USERPROFILE/.ssh/ade_draco"],
+    ["tilde", "~/.ssh/ade_draco"],
+    ["quoted path", "\"~/.ssh/ade_draco\""],
+    ["path relative to home", ".ssh/ade_draco"],
+    ["the public key beside the private key", "%USERPROFILE%/.ssh/ade_draco.pub"],
+  ])("reads the private key from a %s", (_label, sshKeyPath) => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "ade-ssh-home-"));
+    fs.mkdirSync(path.join(home, ".ssh"));
+    fs.writeFileSync(path.join(home, ".ssh", "ade_draco"), "PRIVATE KEY", "utf8");
+    fs.writeFileSync(path.join(home, ".ssh", "ade_draco.pub"), "ssh-ed25519 AAAA public", "utf8");
+
+    const config = buildSshConfig({ ...target, hostname: "draco", sshKeyPath }, {
+      env: {},
+      homeDir: home,
+      sshConfigPath: null,
+    });
+
+    expect(config.privateKey).toEqual(Buffer.from("PRIVATE KEY"));
+    expect(config.host).toBe("draco");
+    expect(config.username).toBe("ade");
+  });
+
+  it("refuses a public key with no private key beside it, naming the file to pick instead", () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "ade-ssh-home-"));
+    fs.mkdirSync(path.join(home, ".ssh"));
+    const publicKey = path.join(home, ".ssh", "only.pub");
+    fs.writeFileSync(publicKey, "ssh-ed25519 AAAA public", "utf8");
+
+    let thrown: unknown;
+    try {
+      buildSshConfig({ ...target, hostname: "draco", sshKeyPath: publicKey }, { env: {}, homeDir: home, sshConfigPath: null });
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(Error);
+    expect((thrown as Error).message).toContain(publicKey);
+    expect((thrown as Error).message).toContain(path.join(home, ".ssh", "only"));
+    expect((thrown as { info?: { kind?: unknown } }).info?.kind).toBe("ssh_auth");
+  });
+
   it("falls back to the local username and default SSH port when target and SSH config omit them", () => {
     const config = buildSshConfig({
       ...target,

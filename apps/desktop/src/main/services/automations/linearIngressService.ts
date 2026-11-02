@@ -6,6 +6,8 @@ import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import type { LinearWebhookSummary } from "../cto/linearClient";
 import { ACCOUNT_RELAY_TOKEN_HEADER } from "../github/githubRelayConfig";
+import { AdeExpectedError } from "../../../shared/expectedError";
+import { LINEAR_NOT_CONNECTED_MESSAGE } from "../../../shared/types/automations";
 import { createRelayWakeSocket, type RelayWakeSocket, type RelayWakeTarget } from "./relayWakeSocket";
 import {
   LINEAR_RELAY_LAST_ERROR_REF,
@@ -268,7 +270,7 @@ export function createLinearIngressService(deps: LinearIngressServiceDeps) {
 
   const requireAuthorization = async (): Promise<string> => {
     const authorization = (await deps.getLinearAccessToken())?.trim() ?? "";
-    if (!authorization) throw new Error("Connect Linear before configuring webhook ingestion.");
+    if (!authorization) throw new AdeExpectedError(LINEAR_NOT_CONNECTED_MESSAGE, "user");
     return authorization;
   };
 
@@ -306,7 +308,7 @@ export function createLinearIngressService(deps: LinearIngressServiceDeps) {
     let createdWebhookId: string | null = null;
     try {
       const client = deps.getLinearClient();
-      if (!client) throw new Error("Connect Linear before configuring webhook ingestion.");
+      if (!client) throw new AdeExpectedError(LINEAR_NOT_CONNECTED_MESSAGE, "user");
       const authorization = await requireAuthorization();
       const relayBaseUrl = resolveLinearRelayBaseUrl(deps.db);
 
@@ -458,7 +460,7 @@ export function createLinearIngressService(deps: LinearIngressServiceDeps) {
     const authorization = (await deps.getLinearAccessToken())?.trim() ?? "";
     const accountAccessToken = await readAccountAccessToken();
     if (!authorization && !accountAccessToken) {
-      throw new Error("Connect Linear before configuring webhook ingestion.");
+      throw new AdeExpectedError(LINEAR_NOT_CONNECTED_MESSAGE, "user");
     }
 
     // Drain full pages within one tick so a backlog larger than one page is

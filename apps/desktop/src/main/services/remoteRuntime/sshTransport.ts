@@ -13,6 +13,7 @@ import type {
 import { RemoteRuntimeConnectError } from "../../../shared/types/remoteRuntime";
 import type { RuntimeRpcTransport, RuntimeRpcTransportCloseInfo } from "./runtimeRpcClient";
 import { routeKey } from "./routeUtils";
+import { expandUserPath, isFile, privateKeyForPublicKeyPath, readSshPrivateKey } from "./sshKeyPaths";
 
 export type SshExecResult = {
   stdout: string;
@@ -157,25 +158,21 @@ function hostPatternsMatch(patterns: string, host: string): boolean {
   return matched;
 }
 
-function expandSshPath(value: string, args: { host: string; username: string; port: number; homeDir?: string }): string {
-  const expanded = value
-    .replace(/%h/g, args.host)
-    .replace(/%r/g, args.username)
-    .replace(/%p/g, String(args.port));
-  const homeDir = args.homeDir ?? os.homedir();
-  if (expanded === "~") return homeDir;
-  if (expanded.startsWith("~/")) return path.join(homeDir, expanded.slice(2));
-  return expanded;
+function expandSshPath(
+  value: string,
+  args: { host: string; username: string; port: number; homeDir?: string; env?: NodeJS.ProcessEnv },
+): string {
+  // A token that starts a Windows `%VAR%` reference (`%home%`, `%path%`) is
+  // left for `expandUserPath`, which expands the variable.
+  const tokens: Record<string, string> = { h: args.host, r: args.username, p: String(args.port) };
+  const expanded = value.replace(/%([hrp])(?![A-Za-z0-9_]*%)/g, (_match, token: string) => tokens[token]!);
+  return expandUserPath(expanded, { homeDir: args.homeDir, env: args.env });
 }
 
 function firstReadableDefaultIdentity(homeDir: string): string | null {
   for (const fileName of DEFAULT_IDENTITY_FILES) {
     const candidate = path.join(homeDir, ".ssh", fileName);
-    try {
-      if (fs.statSync(candidate).isFile()) return candidate;
-    } catch {
-      // Try the next OpenSSH default identity path.
-    }
+    if (isFile(candidate)) return candidate;
   }
   return null;
 }
@@ -395,7 +392,7 @@ function resolveKnownHostsPath(
 ): string | null {
   if (options.knownHostsPath !== undefined) return options.knownHostsPath;
   if (hostConfig.userKnownHostsFile) {
-    return expandSshPath(hostConfig.userKnownHostsFile, { ...args, homeDir });
+    return expandSshPath(hostConfig.userKnownHostsFile, { ...args, homeDir, env: options.env });
   }
   return path.join(homeDir, ".ssh", "known_hosts");
 }
@@ -584,19 +581,23 @@ function resolveOpenSshConfig(
 ): OpenSshResolvedConfig {
   const hostConfig = readOpenSshHostConfig(target, options);
   const endpoint = resolveSshEndpoint(target, options);
-  const identityFile = target.sshKeyPath
+  const explicitKeyPath = target.sshKeyPath?.trim()
+    ? expandUserPath(target.sshKeyPath, { homeDir: endpoint.homeDir, env: options.env })
+    : null;
+  const identityFile = explicitKeyPath
     ?? (hostConfig.identityFile ? expandSshPath(hostConfig.identityFile, {
       host: endpoint.host,
       username: endpoint.username,
       port: endpoint.port,
       homeDir: endpoint.homeDir,
+      env: options.env,
     }) : null)
     ?? firstReadableDefaultIdentity(endpoint.homeDir);
   return {
     host: endpoint.host,
     port: endpoint.port,
     username: endpoint.username,
-    identityFile,
+    identityFile: identityFile ? privateKeyForPublicKeyPath(identityFile) : null,
     knownHostsPath: endpoint.knownHostsPath,
     hostAliases: endpoint.hostAliases,
   };
@@ -617,7 +618,7 @@ export function buildSshConfig(target: RemoteRuntimeTarget, options: BuildSshCon
     keepaliveCountMax: 3,
   };
   if (endpoint.identityFile) {
-    config.privateKey = fs.readFileSync(endpoint.identityFile);
+    config.privateKey = readSshPrivateKey(endpoint.identityFile);
   }
   const knownHostEntries = readKnownHostEntries(endpoint.knownHostsPath);
   const candidates = knownHostCandidates(endpoint.hostAliases, endpoint.port);

@@ -83,6 +83,13 @@ export type AutomationScheduledCleanupStatus =
   | "failed"
   | "cancelled";
 
+/**
+ * What Linear webhook setup answers while Linear itself is not connected on
+ * that machine. The Automations UI keys on it to send the user to Linear
+ * settings instead of showing a setup failure.
+ */
+export const LINEAR_NOT_CONNECTED_MESSAGE = "Connect Linear before configuring webhook ingestion.";
+
 export type AutomationLinearIngressStatus = {
   state: "unconfigured" | "ready" | "error" | "disabled";
   webhookId: string | null;

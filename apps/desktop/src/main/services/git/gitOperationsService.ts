@@ -49,6 +49,7 @@ import { ensureLinearCommitReference } from "../../../shared/linearMagicWords";
 import { GIT_FETCH_TIMEOUT_MS } from "../../../shared/defaultRemoteLaneBase";
 import type { Logger } from "../logging/logger";
 import type { createLaneService } from "../lanes/laneService";
+import { assertLaneIdArg } from "../lanes/laneIdArg";
 import type { createOperationService } from "../history/operationService";
 import { isRecord, parseDiffNameOnly, parseDiffNameOnlySorted, safeJsonParse } from "../shared/utils";
 import { AdeExpectedError } from "../../../shared/expectedError";
@@ -444,6 +445,9 @@ export function createGitOperationsService({
     metadata?: Record<string, unknown>;
     fn: (lane: LaneInfo) => Promise<T>;
   }): Promise<{ result: T; action: GitActionResult }> => {
+    // Every git action (sync, pull, commit, ...) enters here with args an agent,
+    // the CLI or another machine sent; refuse a missing id before any lookup.
+    assertLaneIdArg(laneId, kind);
     invalidateLaneReadCache(laneId);
     const lane = laneService.getLaneBaseAndBranch(laneId);
     await assertLaneWorktreeRoot(lane);

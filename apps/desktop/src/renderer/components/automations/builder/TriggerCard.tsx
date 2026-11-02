@@ -9,7 +9,7 @@ import type {
   AutomationTriggerDeliveryStatus,
 } from "../../../../shared/types";
 import { triggerDeliveryKeyForType } from "../../../../shared/types";
-import { linearIngressApi } from "../linearIngressApi";
+import { linearIngressApi, openLinearSettings, setupLinearIngressOrOpenSettings } from "../linearIngressApi";
 import { Banner, type NoticeAction } from "../../ui/notice";
 import { LinearMark } from "../../lanes/linearBrand";
 import { cn } from "../../ui/cn";
@@ -77,7 +77,7 @@ function TriggerDeliveryCallout({
     setLinearPending(true);
     try {
       // Set up on the machine the draft runs on, not the tab's machine.
-      await (runtimePin ? linearApi.setup(runtimePin) : linearApi.setup());
+      await setupLinearIngressOrOpenSettings(runtimePin);
     } catch {
       // The ingress service records the setup error for the next refresh.
     } finally {
@@ -95,7 +95,7 @@ function TriggerDeliveryCallout({
     icon = <LinearMark size={13} />;
     action = linearApi?.setup
       ? { label: "Connect Linear", disabled: linearPending, onClick: () => void setupLinear() }
-      : { label: "Open Linear settings", onClick: () => navigate(settingsRouteFor("integrations.linear")) };
+      : { label: "Open Linear settings", onClick: () => openLinearSettings(runtimePin) };
   }
 
   return (

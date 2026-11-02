@@ -790,6 +790,60 @@ describe.skipIf(!isCrsqliteAvailable())("openKvDb CRR repair", () => {
     ).toBe(1);
   });
 
+  it("heals a CRR table a racing open rewrote without defaults, keeping its rows", async () => {
+    const projectRoot = makeProjectRoot("ade-kvdb-linear-links-race-heal-");
+    const dbPath = path.join(projectRoot, ".ade", "ade.db");
+    const first = await openKvDb(dbPath, createLogger() as any);
+    insertProjectGraph(first);
+    first.run(
+      `insert into lane_linear_issue_links(id, project_id, lane_id, issue_id, issue_json, role, source, created_at, updated_at)
+       values (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ["link-1", "project-1", "lane-child", "issue-1", "{}", "primary", "manual", "2026-03-17T00:00:00.000Z", "2026-03-17T00:00:00.000Z"],
+    );
+    first.close();
+
+    // What a sibling process's retrofit left behind when it planned from the
+    // schema read before this table became a CRR: the base table replaced
+    // (its change triggers gone with it) by NOT NULL columns without defaults,
+    // while the clock and pks tables survive.
+    const raw = new DatabaseSync(dbPath);
+    raw.exec(`
+      create table link_rows as select * from lane_linear_issue_links;
+      drop table lane_linear_issue_links;
+      create table lane_linear_issue_links (
+        id text not null primary key default '',
+        project_id text not null,
+        lane_id text not null,
+        issue_id text not null,
+        issue_json text not null,
+        role text not null,
+        source text not null,
+        include_in_pr integer not null default 1,
+        close_on_merge integer not null default 0,
+        evidence_json text,
+        created_at text not null,
+        updated_at text not null
+      );
+      insert into lane_linear_issue_links select * from link_rows;
+      drop table link_rows;
+    `);
+    raw.close();
+
+    const reopened = await openKvDb(dbPath, createLogger() as any);
+    activeDisposers.push(async () => reopened.close());
+
+    expect(reopened.all<{ id: string }>("select id from lane_linear_issue_links")).toEqual([{ id: "link-1" }]);
+    // Replicating again: the next write is captured as a new change.
+    const roleChangeVersion = () =>
+      reopened.get<{ col_version: number }>(
+        "select col_version from crsql_changes where [table] = ? and cid = 'role'",
+        ["lane_linear_issue_links"],
+      )?.col_version ?? 0;
+    const versionBefore = roleChangeVersion();
+    reopened.run("update lane_linear_issue_links set role = ? where id = ?", ["worked", "link-1"]);
+    expect(roleChangeVersion()).toBeGreaterThan(versionBefore);
+  });
+
   it("enables CRR on session_linear_issues without a blocking unique index", async () => {
     const projectRoot = makeProjectRoot("ade-kvdb-session-linear-crr-");
     const dbPath = path.join(projectRoot, ".ade", "ade.db");
@@ -1053,7 +1107,7 @@ describe("rebuildTableInTransaction leftover staging guard", () => {
         indexSqlsToRecreate: [],
       };
 
-      expect(() => rebuildTableInTransaction(db, plan)).not.toThrow();
+      expect(() => rebuildTableInTransaction(db, () => plan)).not.toThrow();
 
       // Original rows preserved, staging gone, stale orphan row not leaked in.
       expect(db.prepare("select count(*) as count from widgets").get()).toEqual({ count: 25 });

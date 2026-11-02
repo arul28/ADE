@@ -295,7 +295,8 @@ export type GitMergeTreeResult = GitRunResult & {
 
 const DEFAULT_MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
 const STALE_GIT_INDEX_LOCK_MIN_AGE_MS = 2 * 60_000;
-let mergeTreeMergeBaseSupportPromise: Promise<boolean> | null = null;
+/** What this machine's `git merge-tree` can do, read once per process from its `-h`. */
+let mergeTreeCapabilitiesPromise: Promise<{ mergeBaseFlag: boolean; writeTree: boolean }> | null = null;
 const activeGitPids = new Set<number>();
 
 function extractIndexLockPath(message: string): string | null {
@@ -1228,6 +1229,22 @@ function parseMergeTreeConflicts(output: string): GitMergeTreeConflict[] {
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i] ?? "";
+    // "CONFLICT (rename/delete): a renamed to b in A, but deleted in B." — the
+    // file left in the tree is the renamed-to path, b.
+    const renameDeleteMatch = line.match(/^CONFLICT \(([^)]*rename[^)]*)\): .+? renamed to (.+?) in .+?, but deleted in /);
+    if (renameDeleteMatch) {
+      const markerPreview = [lines[i], lines[i + 1], lines[i + 2]].filter(Boolean).join("\n");
+      addConflict(renameDeleteMatch[2] ?? "", normalizeConflictType(renameDeleteMatch[1] ?? ""), markerPreview);
+      continue;
+    }
+    // "CONFLICT (modify/delete): a.txt deleted in B and modified in A.  Version A of a.txt left in tree."
+    // names the file first; the generic "... in <path>" match would read "tree.".
+    const deleteMatch = line.match(/^CONFLICT \(([^)]*delete[^)]*)\): (.+?) deleted in /);
+    if (deleteMatch) {
+      const markerPreview = [lines[i], lines[i + 1], lines[i + 2]].filter(Boolean).join("\n");
+      addConflict(deleteMatch[2] ?? "", normalizeConflictType(deleteMatch[1] ?? ""), markerPreview);
+      continue;
+    }
     const conflictMatch = line.match(/^CONFLICT \(([^)]+)\): .* in (.+)$/);
     if (conflictMatch) {
       const type = normalizeConflictType(conflictMatch[1] ?? "");
@@ -1269,15 +1286,205 @@ function looksLikeMergeTreeUsage(output: string): boolean {
     || normalized.includes("unknown switch");
 }
 
-async function supportsMergeTreeMergeBaseFlag(cwd: string): Promise<boolean> {
-  if (!mergeTreeMergeBaseSupportPromise) {
-    mergeTreeMergeBaseSupportPromise = (async () => {
-      const help = await runGit(["merge-tree", "-h"], { cwd, timeoutMs: 10_000 });
-      const combined = `${help.stdout}\n${help.stderr}`.toLowerCase();
-      return combined.includes("--merge-base");
-    })().catch(() => true);
+/**
+ * Git before 2.38 has only the legacy trivial-merge form, and answers `-h`,
+ * or a `--write-tree` call, with its one-line usage (`usage: git merge-tree
+ * <base-tree> <branch1> <branch2>`). A newer git's usage names `--write-tree`.
+ */
+function looksLikeLegacyOnlyMergeTree(output: string): boolean {
+  const normalized = output.toLowerCase();
+  return normalized.includes("usage: git merge-tree") && !normalized.includes("--write-tree");
+}
+
+const LEGACY_MERGE_TREE_SECTION = /^(merged|added in remote|added in local|added in both|removed in remote|removed in local|removed in both|changed in both)$/;
+const LEGACY_MERGE_TREE_ENTRY = /^ {2}(base|our|their|result) +\d+ ([0-9a-f]{40}(?:[0-9a-f]{24})?) (.+)$/i;
+
+/**
+ * Conflicts from the legacy `git merge-tree <base> <a> <b>` output: sections
+ * headed "changed in both", "added in both", "removed in remote", ..., each
+ * listing the base/our/their entries and then a diff of the merged result.
+ * A content or add/add conflict carries conflict markers in that diff; a
+ * side that removed a file the other side changed is a delete conflict.
+ *
+ * A section with no diff body and different sides is either a binary file
+ * (no markers to print) or a clean merge whose result equals ours. Only the
+ * caller can tell them apart, so those come back as `unmarked` candidates.
+ */
+type LegacyUnmarkedCandidate = { path: string; ourSha: string; theirSha: string; conflictType: ConflictFileType };
+
+function parseLegacyMergeTreeConflicts(output: string): {
+  conflicts: GitMergeTreeConflict[];
+  unmarked: LegacyUnmarkedCandidate[];
+} {
+  const conflicts: GitMergeTreeConflict[] = [];
+  const unmarked: LegacyUnmarkedCandidate[] = [];
+  const seen = new Set<string>();
+  const lines = output.split(/\r?\n/);
+  let index = 0;
+  while (index < lines.length) {
+    // Headers sit in column 0; a diff line (" merged", "+removed in remote")
+    // never does, so lines are matched as they are, not trimmed.
+    const header = lines[index] ?? "";
+    if (!LEGACY_MERGE_TREE_SECTION.test(header)) {
+      index += 1;
+      continue;
+    }
+    const entries = new Map<string, { sha: string; path: string }>();
+    const body: string[] = [];
+    index += 1;
+    while (index < lines.length && !LEGACY_MERGE_TREE_SECTION.test(lines[index] ?? "")) {
+      const line = lines[index] ?? "";
+      const entry = LEGACY_MERGE_TREE_ENTRY.exec(line);
+      if (entry && body.length === 0) {
+        entries.set(entry[1]!.toLowerCase(), { sha: entry[2]!, path: entry[3]! });
+      } else {
+        body.push(line);
+      }
+      index += 1;
+    }
+    const filePath = (entries.get("our") ?? entries.get("their") ?? entries.get("base") ?? entries.get("result"))?.path?.trim();
+    if (!filePath || seen.has(filePath)) continue;
+    const markerIndex = body.findIndex((line) => /^\+<{7}( |$)/.test(line));
+    let conflictType: ConflictFileType | null = null;
+    const our = entries.get("our");
+    const their = entries.get("their");
+    const bothSidesSection = header === "changed in both" || header === "added in both";
+    if (
+      markerIndex < 0
+      && bothSidesSection
+      && !body.some((line) => line.trim().length > 0)
+      && our && their && our.sha !== their.sha
+    ) {
+      seen.add(filePath);
+      unmarked.push({
+        path: filePath,
+        ourSha: our.sha,
+        theirSha: their.sha,
+        conflictType: header === "added in both" ? "add" : "content",
+      });
+      continue;
+    }
+    if (markerIndex >= 0) {
+      conflictType = header === "added in both" ? "add" : "content";
+    } else if (header === "removed in remote" || header === "removed in local") {
+      const base = entries.get("base");
+      const kept = entries.get(header === "removed in remote" ? "our" : "their");
+      if (base && kept && base.sha !== kept.sha) conflictType = "delete";
+    }
+    if (!conflictType) continue;
+    seen.add(filePath);
+    const preview = markerIndex >= 0
+      ? [header, ...body.slice(markerIndex, markerIndex + 3)].join("\n")
+      : header;
+    conflicts.push({ path: filePath, conflictType, markerPreview: preview });
   }
-  return await mergeTreeMergeBaseSupportPromise;
+  return { conflicts, unmarked };
+}
+
+/** Whether git counts the change between two blobs as binary (`-\t-` in numstat). */
+async function blobsDifferAsBinary(cwd: string, ourSha: string, theirSha: string, timeoutMs: number): Promise<boolean> {
+  const numstat = await runGit(["diff", "--numstat", ourSha, theirSha], { cwd, timeoutMs });
+  return numstat.exitCode === 0 && /^-\t-\t/m.test(numstat.stdout);
+}
+
+/**
+ * The same answer from a git too old for `--write-tree`: the legacy form
+ * always exits 0, so its exit code is set from the conflicts it printed (0
+ * clean, 1 conflicts), the way callers read `--write-tree`. It writes no
+ * tree, so `treeOid` is null. When even that fails, the result names the
+ * machine's git version and the version ADE needs.
+ */
+async function runLegacyGitMergeTree(args: {
+  cwd: string;
+  mergeBase: string;
+  branchA: string;
+  branchB: string;
+  timeoutMs: number;
+}): Promise<GitMergeTreeResult> {
+  const base = {
+    mergeBase: args.mergeBase,
+    branchA: args.branchA,
+    branchB: args.branchB,
+    treeOid: null,
+    usedMergeBaseFlag: false,
+    usedWriteTree: false,
+  };
+  const legacy = args.mergeBase.trim()
+    ? await runGit(["merge-tree", args.mergeBase, args.branchA, args.branchB], {
+        cwd: args.cwd,
+        timeoutMs: args.timeoutMs,
+        maxOutputBytes: 32 * 1024 * 1024,
+      })
+    : null;
+  if (legacy && legacy.exitCode === 0 && !legacy.stdoutTruncated) {
+    const { conflicts, unmarked } = parseLegacyMergeTreeConflicts(legacy.stdout);
+    // A binary file changed on both sides is a conflict with no markers; a
+    // text file with no body merged cleanly into ours.
+    for (const candidate of unmarked) {
+      if (await blobsDifferAsBinary(args.cwd, candidate.ourSha, candidate.theirSha, args.timeoutMs)) {
+        conflicts.push({ path: candidate.path, conflictType: candidate.conflictType, markerPreview: "binary file changed on both sides" });
+      }
+    }
+    return { ...legacy, ...base, exitCode: conflicts.length > 0 ? 1 : 0, conflicts };
+  }
+  // The legacy form ran and failed on its own terms (a timeout, a bad ref,
+  // output past the cap): say that, not that git is too old.
+  if (legacy) {
+    return {
+      ...legacy,
+      ...base,
+      exitCode: legacy.exitCode === 0 ? 128 : legacy.exitCode,
+      stderr: legacy.stdoutTruncated
+        ? "git merge-tree printed more than ADE reads for a conflict check."
+        : legacy.stderr,
+      conflicts: [],
+    };
+  }
+  // No merge base: the legacy form needs one, and only --write-tree merges without.
+  const version = await runGit(["--version"], { cwd: args.cwd, timeoutMs: 10_000 }).catch(() => null);
+  const versionText = version?.exitCode === 0 ? version.stdout.trim().replace(/^git version\s*/i, "") : "";
+  return {
+    exitCode: 128,
+    stdout: "",
+    stderr:
+      `This machine's git${versionText ? ` (${versionText})` : ""} is too old for ADE's conflict check, ` +
+      "which needs git merge-tree --write-tree. Update git to 2.38 or newer.",
+    ...base,
+    conflicts: [],
+  };
+}
+
+type MergeTreeCapabilities = { mergeBaseFlag: boolean; writeTree: boolean };
+
+const CURRENT_GIT_MERGE_TREE: MergeTreeCapabilities = { mergeBaseFlag: true, writeTree: true };
+
+/**
+ * `--merge-base` arrived in git 2.40 and `--write-tree` in 2.38; `-h` lists
+ * both when present. Only a probe that printed git's usage is kept for the
+ * process: `runGit` resolves a spawn error or a timeout too, and caching that
+ * would pin a wrong answer. Until a probe answers, a current git is assumed,
+ * and `runGitMergeTree` corrects it from the real call's usage answer.
+ */
+async function mergeTreeCapabilities(cwd: string): Promise<MergeTreeCapabilities> {
+  if (!mergeTreeCapabilitiesPromise) {
+    const probe = (async (): Promise<MergeTreeCapabilities> => {
+      const help = await runGit(["merge-tree", "-h"], { cwd, timeoutMs: 10_000 });
+      const combined = `${help.stdout}\n${help.stderr}`;
+      if (!combined.toLowerCase().includes("usage: git merge-tree")) {
+        mergeTreeCapabilitiesPromise = null;
+        return CURRENT_GIT_MERGE_TREE;
+      }
+      return {
+        mergeBaseFlag: combined.toLowerCase().includes("--merge-base"),
+        writeTree: !looksLikeLegacyOnlyMergeTree(combined),
+      };
+    })().catch(() => {
+      mergeTreeCapabilitiesPromise = null;
+      return CURRENT_GIT_MERGE_TREE;
+    });
+    mergeTreeCapabilitiesPromise = probe;
+  }
+  return await mergeTreeCapabilitiesPromise;
 }
 
 export async function runGitMergeTree(args: {
@@ -1288,8 +1495,9 @@ export async function runGitMergeTree(args: {
   timeoutMs?: number;
 }): Promise<GitMergeTreeResult> {
   const timeoutMs = args.timeoutMs ?? 45_000;
-  const supportsMergeBaseFlag = await supportsMergeTreeMergeBaseFlag(args.cwd);
-  const writeTreeCmd = supportsMergeBaseFlag
+  const capabilities = await mergeTreeCapabilities(args.cwd);
+  if (!capabilities.writeTree) return await runLegacyGitMergeTree({ ...args, timeoutMs });
+  const writeTreeCmd = (mergeBaseFlag: boolean) => mergeBaseFlag
     ? [
         "merge-tree",
         "--write-tree",
@@ -1307,20 +1515,20 @@ export async function runGitMergeTree(args: {
         args.branchB
       ];
 
-  let writeTree = await runGit(writeTreeCmd, { cwd: args.cwd, timeoutMs });
-  let usedMergeBaseFlag = supportsMergeBaseFlag;
+  let usedMergeBaseFlag = capabilities.mergeBaseFlag;
+  let writeTree = await runGit(writeTreeCmd(usedMergeBaseFlag), { cwd: args.cwd, timeoutMs });
   let combined = `${writeTree.stdout}\n${writeTree.stderr}`;
-
-  if (
-    supportsMergeBaseFlag
-    && writeTree.exitCode !== 0
-    && looksLikeMergeTreeUsage(combined)
-  ) {
-    writeTree = await runGit(
-      ["merge-tree", "--write-tree", "--messages", args.branchA, args.branchB],
-      { cwd: args.cwd, timeoutMs }
-    );
+  // The real call is the final word when the probe could not answer: a git
+  // with only the legacy form falls back to it, and one without
+  // `--merge-base` (2.38-2.39) runs again without it. Either answer is kept.
+  if (looksLikeLegacyOnlyMergeTree(combined)) {
+    mergeTreeCapabilitiesPromise = Promise.resolve({ mergeBaseFlag: false, writeTree: false });
+    return await runLegacyGitMergeTree({ ...args, timeoutMs });
+  }
+  if (usedMergeBaseFlag && looksLikeMergeTreeUsage(combined)) {
+    mergeTreeCapabilitiesPromise = Promise.resolve({ mergeBaseFlag: false, writeTree: true });
     usedMergeBaseFlag = false;
+    writeTree = await runGit(writeTreeCmd(false), { cwd: args.cwd, timeoutMs });
     combined = `${writeTree.stdout}\n${writeTree.stderr}`;
   }
 

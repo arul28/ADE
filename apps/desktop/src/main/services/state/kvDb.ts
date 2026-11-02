@@ -836,12 +836,23 @@ class RebuildRollbackFailedError extends Error {
   }
 }
 
+/**
+ * Rebuild one table through a staging copy, in one write transaction.
+ *
+ * `resolvePlan` runs once the write lock is held and returns null when there
+ * is nothing to rebuild. A sibling process (the desktop
+ * and the brain open the same file) can rewrite the table between the caller
+ * reading the schema and taking the lock, so a plan built from that earlier
+ * read can be stale; one built under the lock cannot. Returns whether the
+ * table was rebuilt.
+ */
 export function rebuildTableInTransaction(
   db: DatabaseSyncType,
-  plan: TableRebuildPlan,
+  resolvePlan: () => TableRebuildPlan | null,
   runStmt: typeof runStatement = runStatement,
-): void {
+): boolean {
   let transactionMayBeOpen = false;
+  let plan: TableRebuildPlan | null = null;
   try {
     runStmt(db, "BEGIN IMMEDIATE");
     transactionMayBeOpen = true;
@@ -855,6 +866,12 @@ export function rebuildTableInTransaction(
   }
 
   try {
+    plan = resolvePlan();
+    if (!plan) {
+      runStmt(db, "commit");
+      transactionMayBeOpen = false;
+      return false;
+    }
     const originalCount = getRow<{ count: number }>(
       db,
       `select count(*) as count from ${quoteIdentifier(plan.tableName)}`,
@@ -893,6 +910,7 @@ export function rebuildTableInTransaction(
     }
     runStmt(db, "commit");
     transactionMayBeOpen = false;
+    return true;
   } catch (error) {
     if (transactionMayBeOpen) {
       try {
@@ -904,7 +922,7 @@ export function rebuildTableInTransaction(
         // instead of running more statements inside it.
         const rollbackMessage = rollbackError instanceof Error ? rollbackError.message : String(rollbackError);
         if (!/no transaction is active/i.test(rollbackMessage)) {
-          throw new RebuildRollbackFailedError(plan.tableName, rollbackError);
+          throw new RebuildRollbackFailedError(plan?.tableName ?? "a table", rollbackError);
         }
       }
     }
@@ -945,8 +963,9 @@ function retrofitLegacyPrimaryKeyNotNullSchema(
     USER_TABLES_SQL
   );
 
-  // Read once: rebuilding a non-CRR table never creates or drops a clock table.
-  const tableNames = readTableNames(db);
+  // Read once: rebuilding a table that is not a live CRR never creates or
+  // drops a clock table, and drops only its own triggers.
+  const crrSchema = readCrrSchemaSnapshot(db);
   let changed = false;
   runStatement(db, "pragma foreign_keys = off");
   try {
@@ -959,9 +978,11 @@ function retrofitLegacyPrimaryKeyNotNullSchema(
       // Local-only tables never become CRRs, so their FK and unique-index
       // schema must remain intact.
       if (LOCAL_ONLY_CRR_EXCLUDED_TABLES.has(table.name)) continue;
-      // CRR tables must be altered via crsql_begin_alter/commit_alter or rebuilt
-      // with rebuildCrrTableWithBackfill — never DROP/rename wholesale.
-      if (tableNames.has(`${table.name}__crsql_clock`)) continue;
+      // A live CRR (clock and all three triggers) must be altered via
+      // crsql_begin_alter/commit_alter or rebuilt with rebuildCrrTableWithBackfill,
+      // never DROP/rename wholesale. A half-converted one (no clock, or missing
+      // triggers) is not replicating yet, so it is rebuilt here like any table.
+      if (isLiveCrr(crrTableState(crrSchema, table.name))) continue;
 
       try {
         if (retrofitTableLegacyPrimaryKey(db, table.name, table.sql)) changed = true;
@@ -995,18 +1016,63 @@ function retrofitLegacyPrimaryKeyNotNullSchema(
 }
 
 /**
+ * A table cr-sqlite is tracking: its clock table and all three change triggers.
+ *
+ * A clock with fewer triggers is not one. Nothing records the table's writes,
+ * and `ensureCrrTables` runs `crsql_as_crr` on it again, which refuses the same
+ * schemas a table that never was a CRR is refused for. The retrofit may rebuild
+ * it like any other table: the clock and pks tables are separate tables, so
+ * they and their history survive the base table being replaced.
+ */
+function isLiveCrr(state: { hasClock: boolean; triggerCount: number }): boolean {
+  return state.hasClock && state.triggerCount >= 3;
+}
+
+/**
  * Rebuild one table that the legacy primary-key retrofit has to change.
  *
  * Returns true when the table was rebuilt and false when its stored schema is
  * already correct. Throws when SQLite rejects the rewritten DDL; the caller
  * isolates that per table so one schema it cannot express does not wedge the
  * database open.
+ *
+ * `tableSql` comes from the caller's one read of the schema, which is enough to
+ * tell that a table needs nothing, the answer for almost every table on almost
+ * every open. A table that does need a rebuild is planned again under the write
+ * lock from what is on disk then. The desktop and the brain open the same file,
+ * often at the same moment on a new project, and the sibling may have rebuilt
+ * this table (or made it a CRR) since that read. A plan joining the old SQL to
+ * the new columns' defaults wrote back a table with NOT NULL columns and no
+ * defaults, which `crsql_as_crr` refuses, and the open failed in both
+ * processes (Sentry ADE-DESKTOP-8A, ADE-BRAIN-5Z).
  */
 function retrofitTableLegacyPrimaryKey(
   db: DatabaseSyncType,
   tableName: string,
   tableSql: string,
 ): boolean {
+  if (!planLegacyPrimaryKeyRetrofit(db, tableName, tableSql)) return false;
+  return rebuildTableInTransaction(db, () => {
+    const liveSql = getRow<{ sql: string | null }>(
+      db,
+      "select sql from sqlite_master where type = 'table' and name = ? limit 1",
+      [tableName],
+    )?.sql;
+    if (!liveSql) return null;
+    const liveCrr = isLiveCrr({
+      hasClock: rawHasTable(db, `${tableName}__crsql_clock`),
+      triggerCount: listCrrTriggers(db, tableName).length,
+    });
+    return liveCrr ? null : planLegacyPrimaryKeyRetrofit(db, tableName, liveSql);
+  });
+}
+
+/** The rebuild that gives `tableName` a schema `crsql_as_crr` accepts, or null when it already has one. */
+function planLegacyPrimaryKeyRetrofit(
+  db: DatabaseSyncType,
+  tableName: string,
+  tableSql: string,
+): TableRebuildPlan | null {
   const tableInfo = allRows<{
     name: string;
     type: string;
@@ -1037,11 +1103,9 @@ function retrofitTableLegacyPrimaryKey(
     `pragma index_list('${tableName.replace(/'/g, "''")}')`,
   );
   const hasDisallowedUniqueIndices = indexes.some((index) => index.unique && index.origin !== "pk");
-  if (nextSql === tableSql && !hasDisallowedUniqueIndices) return false;
+  if (nextSql === tableSql && !hasDisallowedUniqueIndices) return null;
 
   const repairName = `__ade_crr_repair_${tableName}`;
-  const rewrittenSql = rewriteCreateTableName(nextSql, tableName, repairName);
-  const columnsSql = tableInfo.map((column) => quoteIdentifier(column.name)).join(", ");
   const nonUniqueIndexNames = new Set(indexes.filter((index) => !index.unique).map((index) => index.name));
   const indexSqls = allRows<{ name: string; sql: string | null }>(
     db,
@@ -1052,14 +1116,13 @@ function retrofitTableLegacyPrimaryKey(
     .map((index) => index.sql?.trim() ?? "")
     .filter(Boolean);
 
-  rebuildTableInTransaction(db, {
+  return {
     tableName,
     stagingName: repairName,
-    createStagingSql: rewrittenSql,
-    columnsSql,
+    createStagingSql: rewriteCreateTableName(nextSql, tableName, repairName),
+    columnsSql: tableInfo.map((column) => quoteIdentifier(column.name)).join(", "),
     indexSqlsToRecreate: indexSqls,
-  });
-  return true;
+  };
 }
 
 /**
@@ -1183,13 +1246,13 @@ function retrofitForeignKeyCascadeActions(
         .map((index) => index.sql?.trim() ?? "")
         .filter(Boolean);
 
-      rebuildTableInTransaction(db, {
+      rebuildTableInTransaction(db, () => ({
         tableName: table.name,
         stagingName: repairName,
         createStagingSql: rewrittenSql,
         columnsSql,
         indexSqlsToRecreate: indexSqls,
-      });
+      }));
       changed = true;
     }
   } finally {
@@ -2244,12 +2307,21 @@ function rebuildCrrTableWithBackfill(db: DatabaseSyncType, tableName: string): v
   }
 }
 
-/** A non-PK unique index: what `crsql_as_crr` refuses a table for. */
-function hasBlockingUniqueIndexes(db: DatabaseSyncType, tableName: string): boolean {
-  return allRows<{ unique: number; origin: string }>(
-    db,
-    `pragma index_list('${tableName.replace(/'/g, "''")}')`,
-  ).some((index) => Number(index.unique) === 1 && index.origin !== "pk");
+/**
+ * True when the table's own schema is one `crsql_as_crr` refuses: a non-PK
+ * unique index, a nullable primary key, a checked foreign key, or a NOT NULL
+ * column without a default. These are the shapes the schema retrofit exists to
+ * remove, so seeing one here means the retrofit could not rewrite this table.
+ */
+function hasCrrRefusedSchema(db: DatabaseSyncType, tableName: string): boolean {
+  const quoted = tableName.replace(/'/g, "''");
+  const hasUniqueIndex = allRows<{ unique: number; origin: string }>(db, `pragma index_list('${quoted}')`)
+    .some((index) => Number(index.unique) === 1 && index.origin !== "pk");
+  if (hasUniqueIndex) return true;
+  const columns = allRows<{ notnull: number; dflt_value: string | null; pk: number }>(db, `pragma table_info('${quoted}')`);
+  const hasRefusedColumn = columns.some((column) =>
+    column.pk > 0 ? Number(column.notnull) === 0 : Number(column.notnull) === 1 && column.dflt_value == null);
+  return hasRefusedColumn || allRows(db, `pragma foreign_key_list('${quoted}')`).length > 0;
 }
 
 function ensureCrrTables(db: DatabaseSyncType, logger?: Logger): void {
@@ -2260,23 +2332,25 @@ function ensureCrrTables(db: DatabaseSyncType, logger?: Logger): void {
   /**
    * Turn one table into a CRR, or repair the triggers of one that already is.
    *
-   * `crsql_as_crr` refuses a table that still carries a non-PK unique index — a
-   * table the schema retrofit could not strip, for instance. That must not abort
-   * the whole database open: this table loses replication and says so in the log,
-   * while a runtime that cannot start loses everything. A phone-critical table
-   * still throws, because a phone whose core tables silently stop replicating is
-   * worse than an open that fails loudly.
+   * `crsql_as_crr` refuses a table whose schema the retrofit could not rewrite
+   * (`hasCrrRefusedSchema`): a rebuild SQLite rejected, or one a sibling
+   * process's open raced. That must not abort the whole database open: this
+   * table loses replication until an open whose retrofit succeeds, and says so
+   * in the log, while a runtime that cannot start loses everything. A
+   * phone-critical table still throws, because a phone whose core tables
+   * silently stop replicating is worse than an open that fails loudly.
    */
   const convertToCrr = (tableName: string): void => {
     try {
       getRow(db, "select crsql_as_crr(?) as ok", [tableName]);
     } catch (error) {
+      if (isSqliteBusyOrLockedError(error)) throw error;
       if (repairTargets.has(tableName)) throw error;
-      // Swallow the one refusal named above — a table still carrying a non-PK
-      // unique index, which the schema retrofit could not strip. An I/O error
-      // or a busy lock is not a one-table problem, and swallowing it would turn
-      // a loud failure into a table that silently stops replicating.
-      if (!hasBlockingUniqueIndexes(db, tableName)) throw error;
+      // Swallow only the refusals named above, read from the table's schema.
+      // An I/O error or a busy lock is not a one-table problem, and swallowing
+      // it would turn a loud failure into a table that silently stops
+      // replicating.
+      if (!hasCrrRefusedSchema(db, tableName)) throw error;
       logger?.warn("db.crr_conversion_failed", {
         tableName,
         error: error instanceof Error ? error.message : String(error),

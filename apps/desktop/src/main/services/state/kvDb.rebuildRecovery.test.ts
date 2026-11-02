@@ -155,12 +155,12 @@ describe("kvDb transactional table rebuilds", () => {
 
     const currentPages = Number((raw.prepare("pragma page_count").get() as { page_count: number }).page_count);
     constrainSqliteMaxPages(raw, currentPages + 2);
-    expect(() => rebuildTableInTransaction(raw, basicRebuildPlan())).toThrow(/database or disk is full/i);
+    expect(() => rebuildTableInTransaction(raw, basicRebuildPlan)).toThrow(/database or disk is full/i);
     expect(rawCount(raw, "rebuild_source")).toBe(3_000);
     expect(rawTableExists(raw, "__ade_crr_repair_rebuild_source")).toBe(false);
 
     constrainSqliteMaxPages(raw, currentPages * 4);
-    rebuildTableInTransaction(raw, basicRebuildPlan());
+    rebuildTableInTransaction(raw, basicRebuildPlan);
     expect(rawCount(raw, "rebuild_source")).toBe(3_000);
     expect(rawTableExists(raw, "__ade_crr_repair_rebuild_source")).toBe(false);
   });
@@ -181,11 +181,11 @@ describe("kvDb transactional table rebuilds", () => {
         return db.prepare(sql).run() as { changes: number };
       }) as any;
 
-      expect(() => rebuildTableInTransaction(raw, basicRebuildPlan(), injectedRun)).toThrow(/disk is full/i);
+      expect(() => rebuildTableInTransaction(raw, basicRebuildPlan, injectedRun)).toThrow(/disk is full/i);
       expect(rawCount(raw, "rebuild_source")).toBe(20);
       expect(rawTableExists(raw, "__ade_crr_repair_rebuild_source")).toBe(false);
 
-      rebuildTableInTransaction(raw, basicRebuildPlan());
+      rebuildTableInTransaction(raw, basicRebuildPlan);
       expect(rawCount(raw, "rebuild_source")).toBe(20);
       expect(rawTableExists(raw, "__ade_crr_repair_rebuild_source")).toBe(false);
       expect(raw.prepare("select name from sqlite_master where type = 'index' and name = 'idx_rebuild_source_payload'").get())

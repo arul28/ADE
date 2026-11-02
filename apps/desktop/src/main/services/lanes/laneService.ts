@@ -62,6 +62,7 @@ import type { LaneJiraIssue } from "../../../shared/types/jira";
 import type { createOperationService } from "../history/operationService";
 import type { Logger } from "../logging/logger";
 import { createWorktreeResidualCleanup } from "./worktreeResidualCleanup";
+import { assertLaneIdArg, describeArgType } from "./laneIdArg";
 import { laneWorktreeFolderName, legacyLaneWorktreeFolderName, slugify } from "./laneWorktreeNaming";
 import { createLaneWorktreeLockService } from "./laneWorktreeLockService";
 import { measureTree } from "../storage/diskUsage";
@@ -1813,8 +1814,17 @@ export function createLaneService({
     );
   };
 
-  const getLaneRow = (laneId: string) =>
-    db.get<LaneRow>("select * from lanes where id = ? and project_id = ? limit 1", [laneId, projectId]);
+  const getLaneRow = (laneId: string | null) => {
+    // Action callers (agents, the CLI, other machines) reach this with args
+    // straight off the wire; a missing or non-string id would otherwise fail
+    // as a SQLite bind error. Null still binds and reads as "not found".
+    // Not marked expected: action boundaries validate their own input, so a
+    // non-string id reaching the lookup is ADE's bug and stays reportable.
+    if (typeof laneId !== "string" && laneId !== null) {
+      throw new Error(`invalid_argument: laneId must be a lane id string, but got ${describeArgType(laneId)}.`);
+    }
+    return db.get<LaneRow>("select * from lanes where id = ? and project_id = ? limit 1", [laneId, projectId]);
+  };
 
   const getLaneLinearIssue = (laneId: string): LaneLinearIssue | null => {
     try {
@@ -7448,8 +7458,16 @@ export function createLaneService({
     },
 
     rename({ laneId, name }: { laneId: string; name: string }): void {
+      assertLaneIdArg(laneId, "rename");
+      // `name` arrives unchecked from action callers (agents, the CLI, other machines).
+      if (typeof name !== "string") {
+        throw new AdeExpectedError(
+          `invalid_argument: Lane name is required and must be a string, but got ${describeArgType(name)}.`,
+          "user",
+        );
+      }
       const trimmed = name.trim();
-      if (!trimmed) throw new Error("Lane name is required");
+      if (!trimmed) throw new AdeExpectedError("Lane name is required", "user");
       const lane = getLaneRow(laneId);
       if (!lane) throw new Error(`Lane not found: ${laneId}`);
       if (lane.lane_type === "primary") throw new Error("Primary lane cannot be renamed");

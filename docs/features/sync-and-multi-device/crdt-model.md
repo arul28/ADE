@@ -86,6 +86,19 @@ working. The repair drops shadow tables whose base table no longer
 exists before any other CRR work, so existing DBs heal on the next
 brain start.
 
+The desktop and the brain can open a brand-new database at the same time.
+The retrofit therefore plans each table's rebuild again under `BEGIN IMMEDIATE`
+(`rebuildTableInTransaction` takes a `resolvePlan` called with the write lock
+held), from the live schema: a table the other process already rebuilt or made
+a CRR is skipped. Planning from the earlier snapshot once joined an old table
+definition to fresh column defaults and built a table `crsql_as_crr` refuses
+("NOT NULL column without a DEFAULT VALUE"), which failed the open in both
+processes. A half-converted table (a clock without all three triggers) is now
+rebuilt too, keeping its clock and pks history. As a backstop, `convertToCrr`
+logs `db.crr_conversion_failed` and moves on for a schema cr-sqlite refuses
+(`hasCrrRefusedSchema`) rather than fail the open; phone-critical tables still
+throw, and a busy or locked error is rethrown so the open retries.
+
 Startup also self-heals **orphaned rebuild staging tables**. Copy-table
 migrations (`rebuildTableInTransaction`, used for the column drop/rename that
 CRR forbids in place — see Rule 2) issue a bare

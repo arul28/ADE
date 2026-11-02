@@ -20,6 +20,8 @@ import { expectedErrorKind } from "../expectedError";
 import { GITHUB_AUTOLINKS_REFUSED } from "../githubAutolinks";
 import { PENDING_INPUT_SEND_BLOCKED_MESSAGE } from "../pendingInputAnswers";
 import { SIMCTL_MISSING } from "../xcodeToolchain";
+import { PROJECT_SECRET_NAME_RULE } from "../projectSecretRequest";
+import { LINEAR_NOT_CONNECTED_MESSAGE } from "../types/automations";
 
 const escapeRegExp = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
@@ -141,7 +143,43 @@ export const EXPECTED_OUTCOME_PATTERNS: readonly RegExp[] = [
   // offline reasons as NETWORK_FAILURE below; a bare reset stays an issue.
   /^(?:Can't reach GitHub|ADE can't reach its account service) \((?:ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ETIMEDOUT|ENETUNREACH|EHOSTUNREACH|UND_ERR_CONNECT_TIMEOUT|TLS handshake cut off)\)/,
   /^ADE's account service did not answer in time\.$/,
+  // Added from Sentry traffic, 2026-11-02.
+  // Answers to a caller (often an agent) that fixes its input and retries.
+  new RegExp(`^${escapeRegExp(PROJECT_SECRET_NAME_RULE)}$`),
+  /^(?:Path|Attachment source) is not a file\.$/,
+  /^This Codex chat does not have a thread to rewind yet\.$/,
+  /^This message is no longer queued\.$/,
+  // A Linear call on a machine where Linear is not connected; the UI sends the
+  // user to Linear settings.
+  new RegExp(`^${escapeRegExp(LINEAR_NOT_CONNECTED_MESSAGE)}$`),
+  /^Linear token missing\. /,
+  // The network between this machine and GitHub, the account vault or an SSH host.
+  /^GitHub API (?:request|response body) timed out\. Check network access on this machine\.$/,
+  /^Couldn't read this PR's Actions runs from GitHub: Can't reach GitHub\b/,
+  /ADE couldn't reach your ADE account's vault from this computer/,
+  /^Nothing is accepting SSH connections at \S+\. /,
+  // A peer (phone, web) holding a project id from another machine.
+  /^This project is not on this ADE machine\b/,
+  // A second viewer asking for a lane's live stream while the first start is
+  // still running; the answer says to try again once it answers.
+  /^capture_starting: Lane \S+'s (?:live stream|recording) is already starting\. Try again once that start answers\.$/,
 ];
+
+/**
+ * A paired machine on an older build: it lacks a domain, or still wants the
+ * projectId older account calls carried. Only an answer from ANOTHER machine
+ * is a version gap; the same text from this computer's brain is a bug, so the
+ * remote boundaries (remoteConnectionPool, accountConnectionRoutes) mark it
+ * expected and this list does not.
+ */
+const PEER_VERSION_GAP = [
+  /(?:^|: )Domain '[^']+' is unavailable in this runtime\./,
+  /\bMethod [\w.]+ requires params\.projectId\./,
+];
+
+export function isPeerVersionGapMessage(message: string): boolean {
+  return PEER_VERSION_GAP.some((pattern) => pattern.test(message));
+}
 
 // Each of these names the address or host it failed to reach, so a loopback
 // target is visible. A reset or a closed socket mid-request is not on the list:
@@ -219,9 +257,18 @@ export function isExpectedOutcome(error: unknown): boolean {
   if (isExpectedOutcomeText(text)) return true;
   const code = parseCodedErrorMessage(error).code;
   if (code && EXPECTED_OUTCOME_CODES.has(code)) return true;
-  if (text !== "fetch failed" || !(error instanceof Error)) return false;
+  return isOfflineFetchError(error);
+}
+
+/**
+ * A `fetch failed` whose cause chain says the network is down or blocks the
+ * host. The chain does not survive RPC, so a boundary that forwards the error
+ * marks it on the wire; the far side cannot tell it from a defect otherwise.
+ */
+export function isOfflineFetchError(error: unknown): boolean {
+  if (!(error instanceof Error) || error.message !== "fetch failed") return false;
   const causes = causeTexts(error);
-  return causes !== null && isOfflineFetchFailure(text, causes);
+  return causes !== null && isOfflineFetchFailure(error.message, causes);
 }
 
 const PROGRAMMING_ERROR_NAMES = new Set(["TypeError", "ReferenceError", "RangeError", "SyntaxError", "EvalError"]);
