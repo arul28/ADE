@@ -338,9 +338,11 @@ export async function* readJsonlLines(
   const source = fs.createReadStream(filePath);
   // A `.zst` file streams through zstd, so a large rollout is never inflated in
   // memory. pipeline() passes a read error on to the loop below.
-  const stream: Readable = filePath.endsWith(".zst")
+  const compressed = filePath.endsWith(".zst");
+  const stream: Readable = compressed
     ? pipeline(source, zlib.createZstdDecompress(), () => {})
     : source;
+  let streamBytes = 0;
   let lineChunks: Buffer[] = [];
   let lineBytes = 0;
   let discardingOversizedLine = false;
@@ -355,6 +357,7 @@ export async function* readJsonlLines(
 
   try {
     for await (const chunk of stream) {
+      streamBytes += chunk.length;
       let start = 0;
       while (start < chunk.length) {
         const newline = chunk.indexOf(0x0a, start);
@@ -382,6 +385,11 @@ export async function* readJsonlLines(
     }
 
     if (!discardingOversizedLine && lineBytes > 0) yield takeLine();
+    // zstd ends a cut-off frame without an error and without output. Throw, so
+    // the caller marks its scan incomplete instead of reading an empty file.
+    if (compressed && streamBytes === 0 && source.bytesRead > 0) {
+      throw new Error(`Compressed file ${path.basename(filePath)} is truncated or empty.`);
+    }
   } finally {
     stream.destroy();
     source.destroy();
