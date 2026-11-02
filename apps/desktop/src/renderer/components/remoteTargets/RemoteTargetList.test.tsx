@@ -1392,16 +1392,16 @@ describe("RemoteTargetList", () => {
     expect(note.querySelector("svg")).toBeNull();
   });
 
-  it("surfaces Tailscale discovery warnings separately from empty results", async () => {
+  it("surfaces discovery warnings separately from empty results", async () => {
     remoteRuntimeMock.listTargets.mockResolvedValue([]);
     remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({
       machines: [],
       diagnostics: [
         {
-          source: "tailscale",
+          source: "bonjour",
           severity: "warning",
-          code: "tailscale-status-failed",
-          message: "Tailscale discovery failed; LAN discovery still ran.",
+          code: "bonjour-discovery-failed",
+          message: "LAN discovery failed; Tailscale discovery still ran.",
           detail: "boom",
         },
       ],
@@ -1411,7 +1411,7 @@ describe("RemoteTargetList", () => {
     render(<RemoteTargetList />);
 
     const warning = await waitFor(() =>
-      screen.getByText("Tailscale discovery failed; LAN discovery still ran."),
+      screen.getByText("LAN discovery failed; Tailscale discovery still ran."),
     );
     expect(warning.querySelector("svg")).not.toBeNull();
     expect(screen.getByText("Connect your other computers")).toBeTruthy();
