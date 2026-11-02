@@ -1332,12 +1332,19 @@ Tabs:
   its lane's color. The robot mark shows only while a chat holds the tab
   (`ownerChatSessionId`); a lane group alone is not an agent lease.
 
-  Browser leases expire after their idle period. A tab whose owner lease has
-  expired is available for another agent to claim and appears in scoped
-  `ade browser tabs` output as `idle (lease lapsed)`. When opening a new tab
-  would exceed the tab limit, the error lists tabs owned by the caller or with
-  an expired lease that the agent can close; tabs with a live lease for another
-  chat remain protected.
+  Browser leases expire after their idle period. Every agent sees every tab:
+  a scoped read marks a free tab (no owner, or a lapsed lease) `claimable`
+  and another chat's live tab `heldByOtherChat`, and `ade browser status`
+  names the owner by chat title and lane name. Any agent may close any tab;
+  claiming a held tab is still refused. A command with no tab named, from a
+  chat that owns no tab, is refused rather than run in the tab in front. When
+  opening a new tab would exceed the tab limit (20 per collection by
+  default, "Tabs per project" in Settings), the error lists only the caller's
+  agent tabs and free agent tabs nobody kept, and counts the rest; a tab the
+  user opened or kept is never offered. A deleted or archived lane frees its
+  tabs and closes none. At start, a collection restores the user's tabs and
+  the agent tabs a person kept (navigated by hand or handed to a chat), with
+  their ids; other agent tabs and one-time OAuth pages are not restored.
 
   **Zoom-aware inspect.** The preview sets a CSS zoom on `<body>`. The inspect
   overlay attaches to the document element, outside that zoom, and each hit

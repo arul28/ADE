@@ -238,6 +238,8 @@ export type BuiltInBrowserDesktopBridgeClient = {
 } & {
   /** Read-only Work-tools mirror — see `BuiltInBrowserRuntimeStatus`. */
   getStatusForRuntime: () => Promise<BuiltInBrowserRuntimeStatus>;
+  listTabsForAgent: (input: Record<string, unknown>) => Promise<BridgeReturn<"getStatus"> | null>;
+  releaseLaneTabs: (input: { laneId: string }) => Promise<{ released: number }>;
   acknowledgeRemoteRequest: (
     input: BuiltInBrowserAcknowledgeRemoteRequestArgs,
   ) => { ok: boolean };
@@ -246,12 +248,33 @@ export type BuiltInBrowserDesktopBridgeClient = {
 };
 
 /**
- * True for the method the bridge server answers itself (the read-only runtime
- * status), kept out of `isBuiltInBrowserDesktopBridgeMethod` so the bridge
- * server never dispatches it onto `BuiltInBrowserService`.
+ * Every tab of one collection as an agent sees it, read without building the
+ * collection (null when the desktop has none open). The brain asks each
+ * desktop it reaches, so `ade browser status` lists every tab on every
+ * machine. Bridge-served: never an agent command of its own.
+ */
+export const BUILT_IN_BROWSER_LIST_TABS_FOR_AGENT_METHOD = "listTabsForAgent";
+
+/**
+ * A lane was deleted or archived: free its tabs, close none. Called by the
+ * brain's lane service only, so it is bridge-served and never an agent command.
+ */
+export const BUILT_IN_BROWSER_RELEASE_LANE_TABS_METHOD = "releaseLaneTabs";
+
+const BUILT_IN_BROWSER_BRIDGE_SERVED_METHODS = new Set<string>([
+  BUILT_IN_BROWSER_RUNTIME_STATUS_METHOD,
+  BUILT_IN_BROWSER_LIST_TABS_FOR_AGENT_METHOD,
+  BUILT_IN_BROWSER_RELEASE_LANE_TABS_METHOD,
+]);
+
+/**
+ * True for a method the bridge server answers itself (the read-only runtime
+ * status, the agent tab list, a lane's release), kept out of
+ * `isBuiltInBrowserDesktopBridgeMethod` so none of them becomes an agent
+ * action.
  */
 export function isBuiltInBrowserBridgeServedMethod(value: string): boolean {
-  return value === BUILT_IN_BROWSER_RUNTIME_STATUS_METHOD;
+  return BUILT_IN_BROWSER_BRIDGE_SERVED_METHODS.has(value);
 }
 
 const BUILT_IN_BROWSER_DESKTOP_BRIDGE_METHOD_SET = new Set<string>(

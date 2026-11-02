@@ -14,6 +14,7 @@ import path from "node:path";
 import {
   BUILT_IN_BROWSER_REMOTE_CALL_MAX_FILE_BYTES,
   BUILT_IN_BROWSER_REMOTE_CALL_MAX_FILES,
+  isBuiltInBrowserRemoteBroadcastMethod,
   isBuiltInBrowserRemoteCallMethod,
   type BuiltInBrowserRemoteAgentCallOutcome,
   type BuiltInBrowserRemoteCallFile,
@@ -91,6 +92,18 @@ export async function runRemoteAgentBrowserCall(args: {
   method: string;
   input: Record<string, unknown>;
 }): Promise<BuiltInBrowserRemoteAgentCallOutcome> {
+  // Asked of every desktop at once, never an agent's own command: a read that
+  // builds nothing, and a lane's release.
+  if (isBuiltInBrowserRemoteBroadcastMethod(args.method)) {
+    try {
+      const result = args.method === "listTabsForAgent"
+        ? args.service.listTabsForAgent(args.input)
+        : args.service.releaseLaneTabs({ laneId: typeof args.input.laneId === "string" ? args.input.laneId : null });
+      return { ok: true, result, files: [], machineName: machineName() };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error), machineName: machineName() };
+    }
+  }
   if (!isBuiltInBrowserRemoteCallMethod(args.method)) {
     return {
       ok: false,

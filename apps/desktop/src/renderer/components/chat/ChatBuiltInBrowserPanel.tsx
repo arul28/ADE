@@ -1126,6 +1126,9 @@ export function ChatBuiltInBrowserPanel({
               ...(request.tabId ? { tabId: request.tabId } : {}),
               ...(request.newTab ? { newTab: true } : {}),
               ...(request.reuseOwnedTab ? { reuseOwnedTab: true } : {}),
+              // The isolated sign-in the agent asked for (`--profile`).
+              ...(request.profile ? { profile: request.profile } : {}),
+              ...(request.isolated ? { isolated: true } : {}),
             }),
             pin,
           );

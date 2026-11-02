@@ -1,3 +1,4 @@
+import { useServeRemoteBrowserCalls } from "../../lib/remoteBrowserCallHost";
 import { MUSE_LOGIN_COMMAND, PROVIDER_DISPLAY_NAME } from "../../../shared/providers";
 import { Suspense, lazy, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore, type ComponentProps } from "react";
 import { compactFirstOffer } from "../../../shared/compactFirst";
@@ -5468,6 +5469,17 @@ export function AgentChatPane({
     chatNotice,
     (chatRuntimePin ?? projectBinding)?.kind === "remote",
   );
+  // A project chat on another machine, shown here: this desktop runs its
+  // agent's browser commands in the browser the user can see, wherever the
+  // chat is open (Work, the Chats page, the Browser tab's dock), not only when
+  // the Work page has it in front.
+  useServeRemoteBrowserCalls({
+    active: !personalScope,
+    binding: chatEffectiveBinding,
+    chatSessionId: selectedSessionId,
+    laneId: selectedSession?.laneId ?? chatScopeLaneId ?? null,
+    projectRoot: chatEffectiveBinding?.rootPath ?? null,
+  });
   // Pending thread comments for the open chat. Null while the chat has no
   // readable session (a launch still starting, a draft) or the composer and
   // transcript disagree on which chat is open. Always null in a personal chat:
