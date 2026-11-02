@@ -126,6 +126,22 @@ that machine's projects. `siteId` remains an internal per-project
 database/runtime detail and must not be used as the visible identity of
 a saved machine.
 
+## ADE and ADE Beta
+
+Two iPhone apps build from this project. **ADE** (`com.ade.ios`, the `Debug`
+and `Release` configurations) gets stable releases from the release skill.
+**ADE Beta** (`com.ade.ios.beta`, the `Beta` configuration) gets every beta
+from `ios-testflight.yml`, so a broken beta never replaces the normal app on a
+phone. The `Beta` configuration sets `ADE_BETA_APP`, which selects its own App
+Group (`group.com.ade.ios.beta`, in `ADESharedContainer`) and
+`release_channel: beta`. It names the app "ADE Beta" with the orange
+`AppIconBeta`, registers `ade-beta://` (`DeepLinkRouter` routes it like
+`ade://`, so outside `ade://` links still open the normal app), and leaves out
+the App Clip. The two apps share no data, keychain items or pairings, and both
+connect to Stable and Beta machines alike. They draw build numbers from one
+sequence, so `MIN_SUPPORTED_MOBILE_APP_BUILD` means the same for both; see
+[the plan](../../plans/ios-beta-app.md).
+
 ## Host version compatibility
 
 ADE Mobile treats the machine connection as the recovery path for updates, so a
