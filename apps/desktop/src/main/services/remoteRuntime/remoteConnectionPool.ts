@@ -22,7 +22,6 @@ import {
 } from "../../../shared/types/remoteRuntime";
 
 import type { AdeActionRegistryEntry } from "../../../shared/types/automations";
-import type { PairedRuntimeHelloOkPayload } from "../../../shared/types/pairedRuntime";
 import {
   isRemoteRuntimeConnectionError,
   isRuntimeTransportTimeoutError,
@@ -475,6 +474,14 @@ export class RemoteConnectionPool {
   >();
   private readonly disconnectGenerationByTargetId = new Map<string, number>();
   private readonly relayAccountOwnerByTargetId = new Map<string, string>();
+  /**
+   * Whether each target's host answered connection probes at its last
+   * connect. Kept across disconnects, so a reconnect still in flight knows
+   * the host it is reaching.
+   */
+  private readonly hostAcceptsProbesByTargetId = new Map<string, boolean>();
+  /** How each target's latest resolved connection reached it. */
+  private readonly resolvedTransportByTargetId = new Map<string, PoolEntry["transport"]>();
   private readonly livenessProbes = new WeakMap<PoolEntry, Promise<boolean>>();
   private readonly evictionListeners = new Set<
     (targetId: string, error: Error) => void
@@ -595,6 +602,13 @@ export class RemoteConnectionPool {
         );
       } else {
         this.relayAccountOwnerByTargetId.delete(target.id);
+      }
+      this.resolvedTransportByTargetId.set(target.id, entry.transport);
+      if (entry.transport === "paired") {
+        this.hostAcceptsProbesByTargetId.set(
+          target.id,
+          entry.pairedTransport.connection.hello?.features?.connectionProbe === true,
+        );
       }
       this.resolvedEntryPromises.add(entryPromise);
       this.attachEntryLifecycle(target.id, entryPromise, entry);
@@ -1513,15 +1527,19 @@ export class RemoteConnectionPool {
   }
 
   /**
-   * The handshake of this target's open paired connection: what its host
-   * advertised. Null while it is still opening, for an SSH target, and when
-   * nothing is open.
+   * This app's paired connection to the target, open or still opening, which
+   * a login from this device could replace: null when there is none, or when
+   * the open connection went over SSH (it never logs in as this device).
+   * `hostAcceptsProbes` is what the host said at its latest paired connect;
+   * false when it never said.
    */
-  async openPairedHello(targetId: string): Promise<PairedRuntimeHelloOkPayload | null> {
+  liveConnectionState(targetId: string): { hostAcceptsProbes: boolean } | null {
     const pending = this.entries.get(targetId);
-    if (!pending || !this.resolvedEntryPromises.has(pending)) return null;
-    const entry = await pending.catch(() => null);
-    return entry?.transport === "paired" ? entry.pairedTransport.connection.hello : null;
+    if (!pending) return null;
+    if (this.resolvedEntryPromises.has(pending) && this.resolvedTransportByTargetId.get(targetId) === "ssh") {
+      return null;
+    }
+    return { hostAcceptsProbes: this.hostAcceptsProbesByTargetId.get(targetId) === true };
   }
 
   /**

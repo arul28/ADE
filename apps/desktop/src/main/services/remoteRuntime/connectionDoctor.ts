@@ -21,7 +21,7 @@ import {
   openSyncEnvelopeConnection,
   type AuthenticatedSyncConnection,
 } from "./syncRuntimeTransport";
-import { PairedRuntimeRelayAuthRequiredError } from "./pairedRuntimeErrors";
+import { resolveAccountRelayProof, type AccountRelayProof } from "./pairedRuntimeErrors";
 import {
   buildSshRouteCandidates,
   scanSshHostKeyForTarget,
@@ -121,7 +121,11 @@ async function defaultPairedProbe(
 const REACHABILITY_SETTLE_MS = 400;
 
 async function defaultReachableProbe(endpoint: string, timeoutMs: number): Promise<void> {
-  const connection = await openSyncEnvelopeConnection({ endpoint, connectTimeoutMs: timeoutMs });
+  // The settle wait counts against the same budget as the open.
+  const connection = await openSyncEnvelopeConnection({
+    endpoint,
+    connectTimeoutMs: Math.max(250, timeoutMs - REACHABILITY_SETTLE_MS),
+  });
   try {
     await new Promise<void>((resolve, reject) => {
       let removeClose = () => {};
@@ -140,32 +144,6 @@ async function defaultReachableProbe(endpoint: string, timeoutMs: number): Promi
   } finally {
     connection.close(1000, "Connection doctor probe finished.");
   }
-}
-
-/**
- * The account token for a relay probe, checked the way a real connect checks
- * it, so the relay row says "Not signed in" only when this computer is not.
- */
-async function relayProbeToken(
-  credentials: DesktopPairedMachineCredentials,
-  getAccountRelayProof: (() => Promise<{ userId: string; token: string } | null>) | undefined,
-): Promise<string> {
-  let proof: { userId: string; token: string } | null = null;
-  try {
-    proof = await getAccountRelayProof?.() ?? null;
-  } catch {
-    proof = null;
-  }
-  if (!proof?.userId.trim() || !proof.token.trim()) {
-    throw new PairedRuntimeRelayAuthRequiredError("Sign in to ADE to connect through ADE Relay.");
-  }
-  const expectedOwnerUserId = credentials.accountOwnerUserId?.trim() ?? "";
-  if (expectedOwnerUserId && proof.userId.trim() !== expectedOwnerUserId) {
-    throw new PairedRuntimeRelayAuthRequiredError(
-      "Sign in with the same ADE account as this machine to connect through ADE Relay.",
-    );
-  }
-  return proof.token.trim();
 }
 
 async function defaultSshProbe(
@@ -338,23 +316,18 @@ export async function runRemoteRuntimeDoctor(args: {
   dependencies?: RemoteRuntimeDoctorDependencies;
   machineName?: string | null;
   /**
-   * This app has a connection to the machine open or opening. A host takes a
-   * login from this device as a newer connection and closes the open one,
-   * which then reads as "another ADE is using the connection" and stays down.
-   * So every route only gets opened, not logged in to, unless the open
-   * connection's host said it answers probes without that
-   * (`hostAcceptsProbes`). The open connection already proves the pairing.
+   * `"reachability"`: only open each route, never log in (see
+   * RemoteConnectionService.runDoctor for when). Defaults to `"login"`.
    */
-  liveConnection?: { hostAcceptsProbes: boolean } | null;
+  routeProbe?: "login" | "reachability";
   /** The ADE account proof a relay login needs, as on a real connect. */
-  getAccountRelayProof?: () => Promise<{ userId: string; token: string } | null>;
+  getAccountRelayProof?: () => Promise<AccountRelayProof | null>;
 }): Promise<RemoteRuntimeDoctorResult> {
   const timeoutMs = Math.max(250, Math.floor(args.timeoutMs ?? DEFAULT_DOCTOR_TIMEOUT_MS));
   const checks: Array<Promise<RemoteRuntimeDoctorCheck & { hostStall?: RemoteRuntimeHostStall | null }>> = [];
   const pairedProbe = args.dependencies?.probePaired ?? defaultPairedProbe;
   const reachableProbe = args.dependencies?.probeReachable ?? defaultReachableProbe;
   const sshProbe = args.dependencies?.probeSsh ?? defaultSshProbe;
-  const reachabilityOnly = Boolean(args.liveConnection && !args.liveConnection.hostAcceptsProbes);
 
   if (args.credentials) {
     const credentials = args.credentials;
@@ -368,9 +341,9 @@ export async function runRemoteRuntimeDoctor(args: {
         endpoint: candidate.endpoint,
         timeoutMs,
         probe: async () => {
-          if (reachabilityOnly) return await reachableProbe(candidate.endpoint, timeoutMs);
+          if (args.routeProbe === "reachability") return await reachableProbe(candidate.endpoint, timeoutMs);
           const relayAccountToken = candidate.kind === "relay"
-            ? await relayProbeToken(credentials, args.getAccountRelayProof)
+            ? (await resolveAccountRelayProof(credentials, args.getAccountRelayProof)).token
             : null;
           return await pairedProbe(candidate.endpoint, credentials, timeoutMs, { relayAccountToken });
         },

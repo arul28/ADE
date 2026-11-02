@@ -26,8 +26,12 @@ import { execFileOffThread } from "./offThreadSpawn";
 
 const TARGET_ENV = "ADE_REMOVE_TREE_TARGET";
 const EXPECTED_REAL_PATH_ENV = "ADE_REMOVE_TREE_EXPECTED_REAL_PATH";
-/** Whole-tree passes the child makes before it reports what stopped it. */
+/** Whole-tree passes the child makes before it reports what stopped it (~9 s of waits). */
 const CHILD_REMOVE_PASSES = 10;
+/** Passes for the in-process fallback, as many as `rm`'s old `maxRetries: 3` made. */
+const IN_PROCESS_REMOVE_PASSES = 4;
+/** What a file another process holds open, or a full file table, fails with. Worth another pass. */
+const RETRYABLE_REMOVE_CODES = ["EBUSY", "EPERM", "EACCES", "ENOTEMPTY", "EMFILE", "ENFILE"] as const;
 
 const CHILD_SCRIPT = [
   `const target = process.env.${TARGET_ENV};`,
@@ -45,8 +49,8 @@ const CHILD_SCRIPT = [
   // `maxRetries` retries each folder on the way down, so a held folder three
   // levels deep (a process's working directory on Windows) is retried 10^3
   // times and the removal ran for 30 minutes. One pass removes everything that
-  // can go; ten passes over ~11 s give a held handle time to close.
-  "const retryable = new Set(['EBUSY', 'EPERM', 'EACCES', 'ENOTEMPTY', 'EMFILE', 'ENFILE']);",
+  // can go; ten passes over ~9 s give a held handle time to close.
+  `const retryable = new Set(${JSON.stringify(RETRYABLE_REMOVE_CODES)});`,
   "(async () => {",
   "  for (let attempt = 1; ; attempt += 1) {",
   "    try {",
@@ -79,14 +83,14 @@ function isSingleExecutable(): boolean {
  * CHILD_SCRIPT for why `rm`'s own `maxRetries` must stay 0).
  */
 async function removeInProcess(targetPath: string): Promise<void> {
-  const retryable = new Set(["EBUSY", "EPERM", "EACCES", "ENOTEMPTY", "EMFILE", "ENFILE"]);
+  const retryable: ReadonlySet<string> = new Set(RETRYABLE_REMOVE_CODES);
   for (let attempt = 1; ; attempt += 1) {
     try {
       await nonAsarFs.promises.rm(targetPath, { recursive: true, force: true, maxRetries: 0 });
       return;
     } catch (error) {
       const code = (error as NodeJS.ErrnoException | undefined)?.code;
-      if (!code || !retryable.has(code) || attempt >= 4) throw error;
+      if (!code || !retryable.has(code) || attempt >= IN_PROCESS_REMOVE_PASSES) throw error;
       await new Promise((resolve) => setTimeout(resolve, 100 * attempt));
     }
   }

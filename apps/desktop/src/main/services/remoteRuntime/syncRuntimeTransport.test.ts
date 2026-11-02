@@ -113,11 +113,10 @@ describe("openSyncRuntimeTransport", () => {
 
   it("adds an ephemeral account proof only to the relay hello", () => {
     const paired = credentials();
-    const hello = buildDesktopPairedHello(
-      paired,
-      "1.2.3",
-      "short-lived-clerk-token",
-    );
+    const hello = buildDesktopPairedHello(paired, {
+      appVersion: "1.2.3",
+      relayAccountToken: "short-lived-clerk-token",
+    });
 
     expect(hello.auth).toMatchObject({
       kind: "paired",

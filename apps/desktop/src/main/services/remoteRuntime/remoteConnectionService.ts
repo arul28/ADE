@@ -702,28 +702,44 @@ export class RemoteConnectionService {
     if (!target && !credentials) {
       throw new Error("Remote target or paired machine was not found.");
     }
-    // An open (or opening) connection from this app must survive the test,
-    // also when the test was started from the machine's discovered row.
-    const hostIdentity = credentials?.hostIdentity?.deviceId ?? null;
-    const liveTargetId = savedTarget?.id
-      ?? (hostIdentity
-        ? this.registry.list().find((entry) => entry.pairedMachine?.hostIdentity === hostIdentity)?.id ?? null
-        : null);
-    const liveConnection = liveTargetId && this.pool.hasEntry(liveTargetId)
-      ? {
-          hostAcceptsProbes:
-            (await this.pool.openPairedHello(liveTargetId))?.features?.connectionProbe === true,
-        }
-      : null;
+    const liveConnection = this.liveConnectionForDoctor(savedTarget, credentials);
     return await runRemoteRuntimeDoctor({
       target,
       credentials,
       machineName: target?.name ?? discoveredMachine?.machineName ?? credentials?.hostIdentity?.name ?? null,
-      liveConnection,
-      ...(this.options.getAccountRelayProof
-        ? { getAccountRelayProof: this.options.getAccountRelayProof }
-        : {}),
+      // A host takes a login from this device as a newer connection and
+      // closes the open one, which then reads as "another ADE is using the
+      // connection" and stays down. So while this app has one open or
+      // opening, routes are only opened, unless its host said it answers
+      // probes without that. The open connection already proves the pairing.
+      routeProbe: liveConnection && !liveConnection.hostAcceptsProbes ? "reachability" : "login",
+      getAccountRelayProof: this.options.getAccountRelayProof,
     });
+  }
+
+  /**
+   * This app's connection to the machine under test, open or opening. A test
+   * started from a discovered row names no saved target, and two saved
+   * targets can share one pairing, so any target on the same host counts.
+   */
+  private liveConnectionForDoctor(
+    savedTarget: RemoteRuntimeTarget | null,
+    credentials: DesktopPairedMachineCredentials | null,
+  ): { hostAcceptsProbes: boolean } | null {
+    const hostIdentity = credentials?.hostIdentity?.deviceId ?? null;
+    const candidates = [
+      ...(savedTarget ? [savedTarget.id] : []),
+      ...(hostIdentity
+        ? this.registry.list()
+          .filter((entry) => entry.pairedMachine?.hostIdentity === hostIdentity)
+          .map((entry) => entry.id)
+        : []),
+    ];
+    for (const targetId of candidates) {
+      const state = this.pool.liveConnectionState(targetId);
+      if (state) return state;
+    }
+    return null;
   }
 
   removeTarget(targetId: string): boolean {

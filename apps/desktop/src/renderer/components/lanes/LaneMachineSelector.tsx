@@ -27,12 +27,19 @@ export function LaneMachineSelector({
   onSelectMachine,
   onConnectMachine,
   disabled,
+  selectableMachineIds,
 }: {
   machines: LaneMachineOption[];
   selectedMachineId: string;
   onSelectMachine: (machineId: string) => void;
   onConnectMachine?: () => void;
   disabled?: boolean;
+  /**
+   * The machines a pick can be sent to, when the caller knows. A machine left
+   * out reads as unavailable and says why, instead of a card that takes the
+   * click and does nothing.
+   */
+  selectableMachineIds?: readonly string[];
 }) {
   /*
    * The machine is always an explicit choice; `selectedMachineId` is "" until
@@ -42,8 +49,12 @@ export function LaneMachineSelector({
    * to balance, so the card is absent.
    */
   // Only machines automatic placement may choose: a Manual only one is not balanced across.
-  const eligibleCount = machines.filter(canAutoPlaceOnMachine).length;
-  const autoMachine = autoLaneMachine(machines);
+  // Auto picks only among machines a pick can be sent to.
+  const autoCandidates = selectableMachineIds
+    ? machines.filter((machine) => selectableMachineIds.includes(machine.id))
+    : machines;
+  const eligibleCount = autoCandidates.filter(canAutoPlaceOnMachine).length;
+  const autoMachine = autoLaneMachine(autoCandidates);
   return (
     <section className={SECTION_CLASS_NAME} data-tour="lanes.createDialog.machine">
       <span className={LABEL_CLASS_NAME}>Create on</span>
@@ -90,6 +101,9 @@ export function LaneMachineSelector({
             machine={machine}
             selected={machine.id === selectedMachineId}
             disabled={disabled}
+            unconfirmed={selectableMachineIds !== undefined
+              && canCreateLaneOnMachine(machine)
+              && !selectableMachineIds.includes(machine.id)}
             onSelect={() => onSelectMachine(machine.id)}
           />
         ))}
@@ -113,14 +127,18 @@ function LaneMachineCard({
   machine,
   selected,
   disabled,
+  unconfirmed = false,
   onSelect,
 }: {
   machine: LaneMachineOption;
   selected: boolean;
   disabled?: boolean;
+  /** A same-named folder whose repository ADE could not confirm by git origin. */
+  unconfirmed?: boolean;
   onSelect: () => void;
 }) {
-  const available = canCreateLaneOnMachine(machine);
+  const repoPresent = canCreateLaneOnMachine(machine);
+  const available = repoPresent && !unconfirmed;
   const Icon = machine.id === THIS_MACHINE_ID ? Desktop : DesktopTower;
   const freeBytes = laneMachineFreeBytes(machine);
   const lowDisk = isLowLaneMachineDisk(freeBytes);
@@ -130,7 +148,11 @@ function LaneMachineCard({
       role="radio"
       aria-checked={selected}
       disabled={disabled || !available}
-      title={available ? undefined : `${machine.name} doesn't have this repo yet.`}
+      title={available
+        ? undefined
+        : unconfirmed
+          ? `ADE can't confirm ${machine.name}'s ${machine.project?.displayName ?? "folder"} is this repo: its git remote doesn't match or isn't known.`
+          : `${machine.name} doesn't have this repo yet.`}
       onClick={onSelect}
       className={cn(CARD_CLASS_NAME, "!p-2.5", selected && CARD_ACTIVE_CLASS_NAME)}
     >
@@ -156,7 +178,7 @@ function LaneMachineCard({
         </div>
       </div>
       <div className="mt-1 truncate text-[10px] leading-snug text-muted-fg/60">
-        {machineDetailLine(machine, available)}
+        {unconfirmed ? "Can't confirm it's this repo" : machineDetailLine(machine, available)}
       </div>
     </button>
   );

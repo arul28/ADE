@@ -62,6 +62,7 @@ import type { LaneJiraIssue } from "../../../shared/types/jira";
 import type { createOperationService } from "../history/operationService";
 import type { Logger } from "../logging/logger";
 import { createWorktreeResidualCleanup } from "./worktreeResidualCleanup";
+import { laneWorktreeFolderName, legacyLaneWorktreeFolderName, slugify } from "./laneWorktreeNaming";
 import { createLaneWorktreeLockService } from "./laneWorktreeLockService";
 import { measureTree } from "../storage/diskUsage";
 import { writeLaneUsageTombstone, type LaneUsageTombstoneMode } from "./laneUsageTombstone";
@@ -351,7 +352,7 @@ async function makeTreeWritableForRemoval(targetPath: string): Promise<void> {
   await Promise.all(entries.map((entry) => makeTreeWritableForRemoval(path.join(targetPath, entry))));
 }
 
-/** Each attempt's child already retries a held file for ~11 s (see removeTreeOffProcess). */
+/** Each attempt's child already retries a held file for ~9 s (see removeTreeOffProcess). */
 const WORKTREE_REMOVE_ATTEMPTS = 3;
 const WORKTREE_REMOVE_RETRY_MS = 250;
 
@@ -553,15 +554,6 @@ function cloneLaneSummary(summary: LaneSummary): LaneSummary {
   };
 }
 
-function slugify(input: string): string {
-  const s = input
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-  return s.length ? s : "lane";
-}
-
 /**
  * `git worktree add -b` refused because its branch or folder already exists
  * (run with `LC_ALL=C`). Whoever made those owns them; the other failures
@@ -570,33 +562,6 @@ function slugify(input: string): string {
 function isWorktreeAddConflictError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return /already exists|already registered|already checked out|already used by worktree/i.test(message);
-}
-
-/**
- * Longest lane-name part of a worktree folder name. The folder sits between
- * the project path and every file of the checkout, and Windows stops at 260
- * characters: a lane named after a long issue title made a 148-character
- * folder, and every checkout of a repo with 130-character paths failed.
- */
-const WORKTREE_FOLDER_SLUG_MAX_CHARS = 40;
-
-/**
- * `<slug>-<laneId[0:8]>`, the slug cut to a word boundary. The id suffix keeps
- * names unique and is what `worktreeDirSuffix` reads back.
- */
-function laneWorktreeFolderName(name: string, laneId: string): string {
-  let slug = slugify(name);
-  if (slug.length > WORKTREE_FOLDER_SLUG_MAX_CHARS) {
-    const cut = slug.slice(0, WORKTREE_FOLDER_SLUG_MAX_CHARS);
-    const lastDash = cut.lastIndexOf("-");
-    slug = (lastDash >= WORKTREE_FOLDER_SLUG_MAX_CHARS / 2 ? cut.slice(0, lastDash) : cut).replace(/-+$/, "") || "lane";
-  }
-  return `${slug}-${laneId.slice(0, 8)}`;
-}
-
-/** The uncapped folder name older versions made, for paths recorded before the cap. */
-function legacyLaneWorktreeFolderName(name: string, laneId: string): string {
-  return `${slugify(name)}-${laneId.slice(0, 8)}`;
 }
 
 function normAbs(p: string): string {
@@ -4013,11 +3978,16 @@ export function createLaneService({
     } catch (err) {
       logger.warn("laneService.repairLegacyPrimaryBaseRootLanes_failed", { error: err instanceof Error ? err.message : String(err) });
     }
-    try {
-      await residualWorktreeCleanup.retry();
-    } catch (err) {
+    // Not awaited: removing a leftover lane folder can take minutes (hundreds
+    // of thousands of files on Windows, or a folder another process holds),
+    // and every lane list, on this machine and on each one reading it
+    // remotely, waited for it. On Windows that made remote lane lists time out
+    // and the Work tab say a connected machine sent no chats. The list never
+    // needs it: a leftover folder is not a git worktree, and the sweep runs
+    // one at a time.
+    void residualWorktreeCleanup.retry().catch((err: unknown) => {
       logger.warn("laneService.residualWorktreeCleanup_failed", { error: err instanceof Error ? err.message : String(err) });
-    }
+    });
     try {
       // One `git worktree list` feeds both directions of the reconcile: adopt
       // worktrees that have no lane, drop lanes whose worktree is gone. If git
@@ -4340,7 +4310,8 @@ export function createLaneService({
             cwd: projectRoot,
             ...TREE_WRITE_GIT_LIMITS,
             // English output: the progress parser reads it, and the failure
-            // cleanup below tells "already exists" from a failed checkout.
+            // cleanup below tells "already exists" from a failed checkout
+            // (see isWorktreeAddConflictError).
             env: { ...GIT_TREE_WRITE_PROGRESS_ENV, LC_ALL: "C" },
             cancelMessage: LANE_CREATE_CANCEL_MESSAGE,
             ...(runtimeOptions.signal ? { signal: runtimeOptions.signal } : {}),

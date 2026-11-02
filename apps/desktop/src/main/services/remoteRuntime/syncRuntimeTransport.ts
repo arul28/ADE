@@ -409,10 +409,13 @@ export function createDesktopSyncDpopProof(
 
 export function buildDesktopPairedHello(
   credentials: DesktopPairedMachineCredentials,
-  appVersion?: string,
-  relayAccountToken?: string | null,
-  purpose?: "probe",
+  options: {
+    appVersion?: string;
+    relayAccountToken?: string | null;
+    purpose?: "probe";
+  } = {},
 ): SyncHelloPayload {
+  const { appVersion, relayAccountToken, purpose } = options;
   return {
     peer: {
       deviceId: credentials.deviceId,
@@ -432,7 +435,7 @@ export function buildDesktopPairedHello(
         SYNC_RUNTIME_ONLY_CAPABILITY,
       ],
       ...(appVersion?.trim() ? { appVersion: appVersion.trim() } : {}),
-      ...(purpose === "probe" ? { connectionPurpose: "probe" as const } : {}),
+      ...(purpose ? { connectionPurpose: purpose } : {}),
     },
     auth: {
       kind: "paired",
@@ -529,12 +532,11 @@ export async function openPairedSyncConnection(
   const requestId = `hello-${randomUUID()}`;
   let response: Promise<ParsedSyncEnvelope> | null = null;
   try {
-    const helloPayload = buildDesktopPairedHello(
-      options.credentials,
-      options.appVersion,
-      options.relayAccountToken,
-      options.purpose,
-    );
+    const helloPayload = buildDesktopPairedHello(options.credentials, {
+      appVersion: options.appVersion,
+      relayAccountToken: options.relayAccountToken,
+      purpose: options.purpose,
+    });
     response = waitForSyncEnvelope(
       connection,
       (envelope) => envelope.requestId === requestId

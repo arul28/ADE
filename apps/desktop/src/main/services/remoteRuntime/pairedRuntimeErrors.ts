@@ -105,6 +105,37 @@ export function isPairedRuntimeSupersededError(error: unknown): boolean {
   return hasCauseOfType(error, PairedRuntimeSupersededError);
 }
 
+/** The ADE account sign-in a relay route carries, from the account service. */
+export type AccountRelayProof = { userId: string; token: string };
+
+/**
+ * The account proof for one relay hello to the machine `credentials` names:
+ * the signed-in account, which must be the account that paired it, if any.
+ * Throws `PairedRuntimeRelayAuthRequiredError` (with what failed as its cause)
+ * when there is none to send, so a caller never dials the relay unsigned.
+ */
+export async function resolveAccountRelayProof(
+  credentials: { accountOwnerUserId?: string | null },
+  getAccountRelayProof: (() => Promise<AccountRelayProof | null>) | undefined,
+): Promise<AccountRelayProof> {
+  let proof: AccountRelayProof | null;
+  try {
+    proof = await getAccountRelayProof?.() ?? null;
+  } catch (error) {
+    throw new PairedRuntimeRelayAuthRequiredError("Sign in to ADE to connect through ADE Relay.", error);
+  }
+  if (!proof?.userId.trim() || !proof.token.trim()) {
+    throw new PairedRuntimeRelayAuthRequiredError("Sign in to ADE to connect through ADE Relay.");
+  }
+  const expectedOwnerUserId = credentials.accountOwnerUserId?.trim() ?? "";
+  if (expectedOwnerUserId && proof.userId.trim() !== expectedOwnerUserId) {
+    throw new PairedRuntimeRelayAuthRequiredError(
+      "Sign in with the same ADE account as this machine to connect through ADE Relay.",
+    );
+  }
+  return { userId: proof.userId.trim(), token: proof.token.trim() };
+}
+
 export class PairedRuntimeCompatibilityError extends Error {
   readonly code = "PAIRED_RUNTIME_COMPATIBILITY" as const;
 

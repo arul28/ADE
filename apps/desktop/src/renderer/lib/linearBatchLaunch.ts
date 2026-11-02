@@ -228,6 +228,11 @@ export type BatchLaunchResult = {
 /** Concurrency cap — keep the daemon git-worktree mutations and warmups bounded. */
 export const BATCH_LAUNCH_CONCURRENCY = 3;
 
+/** A launch that ended badly: the lane or agent failed, or the agent needs attention. */
+export function isBatchLaunchProblem(status: BatchLaunchItemStatus): boolean {
+  return status === "failed" || status === "agent-error";
+}
+
 export function isBatchLaunchInFlight(status: BatchLaunchItemStatus): boolean {
   return status === "pending"
     || status === "creating-lane"

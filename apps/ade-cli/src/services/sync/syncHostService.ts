@@ -1695,6 +1695,33 @@ function syncContentDigest(value: unknown): string {
   return createHash("sha256").update(JSON.stringify(value)).digest("base64url").slice(0, 32);
 }
 
+/**
+ * The answer to a `connectionPurpose: "probe"` hello: who this host is, its
+ * health and its features, and nothing a session would use (no project
+ * catalog, no commands). The socket closes right after it.
+ */
+export function buildSyncHostProbeHelloOkPayload(args: {
+  peer: SyncPeerMetadata;
+  brain: SyncPeerMetadata;
+  serverDbVersion: number;
+  heartbeatIntervalMs: number;
+  pollIntervalMs: number;
+  connectionTransport: "direct" | "relay";
+  runtimeChannelEnabled: boolean;
+}): PairedRuntimeHelloOkPayload {
+  return buildSyncHostHelloOkPayload({
+    ...args,
+    projectCatalog: { projects: [] },
+    projectCatalogEnabled: false,
+    projectActionsEnabled: false,
+    crossProjectChatEnabled: false,
+    remoteCommandSupportedActions: [],
+    remoteCommandDescriptors: [],
+    localCommandDescriptors: [],
+    omitProjectCatalog: true,
+  });
+}
+
 export function buildSyncHostHelloOkPayload(args: {
   peer: SyncPeerMetadata;
   brain: SyncPeerMetadata;
@@ -1951,8 +1978,9 @@ export function buildSyncHostHelloOkPayload(args: {
       },
       rpcChannel: runtimeChannelEnabled,
       portForward: runtimeChannelEnabled,
-      // A hello with `connectionPurpose: "probe"` is answered and closed here
-      // without replacing the device's open connection.
+      // A `connectionPurpose: "probe"` hello never replaces the device's open
+      // connection: the project host answers and closes it before arbitration,
+      // and the projectless brain has no arbitration to replace it with.
       connectionProbe: true as const,
     },
   };
@@ -8422,28 +8450,15 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       // proved its pairing above; answer and close it before arbitration, so
       // it never replaces (and disconnects) that device's open connection,
       // and never becomes a peer: no presence, no changesets.
-      if (
-        hello.peer.connectionPurpose === "probe"
-        && hello.auth?.kind === "paired"
-        && !sealedAdoption
-        && !connectionAttemptReserved
-        && !connectionAttemptRejected
-        && pendingPairingCommitDeviceId == null
-      ) {
-        send(peer.ws, "hello_ok", buildSyncHostHelloOkPayload({
+      // Only a paired hello: account and sealed hellos take part in
+      // arbitration and adoption, which a probe must not short-circuit.
+      if (hello.peer.connectionPurpose === "probe" && hello.auth?.kind === "paired") {
+        send(peer.ws, "hello_ok", buildSyncHostProbeHelloOkPayload({
           peer: hello.peer,
           brain: readBrainMetadata(),
           serverDbVersion: args.db.sync.getDbVersion(),
           heartbeatIntervalMs,
           pollIntervalMs,
-          projectCatalog: { projects: [] },
-          projectCatalogEnabled: false,
-          projectActionsEnabled: false,
-          crossProjectChatEnabled: false,
-          remoteCommandSupportedActions: [],
-          remoteCommandDescriptors: [],
-          localCommandDescriptors: [],
-          omitProjectCatalog: true,
           connectionTransport: syncConnectionTransportForOrigin(peer.transportOrigin),
           runtimeChannelEnabled: isRuntimeHostPairingRecord(authenticatedPairingRecord),
         }), envelope.requestId);

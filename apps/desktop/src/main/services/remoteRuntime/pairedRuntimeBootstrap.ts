@@ -40,6 +40,8 @@ import {
   PairedRuntimeHelloRejectedError,
   PairedRuntimeRelayAuthRequiredError,
   PairedRuntimeTransportUnavailableError,
+  resolveAccountRelayProof,
+  type AccountRelayProof,
 } from "./pairedRuntimeErrors";
 
 export type PairedRuntimeBootstrapResult = {
@@ -53,10 +55,7 @@ export type PairedRuntimeBootstrapResult = {
 
 type PairedRuntimeBootstrapOptions = {
   openTransport?: typeof openSyncRuntimeTransport;
-  getAccountRelayProof?: () => Promise<{
-    userId: string;
-    token: string;
-  } | null>;
+  getAccountRelayProof?: () => Promise<AccountRelayProof | null>;
 };
 
 function errorMessage(error: unknown): string {
@@ -184,14 +183,13 @@ export async function bootstrapPairedRuntime(args: {
     let relayAccountToken: string | null = null;
     let relayAccountOwnerUserId: string | null = null;
     if (candidate.kind === "relay") {
-      let proof: { userId: string; token: string } | null = null;
+      let proof: AccountRelayProof;
       try {
-        proof = await args.options?.getAccountRelayProof?.() ?? null;
+        proof = await resolveAccountRelayProof(credentials, args.options?.getAccountRelayProof);
       } catch (error) {
-        relayAuthError = new PairedRuntimeRelayAuthRequiredError(
-          "Sign in to ADE to connect through ADE Relay.",
-          error,
-        );
+        relayAuthError = error instanceof PairedRuntimeRelayAuthRequiredError
+          ? error
+          : new PairedRuntimeRelayAuthRequiredError("Sign in to ADE to connect through ADE Relay.", error);
         recordAttempt({
           kind: candidate.kind,
           host: safeHost,
@@ -202,40 +200,8 @@ export async function bootstrapPairedRuntime(args: {
         });
         continue;
       }
-      if (
-        !proof?.userId.trim()
-        || !proof.token.trim()
-      ) {
-        relayAuthError = new PairedRuntimeRelayAuthRequiredError(
-          "Sign in to ADE to connect through ADE Relay.",
-        );
-        recordAttempt({
-          kind: candidate.kind,
-          host: safeHost,
-          startedAt: attemptStartedAt,
-          durationMs: Math.max(0, Date.now() - attemptStartedAt),
-          outcome: "skipped",
-          failure: "authentication",
-        });
-        continue;
-      }
-      const expectedOwnerUserId = credentials.accountOwnerUserId?.trim() ?? "";
-      if (expectedOwnerUserId && proof.userId.trim() !== expectedOwnerUserId) {
-        relayAuthError = new PairedRuntimeRelayAuthRequiredError(
-          "Sign in with the same ADE account as this machine to connect through ADE Relay.",
-        );
-        recordAttempt({
-          kind: candidate.kind,
-          host: safeHost,
-          startedAt: attemptStartedAt,
-          durationMs: Math.max(0, Date.now() - attemptStartedAt),
-          outcome: "skipped",
-          failure: "authentication",
-        });
-        continue;
-      }
-      relayAccountToken = proof.token.trim();
-      relayAccountOwnerUserId = proof.userId.trim();
+      relayAccountToken = proof.token;
+      relayAccountOwnerUserId = proof.userId;
     }
     let transport: SyncRuntimeTransport;
     try {

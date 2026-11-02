@@ -940,11 +940,10 @@ export class DesktopPairedMachineStore {
       try {
         connection.send(
           "hello",
-          buildDesktopPairedHello(
-            provisional,
-            options.appVersion,
-            options.relayAccountToken,
-          ),
+          buildDesktopPairedHello(provisional, {
+            appVersion: options.appVersion,
+            relayAccountToken: options.relayAccountToken,
+          }),
           helloRequestId,
         );
       } catch (error) {

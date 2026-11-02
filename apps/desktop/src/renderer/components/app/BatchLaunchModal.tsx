@@ -750,6 +750,7 @@ export function BatchLaunchModal({
           <LaneMachineSelector
             machines={machineChoice.machines}
             selectedMachineId={selectedMachineId}
+            selectableMachineIds={machineChoice.eligibleMachineIds}
             onSelectMachine={(machineId) => {
               if (machineChoice.machineTargets.has(machineId)) machineChoice.setPickedMachineId(machineId);
             }}
