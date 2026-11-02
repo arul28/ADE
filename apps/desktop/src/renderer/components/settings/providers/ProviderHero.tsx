@@ -20,8 +20,6 @@ type HeroUsage = {
    * them read "0 requests" beside billions of tokens.
    */
   requests: number | null;
-  /** False when the host answered for one machine only (an older ADE). */
-  allMachines: boolean;
   models: Array<{ id: string; label: string; tokens: number }>;
 };
 
@@ -37,7 +35,6 @@ function usageFor(stats: AdeUsageStats, providerId: string, labelFor: (id: strin
     tokens: provider.totalTokens,
     costUsd: provider.rangeCostUsd,
     requests: requests > 0 ? requests : null,
-    allMachines: stats.scope === "account",
     models: models.slice(0, 3).map((row) => ({ id: row.model, label: labelFor(row.model), tokens: row.totalTokens })),
   };
 }
@@ -64,8 +61,10 @@ function useProviderUsage(providerId: string, pin: OpenProjectBinding | null, la
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [providerId, pin?.key]);
   // Loading or unreadable stats show no panel: "no chats ran" is only for a read that worked.
+  // The reach is the response's, kept apart from the figures: an older host
+  // that answered for one machine with nothing for this provider still says so.
   return useMemo(
-    () => (stats ? usageFor(stats, providerId, labelFor) : undefined),
+    () => (stats ? { usage: usageFor(stats, providerId, labelFor), allMachines: stats.scope === "account" } : undefined),
     [stats, providerId, labelFor],
   );
 }
@@ -136,7 +135,8 @@ export function ProviderHero({
   modelLabel: (id: string) => string;
 }) {
   const brand = providerBrand(descriptor.id);
-  const usage = useProviderUsage(descriptor.id, pin, modelLabel);
+  const hero = useProviderUsage(descriptor.id, pin, modelLabel);
+  const usage = hero?.usage ?? null;
   const topTokens = usage?.models[0]?.tokens ?? 0;
 
   return (
@@ -172,10 +172,10 @@ export function ProviderHero({
             {descriptor.preview ? <span className="ade-pv-hero-chip">Preview</span> : null}
           </div>
         </div>
-        {usage === undefined ? null : (
+        {hero === undefined ? null : (
           <div className="ade-pv-hero-stats">
             <div className="ade-pv-hero-stats-head">
-              <span>{usage === null || usage.allMachines ? "All machines" : "One machine"}</span>
+              <span>{hero.allMachines ? "All machines" : "One machine"}</span>
               <span>30 days</span>
             </div>
             {usage ? (

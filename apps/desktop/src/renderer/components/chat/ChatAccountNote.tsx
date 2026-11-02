@@ -352,7 +352,8 @@ export function ChatAccountNote({
         <span className="flex w-3.5 shrink-0 justify-center text-fg/70">
           {isCurrent ? <Check size={12} weight="bold" /> : null}
         </span>
-        <span className="min-w-0 flex-1 truncate">
+        {/* Truncated in a narrow menu: the full name on hover and focus. */}
+        <span className="min-w-0 flex-1 truncate" title={providerAccountName(instance)}>
           {providerAccountName(instance)}
         </span>
         {side ? <span className="shrink-0 tabular-nums text-fg/45">{side}</span> : null}

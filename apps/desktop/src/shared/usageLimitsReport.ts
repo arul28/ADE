@@ -78,6 +78,11 @@ export type UsageLimitsAccount = {
   thisChat: boolean;
   /** Smart balance would start the next new chat here (only while smart balance is on). */
   nextChat: boolean;
+  /**
+   * Signed in on another machine only; this row is that machine's reading.
+   * Absent on hosts that predate pooling.
+   */
+  notSignedInHere?: boolean;
   /** Banked resets the provider granted, when it grants them. */
   resetCredits?: number;
   windows: UsageLimitsWindow[];
@@ -296,6 +301,7 @@ export function buildUsageLimitsReport(
       thisChat: Boolean(chat && instanceId && chat.provider === account.provider && chat.instanceId === instanceId),
       nextChat: Boolean(instanceId && nextChat.has(usageAccountId({ provider: account.provider, instanceId }))),
       windows: accountWindows.map((window) => buildWindow(window, readAtMs, nowMs)),
+      ...(account.notSignedInHere ? { notSignedInHere: true } : {}),
     };
     const credits = account.resetCredits?.availableCount;
     if (typeof credits === "number" && credits > 0) row.resetCredits = credits;
@@ -358,10 +364,13 @@ export function usageLimitsLeftText(window: UsageLimitsWindow): string {
  * quota, so its rows on two machines are not two allowances.
  */
 export function sharedLoginsAcrossMachines(
-  rows: ReadonlyArray<{ provider?: unknown; email?: unknown; machine?: unknown }>,
+  rows: ReadonlyArray<{ provider?: unknown; email?: unknown; machine?: unknown; notSignedInHere?: unknown }>,
 ): Array<{ provider: string; email: string; machines: string[] }> {
   const machinesByLogin = new Map<string, { provider: string; email: string; machines: Set<string> }>();
   for (const row of rows) {
+    // A row pooled from another machine is not a login on this one: counting
+    // it would name a machine that does not hold the login.
+    if (row.notSignedInHere === true) continue;
     const provider = typeof row.provider === "string" ? row.provider : null;
     const email = typeof row.email === "string" && row.email.trim() ? row.email.trim().toLowerCase() : null;
     const machine = typeof row.machine === "string" ? row.machine : null;

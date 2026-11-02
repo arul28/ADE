@@ -162,14 +162,6 @@ export function resolveChatInstanceId(provider: string, instanceId: string | nul
   return getMachineProviderInstanceStore().resolve(provider, instanceId?.trim() || undefined).instance.id;
 }
 
-/**
- * What every surface calls an account: its email. Never its id, which is a
- * storage key (two machines can give one email different ids).
- */
-export function providerInstanceDisplayLabel(instance: { id: string; account?: { email?: string; plan?: string } }): string {
-  return providerAccountName(instance);
-}
-
 function normalizeLabel(value: unknown): string {
   const label = typeof value === "string" ? value.trim().replace(/\s+/g, " ") : "";
   if (!label) throw new Error("A provider account needs a label.");
@@ -436,9 +428,9 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
       ...(stored.mainPromptCacheTtl ? { mainPromptCacheTtl: stored.mainPromptCacheTtl } : {}),
       ...(stored.onExtraUsage ? { onExtraUsage: stored.onExtraUsage } : {}),
       provider: stored.provider,
-      // An account is named by its login, not by a name someone typed: the
-      // email once it has signed in, "Not signed in" until then.
-      label: providerInstanceDisplayLabel(stored),
+      // An account is named by its login, never its id or a typed name: the
+      // email once it has signed in (`providerAccountName`).
+      label: providerAccountName(stored),
       ...(stored.accentColor ? { accentColor: stored.accentColor } : {}),
       configHome: stored.configHome,
       isDefault: defaultIdFor(stored.provider, file) === stored.id,
@@ -503,6 +495,23 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
     const holderProvider = holders[0]!.provider;
     if (holders.some((entry) => entry.provider !== holderProvider)) return null;
     return sameLoginOwner(holders, defaultIdFor(holderProvider, file), (id) => brokenLogins.has(id)) ?? null;
+  }
+
+  /**
+   * Why `findRecord` named nothing, worded for the person who typed it: an
+   * email both providers hold is ambiguous without a provider, not missing.
+   */
+  function missingAccountError(requested: string, file: RegistryFile = readFile()): Error {
+    if (requested.includes("@")) {
+      const providers = new Set(
+        allRecords(file).filter((entry) => sameEmail(entry.account?.email, requested)).map((entry) => entry.provider),
+      );
+      if (providers.size > 1) {
+        // These commands take no provider, so the id is the way to pick one.
+        return new Error(`${requested} is signed in to both Claude and Codex here; pass the account id instead (ade providers accounts list shows it).`);
+      }
+    }
+    return new Error(`No provider account ${JSON.stringify(requested)}.`);
   }
 
   /** An account by its id or its email (see `findRecord`). */
@@ -581,7 +590,7 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
   /** The provider CLI's own sign-out; the default is refused like `remove`. */
   function logoutCommandFor(id: string): { instance: ProviderInstance; command: ProviderInstanceLoginCommand } {
     const instance = get(id);
-    if (!instance) throw new Error(`No provider account ${JSON.stringify(id)}.`);
+    if (!instance) throw missingAccountError(String(id ?? "").trim());
     if (instance.isDefault) throw new Error("This account is the default. Make another account the default first.");
     const args = instance.provider === "claude" ? ["auth", "logout"] : ["logout"];
     return { instance, command: { ...loginCommandFor(instance), args } };
@@ -664,7 +673,7 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
     if (!trimmed) throw new Error("A provider account id is required.");
     const file = readFile();
     const existing = findRecord(file, trimmed);
-    if (!existing) throw new Error(`No provider account ${JSON.stringify(trimmed)}.`);
+    if (!existing) throw missingAccountError(trimmed, file);
     const next = apply(existing);
     const index = file.instances.findIndex((entry) => entry.id === existing.id);
     if (index >= 0) file.instances[index] = next;
@@ -707,7 +716,7 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
     if (!requested) throw new Error("A provider account id is required.");
     const file = readFile();
     const record = findRecord(file, requested);
-    if (!record) throw new Error(`No provider account ${JSON.stringify(requested)}.`);
+    if (!record) throw missingAccountError(requested, file);
     const trimmed = record.id;
     if (signingOut.has(trimmed)) throw new Error("This account is being signed out. Try again in a moment.");
     if (isDefaultProviderInstanceId(trimmed)) delete file.defaults[record.provider];
@@ -732,7 +741,7 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
     if (!requested) throw new Error("A provider account id is required.");
     const file = readFile();
     const record = findRecord(file, requested);
-    if (!record) throw new Error(`No provider account ${JSON.stringify(requested)}.`);
+    if (!record) throw missingAccountError(requested, file);
     const trimmed = record.id;
     // A second removal racing the first one's sign-out must not report success.
     if (signingOut.has(trimmed)) throw new Error("This account is already being signed out.");
@@ -775,9 +784,12 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
     const patchesProvider = typeof settings?.smartBalance === "boolean" || typeof settings?.autoStartWindows === "boolean";
     let accountCompaction: { compaction?: ProviderCompactionSettings } | null = null;
     if (instanceId) {
-      const account = get(instanceId);
-      if (!account || account.provider !== resolved) throw new Error("Provider account does not match this setting.");
-      const updated = mutateRecord(instanceId, "setSettings", (record) => {
+      // Resolved within the provider, so an email that Claude and Codex both
+      // hold still names this provider's account.
+      const file = readFile();
+      const found = findRecord(file, instanceId, resolved);
+      if (!found) throw new Error("Provider account does not match this setting.");
+      const updated = mutateRecord(found.id, "setSettings", (record) => {
         const next = { ...record };
         // A patch that names one account setting must not clear the other.
         if (Object.hasOwn(settings, "compaction")) {
@@ -949,6 +961,7 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
     registryPath,
     list,
     get,
+    missingAccountError,
     getDefault,
     resolve,
     snapshot,
@@ -964,7 +977,7 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
     hasPresetBinding,
     loginCommand: (id: string): ProviderInstanceLoginCommand => {
       const instance = get(id);
-      if (!instance) throw new Error(`No provider account ${JSON.stringify(id)}.`);
+      if (!instance) throw missingAccountError(String(id ?? "").trim());
       return loginCommandFor(instance);
     },
     /**

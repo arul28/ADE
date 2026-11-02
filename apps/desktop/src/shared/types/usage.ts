@@ -752,6 +752,12 @@ export type UsageWindow = {
   windowDurationMs?: number;
   /** Pace of this specific window (ahead/behind a steady burn). Computed per-window. */
   pacing?: UsagePacing;
+  /**
+   * When a live poll last read this window. A carried-forward window keeps the
+   * time it was really read, so two machines' readings of one login can be
+   * told apart by age per account, not by the provider's last poll.
+   */
+  readAt?: string;
 };
 
 export type UsagePacingStatus =

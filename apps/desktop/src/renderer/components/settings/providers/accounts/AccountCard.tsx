@@ -14,6 +14,7 @@ import type { AccountLimitRow } from "../../../usage/usageLimitModel";
 import {
   isBaseProviderInstance,
   PROVIDER_ACCOUNT_NOT_SIGNED_IN,
+  PROVIDER_ACCOUNT_SIGNED_IN_NO_EMAIL,
   providerInstanceHasAccount,
   type ProviderInstance,
   type ProviderInstanceSettingsPatch,
@@ -85,8 +86,10 @@ export function AccountCard({
   // The registry's copy of the email, else the one the usage poll read.
   const email = instance.account?.email ?? limitRow?.account?.email ?? null;
   // An account is its email; it has no other name (its id is a storage key).
-  // A login with no email (a key, not a subscription) is still signed in.
-  const name = email ?? (providerInstanceHasAccount(instance) ? "Signed in, no email" : PROVIDER_ACCOUNT_NOT_SIGNED_IN);
+  // Without one, a working login (a key login has no plan either) is still
+  // signed in: the registry's signed-in state decides, not the plan.
+  const name = email?.trim()
+    || (providerInstanceHasAccount(instance) ? PROVIDER_ACCOUNT_SIGNED_IN_NO_EMAIL : PROVIDER_ACCOUNT_NOT_SIGNED_IN);
   // The usage row carries its own "Signed out" pill when the poller saw the
   // broken login; the header says it only when the row cannot.
   const rowSaysSignedOut = limitRow?.account?.login === "signed_out";
@@ -227,9 +230,11 @@ export function AccountCard({
       <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0, minHeight: 26 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0, flex: 1 }}>
           {/* An account is its login: the email. Before it signs in it has
-              none, and the body says why. */}
+              none, and the body says why. With no email, two cards would read
+              the same, so the hover names the one thing that tells them apart:
+              the id `--instance` takes. Never shown as visible text. */}
           <span
-            title={name}
+            title={email?.trim() ? name : `${name} · account id ${instance.id}`}
             style={{
               fontSize: 13,
               fontWeight: 500,

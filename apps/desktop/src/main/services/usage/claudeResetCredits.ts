@@ -72,7 +72,7 @@ export type ClaudeResetConsumeAttempt = {
  * read or claim needs the caller's token (the quota poll's cached login). The
  * file read is gated before it happens, not after.
  */
-export function isClaudeResetCreditsSupported(
+function claudeTokenFileReadable(
   platform: NodeJS.Platform = process.platform,
 ): boolean {
   return platform !== "darwin";
@@ -257,7 +257,7 @@ export async function readClaudeResetCredits(args: {
   fetchImpl?: typeof fetch;
 } = {}): Promise<ClaudeResetCreditsRead> {
   const token = args.accessToken?.trim()
-    || (isClaudeResetCreditsSupported(args.platform) ? await readClaudeAccessToken(args.configHome) : null);
+    || (claudeTokenFileReadable(args.platform) ? await readClaudeAccessToken(args.configHome) : null);
   if (!token) return { status: "unavailable" };
   const version = args.cliVersion ?? await resolveClaudeCliVersion();
   const fetchImpl = args.fetchImpl ?? fetch;
@@ -303,7 +303,7 @@ export async function consumeClaudeResetCredit(args: {
     result: { ok: false, status: "failure", message },
     retrySameClaim,
   });
-  if (!args.accessToken?.trim() && !isClaudeResetCreditsSupported(args.platform)) {
+  if (!args.accessToken?.trim() && !claudeTokenFileReadable(args.platform)) {
     return failure("Sign in to Claude again to redeem resets.");
   }
   if (!GRANT_ID_PATTERN.test(args.grantId) || !REQUEST_ID_PATTERN.test(args.requestId)) {

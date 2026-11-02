@@ -365,17 +365,9 @@
 
 /* ── Limits (top-bar popover, pooled limits) ──────────────────────────── */
 
-/* One quiet panel per provider: logo and name, then its accounts. The panel is
-   the settings grouped-rows surface, so a provider reads as one thing rather
-   than a heading floating over loose rows. */
-.usage-provider {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  border: 1px solid var(--kit-panel-edge);
-  border-radius: var(--radius-lg);
-  background: var(--kit-panel-bg);
-}
+/* One `.kit-panel` per provider: logo and name, then its accounts, so a
+   provider reads as one thing rather than a heading over loose rows. */
+.usage-provider { display: flex; flex-direction: column; }
 .usage-provider-head { display: flex; align-items: center; gap: 8px; min-width: 0; height: 36px; padding: 0 8px 0 12px; }
 .usage-provider-name { font-size: 13px; font-weight: 600; letter-spacing: -0.01em; color: var(--color-fg); }
 .usage-provider-source { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: var(--kit-text-3); }
@@ -459,21 +451,6 @@
 .usage-detail dl { display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 14px; row-gap: 6px; margin: 0; }
 .usage-detail dt { font-size: 11px; color: var(--kit-text-3); white-space: nowrap; }
 .usage-detail dd { margin: 0; min-width: 0; font-size: 11.5px; color: var(--color-fg); text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
-.usage-detail-link {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  height: 28px;
-  border: 0;
-  border-radius: var(--radius-md);
-  background: color-mix(in srgb, var(--color-fg) 6%, transparent);
-  color: var(--kit-text-2);
-  font: inherit;
-  font-size: 11.5px;
-  cursor: pointer;
-}
-.usage-detail-link:hover { background: var(--kit-active); color: var(--color-fg); }
 
 .usage-popover-foot {
   display: flex;

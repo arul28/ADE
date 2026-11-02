@@ -133,7 +133,6 @@ function formatClock(targetMs: number, nowMs: number): string {
 
 export type PaceVisual = {
   label: string;
-  arrow: string;
   tone: "calm" | "warm" | "hot" | "cool";
   /** The exact figure behind the words, for a tooltip. */
   detail?: string;
@@ -147,7 +146,7 @@ export function paceVisual(pacing?: UsagePacing | null): PaceVisual | null {
   if (!pacing || pacing.weekElapsedPercent <= 0) return null;
   const { status, deltaPercent } = pacing;
   const mag = Math.round(Math.abs(deltaPercent));
-  if (status === "on-track" || mag < 1) return { label: "On pace", arrow: "", tone: "calm", detail: "On a steady pace to the reset" };
+  if (status === "on-track" || mag < 1) return { label: "On pace", tone: "calm", detail: "On a steady pace to the reset" };
   let tone: PaceVisual["tone"];
   if (status === "far-ahead") tone = "hot";
   else if (status === "ahead" || status === "slightly-ahead") tone = "warm";
@@ -157,14 +156,14 @@ export function paceVisual(pacing?: UsagePacing | null): PaceVisual | null {
   // reach tomorrow's reset with room to spare."): "29% ahead of pace" in mono
   // made the reader do the arithmetic. The figure stays on the tooltip.
   const detail = `${mag}% ${ahead ? "ahead of" : "behind"} a steady pace`;
-  if (!ahead) return { label: "Room to spare", arrow: "", tone, detail };
+  if (!ahead) return { label: "Room to spare", tone, detail };
   // "Runs out early" only when the projection really ends past the limit; a
   // window used faster than a steady pace can still last to its reset, and
   // saying it runs out (in red) on an account with most of its room left was
   // an alarm with nothing behind it.
   const runsOut = pacing.willLastToReset === false && pacing.projectedWeeklyPercent >= 100;
-  if (runsOut) return { label: "Runs out early", arrow: "", tone: "hot", detail };
-  return { label: "Using it fast", arrow: "", tone: "warm", detail };
+  if (runsOut) return { label: "Runs out early", tone: "hot", detail };
+  return { label: "Using it fast", tone: "warm", detail };
 }
 
 /** Full sentence for a bar's tooltip: fill, headroom, and reset. */
@@ -190,14 +189,15 @@ export function headroomTitle(window: UsageWindow, nowMs: number): string {
 export function paceOutlook(
   pacing: UsagePacing | null | undefined,
   nowMs: number,
-): { projected: string; outcome: string | null } | null {
+): { projected: string; projectedPercent: number; outcome: string | null } | null {
   if (!pacing || pacing.weekElapsedPercent <= 0) return null;
-  const projected = `${Math.round(pacing.projectedWeeklyPercent)}% by reset`;
+  const projectedPercent = Math.round(pacing.projectedWeeklyPercent);
+  const projected = `${projectedPercent}% by reset`;
   if (pacing.etaHours != null && pacing.etaHours > 0 && !pacing.willLastToReset) {
-    return { projected, outcome: `runs dry ~${formatClock(nowMs + pacing.etaHours * 3_600_000, nowMs)}` };
+    return { projected, projectedPercent, outcome: `runs dry ~${formatClock(nowMs + pacing.etaHours * 3_600_000, nowMs)}` };
   }
-  if (pacing.willLastToReset) return { projected, outcome: "lasts to reset" };
-  return { projected, outcome: null };
+  if (pacing.willLastToReset) return { projected, projectedPercent, outcome: "lasts to reset" };
+  return { projected, projectedPercent, outcome: null };
 }
 
 /** "trending to 87% by reset · runs dry ~tomorrow 3pm" */

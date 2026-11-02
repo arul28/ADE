@@ -8,7 +8,7 @@ import "./lib/nodeWarnings";
 import { pendingCliDelegation } from "./lib/cliDelegationEntry";
 import { isCliMainArgv } from "./lib/cliDelegation";
 import type { CrossMachineHandoffTransport } from "../../desktop/src/main/services/chat/crossMachineHandoffOrchestrator";
-import type { AccountLiveQuotaFetcher, AccountRollupFetcher } from "../../desktop/src/main/services/usage/usageTrackingService";
+import type { AccountRollupFetcher } from "../../desktop/src/main/services/usage/usageTrackingService";
 import {
   setSharedAccountLiveQuotaFetcher,
   setSharedAccountRollupFetcher,
@@ -121,6 +121,11 @@ import { OPEN_PLACES } from "../../desktop/src/shared/openPlaces";
 import { captureError, flushSentry } from "../../desktop/src/shared/sentry/capture";
 import { canonicalGitOriginUrl } from "../../desktop/src/main/services/github/githubSshAlias";
 import { parseGithubRemoteUrl } from "../../desktop/src/shared/githubRemote";
+import {
+  PROVIDER_ACCOUNT_NOT_SIGNED_IN,
+  PROVIDER_ACCOUNT_SIGNED_IN_NO_EMAIL,
+  providerAccountName,
+} from "../../desktop/src/shared/types/providerInstances";
 import {
   registerSentryDiagnosticAttachment,
   registerSentryDiagnosticContext,
@@ -28084,50 +28089,61 @@ async function runServe(
   // account-scoped read (the tracker's 30 s floor paces it), never at startup.
   if (!embedded) {
     // One set of transport hooks for both pulls: the full rollup (stats) and
-    // the quota-only read the limits view uses while it is on screen.
+    // the quota-only read the limits view uses while it is on screen. A usage
+    // refresh is optional, so like the desktop fetcher it only asks machines
+    // this brain already holds an open connection to; it never dials or
+    // re-pairs one, and the rest keep their durable rollup.
+    let lastListMachinesFailure: string | null = null;
     const fetcherDeps = async () => {
+      const { isAgentUsageMethod } = await import("./services/account/agentMachineBridge");
       const bridge = await getAgentMachineBridge();
-      const fetchers = { "usage.getUsageRollup": bridge.fetchUsageRollup, "usage.getLiveQuota": bridge.fetchLiveQuota } as const;
       return {
         listMachines: async () => {
           try {
-            return { state: "ok" as const, machines: await bridge.listAccountMachines(), message: null };
+            const machines = await bridge.listAccountMachines();
+            lastListMachinesFailure = null;
+            return { state: "ok" as const, machines, message: null };
           } catch (error) {
-            return { state: "unavailable" as const, machines: [], message: error instanceof Error ? error.message : String(error) };
+            const message = error instanceof Error ? error.message : String(error);
+            if (message !== lastListMachinesFailure) {
+              lastListMachinesFailure = message;
+              headlessProjectLogger.warn("usage.account_fetch.list_machines_failed", { error: message });
+            }
+            return { state: "unavailable" as const, machines: [], message };
           }
         },
         // The bridge addresses machines by account key; there is no separate target id.
         resolveTargetIdForMachineKey: (machineKey: string) => machineKey,
+        isTargetConnected: (machineKey: string) => bridge.hasLiveConnection(machineKey),
         callMachineMethod: async <T,>(
           machineKey: string,
           method: string,
           _params?: Record<string, unknown>,
           callOptions?: { timeoutMs?: number },
         ): Promise<T> => {
-          const fetch = fetchers[method as keyof typeof fetchers];
-          if (!fetch) throw new Error(`${method} can't run on another machine from here.`);
-          return await fetch(machineKey, callOptions?.timeoutMs ?? 4_000) as T;
+          if (!isAgentUsageMethod(method)) throw new Error(`${method} can't run on another machine from here.`);
+          return await bridge.fetchUsageMethod(machineKey, method, callOptions?.timeoutMs ?? 4_000) as T;
         },
         localMachineKey: () => bridge.localMachineKey() ?? "",
         logger: headlessProjectLogger,
       };
     };
-    let rollupFetcher: AccountRollupFetcher | null = null;
-    setSharedAccountRollupFetcher(async (fetchOptions) => {
-      if (!rollupFetcher) {
-        const { createAccountRollupFetcher } = await import("../../desktop/src/main/services/usage/accountUsageLiveRefresh");
-        rollupFetcher = createAccountRollupFetcher(await fetcherDeps());
-      }
-      return await rollupFetcher(fetchOptions);
-    });
-    let liveQuotaFetcher: AccountLiveQuotaFetcher | null = null;
-    setSharedAccountLiveQuotaFetcher(async (fetchOptions) => {
-      if (!liveQuotaFetcher) {
-        const { createAccountLiveQuotaFetcher } = await import("../../desktop/src/main/services/usage/accountUsageLiveRefresh");
-        liveQuotaFetcher = createAccountLiveQuotaFetcher(await fetcherDeps());
-      }
-      return await liveQuotaFetcher(fetchOptions);
-    });
+    // Each fetcher is built on its first call, then reused.
+    type AccountUsageFactories = typeof import("../../desktop/src/main/services/usage/accountUsageLiveRefresh");
+    type AccountFetchOptions = Parameters<AccountRollupFetcher>[0];
+    const lazyFetcher = <Result,>(
+      build: (factories: AccountUsageFactories, deps: Awaited<ReturnType<typeof fetcherDeps>>) => (options: AccountFetchOptions) => Promise<Result>,
+    ) => {
+      let fetcher: Promise<(options: AccountFetchOptions) => Promise<Result>> | null = null;
+      return async (options: AccountFetchOptions): Promise<Result> => {
+        fetcher ??= Promise.all([import("../../desktop/src/main/services/usage/accountUsageLiveRefresh"), fetcherDeps()])
+          .then(([factories, deps]) => build(factories, deps))
+          .catch((error) => { fetcher = null; throw error; });
+        return await (await fetcher)(options);
+      };
+    };
+    setSharedAccountRollupFetcher(lazyFetcher((factories, deps) => factories.createAccountRollupFetcher(deps)));
+    setSharedAccountLiveQuotaFetcher(lazyFetcher((factories, deps) => factories.createAccountLiveQuotaFetcher(deps)));
   }
 
   // Moving a chat to another machine rides the same paired connection. The
@@ -30223,8 +30239,12 @@ export function formatUsageLimits(value: unknown): string {
     }
     const account = record as unknown as UsageLimitsAccount;
     const marks = [account.thisChat ? "this chat" : null, account.nextChat ? "next chat" : null].filter(Boolean);
-    // An account is its email; one without one yet is not signed in.
-    const name = account.email ?? (account.instanceId ? "not signed in" : account.label) ?? "";
+    // An account is its email. Without one, a multi-login account takes the
+    // shared naming rule plus its id — the only thing `--instance` can select
+    // it by — and a one-login provider keeps its own label.
+    const name = account.email
+      ?? (account.instanceId ? `${providerAccountName({ account })} (id ${account.instanceId})` : account.label)
+      ?? "";
     const accountCell = `${name}${marks.length ? ` (${marks.join(", ")})` : ""}`.trim();
     const notes: string[] = [];
     if (account.note) notes.push(account.note);
@@ -30251,17 +30271,21 @@ export function formatUsageLimits(value: unknown): string {
   }
   const readAt = asString(report.readAt);
   const chat = isRecord(report.chat) ? report.chat : null;
-  const chatEmail = chat
-    // The row the chat's own machine marked: on merged rows another machine
-    // can use the same id for a different login.
-    ? asString(accounts.find((record) => record.thisChat === true && record.provider === chat.provider)?.email)
-    : null;
+  // The row the chat's own machine marked: on merged rows another machine can
+  // use the same id for a different login. No such row in the output (another
+  // provider was asked for) means no line, not a guess.
+  const chatRow = chat
+    ? accounts.find((record) => record.thisChat === true && record.provider === chat.provider) as unknown as UsageLimitsAccount | undefined
+    : undefined;
+  const chatAccountName = chatRow ? providerAccountName({ account: chatRow }) : null;
   const lines = [
     `ADE usage limits${readAt && !merged ? ` · read ${relativeTime(readAt)}` : ""}`,
-    ...(chat
-      ? [chatEmail
-        ? `this chat runs on ${usageProviderTextLabel(chat.provider)} account ${chatEmail}`
-        : `this chat runs on a ${usageProviderTextLabel(chat.provider)} account that is not signed in`]
+    ...(chat && chatAccountName
+      ? [chatAccountName === PROVIDER_ACCOUNT_NOT_SIGNED_IN
+        ? `this chat runs on a ${usageProviderTextLabel(chat.provider)} account that is not signed in`
+        : chatAccountName === PROVIDER_ACCOUNT_SIGNED_IN_NO_EMAIL
+          ? `this chat runs on a ${usageProviderTextLabel(chat.provider)} account that is signed in with no email`
+          : `this chat runs on ${usageProviderTextLabel(chat.provider)} account ${chatAccountName}`]
       : []),
     "",
     renderTable(headers, rows, "No provider limits on this machine. Providers that report limits: Claude, Codex, Cursor, Copilot, Grok, OpenCode, Kimi, Muse.", {
@@ -34568,10 +34592,11 @@ function formatProviderAccounts(value: unknown): string {
     ];
   };
 
-  // An account is its email. The id stays listed last: an account that has
-  // not signed in yet has no email, and --instance takes either.
+  // An account is its email (the shared naming rule). The id stays listed
+  // last: an account that has not signed in yet has no email, and --instance
+  // takes either.
   const accountEmail = (instance: JsonObject): string =>
-    (isRecord(instance.account) ? asString(instance.account.email) : null) ?? "not signed in";
+    providerAccountName(isRecord(instance.account) ? { account: { email: asString(instance.account.email), plan: asString(instance.account.plan) } } : null);
   const describe = (instance: JsonObject): string =>
     renderKeyValues("ADE provider account", [
       ["account", accountEmail(instance)],

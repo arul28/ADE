@@ -199,7 +199,8 @@ export function buildReachableGroups(harness: HarnessPresetBody, inputs: Harness
       if (account.provider !== harness) continue;
       const source: HarnessPresetSource = { kind: "account", provider: harness, instanceId: account.instanceId };
       const key = `account:${account.instanceId}`;
-      // The label is already the email ("Not signed in" before sign-in).
+      // The label is already the email ("Not signed in" before sign-in); the
+      // storage id is never shown.
       groups.push({
         key,
         kind: "native",

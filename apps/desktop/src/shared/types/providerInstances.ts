@@ -121,6 +121,9 @@ export function providerInstanceHasAccount(instance: Pick<ProviderInstance, "sig
 /** Shown where an account's name goes before it has signed in. */
 export const PROVIDER_ACCOUNT_NOT_SIGNED_IN = "Not signed in";
 
+/** Shown where an account's name goes when its login reports a plan but no email. */
+export const PROVIDER_ACCOUNT_SIGNED_IN_NO_EMAIL = "Signed in, no email";
+
 /**
  * What a person sees an account called: its email. An account has no other
  * name; its id is a storage key, and two machines can give one email
@@ -132,7 +135,7 @@ export function providerAccountName(
 ): string {
   const email = instance?.account?.email?.trim();
   if (email) return email;
-  return instance?.account?.plan?.trim() ? "Signed in, no email" : PROVIDER_ACCOUNT_NOT_SIGNED_IN;
+  return instance?.account?.plan?.trim() ? PROVIDER_ACCOUNT_SIGNED_IN_NO_EMAIL : PROVIDER_ACCOUNT_NOT_SIGNED_IN;
 }
 
 /**

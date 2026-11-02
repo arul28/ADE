@@ -12256,20 +12256,34 @@ export function createAgentChatService(args: {
   };
 
   /**
-   * The id of the account a caller named, by id or by email. A name this
+   * The id of the account a caller named, by id or by email. An id this
    * machine does not know is kept as given, so launch falls back the way it
-   * does for a removed account.
+   * does for a removed account. An email it does not know is refused: the
+   * person named a login, and running on a different one would spend the
+   * wrong account's quota without saying so.
    */
   const requestedAccountId = (provider: string, requested: string | null | undefined): string | undefined => {
     const trimmed = requested?.trim();
     if (!trimmed) return undefined;
     if (!isProviderInstanceProvider(provider)) return trimmed;
+    let found: { instance: ProviderInstance; fellBack: boolean };
     try {
-      const found = getMachineProviderInstanceStore().resolve(provider, trimmed);
-      return found.fellBack ? trimmed : found.instance.id;
-    } catch {
+      found = getMachineProviderInstanceStore().resolve(provider, trimmed);
+    } catch (error) {
+      logger.warn("agent_chat.requested_account_resolve_failed", {
+        provider,
+        error: error instanceof Error ? error.message : String(error),
+      });
       return trimmed;
     }
+    if (!found.fellBack) return found.instance.id;
+    if (trimmed.includes("@")) {
+      const providerName = provider === "claude" ? "Claude" : "Codex";
+      throw new Error(
+        `No ${providerName} account ${trimmed} is signed in on this computer. Sign it in here or start the chat on the computer that has it.`,
+      );
+    }
+    return trimmed;
   };
 
   /** The account a new Claude or Codex chat starts on when nothing picked one. */

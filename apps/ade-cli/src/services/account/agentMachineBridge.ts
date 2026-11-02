@@ -165,6 +165,12 @@ export type AgentMachineBridgeOptions = {
 
 export type AgentMachineBridge = ReturnType<typeof createAgentMachineBridge>;
 
+/** The usage reads another machine answers for this brain's account-wide merge. */
+export type AgentUsageMethod = "usage.getUsageRollup" | "usage.getLiveQuota";
+export function isAgentUsageMethod(method: string): method is AgentUsageMethod {
+  return method === "usage.getUsageRollup" || method === "usage.getLiveQuota";
+}
+
 export function createAgentMachineBridge(options: AgentMachineBridgeOptions) {
   const pool = createMachineConnectionPool({
     poolId: "agent",
@@ -455,10 +461,14 @@ export function createAgentMachineBridge(options: AgentMachineBridgeOptions) {
    * no window open (or one whose window is bound elsewhere) never heard from
    * the rest of the account. The answer is aggregates only and is validated
    * and bounded by the caller (`createAccountRollupFetcher`).
+   *
+   * A usage read is optional background work, so it only rides a connection
+   * that is already open: it never dials, pairs or re-pairs a machine. One
+   * without an open connection keeps its last durable rollup.
    */
   const fetchUsageMethod = async (
     machineKey: string,
-    method: "usage.getUsageRollup" | "usage.getLiveQuota",
+    method: AgentUsageMethod,
     timeoutMs: number,
   ): Promise<unknown> => {
     const machines = await pool.listAccountMachines();
@@ -466,7 +476,8 @@ export function createAgentMachineBridge(options: AgentMachineBridgeOptions) {
     if (!machine) throw new Error("This computer is no longer on your ADE account.");
     if (pool.isThisMachine(machine)) throw new MachineIsLocalError(machineName(machine));
     if (!machine.online) throw new MachineOfflineError(machineName(machine), lastSeen(machine));
-    const entry = await pool.acquire(machine);
+    const entry = pool.liveConnection(machineKey);
+    if (!entry) throw new Error(`${machineName(machine)} is not connected from here right now.`);
     return await pool.request(
       machine,
       entry,
@@ -482,9 +493,10 @@ export function createAgentMachineBridge(options: AgentMachineBridgeOptions) {
     listMachines,
     deliverWake,
     locateChat,
-    fetchUsageRollup: (machineKey: string, timeoutMs: number) => fetchUsageMethod(machineKey, "usage.getUsageRollup", timeoutMs),
-    /** One machine's own live quota (windows and accounts), for the limits view. */
-    fetchLiveQuota: (machineKey: string, timeoutMs: number) => fetchUsageMethod(machineKey, "usage.getLiveQuota", timeoutMs),
+    /** One machine's usage rollup or live quota, over an already-open connection only. */
+    fetchUsageMethod,
+    /** Whether this brain already holds an open connection to the machine; never dials. */
+    hasLiveConnection: (machineKey: string): boolean => pool.hasLiveConnection(machineKey),
     /** The account directory, cached briefly; throws when signed out or unreadable. */
     listAccountMachines: () => pool.listAccountMachines(),
     /** This computer's account machine key, or null before it has one. */

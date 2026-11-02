@@ -360,6 +360,15 @@ button.kit-row:hover, a.kit-row:hover { background: var(--kit-hover); }
 .kit-btn[data-size="xs"] { height: 18px; padding: 0 6px; border-radius: 4px; font-size: 11px; line-height: 1; }
 .kit-btn[data-tone="crit"] { color: var(--kit-crit); }
 
+/* A quiet grouped panel inside a card or popover (a provider's accounts, a
+   settings group): the panel tokens, no blur, no lift. */
+.kit-panel {
+  min-width: 0;
+  border: 1px solid var(--kit-panel-edge);
+  border-radius: var(--radius-lg);
+  background: var(--kit-panel-bg);
+}
+
 /* A text field or select for card surfaces, the height of a .kit-btn. */
 .kit-input {
   height: 30px;

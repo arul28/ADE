@@ -358,8 +358,8 @@ export function UsageLimitsBand({
           </div>
         </div>
       ) : (
-        // A logo, a hairline, then the accounts. The old rounded box made every
-        // provider a card stacked on the popover's own card.
+        // One quiet panel per provider (`.kit-panel`), not a frosted card: a
+        // card per provider stacked blur on the popover's own card.
         <div className="flex flex-col gap-2.5">
           {visibleProviders.map((provider) => (
             <ProviderLimitsRow
@@ -486,7 +486,7 @@ function ProviderLimitsRow({
     : [{ key: `${provider}:this-machine`, provider, account: null, cells: [] }];
 
   return (
-    <section data-provider-limits={provider} className="usage-provider">
+    <section data-provider-limits={provider} className="kit-panel usage-provider">
       {/* Logo · name · its age when old ……… actions on hover, then the accounts. */}
       <div className="usage-provider-head" title={sourceLine}>
         <ProviderMark provider={provider} size={16} dim={dim} />

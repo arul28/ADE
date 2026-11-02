@@ -135,9 +135,12 @@ function RoutingSwitch({
   );
 }
 
-/** An account in a sentence: its email, or "this account" before it has one. */
-function accountPhrase(instance: ProviderInstance): string {
-  return instance.account?.email?.trim() || "this account";
+/**
+ * An account in a sentence: its email, or "this account" when it has none.
+ * `startsSentence` capitalizes the fallback.
+ */
+function accountPhrase(instance: ProviderInstance, startsSentence = false): string {
+  return instance.account?.email?.trim() || (startsSentence ? "This account" : "this account");
 }
 
 const CARD_MIN_WIDTH = 290;
@@ -200,7 +203,9 @@ export function ProviderAccountsPanel({
   // A copy of another account's login is a card, not an account: it adds no
   // quota, so it neither counts in the header nor makes balancing meaningful.
   const loginCount = countProviderLogins(instances);
-  const showSmartBalance = loginCount >= 2;
+  // Also while it is on: hiding a switch that is still on (two accounts that
+  // became copies of one login) left balancing armed with no way to see it.
+  const showSmartBalance = loginCount >= 2 || settings.smartBalance === true;
   const showAutoStart = providerOffersAutoStart(snapshot, provider);
   const nextPickId = snapshot?.balanceNext?.find((entry) => entry.provider === provider)?.instanceId ?? null;
 
@@ -254,7 +259,7 @@ export function ProviderAccountsPanel({
         void run(async () => {
           signOutError = (await api.remove({ id: instance.id })).signOutError;
         }).then(() => {
-          if (signOutError) setActionError(`${instance.account?.email?.trim() || "This account"} was removed, but its sign-in could not be cleared. ${signOutError}`);
+          if (signOutError) setActionError(`${accountPhrase(instance, true)} was removed, but its sign-in could not be cleared. ${signOutError}`);
         });
       });
     },

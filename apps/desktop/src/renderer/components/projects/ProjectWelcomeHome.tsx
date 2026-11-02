@@ -248,7 +248,7 @@ export function ActivityUsageCard({ stats }: { stats: RecentStats }) {
   return (
     <section className="kit-card ade-home-card ade-home-activity" aria-label="Activity and usage">
       <WelcomeCardHead icon={ChartBar} title="Activity & usage" action={{ label: "Details", onClick: openUsageDetails }}>
-        <span className="ade-home-card-scope" title="Usage recorded on this computer. Another machine's work shows once it is online and synced.">this machine</span>
+        <span className="ade-home-card-scope" title="Tokens and cost from every computer on your ADE account. A computer counts from its last report until it is online again.">all machines</span>
         <div className="kit-seg ade-home-metric" role="group" aria-label="Measure">
           {(["tokens", "cost"] as Metric[]).map((option) => (
             <button key={option} type="button" aria-pressed={metric === option} onClick={() => setMetric(option)}>

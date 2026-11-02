@@ -11,6 +11,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  countProviderLogins,
   DEFAULT_PROVIDER_INSTANCE_SETTINGS,
   PROVIDER_INSTANCE_PROVIDERS,
   type ProviderInstance,
@@ -156,9 +157,9 @@ export function useProviderAccountCounts(): Partial<Record<ProviderInstanceProvi
         const next: Partial<Record<ProviderInstanceProvider, number>> = {};
         // Distinct logins, as the Accounts panel counts them: a copy of
         // another account's login is not another account.
-        for (const instance of list) {
-          if (instance.sameLoginAs) continue;
-          next[instance.provider] = (next[instance.provider] ?? 0) + 1;
+        for (const provider of PROVIDER_INSTANCE_PROVIDERS) {
+          const logins = countProviderLogins(list.filter((instance) => instance.provider === provider));
+          if (logins > 0) next[provider] = logins;
         }
         setCounts(next);
       } catch {

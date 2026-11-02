@@ -75,6 +75,7 @@ export type RemoteProjectRecord = {
 
 export type PooledConnection = {
   hostDeviceId: string;
+  machineKey: string;
   client: RuntimeRpcClient;
   /** What the target's `ade/initialize` advertised, so a caller can skip what it cannot take. */
   capabilities: Record<string, unknown> | null;
@@ -195,6 +196,8 @@ export function clampMachineCallTimeout(value: number | undefined): number {
 
 type PoolState = {
   connections: Map<string, Promise<PooledConnection>>;
+  /** Opened connections by account machine key, for a synchronous "already connected?" read. */
+  open: Map<string, PooledConnection>;
   pairedStore: DesktopPairedMachineStore | null;
 };
 
@@ -203,7 +206,7 @@ const pools = new Map<string, PoolState>();
 function poolState(poolId: string): PoolState {
   let state = pools.get(poolId);
   if (!state) {
-    state = { connections: new Map(), pairedStore: null };
+    state = { connections: new Map(), open: new Map(), pairedStore: null };
     pools.set(poolId, state);
   }
   return state;
@@ -227,6 +230,7 @@ export function createMachineConnectionPool(options: MachineConnectionPoolOption
     void current.then((entry) => {
       if (pooled && entry !== pooled) return;
       if (state.connections.get(hostDeviceId) === current) state.connections.delete(hostDeviceId);
+      if (state.open.get(entry.machineKey) === entry) state.open.delete(entry.machineKey);
       if (entry.idleTimer) clearTimeout(entry.idleTimer);
       try { entry.client.close(); } catch {}
     }, () => {
@@ -441,6 +445,7 @@ export function createMachineConnectionPool(options: MachineConnectionPoolOption
     }
     const entry: PooledConnection = {
       hostDeviceId,
+      machineKey: machine.machineKey,
       client,
       capabilities: targetCapabilities,
       projects: null,
@@ -448,6 +453,7 @@ export function createMachineConnectionPool(options: MachineConnectionPoolOption
       inFlight: 0,
     };
     client.onDisconnect(() => dropConnection(hostDeviceId, entry));
+    state.open.set(machine.machineKey, entry);
     touch(entry);
     logger?.info(`${options.logPrefix}.connected`, { machineKey: machine.machineKey });
     return entry;
@@ -472,6 +478,21 @@ export function createMachineConnectionPool(options: MachineConnectionPoolOption
       if (state.connections.get(hostDeviceId) === pending) state.connections.delete(hostDeviceId);
       throw new Error(`Couldn't reach ${machineName(machine)}: ${errorMessage(error)}`, { cause: error });
     }
+  };
+
+  /**
+   * The open pooled connection to this machine, or null. Never dials, pairs or
+   * reads the network, so a background read can ride a connection something
+   * else already made without ever opening one itself.
+   */
+  const liveConnection = (machineKey: string): PooledConnection | null => {
+    const entry = state.open.get(machineKey) ?? null;
+    if (!entry) return null;
+    if (entry.client.isClosed()) {
+      state.open.delete(machineKey);
+      return null;
+    }
+    return entry;
   };
 
   /** The target's registered projects, cached per connection for a minute. */
@@ -595,6 +616,9 @@ export function createMachineConnectionPool(options: MachineConnectionPoolOption
     peekDirectory: (): { at: number; machines: AdeAccountMachine[] } | null => directoryCache,
     clearDirectory: (): void => { directoryCache = null; },
     acquire,
+    liveConnection,
+    /** Whether an open pooled connection to this machine exists; never dials. */
+    hasLiveConnection: (machineKey: string): boolean => liveConnection(machineKey) != null,
     dropConnection,
     listProjects,
     request,

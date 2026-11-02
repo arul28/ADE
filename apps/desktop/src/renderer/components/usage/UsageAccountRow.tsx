@@ -1,16 +1,13 @@
 /**
- * One account, one row: its email, then its windows as stacked bars.
+ * One account, one row: its email (and plan, quietly), its pace in words, then
+ * its windows as stacked bars.
  *
- * The row used to open with the provider name, the account's nickname and the
- * plan — "Claude · Work jo.martin@example.com · Claude Pro" — which is four
- * identifiers for one login on a 420px popover. The provider is already the
- * box this row sits in, and a nickname is a thing you chose, not a thing you
- * can be billed as. The email is the account.
+ * The provider is already the panel this row sits in, and a nickname is a
+ * thing you chose, not a thing you can be billed as: the email is the account.
  *
- * The windows stack rather than sit side by side. Two meters across a 400px
- * popover left each one narrower than the words inside it, and the third
- * (Claude's OAuth-apps allowance) wrapped to its own line anyway — so the row
- * was already one-and-a-half rows tall and pretending to be one.
+ * Each window is two lines — its name and headroom, then a full-width bar —
+ * rather than label, bar and number across one line, which squeezed the bar
+ * and forced `5h`/`wk` shorthand.
  *
  * Colour: the meter stays neutral and turns amber at 20% left and red at 5%
  * (`usageLeftLevel`), the same rule as every kit meter, for every provider.
@@ -39,9 +36,7 @@ import { PacePill } from "./UsagePaceBar";
 import type { AccountLimitRow, AccountWindowCell } from "./usageLimitModel";
 import { accountNoticeLine } from "./usageLimitModel";
 import {
-  USAGE_NUMERIC_CLASS,
   USAGE_OVERLAY_CLASS,
-  USAGE_TEXT,
   usageLeftLevel,
   usageLeftLevelColor,
 } from "./usageDesign";
@@ -72,6 +67,10 @@ const POPOVER_POINTER_GRACE_MS = 220;
  * crossed.
  */
 const POPOVER_HOVER_INTENT_MS = 120;
+/** The panel's top sits this far above its meter, level with the meter's label. */
+const POPOVER_LIFT = 10;
+/** Gap below the meter when the panel has no room beside the surface. */
+const POPOVER_DROP = 4;
 
 /**
  * Where the panel goes, in viewport coordinates: BESIDE the surface the meter
@@ -95,11 +94,11 @@ function popoverPosition(
   const clampTop = (top: number) =>
     Math.min(Math.max(POPOVER_MARGIN, top), Math.max(POPOVER_MARGIN, viewport.height - height - POPOVER_MARGIN));
   const leftSide = host.left - POPOVER_OFFSET - width;
-  if (leftSide >= POPOVER_MARGIN) return { top: clampTop(anchor.top - 10), left: leftSide };
+  if (leftSide >= POPOVER_MARGIN) return { top: clampTop(anchor.top - POPOVER_LIFT), left: leftSide };
   const rightSide = host.right + POPOVER_OFFSET;
-  if (rightSide + width + POPOVER_MARGIN <= viewport.width) return { top: clampTop(anchor.top - 10), left: rightSide };
+  if (rightSide + width + POPOVER_MARGIN <= viewport.width) return { top: clampTop(anchor.top - POPOVER_LIFT), left: rightSide };
   const left = Math.min(Math.max(POPOVER_MARGIN, anchor.left), Math.max(POPOVER_MARGIN, viewport.width - width - POPOVER_MARGIN));
-  return { top: clampTop(anchor.bottom + 4), left };
+  return { top: clampTop(anchor.bottom + POPOVER_DROP), left };
 }
 
 /** What spending a reset credit did, in the user's words. */
@@ -571,8 +570,9 @@ function WindowPopover({
     .join(" · ");
   // A model's own weekly cap (Claude's Fable) is worth seeing at 0% too: it
   // says the cap exists and how much of it is left.
+  // Older entries are lowercase ids (`opus`), newer ones display names (`Fable`).
   const models = Object.entries(segment.window.modelBreakdown ?? {})
-    .map(([model, percent]) => `${model} ${Math.max(0, 100 - Math.round(percent))}% left`)
+    .map(([model, percent]) => `${model.charAt(0).toUpperCase()}${model.slice(1)} ${Math.max(0, 100 - Math.round(percent))}% left`)
     .join(" · ");
   return createPortal(
     <ViewportOverlayHost layer="tooltip">
@@ -623,7 +623,7 @@ function WindowPopover({
               value={resetClock ? `${resetClock} · in ${formatCountdown(segment.resetsInMs)}` : `in ${formatCountdown(segment.resetsInMs)}`}
             />
           ) : null}
-          {outlook ? <PopoverRow label="By the reset" value={outlook.projected.replace(" by reset", " used")} /> : null}
+          {outlook ? <PopoverRow label="By the reset" value={`${outlook.projectedPercent}% used`} /> : null}
           {models ? <PopoverRow label="Model caps" value={models} /> : null}
           {account?.plan ? <PopoverRow label="Plan" value={account.plan} /> : null}
           {via ? <PopoverRow label="Read on" value={via} /> : null}
@@ -632,7 +632,7 @@ function WindowPopover({
           ) : null}
         </dl>
         {accountUrl ? (
-          <button type="button" onClick={() => openExternalUrl(accountUrl)} className="usage-detail-link">
+          <button type="button" onClick={() => openExternalUrl(accountUrl)} className="kit-btn kit-btn-ghost w-full" data-size="sm">
             <ArrowSquareOut size={12} aria-hidden />
             Open limits page
           </button>
@@ -644,12 +644,9 @@ function WindowPopover({
 }
 
 /**
- * A label/value row, on exactly one line.
- *
- * It used to wrap, on the theory that an ellipsis in the middle of "runs dry
- * ~Sun 3pm" hides the only part worth reading. In a 248px panel that theory
- * produced a panel where half the rows were two lines tall and nothing lined
- * up. One line each, with the full text on the `title`.
+ * A label/value pair in the panel's two-column grid, on one line, with the
+ * full text on the `title`. Wrapped rows left half the panel two lines tall
+ * and nothing lined up.
  */
 function PopoverRow({ label, value }: { label: string; value: string }) {
   return (
