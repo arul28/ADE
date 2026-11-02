@@ -1,5 +1,6 @@
 import { Archive, ArrowsClockwise, Copy, Gear, GitBranch, Trash, X } from "@phosphor-icons/react";
 import type { LaneSummary } from "../../../../shared/types";
+import { skippedReasonLines } from "../../../lib/bulkSkipped";
 import { showToast } from "../../app/toast/toastStore";
 import { LaneMenuGroups } from "../LaneContextMenu";
 import type { LaneMenuEntry, LaneMenuGroup } from "../laneContextMenuItems";
@@ -10,12 +11,14 @@ import { PointMenu } from "./PointMenu";
  * Right-click menu for a multi-selection in the Lanes sidebar. It acts on every
  * selected lane, local or on another machine; the batch dialogs split the
  * selection per machine. The counts are the lanes the actions will touch:
- * the primary lane, unreachable machines and lanes being deleted are left out.
+ * the primary lane, unreachable machines and lanes being deleted are left out,
+ * and the menu says how many and why.
  */
 export function LaneSidebarBulkContextMenu({
   point,
   laneIds,
   actionableLaneIds,
+  skipReason,
   lanesById,
   onClose,
   onManage,
@@ -27,6 +30,8 @@ export function LaneSidebarBulkContextMenu({
   laneIds: string[];
   /** The selection filtered to what Manage/Catch up/Archive/Delete act on. */
   actionableLaneIds: string[];
+  /** Why the actions leave a selected lane out, or null when they act on it. */
+  skipReason: (laneId: string) => string | null;
   lanesById: Map<string, LaneSummary>;
   onClose: () => void;
   onManage: (laneIds: string[]) => void;
@@ -59,11 +64,19 @@ export function LaneSidebarBulkContextMenu({
     { kind: "action", key: "copy-branches", label: "Copy branches", icon: GitBranch, onSelect: copy(lanes.map(({ lane }) => lane.branchRef).join("\n"), "branches") },
     { kind: "action", key: "clear", label: "Clear selection", icon: X, onSelect: act(onClearSelection) },
   ];
+  const actionable = new Set(actionableLaneIds);
+  const skippedGroups: LaneMenuGroup[] = skippedReasonLines(
+    laneIds.flatMap((id) => {
+      if (actionable.has(id)) return [];
+      const reason = skipReason(id);
+      return reason ? [reason] : [];
+    }),
+  ).map((line, index) => ({ key: `skipped-${index}`, label: line, entries: [], joinPrevious: index > 0 }));
   // The header heads whichever group comes first.
   const header = `${lanes.length} lanes selected`;
   const groups: LaneMenuGroup[] = manageEntries.length
-    ? [{ key: "manage", label: header, entries: manageEntries }, { key: "selection", entries: selectionEntries }]
-    : [{ key: "selection", label: header, entries: selectionEntries }];
+    ? [{ key: "manage", label: header, entries: manageEntries }, ...skippedGroups, { key: "selection", entries: selectionEntries }]
+    : [{ key: "selection", label: header, entries: selectionEntries }, ...skippedGroups];
 
   return (
     <PointMenu

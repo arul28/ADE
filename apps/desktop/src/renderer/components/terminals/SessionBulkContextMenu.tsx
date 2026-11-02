@@ -26,6 +26,7 @@ import {
 } from "../../lib/terminalAttention";
 import { isSessionSnoozed, resolveSnoozePresets } from "../../lib/sessionSnooze";
 import { MAX_WORK_GRID_TILES } from "../../lib/workGrid";
+import { skippedReasonLines } from "../../lib/bulkSkipped";
 import { ContextMenu, type ContextMenuEntry, type ContextMenuState } from "../ui/ContextMenu";
 import {
   settleSessions,
@@ -37,18 +38,27 @@ import {
 /** What the Lanes tab should do with the lanes behind a multi-selection. */
 export type BulkLaneIntent = "open" | "manage" | "archive" | "delete";
 
+/**
+ * A selected row's lane on another machine: its Lanes-tab row key
+ * (`machineId:laneId`), the lane, and why it can't be acted on right now
+ * (the machine is offline or unreachable), or null when it can.
+ */
+export type BulkForeignLane = { key: string; lane: LaneSummary; blockedReason: string | null };
+
 type SessionBulkContextMenuProps = {
   menu: ContextMenuState;
   /** The live selection, in the order the sidebar shows it. */
   sessions: TerminalSessionSummary[];
-  /** The tab's own lanes. Lanes on other machines are not in here. */
+  /** The tab's own lanes. Lanes on other machines come from `foreignLaneFor`. */
   lanes: LaneSummary[];
   /**
    * Sessions in the tab's own roster — the rows the sidebar draws as local.
-   * Their lanes are the ones the Lanes tab can manage. The runtime pin is not
-   * used for this: it can name a machine for a row the sidebar shows as local.
+   * Their lanes are keyed by lane id. The runtime pin is not used for this: it
+   * can name a machine for a row the sidebar shows as local.
    */
   localSessionIds: ReadonlySet<string>;
+  /** The lane of a row on another machine, or null when no machine lists it. */
+  foreignLaneFor: (session: TerminalSessionSummary) => BulkForeignLane | null;
   resolvePin: (session: TerminalSessionSummary) => OpenProjectBinding | null;
   onClose: () => void;
   pinnedSessionIds: string[];
@@ -78,6 +88,7 @@ export function SessionBulkContextMenu({
   sessions,
   lanes,
   localSessionIds,
+  foreignLaneFor,
   resolvePin,
   onClose,
   pinnedSessionIds,
@@ -122,20 +133,36 @@ export function SessionBulkContextMenu({
       && !sessionNeedsYou(canonicalInputFromSummary(session)));
     const stoppableCount = sessions.filter(canBulkStopSession).length;
 
+    // Lane keys as the Lanes tab names its rows: a local lane by its id, a lane
+    // on another machine by `machineId:laneId`. The Lanes tab lists every
+    // connected machine and splits archive/delete per machine, so a mixed
+    // selection goes there whole. A lane that can't be reached is left out and
+    // the menu says why.
     const laneIds: string[] = [];
-    const otherMachineLanes = new Set<string>();
-    for (const { session, pin } of targets) {
-      if (!localSessionIds.has(session.id) || !lanesById.has(session.laneId)) {
-        otherMachineLanes.add(`${pin?.key ?? ""}:${session.laneId}`);
-      } else if (!laneIds.includes(session.laneId)) {
-        laneIds.push(session.laneId);
+    const laneByKey = new Map<string, LaneSummary>();
+    const skipped = new Map<string, string>();
+    for (const { session } of targets) {
+      const local = localSessionIds.has(session.id) ? lanesById.get(session.laneId) : undefined;
+      if (local) {
+        if (!laneByKey.has(local.id)) laneIds.push(local.id);
+        laneByKey.set(local.id, local);
+        continue;
+      }
+      const foreign = foreignLaneFor(session);
+      if (!foreign) {
+        skipped.set(`missing:${session.laneId}`, "lane not listed on any connected machine");
+      } else if (foreign.blockedReason) {
+        skipped.set(foreign.key, foreign.blockedReason);
+      } else {
+        if (!laneByKey.has(foreign.key)) laneIds.push(foreign.key);
+        laneByKey.set(foreign.key, foreign.lane);
       }
     }
-    const manageableLaneIds = laneIds.filter((id) => lanesById.get(id)?.laneType !== "primary");
+    const manageableLaneIds = laneIds.filter((id) => laneByKey.get(id)?.laneType !== "primary");
     const manageHint = manageableLaneIds.length < laneIds.length
       ? `${manageableLaneIds.length} of ${laneIds.length}`
       : undefined;
-    const singleLane = laneIds.length === 1 ? lanesById.get(laneIds[0]!) : undefined;
+    const singleLane = laneIds.length === 1 ? laneByKey.get(laneIds[0]!) : undefined;
 
     const laneEntries: ContextMenuEntry[] = [];
     if (laneIds.length) {
@@ -177,16 +204,11 @@ export function SessionBulkContextMenu({
         },
       );
     }
-    if (otherMachineLanes.size) {
+    const skippedLines = skippedReasonLines(skipped.values());
+    if (skippedLines.length) {
       laneEntries.push(
-        { kind: "separator", key: "lanes-foreign-sep" },
-        {
-          kind: "label",
-          key: "lanes-foreign",
-          label: otherMachineLanes.size === 1
-            ? "1 lane not available in this tab"
-            : `${otherMachineLanes.size} lanes not available in this tab`,
-        },
+        ...(laneEntries.length ? [{ kind: "separator" as const, key: "lanes-skipped-sep" }] : []),
+        ...skippedLines.map((line, index): ContextMenuEntry => ({ kind: "label", key: `lanes-skipped-${index}`, label: line })),
       );
     }
 
@@ -346,6 +368,7 @@ export function SessionBulkContextMenu({
   }, [
     gridSessionIds,
     gridableSessionIds,
+    foreignLaneFor,
     lanes,
     localSessionIds,
     onClearSelection,

@@ -263,6 +263,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     clearForeignSelection,
     effectiveMachineFilter,
     setMachineFilter,
+    machineIdForKey,
     allViewLanes,
     visibleLanes,
     machineFilterChips,
@@ -1382,15 +1383,23 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     })();
   };
 
-  // Lanes a bulk action can act on: reachable, not primary, not being deleted.
-  // A mixed selection is fine: archive/delete split it per machine and pin each
-  // lane to its own.
-  const bulkActionableLaneIds = useCallback((laneIds: string[]) => laneIds.filter((id) => {
+  // Why a bulk action leaves a lane out, or null when it acts on it: lanes must
+  // be reachable, not primary, and not already being deleted. A mixed selection
+  // is fine: archive/delete split it per machine and pin each lane to its own.
+  const bulkSkipReason = useCallback((id: string): string | null => {
     const foreignRow = foreignRowByKey.get(id);
-    if (foreignRow && machineBlockedReason(foreignRow)) return false;
+    const blocked = foreignRow ? machineBlockedReason(foreignRow) : null;
+    if (blocked) return blocked;
     const lane = lanesById.get(id);
-    return lane != null && lane.laneType !== "primary" && !deletingLaneIds.has(id);
-  }), [deletingLaneIds, foreignRowByKey, lanesById]);
+    if (!lane) return "no longer listed";
+    if (lane.laneType === "primary") return "primary lane";
+    if (deletingLaneIds.has(id)) return "already being deleted";
+    return null;
+  }, [deletingLaneIds, foreignRowByKey, lanesById]);
+  const bulkActionableLaneIds = useCallback(
+    (laneIds: string[]) => laneIds.filter((id) => bulkSkipReason(id) == null),
+    [bulkSkipReason],
+  );
 
   const openBatchManage = useCallback((laneIds: string[], initialTab: ManageLaneTab | null = null) => {
     const manageable = bulkActionableLaneIds(laneIds);
@@ -1543,9 +1552,24 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     } else if (action === "batch" || action === "select") {
       // Both leave the lanes multi-selected in the sidebar, exactly as a
       // Cmd-click selection would; `batch` also opens the manage dialog on them.
-      const ids = (urlLaneDeeplinks.laneIdsRaw ?? "").split(",").map((id) => id.trim())
-        .filter((id) => id && lanesById.has(id) && !deletingLaneIds.has(id));
+      const requested = (urlLaneDeeplinks.laneIdsRaw ?? "").split(",").map((id) => id.trim())
+        .filter((id) => id && !deletingLaneIds.has(id));
+      const ids = requested.filter((id) => lanesById.has(id));
       if (ids.length > 0) {
+        // A lane from another machine this tab has not loaded (or that is
+        // gone) cannot be selected; say so rather than act on the rest quietly.
+        const missing = requested.length - ids.length;
+        if (missing > 0) {
+          showToast({
+            title: missing === 1 ? "1 selected lane isn't listed here" : `${missing} selected lanes aren't listed here`,
+            message: "Its machine may still be loading. Try again in a moment.",
+            tone: "warning",
+          });
+        }
+        // A selection from the Work tab can span machines; show them all.
+        if (effectiveMachineFilter !== "all" && ids.some((id) => machineIdForKey(id) !== effectiveMachineFilter)) {
+          setMachineFilter("all");
+        }
         selectDetailLane(ids[0]!);
         setMultiSelectedLaneIds(ids.length > 1 ? new Set(ids) : EMPTY_LANE_ID_SET);
         if (action === "batch") {
@@ -2238,6 +2262,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
           point={laneBulkMenu}
           laneIds={multiSelectedList}
           actionableLaneIds={bulkActionableLaneIds(multiSelectedList)}
+          skipReason={bulkSkipReason}
           lanesById={lanesById}
           onClose={() => setLaneBulkMenu(null)}
           onManage={(ids) => openBatchManage(ids)}

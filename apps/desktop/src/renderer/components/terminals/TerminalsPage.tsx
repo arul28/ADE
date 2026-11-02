@@ -44,7 +44,7 @@ import {
   type SessionContextMenuState,
 } from "./SessionContextMenu";
 import { moveSessionOnBoard } from "./sessionBoardMoveUi";
-import { SessionBulkContextMenu, type BulkLaneIntent } from "./SessionBulkContextMenu";
+import { SessionBulkContextMenu, type BulkForeignLane, type BulkLaneIntent } from "./SessionBulkContextMenu";
 import { showToast } from "../app/toast/toastStore";
 import type { ContextMenuState } from "../ui/ContextMenu";
 import { SessionInfoPopover, type InfoPopoverState } from "./SessionInfoPopover";
@@ -1482,6 +1482,39 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
 
   // Bulk menu → Lanes tab, through the same `action=batch` deep link the Work
   // lane menu's "Manage N Open Lanes" already uses. `open` only selects them.
+  // A selected row on another machine: its lane as the Lanes tab keys it
+  // (`machineId:laneId`), read from the same cross-machine union the Lanes tab
+  // lists, and why it can't be acted on when its machine is out of reach (the
+  // same reasons the sidebar card shows).
+  const foreignLaneBySessionId = useMemo(() => {
+    const bySessionId = new Map<string, BulkForeignLane>();
+    // The tab's own machine is `work.lanes`; a stale slice of it is not a
+    // foreign lane (the Lanes tab skips it too).
+    const activeMachineId = machineIdForBinding(projectBinding);
+    for (const machine of crossMachineSlices) {
+      if (machine.machineId === activeMachineId) continue;
+      const lanesById = new Map(machine.lanes.map((lane) => [lane.id, lane] as const));
+      const blockedReason = !machine.online
+        ? `${machine.machineName} is offline`
+        : !machine.binding
+          ? `${machine.machineName} is unavailable`
+          : null;
+      for (const session of machine.sessions) {
+        const lane = lanesById.get(session.laneId);
+        if (!lane || bySessionId.has(session.id)) continue;
+        bySessionId.set(session.id, { key: foreignLaneKey(machine.machineId, lane.id), lane, blockedReason });
+      }
+    }
+    return bySessionId;
+  }, [crossMachineSlices, projectBinding]);
+  const foreignLaneForSession = useCallback(
+    (session: TerminalSessionSummary) => foreignLaneBySessionId.get(session.id) ?? null,
+    [foreignLaneBySessionId],
+  );
+
+  // `laneIds` are Lanes-tab row keys and may name lanes on other machines. The
+  // Lanes tab resolves those itself; only a lane on the tab's machine may go
+  // into the shared store selection, which every other tab reads as local.
   const handleBulkLanes = useCallback((laneIds: string[], intent: BulkLaneIntent) => {
     if (!laneIds.length) return;
     const params = new URLSearchParams({
@@ -1490,7 +1523,8 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       laneIds: laneIds.join(","),
     });
     if (intent === "archive" || intent === "delete") params.set("manageTab", intent);
-    work.selectLane(laneIds[0]!);
+    const firstLocalLaneId = laneIds.find((id) => work.lanes.some((lane) => lane.id === id));
+    if (firstLocalLaneId) work.selectLane(firstLocalLaneId);
     work.navigate(`/lanes?${params.toString()}`);
   }, [work]);
 
@@ -2288,6 +2322,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         sessions={selectedSessionsInSidebarOrder}
         lanes={work.lanes}
         localSessionIds={localSessionIds}
+        foreignLaneFor={foreignLaneForSession}
         resolvePin={resolveSessionRuntimePin}
         onClose={() => setBulkMenu(null)}
         pinnedSessionIds={work.pinnedSessionIds}
