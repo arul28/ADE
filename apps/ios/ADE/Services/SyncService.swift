@@ -22348,7 +22348,7 @@ final class SyncService: ObservableObject {
       // `storageWait` clears the notice.
       let wait = parseSyncHostStorageWaitNotice(
         payload,
-        machineName: remoteHostName ?? activeHostProfile?.hostName
+        machineName: hostName ?? activeHostProfile?.hostName
       )
       if wait != hostStorageWaitNotice { hostStorageWaitNotice = wait }
     default:
