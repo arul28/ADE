@@ -377,10 +377,15 @@ function readLocalSyncDeviceId(): string | null {
   }
 }
 
-async function discoverTailscalePeers(timeoutMs = 1_200): Promise<{
-  machines: RemoteRuntimeDiscoveredMachine[];
-  diagnostics: RemoteRuntimeDiscoveryDiagnostic[];
-}> {
+/**
+ * Peers this computer's Tailscale can see. They only add Tailscale addresses
+ * to computers Bonjour already found (Find nearby never lists a Tailscale-only
+ * peer), so when Tailscale is missing, quit or slow, nothing a person can see is
+ * lost and nothing is reported: Tailscale is optional, and a note about it
+ * above the computer list read as the reason a machine would not connect.
+ * Tailscale's own status lives in Account → Private network.
+ */
+async function discoverTailscalePeers(timeoutMs = 1_200): Promise<RemoteRuntimeDiscoveredMachine[]> {
   try {
     const { stdout } = await execFileAsync(
       resolveTailscaleCliPath(),
@@ -391,55 +396,10 @@ async function discoverTailscalePeers(timeoutMs = 1_200): Promise<{
         windowsHide: true,
       },
     );
-    return {
-      machines: discoveredRuntimesFromTailscaleStatus(
-        JSON.parse(stdout),
-        Date.now(),
-      ),
-      diagnostics: [],
-    };
-  } catch (error) {
-    const nodeError = error as NodeJS.ErrnoException & {
-      killed?: boolean;
-      signal?: NodeJS.Signals | null;
-    };
-    const message = error instanceof Error ? error.message : String(error);
-    const timedOut =
-      nodeError.killed === true || /timed out|timeout|ETIMEDOUT/i.test(message);
-    const notFound =
-      nodeError.code === "ENOENT" ||
-      /ENOENT|not found|no such file/i.test(message);
-    // Tailscale is optional, and account computers are listed and reached
-    // without it, so none of these is a warning: a warning above "Your
-    // computers" read as "Tailscale is why this machine won't connect". They
-    // stay muted notes inside Add computer → Nearby, the one list Tailscale
-    // can add to. A computer whose Tailscale route fails says so on its own
-    // row, and Account → Private network has Tailscale's own status.
-    let code: string;
-    let reason: string;
-    if (timedOut) {
-      code = "tailscale-timeout";
-      reason = "Tailscale didn't answer";
-    } else if (notFound) {
-      code = "tailscale-unavailable";
-      reason = "Tailscale isn't installed";
-    } else {
-      code = "tailscale-status-failed";
-      reason = "Tailscale isn't running";
-    }
-    const summary = `${reason}, so computers you reach only through Tailscale aren't listed here. You don't need it: computers on this Wi-Fi still show here.`;
-    return {
-      machines: [],
-      diagnostics: [
-        {
-          source: "tailscale",
-          severity: "info",
-          code,
-          message: summary,
-          detail: message || null,
-        },
-      ],
-    };
+    return discoveredRuntimesFromTailscaleStatus(JSON.parse(stdout), Date.now());
+  } catch {
+    // Expected: not installed, not running, or not answering.
+    return [];
   }
 }
 
@@ -472,7 +432,7 @@ export async function discoverLanRuntimes(
           source: "bonjour",
           severity: "warning",
           code: "bonjour-discovery-failed",
-          message: "LAN discovery failed; Tailscale discovery still ran.",
+          message: "Couldn't look for computers on this Wi-Fi. Computers on your ADE account are still listed.",
           detail: message || null,
         });
       } finally {
@@ -484,9 +444,7 @@ export async function discoverLanRuntimes(
       }
     })(),
     (async () => {
-      const tailscale = await discoverTailscalePeers(timeoutMs);
-      diagnostics.push(...tailscale.diagnostics);
-      for (const machine of tailscale.machines) {
+      for (const machine of await discoverTailscalePeers(timeoutMs)) {
         discovered.set(machine.id, machine);
       }
     })(),

@@ -78,7 +78,7 @@ A remote target stores a primary `hostname` plus an optional `routes` array (`Re
 
 ### Discovery diagnostics
 
-`discoverLanRuntimes` runs Bonjour and `tailscale status --json` in parallel and now returns a `RemoteRuntimeDiscoveryResult` with `{ machines, diagnostics }`. Each diagnostic carries `{ source: "bonjour" | "tailscale", severity, code, message, detail }`. Codes today: `bonjour-discovery-failed`, `tailscale-unavailable` (CLI not installed), `tailscale-timeout`, `tailscale-status-failed`. `severity` is `"warning"` when discovery is degraded in a way the user may want to look at, and `"info"` for a normal, non-actionable observation about the environment. All three Tailscale codes are `info` — Tailscale is optional, and account computers are listed and reached without it, so a missing, quit or slow Tailscale is a fact about the machine rather than a problem worth a warning over the computer list. Only `bonjour-discovery-failed` is `warning`. The panel surfaces warnings inline on the resting pane, and renders info diagnostics as muted secondary text with no warning glyph, only inside Add computer → Nearby.
+`discoverLanRuntimes` runs Bonjour and `tailscale status --json` in parallel and returns a `RemoteRuntimeDiscoveryResult` with `{ machines, diagnostics }`. Each diagnostic carries `{ source: "bonjour", severity: "warning", code, message, detail }`; the only code is `bonjour-discovery-failed`, which the panel shows inline on the resting pane. A Tailscale CLI that is missing, quit, slow or failing yields no peers and no diagnostic: Tailscale peers only add tailnet addresses to Bonjour-found machines (Find nearby drops Tailscale-only peers), and Tailscale is optional.
 
 ## Bootstrap sequence
 

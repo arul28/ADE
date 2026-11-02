@@ -1359,39 +1359,6 @@ describe("RemoteTargetList", () => {
     expect(screen.queryByText(/token=secret/)).toBeNull();
   });
 
-  it("keeps an info discovery diagnostic off the resting pane and shows it under Add machine", async () => {
-    remoteRuntimeMock.listTargets.mockResolvedValue([]);
-    remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({
-      machines: [],
-      diagnostics: [
-        {
-          source: "tailscale",
-          severity: "info",
-          code: "tailscale-unavailable",
-          message: "Tailscale not installed — LAN discovery only.",
-          detail: "ENOENT",
-        },
-      ],
-    });
-    installAdeMock();
-
-    render(<RemoteTargetList />);
-
-    // A brand-new user's first read is the call to action, not an explanation
-    // of optional software they never asked about.
-    expect(
-      await screen.findByText("Connect your other computers"),
-    ).toBeTruthy();
-    expect(screen.queryByText("Tailscale not installed — LAN discovery only.")).toBeNull();
-
-    // The information is still there, where someone is actually hunting for
-    // machines this list could be missing.
-    openAddMode("Find nearby");
-    const note = await screen.findByText("Tailscale not installed — LAN discovery only.");
-    // Not having optional software installed must not wear the warning glyph.
-    expect(note.querySelector("svg")).toBeNull();
-  });
-
   it("surfaces discovery warnings separately from empty results", async () => {
     remoteRuntimeMock.listTargets.mockResolvedValue([]);
     remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({

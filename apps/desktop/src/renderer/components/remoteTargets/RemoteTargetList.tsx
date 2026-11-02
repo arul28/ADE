@@ -33,7 +33,6 @@ import type {
   RemoteRuntimeConnectResult,
   RemoteRuntimeDiscoveredMachine,
   RemoteRuntimeDiscoveryDiagnostic,
-  RemoteRuntimeDiscoverySeverity,
   RemoteRuntimeSshHostKeyTrustStatus,
   RemoteRuntimeTarget,
   RemoteRuntimeTargetInput,
@@ -46,7 +45,6 @@ import { PairMachineForm } from "./PairMachineForm";
 import {
   accountMachineMatchesTarget,
   assignMachineSections,
-  describePublishHealth,
   discoveredPairingInput,
   discoveredTargetInput,
   formatRemoteTargetError,
@@ -167,12 +165,8 @@ function targetFormPrefill(
 
 function joinDiagnosticMessages(
   diagnostics: readonly RemoteRuntimeDiscoveryDiagnostic[],
-  severity: RemoteRuntimeDiscoverySeverity,
 ): string {
-  return diagnostics
-    .filter((entry) => entry.severity === severity)
-    .map((entry) => entry.message)
-    .join(" ");
+  return diagnostics.map((entry) => entry.message).join(" ");
 }
 
 const SECTION_LABELS: Record<MachineSection, string> = {
@@ -180,11 +174,6 @@ const SECTION_LABELS: Record<MachineSection, string> = {
   available: "Ready to connect",
   unavailable: "Not reachable right now",
 };
-
-/** The advice table's sentences are lowercase; a card opens with a capital. */
-function capitalizeSentence(value: string): string {
-  return value ? value.charAt(0).toUpperCase() + value.slice(1) : value;
-}
 
 export function RemoteTargetList({
   onConnected,
@@ -238,8 +227,7 @@ export function RemoteTargetList({
   const [formPrefill, setFormPrefill] =
     useState<RemoteTargetFormPrefill | null>(null);
   const [error, setError] = useState<string | null>(null);
-  // One source of truth for what discovery reported; the warning and info lines
-  // are derived, so they can never drift out of sync with each other.
+  // What discovery reported; the warning line is derived from it.
   const [discoveryDiagnostics, setDiscoveryDiagnostics] = useState<
     readonly RemoteRuntimeDiscoveryDiagnostic[]
   >([]);
@@ -512,18 +500,11 @@ export function RemoteTargetList({
     }
   }, []);
 
-  // Warnings mean discovery is degraded and get the warning treatment on the
-  // pane itself. Info diagnostics ("Tailscale isn't installed") are normal on a
-  // plain machine: they render as muted secondary text with no warning glyph,
-  // and only inside Add machine → Nearby, where the reader is actually looking
-  // for machines this list could be missing.
+  // Discovery warnings mean it is degraded and get the warning treatment on
+  // the pane itself.
   const discoveryError = useMemo(
-    () => discoveryFetchError ?? (joinDiagnosticMessages(discoveryDiagnostics, "warning") || null),
+    () => discoveryFetchError ?? (joinDiagnosticMessages(discoveryDiagnostics) || null),
     [discoveryDiagnostics, discoveryFetchError],
-  );
-  const discoveryNote = useMemo(
-    () => joinDiagnosticMessages(discoveryDiagnostics, "info") || null,
-    [discoveryDiagnostics],
   );
 
   useEffect(() => {
@@ -1561,10 +1542,6 @@ export function RemoteTargetList({
                     No computers found. Open ADE on the other computer and make sure both are on the same Wi-Fi or Tailscale network.
                   </div>
                 ) : null}
-                {/* Info diagnostics ("Tailscale isn't installed") explain what is
-                    missing from *this* list, so they belong here rather than on
-                    the resting pane. */}
-                {discoveryNote ? <div style={helperTextStyle}>{discoveryNote}</div> : null}
                 {nearbyMachines.length > 0 ? (
                   <div className="ade-cx-list">
                     {nearbyMachines.map((machine) => (
