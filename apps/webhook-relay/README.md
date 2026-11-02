@@ -164,8 +164,9 @@ npx wrangler secret put GITHUB_BETA_DISPATCH_TOKEN
 
 Unset, the timer does nothing. A refused token (expired or revoked) throws on
 every tick and reaches Sentry; replace it the same way. Cloudflare's dashboard
-lists every tick under the Worker's Cron Events and its log lines start with
-`beta_timer.`.
+lists past cron runs and their outcome on the Worker's page (cron
+events). This Worker keeps no Workers Logs, so its `beta_timer.` lines show only
+in `npx wrangler tail`.
 
 ## ADE project config
 
