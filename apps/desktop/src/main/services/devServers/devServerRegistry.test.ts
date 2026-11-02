@@ -3,10 +3,16 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createAgentShellOutputObserver } from "./agentShellOutput";
 import { createDevServerRegistry, detectDevServersInChunk, devServerRegistry } from "./devServerRegistry";
 import { createDevServerWatcher } from "./devServerWatcher";
+import { runWindowsPortScan } from "./windowsPortScan";
 
-// The listener scan asks the OS (lsof / PowerShell); that process boundary is
-// the only thing replaced.
+// The listener scan asks the OS (lsof / PowerShell / ade-port-scan.exe); those
+// process boundaries are the only things replaced. The Windows helper is
+// absent unless a case gives it an answer.
 vi.mock("node:child_process", () => ({ execFile: vi.fn() }));
+vi.mock("./windowsPortScan", () => ({
+  runWindowsPortScan: vi.fn(async () => null),
+  windowsNativePortScanAvailable: vi.fn(() => false),
+}));
 
 type ExecCallback = (error: Error | null, stdout: string) => void;
 
@@ -130,6 +136,18 @@ describe("createDevServerRegistry", () => {
   });
 });
 
+// What the Windows listener query prints: the PowerShell fallback and
+// ade-port-scan.exe print the same rows.
+const WINDOWS_ROOTS = [{ laneId: "primary", root: "C:\\repo" }, { laneId: "lane-a", root: "C:\\wt\\lane-a" }];
+const WINDOWS_LISTENERS = [
+  { pid: 201, ports: [47182], name: "node.exe", commandLine: "node.exe C:/wt/lane-a/node_modules/vite/bin/vite.js", ancestors: [] },
+  { pid: 202, ports: [47183], name: "node.exe", commandLine: "node C:\\wt\\lane-a-v2\\server.js", ancestors: [] },
+  // A relative entry point: the shell that started it names the lane.
+  { pid: 203, ports: [47185], name: "node.exe", commandLine: "node server.js", ancestors: [{ pid: 300, commandLine: "cmd.exe /c cd /d C:\\WT\\Lane-A && node server.js" }] },
+  // Only ADE itself names a root above it: that is not where it runs.
+  { pid: 204, ports: [47186], name: "node.exe", commandLine: "node server.js", ancestors: [{ pid: process.pid, commandLine: "ade serve --project-root C:\\repo" }] },
+];
+
 describe("dev servers outside ADE terminals", () => {
   afterEach(() => {
     vi.useRealTimers();
@@ -157,6 +175,10 @@ describe("dev servers outside ADE terminals", () => {
   it.each([
     {
       platform: "darwin" as const,
+      source: "lsof",
+      // Each case starts on its own hour: the machine-wide scan is shared and throttled.
+      startAt: "2026-10-04T11:00:00Z",
+      helper: null,
       roots: [{ laneId: "primary", root: "/repo" }, { laneId: "lane-a", root: "/wt/lane-a" }],
       // lsof: listeners, then the cwd of each owner.
       scan: (command: string, args: string[]) => args.includes("cwd")
@@ -168,20 +190,26 @@ describe("dev servers outside ADE terminals", () => {
     },
     {
       platform: "win32" as const,
-      roots: [{ laneId: "primary", root: "C:\\repo" }, { laneId: "lane-a", root: "C:\\wt\\lane-a" }],
-      scan: () => JSON.stringify([
-        { pid: 201, ports: [47182], name: "node.exe", commandLine: "node.exe C:/wt/lane-a/node_modules/vite/bin/vite.js", ancestors: [] },
-        { pid: 202, ports: [47183], name: "node.exe", commandLine: "node C:\\wt\\lane-a-v2\\server.js", ancestors: [] },
-        // A relative entry point: the shell that started it names the lane.
-        { pid: 203, ports: [47185], name: "node.exe", commandLine: "node server.js", ancestors: [{ pid: 300, commandLine: "cmd.exe /c cd /d C:\\WT\\Lane-A && node server.js" }] },
-        // Only ADE itself names a root above it: that is not where it runs.
-        { pid: 204, ports: [47186], name: "node.exe", commandLine: "node server.js", ancestors: [{ pid: process.pid, commandLine: "ade serve --project-root C:\\repo" }] },
-      ]),
+      source: "PowerShell",
+      startAt: "2026-10-04T12:00:00Z",
+      helper: null,
+      roots: WINDOWS_ROOTS,
+      scan: () => JSON.stringify(WINDOWS_LISTENERS),
       found: ["lane-a:47182", "lane-a:47185"],
     },
-  ])("finds a lane's background servers on $platform, and forgets them once they stop", async ({ platform, roots, scan, found }) => {
+    {
+      platform: "win32" as const,
+      source: "ade-port-scan.exe",
+      startAt: "2026-10-04T13:00:00Z",
+      helper: WINDOWS_LISTENERS,
+      roots: WINDOWS_ROOTS,
+      // With the helper answering, PowerShell is never needed.
+      scan: () => "not json",
+      found: ["lane-a:47182", "lane-a:47185"],
+    },
+  ])("finds a lane's background servers on $platform through $source, and forgets them once they stop", async ({ platform, startAt, helper, roots, scan, found }) => {
     vi.useFakeTimers();
-    vi.setSystemTime(new Date(platform === "win32" ? "2026-10-04T12:00:00Z" : "2026-10-04T11:00:00Z"));
+    vi.setSystemTime(new Date(startAt));
     const removed: number[] = [];
     const stopRemoved = devServerRegistry.onRemoved((record) => removed.push(record.port));
     const watcher = createDevServerWatcher({
@@ -192,6 +220,7 @@ describe("dev servers outside ADE terminals", () => {
     });
 
     answerScans(scan);
+    vi.mocked(runWindowsPortScan).mockResolvedValue(helper);
     await watcher.refresh();
     const listed = devServerRegistry.list().map((record) => `${record.source.laneId}:${record.port}`).sort();
     expect(listed).toEqual(found);
@@ -199,6 +228,7 @@ describe("dev servers outside ADE terminals", () => {
 
     // The servers stop. Nothing announces that, so the next look notices.
     answerScans(() => (platform === "win32" ? "[]" : ""));
+    vi.mocked(runWindowsPortScan).mockResolvedValue(helper ? [] : null);
     vi.setSystemTime(Date.now() + 20_000);
     await watcher.refresh();
     expect(devServerRegistry.list()).toEqual([]);

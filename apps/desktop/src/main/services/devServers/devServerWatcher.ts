@@ -4,6 +4,7 @@ import path from "node:path";
 import type { Logger } from "../logging/logger";
 import type { DevServerRegistry } from "./devServerRegistry";
 import { onAgentShellActivity } from "./agentShellOutput";
+import { windowsNativePortScanAvailable } from "./windowsPortScan";
 import { isPathInside, pathComparisonKey, pathKey, pathsEqual } from "../shared/pathCompare";
 import { devServerKey, type DevServerRecord } from "../../../shared/types/builtInBrowser";
 import {
@@ -26,17 +27,23 @@ import {
  * - Someone asking for the list (a Browser pane or launchpad on screen, on any
  *   machine) is the other cue.
  * Each look is ONE machine-wide listener query (tens of milliseconds with
- * `lsof`), throttled, with concurrent asks sharing a single run. Nothing ever
+ * `lsof` or Windows' `ade-port-scan.exe`), throttled, with concurrent asks sharing a single run. Nothing ever
  * connects to a port it finds.
  */
 
 /** No two scans closer than this, however many chats ask. */
 const MIN_SCAN_INTERVAL_MS = 4_000;
-/** Windows pays for a PowerShell start per scan, so it looks less often. */
-const WINDOWS_MIN_SCAN_INTERVAL_MS = 15_000;
+/**
+ * Windows without `ade-port-scan.exe` pays for a PowerShell start per scan
+ * (about 1 s of CPU), so it looks less often. With the helper a scan costs a
+ * few ms, as `lsof` does, and the usual interval applies.
+ */
+const WINDOWS_POWERSHELL_MIN_SCAN_INTERVAL_MS = 15_000;
 
 function minScanIntervalMs(platform: NodeJS.Platform): number {
-  return platform === "win32" ? WINDOWS_MIN_SCAN_INTERVAL_MS : MIN_SCAN_INTERVAL_MS;
+  return platform === "win32" && !windowsNativePortScanAvailable()
+    ? WINDOWS_POWERSHELL_MIN_SCAN_INTERVAL_MS
+    : MIN_SCAN_INTERVAL_MS;
 }
 /** After a shell command: right away-ish, then once more for slow starters. */
 const AFTER_SHELL_DELAYS_MS = [1_500, 6_000] as const;
@@ -64,10 +71,10 @@ type ScanResult = NonNullable<Awaited<ReturnType<typeof scanListeningProcesses>>
 const sharedLocationCache = new Map<number, ProcessLocation>();
 let sharedScan: { at: number; promise: Promise<ScanResult | null> } | null = null;
 
-function scanMachine(platform: NodeJS.Platform): Promise<ScanResult | null> {
+function scanMachine(platform: NodeJS.Platform, logger?: Logger | null): Promise<ScanResult | null> {
   const now = Date.now();
   if (sharedScan && now - sharedScan.at < minScanIntervalMs(platform)) return sharedScan.promise;
-  const promise = scanListeningProcesses({ platform, knownLocations: sharedLocationCache })
+  const promise = scanListeningProcesses({ platform, knownLocations: sharedLocationCache, logger })
     .then((result) => {
       if (!result) return null;
       // Forget pids that stopped listening, so a reused pid is looked up afresh.
@@ -169,7 +176,7 @@ export function createDevServerWatcher(args: {
     pathsEqual(record.source.projectRoot, args.projectRoot, platform);
 
   const scan = async (): Promise<void> => {
-    const result = await scanMachine(platform);
+    const result = await scanMachine(platform, args.logger);
     if (!result || disposed) return;
     const roots = (await args.listLaneRoots().catch(() => []))
       .filter((entry) => entry.laneId && entry.root)
