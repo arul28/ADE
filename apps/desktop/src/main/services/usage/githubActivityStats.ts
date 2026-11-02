@@ -13,10 +13,9 @@
  * the common case, not an error state, so every path returns an empty stats
  * object carrying a sentence about why rather than throwing into the page.
  */
-import { spawn } from "node:child_process";
 import { isRecord, nowIso, getErrorMessage, safeJsonParse } from "../shared/utils";
 import { localDayKey } from "./localDay";
-import { execFileOffThread, offThreadSpawnEnabled } from "../shared/offThreadSpawn";
+import { runReapedCommand } from "../shared/runReapedCommand";
 import type { GithubContributionCalendar } from "../../../shared/types";
 
 /**
@@ -114,72 +113,21 @@ export function makeEmptyGithubStats(error: string | null = null, repo: string |
   };
 }
 
-export function runBufferedCommand(
+export async function runBufferedCommand(
   command: string,
   args: string[],
   options: { cwd?: string; timeoutMs?: number; maxOutputBytes?: number } = {},
 ): Promise<string> {
-  if (offThreadSpawnEnabled()) {
-    return execFileOffThread(command, args, {
-      cwd: options.cwd,
-      env: process.env,
-      timeoutMs: options.timeoutMs ?? GITHUB_STATS_COMMAND_TIMEOUT_MS,
-      maxBuffer: options.maxOutputBytes ?? GITHUB_STATS_MAX_OUTPUT_BYTES,
-    }).then((result) => {
-      if (result.error) throw result.error;
-      if (result.exitCode === 0) return result.stdout;
-      throw new Error(result.stderr.trim() || `${command} exited with code ${result.exitCode ?? "unknown"}`);
-    });
-  }
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    let stdout = "";
-    let stderr = "";
-    const maxOutputBytes = options.maxOutputBytes ?? GITHUB_STATS_MAX_OUTPUT_BYTES;
-    const child = spawn(command, args, {
-      cwd: options.cwd,
-      env: process.env,
-      stdio: ["ignore", "pipe", "pipe"],
-      windowsHide: true,
-    });
-    if (!child) {
-      reject(new Error(`${command} failed to start`));
-      return;
-    }
-    let timeout: ReturnType<typeof setTimeout> | null = null;
-    const finish = (fn: () => void) => {
-      if (settled) return;
-      settled = true;
-      if (timeout) clearTimeout(timeout);
-      fn();
-    };
-    timeout = setTimeout(() => {
-      child?.kill("SIGTERM");
-      finish(() => reject(new Error(`${command} timed out`)));
-    }, options.timeoutMs ?? GITHUB_STATS_COMMAND_TIMEOUT_MS);
-    timeout.unref?.();
-
-    child.stdout?.on("data", (chunk: Buffer) => {
-      stdout += chunk.toString("utf8");
-      if (Buffer.byteLength(stdout, "utf8") > maxOutputBytes) {
-        child?.kill("SIGTERM");
-        finish(() => reject(new Error(`${command} produced too much output`)));
-      }
-    });
-    child.stderr?.on("data", (chunk: Buffer) => {
-      stderr += chunk.toString("utf8");
-    });
-    child.on("error", (error) => finish(() => reject(error)));
-    child.on("close", (code) => {
-      finish(() => {
-        if (code === 0) {
-          resolve(stdout);
-          return;
-        }
-        reject(new Error(stderr.trim() || `${command} exited with code ${code ?? "unknown"}`));
-      });
-    });
+  // Reaped: when the keychain hangs, gh exits but its `security` helper stays.
+  const result = await runReapedCommand(command, args, {
+    cwd: options.cwd,
+    timeoutMs: options.timeoutMs ?? GITHUB_STATS_COMMAND_TIMEOUT_MS,
+    maxBuffer: options.maxOutputBytes ?? GITHUB_STATS_MAX_OUTPUT_BYTES,
   });
+  if (result.timedOut) throw new Error(`${command} timed out`);
+  if (result.error) throw result.error;
+  if (result.exitCode === 0) return result.stdout;
+  throw new Error(result.stderr.trim() || `${command} exited with code ${result.exitCode ?? "unknown"}`);
 }
 
 function parseGithubRepoJson(raw: string): string | null {

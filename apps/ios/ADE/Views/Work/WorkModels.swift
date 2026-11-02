@@ -2322,6 +2322,7 @@ struct WorkChatEnvelope: Identifiable, Equatable {
   var userMessageWrittenByAde = false
   /// True for a user message a side chat sent to this chat (`metadata.sideChat`).
   var userMessageFromSideChat = false
+  var userMessageIsRecoveryHandOff = false
   /// Raw fields intentionally kept beside the normalized event so the broad
   /// WorkChatEvent associated-value surface does not need to grow just for
   /// subagent classification.

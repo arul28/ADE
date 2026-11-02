@@ -4485,7 +4485,101 @@ function rowDrawsVisibleItem({ event }: ChatTranscriptRenderEnvelope): boolean {
 export function filterVisibleTranscriptRows(
   rows: readonly ChatTranscriptRenderEnvelope[],
 ): ChatTranscriptRenderEnvelope[] {
-  return foldQuietNoticeLines(foldSpawnCompletionLines(rows.filter(rowDrawsVisibleItem)));
+  return foldQuietNoticeLines(foldSpawnCompletionLines(foldKeychainRetry(foldContinuityRecovery(rows.filter(rowDrawsVisibleItem)))));
+}
+
+function isKeychainRetryNotice(event: ChatTranscriptRenderEvent): boolean {
+  return event.type === "system_notice" && event.status === "claude_keychain_retry";
+}
+
+/**
+ * A turn ADE is trying once more (its sign-in hit a keychain that was not
+ * answering) reads as one quiet line, not a FAILED pill. If the retry fails
+ * too, that turn's error still draws.
+ */
+function foldKeychainRetry(rows: ChatTranscriptRenderEnvelope[]): ChatTranscriptRenderEnvelope[] {
+  if (!rows.some((row) => isKeychainRetryNotice(row.event))) return rows;
+  const retriedTurnIds = new Set<string>();
+  for (const row of rows) {
+    const turnId = isKeychainRetryNotice(row.event) ? rowTurnId(row.event) : "";
+    if (turnId) retriedTurnIds.add(turnId);
+  }
+  return rows.filter(({ event }) => {
+    const turnId = rowTurnId(event);
+    if (!turnId || !retriedTurnIds.has(turnId)) return true;
+    if (event.type === "status") return event.turnStatus !== "failed";
+    if (event.type === "done") return event.status !== "failed";
+    return true;
+  });
+}
+
+function rowTurnId(event: ChatTranscriptRenderEvent): string {
+  return "turnId" in event && typeof event.turnId === "string" ? event.turnId.trim() : "";
+}
+
+const LOST_PROVIDER_THREAD_ERROR = /no conversation found with session id|could not resume the original codex thread/i;
+
+function continuityDetail(event: ChatTranscriptRenderEvent): {
+  state?: string;
+  originalThreadId?: string | null;
+  supersededBySessionId?: string;
+} | null {
+  if (event.type !== "system_notice") return null;
+  const detail = event.detail;
+  if (!detail || typeof detail !== "object" || detail.kind !== "continuity_recovery") return null;
+  return detail;
+}
+
+/**
+ * A provider thread that was lost and then rebuilt reads as one quiet line,
+ * not a trail of failures:
+ * - an earlier recovery's hand-off message (ADE's, not the user's) never draws;
+ * - only the newest notice about one lost thread draws, so "Reconnecting…",
+ *   repeats and "Reconnected" do not stack;
+ * - once the thread is reconnected (or moved to a new chat), the failed turns
+ *   that ran into the missing thread draw nothing.
+ */
+function foldContinuityRecovery(rows: ChatTranscriptRenderEnvelope[]): ChatTranscriptRenderEnvelope[] {
+  // Almost every chat has none of this: one cheap pass, no copy.
+  const involved = rows.some((row) => continuityDetail(row.event)
+    || (row.event.type === "user_message" && row.event.metadata?.kind === "continuity_recovery"));
+  if (!involved) return rows;
+  const lastNoticeIndexByThread = new Map<string, number>();
+  rows.forEach((row, index) => {
+    const detail = continuityDetail(row.event);
+    if (detail) lastNoticeIndexByThread.set(detail.originalThreadId ?? "", index);
+  });
+  const resolvedThreads = new Set<string>();
+  for (const [thread, index] of lastNoticeIndexByThread) {
+    const detail = continuityDetail(rows[index]!.event)!;
+    if (detail.state === "reconstructed" || detail.supersededBySessionId) resolvedThreads.add(thread);
+  }
+  // Turns that failed because the thread was gone, for threads that came back.
+  const failedTurnIds = new Set<string>();
+  for (const row of rows) {
+    const detail = continuityDetail(row.event);
+    if (detail && resolvedThreads.has(detail.originalThreadId ?? "")) {
+      const turnId = rowTurnId(row.event);
+      if (turnId) failedTurnIds.add(turnId);
+    }
+    // A turn queued behind the failed one fails with the same "not found".
+    if (resolvedThreads.size > 0 && row.event.type === "error" && LOST_PROVIDER_THREAD_ERROR.test(row.event.message)) {
+      const turnId = rowTurnId(row.event);
+      if (turnId) failedTurnIds.add(turnId);
+    }
+  }
+  return rows.filter((row, index) => {
+    const event = row.event;
+    if (event.type === "user_message") return event.metadata?.kind !== "continuity_recovery";
+    const detail = continuityDetail(event);
+    if (detail) return lastNoticeIndexByThread.get(detail.originalThreadId ?? "") === index;
+    const turnId = rowTurnId(event);
+    if (!turnId || !failedTurnIds.has(turnId)) return true;
+    if (event.type === "error") return false;
+    if (event.type === "status") return event.turnStatus !== "failed";
+    if (event.type === "done") return event.status !== "failed";
+    return true;
+  });
 }
 
 type TerminusDoneEvent = Extract<AgentChatEvent, { type: "done" }>;

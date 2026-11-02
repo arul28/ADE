@@ -11382,7 +11382,9 @@ export function AgentChatPane({
       setBusy(true);
       setError(null);
       touchSession(sessionId);
-      await refreshAvailableModels({ force: true });
+      // Send first: the host checks the sign-in itself. Waiting for a forced
+      // re-probe of every agent CLI first left the chat blank for up to half
+      // a minute after "Retry turn". The fresh sign-in state still lands.
       try {
         await agentChatApiRef.current.send({ sessionId, text, displayText, ...replayContext }, chatRuntimePinRef.current);
       } catch (sendError) {
@@ -11390,6 +11392,7 @@ export function AgentChatPane({
         rejectAuthRetry(sessionId);
         return "A turn is already active in this thread. Wait for it to finish before retrying.";
       }
+      void refreshAvailableModels({ force: true }).catch(() => {});
       void refreshSessions().catch(() => {});
       return null;
     } catch (err) {

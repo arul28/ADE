@@ -267,13 +267,19 @@ export function antigravityCredentialEnv(
 // ── Signed-in check ─────────────────────────────────────────────────────────
 
 const KEYCHAIN_CACHE_MS = 30_000;
-const keychainCache = new Map<string, { at: number; present: boolean }>();
+/**
+ * A read that timed out is the keychain waiting on a password dialog (a
+ * locked keychain on the search list). Asking again every 30 s only queues
+ * more dialogs, so that answer is kept for longer.
+ */
+const KEYCHAIN_TIMEOUT_CACHE_MS = 10 * 60_000;
+const keychainCache = new Map<string, { at: number; ttlMs: number; present: boolean }>();
 
 /** True when the macOS login keychain holds the agent's token item. Attribute read only. */
 function keychainItemExists(account: string): Promise<boolean> {
   if (process.platform !== "darwin") return Promise.resolve(false);
   const cached = keychainCache.get(account);
-  if (cached && Date.now() - cached.at < KEYCHAIN_CACHE_MS) return Promise.resolve(cached.present);
+  if (cached && Date.now() - cached.at < cached.ttlMs) return Promise.resolve(cached.present);
   return new Promise((resolve) => {
     execFile(
       "/usr/bin/security",
@@ -281,7 +287,8 @@ function keychainItemExists(account: string): Promise<boolean> {
       { timeout: 2_000, windowsHide: true },
       (error) => {
         const present = !error;
-        keychainCache.set(account, { at: Date.now(), present });
+        const ttlMs = error?.killed ? KEYCHAIN_TIMEOUT_CACHE_MS : KEYCHAIN_CACHE_MS;
+        keychainCache.set(account, { at: Date.now(), ttlMs, present });
         resolve(present);
       },
     );

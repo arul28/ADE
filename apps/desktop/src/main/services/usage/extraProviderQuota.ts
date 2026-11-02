@@ -7,7 +7,6 @@
  * A provider with no local credential returns `not_signed_in` before any
  * network call, so an unsigned install never becomes an error chip.
  */
-import { spawn } from "node:child_process";
 import type { DatabaseSync } from "node:sqlite";
 import { homedir } from "node:os";
 import path from "node:path";
@@ -23,6 +22,7 @@ import { openReadOnlyDatabase } from "../projects/readOnlySqlite";
 import { resolveKimiCodeLogin } from "../shared/kimiCodeLogin";
 import { COPILOT_TOKEN_ENV_KEYS, copilotConfigHome, grokConfigHome, openCodeDataDirs } from "../shared/providerConfigHomes";
 import { asRecord, finiteNumberOrNull, sha256Hex, toOptionalString } from "../shared/utils";
+import { runReapedCommand } from "../shared/runReapedCommand";
 import {
   parseCopilotIdentity,
   parseCopilotQuota,
@@ -745,38 +745,10 @@ async function readCachedGhAuthToken(force: boolean): Promise<string | null> {
   return token;
 }
 
-function spawnGhAuthToken(): Promise<string | null> {
-  return new Promise((resolve) => {
-    let settled = false;
-    const finish = (token: string | null) => {
-      if (settled) return;
-      settled = true;
-      resolve(token);
-    };
-    const child = spawn("gh", ["auth", "token"], {
-      stdio: ["ignore", "pipe", "ignore"],
-      windowsHide: true,
-    });
-    const chunks: Buffer[] = [];
-    const timer = setTimeout(() => {
-      child.kill();
-      finish(null);
-    }, 2_000);
-    child.stdout?.on("data", (chunk: Buffer) => {
-      chunks.push(chunk);
-    });
-    child.on("error", () => {
-      clearTimeout(timer);
-      finish(null);
-    });
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      if (code !== 0) {
-        finish(null);
-        return;
-      }
-      const token = Buffer.concat(chunks).toString("utf8").trim();
-      finish(token.length > 0 ? token : null);
-    });
-  });
+async function spawnGhAuthToken(): Promise<string | null> {
+  // Reaped: when the keychain hangs, gh exits but its `security` helper stays.
+  const result = await runReapedCommand("gh", ["auth", "token"], { timeoutMs: 2_000, maxBuffer: 64 * 1024 });
+  if (result.error || result.exitCode !== 0) return null;
+  const token = result.stdout.trim();
+  return token.length > 0 ? token : null;
 }

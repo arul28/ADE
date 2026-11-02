@@ -157,6 +157,8 @@ struct WorkChatMessageFold {
     switch envelope.event {
     case .userMessage(let text, let attachments, let turnId, let steerId, let deliveryState, let processed):
       previousEnvelopeWasAssistantText = false
+      // ADE's hand-off to a rebuilt thread was never typed by the user.
+      if envelope.userMessageIsRecoveryHandOff { return }
       // Queued steers render as inline cards above the composer, not in the message stream.
       if deliveryState == "queued", steerId != nil {
         return
@@ -1108,6 +1110,7 @@ func makeWorkChatEnvelope(from entry: AgentChatEventEnvelope) -> WorkChatEnvelop
   )
   envelope.userMessageWrittenByAde = entry.userMessageWrittenByAde
   envelope.userMessageFromSideChat = entry.userMessageFromSideChat
+  envelope.userMessageIsRecoveryHandOff = entry.userMessageIsRecoveryHandOff
   return envelope
 }
 

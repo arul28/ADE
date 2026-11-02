@@ -47,6 +47,7 @@ import { acpDialectFor } from "./acpDialects";
 import { ACP_EFFORT_LADDER } from "./acpDialects/shared";
 import { resolveAdeCacheFile } from "../../shared/adeCacheFile";
 import { writeTextAtomic } from "../../shared/utils";
+import { createFailureBackoff } from "../../../../shared/failureBackoff";
 import {
   ACP_METHOD,
   hasAcpSessionCapability,
@@ -55,7 +56,12 @@ import {
 
 /** A list younger than this is fresh: no warm. */
 const CATALOG_TTL_MS = 6 * 60 * 60_000;
-/** A failed warm is not retried on every read. */
+/**
+ * A failed warm is not retried on every read. Each failure in a row doubles
+ * the wait, up to the catalog TTL: a provider that cannot sign in fails the
+ * same way every time, and each attempt starts its CLI (Antigravity's opened
+ * a keychain password dialog per start, every 5 minutes, all night).
+ */
 const RETRY_AFTER_FAILURE_MS = 5 * 60_000;
 const PROBE_TIMEOUT_MS = 20_000;
 const CACHE_FILE_VERSION = 1;
@@ -221,7 +227,7 @@ export function recordAcpSessionModelCatalog(provider: AcpModelProviderGroup, de
 export function markAcpModelCatalogStale(provider: AcpModelProviderGroup): void {
   const saved = readFile().providers[provider];
   lastEmptyAt.delete(provider);
-  lastFailureAt.delete(provider);
+  failureBackoff.delete(provider);
   if (saved && saved.savedAt !== 0) persist(provider, saved.models, 0);
 }
 
@@ -304,7 +310,15 @@ async function discoverProviderModels(provider: AcpModelProviderGroup, env: Node
 }
 
 const inFlight = new Set<AcpModelProviderGroup>();
-const lastFailureAt = new Map<AcpModelProviderGroup, number>();
+const failureBackoff = new Map<AcpModelProviderGroup, ReturnType<typeof createFailureBackoff>>();
+function providerFailureBackoff(provider: AcpModelProviderGroup): ReturnType<typeof createFailureBackoff> {
+  let backoff = failureBackoff.get(provider);
+  if (!backoff) {
+    backoff = createFailureBackoff({ baseMs: RETRY_AFTER_FAILURE_MS, maxMs: CATALOG_TTL_MS });
+    failureBackoff.set(provider, backoff);
+  }
+  return backoff;
+}
 /** A provider that answered with no model list (an Auto-only plan) is not asked again until the TTL. */
 const lastEmptyAt = new Map<AcpModelProviderGroup, number>();
 let queue: Promise<void> = Promise.resolve();
@@ -322,7 +336,7 @@ export function warmAcpModelCatalog(
   const saved = readFile().providers[provider];
   if (saved && Date.now() - saved.savedAt < CATALOG_TTL_MS) return;
   if (inFlight.has(provider)) return;
-  if (Date.now() - (lastFailureAt.get(provider) ?? 0) < RETRY_AFTER_FAILURE_MS) return;
+  if (!providerFailureBackoff(provider).canAttempt()) return;
   if (Date.now() - (lastEmptyAt.get(provider) ?? 0) < CATALOG_TTL_MS) return;
   inFlight.add(provider);
   queue = queue.then(async () => {
@@ -340,11 +354,13 @@ export function warmAcpModelCatalog(
         return;
       }
       recordProbedCatalog(provider, models);
+      providerFailureBackoff(provider).recordSuccess();
       options?.logger?.info?.("ai.acp_model_discovery.ready", { provider, count: models.length });
     } catch (error) {
-      lastFailureAt.set(provider, Date.now());
+      const retryInMs = providerFailureBackoff(provider).recordFailure();
       options?.logger?.warn?.("ai.acp_model_discovery.failed", {
         provider,
+        retryInMs,
         error: (error instanceof Error ? error.message : String(error)).slice(0, 300),
       });
     }

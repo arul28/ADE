@@ -3160,6 +3160,10 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
   /// True for a `user_message` a side chat sent to this chat because the user
   /// asked it to (`metadata.sideChat`). The bubble wears a "From side chat" label.
   var userMessageFromSideChat: Bool = false
+  /// True for the hand-off ADE sends a rebuilt provider thread
+  /// (`metadata.kind == "continuity_recovery"`). Never a bubble: the user did
+  /// not write it. Same rule as desktop `foldContinuityRecovery`.
+  var userMessageIsRecoveryHandOff: Bool = false
   /// Byte offset of this row in the host's transcript, when it arrived on a
   /// `chat_history` page that reported one.
   ///
@@ -3235,6 +3239,7 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     var summary: String?
     var metadataMarksAdeAuthor = false
     var metadataMarksSideChat = false
+    var metadataMarksRecoveryHandOff = false
 
     private struct MetadataKey: CodingKey {
       var stringValue: String
@@ -3287,6 +3292,8 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
         let sideChatKey = MetadataKey(agentChatSideChatMetadataKey)
         metadataMarksSideChat = metadata.contains(sideChatKey)
           && (try? metadata.decodeNil(forKey: sideChatKey)) == false
+        metadataMarksRecoveryHandOff =
+          (try? metadata.decodeIfPresent(String.self, forKey: MetadataKey("kind"))) == "continuity_recovery"
       }
     }
   }
@@ -3354,6 +3361,7 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     stopReason = rawEvent?.stopReason
     userMessageWrittenByAde = rawEvent?.type == "user_message" && rawEvent?.metadataMarksAdeAuthor == true
     userMessageFromSideChat = rawEvent?.type == "user_message" && rawEvent?.metadataMarksSideChat == true
+    userMessageIsRecoveryHandOff = rawEvent?.type == "user_message" && rawEvent?.metadataMarksRecoveryHandOff == true
     // Only a host that honoured `mobileChatSlimV1` sets this. A host that did
     // not sends the whole result and no flag, and the row behaves exactly as
     // it does today.

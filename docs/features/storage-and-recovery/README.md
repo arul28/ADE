@@ -132,7 +132,7 @@ extension and releases its handles immediately, including on Windows.
 | `apps/desktop/src/renderer/components/settings/DiagnosticsSharingSection.tsx` | The one report control in Settings → System → Advanced (`general.diagnostics-sharing`, anchored `#diagnostics-sharing`, `web: "hidden"` because the report is built on this machine). It is **Send a report to ADE**, with no toggle. It hides the button on a preload that predates it. |
 | `apps/desktop/src/renderer/components/app/toast/useAutoDiagnosticsToast.ts` | The renderer half of the delivery contract: subscribes, asks for the outstanding notices (`IPC.diagnosticsFlushAutoSent`), raises the *"A diagnostic report was sent to ADE"* toast with **View**, and only then acknowledges it (`IPC.diagnosticsAckAutoSent`). Mounted from `AppShell.tsx`. |
 | `apps/desktop/src/renderer/components/app/errorSurfaceKit.tsx` | Shared parts for the full-screen error surfaces, built on the surface kit (`.kit-card`, `.kit-tag`, `.kit-btn`) — `ErrorSurfaceCard`, `WhatToDo`, `TechnicalDetailsFold`, `ERROR_PRIMARY_BUTTON` — so the recovery screen, the renderer/page boundaries and the CTO wake failure keep the raw text behind a fold and the plain-language account on top, and read on light themes and over a picture. |
-| `apps/desktop/src/renderer/components/chat/ChatContinuityRecoveryCard.tsx` | In-transcript choices to retry the original thread, rebuild from ADE history, or start a separate chat. `AgentChatMessageList` renders it in place of a plain notice chip when a `system_notice` event's `detail.kind` is `"continuity_recovery"`. |
+| `apps/desktop/src/renderer/components/chat/ChatContinuityRecoveryCard.tsx` | The continuity notice as the chat draws it: a quiet "Reconnecting…" line while ADE recovers by itself, a quiet "Reconnected" line after, and only when that failed an inline `Banner` with one recommended action ("Try again") and "Start a new chat". `AgentChatMessageList` renders it in place of a plain notice chip when a `system_notice` event's `detail.kind` is `"continuity_recovery"`; `foldContinuityRecovery` in `chatTranscriptRows.ts` keeps only the newest notice per lost thread, hides the hand-off message, and drops the failed turns once the thread is back. |
 | `apps/desktop/src/renderer/components/settings/StorageSection.tsx` | Project → Storage & cleanup → Space: storage dashboard, plain-language lane cleanup rules, last/next safety-scan status, and a review table for archived lanes, orphaned worktrees, DerivedData, and build output with ownership, age, blocked reasons, and reclaim estimates. Archive & Reclaim has a typed confirmation and explains exactly what stays and what restore recreates. The page also keeps the category totals, Health & diagnostics strip, project-database breakdown, cleanup preview, recent-cleanups journal, and manual history compression; storage accounting includes ADE temporary files. |
 | `apps/desktop/src/renderer/components/settings/storage/StorageDiagnostics.tsx` | The "Health & diagnostics" strip: four tiles — database size (with a journal-fed sparkline + trend arrow), background-service resident memory, slow responses in 24 h (from `getRuntimeHealth`), and last cleanup — plus the overall health chip. Deep-linked as `#diagnostics` from the top-bar load pill. |
 | `apps/desktop/src/renderer/components/settings/storage/StorageMaintenanceJournal.tsx` | Collapsible "Recent cleanups" panel rendering the last runs from the maintenance journal, one humanized line per action. |
@@ -214,13 +214,26 @@ Chat thread identity has three redundant sources:
 If metadata cannot be read, reconciliation chooses the durable pointer without
 starting a provider thread and writes repaired metadata. A failed provider
 resume never silently starts fresh. The service preserves the original pointer,
-sets `continuityRecovery.state: "required"`, emits a `system_notice` whose
-`detail.kind` is `"continuity_recovery"`, and waits for one explicit action:
+sets `continuityRecovery.state: "required"`, and emits a `system_notice` whose
+`detail.kind` is `"continuity_recovery"`.
+
+When the provider says the thread is simply gone (`reason: "thread_missing"`,
+Claude's "No conversation found", Codex's missing rollout), ADE recovers by
+itself, once per lost thread: the notice carries `autoRecovery: "pending"` and
+the service runs `recover_from_history` straight away
+(`startAutomaticContinuityRecovery`). The rebuilt thread is handed the
+conversation itself, every user message and reply word for word with tool
+steps condensed (`continuityConversation.ts`, about 240 KB), and answers the
+user's unanswered message. Only when that fails does a second notice carry
+`autoRecovery: "failed"`, and the chat waits for one explicit action:
 
 - `retry_original` retries the preserved pointer.
-- `recover_from_history` creates a new provider thread in the same chat with a
-  bounded hidden history capsule and records old/new pointer lineage.
+- `recover_from_history` creates a new provider thread in the same chat with the
+  hidden conversation hand-off and records old/new pointer lineage.
 - `start_new_chat` creates a distinct chat and records the relationship.
+
+Other reasons (`unknown`, `provider_environment`, `transient`) still wait for
+the user, since the original thread may come back.
 
 ### Typed project-open recovery
 

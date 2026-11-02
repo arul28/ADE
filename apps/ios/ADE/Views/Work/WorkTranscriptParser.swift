@@ -1217,6 +1217,9 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
         if let sideChat = metadata[agentChatSideChatMetadataKey], !(sideChat is NSNull) {
           parsed.userMessageFromSideChat = true
         }
+        if (metadata["kind"] as? String) == "continuity_recovery" {
+          parsed.userMessageIsRecoveryHandOff = true
+        }
       }
       return parsed
     }
