@@ -120,12 +120,18 @@ function xcodebuildTestTotal(output: string): { executed: number; failed: number
   const line = (runIndex !== undefined ? lines.find((entry) => entry.index > runIndex) : undefined)
     ?? lines.reduce((best, entry) => (entry.executed > best.executed ? entry : best));
   // "M failures" counts failed assertions: one test with two failing asserts
-  // adds two. The tests that failed are the distinct failed test cases; the
-  // assertion count stays only when no case line names one (a crash).
-  const failedCases = new Set([...output.matchAll(/Test Case '([^']+)' failed \(/g)].map((match) => match[1]));
+  // adds two. Take off each failed case's assertions past its first. A failure
+  // with no case line or no assertion line (a crash) keeps its count.
+  const assertionsByCase = new Map<string, number>();
+  for (const match of output.matchAll(/: error: (-\[[^\]]+\]) :/g)) {
+    assertionsByCase.set(match[1]!, (assertionsByCase.get(match[1]!) ?? 0) + 1);
+  }
+  const failedCases = new Set([...output.matchAll(/Test Case '([^']+)' failed \(/g)].map((match) => match[1]!));
+  let repeatedAssertions = 0;
+  for (const testCase of failedCases) repeatedAssertions += Math.max(0, (assertionsByCase.get(testCase) ?? 1) - 1);
   return {
     executed: line.executed,
-    failed: failedCases.size > 0 ? Math.min(failedCases.size, line.failed) : line.failed,
+    failed: Math.max(failedCases.size, line.failed - repeatedAssertions),
     skipped: line.skipped,
   };
 }

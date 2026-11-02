@@ -54,11 +54,14 @@ describe("runXcodebuildTests log cleanup", () => {
       "/tmp/p/Tests/VLDTests.swift:7: error: -[VLDTests.OldTests testBad] : XCTAssertEqual failed: (\"3\") is not equal to (\"6\") - six",
       "Test Case '-[VLDTests.OldTests testBad]' failed (0.217 seconds).",
       "Test Case '-[VLDTests.OldTests testSkipped]' skipped (0.011 seconds).",
+      "Test Case '-[VLDTests.OldTests testCrash]' started.",
+      "Restarting after unexpected exit, crash, or test timeout in OldTests.testCrash(); summary will include totals from previous launches.",
       "Test Suite 'OldTests' failed at 2026-10-27 21:43:33.413.",
-      // XCTest's "failures" are assertions: two here, from one failed test.
-      "\t Executed 3 tests, with 1 test skipped and 2 failures (0 unexpected) in 0.228 (0.231) seconds",
+      // XCTest's "failures" are assertions: two from one failed test, plus a
+      // crash that prints no case line.
+      "\t Executed 4 tests, with 1 test skipped and 3 failures (0 unexpected) in 0.228 (0.231) seconds",
       "Test Suite 'All tests' failed at 2026-10-27 21:43:33.413.",
-      "\t Executed 3 tests, with 1 test skipped and 2 failures (0 unexpected) in 0.228 (0.232) seconds",
+      "\t Executed 4 tests, with 1 test skipped and 3 failures (0 unexpected) in 0.228 (0.232) seconds",
       "◇ Test run started.",
       "✔ Test passes() passed after 0.001 seconds.",
       "✘ Test \"Two is three\" recorded an issue at VLDTests.swift:13:5: Expectation failed: 2 == 3",
@@ -90,7 +93,7 @@ describe("runXcodebuildTests log cleanup", () => {
       spawnProcess,
     });
 
-    expect(result).toMatchObject({ passed: false, testsExecuted: 6, testsFailed: 2, testsSkipped: 2 });
+    expect(result).toMatchObject({ passed: false, testsExecuted: 7, testsFailed: 3, testsSkipped: 2 });
     expect(result.failures).toEqual([
       {
         test: "VLDTests/OldTests/testBad",
