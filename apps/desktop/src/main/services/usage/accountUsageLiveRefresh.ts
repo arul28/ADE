@@ -11,10 +11,15 @@
  * produces a `failure` entry and nothing more — never a rejected promise that
  * would take the other machines' numbers down with it.
  *
+ * Two requests ride the same reach rules (`reachablePeers`):
+ *  - `usage.getUsageRollup`, the machine's whole day x provider x model
+ *    history, for the account-wide stats (`createAccountRollupFetcher`);
+ *  - `usage.getLiveQuota`, its live quota windows and accounts only, for the
+ *    limits view, which refreshes far more often (`createAccountLiveQuotaFetcher`).
+ *
  * Transport is the one that already exists: the account directory lists the
- * machines, the paired remote-connection pool carries the call, and the command
- * is `usage.getUsageRollup`, registered next to the long-standing
- * `usage.getAdeStats` in `syncRemoteCommandService`.
+ * machines, and the paired remote-connection pool (the desktop window's, or the
+ * brain's agent connections) carries the call.
  */
 
 import type {
@@ -25,6 +30,7 @@ import type {
   UsageAccount,
   UsageWindow,
 } from "../../../shared/types";
+import type { PeerLiveQuota } from "../../../shared/usageLiveQuota";
 import { getErrorMessage } from "../shared/utils";
 import { MAX_LIVE_QUOTA_ACCOUNTS, MAX_LIVE_QUOTA_WINDOWS } from "./accountUsageRollup";
 import { ROLLUP_RETAINED_DAYS } from "./accountUsageRollupStore";
@@ -53,12 +59,15 @@ const TOO_OLD_MESSAGE = "This computer's ADE is too old to share usage";
  * The message a genuinely unknown method produces.
  *
  * `runtimeRpcClient` flattens the JSON-RPC error into a plain `Error` with no
- * `.code`, so the text is all there is; `-32601` is deliberately *not* matched,
+ * `.code`, so the text is all there is. A brain that predates the machine-level
+ * `usage.getUsageRollup` method routes it as a project method and answers
+ * "requires params.projectId", which is the same version gap in other words.
+ * `-32601` is deliberately *not* matched,
  * because ADE also throws `methodNotFound` for permission denials, and reading
  * one of those as "too old to share usage" is exactly the bug class this guard
  * exists to avoid.
  */
-const UNKNOWN_METHOD_MESSAGE = /method not found:|unsupported remote command:/i;
+const UNKNOWN_METHOD_MESSAGE = /method not found:|unsupported remote command:|method usage\.getUsageRollup requires params\.projectId/i;
 
 /**
  * Denial phrasings that ADE dresses in a `methodNotFound` code.
@@ -105,6 +114,9 @@ const MAX_PEER_ROLLUP_ROWS = ROLLUP_RETAINED_DAYS * 200;
 const MAX_PEER_ROOTS = 32;
 const MAX_PEER_ROOT_LENGTH = 128;
 const MAX_PEER_ID_LENGTH = 128;
+/** Per-model caps on one window (Claude's Fable); a handful at most. */
+const MAX_PEER_MODEL_CAPS = 8;
+const PEER_LOGIN_STATES = new Set<NonNullable<UsageAccount["login"]>>(["ok", "expired", "signed_out"]);
 
 function boundedString(value: unknown, maxLength: number): string | null {
   return typeof value === "string" && value ? value.slice(0, maxLength) : null;
@@ -190,8 +202,8 @@ function isUsageRollup(value: unknown): value is AdeUsageRollup {
  * One peer live window, or null.
  *
  * The pooled limits view only reads a window's provider, label, fill and reset,
- * so those are what travel; `pacing` and `modelBreakdown` are omitted rather
- * than carried unbounded. `resetsInMs` is derived from `resetsAt` on the reader
+ * so those are what travel, plus up to a few per-model caps (Claude's Fable);
+ * `pacing` is omitted rather than carried unbounded. `resetsInMs` is derived from `resetsAt` on the reader
  * side anyway, so a peer's value is only a fallback.
  */
 function boundPeerWindow(value: unknown): UsageWindow | null {
@@ -205,6 +217,14 @@ function boundPeerWindow(value: unknown): UsageWindow | null {
   const accountId = boundedString(record.accountId, MAX_PEER_ID_LENGTH);
   const resetsInMs = finiteNumber(record.resetsInMs);
   const windowDurationMs = finiteNumber(record.windowDurationMs);
+  const modelBreakdown: Record<string, number> = {};
+  if (record.modelBreakdown && typeof record.modelBreakdown === "object") {
+    for (const [model, raw] of Object.entries(record.modelBreakdown as Record<string, unknown>).slice(0, MAX_PEER_MODEL_CAPS)) {
+      const name = boundedString(model, MAX_PEER_ID_LENGTH);
+      const percent = finiteNumber(raw);
+      if (name && percent !== null) modelBreakdown[name] = Math.max(0, Math.min(100, percent));
+    }
+  }
   return {
     provider: provider as UsageWindow["provider"],
     windowType: windowType as UsageWindow["windowType"],
@@ -213,8 +233,10 @@ function boundPeerWindow(value: unknown): UsageWindow | null {
     resetsInMs: resetsInMs === null ? 0 : Math.max(0, resetsInMs),
     ...(accountId ? { accountId } : {}),
     ...(windowDurationMs !== null && windowDurationMs > 0 ? { windowDurationMs } : {}),
+    ...(Object.keys(modelBreakdown).length > 0 ? { modelBreakdown } : {}),
   };
 }
+
 
 /**
  * One peer account, or null.
@@ -236,6 +258,11 @@ function boundPeerAccount(value: unknown): UsageAccount | null {
   const label = boundedString(record.label, MAX_PEER_ID_LENGTH);
   const instanceId = boundedString(record.instanceId, MAX_PEER_ID_LENGTH);
   const url = boundedString(record.url, MAX_PEER_ID_LENGTH);
+  // Whether the peer's own token still works, so a reader can tell a live
+  // reading from the last one before that machine's login expired.
+  const login = PEER_LOGIN_STATES.has(record.login as NonNullable<UsageAccount["login"]>)
+    ? record.login as NonNullable<UsageAccount["login"]>
+    : null;
   const machines = Array.isArray(record.machines)
     ? record.machines.slice(0, MAX_PEER_ROOTS).flatMap((raw) => {
       if (!raw || typeof raw !== "object") return [];
@@ -255,7 +282,21 @@ function boundPeerAccount(value: unknown): UsageAccount | null {
     ...(label ? { label } : {}),
     machines,
     ...(url ? { url } : {}),
+    ...(login ? { login } : {}),
   };
+}
+
+/** A peer's live windows and accounts, bounded and validated field by field. */
+function boundPeerQuota(record: { windows?: unknown; accounts?: unknown }): { windows: UsageWindow[]; accounts: UsageAccount[] } {
+  const windows = (Array.isArray(record.windows) ? record.windows : [])
+    .slice(0, MAX_LIVE_QUOTA_WINDOWS)
+    .map(boundPeerWindow)
+    .filter((window): window is UsageWindow => window !== null);
+  const accounts = (Array.isArray(record.accounts) ? record.accounts : [])
+    .slice(0, MAX_LIVE_QUOTA_ACCOUNTS)
+    .map(boundPeerAccount)
+    .filter((account): account is UsageAccount => account !== null);
+  return { windows, accounts };
 }
 
 /**
@@ -290,18 +331,7 @@ function boundPeerRollup(rollup: AdeUsageRollup, fetchedAtIso: string): AdeUsage
   // honest answer — rather than shown as-is.
   const capturedAt = boundedString(rollup.capturedAt, MAX_PEER_ID_LENGTH);
   const capturedAtMs = capturedAt ? Date.parse(capturedAt) : Number.NaN;
-  const windows = (Array.isArray(rollup.windows) ? rollup.windows : [])
-    .slice(0, MAX_LIVE_QUOTA_WINDOWS)
-    .flatMap((raw) => {
-      const window = boundPeerWindow(raw);
-      return window ? [window] : [];
-    });
-  const accounts = (Array.isArray(rollup.accounts) ? rollup.accounts : [])
-    .slice(0, MAX_LIVE_QUOTA_ACCOUNTS)
-    .flatMap((raw) => {
-      const account = boundPeerAccount(raw);
-      return account ? [account] : [];
-    });
+  const { windows, accounts } = boundPeerQuota(rollup);
   return {
     // Every field listed explicitly, and the peer object never spread: a peer
     // controls this payload, and a spread carries anything it invented straight
@@ -353,14 +383,8 @@ function withDeadline<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
   });
 }
 
-export function createAccountRollupFetcher({
-  listMachines,
-  resolveTargetIdForMachineKey,
-  isTargetConnected,
-  callMachineMethod,
-  localMachineKey,
-  logger,
-}: {
+/** How a fan-out reaches the account's other machines. */
+export type AccountPeerTransport = {
   listMachines: () => Promise<AdeAccountMachinesResult>;
   resolveTargetIdForMachineKey: (machineKey: string) => string | null;
   /**
@@ -383,42 +407,58 @@ export function createAccountRollupFetcher({
   localMachineKey: () => string;
   /** Narrow structurally so a lazy per-call delegate satisfies it. */
   logger?: { debug?: (message: string, meta?: Record<string, unknown>) => void; warn?: (message: string, meta?: Record<string, unknown>) => void };
-}) {
+};
+
+/**
+ * The machines a fan-out may ask right now: online, not this one, already
+ * paired and connected, at most `MAX_LIVE_MACHINES`. Empty when the directory
+ * cannot be read.
+ */
+async function reachablePeers(
+  transport: AccountPeerTransport,
+  signal: AbortSignal,
+): Promise<Array<{ machine: AdeAccountMachine; targetId: string }>> {
+  if (signal.aborted) return [];
+  let listed: AdeAccountMachinesResult;
+  try {
+    // The directory call is on the same deadline as the per-machine fetches.
+    // Unwrapped it could outlive the whole refresh — and the caller's
+    // in-flight key is held for exactly as long as this promise, so a slow
+    // directory suppressed every later refresh while returning nothing.
+    listed = await withDeadline(transport.listMachines(), signal);
+  } catch (error) {
+    transport.logger?.warn?.("usage.account.list_machines_failed", { error: getErrorMessage(error) });
+    return [];
+  }
+  if (listed.state !== "ok") return [];
+
+  const selfKey = transport.localMachineKey();
+  // Only machines the directory calls online and that already have a paired
+  // target. Pairing on demand would put an interactive trust decision behind
+  // a page render, which is not a trade the Usage page gets to make.
+  // The cap is applied *after* the reachability filters, not before. Applied
+  // first, a handful of unpaired or disconnected machines at the head of the
+  // directory listing consumed the entire budget and every machine this
+  // refresh could actually have reached was starved out of it.
+  const candidates: Array<{ machine: AdeAccountMachine; targetId: string }> = [];
+  for (const machine of listed.machines) {
+    if (candidates.length >= MAX_LIVE_MACHINES) break;
+    if (machine.machineKey === selfKey || !machine.online) continue;
+    const targetId = transport.resolveTargetIdForMachineKey(machine.machineKey);
+    if (!targetId) continue;
+    // Not connected right now: leave it to its durable rollup rather than
+    // scheduling a reconnect for an optional page refresh.
+    if (transport.isTargetConnected && !transport.isTargetConnected(targetId)) continue;
+    candidates.push({ machine, targetId });
+  }
+  return candidates;
+}
+
+export function createAccountRollupFetcher(transport: AccountPeerTransport) {
+  const { callMachineMethod, logger } = transport;
   return async ({ timeoutMs, signal }: { timeoutMs: number; signal: AbortSignal }): Promise<AccountRollupFetchResult> => {
     const result: AccountRollupFetchResult = { rollups: [], failures: [] };
-    if (signal.aborted) return result;
-    let listed: AdeAccountMachinesResult;
-    try {
-      // The directory call is on the same deadline as the per-machine fetches.
-      // Unwrapped it could outlive the whole refresh — and the caller's
-      // in-flight key is held for exactly as long as this promise, so a slow
-      // directory suppressed every later refresh while returning nothing.
-      listed = await withDeadline(listMachines(), signal);
-    } catch (error) {
-      logger?.warn?.("usage.account.list_machines_failed", { error: getErrorMessage(error) });
-      return result;
-    }
-    if (listed.state !== "ok") return result;
-
-    const selfKey = localMachineKey();
-    // Only machines the directory calls online and that already have a paired
-    // target. Pairing on demand would put an interactive trust decision behind
-    // a page render, which is not a trade the Usage page gets to make.
-    // The cap is applied *after* the reachability filters, not before. Applied
-    // first, a handful of unpaired or disconnected machines at the head of the
-    // directory listing consumed the entire budget and every machine this
-    // refresh could actually have reached was starved out of it.
-    const candidates: Array<{ machine: AdeAccountMachine; targetId: string }> = [];
-    for (const machine of listed.machines) {
-      if (candidates.length >= MAX_LIVE_MACHINES) break;
-      if (machine.machineKey === selfKey || !machine.online) continue;
-      const targetId = resolveTargetIdForMachineKey(machine.machineKey);
-      if (!targetId) continue;
-      // Not connected right now: leave it to its durable rollup rather than
-      // scheduling a reconnect for an optional page refresh.
-      if (isTargetConnected && !isTargetConnected(targetId)) continue;
-      candidates.push({ machine, targetId });
-    }
+    const candidates = await reachablePeers(transport, signal);
 
     await Promise.all(candidates.map(async ({ machine, targetId }) => {
       const label = machineLabel(machine);
@@ -474,5 +514,43 @@ export function createAccountRollupFetcher({
     }));
 
     return result;
+  };
+}
+
+/** The method a peer answers with its own live quota, and nothing else. */
+export const LIVE_QUOTA_METHOD = "usage.getLiveQuota";
+
+/**
+ * Quota-only fan-out for the cross-machine limits view.
+ *
+ * Same reach rules as the rollup fan-out, but the answer is a handful of
+ * windows and accounts instead of the machine's whole history, so the limits
+ * view can refresh while it is on screen without moving rollup-sized payloads.
+ * A peer that is too old or unreachable is left out; the caller keeps its last
+ * reading.
+ */
+export function createAccountLiveQuotaFetcher(transport: AccountPeerTransport) {
+  const { callMachineMethod, logger } = transport;
+  return async ({ timeoutMs, signal }: { timeoutMs: number; signal: AbortSignal }): Promise<PeerLiveQuota[]> => {
+    const candidates = await reachablePeers(transport, signal);
+    const results = await Promise.all(candidates.map(async ({ machine, targetId }): Promise<PeerLiveQuota | null> => {
+      try {
+        if (signal.aborted) return null;
+        const answer = await withDeadline(
+          callMachineMethod<unknown>(targetId, LIVE_QUOTA_METHOD, {}, { timeoutMs }),
+          signal,
+        );
+        if (!answer || typeof answer !== "object") return null;
+        return { machineKey: machine.machineKey, label: machineLabel(machine), ...boundPeerQuota(answer as Record<string, unknown>) };
+      } catch (error) {
+        logger?.debug?.("usage.account.live_quota_machine_failed", {
+          machineKey: machine.machineKey,
+          methodMissing: isMethodNotFound(error),
+          error: getErrorMessage(error),
+        });
+        return null;
+      }
+    }));
+    return results.filter((result): result is PeerLiveQuota => result !== null);
   };
 }

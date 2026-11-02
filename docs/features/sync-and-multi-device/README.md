@@ -2516,7 +2516,11 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   would mostly discard. A `null` result means "not ready yet" (the machine has
   not finished its first ledger scan); the caller records a retryable failure
   rather than storing an empty rollup, which its reconcile pass would read as
-  history having been removed.
+  history having been removed. Between brains the same two reads
+  (`usage.getUsageRollup`, and `usage.getLiveQuota` for a machine's own live
+  quota windows and accounts, no history) are machine-level RPC with no project,
+  on the agent remote-method allowlist; a brain asks only machines it already
+  holds an open connection to and never dials or pairs for them.
   `usage.getQuotaSnapshot` reads the cached live Claude/Codex limit snapshot,
   while `usage.refreshQuota` runs the bounded quota-only provider path with
   interactive auth disabled. Neither remote quota action starts local provider

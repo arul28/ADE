@@ -151,7 +151,7 @@ export function buildRollupRows(
             cachedTokens,
             totalTokens,
             costUsd,
-            calls: 0,
+            calls: toNonNegativeInt(tokens.calls),
             ...(costSplit ? { costSplit } : {}),
           });
         }
@@ -569,6 +569,24 @@ export function mergeAccountUsageStats({
   const stats = foldRollupsIntoStats(localStats, accepted, nowMs);
   stats.scope = "account";
   stats.machines = machines;
+  // Active days are a stat about the user, so on the account scope they count
+  // a day any machine used a model, not only days this project's database
+  // saw. The database's own count can include days the daily series does not
+  // carry (a deleted lane's), so it stays the floor.
+  //
+  // Counted from the dates themselves, not only the chart: a peer's rollup
+  // can reach further back than the chart's day skeleton (the `all` preset
+  // charts a year, rollups keep more), and those days are still active days.
+  const activeDates = new Set(stats.daily
+    .filter((point) => point.totalTokens > 0 || point.sessions > 0 || point.commits > 0 || point.prs > 0)
+    .map((point) => point.date));
+  for (const entry of accepted) {
+    if (entry.isLocal || !entry.rollup) continue;
+    for (const row of entry.rollup.rows) {
+      if (row.totalTokens > 0 && dateInBounds(row.date, bounds)) activeDates.add(row.date);
+    }
+  }
+  stats.summary.activeDays = Math.max(stats.summary.activeDays ?? 0, activeDates.size);
 
   // Live quota pools across every machine that reported it, local first. Live
   // readings do not depend on the historical rollup being ready, so this reads

@@ -161,7 +161,14 @@ describe("model picker custom tab", () => {
     (window as unknown as { ade?: unknown }).ade = {
       providerInstances: {
         list: async () => [
-          { id: "claude-work", provider: "claude", label: "Work", isDefault: true, signedIn: true },
+          {
+            id: "claude-work",
+            provider: "claude",
+            label: "work@example.com",
+            isDefault: true,
+            signedIn: true,
+            account: { email: "work@example.com" },
+          },
         ],
       },
     };
@@ -171,7 +178,9 @@ describe("model picker custom tab", () => {
     fireEvent.click(screen.getByRole("button", { name: /Show details for Opus on work/ }));
 
     const details = document.querySelector('[data-harness-preset-details="hp_1"]') as HTMLElement;
-    await waitFor(() => expect(details.textContent).toContain("Claude account · Work"));
+    // An account is named by its email, never its id or a typed name.
+    await waitFor(() => expect(details.textContent).toContain("work@example.com"));
+    expect(details.textContent).not.toContain("claude-work");
     delete (window as unknown as { ade?: unknown }).ade;
   });
 

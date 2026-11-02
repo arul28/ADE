@@ -16,12 +16,26 @@ func providerAccountWindows(_ account: ProviderAccount, snapshot: MobileUsageQuo
     .filter { seen.insert(adeUsageWindowLabel($0)).inserted }
 }
 
-/// The one-line state under an account's name.
-func providerAccountDetailLine(_ account: ProviderAccount) -> String {
-  // The title is already the email; this line names the id `--instance` takes.
-  if account.loginBroken == true { return [account.id, "sign in again"].joined(separator: " · ") }
-  guard account.signedIn else { return "\(account.id) · not signed in yet" }
-  return [account.id, account.plan.map { $0.capitalized }].compactMap { $0 }.joined(separator: " · ")
+/// The one-line state under an account's name. The name is the email; the
+/// internal id is never shown.
+func providerAccountDetailLine(_ account: ProviderAccount) -> String? {
+  if account.loginBroken == true { return "Sign in again" }
+  guard account.signedIn else { return "Sign in to use it for chats" }
+  return account.plan.map { $0.capitalized }
+}
+
+/// The other machine whose fresher reading this account's bars are, when the
+/// host borrowed one (`UsageAccount.readingFrom`). Nil for the host's own.
+func providerAccountReadingFrom(_ account: ProviderAccount, snapshot: MobileUsageQuotaSnapshot?) -> String? {
+  let usage = snapshot?.accounts?.first { $0.provider == account.provider && $0.instanceId == account.id }
+  let label = usage?.readingFrom?.label.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  return label.isEmpty ? nil : label
+}
+
+/// How many distinct logins the accounts hold: a copy (`sameLoginAs`) adds no
+/// quota, so it is not another account. Desktop `countProviderLogins`.
+func providerAccountLoginCount(_ accounts: [ProviderAccount]) -> Int {
+  accounts.filter { $0.sameLoginAs == nil }.count
 }
 
 /// The provider's name, for an account of either provider.
@@ -227,6 +241,7 @@ struct ProviderAccountsScreen: View {
               account: account,
               ownerLabel: ownerLabel(account),
               windows: providerAccountWindows(account, snapshot: machine.quota),
+              readingFrom: providerAccountReadingFrom(account, snapshot: machine.quota),
               isNext: isBalanceNext(account),
               busy: store.busyAccountId == account.id
             )
@@ -261,7 +276,7 @@ struct ProviderAccountsScreen: View {
         }
       } header: {
         ADESettingsHeader(
-          store.accounts.isEmpty ? "Accounts" : "Accounts · \(store.accounts.count)",
+          store.accounts.isEmpty ? "Accounts" : "Accounts · \(providerAccountLoginCount(store.accounts))",
           hint: footerText
         )
       }
@@ -407,6 +422,8 @@ struct ProviderAccountRow: View {
   let account: ProviderAccount
   var ownerLabel: String?
   var windows: [MobileUsageQuotaWindow] = []
+  /// The machine whose fresher reading `windows` are; nil for the host's own.
+  var readingFrom: String? = nil
   var isNext = false
   var busy = false
 
@@ -418,21 +435,29 @@ struct ProviderAccountRow: View {
         }
         Text(account.displayName)
           .font(.system(size: 15, weight: .semibold))
-          .foregroundStyle(ADEColor.textPrimary)
+          // No email is a state, not a name: it reads quieter than one.
+          .foregroundStyle(account.email == nil ? ADEColor.textSecondary : ADEColor.textPrimary)
           .lineLimit(1)
         badges
         Spacer(minLength: 4)
         if busy { ProgressView().controlSize(.mini) }
       }
-      Text(detailLine)
-        .font(.system(size: 12.5))
-        .foregroundStyle(account.loginBroken == true ? ADEColor.warning : ADEColor.textSecondary)
-        .lineLimit(1)
-        .truncationMode(.middle)
+      if let detailLine {
+        Text(detailLine)
+          .font(.system(size: 12.5))
+          .foregroundStyle(account.loginBroken == true ? ADEColor.warning : ADEColor.textSecondary)
+          .lineLimit(1)
+          .truncationMode(.middle)
+      }
       if account.signedIn, !windows.isEmpty, ownerLabel == nil {
         HStack(spacing: 14) {
           ForEach(windows.prefix(2)) { window in
             ProviderAccountQuotaMeter(window: window, tint: ADEColor.providerBrand(for: account.provider))
+          }
+          if let readingFrom {
+            // These bars are another machine's fresher reading of this login.
+            ADEKitTag(text: "via \(readingFrom)", keepsCase: true)
+              .accessibilityLabel("Read on \(readingFrom)")
           }
         }
         .padding(.top, 4)
@@ -441,7 +466,7 @@ struct ProviderAccountRow: View {
     .accessibilityElement(children: .combine)
   }
 
-  private var detailLine: String {
+  private var detailLine: String? {
     // A broken login shares nothing; its own line says why, like desktop.
     if let ownerLabel, account.loginBroken != true { return "Same login as \(ownerLabel) · shares its limits" }
     return providerAccountDetailLine(account)
@@ -532,9 +557,11 @@ struct ProviderAccountDetailPage: View {
                   .foregroundStyle(ADEColor.textPrimary)
                 if account.isDefault { ADEKitTag(text: "Default", tone: .accent) }
               }
-              Text(providerAccountDetailLine(account))
-                .font(.system(size: 12.5))
-                .foregroundStyle(account.loginBroken == true ? ADEColor.warning : ADEColor.textSecondary)
+              if let detail = providerAccountDetailLine(account) {
+                Text(detail)
+                  .font(.system(size: 12.5))
+                  .foregroundStyle(account.loginBroken == true ? ADEColor.warning : ADEColor.textSecondary)
+              }
             }
             Spacer(minLength: 0)
           }

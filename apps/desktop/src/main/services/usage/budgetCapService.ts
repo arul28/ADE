@@ -178,7 +178,10 @@ export function createBudgetCapService({
     const snapshot = usageTrackingService?.getUsageSnapshot();
     if (!snapshot) return null;
 
-    const windows = snapshot.windows.filter((w) => w.windowType === windowType);
+    // A login signed in only on another machine never runs work here, so its
+    // windows cannot be what this machine's caps guard.
+    const elsewhere = new Set((snapshot.accounts ?? []).filter((a) => a.notSignedInHere).map((a) => a.id));
+    const windows = snapshot.windows.filter((w) => w.windowType === windowType && !(w.accountId && elsewhere.has(w.accountId)));
     const relevant = provider === "any" ? windows : windows.filter((w) => w.provider === provider);
     if (relevant.length === 0) return null;
 

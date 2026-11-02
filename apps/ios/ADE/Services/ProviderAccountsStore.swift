@@ -29,9 +29,11 @@ struct ProviderAccount: Codable, Equatable, Identifiable {
   var replacedAccount: ReplacedLogin?
 
   var email: String? { nonEmpty(account?.email) }
-  /// What an account is called: its login's email, else its id. Accounts have
-  /// no names; an older host may still send a typed `label`, which is not shown.
-  var displayName: String { email ?? id }
+  /// What an account is called: its login's email, never its id (a storage key
+  /// that two machines can give one email differently). Without an email, a
+  /// working login still reads as signed in. Desktop `AccountCard`'s name, with
+  /// the strings of `PROVIDER_ACCOUNT_SIGNED_IN_NO_EMAIL` / `_NOT_SIGNED_IN`.
+  var displayName: String { email ?? (hasLogin ? "Signed in, no email" : "Not signed in") }
   var plan: String? { nonEmpty(account?.plan) }
   /// The config home names a login, working or not.
   var hasLogin: Bool { signedIn || loginBroken == true }

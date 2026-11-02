@@ -1532,12 +1532,15 @@ Renderer — settings:
   machines, headroom, absolute reset, pace, model split, restore, and the
   provider limits link), edge-anchored so it cannot overhang the 420px popover.
   A row carrying a banked reset credit also offers **Use reset**
-  (`ade.usage.consumeResetCredit`). Full behaviour in
+  (`ade.usage.consumeResetCredit`, sent to the machine that produced the row).
+  A login read on another machine carries a `via <machine>` tag, and one signed
+  in only elsewhere reads **Not signed in here**. Full behaviour in
   [usage-tracking.md](usage-tracking.md).
 - `apps/desktop/src/main/services/usage/accountBalance.ts` — the pure smart-
   balance selector for new Claude/Codex chats. It picks the signed-in account
   with the most weekly room left relative to its reset, after subtracting the
-  burn already committed there (measured, pending and reserved), gates on the
+  burn already committed there (measured, pending and reserved) on each
+  login's freshest reading from any machine, gates on the
   projected five-hour room, skips a login that is gone, and reports why it
   skipped when no account was a real choice.
 - `apps/desktop/src/main/services/usage/windowAutoStart.ts` — schedules one
@@ -1636,7 +1639,15 @@ Renderer — settings:
   that takes the other machines' numbers down with it. A peer that genuinely
   does not know the method is reported as too old to share usage; the guard
   explicitly excludes authorization denials, which ADE also dresses in
-  `methodNotFound`.
+  `methodNotFound`. It also builds the quota-only fan-out
+  (`usage.getLiveQuota`, `createAccountLiveQuotaFetcher`); the brain installs
+  both fetchers from `cli.ts` over its agents' already-open paired connections.
+- `apps/desktop/src/main/services/usage/peerLiveQuota.ts` — the other machines'
+  live quota, held in memory only and pulled at most once a minute while limits
+  are on screen. `views()` returns the pooled picking and display views built by
+  `poolPeerQuota` in `shared/usageLiveQuota.ts`: each login shows its freshest
+  reading from any machine, and a login signed in only elsewhere is
+  `notSignedInHere` (displayed, never picked by smart balance or budget caps).
 - `apps/desktop/src/main/services/usage/usagePricing.ts` — per-model token
   rates, all from models.dev (vendor row for a bare model id, the provider's
   row for a `provider/model` name; fetched with a 10 s timeout, cached to

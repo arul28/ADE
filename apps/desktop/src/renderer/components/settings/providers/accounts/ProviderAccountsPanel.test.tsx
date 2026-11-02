@@ -187,12 +187,12 @@ describe("ProviderAccountsPanel", () => {
 
     expect(await screen.findByText("Accounts · 2")).toBeTruthy();
 
-    const personal = await screen.findByRole("group", { name: "Personal account" });
+    const personal = await screen.findByRole("group", { name: "arul@gmail.com account" });
     expect(within(personal).getByText("arul@gmail.com")).toBeTruthy();
     // Smart balance is off, so the default account is the one new chats use.
     expect(within(personal).getByText("New chats")).toBeTruthy();
 
-    const work = screen.getByRole("group", { name: "Work account" });
+    const work = screen.getByRole("group", { name: "arul@acme.com account" });
     expect(within(work).getByText("arul@acme.com")).toBeTruthy();
     expect(within(work).queryByText("New chats")).toBeNull();
   });
@@ -201,8 +201,8 @@ describe("ProviderAccountsPanel", () => {
     installBridge({ smartBalance: true, usage: snapshot({ nextPickInstanceId: "claude-work" }) });
     renderPanel();
 
-    const work = await screen.findByRole("group", { name: "Work account" });
-    const personal = screen.getByRole("group", { name: "Personal account" });
+    const work = await screen.findByRole("group", { name: "arul@acme.com account" });
+    const personal = screen.getByRole("group", { name: "arul@gmail.com account" });
 
     expect(within(work).getByText("Next chat")).toBeTruthy();
     expect(within(personal).queryByText("Next chat")).toBeNull();
@@ -269,8 +269,9 @@ describe("ProviderAccountsPanel", () => {
       </SettingsMachineScopeProvider>,
     );
 
-    const personal = await screen.findByRole("group", { name: "Personal account" });
-    expect(await within(personal).findByText("studio@example.com")).toBeTruthy();
+    // The card is named by the email the picked machine's poll read.
+    const personal = await screen.findByRole("group", { name: "studio@example.com account" });
+    expect((await within(personal).findAllByText("studio@example.com")).length).toBeGreaterThan(0);
     expect(within(personal).queryByText("laptop@example.com")).toBeNull();
     // The reading is the picked machine's too (10% used, so 90% left).
     expect(within(personal).getByRole("button", { name: /90% left/ })).toBeTruthy();
@@ -286,7 +287,7 @@ describe("ProviderAccountsPanel", () => {
     renderPanel();
 
     expect(await screen.findByText("Accounts · 3")).toBeTruthy();
-    const row = screen.getByRole("group", { name: "Extra account" });
+    const row = screen.getByRole("group", { name: "extra@example.com account" });
     expect(within(row).getByText("No usage yet")).toBeTruthy();
   });
 
@@ -308,12 +309,12 @@ describe("ProviderAccountsPanel", () => {
     installBridge({ usage: throttled });
     renderPanel();
 
-    const personal = await screen.findByRole("group", { name: "Personal account" });
+    const personal = await screen.findByRole("group", { name: "arul@gmail.com account" });
     expect(within(personal).getByText("Rate-limited — retrying")).toBeTruthy();
     expect(within(personal).queryByText("No usage yet")).toBeNull();
 
     // The healthy sibling is not named as throttled.
-    const work = screen.getByRole("group", { name: "Work account" });
+    const work = screen.getByRole("group", { name: "arul@acme.com account" });
     expect(within(work).queryByText("Rate-limited — retrying")).toBeNull();
   });
 
@@ -323,8 +324,9 @@ describe("ProviderAccountsPanel", () => {
     });
     renderPanel();
 
-    const row = await screen.findByRole("group", { name: "Personal account" });
-    expect(within(row).getByText("Not signed in")).toBeTruthy();
+    // Before sign-in an account has no email, so that is what it is called.
+    const row = await screen.findByRole("group", { name: "Not signed in account" });
+    expect(within(row).getAllByText("Not signed in").length).toBeGreaterThan(0);
     expect(within(row).getByRole("button", { name: "Sign in" })).toBeTruthy();
   });
 
@@ -378,7 +380,7 @@ describe("ProviderAccountsPanel", () => {
     const harness = installBridge({ smartBalance: true });
     renderPanel();
 
-    const work = await screen.findByRole("group", { name: "Work account" });
+    const work = await screen.findByRole("group", { name: "arul@acme.com account" });
     fireEvent.click(work);
 
     await waitFor(() => {
@@ -403,7 +405,7 @@ describe("ProviderAccountsPanel", () => {
     const harness = installBridge({ instances: [DEFAULT_INSTANCE, broken] });
     renderPanel();
 
-    const row = await screen.findByRole("group", { name: "Broken account" });
+    const row = await screen.findByRole("group", { name: "arul@old.com account" });
     expect(within(row).getByText("arul@old.com")).toBeTruthy();
     expect(within(row).getByText("Signed out")).toBeTruthy();
     expect(within(row).getByRole("button", { name: "Sign in" })).toBeTruthy();
@@ -417,7 +419,7 @@ describe("ProviderAccountsPanel", () => {
     installBridge();
     renderPanel();
 
-    fireEvent.click(await screen.findByRole("button", { name: "Personal account actions" }));
+    fireEvent.click(await screen.findByRole("button", { name: "arul@gmail.com account actions" }));
     expect(screen.getAllByRole("menu")).toHaveLength(1);
 
     fireEvent.keyDown(window, { key: "Escape" });
@@ -425,16 +427,16 @@ describe("ProviderAccountsPanel", () => {
       expect(screen.queryByRole("menu")).toBeNull();
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "Personal account actions" }));
+    fireEvent.click(screen.getByRole("button", { name: "arul@gmail.com account actions" }));
     expect(screen.getAllByRole("menu")).toHaveLength(1);
 
     // A second row's menu must replace the first, not sit on top of it.
-    fireEvent.mouseDown(screen.getByRole("button", { name: "Work account actions" }));
-    fireEvent.click(screen.getByRole("button", { name: "Work account actions" }));
+    fireEvent.mouseDown(screen.getByRole("button", { name: "arul@acme.com account actions" }));
+    fireEvent.click(screen.getByRole("button", { name: "arul@acme.com account actions" }));
     await waitFor(() => {
       expect(screen.getAllByRole("menu")).toHaveLength(1);
     });
-    expect(screen.getByRole("menu", { name: "Work account actions" })).toBeTruthy();
+    expect(screen.getByRole("menu", { name: "arul@acme.com account actions" })).toBeTruthy();
 
     fireEvent.mouseDown(document.body);
     await waitFor(() => {
@@ -451,7 +453,7 @@ describe("ProviderAccountsPanel", () => {
     );
     renderPanel();
 
-    fireEvent.click(await screen.findByRole("button", { name: "Work account actions" }));
+    fireEvent.click(await screen.findByRole("button", { name: "arul@acme.com account actions" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Remove" }));
     fireEvent.click(await screen.findByRole("button", { name: "REMOVE" }));
 
@@ -474,7 +476,7 @@ describe("ProviderAccountsPanel", () => {
     }
     renderPanel();
 
-    fireEvent.click(await screen.findByRole("button", { name: "Work account actions" }));
+    fireEvent.click(await screen.findByRole("button", { name: "arul@acme.com account actions" }));
     fireEvent.click(screen.getByRole("menuitem", { name: /Main chat cache/ }));
     // Automatic is the default: ADE states no lifetime and Claude decides.
     expect(screen.getByRole("menuitemradio", { name: /^Automatic/ }).getAttribute("aria-checked")).toBe("true");
@@ -486,7 +488,7 @@ describe("ProviderAccountsPanel", () => {
       );
     });
     if (saved) {
-      fireEvent.click(screen.getByRole("button", { name: "Work account actions" }));
+      fireEvent.click(screen.getByRole("button", { name: "arul@acme.com account actions" }));
       expect((await screen.findByRole("menuitem", { name: /Main chat cache/ })).textContent).toContain("1 hour");
       expect(screen.queryByText(/not saved/i)).toBeNull();
     } else {
@@ -499,7 +501,7 @@ describe("ProviderAccountsPanel", () => {
     const sentSettings = () => harness.providerInstances.setSettings.mock.calls.map((call) => call[0]);
     renderPanel();
 
-    fireEvent.click(await screen.findByRole("button", { name: "Work account actions" }));
+    fireEvent.click(await screen.findByRole("button", { name: "arul@acme.com account actions" }));
     fireEvent.click(screen.getByRole("menuitem", { name: /Subagent cache/ }));
     // The page says which choice is active before the user picks.
     expect(screen.getByRole("menuitemradio", { name: /^5 minutes/ }).getAttribute("aria-checked")).toBe("true");
@@ -512,7 +514,7 @@ describe("ProviderAccountsPanel", () => {
     });
     expect(screen.queryByRole("menu")).toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: "Work account actions" }));
+    fireEvent.click(screen.getByRole("button", { name: "arul@acme.com account actions" }));
     fireEvent.click(screen.getByRole("menuitem", { name: /Auto-compact/ }));
     fireEvent.change(screen.getByRole("combobox", { name: "Account compaction setting" }), { target: { value: "custom" } });
 
@@ -527,7 +529,7 @@ describe("ProviderAccountsPanel", () => {
     const harness = installBridge();
     renderPanel();
 
-    fireEvent.click(await screen.findByRole("button", { name: "Work account actions" }));
+    fireEvent.click(await screen.findByRole("button", { name: "arul@acme.com account actions" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Remove" }));
 
     expect(await screen.findByText("Remove account")).toBeTruthy();
@@ -540,7 +542,7 @@ describe("ProviderAccountsPanel", () => {
       signOutError: "Sign-out failed: the provider CLI could not run.",
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "Work account actions" }));
+    fireEvent.click(screen.getByRole("button", { name: "arul@acme.com account actions" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Remove" }));
     fireEvent.click(await screen.findByRole("button", { name: "REMOVE" }));
 
@@ -548,7 +550,7 @@ describe("ProviderAccountsPanel", () => {
       expect(harness.providerInstances.remove).toHaveBeenCalledWith({ id: "claude-work" });
     });
     const alert = await screen.findByRole("alert");
-    expect(alert.textContent).toContain("Work was removed");
+    expect(alert.textContent).toContain("arul@acme.com was removed");
     expect(alert.textContent).toContain("could not run");
   });
 
@@ -569,7 +571,7 @@ describe("ProviderAccountsPanel", () => {
     const harness = installBridge({ instances: [card, other] });
     renderPanel();
 
-    fireEvent.click(await screen.findByRole("button", { name: `${label} account actions` }));
+    fireEvent.click(await screen.findByRole("button", { name: `${id}@example.com account actions` }));
     expect(screen.queryByRole("menuitem", { name: "Remove" }) !== null).toBe(remove);
     const signOutItem = screen.queryByRole("menuitem", { name: "Sign out" });
     expect(signOutItem !== null).toBe(signOut);
@@ -673,8 +675,12 @@ describe("ProviderAccountsPanel", () => {
     const harness = installBridge({ instances: [copy, owner] });
     renderPanel();
 
-    const row = await screen.findByRole("group", { name: "Work account" });
-    fireEvent.click(within(row).getByRole("button", { name: "Sign it back in" }));
+    // The owner and its copy share the login, so both read as its email; the
+    // owner is the one offering to sign the replaced login back in.
+    const rows = await screen.findAllByRole("group", { name: "now@example.com account" });
+    const row = rows.find((group) => within(group).queryByRole("button", { name: "Sign it back in" }));
+    expect(row, "the owner card offers the sign-back-in").toBeTruthy();
+    fireEvent.click(within(row!).getByRole("button", { name: "Sign it back in" }));
 
     if (base) {
       const sheet = await screen.findByRole("dialog", { name: "Add a Claude Code account" });
@@ -700,7 +706,7 @@ describe("ProviderAccountsPanel", () => {
     );
     renderPanel();
 
-    const row = await screen.findByRole("group", { name: "Personal account" });
+    const row = await screen.findByRole("group", { name: "Not signed in account" });
     fireEvent.click(within(row).getByRole("button", { name: "Sign in" }));
 
     expect(await screen.findByRole("dialog", { name: "Sign in to Claude Code" })).toBeTruthy();

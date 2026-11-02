@@ -16,7 +16,7 @@ import {
   DEFAULT_API_CREDENTIAL_ID,
   type ApiCredentialSummary,
 } from "../../../../shared/types/apiCredentials";
-import type { ProviderInstance } from "../../../../shared/types/providerInstances";
+import { providerAccountName, type ProviderInstance } from "../../../../shared/types/providerInstances";
 import type { OpenProjectBinding } from "../../../../shared/types";
 import { providerLabel } from "../../../../shared/modelCatalog";
 import {
@@ -59,7 +59,8 @@ function accountFromInstance(instance: ProviderInstance): HarnessAccountSource {
     kind: "account",
     provider: instance.provider,
     instanceId: instance.id,
-    label: instance.label,
+    // An account is named by its email, never its id.
+    label: providerAccountName(instance),
     ...(instance.account?.email ? { email: instance.account.email } : {}),
     ...(instance.account?.plan ? { plan: instance.account.plan } : {}),
     signedIn: instance.signedIn === true,

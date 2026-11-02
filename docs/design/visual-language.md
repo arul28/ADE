@@ -67,6 +67,7 @@ wall of utilities.
 | `.kit-icon-btn` | A borderless square icon button. |
 | `.kit-find-bar` | On a `.kit-card`: the floating ⌘F bar, one 36px row with 24px icon buttons (`shared/FindBar.tsx`). |
 | `.kit-btn` | A 30px text button for card surfaces (recovery and error screens). `.kit-btn-primary` is the one filled button per card, in the theme's ink; `.kit-btn-ghost` is borderless. `data-size="sm"` is the 26px row size; `data-size="xs"` is an 18px inline action inside a line of text; `data-tone="crit"` colours a destructive choice's text. |
+| `.kit-panel` | A quiet grouped panel inside a card or popover (the usage popover's per-provider panels): hairline `--kit-panel-edge`, `--kit-panel-bg`, `--radius-lg`, no blur. |
 | `.kit-input` | A text field or select for card surfaces, the height of a `.kit-btn`. `aria-invalid="true"` tints the border. |
 | `.kit-rule` | A 1px divider. |
 | `.kit-hero` | A coloured page header (the Account and Custom providers banners): `.kit-hero-wash` paints `--hero-deep`, `--hero-mid`, `--hero-bright`, `--hero-light` (from a picture's palette or `paletteFromTint`), `.kit-hero-shade` keeps white text readable, `.kit-hero-row` holds the content. White text in either theme. |

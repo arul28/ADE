@@ -3,13 +3,13 @@
  *
  * Claude Code hands out reset credits the way Codex does: the CLI reads the
  * grants from its OAuth usage endpoint and claims one against the account's
- * organization. ADE mirrors that read and claim using the OAuth token the CLI
- * keeps on disk. It deliberately never reads the macOS Keychain: that lookup is
- * reserved for the credential path's explicit refresh, and turning it into an
- * unattended HTTP call is exactly the refresh storm the credential hygiene in
- * `providerCredentialSources.ts` exists to prevent. On macOS the feature is
- * therefore simply not offered, and this module returns "no resets" without
- * sending anything.
+ * organization. ADE mirrors that read and claim with an OAuth token the caller
+ * already holds — the quota poll's cached login, which on macOS came from the
+ * Keychain read the poll was allowed to make — or, off macOS, the token the CLI
+ * keeps on disk. This module never opens the Keychain itself: an unattended
+ * Keychain lookup per read is exactly the prompt storm the credential hygiene
+ * in `providerCredentialSources.ts` exists to prevent. On macOS without a
+ * caller-supplied token it returns "unavailable" without sending anything.
  *
  * Every failure reads as "no resets" so the live usage bars never break on this
  * optional extra; a claim that did not happen is never reported as one.
@@ -65,13 +65,14 @@ export type ClaudeResetConsumeAttempt = {
 };
 
 /**
- * Whether this platform can read and redeem Claude resets at all.
+ * Whether this platform keeps the Claude OAuth token in the on-disk credentials
+ * file this module may read on its own.
  *
- * macOS keeps the Claude OAuth token in the Keychain, and ADE will not turn a
- * Keychain read into an unattended HTTP call, so the feature is not offered
- * there. The credential read is gated before it happens, not after.
+ * macOS keeps it in the Keychain, which this module never opens, so there a
+ * read or claim needs the caller's token (the quota poll's cached login). The
+ * file read is gated before it happens, not after.
  */
-export function isClaudeResetCreditsSupported(
+function claudeTokenFileReadable(
   platform: NodeJS.Platform = process.platform,
 ): boolean {
   return platform !== "darwin";
@@ -241,7 +242,7 @@ function claudeHeaders(token: string, version: string, withBody: boolean): Recor
 /**
  * Read one account's banked resets.
  *
- * Any failure — macOS, no credentials, a non-2xx response, a thrown request —
+ * Any failure — no token (macOS without the caller's), a non-2xx response, a thrown request —
  * is `unavailable`, never a confirmed zero, so the caller keeps the last known
  * reading rather than hiding a live control on a transient outage. `accessToken`
  * lets the caller reuse the credential path's cached (and possibly refreshed)
@@ -255,8 +256,8 @@ export async function readClaudeResetCredits(args: {
   cliVersion?: string;
   fetchImpl?: typeof fetch;
 } = {}): Promise<ClaudeResetCreditsRead> {
-  if (!isClaudeResetCreditsSupported(args.platform)) return { status: "unavailable" };
-  const token = args.accessToken?.trim() || await readClaudeAccessToken(args.configHome);
+  const token = args.accessToken?.trim()
+    || (claudeTokenFileReadable(args.platform) ? await readClaudeAccessToken(args.configHome) : null);
   if (!token) return { status: "unavailable" };
   const version = args.cliVersion ?? await resolveClaudeCliVersion();
   const fetchImpl = args.fetchImpl ?? fetch;
@@ -302,8 +303,8 @@ export async function consumeClaudeResetCredit(args: {
     result: { ok: false, status: "failure", message },
     retrySameClaim,
   });
-  if (!isClaudeResetCreditsSupported(args.platform)) {
-    return failure("Claude reset credits are not available on this computer.");
+  if (!args.accessToken?.trim() && !claudeTokenFileReadable(args.platform)) {
+    return failure("Sign in to Claude again to redeem resets.");
   }
   if (!GRANT_ID_PATTERN.test(args.grantId) || !REQUEST_ID_PATTERN.test(args.requestId)) {
     return failure("Claude returned a malformed reset credit.");

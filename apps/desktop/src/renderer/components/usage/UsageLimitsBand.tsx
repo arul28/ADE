@@ -73,9 +73,24 @@ function providerSourceLabel(status: UsageProviderStatus | null): string {
   return "Waiting";
 }
 
-/** "OAuth · 2m ago" — where the reading came from and how old it is. */
+/** "OAuth · 2m ago" — where the reading came from and how old it is. Tooltip only. */
 function providerSourceLine(status: UsageProviderStatus | null, nowMs: number): string {
   return `${providerSourceLabel(status)} · ${formatUpdatedAge(status?.updatedAt ?? status?.lastSuccessAt, nowMs)}`;
+}
+
+/** A reading older than this says its age beside the provider's name. */
+const STALE_READING_MS = 10 * 60_000;
+
+/**
+ * What the provider's heading says about its reading: nothing while it is
+ * fresh, its age once it is old. "OAuth · just now" on every provider was
+ * transport detail the reader cannot act on, and "Waiting · not updated" sat
+ * above bars that plainly had numbers.
+ */
+function providerFreshness(status: UsageProviderStatus | null, nowMs: number): string | null {
+  const at = Date.parse(status?.updatedAt ?? status?.lastSuccessAt ?? "");
+  if (!Number.isFinite(at) || nowMs - at < STALE_READING_MS) return null;
+  return `Updated ${formatUpdatedAge(status?.updatedAt ?? status?.lastSuccessAt, nowMs)}`;
 }
 
 /**
@@ -333,7 +348,7 @@ export function UsageLimitsBand({
   }
 
   return (
-    <section className="flex flex-col gap-3">
+    <section className="flex flex-col gap-3" data-usage-detail-host>
       {visibleProviders.length === 0 ? (
         <div className={cn(USAGE_CARD_CLASS, "flex flex-col items-center justify-center py-9 text-center")}>
           <Gauge size={30} weight="regular" className="mb-3 text-muted-fg" />
@@ -343,9 +358,9 @@ export function UsageLimitsBand({
           </div>
         </div>
       ) : (
-        // A logo, a hairline, then the accounts. The old rounded box made every
-        // provider a card stacked on the popover's own card.
-        <div className="flex flex-col gap-2">
+        // One quiet panel per provider (`.kit-panel`), not a frosted card: a
+        // card per provider stacked blur on the popover's own card.
+        <div className="flex flex-col gap-2.5">
           {visibleProviders.map((provider) => (
             <ProviderLimitsRow
               key={provider}
@@ -384,21 +399,6 @@ export function UsageLimitsBand({
 }
 
 // ── supporting reads ─────────────────────────────────────────────
-
-function SkeletonRows() {
-  return (
-    <div className="grid grid-cols-1 gap-4" aria-hidden>
-      {[0, 1].map((i) => (
-        <div key={i} className="space-y-1.5">
-          <div className="h-3 w-16 rounded bg-muted" />
-          <div className={cn("h-2.5 w-full", USAGE_BAR_TRACK_CLASS)}>
-            <div className="h-full w-1/3 animate-pulse rounded-full bg-fg/10" />
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
 
 // ── provider row ─────────────────────────────────────────────────
 
@@ -468,6 +468,7 @@ function ProviderLimitsRow({
 
   const usageUrl = status?.accountUrl ?? usageProviderAccountUrl(provider);
   const sourceLine = providerSourceLine(status, nowMs);
+  const freshness = providerFreshness(status, nowMs);
   // One row per account, each with that account's own windows stacked.
   const rows = buildAccountRows(provider, windows, accounts, nowMs);
   const dim = windows.length === 0 && (!isAuthed || isUsageUnauthed);
@@ -485,13 +486,12 @@ function ProviderLimitsRow({
     : [{ key: `${provider}:this-machine`, provider, account: null, cells: [] }];
 
   return (
-    <section data-provider-limits={provider} className="flex min-w-0 flex-col gap-1.5 pb-3 pt-1 last:pb-0">
-      {/* Logo · name · where the reading came from ……… actions, then a
-          hairline, then the accounts. */}
-      <div className="usage-provider-head">
+    <section data-provider-limits={provider} className="kit-panel usage-provider">
+      {/* Logo · name · its age when old ……… actions on hover, then the accounts. */}
+      <div className="usage-provider-head" title={sourceLine}>
         <ProviderMark provider={provider} size={16} dim={dim} />
         <span className="usage-provider-name">{providerLabel}</span>
-        <span className="usage-provider-source">{sourceLine}</span>
+        {freshness ? <span className="usage-provider-source">{freshness}</span> : null}
         <span className="usage-provider-actions">
           <button
             type="button"
@@ -514,9 +514,7 @@ function ProviderLimitsRow({
           ) : null}
         </span>
       </div>
-      <hr data-provider-divider className="kit-rule" />
-
-      <div className="flex min-w-0 flex-col gap-2.5">
+      <div className="usage-provider-body">
       {spendControlReached ? <NoticeRow message="Spending cap reached" /> : null}
 
       {/* A failed refresh sits above the readings it could not update — with
@@ -541,6 +539,8 @@ function ProviderLimitsRow({
         <UsageAccountRow
           key={row.key}
           row={row}
+          // The popover reads the tab's own machine, so a spend goes there too.
+          pin={null}
           providerTitle={sourceLine}
           fallbackAccountUrl={usageUrl}
           fallbackEmail={status?.accountEmail ?? null}
@@ -560,11 +560,13 @@ function ProviderLimitsRow({
           />
         )
       ) : status?.state === "error" ? (
-        <div className={cn(USAGE_TEXT.detail, "text-muted-fg")}>
+        <div className="usage-footnote px-1.5">
           {status.message ?? "Couldn't reach this provider — retrying"}
         </div>
       ) : (
-        <SkeletonRows />
+        // Words, not grey skeleton bars: a provider that has not answered yet
+        // looked identical to one that never would.
+        <div className="usage-footnote px-1.5">Waiting for the first reading</div>
       )}
       </div>
     </section>

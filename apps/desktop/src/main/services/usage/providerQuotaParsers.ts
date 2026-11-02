@@ -18,6 +18,17 @@ export interface ClaudeUsageResponse {
   extra_usage?: ClaudeExtraUsage | null;
   extraUsage?: ClaudeExtraUsage | null;
   rate_limit_tier?: string;
+  /**
+   * Newer per-scope limits. `weekly_scoped` entries are a model's own weekly cap
+   * (e.g. Fable: "up to 50% of your weekly limit"), and are how the endpoint
+   * reports model limits now that `seven_day_opus`/`seven_day_sonnet` are gone.
+   */
+  limits?: Array<{
+    kind?: string;
+    percent?: number | null;
+    resets_at?: string | null;
+    scope?: { model?: { display_name?: string } | null } | null;
+  }> | null;
 }
 
 type ClaudeUsageBucket = {
@@ -515,6 +526,11 @@ export function parseClaudeWindows(data: ClaudeUsageResponse): { windows: UsageW
     const modelBreakdown: Record<string, number> = {};
     if (sevenDaySonnet) modelBreakdown.sonnet = usagePercent(sevenDaySonnet);
     if (sevenDayOpus) modelBreakdown.opus = usagePercent(sevenDayOpus);
+    for (const limit of Array.isArray(data.limits) ? data.limits : []) {
+      const model = limit?.scope?.model?.display_name?.trim();
+      if (limit?.kind !== "weekly_scoped" || !model || typeof limit.percent !== "number" || !Number.isFinite(limit.percent)) continue;
+      modelBreakdown[model] = Math.max(0, Math.min(100, limit.percent));
+    }
     windows.push({
       provider: "claude",
       windowType: "weekly",

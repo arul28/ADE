@@ -66,7 +66,7 @@ ade harness test --harness claude --via opencode-go --model deepseek-v4.1-flash 
 | any reachable model, no saved preset | `--provider <harness> --via <source> --model <id>` |
 | a saved custom setup (harness preset) | `--preset <preset-id>` |
 | one stored API key, no preset | `--credential <credential-id>` |
-| a specific Claude/Codex account | `--instance <account-id>` |
+| a specific Claude/Codex account | `--instance <email>` (an account signed in with no readable email: its id, from `ade providers accounts list`) |
 
 ```bash
 # A chat on a saved preset — model, effort and subagent pins all come from
@@ -79,8 +79,8 @@ ade new chat --mode cli --lane <lane> --provider claude --preset hp_opus_work
 # A key saved on a provider page, with no preset around it.
 ade chat create --lane <lane> --provider claude --credential openrouter
 
-# A specific account, without a preset.
-ade chat create --lane <lane> --provider claude --instance claude-2
+# A specific account, by its email, without a preset.
+ade chat create --lane <lane> --provider claude --instance you@example.com
 
 # OpenCode Go's DeepSeek inside Claude Code, chat or CLI, no preset.
 ade chat create --lane <lane> --provider claude --via opencode-go --model deepseek-v4.1-flash

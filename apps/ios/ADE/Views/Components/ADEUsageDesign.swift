@@ -666,6 +666,10 @@ struct ADEUsageAccountView: Identifiable, Equatable {
   var instanceId: String? = nil
   /// The account's user-facing name, e.g. "Default" or "Work".
   var label: String? = nil
+  /// Another machine's reading stands in for this host's (`UsageAccount.readingFrom`).
+  var readingFrom: MobileUsageAccountMachine? = nil
+  /// Signed in only on another machine: shown, never picked or spent from here.
+  var notSignedInHere = false
 }
 
 /// `first.last@host` → FL, `dev@host` → DE, machine label → its first two.
@@ -698,6 +702,9 @@ func adeUsagePoolAccounts(_ accounts: [MobileUsageAccount]?) -> [ADEUsageAccount
       }
       if existing.plan == nil { existing.plan = account.plan }
       if existing.label == nil { existing.label = account.label }
+      if existing.readingFrom == nil { existing.readingFrom = account.readingFrom }
+      // Signed in here if any copy of the login is.
+      existing.notSignedInHere = existing.notSignedInHere && account.notSignedInHere == true
       pooled[key] = existing
       continue
     }
@@ -711,7 +718,9 @@ func adeUsagePoolAccounts(_ accounts: [MobileUsageAccount]?) -> [ADEUsageAccount
       url: account.url,
       initials: adeUsageAccountInitials(email: account.email, fallback: account.label ?? account.machines.first?.label ?? ""),
       instanceId: account.instanceId,
-      label: account.label
+      label: account.label,
+      readingFrom: account.readingFrom,
+      notSignedInHere: account.notSignedInHere == true
     )
   }
   let freshness: (MobileUsageAccountMachine) -> Double = { machine in
@@ -855,11 +864,13 @@ func adeUsageAccountsMissingWindows(
   return providerAccounts.filter { !represented.contains($0.id) }
 }
 
+/// An account is its email. The host's `label` is that same name on a current
+/// host; an older one may send an id-shaped label, so it is only a fallback.
 func adeUsageAccountTitle(_ account: ADEUsageAccountView) -> String {
-  let label = account.label?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-  if !label.isEmpty { return label }
   let email = account.email?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
   if !email.isEmpty { return email }
+  let label = account.label?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  if !label.isEmpty { return label }
   return "This account"
 }
 

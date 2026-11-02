@@ -4059,6 +4059,24 @@ describe("createAgentChatService", () => {
       expect((await service.getSessionSummary(before.id))?.instanceId).toBe("claude");
     });
 
+    // An account is named by its email, and `ade usage limits` lists logins
+    // from other machines too. An email this computer does not hold must not
+    // quietly start the chat on whatever the default account is.
+    it("refuses an account email this computer does not hold, and keeps the old fallback for an unknown id", async () => {
+      const { service } = createService();
+
+      await expect(service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        instanceId: "elsewhere@example.com",
+      })).rejects.toThrow(/No Claude account elsewhere@example\.com/);
+      expect(await service.listSessions()).toHaveLength(0);
+
+      const byId = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet", instanceId: "removed-account" });
+      expect((await service.getSessionSummary(byId.id))?.instanceId).toBe("claude");
+    });
+
     it("starts a Claude chat with its own account's subagent cache choice, and no other account's", async () => {
       const accounts = getMachineProviderInstanceStore();
       const work = accounts.create({ provider: "claude", label: "Work" }).instance;

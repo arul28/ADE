@@ -49,7 +49,13 @@ brain scope is running, which is also the only time that tracker polls.
 Smart balance applies to Claude and Codex when it is enabled for that provider.
 New chats consider only signed-in instances, and an account whose stored login
 is gone is skipped — old windows stay on screen after a login breaks, and they
-are not room. Weekly room left at the reset is lost, so the account that needs
+are not room. Each account is judged on its freshest reading from any machine
+([Quota belongs to the login](#quota-belongs-to-the-login)): a login this
+machine last saw full may have room again by another machine's read. A login
+signed in only on another machine is never a candidate here, and budget caps
+ignore its windows. A window whose reset has passed reads as empty with no
+reset, so a carried 95%-used reading from before the reset neither blocks an
+account that has all its room back nor ranks a stale one first. Weekly room left at the reset is lost, so the account that needs
 the most room spent is the default choice. For each account the service computes
 a required rate (weekly room ÷ hours until its reset), subtracts the burn
 already committed there, and sends the chat to the largest remaining deficit.
@@ -75,8 +81,9 @@ does not get a free pass: the first turn still has to fit. When two accounts'
 deficits are within 0.15 points per hour, the sooner weekly reset wins, then the
 healthier five-hour window, then the default. When every account is blocked, the
 new chat still starts on the one that survives the five-hour projection longest.
-An account with a weekly reading and no five-hour window is idle, so it counts
-as full five-hour room. No usable readings fall back to the default, and
+An account with a weekly reading and no five-hour window (idle, or a plan
+without one, such as a weekly-only Claude account) counts as full five-hour
+room. No usable readings fall back to the default, and
 `UsageSnapshot.balanceIssues` drives the amber top-bar pill that says balance
 could not run. An explicit account selection always wins over balancing.
 
@@ -114,7 +121,10 @@ which the five-hour window is gone, has no reset time, or (for a window seen
 above 0%) comes back at 0% with a different end starts the next window about
 five seconds later instead of dropping the timer. A moved window that is
 already in use is followed, not pinged. A poll with no reading for the account,
-or one landing between the reset and the timer, keeps the armed timer. Spending
+or one landing between the reset and the timer, keeps the armed timer. A
+snapshot that has other windows for the account but no five-hour one means the
+account had none to reset (idle, or a plan without one), so a reset that cleared
+another window starts nothing. Spending
 a reset through ADE (`consumeResetCredit` returning `reset`) starts the next
 window directly. Early starts are limited to one per account per 15 minutes.
 
@@ -456,17 +466,21 @@ Two rules shape the account scope:
   them, never enter the sync layer, and are never held in memory by the merge.
   A heavy year of use is a few thousand small rows.
 - **History merges; live quota pools.** Cost, tokens, and code history merge as
-  durable rows. Live quota windows also travel, but only as an in-memory side
-  channel on the same `usage.getUsageRollup` response — never stored. Provider
-  rate limits are tied to the provider account rather than the machine, so the
-  same login on two machines reports the same window; the pooled view counts
-  each account once (the freshest machine's reading per account + window label)
-  instead of double-counting a shared limit. `poolLiveQuota` in
-  `shared/usageLiveQuota.ts` is the one pooling rule, and the Usage page's
-  "All machines" scope renders it with an environment filter. The windows are
-  deliberately absent from the CRR-replicated `usage_machine_rollups`: they
-  change every poll, and storing them would churn the CRR clock and reopen the
-  self-feeding refresh loop the store's no-op detection prevents.
+  durable rows. Live quota windows travel only in memory, never stored, because
+  they change every poll and storing them would churn the CRR clock and reopen
+  the self-feeding refresh loop the store's no-op detection prevents (they are
+  absent from `usage_machine_rollups`). Provider rate limits belong to the
+  login, not the machine; see [Quota belongs to the login](#quota-belongs-to-the-login).
+  `poolLiveQuota` in `shared/usageLiveQuota.ts` pools the rollup's live windows
+  by account for the Usage page's "All machines" scope, with an environment
+  filter.
+- **Every stat about the user is account-wide.** The Settings activity card and
+  the Work composer's activity module read `getAdeStats` with `scope: "account"`,
+  so a remote-bound tab shows the user's numbers, not one computer's. Active
+  days count any day any machine used a model, not only days this project's
+  database saw. Requests count per Claude assistant message and per Codex turn
+  (`last_token_usage`), carried as `calls` on the per-model token breakdown; a
+  scanner that only sees aggregates leaves it absent rather than zero.
 
 GitHub metrics are excluded from the merge for the same reason in a different
 direction: they are repo-scoped, so three machines with the same clone each
@@ -481,14 +495,35 @@ Each machine writes its own rollup to `usage_machine_rollups` and
 those tables desktop-to-desktop. That durable copy is the floor the page renders
 from, which is what lets an offline laptop still count toward account totals.
 On top of it, `accountUsageLiveRefresh.ts` asks whichever machines are reachable
-right now for a fresh rollup over the paired remote-connection pool
-(`usage.getUsageRollup`, `viewerAllowed`), capped at 12 machines per refresh so
-a large fleet cannot turn one page open into a fan-out storm. Everything in that
-path is best effort: an asleep, unpaired, or slow machine produces a failure
-entry and keeps its published rollup rather than taking the other machines'
-numbers down with it. An account-scoped read has a rate floor because the read
-starts a refresh whose update causes another read; `force` (set only by the
-Refresh button) bypasses it.
+right now over a paired connection, capped at 12 machines per refresh so a large
+fleet cannot turn one page open into a fan-out storm. Two requests share the
+same reach rules (`reachablePeers`: online, not this machine, already paired,
+already connected):
+
+- `usage.getUsageRollup` returns the machine's whole day x provider x model
+  history (`createAccountRollupFetcher`).
+- `usage.getLiveQuota` returns only its live windows and accounts
+  (`createAccountLiveQuotaFetcher`), for the limits view.
+
+Two fan-outs feed one tracker. The desktop window's rides its remote-connection
+pool, so it reaches only machines that window is connected to. The brain has its
+own: `cli.ts` installs `setSharedAccountRollupFetcher` and
+`setSharedAccountLiveQuotaFetcher`, built lazily on the first account-scoped
+read over the agents' paired connections
+(`agentMachineBridge.fetchUsageMethod`). The brain only rides a connection that
+is already open; it never dials, pairs, or re-pairs a machine, and a machine
+without one keeps its durable rollup. Both methods are machine-level RPC in
+`multiProjectRpcServer.ts` (no project, answered from the shared tracker's
+`getUsageRollup()` / `getOwnLiveQuota()`) and are on the agent remote-method
+allowlist in `agentRemoteRpc.ts`. A brain that predates them answers "requires
+params.projectId", which the fetcher reads as "too old to share usage". The
+tracker's refresh failures are kept per machine and expire after 30 minutes
+unless a fan-out repeats them. Everything in that path is best effort: an
+asleep, unpaired, or slow machine produces a failure entry and keeps its
+published rollup rather than taking the other machines' numbers down with it.
+An account-scoped read has a rate floor because the read starts a refresh whose
+update causes another read; `force` (set only by the Refresh button) bypasses
+it.
 
 Both tables are in `MOBILE_CHANGESET_EXCLUDED_TABLES`. The phone reads its usage
 from the host over `usage.getAdeStats` and never queries them, so shipping every
@@ -536,6 +571,44 @@ rollup older than the six-hour freshness horizon, with the lag stated),
 `deduped` (excluded, with the machine it was deduped against), or `failed`
 (reported nothing usable — missing from the totals, never an error that empties
 the page).
+
+### Quota belongs to the login
+
+A provider limit is tied to the login, so every screen shows each login's
+freshest reading from any machine on the ADE account. `peerLiveQuota.ts` holds
+what the peers last said, in memory only, and `poolPeerQuota` pools it with this
+machine's own snapshot into two views:
+
+- **For picking** (smart balance, budget caps, balance issues): this machine's
+  own logins, each with its freshest reading. A reading from a working token
+  beats one taken before that machine's login expired; within the same kind the
+  newer one wins. An unexpired reading only counts while its reset is in the
+  future.
+- **For display** (the popover, `ade usage limits`, Settings): that, plus logins
+  signed in only on another machine, marked `notSignedInHere`. They show as
+  **Not signed in here**, with a `via <machine>` tag, so every login's room is
+  in one place. They can take no chat here, so smart balance never picks them
+  and budget caps ignore their windows.
+
+How fresh a reading is comes from the windows themselves: each window carries
+`readAt`, the time a live poll last read it (a carried-forward window keeps its
+real read time), and `stampAccountReadTimes` dates each account by its newest
+window rather than the provider's last poll. Without that, a stale carried
+login on this machine beat another machine's genuinely newer reading.
+`UsageAccount.readingFrom` names the machine a row's numbers came from.
+`lastSnapshot` stays this machine's own reading (polls carry it forward, the
+disk cache stores it, peers pool it); only the views mix peers in, and
+`usage.getLiveQuota` answers with the unpooled own reading so a peer's number is
+never echoed back as this machine's.
+
+The popover pulls the quota-only reading (`usage.getLiveQuota`) at most once a
+minute while it is open: recording quota demand calls
+`peerQuota.refresh()`, which is never awaited and floors itself at 60 s, and the
+Refresh button forces it. The rollup fan-out's live side channel feeds the same
+store. A peer reading is held for at most six hours and dropped sooner when its
+window passes its reset. The pooled view is memoized per (snapshot, peer
+readings) and rebuilt only when a window could cross its reset, so repeated
+reads of one published snapshot return one view.
 
 ## Claude credential hygiene
 
@@ -1071,13 +1144,16 @@ for each provider, mainly Claude and Codex. The wire contract is in
 - `ade usage limits` (action `usage.getUsageLimits`, pure builder
   `shared/usageLimitsReport.ts`) is the agent-sized read of the same cached
   snapshot, about 2 KB instead of the snapshot's ~1 MB of history. One row per
-  account: the id `ade chat create --instance` takes, each window's percent
+  account: named by its email, which `ade chat create --instance` takes (an id
+  works too; an account that has not signed in has no email, so its id is the
+  only handle), each window's percent
   left, reset, and pace (the poll's `etaHours`, counted from the reading), the
   reading's age, a state (`ok`, `stale`, `expired`, `signed_out`, `no_reading`,
   `error`) with a short note, banked reset credits, and two marks: the asking
   chat's account (`chatSessionId`, resolved through the provider-instance store
   so a chat with no recorded account reads as the default) and smart balance's
-  next pick (`balanceNext`). A window whose reset passed since the reading reads
+  next pick (`balanceNext`). A login only another machine holds is a row with
+  `notSignedInHere` and a note naming the machine that read it. A window whose reset passed since the reading reads
   full; one with no reset time keeps its fill. A provider whose check failed with
   nothing to show still gets a row, so "could not read" is not mistaken for "not
   signed in". It never refreshes. `--machine` / `--all-machines` read other
@@ -1189,24 +1265,52 @@ for each provider, mainly Claude and Codex. The wire contract is in
   credits answers "Reset credits are not available on this host yet." rather
   than reporting a reset it did not perform.
 - Accounts pool by email: the same login reported by two machines is one
-  account with two `Via` entries, freshest reading first. **Today the quota
-  poller only reads the local machine**, but it reads EVERY provider account on
-  it: `listQuotaInstances` enumerates the provider-instance registry and polls
-  each account's own config home (default first, because its result decides the
+  account with two `Via` entries, freshest reading first, and its numbers are
+  the freshest reading from either ([Quota belongs to the login](#quota-belongs-to-the-login)).
+  The quota poller reads EVERY provider account on its own machine:
+  `listQuotaInstances` enumerates the provider-instance registry and polls each
+  account's own config home (default first, because its result decides the
   provider-level facts that stay singular — the status line's account email, the
   poll `source`, and the Codex spend-control / 7-day series). A machine with
   three Claude logins therefore contributes as many accounts as it has
   distinct logins — two config homes on one email are one account, and the
-  extra homes and their windows are dropped. A machine with no registry entry falls back to the single ambient
-  `CLAUDE_CONFIG_DIR` / `CODEX_HOME`. The
-  account-wide fan-out in `accountUsageLiveRefresh.ts` carries history rollups
-  (`usage.getUsageRollup`), not live quota. The pooled shape is the contract so
-  a quota fan-out can fill it without moving any client. **Every row names its
-  account, always** — on desktop and iOS. The
-  earlier rule suppressed the email whenever a provider had one account, which
-  is precisely the case where the row IS that account and a machine shared
-  between two logins gives no other clue. A host with no account directory
-  falls back to `status.accountEmail`, then to "This machine".
+  extra homes and their windows are dropped. A machine with no registry entry
+  falls back to the single ambient `CLAUDE_CONFIG_DIR` / `CODEX_HOME`. **Every
+  row names its account, always** — on desktop and iOS. The earlier rule
+  suppressed the email whenever a provider had one account, which is precisely
+  the case where the row IS that account and a machine shared between two
+  logins gives no other clue. A host with no account directory falls back to
+  `status.accountEmail`, then to "This machine".
+- An account is identified by its email. `providerAccountName`
+  (`shared/types/providerInstances.ts`) is the one naming rule: the email, else
+  "Signed in, no email" for a login that reports only a plan, else "Not signed
+  in". Ids are storage keys only, and two machines can give one email different
+  ids, so no surface shows one. The CLI takes `--instance <email>` everywhere
+  (`chat create`, `chat switch-account`, `providers accounts default|remove|login`);
+  the provider-instance store resolves an email to the login's owner (the
+  account that is not a copy, and among those the one whose login works), and
+  a chat asked to run on an email this machine has not signed in is refused
+  rather than started on a different login. An email both providers hold needs
+  an id, since those commands take no provider. A copy (`sameLoginAs`: a second
+  config home signed in to a login another account holds) adds no quota, so
+  every "N accounts" count, including the header's, counts real logins through
+  `countProviderLogins` and excludes copies.
+- The popover row is the email with the plan as a quiet second word, its pace
+  in words, then each window as a name-and-headroom line over a full-width bar.
+  Tags say where the numbers came from: **Last reading** (this machine's token
+  expired, so the bars are its last reading; the account still takes chats),
+  **via <machine>**, and **Not signed in here**. A login with an expired token
+  and no bars reads "Login expired — renews on its next chat", not "No usage
+  yet". The header shows only the windows a provider reports, so a Claude
+  account without a five-hour window (weekly only) gets no phantom 5h slot; the
+  placeholder shows only before the first snapshot lands. "Use reset" is sent to
+  the machine that produced the row, through the row's pin.
+- Claude's per-model weekly caps come from the usage endpoint's
+  `limits[]` entries of kind `weekly_scoped` (the endpoint dropped
+  `seven_day_opus` / `seven_day_sonnet`). Each becomes a `modelBreakdown` entry
+  on the weekly window keyed by the model's display name (Fable, for one), shown
+  in the window's detail as "Model caps" with the percent left, including at 0%
+  used. Up to eight travel in a peer's reading.
 - The iOS quota rows are readings, not controls: the old tap-to-focus gesture
   on a pace bar is gone. Tapping a row opens the account detail sheet.
 - Codex and Claude both report banked reset credits, and ADE parses them:
@@ -1219,11 +1323,13 @@ for each provider, mainly Claude and Codex. The wire contract is in
   `parseCodexRateLimitSnapshot` remains windows-and-spend-control only; the
   Codex credits ride their own key in the same payload. Claude's read is the
   OAuth usage endpoint with `cedar_ember=1&skip_spend=1`, sent with the OAuth
-  token from ADE's Claude credential cache when it is warm (so a token the
-  quota poll just refreshed is used, not the possibly-stale file) and the
-  credentials file otherwise. On macOS that token lives in the Keychain, so ADE
-  does not offer the control there rather than turn a Keychain read into an
-  unattended HTTP call; the read stays off and sends nothing. A failed read is
+  token from the quota poll's in-memory login when it is warm (so a token the
+  poll just refreshed is used, not the possibly-stale file) and the credentials
+  file otherwise. On macOS the token lives in the Keychain, which the reset
+  module never opens: it reuses the token the poll was already allowed to read,
+  so the control is offered there too, and an account whose poll could not read
+  its login keeps its last answer and sends nothing. Spending a credit is a
+  click, so it may read the Keychain when the cache is cold. A failed read is
   not a confirmed zero: the last known credits are kept, and only a successful
   response can replace them. Spending a Claude credit is
   `POST /api/organizations/{org}/reset_rate_limits` with

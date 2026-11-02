@@ -6708,10 +6708,12 @@ const adeBridge = {
       callProjectRuntimeActionOr("usage", "noteQuotaDemand", {}, () =>
         ipcRenderer.invoke(IPC.usageNoteDemand),
       ),
+    // `pin` spends on the machine whose snapshot showed the credit (a Settings
+    // page or chat on another machine); without it, the tab's binding answers.
     consumeResetCredit: async (args: {
       accountId: string;
-    }): Promise<UsageResetCreditResult> =>
-      callProjectRuntimeActionOr("usage", "consumeResetCredit", { args }, () =>
+    }, pin?: OpenProjectBinding | null): Promise<UsageResetCreditResult> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "usage", "consumeResetCredit", { args }, () =>
         ipcRenderer.invoke(IPC.usageConsumeResetCredit, args),
       ),
     getCostBreakdown: async (args: GetAdeUsageCostBreakdownArgs): Promise<AdeUsageCostBreakdown | null> =>

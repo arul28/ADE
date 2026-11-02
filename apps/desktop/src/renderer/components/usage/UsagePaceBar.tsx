@@ -26,22 +26,27 @@ import {
   windowLabel,
 } from "./usageWindowFormat";
 
-/** Pace tones map onto the kit tag tones: they carry meaning, not identity. */
-const TONE_TAG: Record<PaceVisual["tone"], "ok" | "warn" | "crit" | undefined> = {
-  calm: "ok",
-  warm: "warn",
-  hot: "crit",
-  cool: undefined,
-};
 
+/**
+ * The pace, said in words with a status dot: "Room to spare", "On pace",
+ * "Using it fast", "Runs out early". Quiet sans text rather than a tinted mono
+ * pill, which shouted the same weight as a warning on every healthy account.
+ */
 export function PacePill({ pace }: { pace: PaceVisual }) {
   return (
-    <span className="kit-tag shrink-0 gap-1" data-tone={TONE_TAG[pace.tone]}>
+    <span className="usage-pace" data-tone={pace.tone} title={pace.detail}>
+      <span className="kit-dot" data-state={PACE_DOT[pace.tone]} aria-hidden />
       {pace.label}
-      {pace.arrow ? <span aria-hidden>{pace.arrow}</span> : null}
     </span>
   );
 }
+
+const PACE_DOT: Record<PaceVisual["tone"], "ok" | "warn" | "crit" | undefined> = {
+  cool: "ok",
+  calm: undefined,
+  warm: "warn",
+  hot: "crit",
+};
 
 export function UsagePaceBar({
   window: quotaWindow,

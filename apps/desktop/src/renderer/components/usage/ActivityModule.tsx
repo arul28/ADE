@@ -1135,7 +1135,11 @@ export function WorkActivityModule() {
     const request = requestRef.current + 1;
     requestRef.current = request;
     try {
-      const result = await window.ade?.usage?.getAdeStats?.({ preset: nextPreset });
+      // Account scope: a stat about the user covers every machine on the ADE
+      // account, not just the one this tab is bound to. The preload default is
+      // "machine", which made this card one computer's (and, for a remote
+      // tab, the other computer's) numbers.
+      const result = await window.ade?.usage?.getAdeStats?.({ preset: nextPreset, scope: "account" });
       if (!result || requestRef.current !== request) return;
       workStatsCache.set(key, result);
       setStats(result);

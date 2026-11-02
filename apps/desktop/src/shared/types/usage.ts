@@ -752,6 +752,12 @@ export type UsageWindow = {
   windowDurationMs?: number;
   /** Pace of this specific window (ahead/behind a steady burn). Computed per-window. */
   pacing?: UsagePacing;
+  /**
+   * When a live poll last read this window. A carried-forward window keeps the
+   * time it was really read, so two machines' readings of one login can be
+   * told apart by age per account, not by the provider's last poll.
+   */
+  readAt?: string;
 };
 
 export type UsagePacingStatus =
@@ -848,6 +854,8 @@ export type CostTokenBreakdown = {
   cacheWrite?: number;
   costUsd?: number;
   costSplit?: AdeUsageCostSplit;
+  /** Model requests behind these tokens; absent when the ledger does not record them. */
+  calls?: number;
 };
 
 export type CostSnapshot = {
@@ -984,6 +992,19 @@ export type UsageAccount = {
    * Local to the polling machine, like `notice`.
    */
   login?: UsageAccountLogin;
+  /**
+   * The other machine whose reading these windows are, when this machine's own
+   * was missing, expired, or older. Quota belongs to the login, not the
+   * machine, so a fresher reading anywhere on the ADE account is the truth.
+   * Absent when the windows are this machine's own reading.
+   */
+  readingFrom?: { machineKey: string; label: string; checkedAt?: string };
+  /**
+   * The login is signed in on another machine on the ADE account but not on
+   * this one. Shown so every account's room is in one place; it cannot take a
+   * chat here, so smart balance never picks it.
+   */
+  notSignedInHere?: boolean;
 };
 
 export type UsageAccountLogin = "ok" | "expired" | "signed_out";

@@ -391,6 +391,10 @@ export function createWindowAutoStartScheduler({
           .find((candidate) => usageAccountId({ provider, instanceId: candidate.id }) === accountId);
         if (!instance) continue;
         const window = latestSnapshot ? findAutoStartWindow(latestSnapshot, provider, instance.id) : undefined;
+        // An account read with no five-hour window had none to reset (an idle
+        // window, or a plan without one): the reset cleared another window,
+        // and a start request would only spend that window's room.
+        if (latestSnapshot && !window && accountWindows(latestSnapshot, provider, instance.id).length > 0) return;
         lastEarlyStartAtMs.delete(accountId);
         armEarly(provider, instance, window ? Date.parse(window.resetsAt) : Number.NaN);
         return;
