@@ -6854,7 +6854,9 @@ async function runTool(args: {
       }
       // A plain shell is raw terminal access, which stays in the caller's
       // own lane; only an agent CLI (capped below) may go to another lane.
-      if (provider === "shell") {
+      // A caller with no chat of its own has no level for the cap to read,
+      // so it stays in its lane too.
+      if (provider === "shell" || !callerChatSessionId) {
         ensurePtyCreateAuthorized(runtime, session, "start_cli_session", {
           laneId,
           ...(requestedChatSessionId ? { chatSessionId: requestedChatSessionId } : {}),

@@ -934,8 +934,10 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     const machineKey = deps.store.getOrCreateIdentity().machineKey;
     for (const alert of alerts) {
       if (alert.desktopAnnounced || !alert.sessionId) continue;
-      // `alert:<session>:approval:<card>` is one card's alert (one per card).
-      const kind = /:(approval|question)$|:approval:[^:]+$/.test(alert.dedupeKey)
+      // `alert:<session>:approval:<card>` is one card's alert (one per card);
+      // a card id may itself contain `:`.
+      const kind = /:(approval|question)$/.test(alert.dedupeKey)
+        || alert.dedupeKey.startsWith(`alert:${alert.sessionId}:approval:`)
         ? "needs_you" as const
         : /:failed$/.test(alert.dedupeKey)
           ? "failed" as const

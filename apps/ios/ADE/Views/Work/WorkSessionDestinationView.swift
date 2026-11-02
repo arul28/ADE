@@ -1898,13 +1898,17 @@ struct WorkSessionDestinationView: View {
           }
         }
       }
-      .onChange(of: chatSummary) { _, newValue in
+      .onChange(of: chatSummary) { oldValue, newValue in
         // Latch the last non-nil summary so the composer's model/permission
         // controls survive a transient nil while this view stays mounted.
         if let newValue {
           lastKnownChatSummary = newValue
         }
         refreshScheduledWorkSnapshots()
+        // The host's open card feeds the subagents' "needs you" marks.
+        if let newValue, newValue.pendingInputItemId != oldValue?.pendingInputItemId {
+          refreshSubagentSnapshots()
+        }
       }
       .onChange(of: chatInfoPresented) { _, presented in
         handleChatInfoPresentationChange(presented)

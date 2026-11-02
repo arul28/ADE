@@ -28301,6 +28301,10 @@ export function createAgentChatService(args: {
       } else if (runtime.kind === "opencode") {
         settleOpenCodePendingApprovals(managed, runtime, (pending) => ended(pending.request));
         settleOpenCodePendingForms(managed, runtime, ended);
+      } else if (runtime.kind === "muse") {
+        for (const [itemId, pending] of [...managed.localPendingInputs]) {
+          if (pending.request.source === "muse" && ended(pending.request)) cancelLocalPendingInput(managed, itemId);
+        }
       }
     });
   };
@@ -36829,7 +36833,10 @@ export function createAgentChatService(args: {
           subagentId: origin.subagentId,
           reason: "Its approval was dismissed in ADE",
         }).catch((error) => {
+          // Muse would stay parked on an approval ADE no longer shows: stop the
+          // turn instead, the same way out a card with no fitting choice takes.
           logger.warn("agent_chat.muse_subagent_stop_failed", { sessionId: managed.session.id, error: describeMuseError(error) });
+          interrupt();
         });
       };
       // Dismissed without a decision, or no offered choice fits: stop the turn
@@ -37877,8 +37884,14 @@ export function createAgentChatService(args: {
         runtime.interrupted = false;
       }
       // An approval or question that outlives its turn blocks Muse behind a
-      // card the user can no longer reach.
-      cancelPendingInputsFrom(managed, "muse");
+      // card the user can no longer reach. A running background subagent is
+      // still there to hear the answer, so its card stays; it closes when
+      // that subagent ends.
+      for (const [itemId, pending] of [...managed.localPendingInputs]) {
+        if (pending.request.source !== "muse") continue;
+        if (keepsBackgroundSubagentCard(managed, pending.request)) continue;
+        cancelLocalPendingInput(managed, itemId);
+      }
       if (managed.runtime === runtime && runtime.hostDied) {
         teardownRuntime(managed, "restart");
       }
@@ -37898,10 +37911,14 @@ export function createAgentChatService(args: {
   const interruptMuseTurn = async (
     managed: ManagedChatSession,
     runtime: MuseRuntime,
-    options: { retract?: boolean } = {},
+    options: { retract?: boolean; keepBackgroundSubagentCards?: boolean } = {},
   ): Promise<void> => {
     runtime.interrupted = true;
-    cancelPendingInputsFrom(managed, "muse");
+    for (const [itemId, pending] of [...managed.localPendingInputs]) {
+      if (pending.request.source !== "muse") continue;
+      if (options.keepBackgroundSubagentCards && keepsBackgroundSubagentCard(managed, pending.request)) continue;
+      cancelLocalPendingInput(managed, itemId);
+    }
     if (!runtime.host.alive) return;
     await runtime.host.command("turn/interrupt", {
       sessionId: runtime.museSessionId,
@@ -65482,7 +65499,8 @@ export function createAgentChatService(args: {
       // `turn/completed` (cancelled) settles the turn; the turn body reads
       // `interrupted` for its verdict.
       if (rt.busy || rt.activeTurnId) {
-        await interruptMuseTurn(managed, rt, { retract: true });
+        // A Stop that spares background work spares a background subagent's card.
+        await interruptMuseTurn(managed, rt, { retract: true, keepBackgroundSubagentCards: !stopModeStopsBackground(mode) });
       } else {
         // No turn to stop: what is open is either stale or a subagent that
         // outlived its turn. A Stop that spares background work spares a live
