@@ -92,6 +92,7 @@ export function describeHostStorageWait(
   machineName: string | null | undefined,
 ): HostStorageWaitSummary {
   const machine = machineLabel(machineName);
+  const screen = machine === "This computer" ? "this computer's" : `${machine}'s`;
   const onMac = wait.platform === "darwin";
   if (wait.reason === "denied") {
     return {
@@ -104,7 +105,7 @@ export function describeHostStorageWait(
   if (onMac) {
     return {
       title: `${machine} is waiting for permission`,
-      detail: `macOS is asking on ${machine}'s screen whether ADE may use ${wait.path}. Click Allow there. If no prompt is showing, the drive is not responding.`,
+      detail: `macOS is asking on ${screen} screen whether ADE may use ${wait.path}. Click Allow there. If no prompt is showing, the drive is not responding.`,
     };
   }
   return {

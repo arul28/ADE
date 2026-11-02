@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { SyncHostStorageWait } from "../../../../desktop/src/shared/types/sync";
-import { setUnansweringSyncFsRoots } from "../runtime/syncFsCallTracker";
+import { isStallCapablePath, setUnansweringSyncFsRoots } from "../runtime/syncFsCallTracker";
 
 /**
  * Watches, off the main thread, whether each open project folder still answers.
@@ -26,8 +26,12 @@ import { setUnansweringSyncFsRoots } from "../runtime/syncFsCallTracker";
  * freezes anything, so it does not engage the guard.
  */
 
-/** How often each folder is listed. One async listing: microseconds of CPU. */
-export const PROJECT_ROOT_PROBE_INTERVAL_MS = 10_000;
+/**
+ * How often each folder that can stall is listed. One async listing costs
+ * microseconds; the sooner a prompt is seen, the less likely a timer's
+ * synchronous call walks into it first.
+ */
+export const PROJECT_ROOT_PROBE_INTERVAL_MS = 5_000;
 /** A healthy folder answers in milliseconds; a waiting one never does. */
 export const PROJECT_ROOT_PROBE_TIMEOUT_MS = 3_000;
 
@@ -142,15 +146,25 @@ function probe(state: RootState): void {
   answered.then(() => finish(null), (error: NodeJS.ErrnoException) => finish(error));
 }
 
-function probeAll(): void {
-  for (const state of roots.values()) probe(state);
+/**
+ * A folder on the internal disk outside the gated folders cannot wait on a
+ * person or a network; listing it would only add false alarms when the pool is
+ * busy. One already marked keeps being probed until it answers.
+ */
+function needsProbe(state: RootState): boolean {
+  return state.wait !== null || isStallCapablePath(state.root);
 }
 
 function ensureTimer(): void {
-  if (timer || roots.size === 0) return;
+  if (timer || ![...roots.values()].some(needsProbe)) return;
   timer = setInterval(() => {
-    probeAll();
-    if (roots.size === 0 && timer) {
+    let probed = false;
+    for (const state of roots.values()) {
+      if (!needsProbe(state)) continue;
+      probed = true;
+      probe(state);
+    }
+    if (!probed && timer) {
       clearInterval(timer);
       timer = null;
     }

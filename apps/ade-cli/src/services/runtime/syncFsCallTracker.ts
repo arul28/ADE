@@ -139,16 +139,17 @@ export function isStallCapablePath(
     || target.startsWith("/net/");
 }
 
-/** The error a call on an unanswering folder gets instead of waiting. */
+/**
+ * The error a call on an unanswering folder gets instead of waiting. Coded
+ * `storage_read_failed`, ADE's "unreadable, not corrupt" verdict, so callers
+ * and devices show the reason; deliberately no errno or syscall, which would
+ * read as an internal fault and be hidden behind a reference.
+ */
 export class SyncFsRootNotAnsweringError extends Error {
-  readonly code = "ETIMEDOUT";
-  readonly errno = -60;
-  readonly syscall: string;
+  readonly code = "storage_read_failed";
   readonly path: string;
-  constructor(method: string, target: string, root: string) {
-    super(`ETIMEDOUT: ${root} is not answering (macOS may be asking for permission on this computer's screen, or the drive is not responding), ${method} '${target}'`);
-    this.name = "Error";
-    this.syscall = method.replace(/Sync$/, "");
+  constructor(target: string, root: string) {
+    super(`ADE can't read ${root} on this computer right now: it is not answering. If macOS is asking on this computer's screen whether ADE may use this drive or folder, allow it; if the drive is not responding, reconnect it.`);
     this.path = target;
   }
 }
@@ -291,7 +292,7 @@ export function installSyncFsCallTracker(args: { warn: Warn }): void {
           ?? (twoPaths ? (() => { const second = pathOf(callArgs[1]); return second ? unansweringRootOf(second) : null; })() : null);
         if (root !== null) {
           if (method === "existsSync") return false;
-          throw new SyncFsRootNotAnsweringError(method, target, root);
+          throw new SyncFsRootNotAnsweringError(target, root);
         }
       }
       const caller = isStallCapablePath(target) ? captureCaller(wrapped) : null;
