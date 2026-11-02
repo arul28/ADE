@@ -1985,7 +1985,10 @@ func workPendingSubagent(detail: String?) -> WorkPendingSubagent? {
 /// Row keys of the in-thread subagents whose card is still open in this chat
 /// (agent id, else task id — `subagentAgentKey` on desktop). The queue is only
 /// derived when some card names a subagent, so a chat without one pays a scan.
-func workWaitingSubagentKeys(from transcript: [WorkChatEnvelope]) -> Set<String> {
+func workWaitingSubagentKeys(
+  from transcript: [WorkChatEnvelope],
+  hostPendingInputItemId: String? = nil
+) -> Set<String> {
   let namesSubagent = transcript.contains { envelope in
     if case .approvalRequest(_, let detail, _, _) = envelope.event {
       return detail?.contains("\"subagent\"") == true
@@ -1994,7 +1997,10 @@ func workWaitingSubagentKeys(from transcript: [WorkChatEnvelope]) -> Set<String>
   }
   guard namesSubagent else { return [] }
   let queue = deriveWorkPendingInputQueue(from: transcript)
-  return Set(queue.liveItems.compactMap { queue.subagentByItemId[$0.itemId]?.key })
+  // The host may still hold a card the transcript sweep closed (a background
+  // subagent's card after its parent's turn ended); `resolved` keeps it.
+  let open = queue.resolved(hostPendingInputItemId: hostPendingInputItemId)
+  return Set(open.compactMap { queue.subagentByItemId[$0.itemId]?.key })
 }
 
 struct WorkPendingInputQueue: Equatable {

@@ -128,6 +128,7 @@ import { piForkCutBeforePrompt } from "./piForkCut";
 import { repairSplicedEnvelopeFileSync } from "./chatEnvelopeSpliceRepair";
 import { readClaudeWorkflowAgentMessages } from "./claudeWorkflowTranscript";
 import { isQuestionShapedPendingInput, readPendingInputRecord } from "./pendingInputRecovery";
+import { sessionApprovalGrantKey } from "./sessionApprovalGrants";
 import {
   discoverClaudePluginPaths,
   discoverClaudePlugins,
@@ -7759,26 +7760,6 @@ function classifyProviderHostError(
       presentation: presented,
     },
   };
-}
-
-/**
- * The key "Allow for this session" is remembered by, from a card's own
- * provider metadata. Exact: the same command, the same file root, the same
- * OpenCode action on the same resources. Null for a card with nothing to key.
- */
-function sessionApprovalGrantKey(request: PendingInputRequest | null | undefined): string | null {
-  const meta = request?.providerMetadata;
-  if (!request || !meta) return null;
-  if (request.source === "codex") {
-    if (typeof meta.command === "string" && meta.command.trim()) return `codex:command:${meta.command}`;
-    if ("grantRoot" in meta) return `codex:file_change:${typeof meta.grantRoot === "string" ? meta.grantRoot : "*"}`;
-    return null;
-  }
-  if (request.source === "opencode" && typeof meta.type === "string") {
-    const resources = Array.isArray(meta.resources) ? meta.resources.filter((entry) => typeof entry === "string") : [];
-    return `opencode:${meta.type}:${resources.join("\n")}`;
-  }
-  return null;
 }
 
 function mapApprovalDecisionForCodex(decision: AgentChatApprovalDecision): "accept" | "acceptForSession" | "decline" | "cancel" {
@@ -28273,24 +28254,24 @@ export function createAgentChatService(args: {
 
   /**
    * Cancel OpenCode question cards (and ADE's own cards of the turn); the form
-   * on the server is cancelled too. A card `keep` names stays open with its
-   * form: a live background child is still waiting on it.
+   * on the server is cancelled too. `only` settles just those cards and their
+   * forms; the rest stay open (a live background child still waits on one).
    */
   const settleOpenCodePendingForms = (
     managed: ManagedChatSession,
     runtime: OpenCodeRuntime,
-    keep?: (request: PendingInputRequest) => boolean,
+    only?: (request: PendingInputRequest) => boolean,
   ): void => {
     const cancelledFormIds = new Set<string>();
     for (const [itemId, pending] of [...managed.localPendingInputs]) {
       if (pending.request.source !== "opencode" && pending.request.source !== "ade") continue;
-      if (keep?.(pending.request)) continue;
+      if (only && !only(pending.request)) continue;
       const formId = pending.request.providerMetadata?.formId;
       if (typeof formId === "string") cancelledFormIds.add(formId);
       cancelLocalPendingInput(managed, itemId);
     }
     for (const [formId, form] of runtime.pendingForms) {
-      if (keep && !cancelledFormIds.has(formId)) continue;
+      if (only && !cancelledFormIds.has(formId)) continue;
       runtime.pendingForms.delete(formId);
       void runtime.handle.client.session.form.cancel({ sessionID: form.sessionId, formID: formId }).catch(() => {});
     }
@@ -28314,7 +28295,7 @@ export function createAgentChatService(args: {
         settleCodexPendingInputs(managed, runtime, { only: (pending) => ended(pending.request) });
       } else if (runtime.kind === "opencode") {
         settleOpenCodePendingApprovals(managed, runtime, (pending) => ended(pending.request));
-        settleOpenCodePendingForms(managed, runtime, (request) => !ended(request));
+        settleOpenCodePendingForms(managed, runtime, ended);
       }
     });
   };
@@ -36819,18 +36800,31 @@ export function createAgentChatService(args: {
       };
       // A subagent's card answers only that subagent's request: dismissing it
       // declines it (Muse's own deny choice), and never stops the parent turn.
+      // With no deny choice on offer, only that subagent's task is stopped, so
+      // Muse is not left parked on an approval nobody can answer.
       const declineSubagentApproval = (): void => {
         const deny = museChoiceForAnswer(request.availableChoices, { decision: "decline" });
-        if (!deny) return;
-        void runtime.host.command("approval/decide", {
+        if (deny) {
+          void runtime.host.command("approval/decide", {
+            sessionId: runtime.museSessionId,
+            approvalId: request.approvalId,
+            requirementId: request.currentRequirementId,
+            choiceId: deny.choiceId,
+          }).catch(() => undefined);
+          return;
+        }
+        if (!origin?.subagentId) return interrupt();
+        void runtime.host.command("subagent/stop", {
           sessionId: runtime.museSessionId,
-          approvalId: request.approvalId,
-          requirementId: request.currentRequirementId,
-          choiceId: deny.choiceId,
-        }).catch(() => undefined);
+          subagentId: origin.subagentId,
+          reason: "Its approval was dismissed in ADE",
+        }).catch((error) => {
+          logger.warn("agent_chat.muse_subagent_stop_failed", { sessionId: managed.session.id, error: describeMuseError(error) });
+        });
       };
       // Dismissed without a decision, or no offered choice fits: stop the turn
-      // rather than leave Muse parked on an approval nobody can answer.
+      // (a subagent's card: just that subagent) rather than leave Muse parked
+      // on an approval nobody can answer.
       if (response.decision === "cancel") return origin ? declineSubagentApproval() : interrupt();
       const choice = museChoiceForAnswer(request.availableChoices, response);
       if (!choice) return origin ? declineSubagentApproval() : interrupt();
@@ -38360,9 +38354,9 @@ export function createAgentChatService(args: {
     // that is still running: OpenCode keeps a background child going past
     // the parent's turn, and its ask still waits. A child the turn takes down
     // settles, and its cards close with it.
-    const liveChildCard = (request: PendingInputRequest): boolean => subagentCardIsLive(managed, request);
-    settleOpenCodePendingApprovals(managed, runtime, (pending) => !liveChildCard(pending.request));
-    settleOpenCodePendingForms(managed, runtime, liveChildCard);
+    const settles = (request: PendingInputRequest): boolean => !subagentCardIsLive(managed, request);
+    settleOpenCodePendingApprovals(managed, runtime, (pending) => settles(pending.request));
+    settleOpenCodePendingForms(managed, runtime, settles);
     cancelOpenCodeInboxRows(managed, runtime, outcome.status === "interrupted" ? "interrupted" : "failed");
     if (outcome.status === "interrupted") {
       emitChatEvent(managed, { type: "status", turnStatus: "interrupted", turnId });
@@ -39531,6 +39525,12 @@ export function createAgentChatService(args: {
         providerMetadata: {
           grantRoot: params.grantRoot ?? null,
           reason: params.reason ?? null,
+          // The files this change touches (from its item, which Codex sends
+          // first), so "Accept all" can be remembered for exactly these files.
+          paths: (
+            runtime.fileChangesByItemId.get(itemId)
+            ?? runtime.codexSubagentThreads.get(stringOrNull(asRecord(payload.params)?.threadId) ?? "")?.fileChangesByItemId.get(itemId)
+          )?.map((change) => change.path) ?? [],
         },
         turnId: requestTurnId,
         ...subagentField,
@@ -65310,9 +65310,9 @@ export function createAgentChatService(args: {
       else if (runtime.activeTurn) runtime.preserveQueuedSteersOnInterrupt = true;
       // A Stop that spares background children spares their cards; the
       // modes that stop them settled them above, so their cards go here.
-      const liveChildCard = (request: PendingInputRequest): boolean => subagentCardIsLive(managed, request);
-      settleOpenCodePendingApprovals(managed, runtime, (pending) => !liveChildCard(pending.request));
-      settleOpenCodePendingForms(managed, runtime, liveChildCard);
+      const settles = (request: PendingInputRequest): boolean => !subagentCardIsLive(managed, request);
+      settleOpenCodePendingApprovals(managed, runtime, (pending) => settles(pending.request));
+      settleOpenCodePendingForms(managed, runtime, settles);
       try {
         await runtime.handle.client.session.interrupt({ sessionID: runtime.handle.sessionId });
         // An idle session emits no `execution.interrupted`: a turn whose
@@ -65466,8 +65466,19 @@ export function createAgentChatService(args: {
       const rt = managed.runtime;
       // `turn/completed` (cancelled) settles the turn; the turn body reads
       // `interrupted` for its verdict.
-      if (rt.busy || rt.activeTurnId) await interruptMuseTurn(managed, rt, { retract: true });
-      else cancelPendingInputsFrom(managed, "muse");
+      if (rt.busy || rt.activeTurnId) {
+        await interruptMuseTurn(managed, rt, { retract: true });
+      } else {
+        // No turn to stop: what is open is either stale or a subagent that
+        // outlived its turn. A Stop that spares background work spares a live
+        // subagent's card too.
+        const sparesBackground = !stopModeStopsBackground(mode);
+        for (const [itemId, pending] of [...managed.localPendingInputs]) {
+          if (pending.request.source !== "muse") continue;
+          if (sparesBackground && subagentCardIsLive(managed, pending.request)) continue;
+          cancelLocalPendingInput(managed, itemId);
+        }
+      }
       // A `/recap` still being written stops with the turn.
       if (rt.pendingRecapCommandId && rt.host.alive) {
         rt.pendingRecapCommandId = null;
@@ -69403,7 +69414,7 @@ export function createAgentChatService(args: {
     }
     const accepted = decision === "accept" || decision === "accept_for_session";
     // A subagent's question outlived the subagent (it died with ADE's
-    // restart). The answer is the subagent's, not the main agent's, so it is
+    // restart, or it ended). The answer is the subagent's, not the main agent's, so it is
     // not sent on: the card closes, and the notice offers to send it to the
     // main agent on the person's click (`subagent_answer_unsent`).
     if (accepted && isQuestionShapedPendingInput(request) && request?.subagent) {
@@ -69414,7 +69425,7 @@ export function createAgentChatService(args: {
         type: "system_notice",
         noticeKind: "info",
         status: SUBAGENT_ANSWER_UNSENT_NOTICE_STATUS,
-        message: `${request.subagent.name} stopped when ADE restarted, so your answer did not reach it.`,
+        message: `${request.subagent.name} stopped (ADE restarted, or the subagent ended), so your answer did not reach it.`,
         ...(messageText.trim().length
           ? { detail: `Answer for the subagent "${request.subagent.name}" (it stopped before it got this):\n\n${messageText}` }
           : {}),

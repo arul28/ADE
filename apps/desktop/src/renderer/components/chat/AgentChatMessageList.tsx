@@ -337,6 +337,7 @@ const SCENE_FENCE_OPENER = new RegExp(`(?:^|\n) {0,3}(?:\`{3,}|~{3,})${SCENE_FEN
 /** Stable empty array so a proof-free turn never re-renders the divider. */
 const EMPTY_PROOF_ARTIFACTS: ComputerUseArtifactView[] = [];
 const EMPTY_PROOF_IDS: ReadonlySet<string> = new Set();
+const EMPTY_STRING_SET = new Set<string>();
 
 /** The drawer narrowed to one turn's proof, for its "N proof filed" link. */
 function turnProofFocus(artifacts: readonly ComputerUseArtifactView[]): ProofDrawerFocus {
@@ -459,14 +460,18 @@ function ResetCreditNoticeRow({
 function SubagentAnswerUnsentNoticeRow({
   message,
   answerText,
+  alreadySent,
   sessionId,
 }: {
   message: string;
   answerText: string | null;
+  /** The transcript already holds this answer as a message to the main agent. */
+  alreadySent: boolean;
   sessionId: string | null | undefined;
 }) {
   const { pin } = useChatRuntimeScope();
-  const [state, setState] = useState<"idle" | "sending" | "sent" | "failed">("idle");
+  const [sendState, setState] = useState<"idle" | "sending" | "sent" | "failed">("idle");
+  const state = alreadySent ? "sent" : sendState;
   const send = useCallback(async () => {
     const call = window.ade?.agentChat?.send;
     if (!sessionId || !answerText || !isAdeAvailable(call)) return;
@@ -2949,6 +2954,8 @@ function renderEvent(
     onCancelQueuedMessage?: (uuid: string) => void;
     onRestoreCancelledQueue?: (recoveryId: string) => Promise<boolean>;
     settledQueueRecoveryIds?: Set<string>;
+    /** Unsent subagent answers (`subagent_answer_unsent` details) already sent to the main agent. */
+    sentSubagentAnswers?: Set<string>;
     /** Stop one running subagent / background task by provider task id. */
     onStopSubagent?: (taskId: string) => void;
     /**
@@ -3950,6 +3957,7 @@ function renderEvent(
         <SubagentAnswerUnsentNoticeRow
           message={event.message}
           answerText={typeof event.detail === "string" && event.detail.trim() ? event.detail : null}
+          alreadySent={typeof event.detail === "string" && (options?.sentSubagentAnswers?.has(event.detail) ?? false)}
           sessionId={options?.sessionId}
         />
       );
@@ -5324,6 +5332,7 @@ type EventRowProps = SpawnedChatProviderProps & {
   onCancelQueuedMessage?: (uuid: string) => void;
   onRestoreCancelledQueue?: (recoveryId: string) => Promise<boolean>;
   settledQueueRecoveryIds?: Set<string>;
+  sentSubagentAnswers?: Set<string>;
   /** Stop one running subagent / background task by provider task id. */
   onStopSubagent?: (taskId: string) => void;
   /** Proof captured during this turn — surfaced as a chip on the turn rule. */
@@ -5409,6 +5418,7 @@ const EventRow = React.memo(function EventRow({
   onCancelQueuedMessage,
   onRestoreCancelledQueue,
   settledQueueRecoveryIds,
+  sentSubagentAnswers,
   onStopSubagent,
   turnProof,
   turnScheduledWork,
@@ -5533,6 +5543,7 @@ const EventRow = React.memo(function EventRow({
             onCancelQueuedMessage,
             onRestoreCancelledQueue,
             settledQueueRecoveryIds,
+            sentSubagentAnswers,
             onStopSubagent,
             pacedTextReveal,
             liveThinking,
@@ -7361,6 +7372,24 @@ function AgentChatMessageListMain({
     return null;
   }, [groupedRows, sessionEnded, showStreamingIndicator, textPacingEnabled]);
 
+  // A subagent's answer the person already sent on to the main agent: its
+  // notice row no longer offers the send (it reads the transcript, so a reload
+  // or another device agrees).
+  const sentSubagentAnswers = useStableIdentity(useMemo(() => {
+    const offered = new Set<string>();
+    for (const { event } of events) {
+      if (event.type === "system_notice" && event.status === SUBAGENT_ANSWER_UNSENT_NOTICE_STATUS && typeof event.detail === "string") {
+        offered.add(event.detail);
+      }
+    }
+    if (!offered.size) return EMPTY_STRING_SET;
+    const sent = new Set<string>();
+    for (const { event } of events) {
+      if (event.type === "user_message" && offered.has(event.text)) sent.add(event.text);
+    }
+    return sent;
+  }, [events]), sameSetContents);
+
   const settledQueueRecoveryIds = useStableIdentity(useMemo(() => new Set(
     events.flatMap(({ event }) =>
       event.type === "queue_recovery" && event.state !== "available"
@@ -8988,6 +9017,7 @@ function AgentChatMessageListMain({
           onCancelQueuedMessage={onCancelQueuedMessage}
           onRestoreCancelledQueue={onRestoreCancelledQueue}
           settledQueueRecoveryIds={settledQueueRecoveryIds}
+          sentSubagentAnswers={sentSubagentAnswers}
           onStopSubagent={onStopSubagent}
           pacedTextReveal={envelope.key === pacedTextRowKey}
           liveThinking={envelope.key === liveThinkingDrawnKey}
@@ -9065,6 +9095,7 @@ function AgentChatMessageListMain({
         onCancelQueuedMessage={onCancelQueuedMessage}
         onRestoreCancelledQueue={onRestoreCancelledQueue}
         settledQueueRecoveryIds={settledQueueRecoveryIds}
+        sentSubagentAnswers={sentSubagentAnswers}
         onStopSubagent={onStopSubagent}
         pacedTextReveal={envelope.key === pacedTextRowKey}
         liveThinking={envelope.key === liveThinkingDrawnKey}
@@ -9074,7 +9105,7 @@ function AgentChatMessageListMain({
         turnWorkInFold={turnWorkInFold}
       />
     );
-  }, [activeTurnId, foldedTurnEndKeys, openTurnFolds, toggleTurnFold, anchoredRowKey, assistantLabel, assistantTurnCopyByTurnId, interimTextRowKeys, turnEndTextRowKeys, checkpointDiffTurnIds, surfaceMode, surfaceProfile, turnModelState, handleApproval, rowMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, resolvedInputAnswers, laneId, sessionId, sessionProvider, resolveSpawnedChatProvider, sessionTurnActive, sessionEnded, usageLimitResumeActive, usageLimitResumeTurnId, runtimeName, runtimePin, jiraIssueSnapshotsById, rowScrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, onCancelQueuedMessage, onRestoreCancelledQueue, onStopSubagent, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, scheduledWorkByTurnEndKey, wakeTurnFoldIdByTurnEndKey, wakeChainByAnchorKey, inlineProofByRowKey, onOpenProofDrawer, turnSourcesByTurnId, onOpenTurnSources, onForkFromTurn, pacedTextRowKey, liveThinkingDrawnKey, compactOnlyTurnIds]);
+  }, [activeTurnId, foldedTurnEndKeys, openTurnFolds, toggleTurnFold, anchoredRowKey, assistantLabel, assistantTurnCopyByTurnId, interimTextRowKeys, turnEndTextRowKeys, checkpointDiffTurnIds, surfaceMode, surfaceProfile, turnModelState, handleApproval, rowMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, resolvedInputAnswers, laneId, sessionId, sessionProvider, resolveSpawnedChatProvider, sessionTurnActive, sessionEnded, usageLimitResumeActive, usageLimitResumeTurnId, runtimeName, runtimePin, jiraIssueSnapshotsById, rowScrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, sentSubagentAnswers, onCancelQueuedMessage, onRestoreCancelledQueue, onStopSubagent, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, scheduledWorkByTurnEndKey, wakeTurnFoldIdByTurnEndKey, wakeChainByAnchorKey, inlineProofByRowKey, onOpenProofDrawer, turnSourcesByTurnId, onOpenTurnSources, onForkFromTurn, pacedTextRowKey, liveThinkingDrawnKey, compactOnlyTurnIds]);
 
   // Compute the bottom spacer height for virtualized mode.
   const bottomSpacerHeight = useMemo(() => {

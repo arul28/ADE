@@ -3026,7 +3026,10 @@ struct WorkSessionDestinationView: View {
       // list stops rebuilding while a chat covers it on a phone.
       summary: { id in syncService.chatSummaryCache[id] ?? roster.summaries[id] }
     )
-    .map(markingWaitingSubagents(workWaitingSubagentKeys(from: transcript)))
+    .map(markingWaitingSubagents(workWaitingSubagentKeys(
+      from: transcript,
+      hostPendingInputItemId: (chatSummary ?? lastKnownChatSummary)?.pendingInputItemId
+    )))
     if next != subagentSnapshots {
       subagentSnapshots = next
       subagentSnapshotsRenderSignature = workSubagentSnapshotsRenderSignature(next)

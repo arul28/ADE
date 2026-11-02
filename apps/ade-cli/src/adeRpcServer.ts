@@ -3313,6 +3313,17 @@ function isPtySessionAuthorized(runtime: AdeRuntime, session: SessionState, targ
   ) {
     return true;
   }
+  // A CLI session the caller launched (it may run in another lane) is the
+  // caller's to list, read and stop, like its own.
+  if (
+    callerChatSessionId
+    && (
+      asOptionalTrimmedString(target.orchestrationParentSessionId) === callerChatSessionId
+      || asOptionalTrimmedString(target.launchedBySessionId) === callerChatSessionId
+    )
+  ) {
+    return true;
+  }
   // A shell a chat on another machine started in its work copy here runs in
   // the primary lane but belongs to that chat alone, not to the lane.
   if (parseForeignCallerSessionId(targetChatSessionId)) return false;
@@ -6840,6 +6851,14 @@ async function runTool(args: {
       }
       if (orchestrationParentSessionId && orchestrationParentSessionId !== callerChatSessionId) {
         ptyAccessDenied("start_cli_session", session);
+      }
+      // A plain shell is raw terminal access, which stays in the caller's
+      // own lane; only an agent CLI (capped below) may go to another lane.
+      if (provider === "shell") {
+        ensurePtyCreateAuthorized(runtime, session, "start_cli_session", {
+          laneId,
+          ...(requestedChatSessionId ? { chatSessionId: requestedChatSessionId } : {}),
+        });
       }
       if (!resolveLaneWorktreePath(runtime, laneId)) {
         throw new JsonRpcError(
