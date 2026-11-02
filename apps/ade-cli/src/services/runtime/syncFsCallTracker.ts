@@ -2,6 +2,10 @@ import fs from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
+import {
+  StorageNotAnsweringError,
+  unansweringRootOf,
+} from "../../../../desktop/src/main/services/state/unansweringRoots";
 
 /**
  * Names the synchronous file call the brain's main thread is stuck in.
@@ -21,10 +25,12 @@ import { fileURLToPath } from "node:url";
  *   macOS gates per program) also record the calling function. Taking a stack
  *   costs about a microsecond, so a per-second budget bounds it.
  * - A path under a folder that has stopped answering fails at once instead of
- *   joining the wait (see {@link setUnansweringSyncFsRoots}). Callers already
+ *   joining the wait (see `unansweringRoots`). Callers already
  *   handle a refused read; none of them handles a frozen brain. `existsSync`
- *   throws too rather than answer "missing": code that cleans up after a file
- *   it believes is gone must not act on a folder that is only waiting.
+ *   answers "exists" there rather than throw or answer "missing": the folder
+ *   is there, code that cleans up after a file it believes is gone must not
+ *   act on one that is only waiting, and a loop over many projects must not
+ *   break on one of them. Anything that then reads it fails fast.
  * - A call that took a second or more is logged with its caller once it ends.
  */
 
@@ -147,62 +153,11 @@ export function isStallCapablePath(
     || target.startsWith("/net/");
 }
 
-/**
- * Whether an error is the guard's fast failure, which the brain contains
- * instead of exiting: it stands in for a wait, not a fault.
- */
-export function isSyncFsRootNotAnsweringError(error: unknown): boolean {
-  return error instanceof SyncFsRootNotAnsweringError;
-}
-
-/**
- * The error a call on an unanswering folder gets instead of waiting. Coded
- * `storage_read_failed`, ADE's "unreadable, not corrupt" verdict, so callers
- * and devices show the reason; deliberately no errno or syscall, which would
- * read as an internal fault and be hidden behind a reference.
- */
-export class SyncFsRootNotAnsweringError extends Error {
-  readonly code = "storage_read_failed";
-  readonly path: string;
-  constructor(target: string, root: string) {
-    super(`ADE can't read ${root} on this computer right now: it is not answering. If macOS is asking on this computer's screen whether ADE may use this drive or folder, allow it; if the drive is not responding, reconnect it.`);
-    this.path = target;
-  }
-}
-
 let buffer: SharedArrayBuffer | null = null;
-let unansweringRoots: string[] = [];
-
-/** macOS and Windows match paths without case, and Windows either separator. */
-function comparablePath(value: string): string {
-  if (process.platform === "win32") return value.replace(/\\/g, "/").toLowerCase();
-  return process.platform === "darwin" ? value.toLowerCase() : value;
-}
 
 /** The shared buffer the watchdog worker reads, or null before install. */
 export function syncFsCallBuffer(): SharedArrayBuffer | null {
   return buffer;
-}
-
-/**
- * Folders whose synchronous calls fail at once instead of waiting. Set by the
- * project-root monitor, which asks off the main thread; empty clears it.
- */
-export function setUnansweringSyncFsRoots(roots: readonly string[]): void {
-  unansweringRoots = roots.map((root) => root.replace(/[\\/]+$/, ""));
-}
-
-function unansweringRootOf(target: string): string | null {
-  const candidate = comparablePath(target);
-  for (const root of unansweringRoots) {
-    const comparableRoot = comparablePath(root);
-    if (candidate === comparableRoot) return root;
-    if (candidate.startsWith(comparableRoot)) {
-      const next = candidate.charAt(comparableRoot.length);
-      if (next === "/" || next === "\\") return root;
-    }
-  }
-  return null;
 }
 
 function pathOf(value: unknown): string | null {
@@ -310,10 +265,11 @@ export function installSyncFsCallTracker(args: { warn: Warn }): void {
       if (depth > 0) return call.apply(this, callArgs);
       const target = pathOf(callArgs[0]);
       if (target === null) return call.apply(this, callArgs);
-      if (unansweringRoots.length > 0) {
-        const second = twoPaths ? pathOf(callArgs[1]) : null;
-        const root = unansweringRootOf(target) ?? (second ? unansweringRootOf(second) : null);
-        if (root !== null) throw new SyncFsRootNotAnsweringError(target, root);
+      const second = twoPaths ? pathOf(callArgs[1]) : null;
+      const root = unansweringRootOf(target) ?? (second ? unansweringRootOf(second) : null);
+      if (root !== null) {
+        if (method === "existsSync") return true;
+        throw new StorageNotAnsweringError(target, root);
       }
       const caller = isStallCapablePath(target) ? captureCaller(wrapped) : null;
       Atomics.add(ints, SEQUENCE_INT32, 1);

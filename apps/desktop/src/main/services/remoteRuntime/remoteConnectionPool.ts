@@ -1534,11 +1534,15 @@ export class RemoteConnectionPool {
     entry.client.onDisconnect((error) => evict(entry.transport === "paired", true, error));
     if (entry.transport === "paired") {
       // The host pushes its health when it changes; an older host never does.
-      let lastWaitKey: string | null = null;
+      // Seeded from the handshake, which already showed any wait, so the push
+      // that clears it is not taken for "no change".
+      const waitKey = (wait: RemoteRuntimeHostStorageWait | null | undefined): string | null =>
+        wait ? `${wait.reason}:${wait.path}` : null;
+      let lastWaitKey = waitKey(entry.result.hostStorageWait);
       entry.pairedTransport.connection.onEnvelope((envelope) => {
         if (cleanedUp || envelope.type !== "host_health") return;
         const wait = hostStorageWaitFromHealth(envelope.payload as SyncHostHealth | null, Date.now());
-        const key = wait ? `${wait.reason}:${wait.path}` : null;
+        const key = waitKey(wait);
         if (key === lastWaitKey) return;
         lastWaitKey = key;
         for (const listener of [...this.hostStorageWaitListeners]) {

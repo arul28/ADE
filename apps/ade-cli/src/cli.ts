@@ -610,11 +610,8 @@ import {
   startBrainLoopWatchdog,
 } from "./services/runtime/brainLoopWatchdog";
 import { recordHostStall } from "./services/runtime/hostStallRecord";
-import {
-  installSyncFsCallTracker,
-  isStallCapablePath,
-  isSyncFsRootNotAnsweringError,
-} from "./services/runtime/syncFsCallTracker";
+import { installSyncFsCallTracker, isStallCapablePath } from "./services/runtime/syncFsCallTracker";
+import { StorageNotAnsweringError } from "../../desktop/src/main/services/state/unansweringRoots";
 import type { BrainMemoryRestartGuard } from "./services/runtime/brainMemoryRestart";
 import {
   BRAIN_HEARTBEAT_STALE_MS,
@@ -23736,7 +23733,7 @@ function installRuntimeProcessErrorBoundary(label: string): () => void {
     // restarted brain would walk back into the wait, and the loop is what the
     // fast failure exists to stop. The throw happened before the call did
     // anything, so carrying on is as safe as a caught error.
-    if (isSyncFsRootNotAnsweringError(error)) {
+    if (error instanceof StorageNotAnsweringError) {
       write("storage wait", error);
       return;
     }

@@ -3,6 +3,7 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
 import { resolveAdeLayout } from "../../../../desktop/src/shared/adeLayout";
+import { unansweringRootOf } from "../../../../desktop/src/main/services/state/unansweringRoots";
 import { resolveGitMetadataDirectory } from "../../../../desktop/src/main/services/projects/worktreeParent";
 
 // Same cheap cross-project read the roster uses: open each project's
@@ -138,6 +139,10 @@ export function headlessProjectLaneCount(projectRoot: string): number {
   const now = Date.now();
   const cached = laneCountMemo.get(projectRoot);
   if (cached && now - cached.at < LANE_COUNT_TTL_MS) return cached.value;
+  // The count opens the project database natively, which no `fs` guard sees:
+  // under a folder waiting on a permission prompt that open would freeze the
+  // brain. Keep the last count until the folder answers.
+  if (unansweringRootOf(projectRoot) !== null) return cached?.value ?? 0;
   const value = computeHeadlessProjectLaneCount(projectRoot);
   laneCountMemo.set(projectRoot, { value, at: now });
   // No timer to keep the process alive: sweep expired entries opportunistically
