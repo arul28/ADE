@@ -751,6 +751,11 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
         sweepPrivateDriverCopies();
         launchPath = privateDriverCopy(binary, privateCopySlot, deps.logger);
       }
+      // The helper passes its environment to every app it opens on a lane's
+      // screen. The brain runs as Node through ELECTRON_RUN_AS_NODE, and an
+      // Electron app that inherits it starts as Node and exits at once.
+      const inheritedEnv = { ...process.env };
+      delete inheritedEnv.ELECTRON_RUN_AS_NODE;
       let spawned: ChildProcessWithoutNullStreams;
       try {
         spawned = spawnProcess(launchPath, [...driverArgs], {
@@ -758,7 +763,7 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
           // screen, and many Linux machines have no en_US locale (Arch until
           // one is generated, minimal servers, containers): forcing it there
           // made each app warn and fall back. They keep the machine's locale.
-          env: { ...process.env, ...deps.env, ...(platform === "linux" ? {} : { LC_ALL: "en_US.UTF-8" }) },
+          env: { ...inheritedEnv, ...deps.env, ...(platform === "linux" ? {} : { LC_ALL: "en_US.UTF-8" }) },
           stdio: ["pipe", "pipe", "pipe"],
           windowsHide: true,
         }) as ChildProcessWithoutNullStreams;

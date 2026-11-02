@@ -13,7 +13,8 @@ final class AccessibilityDriverTests: XCTestCase {
         role: String = kAXButtonRole,
         title: String? = nil,
         label: String? = nil,
-        value: String? = nil
+        value: String? = nil,
+        actions: [String] = []
     ) -> ObservedElement {
         ObservedElement(
             index: 1,
@@ -27,12 +28,30 @@ final class AccessibilityDriverTests: XCTestCase {
             help: nil,
             enabled: true,
             focused: false,
-            actions: [],
+            actions: actions,
             frame: .zero,
             windowId: nil,
             pid: 0,
             parentIndex: nil
         )
+    }
+
+    func testTextTargetPrefersAnExactNameOverAnEarlierPartialOne() {
+        // Walk order as a save sheet observes: the window, then its buttons.
+        let window = observedElement(role: kAXWindowRole, title: "Save Probe")
+        let ellipsis = observedElement(title: "Save…")
+        let save = observedElement(title: "Save")
+        let records = [window, ellipsis, save]
+        XCTAssertEqual(ObservedElement.bestTextMatch(in: records, text: "save"), 2)
+        XCTAssertEqual(ObservedElement.bestTextMatch(in: records, text: " Save "), 2)
+        // No exact name: the first partial match.
+        XCTAssertEqual(ObservedElement.bestTextMatch(in: records, text: "Probe"), 0)
+        XCTAssertNil(ObservedElement.bestTextMatch(in: records, text: "Replace"))
+        // Within a rank, an element that can be pressed wins.
+        let label = observedElement(role: kAXStaticTextRole, value: "Save changes")
+        let button = observedElement(title: "Save changes now", actions: ["AXPress"])
+        XCTAssertEqual(ObservedElement.bestTextMatch(in: [label, button], text: "save changes"), 0)
+        XCTAssertEqual(ObservedElement.bestTextMatch(in: [label, button], text: "changes"), 1)
     }
 
     func testMenuTypeRolesKeepAXShowMenu() {
