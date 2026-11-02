@@ -1570,9 +1570,13 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
         handled = true;
       }
       if (ids.length > 0) {
-        // A selection from the Work tab can span machines; show them all.
+        // A selection from the Work tab can span machines; show them all,
+        // and drop a text filter that would hide any of them.
         if (effectiveMachineFilter !== "all" && ids.some((id) => machineIdForKey(id) !== effectiveMachineFilter)) {
           setMachineFilter("all");
+        }
+        if (laneFilter.trim() && ids.some((id) => !laneMatchesFilter(lanesById.get(id)!, laneFilter))) {
+          setLaneFilter("");
         }
         selectDetailLane(ids[0]!);
         setMultiSelectedLaneIds(ids.length > 1 ? new Set(ids) : EMPTY_LANE_ID_SET);

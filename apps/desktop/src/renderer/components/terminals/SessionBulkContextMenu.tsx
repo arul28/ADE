@@ -154,6 +154,10 @@ export function SessionBulkContextMenu({
       }
     }
     const manageableLaneIds = laneIds.filter((id) => laneByKey.get(id)?.laneType !== "primary");
+    // Primary still opens in Lanes, but Manage/Archive/Delete leave it out.
+    for (const id of laneIds) {
+      if (!manageableLaneIds.includes(id)) skipped.set(id, "primary lane");
+    }
     const manageHint = manageableLaneIds.length < laneIds.length
       ? `${manageableLaneIds.length} of ${laneIds.length}`
       : undefined;
