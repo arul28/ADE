@@ -180,6 +180,20 @@ them is the existing `ade_feature_used` `auto_sent` outcome when a sustained
 storage fault triggers an automatic diagnostic send through the unchanged
 consent, deduplication, and budget path.
 
+A project folder that stops answering while the brain runs (a macOS
+permission prompt waiting on the screen, or a hung drive) writes local lines
+only: `project_root.not_answering` and `project_root.permission_wait_started`
+(warn: root, source, platform), `project_root.permission_wait_ended` and
+`project_root.recovered` (info: root, how long it waited, outcome),
+`project_root.access_denied` (warn) when the listing was refused. The sync-fs
+tracker writes `brain.sync_fs_call_slow` (warn: method, path, caller, duration,
+at most once per call site every 10 minutes), the watchdog worker writes
+`brain.sync_fs_call_blocked` to stderr after 5 s blocked, and the wedge record
+carries the same as `blockedFsCall`. None is a PostHog event: a prompt is the
+operating system's, not a person's decision in ADE, and a restart it causes is
+already counted by `ade_brain_recovered`. They carry folder paths, which stay
+in local logs.
+
 The brain's local RPC transport writes one raw stderr line when it drops a
 client that has stopped reading — `ade jsonrpc client dropped: <n> bytes
 unread` — before closing the socket, so the client reconnects from its event

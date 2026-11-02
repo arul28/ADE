@@ -108,8 +108,11 @@ function notify(): void {
   for (const listener of [...listeners]) {
     try {
       listener();
-    } catch {
+    } catch (error) {
       // A listener's failure must not stop the others hearing.
+      logger?.warn("project_root.listener_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 }

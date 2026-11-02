@@ -75,6 +75,7 @@ extension and releases its handles immediately, including on Windows.
 | `apps/ade-cli/src/services/runtime/startupTeardown.ts` | `createTeardownStack()` — the LIFO release stack a half-built runtime unwinds. Each acquisition in `createAdeRuntime` registers its own release at the point it acquires, `drain()` pops in reverse order, and a release that throws is caught so it neither stops the drain nor replaces the original startup failure. `runtime.dispose` is now the same `drain()`, which is what stops the failure path and the shutdown path from drifting apart the way two hand-maintained lists always did. |
 | `apps/ade-cli/src/services/runtime/brainMemoryRestart.ts` | `createBrainMemoryRestartGuard` — the planned restart of an idle brain that is holding too much resident memory. See [Brain resilience](#brain-resilience-watchdog-freshness-memory-and-recovery-notice). |
 | `apps/ade-cli/src/services/runtime/runtimeLogMaintenance.ts` | Bounds launchd stdout/stderr with tail-copy plus in-place truncation. |
+| `apps/ade-cli/src/services/runtime/syncFsCallTracker.ts`, `apps/ade-cli/src/services/projects/projectRootAccessMonitor.ts`, `apps/desktop/src/main/services/state/unansweringRoots.ts` | A folder waiting on a permission prompt or a hung drive: the tracker names the synchronous file call the main thread is stuck in (shared memory the watchdog worker reads) and fails calls under a folder that is not answering; the monitor finds such folders off the main thread, one probe per drive, and tells devices. See [A folder waiting on a permission prompt](#a-folder-waiting-on-a-permission-prompt). |
 | `apps/ade-cli/src/services/runtime/brainLoopWatchdog.ts`, `brainLoopWatchdogWorker.ts` | Worker-thread **event-loop watchdog** for the machine brain (the worker's source and its stall evaluation live in `brainLoopWatchdogWorker.ts`). On macOS the worker also takes a 2 s native `sample` of a wedged brain before the kill (12 s cap), so the report names the blocking call. Heartbeats every second with the current command name plus event-loop, memory, and resource diagnostics; a recovered delay over 2 s logs a near-miss, or a suspend gap when the worker thread was paused too. A stall past `ADE_LOOP_WATCHDOG_MS` (30 s default) that is not a sleep/suspend writes an `event-loop-wedge.json` breadcrumb, requests a best-effort Node report, and `SIGKILL`s the brain. On next boot it promotes the evidence to `last-wedge.json` / `last-wedge-report.json`, logs `brain.recovered_from_wedge`, and emits a deduped recovery event. Disable with `ADE_DISABLE_LOOP_WATCHDOG=1`. It is also the brain's memory sampler: `brain.memory_sample` every 5 min, `trackBrainMemoryPressure` to decide when RSS has stayed high long enough to act, and `resolveBrainRssRestartBytes` to read the `ADE_BRAIN_RSS_RESTART_BYTES` override. `classifyBrainLoopLag` separates a stall from a suspension, and `currentBrainLoopWatchdogCommand()` is the idleness signal the memory guard shares with it so a restart decision and a wedge breadcrumb can never disagree about what the brain was doing. |
 | `apps/ade-cli/src/services/runtime/brainFreshnessMonitor.ts` | The running brain stats its own CLI entrypoint every 5 min (`ADE_BRAIN_FRESHNESS_INTERVAL_MS`), hashes only after the stat changes, and — when the on-disk hash no longer matches the baked runtime hash — waits for the brain to go idle (bounded) before triggering the brain-update service restart so an in-place upgrade takes effect without interrupting active work. Disable with `ADE_DISABLE_BRAIN_FRESHNESS=1`. |
 | `apps/ade-cli/src/services/runtime/runtimeBuildIdentity.ts` | `computeRuntimeBuildHash` / `computeRuntimeBuildHashAsync` — the SHA-256 of the CLI entrypoint used as the brain build identity by the freshness monitor and the desktop compatibility handshake. |
@@ -546,6 +547,46 @@ surfaced on `LocalRuntimeStatus.lastWedge`), and the desktop app shell shows it
 once per distinct `ts` in `BrainRecoveryNotice` ("ADE recovered from a
 background issue … a stuck task was restarted"). `ade doctor` reports the same
 `last-wedge.json` as its Wedge-history row.
+
+#### A folder waiting on a permission prompt
+
+macOS gates folders on an external drive, and Desktop, Documents and
+Downloads, per program. A program without the grant waits inside `open()` until
+someone answers the prompt on that Mac's screen, and a hung network drive does
+the same on every platform. Three pieces keep that from freezing a running
+brain:
+
+- **The sync-fs tracker** (`syncFsCallTracker.ts`) wraps the synchronous `fs`
+  calls that take a path, once, at brain start. Each call writes its path and
+  method into memory shared with the watchdog worker (about 50 ns); on a path
+  that can stall (`isStallCapablePath`: `/Volumes`, the gated home folders,
+  UNC and non-system drives, `/mnt` and `/media`) it also records the calling
+  functions, under a per-second budget. After 5 s blocked the worker writes
+  `brain.sync_fs_call_blocked` (method, path, caller) to stderr, and a wedge
+  breadcrumb carries the same as `blockedFsCall`. A call that took 1 s or more
+  logs `brain.sync_fs_call_slow` once it returns.
+- **The project-root monitor** (`projectRootAccessMonitor.ts`) lists one
+  project folder per such drive every 5 s with an async call, which waits on a
+  libuv pool thread, never the event loop; one probe per drive, so a hung
+  probe holds one pool thread. A listing that takes over 3 s marks every
+  project folder on the drive as not answering
+  (`main/services/state/unansweringRoots.ts`). Synchronous `fs` calls under a
+  marked folder then fail at once with `storage_read_failed` (`existsSync`
+  answers "exists", so cleanup code never acts on a folder that is only
+  waiting), and so do the native SQLite openers (`openReadOnlyDatabase`, the
+  catalog's lane count). The brain contains that error if an unguarded timer
+  throws it, instead of exiting. A refused listing is `denied` and engages no
+  guard. The listing finishing clears it all.
+- **After a wedge** in such a call, the restarted brain reads `blockedFsCall`,
+  marks that drive's folders before anything opens them, and probes the exact
+  file first, then the folder, so it cannot walk into the same wait.
+  `assertProjectRootReadable` timing out marks the folder the same way.
+
+While a folder waits, every connected device is told where to look (see
+[Remote runtime](../remote-runtime/README.md), "A frozen host says so"). The
+monitor logs `project_root.not_answering`,
+`project_root.permission_wait_started`, `project_root.permission_wait_ended`,
+`project_root.access_denied` and `project_root.recovered`.
 
 Separately, the **freshness monitor** (`brainFreshnessMonitor.ts`) keeps a
 long-lived login-service brain from drifting behind an in-place binary upgrade:
