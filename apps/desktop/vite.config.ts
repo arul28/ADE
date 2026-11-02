@@ -36,7 +36,49 @@ function skipBrowserMockSnapshotForAppWindow(): Plugin {
   };
 }
 
-export default defineConfig({
+/** The app's named chunk groups; undefined leaves a module to automatic chunking. */
+function vendorChunk(id: string): string | undefined {
+  const normalized = id.replace(/\\/g, "/");
+  // Vite's preload helper is imported by every chunk with a lazy import.
+  // Left to the default placement it lands inside a vendor group (it
+  // landed in vendor-monaco), and then the entry statically imports
+  // that whole group just to reach the helper.
+  if (normalized.includes("vite/preload-helper")) return "preload-helper";
+  if (!normalized.includes("/node_modules/")) return undefined;
+  if (normalized.includes("/node_modules/monaco-editor/")) return "vendor-monaco";
+  // The lane graph's library (@xyflow) has no group: grouped with motion,
+  // which the shell needs at startup, it was part of every launch, and a
+  // group of its own took React's JSX runtime along and every icon with it.
+  if (
+    normalized.includes("/node_modules/framer-motion/")
+    || normalized.includes("/node_modules/motion/")
+  ) {
+    return "vendor-motion";
+  }
+  if (
+    normalized.includes("/node_modules/@xterm/")
+    || normalized.includes("/node_modules/xterm/")
+  ) {
+    return "vendor-terminal";
+  }
+  if (
+    normalized.includes("/node_modules/react-markdown/")
+    || normalized.includes("/node_modules/remark-gfm/")
+  ) {
+    return "vendor-markdown";
+  }
+  return undefined;
+}
+
+/**
+ * `build:demo` builds this renderer as the website's live demo (apps/web/public/demo).
+ * Every file the demo loads is one edge request on the website's host, and
+ * automatic chunking puts each small module shared by lazy chunks (one per
+ * icon) in its own file: hundreds of requests per page view. The demo build
+ * keeps the app's groups and merges those small shared modules into one chunk.
+ * The Electron build is unchanged.
+ */
+export default defineConfig(({ mode }) => ({
   root: "src/renderer",
   base: "./",
   plugins: [react(), skipBrowserMockSnapshotForAppWindow(), sceneThreePlugin()],
@@ -74,40 +116,18 @@ export default defineConfig({
     // uploaded, then deleted before electron-builder packs (release-core.yml).
     sourcemap: process.env.ADE_BUILD_SOURCEMAPS === "1" ? "hidden" : false,
     rollupOptions: {
-      output: {
-        manualChunks(id) {
-          const normalized = id.replace(/\\/g, "/");
-          // Vite's preload helper is imported by every chunk with a lazy import.
-          // Left to the default placement it lands inside a vendor group (it
-          // landed in vendor-monaco), and then the entry statically imports
-          // that whole group just to reach the helper.
-          if (normalized.includes("vite/preload-helper")) return "preload-helper";
-          if (!normalized.includes("/node_modules/")) return undefined;
-          if (normalized.includes("/node_modules/monaco-editor/")) return "vendor-monaco";
-          // The lane graph's library (@xyflow) has no group: grouped with motion,
-          // which the shell needs at startup, it was part of every launch, and a
-          // group of its own took React's JSX runtime along and every icon with it.
-          if (
-            normalized.includes("/node_modules/framer-motion/")
-            || normalized.includes("/node_modules/motion/")
-          ) {
-            return "vendor-motion";
+      output: mode === "demo"
+        ? {
+            codeSplitting: {
+              groups: [
+                { name: (id: string) => vendorChunk(id) ?? null, priority: 2 },
+                { name: "demo-shared", minShareCount: 2, maxModuleSize: 24 * 1024, priority: 1 },
+              ],
+            },
           }
-          if (
-            normalized.includes("/node_modules/@xterm/")
-            || normalized.includes("/node_modules/xterm/")
-          ) {
-            return "vendor-terminal";
-          }
-          if (
-            normalized.includes("/node_modules/react-markdown/")
-            || normalized.includes("/node_modules/remark-gfm/")
-          ) {
-            return "vendor-markdown";
-          }
-          return undefined;
-        }
-      }
-    }
-  }
-});
+        : {
+            manualChunks: vendorChunk,
+          },
+    },
+  },
+}));

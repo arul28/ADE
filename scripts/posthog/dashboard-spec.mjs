@@ -813,6 +813,20 @@ export const dashboardSpec = Object.freeze({
           }),
         ),
         insight(
+          "signup-real-use-funnel",
+          "Real users: sign-up to repeat use",
+          "People who signed up → used an ADE app (any interactive event, never the marketing site) → started a work session → started another one, within 30 days. Every step after the first needs a person at the keyboard, so bots and throwaway accounts stop at step 1.",
+          funnel({
+            series: [
+              eventNode(EVENTS.SIGNED_UP, "Signed up"),
+              eventNode(null, "Used an ADE app", { properties: RETURNING_APP_USE.properties }),
+              eventNode(EVENTS.WORK_SESSION_STARTED, "Started a work session"),
+              eventNode(EVENTS.WORK_SESSION_STARTED, "Came back for another session"),
+            ],
+            windowInterval: 30,
+          }),
+        ),
+        insight(
           "desktop-sign-in-funnel",
           "Desktop sign-in funnel",
           "ADE account sign-ins started on desktop or the CLI → completed, within one day (`ade_feature_used`, feature `account_sign_in`).",
