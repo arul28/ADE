@@ -180,6 +180,42 @@ export function foreignLaneKey(machineId: string, laneId: string): string {
   return `${machineId}:${laneId}`;
 }
 
+/**
+ * A session's lane on another machine: its Lanes-tab row key, the lane, and
+ * why it can't be acted on right now (null when it can).
+ */
+export type ForeignSessionLane = { key: string; lane: LaneSummary; blockedReason: string | null };
+
+/**
+ * Each other machine's sessions → their lanes, from the live union the Lanes
+ * tab lists (not the Work sidebar's retained slices), so every key here is one
+ * the Lanes tab can resolve. The tab's own machine is skipped, as
+ * `buildAllMachineLanes` does. Keyed machine first: two machines can report
+ * the same session id.
+ */
+export function buildForeignSessionLanes(
+  machines: Record<string, CrossMachineMachineLanes>,
+  activeMachineId: string,
+): Map<string, Map<string, ForeignSessionLane>> {
+  const byMachineId = new Map<string, Map<string, ForeignSessionLane>>();
+  for (const entry of Object.values(machines)) {
+    if (entry.machineId === activeMachineId) continue;
+    const blockedReason = machineBlockedReason({
+      machineName: entry.machineName?.trim() || entry.machineId,
+      online: entry.online,
+      routable: entry.binding != null,
+    });
+    const lanesById = new Map(entry.lanes.map((lane) => [lane.id, lane] as const));
+    const bySessionId = new Map<string, ForeignSessionLane>();
+    for (const session of entry.sessions) {
+      const lane = lanesById.get(session.laneId);
+      if (lane) bySessionId.set(session.id, { key: foreignLaneKey(entry.machineId, lane.id), lane, blockedReason });
+    }
+    byMachineId.set(entry.machineId, bySessionId);
+  }
+  return byMachineId;
+}
+
 /** The machines a call can be sent to (the tab's own, and every addressable other). */
 export function routableMachines(machines: readonly LaneMachine[]): LaneMachine[] {
   return machines.filter((machine) => machine.routable);

@@ -116,7 +116,7 @@ import {
 } from "./workSidebarSplitter";
 import { useWorkLaneDeleteProgress } from "./useWorkLaneDeleteProgress";
 import { effectiveRuntimeBinding } from "../../lib/chatMachineRouting";
-import { foreignLaneKey } from "../../state/laneMachineRouting";
+import { buildForeignSessionLanes, foreignLaneKey } from "../../state/laneMachineRouting";
 import { buildPtyContinuationLaunchFields } from "./cliLaunch";
 import {
   cancelCrossMachineOptimisticChatSession,
@@ -1480,8 +1480,30 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   const gridableSessionIds = useMemo(() => new Set(work.sessionsById.keys()), [work.sessionsById]);
   const localSessionIds = useMemo(() => new Set(work.sessions.map((session) => session.id)), [work.sessions]);
 
+  // A selected row on another machine, as the Lanes tab will see it. The row's
+  // own machine (its runtime pin) answers first; a row without a pin takes the
+  // first machine that reports the session.
+  const liveCrossMachineLanes = useRootAppStore((s) => s.crossMachineLanesByMachineId);
+  const foreignSessionLanes = useMemo(
+    () => buildForeignSessionLanes(liveCrossMachineLanes ?? {}, machineIdForBinding(projectBinding)),
+    [liveCrossMachineLanes, projectBinding],
+  );
+  const foreignLaneForSession = useCallback((session: TerminalSessionSummary) => {
+    const pin = resolveSessionRuntimePin(session);
+    const own = pin ? foreignSessionLanes.get(machineIdForBinding(pin))?.get(session.id) : undefined;
+    if (own) return own;
+    for (const bySessionId of foreignSessionLanes.values()) {
+      const lane = bySessionId.get(session.id);
+      if (lane) return lane;
+    }
+    return null;
+  }, [foreignSessionLanes, resolveSessionRuntimePin]);
+
   // Bulk menu → Lanes tab, through the same `action=batch` deep link the Work
   // lane menu's "Manage N Open Lanes" already uses. `open` only selects them.
+  // `laneIds` are Lanes-tab row keys and may name lanes on other machines. The
+  // Lanes tab resolves those itself; only a lane on the tab's machine may go
+  // into the shared store selection, which every other tab reads as local.
   const handleBulkLanes = useCallback((laneIds: string[], intent: BulkLaneIntent) => {
     if (!laneIds.length) return;
     const params = new URLSearchParams({
@@ -1490,7 +1512,8 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       laneIds: laneIds.join(","),
     });
     if (intent === "archive" || intent === "delete") params.set("manageTab", intent);
-    work.selectLane(laneIds[0]!);
+    const firstLocalLaneId = laneIds.find((id) => work.lanes.some((lane) => lane.id === id));
+    if (firstLocalLaneId) work.selectLane(firstLocalLaneId);
     work.navigate(`/lanes?${params.toString()}`);
   }, [work]);
 
@@ -2288,6 +2311,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         sessions={selectedSessionsInSidebarOrder}
         lanes={work.lanes}
         localSessionIds={localSessionIds}
+        foreignLaneFor={foreignLaneForSession}
         resolvePin={resolveSessionRuntimePin}
         onClose={() => setBulkMenu(null)}
         pinnedSessionIds={work.pinnedSessionIds}

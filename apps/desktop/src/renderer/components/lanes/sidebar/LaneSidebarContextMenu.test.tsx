@@ -58,6 +58,8 @@ function renderBulkMenu(actionableLaneIds = ["lane-1", "lane-2"]) {
     point: { x: 10, y: 10 },
     laneIds: ["lane-1", "lane-2", "lane-3"],
     actionableLaneIds,
+    // Anything not actionable is on a machine that is out of reach.
+    skipReason: (laneId: string) => (actionableLaneIds.includes(laneId) ? null : "Studio is offline"),
     lanesById,
     onClose: vi.fn(),
     onManage: vi.fn(),
@@ -105,6 +107,9 @@ describe("LaneSidebarBulkContextMenu", () => {
     expect(screen.getByRole("menuitem", { name: "Delete 2…" })).toBeTruthy();
     expect(screen.getByRole("menuitem", { name: "Copy lane names" })).toBeTruthy();
     expect(screen.getByRole("menuitem", { name: "Copy branches" })).toBeTruthy();
+    // The lane the actions leave out is reported once, with its reason.
+    expect(screen.getAllByText(/Studio is offline/)).toHaveLength(1);
+    expect(screen.getByText(/Studio is offline/).textContent).toMatch(/\b1\b/);
 
     fireEvent.click(screen.getByRole("menuitem", { name: "Manage 2 lanes…" }));
 

@@ -12,7 +12,7 @@ import type {
 import { detectPushDivergence } from "../../shared/laneDivergence";
 import { THIS_MACHINE_ID } from "../../shared/machineIdentity";
 import { AppStoreProvider, createProjectAppStore, useAppStore } from "./appStore";
-import { buildAllMachineLanes, createLaneMachineRouter } from "./laneMachineRouting";
+import { buildAllMachineLanes, buildForeignSessionLanes, createLaneMachineRouter } from "./laneMachineRouting";
 import {
   buildCrossMachineLaneRows,
   cancelCrossMachineOptimisticChatSession,
@@ -2694,5 +2694,45 @@ describe("lane actions resolve against the lane's machine", () => {
     expect(unknownLane.kind).toBe("unknown");
     expect(unknownMachine.kind).toBe("unknown");
     expect(unroutable.kind).toBe("unroutable");
+  });
+
+  it("gives the Work tab's bulk menu the Lanes tab's own row keys, skipping the tab's machine", () => {
+    const slice = (machineId: string, online: boolean, laneId: string, sessionId: string) => ({
+      machineId,
+      machineName: machineId,
+      targetId: machineId,
+      projectId: "project-a",
+      binding: { ...binding, key: `remote:${machineId}:project-a`, targetId: machineId },
+      online,
+      lanes: [makeLane({ id: laneId })],
+      sessions: [makeSession({ id: sessionId, laneId })],
+      prs: [],
+      lastSyncedAtMs: Date.now(),
+      lanesSyncedAtMs: Date.now(),
+      error: null,
+    });
+    const machines = {
+      [THIS_MACHINE_ID]: slice(THIS_MACHINE_ID, true, "stale-local-lane", "session-local"),
+      "target-studio": slice("target-studio", true, "studio-lane", "session-studio"),
+      "target-laptop": slice("target-laptop", false, "laptop-lane", "session-laptop"),
+    };
+    const lanesTabKeys = new Set(
+      buildAllMachineLanes({ activeBinding: null, activeLanes: [], machines }).lanes
+        .filter((row) => !row.isActiveBinding)
+        .map((row) => row.key),
+    );
+
+    const bySession = buildForeignSessionLanes(machines, THIS_MACHINE_ID);
+    const studio = bySession.get("target-studio")?.get("session-studio");
+    const laptop = bySession.get("target-laptop")?.get("session-laptop");
+
+    // Every key the Work tab sends is one the Lanes tab lists, so none is dropped.
+    expect(studio?.key && lanesTabKeys.has(studio.key)).toBe(true);
+    expect(laptop?.key && lanesTabKeys.has(laptop.key)).toBe(true);
+    // An offline machine's lane is reported with a reason; a reachable one is not.
+    expect(studio?.blockedReason).toBeNull();
+    expect(laptop?.blockedReason).toMatch(/offline/);
+    // A stale slice of the tab's own machine is not a foreign lane.
+    expect(bySession.has(THIS_MACHINE_ID)).toBe(false);
   });
 });

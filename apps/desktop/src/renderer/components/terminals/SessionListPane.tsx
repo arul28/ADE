@@ -19,7 +19,7 @@ import {
 } from "../../lib/terminalAttention";
 import { nextSnoozeDeadlineMs } from "../../lib/sessionSnooze";
 import { useAppStore, useRootAppStore } from "../../state/appStore";
-import { foreignLaneKey } from "../../state/laneMachineRouting";
+import { foreignLaneKey, machineBlockedReason } from "../../state/laneMachineRouting";
 import { machineIdForBinding, machineNameForBinding } from "../../../shared/machineIdentity";
 import { useLaneNamePending } from "../../state/sessionMetadataGeneratingStore";
 import {
@@ -2255,6 +2255,12 @@ export const SessionListPane = React.memo(function SessionListPane({
     canDropLane,
     canStartLaneDrag,
   );
+  // The session rows on screen, top to bottom: local and other machines' alike.
+  const onScreenSessionIds = (): string[] | null => {
+    const rows = listScrollRef.current?.querySelectorAll<HTMLElement>("[data-session-row][data-session-id]");
+    if (!rows?.length) return null;
+    return [...new Set(Array.from(rows, (row) => row.dataset.sessionId!))];
+  };
 
   const pendingLaunchLaneIds = usePendingChatLaunchLaneIds();
   type LaneGroup = [string, TerminalSessionSummary[]];
@@ -2501,6 +2507,8 @@ export const SessionListPane = React.memo(function SessionListPane({
     laneBrowserTabs?: number;
     /** Board cards only: the column states the status, so the card must not. */
     suppressStatusLabel?: boolean;
+    /** A board card: shift-ranges walk the board's columns, not the sidebar. */
+    boardCard?: boolean;
     /** The row's filed subagents, as one mark on the row. */
     subagentMark?: NestedSubagentMark | null;
     nesting?: WorkNesting<TerminalSessionSummary>;
@@ -2547,13 +2555,10 @@ export const SessionListPane = React.memo(function SessionListPane({
     const laneDeleteProgress = deleteProgressByLaneId[
       foreignRow ? foreignLaneKey(foreignRow.machineId, session.laneId) : session.laneId
     ] ?? null;
-    const disabledReason = foreignRow && !foreignRow.online
-      ? `${foreignRow.machineName} is offline`
-      : foreignRow && !foreignRow.binding
-        ? `${foreignRow.machineName} is unavailable`
-        : laneDeleteProgress
-          ? `${getLaneDeleteStatusLabel(laneDeleteProgress)} lane`
-          : null;
+    const disabledReason = (foreignRow
+      ? machineBlockedReason({ machineName: foreignRow.machineName, online: foreignRow.online, routable: foreignRow.binding != null })
+      : null)
+      ?? (laneDeleteProgress ? `${getLaneDeleteStatusLabel(laneDeleteProgress)} lane` : null);
     const card = (
       <SessionCard
         key={session.id}
@@ -2576,18 +2581,25 @@ export const SessionListPane = React.memo(function SessionListPane({
           // has to be handed to the PTY surface, so it goes through the page's
           // foreign-runtime handler (which also owns the not-open-binding
           // fallback). The machine chip on the card is untouched either way.
+          // A shift-range spans what is on screen. `renderedSessionIds` holds
+          // only the tab's own machine and a foreign lane knows only its own
+          // rows, so a range across lanes from another machine used to collapse
+          // to the clicked row. The rendered rows are the one order that has
+          // both (collapsed groups unmount their cards, so it is exactly what
+          // the user sees). Board cards keep the board's column-reading order.
+          const rangeIds = event?.shiftKey && !options?.boardCard && !boardReplacesList ? onScreenSessionIds() : null;
           if (!foreignRow) {
-            return onSelectSession(id, event, options?.visibleSessionIds ?? renderedSessionIds);
+            return onSelectSession(id, event, rangeIds ?? options?.visibleSessionIds ?? renderedSessionIds);
           }
           if (isChatToolType(session.toolType)) {
-            return onSelectSession(id, event, options?.visibleSessionIds ?? [], foreignRow.binding);
+            return onSelectSession(id, event, rangeIds ?? options?.visibleSessionIds ?? [], foreignRow.binding);
           }
           if (foreignRow.binding && onSelectForeignRuntimeSession) {
             return onSelectForeignRuntimeSession(
               session,
               foreignRow.binding,
               event,
-              options?.visibleSessionIds ?? [],
+              rangeIds ?? options?.visibleSessionIds ?? [],
             );
           }
           return undefined;
@@ -2760,6 +2772,7 @@ export const SessionListPane = React.memo(function SessionListPane({
       foreignRow,
       showLaneIdentity: true,
       visibleSessionIds: boardSessionIds ?? undefined,
+      boardCard: true,
       // The column header is the authority on status here; a card repeating it
       // is at best noise and at worst a contradiction (a "Done" pill under the
       // "Needs you" heading). The word moves to the hover card — see SessionCard.
