@@ -1,23 +1,17 @@
 import { randomUUID } from "node:crypto";
-import fs from "node:fs";
 import os from "node:os";
-import path from "node:path";
 
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import { THIS_MACHINE_NAME } from "../../../../desktop/src/shared/machineIdentity";
 import {
   BUILT_IN_BROWSER_REMOTE_CALL_EVENT,
-  BUILT_IN_BROWSER_REMOTE_CALL_MAX_FILE_BYTES,
-  BUILT_IN_BROWSER_REMOTE_CALL_MAX_FILES,
   BUILT_IN_BROWSER_REMOTE_REQUEST_EVENT,
   builtInBrowserErrorOnMachine,
   builtInBrowserRemoteCallDoneTimeoutMs,
   isBuiltInBrowserRemoteCallMethod,
   type BuiltInBrowserForwardedToDesktop,
   type BuiltInBrowserHostNote,
-  type BuiltInBrowserRemoteBroadcastMethod,
   type BuiltInBrowserRemoteCall,
-  type BuiltInBrowserRemoteCallFile,
   type BuiltInBrowserRemoteCallMethod,
   type BuiltInBrowserRemoteRequest,
   type BuiltInBrowserRemoteRequestAck,
@@ -28,6 +22,10 @@ import type {
   BuiltInBrowserTabMachine,
 } from "../../../../desktop/src/shared/types/builtInBrowser";
 import { DesktopBridgeUnavailableError } from "./desktopBridgeClient";
+import { createRemoteBrowserBroadcaster } from "./remoteBrowserBroadcast";
+import { nameTabOwners, type DescribeOwners } from "./remoteBrowserOwnerNames";
+import { receiveRemoteCallFiles } from "./remoteBrowserReceivedFiles";
+import { HERE, createTabHostMemory, rememberNewest, type BrowserHost } from "./remoteBrowserTabHosts";
 import type { SessionInputOrigin } from "../../../../desktop/src/shared/sessionInputOrigin";
 import {
   BUILT_IN_BROWSER_ACKNOWLEDGE_REMOTE_REQUEST_METHOD,
@@ -81,26 +79,8 @@ const LAST_HOST_CAP = 200;
  * user closed the laptop would wait out the "nobody answered" clock.
  */
 const USER_DESKTOP_RETRY_AFTER_MS = 60_000;
-/** Replies whose files are kept for the agent to read; older ones are pruned. */
-const RECEIVED_FILE_DIR_CAP = 40;
-/** Tab and browser-session ids whose machine this daemon remembers. */
-const TAB_HOST_CAP = 2_000;
-/** How long a broadcast waits when no desktop has answered one before. */
-const BROADCAST_FIRST_WAIT_MS = 1_200;
-/** How long a broadcast waits for the desktops that answered the last ones. */
-const BROADCAST_KNOWN_WAIT_MS = 3_000;
 /** A lane release is not awaited; replies are taken for this long. */
 const RELEASE_BROADCAST_WAIT_MS = 10_000;
-/** Desktops remembered as answering broadcasts. */
-const ANSWERING_DESKTOP_CAP = 16;
-/**
- * After a tab-list broadcast nobody answered, how long `ade browser status`
- * skips asking again. Without it a machine with no other desktop paid the
- * whole broadcast wait on every status.
- */
-const EMPTY_BROADCAST_SKIP_MS = 5 * 60_000;
-/** Broadcasts that already ended, kept so a desktop that answers late is waited for next time. */
-const FINISHED_BROADCAST_CAP = 32;
 
 /** The CLI words for the commands that stay on this machine, for a message an agent can act on. */
 const LOCAL_FILE_COMMAND_WORDS: Record<BuiltInBrowserLocalFileMethod, string> = {
@@ -132,25 +112,6 @@ type RemoteCallOutcome =
     requestCarriesSignIn?: boolean;
   };
 
-/** The browser a tab, a browser session or a command lives in. */
-type BrowserHost =
-  | { kind: "here" }
-  | { kind: "desktop"; clientId: string; label: string };
-
-const HERE: BrowserHost = { kind: "here" };
-
-type BroadcastReply = { label: string; ok: boolean; result: unknown };
-
-type PendingBroadcast = {
-  method: BuiltInBrowserRemoteBroadcastMethod;
-  /** Desktops that answered the last broadcasts; the wait ends early once they all have. */
-  expected: Set<string>;
-  taken: Set<string>;
-  replies: Map<string, BroadcastReply>;
-  resolve: (replies: Map<string, BroadcastReply>) => void;
-  timer: ReturnType<typeof setTimeout>;
-};
-
 /** This computer's host name, until the runtime gives the forwarder its display name. */
 function hostMachineName(): string {
   return os.hostname().replace(/\.local$/i, "") || "this machine";
@@ -165,6 +126,8 @@ type PendingCall = {
   timer: ReturnType<typeof setTimeout>;
   desktopLabel: string | null;
 };
+
+export type { OwnerNames } from "./remoteBrowserOwnerNames";
 
 export type RemoteBrowserForwarder = {
   /**
@@ -189,12 +152,6 @@ export type RemoteBrowserForwarder = {
   releaseLaneTabs: (laneId: string) => Promise<void>;
   dispose: () => void;
 };
-
-/** Titles and names by id; an id this machine does not know is left out. */
-export type OwnerNames = { chats: Record<string, string>; lanes: Record<string, string> };
-
-/** How long `ade browser status` waits for owner names before printing ids. */
-const OWNER_NAMES_WAIT_MS = 800;
 
 /** The two bridge-served methods the forwarder calls on this machine's desktop. */
 export type LocalBrowserBridge = {
@@ -236,41 +193,6 @@ function settleEntry<Outcome>(
   return true;
 }
 
-/**
- * Clear every `filePath` in a result that is not a file written here. A file
- * the desktop did not send (over the size cap, unreadable) keeps a path that
- * exists only on the user's computer, which the agent cannot read.
- */
-function clearForeignFilePaths(node: unknown, keep: ReadonlySet<string>, depth = 0): void {
-  if (depth > 6) return;
-  if (Array.isArray(node)) {
-    for (const item of node) clearForeignFilePaths(item, keep, depth + 1);
-    return;
-  }
-  if (!isRecord(node)) return;
-  for (const [key, value] of Object.entries(node)) {
-    if (key === "filePath" && typeof value === "string" && !keep.has(value)) {
-      node.filePath = null;
-      if ("relativePath" in node) node.relativePath = null;
-      continue;
-    }
-    clearForeignFilePaths(value, keep, depth + 1);
-  }
-}
-
-function filesFromReply(value: unknown): BuiltInBrowserRemoteCallFile[] {
-  if (!Array.isArray(value)) return [];
-  return value.slice(0, BUILT_IN_BROWSER_REMOTE_CALL_MAX_FILES).filter((file): file is BuiltInBrowserRemoteCallFile => (
-    isRecord(file)
-    && Array.isArray(file.pointer)
-    && file.pointer.length > 0
-    && file.pointer.length <= 6
-    && file.pointer.every((key) => typeof key === "string")
-    && typeof file.fileName === "string"
-    && typeof file.base64 === "string"
-  ));
-}
-
 export function createRemoteBrowserForwarder(args: {
   emitEvent: (payload: Record<string, unknown>) => void;
   logger: Logger;
@@ -289,101 +211,30 @@ export function createRemoteBrowserForwarder(args: {
   /** This machine's name for an agent to read (the device's display name). */
   machineName?: (() => string | null) | null;
   /** Chat titles and lane names for the owners `ade browser status` lists. */
-  describeOwners?: ((ids: { chatSessionIds: string[]; laneIds: string[] }) => Promise<OwnerNames>) | null;
+  describeOwners?: DescribeOwners | null;
 }): RemoteBrowserForwarder {
   const thisMachineName = (): string => stringOrNull(args.machineName?.()) ?? hostMachineName();
   const pending = new Map<string, PendingRequest>();
   const pendingCalls = new Map<string, PendingCall>();
-  const pendingBroadcasts = new Map<string, PendingBroadcast>();
   /** Which browser a chat's last command ran in, newest last. */
   const lastHost = new Map<string, "user-desktop" | "here">();
   /** Chat → the desktop that did not answer, and until when it is left alone. */
   const unanswered = new Map<string, { clientId: string; untilMs: number }>();
-  /** Tab id → the browser that holds it. Newest last. */
-  const tabHosts = new Map<string, BrowserHost>();
-  /** Browser-session id → the browser that holds its tab. */
-  const sessionHosts = new Map<string, BrowserHost>();
   /** A desktop's name for itself, from its replies. */
   const desktopLabels = new Map<string, string>();
-  /** Desktops that answered a tab-list broadcast, so the next one waits for them. */
-  const answeringDesktops = new Set<string>();
-  /** Tab-list broadcasts that ended; a late answer still marks its desktop as one to wait for. */
-  const finishedListBroadcasts = new Set<string>();
-  /** Chat → the tab its last command acted on, so a command with no `--tab` goes where that tab is. */
-  const chatLastTab = new Map<string, string>();
   let localBridge: LocalBrowserBridge | null = null;
-  /** When a tab-list broadcast last came back with no answer from any desktop. */
-  let lastEmptyListAt = 0;
   const ackTimeoutMs = args.ackTimeoutMs ?? ACK_TIMEOUT_MS;
   const callTakenTimeoutMs = args.callTakenTimeoutMs ?? CALL_TAKEN_TIMEOUT_MS;
-  const broadcastWait = args.broadcastWaitMs ?? { first: BROADCAST_FIRST_WAIT_MS, known: BROADCAST_KNOWN_WAIT_MS };
-
-  function rememberNewest<Value>(map: Map<string, Value>, key: string, value: Value, cap: number): void {
-    map.delete(key);
-    map.set(key, value);
-    while (map.size > cap) {
-      const oldest = map.keys().next().value;
-      if (oldest === undefined) break;
-      map.delete(oldest);
-    }
-  }
+  const broadcaster = createRemoteBrowserBroadcaster({
+    emitEvent: args.emitEvent,
+    logger: args.logger,
+    waitMs: args.broadcastWaitMs ?? null,
+  });
+  const tabHosts = createTabHostMemory();
 
   function rememberHost(chatSessionId: string | null, host: "user-desktop" | "here"): void {
     if (!chatSessionId) return;
     rememberNewest(lastHost, chatSessionId, host, LAST_HOST_CAP);
-  }
-
-  function rememberTab(tabId: unknown, host: BrowserHost): void {
-    const id = stringOrNull(tabId);
-    if (id) rememberNewest(tabHosts, id, host, TAB_HOST_CAP);
-  }
-
-  /** Remember which browser holds every tab and browser session a result names. */
-  function rememberAnswering(clientId: string): void {
-    answeringDesktops.add(clientId);
-    while (answeringDesktops.size > ANSWERING_DESKTOP_CAP) {
-      const oldest = answeringDesktops.values().next().value;
-      if (oldest === undefined) break;
-      answeringDesktops.delete(oldest);
-    }
-    // A desktop exists after all: the next status asks again.
-    lastEmptyListAt = 0;
-  }
-
-  /** The tab a chat's last command acted on, from its input and its result. */
-  function noteChatTab(ctx: RouteContext, result: unknown): void {
-    if (!ctx.chatSessionId) return;
-    const record = isRecord(result) ? result : {};
-    const closed = isRecord(record.closedTab) ? stringOrNull(record.closedTab.id) : null;
-    if (closed && chatLastTab.get(ctx.chatSessionId) === closed) {
-      chatLastTab.delete(ctx.chatSessionId);
-      return;
-    }
-    const tabId = stringOrNull(record.targetTabId)
-      ?? (isRecord(record.observation) ? stringOrNull(record.observation.tabId) : null)
-      ?? (isRecord(record.session) ? stringOrNull(record.session.tabId) : null)
-      ?? (closed ? null : stringOrNull(ctx.record.tabId));
-    if (tabId) rememberNewest(chatLastTab, ctx.chatSessionId, tabId, LAST_HOST_CAP);
-  }
-
-  function noteHosts(result: unknown, host: BrowserHost, depth = 0): void {
-    if (!isRecord(result) || depth > 2) return;
-    if (Array.isArray(result.tabs)) {
-      for (const tab of result.tabs) if (isRecord(tab)) rememberTab(tab.id, host);
-    }
-    rememberTab(result.targetTabId, host);
-    const noteSession = (session: unknown) => {
-      if (!isRecord(session)) return;
-      const id = stringOrNull(session.id);
-      if (id) rememberNewest(sessionHosts, id, host, TAB_HOST_CAP);
-      rememberTab(session.tabId, host);
-    };
-    noteSession(result.session);
-    if (Array.isArray(result.sessions)) result.sessions.forEach(noteSession);
-    if (isRecord(result.observation)) rememberTab(result.observation.tabId, host);
-    if (isRecord(result.status)) noteHosts(result.status, host, depth + 1);
-    const closed = isRecord(result.closedTab) ? stringOrNull(result.closedTab.id) : null;
-    if (closed) tabHosts.delete(closed);
   }
 
   function hostLabel(host: BrowserHost): string {
@@ -418,69 +269,6 @@ export function createRemoteBrowserForwarder(args: {
     settleEntry(pendingCalls, requestId, outcome);
   const settle = (requestId: string, ack: BuiltInBrowserRemoteRequestAck | null): boolean =>
     settleEntry(pending, requestId, ack);
-
-  /** Write the files a reply carries where the agent can read them, and point the result at them. */
-  function receiveFiles(requestId: string, result: unknown, files: BuiltInBrowserRemoteCallFile[]): unknown {
-    if (!isRecord(result)) return result;
-    const next = structuredClone(result) as Record<string, unknown>;
-    let wroteAny = false;
-    const writtenPaths = new Set<string>();
-    for (const file of files) {
-      const holder = file.pointer.slice(0, -1).reduce<unknown>(
-        (node, key) => (isRecord(node) ? node[key] : undefined),
-        next,
-      );
-      const field = file.pointer[file.pointer.length - 1];
-      if (!isRecord(holder) || !field || typeof holder[field] !== "string") continue;
-      let written: string | null = null;
-      try {
-        const bytes = Buffer.from(file.base64, "base64");
-        const fileName = path.basename(file.fileName).replace(/[^A-Za-z0-9._-]/g, "_");
-        if (args.receivedFilesDir && fileName && bytes.length > 0 && bytes.length <= BUILT_IN_BROWSER_REMOTE_CALL_MAX_FILE_BYTES) {
-          const dir = path.join(args.receivedFilesDir, requestId);
-          // A screenshot of the user's page: readable by this user only.
-          fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-          written = path.join(dir, fileName);
-          fs.writeFileSync(written, bytes, { mode: 0o600 });
-          wroteAny = true;
-        }
-      } catch (error) {
-        written = null;
-        args.logger.warn("built_in_browser.remote_call_file_write_failed", {
-          requestId,
-          reason: error instanceof Error ? error.message : String(error),
-        });
-      }
-      // Never leave a path that names a file on another machine.
-      holder[field] = written;
-      if (written) writtenPaths.add(written);
-      if ("relativePath" in holder) holder.relativePath = null;
-    }
-    clearForeignFilePaths(next, writtenPaths);
-    if (wroteAny) pruneReceivedFiles();
-    return next;
-  }
-
-  function pruneReceivedFiles(): void {
-    const root = args.receivedFilesDir;
-    if (!root) return;
-    let dirs: Array<{ name: string; at: number }>;
-    try {
-      dirs = fs.readdirSync(root, { withFileTypes: true })
-        .filter((entry) => entry.isDirectory())
-        .map((entry) => ({ name: entry.name, at: fs.statSync(path.join(root, entry.name)).mtimeMs }))
-        .sort((left, right) => right.at - left.at);
-    } catch {
-      return;
-    }
-    for (const stale of dirs.slice(RECEIVED_FILE_DIR_CAP)) {
-      try {
-        fs.rmSync(path.join(root, stale.name), { recursive: true, force: true, maxRetries: 2 });
-      } catch {
-        // A directory Windows still holds open is removed by a later prune.
-      }
-    }
-  }
 
   /** Which of a desktop's collections the agent means: its project's, or the personal one. */
   function collectionOf(record: Record<string, unknown>): "project" | "personal" {
@@ -528,7 +316,10 @@ export function createRemoteBrowserForwarder(args: {
         });
       }
     });
-    if (outcome.taken) rememberNewest(desktopLabels, targetClientId, outcome.desktopLabel, LAST_HOST_CAP);
+    if (outcome.taken) {
+      rememberNewest(desktopLabels, targetClientId, outcome.desktopLabel, LAST_HOST_CAP);
+      broadcaster.noteDesktopSeen();
+    }
     const origin = request.chatSessionId ? args.resolveOrigin?.(request.chatSessionId) ?? null : null;
     // Only the user's own desktop going quiet changes where the chat's next
     // command goes; a desktop that merely holds one tab does not.
@@ -549,83 +340,6 @@ export function createRemoteBrowserForwarder(args: {
       ms: Date.now() - startedAt,
     });
     return outcome;
-  }
-
-  /**
-   * Ask every desktop that holds a pin on this machine at once, and gather
-   * the answers that come in time. Waits for the desktops that answered the
-   * last broadcasts, or a short while when none has yet.
-   */
-  function broadcast(
-    method: BuiltInBrowserRemoteBroadcastMethod,
-    input: Record<string, unknown>,
-    options: {
-      chatSessionId?: string | null;
-      laneId?: string | null;
-      collection?: "project" | "personal";
-      excludeClientIds?: string[];
-      waitMs?: number;
-    } = {},
-  ): Promise<Map<string, BroadcastReply>> {
-    const exclude = options.excludeClientIds ?? [];
-    const expected = new Set([...answeringDesktops].filter((id) => !exclude.includes(id)));
-    const waitMs = options.waitMs ?? (expected.size > 0 ? broadcastWait.known : broadcastWait.first);
-    const call: BuiltInBrowserRemoteCall = {
-      requestId: `bbb-${randomUUID()}`,
-      method,
-      input,
-      chatSessionId: options.chatSessionId ?? null,
-      laneId: options.laneId ?? null,
-      requestedAt: new Date().toISOString(),
-      targetClientId: "",
-      broadcast: true,
-      ...(exclude.length > 0 ? { excludeClientIds: exclude } : {}),
-      ...(options.collection ? { collection: options.collection } : {}),
-    };
-    return new Promise((resolve) => {
-      const entry: PendingBroadcast = {
-        method,
-        expected,
-        taken: new Set(),
-        replies: new Map(),
-        resolve,
-        timer: setTimeout(() => finishBroadcast(call.requestId), waitMs),
-      };
-      entry.timer.unref?.();
-      pendingBroadcasts.set(call.requestId, entry);
-      try {
-        args.emitEvent({ type: BUILT_IN_BROWSER_REMOTE_CALL_EVENT, event: call });
-      } catch (error) {
-        args.logger.warn("built_in_browser.remote_broadcast_emit_failed", {
-          method,
-          reason: error instanceof Error ? error.message : String(error),
-        });
-        finishBroadcast(call.requestId);
-      }
-    });
-  }
-
-  function finishBroadcast(requestId: string): void {
-    const entry = pendingBroadcasts.get(requestId);
-    if (!entry) return;
-    pendingBroadcasts.delete(requestId);
-    clearTimeout(entry.timer);
-    // A desktop that stopped answering is not waited for next time.
-    for (const clientId of entry.expected) if (!entry.replies.has(clientId)) answeringDesktops.delete(clientId);
-    if (entry.method === "listTabsForAgent") {
-      finishedListBroadcasts.add(requestId);
-      while (finishedListBroadcasts.size > FINISHED_BROADCAST_CAP) {
-        const oldest = finishedListBroadcasts.values().next().value;
-        if (oldest === undefined) break;
-        finishedListBroadcasts.delete(oldest);
-      }
-    }
-    entry.resolve(entry.replies);
-  }
-
-  function broadcastReplyReceived(entry: PendingBroadcast, requestId: string): void {
-    const waitingOn = [...entry.expected, ...entry.taken].filter((id) => !entry.replies.has(id));
-    if (entry.expected.size > 0 && waitingOn.length === 0) finishBroadcast(requestId);
   }
 
   function withHostNote(result: unknown, note: BuiltInBrowserHostNote): unknown {
@@ -746,12 +460,12 @@ export function createRemoteBrowserForwarder(args: {
     );
     const tabId = stringOrNull(record.tabId);
     const sessionId = stringOrNull(record.sessionId);
-    const namedHost = (tabId ? tabHosts.get(tabId) : null) ?? (sessionId ? sessionHosts.get(sessionId) : null) ?? null;
+    const namedHost = tabHosts.hostOf({ tabId, sessionId });
     // No tab named: the command acts on this chat's tab, so it goes where that
     // tab is. Sent anywhere else, a desktop with no tab of this chat's would
     // act on whatever tab the person has in front.
-    const lastTab = !tabId && !sessionId && chatSessionId ? chatLastTab.get(chatSessionId) ?? null : null;
-    const targetHost = namedHost ?? (lastTab ? tabHosts.get(lastTab) ?? null : null);
+    const lastTab = !tabId && !sessionId ? tabHosts.lastTabOf(chatSessionId) : null;
+    const targetHost = namedHost ?? (lastTab ? tabHosts.hostOf({ tabId: lastTab, sessionId: null }) : null);
     return {
       record,
       chatSessionId,
@@ -779,8 +493,8 @@ export function createRemoteBrowserForwarder(args: {
   }
 
   function finish(ctx: RouteContext, host: BrowserHost, result: unknown): unknown {
-    noteHosts(result, host);
-    noteChatTab(ctx, result);
+    tabHosts.noteResult(result, host);
+    tabHosts.noteChatTab(ctx.chatSessionId, ctx.record.tabId, result);
     rememberHost(ctx.chatSessionId, host.kind === "here" ? "here" : "user-desktop");
     const note = hostNote(ctx, host);
     return note ? withHostNote(result, note) : result;
@@ -821,7 +535,7 @@ export function createRemoteBrowserForwarder(args: {
    */
   async function locateTab(ctx: RouteContext, tabId: string): Promise<BrowserHost | null> {
     await listEverywhere(ctx, null, { alwaysAsk: true });
-    return tabHosts.get(tabId) ?? null;
+    return tabHosts.hostOf({ tabId, sessionId: null });
   }
 
   /** A command that acts on one tab: the tab's browser, else the chat's. */
@@ -849,7 +563,7 @@ export function createRemoteBrowserForwarder(args: {
           ? `${desktopLabels.get(ctx.remoteTargetId) ?? UNNAMED_USER_DESKTOP} (the user's computer)`
           : null,
         `${thisMachineName()} (this machine)`,
-        ...[...answeringDesktops].filter((id) => id !== ctx.remoteTargetId).map((id) => desktopLabels.get(id) ?? "another desktop"),
+        ...broadcaster.answeringDesktops().filter((id) => id !== ctx.remoteTargetId).map((id) => desktopLabels.get(id) ?? "another desktop"),
       ].filter(Boolean);
       throw new Error(
         `Browser tab not found: ${tabId}. No ADE browser that this machine can reach holds it (asked: ${asked.join(", ")}). It was closed, or it was an agent's tab that ADE did not bring back after a restart. Run \`ade browser status\` for the tabs that exist.`,
@@ -876,7 +590,7 @@ export function createRemoteBrowserForwarder(args: {
   function notAnsweredError(ctx: RouteContext, host: BrowserHost): Error {
     const target = stringOrNull(ctx.record.tabId)
       ?? stringOrNull(ctx.record.sessionId)
-      ?? (ctx.chatSessionId ? chatLastTab.get(ctx.chatSessionId) : null)
+      ?? tabHosts.lastTabOf(ctx.chatSessionId)
       ?? "This tab";
     const label = hostLabel(host);
     return new Error(
@@ -953,6 +667,9 @@ export function createRemoteBrowserForwarder(args: {
         if (outcome.taken && outcome.ok) return finish(ctx, host, outcome.result);
         if (outcome.taken && !outcome.needsPane) throw onMachine(new Error(outcome.error), host, ctx);
         if (isolated && (!outcome.taken || !outcome.requestCarriesSignIn)) isolatedStaysHere = true;
+      } else if (isolated) {
+        // No command path to confirm the request path keeps the sign-in.
+        isolatedStaysHere = true;
       }
       if (!isolatedStaysHere) {
         // An isolated open goes to the user's desktop only: another desktop
@@ -1051,29 +768,28 @@ export function createRemoteBrowserForwarder(args: {
   ): Promise<BuiltInBrowserOtherMachineTabs[]> {
     const { tabId: _tabId, sessionId: _sessionId, ...listInput } = isRecord(ctx.localBase) ? ctx.localBase : {};
     const exclude = skip?.kind === "desktop" ? [skip.clientId] : [];
-    const quiet = !options.alwaysAsk
-      && ![...answeringDesktops].some((id) => !exclude.includes(id))
-      && Date.now() - lastEmptyListAt < EMPTY_BROADCAST_SKIP_MS;
     const [local, remote] = await Promise.all([
       skip?.kind === "here" || !localBridge
         ? Promise.resolve(null)
-        : localBridge.listTabsForAgent(listInput).catch(() => null),
-      quiet
-        ? Promise.resolve(new Map<string, BroadcastReply>())
-        : broadcast("listTabsForAgent", listInput, {
-          chatSessionId: ctx.chatSessionId,
-          laneId: stringOrNull(ctx.record.laneId),
-          collection: collectionOf(ctx.record),
-          excludeClientIds: exclude,
-        }).then((replies) => {
-          if (![...replies].some(([clientId, reply]) => reply.ok && !exclude.includes(clientId))) lastEmptyListAt = Date.now();
-          return replies;
+        : localBridge.listTabsForAgent(listInput).catch((error: unknown) => {
+          // No desktop here, or one too old to list without opening the project.
+          args.logger.debug("built_in_browser.list_tabs_local_skipped", {
+            reason: error instanceof Error ? error.message : String(error),
+          });
+          return null;
         }),
+      broadcaster.listTabs(listInput, {
+        chatSessionId: ctx.chatSessionId,
+        laneId: stringOrNull(ctx.record.laneId),
+        collection: collectionOf(ctx.record),
+        exclude,
+        alwaysAsk: options.alwaysAsk,
+      }),
     ]);
     const others: BuiltInBrowserOtherMachineTabs[] = [];
     const add = (host: BrowserHost, status: unknown) => {
       if (!isRecord(status) || !Array.isArray(status.tabs)) return;
-      noteHosts(status, host);
+      tabHosts.noteResult(status, host);
       const machine = machineOf(host, ctx);
       others.push({
         machine,
@@ -1130,43 +846,12 @@ export function createRemoteBrowserForwarder(args: {
       otherBrowsers: others.filter((entry) => entry.tabs.length > 0 || entry.machine.userComputer),
       route: routeSummary(ctx),
     };
-    await nameOwners([merged.tabs, ...merged.otherBrowsers.map((entry) => entry.tabs as unknown[])]);
+    await nameTabOwners([merged.tabs, ...merged.otherBrowsers.map((entry) => entry.tabs as unknown[])], args.describeOwners ?? null, (error) => {
+      args.logger.warn("built_in_browser.owner_names_failed", {
+        reason: error instanceof Error ? error.message : String(error),
+      });
+    });
     return finish(ctx, primaryHost, merged);
-  }
-
-  /** Put chat titles and lane names beside the ids, so a person and an agent can tell whose a tab is. */
-  async function nameOwners(lists: unknown[][]): Promise<void> {
-    if (!args.describeOwners) return;
-    const tabs = lists.flat().filter(isRecord);
-    const chatSessionIds = new Set<string>();
-    const laneIds = new Set<string>();
-    for (const tab of tabs) {
-      const owner = stringOrNull(tab.ownerChatSessionId);
-      const opener = stringOrNull(tab.openedByChatSessionId);
-      const lane = stringOrNull(tab.ownerLaneId);
-      if (owner) chatSessionIds.add(owner);
-      if (opener) chatSessionIds.add(opener);
-      if (lane) laneIds.add(lane);
-    }
-    if (chatSessionIds.size === 0 && laneIds.size === 0) return;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const names = await Promise.race([
-      args.describeOwners({ chatSessionIds: [...chatSessionIds], laneIds: [...laneIds] }).catch(() => null),
-      new Promise<null>((resolve) => {
-        timer = setTimeout(() => resolve(null), OWNER_NAMES_WAIT_MS);
-        timer.unref?.();
-      }),
-    ]);
-    if (timer) clearTimeout(timer);
-    if (!names) return;
-    for (const tab of tabs) {
-      const owner = stringOrNull(tab.ownerChatSessionId);
-      const opener = stringOrNull(tab.openedByChatSessionId);
-      const lane = stringOrNull(tab.ownerLaneId);
-      if (owner && names.chats[owner]) tab.ownerChatTitle = names.chats[owner];
-      if (opener && names.chats[opener]) tab.openedByChatTitle = names.chats[opener];
-      if (lane && names.lanes[lane]) tab.ownerLaneName = names.lanes[lane];
-    }
   }
 
   return {
@@ -1203,28 +888,14 @@ export function createRemoteBrowserForwarder(args: {
     replyRemoteCall: (input) => {
       const record = isRecord(input) ? input : {};
       const requestId = stringOrNull(record.requestId);
-      const broadcastEntry = requestId ? pendingBroadcasts.get(requestId) : null;
-      if (requestId && !broadcastEntry && finishedListBroadcasts.has(requestId)) {
-        // Too late for that list, but the desktop is there: wait for it next time.
-        const lateClientId = stringOrNull(record.clientId);
-        if (lateClientId) rememberAnswering(lateClientId);
-        return { ok: false };
-      }
-      if (requestId && broadcastEntry) {
-        // Any desktop may answer a broadcast, once.
+      if (requestId) {
         const clientId = stringOrNull(record.clientId);
-        if (!clientId) return { ok: false };
-        if (record.phase === "taken") {
-          broadcastEntry.taken.add(clientId);
-          return { ok: true };
+        const label = (clientId ? desktopLabelFrom(record.desktopLabel) ?? desktopLabels.get(clientId) : null) ?? "another desktop";
+        const answered = broadcaster.reply(requestId, { ...record, clientId, label });
+        if (answered) {
+          if (clientId && record.phase === "done") rememberNewest(desktopLabels, clientId, label, LAST_HOST_CAP);
+          return answered;
         }
-        if (record.phase !== "done" || broadcastEntry.replies.has(clientId)) return { ok: false };
-        const label = desktopLabelFrom(record.desktopLabel) ?? desktopLabels.get(clientId) ?? "another desktop";
-        rememberNewest(desktopLabels, clientId, label, LAST_HOST_CAP);
-        broadcastEntry.replies.set(clientId, { label, ok: record.ok === true, result: record.ok === true ? record.result : null });
-        if (record.ok === true && broadcastEntry.method === "listTabsForAgent") rememberAnswering(clientId);
-        broadcastReplyReceived(broadcastEntry, requestId);
-        return { ok: true };
       }
       const entry = requestId ? pendingCalls.get(requestId) : null;
       // Only the desktop the command was sent to may answer it.
@@ -1263,7 +934,13 @@ export function createRemoteBrowserForwarder(args: {
           taken: true,
           desktopLabel,
           ok: true,
-          result: receiveFiles(requestId, record.result, filesFromReply(record.files)),
+          result: receiveRemoteCallFiles({
+            requestId,
+            result: record.result,
+            files: record.files,
+            dir: args.receivedFilesDir ?? null,
+            logger: args.logger,
+          }),
         }),
       };
     },
@@ -1282,7 +959,7 @@ export function createRemoteBrowserForwarder(args: {
           });
         })
         : Promise.resolve();
-      const remote = broadcast("releaseLaneTabs", { laneId: id }, { waitMs: RELEASE_BROADCAST_WAIT_MS });
+      const remote = broadcaster.send("releaseLaneTabs", { laneId: id }, { laneId: id, waitMs: RELEASE_BROADCAST_WAIT_MS });
       await local;
       void remote.then((replies) => {
         args.logger.info("built_in_browser.release_lane", { laneId: id, desktops: replies.size });
@@ -1291,7 +968,7 @@ export function createRemoteBrowserForwarder(args: {
     dispose: () => {
       for (const requestId of [...pending.keys()]) settle(requestId, null);
       for (const requestId of [...pendingCalls.keys()]) settleCall(requestId, { taken: false });
-      for (const requestId of [...pendingBroadcasts.keys()]) finishBroadcast(requestId);
+      broadcaster.dispose();
     },
   };
 }

@@ -1228,7 +1228,12 @@ export async function createAdeRuntime(args: {
         // Its chats are gone, so nothing would ever let go of its tabs: free
         // them in every browser, and close none.
         if ((event.type === "lane-archived" || event.type === "lane-deleted") && event.laneId) {
-          void releaseLaneBrowserTabsHolder.current?.(event.laneId).catch(() => {});
+          void releaseLaneBrowserTabsHolder.current?.(event.laneId).catch((error: unknown) => {
+            logger.warn("built_in_browser.release_lane_failed", {
+              laneId: event.laneId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          });
         }
       },
       onLinearIssueLinked: ({ lane, issue, linkedAt }) => {
@@ -2205,23 +2210,33 @@ export async function createAdeRuntime(args: {
     // The user's own browser is reached from THIS process (the chat's runtime
     // host), so attaching needs no desktop and works on a remote runtime.
     // This machine's name in browser messages ("ADE browser on Mac Studio …"),
-    // the same display name `ade browser attach` prints.
-    const browserMachineName: { current: string | null } = { current: null };
-    if (!chatOnlyRuntime) {
-      void import("./services/sync/deviceRegistryService")
-        .then((module) => module.resolveDeviceDisplayNameSettled())
-        .then((name) => {
-          browserMachineName.current = name;
-        })
-        .catch(() => {});
-    }
+    // the same display name `ade browser attach` prints. Looked up the first
+    // time a message needs it, not at every brain start; until it is known
+    // the host name stands in.
+    const browserMachineName: { current: string | null; requested: boolean } = { current: null, requested: false };
+    const resolveBrowserMachineName = (): string | null => {
+      if (!browserMachineName.requested) {
+        browserMachineName.requested = true;
+        void import("./services/sync/deviceRegistryService")
+          .then((module) => module.resolveDeviceDisplayNameSettled())
+          .then((name) => {
+            browserMachineName.current = name;
+          })
+          .catch((error: unknown) => {
+            logger.debug("built_in_browser.machine_name_unavailable", {
+              error: error instanceof Error ? error.message : String(error),
+            });
+          });
+      }
+      return browserMachineName.current;
+    };
     const browserSurface = chatOnlyRuntime
       ? null
       : {
         remoteBrowserForwarder: createRemoteBrowserForwarder({
           emitEvent: (payload) => pushEvent("runtime", payload),
           logger,
-          machineName: () => browserMachineName.current,
+          machineName: resolveBrowserMachineName,
           describeOwners: async ({ chatSessionIds, laneIds }) => {
             const chats: Record<string, string> = {};
             const lanes: Record<string, string> = {};

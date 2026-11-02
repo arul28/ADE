@@ -32,30 +32,33 @@ when the user asks for it; see step 10.
 List tabs first: `ade browser status` lists every tab of this project on
 every machine this one can reach, each with its machine, owner, who opened it
 and its sign-in, and how full each browser is. Reuse a tab owned by the
-current chat. Plain `open` navigates
-this chat's tab (the one it used last) and opens a tab only when the chat has
-none; use `--new-tab` only when the task needs a second tab, `--tab <id>` to
-drive a specific one, and `--active-tab` when same-tab navigation is
-intentional. `open` prints `opened: <tab-id> <url>` or `navigated: <tab-id>
+current chat. Plain `open` navigates a tab this chat owns in the browser
+where the user sits, and opens one there when the chat has none, so it can
+pick a different tab than the one you last used. To keep working in one tab,
+pass `--tab <id>`. Use `--new-tab` only when the task needs a second tab, and
+`--active-tab` when same-tab navigation is intentional. `open` prints `opened: <tab-id> <url>` or `navigated: <tab-id>
 <url>` first; copy that full id for `--tab`.
 The owner column says what you may do with a tab:
 
 - `this chat`: yours. Reuse it, and close it when the task is done.
 - `free — ade browser claim --tab <id>`: no chat holds it (or its chat went
-  idle for 10 minutes). Claim it with that command to drive it. `--lane` comes
+  idle for 10 minutes). Claim it with that command to drive it.
+- `free (the user's tab; ask first) — …`: the user opened it, or used an
+  agent's tab by hand. Ask before you claim, drive or close it. `--lane` comes
   from `ADE_LANE_ID`; pass it when working from another shell. A personal
   (project-less) chat claims with the tab id alone.
 - `"<chat title>" · lane <name> (held)`: another chat is using it. You
   cannot claim it (there is no `--force` for agents), and you should leave it
   alone. It frees itself 10 minutes after that chat stops using it.
 
-A command without `--tab` acts on this chat's tab. When the chat has none,
-it is refused rather than run in the tab the user has in front: open your
-own, or name one with `--tab`.
+A command without `--tab` acts on a tab this chat owns. When the chat owns
+none, it is refused rather than run in whatever tab is in front: open your
+own, or claim one and name it with `--tab`.
 
 Any agent may close any tab, a held one included. Check the owner first:
 close this chat's tabs and free ones; close a held tab only when the task
-needs it; never close a tab `opened by the user` without asking them. `close`
+needs it; never close a tab the user opened or kept (`opened by the user`, or
+`the user's tab`) without asking them. `close`
 prints whose tab it closed. A deleted or archived lane frees its tabs and
 leaves them open. An agent's tab is not brought back after ADE restarts; a tab
 the user opened or used keeps its id across a restart.

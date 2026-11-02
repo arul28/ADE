@@ -3560,11 +3560,12 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     owner "this chat"          yours; reuse it, close it when done
     owner "free — claim …"     no chat holds it; claim it to drive it
     owner "\"<title>\" · lane … (held)"  another chat's live tab; leave it alone
-  A command without --tab acts on this chat's tab; with none, it is refused
-  rather than run in the tab the user has in front.
+  A command without --tab acts on a tab this chat owns; with none, it is
+  refused rather than run in whatever tab is in front. Plain "open" uses a tab
+  this chat owns where the user sits; pass --tab <id> to stay in one tab.
   Any agent may close any tab, a held one included, but check the owner first:
   prefer this chat's tabs and free ones, close a held tab only when the task
-  needs it, and never close a tab "opened by the user" without asking them.
+  needs it, and never close a tab the user opened or kept without asking them.
   "close" prints whose tab it closed. When the browser is full, the error lists
   only your tabs and free agent tabs; ask the user about the rest. A deleted or
   archived lane frees its tabs (they stay open). An agent's tab is not brought
@@ -33725,6 +33726,8 @@ function formatUserBrowserStatus(userBrowser: JsonObject): string {
  */
 function formatBrowserHandoff(value: unknown): string {
   const record = isRecord(value) ? value : {};
+  // With the wait, the result is the wait's own answer, not the step map.
+  if (typeof record.ended === "boolean") return formatBrowserHandoff({ result: record });
   const handoff = unwrapActionEnvelope(record.handoff);
   const attention = unwrapActionEnvelope(record.attention);
   const waited = unwrapActionEnvelope(record.result);
@@ -33956,7 +33959,7 @@ function formatBrowserStatus(value: unknown): string {
       { fullColumns: ["tab", "machine", "owner"] },
     ),
     ...(tabs.length > 0
-      ? ["", "Close your own tabs when done. Any agent may close any tab, but check the owner first: prefer this chat's tabs and free ones, leave a tab another chat holds unless the task needs it, and never close a tab the user opened without asking."]
+      ? ["", "Close your own tabs when done. Any agent may close any tab, but check the owner first: prefer this chat's tabs and free ones, leave a tab another chat holds unless the task needs it, and never close a tab the user opened or kept without asking."]
       : []),
   ].join("\n");
 }

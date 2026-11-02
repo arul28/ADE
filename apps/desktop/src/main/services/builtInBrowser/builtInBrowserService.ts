@@ -1018,6 +1018,7 @@ export function createBuiltInBrowserService(args: {
       getTabLimit: () => browserSettings.get().tabLimit,
       resolveDownloadDirectory: () => browserSettings.get().downloadDir,
       networkRouter,
+      isTabIdLive,
       waitForProfileMigration: () => profileMigrationPromise.then(() => undefined),
       onHandoff: args.onHandoff ?? null,
       presenceHolds: presenceRouter,
@@ -1025,6 +1026,15 @@ export function createBuiltInBrowserService(args: {
       createTabRecorder: args.createTabRecorder ?? null,
       demoEngine: args.demoEngine ?? null,
     });
+
+  /**
+   * Whether any collection in this process already has a tab with this id.
+   * Two windows can each restore the same project's saved tabs; only the
+   * first keeps the saved ids, so an id names one tab.
+   */
+  function isTabIdLive(tabId: string): boolean {
+    return allWindowServices().some((service) => service.listTabIds().includes(tabId));
+  }
 
   /**
    * Where a collection's observation screenshots are written.
@@ -1234,6 +1244,7 @@ export function createBuiltInBrowserService(args: {
         getTabLimit: () => browserSettings.get().tabLimit,
         resolveDownloadDirectory: () => browserSettings.get().downloadDir,
         networkRouter,
+        isTabIdLive,
         waitForProfileMigration: () => profileMigrationPromise.then(() => undefined),
         onHandoff: args.onHandoff ?? null,
         presenceHolds: presenceRouter,
@@ -1304,6 +1315,7 @@ export function createBuiltInBrowserService(args: {
           getTabLimit: () => browserSettings.get().tabLimit,
           resolveDownloadDirectory: () => browserSettings.get().downloadDir,
           networkRouter,
+          isTabIdLive,
           waitForProfileMigration: () => profileMigrationPromise.then(() => undefined),
           onHandoff: args.onHandoff ?? null,
           presenceHolds: presenceRouter,
@@ -2292,6 +2304,8 @@ function createBuiltInBrowserWindowService(args: {
   /** The configured download folder, or null for the OS Downloads folder. */
   resolveDownloadDirectory?: (() => string | null) | null;
   networkRouter: ReturnType<typeof createBrowserNetworkRouter>;
+  /** A saved id already used by a tab in another collection or window is not restored as is. */
+  isTabIdLive?: ((tabId: string) => boolean) | null;
   waitForProfileMigration: () => Promise<void>;
   onHandoff?: BuiltInBrowserHandoffListener | null;
   /**
@@ -2695,16 +2709,16 @@ function createBuiltInBrowserWindowService(args: {
     }
     const ownedTab = reusableOwnedTabForInput(input);
     if (ownedTab) return ownedTab;
-    const tab = activeTab();
-    if (!tab) throw new BuiltInBrowserNoTabError(emptyMessage);
     // An agent with no tab of its own names one. Falling back to the tab in
-    // front put its clicks and reads in a page the user opened (their mail, a
-    // form with unsaved work) and claimed it for the agent.
-    if ((stringOrNull(input.chatSessionId) || stringOrNull(input.laneId)) && (tab.openedBy === "human" || tab.keptByPerson)) {
+    // front put its clicks and reads in whatever page that was (the user's
+    // mail, a form with unsaved work, another agent's idle tab) and claimed it.
+    if (stringOrNull(input.chatSessionId) || stringOrNull(input.laneId)) {
       throw new BuiltInBrowserNoTabError(
-        "This chat has no browser tab here, and the tab in front is the user's. Open your own with `ade browser open <url>`, or name a tab with --tab <id> (`ade browser status` lists them; ask the user before using one of theirs)",
+        "This chat has no browser tab here. Open your own with `ade browser open <url>`, or name a tab with --tab <id> (`ade browser status` lists them; ask the user before using one of theirs)",
       );
     }
+    const tab = activeTab();
+    if (!tab) throw new BuiltInBrowserNoTabError(emptyMessage);
     return tab;
   };
 
@@ -7359,7 +7373,7 @@ function createBuiltInBrowserWindowService(args: {
     }
     restoringTabs = true;
     const restoredTabs = saved.map((entry) => {
-      const id = entry.id && !seenIds.has(entry.id) ? entry.id : null;
+      const id = entry.id && !seenIds.has(entry.id) && !args.isTabIdLive?.(entry.id) ? entry.id : null;
       if (id) seenIds.add(id);
       // The same id after a restart, so an id an agent saved, or one in an
       // earlier error, still names this tab (ledger T3).

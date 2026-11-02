@@ -6,6 +6,7 @@ import {
   type BuiltInBrowserRemoteCall,
   type BuiltInBrowserRemoteCallReplyBody,
 } from "../../shared/types/builtInBrowserRemote";
+import { logRendererDebugEvent } from "./debugLog";
 import { getDesktopClientId, isAddressedToThisDesktop } from "./desktopClient";
 
 /**
@@ -99,13 +100,20 @@ function rememberNewest(ids: Set<string>, id: string, cap: number): void {
  */
 function servedChatFor(machine: ServedMachine, call: BuiltInBrowserRemoteCall): ServedChat | null {
   // A lane's release is about every collection, and no chat asks for it.
-  if (call.broadcast && call.method === "releaseLaneTabs") return { chatSessionId: "", laneId: null, projectRoot: null };
+  if (call.broadcast && call.method === "releaseLaneTabs") {
+    const laneId = call.laneId ?? (typeof call.input.laneId === "string" ? call.input.laneId : null);
+    return laneId ? { chatSessionId: "", laneId, projectRoot: null } : null;
+  }
   const registered = call.chatSessionId ? machine.chats.get(call.chatSessionId) ?? null : null;
   if (registered) return registered;
   const myId = getDesktopClientId();
   const addressedHere = Boolean(myId && call.targetClientId === myId);
   if (!call.broadcast && !addressedHere) return null;
   if (call.collection !== "project" && call.collection !== "personal") return null;
+  // A broadcast lists a project's tabs only. The personal collection is the
+  // user's own browsing (the Browser top tab): a chat they never drove from
+  // here does not get to read it.
+  if (call.broadcast && call.collection === "personal") return null;
   return {
     chatSessionId: call.chatSessionId ?? "",
     laneId: call.laneId,
@@ -195,8 +203,9 @@ function saveServedMachines(): void {
       return { ...rest, servedAt: machine.shownAt };
     });
     window.localStorage.setItem(SERVED_MACHINES_STORAGE_KEY, JSON.stringify(bindings));
-  } catch {
+  } catch (error) {
     // No storage (the web client, a full disk): served until the next reload.
+    logRendererDebugEvent("renderer.remote_browser_calls.save_failed", { error: errorText(error) });
   }
 }
 
@@ -275,7 +284,9 @@ export function resumeServedRemoteBrowserCalls(): void {
   let saved: unknown;
   try {
     saved = JSON.parse(window.localStorage.getItem(SERVED_MACHINES_STORAGE_KEY) ?? "[]");
-  } catch {
+  } catch (error) {
+    // Nothing saved that can be read: machines are served again as their chats are shown.
+    logRendererDebugEvent("renderer.remote_browser_calls.resume_failed", { error: errorText(error) });
     return;
   }
   if (!Array.isArray(saved)) return;
@@ -312,7 +323,15 @@ export function useServeRemoteBrowserCalls(args: {
   bindingRef.current = binding;
   const machineKey = binding?.kind === "remote" ? binding.key : null;
   useEffect(() => {
-    if (!active || !chatSessionId || !machineKey) return;
-    serveRemoteBrowserCalls(bindingRef.current, { chatSessionId, laneId, projectRoot });
+    if (!active || !machineKey) return;
+    const current = bindingRef.current;
+    if (current?.kind !== "remote") return;
+    // No chat yet (a draft, a launch in the background): serve the machine
+    // anyway, so the chat's first browser command finds this desktop.
+    if (!chatSessionId) {
+      serveMachine(current);
+      return;
+    }
+    serveRemoteBrowserCalls(current, { chatSessionId, laneId, projectRoot });
   }, [active, chatSessionId, laneId, machineKey, projectRoot]);
 }
