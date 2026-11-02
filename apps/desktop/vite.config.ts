@@ -70,14 +70,6 @@ function vendorChunk(id: string): string | undefined {
   return undefined;
 }
 
-/**
- * `build:demo` builds this renderer as the website's live demo (apps/web/public/demo).
- * Every file the demo loads is one edge request on the website's host, and
- * automatic chunking puts each small module shared by lazy chunks (one per
- * icon) in its own file: hundreds of requests per page view. The demo build
- * keeps the app's groups and merges those small shared modules into one chunk.
- * The Electron build is unchanged.
- */
 export default defineConfig(({ mode }) => ({
   root: "src/renderer",
   base: "./",
@@ -116,6 +108,12 @@ export default defineConfig(({ mode }) => ({
     // uploaded, then deleted before electron-builder packs (release-core.yml).
     sourcemap: process.env.ADE_BUILD_SOURCEMAPS === "1" ? "hidden" : false,
     rollupOptions: {
+      // `build:demo` (`--mode demo`) builds this renderer as the website's live
+      // demo, where every file the demo loads is one request to the website's
+      // host. Automatic chunking puts each small module shared by lazy chunks
+      // (one per icon) in its own file, hundreds per page view, so the demo
+      // keeps the app's groups and merges those small shared modules into one
+      // chunk. The Electron build keeps `manualChunks`.
       output: mode === "demo"
         ? {
             codeSplitting: {

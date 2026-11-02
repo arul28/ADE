@@ -41,7 +41,7 @@
       ]
     },
     {
-      "source": "/assets/(.*)",
+      "source": "/assets/(.+-[A-Za-z0-9_-]{8}\\.[a-z0-9]+)",
       "headers": [
         {
           "key": "Cache-Control",
@@ -50,7 +50,7 @@
       ]
     },
     {
-      "source": "/demo/assets/(.*)",
+      "source": "/demo/assets/(.+-[A-Za-z0-9_-]{8}\\.[a-z0-9]+)",
       "headers": [
         {
           "key": "Cache-Control",
