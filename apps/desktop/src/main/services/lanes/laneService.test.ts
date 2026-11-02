@@ -4265,14 +4265,17 @@ describe("laneService delete teardown + cancellation + streaming", () => {
 
     await service.list({ includeStatus: false });
 
-    // The list starts the sweep and returns without waiting for it.
-    await vi.waitFor(() => expect(fs.existsSync(childPath)).toBe(false));
-    expect(
-      db.get<{ lane_id: string }>(
-        "select lane_id from local_worktree_residual_cleanups where project_id = ? and worktree_path = ?",
-        ["proj-delete", childPath],
-      ),
-    ).toBeNull();
+    // The list starts the sweep and returns without waiting for it; the sweep
+    // removes the folder, then its record.
+    await vi.waitFor(() => {
+      expect(fs.existsSync(childPath)).toBe(false);
+      expect(
+        db.get<{ lane_id: string }>(
+          "select lane_id from local_worktree_residual_cleanups where project_id = ? and worktree_path = ?",
+          ["proj-delete", childPath],
+        ),
+      ).toBeNull();
+    });
   });
 
   it("does not clean up non-git directories still referenced by archived lanes", async () => {

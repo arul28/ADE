@@ -48,6 +48,8 @@ export function useLaneMachineChoice(open: boolean) {
   const { snapshot: remoteSnapshot, loaded: snapshotLoaded } = useRemoteConnectionSnapshot(open);
   /** The machine the user picked; "" until they pick one. */
   const [pickedMachineId, setPickedMachineId] = useState<string>("");
+  /** This computer's checkouts with their origins, read while the dialog is open. */
+  const [localProjects, setLocalProjects] = useState<RecentProjectSummary[] | undefined>(undefined);
   /** This computer's checkouts have been read (or cannot be), so the machine list is final. */
   const [localProjectsSettled, setLocalProjectsSettled] = useState(false);
 
@@ -55,6 +57,8 @@ export function useLaneMachineChoice(open: boolean) {
     // Every open asks again.
     if (open) return;
     setPickedMachineId("");
+    // A reopen reads them again; the old list must not match machines first.
+    setLocalProjects(undefined);
     setLocalProjectsSettled(false);
   }, [open]);
 
@@ -86,7 +90,6 @@ export function useLaneMachineChoice(open: boolean) {
    * here: without it, the same repo on another machine matched only by folder
    * name and could not be picked.
    */
-  const [localProjects, setLocalProjects] = useState<RecentProjectSummary[] | undefined>(undefined);
   useEffect(() => {
     if (!open) return;
     const listRecent = window.ade?.project?.listRecent;

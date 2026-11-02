@@ -323,6 +323,8 @@ export function createHeadlessLinearCredentialService(args: {
     }))) {
       return;
     }
+    // This machine owns the grant now; an earlier "owned elsewhere" is stale.
+    refreshOwnedElsewhereUntilMs = 0;
 
     try {
       if (readCredential(refreshTokenKey)) return;

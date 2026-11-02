@@ -819,6 +819,8 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
     }))) {
       return;
     }
+    // This machine owns the grant now; an earlier "owned elsewhere" is stale.
+    refreshOwnedElsewhereUntilMs = 0;
     let stored: StoredLinearToken | null;
     try {
       stored = getStoredToken();

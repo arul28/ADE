@@ -4334,17 +4334,9 @@ export function createLaneService({
         // long", a full disk, an LFS download) leaves the fresh branch, and a
         // retry then fails on it. Nothing else owns either yet, so remove
         // both. Never when git refused because the branch or folder already
-        // exists: those were made by someone else in the meantime, not by
-        // this call.
-        if (
-          gitStarted
-          && !branchPreexisted
-          && (
-            runtimeOptions.signal?.aborted
-            || addError instanceof GitTimeoutError
-            || !isWorktreeAddConflictError(addError)
-          )
-        ) {
+        // exists, even if the create was also stopped: those were made by
+        // someone else in the meantime, not by this call.
+        if (gitStarted && !branchPreexisted && !isWorktreeAddConflictError(addError)) {
           await cleanupCreatedWorktreeLaneAfterCreateFailure({ laneId, branchRef, worktreePath, cause: addError });
         }
         throw addError;
