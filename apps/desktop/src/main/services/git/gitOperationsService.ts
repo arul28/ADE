@@ -49,6 +49,7 @@ import { ensureLinearCommitReference } from "../../../shared/linearMagicWords";
 import { GIT_FETCH_TIMEOUT_MS } from "../../../shared/defaultRemoteLaneBase";
 import type { Logger } from "../logging/logger";
 import type { createLaneService } from "../lanes/laneService";
+import { assertLaneIdArg } from "../lanes/laneIdArg";
 import type { createOperationService } from "../history/operationService";
 import { isRecord, parseDiffNameOnly, parseDiffNameOnlySorted, safeJsonParse } from "../shared/utils";
 import { AdeExpectedError } from "../../../shared/expectedError";
@@ -446,12 +447,7 @@ export function createGitOperationsService({
   }): Promise<{ result: T; action: GitActionResult }> => {
     // Every git action (sync, pull, commit, ...) enters here with args an agent,
     // the CLI or another machine sent; refuse a missing id before any lookup.
-    if (typeof laneId !== "string" || !laneId.trim()) {
-      throw new AdeExpectedError(
-        `invalid_argument: ${kind} needs a laneId (a lane id string). Pass --lane <id> or run from inside a lane.`,
-        "user",
-      );
-    }
+    assertLaneIdArg(laneId, kind);
     invalidateLaneReadCache(laneId);
     const lane = laneService.getLaneBaseAndBranch(laneId);
     await assertLaneWorktreeRoot(lane);

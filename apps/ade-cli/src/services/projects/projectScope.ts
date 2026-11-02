@@ -5,9 +5,7 @@ import type { SyncRemoteCommandExecutionContext } from "../sync/syncRemoteComman
 import type { SyncHostBlocker } from "../sync/syncService";
 import type { BrainKeepAwakeService } from "../power/brainKeepAwakeService";
 import type { ProjectId, ProjectRecord, ProjectRegistry } from "./projectRegistry";
-import path from "node:path";
 import { captureProblem, sendSentryLog } from "../../../../desktop/src/shared/sentry/capture";
-import { pathsEqual } from "../../../../desktop/src/main/services/shared/pathCompare";
 import { DIAGNOSTIC_ATTACH_TAG } from "../../../../desktop/src/shared/sentry/diagnostics";
 import { createReportOnce, PROJECT_REGISTRY_ATTACH, wasRemovedFromRegistry } from "./projectRegistryJournal";
 
@@ -986,11 +984,9 @@ export class ProjectScopeRegistry {
     const movedTo = this.projectRegistry.resolveMovedProjectId(projectId);
     if (movedTo) return movedTo;
     const rootPath = typeof target.projectRootPath === "string" && target.projectRootPath.trim()
-      ? path.resolve(target.projectRootPath.trim())
+      ? target.projectRootPath.trim()
       : null;
-    const byRoot = rootPath
-      ? this.projectRegistry.list().find((record) => pathsEqual(record.rootPath, rootPath)) ?? null
-      : null;
+    const byRoot = rootPath ? this.projectRegistry.findAtRootPath(rootPath) : null;
     if (byRoot) return byRoot.projectId;
     if (this.logUnknownPeerProjectIdOnce(projectId)) {
       sendSentryLog("warn", "brain.peer_unknown_project_id", {

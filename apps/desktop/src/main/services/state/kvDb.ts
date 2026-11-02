@@ -839,8 +839,8 @@ class RebuildRollbackFailedError extends Error {
 /**
  * Rebuild one table through a staging copy, in one write transaction.
  *
- * `planOrResolve` may be a function, which runs once the write lock is held and
- * returns null when there is nothing to rebuild. A sibling process (the desktop
+ * `resolvePlan` runs once the write lock is held and returns null when there
+ * is nothing to rebuild. A sibling process (the desktop
  * and the brain open the same file) can rewrite the table between the caller
  * reading the schema and taking the lock, so a plan built from that earlier
  * read can be stale; one built under the lock cannot. Returns whether the
@@ -848,11 +848,11 @@ class RebuildRollbackFailedError extends Error {
  */
 export function rebuildTableInTransaction(
   db: DatabaseSyncType,
-  planOrResolve: TableRebuildPlan | (() => TableRebuildPlan | null),
+  resolvePlan: () => TableRebuildPlan | null,
   runStmt: typeof runStatement = runStatement,
 ): boolean {
   let transactionMayBeOpen = false;
-  let rebuildingTable: string | null = typeof planOrResolve === "function" ? null : planOrResolve.tableName;
+  let plan: TableRebuildPlan | null = null;
   try {
     runStmt(db, "BEGIN IMMEDIATE");
     transactionMayBeOpen = true;
@@ -866,13 +866,12 @@ export function rebuildTableInTransaction(
   }
 
   try {
-    const plan = typeof planOrResolve === "function" ? planOrResolve() : planOrResolve;
+    plan = resolvePlan();
     if (!plan) {
       runStmt(db, "commit");
       transactionMayBeOpen = false;
       return false;
     }
-    rebuildingTable = plan.tableName;
     const originalCount = getRow<{ count: number }>(
       db,
       `select count(*) as count from ${quoteIdentifier(plan.tableName)}`,
@@ -923,7 +922,7 @@ export function rebuildTableInTransaction(
         // instead of running more statements inside it.
         const rollbackMessage = rollbackError instanceof Error ? rollbackError.message : String(rollbackError);
         if (!/no transaction is active/i.test(rollbackMessage)) {
-          throw new RebuildRollbackFailedError(rebuildingTable ?? "a table", rollbackError);
+          throw new RebuildRollbackFailedError(plan?.tableName ?? "a table", rollbackError);
         }
       }
     }
@@ -979,8 +978,10 @@ function retrofitLegacyPrimaryKeyNotNullSchema(
       // Local-only tables never become CRRs, so their FK and unique-index
       // schema must remain intact.
       if (LOCAL_ONLY_CRR_EXCLUDED_TABLES.has(table.name)) continue;
-      // CRR tables must be altered via crsql_begin_alter/commit_alter or rebuilt
-      // with rebuildCrrTableWithBackfill — never DROP/rename wholesale.
+      // A live CRR (clock and all three triggers) must be altered via
+      // crsql_begin_alter/commit_alter or rebuilt with rebuildCrrTableWithBackfill,
+      // never DROP/rename wholesale. A half-converted one (no clock, or missing
+      // triggers) is not replicating yet, so it is rebuilt here like any table.
       if (isLiveCrr(crrTableState(crrSchema, table.name))) continue;
 
       try {
@@ -1245,13 +1246,13 @@ function retrofitForeignKeyCascadeActions(
         .map((index) => index.sql?.trim() ?? "")
         .filter(Boolean);
 
-      rebuildTableInTransaction(db, {
+      rebuildTableInTransaction(db, () => ({
         tableName: table.name,
         stagingName: repairName,
         createStagingSql: rewrittenSql,
         columnsSql,
         indexSqlsToRecreate: indexSqls,
-      });
+      }));
       changed = true;
     }
   } finally {
@@ -2343,6 +2344,7 @@ function ensureCrrTables(db: DatabaseSyncType, logger?: Logger): void {
     try {
       getRow(db, "select crsql_as_crr(?) as ok", [tableName]);
     } catch (error) {
+      if (isSqliteBusyOrLockedError(error)) throw error;
       if (repairTargets.has(tableName)) throw error;
       // Swallow only the refusals named above, read from the table's schema.
       // An I/O error or a busy lock is not a one-table problem, and swallowing

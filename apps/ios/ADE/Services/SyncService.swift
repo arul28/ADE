@@ -4758,6 +4758,8 @@ final class SyncService: ObservableObject {
   private var activeRemoteDbSiteId: String?
   private var connectionGeneration: UInt64 = 0
   private var connectAttemptGeneration: UInt64 = 0
+  /// How long a dial waits for an in-flight interface scan before ranking routes.
+  private static let dialTailnetScanWaitNanoseconds: UInt64 = 1_200_000_000
   private var lastConnectionAttemptStartedAtMilliseconds: Int64 = 0
   private var connectAttemptStartedAt: TimeInterval?
   private var projectSwitchTimingStartedAt: TimeInterval?
@@ -9446,6 +9448,19 @@ final class SyncService: ObservableObject {
       let generation = tailnetInterfaceScanGeneration
       await scan.value
       if generation == tailnetInterfaceScanGeneration { return }
+    }
+  }
+
+  /// `latestTailnetScan`, but never longer than `limitNanoseconds`: a dial
+  /// ranks with the last scan's addresses rather than wait on `getifaddrs`
+  /// through interface churn, which is when reconnects fire.
+  private func latestTailnetScan(limitNanoseconds: UInt64) async {
+    guard tailnetInterfaceScanTask != nil else { return }
+    await withTaskGroup(of: Void.self) { group in
+      group.addTask { @MainActor [weak self] in await self?.latestTailnetScan() }
+      group.addTask { try? await Task.sleep(nanoseconds: limitNanoseconds) }
+      await group.next()
+      group.cancelAll()
     }
   }
 
@@ -19012,6 +19027,12 @@ final class SyncService: ObservableObject {
         machineFleet?.focusedConnectionChanged()
       }
     }
+    // The plan's route memory is keyed by this network's fingerprint, built
+    // from the interface addresses. A path change starts an off-main rescan;
+    // wait for it (suspending, not blocking main) so a connect right after a
+    // network switch does not rank routes by the previous network's addresses.
+    await latestTailnetScan(limitNanoseconds: Self.dialTailnetScanWaitNanoseconds)
+    guard isCurrentConnectAttempt(connectAttemptGeneration) else { throw CancellationError() }
     var orderedEndpointAttempts = try endpointAttemptPlan(
       for: profile,
       preferLiveCandidatesOnly: preferLiveCandidatesOnly
@@ -22333,15 +22354,11 @@ final class SyncService: ObservableObject {
       // A roster carries every chat of every project; decoding it on the main
       // actor hung the app. Decode off-main and apply here. Ordering holds:
       // receiveLoop awaits each frame before reading the next.
-      let snapshot = await Task.detached(priority: .userInitiated) {
-        machineConnectionDecode(payload, as: RemoteRosterSnapshotPayload.self)
-      }.value
+      let snapshot = await machineConnectionDecodeOffMain(payload, as: RemoteRosterSnapshotPayload.self)
       guard isCurrentConnectionGeneration(generation), let snapshot else { break }
       applyRosterSnapshot(snapshot)
     case "roster_delta":
-      let delta = await Task.detached(priority: .userInitiated) {
-        machineConnectionDecode(payload, as: RemoteRosterDeltaPayload.self)
-      }.value
+      let delta = await machineConnectionDecodeOffMain(payload, as: RemoteRosterDeltaPayload.self)
       guard isCurrentConnectionGeneration(generation), let delta else { break }
       applyRosterDelta(delta)
     case "chat_launch_event":
@@ -26179,9 +26196,7 @@ extension SyncService {
         self.sendEnvelope(type: "roster_chats_request", requestId: requestId, payload: payload)
       }
       guard generation == rosterOlderChatsGeneration else { return nil }
-      let page = await Task.detached(priority: .userInitiated) {
-        machineConnectionDecode(raw, as: RemoteRosterChatsPayload.self)
-      }.value
+      let page = await machineConnectionDecodeOffMain(raw, as: RemoteRosterChatsPayload.self)
       guard generation == rosterOlderChatsGeneration else { return nil }
       return page
     } catch {
@@ -27161,6 +27176,9 @@ extension SyncService {
     token: String,
     isCurrent: @escaping @MainActor () -> Bool
   ) async throws -> SyncFleetDialResult {
+    // Rank by this network's addresses, not the previous one's (see connectUsingProfile).
+    await latestTailnetScan(limitNanoseconds: Self.dialTailnetScanWaitNanoseconds)
+    guard isCurrent() else { throw CancellationError() }
     let attempts = try endpointAttemptPlan(for: profile, preferLiveCandidatesOnly: false)
     guard !attempts.isEmpty else { throw noConnectableAddressError() }
     let plan = syncConnectionRaceCandidatePlan(rankedAttempts: attempts)

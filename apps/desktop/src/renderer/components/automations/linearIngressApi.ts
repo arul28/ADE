@@ -1,5 +1,8 @@
 import { isAdeAvailable } from "../../lib/adeAvailability";
+import { navigateToAppTarget } from "../../lib/openExternal";
 import { LINEAR_NOT_CONNECTED_MESSAGE } from "../../../shared/types/automations";
+import type { OpenProjectBinding } from "../../../shared/types";
+import { chatSettingsMachineId } from "../chat/chatDeeplinks";
 
 export type LinearIngressApi = typeof window.ade.automations.linearIngress;
 
@@ -17,4 +20,26 @@ export function linearIngressApi(): Partial<LinearIngressApi> | null {
 export function isLinearNotConnectedError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error ?? "");
   return message.includes(LINEAR_NOT_CONNECTED_MESSAGE);
+}
+
+/**
+ * Set up Linear ingress on the machine `pin` names (null: the tab's machine).
+ * When Linear itself is not connected there, open THAT machine's Linear
+ * settings, since connecting it comes first; any other failure is the
+ * caller's to handle.
+ */
+export async function setupLinearIngressOrOpenSettings(pin: OpenProjectBinding | null): Promise<void> {
+  const api = linearIngressApi();
+  if (!api?.setup) return;
+  try {
+    await (pin ? api.setup(pin) : api.setup());
+  } catch (error) {
+    if (!isLinearNotConnectedError(error)) throw error;
+    openLinearSettings(pin);
+  }
+}
+
+/** Linear settings for the machine `pin` names, or the tab's own machine. */
+export function openLinearSettings(pin: OpenProjectBinding | null): void {
+  navigateToAppTarget({ kind: "settings", entryId: "integrations.linear", machineId: chatSettingsMachineId({ pin }) });
 }

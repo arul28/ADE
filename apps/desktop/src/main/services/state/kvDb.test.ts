@@ -1107,7 +1107,7 @@ describe("rebuildTableInTransaction leftover staging guard", () => {
         indexSqlsToRecreate: [],
       };
 
-      expect(() => rebuildTableInTransaction(db, plan)).not.toThrow();
+      expect(() => rebuildTableInTransaction(db, () => plan)).not.toThrow();
 
       // Original rows preserved, staging gone, stale orphan row not leaked in.
       expect(db.prepare("select count(*) as count from widgets").get()).toEqual({ count: 25 });

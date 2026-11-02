@@ -1,12 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
 import { GithubLogo } from "@phosphor-icons/react";
-import { useNavigate } from "react-router-dom";
 import type { AutomationIngressStatus, AutomationLinearIngressStatus } from "../../../../shared/types";
 import { LINEAR_BRAND, LinearMark } from "../../lanes/linearBrand";
 import { Banner, noticeTone, type NoticeAction } from "../../ui/notice";
 import { formatDate } from "../../../lib/format";
-import { isLinearNotConnectedError, linearIngressApi } from "../linearIngressApi";
-import { settingsRouteFor } from "../../settings/settingsManifest";
+import { linearIngressApi, setupLinearIngressOrOpenSettings } from "../linearIngressApi";
 import { useAsyncAction } from "../../../hooks/useAsyncAction";
 
 function Dot({ tone }: { tone: "ok" | "warn" | "off" }) {
@@ -40,7 +38,6 @@ export function IngressStatusStrip({ ingressStatus }: { ingressStatus: Automatio
   const [dismissed, setDismissed] = useState(false);
   const [linear, setLinear] = useState<AutomationLinearIngressStatus | null>(null);
   const api = linearIngressApi();
-  const navigate = useNavigate();
 
   const refreshLinear = useCallback(async () => {
     if (!api?.getStatus) return;
@@ -57,13 +54,9 @@ export function IngressStatusStrip({ ingressStatus }: { ingressStatus: Automatio
 
   const { run: setupLinear, pending: busy } = useAsyncAction({
     action: async () => {
-      if (!api?.setup) return;
       try {
-        await api.setup();
-      } catch (error) {
-        // Linear itself is not connected here: connecting it comes first.
-        if (!isLinearNotConnectedError(error)) throw error;
-        navigate(settingsRouteFor("integrations.linear"));
+        // This strip shows the tab's own machine, so setup and settings go there.
+        await setupLinearIngressOrOpenSettings(null);
       } finally {
         // The service records lastError; the refresh surfaces it either way.
         await refreshLinear().catch(() => {});

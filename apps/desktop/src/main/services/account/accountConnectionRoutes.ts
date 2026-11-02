@@ -1,5 +1,7 @@
 import type { MachineConnectionRoutes } from "../../../shared/types";
 import { parseMachineConnectionRoutes } from "../../../shared/machineConnectionRoutes";
+import { markExpected } from "../../../shared/expectedError";
+import { isPeerVersionGapMessage } from "../../../shared/sentry/expectedFailure";
 import { unwrapAccountActionResult } from "../../../../../ade-cli/src/services/account/accountRefreshBroker";
 
 const ROUTES_TIMEOUT_MS = 12_000;
@@ -72,8 +74,9 @@ export function createAccountConnectionRoutesBridge(
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      if (/unsupported (remote )?command|method not found|unknown method/i.test(message)) {
-        throw new Error("Update ADE on that computer to manage its routes from here.");
+      // An older peer: one without the method, or one that still wants a projectId.
+      if (/unsupported (remote )?command|method not found|unknown method/i.test(message) || isPeerVersionGapMessage(message)) {
+        throw markExpected(new Error("Update ADE on that computer to manage its routes from here."), "environment");
       }
       throw error;
     }

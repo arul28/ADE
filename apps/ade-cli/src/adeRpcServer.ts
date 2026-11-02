@@ -113,7 +113,8 @@ import {
   isErrnoLikeCode,
   parseCodedErrorMessage,
 } from "../../desktop/src/shared/codedError";
-import { isExpectedFailure, isExpectedOutcome, isProgrammingError } from "../../desktop/src/shared/sentry/expectedFailure";
+import { isExpectedFailure, isExpectedOutcome, isOfflineFetchError, isProgrammingError } from "../../desktop/src/shared/sentry/expectedFailure";
+import { describeFetchTransportFailure } from "../../desktop/src/shared/fetchTransportFailure";
 import { forwardLogToSentry } from "../../desktop/src/shared/sentry/logBridge";
 import { expectedErrorKind } from "../../desktop/src/shared/expectedError";
 import {
@@ -9109,7 +9110,12 @@ export function createAdeRpcRequestHandler(args: {
         noteFileWatchAction(actionName, actionArgs, result);
         return result;
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        const rawMessage = error instanceof Error ? error.message : String(error);
+        // undici's bare `fetch failed` keeps its reason only in the cause
+        // chain, which does not cross the wire: name it in the text, so the
+        // caller's report and message say which network failure it was.
+        const transportReason = rawMessage === "fetch failed" ? describeFetchTransportFailure(error) : null;
+        const message = transportReason ? `${rawMessage} (${transportReason})` : rawMessage;
         const movedAway = isMovedAwayChatError(error);
         // `run_ade_action` carries every domain action; name the real one, so
         // the `runtime.action` tag and the log line say what actually failed.
@@ -9129,7 +9135,7 @@ export function createAdeRpcRequestHandler(args: {
         // An expected failure says so on the wire, so the caller's own Sentry
         // gate can tell it from a defect; older callers ignore the field.
         // Sentry keeps no issue for it, so this line is its local record.
-        const expected = expectedErrorKind(error);
+        const expected = expectedErrorKind(error) ?? (isOfflineFetchError(error) ? "network" : null);
         if (expected) {
           runtime.logger?.info?.("ade_rpc.action_expected_failure", {
             action: reportedAction,

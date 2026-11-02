@@ -13,6 +13,7 @@ import { writeFileAtomic } from "../../../../desktop/src/main/services/state/dur
 import { findMoveInProgress, readMovedMarker, type MovedMarker } from "./projectMove/moveJournal";
 import { statIdentity } from "./fileIdentity";
 import { normalizeProjectRootPath } from "./projectRoots";
+import { pathsEqual } from "../../../../desktop/src/main/services/shared/pathCompare";
 import { ExclusiveFileLockTimeoutError, withExclusiveFileLockSync } from "../../lib/exclusiveFileLock";
 import { forwardLogToSentry } from "../../../../desktop/src/shared/sentry/logBridge";
 import {
@@ -234,6 +235,16 @@ export class ProjectRegistry {
   findByRootPath(rootPath: string): ProjectRecord | null {
     const normalized = normalizeRoot(rootPath);
     return this.list().find((record) => record.rootPath === normalized) ?? null;
+  }
+
+  /**
+   * The record registered at exactly `rootPath`, compared the way the OS
+   * compares paths. Unlike `findByRootPath` it does not fold a lane worktree
+   * into its project: a peer naming a root means that root.
+   */
+  findAtRootPath(rootPath: string): ProjectRecord | null {
+    const resolved = path.resolve(rootPath);
+    return this.list().find((record) => pathsEqual(record.rootPath, resolved)) ?? null;
   }
 
   add(

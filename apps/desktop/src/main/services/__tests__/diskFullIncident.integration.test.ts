@@ -221,7 +221,7 @@ describe("disk-full incident integration matrix", () => {
     // authoritative and clean up every staging/temp artifact.
     const currentPages = Number((raw.prepare("pragma page_count").get() as { page_count: number }).page_count);
     constrainSqliteMaxPages(raw, currentPages + 2);
-    expect(() => rebuildTableInTransaction(raw, automationRebuildPlan())).toThrow(/database or disk is full/i);
+    expect(() => rebuildTableInTransaction(raw, automationRebuildPlan)).toThrow(/database or disk is full/i);
 
     const metadataFault = injectFsFault({
       op: "renameSync",

@@ -62,6 +62,7 @@ import type { LaneJiraIssue } from "../../../shared/types/jira";
 import type { createOperationService } from "../history/operationService";
 import type { Logger } from "../logging/logger";
 import { createWorktreeResidualCleanup } from "./worktreeResidualCleanup";
+import { assertLaneIdArg, describeArgType } from "./laneIdArg";
 import { laneWorktreeFolderName, legacyLaneWorktreeFolderName, slugify } from "./laneWorktreeNaming";
 import { createLaneWorktreeLockService } from "./laneWorktreeLockService";
 import { measureTree } from "../storage/diskUsage";
@@ -1525,20 +1526,6 @@ async function resolveImportBranchTarget(args: {
   throw new AdeExpectedError(notFound, "user");
 }
 
-function describeArgType(value: unknown): string {
-  if (value === undefined) return "nothing";
-  if (value === null) return "null";
-  if (Array.isArray(value)) return "a list";
-  return typeof value === "object" ? "an object" : `a ${typeof value}`;
-}
-
-function invalidLaneIdError(value: unknown): AdeExpectedError {
-  return new AdeExpectedError(
-    `invalid_argument: laneId must be a lane id string, but got ${describeArgType(value)}. Pass --lane <id> or run from inside a lane.`,
-    "user",
-  );
-}
-
 const LANE_DELETE_PROGRESS_HISTORY_TTL_MS = 60_000;
 const STORAGE_LIFECYCLE_LOCK_LEASE_MS = 15 * 60_000;
 const STORAGE_LIFECYCLE_LOCK_HEARTBEAT_MS = 60_000;
@@ -1827,7 +1814,7 @@ export function createLaneService({
     );
   };
 
-  const getLaneRow = (laneId: string) => {
+  const getLaneRow = (laneId: string | null) => {
     // Action callers (agents, the CLI, other machines) reach this with args
     // straight off the wire; a missing or non-string id would otherwise fail
     // as a SQLite bind error. Null still binds and reads as "not found".
@@ -7471,17 +7458,16 @@ export function createLaneService({
     },
 
     rename({ laneId, name }: { laneId: string; name: string }): void {
-      if (typeof laneId !== "string" || !laneId.trim()) throw invalidLaneIdError(laneId);
+      assertLaneIdArg(laneId, "rename");
       // `name` arrives unchecked from action callers (agents, the CLI, other machines).
-      const trimmed = typeof name === "string" ? name.trim() : "";
-      if (!trimmed) {
+      if (typeof name !== "string") {
         throw new AdeExpectedError(
-          typeof name === "string"
-            ? "Lane name is required"
-            : `invalid_argument: Lane name is required and must be a string, but got ${describeArgType(name)}.`,
+          `invalid_argument: Lane name is required and must be a string, but got ${describeArgType(name)}.`,
           "user",
         );
       }
+      const trimmed = name.trim();
+      if (!trimmed) throw new AdeExpectedError("Lane name is required", "user");
       const lane = getLaneRow(laneId);
       if (!lane) throw new Error(`Lane not found: ${laneId}`);
       if (lane.lane_type === "primary") throw new Error("Primary lane cannot be renamed");

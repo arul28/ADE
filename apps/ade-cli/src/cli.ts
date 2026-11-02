@@ -27881,13 +27881,8 @@ async function runServe(
       foreignChatProvider: createForeignChatTranscriptResolver({ projectRegistry }),
       projectCommandRouter: {
         resolveProjectId: ({ projectId, projectRootPath }) => {
-          const records = projectRegistry.list();
-          const byId = projectId?.trim()
-            ? records.find((record) => record.projectId === projectId.trim())
-            : undefined;
-          const byRoot = projectRootPath?.trim()
-            ? records.find((record) => pathsEqual(record.rootPath, path.resolve(projectRootPath.trim())))
-            : undefined;
+          const byId = projectId?.trim() ? projectRegistry.get(projectId.trim()) : null;
+          const byRoot = projectRootPath?.trim() ? projectRegistry.findAtRootPath(projectRootPath.trim()) : null;
           // Both selectors given: the project the id names must live at that
           // root, or the command would run in a project the caller did not mean.
           if (byId && projectRootPath?.trim() && !pathsEqual(byId.rootPath, path.resolve(projectRootPath.trim()))) {
