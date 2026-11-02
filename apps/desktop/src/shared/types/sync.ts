@@ -1734,11 +1734,30 @@ export type SyncHostStall = {
   cpuCount?: number;
   /** The host's watchdog restarted ADE there to end it. */
   restarted?: boolean;
+  /** The folder a file call was waiting on when the freeze ended, when it was one. */
+  blockedPath?: string;
+};
+
+/**
+ * A project folder on the host that stopped answering. On macOS that is
+ * usually the system asking, on that computer's screen, whether ADE may use
+ * the drive or folder; anywhere it can be a drive that stopped responding.
+ */
+export type SyncHostStorageWait = {
+  path: string;
+  /** `denied`: the listing was refused (Don't Allow), not left waiting. */
+  reason: "not_answering" | "denied";
+  /** How long ago it started, by the host's clock. */
+  sinceAgoMs: number;
+  /** The host's `process.platform`, so the text can name the right cause. */
+  platform?: string;
 };
 
 export type SyncHostHealth = {
   /** The latest freeze of 5 s or more in the last 5 minutes. */
   lastStall?: SyncHostStall | null;
+  /** A project folder that is not answering right now; null or absent when all answer. */
+  storageWait?: SyncHostStorageWait | null;
 };
 
 type SyncHelloErrorHost = {
@@ -2414,6 +2433,11 @@ export type SyncBrainStatusPayload = {
   };
   /** Mirrors `SyncHelloOkPayload.cloudRelayWssUrl` for connected clients. */
   cloudRelayWssUrl?: string | null;
+  /**
+   * Live host health. Present on hosts that send it, so a client clears a
+   * shown notice when `storageWait` is absent; older hosts never send it.
+   */
+  hostHealth?: SyncHostHealth;
 };
 
 // ---------------------------------------------------------------------------

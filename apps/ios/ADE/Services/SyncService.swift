@@ -4266,6 +4266,10 @@ final class SyncService: ObservableObject {
   /// The machine froze shortly before this connection (from its hello). A
   /// clean reconnect clears it.
   @Published private(set) var hostStallNotice: SyncHostStallNotice?
+  /// A project folder on the machine is not answering (on a Mac, usually a
+  /// permission prompt on its screen). Set from the hello and kept live by
+  /// `brain_status`; nil when every folder answers.
+  @Published private(set) var hostStorageWaitNotice: SyncHostStorageWaitNotice?
   @Published private(set) var prefersReducedSyncLoad = false
   @Published private(set) var terminalBufferRevision = 0
   @Published private(set) var subscribedTerminalSessionIds: Set<String> = []
@@ -21607,6 +21611,10 @@ final class SyncService: ObservableObject {
       machineName: remoteHostName ?? activeHostProfile?.hostName,
       now: Date()
     )
+    hostStorageWaitNotice = parseSyncHostStorageWaitNotice(
+      payload["hostHealth"],
+      machineName: remoteHostName ?? activeHostProfile?.hostName
+    )
     publishConnectTimingMetrics(
       connectedHost: connectedHost,
       hostTransport: payload["connectionTransport"] as? String,
@@ -22089,6 +22097,12 @@ final class SyncService: ObservableObject {
         updateProfile { profile in
           profile.hostName = brain["deviceName"] as? String
           profile.lastHostDeviceId = brain["deviceId"] as? String
+        }
+        // Hosts that send live health send it on every status; an older host
+        // never does, so an absent key leaves the hello's word in place.
+        if dict["hostHealth"] != nil {
+          let wait = parseSyncHostStorageWaitNotice(dict["hostHealth"], machineName: brain["deviceName"] as? String)
+          if wait != hostStorageWaitNotice { hostStorageWaitNotice = wait }
         }
         if let peer = (dict["connectedPeers"] as? [[String: Any]])?.first(where: { $0["deviceId"] as? String == deviceId }) {
           let latencyMs = (peer["latencyMs"] as? NSNumber)?.intValue

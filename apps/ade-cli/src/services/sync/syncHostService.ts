@@ -1,5 +1,9 @@
 import { REMOTE_PROJECT_ICON_UPLOAD_MAX_BYTES } from "../../../../desktop/src/shared/projectIcons";
 import { readRecentHostStall } from "../runtime/hostStallRecord";
+import {
+  onProjectRootStorageWaitChange,
+  readProjectRootStorageWait,
+} from "../projects/projectRootAccessMonitor";
 import type { ChatLaunchService } from "../../../../desktop/src/main/services/chat/chatLaunchService";
 import { isClaudePluginUiOnlyMetaEvent } from "../../../../desktop/src/shared/claudePluginUi";
 import { isThreadCommentsOnlyMetaEvent } from "../../../../desktop/src/shared/threadComments";
@@ -1803,6 +1807,7 @@ export function buildSyncHostHelloOkPayload(args: {
   ];
   const mobileCompatibility = evaluateMobileSyncCompatibility(supportedActions);
   const recentHostStall = readRecentHostStall();
+  const storageWait = readProjectRootStorageWait();
   const actionsDigest = syncCommandRoutingDigest(actions);
   const actionsUnchanged = typeof args.knownCommandRoutingDigest === "string"
     && args.knownCommandRoutingDigest === actionsDigest;
@@ -1849,7 +1854,14 @@ export function buildSyncHostHelloOkPayload(args: {
     ...(args.projectHost ? { projectHost: args.projectHost } : {}),
     // Only while there is something to say: a device that reconnects after
     // this machine froze learns why instead of blaming its network.
-    ...(recentHostStall ? { hostHealth: { lastStall: recentHostStall } } : {}),
+    ...(recentHostStall || storageWait
+      ? {
+        hostHealth: {
+          ...(recentHostStall ? { lastStall: recentHostStall } : {}),
+          ...(storageWait ? { storageWait } : {}),
+        },
+      }
+      : {}),
     features: {
       fileAccess: true,
       terminalStreaming: true,
@@ -5824,7 +5836,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     const connectedPeers = [...peers]
       .map((peer) => toSyncPeerConnectionState(peer, dbVersion))
       .filter((peer): peer is SyncPeerConnectionState => peer != null);
+    const storageWait = readProjectRootStorageWait();
     return {
+      // Always sent, so a device clears its notice when the wait is over.
+      hostHealth: storageWait ? { storageWait } : {},
       brain: {
         ...brainMetadata,
         dbVersion,
@@ -5854,6 +5869,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       cloudRelayWssUrl,
     };
   }
+
+  // A project folder that stops (or starts) answering is news to every device
+  // at once, not at the next periodic status.
+  const stopStorageWaitListener = onProjectRootStorageWaitChange(() => broadcastBrainStatus());
 
   function broadcastBrainStatus(): void {
     if (disposed) return;
@@ -10131,6 +10150,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     async dispose(): Promise<void> {
       if (disposed) return;
       disposed = true;
+      stopStorageWaitListener();
       // Never dispose a shared listener's registry: it outlives this host and
       // still serves the next project's uploads.
       if (ownsAttachmentUploadRegistry) attachmentUploads.dispose();

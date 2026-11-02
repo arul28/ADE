@@ -1,4 +1,5 @@
 import type { BrainLoopWatchdogEvaluation } from "./brainLoopWatchdog";
+import { readSyncFsCall } from "./syncFsCallTracker";
 
 /**
  * The watchdog's worker thread. It runs apart from the brain's main thread, so it
@@ -17,6 +18,12 @@ export const BRAIN_LOOP_WATCHDOG_HEARTBEAT_MS = 1_000;
  * CPU, not just the main thread blocked.
  */
 export const BRAIN_LOOP_WORKER_LATE_REPORT_MS = 500;
+
+/**
+ * How long the main thread must sit in one synchronous file call before the
+ * worker names it. Well past any healthy disk, well before the kill.
+ */
+export const BRAIN_LOOP_SYNC_FS_BLOCK_REPORT_MS = 5_000;
 
 export function evaluateBrainLoopWatchdog(args: {
   nowWallMs: number;
@@ -62,7 +69,26 @@ export function buildBrainLoopWatchdogWorkerSource(): string {
     const { parentPort, workerData } = require("node:worker_threads");
     const BRAIN_LOOP_WATCHDOG_HEARTBEAT_MS = ${BRAIN_LOOP_WATCHDOG_HEARTBEAT_MS};
     const BRAIN_LOOP_WORKER_LATE_REPORT_MS = ${BRAIN_LOOP_WORKER_LATE_REPORT_MS};
+    const BRAIN_LOOP_SYNC_FS_BLOCK_REPORT_MS = ${BRAIN_LOOP_SYNC_FS_BLOCK_REPORT_MS};
     const evaluateBrainLoopWatchdog = ${evaluateBrainLoopWatchdog.toString()};
+    const readSyncFsCall = ${readSyncFsCall.toString()};
+    // What the main thread is inside, when the brain installed the tracker.
+    const currentSyncFsCall = () => {
+      if (!workerData.syncFsBuffer) return null;
+      try {
+        const call = readSyncFsCall(workerData.syncFsBuffer, workerData.syncFsMethods);
+        if (!call) return null;
+        return {
+          method: call.method,
+          path: call.path,
+          caller: call.caller,
+          blockedMs: Math.max(0, Math.floor(Date.now() - call.startedAtMs)),
+        };
+      } catch {
+        return null;
+      }
+    };
+    let reportedSyncFsCallStartedAtMs = null;
 
     const monotonicMs = () => Number(process.hrtime.bigint() / 1000000n);
     let lastHeartbeatWallMs = null;
@@ -82,6 +108,10 @@ export function buildBrainLoopWatchdogWorkerSource(): string {
         diagnostics,
         diagnosticReportPath: workerData.reportEnabled ? workerData.reportPath : null,
       };
+      // A synchronous file call the main thread is stuck in: the path and the
+      // code that made it, which the native sample cannot name.
+      const blockedFsCall = currentSyncFsCall();
+      if (blockedFsCall) breadcrumb.blockedFsCall = blockedFsCall;
       const breadcrumbPath = path.join(workerData.runtimeDir, workerData.breadcrumbFile);
       let tempPath = null;
       try {
@@ -231,6 +261,28 @@ export function buildBrainLoopWatchdogWorkerSource(): string {
         // A suspended process resumes with a stale heartbeat. Forgive that gap so
         // the resume is not read as a block; the pause report above labels it.
         return;
+      }
+
+      // Named well before the kill, so a wait that ends on its own (a person
+      // answering the prompt) still leaves the path and caller in the log.
+      if (evaluation.blockedMs >= BRAIN_LOOP_SYNC_FS_BLOCK_REPORT_MS) {
+        const call = currentSyncFsCall();
+        if (call && call.blockedMs >= BRAIN_LOOP_SYNC_FS_BLOCK_REPORT_MS) {
+          const startedAtMs = Date.now() - call.blockedMs;
+          if (reportedSyncFsCallStartedAtMs === null || Math.abs(startedAtMs - reportedSyncFsCallStartedAtMs) > 1000) {
+            reportedSyncFsCallStartedAtMs = startedAtMs;
+            try {
+              fs.writeSync(2, "[" + new Date().toISOString() + "] WARN brain.sync_fs_call_blocked " + JSON.stringify({
+                pid: process.pid,
+                lastCommand,
+                method: call.method,
+                path: call.path,
+                caller: call.caller,
+                blockedMs: call.blockedMs,
+              }) + "\n");
+            } catch {}
+          }
+        }
       }
 
       if (evaluation.blocked) {

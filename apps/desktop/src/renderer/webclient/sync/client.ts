@@ -24,8 +24,8 @@ import type {
   SyncTerminalInputAckPayload,
   SyncTerminalSnapshotPayload,
 } from "../../../shared/types/sync";
-import { hostStallFromHello } from "../../../shared/connectionDiagnosis";
-import { announceHostStall } from "../../lib/hostStallToast";
+import { hostStallFromHello, hostStorageWaitFromHealth } from "../../../shared/connectionDiagnosis";
+import { announceHostStall, announceHostStorageWait } from "../../lib/hostStallToast";
 import type { AdeAccountMachine } from "../../../shared/types/account";
 import type { ChatLaunchEvent } from "../../../shared/types/chatLaunch";
 import { LANE_GIT_WRITE_ACTION_TIMEOUT_MS } from "../../../main/services/git/gitTimeouts";
@@ -377,6 +377,12 @@ export class AdeSyncClient {
         machineKey: payload.brain?.deviceId,
         machineName: payload.brain?.deviceName,
       });
+      // A project folder there is waiting on a permission prompt: say where.
+      announceHostStorageWait({
+        wait: hostStorageWaitFromHealth(payload.hostHealth, Date.now()),
+        machineKey: payload.brain?.deviceId,
+        machineName: payload.brain?.deviceName,
+      });
       this.beginRestoration(payload);
     });
     this.connection.on("pairingRejected", ({ envId }) => {
@@ -389,7 +395,15 @@ export class AdeSyncClient {
         { closeCode: code, reason },
       ), { preserveTerminalInputs: true });
     });
-    this.connection.on("brainStatus", (payload) => this.emit("brainStatus", payload));
+    this.connection.on("brainStatus", (payload) => {
+      // Live: a folder that stops answering while this browser stays connected.
+      announceHostStorageWait({
+        wait: hostStorageWaitFromHealth(payload.hostHealth, Date.now()),
+        machineKey: payload.brain?.deviceId,
+        machineName: payload.brain?.deviceName,
+      });
+      this.emit("brainStatus", payload);
+    });
     this.connection.on("tablesChanged", (tables) => this.emit("tablesChanged", tables));
     this.connection.on("projectCatalog", (payload) => {
       this.currentCatalog = payload;

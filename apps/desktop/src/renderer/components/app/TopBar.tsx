@@ -5,7 +5,7 @@ import React, {
   useRef,
   useState,
 } from "react";
-import { announceHostStall } from "../../lib/hostStallToast";
+import { announceHostStall, announceHostStorageWait } from "../../lib/hostStallToast";
 import {
   AppWindow,
   ArrowLineRight,
@@ -813,6 +813,13 @@ export function TopBar({
       );
       // A machine that froze says so when it is reached again; once per freeze.
       for (const connection of snapshot.connections) {
+        if (connection.hostStorageWait && connection.state === "connected") {
+          announceHostStorageWait({
+            wait: connection.hostStorageWait,
+            machineKey: connection.target.id,
+            machineName: connection.target.name?.trim() || connection.target.hostname,
+          });
+        }
         if (!connection.hostStall) continue;
         announceHostStall({
           stall: connection.hostStall,

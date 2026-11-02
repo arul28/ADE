@@ -7,6 +7,7 @@ import type {
   RemoteRuntimeActionResult,
   RemoteRuntimeBufferedEvent,
   RemoteRuntimeConnectResult,
+  RemoteRuntimeHostStorageWait,
   RemoteRuntimePortForward,
   RemoteRuntimePortForwardRequest,
   RemoteRuntimeMachineProjectCapability,
@@ -22,6 +23,8 @@ import {
 } from "../../../shared/types/remoteRuntime";
 
 import type { AdeActionRegistryEntry } from "../../../shared/types/automations";
+import type { SyncHostStorageWait } from "../../../shared/types/sync";
+import { hostStorageWaitFromHealth } from "../../../shared/connectionDiagnosis";
 import {
   isRemoteRuntimeConnectionError,
   isRuntimeTransportTimeoutError,
@@ -489,6 +492,9 @@ export class RemoteConnectionPool {
   private readonly connectedListeners = new Set<
     (targetId: string, result: RemoteRuntimeConnectResult) => void
   >();
+  private readonly hostStorageWaitListeners = new Set<
+    (targetId: string, wait: RemoteRuntimeHostStorageWait | null) => void
+  >();
   private readonly portForwardInvalidationListeners = new Set<
     (targetId: string) => void
   >();
@@ -521,6 +527,18 @@ export class RemoteConnectionPool {
     this.connectedListeners.add(listener);
     return () => {
       this.connectedListeners.delete(listener);
+    };
+  }
+
+  /**
+   * A paired machine's live word on its project folders: set when one stops
+   * answering (a permission prompt on its screen), null when they all answer.
+   * Read from its status pushes, so it arrives while the connection stays up.
+   */
+  onHostStorageWait(listener: (targetId: string, wait: RemoteRuntimeHostStorageWait | null) => void): () => void {
+    this.hostStorageWaitListeners.add(listener);
+    return () => {
+      this.hostStorageWaitListeners.delete(listener);
     };
   }
 
@@ -1514,6 +1532,27 @@ export class RemoteConnectionPool {
     };
 
     entry.client.onDisconnect((error) => evict(entry.transport === "paired", true, error));
+    if (entry.transport === "paired") {
+      // Hosts that send live health include it on every status push; an older
+      // host never does, and its `hostHealth` stays absent, which changes nothing.
+      let lastWaitKey: string | null = null;
+      entry.pairedTransport.connection.onEnvelope((envelope) => {
+        if (cleanedUp || envelope.type !== "brain_status") return;
+        const health = (envelope.payload as { hostHealth?: unknown } | null)?.hostHealth;
+        if (!health || typeof health !== "object") return;
+        const wait = hostStorageWaitFromHealth(health as { storageWait?: SyncHostStorageWait | null }, Date.now());
+        const key = wait ? `${wait.reason}:${wait.path}` : null;
+        if (key === lastWaitKey) return;
+        lastWaitKey = key;
+        for (const listener of [...this.hostStorageWaitListeners]) {
+          try {
+            listener(targetId, wait);
+          } catch {
+            // Lifecycle notifications are best-effort.
+          }
+        }
+      });
+    }
     if (entry.transport === "ssh") {
       entry.ssh.once("close", () => evict(true));
       entry.ssh.once("error", (error) => evict(true, true, error instanceof Error ? error : new Error(String(error))));

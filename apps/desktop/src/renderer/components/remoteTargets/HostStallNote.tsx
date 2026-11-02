@@ -1,7 +1,7 @@
-import { Snowflake } from "@phosphor-icons/react";
+import { HardDrives, Snowflake } from "@phosphor-icons/react";
 import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
-import { describeHostStall } from "../../../shared/connectionDiagnosis";
-import type { RemoteRuntimeHostStall } from "../../../shared/types";
+import { describeHostStall, describeHostStorageWait } from "../../../shared/connectionDiagnosis";
+import type { RemoteRuntimeHostStall, RemoteRuntimeHostStorageWait } from "../../../shared/types";
 
 /** A freeze older than this no longer explains anything the user sees. */
 export const HOST_STALL_NOTE_WINDOW_MS = 10 * 60_000;
@@ -32,6 +32,36 @@ export function HostStallNote({
       style={{ display: "flex", gap: 6, fontFamily: SANS_FONT, fontSize: 12 }}
     >
       <Snowflake size={14} weight="bold" color={COLORS.warning} style={{ flexShrink: 0, marginTop: 1 }} />
+      <span style={{ minWidth: 0 }}>
+        <span style={{ color: COLORS.warning }}>{summary.title}.</span>{" "}
+        <span style={{ color: COLORS.textMuted }}>{summary.detail}</span>
+      </span>
+    </div>
+  );
+}
+
+/**
+ * "Studio is waiting for permission. macOS is asking on Studio's screen whether
+ * ADE may use /Volumes/Dev/Projects/ADE. Click Allow there."
+ *
+ * Live, unlike the freeze note: the machine says so while it waits and clears
+ * it when the folder answers again. Same place and style as the freeze note.
+ */
+export function HostStorageWaitNote({
+  wait,
+  machineName,
+}: {
+  wait: RemoteRuntimeHostStorageWait | null | undefined;
+  machineName: string | null | undefined;
+}) {
+  if (!wait) return null;
+  const summary = describeHostStorageWait(wait, machineName);
+  return (
+    <div
+      role="status"
+      style={{ display: "flex", gap: 6, fontFamily: SANS_FONT, fontSize: 12 }}
+    >
+      <HardDrives size={14} weight="bold" color={COLORS.warning} style={{ flexShrink: 0, marginTop: 1 }} />
       <span style={{ minWidth: 0 }}>
         <span style={{ color: COLORS.warning }}>{summary.title}.</span>{" "}
         <span style={{ color: COLORS.textMuted }}>{summary.detail}</span>

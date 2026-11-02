@@ -27131,6 +27131,13 @@ async function runServe(
   // child process froze it, which is most of the near misses that use no CPU.
   const { installSlowSyncSpawnMonitor } = await import("./services/runtime/slowSyncSpawnMonitor");
   installSlowSyncSpawnMonitor({ warn: (event, meta) => headlessProjectLogger.warn(event, meta) });
+  // And this names the synchronous file call, path and caller, that the main
+  // thread is stuck in, for the watchdog to read while it is stuck. Installed
+  // before the watchdog starts, which hands the tracker's memory to its worker.
+  const { installSyncFsCallTracker, isStallCapablePath } = await import("./services/runtime/syncFsCallTracker");
+  installSyncFsCallTracker({ warn: (event, meta) => headlessProjectLogger.warn(event, meta) });
+  const projectRootAccessMonitor = await import("./services/projects/projectRootAccessMonitor");
+  projectRootAccessMonitor.configureProjectRootAccessMonitor({ logger: headlessProjectLogger });
   stopBrainLoopWatchdog = startBrainLoopWatchdog({
     runtimeDir: layout.runtimeDir,
     socketPath,
@@ -27144,7 +27151,27 @@ async function runServe(
         durationMs: breadcrumb.blockedMs,
         endedAtMs: Date.parse(breadcrumb.ts),
         restarted: true,
+        blockedPath: breadcrumb.blockedFsCall?.path ?? null,
       });
+      // The last brain died waiting on a file call. If that was a folder
+      // macOS holds behind a prompt, this brain must not walk into the same
+      // wait: the folder fails fast until a listing off the loop answers.
+      const blockedFsCall = breadcrumb.blockedFsCall;
+      if (blockedFsCall && isStallCapablePath(blockedFsCall.path)) {
+        let knownRoots: string[] = [];
+        try {
+          knownRoots = new ProjectRegistry(layout).list().map((record) => record.rootPath);
+        } catch {
+          // Without the list, the drive itself is marked; still no second wait.
+        }
+        const root = projectRootAccessMonitor.projectRootForPath(blockedFsCall.path, knownRoots);
+        projectRootAccessMonitor.reportProjectRootNotAnswering(root, "previous_brain_wedge", {
+          method: blockedFsCall.method,
+          path: blockedFsCall.path,
+          caller: blockedFsCall.caller,
+          blockedMs: blockedFsCall.blockedMs,
+        });
+      }
       brainProductAnalytics.captureInternal({
         event: "ade_brain_recovered",
         surface: "api",

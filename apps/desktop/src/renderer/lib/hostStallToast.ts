@@ -1,6 +1,6 @@
 import { READABLE_TOAST_DURATION_MS, showToast } from "../components/app/toast/toastStore";
-import { describeHostStall } from "../../shared/connectionDiagnosis";
-import type { RemoteRuntimeHostStall } from "../../shared/types";
+import { describeHostStall, describeHostStorageWait } from "../../shared/connectionDiagnosis";
+import type { RemoteRuntimeHostStall, RemoteRuntimeHostStorageWait } from "../../shared/types";
 
 /** Older than this, a freeze no longer explains the reconnect just seen. */
 const ANNOUNCE_WINDOW_MS = 5 * 60_000;
@@ -33,6 +33,35 @@ export function announceHostStall(args: {
   const summary = describeHostStall(stall, args.machineName);
   showToast({
     id: `host-stall:${args.machineKey}`,
+    tone: "warning",
+    title: summary.title,
+    message: summary.detail,
+    durationMs: READABLE_TOAST_DURATION_MS,
+  });
+}
+
+const announcedWaits = new Set<string>();
+
+/**
+ * "Studio is waiting for permission" once per wait, when a machine says one of
+ * its project folders stopped answering. The person who can click Allow may be
+ * at this device, not that one; the machine row keeps the note until it clears.
+ */
+export function announceHostStorageWait(args: {
+  wait: RemoteRuntimeHostStorageWait | null | undefined;
+  machineKey: string | null | undefined;
+  machineName: string | null | undefined;
+}): void {
+  const { wait } = args;
+  if (!wait || !args.machineKey) return;
+  // The start travels as an age through two clocks; 30 s buckets keep one wait one toast.
+  const key = `${args.machineKey}:${wait.reason}:${wait.path}:${Math.round(wait.since / 30_000)}`;
+  if (announcedWaits.has(key)) return;
+  announcedWaits.add(key);
+  if (announcedWaits.size > 64) announcedWaits.delete(announcedWaits.values().next().value as string);
+  const summary = describeHostStorageWait(wait, args.machineName);
+  showToast({
+    id: `host-storage-wait:${args.machineKey}`,
     tone: "warning",
     title: summary.title,
     message: summary.detail,
