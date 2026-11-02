@@ -134,6 +134,9 @@ const eventProperty = (key, value, operator = "exact") => ({
   type: "event",
 });
 
+/** The desktop "Star ADE on GitHub" pill's facts. */
+const STAR_PROMPT = eventProperty(PROPERTIES.FEATURE, "star_prompt");
+
 function trends({
   series,
   interval = "week",
@@ -899,6 +902,53 @@ export const dashboardSpec = Object.freeze({
           trends({
             series: [eventNode(EVENTS.SURVEY_SENT, "Responses")],
             breakdown: PROPERTIES.SURVEY_NAME,
+          }),
+        ),
+      ],
+    },
+    {
+      key: "github-star-prompt",
+      name: "ADE · GitHub star prompt",
+      description: "The desktop \"Star ADE on GitHub\" pill (`ade_feature_used`, feature `star_prompt`). It shows after the first sent message, returns once 20 messages after the first ×, and the second × is final. `outcome` says which showing: `prompt_first` or `prompt_second`. `star_prompt_shown` is sent once per showing per account, so it counts people, not page views.",
+      pinned: false,
+      insights: [
+        insight(
+          "star-prompt-funnel",
+          "Star prompt funnel",
+          "People who saw the pill → clicked through to GitHub → were detected as having starred, within 14 days. Either showing counts.",
+          funnel({
+            series: [
+              eventNode(EVENTS.FEATURE_USED, "Saw the pill", { properties: [STAR_PROMPT, eventProperty(PROPERTIES.ACTION, "star_prompt_shown")] }),
+              eventNode(EVENTS.FEATURE_USED, "Clicked to GitHub", { properties: [STAR_PROMPT, eventProperty(PROPERTIES.ACTION, "star_prompt_clicked")] }),
+              eventNode(EVENTS.FEATURE_USED, "Starred", { properties: [STAR_PROMPT, eventProperty(PROPERTIES.ACTION, "repo_starred")] }),
+            ],
+            windowInterval: 14,
+          }),
+        ),
+        insight(
+          "star-prompt-weekly",
+          "Star prompt events per week",
+          "Shown, clicked, dismissed and starred each week. Starred over shown is the conversion rate; a spike in shown follows a desktop release.",
+          trends({
+            series: [eventNode(EVENTS.FEATURE_USED, "Star prompt events", { properties: [STAR_PROMPT] })],
+            breakdown: PROPERTIES.ACTION,
+          }),
+        ),
+        insight(
+          "star-prompt-by-showing",
+          "First vs second showing",
+          "Each step split by which showing it came from, over the last 90 days. Shows whether the one re-ask after 20 messages earns stars or only dismissals.",
+          trends({
+            series: [
+              eventNode(EVENTS.FEATURE_USED, "Shown", { properties: [STAR_PROMPT, eventProperty(PROPERTIES.ACTION, "star_prompt_shown")] }),
+              eventNode(EVENTS.FEATURE_USED, "Clicked", { properties: [STAR_PROMPT, eventProperty(PROPERTIES.ACTION, "star_prompt_clicked")] }),
+              eventNode(EVENTS.FEATURE_USED, "Dismissed", { properties: [STAR_PROMPT, eventProperty(PROPERTIES.ACTION, "star_prompt_dismissed")] }),
+              eventNode(EVENTS.FEATURE_USED, "Starred", { properties: [STAR_PROMPT, eventProperty(PROPERTIES.ACTION, "repo_starred")] }),
+            ],
+            dateFrom: "-90d",
+            interval: "month",
+            display: "ActionsBarValue",
+            breakdown: PROPERTIES.OUTCOME,
           }),
         ),
       ],
