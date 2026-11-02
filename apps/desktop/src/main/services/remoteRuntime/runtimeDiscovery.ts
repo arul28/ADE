@@ -410,30 +410,26 @@ async function discoverTailscalePeers(timeoutMs = 1_200): Promise<{
     const notFound =
       nodeError.code === "ENOENT" ||
       /ENOENT|not found|no such file/i.test(message);
+    // Tailscale is optional, and account computers are listed and reached
+    // without it, so none of these is a warning: a warning above "Your
+    // computers" read as "Tailscale is why this machine won't connect". They
+    // stay muted notes inside Add computer → Nearby, the one list Tailscale
+    // can add to. A computer whose Tailscale route fails says so on its own
+    // row, and Account → Private network has Tailscale's own status.
+    const severity: RemoteRuntimeDiscoverySeverity = "info";
     let code: string;
-    let summary: string;
-    // Each message has to say what is missing from the list, not just that a
-    // step failed: the user sees this next to a machine list and needs to know
-    // whether something is absent from it and what to do about that.
-    let severity: RemoteRuntimeDiscoverySeverity;
+    let reason: string;
     if (timedOut) {
       code = "tailscale-timeout";
-      summary =
-        "Tailscale didn't answer in time, so Tailscale-only computers aren't listed. Computers on this Wi-Fi still are — reopen this panel to try again.";
-      severity = "warning";
+      reason = "Tailscale didn't answer";
     } else if (notFound) {
-      // Tailscale is optional. Not having it installed is a fact about the
-      // machine, not a problem with discovery, so it must not read as a warning.
       code = "tailscale-unavailable";
-      summary =
-        "The Tailscale command wasn't found, so Tailscale-only computers aren't listed. Computers on this Wi-Fi still are — install Tailscale, or set ADE_TAILSCALE_CLI to its path.";
-      severity = "info";
+      reason = "Tailscale isn't installed";
     } else {
       code = "tailscale-status-failed";
-      summary =
-        "Tailscale couldn't report its status, so Tailscale-only computers aren't listed. Computers on this Wi-Fi still are — check that Tailscale is running and signed in, then reopen this panel.";
-      severity = "warning";
+      reason = "Tailscale isn't running";
     }
+    const summary = `${reason}, so computers you reach only through Tailscale aren't listed here. You don't need it: computers on this Wi-Fi still show here.`;
     return {
       machines: [],
       diagnostics: [
