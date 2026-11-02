@@ -105,6 +105,12 @@ export function childParentSlot(
   return null;
 }
 
+/** Whether a request is `chat.updateSession`, which can change a chat's permissions. */
+export function isChatUpdateRequest(method: string, params: Record<string, unknown>): boolean {
+  if (method !== "ade/actions/call" || params.name !== "run_ade_action" || !isRecord(params.arguments)) return false;
+  return params.arguments.domain === "chat" && params.arguments.action === "updateSession";
+}
+
 /** The new chat's id in a create answer, wherever the action put it. */
 export function createdChatSessionId(value: unknown): string | null {
   // `ade/actions/call` answers `{ structuredContent: { domain, action, result } }`;

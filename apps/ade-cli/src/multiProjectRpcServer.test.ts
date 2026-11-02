@@ -4165,7 +4165,11 @@ describe("calls from another machine's agents", () => {
     identity: { role: "agent" },
   };
 
-  function makeTarget(options: { peerDeviceId: string | null; initialize?: Record<string, unknown> }) {
+  function makeTarget(options: {
+    peerDeviceId: string | null;
+    initialize?: Record<string, unknown>;
+    crossScopeChats?: Parameters<typeof createMultiProjectRpcRequestHandler>[0]["crossScopeChats"];
+  }) {
     const { projectRoot, registry } = createRegistry();
     const project = registry.add(projectRoot);
     const runtime = makeRuntime("target") as ReturnType<typeof makeRuntime> & {
@@ -4191,6 +4195,7 @@ describe("calls from another machine's agents", () => {
       scopeRegistry,
       peerDeviceId: options.peerDeviceId,
       agentMachineBridge: { call: vi.fn(), listMachines: vi.fn() },
+      crossScopeChats: options.crossScopeChats ?? null,
     });
     const init = handler({
       jsonrpc: "2.0",
@@ -4283,6 +4288,59 @@ describe("calls from another machine's agents", () => {
     });
     expect(childWakeToken("child-1")).toBe("token-for-child-1");
     remote.handler.dispose();
+  });
+
+  it("records a calling chat's level for every chat it starts or updates in another scope, parent or not", async () => {
+    const { configureExternalChatStore, externalChatContext } = await import(
+      "../../desktop/src/main/services/chat/externalChats"
+    );
+    const { createCrossScopeChats } = await import("./services/chat/crossScopeChats");
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-caller-level-"));
+    // The caller is a full-auto chat in the personal scope, which the target
+    // project has never seen.
+    const callerRuntime = {
+      agentChatService: { permissionLevelOf: (id: string) => (id === "caller-chat" ? "full-auto" : null) },
+    } as never;
+    const crossScopeChats = createCrossScopeChats({
+      projectRegistry: { list: () => [] },
+      scopeRegistry: { get: vi.fn(), getIfBooted: () => null },
+      personalChatScope: { runtimeForDelivery: async () => callerRuntime, peekRuntime: () => Promise.resolve(callerRuntime) },
+      deliverRemote: null,
+      stateDir,
+    });
+    try {
+      for (const [action, args] of [
+        ["createSession", { provider: "claude", permissionMode: "full-auto" }],
+        ["updateSession", { sessionId: "child-1", permissionMode: "full-auto" }],
+      ] as const) {
+        configureExternalChatStore(null);
+        const target = makeTarget({
+          peerDeviceId: null,
+          initialize: { identity: { role: "agent", chatSessionId: "caller-chat" } },
+          crossScopeChats,
+        });
+        target.runtime.agentChatService[action] = vi.fn(async () => ({ id: "child-1" }));
+        await target.init;
+        await target.handler({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "ade/actions/call",
+          params: {
+            projectId: target.project.projectId,
+            name: "run_ade_action",
+            arguments: { domain: "chat", action, args },
+          },
+        });
+        expect(externalChatContext("caller-chat")).toMatchObject({
+          scope: { kind: "personal" },
+          permissionLevel: "full-auto",
+        });
+        target.handler.dispose();
+      }
+    } finally {
+      configureExternalChatStore(null);
+      fs.rmSync(stateDir, { recursive: true, force: true });
+    }
   });
 
   it("refuses another machine's agents without a paired peer to attribute them to", async () => {

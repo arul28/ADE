@@ -148,6 +148,7 @@ import {
   AGENT_REMOTE_MACHINE_METHODS,
   MAX_FOREIGN_CALLER_HANDLERS,
   childParentSlot,
+  isChatUpdateRequest,
   createdChatSessionId,
   omitRemoteCaller,
   readMachineCallScope,
@@ -3745,12 +3746,17 @@ export function createMultiProjectRpcRequestHandler(
         }
         forwardedParams = parentSlot.write(foreignCaller);
         childWakeTokenFromCaller = claimField(params, "wakeToken");
-      } else if (!foreignCaller) {
-        const callerChat = callerChatSessionId();
-        if (parent && callerChat && parent === callerChat) {
-          await options.crossScopeChats?.rememberLocalCaller(callerChat, { kind: "project", projectId })
-            .catch(() => null);
-        }
+      }
+    }
+    // The target project caps a chat this call starts or reconfigures at the
+    // calling chat's own level, parent or not (`--no-parent`, `chat update`).
+    // A caller in another project is unknown there and would read as `ask`,
+    // so record its real level first.
+    if (!foreignCaller && (parentSlot || isChatUpdateRequest(method, forwardedParams))) {
+      const callerChat = callerChatSessionId();
+      if (callerChat) {
+        await options.crossScopeChats?.rememberLocalCaller(callerChat, { kind: "project", projectId })
+          .catch(() => null);
       }
     }
 
