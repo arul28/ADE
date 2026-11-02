@@ -5676,6 +5676,15 @@ export function unsupportedActiveTurnDispatchModeMessage(
 }
 
 /**
+ * Whether an error message is `unsupportedActiveTurnDispatchModeMessage`'s
+ * refusal, which is thrown before anything is delivered. Read from text, since
+ * a refusal from another machine arrives as a message string.
+ */
+export function isUnsupportedActiveTurnDispatchModeError(message: string): boolean {
+  return message.includes("active-turn dispatch mode");
+}
+
+/**
  * Providers a CTO thread may run on: the ones that can redirect a turn that is
  * already running. The CTO is interrupted constantly — by child reports,
  * scheduled wakes and peer notes — and a provider that can only stage the next

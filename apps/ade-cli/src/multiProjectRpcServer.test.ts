@@ -4290,54 +4290,51 @@ describe("calls from another machine's agents", () => {
     remote.handler.dispose();
   });
 
-  it("records a calling chat's level for every chat it starts or updates in another scope, parent or not", async () => {
+  it.each([
+    ["createSession", { provider: "claude", permissionMode: "full-auto" }],
+    ["updateSession", { sessionId: "child-1", permissionMode: "full-auto" }],
+  ] as const)("records a calling chat's level in another scope before %s, with no parent named", async (action, args) => {
     const { configureExternalChatStore, externalChatContext } = await import(
       "../../desktop/src/main/services/chat/externalChats"
     );
     const { createCrossScopeChats } = await import("./services/chat/crossScopeChats");
     const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-caller-level-"));
+    configureExternalChatStore(null);
     // The caller is a full-auto chat in the personal scope, which the target
     // project has never seen.
     const callerRuntime = {
       agentChatService: { permissionLevelOf: (id: string) => (id === "caller-chat" ? "full-auto" : null) },
     } as never;
-    const crossScopeChats = createCrossScopeChats({
-      projectRegistry: { list: () => [] },
-      scopeRegistry: { get: vi.fn(), getIfBooted: () => null },
-      personalChatScope: { runtimeForDelivery: async () => callerRuntime, peekRuntime: () => Promise.resolve(callerRuntime) },
-      deliverRemote: null,
-      stateDir,
+    const target = makeTarget({
+      peerDeviceId: null,
+      initialize: { identity: { role: "agent", chatSessionId: "caller-chat" } },
+      crossScopeChats: createCrossScopeChats({
+        projectRegistry: { list: () => [] },
+        scopeRegistry: { get: vi.fn(), getIfBooted: () => null },
+        personalChatScope: { runtimeForDelivery: async () => callerRuntime, peekRuntime: () => Promise.resolve(callerRuntime) },
+        deliverRemote: null,
+        stateDir,
+      }),
     });
     try {
-      for (const [action, args] of [
-        ["createSession", { provider: "claude", permissionMode: "full-auto" }],
-        ["updateSession", { sessionId: "child-1", permissionMode: "full-auto" }],
-      ] as const) {
-        configureExternalChatStore(null);
-        const target = makeTarget({
-          peerDeviceId: null,
-          initialize: { identity: { role: "agent", chatSessionId: "caller-chat" } },
-          crossScopeChats,
-        });
-        target.runtime.agentChatService[action] = vi.fn(async () => ({ id: "child-1" }));
-        await target.init;
-        await target.handler({
-          jsonrpc: "2.0",
-          id: 1,
-          method: "ade/actions/call",
-          params: {
-            projectId: target.project.projectId,
-            name: "run_ade_action",
-            arguments: { domain: "chat", action, args },
-          },
-        });
-        expect(externalChatContext("caller-chat")).toMatchObject({
-          scope: { kind: "personal" },
-          permissionLevel: "full-auto",
-        });
-        target.handler.dispose();
-      }
+      target.runtime.agentChatService[action] = vi.fn(async () => ({ id: "child-1" }));
+      await target.init;
+      await target.handler({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "ade/actions/call",
+        params: {
+          projectId: target.project.projectId,
+          name: "run_ade_action",
+          arguments: { domain: "chat", action, args },
+        },
+      });
+      expect(externalChatContext("caller-chat")).toMatchObject({
+        scope: { kind: "personal" },
+        permissionLevel: "full-auto",
+      });
     } finally {
+      target.handler.dispose();
       configureExternalChatStore(null);
       fs.rmSync(stateDir, { recursive: true, force: true });
     }

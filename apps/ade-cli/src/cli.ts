@@ -14897,7 +14897,8 @@ function buildIosSimulatorPlan(
     // extra device gets a build.
     // The generic args below would carry it through unread, and the install
     // would build and install the lane's own app instead.
-    if (args.some((token) => /^--(app-bundle|app)(=|$)/.test(token))) {
+    const installFlags = flagNamesOutsideFreeText(args);
+    if (installFlags.has("--app-bundle") || installFlags.has("--app")) {
       throw new CliUsageError(
         "apple install builds the lane's app and does not take --app-bundle. For a prebuilt .app on the lane's device, use: ade apple launch --app-bundle <path> --no-build",
       );
@@ -15861,7 +15862,8 @@ function buildIosSimulatorPlan(
     const keep = readFlag(args, ["--keep"]);
     // Detach only ever acts on the lane's own device; a named device (an
     // extra) must not quietly turn into detaching that one.
-    if (args.some((token) => /^--(device|udid)(=|$)/.test(token))) {
+    const detachFlags = flagNamesOutsideFreeText(args);
+    if (detachFlags.has("--device") || detachFlags.has("--udid")) {
       throw new CliUsageError(
         "apple device-detach gives up the lane's own device and does not take --device. To remove an extra device, use: ade apple device-delete --device <udid>",
       );

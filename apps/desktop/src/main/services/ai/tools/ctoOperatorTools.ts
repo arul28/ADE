@@ -54,7 +54,7 @@ import type { createSessionService } from "../../sessions/sessionService";
 import { parseSnoozeDeadline } from "../../sessions/sessionRequestValidation";
 import type { createCtoStateService } from "../../cto/ctoStateService";
 import { CTO_MEMORY_FACT_KINDS, type CtoMemoryService } from "../../cto/ctoMemoryService";
-import { getErrorMessage, nowIso, parseIsoToEpoch } from "../../shared/utils";
+import { getErrorMessage, isRecord, nowIso, parseIsoToEpoch } from "../../shared/utils";
 import { buildAdePrUrl } from "../../../../shared/deeplinks";
 import { normalizeLaneStart } from "../../../../shared/laneStart";
 import { settleAbortMessage } from "../../sessions/settleTerminalSession";
@@ -62,6 +62,8 @@ import {
   AGENT_CHAT_DROID_PERMISSION_MODE_VALUES,
   AGENT_CHAT_PERMISSION_MODE_VALUES,
   AGENT_CHAT_SPAWN_KIND_VALUES,
+  isUnsupportedActiveTurnDispatchModeError,
+  type AgentChatSteerResult,
 } from "../../../../shared/types/chat";
 
 export interface CtoOperatorToolDeps {
@@ -143,7 +145,7 @@ export interface CtoOperatorToolDeps {
     sessionId: string;
     instruction: string;
     dispatchMode?: "inline";
-  }) => Promise<{ steerId: string; queued: boolean; reason?: string }>;
+  }) => Promise<AgentChatSteerResult>;
   cancelSteer: (args: { sessionId: string; steerId: string }) => Promise<void>;
   listSubagents: (args: { sessionId: string }) => Promise<any[]>;
   approveToolUse: (args: { sessionId: string; toolUseId: string; decision: "accept" | "accept_for_session" | "decline" | "cancel" }) => Promise<void>;
@@ -307,16 +309,6 @@ const machineArgSchema = z
     "Machine id or name from listMachines (case-insensitive). Omit for this CTO's home machine. "
     + "Lane and chat ids belong to one machine: pass the same machine you created or listed them on.",
   );
-
-/**
- * The refusal `unsupportedActiveTurnDispatchModeMessage` gives a provider that
- * cannot take a message mid-turn. It is thrown before anything is delivered.
- */
-const LIVE_STEER_REFUSED = /active-turn dispatch mode/i;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 /**
  * The closed tag vocabulary, mirrored from `ctoMemoryService`. Facts and
@@ -2464,15 +2456,15 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
             ? await runRemote(target, {
               domain: "chat",
               action: "steer",
-              args: { sessionId, text: instruction, ...(dispatchMode ? { dispatchMode } : {}) },
+              args: { sessionId, text: instruction, dispatchMode },
             })
-            : await deps.steerChat({ sessionId, instruction, ...(dispatchMode ? { dispatchMode } : {}) })
+            : await deps.steerChat({ sessionId, instruction, dispatchMode })
         );
         let raw: unknown;
         try {
           raw = await steerOnce("inline");
         } catch (error) {
-          if (!LIVE_STEER_REFUSED.test(getErrorMessage(error))) throw error;
+          if (!isUnsupportedActiveTurnDispatchModeError(getErrorMessage(error))) throw error;
           raw = await steerOnce();
         }
         const result = isRecord(raw) ? raw : {};

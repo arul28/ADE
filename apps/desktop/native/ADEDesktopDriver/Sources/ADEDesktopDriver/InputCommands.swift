@@ -84,7 +84,8 @@ extension DriverRuntime {
                     windowControl: windows,
                     timeBudget: AXWalkBudget.waitPollBudget(now: Date(), waitDeadline: deadline)
                 )
-                matchedIndex = observation.elements.first { $0.matches(text: needle) }?.index
+                matchedIndex = ObservedElement.bestTextMatch(in: observation.elements, text: needle)
+                    .map { observation.elements[$0].index }
                 lastStop = observation.truncatedReason
                 stalledApps = observation.stalledApps
             }

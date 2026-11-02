@@ -26,6 +26,7 @@ import path from "node:path";
 
 import type { Logger } from "../logging/logger";
 import { describeNativeHelperSearch } from "../native/nativeHelperPaths";
+import { userProcessEnv } from "../shared/hostRuntimeEnv";
 
 /** Helper lines that mean ScreenCaptureKit stopped answering this process. */
 const CAPTURE_STALL_PATTERN = /ScreenCaptureKit did not answer|SCStreamErrorDomain Code=-3805/;
@@ -752,10 +753,8 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
         launchPath = privateDriverCopy(binary, privateCopySlot, deps.logger);
       }
       // The helper passes its environment to every app it opens on a lane's
-      // screen. The brain runs as Node through ELECTRON_RUN_AS_NODE, and an
-      // Electron app that inherits it starts as Node and exits at once.
-      const inheritedEnv = { ...process.env };
-      delete inheritedEnv.ELECTRON_RUN_AS_NODE;
+      // screen, so it gets a user process's env, not the host's: with the
+      // brain's ELECTRON_RUN_AS_NODE an Electron app starts as Node and exits.
       let spawned: ChildProcessWithoutNullStreams;
       try {
         spawned = spawnProcess(launchPath, [...driverArgs], {
@@ -763,7 +762,7 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
           // screen, and many Linux machines have no en_US locale (Arch until
           // one is generated, minimal servers, containers): forcing it there
           // made each app warn and fall back. They keep the machine's locale.
-          env: { ...inheritedEnv, ...deps.env, ...(platform === "linux" ? {} : { LC_ALL: "en_US.UTF-8" }) },
+          env: { ...userProcessEnv(), ...deps.env, ...(platform === "linux" ? {} : { LC_ALL: "en_US.UTF-8" }) },
           stdio: ["pipe", "pipe", "pipe"],
           windowsHide: true,
         }) as ChildProcessWithoutNullStreams;

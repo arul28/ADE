@@ -14,6 +14,7 @@ import {
   updateTrackOfVersion,
 } from "../../../desktop/src/shared/updateTrack";
 import { compareUpdateVersions } from "../../../desktop/src/shared/updateVersions";
+import { standaloneAdeCliPath } from "../lib/brainVersionSkew";
 import { fetchReleaseManifestJson } from "../lib/releaseAssets";
 import type {
   SyncAccountDirectoryHealth,
@@ -470,7 +471,7 @@ export function readStandaloneCliForDoctor(
   adeDir: string,
   platform: NodeJS.Platform = process.platform,
 ): DoctorStandaloneCli | null {
-  const file = path.join(adeDir, "bin", platform === "win32" ? "ade.exe" : "ade");
+  const file = standaloneAdeCliPath(adeDir, platform);
   try {
     if (!fs.statSync(file).isFile()) return null;
   } catch {
@@ -873,7 +874,7 @@ function standaloneCliRows(cli: DoctorStandaloneCli | null | undefined, brain: D
   }
   const brainVersion = brain.running ? brain.version : null;
   const comparison = brainVersion ? compareDoctorVersions(cli.version, brainVersion) : null;
-  if (!brainVersion || comparison === 0 || comparison == null) {
+  if (comparison === 0 || comparison == null) {
     return [{ key: "standalone_cli", label, status: "ok", detail: `${cli.path} · version ${cli.version}` }];
   }
   return [{

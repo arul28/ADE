@@ -94,18 +94,18 @@ struct ObservedElement {
         }
     }
 
-    /// The offset `text` targeting picks, as the Windows and Linux drivers
-    /// do: an exact name before a partial one, and within each, an element
-    /// with an action before one without; walk order breaks ties. A window
-    /// titled "Save Probe" comes before its own "Save" button in the walk,
-    /// and a click on "Save" must reach the button.
+    /// The offset `text` targeting picks: an exact name with an action, then
+    /// any match with an action (the Windows driver's order), then, with no
+    /// action anywhere, an exact name before a partial one; walk order breaks
+    /// ties. A window titled "Save Probe" comes before its own "Save" button in
+    /// the walk, and a click on "Save" must reach the button.
     static func bestTextMatch(in records: [ObservedElement], text: String) -> Int? {
         var best: (offset: Int, rank: Int)? = nil
         for (offset, record) in records.enumerated() {
             let exact = record.matchesExactly(text: text)
             guard exact || record.matches(text: text) else { continue }
-            let rank = (exact ? 0 : 2) + (record.actions.isEmpty ? 1 : 0)
-            if best == nil || rank < best!.rank { best = (offset, rank) }
+            let rank = (record.actions.isEmpty ? 2 : 0) + (exact ? 0 : 1)
+            if best.map({ rank < $0.rank }) ?? true { best = (offset, rank) }
             if rank == 0 { break }
         }
         return best?.offset

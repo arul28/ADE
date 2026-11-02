@@ -14837,7 +14837,7 @@ export function createAgentChatService(args: {
         // could only ever answer "not available" — the same defect this whole
         // change set exists to remove.
         steerChat: ({ sessionId, instruction, dispatchMode }) =>
-          steer({ sessionId, text: instruction, ...(dispatchMode ? { dispatchMode } : {}) }),
+          steer({ sessionId, text: instruction, dispatchMode }),
         cancelSteer: ({ sessionId, steerId }) => cancelSteer({ sessionId, steerId }),
         listSubagents: ({ sessionId }) => listSubagents({ sessionId }),
         approveToolUse: ({ sessionId, toolUseId, decision }) =>

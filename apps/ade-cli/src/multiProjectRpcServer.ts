@@ -148,7 +148,6 @@ import {
   AGENT_REMOTE_MACHINE_METHODS,
   MAX_FOREIGN_CALLER_HANDLERS,
   childParentSlot,
-  isChatUpdateRequest,
   createdChatSessionId,
   omitRemoteCaller,
   readMachineCallScope,
@@ -3748,18 +3747,6 @@ export function createMultiProjectRpcRequestHandler(
         childWakeTokenFromCaller = claimField(params, "wakeToken");
       }
     }
-    // The target project caps a chat this call starts or reconfigures at the
-    // calling chat's own level, parent or not (`--no-parent`, `chat update`).
-    // A caller in another project is unknown there and would read as `ask`,
-    // so record its real level first.
-    if (!foreignCaller && (parentSlot || isChatUpdateRequest(method, forwardedParams))) {
-      const callerChat = callerChatSessionId();
-      if (callerChat) {
-        await options.crossScopeChats?.rememberLocalCaller(callerChat, { kind: "project", projectId })
-          .catch(() => null);
-      }
-    }
-
     const actionEnvelope = method === "ade/actions/call" && params.name === "run_ade_action"
       ? safeParams(params.arguments)
       : null;
@@ -3770,6 +3757,24 @@ export function createMultiProjectRpcRequestHandler(
       ? actionEnvelope.action
       : null;
     const actionArgs = actionEnvelope ? safeParams(actionEnvelope.args) : {};
+
+    // The target project caps a chat this call starts or reconfigures at the
+    // calling chat's own level, parent or not (`--no-parent`, `chat update`).
+    // A caller in another project is unknown there and would read as `ask`,
+    // so record its real level first.
+    const reconfiguresChat = actionDomain === "chat" && actionName === "updateSession";
+    if (!foreignCaller && (parentSlot || reconfiguresChat)) {
+      const callerChat = callerChatSessionId();
+      if (callerChat) {
+        // A miss only lowers the new chat's ceiling to `ask`; the call goes on.
+        await options.crossScopeChats?.rememberLocalCaller(callerChat, { kind: "project", projectId })
+          .catch((error) => machineProjectLogger.warn("cross_scope.remember_caller_failed", {
+            callerChatSessionId: callerChat,
+            projectId,
+            error: error instanceof Error ? error.message : String(error),
+          }));
+      }
+    }
     if (
       actionDomain === "chat"
       && (actionName === "readTranscript" || actionName === "readTranscriptPage")

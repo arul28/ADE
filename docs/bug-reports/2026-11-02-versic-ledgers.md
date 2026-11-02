@@ -97,11 +97,15 @@ ledgers that Versic agents wrote, as copied on 2026-11-02 to
   - Which pane call it was cannot be named now: the renderer logs of that day
     are not kept. Every caught pane error goes through one reducer
     (`chatNoticeReducer`), which showed the raw Electron text as a red failure.
-- **Fix:** the reducer recognises a dropped connection
-  (`isRemoteRuntimeConnectionError`) and shows a status line instead: "The
-  connection to this chat's machine dropped for a moment. The chat keeps running
-  there, and ADE reconnects by itself. If something you just did is missing, do
-  it again." Other errors stay failures.
+- **Fix:** a pane whose chat is on another machine (pinned there, or in a
+  project tab bound to that machine) shows the remote runtime's own "connection
+  closed/interrupted/failed" error as a status line instead: "The connection to
+  this chat's machine dropped for a moment. The chat keeps running there, and
+  ADE reconnects by itself. If something you just did is missing, do it
+  again." The pane keeps the raw message underneath, so clearing it after a
+  retry and restoring a failed draft still work. Every other error, and the
+  same text for a chat on this computer (the local brain's socket uses those
+  words too), stays a failure.
 
 ### 31. `steerChat` has no `machine`
 - **Status:** confirmed. Fixed on this branch.
