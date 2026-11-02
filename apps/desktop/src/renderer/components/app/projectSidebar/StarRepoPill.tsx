@@ -5,10 +5,12 @@ import { rootAppStoreApi, useRootAppStore } from "../../../state/appStore";
 import { usePrefersReducedMotion } from "../../../hooks/usePrefersReducedMotion";
 import {
   ADE_GITHUB_REPO_URL,
-  STAR_PILL_SNOOZE_THREADS,
+  STAR_PILL_SNOOZE_MESSAGES,
   isStarCheckDue,
   isStarPillVisible,
+  starPillShowing,
 } from "../../../lib/starPill";
+import { captureStarPromptAnalytics } from "../../../lib/starPillActivity";
 import type { GitHubRepoStarState } from "../../../../shared/types";
 
 /** How long "Thanks!" stays up before it fades. */
@@ -34,6 +36,7 @@ async function readStarState(): Promise<GitHubRepoStarState> {
 export function StarRepoPill() {
   const prefs = useRootAppStore((s) => s.starPill);
   const visible = isStarPillVisible(prefs);
+  const showing = starPillShowing(prefs);
   const reducedMotion = usePrefersReducedMotion();
   const [thanks, setThanks] = useState<ThanksPhase>("none");
   const checkingRef = useRef(false);
@@ -48,6 +51,10 @@ export function StarRepoPill() {
       const state = await readStarState();
       // Read fresh: the pill may have been hidden while the request ran.
       const shownWhenAnswered = visibleRef.current;
+      const before = rootAppStoreApi.getState().starPill;
+      if (state === "starred" && !before.starred) {
+        captureStarPromptAnalytics({ action: "repo_starred", outcome: starPillShowing(before) });
+      }
       rootAppStoreApi.getState().updateStarPill((prev) => ({
         ...prev,
         // Only a definite answer advances the 6 h clock. An "unknown" result
@@ -62,6 +69,16 @@ export function StarRepoPill() {
       checkingRef.current = false;
     }
   }, []);
+
+  // Once per showing per account, not per mount or per day: a pill left up
+  // for months must not keep sending events.
+  useEffect(() => {
+    if (!visible) return;
+    const store = rootAppStoreApi.getState();
+    if (store.starPill.shownReported > store.starPill.dismissCount) return;
+    captureStarPromptAnalytics({ action: "star_prompt_shown", outcome: showing });
+    store.updateStarPill((prev) => ({ ...prev, shownReported: prev.dismissCount + 1 }));
+  }, [showing, visible]);
 
   // Periodic check: at most every 6 hours, and only while the pill would show.
   useEffect(() => {
@@ -92,13 +109,22 @@ export function StarRepoPill() {
 
   const openRepo = useCallback(() => {
     checkAfterFocusRef.current = true;
+    captureStarPromptAnalytics({
+      action: "star_prompt_clicked",
+      outcome: starPillShowing(rootAppStoreApi.getState().starPill),
+    });
     void window.ade.app.openExternal(ADE_GITHUB_REPO_URL);
   }, []);
 
-  const snooze = useCallback(() => {
-    rootAppStoreApi.getState().updateStarPill((prev) => ({
+  // The first dismissal hides it for the next 20 sent messages; the second
+  // is final (`isStarPillVisible`).
+  const dismiss = useCallback(() => {
+    const store = rootAppStoreApi.getState();
+    captureStarPromptAnalytics({ action: "star_prompt_dismissed", outcome: starPillShowing(store.starPill) });
+    store.updateStarPill((prev) => ({
       ...prev,
-      snoozedUntilThreadCount: prev.threadsCreated + STAR_PILL_SNOOZE_THREADS,
+      dismissCount: prev.dismissCount + 1,
+      snoozedUntilMessageCount: prev.messagesSent + STAR_PILL_SNOOZE_MESSAGES,
     }));
   }, []);
 
@@ -144,8 +170,8 @@ export function StarRepoPill() {
             </button>
           ),
           dismiss: {
-            onDismiss: snooze,
-            title: `Hide for ${STAR_PILL_SNOOZE_THREADS} new chats`,
+            onDismiss: dismiss,
+            title: showing === "prompt_first" ? `Hide for ${STAR_PILL_SNOOZE_MESSAGES} messages` : "Don't show again",
             label: "Hide the GitHub star prompt",
           },
         }}

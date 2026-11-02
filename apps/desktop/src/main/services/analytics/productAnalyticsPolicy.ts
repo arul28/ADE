@@ -350,6 +350,12 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   "template_setup_started",
   "template_suggestion_hidden",
   "deps_update_started",
+  // The desktop "Star ADE on GitHub" pill: seen, clicked, dismissed, and a
+  // star detected while it showed. Never the GitHub account or a count.
+  "star_prompt_shown",
+  "star_prompt_clicked",
+  "star_prompt_dismissed",
+  "repo_starred",
 ]);
 
 const EVENT_PROPERTY_KEYS: Record<ProductAnalyticsEventName, ReadonlySet<string>> = {
@@ -478,6 +484,8 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     "model_hint",
     // The ADE account sign-in funnel (action "sign_in").
     "account_sign_in",
+    // The desktop "Star ADE on GitHub" pill.
+    "star_prompt",
   ]),
   outcome: new Set([
     "success", "started", "completed", "failure", "timeout", "opened", "cancelled", "approved", "denied",
@@ -580,6 +588,9 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     "from_banner", "from_settings",
     // What the user did with a model hint chip. A chip left alone is not sent.
     "hint_accepted", "hint_dismissed",
+    // Which showing of the star pill: before any dismissal, or the one return
+    // after it. Prefixed like the other renderer surfaces.
+    "prompt_first", "prompt_second",
   ]),
   provider: new Set(["codex", "openai", "claude", "cursor", "droid", "opencode", "pi", "muse", "gemini", "lmstudio", "local", "other"]),
   model_family: new Set([

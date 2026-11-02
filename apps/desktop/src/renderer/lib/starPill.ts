@@ -10,19 +10,31 @@
 
 export const ADE_GITHUB_REPO_URL = "https://github.com/arul28/ADE";
 
-/** Dismissing the pill hides it for this many newly created chats. */
-export const STAR_PILL_SNOOZE_THREADS = 20;
+/** After the first dismissal the pill returns once this many sent messages later. */
+export const STAR_PILL_SNOOZE_MESSAGES = 20;
+
+/** The second dismissal is final. */
+export const STAR_PILL_MAX_DISMISSALS = 2;
 
 /** The GitHub star check runs at most this often. */
 export const STAR_PILL_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
 export type StarPillPrefs = {
-  /** The account has sent at least one chat message from desktop. */
-  hasSentMessage: boolean;
-  /** Chats created from desktop; the snooze clock. */
-  threadsCreated: number;
-  /** Hidden until `threadsCreated` reaches this; null when never dismissed. */
-  snoozedUntilThreadCount: number | null;
+  /**
+   * Chat messages sent from desktop. Only counted while the count can still
+   * change what the pill does (see `starPillCountsMessages`), so it is not a
+   * usage total.
+   */
+  messagesSent: number;
+  /** How many times the pill was dismissed; at `STAR_PILL_MAX_DISMISSALS` it never returns. */
+  dismissCount: number;
+  /**
+   * Showings already reported as `star_prompt_shown` (0, 1 or 2), so each
+   * showing is reported once per account rather than on every mount.
+   */
+  shownReported: number;
+  /** Hidden until `messagesSent` reaches this; null when never dismissed. */
+  snoozedUntilMessageCount: number | null;
   /** The user is known to have starred the repo. The pill never returns. */
   starred: boolean;
   /** Epoch ms of the last GitHub star check; null before the first. */
@@ -30,9 +42,10 @@ export type StarPillPrefs = {
 };
 
 export const DEFAULT_STAR_PILL_PREFS: StarPillPrefs = {
-  hasSentMessage: false,
-  threadsCreated: 0,
-  snoozedUntilThreadCount: null,
+  messagesSent: 0,
+  dismissCount: 0,
+  shownReported: 0,
+  snoozedUntilMessageCount: null,
   starred: false,
   lastCheckedAt: null,
 };
@@ -44,10 +57,22 @@ function nonNegativeInt(value: unknown): number | null {
 export function normalizeStarPillPrefs(value: unknown): StarPillPrefs {
   if (!value || typeof value !== "object" || Array.isArray(value)) return { ...DEFAULT_STAR_PILL_PREFS };
   const raw = value as Record<string, unknown>;
+  // Copies written before the message-based snooze carry `hasSentMessage` and
+  // a chat-count snooze. Read them as one sent message and one dismissal, so an
+  // older machine's copy can neither re-show a dismissed pill early nor hide it.
+  const messagesSent = Math.max(nonNegativeInt(raw.messagesSent) ?? 0, raw.hasSentMessage === true ? 1 : 0);
+  const legacyDismissed = nonNegativeInt(raw.snoozedUntilThreadCount) != null;
+  const dismissCount = Math.min(
+    STAR_PILL_MAX_DISMISSALS,
+    Math.max(nonNegativeInt(raw.dismissCount) ?? 0, legacyDismissed ? 1 : 0),
+  );
+  const snoozedUntilMessageCount = nonNegativeInt(raw.snoozedUntilMessageCount)
+    ?? (legacyDismissed ? messagesSent + STAR_PILL_SNOOZE_MESSAGES : null);
   return {
-    hasSentMessage: raw.hasSentMessage === true,
-    threadsCreated: nonNegativeInt(raw.threadsCreated) ?? 0,
-    snoozedUntilThreadCount: nonNegativeInt(raw.snoozedUntilThreadCount),
+    messagesSent,
+    dismissCount,
+    shownReported: Math.min(STAR_PILL_MAX_DISMISSALS, nonNegativeInt(raw.shownReported) ?? 0),
+    snoozedUntilMessageCount,
     starred: raw.starred === true,
     lastCheckedAt: nonNegativeInt(raw.lastCheckedAt),
   };
@@ -62,22 +87,39 @@ function maxNullable(left: number | null, right: number | null): number | null {
 /**
  * Combine a remote copy with the local one. The account store is
  * last-writer-wins per key, so without this a machine that only bumped its
- * chat counter would erase another machine's star or snooze.
+ * message counter would erase another machine's star or dismissal.
  */
 export function mergeStarPillPrefs(local: StarPillPrefs, remote: unknown): StarPillPrefs {
   const incoming = normalizeStarPillPrefs(remote);
   return {
-    hasSentMessage: local.hasSentMessage || incoming.hasSentMessage,
-    threadsCreated: Math.max(local.threadsCreated, incoming.threadsCreated),
-    snoozedUntilThreadCount: maxNullable(local.snoozedUntilThreadCount, incoming.snoozedUntilThreadCount),
+    messagesSent: Math.max(local.messagesSent, incoming.messagesSent),
+    dismissCount: Math.max(local.dismissCount, incoming.dismissCount),
+    shownReported: Math.max(local.shownReported, incoming.shownReported),
+    snoozedUntilMessageCount: maxNullable(local.snoozedUntilMessageCount, incoming.snoozedUntilMessageCount),
     starred: local.starred || incoming.starred,
     lastCheckedAt: maxNullable(local.lastCheckedAt, incoming.lastCheckedAt),
   };
 }
 
 export function isStarPillVisible(prefs: StarPillPrefs): boolean {
-  if (prefs.starred || !prefs.hasSentMessage) return false;
-  return prefs.snoozedUntilThreadCount == null || prefs.threadsCreated >= prefs.snoozedUntilThreadCount;
+  if (prefs.starred || prefs.messagesSent < 1 || prefs.dismissCount >= STAR_PILL_MAX_DISMISSALS) return false;
+  return prefs.snoozedUntilMessageCount == null || prefs.messagesSent >= prefs.snoozedUntilMessageCount;
+}
+
+/**
+ * Whether one more sent message can still change the pill. Past that point
+ * the counter stays put, so ordinary chatting does not rewrite the
+ * account-synced prefs on every send.
+ */
+export function starPillCountsMessages(prefs: StarPillPrefs): boolean {
+  if (prefs.starred || prefs.dismissCount >= STAR_PILL_MAX_DISMISSALS) return false;
+  if (prefs.snoozedUntilMessageCount == null) return prefs.messagesSent < 1;
+  return prefs.messagesSent < prefs.snoozedUntilMessageCount;
+}
+
+/** Which showing of the pill this is, for analytics. */
+export function starPillShowing(prefs: StarPillPrefs): "prompt_first" | "prompt_second" {
+  return prefs.dismissCount === 0 ? "prompt_first" : "prompt_second";
 }
 
 export function isStarCheckDue(prefs: StarPillPrefs, now: number): boolean {

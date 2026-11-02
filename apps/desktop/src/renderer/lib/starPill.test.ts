@@ -6,6 +6,7 @@ import {
   isStarPillVisible,
   mergeStarPillPrefs,
   normalizeStarPillPrefs,
+  starPillCountsMessages,
   type StarPillPrefs,
 } from "./starPill";
 
@@ -17,44 +18,56 @@ const prefs = (over: Partial<StarPillPrefs> = {}): StarPillPrefs => ({
 describe("isStarPillVisible", () => {
   it("needs a sent message, and never returns once the repo is starred", () => {
     expect(isStarPillVisible(prefs())).toBe(false);
-    expect(isStarPillVisible(prefs({ hasSentMessage: true }))).toBe(true);
-    expect(isStarPillVisible(prefs({ hasSentMessage: true, starred: true }))).toBe(false);
+    expect(isStarPillVisible(prefs({ messagesSent: 1 }))).toBe(true);
+    expect(isStarPillVisible(prefs({ messagesSent: 1, starred: true }))).toBe(false);
   });
 
-  it("returns exactly when the snooze count is reached", () => {
-    const snoozed = prefs({ hasSentMessage: true, threadsCreated: 19, snoozedUntilThreadCount: 20 });
+  it("returns once, exactly when the snooze count is reached, and the second dismissal is final", () => {
+    const snoozed = prefs({ messagesSent: 20, dismissCount: 1, snoozedUntilMessageCount: 21 });
     expect(isStarPillVisible(snoozed)).toBe(false);
-    expect(isStarPillVisible({ ...snoozed, threadsCreated: 20 })).toBe(true);
-    expect(isStarPillVisible({ ...snoozed, threadsCreated: 21 })).toBe(true);
+    expect(starPillCountsMessages(snoozed)).toBe(true);
+    const back = { ...snoozed, messagesSent: 21 };
+    expect(isStarPillVisible(back)).toBe(true);
+    expect(starPillCountsMessages(back)).toBe(false);
+    expect(isStarPillVisible({ ...back, dismissCount: 2 })).toBe(false);
   });
 });
 
 describe("mergeStarPillPrefs", () => {
   it("keeps both machines' progress instead of letting the newer copy win", () => {
     // A machine that only bumped its counter must not erase the star or the
-    // snooze another machine recorded.
-    const local = prefs({ starred: true, threadsCreated: 3, lastCheckedAt: 500 });
+    // dismissal another machine recorded.
+    const local = prefs({ starred: true, messagesSent: 3, lastCheckedAt: 500 });
     const merged = mergeStarPillPrefs(local, {
-      hasSentMessage: true,
-      threadsCreated: 40,
-      snoozedUntilThreadCount: 60,
+      messagesSent: 40,
+      dismissCount: 1,
+      shownReported: 2,
+      snoozedUntilMessageCount: 60,
       starred: false,
       lastCheckedAt: 100,
     });
     expect(merged).toEqual({
-      hasSentMessage: true,
-      threadsCreated: 40,
-      snoozedUntilThreadCount: 60,
+      messagesSent: 40,
+      dismissCount: 1,
+      shownReported: 2,
+      snoozedUntilMessageCount: 60,
       starred: true,
       lastCheckedAt: 500,
     });
   });
 
+  it("reads an older machine's chat-count snooze as one dismissal, not a fresh prompt", () => {
+    const local = prefs({ messagesSent: 1 });
+    const merged = mergeStarPillPrefs(local, { hasSentMessage: true, threadsCreated: 4, snoozedUntilThreadCount: 20 });
+    expect(merged.dismissCount).toBe(1);
+    expect(isStarPillVisible(merged)).toBe(false);
+  });
+
   it("treats a missing or malformed remote copy as no progress", () => {
-    const local = prefs({ hasSentMessage: true, snoozedUntilThreadCount: 20 });
+    const local = prefs({ messagesSent: 1, dismissCount: 1, snoozedUntilMessageCount: 21 });
     expect(mergeStarPillPrefs(local, null)).toEqual(local);
     expect(mergeStarPillPrefs(local, "nonsense")).toEqual(local);
-    expect(normalizeStarPillPrefs({ threadsCreated: -5, starred: "yes" }))
+    expect(normalizeStarPillPrefs({ messagesSent: -5, starred: "yes" }))
       .toEqual({ ...DEFAULT_STAR_PILL_PREFS });
   });
 });
