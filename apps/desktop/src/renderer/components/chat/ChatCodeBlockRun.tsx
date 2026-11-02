@@ -10,7 +10,7 @@ import { requestChatTerminalFocus } from "./chatTerminalFocus";
 import { CODE_BLOCK_ACTION_BUTTON_CLASS, CODE_BLOCK_ACTION_BUTTON_STYLE } from "./codeBlockActionButton";
 import { captureError } from "../../../shared/sentry/capture";
 
-type RevealTerminal = (terminal: { terminalId: string; ptyId: string; label: string }) => void;
+type RevealTerminal = (terminal: { chatSessionId: string; terminalId: string; ptyId: string; label: string }) => void;
 
 /**
  * Opens the chat's terminal pane on a terminal: the pane that owns the chat
@@ -210,15 +210,11 @@ async function startRun(args: {
       finish(early.exitCode);
       return;
     }
-    // A machine's event feed can start after the command already ended;
-    // one read settles it.
-    const read = await window.ade.terminal.read({ terminalId: created.sessionId, maxBytes: 1 }, pin).catch((error: unknown) => {
-      // The exit event still finishes the run; only a quick exit missed by
-      // the feed would leave the block reading "Running".
-      captureError(error, { fingerprint: ["chat-code-block-run", "exit-status-read"], level: "warning", handled: true });
-      return null;
-    });
-    if (read?.status && read.status !== "running") finish(read.exitCode ?? null);
+    // The exit event can miss: a machine's feed can start after the command
+    // ended, and the hosted web reports a terminal's exit only once a view
+    // subscribes to it. The session's own status settles the run then: read
+    // now, and again at a slow pace while it runs.
+    void settleFromSessionStatus(created.sessionId, pin, () => done, finish);
   } catch (error) {
     done = true;
     unsubscribe?.();
@@ -232,6 +228,36 @@ async function startRun(args: {
   }
 }
 
+const SESSION_STATUS_CHECK_DELAYS_MS = [0, 2_000, 5_000, 15_000];
+const SESSION_STATUS_CHECK_INTERVAL_MS = 30_000;
+
+async function settleFromSessionStatus(
+  terminalId: string,
+  pin: OpenProjectBinding | null,
+  isDone: () => boolean,
+  finish: (exitCode: number | null) => void,
+): Promise<void> {
+  for (let check = 0; !isDone(); check += 1) {
+    const delay = SESSION_STATUS_CHECK_DELAYS_MS[check] ?? SESSION_STATUS_CHECK_INTERVAL_MS;
+    if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
+    if (isDone()) return;
+    try {
+      const session = await window.ade.sessions.get(terminalId, pin);
+      // A terminal deleted while it ran leaves the run to its exit event.
+      if (!session) return;
+      if (session.status !== "running") {
+        finish(session.exitCode ?? null);
+        return;
+      }
+    } catch (error) {
+      // The exit event still settles the run; stop asking a machine that
+      // cannot answer.
+      captureError(error, { fingerprint: ["chat-code-block-run", "exit-status-read"], level: "warning", handled: true });
+      return;
+    }
+  }
+}
+
 /** Open the chat's terminal pane on this terminal, running or ended. */
 function showTerminal(
   chatSessionId: string,
@@ -239,7 +265,7 @@ function showTerminal(
   reveal: RevealTerminal | null,
 ): void {
   requestChatTerminalFocus(chatSessionId, terminal);
-  reveal?.({ terminalId: terminal.terminalId, ptyId: terminal.ptyId, label: terminal.label });
+  reveal?.({ chatSessionId, terminalId: terminal.terminalId, ptyId: terminal.ptyId, label: terminal.label });
 }
 
 /**

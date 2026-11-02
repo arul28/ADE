@@ -1664,7 +1664,11 @@ The chat list owns scroll anchoring (`overflow-anchor: none` on the pane):
   and the block shows that error. The new terminal opens in the chat's tools
   pane through `ChatTerminalRevealContext` plus `requestChatTerminalFocus`,
   which hands the drawer the terminal itself so it can show one that already
-  ended. After the exit the block offers "Send output to the agent", which
+  ended; the pane opens it only while it still shows the chat that started
+  the run. The run settles on the PTY's exit event, or on the session's own
+  status (`sessions.get`, read at start and then at a slow pace while it
+  runs) when the event feed misses it: a remote machine's feed can start
+  late, and the hosted web reports an exit only to a subscribed view. After the exit the block offers "Send output to the agent", which
   reads what the terminal shows: the host's terminal snapshot
   (`terminal.preview`), replayed into an offscreen xterm and read back as
   lines, scrollback included. Not the raw transcript, because a Windows

@@ -2801,12 +2801,28 @@ function startHydration(runtime: CachedRuntime) {
     // stacks another copy into scrollback. Only the normal buffer accumulates:
     // an alternate-screen payload repaints its viewport in place.
     // A replay also replaces live output drawn before it (a session that ended
-    // while this view mounted): the replay holds that output too.
-    const eraseStale = (runtime.staleContentBeforeHydration
-      || (data.source === "replay" && runtime.displayedLiveDataBeforeHydration))
+    // while this view mounted): the replay holds that output too. It resets
+    // the terminal rather than erasing, so modes the live output set do not
+    // apply to the replayed bytes.
+    const replacesLive = data.source === "replay"
+      && runtime.displayedLiveDataBeforeHydration
       && terminalOnNormalBuffer(runtime);
+    const eraseStale = runtime.staleContentBeforeHydration && terminalOnNormalBuffer(runtime) && !replacesLive;
     runtime.staleContentBeforeHydration = false;
     if (data.source === "replay") {
+      // A session ends before its transcript finishes writing, so a replay
+      // read right after the exit can hold less than this view already drew.
+      // Then the live output stays, as it is.
+      if (replacesLive && data.text.length < runtime.pendingHydrationBytes) {
+        runtime.pendingHydrationChunks.length = 0;
+        runtime.pendingHydrationBytes = 0;
+        flushPendingFrameWrites(runtime);
+        runtime.hydrationCompleted = true;
+        notifyRuntime(runtime);
+        scheduleFit(runtime, true);
+        reportHydrationComplete(runtime, data.source);
+        return;
+      }
       // Replay mode: enlarge scrollback so the full transcript stays
       // scrollable, then write the stripped bytes in one pass. There is no
       // live PTY by definition, so pending live chunks (if any) are dropped.
@@ -2814,6 +2830,13 @@ function startHydration(runtime: CachedRuntime) {
       runtime.pendingHydrationChunks.length = 0;
       runtime.pendingHydrationBytes = 0;
       discardScheduledFrameWrites(runtime);
+      if (replacesLive) {
+        try {
+          runtime.term.reset();
+        } catch {
+          // a disposed renderer keeps whatever it has
+        }
+      }
       try {
         runtime.term.options.scrollback = REPLAY_SCROLLBACK_LINES;
       } catch {

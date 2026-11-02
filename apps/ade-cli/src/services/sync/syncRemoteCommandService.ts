@@ -2197,8 +2197,8 @@ function parseQuickCommandArgs(value: Record<string, unknown>): SyncRunQuickComm
   };
 }
 
-/** The script travels as one argument; past this it would not fit a command line anyway. */
-const MAX_SHELL_BLOCK_ARGS_CHARS = 128_000;
+/** The script travels as one argument, and Linux caps one argument at 128 KiB in bytes. */
+const MAX_SHELL_BLOCK_ARGS_BYTES = 128_000;
 
 function parseRunShellBlockArgs(value: Record<string, unknown>): SyncRunShellBlockArgs {
   const laneId = requireString(value.laneId, "work.runShellBlock requires laneId.");
@@ -2211,7 +2211,7 @@ function parseRunShellBlockArgs(value: Record<string, unknown>): SyncRunShellBlo
     throw new Error("work.runShellBlock requires args as an array of strings.");
   }
   const commandArgs = value.args as string[];
-  if (commandArgs.reduce((total, entry) => total + entry.length, 0) > MAX_SHELL_BLOCK_ARGS_CHARS) {
+  if (commandArgs.reduce((total, entry) => total + Buffer.byteLength(entry, "utf8"), 0) > MAX_SHELL_BLOCK_ARGS_BYTES) {
     throw new Error("work.runShellBlock: the script is too long to run.");
   }
   return {

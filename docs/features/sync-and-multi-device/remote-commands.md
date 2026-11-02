@@ -819,7 +819,7 @@ A handful have more logic:
 - **`work.runShellBlock`** — runs a chat reply's shell code block:
   `ptyService.create` with `chatSessionId`, the client-built interpreter
   `command` and `args` (the script is one argument, at most 128,000
-  characters), `toolType: "shell"`, tracked, with the host's own
+  UTF-8 bytes in all), `toolType: "shell"`, tracked, with the host's own
   `SHELL_BLOCK_RUN_ENV` (pagers off); the client sends no environment. Controller-only and not
   queueable, so a block runs when the person confirms it and never later on a
   reconnect. Optional in the mobile compatibility contract: clients feature-

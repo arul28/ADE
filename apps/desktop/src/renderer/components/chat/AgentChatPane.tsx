@@ -4938,8 +4938,13 @@ export function AgentChatPane({
     }
   }, [hasExternalTerminalPane, openTerminalPanel]);
   // A code block's Run reaches the pane through context; stable so a
-  // `terminalPaneOpen` flip re-renders no armed block.
-  const revealChatTerminalStable = useLatestCallback(revealChatTerminal);
+  // `terminalPaneOpen` flip re-renders no armed block. A run can start in one
+  // chat and get its terminal after this pane has switched to another; that
+  // chat's terminal does not open here.
+  const revealCodeBlockTerminal = useLatestCallback((terminal: { chatSessionId: string; terminalId: string; ptyId: string; label: string }) => {
+    if (terminal.chatSessionId !== selectedSessionId) return;
+    revealChatTerminal({ terminalId: terminal.terminalId, ptyId: terminal.ptyId, label: terminal.label });
+  });
   const [rightPaneSplit, setRightPaneSplit] = useState<number>(() => {
     try {
       const raw = window.sessionStorage.getItem("ade.chat.rightPaneSplit");
@@ -19338,7 +19343,7 @@ export function AgentChatPane({
                     <ChatInfoHostContext.Provider value={true}>
                     <ThreadEntityProvider skillNames={threadEntitySkillNames}>
                       <SceneReplyContext.Provider value={subagentView ? null : handleSceneReply}>
-                      <ChatTerminalRevealContext.Provider value={subagentView || !chatTerminalVisible ? null : revealChatTerminalStable}>
+                      <ChatTerminalRevealContext.Provider value={subagentView || !chatTerminalVisible ? null : revealCodeBlockTerminal}>
                       <LiveChatMessageList
                         liveTranscript={subagentView ? null : liveTranscript}
                         key={renderedSessionId ?? "chat-draft"}

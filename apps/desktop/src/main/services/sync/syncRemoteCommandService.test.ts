@@ -2141,6 +2141,8 @@ describe("createSyncRemoteCommandService", () => {
         { args: ["-c", 3] },
         { chatSessionId: undefined },
         { args: ["-c", "x".repeat(130_000)] },
+        // The cap is bytes: 50,000 three-byte characters are 150,000.
+        { args: ["-c", "界".repeat(50_000)] },
       ]) {
         await expect(service.execute(makePayload("work.runShellBlock", {
           laneId: "lane-1", chatSessionId: "chat-1", title: "t", command: "bash", args: ["-c", "ls"], ...bad,

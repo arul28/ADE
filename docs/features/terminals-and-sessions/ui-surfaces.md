@@ -1770,9 +1770,11 @@ Key behaviors:
   clobbering it. Replay-mode runtimes set `replayMode: true`, get
   `REPLAY_SCROLLBACK_LINES = 100_000` scrollback regardless of user
   preference. A session that ended while its view was mounting (a quick
-  command) may already have drawn live output; the replay erases that first
-  and replaces it (`canReplayOverLiveData`), since an ended session prints
-  nothing more. On the alternate screen it keeps the old path, where an
+  command) may already have drawn live output; the replay resets the
+  terminal first and replaces it (`canReplayOverLiveData`), since an ended
+  session prints nothing more. A replay shorter than the live output drawn
+  (read before the transcript stream finished writing) leaves the live
+  output in place. On the alternate screen it keeps the old path, where an
   erase would not remove what was drawn. Replay-mode runtimes also skip the usual `trimToLikelyTerminalFrameBoundary`
   hydration trim so the whole transcript stays scrollable. This is
   what makes a disposed Claude / Codex chat session render as a
