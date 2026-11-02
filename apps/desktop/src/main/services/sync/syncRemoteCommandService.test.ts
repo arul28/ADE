@@ -2130,6 +2130,8 @@ describe("createSyncRemoteCommandService", () => {
         chatSessionId: "chat-1",
         command: "bash",
         args: ["-c", script],
+        // Pagers off: `git log` must not stop at a prompt nobody sees.
+        env: expect.objectContaining({ PAGER: "cat", GIT_PAGER: "cat" }),
         tracked: true,
         toolType: "shell",
       }));

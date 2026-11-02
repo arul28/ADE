@@ -1651,7 +1651,9 @@ The chat list owns scroll anchoring (`overflow-anchor: none` on the pane):
   (`chatSessionId`), running the interpreter directly with the script as an
   argument (`bash -c <script>`, `powershell.exe -EncodedCommand`). That keeps
   heredocs and multi-line scripts byte-exact whatever the login shell is,
-  and the PTY's exit is the command's exit code. A `console` block runs only
+  and the PTY's exit is the command's exit code. It runs with
+  `SHELL_BLOCK_RUN_ENV` (`PAGER=cat`, `GIT_PAGER=cat`), so `git log` or
+  `git diff` ends instead of waiting at a `less` prompt. A `console` block runs only
   its `$ `/`% ` prompt lines (with `\` continuations). The chat's machine is
   Windows when its lane folder is a Windows path: there PowerShell blocks run
   and bash blocks are disabled with a reason; elsewhere the reverse. `cmd`

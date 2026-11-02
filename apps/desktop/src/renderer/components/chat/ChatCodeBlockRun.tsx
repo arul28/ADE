@@ -1,6 +1,7 @@
 import React, { createContext, useCallback, useContext, useSyncExternalStore } from "react";
 import { ArrowUp, CheckCircle, Play, Terminal, Warning } from "@phosphor-icons/react";
 import type { OpenProjectBinding, PtyExitEvent } from "../../../shared/types";
+import { SHELL_BLOCK_RUN_ENV } from "../../../shared/types/sync";
 import { confirmDialog } from "../ui/dialog";
 import { isWindowsAbsolutePath } from "../../lib/pathUtils";
 import { useChatRuntimeScope, type ChatRuntimeScope } from "./ChatRuntimeScope";
@@ -198,6 +199,7 @@ async function startRun(args: {
       toolType: "shell",
       command: plan.command,
       args: plan.args,
+      env: { ...SHELL_BLOCK_RUN_ENV },
     }, pin);
     ptyId = created.ptyId;
     updateRun(key, id, { terminalId: created.sessionId, ptyId: created.ptyId, status: "running" });

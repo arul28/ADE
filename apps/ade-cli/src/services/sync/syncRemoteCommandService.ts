@@ -267,6 +267,7 @@ import type {
   WriteTextAtomicArgs,
 } from "../../../../desktop/src/shared/types";
 import { isAdeUsageCostBreakdownBy, isAdeUsageRangePreset, isAdeUsageScope, type AdeUsageCostBreakdownBy } from "../../../../desktop/src/shared/types";
+import { SHELL_BLOCK_RUN_ENV } from "../../../../desktop/src/shared/types/sync";
 import { normalizePriceOverride } from "../../../../desktop/src/main/services/usage/usagePriceOverrides";
 import {
   parseSessionSettleOverride,
@@ -4634,6 +4635,7 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
       title: parsed.title,
       command: parsed.command,
       args: parsed.args,
+      env: { ...SHELL_BLOCK_RUN_ENV },
       tracked: true,
       cols: clampCliDimension(parsed.cols, 100, 20, MAX_CLI_COLS),
       rows: clampCliDimension(parsed.rows, 28, 4, MAX_CLI_ROWS),
