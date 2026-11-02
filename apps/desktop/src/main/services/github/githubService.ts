@@ -3,8 +3,6 @@ import { createGithubIssueOps } from "./githubIssueOps";
 import { issueWriteCandidates } from "./githubIssueWriteAccess";
 import type { GitHubIssueLike, GitHubIssuePatch } from "../../../shared/laneGitHubIssue";
 import path from "node:path";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
 import { safeStorage } from "electron";
 import type { Logger } from "../logging/logger";
 import { getMachineMainLogger } from "../logging/machineLogger";
@@ -107,6 +105,8 @@ import {
 } from "./githubCredentialHealth";
 
 import { nowIso, asString } from "../shared/utils";
+import { runReapedCommandStdout } from "../shared/runReapedCommand";
+import { createFailureBackoff, type FailureBackoff } from "../../../shared/failureBackoff";
 import {
   GITHUB_REST_ISSUE_PR_LIST_MAX_PAGES,
   collectGithubRestPages,
@@ -123,7 +123,6 @@ export const GITHUB_API_BODY_TIMEOUT_MS = 30_000;
 const GH_AUTH_TOKEN_CACHE_TTL_MS = 30_000;
 const GH_HOSTS_TOKEN_CACHE_MAX_ENTRIES = 32;
 const GITHUB_STATUS_FAILURE_COOLDOWN_MS = 30_000;
-const execFileAsync = promisify(execFile);
 const processGhHostsTokenCache = new Map<string, { expiresAt: number; token: string | null }>();
 
 function cacheGhHostsToken(hostsPath: string, token: string | null): void {
@@ -176,6 +175,10 @@ type ProcessGithubAuthState = {
   statusCache: Map<string, { expiresAt: number; result: SharedGithubStatusProbeResult }>;
   statusInFlight: Map<string, Promise<SharedGithubStatusProbeResult>>;
   credentialInventoryRevision: number;
+  /** Spaces out `gh auth token` while it keeps failing; see readGhAuthToken. */
+  authFailureBackoff: FailureBackoff;
+  /** gh's hosts.yml (size and mtime) when the cached failure was recorded. */
+  authFailureHostsSignature: string | null;
 };
 
 const processGithubAuthStates = new WeakMap<GitHubCliAuthProvider, ProcessGithubAuthState>();
@@ -200,6 +203,8 @@ function processGithubAuthState(provider: GitHubCliAuthProvider): ProcessGithubA
     statusCache: new Map(),
     statusInFlight: new Map(),
     credentialInventoryRevision: 0,
+    authFailureBackoff: createFailureBackoff({ baseMs: GH_AUTH_TOKEN_CACHE_TTL_MS, maxMs: 15 * 60_000 }),
+    authFailureHostsSignature: null,
   };
   processGithubAuthStates.set(provider, created);
   return created;
@@ -272,6 +277,16 @@ class GithubCredentialAttemptError extends Error {
  * gh binary). This is the only auth path that works reliably in headless
  * contexts (the launchd brain) where spawning gh has proven fragile.
  */
+/** Size and mtime of gh's hosts.yml, which `gh auth login` and `logout` rewrite. */
+async function ghHostsFileSignature(env: NodeJS.ProcessEnv = process.env): Promise<string> {
+  try {
+    const stat = await fs.promises.stat(path.join(ghConfigDir(env), "hosts.yml"));
+    return `${stat.size}:${stat.mtimeMs}`;
+  } catch {
+    return "missing";
+  }
+}
+
 function readGhHostsFileToken(env: NodeJS.ProcessEnv = process.env): string | null {
   const hostsPath = path.join(ghConfigDir(env), "hosts.yml");
   const cached = processGhHostsTokenCache.get(hostsPath);
@@ -326,10 +341,9 @@ async function readGitHubCliAuthToken(): Promise<GitHubCliAuthResult> {
   }
 
   try {
-    const { stdout } = await execFileAsync(resolved.path, ["auth", "token"], {
-      encoding: "utf8",
-      timeout: 5_000,
-      windowsHide: true,
+    // Reaped: when the keychain hangs, gh exits but its `security` helper stays.
+    const stdout = await runReapedCommandStdout(resolved.path, ["auth", "token"], {
+      timeoutMs: 5_000,
       maxBuffer: 256 * 1024,
       env: {
         ...process.env,
@@ -715,6 +729,7 @@ export function createGithubService({
     }
     if (args.clearGhCaches) {
       sharedGhAuth.authCache = null;
+      sharedGhAuth.authFailureBackoff.reset();
       sharedGhAuth.statusCache.clear();
     }
     invalidateCredentialInventory();
@@ -915,6 +930,16 @@ export function createGithubService({
       sharedGhAuth.authCache = null;
       return { token: null, ghCliPath: null, ghAuthError: null };
     }
+    // A cached failure lasts up to 15 min; signing in or out of gh ends it.
+    if (
+      sharedGhAuth.authCache
+      && !sharedGhAuth.authCache.token
+      && sharedGhAuth.authFailureHostsSignature !== null
+      && (await ghHostsFileSignature()) !== sharedGhAuth.authFailureHostsSignature
+    ) {
+      sharedGhAuth.authCache = null;
+      sharedGhAuth.authFailureBackoff.reset();
+    }
     const now = Date.now();
     if (sharedGhAuth.authCache && sharedGhAuth.authCache.expiresAt > now) {
       return {
@@ -928,7 +953,17 @@ export function createGithubService({
     sharedGhAuth.authInFlight = work;
     try {
       const result = await work;
-      sharedGhAuth.authCache = { ...result, expiresAt: Date.now() + GH_AUTH_TOKEN_CACHE_TTL_MS };
+      // A failure that repeats (a locked keychain, a signed-out gh) is kept
+      // for longer each time instead of being retried every 30 s.
+      let ttlMs = GH_AUTH_TOKEN_CACHE_TTL_MS;
+      sharedGhAuth.authFailureHostsSignature = null;
+      if (result.token) {
+        sharedGhAuth.authFailureBackoff.reset();
+      } else if (result.ghCliPath) {
+        ttlMs = sharedGhAuth.authFailureBackoff.recordFailure();
+        sharedGhAuth.authFailureHostsSignature = await ghHostsFileSignature();
+      }
+      sharedGhAuth.authCache = { ...result, expiresAt: Date.now() + ttlMs };
       return result;
     } finally {
       if (sharedGhAuth.authInFlight === work) sharedGhAuth.authInFlight = null;
@@ -2262,14 +2297,11 @@ export function createGithubService({
     runGh: async (ghArgs, options) => {
       const resolved = resolveExecutableFromKnownLocations("gh");
       if (!resolved?.path) throw new Error("GitHub CLI was not found. Install gh, or remove the pictures.");
-      const { stdout } = await execFileAsync(resolved.path, ghArgs, {
+      return await runReapedCommandStdout(resolved.path, ghArgs, {
         cwd: options.cwd,
-        encoding: "utf8",
-        timeout: options.timeoutMs,
-        windowsHide: true,
+        timeoutMs: options.timeoutMs,
         maxBuffer: 1024 * 1024,
       });
-      return String(stdout);
     },
   });
   const readAppIssueGrant = issueOps.readAppIssueGrant;

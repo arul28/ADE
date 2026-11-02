@@ -4,7 +4,7 @@ import { resolveGithubRepoRef } from "../../desktop/src/main/services/github/git
 import { gitPushError } from "../../desktop/src/main/services/git/gitPushFailure";
 import { githubRepoRefFromRemoteUrl } from "../../desktop/src/shared/githubRemote";
 import { issueWriteCandidates } from "../../desktop/src/main/services/github/githubIssueWriteAccess";
-import { execFile, spawnSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import type { Logger } from "../../desktop/src/main/services/logging/logger";
@@ -107,7 +107,8 @@ import { ghConfigDir } from "./services/credentials/ghConfigDir";
 import { createExpiringPromiseCache } from "../../desktop/src/shared/expiringPromiseCache";
 import { gitCommonDirFor, knownGitCommonDir, runGitRepoCached } from "../../desktop/src/main/services/git/git";
 import { invalidateGitRepoCache, isRefAffectingGitCommand } from "../../desktop/src/main/services/git/gitRepoCache";
-import { execFileOffThread, offThreadSpawnEnabled } from "../../desktop/src/main/services/shared/offThreadSpawn";
+import { runReapedCommand } from "../../desktop/src/main/services/shared/runReapedCommand";
+import { createFailureBackoff } from "../../desktop/src/shared/failureBackoff";
 import {
   GITHUB_CREDENTIAL_CACHE_TTL_MS,
   GITHUB_STATUS_CACHE_TTL_MS,
@@ -467,43 +468,50 @@ function runCommandAsync(
   args: string[],
   options: { cwd?: string; timeoutMs: number; maxBuffer?: number },
 ): Promise<{ exitCode: number; stdout: string; stderr: string }> {
-  if (offThreadSpawnEnabled()) {
-    // `gh auth token` runs here (at most every 30 s); on Windows a spawn on the event
-    // loop blocked it ~120 ms each time. See offThreadSpawn.ts.
-    return execFileOffThread(executable, args, {
-      cwd: options.cwd,
-      timeoutMs: options.timeoutMs,
-      maxBuffer: options.maxBuffer ?? 10 * 1024 * 1024,
-    }).then(({ exitCode, stdout, stderr, error }) => ({
-      exitCode: error ? 1 : exitCode ?? 1,
-      stdout,
-      stderr: stderr || (error ? error.message : ""),
-    }));
+  // Reaped: `gh` leaves its keychain helper behind when the keychain hangs.
+  // On Windows this runs off the event loop; `gh auth token` runs here (at most
+  // every 30 s), and a spawn on the loop blocked it ~120 ms each time.
+  return runReapedCommand(executable, args, {
+    cwd: options.cwd,
+    timeoutMs: options.timeoutMs,
+    maxBuffer: options.maxBuffer ?? 10 * 1024 * 1024,
+  }).then(({ exitCode, stdout, stderr, error }) => ({
+    exitCode: error ? 1 : exitCode ?? 1,
+    stdout,
+    stderr: stderr || (error ? error.message : ""),
+  }));
+}
+
+/**
+ * `gh auth token` that keeps failing is a sign-in problem, not a blip: with a
+ * locked keychain every attempt opens another password dialog and leaves
+ * another stuck helper. Failures back off from 30 s to 15 min and return the
+ * last failure meanwhile. Signing in or out of gh (a `hosts.yml` rewrite) or a
+ * forced status refresh clears the wait.
+ */
+const ghAuthFailureBackoff = createFailureBackoff({ baseMs: 30_000, maxMs: 15 * 60_000 });
+let lastGhAuthFailure: GhAuthTokenResult | null = null;
+let lastGhAuthResult: { result: GhAuthTokenResult; at: number } | null = null;
+let ghAuthBackoffSignature: string | null = null;
+
+/** A changed hosts.yml (a gh sign-in or sign-out) ends the wait. */
+function noteGhHostsSignature(signature: string): void {
+  if (signature === ghAuthBackoffSignature) return;
+  ghAuthBackoffSignature = signature;
+  ghAuthFailureBackoff.reset();
+  lastGhAuthResult = null;
+}
+
+function noteGhAuthResult(result: GhAuthTokenResult): GhAuthTokenResult {
+  lastGhAuthResult = { result, at: Date.now() };
+  if (result.token) {
+    ghAuthFailureBackoff.reset();
+    lastGhAuthFailure = null;
+  } else {
+    ghAuthFailureBackoff.recordFailure();
+    lastGhAuthFailure = result;
   }
-  return new Promise((resolve) => {
-    execFile(
-      executable,
-      args,
-      {
-        ...(options.cwd ? { cwd: options.cwd } : {}),
-        encoding: "utf8",
-        timeout: options.timeoutMs,
-        maxBuffer: options.maxBuffer ?? 10 * 1024 * 1024,
-        windowsHide: true,
-      },
-      (error, stdout, stderr) => {
-        resolve({
-          exitCode: typeof (error as NodeJS.ErrnoException | null)?.code === "number"
-            ? Number((error as NodeJS.ErrnoException).code)
-            : error
-              ? 1
-              : 0,
-          stdout,
-          stderr: stderr || (error ? error.message : ""),
-        });
-      },
-    );
-  });
+  return result;
 }
 
 function ghAuthToken(): Pick<HeadlessGitHubTokenLookup, "token" | "ghCliPath" | "ghAuthError"> {
@@ -514,6 +522,13 @@ function ghAuthToken(): Pick<HeadlessGitHubTokenLookup, "token" | "ghCliPath" | 
   if (hostsToken) {
     return { token: hostsToken, ghCliPath: null, ghAuthError: null };
   }
+  noteGhHostsSignature(readGhHostsFileSignatureSync());
+  if (lastGhAuthFailure && !ghAuthFailureBackoff.canAttempt()) return lastGhAuthFailure;
+  // spawnSync cannot reap a helper gh leaves behind (see runReapedCommand), so
+  // a recent answer from the async lookup is reused instead of asking again.
+  if (lastGhAuthResult && Date.now() - lastGhAuthResult.at < GITHUB_CREDENTIAL_CACHE_TTL_MS) {
+    return lastGhAuthResult.result;
+  }
   const ghCliPath = resolveGhCliPath();
   try {
     const result = spawnSync(ghCliPath, ["auth", "token"], {
@@ -523,20 +538,20 @@ function ghAuthToken(): Pick<HeadlessGitHubTokenLookup, "token" | "ghCliPath" | 
     });
     const token = result.status === 0 ? (result.stdout?.trim() ?? "") : "";
     if (token.length > 0) {
-      return { token, ghCliPath, ghAuthError: null };
+      return noteGhAuthResult({ token, ghCliPath, ghAuthError: null });
     }
     const stderr = typeof result.stderr === "string" ? result.stderr.trim() : "";
-    return {
+    return noteGhAuthResult({
       token: null,
       ghCliPath,
       ghAuthError: stderr || "GitHub CLI is installed, but `gh auth token` did not return a token.",
-    };
+    });
   } catch (error) {
-    return {
+    return noteGhAuthResult({
       token: null,
       ghCliPath: null,
       ghAuthError: error instanceof Error ? error.message : String(error),
-    };
+    });
   }
 }
 
@@ -563,16 +578,29 @@ async function readGhHostsFileSignatureAsync(): Promise<string> {
   }
 }
 
+function readGhHostsFileSignatureSync(): string {
+  try {
+    const stat = fs.statSync(path.join(ghConfigDir(), "hosts.yml"));
+    return `${stat.mtimeMs}:${stat.size}`;
+  } catch {
+    return "missing";
+  }
+}
+
 /** Drops the shared `gh` lookup, for a forced GitHub status refresh. */
 function clearGhAuthTokenCache(): void {
   ghAuthTokenCache.clear();
+  ghAuthFailureBackoff.reset();
+  lastGhAuthResult = null;
 }
 
 async function ghAuthTokenAsync(): Promise<GhAuthTokenResult> {
   if (process.env.ADE_DISABLE_GH_AUTH_FALLBACK === "1") {
     return { token: null, ghCliPath: null, ghAuthError: null };
   }
-  return await ghAuthTokenCache.read(await readGhHostsFileSignatureAsync());
+  const signature = await readGhHostsFileSignatureAsync();
+  noteGhHostsSignature(signature);
+  return await ghAuthTokenCache.read(signature);
 }
 
 async function readGhAuthTokenUncachedAsync(): Promise<GhAuthTokenResult> {
@@ -580,19 +608,20 @@ async function readGhAuthTokenUncachedAsync(): Promise<GhAuthTokenResult> {
   if (hostsToken) {
     return { token: hostsToken, ghCliPath: null, ghAuthError: null };
   }
+  if (lastGhAuthFailure && !ghAuthFailureBackoff.canAttempt()) return lastGhAuthFailure;
   const ghCliPath = await resolveGhCliPathAsync();
   const result = await runCommandAsync(ghCliPath, ["auth", "token"], {
     timeoutMs: 5_000,
     maxBuffer: 64 * 1024,
   });
   const token = result.exitCode === 0 ? result.stdout.trim() : "";
-  if (token) return { token, ghCliPath, ghAuthError: null };
-  return {
+  if (token) return noteGhAuthResult({ token, ghCliPath, ghAuthError: null });
+  return noteGhAuthResult({
     token: null,
     ghCliPath,
     ghAuthError: result.stderr.trim()
       || "GitHub CLI is installed, but `gh auth token` did not return a token.",
-  };
+  });
 }
 
 const ghAuthTokenCache = createExpiringPromiseCache<GhAuthTokenResult>({

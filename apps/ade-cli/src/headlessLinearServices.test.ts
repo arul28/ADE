@@ -4,23 +4,44 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { ghAuthExecMock } = vi.hoisted(() => ({ ghAuthExecMock: vi.fn() }));
+const { ghAuthTokenMock } = vi.hoisted(() => ({ ghAuthTokenMock: vi.fn() }));
 
+// `gh auth token` runs as a spawned child (reaped with its helpers). The
+// mock answers through an execFile-style callback, so a test decides when and
+// how gh exits; the child it returns has no pid, so no real group is signalled.
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
+  const { EventEmitter } = await import("node:events");
   return {
     ...actual,
-    execFile: (...args: Parameters<typeof actual.execFile>) => {
+    spawn: (...args: Parameters<typeof actual.spawn>) => {
       const commandArgs = args[1];
       if (
         Array.isArray(commandArgs)
         && commandArgs[0] === "auth"
         && commandArgs[1] === "token"
-        && ghAuthExecMock.getMockImplementation()
+        && ghAuthTokenMock.getMockImplementation()
       ) {
-        return ghAuthExecMock(...args);
+        const stream = () => Object.assign(new EventEmitter(), { destroy: () => undefined });
+        const child = Object.assign(new EventEmitter(), {
+          stdout: stream(),
+          stderr: stream(),
+          pid: undefined,
+          kill: () => true,
+        });
+        ghAuthTokenMock(args[0], commandArgs, args[2], (error: Error | null, stdout: string, stderr: string) => {
+          // After the caller has attached its listeners, as a real child would.
+          queueMicrotask(() => {
+            if (stdout) child.stdout.emit("data", Buffer.from(stdout, "utf8"));
+            if (stderr) child.stderr.emit("data", Buffer.from(stderr, "utf8"));
+            const code = error ? 1 : 0;
+            child.emit("exit", code);
+            child.emit("close", code);
+          });
+        });
+        return child as unknown as ReturnType<typeof actual.spawn>;
       }
-      return actual.execFile(...args);
+      return actual.spawn(...args);
     },
   };
 });
@@ -2011,8 +2032,8 @@ describe("headlessLinearServices", () => {
     const futureMtime = new Date(Date.now() + Math.random() * 10_000);
     fs.utimesSync(hostsFile, futureMtime, futureMtime);
     const tokens = ["gho_first", "gho_after_config_change", "gho_after_force_refresh"];
-    ghAuthExecMock.mockImplementation((_file, _args, _options, callback) => {
-      const token = tokens[ghAuthExecMock.mock.calls.length - 1];
+    ghAuthTokenMock.mockImplementation((_file, _args, _options, callback) => {
+      const token = tokens[ghAuthTokenMock.mock.calls.length - 1];
       (callback as (error: null, stdout: string, stderr: string) => void)(null, `${token}\n`, "");
       return undefined;
     });
@@ -2036,19 +2057,19 @@ describe("headlessLinearServices", () => {
         firstProject.getReadTokenOrThrowAsync(),
         secondProject.getReadTokenOrThrowAsync(),
       ])).resolves.toEqual(["gho_first", "gho_first"]);
-      expect(ghAuthExecMock).toHaveBeenCalledTimes(1);
+      expect(ghAuthTokenMock).toHaveBeenCalledTimes(1);
 
       fs.writeFileSync(hostsFile, "github.com:\n  user: changed\n  note: new config revision\n");
       const changedConfigToken = await secondProject.getReadTokenOrThrowAsync();
       expect(changedConfigToken).toBe("gho_after_config_change");
-      expect(ghAuthExecMock).toHaveBeenCalledTimes(2);
+      expect(ghAuthTokenMock).toHaveBeenCalledTimes(2);
 
       await firstProject.getStatus({ forceRefresh: true });
       await expect(secondProject.getReadTokenOrThrowAsync()).resolves.toBe("gho_after_force_refresh");
-      expect(ghAuthExecMock).toHaveBeenCalledTimes(3);
+      expect(ghAuthTokenMock).toHaveBeenCalledTimes(3);
       expect(fetchImpl).toHaveBeenCalled();
     } finally {
-      ghAuthExecMock.mockReset();
+      ghAuthTokenMock.mockReset();
       environment.restore();
     }
   });
@@ -2062,7 +2083,7 @@ describe("headlessLinearServices", () => {
     const hostsFile = path.join(process.env.GH_CONFIG_DIR!, "hosts.yml");
     fs.writeFileSync(hostsFile, "github.com:\n  user: race\n");
     const callbacks: Array<(error: null, stdout: string, stderr: string) => void> = [];
-    ghAuthExecMock.mockImplementation((_file, _args, _options, callback) => {
+    ghAuthTokenMock.mockImplementation((_file, _args, _options, callback) => {
       callbacks.push(callback as (error: null, stdout: string, stderr: string) => void);
       return undefined;
     });
@@ -2091,7 +2112,7 @@ describe("headlessLinearServices", () => {
       expect(callbacks).toHaveLength(2);
       expect(fetchImpl).toHaveBeenCalled();
     } finally {
-      ghAuthExecMock.mockReset();
+      ghAuthTokenMock.mockReset();
       environment.restore();
     }
   });

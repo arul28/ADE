@@ -29,10 +29,26 @@ const mockState = vi.hoisted(() => ({
 
 const requireForTest = createRequire(path.join(process.cwd(), "usage-test.cjs"));
 
-vi.mock("node:child_process", () => ({
-  spawn: (...args: unknown[]) => mockState.spawn(...args),
-  spawnSync: (...args: unknown[]) => mockState.spawnSync(...args),
-}));
+vi.mock("node:child_process", async () => {
+  const { EventEmitter } = await import("node:events");
+  return {
+    spawn: (...args: unknown[]) => {
+      // Claude's keychain login read: no such item, so the file login is used.
+      // No pid, so the reaper signals no real process group.
+      if (args[0] === "/usr/bin/security") {
+        const stream = () => Object.assign(new EventEmitter(), { destroy: () => undefined });
+        const child = Object.assign(new EventEmitter(), { stdout: stream(), stderr: stream(), pid: undefined, kill: () => true });
+        queueMicrotask(() => {
+          child.emit("exit", 44);
+          child.emit("close", 44);
+        });
+        return child;
+      }
+      return mockState.spawn(...args);
+    },
+    spawnSync: (...args: unknown[]) => mockState.spawnSync(...args),
+  };
+});
 
 // The Claude CLI `/usage` probe runs in a pty: the process boundary.
 vi.mock("node-pty", () => {

@@ -1,4 +1,4 @@
-import { spawn } from "child_process";
+import { runReapedCommand } from "../shared/runReapedCommand";
 
 import { resolveGithubRemoteRepo } from "../github/githubSshAlias";
 import {
@@ -34,51 +34,20 @@ async function resolveOriginOwner(worktreePath: string): Promise<string | null> 
  * could not be run at all or timed out. Callers use that distinction to decide
  * whether a retry with different flags could possibly help.
  */
-function runGhPrList(args: {
+async function runGhPrList(args: {
   worktreePath: string;
   branch: string;
   fields: string;
 }): Promise<string | null> {
-  return new Promise<string | null>((resolve) => {
-    let settled = false;
-    let out = "";
-    const child = spawn(
-      "gh",
-      [
-        "pr",
-        "list",
-        "--head",
-        args.branch,
-        "--state",
-        "open",
-        "--json",
-        args.fields,
-        "--limit",
-        GH_PR_LIST_LIMIT,
-      ],
-      {
-        cwd: args.worktreePath,
-        env: process.env,
-        stdio: ["ignore", "pipe", "pipe"],
-        windowsHide: true,
-      },
-    );
-    const finish = (value: string | null) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      try { child.kill("SIGKILL"); } catch { /* noop */ }
-      resolve(value);
-    };
-    const timer = setTimeout(() => finish(null), GH_PR_LIST_TIMEOUT_MS);
-    child.stdout.on("data", (d: Buffer | string) => {
-      out += Buffer.isBuffer(d) ? d.toString("utf8") : String(d);
-    });
-    child.stderr.on("data", () => { /* swallow — may contain auth state */ });
-    // gh missing / not executable: no retry can fix that.
-    child.on("error", () => finish(null));
-    child.on("close", (code) => finish(code === 0 ? out : ""));
-  });
+  // Reaped: when the keychain hangs, gh exits but its `security` helper stays.
+  const result = await runReapedCommand(
+    "gh",
+    ["pr", "list", "--head", args.branch, "--state", "open", "--json", args.fields, "--limit", GH_PR_LIST_LIMIT],
+    { cwd: args.worktreePath, timeoutMs: GH_PR_LIST_TIMEOUT_MS, maxBuffer: 4 * 1024 * 1024 },
+  );
+  // gh missing, not executable, or timed out: no retry can fix that.
+  if (result.error) return null;
+  return result.exitCode === 0 ? result.stdout : "";
 }
 
 /**

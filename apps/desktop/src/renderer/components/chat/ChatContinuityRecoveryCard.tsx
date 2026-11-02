@@ -1,20 +1,18 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   ArrowClockwise,
-  ArrowCounterClockwise,
   CaretRight,
   ChatCircleDots,
-  ClockCounterClockwise,
-  Warning,
+  CircleNotch,
 } from "@phosphor-icons/react";
 import type {
   AgentChatContinuityRecoveryResult,
   AgentChatNoticeDetail,
   AgentChatRecoverContinuityArgs,
-  AgentChatResumeFailureKind,
 } from "../../../shared/types";
 import { useAgentChatApi } from "./agentChatApi";
 import { Banner } from "../ui/notice";
+import { QUIET_LINE_ICON_CLASS, QUIET_LINE_TEXT_CLASS } from "./quietLineStyle";
 
 /**
  * Window event the Work surface already listens for to switch the active chat
@@ -24,64 +22,7 @@ import { Banner } from "../ui/notice";
 const SELECT_SESSION_EVENT = "ade:work:select-session";
 
 type RecoverMode = AgentChatContinuityRecoveryResult["mode"];
-
-// Warm amber, never red — a chat whose provider thread couldn't be resumed is
-// recoverable, not a crash. Card + button chrome mirror AgentCliAuthCard so the
-// recovery surfaces read as one family.
-const CARD_CLASS =
-  "mt-3 rounded-[calc(var(--chat-radius-card)-8px)] border border-amber-300/14 bg-amber-400/[0.045] px-3 py-2.5";
-const PRIMARY_BUTTON_CLASS =
-  "inline-flex items-center gap-1.5 rounded-md border border-amber-200/16 bg-amber-300/[0.07] px-2.5 py-1 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-semibold text-amber-50/80 transition-colors hover:border-amber-200/30 hover:bg-amber-300/[0.13] disabled:pointer-events-none disabled:opacity-40";
-const NEUTRAL_BUTTON_CLASS =
-  "inline-flex items-center gap-1.5 rounded-md border border-fg/[0.08] bg-fg/[0.035] px-2.5 py-1 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-semibold text-fg/65 transition-colors hover:border-violet-300/22 hover:bg-violet-400/[0.08] hover:text-fg/85 disabled:pointer-events-none disabled:opacity-40";
-const DISCLOSURE_SUMMARY_CLASS =
-  "cursor-pointer list-none font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.16em] text-muted-fg/40 transition-colors hover:text-muted-fg/65";
-const IDENTIFIER_BLOCK_CLASS =
-  "mt-1.5 grid gap-1 rounded-[calc(var(--chat-radius-card)-8px)] border border-fg/[0.06] bg-black/20 px-3 py-2 font-mono text-[length:calc(var(--chat-font-size)*10/14)] leading-relaxed text-fg/55";
-
-// One plain-language line explaining *why* the thread could not be resumed.
-// Only thread_missing/unknown reach the "required" state in practice, but the
-// map stays total so there is always a human-readable line.
-const REASON_COPY: Record<AgentChatResumeFailureKind, string> = {
-  thread_missing: "The AI provider no longer has this chat's session record.",
-  unknown: "Something interrupted this chat's connection to its AI session.",
-  provider_environment:
-    "The AI provider's environment changed, so this chat's session could not be reopened.",
-  transient: "A temporary problem interrupted this chat's connection to its AI session.",
-};
-
-function reasonLine(reason: AgentChatNoticeDetail["reason"]): string {
-  return (reason && REASON_COPY[reason]) || REASON_COPY.unknown;
-}
-
-// Plain-language copy for an unsuccessful recoverContinuity result. Kept amber
-// and actionable — never a raw provider error.
 type RecoveryFailureReason = AgentChatContinuityRecoveryResult["reason"];
-
-function isRecoveryBreak(reason: RecoveryFailureReason): boolean {
-  return reason === "recovery_failed" || reason === undefined;
-}
-
-function failureCopy(reason: RecoveryFailureReason): string {
-  switch (reason) {
-    case "not_required":
-      return "This chat has already been recovered.";
-    case "unsupported_provider":
-      return "This chat's AI provider doesn't support automatic recovery yet.";
-    case "missing_original_thread":
-      return "There's no original session on record to reconnect to.";
-    case "thread_missing":
-      return "The original session is no longer available. Recover from ADE history or start a new chat.";
-    case "recovery_failed":
-      return "ADE couldn't finish recovering this chat right now. Try again in a moment or pick another option.";
-    case "provider_environment":
-      return "The provider environment changed and blocked the reconnect. Try recovering from ADE history.";
-    case "transient":
-      return "A temporary problem interrupted the reconnect. Try again, or recover from ADE history.";
-    default:
-      return "Recovery didn't complete. Try another option.";
-  }
-}
 
 function navigateToSession(sessionId: string, laneId?: string | null): void {
   try {
@@ -95,81 +36,99 @@ function navigateToSession(sessionId: string, laneId?: string | null): void {
   }
 }
 
-/** Calm "resolved" pill shared by the reconstructed / superseded states. */
-function ResolvedPill({
-  icon: Icon,
-  label,
+function QuietLine({
+  icon,
   children,
+  testId,
 }: {
-  icon: typeof ClockCounterClockwise;
-  label: string;
-  children?: React.ReactNode;
+  icon: React.ReactNode;
+  children: React.ReactNode;
+  testId: string;
 }) {
   return (
-    <div className="mt-3">
-      <div className="inline-flex max-w-full items-center gap-2 rounded-full border border-emerald-400/18 bg-emerald-400/[0.06] px-3 py-1 text-[length:calc(var(--chat-font-size)*10.5/14)] font-medium text-emerald-100/85">
-        <Icon size={13} weight="fill" aria-hidden />
-        <span>{label}</span>
-        {children}
-      </div>
+    <div className="flex min-w-0 max-w-[var(--chat-content-width,52rem)] items-center gap-2 py-1 font-sans" data-testid={testId}>
+      {icon}
+      <span className={QUIET_LINE_TEXT_CLASS}>{children}</span>
     </div>
   );
 }
 
-function ContinuedInNewChatPill({
-  sessionId,
-  laneId,
-}: {
-  sessionId: string;
-  laneId?: string | null;
-}) {
+function ReconnectedLine() {
   return (
-    <ResolvedPill icon={ChatCircleDots} label="Continued in a new chat">
+    <QuietLine
+      testId="continuity-reconnected"
+      icon={<ArrowClockwise size={12} weight="regular" className={QUIET_LINE_ICON_CLASS} aria-hidden />}
+    >
+      Reconnected
+    </QuietLine>
+  );
+}
+
+function ContinuedInNewChatLine({ sessionId, laneId }: { sessionId: string; laneId?: string | null }) {
+  return (
+    <QuietLine
+      testId="continuity-new-chat"
+      icon={<ChatCircleDots size={12} weight="regular" className={QUIET_LINE_ICON_CLASS} aria-hidden />}
+    >
+      Continued in a new chat{" "}
       <button
         type="button"
         onClick={() => navigateToSession(sessionId, laneId)}
-        className="inline-flex items-center gap-0.5 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-semibold text-emerald-100/75 transition-colors hover:text-emerald-50"
-        title="Open the new chat"
+        className="inline-flex items-center gap-0.5 text-fg/70 underline-offset-2 transition-colors hover:text-fg hover:underline"
       >
-        Open chat
-        <CaretRight size={10} weight="bold" aria-hidden />
+        Open
+        <CaretRight size={9} weight="bold" aria-hidden />
       </button>
-    </ResolvedPill>
+    </QuietLine>
   );
 }
 
-function ReconstructedPill({ detail }: { detail: AgentChatNoticeDetail }) {
-  const original = detail.originalThreadId?.trim() || null;
-  const rebuilt = detail.reconstructedThreadId?.trim() || null;
-  return (
-    <div>
-      <ResolvedPill icon={ClockCounterClockwise} label="Rebuilt from ADE history" />
-      <details className="mt-1.5">
-        <summary className={DISCLOSURE_SUMMARY_CLASS}>Details</summary>
-        <div className={IDENTIFIER_BLOCK_CLASS}>
-          <div>
-            <span className="text-fg/40">Original session</span> {original ?? "unknown"}
-          </div>
-          <div>
-            <span className="text-fg/40">Rebuilt session</span> {rebuilt ?? "unknown"}
-          </div>
-        </div>
-      </details>
-    </div>
-  );
+/**
+ * How long "Reconnecting…" may show. An attempt that never reported back (ADE
+ * restarted mid-way, or the attempt hung) then offers the choices instead of
+ * spinning forever.
+ */
+const AUTO_RECOVERY_PENDING_MAX_MS = 90_000;
+
+/** Whether ADE's own attempt is still within its time; re-renders when it runs out. */
+function useAutoRecoveryPending(detail: AgentChatNoticeDetail): boolean {
+  const startedAt = detail.autoRecovery === "pending" ? Date.parse(detail.autoRecoveryStartedAt ?? "") : Number.NaN;
+  // A notice written before the start time was recorded gets the full window from now.
+  const deadline = Number.isFinite(startedAt) ? startedAt + AUTO_RECOVERY_PENDING_MAX_MS : null;
+  const [expired, setExpired] = useState(() => deadline !== null && Date.now() >= deadline);
+  useEffect(() => {
+    if (detail.autoRecovery !== "pending") return;
+    const remaining = deadline === null ? AUTO_RECOVERY_PENDING_MAX_MS : deadline - Date.now();
+    if (remaining <= 0) {
+      setExpired(true);
+      return;
+    }
+    setExpired(false);
+    const timer = window.setTimeout(() => setExpired(true), remaining);
+    return () => window.clearTimeout(timer);
+  }, [detail.autoRecovery, deadline]);
+  return detail.autoRecovery === "pending" && !expired;
 }
 
-function CapsulePreviewDisclosure({ capsulePreview }: { capsulePreview: string }) {
-  return (
-    <details className="mt-1.5">
-      <summary className={DISCLOSURE_SUMMARY_CLASS}>What the new session was told</summary>
-      <pre className="mt-1.5 max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-[calc(var(--chat-radius-card)-8px)] border border-fg/[0.06] bg-black/20 px-3 py-2 font-mono text-[length:calc(var(--chat-font-size)*10/14)] leading-relaxed text-fg/60">
-        {capsulePreview}
-      </pre>
-    </details>
-  );
+function failureCopy(reason: RecoveryFailureReason): string {
+  switch (reason) {
+    case "not_required":
+      return "This chat is already reconnected.";
+    case "unsupported_provider":
+      return "This AI provider can't be reconnected automatically. Start a new chat to continue.";
+    case "transient":
+      return "That didn't work either. Wait a moment and try again.";
+    default:
+      return "That didn't work either. Start a new chat to keep going.";
+  }
 }
 
+/**
+ * A lost provider thread is ADE's problem, not the user's. ADE rebuilds it
+ * from its own copy by itself, so the usual story is two quiet lines:
+ * "Reconnecting…", then "Reconnected". The user only sees a choice when that
+ * did not work, and then one recommended button.
+ */
 export function ChatContinuityRecoveryCard({
   detail,
   sessionId,
@@ -183,18 +142,12 @@ export function ChatContinuityRecoveryCard({
     args: AgentChatRecoverContinuityArgs,
   ) => Promise<AgentChatContinuityRecoveryResult>;
 }) {
-  // Which action, if any, is currently awaiting recoverContinuity.
   const [pendingMode, setPendingMode] = useState<RecoverMode | null>(null);
-  // The "Recover from ADE history" button reveals an inline confirm before it runs.
-  const [confirmingRecover, setConfirmingRecover] = useState(false);
-  // Why the last action didn't recover the chat. A thrown error stays out of
-  // the card: its wire text is never shown here.
+  // Why the last action didn't work. A thrown error's wire text stays out.
   const [failure, setFailure] = useState<{ reason: RecoveryFailureReason } | null>(null);
-  // Populated once an action in *this* card succeeds; drives the resolved view.
   const [result, setResult] = useState<AgentChatContinuityRecoveryResult | null>(null);
-  // Without a host callback, the pane's own chat API (never the project one
-  // for a personal chat; its adapter refuses recovery with a clear error).
   const agentChatApi = useAgentChatApi();
+  const autoRecoveryPending = useAutoRecoveryPending(detail);
 
   const runRecovery = useCallback(
     async (mode: RecoverMode) => {
@@ -202,16 +155,12 @@ export function ChatContinuityRecoveryCard({
       setPendingMode(mode);
       setFailure(null);
       try {
-        const res = await (onRecoverContinuity ?? agentChatApi.recoverContinuity)({
-          sessionId,
-          mode,
-        });
+        const res = await (onRecoverContinuity ?? agentChatApi.recoverContinuity)({ sessionId, mode });
         if (!res.ok) {
           setFailure({ reason: res.reason });
           return;
         }
         setResult(res);
-        setConfirmingRecover(false);
         if (mode === "start_new_chat" && res.newSessionId) {
           navigateToSession(res.newSessionId, detail.spawnedSession?.laneId ?? null);
         }
@@ -224,166 +173,68 @@ export function ChatContinuityRecoveryCard({
     [sessionId, pendingMode, detail.spawnedSession?.laneId, onRecoverContinuity, agentChatApi],
   );
 
-  // ── Resolved states after an action taken in this card ───────────────────
+  // ── Resolved ─────────────────────────────────────────────────────────────
   if (result?.ok) {
-    if (result.mode === "retry_original") {
-      return <ResolvedPill icon={ArrowClockwise} label="Reconnected to the original thread" />;
-    }
     if (result.mode === "start_new_chat" && result.newSessionId) {
-      return (
-        <ContinuedInNewChatPill
-          sessionId={result.newSessionId}
-          laneId={detail.spawnedSession?.laneId ?? null}
-        />
-      );
+      return <ContinuedInNewChatLine sessionId={result.newSessionId} laneId={detail.spawnedSession?.laneId ?? null} />;
     }
-    if (result.mode === "recover_from_history") {
-      return (
-        <div>
-          <ResolvedPill icon={ClockCounterClockwise} label="Rebuilt from ADE history" />
-          {result.capsulePreview ? (
-            <CapsulePreviewDisclosure capsulePreview={result.capsulePreview} />
-          ) : null}
-        </div>
-      );
-    }
+    return <ReconnectedLine />;
+  }
+  if (detail.state === "reconstructed") return <ReconnectedLine />;
+  if (detail.supersededBySessionId) {
+    return <ContinuedInNewChatLine sessionId={detail.supersededBySessionId} laneId={detail.spawnedSession?.laneId ?? null} />;
   }
 
-  // ── Detail-driven states from a replayed/persisted notice ────────────────
-  if (detail.state === "reconstructed") {
-    return <ReconstructedPill detail={detail} />;
-  }
-  if (detail.supersededBySessionId) {
+  // ── ADE is reconnecting by itself ─────────────────────────────────────────
+  if (autoRecoveryPending) {
     return (
-      <ContinuedInNewChatPill
-        sessionId={detail.supersededBySessionId}
-        laneId={detail.spawnedSession?.laneId ?? null}
-      />
+      <QuietLine
+        testId="continuity-reconnecting"
+        icon={<CircleNotch size={12} weight="bold" className={`${QUIET_LINE_ICON_CLASS} animate-spin`} aria-hidden />}
+      >
+        Reconnecting…
+      </QuietLine>
     );
   }
 
-  // ── The actionable "required" card ───────────────────────────────────────
-  const busy = pendingMode !== null;
-  const actionsDisabled = busy || turnActive || !sessionId;
-
+  // ── It could not: one recommended action ──────────────────────────────────
+  // A thread the provider no longer has can't come back, so "try again" means
+  // rebuilding from ADE's copy; anything else may have been a blip.
+  const tryAgainMode: RecoverMode = detail.reason === "thread_missing" ? "recover_from_history" : "retry_original";
+  const blocked = pendingMode !== null || turnActive || !sessionId;
   return (
-    <div className={CARD_CLASS}>
-      <div className="flex items-start gap-2.5">
-        <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg border border-amber-300/15 bg-amber-300/[0.08] text-amber-200">
-          <Warning size={13} weight="bold" aria-hidden />
-        </div>
-        <div className="min-w-0 flex-1">
-          <div className="font-sans text-[length:calc(var(--chat-font-size)*12/14)] font-semibold text-amber-100/90">
-            This chat's original AI thread could not be resumed.
-          </div>
-          <div className="mt-1 text-[length:calc(var(--chat-font-size)*11/14)] leading-relaxed text-fg/66">
-            Your chat history and project files are still here.
-          </div>
-          <div className="mt-1 text-[length:calc(var(--chat-font-size)*10.5/14)] leading-relaxed text-amber-50/72">
-            {reasonLine(detail.reason)}
-          </div>
-
-          {confirmingRecover ? (
-            <div className="mt-2.5 rounded-[calc(var(--chat-radius-card)-8px)] border border-amber-200/12 bg-amber-300/[0.05] px-3 py-2.5">
-              <div className="text-[length:calc(var(--chat-font-size)*10.5/14)] leading-relaxed text-amber-50/78">
-                ADE will start a fresh AI session and brief it with a short summary from this
-                chat's saved history. The original conversation stays saved on this computer.
-              </div>
-              <div className="mt-2 flex flex-wrap gap-1.5">
-                <button
-                  type="button"
-                  disabled={actionsDisabled}
-                  className={PRIMARY_BUTTON_CLASS}
-                  onClick={() => {
-                    void runRecovery("recover_from_history");
-                  }}
-                >
-                  {pendingMode === "recover_from_history" ? (
-                    <ArrowClockwise size={12} weight="bold" className="animate-spin" aria-hidden />
-                  ) : (
-                    <ClockCounterClockwise size={12} weight="bold" aria-hidden />
-                  )}
-                  {pendingMode === "recover_from_history" ? "Recovering" : "Confirm recover"}
-                </button>
-                <button
-                  type="button"
-                  disabled={busy}
-                  className={NEUTRAL_BUTTON_CLASS}
-                  onClick={() => {
-                    setConfirmingRecover(false);
-                    setFailure(null);
-                  }}
-                >
-                  Cancel
-                </button>
-              </div>
-            </div>
-          ) : (
-            <div className="mt-2.5 flex flex-wrap gap-1.5">
-              <button
-                type="button"
-                disabled={actionsDisabled}
-                className={PRIMARY_BUTTON_CLASS}
-                onClick={() => {
-                  void runRecovery("retry_original");
-                }}
-              >
-                {pendingMode === "retry_original" ? (
-                  <ArrowClockwise size={12} weight="bold" className="animate-spin" aria-hidden />
-                ) : (
-                  <ArrowClockwise size={12} weight="bold" aria-hidden />
-                )}
-                {pendingMode === "retry_original" ? "Retrying" : "Retry original thread"}
-              </button>
-              <button
-                type="button"
-                disabled={actionsDisabled}
-                className={NEUTRAL_BUTTON_CLASS}
-                onClick={() => {
-                  setFailure(null);
-                  setConfirmingRecover(true);
-                }}
-              >
-                <ArrowCounterClockwise size={12} weight="bold" aria-hidden />
-                Recover from ADE history
-              </button>
-              <button
-                type="button"
-                disabled={actionsDisabled}
-                className={NEUTRAL_BUTTON_CLASS}
-                onClick={() => {
-                  void runRecovery("start_new_chat");
-                }}
-              >
-                {pendingMode === "start_new_chat" ? (
-                  <ArrowClockwise size={12} weight="bold" className="animate-spin" aria-hidden />
-                ) : (
-                  <ChatCircleDots size={12} weight="bold" aria-hidden />
-                )}
-                {pendingMode === "start_new_chat" ? "Starting" : "Start a new chat"}
-              </button>
-            </div>
-          )}
-
-          {failure ? (
-            <Banner
-              layout="inline"
-              style={{ marginTop: 8 }}
-              model={{
-                id: "chat-continuity-recovery-error",
-                // Only a recovery that broke is ADE's failure; the other reasons
-                // say which option is left, so they warn without a report.
-                tone: isRecoveryBreak(failure.reason) ? "error" : "warning",
-                title: failureCopy(failure.reason),
-                report: isRecoveryBreak(failure.reason)
-                  ? { surface: "chat_continuity_recovery", code: failure.reason ?? null }
-                  : false,
-                dismiss: { onDismiss: () => setFailure(null) },
-              }}
-            />
-          ) : null}
-        </div>
-      </div>
-    </div>
+    <Banner
+      layout="inline"
+      style={{ marginTop: 12 }}
+      testId="continuity-recovery-card"
+      model={{
+        id: "chat-continuity-recovery",
+        tone: "warning",
+        title: "Couldn't reconnect this chat",
+        detail: "Your messages and files are safe.",
+        busy: pendingMode !== null,
+        ...(failure ? { error: failureCopy(failure.reason) } : {}),
+        actions: [
+          {
+            label: pendingMode === tryAgainMode ? "Reconnecting…" : "Try again",
+            variant: "solid",
+            busy: pendingMode === tryAgainMode,
+            disabled: blocked,
+            onClick: () => {
+              void runRecovery(tryAgainMode);
+            },
+          },
+          {
+            label: "Start a new chat",
+            variant: "secondary",
+            busy: pendingMode === "start_new_chat",
+            disabled: blocked,
+            onClick: () => {
+              void runRecovery("start_new_chat");
+            },
+          },
+        ],
+      }}
+    />
   );
 }

@@ -175,6 +175,10 @@ const mockState = vi.hoisted(() => ({
   openCodeSessionCreateBarrier: null as Promise<void> | null,
   /** Launches of the mocked `opencode serve` process. */
   openCodeServeLaunches: 0,
+  /** Exit code of `security find-generic-password` (0 present, 44 absent, else unreadable). */
+  keychainProbeExitCode: 0,
+  /** Exit codes for the next keychain checks, in order; then `keychainProbeExitCode`. */
+  keychainProbeExitCodes: [] as number[],
   openCodeTitleForNextPrompt: null as string | null,
   openCodeQuestionForNextPrompt: null as null | {
     id: string;
@@ -305,6 +309,25 @@ vi.mock("node:child_process", () => ({
   // harness does not launch real provider servers, so report no processes.
   spawnSync: vi.fn(() => ({ error: new Error("process listing unavailable in test"), status: 1, stdout: "" })),
   spawn: vi.fn((command: string, args: string[] = []) => {
+    if (command === "/usr/bin/security") {
+      // The Claude keychain check. No pid, so the reaper signals no real group.
+      const proc = Object.assign(new EventEmitter(), {
+        stdout: Object.assign(new EventEmitter(), { destroy: vi.fn() }),
+        stderr: Object.assign(new EventEmitter(), { destroy: vi.fn() }),
+        pid: undefined,
+        kill: vi.fn(),
+      });
+      // A secret read (`-w`, Claude's own login read) finds no item; the
+      // attributes-only sign-in check answers from the queue.
+      const exitCode = args.includes("-w")
+        ? 44
+        : mockState.keychainProbeExitCodes.shift() ?? mockState.keychainProbeExitCode;
+      queueMicrotask(() => {
+        proc.emit("exit", exitCode);
+        proc.emit("close", exitCode);
+      });
+      return proc;
+    }
     if (args.includes("serve")) {
       mockState.openCodeServeLaunches += 1;
       const proc = new EventEmitter() as EventEmitter & Record<string, any>;
@@ -2259,6 +2282,8 @@ beforeEach(() => {
   mockState.openCodeV2SteerBarrier = null;
   mockState.openCodeSessionCreateBarrier = null;
   mockState.openCodeServeLaunches = 0;
+  mockState.keychainProbeExitCode = 0;
+  mockState.keychainProbeExitCodes = [];
   mockState.openCodeTitleForNextPrompt = null;
   mockState.openCodeQuestionForNextPrompt = null;
   mockState.droidSessionCounter = 0;

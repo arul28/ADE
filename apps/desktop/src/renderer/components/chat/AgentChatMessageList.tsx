@@ -214,6 +214,7 @@ import { LaneSetupTranscriptCard } from "./launch/LaneSetupCard";
 import { navigateToSpawnedChat } from "./spawnNavigation";
 import { spawnCompletionNoticeOf, type SpawnCompletionSibling } from "./spawnCompletionLines";
 import { isQuietNoticeEvent, type QuietNoticeSibling, type SystemNoticeEvent } from "./quietNoticeLines";
+import { QUIET_LINE_ICON_CLASS, QUIET_LINE_TEXT_CLASS } from "./quietLineStyle";
 import { quietNoticeIcon } from "./quietNoticeIcon";
 import { ChatUserMinimap } from "./ChatUserMinimap";
 import { promptHistoryEventKey } from "./chatPromptHistory";
@@ -1515,11 +1516,8 @@ function QuietNoticeRow({
   const extraCount = entries.length - 1;
   const summary = (
     <>
-      <Icon size={12} weight="regular" className="shrink-0 text-fg/35" aria-hidden />
-      <span
-        className="min-w-0 break-words text-[length:calc(var(--chat-font-size)*10.5/14)] text-fg/55"
-        title={event.message}
-      >
+      <Icon size={12} weight="regular" className={QUIET_LINE_ICON_CLASS} aria-hidden />
+      <span className={QUIET_LINE_TEXT_CLASS} title={event.message}>
         {event.message}
       </span>
       {extraCount > 0 ? (

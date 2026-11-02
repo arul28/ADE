@@ -12,6 +12,8 @@ func buildWorkChatTimelineSnapshot(
   /// frame carried no 429.
   usageLimitTurnId: String? = nil
 ) -> WorkChatTimelineSnapshot {
+  // Failures ADE fixed by itself draw nothing (a no-op pass for most chats).
+  let transcript = workFoldSelfHealedFailures(transcript).transcript
   let signature = workChatTimelineSnapshotSignature(
     transcript: transcript,
     fallbackEntries: fallbackEntries,
@@ -3977,6 +3979,8 @@ func buildWorkEventCards(
 func workIsFoldableDiagnosticCard(_ card: WorkEventCardModel) -> Bool {
   if card.kind == "turnDiagnostics" { return true }
   guard card.kind == "notice" else { return false }
+  // The could-not-reconnect card is what the user acts on next.
+  if card.noticeKind == workContinuityNoticeKind { return false }
   if let noticeKind = card.noticeKind?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
      workRoutineNoticeKinds.contains(noticeKind) {
     return true
@@ -4972,6 +4976,25 @@ func eventCard(
       )
     case .systemNotice(let kind, let message, let detail, _, _):
       guard kind != "queue_recovery" else { return nil }
+      // ADE rebuilding a lost provider thread: quiet lines, or the one card
+      // that says it could not. The detail is plumbing, never printed.
+      if let continuity = envelope.continuityNotice {
+        return workContinuityNoticeCard(continuity, envelope: envelope)
+      }
+      // A Claude turn ADE is running once more: the message is the whole line.
+      if kind == AgentChatNoticeKind.claudeKeychainRetry.rawValue {
+        return WorkEventCardModel(
+          id: envelope.id,
+          kind: "notice",
+          title: nonEmptyWorkTimelineText(message) ?? "Claude's sign-in was busy — retrying once",
+          icon: "arrow.clockwise",
+          tint: .secondary,
+          timestamp: envelope.timestamp,
+          body: nil,
+          bullets: [],
+          metadata: []
+        )
+      }
       // A cross-machine move's live state carrier and a destination's arrival
       // marker are state, not conversation (desktop hides both). Their kind is
       // promoted from `status` on the live and replay paths alike.
@@ -5679,6 +5702,193 @@ func workTurnId(for event: WorkChatEvent) -> String? {
     return nil
   }
 }
+
+// MARK: - Self-healed failures
+
+/// A queued turn that ran into a lost provider thread fails with the provider's
+/// own text, and transcripts saved before the continuity notice carry nothing
+/// else to go on.
+private let workLostProviderThreadErrorFragments = [
+  "no conversation found with session id",
+  "could not resume the original codex thread",
+]
+
+/// How long "Reconnecting…" may show before an attempt that never reported back
+/// offers the unresolved card instead of spinning forever.
+private let workAutoRecoveryPendingMaxSeconds: TimeInterval = 90
+
+/// `workContinuityNotice(from:)` reads a `system_notice` detail object whose
+/// `kind` is `continuity_recovery`; any other detail is not one.
+func workContinuityNotice(from detail: RemoteJSONValue?) -> WorkContinuityNotice? {
+  guard case .object(let object)? = detail, case .string("continuity_recovery")? = object["kind"] else {
+    return nil
+  }
+  func text(_ key: String) -> String? {
+    guard case .string(let value)? = object[key] else { return nil }
+    return normalizedWorkTurnId(value)
+  }
+  return WorkContinuityNotice(
+    state: text("state") ?? "",
+    originalThreadId: text("originalThreadId") ?? "",
+    supersededBySessionId: text("supersededBySessionId"),
+    autoRecovery: text("autoRecovery"),
+    autoRecoveryStartedAt: text("autoRecoveryStartedAt")
+  )
+}
+
+/// The transcript with the failures ADE fixed by itself taken out, and the ids
+/// of the rows that were. Mirrors desktop `foldSelfHealedFailures`:
+/// - only the newest continuity notice about one lost thread stays, so
+///   "Reconnecting…", repeats and "Reconnected" do not stack;
+/// - once a thread is reconnected (or moved to a new chat), the failed rows of
+///   the turns its notices carry draw nothing, nor does a "not found" error
+///   whose next notice belongs to such a thread;
+/// - a Claude turn retried after the keychain did not answer loses its FAILED
+///   rows (its error stays: if the retry fails too, that still draws).
+/// The hand-off message ADE sends a rebuilt thread is dropped by the message
+/// fold, not here.
+struct WorkSelfHealedFold {
+  let transcript: [WorkChatEnvelope]
+  let hiddenIds: Set<String>
+}
+
+func workFoldSelfHealedFailures(_ transcript: [WorkChatEnvelope]) -> WorkSelfHealedFold {
+  // Almost every chat has none of this: one cheap pass, no copy.
+  var hasContinuity = false
+  var hasKeychainRetry = false
+  for envelope in transcript {
+    if envelope.continuityNotice != nil {
+      hasContinuity = true
+    } else if workIsKeychainRetryNotice(envelope.event) {
+      hasKeychainRetry = true
+    }
+  }
+  guard hasContinuity || hasKeychainRetry else {
+    return WorkSelfHealedFold(transcript: transcript, hiddenIds: [])
+  }
+
+  /// The rows that draw a turn as failed: its FAILED pill, its failed end and
+  /// (optionally) its error.
+  func isFailureRow(_ event: WorkChatEvent, in turnIds: Set<String>, withErrors: Bool) -> Bool {
+    guard let turnId = normalizedWorkTurnId(workTurnId(for: event)), turnIds.contains(turnId) else { return false }
+    switch event {
+    case .error: return withErrors
+    case .status(let turnStatus, _, _): return turnStatus == AgentChatTurnStatus.failed.rawValue
+    case .done(let status, _, _, _, _, _, _): return status == "failed"
+    default: return false
+    }
+  }
+
+  var hidden = Set<Int>()
+  if hasContinuity {
+    var lastNoticeIndexByThread: [String: Int] = [:]
+    for (index, envelope) in transcript.enumerated() {
+      if let notice = envelope.continuityNotice { lastNoticeIndexByThread[notice.originalThreadId] = index }
+    }
+    let resolvedThreads = Set(lastNoticeIndexByThread.compactMap { thread, index in
+      transcript[index].continuityNotice?.isResolved == true ? thread : nil
+    })
+    // Turns that failed because the thread was gone, for threads that came back.
+    // A "not found" error belongs to the next notice after it: a thread lost
+    // later, and not yet back, keeps its errors.
+    var failedTurnIds = Set<String>()
+    var nextNoticeThread: String?
+    for index in transcript.indices.reversed() {
+      let envelope = transcript[index]
+      let turnId = normalizedWorkTurnId(workTurnId(for: envelope.event))
+      if let notice = envelope.continuityNotice {
+        nextNoticeThread = notice.originalThreadId
+        if let turnId, resolvedThreads.contains(notice.originalThreadId) { failedTurnIds.insert(turnId) }
+        continue
+      }
+      if let turnId,
+         let nextNoticeThread,
+         resolvedThreads.contains(nextNoticeThread),
+         case .error(let message, _, _, _, _, _) = envelope.event {
+        let lowered = message.lowercased()
+        if workLostProviderThreadErrorFragments.contains(where: lowered.contains) { failedTurnIds.insert(turnId) }
+      }
+    }
+    for (index, envelope) in transcript.enumerated() {
+      if let notice = envelope.continuityNotice {
+        if lastNoticeIndexByThread[notice.originalThreadId] != index { hidden.insert(index) }
+      } else if isFailureRow(envelope.event, in: failedTurnIds, withErrors: true) {
+        hidden.insert(index)
+      }
+    }
+  }
+  if hasKeychainRetry {
+    var retriedTurnIds = Set<String>()
+    for envelope in transcript where workIsKeychainRetryNotice(envelope.event) {
+      if let turnId = normalizedWorkTurnId(workTurnId(for: envelope.event)) { retriedTurnIds.insert(turnId) }
+    }
+    for (index, envelope) in transcript.enumerated() where isFailureRow(envelope.event, in: retriedTurnIds, withErrors: false) {
+      hidden.insert(index)
+    }
+  }
+  guard !hidden.isEmpty else { return WorkSelfHealedFold(transcript: transcript, hiddenIds: []) }
+  return WorkSelfHealedFold(
+    transcript: transcript.enumerated().compactMap { hidden.contains($0.offset) ? nil : $0.element },
+    hiddenIds: Set(hidden.map { transcript[$0].id })
+  )
+}
+
+private func workIsKeychainRetryNotice(_ event: WorkChatEvent) -> Bool {
+  guard case .systemNotice(let kind, _, _, _, _) = event else { return false }
+  return kind == AgentChatNoticeKind.claudeKeychainRetry.rawValue
+}
+
+/// How a continuity notice draws. Reconnected, moved on and "ADE is trying" are
+/// one quiet line each; anything else (required, failed, or an attempt that ran
+/// out its time) is the one card that says the chat could not be reconnected.
+/// iOS offers no recovery buttons for it today.
+func workContinuityNoticeCard(
+  _ notice: WorkContinuityNotice,
+  envelope: WorkChatEnvelope,
+  now: Date = Date()
+) -> WorkEventCardModel {
+  func quietLine(_ title: String, icon: String) -> WorkEventCardModel {
+    WorkEventCardModel(
+      id: envelope.id,
+      kind: "notice",
+      title: title,
+      icon: icon,
+      tint: .secondary,
+      timestamp: envelope.timestamp,
+      body: nil,
+      bullets: [],
+      metadata: []
+    )
+  }
+  if notice.state == "reconstructed" { return quietLine("Reconnected", icon: "arrow.clockwise") }
+  if notice.supersededBySessionId != nil {
+    return quietLine("Continued in a new chat", icon: "bubble.left.and.bubble.right")
+  }
+  if notice.autoRecovery == "pending" {
+    // A notice written before the start time was recorded gets the full window.
+    let startedAt = workParsedDate(notice.autoRecoveryStartedAt)
+    if startedAt.map({ now.timeIntervalSince($0) < workAutoRecoveryPendingMaxSeconds }) ?? true {
+      return quietLine("Reconnecting…", icon: "arrow.triangle.2.circlepath")
+    }
+  }
+  return WorkEventCardModel(
+    id: envelope.id,
+    kind: "notice",
+    title: "Couldn't reconnect this chat",
+    icon: "exclamationmark.triangle",
+    tint: .warning,
+    timestamp: envelope.timestamp,
+    body: "Your messages and files are safe.",
+    bullets: [],
+    // The ribbon prints the metadata label before the body.
+    metadata: ["Couldn't reconnect this chat"],
+    noticeKind: workContinuityNoticeKind
+  )
+}
+
+/// The `noticeKind` of the unresolved continuity card, so the diagnostics fold
+/// can leave it on its own row.
+let workContinuityNoticeKind = "continuity_recovery"
 
 struct WorkTurnModelMetadata: Equatable {
   let provider: String

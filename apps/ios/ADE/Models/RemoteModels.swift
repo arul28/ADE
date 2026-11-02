@@ -2530,6 +2530,11 @@ enum AgentChatNoticeKind: String, Codable, Equatable {
   /// message body as a string `detail`. Promoted so the timeline can keep it
   /// visible as one bell line instead of folding it with routine info notices.
   case userNotified = "user_notified"
+  /// "Claude's sign-in was busy — retrying once": the Mac's keychain did not
+  /// answer and ADE is running the turn again. The host sends `noticeKind:
+  /// "info"` with `status: "claude_keychain_retry"`; promoted so the timeline
+  /// can fold the turn's FAILED rows and draw one quiet line.
+  case claudeKeychainRetry = "claude_keychain_retry"
 
   // The host's noticeKind union (see apps/desktop/src/shared/types/chat.ts) grows
   // over time. `system_notice.noticeKind` is a required, non-optional decode, so an
@@ -2574,6 +2579,7 @@ func normalizedSystemNoticeKind(from status: String?) -> AgentChatNoticeKind? {
   case AgentChatNoticeKind.crossMachineHandoffState.rawValue: return .crossMachineHandoffState
   case AgentChatNoticeKind.crossMachineHandoffArrived.rawValue: return .crossMachineHandoffArrived
   case AgentChatNoticeKind.userNotified.rawValue: return .userNotified
+  case AgentChatNoticeKind.claudeKeychainRetry.rawValue: return .claudeKeychainRetry
   default: return nil
   }
 }
@@ -3160,6 +3166,10 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
   /// True for a `user_message` a side chat sent to this chat because the user
   /// asked it to (`metadata.sideChat`). The bubble wears a "From side chat" label.
   var userMessageFromSideChat: Bool = false
+  /// True for the hand-off ADE sends a rebuilt provider thread
+  /// (`metadata.kind == "continuity_recovery"`). Never a bubble: the user did
+  /// not write it. Same rule as desktop `foldContinuityRecovery`.
+  var userMessageIsRecoveryHandOff: Bool = false
   /// Byte offset of this row in the host's transcript, when it arrived on a
   /// `chat_history` page that reported one.
   ///
@@ -3235,6 +3245,7 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     var summary: String?
     var metadataMarksAdeAuthor = false
     var metadataMarksSideChat = false
+    var metadataMarksRecoveryHandOff = false
 
     private struct MetadataKey: CodingKey {
       var stringValue: String
@@ -3287,6 +3298,8 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
         let sideChatKey = MetadataKey(agentChatSideChatMetadataKey)
         metadataMarksSideChat = metadata.contains(sideChatKey)
           && (try? metadata.decodeNil(forKey: sideChatKey)) == false
+        metadataMarksRecoveryHandOff =
+          (try? metadata.decodeIfPresent(String.self, forKey: MetadataKey("kind"))) == "continuity_recovery"
       }
     }
   }
@@ -3354,6 +3367,7 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     stopReason = rawEvent?.stopReason
     userMessageWrittenByAde = rawEvent?.type == "user_message" && rawEvent?.metadataMarksAdeAuthor == true
     userMessageFromSideChat = rawEvent?.type == "user_message" && rawEvent?.metadataMarksSideChat == true
+    userMessageIsRecoveryHandOff = rawEvent?.type == "user_message" && rawEvent?.metadataMarksRecoveryHandOff == true
     // Only a host that honoured `mobileChatSlimV1` sets this. A host that did
     // not sends the whole result and no flag, and the row behaves exactly as
     // it does today.

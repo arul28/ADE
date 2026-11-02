@@ -36,6 +36,8 @@ export function collectAgentChatPromptHistory(
     if (event.type !== "user_message") return [];
     if (event.deliveryState === "queued" && event.steerId) return [];
     if (event.metadata?.hideFullPrompt === true && !event.displayText?.trim()) return [];
+    // ADE's hand-off to a rebuilt thread was never typed by the user.
+    if (event.metadata?.kind === "continuity_recovery") return [];
     const displayText = event.displayText?.trim();
     const text = displayText?.length ? displayText : event.text.trim();
     if (!text) return [];

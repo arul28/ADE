@@ -699,6 +699,14 @@ export type AgentChatNoticeDetail = {
   originalThreadId?: string | null;
   reconstructedThreadId?: string;
   supersededBySessionId?: string;
+  /**
+   * Continuity recovery that ADE runs by itself. `pending` while it rebuilds
+   * the thread (the chat shows a quiet "Reconnecting" line, not the choices);
+   * `failed` when that did not work and the user has to choose.
+   */
+  autoRecovery?: "pending" | "failed";
+  /** When a `pending` attempt started; one that never reported back reads as failed. */
+  autoRecoveryStartedAt?: string;
   title?: string;
   summary?: string;
   metrics?: AgentChatNoticeDetailMetric[];
@@ -2248,6 +2256,11 @@ export type AgentChatEvent =
       type: "system_notice";
       noticeKind: "auth" | "rate_limit" | "hook" | "file_persist" | "info" | "provider_health" | "thread_error" | "warning" | "error" | "config";
       severity?: "info" | "warning" | "error";
+      /**
+       * Free-form marker for a notice a surface treats specially, such as
+       * `claude_keychain_retry`: Claude's sign-in hit a keychain that was not
+       * answering, and ADE is trying that turn once more.
+       */
       status?: string;
       message: string;
       detail?: string | AgentChatNoticeDetail;

@@ -393,6 +393,8 @@ export type OffThreadExecResult = {
   stderr: string;
   /** Set when the process could not start, timed out, or overran maxBuffer. */
   error: Error | null;
+  /** True when the timeout ended it. */
+  timedOut?: boolean;
 };
 
 /**
@@ -411,6 +413,7 @@ export function execFileOffThread(
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
     let failure: Error | null = null;
+    let timedOut = false;
     let settled = false;
     const finish = (exitCode: number | null, error: Error | null) => {
       if (settled) return;
@@ -421,13 +424,17 @@ export function execFileOffThread(
         stdout: Buffer.concat(stdout).toString("utf8"),
         stderr: Buffer.concat(stderr).toString("utf8"),
         error,
+        timedOut,
       });
     };
     const kill = (error: Error) => {
       failure ??= error;
       child.killTree("SIGTERM");
     };
-    const timer = setTimeout(() => kill(new Error(`${command} timed out after ${options.timeoutMs} ms`)), options.timeoutMs);
+    const timer = setTimeout(() => {
+      timedOut = failure === null;
+      kill(new Error(`${command} timed out after ${options.timeoutMs} ms`));
+    }, options.timeoutMs);
     // Per stream, as execFile counts maxBuffer: a quiet stdout must not fail
     // because stderr was chatty, or the other way round.
     const collect = (sink: Buffer[]) => {

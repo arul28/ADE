@@ -2,9 +2,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
-import { spawn } from "node:child_process";
 import { isRecord, safeJsonParse } from "../shared/utils";
-import { killWindowsProcessTree } from "../shared/processExecution";
+import { runReapedCommand } from "../shared/runReapedCommand";
 import { pathKey } from "../shared/pathCompare";
 
 const TOKEN_REFRESH_BUFFER_MS = 5 * 60_000;
@@ -84,56 +83,6 @@ function parseCodexCredentials(parsed: Record<string, unknown>): CodexLocalAuthC
   };
 }
 
-export function runShellCommand(
-  command: string,
-  timeoutMs: number,
-): Promise<{ stdout: string; stderr: string; exitCode: number | null }> {
-  return new Promise((resolve, reject) => {
-    const useCmd = process.platform === "win32";
-    const executable = useCmd ? (process.env.ComSpec?.trim() || "cmd.exe") : "sh";
-    const args = useCmd ? ["/d", "/s", "/c", command] : ["-c", command];
-    const child = spawn(executable, args, {
-      stdio: ["ignore", "pipe", "pipe"],
-      env: process.env,
-      windowsVerbatimArguments: useCmd,
-      windowsHide: true,
-    });
-
-    let stdout = "";
-    let stderr = "";
-    child.stdout?.on("data", (chunk: Buffer) => {
-      stdout += chunk.toString("utf8").slice(0, 50_000);
-    });
-    child.stderr?.on("data", (chunk: Buffer) => {
-      stderr += chunk.toString("utf8").slice(0, 10_000);
-    });
-
-    const timer = setTimeout(() => {
-      try {
-        if (process.platform === "win32") {
-          killWindowsProcessTree(child.pid ?? 0, (detail) => {
-            console.warn("provider_credentials.taskkill_failed", detail);
-          });
-        } else {
-          child.kill("SIGKILL");
-        }
-      } catch {
-        // ignore
-      }
-      reject(new Error(`Shell command timed out after ${timeoutMs}ms`));
-    }, timeoutMs);
-
-    child.on("error", (error) => {
-      clearTimeout(timer);
-      reject(error);
-    });
-    child.on("exit", (code) => {
-      clearTimeout(timer);
-      resolve({ stdout, stderr, exitCode: code });
-    });
-  });
-}
-
 export type ClaudeCredentialReadOptions = {
   /** Keychain reads can display macOS UI. Automatic/background callers must disable them. */
   allowKeychain?: boolean;
@@ -206,6 +155,24 @@ function claudeCacheKey(configHome?: string): string {
 /** `security find-generic-password` exit code for "no such item". */
 const KEYCHAIN_ITEM_NOT_FOUND_EXIT = 44;
 
+/**
+ * Whether Claude's login item can be read from the macOS keychain right now:
+ * `present`, `absent` (really signed out), or `unreadable` (the keychain did
+ * not answer, as when it waits on an unanswered password dialog). Reads the
+ * item's attributes only, never the secret. Not macOS: `present`.
+ */
+export async function probeClaudeKeychainLogin(configHome?: string): Promise<"present" | "absent" | "unreadable"> {
+  if (process.platform !== "darwin") return "present";
+  const result = await runReapedCommand(
+    "/usr/bin/security",
+    ["find-generic-password", "-s", claudeKeychainServiceName(configHome)],
+    { timeoutMs: 3_000, maxBuffer: 64 * 1024 },
+  );
+  if (result.exitCode === 0) return "present";
+  if (result.exitCode === KEYCHAIN_ITEM_NOT_FOUND_EXIT) return "absent";
+  return "unreadable";
+}
+
 type ClaudeCredentialSourceRead = {
   credentials: ClaudeLocalAuthCredentials | null;
   /**
@@ -229,9 +196,12 @@ async function readClaudeCredentialSource(
   if (process.platform === "darwin" && options.allowKeychain !== false) {
     const service = claudeKeychainServiceName(options.configHome);
     try {
-      const result = await runShellCommand(
-        `security find-generic-password -s '${service}' -w`,
-        5_000,
+      // `security` itself, reaped: a shell around it left `security` running
+      // when the timeout killed the shell.
+      const result = await runReapedCommand(
+        "/usr/bin/security",
+        ["find-generic-password", "-s", service, "-w"],
+        { timeoutMs: 5_000, maxBuffer: 256 * 1024 },
       );
       if (result.exitCode === 0 && result.stdout.trim()) {
         const credentials = parseClaudeCredentials(
@@ -250,6 +220,7 @@ async function readClaudeCredentialSource(
           return { credentials, keychainFailed: false };
         }
       } else if (result.exitCode !== 0 && result.exitCode !== KEYCHAIN_ITEM_NOT_FOUND_EXIT) {
+        // Includes a timeout or a failed start (exit code null).
         keychainFailed = true;
       }
     } catch {
@@ -413,7 +384,6 @@ export function isCodexTokenStale(creds: CodexLocalAuthCredentials): boolean {
 }
 
 export const _testing = {
-  runShellCommand,
   parseClaudeCredentials,
   parseCodexCredentials,
 };

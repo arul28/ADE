@@ -2,6 +2,8 @@ import { githubExtraHeaderGitEnv, runGitWithGithubAuthFallback } from "../git/gi
 import { COMPACT_FIRST_MIN_TOKENS, compactFirstIdleMs, compactFirstIdleMsFromEnv, compactFirstMinTokensFromEnv, compactFirstOffer, compactFirstSupportedProvider, warmIdleCompactAtMs } from "../../../shared/compactFirst";
 import { AdeExpectedError } from "../../../shared/expectedError";
 import { createWarmIdleCompactionScheduler } from "./warmIdleCompactionScheduler";
+import { formatContinuityConversation } from "./continuityConversation";
+import { probeClaudeKeychainLogin } from "../ai/providerCredentialSources";
 import { claudePromptCacheTtlOfWrites, normalizeClaudePromptCache, type ClaudePromptCache } from "../../../shared/claudePromptCache";
 import { claudeCompactionSettings, claudeCompactWindow, compactionIdleModeDefault, compactionRuntimeSignature, normalizeCompactionSettings } from "../../../shared/compactionSettings";
 import { withClaudeSubagentCompactWindow } from "../../../shared/claudeBuiltinAgentPrompts";
@@ -3528,7 +3530,28 @@ const CLAUDE_BUILT_IN_SLASH_COMMAND_NAMES = new Set(CLAUDE_BUILT_IN_SLASH_COMMAN
 const CLAUDE_LOGIN_NOT_SDK_COMMAND = "ADE Claude chat is hosted through the Claude Agent SDK, and /login is not an SDK-dispatchable command. Run `claude auth login` in a terminal or configure ANTHROPIC_API_KEY, then refresh AI settings.";
 // Terse one-liner shown when a turn fast-fails on a logout — paired with the
 // fuller CLAUDE_RUNTIME_AUTH_ERROR card body emitted by the catch path.
-const CLAUDE_AUTH_STOPPED_NOTICE = "Claude is logged out — stopped retrying.";
+const CLAUDE_AUTH_STOPPED_NOTICE = "Claude couldn't sign in — stopped retrying.";
+const CLAUDE_KEYCHAIN_UNREADABLE_ERROR =
+  "Claude couldn't read its sign-in because this Mac's keychain isn't answering. You're still signed in. Try again in a moment.";
+const CLAUDE_KEYCHAIN_RETRY_NOTICE = "Claude's sign-in was busy — retrying once";
+/**
+ * How long a turn whose sign-in hit a silent keychain waits before its one
+ * retry. Long enough for a password dialog or a busy keychain to clear; the
+ * keychain is checked once more first, so a stuck one adds one probe, not a loop.
+ */
+const CLAUDE_KEYCHAIN_RETRY_DELAY_MS = 15_000;
+
+/** A chat rebuilds a lost provider thread by itself at most once in this long. */
+const CONTINUITY_AUTO_RECOVERY_INTERVAL_MS = 10 * 60_000;
+/** How long that rebuild waits for the turn that lost the thread to settle. */
+const CONTINUITY_AUTO_RECOVERY_SETTLE_MAX_MS = 30_000;
+/** A transcript up to this size is read whole when a lost provider thread is rebuilt. */
+const CONTINUITY_FULL_TRANSCRIPT_MAX_BYTES = 32 * 1024 * 1024;
+/**
+ * How much conversation a rebuilt thread is handed. About 60k tokens: the
+ * whole of most chats, and a small share of any current model's context.
+ */
+const CONTINUITY_CONVERSATION_BUDGET_BYTES = 240 * 1024;
 const CLAUDE_SESSION_DISABLED_PLUGINS: Record<string, boolean> = {
   "learning-output-style@claude-code-plugins": false,
   "learning-output-style@claude-plugins-official": false,
@@ -32172,6 +32195,71 @@ export function createAgentChatService(args: {
     })();
   };
 
+  /** Per chat, the Claude turn waiting on its one keychain retry, and its timer. */
+  const pendingClaudeKeychainRetry = new Map<string, { turnId: string; timer: NodeJS.Timeout }>();
+
+  /**
+   * Drops a chat's pending keychain retry. Its turn then shows the failure the
+   * retry was standing in for, unless the chat is going away.
+   */
+  const settlePendingClaudeKeychainRetry = (managed: ManagedChatSession, options?: { silent?: boolean }): void => {
+    const pending = pendingClaudeKeychainRetry.get(managed.session.id);
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    pendingClaudeKeychainRetry.delete(managed.session.id);
+    if (!options?.silent && !managed.deleted) {
+      emitChatEvent(managed, { type: "error", message: CLAUDE_KEYCHAIN_UNREADABLE_ERROR, turnId: pending.turnId });
+    }
+  };
+
+  /**
+   * The one retry of a Claude turn whose sign-in read hit a keychain that did
+   * not answer. After the delay the keychain is checked once more: present runs
+   * the turn again, absent is a real sign-out, and silent again shows the
+   * failure. A newer message, Stop, or a deleted chat cancels it.
+   */
+  const scheduleClaudeKeychainRetry = (
+    managed: ManagedChatSession,
+    runtime: ClaudeRuntime,
+    turnId: string,
+    rerun: () => Promise<void>,
+  ): void => {
+    const sessionId = managed.session.id;
+    const isPending = () => pendingClaudeKeychainRetry.get(sessionId)?.turnId === turnId;
+    const chatMovedOn = () => managed.deleted || managed.runtime !== runtime || runtime.busy;
+    const timer = setTimeout(() => {
+      void (async () => {
+        if (!isPending()) return;
+        const login = chatMovedOn() ? null : await probeClaudeKeychainLogin(sessionConfigHome(managed) ?? undefined);
+        // A message sent during the check already took the retry's place.
+        if (!isPending()) return;
+        if (login === "absent") {
+          pendingClaudeKeychainRetry.delete(sessionId);
+          reportProviderRuntimeAuthFailure("claude", CLAUDE_RUNTIME_AUTH_ERROR);
+          emitChatEvent(managed, { type: "error", message: CLAUDE_RUNTIME_AUTH_ERROR, turnId });
+          return;
+        }
+        if (login !== "present" || chatMovedOn()) {
+          logger.info("agent_chat.claude_keychain_retry_skipped", { sessionId, turnId, login });
+          settlePendingClaudeKeychainRetry(managed);
+          return;
+        }
+        pendingClaudeKeychainRetry.delete(sessionId);
+        logger.info("agent_chat.claude_keychain_retry", { sessionId, turnId });
+        await rerun();
+      })().catch((retryError) => {
+        logger.warn("agent_chat.claude_keychain_retry_failed", {
+          sessionId,
+          turnId,
+          error: retryError instanceof Error ? retryError.message : String(retryError),
+        });
+        if (!managed.deleted) emitChatEvent(managed, { type: "error", message: CLAUDE_KEYCHAIN_UNREADABLE_ERROR, turnId });
+      });
+    }, CLAUDE_KEYCHAIN_RETRY_DELAY_MS);
+    timer.unref?.();
+    pendingClaudeKeychainRetry.set(sessionId, { turnId, timer });
+  };
+
   const runClaudeTurn = async (
     managed: ManagedChatSession,
     args: {
@@ -32195,6 +32283,8 @@ export function createAgentChatService(args: {
       versionFallForwardRetry?: boolean;
       /** The user message is already in the transcript; do not echo it again. */
       suppressUserEcho?: boolean;
+      /** This run is the single retry after the Mac's keychain did not answer Claude's sign-in read. */
+      keychainRetry?: boolean;
     },
   ): Promise<void> => {
     const runtime = managed.runtime;
@@ -32206,6 +32296,9 @@ export function createAgentChatService(args: {
       logger.warn("agent_chat.turn_not_ready", { sessionId: managed.session.id, reason: validation.reason });
       throw new Error(validation.reason);
     }
+    // A new message replaces a pending keychain retry; the message that
+    // retry was for says it failed rather than vanishing.
+    if (!args.keychainRetry) settlePendingClaudeKeychainRetry(managed);
 
     const turnId = randomUUID();
     const userMessageId = args.messageUuid?.trim() || randomUUID();
@@ -32272,6 +32365,8 @@ export function createAgentChatService(args: {
     });
 
     let assistantText = "";
+    /** The turn stopped Claude's own sign-in retries; see failClaudeTurnUnauthenticated. */
+    let claudeAuthStopRequested = false;
     let usage: { inputTokens?: number | null; outputTokens?: number | null; cacheReadTokens?: number | null; cacheCreationTokens?: number | null; thinkingTokens?: number | null; cacheWrite1hTokens?: number | null } | undefined;
     let costUsd: number | null = null;
     let resultServedModelCandidate: string | undefined;
@@ -32695,18 +32790,10 @@ export function createAgentChatService(args: {
       // recognises it via isClaudeRuntimeAuthError, closes the query (halting
       // further retries), reports the runtime auth failure, and emits a decorated
       // error event that renders the inline re-login card on every chat surface.
-      let claudeAuthStopNoticeEmitted = false;
+      // The "stopped retrying" notice waits for the failure path, which first
+      // checks whether the keychain just did not answer (then it is not a sign-out).
       const failClaudeTurnUnauthenticated = (): never => {
-        if (!claudeAuthStopNoticeEmitted) {
-          claudeAuthStopNoticeEmitted = true;
-          emitChatEvent(managed, {
-            type: "system_notice",
-            noticeKind: "auth",
-            severity: "warning",
-            message: CLAUDE_AUTH_STOPPED_NOTICE,
-            turnId,
-          });
-        }
+        claudeAuthStopRequested = true;
         throw new Error(CLAUDE_RUNTIME_AUTH_ERROR);
       };
 
@@ -34757,12 +34844,41 @@ export function createAgentChatService(args: {
           });
         }
       } else {
+        // "Not logged in" from a CLI that could not read the keychain is not a
+        // sign-out: the login is still there. Say what happened instead of
+        // sending the user to log in again. Checked while the chat still reads
+        // active, so no new turn can start during the check.
+        const authError = claudeAuthStopRequested || isClaudeRuntimeAuthError(effectiveError);
+        const keychainUnreadable = authError
+          && (await probeClaudeKeychainLogin(sessionConfigHome(managed) ?? undefined)) === "unreadable";
         if (managed.runtime === runtime) markSessionIdleWithFreshCache(managed);
-        const isAuthFailure = isClaudeRuntimeAuthError(effectiveError);
-        let errorMessage = isAuthFailure
-          ? CLAUDE_RUNTIME_AUTH_ERROR
-          : (effectiveError instanceof Error ? effectiveError.message : String(effectiveError));
+        const isAuthFailure = authError && !keychainUnreadable;
+        // A busy keychain usually clears in seconds. A turn that ran nothing
+        // yet is tried once more by itself; one that already did work is not,
+        // so a retry can never repeat an edit or a command.
+        const retryAfterKeychain = keychainUnreadable
+          && args.keychainRetry !== true
+          && !failedBeforeBackendDispatch
+          && !runtime.interrupted
+          && managed.runtime === runtime
+          && !runtime.busy
+          && emittedClaudeToolIds.size === 0
+          && assistantText.trim().length === 0;
+        let errorMessage = keychainUnreadable
+          ? CLAUDE_KEYCHAIN_UNREADABLE_ERROR
+          : isAuthFailure
+            ? CLAUDE_RUNTIME_AUTH_ERROR
+            : (effectiveError instanceof Error ? effectiveError.message : String(effectiveError));
         if (isAuthFailure) {
+          if (claudeAuthStopRequested) {
+            emitChatEvent(managed, {
+              type: "system_notice",
+              noticeKind: "auth",
+              severity: "warning",
+              message: CLAUDE_AUTH_STOPPED_NOTICE,
+              turnId,
+            });
+          }
           reportProviderRuntimeAuthFailure("claude", CLAUDE_RUNTIME_AUTH_ERROR);
         } else {
           reportProviderRuntimeFailure("claude", errorMessage);
@@ -34800,17 +34916,27 @@ export function createAgentChatService(args: {
               otherBrain: siblingBrainOwnerOnDisk(managed.session.id),
             })
           : null;
-        emitChatEvent(managed, {
-          type: "error",
-          message: externalStop?.body ?? errorMessage,
-          ...(externalStop
-            ? {
-                detail: errorMessage,
-                errorInfo: { category: "unknown" as const, provider: "Claude", presentation: externalStop },
-              }
-            : {}),
-          turnId,
-        });
+        if (retryAfterKeychain) {
+          emitChatEvent(managed, {
+            type: "system_notice",
+            noticeKind: "info",
+            status: "claude_keychain_retry",
+            message: CLAUDE_KEYCHAIN_RETRY_NOTICE,
+            turnId,
+          });
+        } else {
+          emitChatEvent(managed, {
+            type: "error",
+            message: externalStop?.body ?? errorMessage,
+            ...(externalStop
+              ? {
+                  detail: errorMessage,
+                  errorInfo: { category: "unknown" as const, provider: "Claude", presentation: externalStop },
+                }
+              : {}),
+            turnId,
+          });
+        }
         emitChatEvent(managed, { type: "status", turnStatus: "failed", turnId });
         emitChatEvent(managed, {
           type: "done",
@@ -34818,6 +34944,15 @@ export function createAgentChatService(args: {
           status: "failed",
           ...doneModel,
         });
+        if (retryAfterKeychain) {
+          scheduleClaudeKeychainRetry(managed, runtime, turnId, () => runClaudeTurn(managed, {
+            ...args,
+            keychainRetry: true,
+            suppressUserEcho: true,
+            onDispatched: undefined,
+            onBackendDispatched: undefined,
+          }));
+        }
 
         // If resume failed, clear sessionId and the caller can retry fresh
         if (runtime.sdkSessionId && isClaudeStaleSessionError(effectiveError)) {
@@ -34852,7 +34987,9 @@ export function createAgentChatService(args: {
           // delivered, and the replacement thread was never told any of it.
           restageSectionsForNewProviderThread(managed);
           refreshReconstructionContext(managed);
-          emitContinuityRecoveryNotice(managed, recovery, turnId);
+          if (!startAutomaticContinuityRecovery(managed, turnId)) {
+            emitContinuityRecoveryNotice(managed, recovery, turnId);
+          }
         }
       }
 
@@ -55148,15 +55285,18 @@ export function createAgentChatService(args: {
     managed: ManagedChatSession,
     recovery: AgentChatContinuityRecovery,
     turnId?: string,
+    autoRecovery?: "pending" | "failed",
   ): void => {
     emitChatEvent(managed, {
       type: "system_notice",
       noticeKind: "thread_error",
-      severity: "error",
+      severity: autoRecovery === "pending" ? "warning" : "error",
       status: recovery.state,
       message: recovery.state === "required"
-        ? "This chat's original AI thread could not be resumed. Your chat history and project files are still here."
-        : "Rebuilt this chat's AI thread from ADE history.",
+        ? autoRecovery === "pending"
+          ? "Reconnecting this chat from ADE's saved copy."
+          : "This chat's original AI thread could not be resumed. Your chat history and project files are still here."
+        : "Reconnected this chat from ADE's saved copy.",
       detail: {
         kind: "continuity_recovery",
         state: recovery.state,
@@ -55164,9 +55304,73 @@ export function createAgentChatService(args: {
         originalThreadId: recovery.originalThreadId,
         ...(recovery.reconstructedThreadId ? { reconstructedThreadId: recovery.reconstructedThreadId } : {}),
         ...(recovery.supersededBySessionId ? { supersededBySessionId: recovery.supersededBySessionId } : {}),
+        ...(autoRecovery ? { autoRecovery } : {}),
+        ...(autoRecovery === "pending" ? { autoRecoveryStartedAt: nowIso() } : {}),
       },
       ...(turnId ? { turnId } : {}),
     });
+  };
+
+  /**
+   * When each chat last rebuilt a lost thread by itself. A rebuilt thread gets
+   * a new id, so "once per lost thread" alone would let a provider that keeps
+   * losing threads drive an endless run of billed recovery turns.
+   */
+  const automaticContinuityRecoveryAt = new Map<string, number>();
+
+  /**
+   * A provider thread that is simply gone (the provider says it has no such
+   * conversation) is rebuilt from ADE's copy straight away, and the user's
+   * unanswered message is answered there. The user only gets the choices when
+   * that fails. Returns true when an attempt was started.
+   */
+  const startAutomaticContinuityRecovery = (managed: ManagedChatSession, turnId?: string): boolean => {
+    const recovery = managed.session.continuityRecovery;
+    if (recovery?.state !== "required" || recovery.reason !== "thread_missing") return false;
+    if (managed.session.provider !== "claude" && managed.session.provider !== "codex") return false;
+    const sessionId = managed.session.id;
+    const lastTriedAt = automaticContinuityRecoveryAt.get(sessionId);
+    if (lastTriedAt !== undefined && Date.now() - lastTriedAt < CONTINUITY_AUTO_RECOVERY_INTERVAL_MS) return false;
+    automaticContinuityRecoveryAt.set(sessionId, Date.now());
+    emitContinuityRecoveryNotice(managed, recovery, turnId, "pending");
+    // Codex reports the lost thread from inside the turn that hit it, and a
+    // recovery refuses to run while a turn is active: wait for it to settle.
+    const turnSettled = () => {
+      const runtime = managed.runtime;
+      if (managed.session.status === "active") return false;
+      if (runtime?.kind === "codex") return !runtime.activeTurnId;
+      if (runtime?.kind === "claude") return !runtime.busy;
+      return true;
+    };
+    setTimeout(() => {
+      void (async () => {
+        const waitUntil = Date.now() + CONTINUITY_AUTO_RECOVERY_SETTLE_MAX_MS;
+        while (!turnSettled() && !managed.deleted && Date.now() < waitUntil) {
+          await new Promise((resolve) => setTimeout(resolve, 250));
+        }
+        if (managed.deleted || !turnSettled()) return false;
+        const ok = (await recoverContinuity({ sessionId, mode: "recover_from_history" })).ok;
+        logger.info("agent_chat.continuity_auto_recovery", { sessionId, ok });
+        return ok;
+      })().catch((error) => {
+        logger.warn("agent_chat.continuity_auto_recovery_failed", {
+          sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return false;
+      }).then((ok) => {
+        const current = managed.session.continuityRecovery;
+        if (!ok && !managed.deleted && current?.state === "required") {
+          emitContinuityRecoveryNotice(managed, current, turnId, "failed");
+        }
+      }).catch((error) => {
+        logger.warn("agent_chat.continuity_auto_recovery_notice_failed", {
+          sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    }, 0);
+    return true;
   };
 
   const emitDiskPressureSendFailure = (
@@ -55240,7 +55444,9 @@ export function createAgentChatService(args: {
       };
       managed.session.continuityRecovery = recovery;
       persistChatState(managed);
-      emitContinuityRecoveryNotice(managed, recovery);
+      if (!startAutomaticContinuityRecovery(managed)) {
+        emitContinuityRecoveryNotice(managed, recovery);
+      }
     }
     return Object.assign(
       new Error(`Could not resume the original Codex thread: ${classification.detail}`),
@@ -64774,6 +64980,9 @@ export function createAgentChatService(args: {
     const mode = parseAgentChatStopMode(args.mode ?? DEFAULT_AGENT_CHAT_STOP_MODE);
     assertChatRuntimeOwnedHere(args.sessionId, "interrupt");
     visited.add(args.sessionId);
+    // Stop also cancels a keychain retry that is waiting to run.
+    const waitingOnKeychain = managedSessions.get(args.sessionId);
+    if (waitingOnKeychain) settlePendingClaudeKeychainRetry(waitingOnKeychain);
     // Never throws; the sweep is a local scheduler write.
     if (internalOptions.cancelAutoResume) await autoResume.cancelForSession(args.sessionId, "stopped");
     const result = await interruptProviderTurn(
@@ -65563,33 +65772,34 @@ export function createAgentChatService(args: {
     return `${text.replace(/\uFFFD$/u, "").trimEnd()}...`;
   };
 
-  const buildContinuityCapsule = (managed: ManagedChatSession): string => {
+  /** The whole saved transcript when it is small enough to read, else its start and its end. */
+  const readContinuityEnvelopes = (managed: ManagedChatSession): AgentChatEventEnvelope[] => {
     const transcriptPath = resolveBestTranscriptPathForSessionId(managed.session.id, managed);
     let envelopes: AgentChatEventEnvelope[] = [];
     if (transcriptPath) {
       try {
         if (transcriptPath.endsWith(".gz")) {
-          // A compressed transcript can't be read by byte offset; decompress
-          // transparently (bounded) and take the prefix from the text, or the
-          // capsule's opening context would be empty for old compressed chats.
-          const decompressed = readHistoryFileSync(transcriptPath).toString("utf8");
-          const prefixText = decompressed.slice(0, 128 * 1024);
-          envelopes.push(...parseAgentChatTranscript(prefixText));
+          envelopes.push(...parseAgentChatTranscript(readHistoryFileSync(transcriptPath).toString("utf8")));
         } else {
           const stat = fs.statSync(transcriptPath);
-          const prefixLength = Math.min(stat.size, 128 * 1024);
-          const fd = fs.openSync(transcriptPath, "r");
-          try {
-            const prefix = Buffer.allocUnsafe(prefixLength);
-            const bytesRead = fs.readSync(fd, prefix, 0, prefixLength, 0);
-            envelopes.push(...parseAgentChatTranscript(prefix.subarray(0, bytesRead).toString("utf8")));
-          } finally {
-            fs.closeSync(fd);
+          if (stat.size <= CONTINUITY_FULL_TRANSCRIPT_MAX_BYTES) {
+            envelopes.push(...parseAgentChatTranscript(fs.readFileSync(transcriptPath, "utf8")));
+          } else {
+            // Too big to read whole: the opening (the task) and the newest part.
+            const prefixLength = Math.min(stat.size, 1024 * 1024);
+            const fd = fs.openSync(transcriptPath, "r");
+            try {
+              const prefix = Buffer.allocUnsafe(prefixLength);
+              const bytesRead = fs.readSync(fd, prefix, 0, prefixLength, 0);
+              envelopes.push(...parseAgentChatTranscript(prefix.subarray(0, bytesRead).toString("utf8")));
+            } finally {
+              fs.closeSync(fd);
+            }
+            envelopes.push(...parseTranscriptHistoryTail(managed.session.id, transcriptPath).envelopes);
           }
         }
-        envelopes.push(...parseTranscriptHistoryTail(managed.session.id, transcriptPath).envelopes);
       } catch {
-        // The bounded in-memory history below remains available.
+        // Fall through with whatever was read.
       }
     }
     const deduped = new Map<string, AgentChatEventEnvelope>();
@@ -65600,73 +65810,51 @@ export function createAgentChatService(args: {
         : `${envelope.timestamp}:${JSON.stringify(envelope.event)}`;
       deduped.set(key, envelope);
     }
-    envelopes = [...deduped.values()].sort((left, right) =>
+    return [...deduped.values()].sort((left, right) =>
       (left.sequence != null && right.sequence != null)
         ? left.sequence - right.sequence
         : Date.parse(left.timestamp) - Date.parse(right.timestamp));
+  };
 
-    const users = envelopes
-      .filter((entry) => entry.event.type === "user_message")
-      .map((entry) => {
-        const event = entry.event as Extract<AgentChatEvent, { type: "user_message" }>;
-        return event.displayText?.trim() || event.text.trim();
-      })
-      .filter(Boolean);
-    const assistants = envelopes.flatMap((entry) => {
-      if (entry.event.type === "text" && entry.event.text.trim()) return [entry.event.text.trim()];
-      if (entry.event.type !== "plan") return [];
-      return [[
-        entry.event.explanation?.trim(),
-        ...entry.event.steps.map((step) => `${step.status}: ${step.text}`),
-      ].filter(Boolean).join("\n")];
-    }).filter(Boolean);
-    const latestTodo = [...envelopes].reverse().find((entry) => entry.event.type === "todo_update");
-    const latestPlan = [...envelopes].reverse().find((entry) => entry.event.type === "plan");
+  /**
+   * What a rebuilt provider thread is told: the conversation so far, word for
+   * word (see `formatContinuityConversation`), so it carries on as if the
+   * original thread were still there.
+   */
+  const buildContinuityCapsule = (managed: ManagedChatSession): string => {
+    const envelopes = readContinuityEnvelopes(managed);
+    const conversation = formatContinuityConversation(envelopes, CONTINUITY_CONVERSATION_BUDGET_BYTES);
     let lastUserIndex = -1;
     for (let index = envelopes.length - 1; index >= 0; index -= 1) {
-      if (envelopes[index]!.event.type === "user_message") {
+      const event = envelopes[index]!.event;
+      if (event.type === "user_message" && event.metadata?.kind !== "continuity_recovery") {
         lastUserIndex = index;
         break;
       }
     }
-    const unanswered = lastUserIndex >= 0
-      && !envelopes.slice(lastUserIndex + 1).some((entry) => entry.event.type === "text")
-      ? users.at(-1) ?? null
-      : null;
+    const answered = lastUserIndex >= 0
+      && envelopes.slice(lastUserIndex + 1).some((entry) => entry.event.type === "text");
     const row = sessionService.get(managed.session.id);
     const lane = laneService.getLaneBaseAndBranch(managed.session.laneId);
-    const lines = [
-      "# ADE continuity capsule",
+    return [
+      "This chat's earlier AI session could not be reopened: the provider no longer has it.",
+      "ADE kept its own copy of the conversation, and here it is. Carry on exactly where it left off.",
+      lastUserIndex >= 0 && !answered
+        ? "The user's last message has not been answered yet: answer it now."
+        : "Wait for the user's next message; do not repeat finished work.",
+      "Before you change files, check their current state, since work may have happened since.",
       "",
       `Chat: ${truncateContinuityText(row?.title?.trim() || defaultChatSessionTitle(managed.session.provider), 512)}`,
-      `Provider: ${managed.session.provider}`,
       `Lane branch: ${lane.branchRef}`,
       `Worktree: ${lane.worktreePath}`,
+      conversation.omittedEntries > 0
+        ? `Note: ${conversation.omittedEntries} older entries were left out to fit; the first message and the newest part are complete.`
+        : "",
       "",
-      "## Original task",
-      truncateContinuityText(users[0] ?? "No durable first user message was available.", 3_000),
+      "--- Conversation so far ---",
       "",
-      "## Recent user messages (newest first)",
-      ...(users.slice(-6).reverse().map((text, index) => `${index + 1}. ${truncateContinuityText(text, 2_000)}`) || ["None available."]),
-      "",
-      "## Recent assistant summaries (newest first)",
-      ...(assistants.slice(-4).reverse().map((text, index) => `${index + 1}. ${truncateContinuityText(text, 2_500)}`) || ["None available."]),
-    ];
-    if (latestPlan?.event.type === "plan") {
-      lines.push("", "## Latest plan", truncateContinuityText([
-        latestPlan.event.explanation?.trim(),
-        ...latestPlan.event.steps.map((step) => `- [${step.status}] ${step.text}`),
-      ].filter(Boolean).join("\n"), 3_000));
-    }
-    if (latestTodo?.event.type === "todo_update") {
-      lines.push("", "## Latest todo snapshot", truncateContinuityText(
-        latestTodo.event.items.map((item) => `- [${item.status}] ${item.description}`).join("\n"),
-        3_000,
-      ));
-    }
-    if (unanswered) lines.push("", "## Most recent unanswered request", truncateContinuityText(unanswered, 3_000));
-    lines.push("", "Continue from this bounded ADE history. Verify current project state before changing files.");
-    return truncateContinuityText(lines.join("\n"), 24 * 1024);
+      conversation.text || "(No saved messages were found.)",
+    ].filter((line, index, all) => line !== "" || all[index - 1] !== "").join("\n");
   };
 
   const recoverContinuity = async (
@@ -70650,6 +70838,9 @@ export function createAgentChatService(args: {
       throw new Error("Chat session id is required.");
     }
     warmIdleCompaction.clear(trimmedSessionId);
+    const deletedManaged = managedSessions.get(trimmedSessionId);
+    if (deletedManaged) settlePendingClaudeKeychainRetry(deletedManaged, { silent: true });
+    automaticContinuityRecoveryAt.delete(trimmedSessionId);
     const existing = sessionService.get(trimmedSessionId);
     if (!existing) {
       // Idempotent, for the same reason the mid-flight `if (!current) return`

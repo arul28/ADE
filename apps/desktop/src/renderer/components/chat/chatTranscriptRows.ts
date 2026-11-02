@@ -45,6 +45,7 @@ import { computerUseEntryWroteImage } from "./chatComputerUseRows";
 import { imageViewLocalPath } from "../../../shared/chatImageUrls";
 import { foldSpawnCompletionLines, readSpawnCompletionChildId, type SpawnCompletionSibling } from "./spawnCompletionLines";
 import { foldQuietNoticeLines, type QuietNoticeSibling } from "./quietNoticeLines";
+import { foldSelfHealedFailures } from "./selfHealedFailureLines";
 import {
   isChatTaskListEvent,
   reduceChatTaskList,
@@ -4485,7 +4486,7 @@ function rowDrawsVisibleItem({ event }: ChatTranscriptRenderEnvelope): boolean {
 export function filterVisibleTranscriptRows(
   rows: readonly ChatTranscriptRenderEnvelope[],
 ): ChatTranscriptRenderEnvelope[] {
-  return foldQuietNoticeLines(foldSpawnCompletionLines(rows.filter(rowDrawsVisibleItem)));
+  return foldQuietNoticeLines(foldSpawnCompletionLines(foldSelfHealedFailures(rows.filter(rowDrawsVisibleItem))));
 }
 
 type TerminusDoneEvent = Extract<AgentChatEvent, { type: "done" }>;

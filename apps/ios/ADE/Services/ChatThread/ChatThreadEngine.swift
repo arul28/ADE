@@ -108,6 +108,9 @@ actor ChatThreadEngine {
   var timelineFold = ChatThreadTimelineFold()
   /// Merge-key lookup for `transcript`, kept across appends.
   var transcriptKeyIndex: WorkChatTranscriptKeyIndex?
+  /// Rows of `transcript` the timeline leaves out as failures ADE fixed by
+  /// itself (`workFoldSelfHealedFailures`). Empty for almost every chat.
+  var selfHealedHiddenIds: Set<String> = []
   var toolActivity = WorkTurnToolActivityIndex(
     completedByTurnId: [:],
     completedFilesByTurnId: [:],
@@ -413,9 +416,15 @@ actor ChatThreadEngine {
           rebuildTranscript()
           timelineWork = .rebuild
         } else if !mapped.isEmpty {
+          let previousCount = transcript.count
           let appended = appendWorkChatTranscriptsTracked(base: transcript, live: mapped, keyIndex: &transcriptKeyIndex)
           transcript = appended.transcript
           timelineFold.transcriptChanged(from: appended.firstChangedIndex)
+          // The checkpoint counts the folded rows, so an edit above the tail
+          // cannot be placed on it while rows are hidden.
+          if !selfHealedHiddenIds.isEmpty, appended.firstChangedIndex < previousCount {
+            timelineFold.invalidate(reason: "self-healed fold, transcript changed above the tail")
+          }
           transcriptRevision &+= 1
           if mapped.contains(where: chatThreadEnvelopeFeedsContextUsage) { usageRevision &+= 1 }
           for envelope in mapped { advanceGoalState(with: envelope) }
@@ -482,8 +491,13 @@ actor ChatThreadEngine {
     if transcript.isEmpty && overlays.localEchoMessages.isEmpty && overlays.artifacts.isEmpty {
       snapshot = .empty
     } else {
+      let healed = workFoldSelfHealedFailures(transcript)
+      if healed.hiddenIds != selfHealedHiddenIds {
+        selfHealedHiddenIds = healed.hiddenIds
+        timelineFold.invalidate(reason: "self-healed rows changed")
+      }
       snapshot = timelineFold.snapshot(
-        transcript: transcript,
+        transcript: healed.transcript,
         artifacts: overlays.artifacts,
         localEchoMessages: overlays.localEchoMessages,
         usageLimitTurnId: overlays.summary.usageLimitTurnId

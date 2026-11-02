@@ -776,6 +776,65 @@ final class WorkChatActiveSendCapabilityTests: XCTestCase {
     }
     XCTAssertEqual(kind, "auth")
   }
+
+  /// Failures ADE fixes by itself (a rebuilt provider thread, a keychain retry)
+  /// fold away on replay; a failure it has not fixed stays.
+  func testSelfHealedFailuresFoldOnlyForResolvedThreadsAndRetriedTurns() {
+    func notice(_ state: String, thread: String, turn: String) -> String {
+      #"{"type":"system_notice","noticeKind":"warning","message":"Lost thread","turnId":"\#(turn)","detail":{"kind":"continuity_recovery","state":"\#(state)","originalThreadId":"\#(thread)","autoRecovery":"failed"}}"#
+    }
+    func error(_ message: String, turn: String) -> String {
+      #"{"type":"error","message":"\#(message)","turnId":"\#(turn)"}"#
+    }
+    func failedStatus(turn: String) -> String { #"{"type":"status","turnStatus":"failed","turnId":"\#(turn)"}"# }
+    func failedDone(turn: String) -> String { #"{"type":"done","status":"failed","turnId":"\#(turn)"}"# }
+    let keychainRetry = #"{"type":"system_notice","noticeKind":"info","status":"claude_keychain_retry","message":"Claude's sign-in was busy — retrying once","turnId":"t2"}"#
+    let lostThread = "No conversation found with session id abc"
+
+    let cases: [(name: String, events: [String], visible: [Int])] = [
+      ("resolved thread: only the newest notice draws, its failed rows go, other turns keep their errors",
+       [notice("required", thread: "th1", turn: "t1"), error("boom", turn: "t1"), failedStatus(turn: "t1"),
+        failedDone(turn: "t1"), notice("reconstructed", thread: "th1", turn: "t1"), error("boom", turn: "t9")],
+       [5, 6]),
+      ("unresolved thread keeps its failed rows",
+       [notice("required", thread: "th2", turn: "t1"), error("boom", turn: "t1"), failedDone(turn: "t1")],
+       [1, 2, 3]),
+      ("a lost-thread error goes when the next notice is for a resolved thread",
+       [error(lostThread, turn: "t5"), notice("reconstructed", thread: "th1", turn: "t6")],
+       [2]),
+      ("a lost-thread error stays when no later notice resolves it",
+       [notice("reconstructed", thread: "th1", turn: "t6"), error(lostThread, turn: "t5")],
+       [1, 2]),
+      ("keychain retry hides the turn's FAILED rows and keeps its error",
+       [keychainRetry, failedStatus(turn: "t2"), failedDone(turn: "t2"), error("boom", turn: "t2")],
+       [1, 4]),
+      ("no notices: the transcript is untouched",
+       [error("boom", turn: "t1"), failedStatus(turn: "t1"), failedDone(turn: "t1")],
+       [1, 2, 3]),
+    ]
+    for testCase in cases {
+      let raw = testCase.events.enumerated().map { index, event in
+        #"{"sessionId":"chat-1","timestamp":"2026-09-16T00:00:\#(String(format: "%02d", index + 1)).000Z","sequence":\#(index + 1),"event":\#(event)}"#
+      }.joined(separator: "\n")
+      let transcript = parseWorkChatTranscript(raw)
+      XCTAssertEqual(transcript.count, testCase.events.count, testCase.name)
+      XCTAssertEqual(workFoldSelfHealedFailures(transcript).transcript.compactMap(\.sequence), testCase.visible, testCase.name)
+    }
+
+    // An unresolved notice draws a card, never its raw detail JSON.
+    let unresolved = parseWorkChatTranscript(
+      #"{"sessionId":"chat-1","timestamp":"2026-09-16T00:00:01.000Z","sequence":1,"event":\#(cases[1].events[0])}"#
+    )
+    let snapshot = buildWorkChatTimelineSnapshot(
+      transcript: unresolved,
+      fallbackEntries: [],
+      artifacts: [],
+      localEchoMessages: []
+    )
+    let card = snapshot.eventCards.first { $0.noticeKind == workContinuityNoticeKind }
+    XCTAssertNotNil(card)
+    XCTAssertEqual(card?.bullets, [])
+  }
 }
 
 /// The transcript's change-detection surface: what makes a row reconfigure
