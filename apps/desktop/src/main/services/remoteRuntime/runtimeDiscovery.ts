@@ -16,7 +16,6 @@ import type {
   RemoteRuntimeDiscoveredMachine,
   RemoteRuntimeDiscoveryDiagnostic,
   RemoteRuntimeDiscoveryResult,
-  RemoteRuntimeDiscoverySeverity,
 } from "../../../shared/types/remoteRuntime";
 
 export const ADE_SYNC_MDNS_SERVICE_TYPE = "ade-sync";
@@ -416,7 +415,6 @@ async function discoverTailscalePeers(timeoutMs = 1_200): Promise<{
     // stay muted notes inside Add computer → Nearby, the one list Tailscale
     // can add to. A computer whose Tailscale route fails says so on its own
     // row, and Account → Private network has Tailscale's own status.
-    const severity: RemoteRuntimeDiscoverySeverity = "info";
     let code: string;
     let reason: string;
     if (timedOut) {
@@ -435,7 +433,7 @@ async function discoverTailscalePeers(timeoutMs = 1_200): Promise<{
       diagnostics: [
         {
           source: "tailscale",
-          severity,
+          severity: "info",
           code,
           message: summary,
           detail: message || null,
