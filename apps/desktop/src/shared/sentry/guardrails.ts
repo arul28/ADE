@@ -118,6 +118,10 @@ const IGNORED_ERROR_PATTERNS: readonly RegExp[] = [
   // Sync turned off (or no project registered yet) is a state, not a failure;
   // presence and other sync calls answer with this on every lane change.
   /Sync service is not available/,
+  // Monaco rejecting its own pending work (hover, highlight, format) with a
+  // bare `Canceled` when an editor is disposed under it, e.g. a file tab that
+  // closes because the file is gone. Nothing of ADE's failed.
+  /^Canceled: Canceled$/,
 ];
 
 type FingerprintSource = {

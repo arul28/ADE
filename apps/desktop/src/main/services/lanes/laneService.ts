@@ -1525,6 +1525,20 @@ async function resolveImportBranchTarget(args: {
   throw new AdeExpectedError(notFound, "user");
 }
 
+function describeArgType(value: unknown): string {
+  if (value === undefined) return "nothing";
+  if (value === null) return "null";
+  if (Array.isArray(value)) return "a list";
+  return typeof value === "object" ? "an object" : `a ${typeof value}`;
+}
+
+function invalidLaneIdError(value: unknown): AdeExpectedError {
+  return new AdeExpectedError(
+    `invalid_argument: laneId must be a lane id string, but got ${describeArgType(value)}. Pass --lane <id> or run from inside a lane.`,
+    "user",
+  );
+}
+
 const LANE_DELETE_PROGRESS_HISTORY_TTL_MS = 60_000;
 const STORAGE_LIFECYCLE_LOCK_LEASE_MS = 15 * 60_000;
 const STORAGE_LIFECYCLE_LOCK_HEARTBEAT_MS = 60_000;
@@ -1813,8 +1827,17 @@ export function createLaneService({
     );
   };
 
-  const getLaneRow = (laneId: string) =>
-    db.get<LaneRow>("select * from lanes where id = ? and project_id = ? limit 1", [laneId, projectId]);
+  const getLaneRow = (laneId: string) => {
+    // Action callers (agents, the CLI, other machines) reach this with args
+    // straight off the wire; a missing or non-string id would otherwise fail
+    // as a SQLite bind error. Null still binds and reads as "not found".
+    // Not marked expected: action boundaries validate their own input, so a
+    // non-string id reaching the lookup is ADE's bug and stays reportable.
+    if (typeof laneId !== "string" && laneId !== null) {
+      throw new Error(`invalid_argument: laneId must be a lane id string, but got ${describeArgType(laneId)}.`);
+    }
+    return db.get<LaneRow>("select * from lanes where id = ? and project_id = ? limit 1", [laneId, projectId]);
+  };
 
   const getLaneLinearIssue = (laneId: string): LaneLinearIssue | null => {
     try {
@@ -7448,8 +7471,17 @@ export function createLaneService({
     },
 
     rename({ laneId, name }: { laneId: string; name: string }): void {
-      const trimmed = name.trim();
-      if (!trimmed) throw new Error("Lane name is required");
+      if (typeof laneId !== "string" || !laneId.trim()) throw invalidLaneIdError(laneId);
+      // `name` arrives unchecked from action callers (agents, the CLI, other machines).
+      const trimmed = typeof name === "string" ? name.trim() : "";
+      if (!trimmed) {
+        throw new AdeExpectedError(
+          typeof name === "string"
+            ? "Lane name is required"
+            : `invalid_argument: Lane name is required and must be a string, but got ${describeArgType(name)}.`,
+          "user",
+        );
+      }
       const lane = getLaneRow(laneId);
       if (!lane) throw new Error(`Lane not found: ${laneId}`);
       if (lane.lane_type === "primary") throw new Error("Primary lane cannot be renamed");

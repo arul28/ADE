@@ -20,6 +20,8 @@ import { expectedErrorKind } from "../expectedError";
 import { GITHUB_AUTOLINKS_REFUSED } from "../githubAutolinks";
 import { PENDING_INPUT_SEND_BLOCKED_MESSAGE } from "../pendingInputAnswers";
 import { SIMCTL_MISSING } from "../xcodeToolchain";
+import { PROJECT_SECRET_NAME_RULE } from "../projectSecretRequest";
+import { LINEAR_NOT_CONNECTED_MESSAGE } from "../types/automations";
 
 const escapeRegExp = (text: string): string => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
@@ -141,6 +143,28 @@ export const EXPECTED_OUTCOME_PATTERNS: readonly RegExp[] = [
   // offline reasons as NETWORK_FAILURE below; a bare reset stays an issue.
   /^(?:Can't reach GitHub|ADE can't reach its account service) \((?:ENOTFOUND|EAI_AGAIN|ECONNREFUSED|ETIMEDOUT|ENETUNREACH|EHOSTUNREACH|UND_ERR_CONNECT_TIMEOUT|TLS handshake cut off)\)/,
   /^ADE's account service did not answer in time\.$/,
+  // Added from Sentry traffic, 2026-11-02.
+  // A paired machine on an older build that lacks a domain, or that still
+  // wants the projectId older account calls carried (accountUsageLiveRefresh.ts
+  // reads the same two answers as a version gap).
+  /^Domain '[^']+' is unavailable in this runtime\.$/,
+  /\(code -32602\): Method [\w.]+ requires params\.projectId\.$/,
+  // Answers to a caller (often an agent) that fixes its input and retries.
+  new RegExp(`^${escapeRegExp(PROJECT_SECRET_NAME_RULE)}$`),
+  /^(?:Path|Attachment source) is not a file\.$/,
+  /^This Codex chat does not have a thread to rewind yet\.$/,
+  /^This message is no longer queued\.$/,
+  // A Linear call on a machine where Linear is not connected; the UI sends the
+  // user to Linear settings.
+  new RegExp(`^${escapeRegExp(LINEAR_NOT_CONNECTED_MESSAGE)}$`),
+  /^Linear token missing\. /,
+  // The network between this machine and GitHub, the account vault or an SSH host.
+  /^GitHub API (?:request|response body) timed out\. Check network access on this machine\.$/,
+  /^Couldn't read this PR's Actions runs from GitHub: (?:fetch failed|Can't reach GitHub\b)/,
+  /ADE couldn't reach your ADE account's vault from this computer/,
+  /^Nothing is accepting SSH connections at \S+\. /,
+  // A peer (phone, web) holding a project id from another machine.
+  /^This project is not on this ADE machine\b/,
 ];
 
 // Each of these names the address or host it failed to reach, so a loopback

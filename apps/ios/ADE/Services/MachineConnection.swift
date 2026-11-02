@@ -485,10 +485,18 @@ final class MachineConnection {
          "project_set_icon_result", "roster_chats":
       resolve(requestId: pre.requestId, result: .success(payload))
     case "roster_snapshot":
-      guard let snapshot = machineConnectionDecode(payload, as: RemoteRosterSnapshotPayload.self) else { return }
+      // Decoded off the main actor: a full roster is large enough to hang the
+      // app. The receive loop awaits each frame, so ordering holds.
+      let snapshot = await Task.detached(priority: .userInitiated) {
+        machineConnectionDecode(payload, as: RemoteRosterSnapshotPayload.self)
+      }.value
+      guard let snapshot, generation == frameGeneration else { return }
       applyRosterSnapshot(snapshot)
     case "roster_delta":
-      guard let delta = machineConnectionDecode(payload, as: RemoteRosterDeltaPayload.self) else { return }
+      let delta = await Task.detached(priority: .userInitiated) {
+        machineConnectionDecode(payload, as: RemoteRosterDeltaPayload.self)
+      }.value
+      guard let delta, generation == frameGeneration else { return }
       applyRosterDelta(delta)
     case "chat_subscribe":
       await handleChatSnapshot(payload, generation: frameGeneration)
@@ -786,7 +794,11 @@ final class MachineConnection {
         timeoutMessage: "Timed out loading older chats."
       )
       guard generation == rosterOlderChatsGeneration else { return nil }
-      return machineConnectionDecode(raw, as: RemoteRosterChatsPayload.self)
+      let page = await Task.detached(priority: .userInitiated) {
+        machineConnectionDecode(raw, as: RemoteRosterChatsPayload.self)
+      }.value
+      guard generation == rosterOlderChatsGeneration else { return nil }
+      return page
     } catch {
       return nil
     }

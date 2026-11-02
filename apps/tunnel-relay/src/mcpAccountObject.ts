@@ -32,6 +32,15 @@ const LEFT_OFF_KEY = "mcpAccountLeftOff";
 const OFF_MEMBERS_KEY = "off";
 
 /**
+ * A stored list of machine keys. Anything else read back (a value from another
+ * shape of this object, a damaged write) counts as empty instead of throwing on
+ * every call; the next registration writes a clean list.
+ */
+function storedKeyList(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((key): key is string => typeof key === "string") : [];
+}
+
+/**
  * The `mcp-account:<accountKey>` object: the machines (relay keys) serving an
  * account, most recent registration last, and the one that last answered.
  */
@@ -40,9 +49,9 @@ export async function handleMcpAccount(
   request: Request,
   pathname: string,
 ): Promise<Response> {
-  const members = (await storage.get<string[]>("members")) ?? [];
+  const members = storedKeyList(await storage.get("members"));
   const front = (await storage.get<string>("front")) ?? null;
-  const off = (await storage.get<string[]>(OFF_MEMBERS_KEY)) ?? [];
+  const off = storedKeyList(await storage.get(OFF_MEMBERS_KEY));
   if (pathname === MCP_ACCOUNT_PATH && request.method === "GET") {
     return jsonResponse(
       { members, front, ...(off.length ? { off } : {}) } satisfies McpAccountState,

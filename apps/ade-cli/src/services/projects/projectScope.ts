@@ -5,7 +5,9 @@ import type { SyncRemoteCommandExecutionContext } from "../sync/syncRemoteComman
 import type { SyncHostBlocker } from "../sync/syncService";
 import type { BrainKeepAwakeService } from "../power/brainKeepAwakeService";
 import type { ProjectId, ProjectRecord, ProjectRegistry } from "./projectRegistry";
-import { captureProblem } from "../../../../desktop/src/shared/sentry/capture";
+import path from "node:path";
+import { captureProblem, sendSentryLog } from "../../../../desktop/src/shared/sentry/capture";
+import { pathsEqual } from "../../../../desktop/src/main/services/shared/pathCompare";
 import { DIAGNOSTIC_ATTACH_TAG } from "../../../../desktop/src/shared/sentry/diagnostics";
 import { createReportOnce, PROJECT_REGISTRY_ATTACH, wasRemovedFromRegistry } from "./projectRegistryJournal";
 
@@ -167,6 +169,7 @@ export class ProjectScopeRegistry {
   private readonly failedSyncHostPhases = new Map<string, FailedAttempt>();
   private readonly disposeListeners = new Set<(projectId: ProjectId) => void>();
   private readonly reportUnknownProjectIdOnce = createReportOnce();
+  private readonly logUnknownPeerProjectIdOnce = createReportOnce();
   private syncHostProjectId: ProjectId | null = null;
   private syncHostTransitionTail: Promise<void> = Promise.resolve();
   private latestSyncHostTransitionId = 0;
@@ -186,7 +189,7 @@ export class ProjectScopeRegistry {
       payload: SyncFileRequest,
       context: { isMobile: boolean },
     ): Promise<unknown> => {
-      const scope = await this.get(projectId);
+      const scope = await this.get(this.resolvePeerProjectId({ projectId }, `files.${payload?.action ?? "unknown"}`));
       const syncService = scope.runtime.syncService;
       if (!syncService) {
         throw new Error(`Phone sync is not available for project ${projectId}.`);
@@ -963,6 +966,47 @@ export class ProjectScopeRegistry {
     }
   }
 
+  /**
+   * The registered project a peer's command or file request names, resolved
+   * the way the brain's own command router resolves it: by id (or the id it
+   * was moved to), else by root path. A phone, web client or other machine
+   * that still holds an id this brain never had (a project that lives on
+   * another machine, a stale selection) is answered with `project_not_open`,
+   * the code every client already recovers from, and leaves a Sentry log
+   * rather than an issue: that is a peer's stale state, not this brain's
+   * project list going wrong. A window asking for an unknown id still goes
+   * through `get`, which reports it.
+   */
+  private resolvePeerProjectId(
+    target: { projectId: string; projectRootPath?: string | null },
+    action: string,
+  ): ProjectId {
+    const { projectId } = target;
+    if (this.scopes.has(projectId) || this.projectRegistry.get(projectId)) return projectId;
+    const movedTo = this.projectRegistry.resolveMovedProjectId(projectId);
+    if (movedTo) return movedTo;
+    const rootPath = typeof target.projectRootPath === "string" && target.projectRootPath.trim()
+      ? path.resolve(target.projectRootPath.trim())
+      : null;
+    const byRoot = rootPath
+      ? this.projectRegistry.list().find((record) => pathsEqual(record.rootPath, rootPath)) ?? null
+      : null;
+    if (byRoot) return byRoot.projectId;
+    if (this.logUnknownPeerProjectIdOnce(projectId)) {
+      sendSentryLog("warn", "brain.peer_unknown_project_id", {
+        projectId,
+        action,
+        hadRootPath: rootPath !== null,
+        registeredCount: this.projectRegistry.list().length,
+        removedHere: wasRemovedFromRegistry(this.projectRegistry.path, projectId),
+      });
+    }
+    throw Object.assign(
+      new Error(`This project is not on this ADE machine (Unknown projectId: ${projectId}). Select the project again and retry.`),
+      { code: "project_not_open" },
+    );
+  }
+
   private async executeRemoteCommand(
     payload: SyncCommandPayload,
     context?: SyncRemoteCommandExecutionContext,
@@ -973,11 +1017,18 @@ export class ProjectScopeRegistry {
     if (!projectId) {
       throw new Error(`Remote command ${payload.action} requires projectId.`);
     }
-    const scope = await this.get(projectId);
+    const resolvedProjectId = this.resolvePeerProjectId({
+      projectId,
+      projectRootPath: payload.projectRootPath,
+    }, payload.action);
+    const scope = await this.get(resolvedProjectId);
     const syncService = scope.runtime.syncService;
     if (!syncService) {
       throw new Error(`Phone sync is not available for project ${projectId}.`);
     }
-    return await syncService.executeRemoteCommand(payload, context);
+    return await syncService.executeRemoteCommand(
+      resolvedProjectId === projectId ? payload : { ...payload, projectId: resolvedProjectId },
+      context,
+    );
   }
 }

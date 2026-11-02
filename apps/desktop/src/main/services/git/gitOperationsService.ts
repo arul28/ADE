@@ -444,6 +444,14 @@ export function createGitOperationsService({
     metadata?: Record<string, unknown>;
     fn: (lane: LaneInfo) => Promise<T>;
   }): Promise<{ result: T; action: GitActionResult }> => {
+    // Every git action (sync, pull, commit, ...) enters here with args an agent,
+    // the CLI or another machine sent; refuse a missing id before any lookup.
+    if (typeof laneId !== "string" || !laneId.trim()) {
+      throw new AdeExpectedError(
+        `invalid_argument: ${kind} needs a laneId (a lane id string). Pass --lane <id> or run from inside a lane.`,
+        "user",
+      );
+    }
     invalidateLaneReadCache(laneId);
     const lane = laneService.getLaneBaseAndBranch(laneId);
     await assertLaneWorktreeRoot(lane);

@@ -46,7 +46,7 @@ const CLEANUP_MONITOR_CONFIG = {
   // only after five missed or failed ticks in a row.
   failureIssueThreshold: 5,
   recoveryThreshold: 1,
-} satisfies Parameters<typeof Sentry.withMonitor>[2];
+} satisfies Parameters<typeof Sentry.captureCheckIn>[1];
 
 function route(request: Request, env: WorkerEnv): Promise<Response> {
   // Diagnostics and usage research are matched before the directory because
@@ -89,7 +89,7 @@ export default Sentry.withSentry(sentryOptions, {
     }
   },
 
-  async scheduled(_event: ScheduledEvent, env: WorkerEnv, ctx: ExecutionContext): Promise<void> {
+  async scheduled(_event: ScheduledEvent, env: WorkerEnv, _ctx: ExecutionContext): Promise<void> {
     // Each cleanup settles on its own: one table that throws logs a line and
     // leaves the other sweeps to finish, instead of failing the whole tick.
     const settle = (task: string, run: () => Promise<unknown>): Promise<void> =>
@@ -101,28 +101,45 @@ export default Sentry.withSentry(sentryOptions, {
         );
     // One Sentry cron monitor (the Team plan includes one; never add
     // `cronTriggersIntegration`, which makes a billed monitor per trigger).
-    // It is upserted by the check-ins, alerts when a minute's tick goes
-    // missing or runs past `maxRuntime`, and is reached only from
-    // `production` (src/sentry.ts sends nothing else). Each sweep's own
-    // failure is a log line above, not a failed check-in.
-    const sweeps = Sentry.withMonitor(CLEANUP_MONITOR_SLUG, () => Promise.all([
-      settle("device_authorizations", () => cleanupExpiredDeviceAuthorizations(env)),
-      settle("pairing_grants", () => cleanupExpiredPairingGrants(env)),
-      // Only today's budget row is ever read; the rest is kept for a week so a
-      // support question about a fleet-wide refusal still has a row to point at.
-      settle("diagnostics_upload_days", () => cleanupDiagnosticsUploadDays(env)),
-      // Usage research: reports past `USAGE_RESEARCH_RETENTION_DAYS` (500 rows
-      // a tick), budget rows past a week, identity rows past their day.
-      settle("usage_research", () => cleanupUsageResearch(env)),
-      // Model registry: rebuilt from its public sources once the newest
-      // snapshot is a day old; every other tick is one indexed read.
-      // `MODEL_REGISTRY_REFRESH=0` stops the fetches.
-      settle("model_registry", () => runModelRegistryCron(env)),
-      // Jev bonus: per-account day counts past a week.
-      settle("jev_bonus_days", () => cleanupJevBonusDays(env)),
-    ]), CLEANUP_MONITOR_CONFIG);
-    ctx.waitUntil(sweeps);
-    // Awaited too, so the SDK flushes after the closing check-in.
-    await sweeps;
+    // It is upserted by the check-in, alerts when a minute's tick goes
+    // missing, and is reached only from `production` (src/sentry.ts sends
+    // nothing else). Each sweep's own failure is a log line above, not a
+    // failed check-in.
+    //
+    // One closing check-in per tick, captured here rather than through
+    // `Sentry.withMonitor`: that forks the isolation scope and loses the
+    // invocation's `waitUntil`, so its closing check-in was sent detached and
+    // Cloudflare cancelled it when the tick returned — the monitor saw a run
+    // that started and never finished, timed out, and regressed every hour.
+    // Captured in this scope the check-in rides the SDK's end-of-invocation
+    // flush. A tick that hangs never checks in and shows up as missed.
+    const startedAt = Date.now();
+    let status: "ok" | "error" = "ok";
+    try {
+      await Promise.all([
+        settle("device_authorizations", () => cleanupExpiredDeviceAuthorizations(env)),
+        settle("pairing_grants", () => cleanupExpiredPairingGrants(env)),
+        // Only today's budget row is ever read; the rest is kept for a week so a
+        // support question about a fleet-wide refusal still has a row to point at.
+        settle("diagnostics_upload_days", () => cleanupDiagnosticsUploadDays(env)),
+        // Usage research: reports past `USAGE_RESEARCH_RETENTION_DAYS` (500 rows
+        // a tick), budget rows past a week, identity rows past their day.
+        settle("usage_research", () => cleanupUsageResearch(env)),
+        // Model registry: rebuilt from its public sources once the newest
+        // snapshot is a day old; every other tick is one indexed read.
+        // `MODEL_REGISTRY_REFRESH=0` stops the fetches.
+        settle("model_registry", () => runModelRegistryCron(env)),
+        // Jev bonus: per-account day counts past a week.
+        settle("jev_bonus_days", () => cleanupJevBonusDays(env)),
+      ]);
+    } catch (error) {
+      status = "error";
+      throw error;
+    } finally {
+      Sentry.captureCheckIn(
+        { monitorSlug: CLEANUP_MONITOR_SLUG, status, duration: (Date.now() - startedAt) / 1000 },
+        CLEANUP_MONITOR_CONFIG,
+      );
+    }
   },
 });

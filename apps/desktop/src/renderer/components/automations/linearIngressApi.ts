@@ -1,4 +1,5 @@
 import { isAdeAvailable } from "../../lib/adeAvailability";
+import { LINEAR_NOT_CONNECTED_MESSAGE } from "../../../shared/types/automations";
 
 export type LinearIngressApi = typeof window.ade.automations.linearIngress;
 
@@ -10,4 +11,10 @@ export type LinearIngressApi = typeof window.ade.automations.linearIngress;
 export function linearIngressApi(): Partial<LinearIngressApi> | null {
   const api = window.ade?.automations?.linearIngress;
   return isAdeAvailable(api) ? api : null;
+}
+
+/** Setup refused because Linear itself is not connected on that machine (IPC keeps only the message). */
+export function isLinearNotConnectedError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return message.includes(LINEAR_NOT_CONNECTED_MESSAGE);
 }

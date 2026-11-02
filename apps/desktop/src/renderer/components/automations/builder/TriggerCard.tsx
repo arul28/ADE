@@ -9,7 +9,7 @@ import type {
   AutomationTriggerDeliveryStatus,
 } from "../../../../shared/types";
 import { triggerDeliveryKeyForType } from "../../../../shared/types";
-import { linearIngressApi } from "../linearIngressApi";
+import { isLinearNotConnectedError, linearIngressApi } from "../linearIngressApi";
 import { Banner, type NoticeAction } from "../../ui/notice";
 import { LinearMark } from "../../lanes/linearBrand";
 import { cn } from "../../ui/cn";
@@ -78,8 +78,10 @@ function TriggerDeliveryCallout({
     try {
       // Set up on the machine the draft runs on, not the tab's machine.
       await (runtimePin ? linearApi.setup(runtimePin) : linearApi.setup());
-    } catch {
-      // The ingress service records the setup error for the next refresh.
+    } catch (error) {
+      // Linear itself is not connected there: connecting it comes first.
+      if (isLinearNotConnectedError(error)) navigate(settingsRouteFor("integrations.linear"));
+      // Otherwise the ingress service records the setup error for the next refresh.
     } finally {
       setLinearPending(false);
       onIngressChanged?.();
