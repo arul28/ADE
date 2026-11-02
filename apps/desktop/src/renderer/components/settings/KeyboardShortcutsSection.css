@@ -1,0 +1,191 @@
+/* Settings › Keyboard › Shortcuts. Rows reuse the modern settings row card;
+   only the key chips, the recorder state and the group headings are new. */
+
+.ade-kb-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.ade-kb-toolbar > :first-child {
+  flex: 1 1 auto;
+  max-width: 320px;
+}
+
+.ade-kb-count {
+  font-size: 11px;
+  color: var(--color-muted-fg);
+}
+
+.ade-kb-count[data-tone="warn"] {
+  color: var(--color-warning);
+}
+
+.ade-kb-group + .ade-kb-group {
+  margin-top: 18px;
+}
+
+.ade-kb-group-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0 2px 6px;
+}
+
+.ade-kb-group-title {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--color-fg);
+}
+
+.ade-kb-group-hint {
+  font-size: 11px;
+  color: var(--color-muted-fg);
+}
+
+.ade-kb-row {
+  align-items: center;
+  transition: background-color 120ms ease-out;
+}
+
+.ade-kb-row[data-recording="true"] {
+  background: color-mix(in srgb, var(--color-accent) 7%, transparent);
+}
+
+.ade-kb-row-text {
+  min-width: 0;
+  flex: 1 1 240px;
+}
+
+.ade-kb-note {
+  color: var(--color-warning);
+}
+
+.ade-kb-row-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+}
+
+.ade-kb-keys {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 24px;
+  padding: 2px 4px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.ade-kb-keys:hover:not(:disabled),
+.ade-kb-keys:focus-visible {
+  border-color: var(--kit-card-edge);
+  background: color-mix(in srgb, var(--color-fg) 4%, transparent);
+  outline: none;
+}
+
+.ade-kb-keys:focus-visible {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-accent) 55%, transparent);
+}
+
+.ade-kb-keys:disabled {
+  cursor: default;
+}
+
+.ade-kb-chip {
+  display: inline-block;
+  min-width: 22px;
+  padding: 1px 6px;
+  border-radius: 5px;
+  border: 1px solid var(--kit-card-edge);
+  background: color-mix(in srgb, var(--color-fg) 6%, transparent);
+  color: var(--color-fg);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
+  font-size: 11px;
+  line-height: 1.6;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.ade-kb-unassigned {
+  font-size: 11px;
+  color: var(--color-muted-fg);
+  font-style: italic;
+}
+
+.ade-kb-capture {
+  display: inline-block;
+  min-width: 96px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  border: 1px dashed color-mix(in srgb, var(--color-accent) 60%, transparent);
+  color: var(--color-fg);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, monospace);
+  font-size: 11px;
+  line-height: 1.6;
+  text-align: center;
+  animation: ade-kb-listen 1.4s ease-in-out infinite;
+}
+
+.ade-kb-capture[data-error="true"] {
+  border-color: color-mix(in srgb, var(--color-warning) 70%, transparent);
+  animation: none;
+}
+
+@keyframes ade-kb-listen {
+  50% { border-color: color-mix(in srgb, var(--color-accent) 25%, transparent); }
+}
+
+.ade-kb-icon {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  border: 0;
+  background: transparent;
+  color: var(--color-muted-fg);
+  cursor: pointer;
+}
+
+.ade-kb-icon:hover:not(:disabled),
+.ade-kb-icon:focus-visible {
+  color: var(--color-fg);
+  background: color-mix(in srgb, var(--color-fg) 7%, transparent);
+  outline: none;
+}
+
+.ade-kb-icon:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+/* The reset slot is always there, so a row never shifts when it changes. */
+.ade-kb-icon[data-hidden="true"] {
+  visibility: hidden;
+}
+
+.ade-kb-pending {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--color-warning);
+}
+
+html[data-reduce-motion="true"] .ade-kb-capture,
+html[data-reduce-motion="true"] .ade-kb-row {
+  animation: none;
+  transition: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ade-kb-capture { animation: none; }
+  .ade-kb-row { transition: none; }
+}

@@ -9,7 +9,12 @@ import {
 import { confirmDialog, Dialog, promptDialog } from "../ui/dialog";
 import { SettingsSelect, SettingsTextField, SettingsToggle } from "./primitives/SettingsControls";
 import { ModernRow, ModernRows, ModernSection } from "./primitives/SettingsModern";
-import { isMacPlatform } from "../../lib/platform";
+import { isMacPlatform, isWindowsPlatform } from "../../lib/platform";
+import { getEffectiveBinding } from "../../lib/keybindings";
+import { isWebClientMode } from "../../lib/webClientMode";
+import { useAppStore } from "../../state/appStore";
+import { KEYBINDING_DEFINITIONS, WEB_KEYBINDING_DEFINITIONS } from "../../../shared/keybindings";
+import { quickSlotChordConflict, resolveBindingChords } from "../../../shared/keybindingEditor";
 import {
   QUICK_SLOT_COMMANDS,
   profileCommands,
@@ -69,6 +74,21 @@ export function QuickSlotsSection() {
     [profiles],
   );
   const mac = isMacPlatform();
+  const keybindings = useAppStore((state) => state.keybindings);
+  // Shortcuts a slot chord would shadow: Quick slots read the leader first.
+  const shadowed = useMemo(() => {
+    const platform = mac ? "mac" as const : isWindowsPlatform() ? "windows" as const : "linux" as const;
+    const definitions = isWebClientMode() ? WEB_KEYBINDING_DEFINITIONS : KEYBINDING_DEFINITIONS;
+    const out: string[] = [];
+    for (const definition of definitions) {
+      const binding = getEffectiveBinding(keybindings, definition.id, definition.defaultBinding);
+      for (const chord of resolveBindingChords(binding, platform)) {
+        const slot = quickSlotChordConflict(chord, leader, platform);
+        if (slot) out.push(`slot ${slot} hides “${definition.description}”`);
+      }
+    }
+    return out;
+  }, [keybindings, leader, mac]);
 
   const grouped = useMemo(() => {
     const visible = commands.filter((command) => matches(command, query));
@@ -157,7 +177,9 @@ export function QuickSlotsSection() {
         <ModernRows>
           <ModernRow
             title="Leader keys"
-            hint={mac ? "Option+Command is the default. Slot 8 can collide with macOS Zoom when zoom is on." : "Ctrl+Shift keeps Ctrl+Alt (AltGr) free."}
+            hint={shadowed.length
+              ? `With these keys, ${shadowed.join("; ")}. Change the leader or that shortcut.`
+              : mac ? "Option+Command is the default. Slot 8 can collide with macOS Zoom when zoom is on." : "Ctrl+Shift keeps Ctrl+Alt (AltGr) free."}
             control={
               <SettingsSelect
                 value={leader}

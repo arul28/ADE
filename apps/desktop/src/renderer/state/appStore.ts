@@ -1788,6 +1788,8 @@ export type AppState = {
   ) => void;
   refreshProviderMode: () => Promise<void>;
   refreshKeybindings: () => Promise<void>;
+  /** Show a snapshot the keybinding store just answered with (Settings › Keyboard). */
+  applyKeybindingsSnapshot: (snapshot: KeybindingsSnapshot) => void;
   dismissMissingAiBanner: (projectRoot: string) => void;
   dismissGithubBanner: (projectRoot: string) => void;
 
@@ -3217,6 +3219,12 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     // A switch made while this read was out: the answer is the other project's.
     if (selectActiveProjectRoot(get()) !== projectRoot) return;
     set({ keybindings });
+  },
+
+  applyKeybindingsSnapshot: (snapshot) => {
+    const projectRoot = selectActiveProjectRoot(get());
+    if (projectRoot) keybindingsByProjectRoot.set(projectRoot, snapshot);
+    set({ keybindings: snapshot });
   },
 
   dismissMissingAiBanner: (projectRoot) => {

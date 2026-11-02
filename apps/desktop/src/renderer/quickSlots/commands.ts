@@ -26,6 +26,7 @@ import type { KeybindingsSnapshot, LaneSummary } from "../../shared/types";
 import {
   QUICK_SLOT_COMMAND_IDS,
   modelProfileMentionToken,
+  reasoningEffortLabel,
   type ModelProfile,
   type QuickSlotArgs,
   type QuickSlotKind,
@@ -181,6 +182,46 @@ function toolCommand(id: WorkSidebarTab, title: string, icon: Icon, needs: Quick
   };
 }
 
+/** One notch up or down this model's own thinking tiers, clamped at the ends. */
+function thinkingCommand(direction: 1 | -1): QuickSlotCommand {
+  const up = direction > 0;
+  return {
+    id: up ? QUICK_SLOT_COMMAND_IDS.modelCycleThinking : QUICK_SLOT_COMMAND_IDS.modelThinkingDown,
+    title: up ? "Thinking level up" : "Thinking level down",
+    hint: up
+      ? "One notch up this model's own tiers; stops at the top."
+      : "One notch down this model's own tiers; stops at the bottom.",
+    group: "Model",
+    kind: "set",
+    needs: "chat",
+    safety: "instant",
+    icon: Lightning,
+    keywords: ["reasoning", "effort", "thinking", up ? "raise" : "lower"],
+    enabled: (context) => {
+      if (!context.composer) return { ok: false, reason: "Open a chat first" };
+      return context.composer.getSnapshot().modelLocked
+        ? { ok: false, reason: "Wait for this turn to end" }
+        : { ok: true };
+    },
+    run: (context) => {
+      const result = context.composer?.cycleReasoningEffort(direction);
+      if (!result) {
+        toast("This model has no thinking levels", "Pick a model that offers reasoning tiers.", "warning");
+        return;
+      }
+      if (result.from === result.to) {
+        toast(
+          `Already at ${result.to ? reasoningEffortLabel(result.to) : "Default"}`,
+          up ? "This model's highest thinking level is selected." : "This model's lowest thinking level is selected.",
+          "info",
+        );
+        return;
+      }
+      toast(`Thinking: ${result.to ? reasoningEffortLabel(result.to) : "Default"}`, "Applies to your next message.");
+    },
+  };
+}
+
 /**
  * Apply a saved profile.
  *
@@ -329,35 +370,8 @@ export const QUICK_SLOT_COMMANDS: readonly QuickSlotCommand[] = [
     },
     run: (context) => context.composer?.openModelPicker(),
   },
-  {
-    id: QUICK_SLOT_COMMAND_IDS.modelCycleThinking,
-    title: "Thinking level up",
-    hint: "One notch up this model's own tiers; stops at the top.",
-    group: "Model",
-    kind: "set",
-    needs: "chat",
-    safety: "instant",
-    icon: Lightning,
-    keywords: ["reasoning", "effort", "thinking"],
-    enabled: (context) => {
-      if (!context.composer) return { ok: false, reason: "Open a chat first" };
-      return context.composer.getSnapshot().modelLocked
-        ? { ok: false, reason: "Wait for this turn to end" }
-        : { ok: true };
-    },
-    run: (context) => {
-      const result = context.composer?.cycleReasoningEffort();
-      if (!result) {
-        toast("This model has no thinking levels", "Pick a model that offers reasoning tiers.", "warning");
-        return;
-      }
-      if (result.from === result.to) {
-        toast(`Already at ${result.to ? result.to : "Default"}`, "This model's highest thinking level is selected.", "info");
-        return;
-      }
-      toast(`Thinking: ${result.to ? result.to : "Default"}`, "Applies to your next message.");
-    },
-  },
+  thinkingCommand(1),
+  thinkingCommand(-1),
   {
     id: QUICK_SLOT_COMMAND_IDS.modelCyclePermission,
     title: "Permission mode up",

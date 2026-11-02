@@ -6349,7 +6349,7 @@ function AgentChatComposerImpl({
       setReasoningEffort: (effort) => {
         quickSlotStateRef.current.onReasoningEffortChange(effort);
       },
-      cycleReasoningEffort: () => {
+      cycleReasoningEffort: (direction = 1) => {
         const current = quickSlotStateRef.current;
         const descriptor = resolveModelDescriptorWithRuntimeCatalog(
           current.modelId,
@@ -6364,7 +6364,10 @@ function AgentChatComposerImpl({
           modelDefault: descriptor?.defaultReasoningEffort ?? null,
         });
         const index = displayed ? tiers.indexOf(displayed) : -1;
-        const next = tiers[Math.min(tiers.length - 1, index < 0 ? 0 : index + 1)] ?? null;
+        // "Auto" (no level) sits before the first tier: up from it is the
+        // first tier, and down from it stays at the first tier.
+        const target = index < 0 ? 0 : index + direction;
+        const next = tiers[Math.max(0, Math.min(tiers.length - 1, target))] ?? null;
         if (next === displayed) return { from: displayed, to: displayed };
         current.onReasoningEffortChange(next);
         return { from: displayed, to: next };

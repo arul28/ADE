@@ -23,6 +23,7 @@ export const QUICK_SLOT_COMMAND_IDS = {
   chatStopTurn: "chat.stopTurn",
   modelOpenPicker: "model.openPicker",
   modelCycleThinking: "model.cycleThinking",
+  modelThinkingDown: "model.thinkingDown",
   modelCyclePermission: "model.cyclePermission",
   modelToggleFast: "model.toggleFast",
   modelApplyProfile: "model.applyProfile",

@@ -11,7 +11,10 @@ import {
   type QuickSlot,
   type QuickSlotArgs,
 } from "../../shared/quickSlots";
-import { MODAL_LAYER_SELECTOR, keyChordIsClaimed } from "../lib/keyboardClaims";
+import { MODAL_LAYER_SELECTOR, keyChordIsClaimed, keyCaptureActive } from "../lib/keyboardClaims";
+import { eventMatchesBinding, getEffectiveBinding } from "../lib/keybindings";
+import { KEYBINDING_DEFINITIONS } from "../../shared/keybindings";
+import { showToast } from "../components/app/toast/toastStore";
 import { isMacPlatform } from "../lib/platform";
 import {
   useAppStore,
@@ -28,6 +31,13 @@ import {
 import { getQuickSlotComposer } from "./composerTarget";
 import { useQuickSlotsStore } from "./quickSlotsStore";
 import "./quickSlots.css";
+
+/** Prompt-box shortcut id → the catalog command it runs. */
+const CHAT_SHORTCUTS: ReadonlyArray<{ bindingId: string; commandId: string }> = [
+  { bindingId: "chat.effort.up", commandId: QUICK_SLOT_COMMAND_IDS.modelCycleThinking },
+  { bindingId: "chat.effort.down", commandId: QUICK_SLOT_COMMAND_IDS.modelThinkingDown },
+  { bindingId: "chat.fast.toggle", commandId: QUICK_SLOT_COMMAND_IDS.modelToggleFast },
+];
 
 type ResolvedSlot = {
   index: number;
@@ -127,6 +137,8 @@ export function QuickSlotsHost() {
 
   const commandsRef = useRef(commands);
   commandsRef.current = commands;
+  const keybindingsRef = useRef(keybindings);
+  keybindingsRef.current = keybindings;
   const slotsRef = useRef(slots);
   slotsRef.current = slots;
   const leaderRef = useRef(leader);
@@ -256,6 +268,40 @@ export function QuickSlotsHost() {
     });
   }, [close, contextFor, navigate]);
 
+  /**
+   * The prompt-box shortcuts (`chat.*` in `shared/keybindings.ts`). They run
+   * the same catalog commands a slot would, so the mid-turn and no-tiers
+   * rules and their toasts are the same whichever way they were asked for.
+   * Without a HUD to explain, a refusal becomes a toast.
+   */
+  const runChatShortcut = useCallback((event: KeyboardEvent): boolean => {
+    const snapshot = keybindingsRef.current;
+    const match = CHAT_SHORTCUTS.find((entry) => {
+      const fallback = KEYBINDING_DEFINITIONS.find((definition) => definition.id === entry.bindingId)?.defaultBinding ?? "";
+      return eventMatchesBinding(event, getEffectiveBinding(snapshot, entry.bindingId, fallback));
+    });
+    if (!match) return false;
+    event.preventDefault();
+    event.stopPropagation();
+    if (event.repeat) return true;
+    const composer = getQuickSlotComposer();
+    // A Work page left mounted off-route still has a registered composer; a
+    // shortcut must not change a chat the user cannot see.
+    const visible = composer?.anchorElement()?.getClientRects().length ?? 0;
+    const context = contextFor(composer?.hasCaret() ?? false);
+    const command = commandsRef.current.find((entry) => entry.id === match.commandId);
+    if (!command) return true;
+    const availability = visible > 0
+      ? (command.enabled?.(context) ?? { ok: true as const })
+      : { ok: false as const, reason: "Open a chat first" };
+    if (!availability.ok) {
+      showToast({ id: "chat-shortcut", title: availability.reason ?? "This shortcut cannot run here", tone: "info" });
+      return true;
+    }
+    void Promise.resolve(command.run(context)).catch(() => {});
+    return true;
+  }, [contextFor]);
+
   useEffect(() => {
     const isMac = isMacPlatform();
     const isLeaderModifier = (event: KeyboardEvent): boolean => {
@@ -270,6 +316,12 @@ export function QuickSlotsHost() {
 
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.isComposing || event.keyCode === 229) return;
+      // A shortcut recorder owns every key while it listens.
+      if (keyCaptureActive()) {
+        if (openRef.current) close(true);
+        return;
+      }
+      if (!openRef.current && !modalOpen(event.target) && runChatShortcut(event)) return;
       const digit = quickSlotDigitFromEvent(event);
       const leaderHeld = quickSlotLeaderHeld(event, leaderRef.current, isMac);
 
@@ -356,7 +408,7 @@ export function QuickSlotsHost() {
       window.removeEventListener("resize", onResize);
       clearTimers();
     };
-  }, [clearTimers, close, openPanel, runSlot]);
+  }, [clearTimers, close, openPanel, runChatShortcut, runSlot]);
 
   // Nine rows of cheap lookups, and none of them run while the panel is
   // closed. Memoizing was not worth a hand-written dependency list: the host

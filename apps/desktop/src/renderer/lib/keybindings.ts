@@ -1,5 +1,5 @@
 import type { KeybindingDefinition, KeybindingsSnapshot } from "../../shared/types";
-import { WEB_KEYBINDING_DEFAULTS } from "../../shared/keybindings";
+import { KEYBINDING_UNASSIGNED, WEB_KEYBINDING_DEFAULTS } from "../../shared/keybindings";
 import { isMacPlatform, modifierKeyLabel } from "./platform";
 import { isWebClientMode } from "./webClientMode";
 
@@ -121,6 +121,10 @@ export function eventMatchesBinding(event: KeyboardEvent, binding: string): bool
   return false;
 }
 
+/**
+ * The binding an action answers to. An override of `KEYBINDING_UNASSIGNED`
+ * returns "", which matches no event and draws no chip.
+ */
 export function getEffectiveBinding(
   snapshot: KeybindingsSnapshot | null,
   actionId: string,
@@ -135,6 +139,7 @@ export function getEffectiveBinding(
   const def = snapshot.definitions.find((d) => d.id === actionId) as KeybindingDefinition | undefined;
   const defaultBinding = webDefault ?? def?.defaultBinding;
   const override = snapshot.overrides.find((o) => o.id === actionId);
+  if (override?.binding.trim().toLowerCase() === KEYBINDING_UNASSIGNED) return "";
   const candidate = (override?.binding ?? defaultBinding ?? fallback).trim();
   if (parseBinding(candidate).length > 0) return candidate;
   // Invalid/empty binding: fall back to default.

@@ -39,8 +39,8 @@ export type QuickSlotComposerTarget = {
   /** Apply a model id; returns false when the picker would refuse it. */
   setModel: (modelId: string) => boolean;
   setReasoningEffort: (effort: string | null) => void;
-  /** One notch up the model's own tier list, clamped at the top. */
-  cycleReasoningEffort: () => { from: string | null; to: string | null } | null;
+  /** One notch along the model's own tier list, clamped at either end. */
+  cycleReasoningEffort: (direction?: 1 | -1) => { from: string | null; to: string | null } | null;
   /** One rung up the provider's permission list. Null when the harness has none. */
   cyclePermission: () => { from: string; to: string } | null;
   /** False when the model does not offer a fast tier. */

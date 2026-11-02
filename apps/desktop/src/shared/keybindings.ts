@@ -1,5 +1,12 @@
 import type { KeybindingDefinition } from "./types";
 
+/**
+ * The override value that turns a shortcut off. The store keeps it like any
+ * other binding; `getEffectiveBinding` reads it as "no keys", so a default can
+ * be freed for another action without inventing a throwaway chord for it.
+ */
+export const KEYBINDING_UNASSIGNED = "none";
+
 export const KEYBINDING_DEFINITIONS: KeybindingDefinition[] = [
   {
     id: "commandPalette.open",
@@ -96,13 +103,13 @@ export const KEYBINDING_DEFINITIONS: KeybindingDefinition[] = [
   // `components/work/workShortcuts.ts` for the dispatcher and the rules.
   {
     id: "work.chat.next",
-    description: "Next chat",
+    description: "Next chat (wraps to the first)",
     defaultBinding: "Mod+ArrowDown",
     scope: "work"
   },
   {
     id: "work.chat.prev",
-    description: "Previous chat",
+    description: "Previous chat (wraps to the last)",
     defaultBinding: "Mod+ArrowUp",
     scope: "work"
   },
@@ -144,6 +151,42 @@ export const KEYBINDING_DEFINITIONS: KeybindingDefinition[] = [
     description: "Previous project",
     defaultBinding: "Ctrl+Shift+Tab",
     scope: "global"
+  },
+  // Scope "chat": the prompt box you last worked in (Work, a chat tile, a
+  // personal chat), the same target Quick slots use. Letters with Shift, so
+  // the keys survive a held Shift on every layout; none of them is a menu or
+  // system chord on macOS, Windows or Linux.
+  {
+    id: "chat.effort.up",
+    description: "Raise the thinking level",
+    defaultBinding: "Mod+Shift+E",
+    scope: "chat"
+  },
+  {
+    id: "chat.effort.down",
+    description: "Lower the thinking level",
+    defaultBinding: "Mod+Shift+D",
+    scope: "chat"
+  },
+  {
+    id: "chat.fast.toggle",
+    description: "Turn fast mode on or off",
+    defaultBinding: "Mod+Shift+F",
+    scope: "chat"
+  },
+  // Scope "terminal": answered by the terminal tool while focus is inside it.
+  // Arrows, not brackets: Ctrl+[ is Escape in a terminal on Windows and Linux.
+  {
+    id: "terminal.next",
+    description: "Next terminal (wraps to the first)",
+    defaultBinding: "Mod+Shift+ArrowRight",
+    scope: "terminal"
+  },
+  {
+    id: "terminal.prev",
+    description: "Previous terminal (wraps to the last)",
+    defaultBinding: "Mod+Shift+ArrowLeft",
+    scope: "terminal"
   },
   // Scope "home": handled by the home page while it is showing.
   {
