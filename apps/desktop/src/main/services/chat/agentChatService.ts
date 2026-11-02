@@ -14712,6 +14712,7 @@ export function createAgentChatService(args: {
         label: event.label?.trim() || previous?.label,
         parentToolUseId: event.parentToolUseId ?? previous?.parentToolUseId ?? null,
         description: event.description,
+        title: previous?.title ?? (event.description?.trim() || undefined),
         status: "running",
         turnId: event.turnId ?? undefined,
         startTimestamp: previous?.startTimestamp ?? timestamp,
@@ -14740,6 +14741,7 @@ export function createAgentChatService(args: {
         label: event.label?.trim() || previous?.label,
         parentToolUseId: event.parentToolUseId ?? previous?.parentToolUseId ?? null,
         description: event.description?.trim() || previous?.description || "Subagent task",
+        ...(previous?.title ? { title: previous.title } : {}),
         // The child is still an active member of the tree, so its status stays
         // "running"; `blockedReason` is what tells clients it is parked on an
         // unanswered ask rather than progressing.
@@ -14779,6 +14781,7 @@ export function createAgentChatService(args: {
       label: event.label?.trim() || previous?.label,
       parentToolUseId: event.parentToolUseId ?? previous?.parentToolUseId ?? null,
       description: previous?.description ?? event.summary ?? "",
+      ...(previous?.title ? { title: previous.title } : {}),
       status,
       turnId: event.turnId ?? previous?.turnId,
       startTimestamp: previous?.startTimestamp,
@@ -14832,7 +14835,7 @@ export function createAgentChatService(args: {
     if (!snapshot) return undefined;
     return {
       key: subagentAgentKey(snapshot) ?? snapshot.taskId,
-      name: deriveSubagentCardName(snapshot),
+      name: deriveSubagentCardName({ ...snapshot, description: snapshot.title ?? snapshot.description }),
       ...(snapshot.background ? { background: true } : {}),
     };
   };

@@ -3660,6 +3660,12 @@ export type AgentChatSubagentSnapshot = {
   label?: string | null;
   parentToolUseId?: string | null;
   description: string;
+  /**
+   * The task as the subagent was started with it. `description` follows its
+   * progress ("Running …"); this stays, so a card names the subagent the way
+   * its row does.
+   */
+  title?: string;
   status: "running" | "completed" | "failed" | "stopped";
   /**
    * Set while the child is parked on a pending user answer (an OpenCode
