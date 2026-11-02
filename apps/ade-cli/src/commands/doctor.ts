@@ -14,6 +14,7 @@ import {
   updateTrackOfVersion,
 } from "../../../desktop/src/shared/updateTrack";
 import { compareUpdateVersions } from "../../../desktop/src/shared/updateVersions";
+import { standaloneAdeCliPath } from "../lib/brainVersionSkew";
 import { fetchReleaseManifestJson } from "../lib/releaseAssets";
 import type {
   SyncAccountDirectoryHealth,
@@ -66,6 +67,7 @@ export type DoctorRow = {
   key:
     | "app"
     | "brain"
+    | "standalone_cli"
     | "wedge"
     | "sync_port"
     | "publish"
@@ -170,7 +172,16 @@ export type DoctorInput = {
    * than fabricated ones.
    */
   windowsDesktop?: WindowsDesktopDoctorProbe | null;
+  /**
+   * The standalone `ade` in the ADE home (`~/.ade/bin/ade`), when there is
+   * one. ADE.app updates itself without it, and a build before v1.2.126 never
+   * says that it differs from the brain, so this row is where it shows.
+   * OPTIONAL, like the other additive inputs: absent, no row.
+   */
+  standaloneCli?: DoctorStandaloneCli | null;
 };
+
+export type DoctorStandaloneCli = { path: string; version: string | null };
 
 /**
  * What the shared auto-diagnostics ledger says about AUTOMATIC sharing.
@@ -248,6 +259,8 @@ export type DoctorCommandResult = {
   diagnostics: DoctorInput["diagnostics"];
   /** Present only on a Windows host that could answer the Windows Desktop probe. */
   windowsDesktop?: WindowsDesktopDoctorProbe | null;
+  /** The standalone `ade` in the ADE home; null when there is none. */
+  standaloneCli?: DoctorStandaloneCli | null;
 };
 
 type DoctorBrainProbe = {
@@ -446,6 +459,30 @@ export async function probeDoctorBrain<Options extends DoctorCommandOptions>(
     try {
       client?.destroy();
     } catch {}
+  }
+}
+
+/**
+ * The standalone `ade` in the ADE home and the version it prints, or null when
+ * there is none. Runs `ade --version`, which reads nothing and connects to
+ * nothing; a binary that does not answer in time reports a null version.
+ */
+export function readStandaloneCliForDoctor(
+  adeDir: string,
+  platform: NodeJS.Platform = process.platform,
+): DoctorStandaloneCli | null {
+  const file = standaloneAdeCliPath(adeDir, platform);
+  try {
+    if (!fs.statSync(file).isFile()) return null;
+  } catch {
+    return null;
+  }
+  try {
+    const result = spawnSync(file, ["--version"], { encoding: "utf8", timeout: 5_000, windowsHide: true });
+    const match = /\d+\.\d+\.\d+(?:-[0-9A-Za-z.]+)?/.exec(String(result.stdout ?? ""));
+    return { path: file, version: result.status === 0 && match ? match[0] : null };
+  } catch {
+    return { path: file, version: null };
   }
 }
 
@@ -823,6 +860,31 @@ function appRow(input: DoctorInput["app"]): DoctorRow {
     status: comparison != null && comparison < 0 ? "warn" : "ok",
     detail: `installed ${input.installedVersion} · latest ${input.latestKnownVersion}`,
   };
+}
+
+/**
+ * The standalone `ade` against the brain it talks to. Empty when there is no
+ * standalone `ade`.
+ */
+function standaloneCliRows(cli: DoctorStandaloneCli | null | undefined, brain: DoctorBrainInput): DoctorRow[] {
+  if (!cli) return [];
+  const label = "Standalone ade";
+  if (!cli.version) {
+    return [{ key: "standalone_cli", label, status: "warn", detail: `${cli.path} did not report its version · run \`ade brain update\` to replace it, or delete it` }];
+  }
+  const brainVersion = brain.running ? brain.version : null;
+  const comparison = brainVersion ? compareDoctorVersions(cli.version, brainVersion) : null;
+  if (comparison === 0 || comparison == null) {
+    return [{ key: "standalone_cli", label, status: "ok", detail: `${cli.path} · version ${cli.version}` }];
+  }
+  return [{
+    key: "standalone_cli",
+    label,
+    status: "warn",
+    // The table cuts long details, so the fix comes first. ADE.app updates
+    // without this file, and an `ade` before 1.2.126 never warns that it differs.
+    detail: `run \`ade brain update\` (or delete it) · ${cli.path} is ${cli.version}, the brain ${brainVersion}`,
+  }];
 }
 
 function brainRow(input: DoctorBrainInput): DoctorRow {
@@ -1311,6 +1373,7 @@ export function evaluateDoctorRows(input: DoctorInput): DoctorRow[] {
   return [
     appRow(input.app),
     brainRow(input.brain),
+    ...standaloneCliRows(input.standaloneCli, input.brain),
     wedgeRow(input.wedge, input.nowMs),
     syncPortRow(input),
     publishRow(input.publishHealth, input.nowMs),
@@ -1402,6 +1465,7 @@ export async function runDoctorCommand<Options extends DoctorCommandOptions>(
     storage,
     diagnostics: readAutoDiagnosticsSharingForDoctor(layout.adeDir),
     windowsDesktop,
+    standaloneCli: readStandaloneCliForDoctor(layout.adeDir),
   };
   const rows = evaluateDoctorRows(input);
   return {
@@ -1421,5 +1485,6 @@ export async function runDoctorCommand<Options extends DoctorCommandOptions>(
     storage,
     diagnostics: input.diagnostics,
     windowsDesktop,
+    standaloneCli: input.standaloneCli ?? null,
   };
 }

@@ -7637,7 +7637,11 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       const raw = testArgs.projectPath.trim();
       const resolved = path.resolve(projectRoot, raw);
       if (!isPathInside(resolved, projectRoot)) {
-        throw new Error(`${IOS_SIMULATOR_OUT_PATH_OUTSIDE_ROOT_CODE}: ${raw} is outside the build root ${projectRoot}.`);
+        // Not the `--out` code: the CLI's hint for that one talks about --out.
+        throw new AdeExpectedError(
+          `--project ${raw} is outside the build root ${projectRoot}. Tests run from the lane's worktree: pass a project inside it (a relative path resolves under it, e.g. .ade/tmp/MyApp/MyApp.xcodeproj).`,
+          "user",
+        );
       }
       // `-project` or `-workspace`: both are directories xcodebuild opens.
       if (!/\.(xcodeproj|xcworkspace)$/u.test(resolved) || !fs.existsSync(resolved)) {

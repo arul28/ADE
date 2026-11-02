@@ -308,7 +308,12 @@ matching `agentChatService` method (`steer`, `cancelSteer`, `listSubagents`,
 service's `itemId`). Making them required is the guard: an optional dep left
 unset advertises a tool whose only possible answer is "not available", which is
 worse than not offering it. `cancelSteer` takes the `steerId` that `steerChat`
-returned, so cancelling is unambiguous when several steers are pending. There
+returned, so cancelling is unambiguous when several steers are pending.
+`steerChat` asks for the provider's live (`inline`) mode, so the instruction
+joins the running turn at its next step instead of waiting for the turn to
+end; only a provider that refuses a mid-turn message gets it staged, and the
+result says which (`delivery: "live" | "queued"`). `steerChat`, `cancelSteer`
+and `interruptChat` take `machine`, like `sendChatMessage`. There
 is no `handoffChat`: it targeted "a different agent identity" and
 `AgentChatIdentityKey` is just `"cto"`.
 

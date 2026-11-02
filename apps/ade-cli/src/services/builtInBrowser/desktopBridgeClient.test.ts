@@ -433,37 +433,131 @@ describe("remote browser forwarder", () => {
   });
 
   /**
-   * An isolated sign-in exists only in this machine's desktop. Any other
-   * desktop would open the page in the user's own sign-in, so an isolated open
-   * is refused rather than forwarded, and never mirrored to the user's screen.
+   * An isolated sign-in must never land in the user's own sign-in. It opens
+   * on the user's desktop only through a path that keeps it: the command path,
+   * or a pane request path the desktop said carries it. Otherwise it stays on
+   * this machine, or is refused when there is no desktop here.
    */
-  it("never sends an isolated open to another desktop", async () => {
-    const events: Record<string, unknown>[] = [];
-    const forwarder = createRemoteBrowserForwarder({
-      emitEvent: (payload) => { events.push(payload); },
-      logger: forwarderLogger,
-      ackTimeoutMs: 10,
-    });
+  it("opens an isolated tab where the user sits only through a path that keeps the sign-in", async () => {
+    const run = async (desktop: "none" | "takes" | "old-pane" | "new-pane") => {
+      const events: Array<{ type: string; event: Record<string, unknown> }> = [];
+      const forwarder = createRemoteBrowserForwarder({
+        emitEvent: (payload) => {
+          const entry = payload as { type: string; event: Record<string, unknown> };
+          events.push(entry);
+          if (desktop === "none") return;
+          const requestId = String(entry.event.requestId);
+          queueMicrotask(() => {
+            if (entry.type === "built_in_browser_remote_request") {
+              forwarder.acknowledgeRemoteRequest({ requestId, desktopLabel: "MacBook", accepted: true });
+              return;
+            }
+            forwarder.replyRemoteCall({ requestId, clientId: "macbook", phase: "taken" });
+            forwarder.replyRemoteCall(desktop === "takes"
+              ? { requestId, clientId: "macbook", phase: "done", desktopLabel: "MacBook", ok: true, result: { targetTabId: "tab-mac" } }
+              : {
+                requestId, clientId: "macbook", phase: "done", desktopLabel: "MacBook", ok: false, code: "needs_pane", error: "needs pane",
+                ...(desktop === "new-pane" ? { requestCarriesSignIn: true } : {}),
+              });
+          });
+        },
+        logger: forwarderLogger,
+        resolveOrigin: () => ({ clientId: "macbook", local: false }),
+        callTakenTimeoutMs: 20,
+        ackTimeoutMs: 20,
+      });
+      const localNavigate = vi.fn(async () => ({ targetTabId: "tab-here" }));
+      const bridge = withRemoteBrowserForwarding(makeBridge({ navigate: localNavigate }), forwarder);
+      const result = await bridge.navigate({ url: "http://localhost:3000/login", profile: "viewer", chatSessionId: "chat-1" } as never) as Record<string, unknown>;
+      const requests = events.filter((entry) => entry.type === "built_in_browser_remote_request").map((entry) => entry.event);
+      const calls = events.filter((entry) => entry.type === "built_in_browser_remote_call").map((entry) => entry.event);
+      return { result, requests, calls, localNavigate };
+    };
 
-    const headless = withRemoteBrowserForwarding(makeBridge(), forwarder);
-    await expect(headless.navigate({
-      url: "http://localhost:3000/login",
-      profile: "viewer",
-      chatSessionId: "chat-1",
-    } as never)).rejects.toThrow(/isolated tab.*not forwarded/);
+    // The user's desktop runs it, with the sign-in it was asked for.
+    const takes = await run("takes");
+    expect(takes.result).toMatchObject({ targetTabId: "tab-mac", browserHost: { userComputer: true } });
+    expect((takes.calls[0]?.input as Record<string, unknown>).profile).toBe("viewer");
+    expect(takes.localNavigate).not.toHaveBeenCalled();
 
-    const localNavigate = vi.fn(async () => ({ targetTabId: "tab-1" }));
-    const withDesktop = withRemoteBrowserForwarding(makeBridge({ navigate: localNavigate }), forwarder);
-    await withDesktop.navigate({
+    // An older desktop's pane path would use the user's sign-in: stay here.
+    const oldPane = await run("old-pane");
+    expect(oldPane.requests).toHaveLength(0);
+    expect(oldPane.localNavigate).toHaveBeenCalledTimes(1);
+    expect(oldPane.result).toMatchObject({ targetTabId: "tab-here", browserHost: { userElsewhere: true } });
+
+    // A desktop that keeps it on the pane path gets the request with the sign-in.
+    const newPane = await run("new-pane");
+    expect(newPane.requests).toEqual([expect.objectContaining({ profile: "viewer", targetClientId: "macbook" })]);
+    expect(newPane.localNavigate).not.toHaveBeenCalled();
+
+    // No desktop anywhere: refused, never sent to any desktop.
+    const forwarder = createRemoteBrowserForwarder({ emitEvent: () => {}, logger: forwarderLogger, ackTimeoutMs: 10 });
+    await expect(withRemoteBrowserForwarding(makeBridge(), forwarder).navigate({
       url: "http://localhost:3000/login",
       isolated: true,
-      openPanel: true,
       chatSessionId: "chat-1",
-    } as never);
+    } as never)).rejects.toThrow(/isolated tab.*not sent anywhere else/);
+  });
 
-    // The mirror to the user's screen is sent before `navigate` resolves.
-    expect(localNavigate).toHaveBeenCalledTimes(1);
-    expect(events).toHaveLength(0);
+  /**
+   * One task stays on one machine: a command for a tab goes to the machine
+   * whose browser holds it, an id this daemon does not know is looked up on
+   * every desktop first, and a holder that does not answer is an error,
+   * never a run in a browser that does not have the tab.
+   */
+  it("sends a tab's commands to the machine that holds it", async () => {
+    const online = new Map<string, boolean>([["macbook", true], ["windows", true]]);
+    const windowsTab = "tab-windows-1";
+    const ran: string[] = [];
+    const forwarder = createRemoteBrowserForwarder({
+      emitEvent: (payload) => {
+        const call = payload.event as { requestId: string; method: string; targetClientId: string; broadcast?: boolean; input: Record<string, unknown> };
+        for (const [clientId, up] of online) {
+          if (!up || (!call.broadcast && call.targetClientId !== clientId)) continue;
+          queueMicrotask(() => {
+            forwarder.replyRemoteCall({ requestId: call.requestId, clientId, phase: "taken" });
+            if (call.method === "listTabsForAgent") {
+              const tabs = clientId === "windows" ? [{ id: windowsTab }] : [];
+              forwarder.replyRemoteCall({ requestId: call.requestId, clientId, phase: "done", desktopLabel: clientId, ok: true, result: { tabs, tabCount: tabs.length, tabLimit: 20 } });
+              return;
+            }
+            ran.push(`${clientId}:${call.method}:${String(call.input.tabId ?? "")}`);
+            const found = clientId === "windows" ? call.input.tabId === windowsTab : call.input.tabId === undefined;
+            forwarder.replyRemoteCall(found
+              ? { requestId: call.requestId, clientId, phase: "done", desktopLabel: clientId, ok: true, result: { targetTabId: call.method === "navigate" ? "tab-mac-1" : undefined } }
+              : { requestId: call.requestId, clientId, phase: "done", desktopLabel: clientId, ok: false, error: `Browser tab not found: ${String(call.input.tabId)}` });
+          });
+        }
+      },
+      logger: forwarderLogger,
+      resolveOrigin: () => ({ clientId: "macbook", local: false }),
+      callTakenTimeoutMs: 20,
+      broadcastWaitMs: { first: 30, known: 60 },
+    });
+    const local = vi.fn(async (input: Record<string, unknown>) => ({ from: "here", tabId: input.tabId ?? null }));
+    const bridge = withRemoteBrowserForwarding(makeBridge({
+      click: local,
+      listTabsForAgent: vi.fn(async () => ({ tabs: [], tabCount: 0, tabLimit: 20 })),
+    }), forwarder);
+
+    // A tab this daemon has never seen is found on the Windows desktop, and
+    // the click runs there, not on the user's MacBook or here.
+    const clicked = await bridge.click({ chatSessionId: "chat-1", tabId: windowsTab } as never) as Record<string, unknown>;
+    expect(clicked.browserHost).toMatchObject({ machine: "windows", userComputer: false });
+    expect(ran).toEqual([`macbook:click:${windowsTab}`, `windows:click:${windowsTab}`]);
+
+    // Now known, the next command goes straight there.
+    await bridge.click({ chatSessionId: "chat-1", tabId: windowsTab } as never);
+    expect(ran.at(-1)).toBe(`windows:click:${windowsTab}`);
+    expect(ran).toHaveLength(3);
+
+    // The holder goes away: the command fails and runs nowhere else.
+    online.set("windows", false);
+    await expect(bridge.click({ chatSessionId: "chat-1", tabId: windowsTab } as never))
+      .rejects.toThrow(/windows, which did not answer.*did not run anywhere/);
+    expect(local).not.toHaveBeenCalled();
+    expect(ran).toHaveLength(3);
   });
 
   it("stops waiting when no desktop answers, instead of failing the command", async () => {
@@ -776,7 +870,7 @@ describe("remote browser forwarder", () => {
     expect(observe).toHaveBeenCalledTimes(1);
 
     const result = await bridge.uploadFile({ chatSessionId: "chat-1", path: "/tmp/a.png" } as never);
-    expect(result).toEqual({ uploaded: true });
+    expect(result).toMatchObject({ uploaded: true, browserHost: { userElsewhere: true } });
     expect(uploadFile).toHaveBeenCalledTimes(1);
   });
 

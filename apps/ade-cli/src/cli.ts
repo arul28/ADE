@@ -809,6 +809,7 @@ export type FormatterId =
   | "apple-point-action"
   | "browser-action"
   | "browser-attach"
+  | "browser-handoff"
   | "browser-status"
   | "browser-dev-servers"
   | "browser-dev-server-stop"
@@ -3551,7 +3552,30 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   user out. --profile <name> names the sign-in (one per chat and name), so a
   test can keep "owner" and "viewer" signed in side by side. A tab's sign-in is
   fixed when it opens: plain "open" reuses only this chat's shared-profile tab,
-  and "open --profile viewer" reuses only this chat's "viewer" tab.
+  and "open --profile viewer" reuses only this chat's "viewer" tab. An
+  isolated tab opens where the user sits, like any other, and they see it.
+
+  Every tab, every machine. "status" lists every tab of this project on every
+  machine this one can reach, with its machine, owner, opener and sign-in:
+    owner "this chat"          yours; reuse it, close it when done
+    owner "free — claim …"     no chat holds it; claim it to drive it
+    owner "\"<title>\" · lane … (held)"  another chat's live tab; leave it alone
+  A command without --tab acts on a tab this chat owns; with none, it is
+  refused rather than run in whatever tab is in front. Plain "open" uses a tab
+  this chat owns where the user sits; pass --tab <id> to stay in one tab.
+  Any agent may close any tab, a held one included, but check the owner first:
+  prefer this chat's tabs and free ones, close a held tab only when the task
+  needs it, and never close a tab the user opened or kept without asking them.
+  "close" prints whose tab it closed. When the browser is full, the error lists
+  only your tabs and free agent tabs; ask the user about the rest. A deleted or
+  archived lane frees its tabs (they stay open). An agent's tab is not brought
+  back after ADE restarts; a tab the user opened or kept keeps its id.
+
+  Which machine. "status" prints the route: the browser "open" uses (the
+  computer the user sends this chat's messages from, else this machine) and
+  why. A command with --tab or --browser-session goes to the machine whose
+  browser holds that tab, so one task stays on one machine; --here forces this
+  machine. Every error names the machine whose browser refused.
 
   The user's own browser (only when the user asks for it):
     $ ade --socket browser attach --text           The tab the user is looking at
@@ -3576,7 +3600,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   --user-data-dir <dir> checks a browser started with that profile directory.
 
   Tabs and navigation:
-    $ ade --socket browser status --text           Show active tab and tab list
+    $ ade --socket browser status --text           Every tab on every machine, owners, and the route
     $ ade --socket browser authorize --tab <id>    Ask the user to let this chat use the ADE browser
     $ ade --socket browser claim --lane <lane-id>  Attribute the active browser tab to a lane
     $ ade --socket browser panel --text            Open the Work sidebar Browser panel
@@ -8013,6 +8037,7 @@ function buildGitPlan(args: string[]): CliPlan {
     return {
       kind: "execute",
       label: "git pull",
+      minTimeoutMs: longRunningLocalRuntimeActionTimeoutMs("git.pull") ?? undefined,
       steps: [actionCallStep("result", "git_pull", withLane(mode ? { mode } : {}))],
     };
   }
@@ -10944,6 +10969,7 @@ function buildChatPlan(args: string[]): CliPlan {
           requireValue(sessionId, "sessionId"),
         ]),
       ],
+      exitCodeFromResult: (result) => (result == null ? 1 : 0),
     };
   if (sub === "status")
     return {
@@ -14903,6 +14929,14 @@ function buildIosSimulatorPlan(
     // into the lane's DerivedData and install it on that device. The lane
     // device's session, stream and claim are left alone, so this is how an
     // extra device gets a build.
+    // The generic args below would carry it through unread, and the install
+    // would build and install the lane's own app instead.
+    const installFlags = flagNamesOutsideFreeText(args);
+    if (installFlags.has("--app-bundle") || installFlags.has("--app")) {
+      throw new CliUsageError(
+        "apple install builds the lane's app and does not take --app-bundle. For a prebuilt .app on the lane's device, use: ade apple launch --app-bundle <path> --no-build",
+      );
+    }
     const launchAfter = readFlag(args, ["--launch", "--start"]);
     const noBuild = readFlag(args, ["--no-build"]);
     // Each value read ONCE: `readValue` consumes the flag.
@@ -15860,6 +15894,14 @@ function buildIosSimulatorPlan(
     // `--keep`: an ADE-made device stays as a free simulator instead of being
     // deleted after the grace. Only when the user asked to keep it.
     const keep = readFlag(args, ["--keep"]);
+    // Detach only ever acts on the lane's own device; a named device (an
+    // extra) must not quietly turn into detaching that one.
+    const detachFlags = flagNamesOutsideFreeText(args);
+    if (detachFlags.has("--device") || detachFlags.has("--udid")) {
+      throw new CliUsageError(
+        "apple device-detach gives up the lane's own device and does not take --device. To remove an extra device, use: ade apple device-delete --device <udid>",
+      );
+    }
     return {
       ...iosAction("Apple device detach", "deviceDetach", {
         ...(laneId ? { laneId } : {}),
@@ -17274,6 +17316,7 @@ function buildBrowserHandoffPlan(args: string[], literalTail: string[] = []): Cl
   return {
     kind: "execute",
     label: "browser handoff",
+    formatter: "browser-handoff",
     steps,
     // The blocking wait is the point of the command; the transport must outlive it.
     minTimeoutMs: noWait ? undefined : timeoutMs + 30_000,
@@ -17404,7 +17447,9 @@ function buildBrowserPlanWithLiteralTail(args: string[], literalTail: string[]):
           "result",
           "built_in_browser",
           "getStatus",
-          collectGenericObjectArgs(args, readBrowserOwnedTabTargetArgs(args)),
+          // Every machine's tabs, not only the chat's browser: an agent sees
+          // every tab, whose it is, and where, before it opens or closes one.
+          { ...collectGenericObjectArgs(args, readBrowserOwnedTabTargetArgs(args)), allMachines: true },
         ),
       ],
     };
@@ -27890,13 +27935,8 @@ async function runServe(
       foreignChatProvider: createForeignChatTranscriptResolver({ projectRegistry }),
       projectCommandRouter: {
         resolveProjectId: ({ projectId, projectRootPath }) => {
-          const records = projectRegistry.list();
-          const byId = projectId?.trim()
-            ? records.find((record) => record.projectId === projectId.trim())
-            : undefined;
-          const byRoot = projectRootPath?.trim()
-            ? records.find((record) => pathsEqual(record.rootPath, path.resolve(projectRootPath.trim())))
-            : undefined;
+          const byId = projectId?.trim() ? projectRegistry.get(projectId.trim()) : null;
+          const byRoot = projectRootPath?.trim() ? projectRegistry.findAtRootPath(projectRootPath.trim()) : null;
           // Both selectors given: the project the id names must live at that
           // root, or the command would run in a project the caller did not mean.
           if (byId && projectRootPath?.trim() && !pathsEqual(byId.rootPath, path.resolve(projectRootPath.trim()))) {
@@ -32445,6 +32485,7 @@ function formatChatList(value: unknown): string {
 }
 
 function formatChatSummary(value: unknown): string {
+  if (value == null) return "No chat with this id here.";
   const record = isRecord(value) ? value : {};
   const activity = isRecord(record.activityStatus) ? record.activityStatus : null;
   const rawActivity = asString(activity?.value);
@@ -33689,6 +33730,41 @@ function formatUserBrowserStatus(userBrowser: JsonObject): string {
   return renderKeyValues("Your browser", rows);
 }
 
+/**
+ * `ade browser handoff`: one sentence for what happened, not each step's
+ * JSON. With the wait, a second sentence for how it ended.
+ */
+function formatBrowserHandoff(value: unknown): string {
+  const record = isRecord(value) ? value : {};
+  // With the wait, the result is the wait's own answer, not the step map.
+  if (typeof record.ended === "boolean") return formatBrowserHandoff({ result: record });
+  const handoff = unwrapActionEnvelope(record.handoff);
+  const attention = unwrapActionEnvelope(record.attention);
+  const waited = unwrapActionEnvelope(record.result);
+  const started = isRecord(handoff) ? handoff : {};
+  const tabId = asString(started.tabId) ?? asString(isRecord(waited) ? waited.tabId : null) ?? "the tab";
+  const reason = asString(isRecord(started.handoff) ? started.handoff.reason : null);
+  const host = isRecord(started.browserHost) ? started.browserHost : null;
+  const where = host && asString(host.machine)
+    ? ` on ${asString(host.machine)}${host.userComputer === true ? ", the computer the user sits at" : ""}`
+    : "";
+  const raised = isRecord(attention) && attention.ok !== false ? " The Work row is raised and the user is alerted." : "";
+  const lines = [`Handed ${tabId} to the user${where}${reason ? `: ${reason}.` : "."}${raised}`];
+  if (isRecord(waited)) {
+    if (waited.ended === true) {
+      const by = asString(waited.endedBy);
+      lines.push(by === "timeout"
+        ? "The handoff timed out; the tab is back with this chat. Check the page before going on."
+        : `Handed back${by && by !== "human" ? ` (${by})` : ""}. Observe the tab before acting.`);
+    } else {
+      lines.push(`Still with the user: the wait ended before they handed it back. Do not retry; \`ade browser status --tab ${tabId}\` shows when it ends.`);
+    }
+  } else {
+    lines.push("Not waiting (--no-wait): actions on the tab fail with handoff_active until the user hands it back.");
+  }
+  return lines.join("\n");
+}
+
 function formatBrowserStatus(value: unknown): string {
   const status = isRecord(value) ? value : {};
   const userBrowser = firstRecord(status, ["userBrowser"]);
@@ -33724,19 +33800,35 @@ function formatBrowserStatus(value: unknown): string {
       ["note", reason],
     ]);
   }
-  const tabs = Array.isArray(status.tabs) ? status.tabs.filter(isRecord) : [];
+  const ownTabs = Array.isArray(status.tabs) ? status.tabs.filter(isRecord) : [];
+  const otherBrowsers = Array.isArray(status.otherBrowsers) ? status.otherBrowsers.filter(isRecord) : [];
+  const tabs = [
+    ...ownTabs,
+    ...otherBrowsers.flatMap((browser) => (Array.isArray(browser.tabs) ? browser.tabs.filter(isRecord) : [])),
+  ];
   const activeTabId = asString(status.activeTabId);
-  // Collection occupancy, not the scoped list: an agent needs to see that one
-  // more tab hits the limit even when some tabs belong to another chat.
-  const tabCount = typeof status.tabCount === "number" ? status.tabCount : tabs.length;
-  const tabLimit = typeof status.tabLimit === "number" ? status.tabLimit : null;
-  const tabUsage = tabLimit == null
-    ? String(tabCount)
-    : `${tabCount} of ${tabLimit}${tabCount >= tabLimit ? " — at the limit; close a tab before opening another" : ""}`;
-  // `claimable` marks a tab with no owner or an expired lease. It is visible
-  // so an agent can discover it instead of starting a duplicate tab, but every
-  // action on it still fails until the caller claims it — so the owner column
-  // says exactly that, with the command that fixes it.
+  const machineLabel = (machine: unknown): string | null => {
+    if (!isRecord(machine)) return null;
+    const name = asString(machine.name) ?? "?";
+    if (machine.userComputer === true) return `${name} (the user's)`;
+    return machine.here === true ? `${name} (here)` : name;
+  };
+  // Collection occupancy, not the list: an agent needs to see that one more
+  // tab hits the limit. Per machine when the runtime listed several.
+  const usage = (count: unknown, limit: unknown): string => {
+    const tabCount = typeof count === "number" ? count : 0;
+    if (typeof limit !== "number" || limit <= 0) return String(tabCount);
+    return `${tabCount} of ${limit}${tabCount >= limit ? " (full)" : ""}`;
+  };
+  const ownCount = typeof status.tabCount === "number" ? status.tabCount : ownTabs.length;
+  const tabUsage = otherBrowsers.length > 0 || isRecord(status.machine)
+    ? [
+      `${machineLabel(status.machine) ?? "this chat's browser"}: ${usage(ownCount, status.tabLimit)}`,
+      ...otherBrowsers.map((browser) => `${machineLabel(browser.machine) ?? "?"}: ${usage(browser.tabCount, browser.tabLimit)}`),
+    ].join("; ")
+    : typeof status.tabLimit === "number"
+      ? `${ownCount} of ${status.tabLimit}${ownCount >= status.tabLimit ? " — at the limit; close one of your tabs or a free one before opening another" : ""}`
+      : String(ownCount);
   // How long since the owner last touched it. A tab with a live lease can
   // still be stale, and "idle 24m" is what tells an agent to reuse or close it
   // instead of opening another.
@@ -33748,26 +33840,36 @@ function formatBrowserStatus(value: unknown): string {
     const minutes = Math.round(elapsed / 60_000);
     return minutes < 60 ? `idle ${minutes}m` : `idle ${Math.round(minutes / 60)}h`;
   };
+  const callerChatSessionId = process.env.ADE_CHAT_SESSION_ID?.trim() || null;
+  // Every tab is listed. `claimable` is free (no owner, or a lease that
+  // lapsed): claim it to drive it. `heldByOtherChat` is another chat's: leave
+  // it alone unless the task needs it. Full ids, never truncated ones that
+  // look copyable and are not.
   const ownerForTab = (tab: Record<string, unknown>): string => {
-    if (tab.claimable === true) {
-      const id = asString(tab.id) ?? "<id>";
-      // A claimable tab that still names an owner is one whose chat went idle
-      // and let its lease lapse: free to reuse, or to close to free a slot.
-      return asString(tab.ownerChatSessionId) || asString(tab.ownerLaneId)
-        ? `idle (lease lapsed) — ade browser claim --tab ${id}, or close it`
-        : `not yours — ade browser claim --tab ${id}`;
-    }
+    const id = asString(tab.id) ?? "<id>";
     const lane = asString(tab.ownerLaneId);
     const chat = asString(tab.ownerChatSessionId);
-    // The caller's own tab says so in words; anyone else's shows full ids,
-    // never a truncated one that looks copyable and is not.
-    const owner = chat && chat === callerChatSessionId
-      ? "this chat"
-      : [lane, chat].filter(Boolean).join(" / ");
+    if (asString(tab.ownerChatSessionId) === callerChatSessionId && callerChatSessionId) {
+      const idle = idleForTab(tab);
+      return idle ? `this chat · ${idle}` : "this chat";
+    }
+    if (tab.claimable === true) {
+      if (chat || lane) return `free (its chat went idle) — ade browser claim --tab ${id}`;
+      // The user's own page is free too, but it is theirs: ask before using it.
+      return asString(tab.openedBy) === "human" || tab.keptByPerson === true
+        ? `free (the user's tab; ask first) — ade browser claim --tab ${id}`
+        : `free — ade browser claim --tab ${id}`;
+    }
+    const chatTitle = asString(tab.ownerChatTitle);
+    const laneName = asString(tab.ownerLaneName);
+    const holder = [
+      chat ? (chatTitle ? `"${chatTitle}"` : `chat ${chat}`) : null,
+      lane ? `lane ${laneName ?? lane}` : null,
+    ].filter(Boolean).join(" · ");
     const idle = idleForTab(tab);
-    return idle ? `${owner} · ${idle}` : owner;
+    const text = [holder || (isRecord(tab.handoff) ? "the user (signing in)" : "free"), idle].filter(Boolean).join(" · ");
+    return tab.heldByOtherChat === true ? `${text} (held)` : text;
   };
-  const callerChatSessionId = process.env.ADE_CHAT_SESSION_ID?.trim() || null;
   // Who created the tab, independent of who holds it now: a tab an agent
   // opened and released still says so.
   const openedForTab = (tab: Record<string, unknown>): string => {
@@ -33775,14 +33877,15 @@ function formatBrowserStatus(value: unknown): string {
     if (by === "chat") {
       const chat = asString(tab.openedByChatSessionId);
       if (chat && chat === callerChatSessionId) return "this chat";
-      return chat ? `chat ${chat}` : "agent";
+      const title = asString(tab.openedByChatTitle);
+      return title ? `"${title}"` : chat ? `chat ${chat}` : "an agent";
     }
-    if (by === "human") return "you";
+    if (by === "human") return "the user";
     return "";
   };
   const signInForTab = (tab: Record<string, unknown>): string => {
     const profile = asString(tab.isolatedProfile);
-    return profile ? `isolated profile "${profile}"` : "shared (the user's)";
+    return profile ? `isolated "${profile}"` : "shared";
   };
   // A failed main-frame load shows as a plain white page, which a screenshot
   // cannot explain; the status names the failure instead.
@@ -33790,11 +33893,17 @@ function formatBrowserStatus(value: unknown): string {
     const failure = isRecord(tab?.loadError) ? tab.loadError : null;
     return failure ? asString(failure.description) ?? "the page did not load" : null;
   };
+  // `close` says whose tab it closed, so a close of another chat's tab is
+  // never silent.
+  const closedTab = isRecord(status.closedTab) ? status.closedTab : null;
+  const closedLine = closedTab
+    ? `closed: ${asString(closedTab.id) ?? "?"}${asString(closedTab.url) ? ` ${asString(closedTab.url)}` : ""} (opened by ${openedForTab(closedTab) || "?"}; held by ${ownerForTab({ ...closedTab, claimable: undefined, heldByOtherChat: undefined }) || "nobody"})`
+    : null;
   // `open` / `new-tab` name the tab they drove in one line, so the agent does
   // not have to pick it out of the table (an agent's tab is not the active
   // one: agent opens do not take the human's focus).
   const targetTabId = asString(status.targetTabId);
-  const targetTab = targetTabId ? tabs.find((tab) => asString(tab.id) === targetTabId) ?? null : null;
+  const targetTab = targetTabId ? ownTabs.find((tab) => asString(tab.id) === targetTabId) ?? null : null;
   const targetLine = targetTabId
     ? `${status.targetTabCreated === true ? "opened" : "navigated"}: ${targetTabId}${
       asString(targetTab?.url) ? ` ${asString(targetTab?.url)}` : ""
@@ -33804,7 +33913,7 @@ function formatBrowserStatus(value: unknown): string {
   // other chat's tab are `browser status`'s job; printing them here buried the
   // one line the caller needed under twenty lines of tabs it may not touch.
   if (targetLine) {
-    const otherTabs = tabs.length - (targetTab ? 1 : 0);
+    const otherTabs = ownTabs.length - (targetTab ? 1 : 0);
     return [
       targetLine,
       "",
@@ -33818,16 +33927,23 @@ function formatBrowserStatus(value: unknown): string {
       ]),
     ].join("\n");
   }
+  const route = isRecord(status.route) ? status.route : null;
+  const showMachines = tabs.some((tab) => isRecord(tab.machine));
   return [
+    ...(closedLine ? [closedLine, ""] : []),
     renderKeyValues("ADE browser", [
+      ["route", route ? `${machineLabel(route.browser) ?? "?"} — ${asString(route.reason) ?? ""}` : null],
+      ["isolated tabs", route?.isolatedTabs],
+      ["--tab commands", route?.tabCommands],
+      ["fallback", route?.fallback],
+      ["tabs", tabUsage],
       ["visible", status.visible],
       ["attached", status.attached],
       ["active tab", activeTabId],
-      ["tabs", tabUsage],
       ["url", status.url],
       ["title", status.title],
       ["loading", status.isLoading ?? status.loading],
-      ["load failed", loadFailureForTab(tabs.find((tab) => asString(tab.id) === activeTabId))],
+      ["load failed", loadFailureForTab(ownTabs.find((tab) => asString(tab.id) === activeTabId))],
       ["back", status.canGoBack],
       ["forward", status.canGoForward],
       ["inspecting", status.isInspecting ?? status.inspecting],
@@ -33835,21 +33951,26 @@ function formatBrowserStatus(value: unknown): string {
       ["active tab owner lane", status.ownerLaneId],
       ["active tab owner chat", status.ownerChatSessionId],
       ["active tab owner claimed", status.ownerClaimedAt],
-    ]),
+    ], ["route", "isolated tabs", "--tab commands", "fallback", "tabs"]),
     "",
     renderTable(
-      ["active", "tab", "owner", "opened", "title", "url"],
+      ["active", "tab", ...(showMachines ? ["machine"] : []), "owner", "opened by", "sign-in", "title", "url"],
       tabs.map((tab) => [
-        asString(tab.id) === activeTabId ? "*" : "",
+        asString(tab.id) === activeTabId && ownTabs.includes(tab) ? "*" : "",
         tab.id,
+        ...(showMachines ? [machineLabel(tab.machine) ?? ""] : []),
         ownerForTab(tab),
         openedForTab(tab),
+        signInForTab(tab),
         tab.title,
         tab.url,
       ]),
       "Browser tabs\n(no browser tabs)",
-      { fullColumns: ["tab", "owner"] },
+      { fullColumns: ["tab", "machine", "owner"] },
     ),
+    ...(tabs.length > 0
+      ? ["", "Close your own tabs when done. Any agent may close any tab, but check the owner first: prefer this chat's tabs and free ones, leave a tab another chat holds unless the task needs it, and never close a tab the user opened or kept without asking."]
+      : []),
   ].join("\n");
 }
 
@@ -35424,6 +35545,8 @@ function formatTextOutput(
       return formatBrowserStatus(value);
     case "browser-attach":
       return formatBrowserAttach(value);
+    case "browser-handoff":
+      return formatBrowserHandoff(value);
     case "browser-dev-servers":
       return formatBrowserDevServers(value);
     case "browser-dev-server-stop":
@@ -36078,6 +36201,15 @@ function summarizeExecution(args: {
     const cliChildren = unwrapActionEnvelope(values.cli);
     if (!Array.isArray(chats) || !Array.isArray(cliChildren) || cliChildren.length === 0) return chats;
     return [...chats, ...cliChildren];
+  }
+
+  if (plan.label === "chat show") {
+    // A chat this machine does not have answers null, not an error. Mark the
+    // miss so the run asks the account's other machines (or prints the
+    // `--machine` hint), as `chat status` does.
+    const summary = unwrapActionEnvelope(values.result);
+    if (summary == null) chatMissedHere = true;
+    return summary;
   }
 
   if (plan.label === "chat status") {
@@ -37510,7 +37642,10 @@ function builtInBrowserHostLine(value: unknown): string {
     return `browser: on ${machine}, the computer the user sits at. They see this tab and it uses their sign-ins.\n`;
   }
   if (host.userElsewhere === true) {
-    return "browser: on this machine. The user drives this chat from another computer, which did not take the command, so they cannot see this browser and it has none of their tabs.\n";
+    return "browser: on this machine. The user drives this chat from another computer, so they cannot see this browser and it has none of their tabs.\n";
+  }
+  if (asString(host.machine)) {
+    return `browser: on ${machine}, whose browser holds this tab. The user does not send this chat's messages from there.\n`;
   }
   return "";
 }

@@ -647,11 +647,7 @@ final class AccessibilityBridge: NSObject {
         // physically too large to be a single tappable element) stays
         // probe-able so we can discover "remote" elements iOS hid under
         // empty-children Groups (Nav bar / Tab Bar / scroll views).
-        if !childDicts.isEmpty || isLikelyContainer(frame: frame) {
-            coverage.insertContainer(frame)
-        } else {
-            coverage.insertLeaf(frame)
-        }
+        coverage.insert(frame, hasWalkedChildren: !childDicts.isEmpty)
         dict["children"] = childDicts
 
         return dict
@@ -681,15 +677,6 @@ final class AccessibilityBridge: NSObject {
     private func boolValue(_ obj: NSObject, key: String) -> Bool? {
         if let n = obj.value(forKey: key) as? NSNumber { return n.boolValue }
         return nil
-    }
-
-    /// Heuristic: anything with a dimension >= 250pt is too big to be a
-    /// single tappable element, so we treat it as a container even when
-    /// it reports no AX children. Picks up the iOS pattern where a Group
-    /// (Nav bar, Tab Bar, scroll views) hides its content from the
-    /// recursive walk but exposes it to hit-testing.
-    private func isLikelyContainer(frame: NSRect) -> Bool {
-        return max(frame.width, frame.height) >= 250
     }
 
     // MARK: - AXPTranslationTokenDelegateHelper
@@ -778,6 +765,9 @@ final class AccessibilityBridge: NSObject {
 /// fractional pixel between fetches and we don't care.
 struct AccessibilityCoverage {
     private var leafRects: [NSRect] = []
+    /// ADE patch: large elements with no walked children (a tab bar, a nav
+    /// bar). iOS draws them over the content and hosts their items remotely.
+    private var barRects: [NSRect] = []
     private var keys: Set<String> = []
 
     /// Add a known-leaf rect — point-in-rect checks will skip XPC for any
@@ -800,11 +790,25 @@ struct AccessibilityCoverage {
         keys.contains(Self.key(for: rect))
     }
 
-    func contains(_ point: CGPoint) -> Bool {
-        for r in leafRects where r.contains(point) {
-            return true
+    /// A container with no walked children: dedups by frame like any
+    /// container, and shields its own area (`contains(_ point:)`).
+    mutating func insertBar(_ rect: NSRect) {
+        if keys.insert(Self.key(for: rect)).inserted {
+            barRects.append(rect)
         }
-        return false
+    }
+
+    /// ADE patch: a point on a bar is covered only by a leaf inside every bar
+    /// over that point. The walk also lists content scrolled behind a floating
+    /// bar (a grid tile under the tab bar); its frame must not stop the grid
+    /// from asking what is drawn on top there, or the bar's own items are never
+    /// found. "Every" because the content's own scroll view can be a bar too,
+    /// and the tile lies inside that one.
+    func contains(_ point: CGPoint) -> Bool {
+        let bars = barRects.filter { $0.contains(point) }
+        return leafRects.contains { leaf in
+            leaf.contains(point) && bars.allSatisfy { $0.insetBy(dx: -1, dy: -1).contains(leaf) }
+        }
     }
 
     private static func key(for rect: NSRect) -> String {

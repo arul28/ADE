@@ -32,6 +32,7 @@ import {
   findJsonlFiles,
   findRecentFiles,
   isAdeWorktreePath,
+  jsonlBaseName,
   markLedgerScanIncomplete,
   markLedgerScanIncompleteUnlessMissing,
   newestCandidatePaths,
@@ -70,6 +71,8 @@ const CODEX_COST_SCAN_MAX_FILE_BYTES = 1024 * 1024 * 1024;
 const CODEX_COST_SCAN_MAX_TOTAL_BYTES = 64 * 1024 * 1024 * 1024;
 const CODEX_COST_SCAN_MAX_FILES = 50_000;
 const CODEX_COST_SCAN_MAX_ENTRIES = 1_000_000;
+/** Rows per OpenCode usage read; the read pages through the table by time. */
+const OPENCODE_USAGE_PAGE_ROWS = 5_000;
 const LOCAL_CURSOR_SQLITE_RECENT_ROWS = 250_000;
 const CURSOR_CHARS_PER_TOKEN = 4;
 
@@ -401,7 +404,8 @@ async function scanCodexLogsOnce(
   let remainingBytes = CODEX_COST_SCAN_MAX_TOTAL_BYTES;
   let remainingFiles = CODEX_COST_SCAN_MAX_FILES;
   // Codex archives a session by MOVING its rollout to `archived_sessions/`,
-  // keeping the basename. Skip a basename already taken from `sessions/` so the
+  // keeping the basename, and later compresses an old rollout to `.jsonl.zst`.
+  // Skip a name already taken from `sessions/`, with either extension, so the
   // same rollout is never read twice.
   const seenSessionFileNames = new Set<string>();
   const jsonlFiles: string[] = [];
@@ -411,9 +415,10 @@ async function scanCodexLogsOnce(
       maxFiles: remainingFiles,
       maxFileBytes: CODEX_COST_SCAN_MAX_FILE_BYTES,
       maxTotalBytes: remainingBytes,
+      includeCompressed: true,
     });
     for (const filePath of found) {
-      const name = path.basename(filePath);
+      const name = jsonlBaseName(filePath);
       if (seenSessionFileNames.has(name)) continue;
       seenSessionFileNames.add(name);
       jsonlFiles.push(filePath);
@@ -428,7 +433,7 @@ async function scanCodexLogsOnce(
 
   for (const filePath of jsonlFiles) {
     try {
-      let sessionId = path.basename(filePath, ".jsonl");
+      let sessionId = jsonlBaseName(filePath);
       let sessionModel = "codex";
       let sessionOriginator = "";
       let sessionProjectPath = "";
@@ -1325,77 +1330,106 @@ export async function scanOpenCodeLogs(dataDir = defaultOpenCodeDataDir()): Prom
     const db = openReadonlyUsageDatabase(dbPath);
     if (!db) continue;
     try {
-      type OpenCodeMessageRow = {
+      type OpenCodeUsageRow = {
         id: string;
         sessionId: string;
         timeCreated: number;
-        data: string;
+        inputTokens: unknown;
+        outputTokens: unknown;
+        reasoningTokens: unknown;
+        cacheReadTokens: unknown;
+        cacheWriteTokens: unknown;
+        cost: unknown;
+        modelId: unknown;
         directory: string | null;
       };
-      const selectMessages = (withSession: boolean) => usageSqliteAll<OpenCodeMessageRow>(
-        db,
-        `
-          select
-            m.id as id,
-            m.session_id as sessionId,
-            m.time_created as timeCreated,
-            cast(m.data as blob) as data,
-            ${withSession ? "s.directory as directory" : "null as directory"}
-          from message m
-          ${withSession ? "left join session s on s.id = m.session_id" : ""}
-          where m.time_created >= ?
-          order by m.time_created desc, m.id desc
-          limit ?
-        `,
-        [sinceMs, LOCAL_SQLITE_SCAN_MAX_ROWS],
-      );
+      // OpenCode keeps a whole message in `data`, and a user message carrying
+      // diffs can be tens of MB. Reading `data` into JS for every row put all of
+      // it on the heap at once, so SQLite picks the assistant rows and the few
+      // usage fields here. The CASE skips a row whose `data` is not valid JSON
+      // instead of failing the whole read, as the JS parse used to.
+      const selectPage = (withSession: boolean, after: { timeCreated: number; id: string } | null, limit: number) =>
+        usageSqliteAll<OpenCodeUsageRow>(
+          db,
+          `
+            select
+              m.id as id,
+              m.session_id as sessionId,
+              m.time_created as timeCreated,
+              json_extract(cast(m.data as text), '$.tokens.input') as inputTokens,
+              json_extract(cast(m.data as text), '$.tokens.output') as outputTokens,
+              json_extract(cast(m.data as text), '$.tokens.reasoning') as reasoningTokens,
+              json_extract(cast(m.data as text), '$.tokens.cache.read') as cacheReadTokens,
+              json_extract(cast(m.data as text), '$.tokens.cache.write') as cacheWriteTokens,
+              json_extract(cast(m.data as text), '$.cost') as cost,
+              json_extract(cast(m.data as text), '$.modelID') as modelId,
+              ${withSession ? "s.directory as directory" : "null as directory"}
+            from message m
+            ${withSession ? "left join session s on s.id = m.session_id" : ""}
+            where m.time_created >= ?
+              ${after ? "and (m.time_created < ? or (m.time_created = ? and m.id < ?))" : ""}
+              and (case when json_valid(cast(m.data as text))
+                then json_extract(cast(m.data as text), '$.role') end) = 'assistant'
+            order by m.time_created desc, m.id desc
+            limit ?
+          `,
+          [sinceMs, ...(after ? [after.timeCreated, after.timeCreated, after.id] : []), limit],
+        );
       // `session.directory` is the working directory OpenCode ran the session
       // in — the only project attribution this ledger has. Left-joined so a
       // message whose session row was pruned still counts toward the machine.
       // Older OpenCode installs have no `session` table at all; losing every
       // message because the project column is unavailable would be a far worse
       // trade than losing the project column, so fall back to the plain read.
-      let rows: OpenCodeMessageRow[];
-      try {
-        rows = selectMessages(true);
-      } catch {
-        rows = selectMessages(false);
-      }
-      for (const row of rows) {
-        const data = safeJsonParse<Record<string, unknown>>(textFromSqliteValue(row.data), {});
-        if (data.role !== "assistant") continue;
-        const tokens = isRecord(data.tokens) ? data.tokens : {};
-        const cache = isRecord(tokens.cache) ? tokens.cache : {};
-        const inputTokens = numberFromRecord(tokens, "input");
-        const outputTokens = numberFromRecord(tokens, "output");
-        const reasoningTokens = numberFromRecord(tokens, "reasoning");
-        const cachedTokens = numberFromRecord(cache, "read");
-        const cacheWriteTokens = numberFromRecord(cache, "write");
-        const cost = finiteNumberOrNull(data.cost);
-        if (inputTokens + outputTokens + reasoningTokens + cachedTokens + cacheWriteTokens === 0 && !(cost && cost > 0)) continue;
+      let withSession = true;
+      let after: { timeCreated: number; id: string } | null = null;
+      let rowsRead = 0;
+      while (rowsRead < LOCAL_SQLITE_SCAN_MAX_ROWS) {
+        const limit = Math.min(OPENCODE_USAGE_PAGE_ROWS, LOCAL_SQLITE_SCAN_MAX_ROWS - rowsRead);
+        let rows: OpenCodeUsageRow[];
+        try {
+          rows = selectPage(withSession, after, limit);
+        } catch (error) {
+          if (!withSession) throw error;
+          withSession = false;
+          rows = selectPage(false, after, limit);
+        }
+        rowsRead += rows.length;
+        const last = rows[rows.length - 1];
+        after = rows.length === limit && last ? { timeCreated: last.timeCreated, id: last.id } : null;
+        for (const row of rows) {
+          const inputTokens = finiteNumberOrNull(row.inputTokens) ?? 0;
+          const outputTokens = finiteNumberOrNull(row.outputTokens) ?? 0;
+          const reasoningTokens = finiteNumberOrNull(row.reasoningTokens) ?? 0;
+          const cachedTokens = finiteNumberOrNull(row.cacheReadTokens) ?? 0;
+          const cacheWriteTokens = finiteNumberOrNull(row.cacheWriteTokens) ?? 0;
+          const cost = finiteNumberOrNull(row.cost);
+          if (inputTokens + outputTokens + reasoningTokens + cachedTokens + cacheWriteTokens === 0 && !(cost && cost > 0)) continue;
 
-        const sessionId = typeof row.sessionId === "string" && row.sessionId ? row.sessionId : "unknown";
-        const dedupeKey = `opencode:${sessionId}:${row.id}`;
-        if (seen.has(dedupeKey)) continue;
-        seen.add(dedupeKey);
-        entries.push({
-          messageId: dedupeKey,
-          model: typeof data.modelID === "string" && data.modelID.trim() ? data.modelID : "opencode-auto",
-          inputTokens,
-          // Reasoning is billed at the output rate but is not output; it reaches
-          // cost through `billableOutputTokens` and stays out of display totals.
-          outputTokens,
-          billableOutputTokens: outputTokens + reasoningTokens,
-          cachedTokens,
-          billableCachedTokens: cachedTokens,
-          cacheWriteTokens,
-          costOverrideUsd: cost != null && cost > 0 ? cost : undefined,
-          timestamp: timestampMsFromUnixish(row.timeCreated),
-          ...(typeof row.directory === "string" && row.directory.trim()
-            ? { projectPath: row.directory.trim() }
-            : {}),
-        });
-        if (entries.length >= LOCAL_COST_SCAN_MAX_ENTRIES) return entries;
+          const sessionId = typeof row.sessionId === "string" && row.sessionId ? row.sessionId : "unknown";
+          const dedupeKey = `opencode:${sessionId}:${row.id}`;
+          if (seen.has(dedupeKey)) continue;
+          seen.add(dedupeKey);
+          entries.push({
+            messageId: dedupeKey,
+            model: typeof row.modelId === "string" && row.modelId.trim() ? row.modelId : "opencode-auto",
+            inputTokens,
+            // Reasoning is billed at the output rate but is not output; it reaches
+            // cost through `billableOutputTokens` and stays out of display totals.
+            outputTokens,
+            billableOutputTokens: outputTokens + reasoningTokens,
+            cachedTokens,
+            billableCachedTokens: cachedTokens,
+            cacheWriteTokens,
+            costOverrideUsd: cost != null && cost > 0 ? cost : undefined,
+            timestamp: timestampMsFromUnixish(row.timeCreated),
+            ...(typeof row.directory === "string" && row.directory.trim()
+              ? { projectPath: row.directory.trim() }
+              : {}),
+          });
+          if (entries.length >= LOCAL_COST_SCAN_MAX_ENTRIES) return entries;
+        }
+        if (!after) break;
       }
     } catch {
       // Skip unrecognized OpenCode DB schemas. The database is there and its

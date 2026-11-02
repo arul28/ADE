@@ -417,7 +417,7 @@ export function createHeadlessLinearCredentialService(args: {
       const { token } = readToken();
       if (!token.trim()) {
         throw new Error(
-          "Linear token missing. Set ADE_LINEAR_API, LINEAR_API_KEY, ADE_LINEAR_TOKEN, or LINEAR_TOKEN for headless mode.",
+          "Linear token missing. Connect Linear in Settings > Linear, or set ADE_LINEAR_API, LINEAR_API_KEY, ADE_LINEAR_TOKEN, or LINEAR_TOKEN for headless mode.",
         );
       }
       return token.trim();

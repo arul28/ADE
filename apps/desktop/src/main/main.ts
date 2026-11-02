@@ -4181,6 +4181,10 @@ app.whenReady().then(async () => {
       onLifecycleEvent: (event) => {
         emitProjectEvent(projectRoot, IPC.lanesLifecycleEvent, event);
         if (event.laneId) searchServiceHolder.current?.notifyLaneActivity(event.laneId);
+        // A deleted or archived lane's browser tabs stay open and become free.
+        if ((event.type === "lane-archived" || event.type === "lane-deleted") && event.laneId) {
+          builtInBrowserService.releaseLaneTabs({ laneId: event.laneId });
+        }
       },
       onLinearIssueLinked: ({ lane, issue, linkedAt }) => {
         const tracker = linearIssueTrackerRef;

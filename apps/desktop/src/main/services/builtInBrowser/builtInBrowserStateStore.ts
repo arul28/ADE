@@ -39,8 +39,26 @@ const MAX_COLLECTIONS = 100;
 const MAX_TABS_PER_COLLECTION = BUILT_IN_BROWSER_TAB_LIMIT_MAX;
 const WRITE_DEBOUNCE_MS = 200;
 
+/**
+ * One saved tab. Only `url` is required: files written before the rest were
+ * saved restore as tabs a person opened, under new ids.
+ */
+export type BuiltInBrowserPersistedTab = {
+  url: string;
+  /** The tab's id, kept so an id an agent saved still works after a restart. */
+  id?: string;
+  /** Who opened it; a tab a chat opened is not restored unless a person kept it. */
+  openedBy?: "human" | "chat";
+  openedByChatSessionId?: string | null;
+  openedByLaneId?: string | null;
+  /** The lane the tab is outlined with. */
+  groupLaneId?: string | null;
+  /** A person navigated it or handed it to a chat: it is theirs to keep. */
+  keptByPerson?: boolean;
+};
+
 export type BuiltInBrowserRestoredCollection = {
-  tabs: Array<{ url: string }>;
+  tabs: BuiltInBrowserPersistedTab[];
   activeIndex: number;
 };
 
@@ -122,13 +140,13 @@ export function createBuiltInBrowserStateStore(args: {
     },
     record(collectionKey: string, value: BuiltInBrowserRestoredCollection): void {
       if (!isPersistentCollectionKey(collectionKey)) return;
-      const tabs = value.tabs
-        .map((tab) => ({ url: restorableBrowserUrl(tab.url) }))
-        .filter((tab): tab is { url: string } => Boolean(tab.url))
+      const activeTab = value.tabs[Math.floor(value.activeIndex)] ?? null;
+      const kept = value.tabs
+        .map((tab) => ({ source: tab, saved: persistedTab(tab) }))
+        .filter((entry): entry is { source: BuiltInBrowserPersistedTab; saved: BuiltInBrowserPersistedTab } => Boolean(entry.saved))
         .slice(0, MAX_TABS_PER_COLLECTION);
-      const activeIndex = tabs.length === 0
-        ? 0
-        : Math.max(0, Math.min(tabs.length - 1, Math.floor(value.activeIndex)));
+      const tabs = kept.map((entry) => entry.saved);
+      const activeIndex = Math.max(0, kept.findIndex((entry) => entry.source === activeTab));
       const next: StoredCollection = {
         tabs,
         activeIndex,
@@ -138,8 +156,7 @@ export function createBuiltInBrowserStateStore(args: {
       if (
         previous
         && previous.activeIndex === next.activeIndex
-        && previous.tabs.length === next.tabs.length
-        && previous.tabs.every((tab, index) => tab.url === next.tabs[index]?.url)
+        && JSON.stringify(previous.tabs) === JSON.stringify(next.tabs)
       ) {
         return;
       }
@@ -171,13 +188,12 @@ function loadState(filePath: string): { entries: Array<[string, StoredCollection
         // restore into a collection nothing ever looks at.
         if ((migrated || rekeyed) && key.startsWith("project-")) return null;
         const tabs = value.tabs
-          .map((tab) => isRecord(tab) ? restorableBrowserUrl(tab.url) : null)
-          .filter((url): url is string => Boolean(url))
+          .map((tab) => isRecord(tab) ? persistedTab(tab) : null)
+          .filter((tab): tab is BuiltInBrowserPersistedTab => Boolean(tab))
           // Drop the home page ADE used to force onto new tabs, but only while
           // upgrading a v1 file — after that a google tab is the person's own.
-          .filter((url) => !migrated || !isLegacyDefaultTabUrl(url))
-          .slice(0, MAX_TABS_PER_COLLECTION)
-          .map((url) => ({ url }));
+          .filter((tab) => !migrated || !isLegacyDefaultTabUrl(tab.url))
+          .slice(0, MAX_TABS_PER_COLLECTION);
         const rawActiveIndex = typeof value.activeIndex === "number" ? Math.floor(value.activeIndex) : 0;
         return [key, {
           tabs,
@@ -195,6 +211,50 @@ function loadState(filePath: string): { entries: Array<[string, StoredCollection
 
 function isPersistentCollectionKey(value: string): boolean {
   return value === "window" || value === "personal" || /^project-[a-f0-9]{16}$/.test(value);
+}
+
+const TAB_ID_PATTERN = /^tab-[A-Za-z0-9-]{8,80}$/;
+
+function optionalString(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+/** A tab as it is saved, or null when it must not come back after a restart. */
+function persistedTab(value: Record<string, unknown> | BuiltInBrowserPersistedTab): BuiltInBrowserPersistedTab | null {
+  const url = restorableBrowserUrl(value.url);
+  if (!url || isOneTimeBrowserUrl(url)) return null;
+  const id = typeof value.id === "string" && TAB_ID_PATTERN.test(value.id) ? value.id : null;
+  const openedBy = value.openedBy === "chat" || value.openedBy === "human" ? value.openedBy : null;
+  const openedByChatSessionId = optionalString(value.openedByChatSessionId);
+  const openedByLaneId = optionalString(value.openedByLaneId);
+  const groupLaneId = optionalString(value.groupLaneId);
+  return {
+    url,
+    ...(id ? { id } : {}),
+    ...(openedBy ? { openedBy } : {}),
+    ...(openedByChatSessionId ? { openedByChatSessionId } : {}),
+    ...(openedByLaneId ? { openedByLaneId } : {}),
+    ...(groupLaneId ? { groupLaneId } : {}),
+    ...(value.keptByPerson === true ? { keptByPerson: true } : {}),
+  };
+}
+
+/**
+ * A page that works once: an OAuth consent or callback page carries a
+ * one-time `state`, `code` or PKCE challenge. Loaded again after a restart it
+ * fails, or starts a sign-in nobody asked for, so it is never saved.
+ */
+export function isOneTimeBrowserUrl(value: string): boolean {
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return false;
+  }
+  const params = parsed.searchParams;
+  if (params.has("code_challenge") || params.has("id_token") || params.has("access_token")) return true;
+  if (params.has("state") && (params.has("code") || params.has("redirect_uri") || params.has("client_id"))) return true;
+  return /(^|[^a-z])(oauth|callback)([^a-z]|$)/i.test(parsed.pathname) && params.has("state");
 }
 
 function restorableBrowserUrl(value: unknown): string | null {

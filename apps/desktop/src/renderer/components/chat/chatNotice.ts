@@ -29,3 +29,27 @@ export function chatNoticeReducer(current: ChatNotice | null, action: ChatNotice
   if (!action) return null;
   return typeof action === "string" ? { message: action, kind: "failure" } : action;
 }
+
+/**
+ * The remote runtime client's words for a lost connection: "Error invoking
+ * remote method 'ade.remoteRuntime.callAction': Error: Remote ADE service
+ * connection closed." The local brain's socket raises them too, which is why
+ * the pane asks only for a chat on another machine.
+ */
+const MACHINE_CONNECTION_DROPPED = /remote (?:runtime|ADE service) connection (?:(?:was )?interrupted|closed|failed)/i;
+
+const CHAT_MACHINE_CONNECTION_DROPPED_NOTICE =
+  "The connection to this chat's machine dropped for a moment. The chat keeps running there, and ADE reconnects by itself. If something you just did is missing, do it again.";
+
+/**
+ * The notice as a pane on another machine's chat shows it: its own call to
+ * that machine losing the connection is a status, not a failure, since the
+ * chat keeps running there. The stored notice keeps the raw message, so
+ * "clear it if it is still mine" and the draft-restore match still find it.
+ */
+export function shownChatNotice(notice: ChatNotice | null, chatOnAnotherMachine: boolean): ChatNotice | null {
+  if (!notice || !chatOnAnotherMachine || notice.kind !== "failure") return notice;
+  return MACHINE_CONNECTION_DROPPED.test(notice.message)
+    ? { message: CHAT_MACHINE_CONNECTION_DROPPED_NOTICE, kind: "status" }
+    : notice;
+}

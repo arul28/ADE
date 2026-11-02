@@ -52,7 +52,7 @@ The remote event buffer categories are intentionally narrow: `orchestrator`, `da
 `sshTransport.ts` creates an `ssh2` client config from the saved target:
 
 - host, port, and username come from the remote target registry.
-- `sshKeyPath` loads a private key from disk when supplied.
+- `sshKeyPath` loads a private key from disk when supplied. Key and known-hosts paths are expanded the way people type them on any OS (`sshKeyPaths.ts`): `~`, `%VAR%`, `$env:VAR`, `${VAR}`, `$VAR`, a bare leading `USERPROFILE\` or `HOME/`, quotes, and a path relative to the SSH home. `HOME` and `USERPROFILE` always mean the SSH home. A `.pub` with its private key beside it uses that key; a public key alone, a missing file or a folder fails as `ssh_auth` naming the resolved path.
 - if no explicit key path is saved, matching `HostName` and `IdentityFile` entries in `~/.ssh/config` are applied so aliases like `Host studio` work.
 - `SSH_AUTH_SOCK` is passed through as `agent` when available.
 - every config carries a bounded `readyTimeout` (`ADE_REMOTE_SSH_CONNECT_TIMEOUT_MS`, default 10 s) and disables SSH-level keepalives; runtime RPC calls, exec probes, and artifact uploads carry their own timeouts so large channel writes are not interrupted by transport probes.

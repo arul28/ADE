@@ -863,37 +863,66 @@ relay payload E2E encryption is planned security work. See the trust boundary in
 
     On the desktop, `renderer/lib/remoteBrowserCallHost.ts` answers. It is not
     a component: the agent keeps working while the user reads another chat or
-    has Git in the tools pane. A chat is registered when the Work page shows it
-    and stays registered; one event subscription per machine, the four most
-    recently shown machines. It swaps the agent's project path (a path on
-    another machine) for the project its own window shows, runs the command
+    has Git in the tools pane. A machine is served once any chat pane shows a
+    chat or a draft on it (Work, the Chats page, the Browser tab's dock); one
+    event subscription per machine, the four most recently shown, saved in
+    localStorage and served again 4 s after a reload (a machine not shown for
+    7 days is dropped). A command addressed to this desktop by name runs even
+    for a chat the window has not shown since it started: the call carries
+    `collection` (`project` or `personal`), and the project is the binding's
+    root. It swaps the agent's project path (a path on another machine) for
+    that collection's root as this window names it, runs the command
     through `builtInBrowser.runRemoteAgentCall` (main:
     `builtInBrowserRemoteCalls.ts`, the same `dispatchBuiltInBrowserAgentCall`
     the bridge socket uses, so ownership, presence and agent access apply
     unchanged), and replies on the pinned runtime. Two windows showing the chat
     are arbitrated by `remoteRequestClaims`, as for an open.
 
+    One task stays on one machine. The forwarder remembers which browser holds
+    every tab and browser session a result names (`remoteBrowserTabHosts.ts`).
+    A command with `--tab` / `--browser-session` goes to that machine; one
+    with no tab goes where the chat's last tab is; a plain `open` follows the
+    user. An unknown id is tried in the chat's browser, then looked up on this
+    machine and on every desktop before the command fails, and the failure
+    lists the machines asked. A desktop that holds the tab and does not answer
+    is an error ("did not run anywhere"), never a run here.
+
+    Broadcasts (`remoteBrowserBroadcast.ts`) reach every desktop that holds a
+    pin on this machine at once: `listTabsForAgent` (a project's tabs, read
+    without building the collection; never the personal collection) for
+    `ade browser status`, and `releaseLaneTabs` when a lane is deleted or
+    archived. A tab list waits for the desktops that answered the last ones,
+    or 1.2 s when none has; after a list nobody answered, lists are skipped
+    for two minutes or until a desktop takes a command.
+
+    Isolated sign-ins (`--isolated`, `--profile`) open on the user's desktop
+    like any tab. A loopback URL needs the pane's request path, which carries
+    `profile` / `isolated` only for a desktop whose `needs_pane` reply says
+    `requestCarriesSignIn`; for an older desktop the tab opens on the agent's
+    machine instead.
+
     The agent's own machine is the fallback and the opt-out:
 
-    - No desktop takes a command within 4 s (the laptop is closed): it runs in
-      the browser on the agent's machine, and the chat's commands stay there for
-      60 s before the desktop is asked again.
+    - No desktop takes a command within 4 s (the laptop is closed): a command
+      for no particular tab runs in the browser on the agent's machine, and the
+      chat's commands stay there for 60 s before the desktop is asked again.
     - The last message came from the phone or the CLI: there is no desktop to
       name, so nothing changes from before.
-    - `--here` on any `ade browser` command, and every isolated sign-in
-      (`--isolated`, `--profile`): the browser on the agent's machine.
+    - `--here` on any `ade browser` command: the browser on the agent's machine.
     - `upload`, `har` and `record` read or write a file on the agent's machine.
-      They are refused with a pointer to `--here` while the chat's browser is on
-      the user's computer.
+      They are refused with a pointer to `--here` unless the tab is here.
 
     Every result says where it ran (`browserHost`, printed by `--text` as a
-    first line), so an agent whose command fell back can tell the user why they
-    cannot see its browser.
+    first line), and every error names the machine whose browser refused
+    (`builtInBrowserErrorOnMachine`). `ade browser status` prints the route
+    (`route`: the browser `open` uses and why, where isolated tabs go, the
+    fallback in effect) and every reachable machine's tabs and cap.
 
     Known limits: a tab opened through a tunnel reports its forward port
     (`127.0.0.1:<ephemeral>`) to the agent rather than the port it asked for; a
-    personal chat on another machine is not served (only chats shown on the
-    Work page are); a download lands on the user's computer.
+    personal chat on another machine is served only once its pane was shown
+    here (the daemon names its collection, but no pane registers a personal
+    binding); a download lands on the user's computer.
 
     On the desktop, three things say where a remote chat's browser is, and no
     more: the Browser card in the tools picker ends with `chat on <machine>`;

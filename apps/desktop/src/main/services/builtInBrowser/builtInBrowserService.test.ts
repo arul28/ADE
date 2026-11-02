@@ -1899,7 +1899,7 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
       .not.toBe(service.getStatus({ projectRoot: "/Users/ade/project-alpha" }, browserWin).collectionKey);
   });
 
-  it("restores project tab URLs and the active tab without restoring agent leases", async () => {
+  it("restores the user's tabs with their ids, and drops an agent's tabs nobody kept", async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-browser-restore-"));
     const stateFilePath = path.join(tempDir, "browser-state.json");
     try {
@@ -1912,13 +1912,26 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
         stateFilePath,
         getProjectRootForWindow: (candidate) => projectRootByWindow.get(candidate.id) ?? null,
       });
+      // An agent's tab for one task: it does not come back after a restart.
       await firstService.createTab({
         url: "https://github.com/login",
         activate: true,
         laneId: "lane-1",
         chatSessionId: "chat-1",
       }, browserWin);
-      await firstService.createTab({ url: "https://console.aws.amazon.com/", activate: true }, browserWin);
+      // An agent's tab the user then navigated by hand: theirs now, it comes back.
+      const kept = await firstService.createTab({
+        url: "https://github.com/agent-start",
+        activate: true,
+        laneId: "lane-1",
+        chatSessionId: "chat-1",
+      }, browserWin);
+      const keptTabId = kept.targetTabId ?? "";
+      await firstService.navigate({ url: "https://github.com/kept", tabId: keptTabId }, browserWin);
+      const human = await firstService.createTab({ url: "https://console.aws.amazon.com/", activate: true }, browserWin);
+      const humanTabId = human.targetTabId ?? "";
+      expect(keptTabId).not.toBe("");
+      expect(humanTabId).not.toBe("");
       // An isolated sign-in lives only in memory; restoring its URL would
       // reopen it in the user's own profile, so it is never saved.
       await firstService.createTab({
@@ -1941,12 +1954,15 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
       restoredService.attachToWindow(restoredBrowserWin);
       await vi.waitFor(() => {
         expect(restoredService.getStatus(restoredBrowserWin).tabs.map((tab) => tab.url)).toEqual([
-          "https://github.com/login",
+          "https://github.com/kept",
           "https://console.aws.amazon.com/",
         ]);
       });
       const status = restoredService.getStatus(restoredBrowserWin);
       expect(status.url).toBe("https://console.aws.amazon.com/");
+      // The same ids, so an id saved before the restart still names the tab.
+      expect(status.tabs.map((tab) => tab.id)).toEqual([keptTabId, humanTabId]);
+      expect(status.tabs.map((tab) => tab.openedBy)).toEqual(["chat", "human"]);
       expect(status.tabs.every((tab) => (
         tab.ownerLaneId === null
         && tab.ownerChatSessionId === null
@@ -3167,7 +3183,7 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     expect(service.getStatus({ tabId, laneId: "lane-1", chatSessionId: "chat-1" }).url)
       .toBe("https://github.com/settings/tokens");
     expect(() => service.getStatus({ tabId, laneId: "lane-2", chatSessionId: "chat-2" }))
-      .toThrow(/leased by chat chat-1/);
+      .toThrow(/held by chat chat-1/);
   });
 
   it("moves a tab lease to the receiving chat or drops it for a new chat", async () => {
@@ -3798,7 +3814,7 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
       openPanel: true,
     });
 
-    expect(status.tabs).toHaveLength(1);
+    expect(status.tabs).toHaveLength(2);
     expect(status.activeTabId).toBe(firstTabId);
     expect(status.url).toBe("https://reused.test/");
     expect(status.tabs.find((tab) => tab.id === firstTabId)).toMatchObject({
@@ -3806,7 +3822,11 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
       ownerLaneId: "lane-1",
       ownerChatSessionId: "chat-1",
     });
-    expect(status.tabs.find((tab) => tab.id === secondTabId)).toBeUndefined();
+    // The other chat's tab is listed, marked as held, and was not reused.
+    expect(status.tabs.find((tab) => tab.id === secondTabId)).toMatchObject({
+      url: "https://second.test/",
+      heldByOtherChat: true,
+    });
 
     status = await service.navigate({
       url: "https://fresh.test",
@@ -3815,7 +3835,7 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
       reuseOwnedTab: true,
     });
 
-    expect(status.tabs).toHaveLength(1);
+    expect(status.tabs).toHaveLength(3);
     expect(status.url).toBe("https://fresh.test/");
     expect(status.tabs.at(-1)).toMatchObject({
       url: "https://fresh.test/",
@@ -3823,6 +3843,30 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
       ownerChatSessionId: "chat-3",
     });
     expect(service.getStatus().tabs).toHaveLength(3);
+  });
+
+  // An agent with no tab of its own must name one. Falling back to the tab in
+  // front ran its reads and clicks in the user's page and claimed it.
+  it("refuses a chat's command with no tab named when the chat owns no tab", async () => {
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    await service.createTab({ url: "https://mail.example", activate: true });
+    const usersTabId = service.getStatus().activeTabId ?? "";
+    const agent = { laneId: "lane-1", chatSessionId: "chat-1" };
+
+    await expect(service.reload(agent)).rejects.toThrow(/This chat has no browser tab here/);
+    expect(() => service.getTrace(agent)).toThrow(/This chat has no browser tab here/);
+    // Asking to use the browser does not claim the tab in front either.
+    await service.requestOriginAccess(agent);
+    expect(service.getStatus().tabs.find((tab) => tab.id === usersTabId)).toMatchObject({
+      ownerChatSessionId: null,
+      ownerLaneId: null,
+    });
+
+    // With a tab of its own, the same command runs there, not in the user's.
+    const own = await service.createTab({ url: "https://own.example", activate: false, ...agent });
+    await service.reload(agent);
+    expect(service.getTrace(agent).tabId).toBe(own.targetTabId);
+    expect(service.getStatus().activeTabId).toBe(usersTabId);
   });
 
   it("does not reuse a same-lane tab owned by another chat when chat identity is missing", async () => {
@@ -3889,7 +3933,7 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
       openPanel: false,
     });
 
-    expect(status.tabs).toHaveLength(1);
+    expect(status.tabs).toHaveLength(2);
     expect(status.activeTabId).toBeNull();
     expect(status.tabs.find((tab) => tab.id === ownedTabId)).toMatchObject({
       url: "https://background.test/",
@@ -4633,7 +4677,7 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     }
   });
 
-  it("filters other agents' tab metadata from status and action results", async () => {
+  it("keeps the active tab's page details to its owner in a scoped status", async () => {
     const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
     const first = await service.createTab({
       url: "http://localhost:4101/private-one",
@@ -4655,24 +4699,17 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
       laneId: "lane-1",
       chatSessionId: "chat-1",
     });
+    // The active tab is chat-2's: its page details stay out of chat-1's status.
     expect(scoped.activeTabId).toBeNull();
     expect(scoped.url).toBeNull();
-    expect(scoped.tabs).toEqual([
-      expect.objectContaining({
-        id: firstTabId,
-        url: "http://localhost:4101/private-one",
-        ownerChatSessionId: "chat-1",
-      }),
-    ]);
-    expect(JSON.stringify(scoped)).not.toContain(secondTabId);
-    expect(JSON.stringify(scoped)).not.toContain("private-two");
-    expect(JSON.stringify(scoped)).not.toContain("chat-2");
+    expect(scoped.ownerChatSessionId).toBeNull();
+    expect(scoped.tabs.map((tab) => tab.id)).toEqual([firstTabId, secondTabId]);
 
     const implicitScoped = service.getStatus({
       laneId: "lane-1",
       chatSessionId: "chat-1",
     });
-    expect(implicitScoped.tabs.map((tab) => tab.id)).toEqual([firstTabId]);
+    expect(implicitScoped.tabs.map((tab) => tab.id)).toEqual([firstTabId, secondTabId]);
     expect(implicitScoped.activeTabId).toBeNull();
 
     const actionStatus = await service.reload({
@@ -4680,8 +4717,8 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
       laneId: "lane-1",
       chatSessionId: "chat-1",
     });
-    expect(actionStatus.tabs).toHaveLength(1);
-    expect(JSON.stringify(actionStatus)).not.toContain("private-two");
+    expect(actionStatus.tabs).toHaveLength(2);
+    expect(actionStatus.url).toBeNull();
   });
 
   it("blocks another lane from driving a leased tab unless forced", async () => {
@@ -4690,15 +4727,15 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     const tabId = service.getStatus().activeTabId ?? "";
     expect(service.getStatus().ownerLeaseExpiresAt).toEqual(expect.any(String));
 
-    expect(() => service.startSession({ tabId, laneId: "lane-2" })).toThrow(/leased by lane lane-1/);
+    expect(() => service.startSession({ tabId, laneId: "lane-2" })).toThrow(/held by lane lane-1/);
 
     await expect(
       service.click({ tabId, x: 10, y: 20, laneId: "lane-2", observe: false }),
-    ).rejects.toThrow(/leased by lane lane-1/);
+    ).rejects.toThrow(/held by lane lane-1/);
     expect(service.getTrace({ tabId }).entries.at(-1)).toMatchObject({
       action: "click",
       status: "error",
-      error: expect.stringContaining("leased by lane lane-1"),
+      error: expect.stringContaining("held by lane lane-1"),
     });
 
     await expect(
@@ -4718,15 +4755,15 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     const tabId = service.getStatus().activeTabId ?? "";
 
     expect(() => service.startSession({ tabId, laneId: "lane-1", chatSessionId: "chat-2" }))
-      .toThrow(/leased by chat chat-1 in lane lane-1/);
+      .toThrow(/held by chat chat-1 in lane lane-1/);
 
     await expect(
       service.click({ tabId, x: 10, y: 20, laneId: "lane-1", chatSessionId: "chat-2", observe: false }),
-    ).rejects.toThrow(/leased by chat chat-1 in lane lane-1/);
+    ).rejects.toThrow(/held by chat chat-1 in lane lane-1/);
     expect(service.getTrace({ tabId }).entries.at(-1)).toMatchObject({
       action: "click",
       status: "error",
-      error: expect.stringContaining("leased by chat chat-1 in lane lane-1"),
+      error: expect.stringContaining("held by chat chat-1 in lane lane-1"),
     });
 
     await expect(
@@ -4750,18 +4787,18 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     const otherOwner = { tabId, laneId: "lane-1", chatSessionId: "chat-2" };
     const ownedSession = service.startSession({ tabId, laneId: "lane-1", chatSessionId: "chat-1" }).session;
 
-    expect(() => service.getStatus(otherOwner)).toThrow(/leased by chat chat-1/);
-    await expect(service.captureScreenshot(otherOwner)).rejects.toThrow(/leased by chat chat-1/);
-    await expect(service.observe({ ...otherOwner, includeDom: false })).rejects.toThrow(/leased by chat chat-1/);
-    expect(() => service.getTrace(otherOwner)).toThrow(/leased by chat chat-1/);
-    await expect(service.reload(otherOwner)).rejects.toThrow(/leased by chat chat-1/);
-    await expect(service.selectPoint({ ...otherOwner, x: 10, y: 20 })).rejects.toThrow(/leased by chat chat-1/);
+    expect(() => service.getStatus(otherOwner)).toThrow(/held by chat chat-1/);
+    await expect(service.captureScreenshot(otherOwner)).rejects.toThrow(/held by chat chat-1/);
+    await expect(service.observe({ ...otherOwner, includeDom: false })).rejects.toThrow(/held by chat chat-1/);
+    expect(() => service.getTrace(otherOwner)).toThrow(/held by chat chat-1/);
+    await expect(service.reload(otherOwner)).rejects.toThrow(/held by chat chat-1/);
+    await expect(service.selectPoint({ ...otherOwner, x: 10, y: 20 })).rejects.toThrow(/held by chat chat-1/);
     expect(service.listSessions({ laneId: "lane-1", chatSessionId: "chat-2" }).sessions).toEqual([]);
     expect(() => service.endSession({
       sessionId: ownedSession.id,
       laneId: "lane-1",
       chatSessionId: "chat-2",
-    })).toThrow(/leased by chat chat-1/);
+    })).toThrow(/held by chat chat-1/);
 
     await expect(service.captureScreenshot({ ...otherOwner, force: true })).resolves.toMatchObject({
       width: 320,
@@ -4828,12 +4865,12 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
       tabId: activeTabId,
       laneId: "lane-1",
       chatSessionId: "chat-2",
-    })).rejects.toThrow(/leased by chat chat-1/);
+    })).rejects.toThrow(/held by chat chat-1/);
     await expect(service.clearSelection({
       tabId: activeTabId,
       laneId: "lane-1",
       chatSessionId: "chat-2",
-    })).rejects.toThrow(/leased by chat chat-1/);
+    })).rejects.toThrow(/held by chat chat-1/);
     expect(service.getStatus().hasSelection).toBe(true);
 
     await expect(service.selectCurrent({
@@ -4858,7 +4895,7 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
 
     await expect(
       service.switchTab({ tabId: firstTabId, laneId: "lane-2" }),
-    ).rejects.toThrow(/leased by lane lane-1/);
+    ).rejects.toThrow(/held by lane lane-1/);
 
     expect(service.getStatus().activeTabId).toBe(activeBefore);
   });

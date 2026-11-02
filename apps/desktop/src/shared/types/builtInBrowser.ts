@@ -190,6 +190,11 @@ export type BuiltInBrowserTab = {
   openedBy: "human" | "chat";
   openedByChatSessionId: string | null;
   openedByLaneId: string | null;
+  /**
+   * A person navigated this tab by hand or handed it to a chat, so it is
+   * theirs even if an agent opened it. Absent on an older desktop.
+   */
+  keptByPerson?: boolean;
   /** When the tab was created. */
   createdAt: string;
   zoomFactor: number;
@@ -215,11 +220,39 @@ export type BuiltInBrowserTab = {
   handoff: BuiltInBrowserTabHandoff | null;
   /**
    * Present only on an identity-scoped read (`ade browser status` from an
-   * agent): the tab has no owner, so it is visible but not yet drivable. The
-   * agent has to `claim` it first. Tabs owned by a *different* chat stay hidden
-   * entirely — this field never means "someone else's tab".
+   * agent): the tab has no owner, or its owner's lease lapsed, so it is free.
+   * The agent has to `claim` it before driving it.
    */
   claimable?: true;
+  /**
+   * Present only on an identity-scoped read: another chat (or another lane)
+   * holds a live lease on this tab. Every agent sees every tab, so it can tell
+   * why the browser is full and whose tab it is; it may close this one only
+   * when the task needs it.
+   */
+  heldByOtherChat?: true;
+  /**
+   * Set by the agent's runtime on a tab list it gathered from more than one
+   * machine: which computer's browser holds this tab.
+   */
+  machine?: BuiltInBrowserTabMachine;
+  /**
+   * Set by the agent's runtime on `ade browser status`, when it knows them:
+   * the owner chat's title and lane name, and the opener chat's title.
+   */
+  ownerChatTitle?: string | null;
+  ownerLaneName?: string | null;
+  openedByChatTitle?: string | null;
+};
+
+/** Which computer's ADE browser holds a tab, as an agent's runtime saw it. */
+export type BuiltInBrowserTabMachine = {
+  /** The computer's name, or "this machine". */
+  name: string;
+  /** The computer the agent runs on. */
+  here: boolean;
+  /** The computer the user sends this chat's messages from. */
+  userComputer: boolean;
 };
 
 /** Why a login handoff ended — carried on the `handoff-end` trace entry. */
@@ -499,9 +532,10 @@ export type BuiltInBrowserSession = {
  * Default for `BuiltInBrowserSettings.tabLimit`.
  *
  * The live limit is the setting; this is only what an unset machine gets, and
- * what the fallback statuses report before the setting has been read.
+ * what the fallback statuses report before the setting has been read. A limit
+ * the person saved is kept as it is.
  */
-export const BUILT_IN_BROWSER_TAB_LIMIT_DEFAULT = 10;
+export const BUILT_IN_BROWSER_TAB_LIMIT_DEFAULT = 20;
 export const BUILT_IN_BROWSER_TAB_LIMIT_MIN = 1;
 export const BUILT_IN_BROWSER_TAB_LIMIT_MAX = 50;
 
@@ -780,6 +814,41 @@ export type BuiltInBrowserStatus = {
   targetTabId?: string | null;
   /** True when that call created the tab rather than navigating an existing one. */
   targetTabCreated?: boolean;
+  /**
+   * Set only on a `closeTab` answer: the tab that closed, as it was just
+   * before, so the agent can say whose tab it closed.
+   */
+  closedTab?: BuiltInBrowserTab | null;
+  /**
+   * Set by the agent's runtime on `ade browser status`: every other computer's
+   * browser it could reach, with its tabs, so an agent sees every tab and the
+   * cap of each browser. `tabs` above stays the browser this chat works in.
+   */
+  otherBrowsers?: BuiltInBrowserOtherMachineTabs[];
+  /** Set by the agent's runtime on `ade browser status`: where its commands go, and why. */
+  route?: BuiltInBrowserRouteSummary;
+};
+
+/** Another computer's browser, as listed by `ade browser status`. */
+export type BuiltInBrowserOtherMachineTabs = {
+  machine: BuiltInBrowserTabMachine;
+  tabs: BuiltInBrowserTab[];
+  tabCount: number;
+  tabLimit: number;
+};
+
+/** Where an agent's browser commands go, for `ade browser status`. */
+export type BuiltInBrowserRouteSummary = {
+  /** The browser `open` uses: the user's computer, or this machine. */
+  browser: BuiltInBrowserTabMachine;
+  /** Why that browser. */
+  reason: string;
+  /** Where `--profile` / `--isolated` tabs open. */
+  isolatedTabs: string;
+  /** Where a command with `--tab <id>` goes. */
+  tabCommands: string;
+  /** Set while the user's computer did not answer and commands run here. */
+  fallback: string | null;
 };
 
 export type BuiltInBrowserPermissionDecision = {
@@ -1008,6 +1077,11 @@ export type BuiltInBrowserAgentActionResult = {
   resolved: BuiltInBrowserElementSnapshot | null;
   /** Whether anything visibly changed between the state before the input and the post-action observation. */
   effect: ComputerUseActionEffect;
+  /**
+   * Set when the action ran but the observation after it failed. The action
+   * still happened: do not run it again (a second click is a second submit).
+   */
+  observationError?: string;
 };
 
 export type BuiltInBrowserElementSnapshot = AgentElementSnapshot;

@@ -11,6 +11,8 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import fs from "node:fs";
 import path from "node:path";
+import { pipeline, type Readable } from "node:stream";
+import zlib from "node:zlib";
 import { createRequire } from "node:module";
 import type { SqlValue } from "../../state/kvDb";
 import { finiteNumberOrNull, toOptionalString } from "../../shared/utils";
@@ -309,9 +311,21 @@ export async function findRecentFiles(
 export async function findJsonlFiles(
   dir: string,
   maxAgeDays: number,
-  options: { maxFiles?: number; maxFileBytes?: number; maxTotalBytes?: number } = {},
+  options: {
+    maxFiles?: number;
+    maxFileBytes?: number;
+    maxTotalBytes?: number;
+    /** Also find zstd-compressed `.jsonl.zst` files (Codex compresses old rollouts). */
+    includeCompressed?: boolean;
+  } = {},
 ): Promise<string[]> {
-  return findRecentFiles(dir, maxAgeDays, [".jsonl"], options);
+  const { includeCompressed, ...limits } = options;
+  return findRecentFiles(dir, maxAgeDays, includeCompressed ? [".jsonl", ".jsonl.zst"] : [".jsonl"], limits);
+}
+
+/** A JSONL file's name without `.jsonl` or `.jsonl.zst`. */
+export function jsonlBaseName(filePath: string): string {
+  return path.basename(filePath).replace(/\.jsonl(?:\.zst)?$/, "");
 }
 
 export async function* readJsonlLines(
@@ -321,7 +335,14 @@ export async function* readJsonlLines(
   const normalizedMaxLineBytes = Number.isFinite(maxLineBytes)
     ? Math.max(1, Math.floor(maxLineBytes))
     : LOCAL_JSONL_MAX_LINE_BYTES;
-  const stream = fs.createReadStream(filePath);
+  const source = fs.createReadStream(filePath);
+  // A `.zst` file streams through zstd, so a large rollout is never inflated in
+  // memory. pipeline() passes a read error on to the loop below.
+  const compressed = filePath.endsWith(".zst");
+  const stream: Readable = compressed
+    ? pipeline(source, zlib.createZstdDecompress(), () => {})
+    : source;
+  let streamBytes = 0;
   let lineChunks: Buffer[] = [];
   let lineBytes = 0;
   let discardingOversizedLine = false;
@@ -336,6 +357,7 @@ export async function* readJsonlLines(
 
   try {
     for await (const chunk of stream) {
+      streamBytes += chunk.length;
       let start = 0;
       while (start < chunk.length) {
         const newline = chunk.indexOf(0x0a, start);
@@ -363,8 +385,14 @@ export async function* readJsonlLines(
     }
 
     if (!discardingOversizedLine && lineBytes > 0) yield takeLine();
+    // zstd ends a cut-off frame without an error and without output. Throw, so
+    // the caller marks its scan incomplete instead of reading an empty file.
+    if (compressed && streamBytes === 0 && source.bytesRead > 0) {
+      throw new Error(`Compressed file ${path.basename(filePath)} is truncated or empty.`);
+    }
   } finally {
     stream.destroy();
+    source.destroy();
   }
 }
 

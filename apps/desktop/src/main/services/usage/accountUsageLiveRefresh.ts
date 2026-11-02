@@ -31,6 +31,7 @@ import type {
   UsageWindow,
 } from "../../../shared/types";
 import type { PeerLiveQuota } from "../../../shared/usageLiveQuota";
+import { isPeerVersionGapMessage } from "../../../shared/sentry/expectedFailure";
 import { getErrorMessage } from "../shared/utils";
 import { MAX_LIVE_QUOTA_ACCOUNTS, MAX_LIVE_QUOTA_WINDOWS } from "./accountUsageRollup";
 import { ROLLUP_RETAINED_DAYS } from "./accountUsageRollupStore";
@@ -67,7 +68,7 @@ const TOO_OLD_MESSAGE = "This computer's ADE is too old to share usage";
  * one of those as "too old to share usage" is exactly the bug class this guard
  * exists to avoid.
  */
-const UNKNOWN_METHOD_MESSAGE = /method not found:|unsupported remote command:|method usage\.getUsageRollup requires params\.projectId/i;
+const UNKNOWN_METHOD_MESSAGE = /method not found:|unsupported remote command:/i;
 
 /**
  * Denial phrasings that ADE dresses in a `methodNotFound` code.
@@ -90,7 +91,7 @@ function isMethodNotFound(error: unknown): boolean {
   if (!error) return false;
   const message = getErrorMessage(error);
   if (AUTHORIZATION_DENIAL_MESSAGE.test(message)) return false;
-  return UNKNOWN_METHOD_MESSAGE.test(message);
+  return UNKNOWN_METHOD_MESSAGE.test(message) || isPeerVersionGapMessage(message);
 }
 
 /**

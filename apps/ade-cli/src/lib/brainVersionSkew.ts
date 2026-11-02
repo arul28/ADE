@@ -87,6 +87,12 @@ function isRealVersion(version: string | null, placeholder: string): version is 
   return Boolean(version) && version !== placeholder && /^v?\d+\.\d+\.\d+/.test(version ?? "");
 }
 
+/** Where the standalone `ade` lives in an ADE home: `<home>/bin/ade`, `ade.exe` on Windows. */
+export function standaloneAdeCliPath(adeHome: string, platform: NodeJS.Platform = process.platform): string {
+  const api = platform === "win32" ? path.win32 : path.posix;
+  return api.join(adeHome, "bin", platform === "win32" ? "ade.exe" : "ade");
+}
+
 /**
  * The command a person should run to reach this brain: its own `ade` when it
  * says what it runs (a SEA `ade`, or the `bin/ade` beside a packaged cli.cjs),
@@ -102,7 +108,7 @@ export function matchingBrainCliHint(input: Pick<BrainSkewInput, "brain" | "adeH
     const wrapper = api.join(api.dirname(entry), "bin", platform === "win32" ? "ade.cmd" : "ade");
     return exists(wrapper) ? wrapper : null;
   }
-  const standalone = api.join(input.adeHome, "bin", platform === "win32" ? "ade.exe" : "ade");
+  const standalone = standaloneAdeCliPath(input.adeHome, platform);
   return exists(standalone) ? standalone : null;
 }
 

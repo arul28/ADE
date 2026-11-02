@@ -5,6 +5,7 @@ import { runGitPushOrThrow } from "./gitPushFailure";
 import { branchNameFromHeadRef, getHeadSha, gitBranchRefsIdentity, gitStdoutOrThrow, gitWorktreeRootCached, resolveGitCommit, runGit, runGitOrThrow, runGitRepoCached } from "./git";
 import { detectConflictKind } from "./gitConflictState";
 import { runGitWithGithubAuthFallbackOrThrow } from "./gitTransportAuth";
+import { GIT_PULL_TIMEOUT_MS, GIT_REMOTE_FETCH_TIMEOUT_MS } from "./gitTimeouts";
 import type {
   GitActionResult,
   GitBatchFileActionArgs,
@@ -49,6 +50,7 @@ import { ensureLinearCommitReference } from "../../../shared/linearMagicWords";
 import { GIT_FETCH_TIMEOUT_MS } from "../../../shared/defaultRemoteLaneBase";
 import type { Logger } from "../logging/logger";
 import type { createLaneService } from "../lanes/laneService";
+import { assertLaneIdArg } from "../lanes/laneIdArg";
 import type { createOperationService } from "../history/operationService";
 import { isRecord, parseDiffNameOnly, parseDiffNameOnlySorted, safeJsonParse } from "../shared/utils";
 import { AdeExpectedError } from "../../../shared/expectedError";
@@ -444,6 +446,9 @@ export function createGitOperationsService({
     metadata?: Record<string, unknown>;
     fn: (lane: LaneInfo) => Promise<T>;
   }): Promise<{ result: T; action: GitActionResult }> => {
+    // Every git action (sync, pull, commit, ...) enters here with args an agent,
+    // the CLI or another machine sent; refuse a missing id before any lookup.
+    assertLaneIdArg(laneId, kind);
     invalidateLaneReadCache(laneId);
     const lane = laneService.getLaneBaseAndBranch(laneId);
     await assertLaneWorktreeRoot(lane);
@@ -1433,14 +1438,22 @@ export function createGitOperationsService({
         rebase: ["pull", "--rebase"],
         merge: ["pull", "--no-rebase", "--no-edit"],
       };
+      // A pull waits for an earlier pull on the same lane. Its wait and its own
+      // git run share one bound, so it never starts or keeps writing after its
+      // caller stopped waiting (GIT_PULL_ACTION_TIMEOUT_MS covers this bound).
+      const deadline = Date.now() + GIT_PULL_TIMEOUT_MS;
       return serializePull(args.laneId, async () => {
+        const leftMs = deadline - Date.now();
+        if (leftMs < GIT_REMOTE_FETCH_TIMEOUT_MS) {
+          throw new Error("Another pull on this lane ran too long. Try the pull again.");
+        }
         const { action } = await runLaneOperation({
           laneId: args.laneId,
           kind: "git_pull",
           reason: `pull_${mode.replace("-", "_")}`,
           metadata: { mode },
           fn: async (lane) => {
-            await runGitWithGithubAuthFallbackOrThrow(commandByMode[mode], { cwd: lane.worktreePath, timeoutMs: 60_000 });
+            await runGitWithGithubAuthFallbackOrThrow(commandByMode[mode], { cwd: lane.worktreePath, timeoutMs: deadline - Date.now() });
           }
         });
         return action;

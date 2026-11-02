@@ -43,6 +43,8 @@ The Behind main group's **Catch up all** (`LaneSidebarBulkCatchUpDialog.tsx`) ap
 
 `git.mergeBaseIn` (`gitOperationsService.mergeBaseIn`, `ade git merge --lane <lane>`) fetches `origin/<base>`, then runs `git merge --no-edit origin/<base>` (the local base when there is no remote copy) as a lane operation (`git_merge_base_in`). It refuses a dirty lane or one mid-rebase or merge. On a conflict, or any other failure, it aborts the merge and throws, so the lane is as it was. A failed fetch merges the last known copy and says so (`fetched: false`).
 
+A repository with no commits has no branch to start from. When the start branch does not resolve and the repository has no refs at all, the resolver says "This repository has no commits yet. Make a first commit, then create a lane." instead of "wasn't found". A new project from ADE is still created with no commit (the first-run rule: never block on an initial commit).
+
 Source files: `src/shared/laneStart.ts` defines start choices; `main/services/lanes/laneStartResolver.ts` resolves them; `newLaneSettingsStore.ts` stores defaults and templates; `laneCompareBase.ts` resolves the compare base; `renderer/components/settings/NewLaneSettingsSection.tsx` and `renderer/components/lanes/CreateLaneDialog.tsx` expose the choices.
 
 ## Where this runs
@@ -231,8 +233,8 @@ Shared git engine (every lane service reaches git through these):
 
 - `src/main/services/git/git.ts` — `runGit` is the spawn point for ADE's own
   git. Before every command it adds the `-c` overrides in `gitReadEnv.ts`, so a
-  personal `status.showUntrackedFiles=no` or `diff.noprefix` cannot change
-  what ADE reads, and it sets `GIT_TERMINAL_PROMPT=0`, so a missing sign-in
+  personal `status.showUntrackedFiles=no`, `diff.noprefix` or
+  `log.showSignature=true` cannot change what ADE reads, and it sets `GIT_TERMINAL_PROMPT=0`, so a missing sign-in
   fails at once with a hint instead of waiting for the timeout. The AI git
   tools spawn git themselves with the same overrides. Lane checkouts and
   `worktree add` / `remove` allow 15 minutes and lane fetches 5
@@ -751,8 +753,10 @@ brain's chat-launch service) pass:
 - **`onCheckoutProgress`** receives `{ percent, completed, total }`
   parsed from git's `Updating files:  NN% (n/m)` stderr lines
   (`parseGitCheckoutProgressLine`). The `worktree add` then runs with
-  `GIT_PROGRESS_DELAY=0` and `LC_ALL=C` so git prints progress to a
-  pipe from the first file, in a parseable locale.
+  `GIT_PROGRESS_DELAY=0` and `GIT_ENGLISH_MESSAGES_ENV` (`LANGUAGE=C`,
+  `LC_MESSAGES=C`) so git prints English progress to a pipe from the first
+  file. It does not set `LC_ALL`: that reaches the user's post-checkout hook
+  and breaks a hook that reads or prints UTF-8.
 - **`signal`** cancels the checkout. Aborted before git ran (for
   example while waiting on the worktree-mutation guard), the create
   throws and nothing is cleaned up — it must not delete a branch it

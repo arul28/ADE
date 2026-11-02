@@ -28,6 +28,7 @@ import {
 import { runGitWithGithubAuthFallback, runGitWithGithubAuthFallbackOrThrow } from "../git/gitTransportAuth";
 import { describeUnsavedWorktreeWork, readWorktreeDirty, UNCOMMITTED_CHANGES_REASON } from "../git/worktreeState";
 import { runGitPushOrThrow } from "../git/gitPushFailure";
+import { GIT_ENGLISH_MESSAGES_ENV } from "../git/gitReadEnv";
 import { detachPullRequestRowsForLane, deletePullRequestChatLinksForSessions } from "../prs/pullRequestRowCleanup";
 import { isWithinDir, normalizeBranchName, parseDiffNameOnly, resolvePathWithinRoot } from "../shared/utils";
 import { fetchRemoteTrackingBranch } from "../shared/remoteTrackingBranch";
@@ -62,6 +63,7 @@ import type { LaneJiraIssue } from "../../../shared/types/jira";
 import type { createOperationService } from "../history/operationService";
 import type { Logger } from "../logging/logger";
 import { createWorktreeResidualCleanup } from "./worktreeResidualCleanup";
+import { assertLaneIdArg, describeArgType } from "./laneIdArg";
 import { laneWorktreeFolderName, legacyLaneWorktreeFolderName, slugify } from "./laneWorktreeNaming";
 import { createLaneWorktreeLockService } from "./laneWorktreeLockService";
 import { measureTree } from "../storage/diskUsage";
@@ -556,7 +558,7 @@ function cloneLaneSummary(summary: LaneSummary): LaneSummary {
 
 /**
  * `git worktree add -b` refused because its branch or folder already exists
- * (run with `LC_ALL=C`). Whoever made those owns them; the other failures
+ * (run with GIT_ENGLISH_MESSAGES_ENV). Whoever made those owns them; the other failures
  * happen after git made the branch, so the branch is the failed call's own.
  */
 function isWorktreeAddConflictError(error: unknown): boolean {
@@ -1813,8 +1815,17 @@ export function createLaneService({
     );
   };
 
-  const getLaneRow = (laneId: string) =>
-    db.get<LaneRow>("select * from lanes where id = ? and project_id = ? limit 1", [laneId, projectId]);
+  const getLaneRow = (laneId: string | null) => {
+    // Action callers (agents, the CLI, other machines) reach this with args
+    // straight off the wire; a missing or non-string id would otherwise fail
+    // as a SQLite bind error. Null still binds and reads as "not found".
+    // Not marked expected: action boundaries validate their own input, so a
+    // non-string id reaching the lookup is ADE's bug and stays reportable.
+    if (typeof laneId !== "string" && laneId !== null) {
+      throw new Error(`invalid_argument: laneId must be a lane id string, but got ${describeArgType(laneId)}.`);
+    }
+    return db.get<LaneRow>("select * from lanes where id = ? and project_id = ? limit 1", [laneId, projectId]);
+  };
 
   const getLaneLinearIssue = (laneId: string): LaneLinearIssue | null => {
     try {
@@ -4312,7 +4323,7 @@ export function createLaneService({
             // English output: the progress parser reads it, and the failure
             // cleanup below tells "already exists" from a failed checkout
             // (see isWorktreeAddConflictError).
-            env: { ...GIT_TREE_WRITE_PROGRESS_ENV, LC_ALL: "C" },
+            env: { ...GIT_TREE_WRITE_PROGRESS_ENV, ...GIT_ENGLISH_MESSAGES_ENV },
             cancelMessage: LANE_CREATE_CANCEL_MESSAGE,
             ...(runtimeOptions.signal ? { signal: runtimeOptions.signal } : {}),
             ...(onCheckoutProgress
@@ -7448,8 +7459,16 @@ export function createLaneService({
     },
 
     rename({ laneId, name }: { laneId: string; name: string }): void {
+      assertLaneIdArg(laneId, "rename");
+      // `name` arrives unchecked from action callers (agents, the CLI, other machines).
+      if (typeof name !== "string") {
+        throw new AdeExpectedError(
+          `invalid_argument: Lane name is required and must be a string, but got ${describeArgType(name)}.`,
+          "user",
+        );
+      }
       const trimmed = name.trim();
-      if (!trimmed) throw new Error("Lane name is required");
+      if (!trimmed) throw new AdeExpectedError("Lane name is required", "user");
       const lane = getLaneRow(laneId);
       if (!lane) throw new Error(`Lane not found: ${laneId}`);
       if (lane.lane_type === "primary") throw new Error("Primary lane cannot be renamed");
@@ -8773,7 +8792,7 @@ export function createLaneService({
               const removeRes = await runGit(removeArgs, {
                 cwd: projectRoot,
                 timeoutMs: GIT_TREE_WRITE_TIMEOUT_MS,
-                env: { LC_ALL: "C" },
+                env: GIT_ENGLISH_MESSAGES_ENV,
                 signal: deleteGitWrite.signal,
               });
               setDeleteStoppable(false);

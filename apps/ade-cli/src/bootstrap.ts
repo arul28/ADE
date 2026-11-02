@@ -1177,6 +1177,8 @@ export async function createAdeRuntime(args: {
 
     let conflictServiceRef: ReturnType<typeof createConflictService> | null = null;
     const searchServiceHolder: { current: SearchService | null } = { current: null };
+    /** Frees a deleted or archived lane's browser tabs; set once the browser surface exists. */
+    const releaseLaneBrowserTabsHolder: { current: ((laneId: string) => Promise<void>) | null } = { current: null };
     let linearIssueTrackerRef: ReturnType<typeof createLinearIssueTracker> | null = null;
     let githubServiceRef: ReturnType<typeof createGithubService> | null = null;
     let jiraServiceRef: ReturnType<typeof createJiraService> | null = null;
@@ -1223,6 +1225,16 @@ export async function createAdeRuntime(args: {
       onLifecycleEvent: (event) => {
         pushEvent("runtime", { type: "lane_lifecycle_event", event });
         if (event.laneId) searchServiceHolder.current?.notifyLaneActivity(event.laneId);
+        // Its chats are gone, so nothing would ever let go of its tabs: free
+        // them in every browser, and close none.
+        if ((event.type === "lane-archived" || event.type === "lane-deleted") && event.laneId) {
+          void releaseLaneBrowserTabsHolder.current?.(event.laneId).catch((error: unknown) => {
+            logger.warn("built_in_browser.release_lane_failed", {
+              laneId: event.laneId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          });
+        }
       },
       onLinearIssueLinked: ({ lane, issue, linkedAt }) => {
         const tracker = linearIssueTrackerRef;
@@ -2197,12 +2209,51 @@ export async function createAdeRuntime(args: {
     // own browser and reach this machine's localhost through a port-forward.
     // The user's own browser is reached from THIS process (the chat's runtime
     // host), so attaching needs no desktop and works on a remote runtime.
+    // This machine's name in browser messages ("ADE browser on Mac Studio …"),
+    // the same display name `ade browser attach` prints. Looked up the first
+    // time a message needs it, not at every brain start; until it is known
+    // the host name stands in.
+    const browserMachineName: { current: string | null; requested: boolean } = { current: null, requested: false };
+    const resolveBrowserMachineName = (): string | null => {
+      if (!browserMachineName.requested) {
+        browserMachineName.requested = true;
+        void import("./services/sync/deviceRegistryService")
+          .then((module) => module.resolveDeviceDisplayNameSettled())
+          .then((name) => {
+            browserMachineName.current = name;
+          })
+          .catch((error: unknown) => {
+            logger.debug("built_in_browser.machine_name_unavailable", {
+              error: error instanceof Error ? error.message : String(error),
+            });
+          });
+      }
+      return browserMachineName.current;
+    };
     const browserSurface = chatOnlyRuntime
       ? null
       : {
         remoteBrowserForwarder: createRemoteBrowserForwarder({
           emitEvent: (payload) => pushEvent("runtime", payload),
           logger,
+          machineName: resolveBrowserMachineName,
+          describeOwners: async ({ chatSessionIds, laneIds }) => {
+            const chats: Record<string, string> = {};
+            const lanes: Record<string, string> = {};
+            await Promise.all([
+              ...chatSessionIds.slice(0, 50).map(async (id) => {
+                const summary = await agentChatServiceHolder.current?.getSessionSummary(id).catch(() => null);
+                const title = summary?.title?.trim();
+                if (title) chats[id] = title;
+              }),
+              ...laneIds.slice(0, 50).map(async (id) => {
+                const lane = await laneServiceRef?.getSummary(id, { includeStatus: false }).catch(() => null);
+                const name = lane?.name?.trim();
+                if (name) lanes[id] = name;
+              }),
+            ]);
+            return { chats, lanes };
+          },
           resolveOrigin: (chatSessionId) => getSessionInputOrigin(chatSessionId),
           receivedFilesDir: path.join(paths.cacheDir, "browser-observations", "remote"),
         }),
@@ -2218,6 +2269,10 @@ export async function createAdeRuntime(args: {
         }),
       };
     if (browserSurface) {
+      releaseLaneBrowserTabsHolder.current = (laneId) => browserSurface.remoteBrowserForwarder.releaseLaneTabs(laneId);
+      teardown.push(() => {
+        releaseLaneBrowserTabsHolder.current = null;
+      });
       teardown.push(() => browserSurface.remoteBrowserForwarder.dispose());
       teardown.push(() => browserSurface.userBrowserAttachService.dispose());
     }

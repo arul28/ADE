@@ -1,3 +1,4 @@
+import { useServeRemoteBrowserCalls } from "../../lib/remoteBrowserCallHost";
 import { MUSE_LOGIN_COMMAND, PROVIDER_DISPLAY_NAME } from "../../../shared/providers";
 import { Suspense, lazy, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore, type ComponentProps } from "react";
 import { compactFirstOffer } from "../../../shared/compactFirst";
@@ -417,7 +418,7 @@ import {
   collectDraftVisualAttachmentPaths,
   useDraftAttachmentTransfer,
 } from "./draftAttachmentTransfer";
-import { chatNoticeReducer } from "./chatNotice";
+import { chatNoticeReducer, shownChatNotice } from "./chatNotice";
 import {
   LAUNCH_PROFILE_TITLE,
   type CliProvider,
@@ -5462,6 +5463,23 @@ export function AgentChatPane({
   const chatRuntimePinRef = useRef<OpenProjectBinding | null>(chatRuntimePin);
   chatRuntimePinRef.current = chatRuntimePin;
   const chatRuntimePinKey = chatRuntimePin?.key ?? null;
+  // Another machine's chat: pinned there, or on the machine this project tab
+  // itself is bound to.
+  const shownNotice = shownChatNotice(
+    chatNotice,
+    (chatRuntimePin ?? projectBinding)?.kind === "remote",
+  );
+  // A project chat on another machine, shown here: this desktop runs its
+  // agent's browser commands in the browser the user can see, wherever the
+  // chat is open (Work, the Chats page, the Browser tab's dock), not only when
+  // the Work page has it in front.
+  useServeRemoteBrowserCalls({
+    active: !personalScope,
+    binding: chatEffectiveBinding,
+    chatSessionId: selectedSessionId,
+    laneId: selectedSession?.laneId ?? chatScopeLaneId ?? null,
+    projectRoot: chatEffectiveBinding?.rootPath ?? null,
+  });
   // Pending thread comments for the open chat. Null while the chat has no
   // readable session (a launch still starting, a draft) or the composer and
   // transcript disagree on which chat is open. Always null in a personal chat:
@@ -19115,14 +19133,14 @@ export function AgentChatPane({
         overlayFooter
         bodyClassName="flex min-h-0 flex-col overflow-hidden"
       >
-        {chatNotice ? (
+        {shownNotice ? (
           <Banner
             layout="inline"
             style={RUNTIME_BANNER_STYLE}
             model={{
               id: "chat-error",
-              ...noticeKindModel(chatNotice.kind),
-              title: chatNotice.message,
+              ...noticeKindModel(shownNotice.kind),
+              title: shownNotice.message,
               dismiss: { onDismiss: () => setError(null) },
               actions: [
                 ...(draftMachineRecoveryAvailable

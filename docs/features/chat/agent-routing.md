@@ -676,7 +676,7 @@ one `context_compact` lifecycle, and adds a guarded Claude fallback at 97%.
 
 | Provider | Compacts by itself | ADE setting applied as | `/compact` in ADE | Context window source |
 |---|---|---|---|---|
-| Claude | Yes (`auto` window from Anthropic, per model) | SDK query `settings.autoCompactWindow` (100k–1M); subagents get `autoCompactWindow` on each `agents` entry | Passed to the SDK as a slash command | `modelUsage[].contextWindow`, else the registry; `getContextUsage().raw_max_tokens` is the compaction point |
+| Claude | Yes (`auto` window from Anthropic, per model) | SDK query `settings.autoCompactWindow` (100k–1M); subagents get `autoCompactWindow` on each `agents` entry | Passed to the SDK as a slash command | `modelUsage[].contextWindow`, else the registry; `getContextUsage().raw_max_tokens` is the compaction window and `autoCompactThreshold` the compaction point (33,000 below) |
 | Codex | Yes | `model_auto_compact_token_limit=<n>` in the thread's config (`thread/start`, `thread/resume`), capped at the model window | `thread/compact/start`; custom instructions are not supported, and ADE says so | `thread/tokenUsage/updated` `modelContextWindow`; occupancy is `last` only, never the cumulative total |
 | OpenCode | Yes | OpenCode config `compaction: { buffer, keep: { tokens } }` | `session.command` when the server lists `compact` | `min(models.dev limit.context, ADE registry)` |
 | Pi | Yes | `settingsManager.applyOverrides({ compaction: { reserveTokens, keepRecentTokens } })` | `sdk.compact()` | SDK `context_usage` |
@@ -1773,6 +1773,15 @@ could gain: a missing actor is already the most permissive case.
   step or attempt) is capped only by the target's parent. The CTO counts as the
   CTO only from its own thread, or as a CTO-role caller with no chat and no run,
   step or attempt (`callerIsTrustedCto`); a CTO-role run agent is an agent here.
+- **A caller in another project or on another machine** is not one of the
+  target service's chats, so its level comes from what the brain recorded for it
+  (`externalChatContext`), and an unrecorded caller counts as `ask`. A remote
+  machine sends the caller's level on every call. For a caller on this machine,
+  `multiProjectRpcServer` records it (`crossScopeChats.rememberLocalCaller`)
+  before every call that starts a chat (`childParentSlot`) or runs
+  `chat.updateSession`, parent named or not. Before, only a create that named
+  the caller as parent recorded it, so `chat create --no-parent` and every
+  `chat update` from a full-auto chat in another project ended at `ask`.
 - Claude plan mode with ask-level access behind it reads as the plan rung; with
   more behind it, it reads at that level, because leaving plan mode restores it.
 - Trade-off: Cursor's `agent` mode reads as `ask`, so an `ask` agent may start

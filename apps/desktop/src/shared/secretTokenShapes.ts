@@ -15,9 +15,10 @@
 export const SECRET_TOKEN_PATTERNS: readonly RegExp[] = [
   /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g,
   // OpenAI, Anthropic and OpenRouter keys: `sk-ant-api03-…`, `sk-proj-…` and
-  // `sk-or-v1-…` bodies carry `-` and `_`; an unprefixed `sk-` key is
-  // alphanumeric, so a folder such as `sk-learn-tutorials` is left alone.
-  /\bsk-(?:ant|proj|svcacct|admin|None|or-v1)-[A-Za-z0-9_-]{12,}|\bsk-[A-Za-z0-9]{16,}/g,
+  // `sk-or-v1-…` bodies carry `-` and `_`. An unprefixed `sk-` key can carry
+  // `_` too (stopping at it left the rest of the key in the text), but not
+  // `-`, so a folder such as `sk-learn-tutorials` is left alone.
+  /\bsk-(?:ant|proj|svcacct|admin|None|or-v1)-[A-Za-z0-9_-]{12,}|\bsk-[A-Za-z0-9_]{16,}/g,
   /\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}/g,
   /\bgithub_pat_[A-Za-z0-9_]{20,}/g,
   /\bglpat-[A-Za-z0-9_-]{20,}/g,

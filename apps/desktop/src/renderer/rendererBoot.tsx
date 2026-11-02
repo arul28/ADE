@@ -215,3 +215,12 @@ createRoot(document.getElementById("root")!).render(
 );
 
 void initPerfRuntime();
+
+// Answer agents' browser commands for the machines this desktop served before
+// it reloaded or updated (`remoteBrowserCallHost`). After launch settles: each
+// is one event stream to another machine, which launch must not wait on.
+window.setTimeout(() => {
+  void import("./lib/remoteBrowserCallHost")
+    .then((module) => module.resumeServedRemoteBrowserCalls())
+    .catch(() => undefined);
+}, 4_000);

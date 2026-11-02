@@ -441,6 +441,12 @@ export type BrowserTabState = {
   openedBy: "human" | "chat";
   openedByChatSessionId: string | null;
   openedByLaneId: string | null;
+  /**
+   * A person navigated this tab by hand or handed it to a chat. A tab a chat
+   * opened is dropped at the next start unless this is set: it was work for
+   * one task, and nobody sits at the machine to close it (ledger T1).
+   */
+  keptByPerson: boolean;
   createdAt: string;
   /** When the agent last acted on this tab; scopes "the download I just made". */
   lastActionAtMs: number | null;
@@ -1005,15 +1011,14 @@ export function createBuiltInBrowserService(args: {
       collection,
       restoredState: stateStore?.restore(collection.key) ?? null,
       onStateChange: (state) => stateStore?.record(collection.key, state),
-      observationRootPath: collection.projectRoot
-        ? path.join(collection.projectRoot, OBSERVATION_CACHE_DIR)
-        : personalObservationRootPath,
+      ...observationRootsForCollection(collection),
       permissionController,
       certificateTrust,
       agentAccessController: agentAccessController.forProjectRoot(collection.projectRoot),
       getTabLimit: () => browserSettings.get().tabLimit,
       resolveDownloadDirectory: () => browserSettings.get().downloadDir,
       networkRouter,
+      isTabIdLive,
       waitForProfileMigration: () => profileMigrationPromise.then(() => undefined),
       onHandoff: args.onHandoff ?? null,
       presenceHolds: presenceRouter,
@@ -1021,6 +1026,35 @@ export function createBuiltInBrowserService(args: {
       createTabRecorder: args.createTabRecorder ?? null,
       demoEngine: args.demoEngine ?? null,
     });
+
+  /**
+   * Whether any collection in this process already has a tab with this id.
+   * Two windows can each restore the same project's saved tabs; only the
+   * first keeps the saved ids, so an id names one tab.
+   */
+  function isTabIdLive(tabId: string): boolean {
+    return allWindowServices().some((service) => service.listTabIds().includes(tabId));
+  }
+
+  /**
+   * Where a collection's observation screenshots are written.
+   *
+   * A project on this computer keeps them in its own `.ade/cache`. A window
+   * bound to a project on another machine names that machine's path
+   * (`/Volumes/Dev/…` on a MacBook, or a Mac path on a Windows PC): making it
+   * here failed every `observe` with `EACCES mkdir '/Volumes/Dev'`, or wrote a
+   * stray folder on the current drive (ledger O1). Such a collection writes
+   * under this desktop's user-data folder instead, keyed by the collection.
+   */
+  function observationRootsForCollection(collection: BrowserCollection): {
+    observationRootPath: string | null;
+    observationRelativeBasePath?: string | null;
+  } {
+    if (collection.projectRoot && existsSync(collection.projectRoot)) {
+      return { observationRootPath: path.join(collection.projectRoot, OBSERVATION_CACHE_DIR) };
+    }
+    return { observationRootPath: personalObservationRootPath, observationRelativeBasePath: personalObservationRootPath };
+  }
 
   const serviceKey = (windowId: number, collection: BrowserCollection): string =>
     `${windowId}:${collection.key}`;
@@ -1210,6 +1244,7 @@ export function createBuiltInBrowserService(args: {
         getTabLimit: () => browserSettings.get().tabLimit,
         resolveDownloadDirectory: () => browserSettings.get().downloadDir,
         networkRouter,
+        isTabIdLive,
         waitForProfileMigration: () => profileMigrationPromise.then(() => undefined),
         onHandoff: args.onHandoff ?? null,
         presenceHolds: presenceRouter,
@@ -1280,6 +1315,7 @@ export function createBuiltInBrowserService(args: {
           getTabLimit: () => browserSettings.get().tabLimit,
           resolveDownloadDirectory: () => browserSettings.get().downloadDir,
           networkRouter,
+          isTabIdLive,
           waitForProfileMigration: () => profileMigrationPromise.then(() => undefined),
           onHandoff: args.onHandoff ?? null,
           presenceHolds: presenceRouter,
@@ -1378,6 +1414,8 @@ export function createBuiltInBrowserService(args: {
   const devServers = args.devServers ?? sharedDevServerRegistry;
   /** `${laneId}:${port}` keys already auto-opened during this app session. */
   const autoOpenedDevServers = new Set<string>();
+
+  const allWindowEntries = (): WindowBrowserEntry[] => [...windowServices.values()];
 
   const allWindowServices = (): WindowBrowserService[] => [
     ...[...windowServices.values()].map((entry) => entry.service),
@@ -1740,6 +1778,36 @@ export function createBuiltInBrowserService(args: {
      */
     hasWindowForProjectScope(projectRoot: string | null): boolean {
       return hasLiveWindowForProjectRoot(projectRoot);
+    },
+    /**
+     * Every tab of one collection, as an agent sees it, without building the
+     * collection: `null` when this desktop has none open. `ade browser status`
+     * asks every machine it can reach, and a machine that never opened the
+     * project must not restore and load its saved tabs just to be listed.
+     */
+    listTabsForAgent(input: BuiltInBrowserTabTargetArgs = {}): BuiltInBrowserStatus | null {
+      const { tabId: _tabId, sessionId: _sessionId, ...identity } = input;
+      if (requestsPersonalCollection(input)) {
+        const personal = allWindowEntries().find((entry) => entry.collection.key === "personal")?.service
+          ?? fallbackServices.get("personal")
+          ?? null;
+        return personal?.getStatusForInput(identity) ?? null;
+      }
+      const projectRoot = projectRootFromInput(input);
+      if (!projectRoot) return null;
+      return readOnlyServiceForProjectRoot(projectRoot)?.getStatusForInput(identity) ?? null;
+    },
+    /**
+     * A lane was deleted or archived: free its tabs in every collection, and
+     * close none. Reached from the brain's lane service (bridge-served, never an
+     * agent command) and from a brain on another machine.
+     */
+    releaseLaneTabs(input: { laneId?: string | null }): { released: number } {
+      const laneId = typeof input.laneId === "string" ? input.laneId.trim() : "";
+      if (!laneId) return { released: 0 };
+      let released = 0;
+      for (const service of allWindowServices()) released += service.releaseLane(laneId);
+      return { released };
     },
     requestOriginAccess(
       input: BuiltInBrowserRequestOriginAccessArgs = {},
@@ -2225,6 +2293,8 @@ function createBuiltInBrowserWindowService(args: {
   restoredState?: BuiltInBrowserRestoredCollection | null;
   onStateChange?: ((state: BuiltInBrowserRestoredCollection) => void) | null;
   observationRootPath: string | null;
+  /** What observation paths are relative to; the project root when unset. */
+  observationRelativeBasePath?: string | null;
   permissionController: ReturnType<typeof createBuiltInBrowserPermissionController>;
   /** Shared by every window: an approval holds wherever the profile is open. */
   certificateTrust?: BuiltInBrowserCertificateTrust | null;
@@ -2234,6 +2304,8 @@ function createBuiltInBrowserWindowService(args: {
   /** The configured download folder, or null for the OS Downloads folder. */
   resolveDownloadDirectory?: (() => string | null) | null;
   networkRouter: ReturnType<typeof createBrowserNetworkRouter>;
+  /** A saved id already used by a tab in another collection or window is not restored as is. */
+  isTabIdLive?: ((tabId: string) => boolean) | null;
   waitForProfileMigration: () => Promise<void>;
   onHandoff?: BuiltInBrowserHandoffListener | null;
   /**
@@ -2395,7 +2467,7 @@ function createBuiltInBrowserWindowService(args: {
   };
 
   const observationRootPath = normalizedProjectRoot(args.observationRootPath);
-  const observationRelativeBasePath = args.collection.projectRoot ?? observationRootPath;
+  const observationRelativeBasePath = args.observationRelativeBasePath ?? args.collection.projectRoot ?? observationRootPath;
   const observationDirectory = (tab: BrowserTabState): string => {
     if (!observationRootPath) {
       throw new Error("Browser observations are unavailable because no scratch root is configured.");
@@ -2428,7 +2500,15 @@ function createBuiltInBrowserWindowService(args: {
       const liveTabs = tabs.filter((tab) => !tab.webContents.isDestroyed() && !tab.isolation);
       const activeIndex = Math.max(0, liveTabs.findIndex((tab) => tab.id === activeTabId));
       args.onStateChange({
-        tabs: liveTabs.map((tab) => ({ url: tab.webContents.getURL() })),
+        tabs: liveTabs.map((tab) => ({
+          url: tab.webContents.getURL(),
+          id: tab.id,
+          openedBy: tab.openedBy,
+          openedByChatSessionId: tab.openedByChatSessionId,
+          openedByLaneId: tab.openedByLaneId,
+          groupLaneId: tab.groupLaneId,
+          keptByPerson: tab.keptByPerson,
+        })),
         activeIndex,
       });
     }
@@ -2629,6 +2709,14 @@ function createBuiltInBrowserWindowService(args: {
     }
     const ownedTab = reusableOwnedTabForInput(input);
     if (ownedTab) return ownedTab;
+    // An agent with no tab of its own names one. Falling back to the tab in
+    // front put its clicks and reads in whatever page that was (the user's
+    // mail, a form with unsaved work, another agent's idle tab) and claimed it.
+    if (stringOrNull(input.chatSessionId) || stringOrNull(input.laneId)) {
+      throw new BuiltInBrowserNoTabError(
+        "This chat has no browser tab here. Open your own with `ade browser open <url>`, or name a tab with --tab <id> (`ade browser status` lists them; ask the user before using one of theirs)",
+      );
+    }
     const tab = activeTab();
     if (!tab) throw new BuiltInBrowserNoTabError(emptyMessage);
     return tab;
@@ -2766,6 +2854,7 @@ function createBuiltInBrowserWindowService(args: {
     to.openedBy = from.openedBy;
     to.openedByChatSessionId = from.openedByChatSessionId;
     to.openedByLaneId = from.openedByLaneId;
+    to.keptByPerson = from.keptByPerson;
   };
 
   /**
@@ -2791,22 +2880,15 @@ function createBuiltInBrowserWindowService(args: {
     const chatSessionId = stringOrNull(input.chatSessionId);
     if (!laneId && !chatSessionId) return;
     if (isLeaseExpired(tab.ownerLeaseExpiresAt)) return;
+    const heldMessage = (holder: string): string =>
+      `Browser tab ${tab.id} is held by ${holder}, which is using it. Open your own tab instead (\`ade browser open <url> --new-tab\`), or ask the user to hand this one to this chat. It frees itself 10 minutes after that chat stops using it.`;
     if (tab.ownerChatSessionId) {
-      if (chatSessionId && tab.ownerChatSessionId !== chatSessionId) {
-        throw new Error(
-          `Browser tab ${tab.id} is leased by chat ${tab.ownerChatSessionId}${tab.ownerLaneId ? ` in lane ${tab.ownerLaneId}` : ""}. Ask the user to close it or hand it to this chat, or open another tab.`,
-        );
-      }
-      if (!chatSessionId && laneId && tab.ownerLaneId === laneId) {
-        throw new Error(
-          `Browser tab ${tab.id} is leased by chat ${tab.ownerChatSessionId}${tab.ownerLaneId ? ` in lane ${tab.ownerLaneId}` : ""}. Ask the user to close it or hand it to this chat, or open another tab.`,
-        );
-      }
+      const holder = `chat ${tab.ownerChatSessionId}${tab.ownerLaneId ? ` in lane ${tab.ownerLaneId}` : ""}`;
+      if (chatSessionId && tab.ownerChatSessionId !== chatSessionId) throw new Error(heldMessage(holder));
+      if (!chatSessionId && laneId && tab.ownerLaneId === laneId) throw new Error(heldMessage(holder));
     }
     if (!laneId || !tab.ownerLaneId || tab.ownerLaneId === laneId) return;
-    throw new Error(
-      `Browser tab ${tab.id} is leased by lane ${tab.ownerLaneId}. Ask the user to close it or open another tab.`,
-    );
+    throw new Error(heldMessage(`lane ${tab.ownerLaneId}`));
   };
 
   const armAgentNavigationGuard = (
@@ -2827,6 +2909,7 @@ function createBuiltInBrowserWindowService(args: {
     input: Pick<BuiltInBrowserClaimArgs, "laneId" | "chatSessionId">,
   ): void => {
     if (stringOrNull(input.laneId) || stringOrNull(input.chatSessionId)) return;
+    tab.keptByPerson = true;
     tab.ownerLaneId = null;
     tab.ownerChatSessionId = null;
     tab.ownerClaimedAt = null;
@@ -2981,17 +3064,33 @@ function createBuiltInBrowserWindowService(args: {
     && ((!tab.ownerLaneId && !tab.ownerChatSessionId) || isLeaseExpired(tab.ownerLeaseExpiresAt));
 
   /**
-   * The tab-limit refusal, naming the tabs this caller may close so an agent
-   * can free a slot itself instead of waiting on a person.
+   * The tab-limit refusal, naming the tabs this caller should close so an
+   * agent can free a slot itself instead of waiting on a person.
+   *
+   * Only tabs an agent opened that no person kept: the caller's own, and free
+   * ones whose chat let go. A tab a person opened (their mail, a page with
+   * unsaved work) is never offered, and neither is one another chat holds;
+   * the message counts them so the agent knows to ask the user (ledger T4).
    */
   const tabLimitError = (input: Pick<BuiltInBrowserClaimArgs, "laneId" | "chatSessionId"> = {}): Error => {
-    const closable = tabs
-      .filter((tab) => !tab.webContents.isDestroyed() && (tabMatchesOwnerInput(tab, input) || isUnownedTab(tab)))
-      .map((tab) => `${tab.id} (${emptyToNull(tab.webContents.getURL()) ?? "blank"})`);
-    const hint = closable.length > 0
-      ? ` Tabs you can close with \`ade browser close --tab <id>\`: ${closable.join(", ")}.`
-      : " Every tab is in use by another chat; ask the user to close one.";
-    return new Error(`ADE browser is limited to ${tabLimit()} tabs. Close a tab before opening another.${hint}`);
+    const live = tabs.filter((tab) => !tab.webContents.isDestroyed());
+    const agentWork = (tab: BrowserTabState): boolean => tab.openedBy === "chat" && !tab.keptByPerson;
+    const describe = (tab: BrowserTabState): string => `${tab.id} (${emptyToNull(tab.webContents.getURL()) ?? "blank"})`;
+    const own = live.filter((tab) => agentWork(tab) && tabMatchesOwnerInput(tab, input));
+    const free = live.filter((tab) => agentWork(tab) && !own.includes(tab) && isUnownedTab(tab));
+    const byPerson = live.filter((tab) => !agentWork(tab)).length;
+    const heldByOthers = live.length - own.length - free.length - byPerson;
+    const parts: string[] = [];
+    if (own.length > 0) parts.push(`Your tabs: ${own.map(describe).join(", ")}.`);
+    if (free.length > 0) parts.push(`Free tabs an agent opened and no chat holds: ${free.map(describe).join(", ")}.`);
+    const others = [
+      heldByOthers > 0 ? `${heldByOthers} held by other chats` : null,
+      byPerson > 0 ? `${byPerson} opened or kept by the user` : null,
+    ].filter(Boolean).join(", ");
+    const hint = own.length + free.length > 0
+      ? ` Close one with \`ade browser close --tab <id>\`. ${parts.join(" ")}${others ? ` Leave the rest (${others}).` : ""}`
+      : ` None is yours or free to close (${others || "every tab is in use"}). Ask the user to close a tab, or to raise "Tabs per project" in Settings › Browser. Closing a tab another chat holds stops that chat's work, so do it only if the user agrees.`;
+    return new Error(`ADE browser is limited to ${tabLimit()} tabs for this project, and all are open.${hint} \`ade browser status\` lists every tab with its owner.`);
   };
 
   const reusableOwnedTabForInput = (
@@ -3852,6 +3951,7 @@ function createBuiltInBrowserWindowService(args: {
   const createTabStateForView = (
     nextView: WebContentsView,
     isolation: BrowserTabIsolation | null = null,
+    restoredId: string | null = null,
   ): BrowserTabState => {
     // Match a normal browser canvas. Many sites leave their root background
     // transparent, so a dark ADE-specific backing color makes light pages
@@ -3863,7 +3963,7 @@ function createBuiltInBrowserWindowService(args: {
     const wc = nextView.webContents;
     configureBrowserWebContents(wc);
     return {
-      id: `tab-${randomUUID()}`,
+      id: restoredId ?? `tab-${randomUUID()}`,
       view: nextView,
       isolation,
       webContents: wc,
@@ -3883,6 +3983,7 @@ function createBuiltInBrowserWindowService(args: {
       openedBy: "human",
       openedByChatSessionId: null,
       openedByLaneId: null,
+      keptByPerson: false,
       createdAt: new Date().toISOString(),
       lastActionAtMs: null,
       agentNavigationGuard: null,
@@ -3911,12 +4012,15 @@ function createBuiltInBrowserWindowService(args: {
     };
   };
 
-  const createTabState = (isolation: BrowserTabIsolation | null = null): BrowserTabState => {
+  const createTabState = (
+    isolation: BrowserTabIsolation | null = null,
+    restoredId: string | null = null,
+  ): BrowserTabState => {
     configureBrowserSession();
     if (isolation) isolatedSessions.ensure(isolation, browserDownloadListener);
     return createTabStateForView(new WebContentsView({
       webPreferences: browserWebPreferences(isolation?.partition),
-    }), isolation);
+    }), isolation, restoredId);
   };
 
   const popupUrlForOpen = (url: string): string | null => {
@@ -4993,18 +5097,21 @@ function createBuiltInBrowserWindowService(args: {
     const visibleTabIds = new Set(
       liveTabs.filter((tab) => tabVisibleToInput(tab, identity)).map((tab) => tab.id),
     );
-    // A tab nobody owns is not a secret — hiding it left `ade browser status`
-    // reporting 0 tabs against a pane the human can see full, with no tab id to
-    // claim and no `--all`, so `browser open` silently started another tab.
-    // Tabs owned by a *different* chat stay hidden.
+    // Every agent sees every tab. Hiding another chat's tabs left `ade browser
+    // status` printing `tabs 9 of 10` over 8 rows, and an agent at the limit
+    // could not tell whose tabs filled it. A free tab is marked `claimable`;
+    // one another chat holds is marked `heldByOtherChat`, so the agent knows to
+    // leave it alone unless its task needs it.
     const claimableTabIds = new Set(
       liveTabs
         .filter((tab) => !visibleTabIds.has(tab.id) && isUnownedTab(tab))
         .map((tab) => tab.id),
     );
-    const scopedTabs = status.tabs
-      .filter((tab) => visibleTabIds.has(tab.id) || claimableTabIds.has(tab.id))
-      .map((tab) => (claimableTabIds.has(tab.id) ? { ...tab, claimable: true as const } : tab));
+    const scopedTabs = status.tabs.map((tab) => {
+      if (visibleTabIds.has(tab.id)) return tab;
+      if (claimableTabIds.has(tab.id)) return { ...tab, claimable: true as const };
+      return { ...tab, heldByOtherChat: true as const };
+    });
     if (status.activeTabId && visibleTabIds.has(status.activeTabId)) {
       return { ...status, tabs: scopedTabs };
     }
@@ -5036,6 +5143,39 @@ function createBuiltInBrowserWindowService(args: {
     return scopeStatusForInput(getStatus(), input);
   }
 
+  /**
+   * A lane was deleted or archived: its tabs stay open and become free. Its
+   * chats are gone, so nothing would ever renew or drop their leases, and
+   * every other agent would see the tabs as taken until the lease ran out.
+   * A handed-off tab is handed back to nobody.
+   */
+  function releaseLane(laneId: string): number {
+    let released = 0;
+    for (const tab of tabs) {
+      let changed = false;
+      if (tab.ownerLaneId === laneId) {
+        tab.ownerLaneId = null;
+        tab.ownerChatSessionId = null;
+        tab.ownerClaimedAt = null;
+        tab.ownerLastActiveAt = null;
+        tab.ownerLeaseExpiresAt = null;
+        tab.agentNavigationGuard = null;
+        changed = true;
+      }
+      if (tab.handoff?.previousOwner.laneId === laneId) {
+        tab.handoff.previousOwner = { laneId: null, chatSessionId: null };
+        changed = true;
+      }
+      if (tab.groupLaneId === laneId) {
+        tab.groupLaneId = null;
+        changed = true;
+      }
+      if (changed) released += 1;
+    }
+    if (released > 0) emitStatus();
+    return released;
+  }
+
   async function requestOriginAccess(
     input: BuiltInBrowserRequestOriginAccessArgs = {},
   ): Promise<BuiltInBrowserOriginAccessResult> {
@@ -5044,9 +5184,13 @@ function createBuiltInBrowserWindowService(args: {
     // The answer covers the caller, not a tab, so asking needs no tab. A named
     // tab or session is still resolved (and must exist) so it can be claimed.
     const targetsTab = Boolean(stringOrNull(input.tabId) || stringOrNull(input.sessionId));
-    const tab = targetsTab || tabs.length > 0
+    const isAgent = Boolean(stringOrNull(input.chatSessionId) || stringOrNull(input.laneId));
+    // An agent asking with no tab named claims its own tab, never the one in front.
+    const tab = targetsTab
       ? targetTabFromInput(input, "No active browser tab.")
-      : null;
+      : isAgent
+        ? reusableOwnedTabForInput(input)
+        : tabs.length > 0 ? targetTabFromInput(input, "No active browser tab.") : null;
     if (tab) {
       assertHandoffAllowsAgentAction(tab, input);
       assertTabLeaseAvailable(tab, input);
@@ -5658,6 +5802,7 @@ function createBuiltInBrowserWindowService(args: {
     if (tab.handoff) throw new Error("Someone is signing in on this tab. Hand it back before attaching it to a chat.");
     const chatSessionId = stringOrNull(input.chatSessionId);
     const laneId = chatSessionId ? stringOrNull(input.laneId) : null;
+    tab.keptByPerson = true;
     tab.ownerChatSessionId = chatSessionId;
     tab.ownerLaneId = laneId;
     tab.ownerClaimedAt = chatSessionId ? new Date().toISOString() : null;
@@ -5698,7 +5843,21 @@ function createBuiltInBrowserWindowService(args: {
     if (!tabId) throw new Error("Browser tab id is required.");
     const index = tabs.findIndex((entry) => entry.id === tabId);
     if (index < 0) throw new AdeExpectedError(`Browser tab not found: ${tabId}`, "user");
-    await prepareAgentReadTabAsync(tabs[index]!, input, "The agent requested access to close this browser tab.");
+    const closing = tabs[index]!;
+    // Any agent may close any tab, one another chat holds included: a tab whose
+    // chat stopped working would otherwise sit in the cap until a person found
+    // it. The skill tells agents to check the owner first. Two things still
+    // stop it: a person signing in on the tab (handoff), and the person's
+    // answer on whether this chat may use the browser at all.
+    await args.waitForProfileMigration();
+    assertHandoffAllowsAgentAction(closing, input);
+    await args.agentAccessController.requireUrlAccess(
+      closing.webContents.isDestroyed() ? null : closing.webContents.getURL(),
+      input,
+      "The agent requested access to close this browser tab.",
+      { waitBudgetMs: BUILT_IN_BROWSER_APPROVAL_CALL_BUDGET_MS },
+    );
+    const closedTab = closing.webContents.isDestroyed() ? null : tabStatus(closing);
     if (tabId === activeTabId) {
       await stopInspectQuietly("built_in_browser.close_tab_stop_inspect_failed");
     }
@@ -5742,7 +5901,7 @@ function createBuiltInBrowserWindowService(args: {
     releaseUnusedIsolatedSessions();
     attachViewsToCurrentWindow();
     emitStatus();
-    return scopeStatusForInput(getStatus(), input);
+    return { ...scopeStatusForInput(getStatus(), input), closedTab };
   }
 
   async function reload(input: BuiltInBrowserTabTargetArgs = {}): Promise<BuiltInBrowserStatus> {
@@ -7072,7 +7231,19 @@ function createBuiltInBrowserWindowService(args: {
       const waitMs = normalizeActionObserveDelayMs(input.waitAfterMs);
       if (waitMs > 0) await delay(waitMs);
     }
-    const observation = input.observe === false ? null : await observe({ ...input, tabId: tab.id });
+    // The action already ran. An observation that fails after it (a full
+    // disk, a scratch folder it cannot make) must not turn it into a failure:
+    // the agent would run it again, and a second click is a second submit.
+    let observation: BuiltInBrowserObservation | null = null;
+    let observationError: string | null = null;
+    if (input.observe !== false) {
+      try {
+        observation = await observe({ ...input, tabId: tab.id });
+      } catch (error) {
+        observationError = error instanceof Error ? error.message : String(error);
+        logger()?.warn("built_in_browser.action_observation_failed", { tabId: tab.id, err: observationError });
+      }
+    }
     const effectEntry = actionEffectTrackers.get(tab);
     const tracker = effectEntry?.tracker ?? createAgentActionEffectTracker();
     return {
@@ -7083,11 +7254,17 @@ function createBuiltInBrowserWindowService(args: {
       session: sessionEntry ? sessionSnapshot(sessionEntry) : null,
       resolved: tracker.resolved,
       effect: navigationApprovalEffect(effectEntry?.navigationApproval ?? null)
-        ?? agentActionEffect(tracker, {
-          action: effectEntry?.action ?? "action",
-          observed: observation != null,
-          after: observation?.dom,
-        }),
+        ?? (observationError
+          ? {
+            status: "not_checked",
+            reason: `the action ran, but the observation after it failed: ${observationError}. Do not repeat the action; run \`ade browser observe\` to see the page.`,
+          }
+          : agentActionEffect(tracker, {
+            action: effectEntry?.action ?? "action",
+            observed: observation != null,
+            after: observation?.dom,
+          })),
+      ...(observationError ? { observationError } : {}),
     };
   };
 
@@ -7178,16 +7355,46 @@ function createBuiltInBrowserWindowService(args: {
     if (disposed) return;
     const restored = args.restoredState;
     if (!restored?.tabs.length) return;
+    // A tab a chat opened was work for one task. Nobody may sit at this
+    // machine to close it, so bringing it back at every start filled the cap
+    // with dead dev servers and stale sign-in pages (ledger T1). It comes back
+    // only when a person kept it.
+    const activeSaved = restored.tabs[restored.activeIndex] ?? null;
+    const seenIds = new Set<string>();
+    const saved = restored.tabs
+      .filter((tab) => tab.openedBy !== "chat" || tab.keptByPerson === true)
+      .slice(0, tabLimit());
+    if (saved.length === 0) {
+      logger()?.info("built_in_browser.tabs_restore_skipped", {
+        collectionKey: args.collection.key,
+        droppedAgentTabCount: restored.tabs.length,
+      });
+      return;
+    }
     restoringTabs = true;
-    const restoredTabs = restored.tabs.slice(0, tabLimit()).map(() => createTabState());
+    const restoredTabs = saved.map((entry) => {
+      const id = entry.id && !seenIds.has(entry.id) && !args.isTabIdLive?.(entry.id) ? entry.id : null;
+      if (id) seenIds.add(id);
+      // The same id after a restart, so an id an agent saved, or one in an
+      // earlier error, still names this tab (ledger T3).
+      const tab = createTabState(null, id);
+      tab.openedBy = entry.openedBy ?? "human";
+      tab.openedByChatSessionId = entry.openedByChatSessionId ?? null;
+      tab.openedByLaneId = entry.openedByLaneId ?? null;
+      tab.groupLaneId = entry.groupLaneId ?? null;
+      tab.keptByPerson = entry.keptByPerson === true;
+      return tab;
+    });
     tabs = restoredTabs;
-    activeTabId = restoredTabs[restored.activeIndex]?.id ?? restoredTabs[0]?.id ?? null;
+    const activeIndex = activeSaved ? saved.indexOf(activeSaved) : -1;
+    activeTabId = restoredTabs[activeIndex]?.id ?? restoredTabs[0]?.id ?? null;
     logger()?.info("built_in_browser.tabs_restore_started", {
       collectionKey: args.collection.key,
       tabCount: restoredTabs.length,
+      droppedAgentTabCount: restored.tabs.length - saved.length,
     });
     const results = await Promise.allSettled(restoredTabs.map((tab, index) => (
-      tab.webContents.loadURL(restored.tabs[index]?.url ?? "about:blank")
+      tab.webContents.loadURL(saved[index]?.url ?? "about:blank")
     )));
     restoringTabs = false;
     if (disposed) return;
@@ -7315,6 +7522,7 @@ function createBuiltInBrowserWindowService(args: {
     },
     requestOriginAccess,
     claim,
+    releaseLane,
     startHandoff,
     endHandoff,
     waitForHandoff,
@@ -7563,6 +7771,7 @@ function tabStatus(tab: BrowserTabState): BuiltInBrowserTab {
     openedBy: tab.openedBy,
     openedByChatSessionId: tab.openedByChatSessionId,
     openedByLaneId: tab.openedByLaneId,
+    keptByPerson: tab.keptByPerson,
     createdAt: tab.createdAt,
     zoomFactor: tab.zoomFactor,
     devToolsOpen: tab.devToolsMode !== null,

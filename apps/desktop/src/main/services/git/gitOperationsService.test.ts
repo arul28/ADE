@@ -26,6 +26,7 @@ vi.mock("./git", () => ({
 }));
 
 import { createGitOperationsService } from "./gitOperationsService";
+import { GIT_REMOTE_FETCH_TIMEOUT_MS } from "./gitTimeouts";
 
 const STASH_LIST_FORMAT = "--format=%H%x1f%gd%x1f%cI%x1f%gs";
 
@@ -295,17 +296,17 @@ describe("gitOperationsService.pull", () => {
     expect(mockGit.runGitOrThrow).toHaveBeenNthCalledWith(
       1,
       ["pull", "--ff-only"],
-      { cwd: "/tmp/ade-lane", timeoutMs: 60_000 },
+      expect.objectContaining({ cwd: "/tmp/ade-lane" }),
     );
     expect(mockGit.runGitOrThrow).toHaveBeenNthCalledWith(
       2,
       ["pull", "--rebase"],
-      { cwd: "/tmp/ade-lane", timeoutMs: 60_000 },
+      expect.objectContaining({ cwd: "/tmp/ade-lane" }),
     );
     expect(mockGit.runGitOrThrow).toHaveBeenNthCalledWith(
       3,
       ["pull", "--no-rebase", "--no-edit"],
-      { cwd: "/tmp/ade-lane", timeoutMs: 60_000 },
+      expect.objectContaining({ cwd: "/tmp/ade-lane" }),
     );
     expect(mockStart).toHaveBeenNthCalledWith(
       1,
@@ -327,6 +328,10 @@ describe("gitOperationsService.pull", () => {
         metadata: expect.objectContaining({ reason: "pull_merge", mode: "merge" }),
       }),
     );
+    // A pull fetches first, so it may run at least as long as a fetch.
+    for (const [, options] of mockGit.runGitOrThrow.mock.calls) {
+      expect((options as { timeoutMs: number }).timeoutMs).toBeGreaterThanOrEqual(GIT_REMOTE_FETCH_TIMEOUT_MS);
+    }
   });
 
   it("serializes pulls for the same lane until the active pull completes", async () => {

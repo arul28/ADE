@@ -94,6 +94,9 @@ enum CrashReporting {
   static func capture(_ error: Error, context: [String: String] = [:]) {
     if error is CancellationError { return }
     if let urlError = error as? URLError, benignURLErrorCodes.contains(urlError.code) { return }
+    // A paired machine that is asleep, busy or on a slow link; the user is
+    // told to try again, and nothing on the phone failed.
+    if error.localizedDescription == SyncRequestTimeout.message { return }
     let area = context["area"] ?? "unknown"
     let fingerprint = ["ios", area, String(describing: type(of: error))]
     _ = SentrySDK.capture(error: error) { scope in

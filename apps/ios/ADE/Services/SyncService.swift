@@ -4758,6 +4758,8 @@ final class SyncService: ObservableObject {
   private var activeRemoteDbSiteId: String?
   private var connectionGeneration: UInt64 = 0
   private var connectAttemptGeneration: UInt64 = 0
+  /// How long a dial waits for an in-flight interface scan before ranking routes.
+  private static let dialTailnetScanWaitNanoseconds: UInt64 = 1_200_000_000
   private var lastConnectionAttemptStartedAtMilliseconds: Int64 = 0
   private var connectAttemptStartedAt: TimeInterval?
   private var projectSwitchTimingStartedAt: TimeInterval?
@@ -4963,6 +4965,12 @@ final class SyncService: ObservableObject {
   private var tailnetInterfaceScanTask: Task<Void, Never>?
   private var pathChangeRoamTask: Task<Void, Never>?
   private var tailnetInterfaceScanGeneration: UInt64 = 0
+  /// Interface addresses from the newest off-main scan. The network
+  /// fingerprint reads these instead of calling `getifaddrs` on the main actor.
+  private var lastInterfaceAddresses: [SyncNetworkInterfaceAddress] = []
+  /// The scan generation `lastInterfaceAddresses` came from. Behind the newest
+  /// scan, the addresses may describe the previous network.
+  private var lastInterfaceAddressesGeneration: UInt64 = 0
 
   /// Tracks `activeSessions` derivation so we do not rebuild on every
   /// unrelated `localStateRevision` bump.
@@ -9424,10 +9432,13 @@ final class SyncService: ObservableObject {
     tailnetInterfaceScanGeneration &+= 1
     let generation = tailnetInterfaceScanGeneration
     tailnetInterfaceScanTask = Task { @MainActor [weak self] in
-      let hasTailnet = await Task.detached(priority: .userInitiated) {
-        syncHasTailnetSelfAddress(syncCopyNetworkInterfaceAddresses())
+      let addresses = await Task.detached(priority: .userInitiated) {
+        syncCopyNetworkInterfaceAddresses()
       }.value
       guard let self, !Task.isCancelled, generation == self.tailnetInterfaceScanGeneration else { return }
+      self.lastInterfaceAddresses = addresses
+      self.lastInterfaceAddressesGeneration = generation
+      let hasTailnet = syncHasTailnetSelfAddress(addresses)
       if self.phoneHasTailnetInterface != hasTailnet {
         self.phoneHasTailnetInterface = hasTailnet
       }
@@ -9441,6 +9452,19 @@ final class SyncService: ObservableObject {
       let generation = tailnetInterfaceScanGeneration
       await scan.value
       if generation == tailnetInterfaceScanGeneration { return }
+    }
+  }
+
+  /// `latestTailnetScan`, but never longer than `limitNanoseconds`: a dial
+  /// ranks with the last scan's addresses rather than wait on `getifaddrs`
+  /// through interface churn, which is when reconnects fire.
+  private func latestTailnetScan(limitNanoseconds: UInt64) async {
+    guard tailnetInterfaceScanTask != nil else { return }
+    await withTaskGroup(of: Void.self) { group in
+      group.addTask { @MainActor [weak self] in await self?.latestTailnetScan() }
+      group.addTask { try? await Task.sleep(nanoseconds: limitNanoseconds) }
+      await group.next()
+      group.cancelAll()
     }
   }
 
@@ -18734,13 +18758,20 @@ final class SyncService: ObservableObject {
     return false
   }
 
+  /// Uses the addresses from the newest off-main interface scan (refreshed on
+  /// every path change, foreground and reconnect): `getifaddrs` can block for
+  /// seconds and this runs on the main actor during connect.
   private func currentNetworkFingerprint() -> String? {
     guard let snapshot = lastNetworkPathSnapshot else { return nil }
     return syncNetworkFingerprint(
       usesWiFi: snapshot.usesWiFi,
       usesCellular: snapshot.usesCellular,
       usesWiredEthernet: snapshot.usesWiredEthernet,
-      interfaceAddresses: snapshot.usesWiFi ? syncCopyNetworkInterfaceAddresses() : []
+      // Addresses from an older scan may be the previous Wi-Fi's: rank by
+      // plain "wifi" until the newest scan lands, rather than the wrong subnet.
+      interfaceAddresses: snapshot.usesWiFi && lastInterfaceAddressesGeneration == tailnetInterfaceScanGeneration
+        ? lastInterfaceAddresses
+        : []
     )
   }
 
@@ -19004,6 +19035,12 @@ final class SyncService: ObservableObject {
         machineFleet?.focusedConnectionChanged()
       }
     }
+    // The plan's route memory is keyed by this network's fingerprint, built
+    // from the interface addresses. A path change starts an off-main rescan;
+    // wait for it (suspending, not blocking main) so a connect right after a
+    // network switch does not rank routes by the previous network's addresses.
+    await latestTailnetScan(limitNanoseconds: Self.dialTailnetScanWaitNanoseconds)
+    guard isCurrentConnectAttempt(connectAttemptGeneration) else { throw CancellationError() }
     var orderedEndpointAttempts = try endpointAttemptPlan(
       for: profile,
       preferLiveCandidatesOnly: preferLiveCandidatesOnly
@@ -22322,13 +22359,16 @@ final class SyncService: ObservableObject {
         terminalStreamHandlers[sessionId]?(.exit(code: exitCode))
       }
     case "roster_snapshot":
-      if let snapshot = try? decode(payload, as: RemoteRosterSnapshotPayload.self) {
-        applyRosterSnapshot(snapshot)
-      }
+      // A roster carries every chat of every project; decoding it on the main
+      // actor hung the app. Decode off-main and apply here. Ordering holds:
+      // receiveLoop awaits each frame before reading the next.
+      let snapshot = await machineConnectionDecodeOffMain(payload, as: RemoteRosterSnapshotPayload.self)
+      guard isCurrentConnectionGeneration(generation), let snapshot else { break }
+      applyRosterSnapshot(snapshot)
     case "roster_delta":
-      if let delta = try? decode(payload, as: RemoteRosterDeltaPayload.self) {
-        applyRosterDelta(delta)
-      }
+      let delta = await machineConnectionDecodeOffMain(payload, as: RemoteRosterDeltaPayload.self)
+      guard isCurrentConnectionGeneration(generation), let delta else { break }
+      applyRosterDelta(delta)
     case "chat_launch_event":
       if let envelope = try? decode(payload, as: ChatLaunchEventEnvelope.self) {
         applyChatLaunchEventEnvelope(envelope)
@@ -25326,10 +25366,66 @@ func syncDiscoveredHostFromBonjour(
   )
 }
 
+/// A dedicated thread with its own run loop for Bonjour. `NetServiceBrowser`
+/// and `NetService` are run-loop scheduled, and starting a search talks to
+/// mDNSResponder synchronously, which hung the main thread for most of a
+/// second. Everything the browser touches runs here instead.
+private final class SyncBonjourRunLoopThread: Thread {
+  static let shared: SyncBonjourRunLoopThread = {
+    let thread = SyncBonjourRunLoopThread()
+    thread.name = "com.ade.sync.bonjour"
+    thread.qualityOfService = .utility
+    thread.start()
+    thread.ready.wait()
+    return thread
+  }()
+
+  private let ready = DispatchSemaphore(value: 0)
+  private var cfRunLoop: CFRunLoop?
+
+  override func main() {
+    // A port keeps the run loop alive while no browser or service is scheduled.
+    RunLoop.current.add(Port(), forMode: .default)
+    cfRunLoop = CFRunLoopGetCurrent()
+    ready.signal()
+    while !isCancelled {
+      RunLoop.current.run(mode: .default, before: .distantFuture)
+    }
+  }
+
+  func enqueue(_ block: @escaping () -> Void) {
+    guard let cfRunLoop else { return }
+    CFRunLoopPerformBlock(cfRunLoop, CFRunLoopMode.defaultMode.rawValue, block)
+    CFRunLoopWakeUp(cfRunLoop)
+  }
+
+  /// Runs `workItem` on this thread after the delay unless it was cancelled
+  /// first. Cancel and the check both happen on this thread.
+  func enqueue(after delayNanoseconds: UInt64, _ workItem: DispatchWorkItem) {
+    DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + .nanoseconds(Int(delayNanoseconds))) { [self] in
+      enqueue {
+        guard !workItem.isCancelled else { return }
+        workItem.perform()
+      }
+    }
+  }
+}
+
+/// All state is confined to `SyncBonjourRunLoopThread`: `start`/`stop` hop
+/// onto it, delegate callbacks arrive on it, and `onHostsChanged` is called
+/// from it (the owner hops to the main actor).
 private final class SyncBonjourBrowser: NSObject, NetServiceBrowserDelegate, NetServiceDelegate {
+  /// Set once before `start()`.
   var onHostsChanged: (([DiscoveredSyncHost]) -> Void)?
 
-  private let browser = NetServiceBrowser()
+  private let thread = SyncBonjourRunLoopThread.shared
+  /// Created on the Bonjour thread so it is scheduled on that run loop.
+  private lazy var browser: NetServiceBrowser = {
+    let browser = NetServiceBrowser()
+    browser.delegate = self
+    browser.includesPeerToPeer = true
+    return browser
+  }()
   private var services: [String: NetService] = [:]
   private var hosts: [String: DiscoveredSyncHost] = [:]
   private var isSearching = false
@@ -25340,18 +25436,18 @@ private final class SyncBonjourBrowser: NSObject, NetServiceBrowserDelegate, Net
   private var resolveRetryWorkItems: [String: DispatchWorkItem] = [:]
   private let restartAfterIntentionalStopNanoseconds: UInt64 = 250_000_000
 
-  override init() {
-    super.init()
-    browser.delegate = self
-    browser.includesPeerToPeer = true
-  }
-
   func start() {
-    shouldMaintainBrowsing = true
-    scheduleBrowseStart(after: 0)
+    thread.enqueue { [self] in
+      shouldMaintainBrowsing = true
+      scheduleBrowseStart(after: 0)
+    }
   }
 
   func stop() {
+    thread.enqueue { [self] in stopOnThread() }
+  }
+
+  private func stopOnThread() {
     shouldMaintainBrowsing = false
     cancelBrowseScheduling()
     cancelResolveRetries()
@@ -25434,7 +25530,7 @@ private final class SyncBonjourBrowser: NSObject, NetServiceBrowserDelegate, Net
       self?.beginBrowsing()
     }
     browseRetryWorkItem = workItem
-    DispatchQueue.main.asyncAfter(deadline: .now() + .nanoseconds(Int(delayNanoseconds)), execute: workItem)
+    thread.enqueue(after: delayNanoseconds, workItem)
   }
 
   private func beginBrowsing() {
@@ -25468,7 +25564,7 @@ private final class SyncBonjourBrowser: NSObject, NetServiceBrowserDelegate, Net
       self?.restartBrowsing()
     }
     periodicRestartWorkItem = workItem
-    DispatchQueue.main.asyncAfter(deadline: .now() + .nanoseconds(Int(SyncBonjourTiming.periodicRestartNanoseconds)), execute: workItem)
+    thread.enqueue(after: SyncBonjourTiming.periodicRestartNanoseconds, workItem)
   }
 
   private func cancelBrowseRetry() {
@@ -25497,7 +25593,7 @@ private final class SyncBonjourBrowser: NSObject, NetServiceBrowserDelegate, Net
       service.resolve(withTimeout: SyncBonjourTiming.resolveTimeout)
     }
     resolveRetryWorkItems[key] = workItem
-    DispatchQueue.main.asyncAfter(deadline: .now() + .nanoseconds(Int(SyncBonjourTiming.resolveRetryNanoseconds)), execute: workItem)
+    thread.enqueue(after: SyncBonjourTiming.resolveRetryNanoseconds, workItem)
   }
 
   private func cancelResolveRetry(forKey key: String) {
@@ -26108,7 +26204,9 @@ extension SyncService {
         self.sendEnvelope(type: "roster_chats_request", requestId: requestId, payload: payload)
       }
       guard generation == rosterOlderChatsGeneration else { return nil }
-      return try decode(raw, as: RemoteRosterChatsPayload.self)
+      let page = await machineConnectionDecodeOffMain(raw, as: RemoteRosterChatsPayload.self)
+      guard generation == rosterOlderChatsGeneration else { return nil }
+      return page
     } catch {
       syncConnectLog.info("roster chats request failed error=\(String(describing: error), privacy: .public)")
       return nil
@@ -27086,6 +27184,9 @@ extension SyncService {
     token: String,
     isCurrent: @escaping @MainActor () -> Bool
   ) async throws -> SyncFleetDialResult {
+    // Rank by this network's addresses, not the previous one's (see connectUsingProfile).
+    await latestTailnetScan(limitNanoseconds: Self.dialTailnetScanWaitNanoseconds)
+    guard isCurrent() else { throw CancellationError() }
     let attempts = try endpointAttemptPlan(for: profile, preferLiveCandidatesOnly: false)
     guard !attempts.isEmpty else { throw noConnectableAddressError() }
     let plan = syncConnectionRaceCandidatePlan(rankedAttempts: attempts)

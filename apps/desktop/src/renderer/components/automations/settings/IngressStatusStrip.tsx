@@ -4,7 +4,7 @@ import type { AutomationIngressStatus, AutomationLinearIngressStatus } from "../
 import { LINEAR_BRAND, LinearMark } from "../../lanes/linearBrand";
 import { Banner, noticeTone, type NoticeAction } from "../../ui/notice";
 import { formatDate } from "../../../lib/format";
-import { linearIngressApi } from "../linearIngressApi";
+import { linearIngressApi, setupLinearIngressOrOpenSettings } from "../linearIngressApi";
 import { useAsyncAction } from "../../../hooks/useAsyncAction";
 
 function Dot({ tone }: { tone: "ok" | "warn" | "off" }) {
@@ -54,9 +54,9 @@ export function IngressStatusStrip({ ingressStatus }: { ingressStatus: Automatio
 
   const { run: setupLinear, pending: busy } = useAsyncAction({
     action: async () => {
-      if (!api?.setup) return;
       try {
-        await api.setup();
+        // This strip shows the tab's own machine, so setup and settings go there.
+        await setupLinearIngressOrOpenSettings(null);
       } finally {
         // The service records lastError; the refresh surfaces it either way.
         await refreshLinear().catch(() => {});

@@ -13,7 +13,8 @@ final class AccessibilityDriverTests: XCTestCase {
         role: String = kAXButtonRole,
         title: String? = nil,
         label: String? = nil,
-        value: String? = nil
+        value: String? = nil,
+        actions: [String] = []
     ) -> ObservedElement {
         ObservedElement(
             index: 1,
@@ -27,12 +28,32 @@ final class AccessibilityDriverTests: XCTestCase {
             help: nil,
             enabled: true,
             focused: false,
-            actions: [],
+            actions: actions,
             frame: .zero,
             windowId: nil,
             pid: 0,
             parentIndex: nil
         )
+    }
+
+    func testTextTargetPrefersPressableThenExactOverWalkOrder() {
+        // Walk order as a save sheet observes: the window, then its buttons.
+        let window = observedElement(role: kAXWindowRole, title: "Save Probe")
+        let ellipsis = observedElement(title: "Save…", actions: ["AXPress"])
+        let save = observedElement(title: "Save", actions: ["AXPress"])
+        let records = [window, ellipsis, save]
+        XCTAssertEqual(ObservedElement.bestTextMatch(in: records, text: "save"), 2)
+        XCTAssertEqual(ObservedElement.bestTextMatch(in: records, text: " Save "), 2)
+        // No exact name: the first partial match.
+        XCTAssertEqual(ObservedElement.bestTextMatch(in: records, text: "Probe"), 0)
+        XCTAssertNil(ObservedElement.bestTextMatch(in: records, text: "Replace"))
+        // An element that can be pressed beats a label, even one named exactly.
+        let label = observedElement(role: kAXStaticTextRole, value: "Open")
+        let button = observedElement(title: "Open…", actions: ["AXPress"])
+        XCTAssertEqual(ObservedElement.bestTextMatch(in: [label, button], text: "open"), 1)
+        // With no action anywhere, the exact name wins over an earlier partial one.
+        let heading = observedElement(role: kAXStaticTextRole, value: "Open recent files")
+        XCTAssertEqual(ObservedElement.bestTextMatch(in: [heading, label], text: "open"), 1)
     }
 
     func testMenuTypeRolesKeepAXShowMenu() {

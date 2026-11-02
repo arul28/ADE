@@ -150,6 +150,8 @@ import {
 } from "./githubReadBackoff";
 import { createMergeStateGraphqlBrake } from "./mergeStateGraphqlBrake";
 import { isGithubServiceUnavailable } from "../../../shared/githubServiceHealth";
+import { carryExpected, markExpected } from "../../../shared/expectedError";
+import { isOfflineFetchError } from "../../../shared/sentry/expectedFailure";
 import { githubAuthFailureKindOf, isTransientGithubProbeFailure } from "../github/githubRateLimit";
 import { formatMergeError as formatMergeErrorMessage, shouldAttemptAdminMergeForRestError } from "./resolverUtils";
 import { createPrHeadChangeDetector, formatHeadChangeMessage } from "./prHeadChange";
@@ -6741,9 +6743,13 @@ export function createPrService({
       getChecksByCoords(coords),
     ]);
     if (runsResult.status === "rejected") {
-      throw new Error(
+      // A bare "fetch failed" may be a defect or no network; only its cause
+      // chain can tell, so the offline check reads that, not this text.
+      const error = carryExpected(runsResult.reason, new Error(
         `Couldn't read this PR's Actions runs from GitHub: ${getErrorMessage(runsResult.reason)}`,
-      );
+        { cause: runsResult.reason },
+      ));
+      throw isOfflineFetchError(runsResult.reason) ? markExpected(error, "network") : error;
     }
     const runs = runsResult.value;
     const checks = checksResult.status === "fulfilled" ? checksResult.value : ([] as PrCheck[]);

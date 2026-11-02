@@ -233,7 +233,10 @@ turn's error under a new turn.
 Live Claude occupancy is the last request's input + cache read + cache creation tokens (output tokens are not
 counted), measured against the model's maximum window (`modelUsage[].contextWindow`, else the registry). The SDK's
 `getContextUsage().raw_max_tokens` is the auto-compact window, not the model maximum, so ADE keeps it separately as
-`compactAtTokens`; the 80/90/97% guardrail gates measure against `compactAtTokens`. It emits at most once every
+the compaction window; the 80/90/97% guardrail gates measure against that window. Claude itself compacts a fixed
+33,000-token buffer below the window and reports that point as `autoCompactThreshold`; ADE shows it as
+`compactAtTokens` (estimated as window − 33,000 before the first snapshot). The 97% fallback stays on the window, so
+it fires only after Claude should already have compacted. It emits at most once every
 five seconds and only after a one-point percentage change. ADE never preempts the SDK's natural compaction.
 The streamed reading is refreshed from authoritative SDK `getContextUsage()`
 snapshots after runtime initialization, every settled turn, and compact

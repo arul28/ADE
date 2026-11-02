@@ -24,7 +24,15 @@ the working directory. Exit codes:
 - `128` — fatal git error (corrupt ref, missing object)
 
 ADE wraps this via `runGitMergeTree({ cwd, mergeBase, branchA,
-branchB, timeoutMs })` which parses stdout and returns:
+branchB, timeoutMs })`. One `git merge-tree -h` probe per process (kept only
+when it printed git's usage) says whether `--write-tree` (git 2.38+) and
+`--merge-base` (2.40+) exist; a real call that answers with the legacy usage
+corrects it. A git older than 2.38 runs the legacy trivial-merge form instead:
+conflict markers, a delete on one side of a changed file, and a binary file
+changed on both sides (`git diff --numstat` shows `-`) are conflicts, the exit
+code is set to match `--write-tree`, and `treeOid` is null. A failed legacy run
+returns git's own error; only a merge with no merge base says to update git.
+It parses stdout and returns:
 
 ```ts
 {
