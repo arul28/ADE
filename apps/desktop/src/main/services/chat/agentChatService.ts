@@ -5,7 +5,7 @@ import { createWarmIdleCompactionScheduler } from "./warmIdleCompactionScheduler
 import { formatContinuityConversation } from "./continuityConversation";
 import { probeClaudeKeychainLogin } from "../ai/providerCredentialSources";
 import { claudePromptCacheTtlOfWrites, normalizeClaudePromptCache, type ClaudePromptCache } from "../../../shared/claudePromptCache";
-import { claudeCompactionSettings, claudeCompactWindow, compactionIdleModeDefault, compactionRuntimeSignature, normalizeCompactionSettings } from "../../../shared/compactionSettings";
+import { claudeCompactionSettings, claudeCompactWindow, claudeEstimatedCompactAt, compactionIdleModeDefault, compactionRuntimeSignature, normalizeCompactionSettings } from "../../../shared/compactionSettings";
 import { withClaudeSubagentCompactWindow } from "../../../shared/claudeBuiltinAgentPrompts";
 import { claudeToolProfileOrNull, noteClaudeCodeInit } from "../ai/claudeCodeInit";
 import { demoTrackRegistry } from "../demoVideo/demoTrackRegistry";
@@ -1863,6 +1863,8 @@ function resolveClaudeAgentSdkVersion(): string {
 const CLAUDE_AGENT_SDK_VERSION = resolveClaudeAgentSdkVersion();
 const CLAUDE_AGENT_SDK_API = "v1_query";
 const CLAUDE_POST_RESULT_DRAIN_TIMEOUT_MS = 1_000;
+/** canUseTool's answer when Claude withdrew the request; the SDK discards it. */
+const CLAUDE_REQUEST_WITHDRAWN_MESSAGE = "Claude withdrew this request.";
 /** Longer than a recurring schedule lives (seven days), so a claim never lapses mid-schedule. */
 const SCHEDULED_WORK_CLAIM_RETENTION_MS = 8 * 24 * 60 * 60 * 1_000;
 /** Longest a Pi restart waits for the released worker (1.5s grace, then killed). */
@@ -14302,23 +14304,15 @@ export function createAgentChatService(args: {
         turnId: turnId ?? null,
       };
 
-      emitPendingInputRequest(managed, request, {
+      // Block until the user responds via the approval UI, or Claude
+      // withdraws the request (the SDK aborts its signal).
+      const parked = await parkClaudeCard(managed, runtime, request, sdkOptions?.signal, {
         kind: "tool_call",
         description: planSummary,
         detail: { tool: "ExitPlanMode", planContent },
-      });
-
-      // Block until the user responds via the approval UI.
-      let response: { decision?: AgentChatApprovalDecision; answers?: Record<string, string | string[]>; responseText?: string | null };
-      try {
-        runtime.pauseIdleWatchdog?.();
-        response = await new Promise<typeof response>((resolve) => {
-          runtime.approvals.set(approvalItemId, { kind: "approval", resolve, request });
-        });
-      } finally {
-        runtime.approvals.delete(approvalItemId);
-        runtime.resumeIdleWatchdog?.();
-      }
+      }, "approval");
+      if (parked.abandoned) return { behavior: "deny", message: CLAUDE_REQUEST_WITHDRAWN_MESSAGE };
+      const response = parked.response;
 
       // Emit tool_result so derivePendingInputRequests clears this entry.
       const approved = response.decision === "accept" || response.decision === "accept_for_session";
@@ -14399,7 +14393,7 @@ export function createAgentChatService(args: {
       }
 
       const approvalItemId = request.itemId ?? request.requestId;
-      emitPendingInputRequest(managed, request, {
+      const parked = await parkClaudeCard(managed, runtime, request, sdkOptions?.signal, {
         kind: "tool_call",
         description: request.description ?? waitingOnYouDescription(request.questions.length),
         detail: {
@@ -14408,17 +14402,8 @@ export function createAgentChatService(args: {
           ...(sdkOptions?.toolUseID ? { toolUseID: sdkOptions.toolUseID } : {}),
         },
       });
-
-      let response: { decision?: AgentChatApprovalDecision; answers?: Record<string, string | string[]>; responseText?: string | null };
-      try {
-        runtime.pauseIdleWatchdog?.();
-        response = await new Promise<typeof response>((resolve) => {
-          runtime.approvals.set(approvalItemId, { kind: "question", resolve, request });
-        });
-      } finally {
-        runtime.approvals.delete(approvalItemId);
-        runtime.resumeIdleWatchdog?.();
-      }
+      if (parked.abandoned) return { behavior: "deny", message: CLAUDE_REQUEST_WITHDRAWN_MESSAGE };
+      const response = parked.response;
 
       // Emit a tool_result so derivePendingInputRequests clears this entry
       // and the question UI doesn't reappear on the next event flush.
@@ -14553,22 +14538,15 @@ export function createAgentChatService(args: {
         turnId: turnId ?? null,
       };
 
-      emitPendingInputRequest(managed, request, {
+      // Claude withdraws a request it no longer needs (a PermissionRequest
+      // hook allowed it, say) by aborting the signal; the card then closes.
+      const parked = await parkClaudeCard(managed, runtime, request, sdkOptions?.signal, {
         kind: normalizedToolName.includes("bash") ? "command" : "file_change",
         description,
         detail: { tool: toolName, ...(sdkOptions?.blockedPath ? { blockedPath: sdkOptions.blockedPath } : {}) },
-      });
-
-      let response: { decision?: AgentChatApprovalDecision; answers?: Record<string, string | string[]>; responseText?: string | null };
-      try {
-        runtime.pauseIdleWatchdog?.();
-        response = await new Promise<typeof response>((resolve) => {
-          runtime.approvals.set(approvalItemId, { kind: "approval", resolve, request });
-        });
-      } finally {
-        runtime.approvals.delete(approvalItemId);
-        runtime.resumeIdleWatchdog?.();
-      }
+      }, "approval");
+      if (parked.abandoned) return { behavior: "deny", message: CLAUDE_REQUEST_WITHDRAWN_MESSAGE };
+      const response = parked.response;
 
       const approved = response.decision === "accept" || response.decision === "accept_for_session";
       // A suppressed ask must not persist anything, even if a client sends
@@ -25111,7 +25089,7 @@ export function createAgentChatService(args: {
       totalTokens: Math.max(0, guardrail.totalTokens),
       maxTokens: Math.max(0, maxTokens),
       rawMaxTokens: Math.max(0, guardrail.compactAtTokens || maxTokens),
-      compactAtTokens: Math.max(0, guardrail.compactAtTokens || claudeSettingCompactAt(managed) || maxTokens),
+      compactAtTokens: Math.max(0, guardrail.compactAtTokens || claudeEstimatedCompactAtFor(managed, maxTokens)),
       compactAtSource: claudeSettingCompactAt(managed) ? "setting" : "provider",
       percentage: maxTokens > 0
         ? Math.max(0, Math.min(100, (guardrail.totalTokens / maxTokens) * 100))
@@ -25172,7 +25150,9 @@ export function createAgentChatService(args: {
       const guardrail = runtime.contextGuardrail;
       guardrail.totalTokens = usage.totalTokens;
       guardrail.maxTokens ||= resolveSessionModelDescriptor(managed.session)?.contextWindow ?? usage.maxTokens;
-      guardrail.compactAtTokens = Math.min(usage.rawMaxTokens ?? usage.maxTokens, guardrail.maxTokens);
+      // Claude's own compaction point, which sits a buffer below the window;
+      // an older CLI that does not report it leaves the window.
+      guardrail.compactAtTokens = Math.min(usage.compactAtTokens ?? usage.rawMaxTokens ?? usage.maxTokens, guardrail.maxTokens);
       usage.maxTokens = guardrail.maxTokens;
       usage.compactAtTokens = guardrail.compactAtTokens;
       usage.compactAtSource = claudeSettingCompactAt(managed) ? "setting" : "provider";
@@ -25234,7 +25214,7 @@ export function createAgentChatService(args: {
     guardrail.totalTokens = guardrail.inputTokens
       + guardrail.cacheReadTokens
       + guardrail.cacheCreationTokens;
-    guardrail.compactAtTokens ||= Math.min(claudeSettingCompactAt(managed) || guardrail.maxTokens, guardrail.maxTokens);
+    guardrail.compactAtTokens ||= claudeEstimatedCompactAtFor(managed, guardrail.maxTokens);
     const occupancyPct = Math.max(0, Math.min(100, (guardrail.totalTokens / guardrail.compactAtTokens) * 100));
     updateClaudeContextEpisode(guardrail, occupancyPct);
 
@@ -44724,6 +44704,16 @@ export function createAgentChatService(args: {
     compactionRuntimeSignature(managed.session.provider ?? "", compactionSettingsFor(managed));
   /** Claude's compaction point from the ADE setting, clamped like the SDK clamps it. */
   const claudeSettingCompactAt = (managed: ManagedChatSession) => claudeCompactWindow(compactionSettingsFor(managed).atTokens);
+  /**
+   * Where Claude should auto-compact until a context snapshot reports the real
+   * point: the window (the setting, capped at the model's) minus Claude's
+   * buffer. The setting is the window, not the compaction point.
+   */
+  const claudeEstimatedCompactAtFor = (managed: ManagedChatSession, modelWindowTokens: number): number => {
+    const setting = claudeSettingCompactAt(managed);
+    const window = setting && modelWindowTokens > 0 ? Math.min(setting, modelWindowTokens) : setting || modelWindowTokens;
+    return claudeEstimatedCompactAt(window);
+  };
   const runtimeCompactionSettings = new WeakMap<object, string>();
   const refreshRuntimeCompactionSettings = (managed: ManagedChatSession): void => {
     const runtime = managed.runtime;
@@ -45890,8 +45880,9 @@ export function createAgentChatService(args: {
     managed: ManagedChatSession,
     runtime: ClaudeRuntime,
     pendingRequest: PendingInputRequest,
-    signal: AbortSignal,
-    ui: { kind: "tool_call"; description: string; detail?: Record<string, unknown> },
+    signal: AbortSignal | undefined,
+    ui: { kind: "command" | "file_change" | "tool_call"; description: string; detail?: Record<string, unknown> },
+    cardKind: PendingClaudeApproval["kind"] = "question",
   ): Promise<{
     abandoned: boolean;
     response: { decision?: AgentChatApprovalDecision; answers?: Record<string, string | string[]>; responseText?: string | null };
@@ -45906,8 +45897,9 @@ export function createAgentChatService(args: {
         answers?: Record<string, string | string[]>;
         responseText?: string | null;
       }>((resolve) => {
-        const entry = { kind: "question" as const, resolve, request: pendingRequest };
+        const entry: PendingClaudeApproval = { kind: cardKind, resolve, request: pendingRequest };
         runtime.approvals.set(itemId, entry);
+        if (!signal) return;
         const onAbort = (): void => {
           // Only when this entry is still the live one: a replaced waiter
           // belongs to a newer card and must not be resolved by this signal.
@@ -71108,6 +71100,8 @@ export function createAgentChatService(args: {
     hostSleepChips.dispose();
     clearInterval(sessionCleanupTimer);
     warmIdleCompaction.dispose();
+    warmIdleRearmStopped = true;
+    if (warmIdleRearmTimer) clearTimeout(warmIdleRearmTimer);
     restartRecoverySweepStopped = true;
     if (restartRecoverySweepTimer) clearTimeout(restartRecoverySweepTimer);
     chatWaits?.dispose();
@@ -71397,6 +71391,63 @@ export function createAgentChatService(args: {
   };
   if (process.env.VITEST !== "true" && process.env.NODE_ENV !== "test") {
     scheduleRestartRecoverySweep(3_000, Math.max(0, STALE_RUNNING_SESSION_RESCAN_DELAY_MS + 5_000 - 3_000));
+  }
+
+  /**
+   * The warm idle compaction timers live in memory, so a brain restart (an
+   * update, a quit and reopen) dropped them and a big idle chat then paid a full
+   * uncached read on its next send. Once at startup this re-arms them from each
+   * chat's saved history. Bounded like the restart sweep: Claude chats active
+   * within one cache life, on "Always compact first", that this brain may take
+   * up by itself. The scheduler still skips a timer that is long past due.
+   */
+  const WARM_IDLE_REARM_LIMIT = 25;
+  const WARM_IDLE_REARM_MAX_AGE_MS = 60 * 60_000;
+  let warmIdleRearmTimer: ReturnType<typeof setTimeout> | null = null;
+  let warmIdleRearmStopped = false;
+  const rearmWarmIdleCompaction = async (): Promise<void> => {
+    await scheduledWorkReady;
+    if (warmIdleRearmStopped) return;
+    const cutoff = Date.now() - WARM_IDLE_REARM_MAX_AGE_MS;
+    const rows = sessionService
+      .list({ limit: 200, toolTypes: ["claude-chat"], includeArchived: false })
+      .filter((row) => !row.archivedAt && !row.settledAt)
+      .filter((row) => {
+        const activeMs = row.lastActivityAt ? Date.parse(row.lastActivityAt) : Number.NaN;
+        return Number.isFinite(activeMs) && activeMs >= cutoff;
+      })
+      .slice(0, WARM_IDLE_REARM_LIMIT);
+    for (const row of rows) {
+      if (warmIdleRearmStopped) return;
+      try {
+        let managed = managedSessions.get(row.id);
+        if (!managed) {
+          const persisted = readPersistedState(row.id);
+          // Read the setting before loading: a load reads the transcript.
+          if (compactionSettingsForSession({ provider: "claude", instanceId: persisted?.instanceId ?? null }).idleMode !== "always") continue;
+          if (!chatAutoAdoptable(row.id, persisted, { quiet: true })) continue;
+          managed = ensureManagedSession(row.id);
+        }
+        await warmIdleCompaction.schedule(managed);
+      } catch (error) {
+        logger.warn("agent_chat.warm_idle_compaction_rearm_failed", {
+          sessionId: row.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+  };
+  if (process.env.VITEST !== "true" && process.env.NODE_ENV !== "test") {
+    warmIdleRearmTimer = setTimeout(() => {
+      warmIdleRearmTimer = null;
+      void rearmWarmIdleCompaction().catch((error) => {
+        logger.warn("agent_chat.warm_idle_compaction_rearm_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    }, 5_000);
+    warmIdleRearmTimer.unref?.();
   }
 
   // A tracked CLI child's end closes its parent's card. Every PTY exit path

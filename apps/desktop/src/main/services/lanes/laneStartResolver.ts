@@ -37,6 +37,19 @@ async function verifyCommit(ref: string, cwd: string): Promise<string | null> {
 }
 
 /**
+ * The error for a start branch that does not resolve. A repository with no
+ * commit at all (a fresh `git init`) has no branch to start from yet, and
+ * "wasn't found" would send the user looking for a branch that cannot exist.
+ */
+async function missingStartBranchError(projectRoot: string, message: string): Promise<Error> {
+  const anyRef = await runGit(["for-each-ref", "--count=1", "--format=%(refname)"], { cwd: projectRoot, timeoutMs: 10_000 });
+  if (anyRef.exitCode === 0 && !anyRef.stdout.trim()) {
+    return new Error("This repository has no commits yet. Make a first commit, then create a lane.");
+  }
+  return new Error(message);
+}
+
+/**
  * Resolve a {@link LaneStart} into the commit a new lane branches from.
  *
  * Never throws for a fallback it can explain: a failed fetch uses the last
@@ -82,14 +95,14 @@ export async function resolveLaneStart(args: {
       notes.push(`${sourceBranch} isn't on the remote yet; started from your local ${sourceBranch}.`);
       return { start, sourceBranch, startRef: sourceBranch, startSha: localSha, copyFrom: null, notes };
     }
-    throw new Error(`Branch ${sourceBranch} wasn't found on the remote or locally.`);
+    throw await missingStartBranchError(projectRoot, `Branch ${sourceBranch} wasn't found on the remote or locally.`);
   }
 
   let startRef = laneStartRefLabel(start, sourceBranch);
   let startSha = await verifyCommit(`refs/heads/${sourceBranch}`, projectRoot);
   if (!startSha) {
     startSha = await verifyCommit(`refs/remotes/${remoteRef}`, projectRoot);
-    if (!startSha) throw new Error(`Branch ${sourceBranch} wasn't found locally or on the remote.`);
+    if (!startSha) throw await missingStartBranchError(projectRoot, `Branch ${sourceBranch} wasn't found locally or on the remote.`);
     startRef = remoteRef;
     notes.push(`There's no local ${sourceBranch}; started from ${remoteRef}.`);
   }

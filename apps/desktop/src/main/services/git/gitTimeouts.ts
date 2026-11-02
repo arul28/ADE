@@ -34,6 +34,16 @@ export const GIT_TREE_WRITE_PROGRESS_ENV = { GIT_PROGRESS_DELAY: "0" } as const;
 export const GIT_REMOTE_FETCH_TIMEOUT_MS = 5 * 60_000;
 
 /**
+ * Bound for a pull: a fetch, then a merge or rebase that writes the tree. A
+ * pull is at least as slow as a fetch, and git cannot undo a merge or rebase
+ * it was stopped in, so it gets both bounds.
+ */
+export const GIT_PULL_TIMEOUT_MS = GIT_REMOTE_FETCH_TIMEOUT_MS + GIT_TREE_WRITE_TIMEOUT_MS;
+
+/** How long a caller waits for a pull action: the pull plus the lane bookkeeping around it. */
+export const GIT_PULL_ACTION_TIMEOUT_MS = GIT_PULL_TIMEOUT_MS + 60_000;
+
+/**
  * How long a caller waits for a lane action that runs these commands. It covers
  * the most git work one of them does: three fetches and two tree writes. A lane
  * from a PR branch fetches twice to check the branch and once more to import

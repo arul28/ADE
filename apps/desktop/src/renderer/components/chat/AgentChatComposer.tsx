@@ -229,6 +229,7 @@ import { formatCursorModeLabel } from "../../../shared/cursorModes";
 import { ChatProposedPlanCard } from "./ChatProposedPlanCard";
 import { ChatCommandMenu, type ChatCommandMenuItem, type ChatCommandMenuHandle, type ComposerPrSuggestion } from "./ChatCommandMenu";
 import { isMacPlatform, modifierKeyLabel } from "../../lib/platform";
+import { eventKeyCandidates } from "../../lib/keybindings";
 import { canOpenInAdeBrowser, openUrlInAdeBrowser, openLinkFromUi } from "../../lib/openExternal";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { fixedMenuAboveAnchorStyle } from "../../lib/fixedMenuPlacement";
@@ -576,6 +577,8 @@ function isHttpAuthorizationUrl(value: string): boolean {
 
 type PasteShortcutEvent = {
   key: string;
+  code?: string;
+  getModifierState?: (key: "AltGraph") => boolean;
   metaKey: boolean;
   ctrlKey: boolean;
   altKey: boolean;
@@ -598,7 +601,8 @@ type PasteShortcutEvent = {
 function isMacPasteShortcut(event: PasteShortcutEvent): boolean {
   return (
     isMacPlatform()
-    && event.key.toLowerCase() === "v"
+    // `eventKeyCandidates`: Cmd+V on a Russian or Hebrew layout types `м` or `ה`.
+    && eventKeyCandidates(event).includes("v")
     && event.metaKey
     && !event.ctrlKey
     && !event.altKey

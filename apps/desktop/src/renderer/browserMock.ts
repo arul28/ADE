@@ -7985,6 +7985,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         },
         subscriptionType: "max",
         limitsAvailable: true,
+        limitsUnreadable: null,
         limits: [
           { key: "five_hour", label: "5-hour", usedPercent: 38, resetsAt: new Date(Date.now() + 2.4 * 3_600_000).toISOString() },
           { key: "seven_day", label: "Weekly", usedPercent: 83, resetsAt: new Date(Date.now() + 3.2 * 86_400_000).toISOString() },

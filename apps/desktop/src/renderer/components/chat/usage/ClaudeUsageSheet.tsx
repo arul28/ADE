@@ -37,6 +37,7 @@ type Range = "day" | "week";
 const PLAN_LABELS: Record<string, string> = {
   pro: "Pro",
   max: "Max",
+  ultra: "Ultra",
   team: "Team",
   enterprise: "Enterprise",
 };
@@ -285,6 +286,10 @@ export const ClaudeUsageSheet = memo(function ClaudeUsageSheet({
                   </div>
                 ) : null}
               </>
+            ) : report.limitsUnreadable === "read_failed" ? (
+              <span className="ade-cu-muted">Couldn't read plan limits. Refresh to try again.</span>
+            ) : report.limitsUnreadable === "sign_in" ? (
+              <span className="ade-cu-muted">This sign-in can't read plan limits. Sign in to Claude again to see them.</span>
             ) : (
               <span className="ade-cu-muted">Plan limits don't apply to this sign-in.</span>
             )}

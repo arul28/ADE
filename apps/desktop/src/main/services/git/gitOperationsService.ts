@@ -5,6 +5,7 @@ import { runGitPushOrThrow } from "./gitPushFailure";
 import { branchNameFromHeadRef, getHeadSha, gitBranchRefsIdentity, gitStdoutOrThrow, gitWorktreeRootCached, resolveGitCommit, runGit, runGitOrThrow, runGitRepoCached } from "./git";
 import { detectConflictKind } from "./gitConflictState";
 import { runGitWithGithubAuthFallbackOrThrow } from "./gitTransportAuth";
+import { GIT_PULL_TIMEOUT_MS } from "./gitTimeouts";
 import type {
   GitActionResult,
   GitBatchFileActionArgs,
@@ -1440,7 +1441,7 @@ export function createGitOperationsService({
           reason: `pull_${mode.replace("-", "_")}`,
           metadata: { mode },
           fn: async (lane) => {
-            await runGitWithGithubAuthFallbackOrThrow(commandByMode[mode], { cwd: lane.worktreePath, timeoutMs: 60_000 });
+            await runGitWithGithubAuthFallbackOrThrow(commandByMode[mode], { cwd: lane.worktreePath, timeoutMs: GIT_PULL_TIMEOUT_MS });
           }
         });
         return action;

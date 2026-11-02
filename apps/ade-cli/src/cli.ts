@@ -8013,6 +8013,7 @@ function buildGitPlan(args: string[]): CliPlan {
     return {
       kind: "execute",
       label: "git pull",
+      minTimeoutMs: longRunningLocalRuntimeActionTimeoutMs("git.pull") ?? undefined,
       steps: [actionCallStep("result", "git_pull", withLane(mode ? { mode } : {}))],
     };
   }

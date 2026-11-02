@@ -28,6 +28,7 @@ import {
 import { runGitWithGithubAuthFallback, runGitWithGithubAuthFallbackOrThrow } from "../git/gitTransportAuth";
 import { describeUnsavedWorktreeWork, readWorktreeDirty, UNCOMMITTED_CHANGES_REASON } from "../git/worktreeState";
 import { runGitPushOrThrow } from "../git/gitPushFailure";
+import { GIT_ENGLISH_MESSAGES_ENV } from "../git/gitReadEnv";
 import { detachPullRequestRowsForLane, deletePullRequestChatLinksForSessions } from "../prs/pullRequestRowCleanup";
 import { isWithinDir, normalizeBranchName, parseDiffNameOnly, resolvePathWithinRoot } from "../shared/utils";
 import { fetchRemoteTrackingBranch } from "../shared/remoteTrackingBranch";
@@ -556,7 +557,7 @@ function cloneLaneSummary(summary: LaneSummary): LaneSummary {
 
 /**
  * `git worktree add -b` refused because its branch or folder already exists
- * (run with `LC_ALL=C`). Whoever made those owns them; the other failures
+ * (run with GIT_ENGLISH_MESSAGES_ENV). Whoever made those owns them; the other failures
  * happen after git made the branch, so the branch is the failed call's own.
  */
 function isWorktreeAddConflictError(error: unknown): boolean {
@@ -4312,7 +4313,7 @@ export function createLaneService({
             // English output: the progress parser reads it, and the failure
             // cleanup below tells "already exists" from a failed checkout
             // (see isWorktreeAddConflictError).
-            env: { ...GIT_TREE_WRITE_PROGRESS_ENV, LC_ALL: "C" },
+            env: { ...GIT_TREE_WRITE_PROGRESS_ENV, ...GIT_ENGLISH_MESSAGES_ENV },
             cancelMessage: LANE_CREATE_CANCEL_MESSAGE,
             ...(runtimeOptions.signal ? { signal: runtimeOptions.signal } : {}),
             ...(onCheckoutProgress
@@ -8773,7 +8774,7 @@ export function createLaneService({
               const removeRes = await runGit(removeArgs, {
                 cwd: projectRoot,
                 timeoutMs: GIT_TREE_WRITE_TIMEOUT_MS,
-                env: { LC_ALL: "C" },
+                env: GIT_ENGLISH_MESSAGES_ENV,
                 signal: deleteGitWrite.signal,
               });
               setDeleteStoppable(false);

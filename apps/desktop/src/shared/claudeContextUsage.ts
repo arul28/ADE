@@ -26,6 +26,12 @@ export type ClaudeContextUsage = {
   totalTokens: number;
   maxTokens: number;
   rawMaxTokens?: number;
+  /**
+   * Where Claude auto-compacts, as Claude reports it (`autoCompactThreshold`).
+   * It sits a fixed buffer below the window, so it is lower than
+   * `rawMaxTokens`. Absent when auto-compact is off or the CLI is too old.
+   */
+  compactAtTokens?: number;
   percentage: number;
   model?: string;
 };
@@ -122,6 +128,8 @@ export function normalizeClaudeContextUsage(usage: {
   totalTokens?: unknown;
   maxTokens?: unknown;
   rawMaxTokens?: unknown;
+  autoCompactThreshold?: unknown;
+  isAutoCompactEnabled?: unknown;
   percentage?: unknown;
   model?: unknown;
   mcpTools?: unknown;
@@ -163,11 +171,13 @@ export function normalizeClaudeContextUsage(usage: {
   }
 
   const rawMaxTokens = nonNegativeInt(usage?.rawMaxTokens);
+  const compactAtTokens = usage?.isAutoCompactEnabled === false ? 0 : nonNegativeInt(usage?.autoCompactThreshold);
   return {
     categories,
     totalTokens,
     maxTokens,
     rawMaxTokens: rawMaxTokens > 0 ? rawMaxTokens : maxTokens,
+    ...(compactAtTokens > 0 ? { compactAtTokens } : {}),
     percentage: typeof usage?.percentage === "number" && Number.isFinite(usage.percentage)
       ? Math.max(0, Math.min(100, usage.percentage))
       : maxTokens > 0

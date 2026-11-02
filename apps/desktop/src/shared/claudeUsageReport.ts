@@ -72,8 +72,14 @@ export type ClaudeUsageReport = {
   };
   /** `pro`, `max`, `team`, `enterprise`, or null for an API key or a cloud provider. */
   subscriptionType: string | null;
-  /** False when plan limits do not apply (API key, Bedrock, Vertex). */
+  /** False when plan limits do not apply (API key, Bedrock, Vertex), or could not be read. */
   limitsAvailable: boolean;
+  /**
+   * Why a subscriber's plan limits could not be read: the usage server refused
+   * the read (`read_failed`, a rate limit, say), or the sign-in lacks the scope
+   * that reads them (`sign_in`). Null when they were read or do not apply.
+   */
+  limitsUnreadable: "read_failed" | "sign_in" | null;
   limits: ClaudeUsageLimitWindow[];
   extraUsage: ClaudeUsageExtraUsage | null;
   /** From a scan of this machine's transcripts; null when skipped or not a subscriber. */
@@ -217,6 +223,15 @@ export function normalizeClaudeUsageReport(value: unknown): ClaudeUsageReport {
   }
   const extra = asRecord(rateLimits?.extra_usage);
   const behaviors = asRecord(record.behaviors);
+  const subscriptionType = str(record.subscription_type);
+  // A refused read still resolves, as `rate_limits: { error: {...} }`. A
+  // subscriber whose sign-in cannot read limits gets `rate_limits_available:
+  // false` with a plan; only a non-subscriber (no plan) truly has none.
+  const limitsUnreadable: ClaudeUsageReport["limitsUnreadable"] = asRecord(rateLimits?.error)
+    ? "read_failed"
+    : record.rate_limits_available !== true && subscriptionType
+      ? "sign_in"
+      : null;
 
   return {
     session: {
@@ -227,8 +242,9 @@ export function normalizeClaudeUsageReport(value: unknown): ClaudeUsageReport {
       linesRemoved: num(session.total_lines_removed),
       models,
     },
-    subscriptionType: str(record.subscription_type),
+    subscriptionType,
     limitsAvailable: record.rate_limits_available === true && limits.length > 0,
+    limitsUnreadable,
     limits,
     extraUsage: extra
       ? {

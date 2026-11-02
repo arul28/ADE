@@ -42,6 +42,20 @@ export function claudeCompactWindow(atTokens: number | null | undefined): number
   return atTokens != null ? Math.max(100_000, Math.min(1_000_000, atTokens)) : undefined;
 }
 
+/**
+ * How far below its window Claude auto-compacts: the CLI keeps this many
+ * tokens free (its `autocompact_buffer` row). Measured on CLI 2.1.x with the
+ * Agent SDK 0.3.310, the same for every model, for a set window and for Auto.
+ * Claude reports the real point (`autoCompactThreshold`) in each context
+ * snapshot, which replaces this estimate.
+ */
+export const CLAUDE_AUTOCOMPACT_BUFFER_TOKENS = 33_000;
+
+/** The estimated token count where Claude auto-compacts in a window of `windowTokens`. */
+export function claudeEstimatedCompactAt(windowTokens: number): number {
+  return windowTokens > CLAUDE_AUTOCOMPACT_BUFFER_TOKENS ? windowTokens - CLAUDE_AUTOCOMPACT_BUFFER_TOKENS : windowTokens;
+}
+
 export function claudeCompactionSettings(settings: ProviderCompactionSettings): { autoCompactWindow?: number } {
   const window = claudeCompactWindow(settings.atTokens);
   return window !== undefined ? { autoCompactWindow: window } : {};
