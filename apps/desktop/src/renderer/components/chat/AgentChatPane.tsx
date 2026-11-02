@@ -9150,7 +9150,14 @@ export function AgentChatPane({
       if (Date.now() - lastRecoveryAt < OLDER_HISTORY_CURSOR_RECOVERY_INTERVAL_MS) return;
       olderHistoryCursorRecoveryAtRef.current.set(sessionId, Date.now());
       historyResumeBySessionRef.current.delete(sessionId);
-      await loadHistory(sessionId, { force: true, pin });
+      // Shown as an older-history load: the list re-arms its own paging when
+      // that ends, so a recovered position pages on without another scroll.
+      setOlderHistoryLoadingBySession((prev) => ({ ...prev, [sessionId]: true }));
+      try {
+        await loadHistory(sessionId, { force: true, pin });
+      } finally {
+        setOlderHistoryLoadingBySession((prev) => ({ ...prev, [sessionId]: false }));
+      }
       return;
     }
     if (cursor <= 0) return;
