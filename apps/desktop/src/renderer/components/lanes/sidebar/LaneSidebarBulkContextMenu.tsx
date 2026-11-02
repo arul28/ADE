@@ -64,13 +64,8 @@ export function LaneSidebarBulkContextMenu({
     { kind: "action", key: "copy-branches", label: "Copy branches", icon: GitBranch, onSelect: copy(lanes.map(({ lane }) => lane.branchRef).join("\n"), "branches") },
     { kind: "action", key: "clear", label: "Clear selection", icon: X, onSelect: act(onClearSelection) },
   ];
-  const actionable = new Set(actionableLaneIds);
   const skippedGroups: LaneMenuGroup[] = skippedReasonLines(
-    laneIds.flatMap((id) => {
-      if (actionable.has(id)) return [];
-      const reason = skipReason(id);
-      return reason ? [reason] : [];
-    }),
+    laneIds.flatMap((id) => skipReason(id) ?? []),
   ).map((line, index) => ({ key: `skipped-${index}`, label: line, entries: [], joinPrevious: index > 0 }));
   // The header heads whichever group comes first.
   const header = `${lanes.length} lanes selected`;

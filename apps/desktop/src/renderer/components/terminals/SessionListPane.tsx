@@ -19,7 +19,7 @@ import {
 } from "../../lib/terminalAttention";
 import { nextSnoozeDeadlineMs } from "../../lib/sessionSnooze";
 import { useAppStore, useRootAppStore } from "../../state/appStore";
-import { foreignLaneKey } from "../../state/laneMachineRouting";
+import { foreignLaneKey, machineBlockedReason } from "../../state/laneMachineRouting";
 import { machineIdForBinding, machineNameForBinding } from "../../../shared/machineIdentity";
 import { useLaneNamePending } from "../../state/sessionMetadataGeneratingStore";
 import {
@@ -2555,13 +2555,10 @@ export const SessionListPane = React.memo(function SessionListPane({
     const laneDeleteProgress = deleteProgressByLaneId[
       foreignRow ? foreignLaneKey(foreignRow.machineId, session.laneId) : session.laneId
     ] ?? null;
-    const disabledReason = foreignRow && !foreignRow.online
-      ? `${foreignRow.machineName} is offline`
-      : foreignRow && !foreignRow.binding
-        ? `${foreignRow.machineName} is unavailable`
-        : laneDeleteProgress
-          ? `${getLaneDeleteStatusLabel(laneDeleteProgress)} lane`
-          : null;
+    const disabledReason = (foreignRow
+      ? machineBlockedReason({ machineName: foreignRow.machineName, online: foreignRow.online, routable: foreignRow.binding != null })
+      : null)
+      ?? (laneDeleteProgress ? `${getLaneDeleteStatusLabel(laneDeleteProgress)} lane` : null);
     const card = (
       <SessionCard
         key={session.id}

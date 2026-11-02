@@ -1555,17 +1555,21 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       const requested = (urlLaneDeeplinks.laneIdsRaw ?? "").split(",").map((id) => id.trim())
         .filter((id) => id && !deletingLaneIds.has(id));
       const ids = requested.filter((id) => lanesById.has(id));
+      // A lane from another machine this tab has not loaded (or that is gone)
+      // cannot be selected; say so rather than act on the rest quietly, or
+      // leave the request pending to open a dialog unasked later.
+      const missing = requested.length - ids.length;
+      if (missing > 0) {
+        showToast({
+          title: missing === 1 ? "1 selected lane isn't listed here" : `${missing} selected lanes aren't listed here`,
+          message: missing === 1
+            ? "Its machine may still be loading. Try again in a moment."
+            : "Their machines may still be loading. Try again in a moment.",
+          tone: "warning",
+        });
+        handled = true;
+      }
       if (ids.length > 0) {
-        // A lane from another machine this tab has not loaded (or that is
-        // gone) cannot be selected; say so rather than act on the rest quietly.
-        const missing = requested.length - ids.length;
-        if (missing > 0) {
-          showToast({
-            title: missing === 1 ? "1 selected lane isn't listed here" : `${missing} selected lanes aren't listed here`,
-            message: "Its machine may still be loading. Try again in a moment.",
-            tone: "warning",
-          });
-        }
         // A selection from the Work tab can span machines; show them all.
         if (effectiveMachineFilter !== "all" && ids.some((id) => machineIdForKey(id) !== effectiveMachineFilter)) {
           setMachineFilter("all");

@@ -44,7 +44,7 @@ import {
   type SessionContextMenuState,
 } from "./SessionContextMenu";
 import { moveSessionOnBoard } from "./sessionBoardMoveUi";
-import { SessionBulkContextMenu, type BulkForeignLane, type BulkLaneIntent } from "./SessionBulkContextMenu";
+import { SessionBulkContextMenu, type BulkLaneIntent } from "./SessionBulkContextMenu";
 import { showToast } from "../app/toast/toastStore";
 import type { ContextMenuState } from "../ui/ContextMenu";
 import { SessionInfoPopover, type InfoPopoverState } from "./SessionInfoPopover";
@@ -116,7 +116,7 @@ import {
 } from "./workSidebarSplitter";
 import { useWorkLaneDeleteProgress } from "./useWorkLaneDeleteProgress";
 import { effectiveRuntimeBinding } from "../../lib/chatMachineRouting";
-import { foreignLaneKey } from "../../state/laneMachineRouting";
+import { buildForeignSessionLanes, foreignLaneKey } from "../../state/laneMachineRouting";
 import { buildPtyContinuationLaunchFields } from "./cliLaunch";
 import {
   cancelCrossMachineOptimisticChatSession,
@@ -1480,38 +1480,27 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   const gridableSessionIds = useMemo(() => new Set(work.sessionsById.keys()), [work.sessionsById]);
   const localSessionIds = useMemo(() => new Set(work.sessions.map((session) => session.id)), [work.sessions]);
 
+  // A selected row on another machine, as the Lanes tab will see it. The row's
+  // own machine (its runtime pin) answers first; a row without a pin takes the
+  // first machine that reports the session.
+  const liveCrossMachineLanes = useRootAppStore((s) => s.crossMachineLanesByMachineId);
+  const foreignSessionLanes = useMemo(
+    () => buildForeignSessionLanes(liveCrossMachineLanes ?? {}, machineIdForBinding(projectBinding)),
+    [liveCrossMachineLanes, projectBinding],
+  );
+  const foreignLaneForSession = useCallback((session: TerminalSessionSummary) => {
+    const pin = resolveSessionRuntimePin(session);
+    const own = pin ? foreignSessionLanes.get(machineIdForBinding(pin))?.get(session.id) : undefined;
+    if (own) return own;
+    for (const bySessionId of foreignSessionLanes.values()) {
+      const lane = bySessionId.get(session.id);
+      if (lane) return lane;
+    }
+    return null;
+  }, [foreignSessionLanes, resolveSessionRuntimePin]);
+
   // Bulk menu → Lanes tab, through the same `action=batch` deep link the Work
   // lane menu's "Manage N Open Lanes" already uses. `open` only selects them.
-  // A selected row on another machine: its lane as the Lanes tab keys it
-  // (`machineId:laneId`), read from the same cross-machine union the Lanes tab
-  // lists, and why it can't be acted on when its machine is out of reach (the
-  // same reasons the sidebar card shows).
-  const foreignLaneBySessionId = useMemo(() => {
-    const bySessionId = new Map<string, BulkForeignLane>();
-    // The tab's own machine is `work.lanes`; a stale slice of it is not a
-    // foreign lane (the Lanes tab skips it too).
-    const activeMachineId = machineIdForBinding(projectBinding);
-    for (const machine of crossMachineSlices) {
-      if (machine.machineId === activeMachineId) continue;
-      const lanesById = new Map(machine.lanes.map((lane) => [lane.id, lane] as const));
-      const blockedReason = !machine.online
-        ? `${machine.machineName} is offline`
-        : !machine.binding
-          ? `${machine.machineName} is unavailable`
-          : null;
-      for (const session of machine.sessions) {
-        const lane = lanesById.get(session.laneId);
-        if (!lane || bySessionId.has(session.id)) continue;
-        bySessionId.set(session.id, { key: foreignLaneKey(machine.machineId, lane.id), lane, blockedReason });
-      }
-    }
-    return bySessionId;
-  }, [crossMachineSlices, projectBinding]);
-  const foreignLaneForSession = useCallback(
-    (session: TerminalSessionSummary) => foreignLaneBySessionId.get(session.id) ?? null,
-    [foreignLaneBySessionId],
-  );
-
   // `laneIds` are Lanes-tab row keys and may name lanes on other machines. The
   // Lanes tab resolves those itself; only a lane on the tab's machine may go
   // into the shared store selection, which every other tab reads as local.

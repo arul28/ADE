@@ -17,6 +17,7 @@ import {
   X,
 } from "@phosphor-icons/react";
 import type { LaneSummary, OpenProjectBinding, TerminalSessionSummary } from "../../../shared/types";
+import type { ForeignSessionLane } from "../../state/laneMachineRouting";
 import { canBulkStopSession } from "../../lib/sessions";
 import {
   canonicalInputFromSummary,
@@ -38,12 +39,6 @@ import {
 /** What the Lanes tab should do with the lanes behind a multi-selection. */
 export type BulkLaneIntent = "open" | "manage" | "archive" | "delete";
 
-/**
- * A selected row's lane on another machine: its Lanes-tab row key
- * (`machineId:laneId`), the lane, and why it can't be acted on right now
- * (the machine is offline or unreachable), or null when it can.
- */
-export type BulkForeignLane = { key: string; lane: LaneSummary; blockedReason: string | null };
 
 type SessionBulkContextMenuProps = {
   menu: ContextMenuState;
@@ -58,7 +53,7 @@ type SessionBulkContextMenuProps = {
    */
   localSessionIds: ReadonlySet<string>;
   /** The lane of a row on another machine, or null when no machine lists it. */
-  foreignLaneFor: (session: TerminalSessionSummary) => BulkForeignLane | null;
+  foreignLaneFor: (session: TerminalSessionSummary) => ForeignSessionLane | null;
   resolvePin: (session: TerminalSessionSummary) => OpenProjectBinding | null;
   onClose: () => void;
   pinnedSessionIds: string[];

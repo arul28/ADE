@@ -1811,6 +1811,8 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
       // long-press bridge that stands in for `contextmenu`, which iOS Safari
       // never fires. Without this it would have to walk up from an inner
       // testid, which silently breaks the moment the card's markup shifts.
+      // The Work sidebar's Shift-click range also reads these two attributes
+      // for on-screen row order (`onScreenSessionIds` in SessionListPane).
       data-session-row=""
       data-session-id={session.id}
       /* The hover-intent trigger sits on the WRAPPER, not on the row: this is
