@@ -13,7 +13,8 @@ ADE GitHub App on the repositories the user wants ADE to track.
 ## Why this shape
 
 - One Worker, one D1 database, and one hibernating Durable Object per active
-  repository; no always-on server, queues, cron, or per-user process.
+  repository; no always-on server, queues, or per-user process. Its only cron
+  is the Beta timer (below), which has nothing to do with webhooks.
 - GitHub webhook writes are idempotent by delivery id.
 - ADE polls with `after=<last-cursor>`, where new cursors are monotonic
   `seq:<n>` values. Legacy delivery-id cursors still work during migration.
@@ -143,6 +144,28 @@ printf '%s' "$ADE_GITHUB_RELAY_TOKEN" | npx wrangler secret put RELAY_ACCESS_TOK
 ADE clients send a project-scoped `ade_proj_...` token derived from that secret
 and `remoteProjectId`; if ADE is configured with an already-derived
 `ade_proj_...` token it sends that value as-is.
+
+## Beta timer
+
+The Worker's cron (`17,47 * * * *`) starts ADE's own Beta workflow
+(`.github/workflows/beta.yml`) through the GitHub API (`src/betaTimer.ts`).
+GitHub's `schedule` trigger ran hours late for the ADE repo and dropped the
+ticks it missed, so betas came every 3.5–7.5 hours instead of at most every 3.
+The workflow still decides whether a beta is due; the timer only starts it,
+and skips a tick while a Beta run is queued or building.
+
+It needs one secret, a fine-grained GitHub token for `arul28/ADE` with
+**Actions: read and write** and nothing else:
+
+```sh
+cd apps/webhook-relay
+npx wrangler secret put GITHUB_BETA_DISPATCH_TOKEN
+```
+
+Unset, the timer does nothing. A refused token (expired or revoked) throws on
+every tick and reaches Sentry; replace it the same way. Cloudflare's dashboard
+lists every tick under the Worker's Cron Events and its log lines start with
+`beta_timer.`.
 
 ## ADE project config
 

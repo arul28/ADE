@@ -1,4 +1,5 @@
 import * as Sentry from "@sentry/cloudflare";
+import { runBetaTimer, type BetaTimerEnv } from "./betaTimer";
 import { RepoEventsDurableObject as RepoEventsDurableObjectClass } from "./repoEventsDurableObject";
 import { cloudflareTransientKind, logCloudflareTransient, retryD1Reads, transientUnavailableResponse } from "./cloudflareTransient";
 import { handleRequest, type RelayEnv } from "./relay";
@@ -40,5 +41,11 @@ export default Sentry.withSentry(sentryOptions, {
         headers: { "content-type": "application/json" },
       });
     }
+  },
+
+  // The only cron job: start ADE's Beta workflow (src/betaTimer.ts). Awaited,
+  // so a throw reaches the Sentry wrapper.
+  async scheduled(_event: ScheduledEvent, env: BetaTimerEnv & SentryEnv): Promise<void> {
+    await runBetaTimer(env);
   },
 });

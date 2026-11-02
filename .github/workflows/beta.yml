@@ -27,8 +27,11 @@ name: Beta
 # dispatched them and leave the issue alone.
 
 on:
+  # The real timer is the ade-github-webhook-relay Worker's cron, which
+  # dispatches this workflow at :17 and :47 (apps/webhook-relay/src/betaTimer.ts).
+  # GitHub's schedule ran hours late for this repo and dropped the ticks it
+  # missed, so it stays only as a backup.
   schedule:
-    # Off the hour, when GitHub's scheduler is least crowded.
     - cron: "17,47 * * * *"
   workflow_dispatch:
     inputs:
