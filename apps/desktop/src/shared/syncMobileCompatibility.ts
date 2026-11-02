@@ -7,9 +7,10 @@ export const MOBILE_SYNC_COMPATIBILITY_CONTRACT_VERSION = 1;
 /**
  * The oldest iPhone build this computer talks to. Hosts refuse older builds
  * at hello with `protocol_version_mismatch` / `updateTarget: "client"`, which
- * every shipped build shows as "Update ADE on this iPhone". The release that
- * raises it must ship the iOS build with at least this number (for this
- * marketing version).
+ * every shipped build shows as "Update ADE on this iPhone". Raise it only up
+ * to a build the normal ADE app (com.ade.ios) already has: betas ship this
+ * value to machines first, and the normal app only updates at a stable
+ * release (see the release skill's "iPhone minimum" rule).
  *
  * App Store Connect numbers builds per marketing version (`CFBundleVersion`
  * restarts for each `CFBundleShortVersionString`), so the gate compares the

@@ -134,6 +134,10 @@ Why it works:
 - The older side does not know the new features, so it does not show them.
 - Only a protocol minimum raise would block a connection, and then both sides
   say which one to update. No release has done that.
+- The iPhone minimum (`MIN_SUPPORTED_MOBILE_APP_BUILD`) is raised only up to
+  a build the normal ADE app already has. A raise reaches Beta machines first,
+  and the normal app only updates at a stable release, so a higher minimum
+  would lock it out of them. `/quality` and the release skill both check it.
 
 The web client deploys from `main` on every merge
 (`.github/workflows/deploy-web.yml`), so it is newer than both tracks. It
