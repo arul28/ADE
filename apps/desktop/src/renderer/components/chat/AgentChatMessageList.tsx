@@ -405,6 +405,9 @@ function ResetCreditNoticeRow({
 }) {
   const [spending, setSpending] = useState(false);
   const [outcome, setOutcome] = useState<string | null>(null);
+  // The credit belongs to the account on the chat's machine, which is not
+  // always the machine the tab is bound to.
+  const { pin } = useChatRuntimeScope();
   const consume = window.ade?.usage?.consumeResetCredit;
   const canSpend = Boolean(accountId) && isAdeAvailable(consume) && !outcome;
   const spend = useCallback(async () => {
@@ -413,13 +416,13 @@ function ResetCreditNoticeRow({
     if (!isAdeAvailable(call)) return;
     setSpending(true);
     try {
-      setOutcome(resetCreditOutcomeText(await call({ accountId })));
+      setOutcome(resetCreditOutcomeText(await call({ accountId }, pin)));
     } catch {
       setOutcome(RESET_CREDIT_OUTCOME_TEXT.failure);
     } finally {
       setSpending(false);
     }
-  }, [accountId]);
+  }, [accountId, pin]);
   return (
     <div className={cn(
       "inline-flex max-w-[var(--chat-content-width,52rem)] flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border px-2.5 py-1.5 font-sans text-[length:calc(var(--chat-font-size)*10/14)]",

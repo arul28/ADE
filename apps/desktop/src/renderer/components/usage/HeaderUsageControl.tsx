@@ -60,6 +60,8 @@ function windowPercentFor(
 const HEADER_USAGE_PROVIDER_STATUS_REFRESH_MS = 300_000;
 
 type HeaderUsageWindowSummary = {
+  /** False until the first snapshot lands; a missing window then reads "…". */
+  loaded: boolean;
   fiveHourPercent: number | null;
   planPercent: number | null;
   planLabel: "wk" | "mo";
@@ -69,6 +71,7 @@ function headerUsageFor(snapshot: UsageSnapshot | null, provider: UsageProvider)
   const weeklyPercent = windowPercentFor(snapshot, provider, "weekly");
   const monthlyPercent = windowPercentFor(snapshot, provider, "monthly");
   return {
+    loaded: snapshot != null,
     fiveHourPercent: windowPercentFor(snapshot, provider, "five_hour"),
     planPercent: weeklyPercent ?? monthlyPercent,
     planLabel: weeklyPercent == null && monthlyPercent != null ? "mo" : "wk",
@@ -96,9 +99,11 @@ function headroomLabel(percentUsed: number | null): string {
 
 function formatUsageTitle(provider: UsageProvider, usage: HeaderUsageWindowSummary): string {
   const plan = `${usage.planLabel} ${headroomLabel(usage.planPercent)}`;
-  // Claude and Codex always speak both windows. A provider that only has a
-  // plan window (Cursor, Copilot, Grok) does not grow an empty 5h slot.
-  if (provider === "claude" || provider === "codex" || usage.fiveHourPercent != null) {
+  // Only the windows the provider reports. Before the first snapshot Claude and
+  // Codex hold a "5h …" slot; once it lands, an account with no five-hour
+  // window (idle, or a plan without one) does not get a phantom one.
+  const fiveHourPending = !usage.loaded && (provider === "claude" || provider === "codex");
+  if (usage.fiveHourPercent != null || fiveHourPending) {
     return `${plan}, 5h ${headroomLabel(usage.fiveHourPercent)}`;
   }
   return plan;

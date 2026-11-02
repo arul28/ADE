@@ -53,12 +53,15 @@ const TOO_OLD_MESSAGE = "This computer's ADE is too old to share usage";
  * The message a genuinely unknown method produces.
  *
  * `runtimeRpcClient` flattens the JSON-RPC error into a plain `Error` with no
- * `.code`, so the text is all there is; `-32601` is deliberately *not* matched,
+ * `.code`, so the text is all there is. A brain that predates the machine-level
+ * `usage.getUsageRollup` method routes it as a project method and answers
+ * "requires params.projectId", which is the same version gap in other words.
+ * `-32601` is deliberately *not* matched,
  * because ADE also throws `methodNotFound` for permission denials, and reading
  * one of those as "too old to share usage" is exactly the bug class this guard
  * exists to avoid.
  */
-const UNKNOWN_METHOD_MESSAGE = /method not found:|unsupported remote command:/i;
+const UNKNOWN_METHOD_MESSAGE = /method not found:|unsupported remote command:|method usage\.getUsageRollup requires params\.projectId/i;
 
 /**
  * Denial phrasings that ADE dresses in a `methodNotFound` code.
@@ -190,8 +193,8 @@ function isUsageRollup(value: unknown): value is AdeUsageRollup {
  * One peer live window, or null.
  *
  * The pooled limits view only reads a window's provider, label, fill and reset,
- * so those are what travel; `pacing` and `modelBreakdown` are omitted rather
- * than carried unbounded. `resetsInMs` is derived from `resetsAt` on the reader
+ * so those are what travel, plus up to a few per-model caps (Claude's Fable);
+ * `pacing` is omitted rather than carried unbounded. `resetsInMs` is derived from `resetsAt` on the reader
  * side anyway, so a peer's value is only a fallback.
  */
 function boundPeerWindow(value: unknown): UsageWindow | null {
@@ -205,6 +208,14 @@ function boundPeerWindow(value: unknown): UsageWindow | null {
   const accountId = boundedString(record.accountId, MAX_PEER_ID_LENGTH);
   const resetsInMs = finiteNumber(record.resetsInMs);
   const windowDurationMs = finiteNumber(record.windowDurationMs);
+  const modelBreakdown: Record<string, number> = {};
+  if (record.modelBreakdown && typeof record.modelBreakdown === "object") {
+    for (const [model, raw] of Object.entries(record.modelBreakdown as Record<string, unknown>).slice(0, MAX_PEER_MODEL_CAPS)) {
+      const name = boundedString(model, MAX_PEER_ID_LENGTH);
+      const percent = finiteNumber(raw);
+      if (name && percent !== null) modelBreakdown[name] = Math.max(0, Math.min(100, percent));
+    }
+  }
   return {
     provider: provider as UsageWindow["provider"],
     windowType: windowType as UsageWindow["windowType"],
@@ -213,8 +224,12 @@ function boundPeerWindow(value: unknown): UsageWindow | null {
     resetsInMs: resetsInMs === null ? 0 : Math.max(0, resetsInMs),
     ...(accountId ? { accountId } : {}),
     ...(windowDurationMs !== null && windowDurationMs > 0 ? { windowDurationMs } : {}),
+    ...(Object.keys(modelBreakdown).length > 0 ? { modelBreakdown } : {}),
   };
 }
+
+const MAX_PEER_MODEL_CAPS = 8;
+const PEER_LOGIN_STATES = new Set<NonNullable<UsageAccount["login"]>>(["ok", "expired", "signed_out"]);
 
 /**
  * One peer account, or null.
@@ -236,6 +251,11 @@ function boundPeerAccount(value: unknown): UsageAccount | null {
   const label = boundedString(record.label, MAX_PEER_ID_LENGTH);
   const instanceId = boundedString(record.instanceId, MAX_PEER_ID_LENGTH);
   const url = boundedString(record.url, MAX_PEER_ID_LENGTH);
+  // Whether the peer's own token still works, so a reader can tell a live
+  // reading from the last one before that machine's login expired.
+  const login = PEER_LOGIN_STATES.has(record.login as NonNullable<UsageAccount["login"]>)
+    ? record.login as NonNullable<UsageAccount["login"]>
+    : null;
   const machines = Array.isArray(record.machines)
     ? record.machines.slice(0, MAX_PEER_ROOTS).flatMap((raw) => {
       if (!raw || typeof raw !== "object") return [];
@@ -255,6 +275,7 @@ function boundPeerAccount(value: unknown): UsageAccount | null {
     ...(label ? { label } : {}),
     machines,
     ...(url ? { url } : {}),
+    ...(login ? { login } : {}),
   };
 }
 
@@ -474,5 +495,81 @@ export function createAccountRollupFetcher({
     }));
 
     return result;
+  };
+}
+
+/** The method a peer answers with its own live quota, and nothing else. */
+export const LIVE_QUOTA_METHOD = "usage.getLiveQuota";
+
+/**
+ * Quota-only fan-out for the cross-machine limits view.
+ *
+ * Same reach rules as the rollup fan-out (online, paired, already connected,
+ * capped), but the answer is a handful of windows and accounts instead of the
+ * machine's whole history, so the limits view can refresh while it is on
+ * screen without moving rollup-sized payloads. A peer that is too old or
+ * unreachable is left out; the caller keeps its last reading.
+ */
+export function createAccountLiveQuotaFetcher({
+  listMachines,
+  resolveTargetIdForMachineKey,
+  isTargetConnected,
+  callMachineMethod,
+  localMachineKey,
+  logger,
+}: Parameters<typeof createAccountRollupFetcher>[0]) {
+  return async ({ timeoutMs, signal }: { timeoutMs: number; signal: AbortSignal }): Promise<Array<{
+    machineKey: string;
+    label: string;
+    windows: UsageWindow[];
+    accounts: UsageAccount[];
+  }>> => {
+    if (signal.aborted) return [];
+    let listed: AdeAccountMachinesResult;
+    try {
+      listed = await withDeadline(listMachines(), signal);
+    } catch (error) {
+      logger?.debug?.("usage.account.live_quota_list_failed", { error: getErrorMessage(error) });
+      return [];
+    }
+    if (listed.state !== "ok") return [];
+    const selfKey = localMachineKey();
+    const candidates: Array<{ machine: AdeAccountMachine; targetId: string }> = [];
+    for (const machine of listed.machines) {
+      if (candidates.length >= MAX_LIVE_MACHINES) break;
+      if (machine.machineKey === selfKey || !machine.online) continue;
+      const targetId = resolveTargetIdForMachineKey(machine.machineKey);
+      if (!targetId) continue;
+      if (isTargetConnected && !isTargetConnected(targetId)) continue;
+      candidates.push({ machine, targetId });
+    }
+    const results = await Promise.all(candidates.map(async ({ machine, targetId }) => {
+      try {
+        if (signal.aborted) return null;
+        const answer = await withDeadline(
+          callMachineMethod<unknown>(targetId, LIVE_QUOTA_METHOD, {}, { timeoutMs }),
+          signal,
+        );
+        if (!answer || typeof answer !== "object") return null;
+        const record = answer as Record<string, unknown>;
+        const windows = (Array.isArray(record.windows) ? record.windows : [])
+          .slice(0, MAX_LIVE_QUOTA_WINDOWS)
+          .map(boundPeerWindow)
+          .filter((window): window is UsageWindow => window !== null);
+        const accounts = (Array.isArray(record.accounts) ? record.accounts : [])
+          .slice(0, MAX_LIVE_QUOTA_ACCOUNTS)
+          .map(boundPeerAccount)
+          .filter((account): account is UsageAccount => account !== null);
+        return { machineKey: machine.machineKey, label: machineLabel(machine), windows, accounts };
+      } catch (error) {
+        logger?.debug?.("usage.account.live_quota_machine_failed", {
+          machineKey: machine.machineKey,
+          methodMissing: isMethodNotFound(error),
+          error: getErrorMessage(error),
+        });
+        return null;
+      }
+    }));
+    return results.filter((result): result is NonNullable<typeof result> => result !== null);
   };
 }

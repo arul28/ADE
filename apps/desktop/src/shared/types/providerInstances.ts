@@ -46,8 +46,9 @@ export type ProviderInstance = {
   id: string;
   provider: ProviderInstanceProvider;
   /**
-   * What every surface calls the account: its signed-in email, else its id.
-   * Set by the host; accounts have no names of their own.
+   * What every surface calls the account: its signed-in email (see
+   * `providerAccountName`), never its id. Set by the host; accounts have no
+   * names of their own.
    */
   label: string;
   /** `#rrggbb`, chosen by the user to tell accounts apart at a glance. */
@@ -115,6 +116,33 @@ export type ProviderInstanceReplacedAccount = {
  */
 export function providerInstanceHasAccount(instance: Pick<ProviderInstance, "signedIn" | "loginBroken">): boolean {
   return instance.signedIn || instance.loginBroken === true;
+}
+
+/** Shown where an account's name goes before it has signed in. */
+export const PROVIDER_ACCOUNT_NOT_SIGNED_IN = "Not signed in";
+
+/**
+ * What a person sees an account called: its email. An account has no other
+ * name; its id is a storage key, and two machines can give one email
+ * different ids. A login with no email (a plan only) reads as signed in;
+ * before the account signs in, `PROVIDER_ACCOUNT_NOT_SIGNED_IN`.
+ */
+export function providerAccountName(
+  instance: { account?: { email?: string | null; plan?: string | null } | null } | null | undefined,
+): string {
+  const email = instance?.account?.email?.trim();
+  if (email) return email;
+  return instance?.account?.plan?.trim() ? "Signed in, no email" : PROVIDER_ACCOUNT_NOT_SIGNED_IN;
+}
+
+/**
+ * How many distinct logins a list of accounts holds. A copy (`sameLoginAs`)
+ * is a second config home signed in to a login another account already
+ * holds: it adds no quota, so it is not another account to count. Every
+ * surface that says "N accounts" counts this, never the raw list length.
+ */
+export function countProviderLogins(instances: readonly Pick<ProviderInstance, "sameLoginAs">[]): number {
+  return instances.filter((instance) => !instance.sameLoginAs).length;
 }
 
 /** Per-provider settings that are about the set of accounts, not one account. */

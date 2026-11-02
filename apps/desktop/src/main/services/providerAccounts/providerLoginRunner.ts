@@ -248,7 +248,7 @@ export function createProviderLoginRunner(deps: ProviderLoginRunnerDeps) {
 
   function start(id: string, options: { deviceAuth?: boolean } = {}): ProviderLoginStatus {
     const instance = deps.getInstance(id);
-    if (!instance) throw new Error(`No provider account with id ${JSON.stringify(id)}.`);
+    if (!instance) throw new Error(`No provider account ${JSON.stringify(id)}.`);
     // Only Codex has a device sign-in; Claude's link already ends in a pasted code.
     const deviceAuth = options.deviceAuth === true && instance.provider === "codex";
     const pinned = pinnedProviderCliState(instance.provider);

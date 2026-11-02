@@ -34,6 +34,7 @@ import {
   isDefaultProviderInstanceId,
   isProviderInstanceProvider,
   normalizeProviderInstanceAccent,
+  providerAccountName,
   type ProviderInstance,
   type ProviderInstanceLoginCommand,
   type ProviderInstanceProvider,
@@ -161,9 +162,12 @@ export function resolveChatInstanceId(provider: string, instanceId: string | nul
   return getMachineProviderInstanceStore().resolve(provider, instanceId?.trim() || undefined).instance.id;
 }
 
-/** What every surface calls an account: its email, else its id. */
-export function providerInstanceDisplayLabel(instance: { id: string; account?: { email?: string } }): string {
-  return instance.account?.email?.trim() || instance.id;
+/**
+ * What every surface calls an account: its email. Never its id, which is a
+ * storage key (two machines can give one email different ids).
+ */
+export function providerInstanceDisplayLabel(instance: { id: string; account?: { email?: string; plan?: string } }): string {
+  return providerAccountName(instance);
 }
 
 function normalizeLabel(value: unknown): string {
@@ -433,7 +437,7 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
       ...(stored.onExtraUsage ? { onExtraUsage: stored.onExtraUsage } : {}),
       provider: stored.provider,
       // An account is named by its login, not by a name someone typed: the
-      // email once it has signed in, its id until then.
+      // email once it has signed in, "Not signed in" until then.
       label: providerInstanceDisplayLabel(stored),
       ...(stored.accentColor ? { accentColor: stored.accentColor } : {}),
       configHome: stored.configHome,
@@ -474,11 +478,37 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
       .map((record) => toPublic(record, file));
   }
 
-  function get(id: string): ProviderInstance | null {
-    const trimmed = typeof id === "string" ? id.trim() : "";
+  /**
+   * The record an id or an email names. Users know an account by its email,
+   * so anywhere an account is named (`--instance`, `providers accounts
+   * default`, a switch) the email works too. An exact id always wins. An email
+   * names the login's owner: the account that is not a copy and, among those,
+   * the one whose login works (the same rule as `sameLoginAs`). Without a
+   * provider, an email that both providers hold names neither.
+   */
+  function findRecord(
+    file: RegistryFile,
+    idOrEmail: unknown,
+    provider?: ProviderInstanceProvider,
+  ): StoredInstance | null {
+    const trimmed = typeof idOrEmail === "string" ? idOrEmail.trim() : "";
     if (!trimmed) return null;
+    const records = allRecords(file);
+    const exact = records.find((entry) => entry.id === trimmed);
+    if (exact) return !provider || exact.provider === provider ? exact : null;
+    if (!trimmed.includes("@")) return null;
+    const holders = records.filter((entry) =>
+      (!provider || entry.provider === provider) && sameEmail(entry.account?.email, trimmed));
+    if (!holders.length) return null;
+    const holderProvider = holders[0]!.provider;
+    if (holders.some((entry) => entry.provider !== holderProvider)) return null;
+    return sameLoginOwner(holders, defaultIdFor(holderProvider, file), (id) => brokenLogins.has(id)) ?? null;
+  }
+
+  /** An account by its id or its email (see `findRecord`). */
+  function get(idOrEmail: string): ProviderInstance | null {
     const file = readFile();
-    const record = allRecords(file).find((entry) => entry.id === trimmed);
+    const record = findRecord(file, idOrEmail);
     return record ? toPublic(record, file) : null;
   }
 
@@ -502,8 +532,9 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
   ): { instance: ProviderInstance; fellBack: boolean } {
     const requested = instanceId?.trim();
     if (requested) {
-      const found = get(requested);
-      if (found && found.provider === provider) return { instance: found, fellBack: false };
+      const file = readFile();
+      const found = findRecord(file, requested, provider);
+      if (found) return { instance: toPublic(found, file), fellBack: false };
       return { instance: getDefault(provider), fellBack: true };
     }
     return { instance: getDefault(provider), fellBack: false };
@@ -550,7 +581,7 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
   /** The provider CLI's own sign-out; the default is refused like `remove`. */
   function logoutCommandFor(id: string): { instance: ProviderInstance; command: ProviderInstanceLoginCommand } {
     const instance = get(id);
-    if (!instance) throw new Error(`No provider account with id ${JSON.stringify(id)}.`);
+    if (!instance) throw new Error(`No provider account ${JSON.stringify(id)}.`);
     if (instance.isDefault) throw new Error("This account is the default. Make another account the default first.");
     const args = instance.provider === "claude" ? ["auth", "logout"] : ["logout"];
     return { instance, command: { ...loginCommandFor(instance), args } };
@@ -632,10 +663,10 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
     const trimmed = typeof id === "string" ? id.trim() : "";
     if (!trimmed) throw new Error("A provider account id is required.");
     const file = readFile();
-    const existing = allRecords(file).find((entry) => entry.id === trimmed);
-    if (!existing) throw new Error(`No provider account with id ${JSON.stringify(trimmed)}.`);
+    const existing = findRecord(file, trimmed);
+    if (!existing) throw new Error(`No provider account ${JSON.stringify(trimmed)}.`);
     const next = apply(existing);
-    const index = file.instances.findIndex((entry) => entry.id === trimmed);
+    const index = file.instances.findIndex((entry) => entry.id === existing.id);
     if (index >= 0) file.instances[index] = next;
     else file.instances = [...file.instances, next];
     writeFile(file);
@@ -671,13 +702,14 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
    */
   const signingOut = new Set<string>();
 
-  function setDefault(id: string): ProviderInstance {
-    const trimmed = typeof id === "string" ? id.trim() : "";
-    if (!trimmed) throw new Error("A provider account id is required.");
-    if (signingOut.has(trimmed)) throw new Error("This account is being signed out. Try again in a moment.");
+  function setDefault(idOrEmail: string): ProviderInstance {
+    const requested = typeof idOrEmail === "string" ? idOrEmail.trim() : "";
+    if (!requested) throw new Error("A provider account id is required.");
     const file = readFile();
-    const record = allRecords(file).find((entry) => entry.id === trimmed);
-    if (!record) throw new Error(`No provider account with id ${JSON.stringify(trimmed)}.`);
+    const record = findRecord(file, requested);
+    if (!record) throw new Error(`No provider account ${JSON.stringify(requested)}.`);
+    const trimmed = record.id;
+    if (signingOut.has(trimmed)) throw new Error("This account is being signed out. Try again in a moment.");
     if (isDefaultProviderInstanceId(trimmed)) delete file.defaults[record.provider];
     else file.defaults[record.provider] = trimmed;
     writeFile(file);
@@ -695,12 +727,13 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
    * behind a non-destructive word. The directory stays; the path is returned so
    * a caller can tell the user exactly what is still there.
    */
-  function remove(id: string): { removed: boolean; configHome: string } {
-    const trimmed = typeof id === "string" ? id.trim() : "";
-    if (!trimmed) throw new Error("A provider account id is required.");
+  function remove(idOrEmail: string): { removed: boolean; configHome: string } {
+    const requested = typeof idOrEmail === "string" ? idOrEmail.trim() : "";
+    if (!requested) throw new Error("A provider account id is required.");
     const file = readFile();
-    const record = allRecords(file).find((entry) => entry.id === trimmed);
-    if (!record) throw new Error(`No provider account with id ${JSON.stringify(trimmed)}.`);
+    const record = findRecord(file, requested);
+    if (!record) throw new Error(`No provider account ${JSON.stringify(requested)}.`);
+    const trimmed = record.id;
     // A second removal racing the first one's sign-out must not report success.
     if (signingOut.has(trimmed)) throw new Error("This account is already being signed out.");
     if (isDefaultProviderInstanceId(trimmed)) {
@@ -931,7 +964,7 @@ export function createProviderInstanceStore(options: CreateProviderInstanceStore
     hasPresetBinding,
     loginCommand: (id: string): ProviderInstanceLoginCommand => {
       const instance = get(id);
-      if (!instance) throw new Error(`No provider account with id ${JSON.stringify(id)}.`);
+      if (!instance) throw new Error(`No provider account ${JSON.stringify(id)}.`);
       return loginCommandFor(instance);
     },
     /**

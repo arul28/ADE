@@ -30,6 +30,7 @@ import { AnchoredTooltip } from "../../../ui/AnchoredTooltip";
 import { useUsageSnapshot } from "../../../usage/useUsageSnapshot";
 import { usePrefersReducedMotion } from "../../../../hooks/usePrefersReducedMotion";
 import {
+  countProviderLogins,
   isBaseProviderInstance,
   type ProviderInstance,
   type ProviderInstanceProvider,
@@ -134,6 +135,11 @@ function RoutingSwitch({
   );
 }
 
+/** An account in a sentence: its email, or "this account" before it has one. */
+function accountPhrase(instance: ProviderInstance): string {
+  return instance.account?.email?.trim() || "this account";
+}
+
 const CARD_MIN_WIDTH = 290;
 const CARD_GAP = 10;
 
@@ -191,9 +197,11 @@ export function ProviderAccountsPanel({
   const gridWidth = useElementWidth(gridRef);
   const columns = balancedColumns(instances.length, gridWidth);
 
-  const showSmartBalance = instances.length >= 2;
+  // A copy of another account's login is a card, not an account: it adds no
+  // quota, so it neither counts in the header nor makes balancing meaningful.
+  const loginCount = countProviderLogins(instances);
+  const showSmartBalance = loginCount >= 2;
   const showAutoStart = providerOffersAutoStart(snapshot, provider);
-  const labelById = useMemo(() => new Map(instances.map((instance) => [instance.id, instance.label])), [instances]);
   const nextPickId = snapshot?.balanceNext?.find((entry) => entry.provider === provider)?.instanceId ?? null;
 
   const run = useCallback(
@@ -223,8 +231,8 @@ export function ProviderAccountsPanel({
         void confirmDialog({
           title: "Sign out",
           message: isBaseProviderInstance(instance)
-            ? `Sign ${instance.label} out of ${providerLabel}? This is this computer's own login, so the ${providerLabel} command in your terminal is signed out too.`
-            : `Sign ${instance.label} out of ${providerLabel}? The card stays; Sign in puts a login back.`,
+            ? `Sign ${accountPhrase(instance)} out of ${providerLabel}? This is this computer's own login, so the ${providerLabel} command in your terminal is signed out too.`
+            : `Sign ${accountPhrase(instance)} out of ${providerLabel}? The card stays; Sign in puts a login back.`,
           confirmLabel: "SIGN OUT",
           destructive: true,
         }).then((ok) => {
@@ -236,8 +244,8 @@ export function ProviderAccountsPanel({
       void confirmDialog({
         title: "Remove account",
         message: signedIn
-          ? `Remove ${instance.label} from ${providerLabel}? It is signed out first, so adding it again starts from a fresh sign-in.`
-          : `Remove ${instance.label} from ${providerLabel}?`,
+          ? `Remove ${accountPhrase(instance)} from ${providerLabel}? It is signed out first, so adding it again starts from a fresh sign-in.`
+          : `Remove ${accountPhrase(instance)} from ${providerLabel}?`,
         confirmLabel: "REMOVE",
         destructive: true,
       }).then((ok) => {
@@ -246,7 +254,7 @@ export function ProviderAccountsPanel({
         void run(async () => {
           signOutError = (await api.remove({ id: instance.id })).signOutError;
         }).then(() => {
-          if (signOutError) setActionError(`${instance.label} was removed, but its sign-in could not be cleared. ${signOutError}`);
+          if (signOutError) setActionError(`${instance.account?.email?.trim() || "This account"} was removed, but its sign-in could not be cleared. ${signOutError}`);
         });
       });
     },
@@ -338,7 +346,7 @@ export function ProviderAccountsPanel({
     <>
       <ProviderPanel
         title="Accounts"
-        count={instances.length}
+        count={loginCount}
         bodyStyle={{ gap: 12 }}
         actions={
           <button
@@ -418,11 +426,10 @@ export function ProviderAccountsPanel({
         >
           {instances.map((instance) => {
             const signedOut = signedOutById.get(instance.id) === true;
-            const ownerLabel = instance.sameLoginAs ? labelById.get(instance.sameLoginAs) ?? instance.sameLoginAs : null;
             const state: CardState = signedOut
               ? { kind: "signedOut" }
-              : ownerLabel
-                ? { kind: "copy", ownerLabel }
+              : instance.sameLoginAs
+                ? { kind: "copy" }
                 : { kind: "ok" };
             const usable = state.kind === "ok";
             const badge = !usable
@@ -451,6 +458,7 @@ export function ProviderAccountsPanel({
                 compactionControl={instances.length > 1 ? <CompactionSettings provider={provider} account value={instance.compaction} onChange={async (compaction) => { await window.ade.providerInstances.setSettings({ provider, instanceId: instance.id, settings: { compaction } }, pin); await reload(); }} /> : null}
                 onSetClaudeSetting={provider === "claude" ? setClaudeSetting : undefined}
                 limitRow={accountLimitRow(snapshot, provider, instance, nowMs)}
+                pin={pin}
                 state={state}
                 badge={badge}
                 selectable={usable && !(!settings.smartBalance && instance.isDefault)}

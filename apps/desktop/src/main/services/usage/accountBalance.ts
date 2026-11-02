@@ -161,6 +161,21 @@ function windowForType(
   return windows.find((window) => window.windowType === windowType);
 }
 
+/**
+ * The window as it stands at `nowMs`. A reading whose reset has passed
+ * describes a window that already rolled over: its room came back, and its
+ * next reset is a full window away. Read raw, a carried 95%-used five-hour
+ * reading from before the reset blocked an account that had all its room, and
+ * an elapsed weekly reset divided by the 0.1h floor ranked a stale account
+ * first. The popover reads the same rule (`displayPercent`).
+ */
+function currentWindow(window: UsageWindow | undefined, nowMs: number): UsageWindow | undefined {
+  if (!window) return undefined;
+  const resetsAtMs = Date.parse(window.resetsAt);
+  if (!Number.isFinite(resetsAtMs) || !Number.isFinite(nowMs) || resetsAtMs > nowMs) return window;
+  return { ...window, percentUsed: 0, resetsAt: "" };
+}
+
 function headroom(window: UsageWindow | undefined): number | undefined {
   if (!window || !Number.isFinite(window.percentUsed)) return undefined;
   return 100 - Math.min(100, Math.max(0, window.percentUsed));
@@ -273,8 +288,8 @@ function accountRoom(
   load: AccountBalanceLoad,
   firstTurnFiveHourBurn: number,
 ): AccountRoom {
-  const fiveHour = windowForType(windows, "five_hour");
-  const weekly = windowForType(windows, "weekly");
+  const fiveHour = currentWindow(windowForType(windows, "five_hour"), nowMs);
+  const weekly = currentWindow(windowForType(windows, "weekly"), nowMs);
   const fiveHourRoom = headroom(fiveHour);
   const weeklyRoom = headroom(weekly);
   if (fiveHourRoom === undefined && weeklyRoom === undefined) return { kind: "unknown" };
@@ -348,8 +363,14 @@ function bestByDeficit(candidates: readonly RankedInstance[], defaultId: string)
   });
 }
 
-/** Orders two accounts by five-hour survival, then weekly room, then deadline. */
+/**
+ * Orders two accounts by five-hour survival, then weekly room, then deadline.
+ * An account whose weekly window is spent cannot take a turn however much
+ * five-hour room it shows, so any weekly room beats none.
+ */
 function compareBySurvival(a: RankedInstance, b: RankedInstance, defaultId: string): number {
+  const weeklySpent = Number(b.room.weeklyRoom <= 0) - Number(a.room.weeklyRoom <= 0);
+  if (weeklySpent !== 0) return weeklySpent;
   const survivalGap = a.room.survivalFiveHour - b.room.survivalFiveHour;
   if (Math.abs(survivalGap) > TIE_EPSILON) return survivalGap;
   const roomGap = a.room.weeklyRoom - b.room.weeklyRoom;
@@ -449,9 +470,9 @@ export function pickInstanceForNewChat({
  * but an account with a weekly reading and no five-hour window is idle, and
  * idle means its five-hour window is empty.
  */
-function hasImmediateRoom(windows: readonly UsageWindow[]): boolean {
-  const fiveHourHeadroom = headroom(windowForType(windows, "five_hour"));
-  const weeklyHeadroom = headroom(windowForType(windows, "weekly"));
+function hasImmediateRoom(windows: readonly UsageWindow[], nowMs: number): boolean {
+  const fiveHourHeadroom = headroom(currentWindow(windowForType(windows, "five_hour"), nowMs));
+  const weeklyHeadroom = headroom(currentWindow(windowForType(windows, "weekly"), nowMs));
   if (weeklyHeadroom === undefined) return false;
   if (weeklyHeadroom === 0 || fiveHourHeadroom === 0) return false;
   return true;
@@ -494,7 +515,7 @@ export function pickAlternateInstanceForLimitedChat({
   let chosen: RankedInstance | null = null;
   for (const instance of candidates) {
     const { account, windows } = readingFor({ provider, accounts, windowsByAccountId }, instance.id);
-    if (account?.login === "signed_out" || !hasImmediateRoom(windows)) continue;
+    if (account?.login === "signed_out" || !hasImmediateRoom(windows, nowMs)) continue;
     const room = accountRoom(
       windows,
       nowMs,

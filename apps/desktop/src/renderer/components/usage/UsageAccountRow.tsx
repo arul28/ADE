@@ -27,6 +27,7 @@ import { ViewportOverlayHost } from "../ui/ViewportOverlayHost";
 import type React from "react";
 import { ArrowClockwise, ArrowSquareOut } from "@phosphor-icons/react";
 import type { UsageProvider } from "../../../shared/types";
+import type { OpenProjectBinding } from "../../../shared/types/core";
 import { openExternalUrl } from "../../lib/openExternal";
 import {
   RESET_CREDIT_OUTCOME_TEXT,
@@ -54,66 +55,51 @@ import {
 } from "./usageWindowFormat";
 import { isAdeAvailable } from "../../lib/adeAvailability";
 
-/**
- * Where a meter's details panel hangs.
- *
- * The panel is wider than half the popover, so it always hangs from its bar's
- * left edge and is clamped to the viewport — a centred panel overhung the
- * popover's edge and gave the whole thing a horizontal scrollbar.
- */
-type PopoverAlign = "left" | "center" | "right";
-
 /** The panel's own width, in px. Fixed, so its placement can be computed. */
-const POPOVER_WIDTH = 300;
+const POPOVER_WIDTH = 280;
 /** Breathing room kept between the panel and the window edges. */
 const POPOVER_MARGIN = 8;
-/** Gap between the meter and the panel. */
-const POPOVER_OFFSET = 6;
+/** Gap between the surface and the panel. */
+const POPOVER_OFFSET = 8;
 /**
- * How long the panel stays open while the pointer crosses that gap.
- *
- * The panel is portalled to `document.body`, so leaving the meter fires
- * `mouseleave` before the pointer arrives. Closing in that instant is why the
- * link could not be hovered.
+ * How long the panel stays open after the pointer leaves the meter or the
+ * panel, so crossing the gap between them never closes it.
  */
-const POPOVER_POINTER_GRACE_MS = 180;
+const POPOVER_POINTER_GRACE_MS = 220;
+/**
+ * How long the pointer rests on a meter before its panel opens. Without it,
+ * sweeping the pointer across the popover flashed a panel for every bar it
+ * crossed.
+ */
+const POPOVER_HOVER_INTENT_MS = 120;
 
 /**
- * Where the panel goes, in viewport coordinates.
+ * Where the panel goes, in viewport coordinates: BESIDE the surface the meter
+ * sits in, with its top level with the meter.
  *
- * It is rendered in a portal on `document.body` because this row also lives
- * inside the header usage popup, which is a ~400px tall scroll container: an
- * absolutely positioned panel taller than that container was simply cut off,
- * taking "Open limits" with it. Fixed coordinates computed from the meter keep
- * the same visual anchoring without inheriting anyone's clipping.
+ * It used to hang below the meter. The pointer then had to travel down across
+ * the next meter to reach it, and that meter took the hover and swapped the
+ * panel out from under it, so the panel could never be reached. Beside the
+ * surface, the way in is a short sideways move that crosses nothing. The
+ * surface is the usage popover when there is one (`data-usage-detail-host`),
+ * else the meter's own row. Left first (the popover sits at the window's right
+ * edge), then right, then below as a last resort.
  */
 function popoverPosition(
   anchor: DOMRect,
-  align: PopoverAlign,
+  host: DOMRect,
   panel: { width: number; height: number },
   viewport: { width: number; height: number },
 ): { top: number; left: number } {
-  const panelHeight = panel.height;
-  const panelWidth = panel.width;
-  const rawLeft = align === "left"
-    ? anchor.left
-    : align === "right"
-      ? anchor.right - panelWidth
-      : anchor.left + anchor.width / 2 - panelWidth / 2;
-  const left = Math.min(
-    Math.max(POPOVER_MARGIN, rawLeft),
-    Math.max(POPOVER_MARGIN, viewport.width - panelWidth - POPOVER_MARGIN),
-  );
-  const below = anchor.bottom + POPOVER_OFFSET;
-  // Flip above when the panel would run off the bottom and there is more room
-  // up there; otherwise clamp, so a viewport shorter than the panel still shows
-  // its top rather than nothing.
-  const fitsBelow = below + panelHeight + POPOVER_MARGIN <= viewport.height;
-  const above = anchor.top - POPOVER_OFFSET - panelHeight;
-  const top = fitsBelow || above < POPOVER_MARGIN
-    ? Math.min(below, Math.max(POPOVER_MARGIN, viewport.height - panelHeight - POPOVER_MARGIN))
-    : above;
-  return { top, left };
+  const { width, height } = panel;
+  const clampTop = (top: number) =>
+    Math.min(Math.max(POPOVER_MARGIN, top), Math.max(POPOVER_MARGIN, viewport.height - height - POPOVER_MARGIN));
+  const leftSide = host.left - POPOVER_OFFSET - width;
+  if (leftSide >= POPOVER_MARGIN) return { top: clampTop(anchor.top - 10), left: leftSide };
+  const rightSide = host.right + POPOVER_OFFSET;
+  if (rightSide + width + POPOVER_MARGIN <= viewport.width) return { top: clampTop(anchor.top - 10), left: rightSide };
+  const left = Math.min(Math.max(POPOVER_MARGIN, anchor.left), Math.max(POPOVER_MARGIN, viewport.width - width - POPOVER_MARGIN));
+  return { top: clampTop(anchor.bottom + 4), left };
 }
 
 /** What spending a reset credit did, in the user's words. */
@@ -144,6 +130,7 @@ export function ProviderMark({
 
 export function UsageAccountRow({
   row,
+  pin,
   providerTitle,
   fallbackAccountUrl,
   fallbackEmail,
@@ -153,6 +140,11 @@ export function UsageAccountRow({
   hideIdentity,
 }: {
   row: AccountLimitRow;
+  /**
+   * The machine whose snapshot this row came from, so "Use reset" spends the
+   * credit there. Null is the tab's own machine (the unpinned route).
+   */
+  pin: OpenProjectBinding | null;
   /** "OAuth · 2m ago" — where this reading came from, on the account's title. */
   providerTitle?: string;
   /** Limits page for a host that sends no account directory. */
@@ -197,14 +189,14 @@ export function UsageAccountRow({
       // Read the bridge at click time: the web client and older preloads do not
       // expose it, and the button is only offered when they do.
       const consume = window.ade?.usage?.consumeResetCredit;
-      const result = isAdeAvailable(consume) ? await consume({ accountId }) : null;
+      const result = isAdeAvailable(consume) ? await consume({ accountId }, pin) : null;
       if (mountedRef.current) setOutcome(resetCreditOutcomeText(result));
     } catch {
       if (mountedRef.current) setOutcome(RESET_CREDIT_OUTCOME_TEXT.failure);
     } finally {
       if (mountedRef.current) setSpending(false);
     }
-  }, [accountId]);
+  }, [accountId, pin]);
 
   const email = account?.email ?? fallbackEmail ?? undefined;
   const identity = email ?? account?.label ?? "This machine";
@@ -226,17 +218,21 @@ export function UsageAccountRow({
   const pace = paceVisual(tightest?.segment.window.pacing);
 
   return (
-    <div className="flex min-w-0 flex-col gap-1">
-      {/* Only the email. See the note at the top of this file. */}
+    <div className="usage-account">
+      {/* The email is the account; the plan is a quiet second word. */}
       <div className="usage-account-head">
         {hideIdentity ? null : (
-          <span
-            className={cn("usage-account-email", dim && "opacity-70")}
-            title={providerTitle ? `${identity} · ${providerTitle}` : identity}
-          >
-            {identity}
-          </span>
+          <>
+            <span
+              className={cn("usage-account-email", (dim || account?.notSignedInHere) && "opacity-70")}
+              title={providerTitle ? `${identity} · ${providerTitle}` : identity}
+            >
+              {identity}
+            </span>
+            {account?.plan ? <span className="usage-account-plan">{account.plan}</span> : null}
+          </>
         )}
+        <span className="usage-account-marks">
         {/* The pace line, back outside the details panel where it was legible
             without hovering anything. */}
         {account?.login === "signed_out" ? (
@@ -249,7 +245,37 @@ export function UsageAccountRow({
           >
             Signed out
           </span>
+        ) : account?.login === "expired" && row.cells.length > 0 && !account.readingFrom ? (
+          // This machine's token for the login expired, so the bars are its
+          // last reading and may be hours old. The account still takes chats.
+          <span
+            className="kit-tag"
+            title="This computer's login for the account expired, so these bars are its last reading. The next chat on the account renews the login."
+          >
+            Last reading
+          </span>
         ) : pace ? <PacePill pace={pace} /> : null}
+        {account?.notSignedInHere ? (
+          // Signed in on another machine only: shown so every account's room is
+          // in one place, but it can't take a chat here.
+          <span
+            className="kit-tag"
+            data-tone="warn"
+            title={`Signed in on ${account.readingFrom?.label ?? "another computer"}, not on this one. These are that computer's numbers. Sign in to it here in Settings to use it for chats on this computer.`}
+          >
+            Not signed in here
+          </span>
+        ) : null}
+        {account?.readingFrom && row.cells.length > 0 ? (
+          // Quota is the login's: another machine read it more recently than
+          // this one could, so these bars are that machine's reading.
+          <span
+            className="kit-tag"
+            title={`Read on ${account.readingFrom.label}, the freshest reading of this account across your machines.`}
+          >
+            via {account.readingFrom.label}
+          </span>
+        ) : null}
         {hasCredit ? (
           <button
             type="button"
@@ -267,12 +293,13 @@ export function UsageAccountRow({
             Use reset
           </button>
         ) : null}
+        </span>
       </div>
 
       {/* Stacked, full width. Each bar carries its own name, its headroom and
           its reset clock, so none of them has to be read against a header. */}
       {row.cells.length > 0 ? (
-        <div className="flex min-w-0 flex-col">
+        <div className="flex min-w-0 flex-col gap-0.5">
           {row.cells.map((cell) => (
             <WindowMeter
               key={cell.card.key}
@@ -292,6 +319,10 @@ export function UsageAccountRow({
         <span className="usage-footnote">
           {accountNoticeLine(account.notice, nowMs)}
         </span>
+      ) : account?.login === "expired" ? (
+        // Not "No usage yet": the login is there, its token expired, so this
+        // machine cannot read the account until the next chat renews it.
+        <span className="usage-footnote">Login expired — renews on its next chat</span>
       ) : account ? (
         <span className="usage-footnote">No usage yet</span>
       ) : null}
@@ -342,6 +373,15 @@ function WindowMeter({
     clearCloseTimer();
     onOpenChange(true);
   }, [clearCloseTimer, onOpenChange]);
+  // Open on a resting pointer, not on every bar the pointer sweeps across.
+  const hoverOpen = useCallback(() => {
+    clearCloseTimer();
+    if (open) return;
+    closeTimerRef.current = window.setTimeout(() => {
+      closeTimerRef.current = null;
+      onOpenChange(true);
+    }, POPOVER_HOVER_INTENT_MS);
+  }, [clearCloseTimer, onOpenChange, open]);
   const releaseOpen = useCallback(() => {
     clearCloseTimer();
     closeTimerRef.current = window.setTimeout(() => onOpenChange(false), POPOVER_POINTER_GRACE_MS);
@@ -389,10 +429,17 @@ function WindowMeter({
     <div
       ref={anchorRef}
       className="relative w-full"
-      onMouseEnter={holdOpen}
+      onMouseEnter={hoverOpen}
       onMouseLeave={(event) => {
         const next = event.relatedTarget;
-        if (next instanceof Node && document.getElementById(panelId)?.contains(next)) return;
+        if (next instanceof Node && document.getElementById(panelId)?.contains(next)) {
+          clearCloseTimer();
+          return;
+        }
+        if (!open) {
+          clearCloseTimer();
+          return;
+        }
         releaseOpen();
       }}
       onFocus={holdOpen}
@@ -413,8 +460,17 @@ function WindowMeter({
         <span className="usage-limit-label" aria-hidden>
           {shortWindowLabel(segment.window)}
           {segment.window.unlimited ? " · Unlimited" : segment.window.usedCount != null && segment.window.entitlementCount != null
-            ? ` · ${segment.window.usedCount}/${segment.window.entitlementCount}`
+            ? ` · ${segment.window.usedCount} of ${segment.window.entitlementCount}`
             : ""}
+        </span>
+        <span className="usage-limit-value" aria-hidden>
+          <b>{left}%</b> left
+          {segment.window.resetsAt && segment.resetsInMs > 0 ? (
+            <>
+              <span className="usage-limit-sep">·</span>
+              resets in {formatCountdown(segment.resetsInMs)}
+            </>
+          ) : null}
         </span>
         {/* A thin neutral meter whose fill is the HEADROOM — the same quantity
             the number names, so "85% left" is a bar 85% full. It only takes a
@@ -427,15 +483,6 @@ function WindowMeter({
             }}
           />
         </span>
-        <span className="usage-limit-value" aria-hidden>
-          <b>{left}%</b> <span>left</span>
-          {segment.window.resetsAt ? (
-            <>
-              <span className="usage-limit-sep">·</span>
-              {formatCountdown(segment.resetsInMs)}
-            </>
-          ) : null}
-        </span>
       </button>
 
       {open ? (
@@ -447,7 +494,7 @@ function WindowMeter({
           nowMs={nowMs}
           anchorRef={anchorRef}
           onPointerEnter={holdOpen}
-          onPointerLeave={close}
+          onPointerLeave={releaseOpen}
         />
       ) : null}
     </div>
@@ -488,11 +535,14 @@ function WindowPopover({
          factor off the panel's own known width converts between the two, so a
          zoomed window does not push the panel off screen. */
       const scale = panelRect.width > 0 ? panelRect.width / POPOVER_WIDTH : 1;
+      const anchorRect = anchor.getBoundingClientRect();
+      // Beside the whole usage popover when the meter is in one, so the panel
+      // never covers another meter.
+      const marked = anchor.closest("[data-usage-detail-host]");
+      const host = (marked?.closest('[role="dialog"]') ?? marked)?.getBoundingClientRect() ?? anchorRect;
       const placed = popoverPosition(
-        anchor.getBoundingClientRect(),
-        // The meters are full-width now, so there is no rightmost meter to
-        // flip for: every panel hangs from its bar's left edge.
-        "left",
+        anchorRect,
+        host,
         { width: panelRect.width || POPOVER_WIDTH, height: panelRect.height },
         { width: window.innerWidth, height: window.innerHeight },
       );
@@ -519,9 +569,10 @@ function WindowPopover({
     .map((machine) => machine.label)
     .filter(Boolean)
     .join(" · ");
+  // A model's own weekly cap (Claude's Fable) is worth seeing at 0% too: it
+  // says the cap exists and how much of it is left.
   const models = Object.entries(segment.window.modelBreakdown ?? {})
-    .filter(([, percent]) => percent > 0)
-    .map(([model, percent]) => `${model} ${Math.round(percent)}%`)
+    .map(([model, percent]) => `${model} ${Math.max(0, 100 - Math.round(percent))}% left`)
     .join(" · ");
   return createPortal(
     <ViewportOverlayHost layer="tooltip">
@@ -540,81 +591,52 @@ function WindowPopover({
           // be a visible jump in the corner of the screen.
           visibility: position ? "visible" : "hidden",
         }}
-        className={cn(
-          // `bg-surface-raised` is translucent on the light theme, and this panel
-          // floats over the rows beneath it — they read straight through. The
-          // overlay token is the one every other floating usage readout uses.
-          "p-3",
-          USAGE_OVERLAY_CLASS,
-        )}
+        className={cn("usage-detail", USAGE_OVERLAY_CLASS)}
         onMouseEnter={onPointerEnter}
         onMouseLeave={onPointerLeave}
       >
-      {/* The window's own colour runs down the header, so a panel that has
-          floated away from its bar still says which bar it came from. */}
-      <div
-        className="-mx-3 -mt-3 mb-2 flex min-w-0 items-center justify-between gap-2 rounded-t-lg border-b border-separator px-3 py-2"
-        style={{ background: `color-mix(in srgb, ${tone} 12%, transparent)` }}
-      >
-        <span className={cn(USAGE_TEXT.detail, "min-w-0 truncate font-semibold text-fg")}>{card.label}</span>
-        <span
-          className={cn(USAGE_TEXT.detail, USAGE_NUMERIC_CLASS, "shrink-0 font-semibold")}
-          style={{ color: tone }}
-        >
-          {Math.round(segment.percentLeft)}% left
+        {/* The headline: which window, how much is left, in the meter's own
+            colour, so a panel beside the popover still says which bar it is. */}
+        <div className="usage-detail-head">
+          <div className="flex min-w-0 flex-col gap-1">
+            <span className="usage-detail-title">{card.label}</span>
+            <span className="usage-detail-sub truncate" title={account?.email}>{account?.email ?? "This machine"}</span>
+          </div>
+          <div className="flex shrink-0 flex-col items-end gap-1">
+            <span className="usage-detail-big" style={{ color: tone }}>{Math.round(segment.percentLeft)}%</span>
+            <span className="usage-detail-sub">left</span>
+          </div>
+        </div>
+        <span className="kit-meter" data-level={usageLeftLevel(segment.percentLeft) ?? undefined} aria-hidden>
+          <span style={{ width: `${segment.percentLeft}%` }} />
         </span>
-      </div>
-      {/* Every row is one line. The values are short enough to fit at 248px —
-          the machine list and the model split are joined with "·" and
-          truncated with a title rather than wrapped, because a two-line value
-          pushed "Open limits" off the bottom of the panel. */}
-      <dl className="flex flex-col gap-1">
-        <PopoverRow label="Account" value={account?.email ?? "This machine"} />
-        {account?.plan ? <PopoverRow label="Plan" value={account.plan} /> : null}
-        {via ? <PopoverRow label="Via" value={via} /> : null}
-        {resetClock || segment.resetsInMs > 0 ? (
-          <PopoverRow
-            label="Resets"
-            value={
-              resetClock
-                ? `${resetClock} · in ${formatCountdown(segment.resetsInMs)}`
-                : `in ${formatCountdown(segment.resetsInMs)}`
-            }
-            numeric
-          />
-        ) : null}
         {pace ? (
           <div className="flex min-w-0 items-center justify-between gap-3">
-            <dt className={cn(USAGE_TEXT.micro, "shrink-0 text-muted-fg")}>Pace</dt>
-            <dd className="m-0 flex min-w-0 shrink-0 justify-end">
-              <PacePill pace={pace} />
-            </dd>
+            <PacePill pace={pace} />
+            {outlook?.outcome ? <span className="usage-detail-sub truncate">{outlook.outcome}</span> : null}
           </div>
         ) : null}
-        {outlook ? <PopoverRow label="Trending" value={outlook.projected} numeric /> : null}
-        {outlook?.outcome ? <PopoverRow label="Outlook" value={outlook.outcome} /> : null}
-        {models ? <PopoverRow label="Models" value={models} /> : null}
-        {segment.restoresPercentOfPool >= 0.5 ? (
-          <PopoverRow
-            label="Restores"
-            value={`+${Math.round(segment.restoresPercentOfPool)}% of pool`}
-            numeric
-          />
+        <dl>
+          {resetClock || segment.resetsInMs > 0 ? (
+            <PopoverRow
+              label="Resets"
+              value={resetClock ? `${resetClock} · in ${formatCountdown(segment.resetsInMs)}` : `in ${formatCountdown(segment.resetsInMs)}`}
+            />
+          ) : null}
+          {outlook ? <PopoverRow label="By the reset" value={outlook.projected.replace(" by reset", " used")} /> : null}
+          {models ? <PopoverRow label="Model caps" value={models} /> : null}
+          {account?.plan ? <PopoverRow label="Plan" value={account.plan} /> : null}
+          {via ? <PopoverRow label="Read on" value={via} /> : null}
+          {segment.restoresPercentOfPool >= 0.5 ? (
+            <PopoverRow label="Adds to pool" value={`${Math.round(segment.restoresPercentOfPool)}%`} />
+          ) : null}
+        </dl>
+        {accountUrl ? (
+          <button type="button" onClick={() => openExternalUrl(accountUrl)} className="usage-detail-link">
+            <ArrowSquareOut size={12} aria-hidden />
+            Open limits page
+          </button>
         ) : null}
-      </dl>
-      {accountUrl ? (
-        <button
-          type="button"
-          onClick={() => openExternalUrl(accountUrl)}
-          className={cn(
-            USAGE_TEXT.micro,
-            "mt-2 inline-flex w-full items-center justify-center gap-1 rounded-md border border-separator px-2 py-1 text-muted-fg hover:bg-muted hover:text-fg",
-          )}
-        >
-          <ArrowSquareOut size={11} aria-hidden />
-          Open limits
-        </button>
-      ) : null}
       </div>
     </ViewportOverlayHost>,
     document.body,
@@ -629,20 +651,11 @@ function WindowPopover({
  * produced a panel where half the rows were two lines tall and nothing lined
  * up. One line each, with the full text on the `title`.
  */
-function PopoverRow({ label, value, numeric }: { label: string; value: string; numeric?: boolean }) {
+function PopoverRow({ label, value }: { label: string; value: string }) {
   return (
-    <div className="flex min-w-0 items-baseline justify-between gap-3">
-      <dt className={cn(USAGE_TEXT.micro, "shrink-0 text-muted-fg")}>{label}</dt>
-      <dd
-        title={value}
-        className={cn(
-          USAGE_TEXT.micro,
-          numeric && USAGE_NUMERIC_CLASS,
-          "m-0 min-w-0 truncate text-right text-fg",
-        )}
-      >
-        {value}
-      </dd>
-    </div>
+    <>
+      <dt>{label}</dt>
+      <dd title={value}>{value}</dd>
+    </>
   );
 }

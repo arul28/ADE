@@ -2173,7 +2173,7 @@ declare global {
          */
         consumeResetCredit?: (args: {
           accountId: string;
-        }) => Promise<import("../shared/types").UsageResetCreditResult>;
+        }, pin?: OpenProjectBinding | null) => Promise<import("../shared/types").UsageResetCreditResult>;
         /**
          * Spend by chat, lane, or account, and one model's detail and price.
          * Optional on the bridge: an older preload or web host may not expose

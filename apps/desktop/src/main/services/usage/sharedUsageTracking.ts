@@ -1,4 +1,6 @@
 import type {
+  AccountLiveQuotaFetcher,
+  AccountRollupFetcher,
   UsageTrackingProjectScope,
   UsageTrackingProjectScopeInput,
   UsageTrackingService,
@@ -59,6 +61,8 @@ export function attachSharedUsageTrackingScope(
   scope: UsageTrackingProjectScopeInput,
 ): UsageTrackingProjectScope {
   const shared = attachSharedByKey(sharedUsageTrackingServices, key, make, (service) => service.dispose());
+  if (sharedAccountRollupFetcher) shared.value.setAccountRollupFetcher(sharedAccountRollupFetcher);
+  if (sharedAccountLiveQuotaFetcher) shared.value.setAccountLiveQuotaFetcher(sharedAccountLiveQuotaFetcher);
   const attached = shared.value.attachProjectScope(scope);
   let released = false;
   return {
@@ -70,6 +74,27 @@ export function attachSharedUsageTrackingScope(
       shared.release();
     },
   };
+}
+
+/**
+ * The process's own way to ask the account's other machines for their usage
+ * rollups. The brain installs one built on its agents' paired connections;
+ * every shared tracker, existing or made later, gets it, so account-scoped
+ * reads pull the other machines whether or not a desktop window is pushing.
+ */
+let sharedAccountRollupFetcher: AccountRollupFetcher | null = null;
+
+export function setSharedAccountRollupFetcher(fetcher: AccountRollupFetcher | null): void {
+  sharedAccountRollupFetcher = fetcher;
+  for (const entry of sharedUsageTrackingServices.values()) entry.value.setAccountRollupFetcher(fetcher);
+}
+
+/** Same as the rollup fetcher, for the quota-only pull the limits view uses. */
+let sharedAccountLiveQuotaFetcher: AccountLiveQuotaFetcher | null = null;
+
+export function setSharedAccountLiveQuotaFetcher(fetcher: AccountLiveQuotaFetcher | null): void {
+  sharedAccountLiveQuotaFetcher = fetcher;
+  for (const entry of sharedUsageTrackingServices.values()) entry.value.setAccountLiveQuotaFetcher(fetcher);
 }
 
 export function peekSharedUsageTrackingService(key: string): UsageTrackingService | undefined {

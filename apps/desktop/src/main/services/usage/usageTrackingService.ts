@@ -165,6 +165,7 @@ import {
   mergeAccountUsageStats,
   type AccountUsageContribution,
 } from "./accountUsageRollup";
+import { fillQuotaFromPeers } from "../../../shared/usageLiveQuota";
 import { buildTranscriptSource, type UsageSourceFsApi } from "./accountUsageSource";
 import { addCostSplit, emptyCostSplit, finalizeCostSplit, parseCostSplit } from "../../../shared/usageCostSplit";
 import { buildCostBreakdown } from "./usageCostBreakdown";
@@ -231,7 +232,6 @@ import {
 } from "./providerQuotaParsers";
 import {
   consumeClaudeResetCredit,
-  isClaudeResetCreditsSupported,
   readClaudeResetCredits,
   type ClaudeResetCredits,
 } from "./claudeResetCredits";
@@ -2084,11 +2084,11 @@ const CODEX_RESET_CREDIT_OUTCOME_MESSAGE: Record<
 //
 // Claude Code's `cedar_ember` program grants banked resets the way Codex does:
 // the CLI reads the grants from its OAuth usage endpoint and claims one against
-// the account's organization. ADE reads the same endpoint with the CLI's
-// on-disk OAuth token. On macOS that token lives in the Keychain, which ADE
-// deliberately never turns into an unattended HTTP call, so the probe returns
-// "no credits" there without sending anything and the control stays hidden.
-// The read is the fast HTTP path — no subprocess, no Keychain.
+// the account's organization. ADE reads the same endpoint with the token the
+// quota poll just used (its in-memory login cache), falling back to the CLI's
+// on-disk token off macOS. The probe itself never opens the Keychain: on macOS
+// it rides the poll's cached read, so an account whose poll could not read its
+// login keeps its last answer. The read is the fast HTTP path — no subprocess.
 
 /** At most one read per account per this interval; explicit refresh bypasses it. */
 const CLAUDE_RESET_CREDIT_PROBE_INTERVAL_MS = 15 * 60_000;
@@ -2130,8 +2130,8 @@ function claudeResetCreditsContract(
  * Read one account's banked credits, at most once per
  * {@link CLAUDE_RESET_CREDIT_PROBE_INTERVAL_MS} unless `force` is set.
  *
- * Never throws. On macOS the feature is not offered, so the field is zeroed
- * without reading anything. On a real read failure the previous reading is kept
+ * Never throws. On a real read failure (including macOS with no cached login
+ * to borrow) the previous reading is kept
  * — a transient outage must not blank a live control — and only a confirmed
  * response can replace it, with zero when the account has no redeemable grant.
  * The token comes from the credential path's cache when it has one (possibly
@@ -2151,10 +2151,6 @@ async function probeClaudeResetCredits(args: {
   if (inFlight) return inFlight;
   const probe = (async () => {
     try {
-      if (!isClaudeResetCreditsSupported()) {
-        claudeResetCreditCache.set(key, { credits: { availableCount: 0 }, readAt: Date.now() });
-        return;
-      }
       const accessToken = await readClaudeCredentialAccessToken(args.logger, args.configHome);
       const read = await readClaudeResetCredits({
         ...(args.configHome ? { configHome: args.configHome } : {}),
@@ -2186,16 +2182,20 @@ async function probeClaudeResetCredits(args: {
 }
 
 /**
- * The cached access token for one Claude account, or null when it expired. `allowKeychain` is false so the reset path never opens the macOS
+ * The cached access token for one Claude account, or null when it expired.
+ *
+ * The background probe passes no `allowKeychain`, so it never opens the macOS
  * Keychain; the quota poll that runs earlier in the same pass has usually
- * already warmed this cache.
+ * already warmed this cache. A spend is a user's click, the same standing a
+ * user-initiated poll has, so it may read the Keychain when the cache is cold.
  */
 async function readClaudeCredentialAccessToken(
   logger: Logger,
   configHome: string | undefined,
+  options: { allowKeychain?: boolean } = {},
 ): Promise<string | null> {
   const login = await readClaudeLogin({
-    allowKeychain: false,
+    allowKeychain: options.allowKeychain === true,
     ...(configHome ? { configHome } : {}),
   });
   return login.state === "ok" ? login.credentials.accessToken : null;
@@ -2246,7 +2246,7 @@ async function spendClaudeResetCredit(args: {
       }
       const requestId = held?.requestId ?? randomUUID();
       claudeResetCreditRequestIds.set(key, { requestId, grantId });
-      const accessToken = await readClaudeCredentialAccessToken(args.logger, args.configHome);
+      const accessToken = await readClaudeCredentialAccessToken(args.logger, args.configHome, { allowKeychain: true });
       const { result, retrySameClaim } = await consumeClaudeResetCredit({
         ...(args.configHome ? { configHome: args.configHome } : {}),
         ...(accessToken ? { accessToken } : {}),
@@ -2312,6 +2312,8 @@ function addTokenBreakdownEntry(breakdown: TokenBreakdown, entry: TokenEntry, co
   row.cacheWrite += toNonNegativeInt(entry.cacheWriteTokens);
   row.costUsd += cost.costUsd;
   addCostSplit(row.costSplit ??= emptyCostSplit(), cost.split);
+  const requests = toNonNegativeInt(entry.requests);
+  if (requests > 0) row.calls = toNonNegativeInt(row.calls) + requests;
 }
 
 function addDailyTokenEntry(breakdown: DailyTokenBreakdown, entry: TokenEntry): void {
@@ -2958,6 +2960,7 @@ function addCostSnapshotsProviderUsage(
         outputTokens: modelOutput,
         cachedTokens: modelCached,
         cacheWriteTokens: toNonNegativeInt(tokens.cacheWrite),
+        calls: toNonNegativeInt(tokens.calls),
         // Only a breakdown that carries its own dollars carries a split of
         // them; a share-of-provider estimate has nothing to split.
         costSplit: tokens.costUsd != null ? parseCostSplit(tokens.costSplit) : null,
@@ -2990,6 +2993,8 @@ function tokenBreakdownForExactRange(cost: CostSnapshot, range: ResolvedAdeUsage
       selected[model].cached += toNonNegativeInt(entry.cached);
       selected[model].cacheWrite += toNonNegativeInt(entry.cacheWrite);
       selected[model].costUsd += Math.max(0, toFiniteNumber(entry.costUsd));
+      const dayCalls = toNonNegativeInt(entry.calls);
+      if (dayCalls > 0) selected[model].calls = toNonNegativeInt(selected[model].calls) + dayCalls;
       const daySplit = parseCostSplit(entry.costSplit);
       if (daySplit) addCostSplit(selected[model].costSplit ??= emptyCostSplit(), daySplit);
     }
@@ -3986,6 +3991,20 @@ export type AccountRollupFetcher = (options: { timeoutMs: number; signal: AbortS
 /** What one fan-out over the account's machines produced. */
 export type AccountRollupFetchResult = Awaited<ReturnType<AccountRollupFetcher>>;
 
+/**
+ * Asks each online machine on the ADE account for its live quota only — its
+ * own windows and accounts, no history — for the cross-machine limits view.
+ * The full rollup carries every day x provider x model row the machine has;
+ * the limits view polls far more often than the stats page and needs none of
+ * that, so it has its own small request. A peer too old to answer is skipped.
+ */
+export type AccountLiveQuotaFetcher = (options: { timeoutMs: number; signal: AbortSignal }) => Promise<Array<{
+  machineKey: string;
+  label: string;
+  windows: UsageWindow[];
+  accounts: UsageAccount[];
+}>>;
+
 /** Shape guard for a rollup fan-out result that arrived over RPC. */
 function isAdeUsageRollupRow(value: unknown): value is AdeUsageRollupRow {
   return isRecord(value)
@@ -4055,6 +4074,11 @@ const ACCOUNT_LIVE_REFRESH_TIMEOUT_MS = 4_000;
  * the loop this defends against.
  */
 const ACCOUNT_LIVE_REFRESH_MIN_INTERVAL_MS = 30_000;
+
+/** Floor between quota-only pulls from the other machines while limits are on screen. */
+const PEER_LIVE_QUOTA_MIN_INTERVAL_MS = 60_000;
+/** A peer reading held longer than this is dropped from the pooled view. */
+const PEER_LIVE_QUOTA_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 
 let cachedLocalMachineKey: string | null = null;
 
@@ -4483,8 +4507,93 @@ export function createUsageTrackingService({
    */
   const accountLiveQuota = new Map<
     string,
-    { windows: UsageWindow[]; accounts: UsageAccount[] }
+    { label: string; windows: UsageWindow[]; accounts: UsageAccount[]; fetchedAtMs: number }
   >();
+  let fetchAccountLiveQuota: AccountLiveQuotaFetcher | null = null;
+  let liveQuotaRefreshInFlight: Promise<void> | null = null;
+  let liveQuotaRefreshStartedAtMs = 0;
+
+  /** Store one machine's live quota; true when it differs from what was held. */
+  function setPeerLiveQuota(
+    machineKey: string,
+    live: { label: string; windows: UsageWindow[]; accounts: UsageAccount[] },
+    nowMs: number,
+  ): boolean {
+    const previous = accountLiveQuota.get(machineKey);
+    const changed = !previous
+      || previous.label !== live.label
+      || JSON.stringify(previous.windows) !== JSON.stringify(live.windows)
+      || JSON.stringify(previous.accounts) !== JSON.stringify(live.accounts);
+    accountLiveQuota.set(machineKey, { ...live, fetchedAtMs: nowMs });
+    return changed;
+  }
+
+  /**
+   * `snapshot` with each login's quota taken from the freshest machine on the
+   * ADE account. Quota is the login's, not the machine's: a machine whose token
+   * for the login expired, or whose reset already passed, shows what a peer read
+   * instead. `lastSnapshot` itself stays this machine's own reading — polls
+   * carry it forward, the disk cache stores it, and peers pool it — so a peer's
+   * reading is never echoed back as this machine's.
+   */
+  function withPeerQuota(
+    snapshot: UsageSnapshot,
+    options: { includeOtherMachineLogins?: boolean } = {},
+  ): UsageSnapshot {
+    if (accountLiveQuota.size === 0) return snapshot;
+    const nowMs = Date.now();
+    const peers = [...accountLiveQuota]
+      // A machine not heard from in this long may be gone; its windows also
+      // carry their own reset times, so this is a backstop, not the freshness rule.
+      .filter(([, live]) => nowMs - live.fetchedAtMs < PEER_LIVE_QUOTA_MAX_AGE_MS)
+      .map(([machineKey, live]) => ({ machineKey, ...live }));
+    return fillQuotaFromPeers(snapshot, peers, nowMs, options);
+  }
+
+  /** What every screen shows: every login on the ADE account, this machine's or not. */
+  function accountView(snapshot: UsageSnapshot): UsageSnapshot {
+    return withPeerQuota(snapshot, { includeOtherMachineLogins: true });
+  }
+
+  function setAccountLiveQuotaFetcher(fetcher: AccountLiveQuotaFetcher | null): void {
+    fetchAccountLiveQuota = fetcher;
+  }
+
+  /**
+   * Pull every reachable machine's live quota in the background.
+   *
+   * Driven by someone looking at limits (`noteQuotaDemand`) and by a manual
+   * refresh. Never awaited by a read: the current view returns at once and the
+   * update lands through `emitUpdate`.
+   */
+  function refreshPeerLiveQuotaInBackground({ force = false }: { force?: boolean } = {}): void {
+    if (!fetchAccountLiveQuota || liveQuotaRefreshInFlight) return;
+    const startedAtMs = Date.now();
+    if (!force && startedAtMs - liveQuotaRefreshStartedAtMs < PEER_LIVE_QUOTA_MIN_INTERVAL_MS) return;
+    liveQuotaRefreshStartedAtMs = startedAtMs;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), ACCOUNT_LIVE_REFRESH_TIMEOUT_MS);
+    timer.unref?.();
+    const selfKey = readLocalMachineIdentity()?.machineKey ?? null;
+    liveQuotaRefreshInFlight = fetchAccountLiveQuota({ timeoutMs: ACCOUNT_LIVE_REFRESH_TIMEOUT_MS, signal: controller.signal })
+      .then((results) => {
+        let changed = false;
+        for (const result of results) {
+          if (result.machineKey === selfKey) continue;
+          if (setPeerLiveQuota(result.machineKey, result, startedAtMs)) changed = true;
+        }
+        // A peer's fresher reading changes what this machine shows for a login
+        // and where smart balance sends the next chat.
+        if (changed) publishSnapshot(lastSnapshot);
+      })
+      .catch((error) => {
+        logger.warn("usage.account.live_quota_refresh_failed", { error: getErrorMessage(error) });
+      })
+      .finally(() => {
+        clearTimeout(timer);
+        liveQuotaRefreshInFlight = null;
+      });
+  }
 
   /**
    * The transcript-source marker, resolved once per ledger scan.
@@ -4624,7 +4733,7 @@ export function createUsageTrackingService({
     // Replace wholesale: only machines reached in this round have fresh live
     // readings. A machine's durable rows stay; its live windows are "live" and
     // a round that did not reach it has none to show.
-    accountLiveQuota.clear();
+    let liveQuotaChanged = false;
     for (const rollup of rollups) {
       try {
         // Unknown identity cannot match anything, and nothing was published
@@ -4633,7 +4742,9 @@ export function createUsageTrackingService({
         const liveWindows = Array.isArray(rollup.windows) ? rollup.windows : [];
         const liveAccounts = Array.isArray(rollup.accounts) ? rollup.accounts : [];
         if (liveWindows.length > 0 || liveAccounts.length > 0) {
-          accountLiveQuota.set(rollup.machineKey, { windows: liveWindows, accounts: liveAccounts });
+          if (setPeerLiveQuota(rollup.machineKey, { label: rollup.label, windows: liveWindows, accounts: liveAccounts }, startedAtMs)) {
+            liveQuotaChanged = true;
+          }
         }
         // The live side channel is never stored: it changes every poll, and a
         // stored copy would churn the CRR clock. Strip it before publish.
@@ -4692,7 +4803,9 @@ export function createUsageTrackingService({
     // Content is unchanged; the rollup store behind it is not. Republish
     // through the same path so the snapshot carries a new revision — an
     // emit that reuses the current revision is dropped by ordering.
-    if (published > 0 || failuresChanged) publishSnapshot(lastSnapshot);
+    // A peer's fresher reading changes what this machine shows for that login
+    // and where smart balance sends the next chat, even when no history moved.
+    if (published > 0 || failuresChanged || liveQuotaChanged) publishSnapshot(lastSnapshot);
   }
 
   /**
@@ -4815,12 +4928,13 @@ export function createUsageTrackingService({
 
   function emitUpdate(snapshot: UsageSnapshot): void {
     if (disposed) return;
+    const view = accountView(snapshot);
     // Constructor `onUpdate` lives on `defaultScope`. Attached project scopes
     // add their own. One loop, so a host cannot observe a snapshot the others
     // did not receive.
     for (const scope of allScopes()) {
       try {
-        scope.onUpdate?.(snapshot);
+        scope.onUpdate?.(view);
       } catch {
         // Never crash on callback error
       }
@@ -5095,7 +5209,7 @@ export function createUsageTrackingService({
 
   /** Preview the next account without placing a chat on it. */
   function peekBalancedInstance(provider: ProviderInstanceProvider): AccountBalanceResult | null {
-    return balancedPick(provider, lastSnapshot);
+    return balancedPick(provider, withPeerQuota(lastSnapshot));
   }
 
   /**
@@ -5104,7 +5218,7 @@ export function createUsageTrackingService({
    */
   function getAccountBalanceLoad(provider: ProviderInstanceProvider): ReadonlyMap<string, AccountBalanceLoad> {
     const nowMs = Date.now();
-    return balanceLoad(provider, providerInstanceStore.list(provider), lastSnapshot, nowMs);
+    return balanceLoad(provider, providerInstanceStore.list(provider), withPeerQuota(lastSnapshot), nowMs);
   }
 
   /**
@@ -5129,8 +5243,11 @@ export function createUsageTrackingService({
   /** The snapshot with this moment's balance issues and next picks in place of any it carried. */
   function withBalanceIssues(snapshot: UsageSnapshot): UsageSnapshot {
     const { balanceIssues: _previousIssues, balanceNext: _previousNext, ...rest } = snapshot;
-    const balanceIssues = computeBalanceIssues(rest);
-    const balanceNext = computeBalanceNext(rest);
+    // Judged on the account-wide reading: a login this machine last saw full
+    // may have room again by another machine's fresher read.
+    const pooled = withPeerQuota(rest as UsageSnapshot);
+    const balanceIssues = computeBalanceIssues(pooled);
+    const balanceNext = computeBalanceNext(pooled);
     return {
       ...rest,
       ...(balanceIssues.length > 0 ? { balanceIssues } : {}),
@@ -5859,7 +5976,7 @@ export function createUsageTrackingService({
   }
 
   function getUsageSnapshot(): UsageSnapshot {
-    return lastSnapshot;
+    return accountView(lastSnapshot);
   }
 
   function noteQuotaDemand(): UsageSnapshot {
@@ -5871,7 +5988,28 @@ export function createUsageTrackingService({
     if (nowMs - Date.parse(snapshot.lastPolledAt) > ACTIVE_POLL_INTERVAL_MS) {
       void poll({ reason: "automatic" }).catch(() => {});
     }
+    // Someone is looking at limits: pull the other machines' readings too, so a
+    // login this machine cannot read right now still shows its real numbers.
+    // Quota only, rate-limited and never awaited.
+    refreshPeerLiveQuotaInBackground();
     return snapshot;
+  }
+
+  /**
+   * The public quota reads return the account-wide view. Internal callers (the
+   * auto-start scheduler) keep this machine's own reading.
+   */
+  async function forceRefreshView(options: { allowInteractiveAuth?: boolean } = {}): Promise<UsageSnapshot> {
+    refreshPeerLiveQuotaInBackground({ force: true });
+    return accountView(await forceRefresh(options));
+  }
+
+  async function refreshHistoryView(options: { reason?: UsageRefreshReason } = {}): Promise<UsageSnapshot> {
+    return accountView(await refreshHistory(options));
+  }
+
+  async function pollView(options: PollOptions = {}): Promise<UsageSnapshot> {
+    return accountView(await poll(options));
   }
 
   async function forceRefresh(
@@ -6262,6 +6400,18 @@ export function createUsageTrackingService({
    * Both windows read to the caller as "still reading its history", which the
    * store already treats as retryable.
    */
+  /**
+   * This machine's own live quota, for a peer's cross-machine limits view.
+   * Never the pooled view: echoing a peer's reading back would let it pass as
+   * this machine's and keep a stale number alive between machines.
+   */
+  function getOwnLiveQuota(): { windows: UsageWindow[]; accounts: UsageAccount[] } {
+    return {
+      windows: lastSnapshot.windows.slice(0, MAX_LIVE_QUOTA_WINDOWS),
+      accounts: (lastSnapshot.accounts ?? []).slice(0, MAX_LIVE_QUOTA_ACCOUNTS),
+    };
+  }
+
   function getUsageRollup(): AdeUsageRollup | null {
     if (costCacheTimestamp === 0) return null;
     return buildLocalRollup(Date.now());
@@ -6300,7 +6450,7 @@ export function createUsageTrackingService({
     modelId?: string | null,
   ): AccountBalanceResult | null {
     try {
-      const result = balancedPick(provider, lastSnapshot, firstTurnFiveHourBurnForModel(modelId));
+      const result = balancedPick(provider, withPeerQuota(lastSnapshot), firstTurnFiveHourBurnForModel(modelId));
       if (!result) return null;
       if (result.skip === "one_account") {
         // Nothing to balance; an issue from an earlier pick no longer applies.
@@ -6456,9 +6606,9 @@ export function createUsageTrackingService({
       stop: scopeStop,
       getUsageSnapshot,
       noteQuotaDemand,
-      forceRefresh,
+      forceRefresh: forceRefreshView,
       consumeResetCredit,
-      refreshHistory,
+      refreshHistory: refreshHistoryView,
       getAdeUsageStats: (args: GetAdeUsageStatsArgs = {}) => getAdeUsageStats(args, scope),
       getTurnUsageSummary: (args: GetTurnUsageSummaryArgs = {}) => getTurnUsageSummary(args, scope),
       getCostBreakdown: (args: GetAdeUsageCostBreakdownArgs) => getCostBreakdown(args, scope),
@@ -6478,8 +6628,10 @@ export function createUsageTrackingService({
       getAccountBalanceLoad,
       getAutoStartState: autoStartScheduler.getAutoStartState,
       setAccountRollupFetcher,
+      setAccountLiveQuotaFetcher,
+      getOwnLiveQuota,
       applyAccountRollups,
-      poll,
+      poll: pollView,
       /**
        * Detach this project, not the machine's poller. The shared service is
        * owned by the process and outlives every scope on it.
@@ -6503,9 +6655,9 @@ export function createUsageTrackingService({
     stop,
     getUsageSnapshot,
     noteQuotaDemand,
-    forceRefresh,
+    forceRefresh: forceRefreshView,
     consumeResetCredit,
-    refreshHistory,
+    refreshHistory: refreshHistoryView,
     getAdeUsageStats,
     getTurnUsageSummary: (args: GetTurnUsageSummaryArgs = {}) => getTurnUsageSummary(args),
     getCostBreakdown: (args: GetAdeUsageCostBreakdownArgs) => getCostBreakdown(args),
@@ -6525,8 +6677,10 @@ export function createUsageTrackingService({
     getAccountBalanceLoad,
     getAutoStartState: autoStartScheduler.getAutoStartState,
     setAccountRollupFetcher,
+    setAccountLiveQuotaFetcher,
+    getOwnLiveQuota,
     applyAccountRollups,
-    poll,
+    poll: pollView,
     attachProjectScope,
     /** The producer identity every snapshot from this instance is stamped with. */
     producerId,

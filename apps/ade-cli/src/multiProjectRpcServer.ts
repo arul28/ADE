@@ -54,6 +54,7 @@ import {
 import { createConnectionFrameDemand } from "./connectionFrameDemand";
 import { readAppControlFrameDemand } from "../../desktop/src/shared/appControlFrameDemand";
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
+import { peekSharedUsageTrackingService } from "../../desktop/src/main/services/usage/sharedUsageTracking";
 import { readProjectFolderPresence, readProjectFolderStates } from "./services/projects/projectFolderPresence";
 import {
   decodeProjectIconUpload,
@@ -534,6 +535,8 @@ const RUNTIME_METHODS = new Set([
   "attention.call",
   "notify.send",
   "providers.status",
+  "usage.getUsageRollup",
+  "usage.getLiveQuota",
   "personalChats.call",
   "providerAccounts.call",
   "credentials.call",
@@ -3001,6 +3004,25 @@ export function createMultiProjectRpcRequestHandler(
     // already infer from whether that chat starts.
     if (method === "providers.status") {
       return await providerStatus.status({ refresh: params.refresh === true });
+    }
+
+    // This machine's usage rollup, for another machine's account-wide totals.
+    // Machine-level because the tracker is one per machine: a peer calls it
+    // with no project, and before this existed every such call fell through to
+    // "requires params.projectId" and was reported as an unreachable computer.
+    // No role gate, matching the `viewerAllowed` sync command it mirrors: it is
+    // day x provider x model aggregates, with no path or transcript record.
+    // Null until a project has booted the tracker and its first ledger scan
+    // finished, which the caller treats as "still reading", not as zero.
+    if (method === "usage.getUsageRollup") {
+      return peekSharedUsageTrackingService(resolveMachineAdeLayout().adeDir)?.getUsageRollup() ?? null;
+    }
+
+    // This machine's own live quota (windows and accounts, no history), for
+    // another machine's cross-machine limits view. Same gate as the rollup:
+    // percentages and reset times, no token or credential.
+    if (method === "usage.getLiveQuota") {
+      return peekSharedUsageTrackingService(resolveMachineAdeLayout().adeDir)?.getOwnLiveQuota() ?? null;
     }
 
     if (method === "providerAccounts.call" || method === "credentials.call" || method === "presets.call") {

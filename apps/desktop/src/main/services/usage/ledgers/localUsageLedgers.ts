@@ -319,6 +319,9 @@ export async function scanClaudeLogs(projectDirsOverride?: string[]): Promise<To
           // that request's context (Anthropic is flat-priced today; the field
           // keeps tier pricing correct if that changes).
           ...(requestContextTokens > 0 ? { requestContextTokens } : {}),
+          // Streamed records of one message collapse to this one entry below,
+          // so it is one request however many lines carried it.
+          requests: 1,
           timestamp,
         });
       }
@@ -598,6 +601,9 @@ async function scanCodexLogsOnce(
             billableCachedTokens: cachedTokens,
             cacheWriteTokens: 0,
             ...(sessionSpeed !== "standard" ? { speed: sessionSpeed } : {}),
+            // `last_token_usage` is one model response; a delta between
+            // cumulative totals can span several, so it counts none.
+            ...(lastUsage ? { requests: 1 } : {}),
             timestamp,
           });
           if (entries.length >= maxJsonlEntries) {

@@ -77,9 +77,11 @@ function forgetCachedLogin(instance: ProviderInstance | null): void {
  * the config home), so it is the one that clears it. The account card stays:
  * **Sign in** puts a login back, and **Remove** drops the card.
  */
-export async function signOutProviderAccount(id: string, usage: UsageRefresher): Promise<ProviderInstance | null> {
+export async function signOutProviderAccount(idOrEmail: string, usage: UsageRefresher): Promise<ProviderInstance | null> {
   const store = getMachineProviderInstanceStore();
-  const instance = store.get(id);
+  const instance = store.get(idOrEmail);
+  // An account may be named by its email; everything below keys on its id.
+  const id = instance?.id ?? idOrEmail;
   await runLogout(id);
   forgetCachedLogin(instance);
   await refreshProviderAccounts({ provider: instance?.provider, instanceId: id }, usage);
@@ -95,9 +97,10 @@ export async function signOutProviderAccount(id: string, usage: UsageRefresher):
  * be stuck while its CLI is missing or hung. The result says so, and the login
  * stays in the config home, which removal never deletes.
  */
-export async function removeProviderAccount(id: string): Promise<ProviderInstanceRemoveResult> {
+export async function removeProviderAccount(idOrEmail: string): Promise<ProviderInstanceRemoveResult> {
   const store = getMachineProviderInstanceStore();
-  const instance = store.get(id);
+  const instance = store.get(idOrEmail);
+  const id = instance?.id ?? idOrEmail;
   let signOutError: string | undefined;
   // The store refuses the default and the machine's own login; neither is
   // signed out on the way to that refusal.

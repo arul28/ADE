@@ -177,7 +177,17 @@ function accountState(
   status: UsageProviderStatus | undefined,
   windowCount: number,
 ): { state: UsageLimitsAccountState; note: string | null } {
+  // A login only another machine holds: its numbers are that machine's, and it
+  // can't take a chat here.
+  if (account?.notSignedInHere) {
+    return { state: "ok", note: `not signed in on this computer; read on ${account.readingFrom?.label ?? "another computer"}` };
+  }
   if (account?.login === "signed_out") return { state: "signed_out", note: "signed out; can't take a chat until it signs in again" };
+  // This machine's own reading was missing or older: another machine's stands in.
+  if (account?.readingFrom && windowCount > 0) {
+    const local = account.login === "expired" ? "this computer's login expired; " : "";
+    return { state: "ok", note: `${local}read on ${account.readingFrom.label}` };
+  }
   if (account?.login === "expired") return { state: "expired", note: "login expired; renews on its next chat" };
   if (status?.state === "stale") return { state: "stale", note: status.message?.trim() || "last check failed; showing the last numbers" };
   if (windowCount === 0) {

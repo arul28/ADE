@@ -6,6 +6,7 @@ import type { AgentChatEventEnvelope, AgentChatUsageAccount } from "../../../sha
 import type { HarnessPreset } from "../../../shared/harnessPresets";
 import {
   isProviderInstanceProvider,
+  providerAccountName,
   type ProviderInstance,
   type ProviderInstanceProvider,
 } from "../../../shared/types/providerInstances";
@@ -129,8 +130,8 @@ function resolveChatAccountNote(input: ChatAccountNoteInput): ChatAccountNoteMod
     : null;
   const email = clean(turn?.email) ?? clean(instance?.account?.email);
   const plan = clean(turn?.plan) ?? clean(instance?.account?.plan);
-  const label = clean(instance?.label);
-  const primary = email ?? label;
+  // An account is its email; before it has one, it is not signed in.
+  const primary = email ?? (instance ? providerAccountName(instance) : null);
   if (!primary) return null;
   return {
     family: provider,
@@ -138,7 +139,7 @@ function resolveChatAccountNote(input: ChatAccountNoteInput): ChatAccountNoteMod
     detail: [
       `${providerName} account`,
       email,
-      instance ? `Account id: ${instance.id}${instance.isDefault ? " (default)" : ""}` : null,
+      instance?.isDefault ? "Default for new chats" : null,
       plan ? `Plan: ${plan}` : null,
       instance && instance.loginBroken ? "Signed out: this account needs a new sign-in." : null,
       sourceLine,
@@ -351,8 +352,8 @@ export function ChatAccountNote({
         <span className="flex w-3.5 shrink-0 justify-center text-fg/70">
           {isCurrent ? <Check size={12} weight="bold" /> : null}
         </span>
-        <span className="min-w-0 flex-1 truncate" title={`Account id: ${instance.id}`}>
-          {clean(instance.account?.email) ?? instance.label}
+        <span className="min-w-0 flex-1 truncate">
+          {providerAccountName(instance)}
         </span>
         {side ? <span className="shrink-0 tabular-nums text-fg/45">{side}</span> : null}
       </>

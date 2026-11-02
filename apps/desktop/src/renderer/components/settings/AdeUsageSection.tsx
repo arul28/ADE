@@ -86,10 +86,12 @@ function cacheScopeFromProject(project: { rootPath?: string | null } | null | un
 
 const SCOPE_VALUES: readonly AdeUsageScope[] = ["account", "machine", "project"];
 
+// Opens on "All machines": a stat about the user is the account's, and the
+// narrower scopes are a choice the user makes (and that choice is remembered).
 function readScope(): AdeUsageScope {
-  if (typeof localStorage === "undefined") return "project";
+  if (typeof localStorage === "undefined") return "account";
   const value = localStorage.getItem(SCOPE_STORAGE_KEY);
-  return SCOPE_VALUES.includes(value as AdeUsageScope) ? (value as AdeUsageScope) : "project";
+  return SCOPE_VALUES.includes(value as AdeUsageScope) ? (value as AdeUsageScope) : "account";
 }
 
 function persistScope(scope: AdeUsageScope): void {

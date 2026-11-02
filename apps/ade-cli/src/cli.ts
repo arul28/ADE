@@ -8,6 +8,11 @@ import "./lib/nodeWarnings";
 import { pendingCliDelegation } from "./lib/cliDelegationEntry";
 import { isCliMainArgv } from "./lib/cliDelegation";
 import type { CrossMachineHandoffTransport } from "../../desktop/src/main/services/chat/crossMachineHandoffOrchestrator";
+import type { AccountLiveQuotaFetcher, AccountRollupFetcher } from "../../desktop/src/main/services/usage/usageTrackingService";
+import {
+  setSharedAccountLiveQuotaFetcher,
+  setSharedAccountRollupFetcher,
+} from "../../desktop/src/main/services/usage/sharedUsageTracking";
 import { consumeCliViaCmdMarker } from "../../desktop/src/main/services/cli/windowsCliLauncher";
 import { liveOnlyCallLabel } from "./lib/liveRuntimeActions";
 import { Buffer } from "node:buffer";
@@ -2624,8 +2629,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                                                     Exit 1 when the host reports no live usage limit.
     $ ade chat continue-on-account <session>        Continue a usage-limited chat on another account that still has room
                                                     Exit 1 when no other account can take it.
-    $ ade chat switch-account <session> --account <id>  Move a Claude or Codex chat to another account; same thread
-                                                    Account ids: ade providers accounts list. Exit 1 when refused.
+    $ ade chat switch-account <session> --account <email>  Move a Claude or Codex chat to another account; same thread
+                                                    Accounts: ade providers accounts list. Exit 1 when refused.
     $ ade chat note "testing desktop auth fallback" # Update the Work status line (aim for ${STATUS_NOTE_GUIDELINE_WORDS} words or fewer; truncated past ${MAX_STATUS_NOTE_CHARACTERS} characters)
     $ ade chat activity debugging                    Name what this turn is doing when ADE's own detection (from tool calls) cannot tell; use clear to remove it
                                                     Values: ${SESSION_ACTIVITY_VALUES.join(" | ")}. Agent callers need a bound ADE Work chat; --session may target that chat or a tracked terminal it owns. CTO callers may target sessions explicitly.
@@ -2793,8 +2798,9 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     --prompt-file <path|->  The first message from a file, or stdin with -. Use it
                             for multi-line text (ade.cmd on Windows cuts arguments
                             at the first line break).
-    --instance <id>         Provider account; --credential <id> and --preset <id> pick
-                            a saved credential or harness preset (ade help providers).
+    --instance <email>      Provider account, by its email (its id works too);
+                            --credential <id> and --preset <id> pick a saved
+                            credential or harness preset (ade help providers).
     --permissions <mode>    Alias for --permission-mode.
     --permission-mode <m>   default | auto | plan | edit | full-auto | config-toml.
                             The host may lower it for an agent caller (stderr note).
@@ -2863,8 +2869,9 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                             Use it for long or multi-line text: on Windows,
                             ade.cmd cuts an argument at its first line break.
                             Not with --prompt.
-    --instance <id>         Which provider account to sign in as (ade usage limits
-                            and ade providers accounts list show the ids).
+    --instance <email>      Which provider account to run on, by its email (ade
+                            usage limits and ade providers accounts list show
+                            them; an account's id works too).
     --credential <id>       A saved API credential for the provider.
     --preset <id>           A saved harness preset. See ade help providers.
     --permissions <mode>    Alias for --permission-mode.
@@ -4024,9 +4031,10 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   signed-in account out with the provider CLI's own logout, then forgets it; the
   directory stays, and so does the login when that sign-out fails.
   The machine's own pre-existing login is always present, is always removable-
-  proof, and starts out as the default. Accounts have no names: each shows as
-  its signed-in email, and its id (what --instance takes) never changes. A new
-  account's id is the next free <provider>-<n>. Adding, removing, signing in
+  proof, and starts out as the default. Accounts have no names: each is its
+  signed-in email, and --instance takes that email. An account that has not
+  signed in yet has no email; use its id (the last column of the list).
+  Adding, removing, signing in
   and the default are the user's: run them from your own terminal; an agent's
   call is refused.
 
@@ -4035,11 +4043,11 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade providers accounts add --provider claude --text
                                                     Create an account and print its login command
     $ ade providers accounts add --provider codex --accent '#3b82f6' --text
-    $ ade providers accounts login --instance claude-2 --text
+    $ ade providers accounts login --instance you@example.com --text
                                                     Reprint one account's login command
-    $ ade providers accounts default --instance claude-2 --text
+    $ ade providers accounts default --instance you@example.com --text
                                                     Make an account the provider's default
-    $ ade providers accounts remove --instance claude-2 --text
+    $ ade providers accounts remove --instance you@example.com --text
                                                     Sign an account out and forget it
     $ ade providers accounts refresh --text         Re-read each config home and record who is signed in
     $ ade providers actions --text                  List raw provider-account service actions
@@ -4053,8 +4061,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     \`ai.opencodeCloudConnect\` with \`ade actions run\` and the current prompt answers.
 
   Use an account for one session:
-    $ ade chat create --lane <lane> --provider claude --instance claude-2
-    $ ade new chat --mode cli --lane <lane> --provider claude --instance claude-2
+    $ ade chat create --lane <lane> --provider claude --instance you@example.com
+    $ ade new chat --mode cli --lane <lane> --provider claude --instance you@example.com
 
   Use a saved custom setup (agent + model, from Settings > Providers > Custom)
   or one stored API key for one session:
@@ -28068,6 +28076,60 @@ async function runServe(
       listMachines: async (input) => (await getAgentMachineBridge()).listMachines(input),
     };
 
+  // Account-wide usage: this brain pulls each online machine's usage rollup
+  // itself, over the same paired connection its agents use. Before this the
+  // only fan-out lived in the desktop window, reached only machines that window
+  // was already connected to, and asked them with a method no brain answered,
+  // so the account total was this machine's alone. Built on the first
+  // account-scoped read (the tracker's 30 s floor paces it), never at startup.
+  if (!embedded) {
+    // One set of transport hooks for both pulls: the full rollup (stats) and
+    // the quota-only read the limits view uses while it is on screen.
+    const fetcherDeps = async () => {
+      const bridge = await getAgentMachineBridge();
+      const fetchers = { "usage.getUsageRollup": bridge.fetchUsageRollup, "usage.getLiveQuota": bridge.fetchLiveQuota } as const;
+      return {
+        listMachines: async () => {
+          try {
+            return { state: "ok" as const, machines: await bridge.listAccountMachines(), message: null };
+          } catch (error) {
+            return { state: "unavailable" as const, machines: [], message: error instanceof Error ? error.message : String(error) };
+          }
+        },
+        // The bridge addresses machines by account key; there is no separate target id.
+        resolveTargetIdForMachineKey: (machineKey: string) => machineKey,
+        callMachineMethod: async <T,>(
+          machineKey: string,
+          method: string,
+          _params?: Record<string, unknown>,
+          callOptions?: { timeoutMs?: number },
+        ): Promise<T> => {
+          const fetch = fetchers[method as keyof typeof fetchers];
+          if (!fetch) throw new Error(`${method} can't run on another machine from here.`);
+          return await fetch(machineKey, callOptions?.timeoutMs ?? 4_000) as T;
+        },
+        localMachineKey: () => bridge.localMachineKey() ?? "",
+        logger: headlessProjectLogger,
+      };
+    };
+    let rollupFetcher: AccountRollupFetcher | null = null;
+    setSharedAccountRollupFetcher(async (fetchOptions) => {
+      if (!rollupFetcher) {
+        const { createAccountRollupFetcher } = await import("../../desktop/src/main/services/usage/accountUsageLiveRefresh");
+        rollupFetcher = createAccountRollupFetcher(await fetcherDeps());
+      }
+      return await rollupFetcher(fetchOptions);
+    });
+    let liveQuotaFetcher: AccountLiveQuotaFetcher | null = null;
+    setSharedAccountLiveQuotaFetcher(async (fetchOptions) => {
+      if (!liveQuotaFetcher) {
+        const { createAccountLiveQuotaFetcher } = await import("../../desktop/src/main/services/usage/accountUsageLiveRefresh");
+        liveQuotaFetcher = createAccountLiveQuotaFetcher(await fetcherDeps());
+      }
+      return await liveQuotaFetcher(fetchOptions);
+    });
+  }
+
   // Moving a chat to another machine rides the same paired connection. The
   // destination applies its own action policy to every step.
   if (!embedded) {
@@ -30141,15 +30203,16 @@ export function formatUsagePrices(value: unknown): string {
 }
 
 /**
- * `ade usage limits`: one row per window, named by the account id `chat create
- * --instance` takes, with the reading's age when it is not fresh. Rows merged
- * from several machines (`--all-machines`) lead with the machine.
+ * `ade usage limits`: one row per window, named by the account's email (what
+ * `chat create --instance` takes), with the reading's age when it is not
+ * fresh. Rows merged from several machines (`--all-machines`) lead with the
+ * machine.
  */
 export function formatUsageLimits(value: unknown): string {
   const report = isRecord(value) ? value : {};
   const accounts = Array.isArray(report.accounts) ? report.accounts.filter(isRecord) : [];
   const merged = accounts.some((account) => MACHINE_ROW_KEY in account);
-  const headers = [...(merged ? ["machine"] : []), "provider", "account", "login", "window", "left", "resets", "pace", "note"];
+  const headers = [...(merged ? ["machine"] : []), "provider", "account", "plan", "window", "left", "resets", "pace", "note"];
   const rows: unknown[][] = [];
   for (const record of accounts) {
     const machineCells = merged ? [record[MACHINE_ROW_KEY] ?? ""] : [];
@@ -30160,8 +30223,9 @@ export function formatUsageLimits(value: unknown): string {
     }
     const account = record as unknown as UsageLimitsAccount;
     const marks = [account.thisChat ? "this chat" : null, account.nextChat ? "next chat" : null].filter(Boolean);
-    const accountCell = `${account.instanceId ?? ""}${marks.length ? ` (${marks.join(", ")})` : ""}`.trim();
-    const login = [account.email ?? account.label, account.plan].filter(Boolean).join(" · ");
+    // An account is its email; one without one yet is not signed in.
+    const name = account.email ?? (account.instanceId ? "not signed in" : account.label) ?? "";
+    const accountCell = `${name}${marks.length ? ` (${marks.join(", ")})` : ""}`.trim();
     const notes: string[] = [];
     if (account.note) notes.push(account.note);
     if (account.state === "ok" && account.ageMinutes != null && account.ageMinutes >= 10) {
@@ -30169,7 +30233,7 @@ export function formatUsageLimits(value: unknown): string {
     }
     if (account.resetCredits) notes.push(`${account.resetCredits} reset credit${account.resetCredits === 1 ? "" : "s"} banked`);
     const windows = Array.isArray(account.windows) ? account.windows : [];
-    const lead = [...machineCells, usageProviderTextLabel(account.provider), accountCell, login];
+    const lead = [...machineCells, usageProviderTextLabel(account.provider), accountCell, account.plan ?? ""];
     if (windows.length === 0) {
       rows.push([...lead, "", "", "", "", notes.join("; ")]);
       continue;
@@ -30187,12 +30251,21 @@ export function formatUsageLimits(value: unknown): string {
   }
   const readAt = asString(report.readAt);
   const chat = isRecord(report.chat) ? report.chat : null;
+  const chatEmail = chat
+    // The row the chat's own machine marked: on merged rows another machine
+    // can use the same id for a different login.
+    ? asString(accounts.find((record) => record.thisChat === true && record.provider === chat.provider)?.email)
+    : null;
   const lines = [
     `ADE usage limits${readAt && !merged ? ` · read ${relativeTime(readAt)}` : ""}`,
-    ...(chat ? [`this chat runs on ${usageProviderTextLabel(chat.provider)} account ${String(chat.instanceId ?? "")}`] : []),
+    ...(chat
+      ? [chatEmail
+        ? `this chat runs on ${usageProviderTextLabel(chat.provider)} account ${chatEmail}`
+        : `this chat runs on a ${usageProviderTextLabel(chat.provider)} account that is not signed in`]
+      : []),
     "",
     renderTable(headers, rows, "No provider limits on this machine. Providers that report limits: Claude, Codex, Cursor, Copilot, Grok, OpenCode, Kimi, Muse.", {
-      fullColumns: ["account", "login"],
+      fullColumns: ["account"],
     }),
   ];
   // The same login seen from two machines is one quota, not two.
@@ -30202,7 +30275,7 @@ export function formatUsageLimits(value: unknown): string {
   const notes = Array.isArray(report.notes) ? report.notes.map((note) => asString(note)).filter(Boolean) : [];
   if (notes.length) lines.push("", ...notes.map((note) => `note: ${note}`));
   if (accounts.some((account) => asString(account.instanceId))) {
-    lines.push("", "Start a chat on an account: ade chat create --provider <provider> --instance <account>");
+    lines.push("", "Start a chat on an account: ade chat create --provider <provider> --instance <email>");
   }
   return lines.join("\n");
 }
@@ -34495,15 +34568,18 @@ function formatProviderAccounts(value: unknown): string {
     ];
   };
 
+  // An account is its email. The id stays listed last: an account that has
+  // not signed in yet has no email, and --instance takes either.
+  const accountEmail = (instance: JsonObject): string =>
+    (isRecord(instance.account) ? asString(instance.account.email) : null) ?? "not signed in";
   const describe = (instance: JsonObject): string =>
     renderKeyValues("ADE provider account", [
-      ["id", instance.id],
+      ["account", accountEmail(instance)],
       ["provider", instance.provider],
-      ["email", isRecord(instance.account) ? instance.account.email : undefined],
       ["plan", isRecord(instance.account) ? instance.account.plan : undefined],
       ["default", instance.isDefault === true ? "yes" : "no"],
       ["signed in", instance.signedIn === true ? "yes" : instance.loginBroken === true ? "no (signed out, sign in again)" : "no"],
-      ["same login as", instance.sameLoginAs],
+      ["copy", typeof instance.sameLoginAs === "string" ? "yes, another account holds the same login" : undefined],
       ["replaced login", isRecord(instance.replacedAccount) ? instance.replacedAccount.email : undefined],
       ["accent", instance.accentColor],
       ["main chat cache", instance.mainPromptCacheTtl === "1h" ? "1 hour" : instance.mainPromptCacheTtl === "5m" ? "5 minutes" : undefined],
@@ -34511,6 +34587,7 @@ function formatProviderAccounts(value: unknown): string {
       ["extra usage", instance.onExtraUsage === "stop" ? "stop the turn" : undefined],
       ["config home", instance.configHome],
       ["created", instance.createdAt],
+      ["id", instance.id],
     ]);
 
   // Every mutation on the provider_instances domain wraps its payload:
@@ -34564,20 +34641,20 @@ function formatProviderAccounts(value: unknown): string {
   }
   const instances = firstArray(value, ["instances"]);
   return renderTable(
-    ["id", "provider", "email", "plan", "default", "signed in", "config home"],
+    ["account", "provider", "plan", "default", "signed in", "config home", "id"],
     instances.map((instance) => [
-      instance.id,
+      accountEmail(instance),
       instance.provider,
-      isRecord(instance.account) ? instance.account.email ?? "" : "",
       isRecord(instance.account) ? instance.account.plan ?? "" : "",
       instance.isDefault === true ? "yes" : "",
       instance.signedIn === true
-        ? `yes${typeof instance.sameLoginAs === "string" ? ` (same login as ${instance.sameLoginAs})` : ""}`
+        ? `yes${typeof instance.sameLoginAs === "string" ? " (copy of the same login)" : ""}`
         : instance.loginBroken === true ? "signed out" : "no",
       instance.configHome,
+      instance.id,
     ]),
     "ADE provider accounts\n(no provider accounts found)",
-    { fullColumns: ["id", "email"] },
+    { fullColumns: ["account", "id"] },
   );
 }
 

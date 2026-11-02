@@ -160,7 +160,7 @@ const ACTIVITY_DAYS = 14;
 export type RecentStats = AdeUsageStats | null | "unavailable";
 
 /**
- * Usage stats for this machine, all time (the card slices the last 28 days);
+ * Usage stats across every machine on the account, all time (the card slices the last 28 days);
  * null while loading. The first read can come back before the provider ledger
  * is complete, so a later usage update (the ledger landing) reloads it.
  */
@@ -177,7 +177,7 @@ export function useRecentStats(): RecentStats {
     try {
       // The same read the new-chat Activity card makes, so both agree and the
       // main process answers from one cache.
-      const result = await getStats({ preset: "all" });
+      const result = await getStats({ preset: "all", scope: "account" });
       if (requestRef.current === request) setStats(result ?? "unavailable");
     } catch {
       if (requestRef.current === request) setStats((current) => current ?? "unavailable");

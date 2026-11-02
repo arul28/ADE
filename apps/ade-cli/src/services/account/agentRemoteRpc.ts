@@ -48,6 +48,11 @@ export const AGENT_REMOTE_MACHINE_METHODS: ReadonlySet<string> = new Set([
   "personalChats.call",
   "machines.deliverWake",
   "machines.cloneForAgent",
+  // Day x provider x model aggregates only, for the account-wide usage merge
+  // (the calling brain's own fan-out rides its agents' paired connection).
+  "usage.getUsageRollup",
+  // Live quota windows and accounts only, for the cross-machine limits view.
+  "usage.getLiveQuota",
 ]);
 
 /**

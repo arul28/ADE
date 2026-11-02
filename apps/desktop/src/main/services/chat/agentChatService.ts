@@ -12255,6 +12255,23 @@ export function createAgentChatService(args: {
     return buildLinearSessionDirective(links);
   };
 
+  /**
+   * The id of the account a caller named, by id or by email. A name this
+   * machine does not know is kept as given, so launch falls back the way it
+   * does for a removed account.
+   */
+  const requestedAccountId = (provider: string, requested: string | null | undefined): string | undefined => {
+    const trimmed = requested?.trim();
+    if (!trimmed) return undefined;
+    if (!isProviderInstanceProvider(provider)) return trimmed;
+    try {
+      const found = getMachineProviderInstanceStore().resolve(provider, trimmed);
+      return found.fellBack ? trimmed : found.instance.id;
+    } catch {
+      return trimmed;
+    }
+  };
+
   /** The account a new Claude or Codex chat starts on when nothing picked one. */
   const currentDefaultInstanceId = (provider: string): string | undefined => {
     if (!isProviderInstanceProvider(provider)) return undefined;
@@ -12331,6 +12348,12 @@ export function createAgentChatService(args: {
         instanceId: pinned.id,
       });
       return pinned;
+    }
+    if (!resolved.fellBack && resolved.instance.id !== requestedId) {
+      // Named by its email: record the account's id, which every other
+      // reader of `instanceId` (usage rows, the account switcher) compares.
+      managed.session.instanceId = resolved.instance.id;
+      persistChatState(managed);
     }
     if (resolved.fellBack) {
       // Keep the pointers when another home may still own the account, or a
@@ -22991,8 +23014,9 @@ export function createAgentChatService(args: {
       await sendMessage({
         sessionId: created.id,
         text: usageLimitHandoffPrompt({
-          // The id, not the label: the label is the login's email now.
-          accountLabel: alternate.instanceId,
+          // Neither the id (users never see it) nor the email: "the other
+          // account" is all the new chat needs.
+          accountLabel: "",
           title: managed.autoTitleSeed,
           task: managed.session.goal,
           summary: managed.continuitySummary,
@@ -23236,11 +23260,12 @@ export function createAgentChatService(args: {
     instanceId,
   }: AgentChatSwitchAccountArgs): Promise<AgentChatSwitchAccountResult> => {
     const normalizedSessionId = sessionId.trim();
-    const targetId = instanceId.trim();
     if (!normalizedSessionId) throw new Error("Chat session id is required.");
-    if (!targetId) throw new Error("Account id is required.");
+    if (!instanceId.trim()) throw new Error("Account id is required.");
     assertChatRuntimeOwnedHere(normalizedSessionId, "switch the account of");
     const managed = ensureManagedSession(normalizedSessionId);
+    // The account may be named by its email; compare and record its id.
+    const targetId = requestedAccountId(managed.session.provider, instanceId) ?? instanceId.trim();
     if (resolveHandoffBlockedReason(managed)
       || accountSwitchesInFlight.has(normalizedSessionId)
       || pendingUsageLimitMoves.has(normalizedSessionId)
@@ -49860,7 +49885,7 @@ export function createAgentChatService(args: {
     // follows the default, and a later default switch would relaunch it on a
     // config home that does not hold its thread.
     const selectedInstanceId = balancedInstance?.instanceId
-      || requestedInstanceId?.trim()
+      || requestedAccountId(effectiveProvider, requestedInstanceId)
       || currentDefaultInstanceId(effectiveProvider);
 
     /* A Custom provider's thinking level is part of the preset, and the preset

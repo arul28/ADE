@@ -1,7 +1,7 @@
 /**
  * The top of a provider page: the maker's banner, the logo standing on it in
- * 3D, the provider's name and state, and what this machine ran on it in
- * the last 30 days.
+ * 3D, the provider's name and state, and what the user ran on it across
+ * every machine on their ADE account in the last 30 days.
  */
 import React, { useEffect, useMemo, useState } from "react";
 import type { AdeUsageStats } from "../../../../shared/types/usage";
@@ -14,21 +14,30 @@ import type { ProviderDescriptor, ProviderStatusState } from "./types";
 type HeroUsage = {
   tokens: number;
   costUsd: number;
-  requests: number;
+  /**
+   * Null when the stats counted no requests. Provider-ledger model rows carry
+   * tokens and dollars but no request count (`calls` stays 0), so a sum of
+   * them read "0 requests" beside billions of tokens.
+   */
+  requests: number | null;
+  /** False when the host answered for one machine only (an older ADE). */
+  allMachines: boolean;
   models: Array<{ id: string; label: string; tokens: number }>;
 };
 
-/** This provider's slice of the machine's 30-day usage, or null when it ran nothing. */
+/** This provider's slice of the account's 30-day usage, or null when it ran nothing. */
 function usageFor(stats: AdeUsageStats, providerId: string, labelFor: (id: string) => string): HeroUsage | null {
   const provider = stats.providers.find((row) => row.provider === providerId);
   const models = stats.models
     .filter((row) => row.provider === providerId && row.totalTokens > 0)
     .sort((a, b) => b.totalTokens - a.totalTokens);
   if (!provider || provider.totalTokens <= 0) return null;
+  const requests = models.reduce((sum, row) => sum + row.calls, 0);
   return {
     tokens: provider.totalTokens,
     costUsd: provider.rangeCostUsd,
-    requests: models.reduce((sum, row) => sum + row.calls, 0),
+    requests: requests > 0 ? requests : null,
+    allMachines: stats.scope === "account",
     models: models.slice(0, 3).map((row) => ({ id: row.model, label: labelFor(row.model), tokens: row.totalTokens })),
   };
 }
@@ -44,7 +53,10 @@ function useProviderUsage(providerId: string, pin: OpenProjectBinding | null, la
       setStats(null);
       return;
     }
-    read({ preset: "30d", scope: "machine" }, pin)
+    // A stat about the user is every machine's, never just the one showing
+    // the page. Account scope answers from stored rollups at once and
+    // refreshes the other machines in the background.
+    read({ preset: "30d", scope: "account" }, pin)
       .then((next) => { if (!cancelled) setStats(next ?? null); })
       .catch(() => { if (!cancelled) setStats(null); });
     return () => { cancelled = true; };
@@ -163,7 +175,7 @@ export function ProviderHero({
         {usage === undefined ? null : (
           <div className="ade-pv-hero-stats">
             <div className="ade-pv-hero-stats-head">
-              <span>On this machine</span>
+              <span>{usage === null || usage.allMachines ? "All machines" : "One machine"}</span>
               <span>30 days</span>
             </div>
             {usage ? (
@@ -173,10 +185,12 @@ export function ProviderHero({
                     <b>{formatTokens(usage.tokens)}</b>
                     <span>tokens</span>
                   </div>
-                  <div className="ade-pv-hero-figure">
-                    <b>{usage.requests.toLocaleString("en-US")}</b>
-                    <span>requests</span>
-                  </div>
+                  {usage.requests != null ? (
+                    <div className="ade-pv-hero-figure">
+                      <b>{usage.requests.toLocaleString("en-US")}</b>
+                      <span>requests</span>
+                    </div>
+                  ) : null}
                   <div className="ade-pv-hero-figure" title="The turns at public list prices">
                     <b>{formatCost(usage.costUsd)}</b>
                     <span>at list price</span>
@@ -197,7 +211,7 @@ export function ProviderHero({
                 ) : null}
               </>
             ) : (
-              <div className="ade-pv-hero-empty">No chats ran on {descriptor.label} here in the last 30 days.</div>
+              <div className="ade-pv-hero-empty">No chats ran on {descriptor.label} on your machines in the last 30 days.</div>
             )}
           </div>
         )}

@@ -154,7 +154,10 @@ export function useProviderAccountCounts(): Partial<Record<ProviderInstanceProvi
         const list = await api.list();
         if (cancelled) return;
         const next: Partial<Record<ProviderInstanceProvider, number>> = {};
+        // Distinct logins, as the Accounts panel counts them: a copy of
+        // another account's login is not another account.
         for (const instance of list) {
+          if (instance.sameLoginAs) continue;
           next[instance.provider] = (next[instance.provider] ?? 0) + 1;
         }
         setCounts(next);

@@ -446,5 +446,48 @@ export function createAgentMachineBridge(options: AgentMachineBridgeOptions) {
     }
   };
 
-  return { call, listMachines, deliverWake, locateChat };
+  /**
+   * One machine's usage rollup, for this brain's account-wide usage merge.
+   *
+   * Rides the agents' paired connection because the brain owns the rollup
+   * store and has no other client for its peers; the desktop app's fan-out only
+   * reaches machines its own window happens to be connected to, so a brain with
+   * no window open (or one whose window is bound elsewhere) never heard from
+   * the rest of the account. The answer is aggregates only and is validated
+   * and bounded by the caller (`createAccountRollupFetcher`).
+   */
+  const fetchUsageMethod = async (
+    machineKey: string,
+    method: "usage.getUsageRollup" | "usage.getLiveQuota",
+    timeoutMs: number,
+  ): Promise<unknown> => {
+    const machines = await pool.listAccountMachines();
+    const machine = machines.find((candidate) => candidate.machineKey === machineKey);
+    if (!machine) throw new Error("This computer is no longer on your ADE account.");
+    if (pool.isThisMachine(machine)) throw new MachineIsLocalError(machineName(machine));
+    if (!machine.online) throw new MachineOfflineError(machineName(machine), lastSeen(machine));
+    const entry = await pool.acquire(machine);
+    return await pool.request(
+      machine,
+      entry,
+      method,
+      method,
+      {},
+      clampMachineCallTimeout(timeoutMs),
+    );
+  };
+
+  return {
+    call,
+    listMachines,
+    deliverWake,
+    locateChat,
+    fetchUsageRollup: (machineKey: string, timeoutMs: number) => fetchUsageMethod(machineKey, "usage.getUsageRollup", timeoutMs),
+    /** One machine's own live quota (windows and accounts), for the limits view. */
+    fetchLiveQuota: (machineKey: string, timeoutMs: number) => fetchUsageMethod(machineKey, "usage.getLiveQuota", timeoutMs),
+    /** The account directory, cached briefly; throws when signed out or unreadable. */
+    listAccountMachines: () => pool.listAccountMachines(),
+    /** This computer's account machine key, or null before it has one. */
+    localMachineKey: (): string | null => pool.thisMachine()?.machineKey ?? null,
+  };
 }

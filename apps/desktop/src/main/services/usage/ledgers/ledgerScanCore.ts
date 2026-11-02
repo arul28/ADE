@@ -128,6 +128,13 @@ export interface TokenEntry {
    * turn or session aggregates, which are priced at the base rate.
    */
   requestContextTokens?: number;
+  /**
+   * Model requests this entry records. Set only by scanners whose entries are
+   * single requests (a deduped Claude assistant message, a Codex
+   * `last_token_usage` event); absent on aggregates, whose request count is
+   * unknown rather than zero.
+   */
+  requests?: number;
   timestamp: number;
 }
 

@@ -40,6 +40,10 @@ export type UsageAccountView = {
   notice?: NonNullable<UsageAccount["notice"]>;
   /** This machine's login state for the account; local like `notice`. */
   login?: UsageAccount["login"];
+  /** Another machine whose fresher reading these windows are, when not this one's. */
+  readingFrom?: UsageAccount["readingFrom"];
+  /** Signed in only on another machine; it can't take a chat here. */
+  notSignedInHere?: boolean;
   /** Two letters for the chip, derived from the email (or the machine). */
   initials: string;
 };
@@ -98,6 +102,8 @@ export function poolAccounts(accounts: UsageAccount[] | undefined): UsageAccount
         ...(account.resetCredits ? { resetCredits: account.resetCredits } : {}),
         ...(account.notice ? { notice: account.notice } : {}),
         ...(account.login ? { login: account.login } : {}),
+        ...(account.readingFrom ? { readingFrom: account.readingFrom } : {}),
+        ...(account.notSignedInHere ? { notSignedInHere: true } : {}),
         initials: emailInitials(account.email, account.machines[0]?.label),
       });
       continue;
