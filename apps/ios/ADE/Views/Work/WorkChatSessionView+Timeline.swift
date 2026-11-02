@@ -678,6 +678,7 @@ extension WorkChatSessionView {
         pendingInputCollapsedPill(item)
       } else {
         pendingInputQueueHeader
+        pendingInputAskers(primary: item)
         consolidatedPendingInputBody(item)
       }
     }
@@ -724,6 +725,31 @@ extension WorkChatSessionView {
     }
     .padding(.horizontal, 4)
     .frame(minHeight: 22)
+  }
+
+  /// Who asks: the open card's subagent ("Reviewer asks"), and with several
+  /// cards waiting, everyone waiting — three names, then "+N more". Desktop
+  /// parity: `PendingInputStack`.
+  @ViewBuilder
+  private func pendingInputAskers(primary item: WorkPendingInputItem) -> some View {
+    let subagents = timelineSnapshot.pendingInputQueue.subagentByItemId
+    let names = pendingInputs.map { subagents[$0.itemId]?.name ?? "Main agent" }
+    if let primaryName = subagents[item.itemId]?.name {
+      Text("\(primaryName) asks")
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(ADEColor.textPrimary)
+        .padding(.horizontal, 4)
+        .accessibilityLabel("Subagent \(primaryName) asks")
+    }
+    if names.count > 1 {
+      let shown = names.prefix(3).joined(separator: " · ")
+      let more = names.count > 3 ? " +\(names.count - 3) more" : ""
+      Text("Waiting: \(shown)\(more)")
+        .font(.caption2)
+        .foregroundStyle(ADEColor.textMuted)
+        .lineLimit(1)
+        .padding(.horizontal, 4)
+    }
   }
 
   /// Minimized state: a single tappable line that keeps the gate visible (and

@@ -3310,7 +3310,7 @@ describe("adeRpcServer", () => {
     }));
   });
 
-  it("lets an agent start a CLI child only as itself in an authorized lane", async () => {
+  it("lets an agent start a CLI child as itself in any lane, but keeps a raw shell in its own lane", async () => {
     const fixture = createRuntime();
     fixture.runtime.sessionService.get.mockImplementation((sessionId: string) => {
       if (sessionId === "chat-agent") return { id: sessionId, laneId: "lane-1" };
@@ -3327,20 +3327,34 @@ describe("adeRpcServer", () => {
     });
     expect(allowed.isError).toBeUndefined();
 
+    // An agent CLI may go to another lane, like chat.launchCli and spawn_agent.
+    const otherLane = await callTool(handler, "start_cli_session", {
+      laneId: "lane-2",
+      provider: "codex",
+      orchestrationParentSessionId: "chat-agent",
+      spawnKind: "subagent",
+    });
+    expect(otherLane.isError).toBeUndefined();
+    expect(fixture.runtime.ptyService.create).toHaveBeenLastCalledWith(expect.objectContaining({ laneId: "lane-2" }));
+
+    // The parent it reports to must be the caller, and the denial names the caller.
     const foreignParent = await callTool(handler, "start_cli_session", {
       laneId: "lane-1",
       provider: "codex",
       orchestrationParentSessionId: "other-chat",
+      spawnKind: "subagent",
     });
     expect(foreignParent.isError).toBe(true);
     expect(JSON.stringify(foreignParent.error ?? foreignParent)).toMatch(/PTY access is limited/i);
+    expect(JSON.stringify(foreignParent.error ?? foreignParent)).toContain("chat-agent");
 
-    const foreignLane = await callTool(handler, "start_cli_session", {
+    // A plain shell is raw terminal access: another lane is refused.
+    const shellElsewhere = await callTool(handler, "start_cli_session", {
       laneId: "lane-2",
-      provider: "codex",
-      orchestrationParentSessionId: "chat-agent",
+      provider: "shell",
     });
-    expect(foreignLane.isError).toBe(true);
+    expect(shellElsewhere.isError).toBe(true);
+    expect(JSON.stringify(shellElsewhere.error ?? shellElsewhere)).toMatch(/PTY access is limited/i);
   });
 
   it("reopens the parent card only when a CLI send actually resumes the child", async () => {

@@ -55,6 +55,18 @@ export type AgentRunState = {
   detail: string | null;
   /** Pending approval item id while phase is waiting_for_approval. */
   itemId: string | null;
+  /**
+   * Every card still open in this chat, oldest first. Two subagents can wait at
+   * once: the run stays waiting until all are answered, and `itemId`/`detail`
+   * follow the newest one still open. A subagent's card also keeps the run
+   * waiting past the end of the parent's turn.
+   */
+  openCards?: Map<string, {
+    phase: "waiting_for_approval" | "waiting_for_input";
+    detail: string | null;
+    /** Raised by a subagent, which can outlive the parent's turn. */
+    subagent: boolean;
+  }>;
   startedAt: number;
   lastActiveAt: number;
   /** Immutable while `phase` is unchanged. */

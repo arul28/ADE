@@ -6592,6 +6592,16 @@ export function AgentChatPane({
     return resolved;
   }, [pendingInputsBySession, sessions, initialSessionSummary]);
 
+  // Rows in the subagents panel whose subagent has a card open in this chat.
+  const waitingSubagentKeys = useMemo(() => {
+    const keys = new Set<string>();
+    for (const entry of (selectedSessionId ? resolvedPendingInputsBySession[selectedSessionId] : null) ?? []) {
+      const key = entry.request.subagent?.key;
+      if (key) keys.add(key);
+    }
+    return keys;
+  }, [resolvedPendingInputsBySession, selectedSessionId]);
+
   const selectedPendingInputs = composerSessionId
     ? (resolvedPendingInputsBySession[composerSessionId] ?? [])
     : [];
@@ -6602,9 +6612,18 @@ export function AgentChatPane({
   const steeringPendingInput = selectedPendingInputs.find((entry) =>
     isNonBlockingPendingRequest(entry.request),
   ) ?? null;
-  const pendingInput = selectedPendingInputs.find((entry) =>
-    !isNonBlockingPendingRequest(entry.request),
-  ) ?? null;
+  const blockingPendingInputs = useMemo(
+    () => selectedPendingInputs.filter((entry) => !isNonBlockingPendingRequest(entry.request)),
+    [selectedPendingInputs],
+  );
+  // Several cards can wait at once (two subagents, or a subagent and the main
+  // agent). The composer lists them and opens the one picked here; a card that
+  // closes falls back to the first one still waiting.
+  const [focusedPendingItemId, setFocusedPendingItemId] = useState<string | null>(null);
+  const pendingInput = blockingPendingInputs.find((entry) => entry.itemId === focusedPendingItemId)
+    ?? blockingPendingInputs[0]
+    ?? null;
+  const pendingInputQueue = blockingPendingInputs.length > 1 ? blockingPendingInputs : undefined;
   const composerPendingInput = pendingInput ? pendingInput.request : null;
   const selectedSessionAwaitingInput =
     Boolean(pendingInput)
@@ -16974,6 +16993,7 @@ export function AgentChatPane({
       onRetryTerminalWatches={chatTerminalWatches.retry}
       runtimeAlive={selectedSession?.runtimeAlive}
       childChatStatuses={knownChatStatusesById}
+      waitingSubagentKeys={waitingSubagentKeys}
       events={selectedEvents}
       taskList={selectedTaskList}
       scheduleItems={selectedScheduleItems}
@@ -18415,6 +18435,8 @@ export function AgentChatPane({
             }
             pinnedLinearIssue={pinnedLinearIssue}
             pendingInput={composerPendingInput}
+            pendingInputQueue={pendingInputQueue}
+            onSelectPendingInput={setFocusedPendingItemId}
             approvalResponding={pendingInput ? respondingApprovalIds.has(pendingInput.itemId) : false}
             turnActive={turnActive}
             sendOnEnter={sendOnEnter}

@@ -3242,8 +3242,10 @@ function scopeAccessDenied(
   });
 }
 
-function ptyAccessDenied(method: string): never {
-  scopeAccessDenied("PTY access is limited to the caller's own terminal session and lane", method);
+function ptyAccessDenied(method: string, session?: SessionState): never {
+  scopeAccessDenied("PTY access is limited to the caller's own terminal session and lane", method, {
+    callerChatSessionId: session?.identity.chatSessionId ?? null,
+  });
 }
 
 function chatAccessDenied(
@@ -3311,6 +3313,17 @@ function isPtySessionAuthorized(runtime: AdeRuntime, session: SessionState, targ
   ) {
     return true;
   }
+  // A CLI session the caller launched (it may run in another lane) is the
+  // caller's to list, read and stop, like its own.
+  if (
+    callerChatSessionId
+    && (
+      asOptionalTrimmedString(target.orchestrationParentSessionId) === callerChatSessionId
+      || asOptionalTrimmedString(target.launchedBySessionId) === callerChatSessionId
+    )
+  ) {
+    return true;
+  }
   // A shell a chat on another machine started in its work copy here runs in
   // the primary lane but belongs to that chat alone, not to the lane.
   if (parseForeignCallerSessionId(targetChatSessionId)) return false;
@@ -3328,10 +3341,10 @@ function ensurePtyCreateAuthorized(
   const requestedChatSessionId = asOptionalTrimmedString(ptyArgs.chatSessionId);
   const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
   if (requestedChatSessionId && requestedChatSessionId !== callerChatSessionId) {
-    ptyAccessDenied(method);
+    ptyAccessDenied(method, session);
   }
   if (!laneId || !authorizedPtyLaneIds(runtime, session).has(laneId)) {
-    ptyAccessDenied(method);
+    ptyAccessDenied(method, session);
   }
 }
 
@@ -3352,7 +3365,7 @@ function ensurePtyTargetAuthorized(
     ...(sessionId ? [getPtySessionForAuthorization(runtime, sessionId)] : []),
   ];
   if (targets.length === 0 || targets.some((target) => !target || !isPtySessionAuthorized(runtime, session, target))) {
-    ptyAccessDenied(method);
+    ptyAccessDenied(method, session);
   }
 }
 
@@ -3386,10 +3399,10 @@ function listAuthorizedPtySessions(
   const laneIds = authorizedPtyLaneIds(runtime, session);
   const requestedLaneId = extractLaneId(ptyArgs);
   if (requestedLaneId && !laneIds.has(requestedLaneId)) {
-    ptyAccessDenied(method);
+    ptyAccessDenied(method, session);
   }
   if (!callerChatSessionId && !laneIds.size) {
-    ptyAccessDenied(method);
+    ptyAccessDenied(method, session);
   }
 
   const scopedArgs = { ...ptyArgs };
@@ -3433,7 +3446,7 @@ function authorizePtyAdeActionInvocation(
       ensurePtyTargetAuthorized(runtime, session, method, ptyArgs);
       return;
     default:
-      ptyAccessDenied(method);
+      ptyAccessDenied(method, session);
   }
 }
 
@@ -3448,15 +3461,15 @@ function scopeTerminalChatArgs(
   const requestedChatSessionId = asOptionalTrimmedString(scopedArgs.chatSessionId);
   const requestedLaneId = extractLaneId(scopedArgs);
   if (requestedChatSessionId && requestedChatSessionId !== callerChatSessionId) {
-    ptyAccessDenied(method);
+    ptyAccessDenied(method, session);
   }
   if (requestedLaneId && !authorizedPtyLaneIds(runtime, session).has(requestedLaneId)) {
-    ptyAccessDenied(method);
+    ptyAccessDenied(method, session);
   }
   if (!requestedChatSessionId && callerChatSessionId) {
     scopedArgs.chatSessionId = callerChatSessionId;
   } else if (!requestedChatSessionId) {
-    ptyAccessDenied(method);
+    ptyAccessDenied(method, session);
   }
   return scopedArgs;
 }
@@ -3473,17 +3486,17 @@ function scopeTerminalListArgs(
   const requestedLaneId = extractLaneId(scopedArgs);
   const laneIds = authorizedPtyLaneIds(runtime, session);
   if (requestedChatSessionId && requestedChatSessionId !== callerChatSessionId) {
-    ptyAccessDenied(method);
+    ptyAccessDenied(method, session);
   }
   if (requestedLaneId && !laneIds.has(requestedLaneId)) {
-    ptyAccessDenied(method);
+    ptyAccessDenied(method, session);
   }
   if (!requestedChatSessionId && callerChatSessionId) {
     scopedArgs.chatSessionId = callerChatSessionId;
   } else if (!requestedLaneId && laneIds.size === 1) {
     scopedArgs.laneId = [...laneIds][0];
   } else if (!requestedChatSessionId && !requestedLaneId) {
-    ptyAccessDenied(method);
+    ptyAccessDenied(method, session);
   }
   return scopedArgs;
 }
@@ -3501,7 +3514,7 @@ function scopeTerminalTargetArgs(
   const ptyId = asOptionalTrimmedString(scopedArgs.ptyId);
 
   if (requestedChatSessionId && requestedChatSessionId !== callerChatSessionId) {
-    ptyAccessDenied(method);
+    ptyAccessDenied(method, session);
   }
   if (!requestedChatSessionId && !terminalId && !ptyId && callerChatSessionId) {
     scopedArgs.chatSessionId = callerChatSessionId;
@@ -3514,7 +3527,7 @@ function scopeTerminalTargetArgs(
     return scopedArgs;
   }
   if (asOptionalTrimmedString(scopedArgs.chatSessionId) !== callerChatSessionId || !callerChatSessionId) {
-    ptyAccessDenied(method);
+    ptyAccessDenied(method, session);
   }
   return scopedArgs;
 }
@@ -3570,7 +3583,7 @@ function scopeTerminalAdeActionArgs(
       // within it, never past it.
       return scopeTerminalChatArgs(runtime, session, method, terminalArgs);
     default:
-      ptyAccessDenied(method);
+      ptyAccessDenied(method, session);
   }
 }
 
@@ -6298,7 +6311,7 @@ async function runTool(args: {
       const requestedLaneId = extractLaneId(childArgs);
       const localCliUser = isUnboundAdeCliCaller(session);
       if (!localCliUser && (!laneIds.size || (requestedLaneId && !laneIds.has(requestedLaneId)))) {
-        ptyAccessDenied(`run_ade_action:${domain}.${action}`);
+        ptyAccessDenied(`run_ade_action:${domain}.${action}`, session);
       }
       scopedObjectArgs = {
         ...childArgs,
@@ -6827,13 +6840,33 @@ async function runTool(args: {
       ? null
       : assertNonEmptyString(toolArgs.orchestrationParentSessionId, "orchestrationParentSessionId");
     if (!callerHasRoleAtLeast(session.identity.role, "cto") && !isUnboundAdeCliCaller(session)) {
-      ensurePtyCreateAuthorized(runtime, session, "start_cli_session", {
-        laneId,
-        ...(requestedChatSessionId ? { chatSessionId: requestedChatSessionId } : {}),
-      });
+      // Starting an agent CLI is agent work, not raw terminal access: like
+      // `chat.launchCli` and `spawn_agent`, it may target any lane that exists,
+      // and the permission cap below keeps the child at or under its caller.
+      // What stays the caller's own is the chat it claims as owner and the
+      // parent it reports to.
       const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
+      if (requestedChatSessionId && requestedChatSessionId !== callerChatSessionId) {
+        ptyAccessDenied("start_cli_session", session);
+      }
       if (orchestrationParentSessionId && orchestrationParentSessionId !== callerChatSessionId) {
-        ptyAccessDenied("start_cli_session");
+        ptyAccessDenied("start_cli_session", session);
+      }
+      // A plain shell is raw terminal access, which stays in the caller's
+      // own lane; only an agent CLI (capped below) may go to another lane.
+      // A caller with no chat of its own has no level for the cap to read,
+      // so it stays in its lane too.
+      if (provider === "shell" || !callerChatSessionId) {
+        ensurePtyCreateAuthorized(runtime, session, "start_cli_session", {
+          laneId,
+          ...(requestedChatSessionId ? { chatSessionId: requestedChatSessionId } : {}),
+        });
+      }
+      if (!resolveLaneWorktreePath(runtime, laneId)) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidParams,
+          `Requested lane '${laneId}' does not have an available worktree.`,
+        );
       }
     }
     const callerActor = await callerRuntimeActor(runtime, session, isUserClientSession(session));

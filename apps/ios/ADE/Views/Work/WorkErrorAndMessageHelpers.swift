@@ -1964,9 +1964,51 @@ func pendingWorkModelSelectionFromApproval(
 /// `resolved(hostPendingInputItemId:)`, because only the session summary can say
 /// whether a receipt-less sweep was right. See "Pending input derivation" in
 /// `docs/features/chat/README.md`.
+/// Who raised a card inside a chat: one of its provider-native subagents. The
+/// card still belongs to the chat and is answered there. Desktop parity:
+/// `PendingInputSubagent` in `shared/types/chat.ts`.
+struct WorkPendingSubagent: Equatable {
+  let key: String
+  let name: String
+}
+
+func workPendingSubagent(detail: String?) -> WorkPendingSubagent? {
+  guard let detailObject = workJSONObject(from: detail),
+        let request = detailObject["request"] as? [String: Any],
+        let subagent = request["subagent"] as? [String: Any],
+        let key = optionalString(subagent["key"]), !key.isEmpty,
+        let name = optionalString(subagent["name"]), !name.isEmpty
+  else { return nil }
+  return WorkPendingSubagent(key: key, name: name)
+}
+
+/// Row keys of the in-thread subagents whose card is still open in this chat
+/// (agent id, else task id — `subagentAgentKey` on desktop). The queue is only
+/// derived when some card names a subagent, so a chat without one pays a scan.
+func workWaitingSubagentKeys(
+  from transcript: [WorkChatEnvelope],
+  hostPendingInputItemId: String? = nil
+) -> Set<String> {
+  let namesSubagent = transcript.contains { envelope in
+    if case .approvalRequest(_, let detail, _, _) = envelope.event {
+      return detail?.contains("\"subagent\"") == true
+    }
+    return false
+  }
+  guard namesSubagent else { return [] }
+  let queue = deriveWorkPendingInputQueue(from: transcript)
+  // The host may still hold a card the transcript sweep closed (a background
+  // subagent's card after its parent's turn ended); `resolved` keeps it.
+  let open = queue.resolved(hostPendingInputItemId: hostPendingInputItemId)
+  return Set(open.compactMap { queue.subagentByItemId[$0.itemId]?.key })
+}
+
 struct WorkPendingInputQueue: Equatable {
   var items: [WorkPendingInputItem]
   var sweptItemIds: Set<String>
+  /// The provider-native subagent that raised each card (`detail.request.subagent`),
+  /// by item id. A card missing here is the chat's own agent's.
+  var subagentByItemId: [String: WorkPendingSubagent] = [:]
 
   static let empty = WorkPendingInputQueue(items: [], sweptItemIds: [])
 
@@ -2019,11 +2061,15 @@ func deriveWorkPendingInputQueue(from transcript: [WorkChatEnvelope]) -> WorkPen
   // than merely deprioritised.
   var wrappedQuestionTexts = Set<String>()
   var rawToolCallQuestionTexts: [String: Set<String>] = [:]
+  var subagentByItemId: [String: WorkPendingSubagent] = [:]
   for envelope in sortedWorkChatEnvelopes(transcript) {
     switch envelope.event {
     case .approvalRequest(let description, let detail, let itemId, _):
       guard openIds.contains(itemId), !seen.contains(itemId) else { continue }
       seen.insert(itemId)
+      if let subagent = workPendingSubagent(detail: detail) {
+        subagentByItemId[itemId] = subagent
+      }
       if let modelSelection = pendingWorkModelSelectionFromApproval(description: description, detail: detail, itemId: itemId) {
         results.append(.modelSelection(modelSelection))
       } else if let planApproval = pendingWorkPlanApprovalFromApproval(description: description, detail: detail, itemId: itemId) {
@@ -2079,11 +2125,12 @@ func deriveWorkPendingInputQueue(from transcript: [WorkChatEnvelope]) -> WorkPen
     }
   }
   guard !sweepState.sweptItemIds.isEmpty else {
-    return WorkPendingInputQueue(items: items, sweptItemIds: [])
+    return WorkPendingInputQueue(items: items, sweptItemIds: [], subagentByItemId: subagentByItemId)
   }
   return WorkPendingInputQueue(
     items: items,
-    sweptItemIds: sweepState.sweptItemIds.intersection(items.map(\.itemId))
+    sweptItemIds: sweepState.sweptItemIds.intersection(items.map(\.itemId)),
+    subagentByItemId: subagentByItemId
   )
 }
 

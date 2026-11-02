@@ -36,6 +36,7 @@ import {
   groupPaneSectionItems,
   isBackgroundShellCommand,
   isEarlierSubagentSnapshot,
+  subagentAgentKey,
   subagentModelAttribution,
   subagentSummaryPlainText,
 } from "../../../shared/chatSubagents";
@@ -1316,6 +1317,7 @@ export function ChatSubagentsPanel({
   sessionModelLabel = null,
   runtimeAlive,
   childChatStatuses,
+  waitingSubagentKeys,
   workflowPlans,
   shells = [],
   shellsPin = null,
@@ -1398,6 +1400,11 @@ export function ChatSubagentsPanel({
    * (`useChatChildRoster`), which also give filing and "needs you".
    */
   childChatStatuses?: ReadonlyMap<string, AgentChatSessionStatus>;
+  /**
+   * Row keys (`subagentAgentKey`) of the provider-native subagents whose card
+   * is open in this chat. Their rows read "needs you" like a waiting child chat.
+   */
+  waitingSubagentKeys?: ReadonlySet<string>;
   /**
    * Each dynamic workflow's declared script plan, keyed by workflow task id —
    * the phases a run's script names, shown in the workflow section when the
@@ -1800,7 +1807,8 @@ export function ChatSubagentsPanel({
   const taskProgress = taskList ? chatTaskListProgress(taskList.items) : null;
 
   const subagentNeedsYou = (snap: ChatSubagentSnapshot) =>
-    snap.childSessionId != null && childById.get(snap.childSessionId)?.phase === "needs_you";
+    (snap.childSessionId != null && childById.get(snap.childSessionId)?.phase === "needs_you")
+    || (waitingSubagentKeys?.has(subagentAgentKey(snap) ?? snap.taskId) ?? false);
   const subagentNeedsYouCount = subagentGroups.active.filter(subagentNeedsYou).length;
   const subagentRunningCount = subagentGroups.active.filter((item) => item.status === "running" && !subagentNeedsYou(item)).length;
   const subagentFailedCount = subagentGroups.active.filter((item) => item.status === "failed").length;

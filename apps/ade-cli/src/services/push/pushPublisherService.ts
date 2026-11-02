@@ -4,6 +4,7 @@ import type { Logger } from "../../../../desktop/src/main/services/logging/logge
 import { GOAL_BLOCKED_NOTICE_STATUS, GOAL_REACHED_NOTICE_STATUS } from "../../../../desktop/src/shared/chatGoals";
 import type { AgentChatEventEnvelope, AgentChatSessionSummary } from "../../../../desktop/src/shared/types/chat";
 import { approvalRequestKind, isQuestionKind } from "../../../../desktop/src/shared/pendingInputAnswers";
+import { readPendingInputSubagent } from "../../../../desktop/src/shared/pendingInputRequest";
 import {
   ATTENTION_CONTRACT_VERSION,
   DEFAULT_ATTENTION_PREFERENCES,
@@ -61,6 +62,23 @@ import type {
   RosterPhaseAnchor,
 } from "./attentionItemBuilder";
 import { deriveProjectId } from "../projects/projectRegistry";
+
+/** The subagent that raised a card, from the card's own request record. */
+function approvalRequestSubagentName(event: { detail?: unknown }): string | null {
+  const detail = event.detail && typeof event.detail === "object" ? event.detail as Record<string, unknown> : null;
+  const request = detail?.request && typeof detail.request === "object" ? detail.request as Record<string, unknown> : null;
+  return readPendingInputSubagent(request?.subagent)?.name ?? null;
+}
+
+/** The newest card a subagent still waits on: it keeps the run waiting past its parent's turn. */
+function openSubagentCard(run: AgentRunState): { phase: "waiting_for_approval" | "waiting_for_input" } | undefined {
+  return run.openCards ? [...run.openCards.values()].filter((card) => card.subagent).at(-1) : undefined;
+}
+
+/** One alert per open card; a card with no item id falls back to one per chat. */
+function approvalAlertDedupeKey(sessionId: string, itemId: string | null | undefined): string {
+  return itemId ? `alert:${sessionId}:approval:${itemId}` : `alert:${sessionId}:approval`;
+}
 
 /**
  * The Activity projection and its vocabulary live in `attentionItemBuilder.ts`.
@@ -731,6 +749,14 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
    * background work is doing.
    */
   const settleRun = (run: AgentRunState, phase: AgentRunPhase): void => {
+    // A background subagent's card outlives the parent's turn: the chat still
+    // needs the person until it is answered.
+    const openCard = phase === "completed" ? openSubagentCard(run) : undefined;
+    if (openCard) {
+      run.deferredTerminalPhase = phase;
+      setRunPhase(run, openCard.phase);
+      return;
+    }
     if (phase === "completed" && runHasBackgroundWork(run)) {
       run.deferredTerminalPhase = phase;
       setRunPhase(run, "running");
@@ -767,6 +793,9 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       // important happened meanwhile — an approval prompt, a failure — that
       // state owns the run and a drained background task must not erase it.
       if (run.phase === "running") setRunPhase(run, run.deferredTerminalPhase);
+      // A subagent's open card still holds the turn's landing until it is
+      // answered (see `pending_input_resolved`).
+      else if (openSubagentCard(run)) return;
       run.deferredTerminalPhase = null;
     }
   };
@@ -905,7 +934,10 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     const machineKey = deps.store.getOrCreateIdentity().machineKey;
     for (const alert of alerts) {
       if (alert.desktopAnnounced || !alert.sessionId) continue;
+      // `alert:<session>:approval:<card>` is one card's alert (one per card);
+      // a card id may itself contain `:`.
       const kind = /:(approval|question)$/.test(alert.dedupeKey)
+        || alert.dedupeKey.startsWith(`alert:${alert.sessionId}:approval:`)
         ? "needs_you" as const
         : /:failed$/.test(alert.dedupeKey)
           ? "failed" as const
@@ -1070,6 +1102,21 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
 
   const clearAlertDedupe = (dedupeKey: string): void => {
     lastAlertFingerprintByKey.delete(dedupeKey);
+  };
+
+  /**
+   * Drop every approval alert a session has queued (one per open card) and
+   * forget their dedupe, so a later card alerts again. Its open cards go too:
+   * whoever calls this has ended or superseded what they were waiting for.
+   */
+  const dropApprovalAlerts = (sessionId: string): void => {
+    const base = approvalAlertDedupeKey(sessionId, null);
+    const isApprovalKey = (key: string): boolean => key === base || key.startsWith(`${base}:`);
+    pendingAlerts = pendingAlerts.filter((alert) => !isApprovalKey(alert.dedupeKey));
+    for (const key of [...lastAlertFingerprintByKey.keys()]) {
+      if (isApprovalKey(key)) lastAlertFingerprintByKey.delete(key);
+    }
+    runs.get(sessionId)?.openCards?.clear();
   };
 
   const scheduleFlush = (immediate: boolean, activityChanged = true): void => {
@@ -1998,15 +2045,26 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         // the transcript reads it the same way. Neither present is an approval,
         // which is what a host with no question support meant.
         const isQuestion = isQuestionKind(approvalRequestKind(event));
-        setRunPhase(run, isQuestion ? "waiting_for_input" : "waiting_for_approval");
+        const phase = isQuestion ? "waiting_for_input" : "waiting_for_approval";
+        setRunPhase(run, phase);
         run.detail = event.description ?? run.detail;
         run.itemId = event.itemId || null;
+        // A subagent's card names it: two subagents asking at once are two
+        // alerts, each answering its own card.
+        const asker = approvalRequestSubagentName(event);
+        if (event.itemId) {
+          (run.openCards ??= new Map()).delete(event.itemId);
+          run.openCards.set(event.itemId, { phase, detail: event.description ?? null, subagent: asker !== null });
+        }
         enqueueAlert({
           sessionId,
-          // Both flavours are one prompt per session; sharing the dedupe key
-          // keeps a question from re-alerting over an approval it replaced.
-          dedupeKey: `alert:${sessionId}:approval`,
-          render: () => ({ title: `${runSubject(run)} needs you`, body: laneTitleLine(run) }),
+          // One alert per card. A re-sent card (same item id) keeps its key, so
+          // it does not alert twice; a second card alerts on its own.
+          dedupeKey: approvalAlertDedupeKey(sessionId, event.itemId),
+          render: () => ({
+            title: asker ? `${asker} needs you` : `${runSubject(run)} needs you`,
+            body: asker ? `${runSubject(run)} · ${laneTitleLine(run)}` : laneTitleLine(run),
+          }),
           deepLink: `ade://session/${sessionId}`,
           threadId: sessionId,
           phase: "waiting",
@@ -2036,18 +2094,34 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         break;
       }
       case "pending_input_resolved": {
-        if (run.phase === "waiting_for_approval" || run.phase === "waiting_for_input") {
-          run.deferredTerminalPhase = null;
-          setRunPhase(run, "running");
+        run.openCards?.delete(event.itemId);
+        // Another card is still open (a second subagent asked): the run keeps
+        // waiting, now on the newest card left.
+        const remaining = run.openCards ? [...run.openCards.entries()].at(-1) : undefined;
+        if (remaining) {
+          setRunPhase(run, remaining[1].phase);
+          run.itemId = remaining[0];
+          run.detail = remaining[1].detail ?? run.detail;
+        } else {
+          if (run.phase === "waiting_for_approval" || run.phase === "waiting_for_input") {
+            // The turn ended while this card waited: land where it ended.
+            const ended = run.deferredTerminalPhase;
+            run.deferredTerminalPhase = null;
+            if (ended) settleRun(run, ended);
+            else setRunPhase(run, "running");
+          }
+          run.itemId = null;
         }
-        run.itemId = null;
-        // Allow a later prompt in the same session to alert again.
-        clearAlertDedupe(`alert:${sessionId}:approval`);
+        // An alert still queued for this card would ask about an answered one.
+        const cardAlertKey = approvalAlertDedupeKey(sessionId, event.itemId);
+        pendingAlerts = pendingAlerts.filter((alert) => alert.dedupeKey !== cardAlertKey);
+        // Allow a later prompt for the same card id to alert again.
+        clearAlertDedupe(cardAlertKey);
         clearAlertDedupe(`alert:${sessionId}:question`);
         break;
       }
       case "status": {
-        if (event.turnStatus !== "started") run.itemId = null;
+        if (event.turnStatus !== "started" && !openSubagentCard(run)) run.itemId = null;
         if (event.turnStatus === "started") {
           run.deferredTerminalPhase = null;
           if (isTerminalPhase(run.phase)) setRunPhase(run, "running");
@@ -2152,12 +2226,8 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         setRunPhase(existing, "completed");
         recentRuns.set(signal.sessionId, snapshotRun(existing));
         runs.delete(signal.sessionId);
-        pendingAlerts = pendingAlerts.filter(
-          (alert) =>
-            alert.dedupeKey !== `alert:${signal.sessionId}:approval`
-            && alert.dedupeKey !== `alert:${signal.sessionId}:question`,
-        );
-        clearAlertDedupe(`alert:${signal.sessionId}:approval`);
+        dropApprovalAlerts(signal.sessionId);
+        pendingAlerts = pendingAlerts.filter((alert) => alert.dedupeKey !== `alert:${signal.sessionId}:question`);
         clearAlertDedupe(`alert:${signal.sessionId}:question`);
         scheduleFlush(true);
       }
@@ -2602,10 +2672,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       // clear the stale approval item + its queued alert/dedupe so the next
       // flush can't pair obsolete approval state with the new question.
       run.itemId = null;
-      pendingAlerts = pendingAlerts.filter(
-        (existing) => existing.dedupeKey !== `alert:${request.sessionId}:approval`,
-      );
-      clearAlertDedupe(`alert:${request.sessionId}:approval`);
+      dropApprovalAlerts(request.sessionId);
       clearAlertDedupe(`alert:${request.sessionId}:question`);
       enqueueAlert({
         sessionId: request.sessionId,
@@ -2656,12 +2723,8 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       run.itemId = null;
       markRunUpdated(run);
       setRunPhase(run, "running");
-      pendingAlerts = pendingAlerts.filter(
-        (alert) =>
-          alert.dedupeKey !== `alert:${sessionId}:approval`
-          && alert.dedupeKey !== `alert:${sessionId}:question`,
-      );
-      clearAlertDedupe(`alert:${sessionId}:approval`);
+      dropApprovalAlerts(sessionId);
+      pendingAlerts = pendingAlerts.filter((alert) => alert.dedupeKey !== `alert:${sessionId}:question`);
       clearAlertDedupe(`alert:${sessionId}:question`);
       scheduleFlush(true);
     },
@@ -2675,12 +2738,8 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       setRunPhase(run, "completed");
       recentRuns.set(sessionId, snapshotRun(run));
       runs.delete(sessionId);
-      pendingAlerts = pendingAlerts.filter(
-        (alert) =>
-          alert.dedupeKey !== `alert:${sessionId}:approval`
-          && alert.dedupeKey !== `alert:${sessionId}:question`,
-      );
-      clearAlertDedupe(`alert:${sessionId}:approval`);
+      dropApprovalAlerts(sessionId);
+      pendingAlerts = pendingAlerts.filter((alert) => alert.dedupeKey !== `alert:${sessionId}:question`);
       clearAlertDedupe(`alert:${sessionId}:question`);
       scheduleFlush(true);
     },

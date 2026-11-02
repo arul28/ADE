@@ -717,10 +717,21 @@ nothing for them to do, so it ships without them — the same shape
 `structured_question` already published. Before this, every `AskUserQuestion`
 went out as `waiting_for_approval`, so the phone offered
 Approve/Deny for something that wants prose, and the answer branch in the
-attention item builder was dead code. Both flavours share the
-`alert:<sessionId>:approval` dedupe key: it is one prompt per session either way,
-and sharing it keeps a question from re-alerting over an approval it replaced.
-An event with no `requestKind` is an approval, which is what older hosts meant.
+attention item builder was dead code. Both flavours use the per-card
+`alert:<sessionId>:approval:<itemId>` dedupe key (`approvalAlertDedupeKey`; an
+event with no item id falls back to `alert:<sessionId>:approval`). One chat can
+hold several open cards at once (the main agent's and its subagents'), and a
+shared per-chat key dropped every card after the first. A card answered before
+its alert flushes drops that alert, and a new card in the chat drops the older
+cards' queued alerts (`dropApprovalAlerts`). A subagent's card is titled
+"`<name>` needs you". An event with no `requestKind` is an approval, which is
+what older hosts meant.
+
+The run keeps one entry per open card (`AgentRunState.openCards`). Answering a
+card moves the phase to the newest card still open. A subagent's card keeps the
+run waiting past its parent's turn end, because the subagent still runs: the
+turn end is kept as the deferred phase and lands when the last card closes. A
+main-agent card does not hold the run past turn end.
 
 The `needs_you` privacy preview reads **"An ADE agent needs you."** — the same
 two words the status label and the title suffix use. "needs your input" was a third phrasing for one state, on the

@@ -5444,7 +5444,7 @@ function readSecretValueInput(args: string[]): string {
   }
   if (inline != null) return inline;
   if (fromFile != null) return fromFile;
-  if (fromStdin) return fs.readFileSync(0, "utf8");
+  if (fromStdin) return readAllStdinSync();
   const positionalValue = firstPositional(args);
   if (positionalValue != null) return positionalValue;
   throw new CliUsageError("Secret value is required. Pass --value, --value-file, --stdin, or a positional value.");
@@ -13298,7 +13298,7 @@ function buildScenePlan(args: string[]): CliPlan {
   if (!target) throw new CliUsageError("ade scene preview needs a file, or - for stdin: ade scene preview /tmp/chart.html");
   let source: string;
   try {
-    source = target === "-" ? fs.readFileSync(0, "utf8") : fs.readFileSync(path.resolve(target), "utf8");
+    source = target === "-" ? readAllStdinSync() : fs.readFileSync(path.resolve(target), "utf8");
   } catch (error) {
     throw new CliUsageError(`Could not read ${target === "-" ? "stdin" : target}: ${error instanceof Error ? error.message : String(error)}`);
   }
@@ -13425,7 +13425,7 @@ function readFileTextInput(args: string[]): string | undefined {
   if (text != null) return text;
   const filePath = readValue(args, ["--from-file"]);
   if (filePath != null) return fs.readFileSync(path.resolve(filePath), "utf8");
-  if (readFlag(args, ["--stdin"])) return fs.readFileSync(0, "utf8");
+  if (readFlag(args, ["--stdin"])) return readAllStdinSync();
   return undefined;
 }
 
@@ -13491,8 +13491,17 @@ function warnInlineChatTextThroughCmd(args: string[], inlineFlags: readonly stri
   }
 }
 
+/**
+ * Stdin can be read only once, and one CLI run can parse its command twice: a
+ * chat command runs here first and, when the chat is on another machine, runs
+ * again routed there (`runChatHereThenElsewhere`). The second read found stdin
+ * already drained ("--text-file got no text on stdin"), so the text is kept.
+ */
+let stdinTextRead: string | null = null;
+
 function readAllStdinSync(): string {
-  return fs.readFileSync(0, "utf8");
+  stdinTextRead ??= fs.readFileSync(0, "utf8");
+  return stdinTextRead;
 }
 
 function readBoundedStdinSync(maxBytes: number, label: string): string {
@@ -20743,7 +20752,7 @@ export function readTextOrFileOption(
   }
   if (inline != null) return inline;
   if (filePath == null) return undefined;
-  if (filePath === "-") return fs.readFileSync(0, "utf8");
+  if (filePath === "-") return readAllStdinSync();
   try {
     return fs.readFileSync(path.resolve(filePath), "utf8");
   } catch (error) {

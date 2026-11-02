@@ -69,6 +69,7 @@ subagents, computer use). The pane derives all visible state from the
 | `apps/desktop/src/shared/chatScheduledWork.ts` | Pure scheduled-work derivation. Folds `scheduled_work_update` envelopes into Chat Info schedule rows for Claude wakeups, cron tasks, `/loop`, remote triggers, and background work; defines the shared Background/Schedule Earlier predicates (including fired one-shot wakeups); and formats next-fire labels. A parent turn's terminal event does not stop a background row, and background snapshots whose `sourceTaskId` belongs to a real subagent are omitted so native Agents do not appear twice. Shared by desktop and mirrored by iOS. |
 | `ChatFileChangesPanel.tsx` | Turn-level file change summary for checkpoint-backed `turn_diff_summary` events, with lazy diff expansion. File rows render the lane-relative path (dimmed directory + filename) rather than a bare basename, so several `index.ts` in one turn stay distinguishable; the directory truncates first and the full path stays in the row tooltip. Diff reads come from `useChatRuntimeScope()`, so a foreign chat's file changes are fetched from the machine that has them. |
 | `RewindFilesConfirmDialog.tsx`, `rewindFilesPreview.ts` | Undo confirmation for provider-backed file rewind. Builds a message-scoped file list from provider dry-run output plus turn diff summaries, then renders per-file expandable diffs before applying `rewindFiles`. Claude uses SDK file checkpoints; Codex forks the thread before the selected turn (`thread/fork` + `beforeTurnId`) on app-server >= 0.145.0, or falls back to `thread/rollback` (latest user message only) on pre-0.156 servers, and restores files through ADE's git plan. Diff reads take a `runtimePin`, so a foreign chat's rewind dialog reads its diffs and restores files on the machine the chat runs on. |
+| `PendingInputStack.tsx` | The list of open cards shown above the open card when a chat has more than one (the main agent's and its subagents'): one row per card naming who asks, three rows then "+N more", a click opens that card. See [Subagent cards](#subagent-cards). |
 | `ChatSubagentsPanel.tsx` | Chat Info panel. It renders the Codex goal card, the one Tasks section (the chat's task list), schedule, and subagent/background rosters. Every subagent row shows a sentence-case model chip (`subagentModelAttribution`): a reported envelope `model` is ground truth, and a missing model falls back to the parent session label marked **inherited**. Running subagent and background rows derive elapsed time from the wall clock and tick once per second; terminal rows keep their final compact duration. Large sections cap active rows and add Show all; terminal rows move into one Completed fold; Clear/Restore is a visual per-session filter. Failed and pinned rows remain active, survivors keep source order, and the pane variant owns a single scroller with sticky section headers. Spawned-chat rows are identified by `childSessionId`, show the live child title supplied by `AgentChatPane` / `WorkViewArea`, keep the runtime as a small kind chip, and navigate to the child (on the parent's machine, via the chat's pin) rather than opening the provider-subagent drawer. The Work list no longer shows same-lane subagent chats, so this section is their home: every subagent the Work list files under this chat (`filedSubagentsOf`: same machine, same lane, grandchildren included) with no `chat:<id>` row in the transcript gets one from that machine's sessions (`chatSubagentRoster.ts`), and any child chat waiting on the user reads **needs you**. Running native subagent rows (and background rows that carry a `sourceTaskId`) expose a square stop whose aria-label is `Stop ${agentType}`; spawned ADE chats (`chat:` task ids) are not stoppable this way. The Schedule header keeps the per-chat pause/play action. For Codex sessions the goal card stays above plan/subagent progress so the current objective stays visible without crowding the chat header. |
 | `ChatComputerUsePanel.tsx` | Complete chat proof drawer with image lightbox, inline video, availability/error states, and irreversible artifact deletion. Preview reads stay runtime-routed through `useChatRuntimeScope()` — the chat's machine, not the tab's — and the surface has no review or Finder/reveal controls. Inline transcript proof is owned by `AgentChatMessageList` + `ChatProofFilmstrip`: a collapsed count on the producing turn expands in chronology instead of pinning the newest items to the thread tail, and the strip opens by default. |
 | `ChatAppControlPanel.tsx` | App Control panel for Electron apps. Two mount points: under the chat composer (chat-scoped, `sessionId` set) and inside the Work right-edge sidebar (lane-scoped, `sessionId={null}`). Two modes: **Control** (live screencast frames + launch/connect form + click/type input + quick `terminal write` / `terminal signal` actions) and **Inspect** (hit-test crosshair on the screenshot; commits selections as `AppControlContextItem`s with screenshot, DOM packet, and source-file candidates). Persists panel state under `sessionStorage["ade.chat.appControlPanel.<key>"]`, where the key is `chat:<sessionId>` for the chat mount and `lane:<laneId>:<projectRoot>` for the sidebar mount. Connect/launch calls forward `laneId` so the resulting `AppControlSession` records its launching lane. It takes a `runtimePin` and every status/target/input call routes through it, so the panel drives the machine the chat runs on rather than the one the tab is bound to; the pin also participates in the panel's `sessionStorage` key so two machines' panels cannot share state. See [App Control](../computer-use/app-control.md). |
@@ -3062,10 +3063,63 @@ re-deriving the split:
 - The brain's push publisher (`pushPublisherService.ts`) sets the run phase to
   `waiting_for_input` for a question and `waiting_for_approval` otherwise, and
   ships the question **without** the Approve/Deny notification category — a
-  question has nothing for those inline buttons to do. Both flavours share the
-  `alert:<sessionId>:approval` dedupe key, since either way it is one prompt per
-  session, and sharing it keeps a question from re-alerting over an approval it
-  replaced. See [push notifications](../sync-and-multi-device/push-notifications.md).
+  question has nothing for those inline buttons to do. Both flavours alert once
+  per card (`alert:<sessionId>:approval:<itemId>`), since one chat can hold the
+  main agent's card and its subagents' cards at once. See
+  [push notifications](../sync-and-multi-device/push-notifications.md).
+
+### Subagent cards
+
+A subagent that runs inside the chat's own provider session (a Claude
+background agent, a Codex `spawn_agent` child thread, an OpenCode child session,
+a Muse subagent) asks through the **parent** chat. Its card is an ordinary
+pending input on the parent session, so the answer key (session id + item id)
+and the machine pin are the same as for the main agent's cards. ADE child chats
+(`ade chat create --type subagent`) are separate chats and keep their cards in
+the child.
+
+- **Naming.** The request carries `subagent: { key, name, background? }`
+  (`PendingInputSubagent`; `readPendingInputSubagent` keeps it through reloads
+  and sync). `key` is the subagent row's id in the Chat Info roster
+  (`subagentAgentKey`); `name` comes from the row's start `title`, not its
+  progress text. The card header reads "`<name>` asks". Copilot, Cursor, Droid
+  and ACP requests carry no subagent id ADE can match, so their cards stay
+  unnamed. Grok's ACP child asks on the parent's own session id, so its cards
+  already reach the parent.
+- **Several at once.** `PendingInputStack` lists every open card above the open
+  one ("N waiting for you": who asks, and what), three rows, then "+N more". A
+  click opens that card. The pane's open card is the one the person picked,
+  else the first. Chat Info marks a subagent with an open card **needs you**
+  (`waitingSubagentKeys`), on desktop and iOS.
+- **Accept all covers the chat.** A subagent's card with a session choice says
+  "Accept all covers this whole chat: the main agent and all its subagents."
+  Claude's session rule already covers the whole query. Codex and OpenCode keep
+  "for session" to the thread or child session that asked, so ADE remembers the
+  grant per chat (`ManagedChatSession.sessionApprovalGrants`, keyed by
+  `sessionApprovalGrantKey` in `sessionApprovalGrants.ts`) and answers a later
+  matching request itself, from any thread, with no card. A key is exact: a
+  Codex command matches on command, `cwd` and extra permissions; a file change
+  on its grant root or its exact file set; an OpenCode ask on its type and
+  resources. A request with nothing to key on gets no grant. A policy that
+  denies by fallback still wins over a remembered grant.
+- **Lifecycle.** The default Stop (`stop_and_clear`) leaves background work
+  running, so it also leaves a running background subagent's cards open; Stop
+  with background stops them and closes their cards. A Codex parent turn that
+  ends (`turn/completed` arrives while children still run) keeps every card
+  whose child is still running. When a subagent ends or is stopped, its own
+  cards close (`settleEndedSubagentCardsSoon`, after `subagent_result`), and a
+  Codex `serverRequest/resolved` on a child thread closes that card. A Claude
+  card ADE closes tells the SDK nobody denied it (`CLAUDE_CARD_CLOSED_MESSAGE`),
+  not "User denied". Dismissing a Muse subagent's card declines only that
+  approval (or stops only that subagent when Muse offers no deny choice); it
+  never interrupts the parent turn.
+- **After a restart.** A subagent's question answered after ADE restarted (or
+  after the subagent ended) is not sent to the main agent as a message, unlike
+  a main-agent question. The card closes, and a `system_notice` with status
+  `subagent_answer_unsent` holds the answer. Its row offers
+  **Send my answer to the main agent**, which sends it as a user message (with
+  the chat's pin) only on that click, and stays gone once the transcript holds
+  that message.
 
 ### Cross-surface parity
 

@@ -197,7 +197,11 @@ the command is advertised.
 
 Chat Info sections follow desktop's drawer: each header carries the section's
 icon and tone, and a section with only finished rows folds to its header line
-("Subagents · 2 done"), which opens the finished list.
+("Subagents · 2 done"), which opens the finished list. A subagent with an
+open card in the parent chat reads **needs you** (`workWaitingSubagentKeys`,
+which also counts the card the host still reports open), and the pending card
+names its asker ("`<name>` asks") with a "Waiting: a · b · c +N more" line when
+several cards are open.
 
 The Settings machine card mirrors this state through
 `SettingsConnectionHeader`: connected limited hosts show a compact "Machine

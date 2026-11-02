@@ -3108,6 +3108,134 @@ describe("createAgentChatService", () => {
       await expect(sendPromise).resolves.toBeUndefined();
     });
 
+    it("keeps a background subagent's card through the default Stop, and holds its answer after a restart", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      let streamCall = 0;
+      let warmupComplete = false;
+      let hangResolve: (() => void) | null = null;
+      const hangPromise = new Promise<void>((resolve) => { hangResolve = resolve; });
+      const stopTask = vi.fn().mockResolvedValue(undefined);
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-bg-card", slash_commands: [] };
+          warmupComplete = true;
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        yield {
+          type: "assistant",
+          message: {
+            id: "msg-bg-card",
+            content: [{
+              type: "tool_use",
+              id: "toolu_bg_card",
+              name: "Task",
+              input: { subagent_type: "Writer", description: "Write the report", prompt: "Write it.", run_in_background: true },
+            }],
+            usage: { input_tokens: 1, output_tokens: 1 },
+          },
+        };
+        yield {
+          type: "system",
+          subtype: "task_started",
+          task_id: "agent-bg-card",
+          parent_tool_use_id: "toolu_bg_card",
+          subagent_type: "Writer",
+          task_type: "local_agent",
+          description: "Write the report",
+        };
+        yield {
+          type: "system",
+          subtype: "background_tasks_changed",
+          tasks: [{ task_id: "agent-bg-card", task_type: "local_agent", description: "Write the report" }],
+        };
+        await hangPromise;
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn().mockResolvedValue(undefined),
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-bg-card",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+        stopTask,
+      } as any);
+      const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+      const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      await vi.waitFor(() => { expect(warmupComplete).toBe(true); });
+      const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls.at(-1)?.[0] as {
+        canUseTool?: (tool: string, input: Record<string, unknown>, options: Record<string, unknown>) => Promise<Record<string, unknown>>;
+      } | undefined;
+      const sendPromise = service.sendMessage({ sessionId: session.id, text: "write the report in the background" });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "subagent_started"
+          && (event.event as any).taskId === "agent-bg-card"
+          && (event.event as any).background === true,
+      );
+
+      const mainAsk = opts!.canUseTool!("Bash", { command: "echo main" }, {
+        signal: new AbortController().signal, toolUseID: "tool-main-card",
+      });
+      const subagentAsk = opts!.canUseTool!("Bash", { command: "echo sub" }, {
+        signal: new AbortController().signal, toolUseID: "tool-sub-card", agentID: "agent-bg-card",
+      });
+      await vi.waitFor(() => {
+        expect(events.filter((event) => event.event.type === "approval_request")).toHaveLength(2);
+      });
+      const cards = events.filter((event) => event.event.type === "approval_request");
+      const subagentCard = cards.find((event) => ((event.event as any).detail)?.request?.subagent?.key === "agent-bg-card");
+      const mainCard = cards.find((event) => event !== subagentCard);
+      expect(subagentCard, "the subagent's card names it").toBeDefined();
+      const subagentItemId = (subagentCard!.event as { itemId: string }).itemId;
+      const mainItemId = (mainCard!.event as { itemId: string }).itemId;
+
+      await service.interrupt({ sessionId: session.id });
+      await expect(mainAsk).resolves.toMatchObject({ behavior: "deny" });
+      const resolvedIds = events
+        .filter((event) => event.event.type === "pending_input_resolved")
+        .map((event) => (event.event as { itemId: string }).itemId);
+      expect(resolvedIds).toContain(mainItemId);
+      expect(resolvedIds).not.toContain(subagentItemId);
+      expect(stopTask).not.toHaveBeenCalled();
+
+      await service.respondToInput({ sessionId: session.id, itemId: subagentItemId, decision: "accept" });
+      await expect(subagentAsk).resolves.toMatchObject({ behavior: "allow" });
+
+      // The subagent then asks a question, and ADE restarts before the answer.
+      void opts!.canUseTool!("AskUserQuestion", {
+        questions: [{ question: "Which format?", header: "Format", options: [{ label: "Markdown" }, { label: "HTML" }], multiSelect: false }],
+      }, { signal: new AbortController().signal, toolUseID: "tool-sub-question", agentID: "agent-bg-card" });
+      await vi.waitFor(() => {
+        expect(events.filter((event) => event.event.type === "approval_request")).toHaveLength(3);
+      });
+      const questionItemId = (events.filter((event) => event.event.type === "approval_request").at(-1)!.event as { itemId: string }).itemId;
+      hangResolve!();
+      await sendPromise;
+      await flushAllQueuedTranscriptWrites();
+      service.forceDisposeAll();
+      installRealTranscriptParser();
+      const after: AgentChatEventEnvelope[] = [];
+      const restarted = createService({ onEvent: (event: AgentChatEventEnvelope) => after.push(event) });
+
+      await restarted.service.respondToInput({
+        sessionId: session.id,
+        itemId: questionItemId,
+        decision: "accept",
+        answers: { question_1: "Markdown" },
+      });
+      // The answer was the subagent's: it is not sent to the main agent. The
+      // card closes, and the notice carries the answer for an explicit send.
+      expect(after.some((event) => event.event.type === "user_message")).toBe(false);
+      expect(after).toEqual(expect.arrayContaining([
+        expect.objectContaining({ event: expect.objectContaining({ type: "pending_input_resolved", itemId: questionItemId, resolution: "cancelled" }) }),
+        expect.objectContaining({ event: expect.objectContaining({ type: "system_notice", status: "subagent_answer_unsent", detail: expect.stringContaining("Markdown") }) }),
+      ]));
+      restarted.service.forceDisposeAll();
+    });
+
     it("preserves lifecycle markers on scheduled wakes and clears them on user sends", async () => {
       // Regression for the settle lifecycle: a scheduled wake is not user
       // activity (a declared settle must survive it and re-settle at rest),

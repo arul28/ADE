@@ -544,15 +544,15 @@ describe("createPushPublisherService flush", () => {
     expect(publish.mock.calls[0]?.[0].notifications).toEqual([
       expect.objectContaining({
         deviceIds: ["dev-1"],
-        dedupeKey: alertDedupeKey("alert:s-1:approval", "dev-1"),
+        dedupeKey: alertDedupeKey("alert:s-1:approval:i-1", "dev-1"),
       }),
       expect.objectContaining({
         deviceIds: ["dev-2"],
-        dedupeKey: alertDedupeKey("alert:s-1:approval", "dev-2"),
+        dedupeKey: alertDedupeKey("alert:s-1:approval:i-1", "dev-2"),
       }),
       expect.objectContaining({
         deviceIds: ["dev-3"],
-        dedupeKey: alertDedupeKey("alert:s-1:approval", "dev-3"),
+        dedupeKey: alertDedupeKey("alert:s-1:approval:i-1", "dev-3"),
       }),
     ]);
     expect(store.recordPublishResult).toHaveBeenLastCalledWith(
@@ -565,7 +565,7 @@ describe("createPushPublisherService flush", () => {
     expect(publish.mock.calls[1]?.[0].notifications).toEqual([
       expect.objectContaining({
         deviceIds: ["dev-3"],
-        dedupeKey: alertDedupeKey("alert:s-1:approval", "dev-3"),
+        dedupeKey: alertDedupeKey("alert:s-1:approval:i-1", "dev-3"),
       }),
     ]);
     expect(store.recordPublishResult).toHaveBeenLastCalledWith(
@@ -844,7 +844,7 @@ describe("createPushPublisherService flush", () => {
     const payload = publish.mock.calls[0][0];
     expect(payload.notifications).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ dedupeKey: alertDedupeKey("alert:s-1:approval") }),
+        expect.objectContaining({ dedupeKey: alertDedupeKey("alert:s-1:approval:i-1") }),
       ]),
     );
     expect(payload.liveActivity).toBeUndefined();
@@ -1950,6 +1950,56 @@ describe("createPushPublisherService flush", () => {
     const resolvedRun = publisher._debug.runs.get("s-1");
     expect(resolvedRun?.phase).toBe("running");
     expect(resolvedRun?.itemId ?? null).toBeNull();
+
+    publisher.dispose();
+  });
+
+  it("alerts once per open card and stays waiting while a subagent's card outlives the parent turn", async () => {
+    const { publisher, publish, emit } = makeHarness();
+    await publisher.start();
+    const subagentApproval: AgentChatEventEnvelope = {
+      sessionId: "s-1",
+      timestamp: "",
+      event: {
+        type: "approval_request",
+        itemId: "i-sub",
+        kind: "command",
+        description: "Run lint",
+        detail: { request: { subagent: { key: "agent-1", name: "Reviewer" } } },
+      },
+    };
+    const resolve = (itemId: string) => emit({
+      sessionId: "s-1",
+      timestamp: "",
+      event: { type: "pending_input_resolved", itemId, resolution: "accepted" },
+    });
+
+    emit(subagentApproval);
+    emit(approval);
+    await vi.advanceTimersByTimeAsync(200);
+    const alerts = publish.mock.calls[0][0].notifications.filter((item: { title: string }) => item.title);
+    expect(alerts.map((item: { itemId: string }) => item.itemId).sort()).toEqual(["i-1", "i-sub"]);
+    expect(alerts.find((item: { itemId: string }) => item.itemId === "i-sub").title).toMatch(/Reviewer/);
+
+    // The main agent's card is answered and its turn ends; the subagent still waits.
+    resolve("i-1");
+    emit({ sessionId: "s-1", timestamp: "", event: { type: "status", turnStatus: "completed" } });
+    await vi.advanceTimersByTimeAsync(2_500);
+    expect(publisher._debug.runs.get("s-1")).toMatchObject({ phase: "waiting_for_approval", itemId: "i-sub" });
+
+    // A card answered before its alert flushes never alerts.
+    publish.mockClear();
+    emit({ ...approval, event: { ...approval.event, itemId: "i-late" } as AgentChatEventEnvelope["event"] });
+    resolve("i-late");
+    await vi.advanceTimersByTimeAsync(2_500);
+    const lateAlerts = publish.mock.calls.flatMap((call) => call[0].notifications)
+      .filter((item: { itemId?: string; title: string }) => item.title && item.itemId === "i-late");
+    expect(lateAlerts).toEqual([]);
+
+    // The last card closes: the deferred turn end lands.
+    resolve("i-sub");
+    await vi.advanceTimersByTimeAsync(2_500);
+    expect(publisher._debug.runs.get("s-1")?.phase).toBe("completed");
 
     publisher.dispose();
   });
