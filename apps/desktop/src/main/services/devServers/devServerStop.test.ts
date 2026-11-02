@@ -4,7 +4,9 @@ import type { DevServerRecord } from "../../../shared/types/builtInBrowser";
 import { stopChatDevServer } from "./devServerStop";
 
 // PowerShell (listeners, process table) and taskkill are the OS boundary.
+// ade-port-scan.exe, which prints the same answers, is absent here.
 vi.mock("node:child_process", () => ({ execFile: vi.fn() }));
+vi.mock("./windowsPortScan", () => ({ runWindowsPortScan: vi.fn(async () => null) }));
 
 type ExecCallback = (error: Error | null, stdout: string) => void;
 
