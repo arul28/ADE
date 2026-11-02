@@ -103,7 +103,10 @@ long page that is scrolled away), a 12,000-node cap and a 2.5 s budget. A walk
 cut short reports `truncatedReason` (`node_cap`, `timeout`). Interactive roles
 (buttons, links, entries, check boxes, menu items, tabs, …) and named text
 roles (headings, labels, static text) with an on-screen frame become elements;
-with more than the limit, the interactive ones are kept first.
+with more than the limit, the interactive ones are kept first. A text target
+(`click --text`, `type --target`) picks an interactive element first, then an
+exact name, then the smallest, as the macOS and Windows drivers do: a label
+"Open" must not win a click over the button "Open…".
 
 Chromium and Electron build the renderer's tree only when asked: `app.launch`
 adds `--force-renderer-accessibility` to Chromium-family browsers and to
