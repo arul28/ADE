@@ -415,7 +415,7 @@ is out of scope **except the SDK tab**: if the branch touches `packages/sdk`,
 embedded runtime profile / parent-death watchdog, also update `sdk/*.mdx` and
 the SDK entries in `docs.json`. Keep the MCP honesty table aligned across
 `sdk/mcp.mdx`, `packages/sdk/README.md`, and `docs/features/sdk/README.md`.
-Both npm READMEs must link to https://www.ade-app.dev/docs/sdk/overview.
+Both npm READMEs must link to https://ade-app.dev/docs/sdk/overview.
 Do not rewrite unrelated Mintlify product pages (chat/, tools/, changelog/, …).
 
 Step 1: Get changed files
@@ -688,7 +688,7 @@ nothing.
 
 Also update the public Mintlify SDK tab (`sdk/*.mdx`, `docs.json` SDK
 navigation) so it matches the published contract. npm READMEs must link to
-https://www.ade-app.dev/docs/sdk/overview. The MCP honesty table in
+https://ade-app.dev/docs/sdk/overview. The MCP honesty table in
 sdk/mcp.mdx, packages/sdk/README.md, and docs/features/sdk/README.md must
 stay aligned (enforced only on Claude).
 

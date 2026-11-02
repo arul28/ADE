@@ -184,9 +184,9 @@ function expectCacheEmpty(updaterCacheDir: string): void {
 
 describe("buildReleaseNotesUrl", () => {
   it("points release notes at the docs changelog route", () => {
-    expect(buildReleaseNotesUrl("v1.2.11")).toBe("https://www.ade-app.dev/docs/changelog/v1.2.11");
+    expect(buildReleaseNotesUrl("v1.2.11")).toBe("https://ade-app.dev/docs/changelog/v1.2.11");
     expect(buildReleaseNotesUrl("1.2.11", "https://staging.ade-app.dev/")).toBe("https://staging.ade-app.dev/docs/changelog/v1.2.11");
-    expect(buildReleaseNotesUrl(" ", "https://www.ade-app.dev")).toBeNull();
+    expect(buildReleaseNotesUrl(" ", "https://ade-app.dev")).toBeNull();
   });
 });
 
@@ -464,7 +464,7 @@ describe("createAutoUpdateService", () => {
       pendingInstallUpdate: {
         fromVersion: "1.2.2",
         targetVersion: "1.2.3",
-        releaseNotesUrl: "https://www.ade-app.dev/changelog/v1.2.3",
+        releaseNotesUrl: "https://ade-app.dev/changelog/v1.2.3",
         requestedAt: "2026-04-06T15:20:00.000Z",
       },
     }), "utf8");
@@ -484,7 +484,7 @@ describe("createAutoUpdateService", () => {
       version: "1.2.3",
       installedAt: "2026-04-06T15:21:00.000Z",
       fromVersion: "1.2.2",
-      releaseNotesUrl: "https://www.ade-app.dev/docs/changelog/v1.2.3",
+      releaseNotesUrl: "https://ade-app.dev/docs/changelog/v1.2.3",
       githubReleaseUrl: "https://github.com/arul28/ADE/releases/tag/v1.2.3",
     });
 
@@ -493,7 +493,7 @@ describe("createAutoUpdateService", () => {
         version: "1.2.3",
         installedAt: "2026-04-06T15:21:00.000Z",
         fromVersion: "1.2.2",
-        releaseNotesUrl: "https://www.ade-app.dev/docs/changelog/v1.2.3",
+        releaseNotesUrl: "https://ade-app.dev/docs/changelog/v1.2.3",
         githubReleaseUrl: "https://github.com/arul28/ADE/releases/tag/v1.2.3",
       },
     });
@@ -512,7 +512,7 @@ describe("createAutoUpdateService", () => {
       recentlyInstalledUpdate: {
         version: "1.2.3",
         installedAt: "2026-04-06T15:20:00.000Z",
-        releaseNotesUrl: "https://www.ade-app.dev/docs/changelog/v1.2.3",
+        releaseNotesUrl: "https://ade-app.dev/docs/changelog/v1.2.3",
         githubReleaseUrl: "https://github.com/arul28/ADE/releases/tag/v1.2.3",
       },
     }), "utf8");
@@ -552,7 +552,7 @@ describe("createAutoUpdateService", () => {
       pendingInstallUpdate: {
         fromVersion: "1.2.2",
         targetVersion: "1.2.3",
-        releaseNotesUrl: "https://www.ade-app.dev/docs/changelog/v1.2.3",
+        releaseNotesUrl: "https://ade-app.dev/docs/changelog/v1.2.3",
         requestedAt: "2026-04-06T15:20:00.000Z",
       },
     }), "utf8");
@@ -629,7 +629,7 @@ describe("createAutoUpdateService", () => {
       pendingInstallUpdate: {
         fromVersion: "1.2.2",
         targetVersion: "1.2.3",
-        releaseNotesUrl: "https://www.ade-app.dev/docs/changelog/v1.2.3",
+        releaseNotesUrl: "https://ade-app.dev/docs/changelog/v1.2.3",
         requestedAt: "2026-04-06T15:20:00.000Z",
       },
       failedInstallAttempts: {
@@ -961,7 +961,7 @@ describe("createAutoUpdateService", () => {
       bytesPerSecond: 128_000,
       transferredBytes: 6_240_000,
       totalBytes: 10_000_000,
-      releaseNotesUrl: "https://www.ade-app.dev/docs/changelog/v1.2.3",
+      releaseNotesUrl: "https://ade-app.dev/docs/changelog/v1.2.3",
     });
 
     updater.emit("update-downloaded", {
@@ -973,7 +973,7 @@ describe("createAutoUpdateService", () => {
       latestKnownVersion: "1.2.3",
       version: "1.2.3",
       progressPercent: 100,
-      releaseNotesUrl: "https://www.ade-app.dev/docs/changelog/v1.2.3",
+      releaseNotesUrl: "https://ade-app.dev/docs/changelog/v1.2.3",
     });
 
     await expect(service.quitAndInstall()).resolves.toBe(true);
@@ -983,7 +983,7 @@ describe("createAutoUpdateService", () => {
       pendingInstallUpdate: {
         fromVersion: "1.2.2",
         targetVersion: "1.2.3",
-        releaseNotesUrl: "https://www.ade-app.dev/docs/changelog/v1.2.3",
+        releaseNotesUrl: "https://ade-app.dev/docs/changelog/v1.2.3",
         requestedAt: "2026-04-06T15:21:00.000Z",
       },
       restoreUpdateWorkspaceOnLaunch: true,
@@ -1320,7 +1320,7 @@ describe("createAutoUpdateService", () => {
     expect(service.getSnapshot()).toMatchObject({
       status: "ready",
       version: "1.2.3",
-      releaseNotesUrl: "https://www.ade-app.dev/docs/changelog/v1.2.3",
+      releaseNotesUrl: "https://ade-app.dev/docs/changelog/v1.2.3",
       parked: { reason: "refresh_failed" },
     });
     expect(fs.readdirSync(updaterCacheDir).sort()).toEqual(["pending", "update.zip"]);
@@ -1496,7 +1496,7 @@ describe("createAutoUpdateService", () => {
       pendingInstallUpdate: {
         fromVersion: "1.2.2",
         targetVersion: "1.2.4",
-        releaseNotesUrl: "https://www.ade-app.dev/docs/changelog/v1.2.4",
+        releaseNotesUrl: "https://ade-app.dev/docs/changelog/v1.2.4",
         requestedAt: "2026-04-06T15:21:00.000Z",
       },
       restoreUpdateWorkspaceOnLaunch: true,
@@ -1901,7 +1901,7 @@ describe("createAutoUpdateService", () => {
     expect(service.getSnapshot()).toMatchObject({
       status: "ready",
       version: "1.2.4",
-      releaseNotesUrl: "https://www.ade-app.dev/docs/changelog/v1.2.4",
+      releaseNotesUrl: "https://ade-app.dev/docs/changelog/v1.2.4",
     });
 
     await expect(service.quitAndInstall()).resolves.toBe(false);
@@ -3177,7 +3177,7 @@ describe("createAutoUpdateService", () => {
       pendingInstallUpdate: {
         fromVersion: "1.2.2",
         targetVersion: "1.2.3",
-        releaseNotesUrl: "https://www.ade-app.dev/docs/changelog/v1.2.3",
+        releaseNotesUrl: "https://ade-app.dev/docs/changelog/v1.2.3",
         requestedAt: "2026-04-06T15:20:00.000Z",
       },
     }), "utf8");
@@ -3197,7 +3197,7 @@ describe("createAutoUpdateService", () => {
       version: "1.2.4",
       installedAt: "2026-04-06T15:21:00.000Z",
       fromVersion: "1.2.2",
-      releaseNotesUrl: "https://www.ade-app.dev/docs/changelog/v1.2.4",
+      releaseNotesUrl: "https://ade-app.dev/docs/changelog/v1.2.4",
       githubReleaseUrl: "https://github.com/arul28/ADE/releases/tag/v1.2.4",
     });
     expectCacheEmpty(updaterCacheDir);
@@ -3323,7 +3323,7 @@ describe("the installed notice and the resume it still owes", () => {
   const installedAt = {
     version: "1.2.3",
     installedAt: "2026-04-06T15:20:00.000Z",
-    releaseNotesUrl: "https://www.ade-app.dev/docs/changelog/v1.2.3",
+    releaseNotesUrl: "https://ade-app.dev/docs/changelog/v1.2.3",
     githubReleaseUrl: "https://github.com/arul28/ADE/releases/tag/v1.2.3",
   };
 

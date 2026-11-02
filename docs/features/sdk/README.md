@@ -1009,7 +1009,7 @@ Native `windows-latest` CI still has to repeat the Windows-sensitive files; para
 
 ## Related docs
 
-- Public Mintlify: [ADE SDK](https://www.ade-app.dev/docs/sdk/overview) — pages under `sdk/*.mdx`, nav in `docs.json`. Keep them in lockstep with this page when the contract changes; `node scripts/validate-docs.mjs` fails on a page missing from the nav.
+- Public Mintlify: [ADE SDK](https://ade-app.dev/docs/sdk/overview) — pages under `sdk/*.mdx`, nav in `docs.json`. Keep them in lockstep with this page when the contract changes; `node scripts/validate-docs.mjs` fails on a page missing from the nav.
   - `overview`, `install`, `quickstart` — what it is and the first client.
   - `threads`, `mcp`, `permissions` — the per-thread contract and the three honesty tables.
   - `chat-ui`, `electron`, `server`, `testing` — the host-side surfaces and token-free development workflow.

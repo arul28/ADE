@@ -23,7 +23,7 @@ import { LaneAccentDot } from "../lanes/LaneAccentDot";
 import { deriveLaneName, openWorktreeAsLane } from "./worktreeLaneFlow";
 import { Banner } from "../ui/notice";
 
-const DOCS_URL = "https://www.ade-app.dev/docs/lanes/repos-and-worktrees";
+const DOCS_URL = "https://ade-app.dev/docs/lanes/repos-and-worktrees";
 
 type BusyKind = "lane" | "standalone" | null;
 

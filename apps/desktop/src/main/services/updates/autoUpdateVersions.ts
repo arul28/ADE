@@ -1,4 +1,4 @@
-export const DEFAULT_RELEASE_NOTES_BASE_URL = "https://www.ade-app.dev";
+export const DEFAULT_RELEASE_NOTES_BASE_URL = "https://ade-app.dev";
 export const DEFAULT_RELEASE_REPOSITORY = "arul28/ADE";
 
 // The comparator itself lives in shared/ so the renderer's "is that machine

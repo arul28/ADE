@@ -493,7 +493,7 @@ scope):
   (`strictRequested` first, then `level === "enforced"`) is the honesty
   mechanism.
 - Both npm READMEs (`packages/sdk/README.md`, `packages/chat-ui/README.md`)
-  must link to `https://www.ade-app.dev/docs/sdk/overview` as the full docs.
+  must link to `https://ade-app.dev/docs/sdk/overview` as the full docs.
   README edits publish on the **next** `@ade-dev/sdk` / `@ade-dev/chat-ui`
   version bump (`publish-sdk-packages.yml`). Do not `npm publish` from this
   skill.

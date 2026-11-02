@@ -3,7 +3,7 @@
 // Public docs live under the Mintlify `/docs` prefix. Keep these paths in sync
 // with the public site so onboarding links never send users to dead pages.
 
-const SITE_BASE = "https://www.ade-app.dev";
+const SITE_BASE = "https://ade-app.dev";
 const DOCS_BASE = `${SITE_BASE}/docs`;
 
 export const docs = {
