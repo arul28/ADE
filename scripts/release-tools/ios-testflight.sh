@@ -15,6 +15,7 @@ MV="${1:?usage: ios-testflight.sh <marketing-version> <build-number> <release-sh
 BN="${2:?build number}"
 SHA="${3:?release sha}"
 APP=6762759870
+BETA_APP=6829373114 # ADE Beta (com.ade.ios.beta), only read for its build numbers
 OUT=".ade/tmp/ios-testflight-$MV-build$BN"
 export ASC_TIMEOUT="${ASC_TIMEOUT:-120s}"
 log() { echo "[ios $(date +%H:%M:%S)] $*" >&2; }
@@ -58,6 +59,16 @@ find_build() {
 existing="$(retry 5 find_build || true)"
 
 if [ -z "$existing" ]; then
+  # ADE and ADE Beta share one build-number sequence (docs/plans/ios-beta-app.md),
+  # so MIN_SUPPORTED_MOBILE_APP_BUILD means the same for both. A new build here
+  # must not fall below an ADE Beta build.
+  beta_json="$(retry 5 asc builds next-build-number --app "$BETA_APP" --version "$MV" --platform IOS --output json)" \
+    || { echo "could not read ADE Beta's next build number: $(echo "$beta_json" | tail -1)"; exit 1; }
+  beta_next="$(printf '%s' "$beta_json" | jq -r '.. | objects | select(has("nextBuildNumber")) | .nextBuildNumber' | tail -n1)"
+  if [[ "$beta_next" =~ ^[0-9]+$ ]] && [ "$BN" -lt "$beta_next" ]; then
+    echo "build $BN is below ADE Beta's next build number $beta_next; use the higher of both apps' next numbers"
+    exit 1
+  fi
   if [ ! -s "$OUT/ADE.ipa" ]; then
     log "archiving (logs: $OUT/archive.log)"
     asc xcode archive --project apps/ios/ADE.xcodeproj --scheme ADE --configuration Release --clean \

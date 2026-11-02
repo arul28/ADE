@@ -278,7 +278,7 @@ else
   retry 5 asc builds test-notes create --build-id "$BID" --locale en-US --whats-new "$notes" > /dev/null
 fi
 
-# --- Internal Testers only -------------------------------------------------
+# --- Internal Testers ------------------------------------------------------
 groups="$(retry 10 asc testflight groups list --app "$APP" --internal --paginate --output json)"
 gid="$(printf '%s' "$groups" | jq -r --arg n "$GROUP_NAME" '(.data // [])[] | select(.attributes.name == $n) | .id' | head -n1)"
 [ -n "$gid" ] || fail "no internal TestFlight group named '$GROUP_NAME'"

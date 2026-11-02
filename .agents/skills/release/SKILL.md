@@ -74,7 +74,7 @@ bash scripts/release-tools/scope.sh
   it (a newer marketing version, or the same one with a higher build), iOS is
   in scope even when `scope.sh` says otherwise, the build must be at least the
   minimum, and the desktop draft stays a draft until that build reached every
-  group. Machines running a beta with that minimum already refuse the normal
+  group (the one exception to independent tiers). Machines running a beta with that minimum already refuse the normal
   app, so do this release soon.
 - any cloudflare line with `undeployed_commits > 0` or `UNKNOWN` → Cloudflare
   needs work (step 5).
