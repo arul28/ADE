@@ -95,6 +95,8 @@ export const PROPERTIES = Object.freeze({
   SIGNUP_METHOD: "signup_method",
   SURVEY_NAME: "$survey_name",
   SURVEY_RESPONSE: "$survey_response",
+  // PostHog's traffic classification, computed at query time from `$raw_user_agent`.
+  IS_BOT: "$virt_is_bot",
 });
 
 /**
@@ -552,6 +554,22 @@ export const dashboardSpec = Object.freeze({
           "Unique anonymous visitors who opened the public ADE website in each week.",
           trends({
             series: [eventNode(EVENTS.MARKETING_APP_OPENED, "Marketing visitors", { math: "dau" })],
+          }),
+        ),
+        insight(
+          "daily-real-website-visitors",
+          "Real website visitors",
+          "People who viewed a page of the website each day. Leaves out the `/open` link page, which link-preview and link-safety scanners load far more than people do, and any event PostHog classifies as a bot, crawler or headless browser from its user agent. Site events carry the user agent from 2026-11-02; earlier events have none and classify as bots, so the chart starts that day.",
+          trends({
+            series: [eventNode(EVENTS.MARKETING_SCREEN_VIEWED, "Real visitors", {
+              math: "dau",
+              properties: [
+                eventProperty(PROPERTIES.SCREEN, ["open_link"], "is_not"),
+                eventProperty(PROPERTIES.IS_BOT, ["false"]),
+              ],
+            })],
+            interval: "day",
+            dateFrom: "-30d",
           }),
         ),
         insight(

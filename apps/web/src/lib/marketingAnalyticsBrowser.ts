@@ -131,10 +131,14 @@ function landingContext(): (() => Record<string, string>) | undefined {
       firstTouch = null;
     }
     const page = marketingCurrentUrl(window.location.href);
+    // PostHog classifies bots, crawlers and headless browsers from the
+    // user-agent string; without it every site event counts as a person.
+    const userAgent = navigator.userAgent.slice(0, 512);
     return {
       ...(firstTouch ?? {}),
       ...sessionLanding,
       ...(page ? { $current_url: page.url, $host: page.host, $pathname: page.pathname } : {}),
+      ...(userAgent ? { $raw_user_agent: userAgent } : {}),
     };
   };
 }
