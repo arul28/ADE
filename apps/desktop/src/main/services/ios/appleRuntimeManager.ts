@@ -1,6 +1,9 @@
 import type { ChildProcess } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
 import type {
   AppleInstalledRuntime,
+  AppleLeftoverRuntime,
   AppleMissingRuntime,
   AppleRuntimeDeleteArgs,
   AppleRuntimeDeleteResult,
@@ -82,6 +85,11 @@ type RuntimeImage = {
   sizeBytes: number | null;
   deletable: boolean;
   lastUsedAt: string | null;
+  /**
+   * Every path CoreSimulator reports for the image (`path`, `parentMountPath`,
+   * `parentImagePath`, …), in whatever form it uses (`/System/Volumes/Data/…`).
+   */
+  paths: string[];
 };
 
 /** `simctl runtime list -j`: the disk images, keyed by runtime identifier. */
@@ -102,9 +110,22 @@ export function parseSimctlRuntimeImages(stdout: string): Map<string, RuntimeIma
       sizeBytes,
       deletable: value.deletable !== false,
       lastUsedAt: typeof value.lastUsedAt === "string" ? value.lastUsedAt : null,
+      paths: Object.values(value).filter((entry): entry is string => typeof entry === "string" && entry.startsWith("/")),
     });
   }
   return images;
+}
+
+/** Where macOS keeps downloaded simulator runtimes (MobileAsset), one `<id>.asset` folder each. */
+export const APPLE_RUNTIME_ASSETS_DIR = "/System/Library/AssetsV2/com_apple_MobileAsset_iOSSimulatorRuntime";
+
+/** An asset's `Info.plist` as `plutil -convert json` prints it: its iOS version and build. */
+export function parseRuntimeAssetInfo(stdout: string): { version: string; build: string | null } | null {
+  const parsed = JSON.parse(stdout) as { MobileAssetProperties?: Record<string, unknown> } | null;
+  const props = parsed?.MobileAssetProperties;
+  const version = typeof props?.SimulatorVersion === "string" ? props.SimulatorVersion.trim() : "";
+  if (!version) return null;
+  return { version, build: typeof props?.Build === "string" ? props.Build : null };
 }
 
 type RuntimeDevice = { udid: string; name: string; state: string; deviceTypeIdentifier: string | null };
@@ -396,7 +417,7 @@ export function createAppleRuntimeManager(deps: AppleRuntimeManagerDeps) {
     const [runtimesOut, imagesOut, devicesOut, typesOut, sdkOut] = await Promise.all([
       deps.run("xcrun", ["simctl", "list", "runtimes", "--json"], { timeoutMs: 30_000 }),
       deps.run("xcrun", ["simctl", "runtime", "list", "-j"], { timeoutMs: 30_000 })
-        .catch(fallingBack("apple.runtime_images_unreadable", { stdout: "{}", stderr: "" })),
+        .catch(fallingBack("apple.runtime_images_unreadable", null)),
       deps.run("xcrun", ["simctl", "list", "devices", "--json"], { timeoutMs: 30_000 }),
       deps.run("xcrun", ["simctl", "list", "devicetypes", "-j"], { timeoutMs: 30_000 })
         .catch(fallingBack("apple.device_types_unreadable", { stdout: "{}", stderr: "" })),
@@ -404,7 +425,7 @@ export function createAppleRuntimeManager(deps: AppleRuntimeManagerDeps) {
         .catch(fallingBack("apple.sdks_unreadable", { stdout: "[]", stderr: "" })),
     ]);
     const installed = parseAppleInstalledRuntimes(runtimesOut.stdout);
-    const images = parseSimctlRuntimeImages(imagesOut.stdout);
+    const images = imagesOut ? parseSimctlRuntimeImages(imagesOut.stdout) : null;
     const devices = parseSimctlDevicesByRuntime(devicesOut.stdout);
     const types = (() => {
       try {
@@ -436,7 +457,7 @@ export function createAppleRuntimeManager(deps: AppleRuntimeManagerDeps) {
       && appleRuntimeScore(other.version) > appleRuntimeScore(runtime.version)
       && other.deviceTypes.some((candidate) => candidate.identifier === typeId));
     const entries = installed.map((runtime): AppleRuntimeEntry => {
-      const image = images.get(runtime.identifier) ?? null;
+      const image = images?.get(runtime.identifier) ?? null;
       const simulators: AppleRuntimeSimulator[] = (devices.get(runtime.identifier) ?? []).map((device) => ({
         ...device,
         laneHeld: held.has(device.udid),
@@ -468,7 +489,50 @@ export function createAppleRuntimeManager(deps: AppleRuntimeManagerDeps) {
         simulators,
       };
     });
-    return { entries, installed, types, sdkVersion };
+    return { entries, installed, types, sdkVersion, images };
+  };
+
+  /**
+   * Runtime downloads macOS keeps but CoreSimulator does not list: an asset
+   * folder no disk image is mounted from and whose build no image has. They
+   * happen when CoreSimulator loses track of a runtime (an interrupted delete,
+   * a failed move); the folder stays, often for months, and nothing shows it.
+   * Only folders nothing claims cost a `plutil` and a `du`. Without the image
+   * list nothing counts as left over, and no answer while a download runs,
+   * since a half-written asset looks the same.
+   */
+  const leftoverRuntimes = async (images: Map<string, RuntimeImage> | null): Promise<AppleLeftoverRuntime[]> => {
+    if (!images || appleRuntimeInstallActive(installer.install)) return [];
+    let names: string[];
+    try {
+      names = (await fs.promises.readdir(APPLE_RUNTIME_ASSETS_DIR)).filter((name) => name.endsWith(".asset"));
+    } catch {
+      return [];
+    }
+    const claimedPaths = [...images.values()].flatMap((image) => image.paths);
+    const claimedBuilds = new Set([...images.values()].map((image) => image.build).filter(Boolean));
+    const leftovers: AppleLeftoverRuntime[] = [];
+    for (const name of names) {
+      const dir = path.join(APPLE_RUNTIME_ASSETS_DIR, name);
+      // By the folder's own name, so `/System/Volumes/Data/…` and any other
+      // path field naming the same asset count too.
+      if (claimedPaths.some((claimed) => claimed.endsWith(`/${name}`) || claimed.includes(`/${name}/`))) continue;
+      const info = await deps.run("plutil", ["-convert", "json", "-o", "-", path.join(dir, "Info.plist")], { timeoutMs: 10_000 })
+        .then(({ stdout }) => parseRuntimeAssetInfo(stdout))
+        .catch(() => null);
+      if (!info || (info.build && claimedBuilds.has(info.build))) continue;
+      const kilobytes = await deps.run("du", ["-sk", dir], { timeoutMs: 30_000 })
+        .then(({ stdout }) => Number.parseInt(stdout.trim().split(/\s+/u)[0] ?? "", 10))
+        .catch(() => Number.NaN);
+      leftovers.push({
+        path: dir,
+        name: `iOS ${info.version}`,
+        version: info.version,
+        build: info.build,
+        sizeBytes: Number.isFinite(kilobytes) && kilobytes > 0 ? kilobytes * 1024 : null,
+      });
+    }
+    return leftovers.sort((a, b) => appleRuntimeScore(a.version) - appleRuntimeScore(b.version));
   };
 
   /**
@@ -519,7 +583,15 @@ export function createAppleRuntimeManager(deps: AppleRuntimeManagerDeps) {
       xcodeStatus(),
       deps.freeBytes().catch(fallingBack("apple.free_space_unreadable", null)),
     ]);
-    return { runtimes: read.entries, missing: missingFrom(read), install: installer.install ? { ...installer.install } : null, xcode, freeBytes };
+    const leftovers = await leftoverRuntimes(read.images);
+    return {
+      runtimes: read.entries,
+      leftovers,
+      missing: missingFrom(read),
+      install: installer.install ? { ...installer.install } : null,
+      xcode,
+      freeBytes,
+    };
   };
 
   const installActive = () => appleRuntimeInstallActive(installer.install);

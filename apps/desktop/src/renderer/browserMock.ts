@@ -8233,6 +8233,13 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       deviceCleanup: resolvedArg({ deleted: [], poweredOff: [], forgottenRows: [], released: [], errors: [] } as any),
       runtimeList: resolved({
         runtimes: [],
+        leftovers: [{
+          path: "/System/Library/AssetsV2/com_apple_MobileAsset_iOSSimulatorRuntime/mock.asset",
+          name: "iOS 18.6",
+          version: "18.6",
+          build: "22G86",
+          sizeBytes: 9_131_044_864,
+        }],
         missing: null,
         install: null,
         xcode: { version: null, build: null, firstLaunchPending: false, latest: null, updateAvailable: false },

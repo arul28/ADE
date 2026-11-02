@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type {
+  AppleLeftoverRuntime,
   AppleRuntimeEntry,
   AppleRuntimeInstallState,
   AppleRuntimeInventory,
@@ -119,6 +120,48 @@ async function confirmRemoval(input: {
 }
 
 /**
+ * A runtime download macOS kept after CoreSimulator lost track of it. ADE
+ * cannot remove it (the folder is SIP-protected and `simctl` no longer sees
+ * it), so the row says what it costs and how the person removes it.
+ */
+function LeftoverRuntimeRow({ leftover }: { leftover: AppleLeftoverRuntime }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div data-apple-runtime-leftover={leftover.name} className="flex min-w-0 flex-col rounded px-1.5 py-1">
+      <div className="flex min-w-0 items-center gap-2">
+        <div className="flex min-w-0 flex-1 flex-col">
+          <span className="flex min-w-0 items-baseline gap-2">
+            <span className="shrink-0 font-sans text-[12px] font-medium leading-5 text-fg">{leftover.name}</span>
+            <span className="shrink-0 font-sans text-[10px] uppercase tracking-[0.08em] text-warning">left behind</span>
+          </span>
+          <span className="min-w-0 break-words font-sans text-[11px] leading-4 text-muted-fg">
+            {[sizeOf(leftover), "not listed, so no simulator can use it"].filter(Boolean).join(" · ")}
+          </span>
+        </div>
+        <Button
+          variant="ghost"
+          size="sm"
+          casing="sentence"
+          aria-expanded={open}
+          aria-label={`How to remove ${leftover.name}`}
+          onClick={() => setOpen((value) => !value)}
+          className="h-6 shrink-0 px-2 text-[11px] text-muted-fg"
+        >
+          {open ? "Hide steps" : "How to remove"}
+        </Button>
+      </div>
+      {open ? (
+        <ol className="mt-1.5 flex min-w-0 list-decimal flex-col gap-1 rounded bg-muted/40 py-2 pl-7 pr-2 font-sans text-[11px] leading-4 text-fg/80">
+          <li>Restart the Mac.</li>
+          <li>{`If ${leftover.name} then shows above, click Remove. That deletes this copy too.`}</li>
+          <li>{`If it doesn't, delete ${leftover.name} in Xcode ▸ Settings ▸ Components.`}</li>
+        </ol>
+      ) : null}
+    </div>
+  );
+}
+
+/**
  * RUNTIMES: one row per installed runtime with its size and what runs on it,
  * a Remove on each one CoreSimulator can delete, and one line that frees every
  * runtime a newer one fully replaces.
@@ -136,7 +179,8 @@ export function AppleRuntimesSection({
   onRemove: (id: string, simulators: AppleRuntimeSimulatorDisposition) => void;
   onPrune: (simulators: AppleRuntimeSimulatorDisposition) => void;
 }) {
-  if (!inventory || !inventory.runtimes.length) return null;
+  const leftovers = inventory?.leftovers ?? [];
+  if (!inventory || (!inventory.runtimes.length && !leftovers.length)) return null;
   const replaceable = inventory.runtimes.filter((entry) => entry.superseded && entry.deletable);
   const replaceableBytes = replaceable.reduce((sum, entry) => sum + (entry.sizeBytes ?? 0), 0);
   const busy = disabled || removing || appleRuntimeInstallActive(inventory.install);
@@ -185,6 +229,11 @@ export function AppleRuntimesSection({
             ) : null}
           </div>
         ))}
+        {leftovers.length ? (
+          <div className={cn("flex min-w-0 flex-col", inventory.runtimes.length ? "mt-1 border-t border-border/40 pt-1" : null)}>
+            {leftovers.map((leftover) => <LeftoverRuntimeRow key={leftover.path} leftover={leftover} />)}
+          </div>
+        ) : null}
         {replaceable.length ? (
           <Button
             variant="ghost"

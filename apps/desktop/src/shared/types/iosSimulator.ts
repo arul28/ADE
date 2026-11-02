@@ -2048,8 +2048,26 @@ export type AppleXcodeStatus = {
   updateAvailable: boolean;
 };
 
+/**
+ * A runtime download macOS still keeps on disk but CoreSimulator no longer
+ * lists, so no simulator can use it and `simctl runtime delete` cannot reach
+ * it. It sits in a SIP-protected folder: only the person can remove it (see
+ * the panel's steps).
+ */
+export type AppleLeftoverRuntime = {
+  /** The asset folder under `APPLE_RUNTIME_ASSETS_DIR`. */
+  path: string;
+  /** `iOS 18.6`. */
+  name: string;
+  version: string;
+  build: string | null;
+  sizeBytes: number | null;
+};
+
 export type AppleRuntimeInventory = {
   runtimes: AppleRuntimeEntry[];
+  /** Runtime downloads left on disk that nothing lists. Absent from an older brain. */
+  leftovers?: AppleLeftoverRuntime[];
   missing: AppleMissingRuntime | null;
   install: AppleRuntimeInstallState | null;
   xcode: AppleXcodeStatus;
