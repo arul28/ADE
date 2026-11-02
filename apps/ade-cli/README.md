@@ -812,7 +812,8 @@ ade --socket app-control actions --text                            # full app_co
 ade --socket browser open http://localhost:5173 --new-tab --text  # ADE-launched chat/terminal capability required
 ade --socket browser open http://localhost:3000/login --profile viewer --text  # own throwaway sign-in, not the user's
 ade --socket browser authorize --text                             # ask the user to let this chat use the ADE browser (only when the setting asks)
-ade --socket browser status --text                                # active tab + tab list; a tab marked "not yours" needs `browser claim`
+ade --socket browser status --text                                # every tab on every machine with its owner, each browser's cap, and the route; "free" tabs need `browser claim`
+ade --socket browser close --tab tab-id --text                    # any agent may close any tab (check the owner first); prints whose tab it was
 ade --socket browser claim --tab tab-id --lane lane-id --text     # attribute an already-open tab to this agent's lane
 ade --socket browser panel --text                                 # reveal the Work sidebar Browser panel
 ade --socket browser dev-servers --text                           # dev servers running in this chat's lane (terminals, agent shells, listening ports); no desktop needed

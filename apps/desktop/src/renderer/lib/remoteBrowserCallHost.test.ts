@@ -49,7 +49,14 @@ function installBrowserApi(overrides: Partial<Omit<Fakes, "emit">> = {}): Fakes 
   };
 }
 
-const binding = { kind: "remote", key: "remote:windows-pc:project-a", targetId: "windows-pc", projectId: "project-a" } as never;
+const binding = {
+  kind: "remote",
+  key: "remote:windows-pc:project-a",
+  targetId: "windows-pc",
+  projectId: "project-a",
+  // The project as the other machine names it; the pane keys its tabs by it.
+  rootPath: "/srv/pc/project-a",
+} as never;
 
 function call(overrides: Partial<BuiltInBrowserRemoteCall> = {}): BuiltInBrowserRemoteCall {
   return {
@@ -122,6 +129,53 @@ describe("remoteBrowserCallHost", () => {
     expect(fakes.claimRemoteRequest).not.toHaveBeenCalled();
     expect(fakes.runRemoteAgentCall).not.toHaveBeenCalled();
     expect(fakes.replyRemoteCall).not.toHaveBeenCalled();
+  });
+
+  /**
+   * After a reload this window has shown no chat yet, and the daemon names
+   * this desktop because the chat's last message came from here. It must still
+   * answer, in the right collection; a lane's release must reach every
+   * desktop with its lane id; and a broadcast never reads the personal tabs.
+   */
+  it.each([
+    {
+      name: "a command addressed here for a chat not shown yet runs in the binding's project",
+      call: { chatSessionId: "chat-new", collection: "project" as const },
+      runs: { method: "click", input: { chatSessionId: "chat-new", laneId: "lane-pc", projectRoot: "/srv/pc/project-a", tabId: "tab-1" } },
+    },
+    {
+      name: "a lane release broadcast keeps its lane id",
+      call: { method: "releaseLaneTabs" as const, broadcast: true, targetClientId: "", chatSessionId: null, laneId: null, input: { laneId: "lane-gone" } },
+      runs: { method: "releaseLaneTabs", input: { laneId: "lane-gone" } },
+    },
+    {
+      name: "a broadcast tab list for the personal collection is not answered",
+      call: { method: "listTabsForAgent" as const, broadcast: true, targetClientId: "", chatSessionId: "chat-new", collection: "personal" as const, input: {} },
+      runs: null,
+    },
+    {
+      name: "an older daemon's command for a chat not shown (no collection) is not answered",
+      call: { chatSessionId: "chat-new" },
+      runs: null,
+    },
+  ])("$name", async ({ call: overrides, runs }) => {
+    const fakes = installBrowserApi();
+    const { serveRemoteBrowserCalls } = await import("./remoteBrowserCallHost");
+    // A machine served with no chat shown on it.
+    serveRemoteBrowserCalls(binding, { chatSessionId: "chat-pc", laneId: "lane-pc", projectRoot: "/Users/me/project-a" });
+    fakes.emit(call(overrides));
+    await drain();
+    if (!runs) {
+      expect(fakes.runRemoteAgentCall).not.toHaveBeenCalled();
+      expect(fakes.claimRemoteRequest).not.toHaveBeenCalled();
+      expect(fakes.replyRemoteCall).not.toHaveBeenCalled();
+      return;
+    }
+    await vi.waitFor(() => expect(fakes.runRemoteAgentCall).toHaveBeenCalledTimes(1));
+    const sent = fakes.runRemoteAgentCall.mock.calls[0]![0];
+    expect(sent.method).toBe(runs.method);
+    expect(sent.input).toMatchObject(runs.input);
+    await vi.waitFor(() => expect(fakes.replyRemoteCall.mock.calls.map(([reply]) => reply.phase)).toEqual(["taken", "done"]));
   });
 
   it("runs a replayed command once", async () => {

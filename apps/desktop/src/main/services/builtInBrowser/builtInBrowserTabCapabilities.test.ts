@@ -638,12 +638,11 @@ describe("built-in browser favicon inlining", () => {
   });
 });
 
-// Regression: the owner filter hid every unclaimed tab from an identity-scoped
-// read, so `ade browser status` printed 0 tabs against a pane the human could
-// see full — with no tab id to claim and no `--all`, so `browser open` silently
-// started another tab.
+// Every agent sees every tab, marked with what it may do: hiding tabs left
+// `ade browser status` printing `tabs 9 of 10` over 8 rows, with no way to
+// tell whose tabs filled the browser.
 describe("built-in browser claimable tabs", () => {
-  it("shows unowned and expired tabs as claimable while hiding live leases", async () => {
+  it("lists every tab: free and expired ones claimable, live leases held", async () => {
     const { service } = await serviceWithTab();
     const unowned = service.getStatus().activeTabId!;
 
@@ -678,11 +677,12 @@ describe("built-in browser claimable tabs", () => {
 
       const scoped = service.getStatus({ laneId: "lane-4", chatSessionId: "chat-4" });
       const byId = new Map(scoped.tabs.map((tab) => [tab.id, tab]));
-      expect([...byId.keys()].sort()).toEqual([stale.id, unowned].sort());
+      expect([...byId.keys()].sort()).toEqual([stale.id, unowned, mine, theirs].sort());
       expect(byId.get(unowned)?.claimable).toBe(true);
       expect(byId.get(stale.id)?.claimable).toBe(true);
       expect(byId.get(stale.id)?.ownerChatSessionId).toBe("chat-2");
-      expect(byId.has(theirs)).toBe(false);
+      expect(byId.get(theirs)).toMatchObject({ heldByOtherChat: true, ownerChatSessionId: "chat-3" });
+      expect(byId.get(theirs)?.claimable).toBeUndefined();
     } finally {
       now.mockRestore();
     }
@@ -691,9 +691,10 @@ describe("built-in browser claimable tabs", () => {
     const ownTab = own.tabs.find((tab) => tab.id === mine);
     expect(ownTab).toBeTruthy();
     expect(ownTab?.claimable).toBeUndefined();
+    expect(ownTab?.heldByOtherChat).toBeUndefined();
 
-    // An unscoped read (the renderer) is unchanged: no `claimable` anywhere.
-    expect(service.getStatus().tabs.every((tab) => tab.claimable === undefined)).toBe(true);
+    // An unscoped read (the renderer) carries no marks.
+    expect(service.getStatus().tabs.every((tab) => tab.claimable === undefined && tab.heldByOtherChat === undefined)).toBe(true);
   });
 });
 
