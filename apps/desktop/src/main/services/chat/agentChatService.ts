@@ -19822,7 +19822,12 @@ export function createAgentChatService(args: {
       let row: ReturnType<typeof sessionService.get> = null;
       try {
         row = sessionService.get(sessionId);
-      } catch {
+      } catch (error) {
+        // The cap falls back to "ask", the safe level.
+        logger.warn("agent_chat.tracked_cli_level_read_failed", {
+          sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
         return null;
       }
       const resume = row?.tracked ? row.resumeMetadata : null;
@@ -36810,7 +36815,12 @@ export function createAgentChatService(args: {
             approvalId: request.approvalId,
             requirementId: request.currentRequirementId,
             choiceId: deny.choiceId,
-          }).catch(() => undefined);
+          }).catch((error) => {
+            logger.warn("agent_chat.muse_approval_decide_failed", {
+              sessionId: managed.session.id,
+              error: describeMuseError(error),
+            });
+          });
           return;
         }
         if (!origin?.subagentId) return interrupt();
@@ -38452,7 +38462,12 @@ export function createAgentChatService(args: {
         runtime.handle,
         { category, requestId: ask.id, sessionId: ask.sessionID, request },
         "always",
-      ).catch(() => {});
+      ).catch((error) => {
+        logger.warn("agent_chat.opencode_session_grant_reply_failed", {
+          sessionId: managed.session.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
       return;
     }
     // Keyed by the card's item id, which is what an answer carries back. One

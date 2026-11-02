@@ -289,6 +289,17 @@ and in tests.
   sessions omit the fields. After the PTY is created, `start_cli_session` calls
   `agentChatService.notifyParentOfCliChildSpawn`, which lands the same spawn
   chip and `chat:<childId>` subagent card in the parent that a chat child gets.
+  For an agent caller it follows the same lane rule as `chat.launchCli` and
+  `spawn_agent`: an agent CLI may start in any lane that has a worktree (the
+  permission cap keeps it at or under its caller), while the chat it claims
+  (`chatSessionId`) and the parent it reports to must be the caller's own. A
+  plain `shell` launch is raw terminal access and stays in the caller's own lane
+  (`ensurePtyCreateAuthorized`). A denial names the caller's chat session
+  (`callerChatSessionId`). A parent may read and stop the CLI children it
+  launched in other lanes (`orchestrationParentSessionId` / `launchedBySessionId`
+  in `isPtySessionAuthorized`). `--text-file -` reads stdin once per CLI run
+  (`readAllStdinSync` caches it), so the text survives when the CLI forwards the
+  command to the chat's machine and plans it again.
 - `apps/desktop/src/main/services/chat/cliChildSessions.ts` — the pure half of
   the CLI child bridge: lineage from the terminal row, the end verdict
   (`completed` / `failed` / `disposed`·`detached` → stopped), the run key

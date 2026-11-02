@@ -1225,6 +1225,124 @@ describe("createAgentChatService", () => {
       });
     });
 
+    it("keeps a Codex child's card open past the parent turn and shares its Accept all with the whole chat", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Run a parallel repository scan.",
+      }, { awaitDispatch: true });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "status"
+          && event.event.turnStatus === "started"
+          && event.event.turnId === "turn-1",
+      );
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/started",
+        params: {
+          turnId: "turn-1",
+          item: {
+            id: "call-spawn-1",
+            type: "collabAgentToolCall",
+            tool: "spawn_agent",
+            receiverThreadIds: ["agent-thread-1"],
+            prompt: "Run the test suite",
+          },
+        },
+      });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/started",
+        params: { threadId: "agent-thread-1", turn: { id: "agent-turn-1", status: "inProgress" } },
+      });
+
+      const commandRequest = (id: string, threadId: string, extra: Record<string, unknown> = {}) => ({
+        jsonrpc: "2.0",
+        id,
+        method: "item/commandExecution/requestApproval",
+        params: { threadId, turnId: threadId === "agent-thread-1" ? "agent-turn-1" : "turn-1", itemId: id, command: "npm test", ...extra },
+      });
+      const replyTo = (id: string) => mockState.codexRequestPayloads.find((payload) => payload.id === id);
+
+      mockState.emitCodexPayload(commandRequest("child-cmd-1", "agent-thread-1"));
+      const childCard = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+        } => event.event.type === "approval_request" && event.event.itemId === "child-cmd-1",
+      );
+      expect((childCard.event.detail as any)?.request?.subagent).toMatchObject({ key: "agent-thread-1" });
+
+      // The parent's turn ends while the child still waits on the card.
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/completed",
+        params: { turn: { id: "turn-1", status: "completed" } },
+      });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "done" && event.event.turnId === "turn-1",
+      );
+      expect(replyTo("child-cmd-1")).toBeUndefined();
+      expect(events.some((event) =>
+        event.event.type === "pending_input_resolved" && event.event.itemId === "child-cmd-1"
+      )).toBe(false);
+
+      await service.respondToInput({ sessionId: session.id, itemId: "child-cmd-1", decision: "accept_for_session" });
+      expect(replyTo("child-cmd-1")).toMatchObject({ result: { decision: "acceptForSession" } });
+
+      // The same command from the main agent is answered from the grant, with no card.
+      mockState.emitCodexPayload(commandRequest("parent-cmd-1", "thread-1"));
+      await vi.waitFor(() => {
+        expect(replyTo("parent-cmd-1")).toMatchObject({ result: { decision: "acceptForSession" } });
+      });
+      expect(events.some((event) =>
+        event.event.type === "approval_request" && event.event.itemId === "parent-cmd-1"
+      )).toBe(false);
+
+      // The same command in another folder is a different request: it asks again.
+      mockState.emitCodexPayload(commandRequest("parent-cmd-2", "thread-1", { cwd: path.join(tmpHomeRoot, "elsewhere") }));
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "approval_request" && event.event.itemId === "parent-cmd-2",
+      );
+      expect(replyTo("parent-cmd-2")).toBeUndefined();
+
+      // The child asks again, then ends: only its own card closes.
+      mockState.emitCodexPayload(commandRequest("child-cmd-2", "agent-thread-1", { command: "npm run lint" }));
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "approval_request" && event.event.itemId === "child-cmd-2",
+      );
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/completed",
+        params: { threadId: "agent-thread-1", turn: { id: "agent-turn-1", status: "completed", items: [] } },
+      });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "pending_input_resolved" && event.event.itemId === "child-cmd-2",
+      );
+      expect(service.listPendingInputs({ sessionId: session.id }).requests.map((request) => request.itemId))
+        .toEqual(["parent-cmd-2"]);
+      await service.respondToInput({ sessionId: session.id, itemId: "parent-cmd-2", decision: "decline" });
+    });
+
     it("attributes a Codex close_agent result to the provider", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const { service } = createService({

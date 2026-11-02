@@ -49,6 +49,37 @@ describe("createAgentChatService", () => {
       }
     });
 
+    it.each([
+      ["full-auto", "bypassPermissions", "danger-full-access", "never"],
+      ["ask", "default", "workspace-write", "on-request"],
+    ] as const)("caps a child of a tracked CLI caller at the level that CLI launched with (%s)", async (
+      _level, launchedClaudeMode, expectedSandbox, expectedApproval,
+    ) => {
+      const { service, sessionService } = createService();
+      const defaultGet = sessionService.get.getMockImplementation()!;
+      sessionService.get.mockImplementation((sessionId: string) => (sessionId === "cli-tracked-1"
+        ? {
+          id: sessionId,
+          laneId: "lane-1",
+          tracked: true,
+          toolType: "claude",
+          resumeMetadata: { provider: "claude", launch: { claudePermissionMode: launchedClaudeMode } },
+        }
+        : defaultGet(sessionId)) as any);
+
+      const child = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+        codexSandbox: "danger-full-access",
+        codexApprovalPolicy: "never",
+        runtimeActor: { kind: "agent", chatSessionId: "cli-tracked-1" },
+      });
+      expect(child.codexSandbox).toBe(expectedSandbox);
+      expect(child.codexApprovalPolicy).toBe(expectedApproval);
+      expect(sessionService.get).toHaveBeenCalledWith("cli-tracked-1");
+    });
+
     it("caps what an agent can start or raise at its own level, and leaves a person free", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const { service } = createService({

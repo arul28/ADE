@@ -1773,6 +1773,12 @@ could gain: a missing actor is already the most permissive case.
   step or attempt) is capped only by the target's parent. The CTO counts as the
   CTO only from its own thread, or as a CTO-role caller with no chat and no run,
   step or attempt (`callerIsTrustedCto`); a CTO-role run agent is an agent here.
+- **A tracked CLI caller** (an agent running `ade` from a Claude or Codex
+  terminal) has no chat record, so its level is the permission that CLI was
+  launched with, read from its terminal row's `resumeMetadata.launch`
+  (`trackedCliLevel` in `resolvePermissionCeiling`). A full-auto Claude CLI can
+  start a full-auto chat; a default one is capped at `ask`. A failed read falls
+  back to `ask`.
 - **A caller in another project or on another machine** is not one of the
   target service's chats, so its level comes from what the brain recorded for it
   (`externalChatContext`), and an unrecorded caller counts as `ask`. A remote
