@@ -195,6 +195,10 @@ the parser has a chance to ignore the irrelevant payload.
 
 The Codex history reader is therefore a bounded byte-stream pipeline:
 
+- Codex compresses old rollouts to `.jsonl.zst`; ADE streams those through
+  Node's zstd decoder, counts a rollout once when both forms exist, and marks
+  the scan incomplete when a compressed file is corrupt or cut off (zstd ends a
+  cut-off frame with no output and no error);
 - candidate session and archived-session files are considered newest first,
   with at most 5,000 files per root, 256 MiB per file, and 2 GiB distributed
   across both roots;
@@ -204,6 +208,12 @@ The Codex history reader is therefore a bounded byte-stream pipeline:
 - detailed history stops at 250,000 token entries; and
 - concurrent production callers share one in-flight Codex scan, so two open
   projects cannot duplicate the same CPU work and retained entry set.
+
+OpenCode keeps each whole message as JSON in `opencode.db`, and a user message
+with diffs can be tens of MB. The OpenCode scan never reads that column into
+JavaScript: SQLite selects only assistant rows and only the token, cost and
+model fields (`json_extract`), in pages of 5,000 rows by `time_created`, and
+skips a row whose JSON is invalid.
 
 These limits bound ADE's work; they do not truncate the source files. The
 tradeoff is intentionally visible in the data model: an extreme old record or

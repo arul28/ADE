@@ -676,7 +676,7 @@ one `context_compact` lifecycle, and adds a guarded Claude fallback at 97%.
 
 | Provider | Compacts by itself | ADE setting applied as | `/compact` in ADE | Context window source |
 |---|---|---|---|---|
-| Claude | Yes (`auto` window from Anthropic, per model) | SDK query `settings.autoCompactWindow` (100k–1M); subagents get `autoCompactWindow` on each `agents` entry | Passed to the SDK as a slash command | `modelUsage[].contextWindow`, else the registry; `getContextUsage().raw_max_tokens` is the compaction point |
+| Claude | Yes (`auto` window from Anthropic, per model) | SDK query `settings.autoCompactWindow` (100k–1M); subagents get `autoCompactWindow` on each `agents` entry | Passed to the SDK as a slash command | `modelUsage[].contextWindow`, else the registry; `getContextUsage().raw_max_tokens` is the compaction window and `autoCompactThreshold` the compaction point (33,000 below) |
 | Codex | Yes | `model_auto_compact_token_limit=<n>` in the thread's config (`thread/start`, `thread/resume`), capped at the model window | `thread/compact/start`; custom instructions are not supported, and ADE says so | `thread/tokenUsage/updated` `modelContextWindow`; occupancy is `last` only, never the cumulative total |
 | OpenCode | Yes | OpenCode config `compaction: { buffer, keep: { tokens } }` | `session.command` when the server lists `compact` | `min(models.dev limit.context, ADE registry)` |
 | Pi | Yes | `settingsManager.applyOverrides({ compaction: { reserveTokens, keepRecentTokens } })` | `sdk.compact()` | SDK `context_usage` |
