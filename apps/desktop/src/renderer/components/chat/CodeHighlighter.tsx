@@ -277,7 +277,9 @@ function DiffCodeBlock({ code }: { code: string }) {
 
 /**
  * The block's controls: Copy, and Run when the block is a runnable shell
- * block (`leading`, drawn before Copy).
+ * block (`leading`, drawn before Copy). Run mounts when the block takes focus,
+ * which for a keyboard is Copy, so it sits after Copy in the DOM (forward Tab
+ * reaches it) and before it on screen.
  */
 function CodeCopyButton({ code, position, leading }: { code: string; position: CodeBlockCopyButtonPosition; leading?: React.ReactNode }) {
   const { copy, copied } = useCopyToClipboard();
@@ -290,7 +292,6 @@ function CodeCopyButton({ code, position, leading }: { code: string; position: C
         // -mb keeps the sticky row from pushing the code text down on its first line.
         style={{ marginBottom: -24 }}
       >
-        {leading}
         <button
           type="button"
           className={`${CODE_BLOCK_ACTION_BUTTON_CLASS} opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100`}
@@ -302,6 +303,7 @@ function CodeCopyButton({ code, position, leading }: { code: string; position: C
           {copied ? <Checks size={10} weight="bold" /> : <CopySimple size={10} weight="regular" />}
           <span>{copied ? "Copied" : "Copy"}</span>
         </button>
+        {leading ? <div className="order-first flex empty:hidden">{leading}</div> : null}
       </div>
     );
   }
@@ -324,8 +326,8 @@ function CodeCopyButton({ code, position, leading }: { code: string; position: C
   if (!leading) return button;
   return (
     <div className={`pointer-events-none absolute right-2 z-10 flex gap-1 ${posClass}`}>
-      {leading}
       {button}
+      <div className="order-first flex empty:hidden">{leading}</div>
     </div>
   );
 }

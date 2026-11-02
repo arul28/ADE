@@ -19343,7 +19343,7 @@ export function AgentChatPane({
                     <ChatInfoHostContext.Provider value={true}>
                     <ThreadEntityProvider skillNames={threadEntitySkillNames}>
                       <SceneReplyContext.Provider value={subagentView ? null : handleSceneReply}>
-                      <ChatTerminalRevealContext.Provider value={subagentView || !chatTerminalVisible ? null : revealCodeBlockTerminal}>
+                      <ChatTerminalRevealContext.Provider value={subagentView ? false : chatTerminalVisible ? revealCodeBlockTerminal : null}>
                       <LiveChatMessageList
                         liveTranscript={subagentView ? null : liveTranscript}
                         key={renderedSessionId ?? "chat-draft"}

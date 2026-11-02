@@ -15,9 +15,11 @@ type RevealTerminal = (terminal: { chatSessionId: string; terminalId: string; pt
 /**
  * Opens the chat's terminal pane on a terminal: the pane that owns the chat
  * provides it. Context rather than a prop, so the transcript's row memos never
- * see it. Absent, a run still starts; its terminal is in the chat's tools pane.
+ * see it. Absent (null), a run still starts; its terminal is in the chat's
+ * tools pane. `false` means this transcript runs nothing (a subagent's view,
+ * whose blocks are not this chat's replies).
  */
-export const ChatTerminalRevealContext = createContext<RevealTerminal | null>(null);
+export const ChatTerminalRevealContext = createContext<RevealTerminal | null | false>(null);
 
 /*
  * Run a shell code block from a reply in a new terminal of the chat's tools
@@ -365,7 +367,7 @@ export function ShellCodeBlockRunButton({ code, language }: { code: string; lang
   const scope = useChatRuntimeScope();
   const reveal = useContext(ChatTerminalRevealContext);
   // Outside a chat (a PR description, a preview) there is nowhere to run it.
-  if (!scope.sessionId) return null;
+  if (!scope.sessionId || reveal === false) return null;
   const plan = planShellBlockRun({ code, language, machineIsWindows: scopeIsWindows(scope) });
   if (!plan) return null;
   const reason = blockedReason(scope) ?? (plan.ok ? null : plan.reason);
@@ -462,7 +464,7 @@ export function ShellCodeBlockRunStatus({ code, language }: { code: string; lang
           type="button"
           className={CODE_BLOCK_ACTION_BUTTON_CLASS}
           style={CODE_BLOCK_ACTION_BUTTON_STYLE}
-          onClick={() => showTerminal(run.sessionId, { terminalId, ptyId, label: run.title, ended: run.status === "exited" }, reveal)}
+          onClick={() => showTerminal(run.sessionId, { terminalId, ptyId, label: run.title, ended: run.status === "exited" }, reveal || null)}
         >
           <Terminal size={10} weight="bold" />
           <span>Show terminal</span>

@@ -2810,10 +2810,15 @@ function startHydration(runtime: CachedRuntime) {
     const eraseStale = runtime.staleContentBeforeHydration && terminalOnNormalBuffer(runtime) && !replacesLive;
     runtime.staleContentBeforeHydration = false;
     if (data.source === "replay") {
-      // A session ends before its transcript finishes writing, so a replay
-      // read right after the exit can hold less than this view already drew.
-      // Then the live output stays, as it is.
-      if (replacesLive && data.text.length < runtime.pendingHydrationBytes) {
+      // Live output already drawn stays, as it is, unless the replay can
+      // replace it: the terminal may have moved to the alternate screen while
+      // the replay was read, and a session ends before its transcript finishes
+      // writing, so a replay read right after the exit can hold less than this
+      // view drew.
+      if (
+        runtime.displayedLiveDataBeforeHydration
+        && (!replacesLive || data.text.length < runtime.pendingHydrationBytes)
+      ) {
         runtime.pendingHydrationChunks.length = 0;
         runtime.pendingHydrationBytes = 0;
         flushPendingFrameWrites(runtime);

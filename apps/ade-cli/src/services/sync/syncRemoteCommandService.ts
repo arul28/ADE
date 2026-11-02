@@ -4629,6 +4629,13 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
   // on a reconnect.
   register("work.runShellBlock", { viewerAllowed: false, controllerAllowed: true, queueable: false }, async (payload) => {
     const parsed = parseRunShellBlockArgs(payload);
+    // The lane picks the folder and the chat owns the terminal: they must be
+    // the same chat's, or a run lands in one lane under another chat.
+    const chat = await requireService(args.agentChatService, "Agent chat service not available.")
+      .getSessionSummary(parsed.chatSessionId);
+    if (!chat || chat.laneId !== parsed.laneId) {
+      throw new Error("work.runShellBlock: the chat is not in that lane.");
+    }
     return await args.ptyService.create({
       laneId: parsed.laneId,
       chatSessionId: parsed.chatSessionId,

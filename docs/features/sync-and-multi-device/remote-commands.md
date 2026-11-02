@@ -816,8 +816,9 @@ A handful have more logic:
 - **`work.runQuickCommand`** — constructs a `PtyCreateArgs`, calls
   `ptyService.create`, and returns the PTY handle for the controller
   to subscribe to via `terminal_subscribe`.
-- **`work.runShellBlock`** — runs a chat reply's shell code block:
-  `ptyService.create` with `chatSessionId`, the client-built interpreter
+- **`work.runShellBlock`** — runs a chat reply's shell code block. The chat
+  must be in the given lane (the lane picks the folder, the chat owns the
+  terminal), then `ptyService.create` with `chatSessionId`, the client-built interpreter
   `command` and `args` (the script is one argument, at most 128,000
   UTF-8 bytes in all), `toolType: "shell"`, tracked, with the host's own
   `SHELL_BLOCK_RUN_ENV` (pagers off); the client sends no environment. Controller-only and not

@@ -2140,6 +2140,8 @@ describe("createSyncRemoteCommandService", () => {
         { args: "-c ls" },
         { args: ["-c", 3] },
         { chatSessionId: undefined },
+        // The chat must be in the lane the run's folder comes from.
+        { laneId: "lane-2" },
         { args: ["-c", "x".repeat(130_000)] },
         // The cap is bytes: 50,000 three-byte characters are 150,000.
         { args: ["-c", "界".repeat(50_000)] },
