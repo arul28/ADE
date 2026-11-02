@@ -1898,17 +1898,17 @@ struct WorkSessionDestinationView: View {
           }
         }
       }
-      .onChange(of: chatSummary) { oldValue, newValue in
+      .onChange(of: chatSummary) { _, newValue in
         // Latch the last non-nil summary so the composer's model/permission
         // controls survive a transient nil while this view stays mounted.
         if let newValue {
           lastKnownChatSummary = newValue
         }
         refreshScheduledWorkSnapshots()
+      }
+      .onChange(of: hostPendingInputItemId) { _, _ in
         // The host's open card feeds the subagents' "needs you" marks.
-        if let newValue, newValue.pendingInputItemId != oldValue?.pendingInputItemId {
-          refreshSubagentSnapshots()
-        }
+        refreshSubagentSnapshots()
       }
       .onChange(of: chatInfoPresented) { _, presented in
         handleChatInfoPresentationChange(presented)
@@ -3032,7 +3032,7 @@ struct WorkSessionDestinationView: View {
     )
     .map(markingWaitingSubagents(workWaitingSubagentKeys(
       from: transcript,
-      hostPendingInputItemId: (chatSummary ?? lastKnownChatSummary)?.pendingInputItemId
+      hostPendingInputItemId: hostPendingInputItemId
     )))
     if next != subagentSnapshots {
       subagentSnapshots = next
@@ -3421,11 +3421,16 @@ struct WorkChatThreadOverlayInputs: Equatable {
 }
 
 extension WorkSessionDestinationView {
+  /// The card the host still holds open: the chat summary's, else the session row's.
+  var hostPendingInputItemId: String? {
+    let summaryPendingId = composerChatSummary?.pendingInputItemId?
+      .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    return summaryPendingId.isEmpty ? (session ?? initialSession)?.pendingInputItemId : summaryPendingId
+  }
+
   var threadOverlayInputs: WorkChatThreadOverlayInputs {
     let summary = composerChatSummary
     let currentSession = session ?? initialSession
-    let summaryPendingId = summary?.pendingInputItemId?
-      .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     let usageLimitResume = summary.flatMap { workUsageLimitResumeModel(for: $0) }
     return WorkChatThreadOverlayInputs(
       localEchoMessages: localEchoMessages,
@@ -3441,7 +3446,7 @@ extension WorkSessionDestinationView {
         modelId: summary?.modelId,
         usageLimitTurnId: usageLimitResume?.turnId,
         hasUsageLimitResume: usageLimitResume != nil,
-        pendingInputItemId: summaryPendingId.isEmpty ? currentSession?.pendingInputItemId : summaryPendingId,
+        pendingInputItemId: hostPendingInputItemId,
         claudeGoal: summary?.claudeGoal,
         orchestrationParentSessionId: summary?.orchestrationParentSessionId,
         rowEndedAtCandidates: [

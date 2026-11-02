@@ -38471,32 +38471,38 @@ export function createAgentChatService(args: {
     const { itemId, category, description } = built;
     const subagent = child ? subagentForCard(managed, ask.sessionID) : undefined;
     const request: PendingInputRequest = subagent ? { ...built.request, subagent } : built.request;
+    const raiseCard = (): void => {
+      // Keyed by the card's item id, which is what an answer carries back. One
+      // tool call asks one thing at a time (an external-directory ask is answered
+      // before the edit ask that follows it), so the key does not collide.
+      runtime.pendingApprovals.set(itemId, { category, requestId: ask.id, sessionId: ask.sessionID, request });
+      if (child) emitOpenCodeChildBlocked(managed, runtime, ask.sessionID, description);
+      emitPendingInputRequest(managed, request, {
+        kind: category === "bash" ? "command" : "file_change",
+        description,
+        detail: ask.metadata ?? {},
+      });
+    };
     // OpenCode keeps "always" to the session that asked; the person allowed
     // it for the whole chat, so the parent and every child are answered alike.
+    // As for Codex, a policy that denies by fallback outranks a remembered grant.
     const grantKey = sessionApprovalGrantKey(request);
-    if (grantKey && managed.sessionApprovalGrants?.has(grantKey)) {
+    if (grantKey && managed.sessionApprovalGrants?.has(grantKey) && !permissionPolicyDeniesByFallback(managed.session)) {
       void replyToOpenCodePendingApproval(
         runtime.handle,
         { category, requestId: ask.id, sessionId: ask.sessionID, request },
         "always",
       ).catch((error) => {
+        // The ask is still open in OpenCode: show the card so the person can answer it.
         logger.warn("agent_chat.opencode_session_grant_reply_failed", {
           sessionId: managed.session.id,
           error: error instanceof Error ? error.message : String(error),
         });
+        if (managed.runtime === runtime) raiseCard();
       });
       return;
     }
-    // Keyed by the card's item id, which is what an answer carries back. One
-    // tool call asks one thing at a time (an external-directory ask is answered
-    // before the edit ask that follows it), so the key does not collide.
-    runtime.pendingApprovals.set(itemId, { category, requestId: ask.id, sessionId: ask.sessionID, request });
-    if (child) emitOpenCodeChildBlocked(managed, runtime, ask.sessionID, description);
-    emitPendingInputRequest(managed, request, {
-      kind: category === "bash" ? "command" : "file_change",
-      description,
-      detail: ask.metadata ?? {},
-    });
+    raiseCard();
   };
 
   const onOpenCodePermissionReplied = (
