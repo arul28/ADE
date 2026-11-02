@@ -110,6 +110,11 @@ remote commands, or host update flows, verify:
 - `apps/desktop/src/shared/syncMobileCompatibility.ts` includes every host
   command ADE Mobile requires, and the brain advertises missing required actions
   through `features.mobileCompatibility`.
+- A raise of `MIN_SUPPORTED_MOBILE_APP_VERSION` / `_BUILD` goes no higher than
+  the normal ADE app's newest TestFlight build. Betas ship the raise to
+  machines first, and the normal app only updates at a stable release, so a
+  higher minimum locks it out of every Beta machine. Raising it is a
+  merge-blocking product decision when no such build exists yet.
 - iOS gates unsupported actions locally before queueing/sending them and keeps
   the connection alive for update guidance.
 - Tests cover legacy hosts that omit `mobileCompatibility` and hosts that report

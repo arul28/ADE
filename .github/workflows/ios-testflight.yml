@@ -1,15 +1,17 @@
 name: iOS TestFlight
 
-# Builds ADE for iPhone on a GitHub-hosted Mac and gives the build to the
-# Internal Testers group on TestFlight. beta.yml calls it after each real beta
-# is public; it can also be dispatched by hand. See docs/plans/beta-track.md
-# (work item 8). scripts/release-tools/ios-testflight-ci.sh does the work.
+# Builds the ADE Beta iPhone app (com.ade.ios.beta) on a GitHub-hosted Mac
+# and gives the build to its TestFlight testers. beta.yml calls it after each
+# real beta is public; it can also be dispatched by hand. See
+# docs/plans/ios-beta-app.md and docs/plans/beta-track.md (work item 8).
+# scripts/release-tools/ios-testflight-ci.sh does the work. The normal app
+# (com.ade.ios) gets builds only from stable releases.
 #
-# It runs only when iOS code changed since the last iOS build (the newest
-# ios-v*-build* tag, the base scope.sh uses), so a beta that left iOS alone
-# makes no TestFlight build. The base is the last iOS build, not the previous
-# beta: a beta whose TestFlight build failed must not hide its iOS changes
-# from the next one.
+# It runs only when iOS code changed since the last ADE Beta build (the newest
+# ios-beta-v*-build* tag), so a beta that left iOS alone makes no TestFlight
+# build. The base is the last ADE Beta build, not the previous beta: a beta
+# whose TestFlight build failed must not hide its iOS changes from the next
+# one.
 #
 # It never fails or blocks the desktop beta. The feed does not wait for it,
 # the TestFlight step and its job continue on error, and a failure opens (or
@@ -46,7 +48,7 @@ on:
         default: main
         type: string
       force:
-        description: Build even when iOS did not change since the last iOS build.
+        description: Build even when iOS did not change since the last ADE Beta build.
         required: false
         default: false
         type: boolean
@@ -70,7 +72,7 @@ jobs:
       sha: ${{ steps.gate.outputs.sha }}
       label: ${{ steps.gate.outputs.label }}
     steps:
-      # Full history and every tag: the base is the newest ios-v*-build* tag.
+      # Full history and every tag: the base is the newest ios-beta-v*-build* tag.
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -101,10 +103,10 @@ jobs:
           # The paths that change the iPhone app: its sources, and this
           # pipeline. Generated iOS files are committed under apps/ios.
           paths=(apps/ios .github/workflows/ios-testflight.yml scripts/release-tools/ios-testflight-ci.sh)
-          base_tag="$(git tag --list 'ios-v*-build*' --sort=-creatordate | head -n 1)"
+          base_tag="$(git tag --list 'ios-beta-v*-build*' --sort=-creatordate | head -n 1)"
           if [ -z "$base_tag" ]; then
             changed=1
-            reason="no earlier iOS build tag"
+            reason="no earlier ADE Beta build tag"
           else
             changed="$(git diff --name-only "$base_tag..$sha" -- "${paths[@]}" | wc -l | tr -d ' ')"
             reason="$changed iOS files changed since $base_tag"
@@ -166,7 +168,7 @@ jobs:
           chmod +x "$bin/asc"
           echo "$bin" >> "$GITHUB_PATH"
 
-      - name: Build and give to Internal Testers
+      - name: Build ADE Beta and give it to testers
         id: build
         continue-on-error: true
         env:
@@ -212,9 +214,9 @@ jobs:
           issue="$(gh issue list --state open --label beta --limit 100 --json number,title \
             --jq "[.[] | select(.title == \"$title\")][0].number // empty")"
           if [ "$OUTCOME" = success ]; then
-            echo "TestFlight build $BUILD for $LABEL is with Internal Testers." >> "$GITHUB_STEP_SUMMARY"
+            echo "ADE Beta build $BUILD for $LABEL is with Internal Testers." >> "$GITHUB_STEP_SUMMARY"
             if [ -n "$issue" ]; then
-              gh issue comment "$issue" --body "Fixed: build $BUILD for $LABEL reached Internal Testers. $RUN_URL"
+              gh issue comment "$issue" --body "Fixed: ADE Beta build $BUILD for $LABEL reached Internal Testers. $RUN_URL"
               gh issue close "$issue"
             fi
             exit 0

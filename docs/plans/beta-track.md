@@ -25,9 +25,11 @@ guard that covers it. Keep it current while the work runs.
   errors the whole time it was out, and it brought no new errors. Age is not
   a measure. The stable tag is pushed by the release agent as the owner,
   because the tag rule refuses the workflow's own token.
-- iPhone: one TestFlight app. Beta builds go to Internal Testers only; a stable
-  release adds the same build to Friends and Public Beta. The phone shows an
-  orange "Beta" chip on a machine that runs the Beta track.
+- iPhone: two TestFlight apps (owner-approved 2026-11-01,
+  `docs/plans/ios-beta-app.md`). Beta builds go to the separate "ADE Beta" app
+  (`com.ade.ios.beta`); a stable release builds the normal app for every
+  group. The phone shows an orange "Beta" chip on a machine that runs the Beta
+  track.
 - New UI follows `docs/design/notices.md` and `docs/design/visual-language.md`.
   Words are short and plain. "Stable" and "Beta" are the only track names.
 
@@ -333,17 +335,20 @@ How the pipeline is built, and what is still open.
 - `beta.yml`'s `ios` job calls `ios-testflight.yml` once a real beta is
   public, beside the feed. Previews never call it. The feed, prune and report
   jobs do not wait for it.
+- It builds the ADE Beta app (`com.ade.ios.beta`, `Beta` configuration),
+  never the normal app. See `docs/plans/ios-beta-app.md`.
 - Its `gate` job (Ubuntu) builds only when `apps/ios`, the workflow or the
-  script changed since the newest `ios-v*-build*` tag, the base `scope.sh`
-  uses. Not the previous beta: a beta whose TestFlight build failed would
+  script changed since the newest `ios-beta-v*-build*` tag. Not the previous
+  beta: a beta whose TestFlight build failed would
   otherwise hide its iOS changes from the next one.
 - The `testflight` job (`xcode-27` runner, Xcode 27.1, `asc` 1.2.3 pinned by checksum)
-  runs `scripts/release-tools/ios-testflight-ci.sh`: next build number from
-  App Store Connect, `xcodebuild archive` and `-exportArchive` with
-  `-allowProvisioningUpdates` and the API key, IPA check (app, App Clip,
-  widgets, versions), `altool` validate, upload, dSYMs to Sentry, wait for
-  processing, encryption flag, What to Test, the "Internal Testers" group
-  only (no beta review), then the `ios-v<mv>-build<n>` tag. `--dry-run`
+  runs `scripts/release-tools/ios-testflight-ci.sh`: next build number (the
+  higher of both apps), `xcodebuild archive` and `-exportArchive` with
+  `-allowProvisioningUpdates` and the API key, IPA check (bundle IDs,
+  widgets, versions, no App Clip), `altool` validate, upload, dSYMs to
+  Sentry, wait for processing, encryption flag, What to Test, the "Internal
+  Testers" group, the "Public Beta" group submitted for beta review (a
+  warning when it fails), then the `ios-beta-v<mv>-build<n>` tag. `--dry-run`
   stops after the IPA check. Dispatch it by hand with `git_ref`, `force` and
   `dry_run`.
 - A failure never fails the beta: the step and the job continue on error,

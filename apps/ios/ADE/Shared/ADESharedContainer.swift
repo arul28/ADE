@@ -11,8 +11,14 @@ public struct ADEAccountDeviceOwnershipState: Codable, Equatable {
 /// The App Group identifier is the single source of truth and is used to
 /// derive the shared `UserDefaults` suite and the on-disk container URL.
 public enum ADESharedContainer {
-    /// App Group identifier shared by the main app + extensions.
+    /// App Group identifier shared by the main app + extensions. The ADE Beta
+    /// app (`Beta` build configuration) has its own group, so it never reads
+    /// or writes the normal app's data.
+    #if ADE_BETA_APP
+    public static let appGroupIdentifier = "group.com.ade.ios.beta"
+    #else
     public static let appGroupIdentifier = "group.com.ade.ios"
+    #endif
 
     /// Shared `UserDefaults` for cross-process preferences and small snapshots.
     ///

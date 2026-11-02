@@ -19,7 +19,7 @@ Every hand-typed step in past releases is where the mistakes came from.
 | `node scripts/release-tools/beta-gate.mjs <beta tag>` | The Sentry gate for one beta: it ran, Sentry was receiving errors, and it brought no new ones. Exit 0 pass, 1 fail, 2 could not check |
 | `bash scripts/release-tools/verify-desktop-draft.sh <version>` | Checks the desktop draft; prints `DRAFT OK` or each problem |
 | `bash scripts/release-tools/ios-testflight.sh <mv> <build> <sha>` | Archive → export → inspect → validate → upload → dSYMs to Sentry → wait → groups → tag. Resumable; retries every App Store Connect call. The dSYM upload needs an `ade-app` Sentry token (`SENTRY_AUTH_TOKEN` env or ADE secret); a `WARNING: Sentry dSYM upload FAILED` line means iOS reports for that build stay unsymbolicated, so rerun |
-| `ios-testflight.yml` (CI, `scripts/release-tools/ios-testflight-ci.sh`) | Runs by itself after each beta that changed iOS: builds on a GitHub Mac, gives the build to **Internal Testers only**, tags `ios-v<mv>-build<n>`. A failure opens the "iOS TestFlight failed" issue and never blocks the desktop beta. `gh workflow run ios-testflight.yml -f dry_run=true` archives and exports without uploading |
+| `ios-testflight.yml` (CI, `scripts/release-tools/ios-testflight-ci.sh`) | Runs by itself after each beta that changed iOS: builds the separate **ADE Beta** app (`com.ade.ios.beta`, `Beta` configuration) on a GitHub Mac, gives it to that app's Internal Testers and, after Apple's beta review, its Public Beta link, tags `ios-beta-v<mv>-build<n>`. It never touches the normal app. A failure opens the "iOS TestFlight failed" issue and never blocks the desktop beta. `gh workflow run ios-testflight.yml -f dry_run=true` archives and exports without uploading |
 
 `reference.md` in this folder is the long form: incident history, the full
 Cloudflare account checklist, and recovery detail. Read the section named below
@@ -44,6 +44,12 @@ only when a step goes off the happy path.
   published on undraft are permanent.
 - **Every iOS build includes the app, widgets and App Clip.** The script refuses
   an IPA missing any of them.
+- **The iPhone minimum never passes the normal app.** Machines refuse iPhone
+  builds older than `MIN_SUPPORTED_MOBILE_APP_VERSION` /
+  `MIN_SUPPORTED_MOBILE_APP_BUILD` (`apps/desktop/src/shared/syncMobileCompatibility.ts`).
+  A raise reaches Beta machines first, but the normal ADE app only gets builds
+  here. A minimum above its newest build locks it out of every machine running
+  that code until its next build. Step 1 checks it.
 - **A blocked tier is reported as blocked**, with the failing check and the
   recovery command. Never call it skipped, and never call the release done.
 
@@ -57,10 +63,22 @@ bash scripts/release-tools/scope.sh
 ```
 
 - desktop `changed_files > 0` → desktop is in scope; the next tag is printed.
-- ios `changed_files > 0` → iOS is in scope.
-  `asc builds next-build-number --app 6762759870 --version <mv> --platform IOS`
-  gives the build number; the marketing version is the current one
-  (`MARKETING_VERSION` in the Xcode project).
+- ios `changed_files > 0` → iOS is in scope. The build number is the higher
+  of `asc builds next-build-number --app <id> --version <mv> --platform IOS`
+  for ADE (`6762759870`) and ADE Beta (`6829373114`): both apps share one
+  sequence, so the minimum check below works for both. The marketing version
+  is the current one (`MARKETING_VERSION` in the Xcode project).
+- **iPhone minimum check.** Read `MIN_SUPPORTED_MOBILE_APP_VERSION` and
+  `MIN_SUPPORTED_MOBILE_APP_BUILD` in the commit you release. The normal app's
+  newest build is the highest processed, unexpired one (`next-build-number`
+  also counts uploads that never finished, so do not subtract one from it):
+  `asc builds list --app 6762759870 --version <mv> --platform IOS --processing-state VALID --limit 50 --output json | jq '[.data[] | select(.attributes.expired | not) | .attributes.version | tonumber] | max'`.
+  If the minimum is above it (a newer marketing version, or the same one with
+  a higher build), iOS is in scope even when `scope.sh` says otherwise, the
+  build must be at least the minimum, and the desktop draft stays a draft
+  until that build reached every group (the one exception to independent
+  tiers). Machines running a beta with that minimum already refuse the normal
+  app, so do this release soon.
 - any cloudflare line with `undeployed_commits > 0` or `UNKNOWN` → Cloudflare
   needs work (step 5).
 - Nothing in scope → stop. Changes only under `docs/`, `changelog/`, `sdk/` do
@@ -157,13 +175,12 @@ refused (HTTP 422) at the publish step, and dispatching as well as pushing
 starts two runs.
 
 Right after (or right away on an iOS-only release), start iOS in the
-background. It does not need the desktop draft. Betas already reach Internal
-Testers from CI (`ios-testflight.yml`); a stable release gives a build to
-every group (Friends, Public Beta), so it still runs this script here.
-`scope.sh` counts iOS changes since the newest `ios-v*-build*` tag, and CI
-beta builds make those tags too, so `changed_files=0` can mean "already with
-Internal Testers": then ask the owner whether to promote the newest CI build
-to every group instead of building again.
+background. It does not need the desktop draft. Betas go to the separate ADE
+Beta app from CI (`ios-testflight.yml`, `ios-beta-v*` tags). The normal app
+(`com.ade.ios`) gets builds only here, from a stable release, and this script
+gives the build to every group (Internal Testers, Friends, Public Beta).
+`scope.sh` counts iOS changes since the newest `ios-v*-build*` tag, which only
+the normal app's builds make.
 
 ```bash
 IOS_SHA=$(git rev-parse origin/main)   # iOS is not promoted from a beta yet: main's head, the code scope.sh counted
@@ -243,6 +260,7 @@ One short block:
 | npm publish run fails | Rerun `publish-runtime-packages.yml` for the same tag; it skips what already landed. |
 | `ios-testflight.sh` fails or is killed | Rerun the same command. It reuses the IPA and skips the upload if App Store Connect has the build. |
 | "iOS TestFlight failed" issue open | Read the run's step log; it names the stage. Signing errors mean the API key is not Admin and `IOS_SIGNING_P12_BASE64`/`IOS_SIGNING_P12_PASSWORD` are missing (docs/plans/beta-track.md, "iOS TestFlight from CI"). Rerun with `gh workflow run ios-testflight.yml -f git_ref=<beta sha> -f force=true`. It never blocks a desktop release. |
+| Signing fails with "Authentication failed" and no profiles for a new bundle ID, while the normal app signs | Cloud signing cannot register a new App Group. The owner creates it on developer.apple.com (Identifiers → App Groups) and ticks it on every app ID that uses it, then rerun. ADE Beta needed this for `group.com.ade.ios.beta`. |
 | App Clip / signing error in the archive | Fix the signing; never drop a target. reference.md → Phase 5. |
 | A Worker misbehaves after deploy | reference.md → Phase 5.5, Step 7 (rollback). |
 
