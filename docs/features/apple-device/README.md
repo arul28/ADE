@@ -170,6 +170,16 @@ that runs that model.
   (`installVersion`); anything else is named by the SDK version and left to
   Xcode. The Create control offers them as `<name> · Not installed` with
   **Install & create**, which pins the version the picked model needs.
+- `leftovers` (in `runtimeList`): runtime downloads macOS still keeps in
+  `/System/Library/AssetsV2/com_apple_MobileAsset_iOSSimulatorRuntime` that
+  `simctl runtime list` no longer lists, so no simulator can use them and
+  `simctl runtime delete` cannot reach them. An asset folder counts when no
+  disk image is mounted from it and no image has its build; only those cost a
+  `plutil` and a `du`. Nothing counts while a download runs or when the image
+  list could not be read. The panel shows each as "left behind" with its size
+  and the steps to remove it (restart, then Remove if it is listed again,
+  else Xcode ▸ Settings ▸ Components); the folder is SIP-protected, so ADE
+  never removes it itself.
 - `runtimeInstall`: `xcodebuild -downloadPlatform iOS` as a background job
   (checks ~10 GB free first, cancellable, `apple.runtime.install` progress
   events). Without a version Xcode fetches every runtime it needs; `--version`
