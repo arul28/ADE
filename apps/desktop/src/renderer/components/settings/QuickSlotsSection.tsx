@@ -47,6 +47,14 @@ function slotCommand(
     && (command.args?.profileId ?? null) === (slot.args?.profileId ?? null)) ?? null;
 }
 
+const QUICK_SLOT_GROUP_DETAIL: Record<QuickSlotCommand["group"], string> = {
+  Chat: "Acts on the chat in front of you.",
+  Model: "Changes the chat's model settings.",
+  Lane: "Acts on the lane in front of you.",
+  Tools: "Opens this tool in the Work tools pane.",
+  Navigate: "Opens this page or panel.",
+};
+
 export function QuickSlotsSection() {
   const {
     slots,
@@ -126,8 +134,8 @@ export function QuickSlotsSection() {
 
   const leaderOptions = mac
     ? [
-        { value: "default" as const, label: `Option+Command (${quickSlotLeaderLabel("default", true)})` },
-        { value: "alternate" as const, label: `Control+Option (${quickSlotLeaderLabel("alternate", true)})` },
+        { value: "default" as const, label: quickSlotLeaderLabel("default", true) },
+        { value: "alternate" as const, label: quickSlotLeaderLabel("alternate", true) },
       ]
     : [{ value: "default" as const, label: "Ctrl+Shift" }];
 
@@ -139,12 +147,29 @@ export function QuickSlotsSection() {
         title="Quick slots"
         hint={
           <>
-            Hold <kbd className="ade-qs-kbd">{quickSlotLeaderLabel(leader, mac)}</kbd> and tap
-            1–9. Each slot runs one action on whatever chat, lane or tool is in front of you.
+            Hold <kbd className="kit-kbd" data-size="sm">{quickSlotLeaderLabel(leader, mac)}</kbd> and tap 1–9 to run
+            a slot on the chat, lane or tool in front of you.
           </>
         }
+        actions={
+          <button
+            type="button"
+            className="kit-btn kit-btn-ghost"
+            data-size="sm"
+            onClick={async () => {
+              const ok = await confirmDialog({
+                title: "Reset all nine slots?",
+                message: "Your saved model profiles stay. The slot assignments go back to the shipped defaults.",
+                confirmLabel: "Reset slots",
+              });
+              if (ok) resetSlots();
+            }}
+          >
+            Reset
+          </button>
+        }
       >
-        <div className="ade-qs-settings-grid">
+        <div className="ade-ap-grid3 ade-qs-slots">
           {slots.map((slot) => {
             const command = slotCommand(slot, commands);
             const label = slot.commandId
@@ -154,21 +179,25 @@ export function QuickSlotsSection() {
                   : command.title)
                 : (slot.label ?? "Action unavailable"))
               : "Empty";
-            const detail = command?.hint ?? (slot.commandId ? "Pick another action" : "Click to assign");
+            // A command without a hint still names its group; only a slot whose
+            // command is gone asks for another action.
+            const detail = command
+              ? (command.hint ?? QUICK_SLOT_GROUP_DETAIL[command.group])
+              : (slot.commandId ? "Action unavailable. Pick another." : "Click to assign");
             return (
               <button
                 key={slot.index}
                 type="button"
-                className="ade-qs-settings-cell"
+                className="ade-ap-choice ade-qs-slot"
                 data-empty={!slot.commandId || undefined}
                 onClick={() => {
                   setPickerSlot(slot.index);
                   setQuery("");
                 }}
               >
-                <span className="ade-qs-settings-num">{slot.index}</span>
-                <span className="ade-qs-settings-label">{label}</span>
-                <span className="ade-qs-settings-detail">{detail}</span>
+                <span className="kit-num ade-qs-slot-num">{slot.index}</span>
+                <span className="ade-qs-slot-label">{label}</span>
+                <span className="ade-qs-slot-detail">{detail}</span>
               </button>
             );
           })}
@@ -217,69 +246,52 @@ export function QuickSlotsSection() {
           />
         </ModernRows>
 
-        <div className="ade-qs-settings-foot">
-          <button
-            type="button"
-            className="ade-qs-settings-link"
-            onClick={async () => {
-              const ok = await confirmDialog({
-                title: "Reset all nine slots?",
-                message: "Your saved model profiles stay. The slot assignments go back to the shipped defaults.",
-                confirmLabel: "Reset slots",
-              });
-              if (ok) resetSlots();
-            }}
-          >
-            Reset slots to defaults
-          </button>
-        </div>
       </ModernSection>
 
       <ModernSection
         group="Model profiles"
         anchor="model-profiles"
         title="Model profiles"
-        hint="A profile is a model plus a thinking level. It is not a permission mode: the chat's own permission stays in the composer."
+        hint="A model and a thinking level. Permissions stay in the composer."
         actions={
-          <button type="button" className="ade-qs-settings-add" onClick={() => setAddProfileOpen(true)}>
-            <Plus size={13} /> Add profile
+          <button type="button" className="kit-btn" data-size="sm" onClick={() => setAddProfileOpen(true)}>
+            <Plus size={12} /> Add profile
           </button>
         }
       >
         {profiles.length === 0 ? (
-          <p className="ade-qs-settings-empty">
-            No profiles yet. Open a chat, set the model and thinking level you want, then assign
-            “Save this chat's model as a profile” to a slot. Or add one by model id below.
+          <p className="ade-qs-empty">
+            No profiles yet. Save one from a chat with the “Save this chat's model as a profile” slot, or add one by model id.
           </p>
         ) : (
-          <div className="ade-qs-profile-list">
+          <ModernRows>
             {profiles.map((profile) => (
-              <div key={profile.id} className="ade-qs-profile-row">
-                <div className="ade-qs-profile-main">
-                  <span className="ade-qs-settings-label">{profile.name}</span>
-                  <span className="ade-qs-settings-detail">
-                    {profile.modelId} · {reasoningEffortLabel(profile.reasoningEffort)}
-                  </span>
-                </div>
-                <button
-                  type="button"
-                  className="ade-qs-settings-icon"
-                  aria-label={`Delete profile ${profile.name}`}
-                  onClick={async () => {
-                    const ok = await confirmDialog({
-                      title: `Delete ${profile.name}?`,
-                      message: "Slots using this profile become empty.",
-                      confirmLabel: "Delete",
-                      destructive: true,
-                    });
-                    if (ok) removeProfile(profile.id);
-                  }}
-                >
-                  <Trash size={14} />
-                </button>
-              </div>
+              <ModernRow
+                key={profile.id}
+                title={profile.name}
+                hint={`${profile.modelId} · ${reasoningEffortLabel(profile.reasoningEffort)}`}
+                control={(
+                  <button
+                    type="button"
+                    className="kit-icon-btn"
+                    aria-label={`Delete profile ${profile.name}`}
+                    title="Delete profile"
+                    onClick={async () => {
+                      const ok = await confirmDialog({
+                        title: `Delete ${profile.name}?`,
+                        message: "Slots using this profile become empty.",
+                        confirmLabel: "Delete",
+                        destructive: true,
+                      });
+                      if (ok) removeProfile(profile.id);
+                    }}
+                  >
+                    <Trash size={13} />
+                  </button>
+                )}
+              />
             ))}
-          </div>
+          </ModernRows>
         )}
       </ModernSection>
 
@@ -297,7 +309,7 @@ export function QuickSlotsSection() {
       >
         <div className="ade-qs-picker">
           <input
-            className="ade-qs-picker-search"
+            className="kit-input ade-qs-picker-search"
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             placeholder="Search actions"
@@ -333,7 +345,7 @@ export function QuickSlotsSection() {
               </React.Fragment>
             ))}
             {grouped.length === 0 ? (
-              <p className="ade-qs-settings-empty">No action matches “{query.trim()}”.</p>
+              <p className="ade-qs-empty">No action matches “{query.trim()}”.</p>
             ) : null}
           </div>
         </div>
@@ -377,7 +389,8 @@ export function QuickSlotsSection() {
           <div className="ade-qs-form-actions">
             <button
               type="button"
-              className="ade-qs-settings-add"
+              className="kit-btn kit-btn-primary"
+              data-size="sm"
               disabled={!profileName.trim() || !profileModel.trim()}
               onClick={() => {
                 upsertProfile({

@@ -285,6 +285,26 @@ button.kit-row:hover, a.kit-row:hover { background: var(--kit-hover); }
 .kit-tag[data-tone="warn"] { background: color-mix(in srgb, var(--kit-warn) 14%, transparent); color: var(--kit-warn); }
 .kit-tag[data-tone="crit"] { background: color-mix(in srgb, var(--kit-crit) 14%, transparent); color: var(--kit-crit); }
 
+/* A key or chord as the OS prints it (⌘K, Ctrl+Shift+E). One chip per chord;
+   a binding with two chords is two chips. `data-size="sm"` for a line of
+   hint text. Mono so ⌘ and ⇧ sit on the same baseline as the letter. */
+.kit-kbd {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 22px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 5px;
+  border: 1px solid var(--kit-card-edge);
+  background: color-mix(in srgb, var(--color-fg) 6%, transparent);
+  color: var(--color-fg);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.kit-kbd[data-size="sm"] { min-width: 0; height: 16px; padding: 0 4px; font-size: 10px; border-radius: 4px; }
+
 /* Big stat number. */
 .kit-stat {
   font-size: 26px;

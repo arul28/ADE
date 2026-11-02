@@ -1,6 +1,4 @@
 import { createBrowserMockMusic } from "./browserMockMusic";
-import { KEYBINDING_DEFINITIONS } from "../shared/keybindings";
-import type { KeybindingOverride } from "../shared/types";
 import { browserMockProviderContextInventory } from "./browserMockProviderContext";
 import type { GetProviderContextInventoryArgs } from "../shared/types/providerContext";
 import type { TerminalShellSettings } from "../shared/types/terminalShells";
@@ -173,9 +171,6 @@ import { ADE_SUGGESTIONS } from "./onboarding/adeTipsSuggestions";
 import { EMPTY_SUGGESTIONS_STATE, SUGGESTIONS_STORAGE_KEY, type SuggestionsState } from "./onboarding/situationalSuggestions";
 import { ONBOARDING_PROGRESS_STORAGE_KEY, type OnboardingProgress } from "./onboarding/onboardingProgress";
 import { resetOnboardingTiers } from "./onboarding/resetOnboardingTiers";
-
-/** The browser mock's keybinding overrides (Settings › Keyboard). */
-let browserMockKeybindingOverrides: KeybindingOverride[] = [];
 
 // The browser preview holds no power locks, so it reports the honest default.
 const MOCK_KEEP_AWAKE_SNAPSHOT = INERT_KEEP_AWAKE_SNAPSHOT;
@@ -6316,14 +6311,9 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       streamEvents: resolvedArg({ events: [], nextCursor: 0, hasMore: false }),
       disconnect: resolvedArg({ disconnected: true }),
     },
-    // Kept in memory so Settings › Keyboard can be exercised in the preview:
-    // a save answers with what was saved, as the real store does.
     keybindings: {
-      get: async () => ({ definitions: KEYBINDING_DEFINITIONS, overrides: [...browserMockKeybindingOverrides] }),
-      set: async (overrides: KeybindingOverride[]) => {
-        browserMockKeybindingOverrides = Array.isArray(overrides) ? [...overrides] : [];
-        return { definitions: KEYBINDING_DEFINITIONS, overrides: [...browserMockKeybindingOverrides] };
-      },
+      get: resolved({ definitions: [], overrides: [] }),
+      set: resolvedArg({ definitions: [], overrides: [] }),
     },
     sync: {
       getStatus: resolved(BROWSER_MOCK_SYNC_SNAPSHOT),

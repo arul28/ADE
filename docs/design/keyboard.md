@@ -80,7 +80,12 @@ the same questions:
 - **Unassign** stores `KEYBINDING_UNASSIGNED` (`"none"`), which
   `getEffectiveBinding` reads as no keys. Setting a chord back to its default
   drops the override, so a later change of default still reaches the user.
-- **Where it saves:** the existing store, which keeps overrides in the open
-  project's database on the machine that owns the project (the hosted client
-  keeps them in the browser). The page says so rather than claiming they follow
-  the computer.
+- **Where it saves:** this computer (`lib/keybindingStore.ts`,
+  `localStorage` key `ade.keybindings.v1`), beside Appearance and Quick slots.
+  Shortcuts belong to the keyboard and OS in front of you, so every project and
+  every window on the computer reads one set, a project opened from another
+  machine still uses this computer's keys, and a save reaches the shell, every
+  open project and other ADE windows (the `storage` event) at once. The hosted
+  client keeps them in the browser. The brain's older per-project store
+  (`keybindingsService`) is read once, the first time a computer has nothing
+  saved, so overrides set there through `ade actions` carry over.

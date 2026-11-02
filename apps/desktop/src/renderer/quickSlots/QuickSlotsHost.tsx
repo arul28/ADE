@@ -445,7 +445,7 @@ export function QuickSlotsHost() {
         >
           <div className="ade-qs-head">
             <span className="ade-qs-title">Quick slots</span>
-            <span className="ade-qs-leader">{quickSlotLeaderLabel(leader, isMacPlatform())}</span>
+            <kbd className="kit-kbd" data-size="sm">{quickSlotLeaderLabel(leader, isMacPlatform())}</kbd>
             <button
               type="button"
               className="ade-qs-edit"

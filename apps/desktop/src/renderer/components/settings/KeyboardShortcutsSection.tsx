@@ -1,11 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowCounterClockwise, Plus } from "@phosphor-icons/react";
 import type { KeybindingDefinition, KeybindingsSnapshot } from "../../../shared/types";
-import {
-  KEYBINDING_DEFINITIONS,
-  KEYBINDING_UNASSIGNED,
-  WEB_KEYBINDING_DEFINITIONS,
-} from "../../../shared/keybindings";
+import { KEYBINDING_UNASSIGNED } from "../../../shared/keybindings";
 import {
   bareKeyRefusal,
   captureBinding,
@@ -21,26 +17,27 @@ import {
 } from "../../../shared/keybindingEditor";
 import { quickSlotLeaderLabel } from "../../../shared/quickSlots";
 import { bindingChipLabel, getEffectiveBinding } from "../../lib/keybindings";
+import { readKeybindingsSnapshot, writeKeybindingOverrides } from "../../lib/keybindingStore";
 import { beginKeyCapture } from "../../lib/keyboardClaims";
 import { isMacPlatform, isWindowsPlatform } from "../../lib/platform";
 import { isWebClientMode } from "../../lib/webClientMode";
-import { rootAppStoreApi, useAppStore, useAppStoreApi } from "../../state/appStore";
+import { useAppStore } from "../../state/appStore";
 import { useQuickSlotsStore } from "../../quickSlots/quickSlotsStore";
 import { showToast } from "../app/toast/toastStore";
 import { confirmDialog } from "../ui/dialog";
 import { SettingsTextField } from "./primitives/SettingsControls";
-import { ModernSection } from "./primitives/SettingsModern";
+import { ModernRow, ModernRows, ModernSection } from "./primitives/SettingsModern";
 import "./KeyboardShortcutsSection.css";
 
 /**
- * Settings › Keyboard › Shortcuts: the editor for ADE's keybinding store.
+ * Settings › Keyboard › Shortcuts: rebind any action in `shared/keybindings.ts`.
  *
- * The store (`keybindingsService`, reached through `window.ade.keybindings`)
- * already keeps overrides and every surface already reads them through
- * `getEffectiveBinding`; this is the first UI that writes them. Every chord is
- * checked before it is saved: against ADE's other shortcuts in a scope that
- * can hear the same key, against the Quick slots leader, and against chords
- * the OS, ADE's own menu or the browser take first.
+ * Shortcuts are this computer's (`lib/keybindingStore.ts`): every project and
+ * every window on it reads the same set, and a save reaches them at once.
+ * Every chord is checked before it is saved, by the rules in
+ * `shared/keybindingEditor.ts`: other shortcuts a key press could also reach,
+ * the Quick slots leader, and chords the OS, ADE's menu or the browser take
+ * first.
  */
 
 const SCOPE_ORDER: ReadonlyArray<{ scope: KeybindingDefinition["scope"]; label: string; hint: string }> = [
@@ -72,7 +69,7 @@ function bindingLabels(binding: string): string[] {
 }
 
 /** The modifiers held so far, drawn the way the chips draw them. */
-function heldModifiersLabel(chord: ResolvedChord, platform: KeyboardPlatform): string {
+function heldModifiersLabel(chord: Omit<ResolvedChord, "key">, platform: KeyboardPlatform): string {
   if (platform === "mac") {
     return `${chord.ctrl ? "⌃" : ""}${chord.alt ? "⌥" : ""}${chord.shift ? "⇧" : ""}${chord.meta ? "⌘" : ""}`;
   }
@@ -91,79 +88,46 @@ function withoutChords(binding: string, chords: ReadonlySet<string>, platform: K
   return kept.length ? kept.join(",") : KEYBINDING_UNASSIGNED;
 }
 
+function Chips({ binding }: { binding: string }) {
+  const labels = bindingLabels(binding);
+  return <>{labels.map((label) => <kbd key={label} className="kit-kbd">{label}</kbd>)}</>;
+}
+
 export function KeyboardShortcutsSection() {
   const platform = useMemo(currentPlatform, []);
   const web = isWebClientMode();
-  const definitions = web ? WEB_KEYBINDING_DEFINITIONS : KEYBINDING_DEFINITIONS;
-  const store = useAppStoreApi();
-  const snapshot = useAppStore((state) => state.keybindings);
+  const snapshot: KeybindingsSnapshot = useAppStore((state) => state.keybindings) ?? readKeybindingsSnapshot();
+  const definitions = snapshot.definitions;
   const leader = useQuickSlotsStore((state) => state.leader);
 
-  const [readOnlyReason, setReadOnlyReason] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const [recording, setRecording] = useState<Recording | null>(null);
   const [held, setHeld] = useState("");
   const [rowError, setRowError] = useState<{ id: string; message: string } | null>(null);
   const [pending, setPending] = useState<PendingConflict | null>(null);
-  const [saving, setSaving] = useState(false);
-
-  // A Settings page opened before the project answered (or with no project
-  // at all) has no snapshot. Ask once; a store that cannot answer leaves the
-  // page read-only with the defaults showing.
-  useEffect(() => {
-    if (snapshot) {
-      setReadOnlyReason(null);
-      return;
-    }
-    let cancelled = false;
-    void window.ade.keybindings.get()
-      .then((next) => {
-        if (!cancelled) store.getState().applyKeybindingsSnapshot(next);
-      })
-      .catch(() => {
-        if (!cancelled) setReadOnlyReason("Open a project to change shortcuts. These are the defaults.");
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [snapshot, store]);
 
   const effective = useCallback(
     (definition: KeybindingDefinition) => getEffectiveBinding(snapshot, definition.id, definition.defaultBinding),
     [snapshot],
   );
 
-  const publish = useCallback((next: KeybindingsSnapshot) => {
-    store.getState().applyKeybindingsSnapshot(next);
-    // The shell above the project surface (palette, sidebar, Quick slots)
-    // reads its own copy; keep it in step.
-    if (rootAppStoreApi !== store) rootAppStoreApi.getState().applyKeybindingsSnapshot(next);
-  }, [store]);
-
-  const save = useCallback(async (overrides: KeybindingsSnapshot["overrides"]) => {
-    const previous = snapshot;
-    const base = snapshot?.definitions ?? definitions;
-    publish({ definitions: base, overrides });
-    setSaving(true);
+  const save = useCallback((overrides: KeybindingsSnapshot["overrides"]) => {
     try {
-      publish(await window.ade.keybindings.set(overrides));
+      writeKeybindingOverrides(overrides);
     } catch (error) {
-      if (previous) publish(previous);
       showToast({
         tone: "error",
         title: "Could not save the shortcut",
         message: error instanceof Error ? error.message : String(error),
       });
-    } finally {
-      setSaving(false);
     }
-  }, [definitions, publish, snapshot]);
+  }, []);
 
   const definitionById = useMemo(() => new Map(definitions.map((definition) => [definition.id, definition])), [definitions]);
 
   const commit = useCallback((id: string, mode: Recording["mode"], binding: string, replaceIds: readonly string[] = []) => {
     const definition = definitionById.get(id);
-    if (!definition || !snapshot) return;
+    if (!definition) return;
     const current = effective(definition);
     const next = mode === "add" && current
       ? [...new Set([...current.split(",").map((part) => part.trim()), binding])].join(",")
@@ -176,7 +140,7 @@ export function KeyboardShortcutsSection() {
       const remaining = withoutChords(effective(other), taken, platform);
       overrides = withOverride({ overrides }, otherId, remaining, other.defaultBinding, platform);
     }
-    void save(overrides);
+    save(overrides);
   }, [definitionById, effective, platform, save, snapshot]);
 
   // ── The recorder ─────────────────────────────────────────────────────────
@@ -186,15 +150,15 @@ export function KeyboardShortcutsSection() {
   validateRef.current = (id, mode, binding, chord) => {
     const definition = definitionById.get(id);
     if (!definition) return;
+    // A shipped default on a menu chord is deliberate (the Lanes filter's ⌘F
+    // arrives through the menu's Find claim), so re-recording it is allowed.
     const shipped = resolveBindingChords(definition.defaultBinding, platform).some((entry) => chordId(entry) === chordId(chord));
+    const slot = quickSlotChordConflict(chord, leader, platform);
     const refusal = bareKeyRefusal(chord, definition, platform)
       ?? (shipped ? null : reservedChord(chord, platform, { web })?.reason)
-      ?? (() => {
-        const slot = quickSlotChordConflict(chord, leader, platform);
-        return slot
-          ? `Quick slot ${slot} uses ${quickSlotLeaderLabel(leader, platform === "mac")} ${slot} first. Pick another chord or change the Quick slots leader.`
-          : null;
-      })();
+      ?? (slot
+        ? `Quick slot ${slot} uses ${quickSlotLeaderLabel(leader, platform === "mac")} ${slot} first. Pick another chord or change the Quick slots leader.`
+        : null);
     if (refusal) {
       setRowError({ id, message: refusal });
       return;
@@ -213,7 +177,7 @@ export function KeyboardShortcutsSection() {
     if (!recording) return undefined;
     const endCapture = beginKeyCapture();
     // The native menu would otherwise take ⌘W or ⌘N before this page sees
-    // them, closing the window instead of telling you the chord is taken.
+    // them, closing the window instead of saying the chord is taken.
     const menu = !web ? window.ade?.app?.setIgnoreMenuShortcuts : undefined;
     void menu?.(true)?.catch?.(() => {});
 
@@ -245,8 +209,14 @@ export function KeyboardShortcutsSection() {
     };
     const onKeyUp = (event: KeyboardEvent) => {
       event.stopPropagation();
-      if (!event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey) setHeld("");
-      else setHeld(heldModifiersLabel({ key: "", ctrl: event.ctrlKey, meta: event.metaKey, alt: event.altKey, shift: event.shiftKey }, platform));
+      // A key-up reports the modifiers as they were before the release; the
+      // released modifier itself is no longer held.
+      setHeld(heldModifiersLabel({
+        ctrl: event.ctrlKey && event.key !== "Control",
+        meta: event.metaKey && event.key !== "Meta",
+        alt: event.altKey && event.key !== "Alt",
+        shift: event.shiftKey && event.key !== "Shift",
+      }, platform));
     };
     const onBlur = () => {
       setRecording(null);
@@ -266,7 +236,6 @@ export function KeyboardShortcutsSection() {
   }, [recording, platform, web]);
 
   const startRecording = (id: string, mode: Recording["mode"]) => {
-    if (readOnlyReason || !snapshot) return;
     setPending(null);
     setRowError(null);
     setHeld("");
@@ -279,9 +248,6 @@ export function KeyboardShortcutsSection() {
     for (const definition of definitions) {
       const binding = effective(definition);
       const out: string[] = [];
-      // A shipped default on a menu chord is deliberate (the Lanes filter's
-      // ⌘F arrives through the menu's Find claim), so only a chord the user
-      // chose is checked against the reserved table.
       const shipped = new Set(resolveBindingChords(definition.defaultBinding, platform).map(chordId));
       for (const chord of resolveBindingChords(binding, platform)) {
         const reserved = shipped.has(chordId(chord)) ? null : reservedChord(chord, platform, { web });
@@ -290,15 +256,13 @@ export function KeyboardShortcutsSection() {
         if (slot) out.push(`Quick slot ${slot} uses these keys first, so this shortcut never runs.`);
       }
       const conflicts = findBindingConflicts({ selfId: definition.id, binding, definitions, effectiveBinding: effective, platform });
-      if (conflicts.length) {
-        out.push(`Same keys as ${conflicts.map((conflict) => conflict.description).join(", ")}.`);
-      }
+      if (conflicts.length) out.push(`Same keys as ${conflicts.map((conflict) => conflict.description).join(", ")}.`);
       if (out.length) notes.set(definition.id, out);
     }
     return notes;
   }, [definitions, effective, leader, platform, web]);
 
-  const overrides = snapshot?.overrides ?? [];
+  const overrides = snapshot.overrides;
   const overridden = new Set(overrides.map((override) => override.id));
   const needle = query.trim().toLowerCase();
   const visible = definitions.filter((definition) => {
@@ -308,171 +272,164 @@ export function KeyboardShortcutsSection() {
       || definition.id.toLowerCase().includes(needle)
       || keys.includes(needle);
   });
-  const problemCount = rowNotes.size;
 
-  return (
-    <ModernSection
-      group="Shortcuts"
-      anchor="keyboard-shortcuts"
-      title="Shortcuts"
-      hint={
-        readOnlyReason
-          ?? (web
-            ? "Saved in this browser. Click a shortcut, then press the new keys. Esc cancels."
-            : "Saved with the open project, so each project can keep its own. Click a shortcut, then press the new keys. Esc cancels.")
-      }
-      actions={
+  const renderHint = (definition: KeybindingDefinition): React.ReactNode => {
+    if (recording?.id === definition.id) {
+      const error = rowError?.id === definition.id ? rowError.message : null;
+      return (
+        <span aria-live="polite" className={error ? "ade-kb-warn" : undefined}>
+          {error ?? (recording.mode === "add" ? "Press another chord for this action. Esc cancels." : "Press the new keys. Esc cancels.")}
+        </span>
+      );
+    }
+    if (pending?.id === definition.id) {
+      return (
+        <span className="ade-kb-pending" role="group" aria-label="Shortcut already in use">
+          <span className="ade-kb-warn">
+            <Chips binding={pending.binding} /> is already {pending.conflicts.map((conflict) => conflict.description).join(", ")}.
+          </span>
+          <button
+            type="button"
+            className="kit-btn"
+            data-size="xs"
+            onClick={() => {
+              commit(pending.id, pending.mode, pending.binding, pending.conflicts.map((conflict) => conflict.id));
+              setPending(null);
+            }}
+          >
+            Use it here instead
+          </button>
+          <button type="button" className="kit-btn kit-btn-ghost" data-size="xs" onClick={() => setPending(null)}>
+            Cancel
+          </button>
+        </span>
+      );
+    }
+    const notes = rowNotes.get(definition.id);
+    return notes ? <span className="ade-kb-warn">{notes.join(" ")}</span> : undefined;
+  };
+
+  const renderControl = (definition: KeybindingDefinition): React.ReactNode => {
+    const binding = effective(definition);
+    const labels = bindingLabels(binding);
+    if (recording?.id === definition.id) {
+      const error = rowError?.id === definition.id;
+      return (
+        <>
+          <span className="ade-kb-capture" data-error={error || undefined}>{held || "Press keys…"}</span>
+          {recording.mode === "replace" && labels.length ? (
+            <button
+              type="button"
+              className="kit-btn kit-btn-ghost"
+              data-size="sm"
+              onClick={() => {
+                setRecording(null);
+                save(withOverride({ overrides }, definition.id, KEYBINDING_UNASSIGNED, definition.defaultBinding, platform));
+              }}
+            >
+              Unassign
+            </button>
+          ) : null}
+          <button type="button" className="kit-btn kit-btn-ghost" data-size="sm" onClick={() => setRecording(null)}>
+            Cancel
+          </button>
+        </>
+      );
+    }
+    const isOverridden = overridden.has(definition.id);
+    return (
+      <>
         <button
           type="button"
-          className="ade-qs-settings-link"
-          disabled={!overrides.length || saving || Boolean(readOnlyReason)}
-          onClick={async () => {
-            const ok = await confirmDialog({
-              title: "Reset every shortcut?",
-              message: "Every action goes back to its default keys. Quick slots are not changed.",
-              confirmLabel: "Reset shortcuts",
-            });
-            if (ok) void save([]);
-          }}
+          className="ade-kb-keys"
+          aria-label={`Change the shortcut for ${definition.description}, now ${labels.join(" or ") || "unassigned"}`}
+          onClick={() => startRecording(definition.id, "replace")}
         >
-          Reset all
+          {labels.length ? <Chips binding={binding} /> : <span className="ade-kb-unassigned">Unassigned</span>}
         </button>
-      }
-    >
-      <div className="ade-kb-toolbar">
-        <SettingsTextField
-          value={query}
-          onChange={setQuery}
-          placeholder="Search actions or keys"
-          ariaLabel="Search shortcuts"
-        />
-        {problemCount ? (
-          <span className="ade-kb-count" data-tone="warn">
-            {problemCount === 1 ? "1 shortcut needs a look" : `${problemCount} shortcuts need a look`}
-          </span>
-        ) : null}
-      </div>
+        <button
+          type="button"
+          className="kit-icon-btn ade-kb-icon"
+          title="Add another key"
+          aria-label={`Add another key for ${definition.description}`}
+          data-hidden={labels.length ? undefined : "true"}
+          disabled={!labels.length}
+          onClick={() => startRecording(definition.id, "add")}
+        >
+          <Plus size={12} />
+        </button>
+        <button
+          type="button"
+          className="kit-icon-btn ade-kb-icon"
+          disabled={!isOverridden}
+          data-hidden={isOverridden ? undefined : "true"}
+          title={`Reset to ${bindingLabels(definition.defaultBinding).join(" or ")}`}
+          aria-label={`Reset ${definition.description} to its default`}
+          onClick={() => save(withOverride({ overrides }, definition.id, null, definition.defaultBinding, platform))}
+        >
+          <ArrowCounterClockwise size={12} />
+        </button>
+      </>
+    );
+  };
+
+  return (
+    <>
+      <ModernSection
+        group="Shortcuts"
+        anchor="keyboard-shortcuts"
+        title="Shortcuts"
+        hint={web
+          ? "Saved in this browser. Click a shortcut and press the new keys."
+          : "Saved on this computer, for every project. Click a shortcut and press the new keys."}
+        actions={
+          <button
+            type="button"
+            className="kit-btn kit-btn-ghost"
+            data-size="sm"
+            disabled={!overrides.length}
+            onClick={async () => {
+              const ok = await confirmDialog({
+                title: "Reset every shortcut?",
+                message: "Every action goes back to its default keys. Quick slots are not changed.",
+                confirmLabel: "Reset shortcuts",
+              });
+              if (ok) save([]);
+            }}
+          >
+            Reset all
+          </button>
+        }
+      >
+        <div className="ade-kb-toolbar">
+          <SettingsTextField value={query} onChange={setQuery} placeholder="Search actions or keys" ariaLabel="Search shortcuts" />
+          {rowNotes.size ? (
+            <span className="kit-tag" data-tone="warn">
+              {rowNotes.size === 1 ? "1 needs a look" : `${rowNotes.size} need a look`}
+            </span>
+          ) : null}
+        </div>
+        {!visible.length ? <p className="ade-kb-empty">No shortcut matches “{query.trim()}”.</p> : null}
+      </ModernSection>
 
       {SCOPE_ORDER.map(({ scope, label, hint }) => {
         const rows = visible.filter((definition) => definition.scope === scope);
         if (!rows.length) return null;
         return (
-          <div key={scope} className="ade-kb-group">
-            <div className="ade-kb-group-head">
-              <span className="ade-kb-group-title">{label}</span>
-              <span className="ade-kb-group-hint">{hint}</span>
-            </div>
-            <div className="ade-modern-rows">
-              {rows.map((definition) => {
-                const binding = effective(definition);
-                const labels = bindingLabels(binding);
-                const isRecording = recording?.id === definition.id;
-                const isPending = pending?.id === definition.id;
-                const notes = rowNotes.get(definition.id);
-                const error = rowError?.id === definition.id ? rowError.message : null;
-                const isOverridden = overridden.has(definition.id);
-                const editable = !readOnlyReason && Boolean(snapshot);
-                return (
-                  <div key={definition.id} className="ade-ap-rowcard ade-kb-row" data-recording={isRecording || undefined}>
-                    <div className="ade-kb-row-text">
-                      <div className="ade-ap-rowtitle">{definition.description}</div>
-                      {isRecording ? (
-                        <div className="ade-ap-rowhint" aria-live="polite">
-                          {error ?? (recording?.mode === "add" ? "Press another chord for this action. Esc cancels." : "Press the new keys. Esc cancels.")}
-                        </div>
-                      ) : isPending && pending ? (
-                        <div className="ade-kb-pending" role="group" aria-label="Shortcut already in use">
-                          <span>
-                            {bindingLabels(pending.binding).join(" ")} is already {pending.conflicts.map((conflict) => conflict.description).join(", ")}.
-                          </span>
-                          <button
-                            type="button"
-                            className="ade-qs-settings-add"
-                            onClick={() => {
-                              commit(pending.id, pending.mode, pending.binding, pending.conflicts.map((conflict) => conflict.id));
-                              setPending(null);
-                            }}
-                          >
-                            Use it here instead
-                          </button>
-                          <button type="button" className="ade-qs-settings-link" onClick={() => setPending(null)}>
-                            Cancel
-                          </button>
-                        </div>
-                      ) : notes ? (
-                        <div className="ade-ap-rowhint ade-kb-note">{notes.join(" ")}</div>
-                      ) : null}
-                    </div>
-                    <div className="ade-kb-row-controls">
-                      {isRecording ? (
-                        <>
-                          <span className="ade-kb-capture" data-error={error ? "true" : undefined}>
-                            {held || "Press keys…"}
-                          </span>
-                          {recording?.mode === "replace" && labels.length ? (
-                            <button
-                              type="button"
-                              className="ade-qs-settings-link"
-                              onClick={() => {
-                                setRecording(null);
-                                void save(withOverride({ overrides }, definition.id, KEYBINDING_UNASSIGNED, definition.defaultBinding, platform));
-                              }}
-                            >
-                              Unassign
-                            </button>
-                          ) : null}
-                          <button type="button" className="ade-qs-settings-link" onClick={() => setRecording(null)}>
-                            Cancel
-                          </button>
-                        </>
-                      ) : (
-                        <>
-                          <button
-                            type="button"
-                            className="ade-kb-keys"
-                            disabled={!editable}
-                            data-unassigned={labels.length ? undefined : "true"}
-                            aria-label={`Change the shortcut for ${definition.description}, now ${labels.join(" or ") || "unassigned"}`}
-                            onClick={() => startRecording(definition.id, "replace")}
-                          >
-                            {labels.length
-                              ? labels.map((chip) => <kbd key={chip} className="ade-kb-chip">{chip}</kbd>)
-                              : <span className="ade-kb-unassigned">Unassigned</span>}
-                          </button>
-                          {labels.length ? (
-                            <button
-                              type="button"
-                              className="ade-kb-icon"
-                              disabled={!editable}
-                              title="Add another key"
-                              aria-label={`Add another key for ${definition.description}`}
-                              onClick={() => startRecording(definition.id, "add")}
-                            >
-                              <Plus size={12} />
-                            </button>
-                          ) : null}
-                          <button
-                            type="button"
-                            className="ade-kb-icon"
-                            disabled={!editable || !isOverridden}
-                            data-hidden={isOverridden ? undefined : "true"}
-                            title={`Reset to ${bindingLabels(definition.defaultBinding).join(" or ")}`}
-                            aria-label={`Reset ${definition.description} to its default`}
-                            onClick={() => void save(withOverride({ overrides }, definition.id, null, definition.defaultBinding, platform))}
-                          >
-                            <ArrowCounterClockwise size={12} />
-                          </button>
-                        </>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
+          <ModernSection key={scope} group="Shortcuts" title={label} hint={hint}>
+            <ModernRows>
+              {rows.map((definition) => (
+                <ModernRow
+                  key={definition.id}
+                  title={definition.description}
+                  hint={renderHint(definition)}
+                  control={<div className="ade-kb-controls">{renderControl(definition)}</div>}
+                />
+              ))}
+            </ModernRows>
+          </ModernSection>
         );
       })}
-      {!visible.length ? <p className="ade-qs-settings-empty">No shortcut matches “{query.trim()}”.</p> : null}
-    </ModernSection>
+    </>
   );
 }
