@@ -1797,7 +1797,7 @@ The full-access personal key belongs only in encrypted ADE secrets. When running
 
 ## PostHog dashboards
 
-`scripts/posthog/dashboard-spec.mjs` is the declarative source of truth. `scripts/posthog/provision.mjs` validates and idempotently upserts the managed objects. The project currently has eight managed dashboards and fifty-two managed insights:
+`scripts/posthog/dashboard-spec.mjs` is the declarative source of truth. `scripts/posthog/provision.mjs` validates and idempotently upserts the managed objects. The project currently has eight managed dashboards and fifty-three managed insights:
 
 - ADE · Growth and retention
 - ADE · Surface and feature adoption

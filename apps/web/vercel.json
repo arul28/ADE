@@ -18,7 +18,7 @@
       "headers": [
         {
           "key": "Cache-Control",
-          "value": "public, max-age=0, s-maxage=31536000, must-revalidate"
+          "value": "public, max-age=86400, s-maxage=31536000"
         }
       ]
     },
@@ -27,7 +27,34 @@
       "headers": [
         {
           "key": "Cache-Control",
-          "value": "public, max-age=0, s-maxage=31536000, must-revalidate"
+          "value": "public, max-age=86400, s-maxage=31536000"
+        }
+      ]
+    },
+    {
+      "source": "/film/((?!film\\.json$).*)",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=86400, s-maxage=31536000"
+        }
+      ]
+    },
+    {
+      "source": "/assets/(.+-[A-Za-z0-9_-]{8}\\.[a-z0-9]+)",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=31536000, immutable"
+        }
+      ]
+    },
+    {
+      "source": "/demo/assets/(.+-[A-Za-z0-9_-]{8}\\.[a-z0-9]+)",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=31536000, immutable"
         }
       ]
     }
