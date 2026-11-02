@@ -39,12 +39,16 @@ ledgers that Versic agents wrote, as copied on 2026-11-02 to
 | Mobile 37, 40, 41/44, 42 (Mac Desktop) | fixed on 1.2.127 | none |
 | Mobile 27, 46 | fixed in code by #1953 | none |
 | Mobile 14 | by design, and now said on detach | none |
-| Mobile 17 | probably the cause of 35; not testable on Versic | helper fix |
-| Mobile 33 | not rechecked | none |
-| Mobile 38/47 | inconclusive | none |
-| Mobile 39, 43 | cannot test safely / not retested | none |
+| Mobile 17, 33 | fixed on 1.2.127 | none |
+| Mobile 38/47 out-of-process Save panel and its sheet | fixed on 1.2.127 | none |
+| Mobile 39 lease timeout | fixed in code by #1953 (in 1.2.127) | none |
+| Mobile 43 frameless Electron window | cannot test on 1.2.127: no Electron app starts on a lane screen (fixed, below) | none |
+| Mobile 30, 31 phone viewer | fixed by #1953 (1.2.127, iOS 1.1.10) | none |
 | New: `apple install --app-bundle`, `device-detach --device` ignored | fixed | `cli.ts` |
 | New: `apple test --project` refusal named `--out` | fixed | `iosSimulatorService.ts` |
+| New: Electron apps quit at once on a lane screen | fixed | `macDesktopDriverClient.ts` |
+| New: `mac-desktop click --text` picked a partial match first | fixed | desktop driver (`AccessibilityDriver.swift`) |
+| New: a launch that quit reported as "second copy (pid -1)" | fixed | desktop driver (`AppLauncher.swift`) |
 
 ---
 
@@ -171,7 +175,10 @@ fold timing. No Versic account was used.
   read time (about 0.9 s both); no change on a 200-row list or on the Duo in
   laptop and open postures. The helper's 84 Swift tests pass.
 - The ledger's first report (frames in the wrong order, a minimised bar still
-  listed) was not reproduced: the test app's tab frames matched the drawn bar.
+  listed) was not reproduced. The expanded bar's frames matched the drawn
+  order, and with the bar minimised by scrolling (`tabBarMinimizeBehavior`,
+  plus a bottom accessory) the read listed only the Projects pill, the
+  accessory and the Search pill, at the frames drawn.
 
 ### 18. `fold open` prints the old shape
 - **Status:** fixed before this branch; not reproduced on 1.2.127.
@@ -221,20 +228,20 @@ fold timing. No Versic account was used.
 | 14 | by design | `device-detach` now says the ADE-made device becomes a leftover, when it is deleted, and how to keep it |
 | 15 | fixed | `device-detach --text` prints the device, its origin and "deletes after" |
 | 16 | fixed | `tap-element --label BackButton` says it matched the identifier, and goes back |
-| 17 | probably 35 | elements under floating content (the deck over the list) are the case the 35 fix covers; the Versic deck needs sign-in, so not confirmed |
+| 17 | fixed | the same cut table as 32: on the Duo in laptop posture with a key deck over a 200-row list, `snapshot --text` listed all 32 rows, the five keys included |
 | 20 | fixed | `fill-element --identifier search-field` types and verifies ("The field reads \"Hello\"") |
 | 25 | fixed | `boot --device` reports `state Booted` |
 | 32 | fixed | `snapshot` listed all 41 rows of the tile screen |
-| 33 | not rechecked | `log-start` on the extra was refused; the reason was not captured |
+| 33 | fixed | `log-start --bundle-id` then two taps: `log` had the app's own `os_log` lines between ADE's two "Tapped" rows, from this device only. On an extra it is refused with a message naming `device-promote` |
 | 34 | fixed | `tap-element --text-match Everything` tapped the tile (no context menu) |
 | 36 | fixed | both sliders read `0:29 of 0:49` |
 | 27, 46 | fixed in code | #1953 |
 | 37 | fixed | a second document went to the lane's running TextEdit |
 | 40 | fixed | `quit TextEdit` is accepted and TextEdit quits |
 | 41, 44, 42 | fixed | on this lane's private Mac screen |
-| 38, 47 | inconclusive | ⌘S from the lane did not open TextEdit's Save panel (⌘N did) |
-| 39 | cannot test | needs an approval card in front of the owner |
-| 43 | not retested | |
+| 38, 47 | fixed | a test app's system Save panel (out of process) on the lane screen: `observe` listed its fields and buttons, a click on Save brought the "Replace?" sheet, its buttons were listed too, and Replace overwrote the file |
+| 39 | fixed in code | #1953: the CLI waits as long as the card (170 s) and exits 1 unless granted; not run live, since it puts a card in front of the owner |
+| 43 | cannot test on 1.2.127 | no Electron app can start on a lane screen (the new bug below, fixed on this branch); retest after it ships |
 
 ### Found during the retest, fixed on this branch
 - **`apple install --app-bundle <path>` installed the wrong app.** `install`
@@ -249,6 +256,21 @@ fold timing. No Versic account was used.
   "2 failed". It now counts the failing test cases.
 - **`apple test --project` outside the worktree** answered with the `--out`
   hint. It now says the project must be inside the lane's worktree.
+- **No Electron app could start on a lane screen.** The brain runs as Node
+  through `ELECTRON_RUN_AS_NODE=1`; the desktop helper inherited it and passed
+  it to every app it opened, so an Electron app ran as Node and quit at once.
+  Shown with a launch the same way as the helper: with the variable the app
+  never ran (pid -1), without it the same app started. The driver client now
+  starts the helper without it (Windows and Linux use the same client). Not
+  run live: the helper is shared by every lane and was not restarted.
+- **`mac-desktop open` reported a quit app as running.** It printed "this
+  lane got its own second copy (pid -1)". A launch whose process is already
+  gone is now an error, and says when the words after `--` went in as
+  documents.
+- **`mac-desktop click --text "Save"` pressed the window "Save Probe".** The
+  Mac driver took the first partial match in walk order, and the window
+  comes before its own button. It now ranks an exact name, then a pressable
+  element, first, as the Windows and Linux drivers already did.
 - Not ADE: after the tests ended in 9 s, `xcodebuild` took 10 more minutes to
   write the result bundle (Xcode 27.1 printed `IDESchemeActionSDKRecord …
   invalidDigitCount(94232)`), so `apple test` reported 610 s.
