@@ -304,7 +304,10 @@ log "group $GROUP_NAME has build $BN"
 
 # --- Public link -------------------------------------------------------------
 # The external group behind the public link. Apple reviews its builds first, so
-# testers get this build once Apple approves it. Never fails the run.
+# testers get this build once Apple approves it. Never fails the run, but a
+# refused submission leaves the build untagged, so the next beta builds and
+# submits again instead of treating this build as the last ADE Beta build.
+public_ok=1
 external="$(retry 5 asc testflight groups list --app "$APP" --paginate --output json 2> /dev/null || true)"
 pid="$(printf '%s' "$external" | jq -r --arg n "$PUBLIC_GROUP_NAME" '(.data // [])[] | select(.attributes.name == $n and (.attributes.isInternalGroup | not)) | .id' 2> /dev/null | head -n1 || true)"
 if [ -z "$pid" ]; then
@@ -316,7 +319,12 @@ else
   else
     [ "${GITHUB_ACTIONS:-}" = true ] && echo "::warning::could not give build $BN to $PUBLIC_GROUP_NAME: $(echo "$out" | tail -1 | cut -c1-200)"
     log "WARNING: $PUBLIC_GROUP_NAME did not take build $BN: $(echo "$out" | tail -1 | cut -c1-200)"
+    public_ok=0
   fi
+fi
+if [ "$public_ok" = 0 ]; then
+  log "IOS DONE: $MV ($BN) build $BID for $LABEL is with $GROUP_NAME only; not tagged, so the next beta retries $PUBLIC_GROUP_NAME"
+  exit 0
 fi
 
 # --- Tag -------------------------------------------------------------------
