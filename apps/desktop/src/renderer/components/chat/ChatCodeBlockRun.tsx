@@ -1,6 +1,6 @@
 import React, { createContext, useCallback, useContext, useSyncExternalStore } from "react";
 import { ArrowUp, CheckCircle, Play, Terminal, Warning } from "@phosphor-icons/react";
-import type { OpenProjectBinding, PtyExitEvent } from "../../../shared/types";
+import type { OpenProjectBinding, PtyExitEvent, TerminalSerializedSnapshot } from "../../../shared/types";
 import { SHELL_BLOCK_RUN_ENV } from "../../../shared/types/sync";
 import { confirmDialog } from "../ui/dialog";
 import { isWindowsAbsolutePath } from "../../lib/pathUtils";
@@ -242,14 +242,61 @@ function showTerminal(
   reveal?.({ terminalId: terminal.terminalId, ptyId: terminal.ptyId, label: terminal.label });
 }
 
+/**
+ * What a finished run printed, as its terminal shows it, scrollback included.
+ *
+ * Read from the screen the host's terminal keeps where there is one, not from
+ * the raw output: a Windows terminal (ConPTY) repaints its whole screen with
+ * cursor moves instead of writing a log, so its raw output holds every
+ * repaint, blank rows and repeated lines included. Without a screen (an older
+ * host, the hosted web), the raw output, cleaned by `shellRunResultMessage`.
+ */
+async function readRunOutput(terminalId: string, pin: OpenProjectBinding | null): Promise<string> {
+  const preview = await window.ade.terminal.preview({ terminalId }, pin).catch(() => null);
+  const snapshot = preview?.snapshot;
+  if (snapshot?.serialized) {
+    const text = await terminalSnapshotText(snapshot).catch(() => null);
+    if (text !== null) return text;
+  }
+  // Raw, so a progress bar's carriage returns survive to be collapsed.
+  return window.ade.sessions.readTranscriptTail({ sessionId: terminalId, maxBytes: 64_000, raw: true }, pin);
+}
+
+/** A terminal snapshot's normal buffer (scrollback, then screen) as plain lines. */
+async function terminalSnapshotText(snapshot: TerminalSerializedSnapshot): Promise<string> {
+  const { Terminal: Xterm } = await import("@xterm/xterm");
+  const terminal = new Xterm({
+    allowProposedApi: true,
+    cols: Math.max(1, snapshot.cols),
+    rows: Math.max(1, snapshot.rows),
+    scrollback: 10_000,
+  });
+  try {
+    // `write` parses asynchronously; the buffer is complete only in its callback.
+    await new Promise<void>((resolve) => terminal.write(snapshot.serialized, resolve));
+    const buffer = terminal.buffer.normal;
+    const lines: string[] = [];
+    for (let y = 0; y < buffer.length; y += 1) {
+      const line = buffer.getLine(y);
+      if (!line) continue;
+      // A row that wraps onto the next keeps its trailing spaces: they are text.
+      const text = line.translateToString(!buffer.getLine(y + 1)?.isWrapped);
+      if (line.isWrapped && lines.length > 0) lines[lines.length - 1] += text;
+      else lines.push(text);
+    }
+    return lines.join("\n").replace(/^(?:[ \t]*\n)+/, "").replace(/\s+$/, "");
+  } finally {
+    terminal.dispose();
+  }
+}
+
 async function sendRunOutput(key: string): Promise<void> {
   const run = runsByKey.get(key);
   if (!run || run.status !== "exited" || !run.terminalId) return;
   if (run.send.kind === "sending" || run.send.kind === "sent") return;
   updateRun(key, run.id, { send: { kind: "sending" } });
   try {
-    // Raw, so a progress bar's carriage returns survive to be collapsed.
-    const output = await window.ade.sessions.readTranscriptTail({ sessionId: run.terminalId, maxBytes: 64_000, raw: true }, run.pin);
+    const output = await readRunOutput(run.terminalId, run.pin);
     const text = shellRunResultMessage({
       script: run.script,
       language: run.language,

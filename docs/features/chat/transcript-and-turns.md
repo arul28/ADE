@@ -1665,9 +1665,18 @@ The chat list owns scroll anchoring (`overflow-anchor: none` on the pane):
   pane through `ChatTerminalRevealContext` plus `requestChatTerminalFocus`,
   which hands the drawer the terminal itself so it can show one that already
   ended. After the exit the block offers "Send output to the agent", which
-  reads the raw transcript, strips escapes while collapsing carriage-return
-  redraws, and sends command, exit code and the last 20,000 characters as a
-  normal user message on the chat's pin. Nothing is sent without that click.
+  reads what the terminal shows: the host's terminal snapshot
+  (`terminal.preview`), replayed into an offscreen xterm and read back as
+  lines, scrollback included. Not the raw transcript, because a Windows
+  terminal (ConPTY) repaints its screen with cursor moves, and its raw output
+  holds every repaint (blank rows, repeated lines). Without a snapshot (an
+  older host, the hosted web) it falls back to the raw transcript, with escapes
+  stripped and carriage-return redraws collapsed. It sends command, exit code
+  and the last 20,000 characters as a normal user message on the chat's pin.
+  Nothing is sent without that click. Windows PowerShell 5.1 itself drops
+  table output still waiting to print when a script ends in `exit` or `throw`
+  (as `powershell -Command` does anywhere); that output never reaches the
+  terminal.
   Runs live in a module store keyed by chat and block, so a row that scrolls
   away keeps its result. The hosted web client sends the same launch as
   `work.runShellBlock`; a host that does not advertise it gets an "update
