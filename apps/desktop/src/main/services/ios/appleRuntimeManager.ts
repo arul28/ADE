@@ -85,7 +85,10 @@ type RuntimeImage = {
   sizeBytes: number | null;
   deletable: boolean;
   lastUsedAt: string | null;
-  /** The image file and the folder it is mounted from, as CoreSimulator reports them. */
+  /**
+   * Every path CoreSimulator reports for the image (`path`, `parentMountPath`,
+   * `parentImagePath`, …), in whatever form it uses (`/System/Volumes/Data/…`).
+   */
   paths: string[];
 };
 
@@ -107,7 +110,7 @@ export function parseSimctlRuntimeImages(stdout: string): Map<string, RuntimeIma
       sizeBytes,
       deletable: value.deletable !== false,
       lastUsedAt: typeof value.lastUsedAt === "string" ? value.lastUsedAt : null,
-      paths: [value.path, value.parentMountPath].filter((entry): entry is string => typeof entry === "string" && entry.length > 0),
+      paths: Object.values(value).filter((entry): entry is string => typeof entry === "string" && entry.startsWith("/")),
     });
   }
   return images;
@@ -511,7 +514,9 @@ export function createAppleRuntimeManager(deps: AppleRuntimeManagerDeps) {
     const leftovers: AppleLeftoverRuntime[] = [];
     for (const name of names) {
       const dir = path.join(APPLE_RUNTIME_ASSETS_DIR, name);
-      if (claimedPaths.some((claimed) => claimed === dir || claimed.startsWith(`${dir}/`))) continue;
+      // By the folder's own name, so `/System/Volumes/Data/…` and any other
+      // path field naming the same asset count too.
+      if (claimedPaths.some((claimed) => claimed.endsWith(`/${name}`) || claimed.includes(`/${name}/`))) continue;
       const info = await deps.run("plutil", ["-convert", "json", "-o", "-", path.join(dir, "Info.plist")], { timeoutMs: 10_000 })
         .then(({ stdout }) => parseRuntimeAssetInfo(stdout))
         .catch(() => null);
