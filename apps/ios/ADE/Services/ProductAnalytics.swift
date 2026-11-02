@@ -33,15 +33,17 @@ enum ADEAnalyticsDistribution: String, CaseIterable {
     #endif
   }
 
-  /// The build's `release_channel`, in the desktop's words: TestFlight is the
-  /// beta, the App Store is stable. Every PostHog event and Sentry's
+  /// The build's `release_channel`, in the desktop's words: the ADE Beta app
+  /// (`Beta` build configuration) is the beta, and the normal app is stable on
+  /// TestFlight and the App Store alike. Every PostHog event and Sentry's
   /// `release_channel` tag carry it.
   var releaseChannel: String {
-    switch self {
-    case .testFlight: return "beta"
-    case .appStore: return "stable"
-    case .development: return "development"
-    }
+    if self == .development { return "development" }
+    #if ADE_BETA_APP
+    return "beta"
+    #else
+    return "stable"
+    #endif
   }
 }
 

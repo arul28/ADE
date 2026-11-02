@@ -27,6 +27,16 @@ final class DeepLinkRouter {
     SyncService.shared?.landOnHub(notice: notice)
   }
 
+  /// The ADE Beta app registers `ade-beta` instead of `ade`, so an outside
+  /// `ade://` link opens the normal app. An `ade-beta://` link routes the same
+  /// way as `ade://`.
+  private static func withADEScheme(_ url: URL) -> URL {
+    guard url.scheme?.lowercased() == "ade-beta",
+          var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return url }
+    components.scheme = "ade"
+    return components.url ?? url
+  }
+
   /// Is this a link meant for ADE? Other URLs (an auth callback, a stray
   /// scheme) are not ours to complain about.
   private static func isADELink(_ url: URL) -> Bool {
@@ -54,6 +64,7 @@ final class DeepLinkRouter {
   /// Malformed input never crashes. An ADE link that reaches no route opens the
   /// Hub with a short notice, so the tap is never a silent no-op.
   func handle(_ url: URL, attentionItemId: String? = nil) {
+    let url = Self.withADEScheme(url)
     let before = routedCount
     route(url, attentionItemId: attentionItemId)
     guard routedCount == before, Self.isADELink(url) else { return }

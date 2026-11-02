@@ -19,7 +19,7 @@ Every hand-typed step in past releases is where the mistakes came from.
 | `node scripts/release-tools/beta-gate.mjs <beta tag>` | The Sentry gate for one beta: it ran, Sentry was receiving errors, and it brought no new ones. Exit 0 pass, 1 fail, 2 could not check |
 | `bash scripts/release-tools/verify-desktop-draft.sh <version>` | Checks the desktop draft; prints `DRAFT OK` or each problem |
 | `bash scripts/release-tools/ios-testflight.sh <mv> <build> <sha>` | Archive → export → inspect → validate → upload → dSYMs to Sentry → wait → groups → tag. Resumable; retries every App Store Connect call. The dSYM upload needs an `ade-app` Sentry token (`SENTRY_AUTH_TOKEN` env or ADE secret); a `WARNING: Sentry dSYM upload FAILED` line means iOS reports for that build stay unsymbolicated, so rerun |
-| `ios-testflight.yml` (CI, `scripts/release-tools/ios-testflight-ci.sh`) | Runs by itself after each beta that changed iOS: builds on a GitHub Mac, gives the build to **Internal Testers only**, tags `ios-v<mv>-build<n>`. A failure opens the "iOS TestFlight failed" issue and never blocks the desktop beta. `gh workflow run ios-testflight.yml -f dry_run=true` archives and exports without uploading |
+| `ios-testflight.yml` (CI, `scripts/release-tools/ios-testflight-ci.sh`) | Runs by itself after each beta that changed iOS: builds the separate **ADE Beta** app (`com.ade.ios.beta`, `Beta` configuration) on a GitHub Mac, gives it to that app's Internal Testers and, after Apple's beta review, its Public Beta link, tags `ios-beta-v<mv>-build<n>`. It never touches the normal app. A failure opens the "iOS TestFlight failed" issue and never blocks the desktop beta. `gh workflow run ios-testflight.yml -f dry_run=true` archives and exports without uploading |
 
 `reference.md` in this folder is the long form: incident history, the full
 Cloudflare account checklist, and recovery detail. Read the section named below
@@ -157,13 +157,12 @@ refused (HTTP 422) at the publish step, and dispatching as well as pushing
 starts two runs.
 
 Right after (or right away on an iOS-only release), start iOS in the
-background. It does not need the desktop draft. Betas already reach Internal
-Testers from CI (`ios-testflight.yml`); a stable release gives a build to
-every group (Friends, Public Beta), so it still runs this script here.
-`scope.sh` counts iOS changes since the newest `ios-v*-build*` tag, and CI
-beta builds make those tags too, so `changed_files=0` can mean "already with
-Internal Testers": then ask the owner whether to promote the newest CI build
-to every group instead of building again.
+background. It does not need the desktop draft. Betas go to the separate ADE
+Beta app from CI (`ios-testflight.yml`, `ios-beta-v*` tags). The normal app
+(`com.ade.ios`) gets builds only here, from a stable release, and this script
+gives the build to every group (Internal Testers, Friends, Public Beta).
+`scope.sh` counts iOS changes since the newest `ios-v*-build*` tag, which only
+the normal app's builds make.
 
 ```bash
 IOS_SHA=$(git rev-parse origin/main)   # iOS is not promoted from a beta yet: main's head, the code scope.sh counted

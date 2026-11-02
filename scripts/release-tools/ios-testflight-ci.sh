@@ -1,15 +1,20 @@
 #!/usr/bin/env bash
-# Builds one TestFlight build of ADE in CI and gives it to Internal Testers.
+# Builds one TestFlight build of the ADE Beta app in CI and gives it to its
+# testers.
 #
 #   bash scripts/release-tools/ios-testflight-ci.sh --label <beta tag> --sha <commit> [--dry-run] [--build-number <n>]
 #
 # Run from the repo root with <commit> checked out, on macOS. ios-testflight.yml
-# runs it after each beta that changed iOS; ios-testflight.sh is the local
-# version the release skill uses for stable releases.
+# runs it after each beta that changed iOS. The ADE Beta app
+# (com.ade.ios.beta, the `Beta` build configuration) is a second TestFlight app
+# beside ADE (com.ade.ios), so a bad beta never replaces the normal app on a
+# phone. The normal app is built only for stable releases, by
+# ios-testflight.sh from the release skill. See docs/plans/ios-beta-app.md.
 #
 # Steps: API key → signing → build number → archive → export → check the IPA →
 # validate → upload → dSYMs to Sentry → wait for processing → What to Test →
-# Internal Testers → tag ios-v<mv>-build<n>.
+# Internal Testers (and the public group, after Apple's beta review) → tag
+# ios-beta-v<mv>-build<n>.
 #
 # --dry-run stops after the IPA check: it validates, uploads and tags nothing.
 # --build-number skips the App Store Connect lookup (needed for a dry run with
@@ -27,14 +32,23 @@
 #       with the Admin role. With the .p12, an App Manager key is enough.
 #   ADE_POSTHOG_PROJECT_TOKEN, ADE_POSTHOG_HOST (optional) analytics config.
 #   SENTRY_AUTH_TOKEN (optional) dSYM upload; never fails the run.
-#   IOS_TESTFLIGHT_GROUP (default "Internal Testers") the only group served.
+#   IOS_TESTFLIGHT_GROUP (default "Internal Testers") the internal group.
+#   IOS_TESTFLIGHT_PUBLIC_GROUP (default "Public Beta") the external group with
+#       the public link. Its builds wait for Apple's beta review; a missing
+#       group or a refused submission is a warning, never a failure.
 set -euo pipefail
 
-APP=6762759870
+BUNDLE_ID=com.ade.ios.beta
+# The normal app. Both apps take build numbers from one sequence, because
+# brains refuse an iPhone build below MIN_SUPPORTED_MOBILE_APP_BUILD whichever
+# app it is (apps/desktop/src/shared/syncMobileCompatibility.ts).
+STABLE_APP=6762759870
 PROJECT=apps/ios/ADE.xcodeproj
 SCHEME=ADE
+CONFIGURATION=Beta
 EXPORT_OPTIONS=apps/ios/ExportOptions.auto.plist
 GROUP_NAME="${IOS_TESTFLIGHT_GROUP:-Internal Testers}"
+PUBLIC_GROUP_NAME="${IOS_TESTFLIGHT_PUBLIC_GROUP:-Public Beta}"
 
 LABEL=""
 SHA=""
@@ -132,12 +146,28 @@ log "signing: $SIGNING"
 # --- Versions --------------------------------------------------------------
 MV="$(grep -m1 'MARKETING_VERSION = ' "$PROJECT/project.pbxproj" | sed -E 's/^[^M]*MARKETING_VERSION = ([^;]+);/\1/' | xargs)"
 [ -n "$MV" ] || fail "could not read MARKETING_VERSION from $PROJECT"
+APP=""
+if command -v asc > /dev/null; then
+  apps_json="$(retry 5 asc apps list --bundle-id "$BUNDLE_ID" --output json)" || fail "asc apps list failed: $(echo "$apps_json" | tail -1)"
+  APP="$(printf '%s' "$apps_json" | jq -r --arg b "$BUNDLE_ID" '(.data // [])[] | select(.attributes.bundleId == $b) | .id' | head -n1)"
+fi
+if [ -z "$APP" ]; then
+  [ "$DRY_RUN" = 1 ] || fail "App Store Connect has no app for $BUNDLE_ID. Create the ADE Beta app first (docs/plans/ios-beta-app.md)."
+  log "no App Store Connect app for $BUNDLE_ID yet; the dry run numbers the build from ADE only"
+fi
+next_build_number() {
+  local json
+  json="$(retry 5 asc builds next-build-number --app "$1" --version "$MV" --platform IOS --output json)" \
+    || fail "asc builds next-build-number failed for app $1: $(echo "$json" | tail -1)"
+  printf '%s' "$json" | jq -r '.. | objects | select(has("nextBuildNumber")) | .nextBuildNumber' | tail -n1 | xargs
+}
 if [ -z "$BN" ]; then
-  # The same source as the internal bump script: App Store Connect's next
-  # build number for this marketing version.
-  json="$(retry 5 asc builds next-build-number --app "$APP" --version "$MV" --platform IOS --output json)" \
-    || fail "asc builds next-build-number failed: $(echo "$json" | tail -1)"
-  BN="$(printf '%s' "$json" | jq -r '.. | objects | select(has("nextBuildNumber")) | .nextBuildNumber' | tail -n1 | xargs)"
+  # The higher of the two apps' next numbers for this marketing version.
+  BN="$(next_build_number "$STABLE_APP")"
+  if [ -n "$APP" ]; then
+    beta_bn="$(next_build_number "$APP")"
+    [[ "$beta_bn" =~ ^[0-9]+$ ]] && [[ "$BN" =~ ^[0-9]+$ ]] && [ "$beta_bn" -gt "$BN" ] && BN="$beta_bn"
+  fi
 fi
 [[ "$BN" =~ ^[0-9]+$ ]] || fail "invalid build number: '$BN'"
 OUT="$TMP/ade-ios-$MV-build$BN"
@@ -163,7 +193,7 @@ export ADE_POSTHOG_PROJECT_TOKEN_SECRET="${ADE_POSTHOG_PROJECT_TOKEN:-}" ADE_POS
 
 # --- Archive and export ----------------------------------------------------
 log "archiving (log: $OUT/archive.log)"
-if ! xcodebuild archive -project "$PROJECT" -scheme "$SCHEME" -configuration Release \
+if ! xcodebuild archive -project "$PROJECT" -scheme "$SCHEME" -configuration "$CONFIGURATION" \
     -destination generic/platform=iOS -archivePath "$ARCHIVE" "${AUTH[@]}" \
     -xcconfig "$POSTHOG_XCCONFIG" \
     "CURRENT_PROJECT_VERSION=$BN" "MARKETING_VERSION=$MV" > "$OUT/archive.log" 2>&1; then
@@ -185,11 +215,16 @@ IPA="$OUT/export/ADE.ipa"
 # --- Check the IPA ---------------------------------------------------------
 log "inspecting the IPA"
 T="$OUT/ipa-check"; rm -rf "$T"; mkdir -p "$T"; ditto -x -k "$IPA" "$T"
-for p in Payload/ADE.app Payload/ADE.app/AppClips/ADEClip.app Payload/ADE.app/PlugIns/ADEWidgets.appex; do
+for entry in "Payload/ADE.app $BUNDLE_ID" "Payload/ADE.app/PlugIns/ADEWidgets.appex $BUNDLE_ID.widgets"; do
+  p="${entry% *}"; want_id="${entry#* }"
   [ -f "$T/$p/Info.plist" ] || fail "IPA is missing $p"
   got="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$T/$p/Info.plist") $(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$T/$p/Info.plist")"
   [ "$got" = "$MV $BN" ] || fail "$p is $got, expected $MV $BN"
+  got_id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$T/$p/Info.plist")"
+  [ "$got_id" = "$want_id" ] || fail "$p is $got_id, expected $want_id"
 done
+# The App Clip belongs to the normal app only.
+[ ! -e "$T/Payload/ADE.app/AppClips" ] || fail "the ADE Beta app must not embed the App Clip"
 rm -rf "$T"
 
 if [ "$DRY_RUN" = 1 ]; then
@@ -267,11 +302,30 @@ fi
 [ "${has:-0}" -ge 1 ] || fail "group $GROUP_NAME does not have build $BN"
 log "group $GROUP_NAME has build $BN"
 
+# --- Public link -------------------------------------------------------------
+# The external group behind the public link. Apple reviews its builds first, so
+# testers get this build once Apple approves it. Never fails the run.
+external="$(retry 5 asc testflight groups list --app "$APP" --paginate --output json 2> /dev/null || true)"
+pid="$(printf '%s' "$external" | jq -r --arg n "$PUBLIC_GROUP_NAME" '(.data // [])[] | select(.attributes.name == $n and (.attributes.isInternalGroup | not)) | .id' 2> /dev/null | head -n1 || true)"
+if [ -z "$pid" ]; then
+  log "no external group named '$PUBLIC_GROUP_NAME'; the build stays with $GROUP_NAME"
+else
+  out="$(retry 5 asc builds add-groups --build-id "$BID" --group "$pid" --submit --confirm 2>&1 || true)"
+  if echo "$out" | grep -qiE '"action":"added"|already'; then
+    log "group $PUBLIC_GROUP_NAME has build $BN; it reaches testers after Apple's beta review"
+  else
+    [ "${GITHUB_ACTIONS:-}" = true ] && echo "::warning::could not give build $BN to $PUBLIC_GROUP_NAME: $(echo "$out" | tail -1 | cut -c1-200)"
+    log "WARNING: $PUBLIC_GROUP_NAME did not take build $BN: $(echo "$out" | tail -1 | cut -c1-200)"
+  fi
+fi
+
 # --- Tag -------------------------------------------------------------------
-# scope.sh and ios-testflight.yml read the newest ios-v*-build* tag as the last
-# iOS build. A failed push is a warning: the build is already with testers.
-TAG="ios-v$MV-build$BN"
-git rev-parse -q --verify "refs/tags/$TAG" > /dev/null || git tag -a "$TAG" "$SHA" -m "iOS $MV build $BN ($LABEL)"
+# ios-testflight.yml reads the newest ios-beta-v*-build* tag as the last ADE
+# Beta build. The prefix keeps it out of scope.sh's `ios-v*` tags, which count
+# the normal app's stable builds. A failed push is a warning: the build is
+# already with testers.
+TAG="ios-beta-v$MV-build$BN"
+git rev-parse -q --verify "refs/tags/$TAG" > /dev/null || git tag -a "$TAG" "$SHA" -m "ADE Beta iOS $MV build $BN ($LABEL)"
 git push -q origin "refs/tags/$TAG" 2>&1 | grep -v '^remote' || true
 git ls-remote --exit-code --tags origin "refs/tags/$TAG" > /dev/null 2>&1 \
   || { [ "${GITHUB_ACTIONS:-}" = true ] && echo "::warning::could not push $TAG"; log "WARNING: $TAG not on origin"; }
