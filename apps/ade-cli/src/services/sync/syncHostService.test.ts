@@ -6627,8 +6627,12 @@ describe("CTO-gated Linear sync commands", () => {
         "ai.cursorCloudResolveLane",
         "ai.cursorCloudPullIntoLane",
         "ai.cursorCloudStopRun",
+        // Running a chat's code block runs a command on the host: a person on
+        // a phone or browser controller may, a read-only viewer never.
+        "work.runShellBlock",
       ]);
       const controllerAllowedActions = new Set<string>([
+        "work.runShellBlock",
         "ai.createCursorCloudRun",
         "ai.archiveCursorCloudAgent",
         "ai.unarchiveCursorCloudAgent",

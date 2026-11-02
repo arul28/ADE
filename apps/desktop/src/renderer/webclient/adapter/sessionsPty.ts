@@ -493,10 +493,16 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
     create: async (args: unknown, pin?: RuntimePinArg): Promise<PtyCreateResult> => {
       assertWebRuntimePinRoutable("pty.create", pin, infra);
       const record = asRecord(args);
-      // A direct launch (a chat code block's Run) runs its interpreter with
-      // argv, owned by the chat; `work.startCliSession` would type the
-      // command word into a shell and drop the rest.
-      if (typeof record.command === "string" && Array.isArray(record.args)) {
+      // A chat code block's Run: a shell owned by a chat, launched as argv.
+      // `work.startCliSession` would type the command word into a shell and
+      // drop the rest. Other argv launches (a Devin terminal) name their own
+      // tool type and no chat, and keep the CLI launch path.
+      if (
+        record.toolType === "shell"
+        && typeof record.chatSessionId === "string"
+        && typeof record.command === "string"
+        && Array.isArray(record.args)
+      ) {
         if (!commands.hasAction("work.runShellBlock")) {
           throw new Error("Update ADE on this machine to run code blocks from chat.");
         }

@@ -88,7 +88,6 @@ const MEANINGFUL_ACTIONS = new Set([
   "work.resumeCliSession",
   "work.importExternalSession",
   "work.runQuickCommand",
-  "work.runShellBlock",
   "work.sendToSession",
   "work.stopRuntime",
   "work.settleSession",

@@ -108,6 +108,33 @@ function useShellRun(key: string | null): ShellRun | null {
   return useSyncExternalStore(subscribeKey, () => (key ? runsByKey.get(key) ?? null : null));
 }
 
+const DAY_MS = 24 * 60 * 60_000;
+
+/**
+ * Whether people run code blocks from chat, and send the output back
+ * (`docs/logging.md`). Emitted here because a run has no backend mutation of
+ * its own: on the desktop it is an ordinary terminal create. Closed and
+ * content-free; a per-action 24-hour key allows at most two accepted events
+ * per installation per UTC day.
+ */
+function captureCodeBlockRunFact(action: "code_block_run" | "code_block_output_sent"): void {
+  try {
+    void window.ade?.analytics?.capture({
+      event: "ade_feature_used",
+      properties: {
+        feature: "chat",
+        action,
+        outcome: action === "code_block_run" ? "started" : "completed",
+        source: "renderer_route",
+      },
+      dedupeKey: `chat_${action}`,
+      minimumIntervalMs: DAY_MS,
+    }).catch(() => undefined);
+  } catch {
+    // Analytics must never change what Run does.
+  }
+}
+
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -174,6 +201,7 @@ async function startRun(args: {
     }, pin);
     ptyId = created.ptyId;
     updateRun(key, id, { terminalId: created.sessionId, ptyId: created.ptyId, status: "running" });
+    captureCodeBlockRunFact("code_block_run");
     const early = earlyExits.find((event) => event.ptyId === created.ptyId);
     showTerminal(scope.sessionId, { terminalId: created.sessionId, ptyId: created.ptyId, label: title, ended: Boolean(early) }, args.reveal);
     if (early) {
@@ -192,6 +220,12 @@ async function startRun(args: {
   } catch (error) {
     done = true;
     unsubscribe?.();
+    // A lane folder that is gone, or a host too old for the hosted client's
+    // launch, is the person's state and the block says so; anything else is
+    // ours to hear about.
+    if (!/worktree is unavailable|Update ADE on this machine/i.test(errorText(error))) {
+      captureError(error, { fingerprint: ["chat-code-block-run", "start-failed"], level: "warning", handled: true });
+    }
     updateRun(key, id, { status: "failed", error: errorText(error) });
   }
 }
@@ -224,10 +258,13 @@ async function sendRunOutput(key: string): Promise<void> {
     });
     await window.ade.agentChat.send({ sessionId: run.sessionId, text }, run.pin);
     updateRun(key, run.id, { send: { kind: "sent" } });
+    captureCodeBlockRunFact("code_block_output_sent");
   } catch (error) {
-    const message = /already active/i.test(errorText(error))
-      ? "The agent is busy with a turn. Send the output when it finishes."
-      : errorText(error);
+    const busy = /already active/i.test(errorText(error));
+    if (!busy) {
+      captureError(error, { fingerprint: ["chat-code-block-run", "send-output-failed"], level: "warning", handled: true });
+    }
+    const message = busy ? "The agent is busy with a turn. Send the output when it finishes." : errorText(error);
     updateRun(key, run.id, { send: { kind: "error", message } });
   }
 }
