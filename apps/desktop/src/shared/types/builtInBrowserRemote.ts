@@ -30,6 +30,13 @@ export type BuiltInBrowserRemoteRequest = {
   newTab?: boolean;
   /** Reuse a tab this chat already owns. */
   reuseOwnedTab?: boolean;
+  /**
+   * An isolated sign-in for the tab (`--profile` / `--isolated`). Sent only to
+   * a desktop that said it reads them (`requestCarriesSignIn`); an older one
+   * would open the page in the user's own sign-in.
+   */
+  profile?: string;
+  isolated?: boolean;
 };
 
 /** Sent back by the desktop that took the request, over the pinned runtime. */
@@ -164,10 +171,27 @@ export function isBuiltInBrowserRemoteCallMethod(value: unknown): value is Built
   return typeof value === "string" && REMOTE_CALL_METHOD_SET.has(value);
 }
 
+/**
+ * Calls the daemon sends to every desktop that holds a pin on its machine at
+ * once (`broadcast`), never as an agent's own command:
+ *
+ * - `listTabsForAgent`: the desktop's tabs for the project, read without
+ *   opening the collection, so `ade browser status` lists every tab on every
+ *   machine with its owner.
+ * - `releaseLaneTabs`: a lane was deleted or archived; free its tabs.
+ */
+export const BUILT_IN_BROWSER_REMOTE_BROADCAST_METHODS = ["listTabsForAgent", "releaseLaneTabs"] as const;
+
+export type BuiltInBrowserRemoteBroadcastMethod = (typeof BUILT_IN_BROWSER_REMOTE_BROADCAST_METHODS)[number];
+
+export function isBuiltInBrowserRemoteBroadcastMethod(value: unknown): value is BuiltInBrowserRemoteBroadcastMethod {
+  return value === "listTabsForAgent" || value === "releaseLaneTabs";
+}
+
 /** Emitted by the daemon; taken only by the desktop it names. */
 export type BuiltInBrowserRemoteCall = {
   requestId: string;
-  method: BuiltInBrowserRemoteCallMethod;
+  method: BuiltInBrowserRemoteCallMethod | BuiltInBrowserRemoteBroadcastMethod;
   /**
    * The command's own arguments. The chat and lane are the daemon's answer to
    * "who is calling"; which project's tabs they mean is the desktop's to say,
@@ -177,8 +201,21 @@ export type BuiltInBrowserRemoteCall = {
   chatSessionId: string | null;
   laneId: string | null;
   requestedAt: string;
-  /** The desktop that sent the chat its last message. */
+  /**
+   * The desktop that runs it: the one that sent the chat its last message, or
+   * the one that holds the tab. Empty on a broadcast.
+   */
   targetClientId: string;
+  /** Every desktop answers (a `BUILT_IN_BROWSER_REMOTE_BROADCAST_METHODS` call only). */
+  broadcast?: boolean;
+  /** Desktops that must not answer a broadcast (their answer is already in hand). */
+  excludeClientIds?: string[];
+  /**
+   * Which of the desktop's collections the chat means: its project's, or the
+   * personal one (a chat with no project). Lets a desktop run a command for a
+   * chat it has not shown since it started. Absent from an older daemon.
+   */
+  collection?: "project" | "personal";
 };
 
 /**
@@ -238,6 +275,12 @@ export type BuiltInBrowserRemoteCallReplyBody =
     error: string;
     /** The desktop can only do this open with its Browser pane on screen. */
     code?: "needs_pane";
+    /**
+     * With `needs_pane`: the desktop's request path opens the page in the
+     * isolated sign-in the agent asked for. An older desktop leaves it out,
+     * and its request path would use the user's own sign-in.
+     */
+    requestCarriesSignIn?: boolean;
   };
 
 export type BuiltInBrowserRemoteCallReply = {
@@ -261,3 +304,12 @@ export type BuiltInBrowserHostNote = {
   userComputer: boolean;
   userElsewhere?: boolean;
 };
+
+/** A browser error, with the machine whose browser refused, for the agent to read. */
+export function builtInBrowserErrorOnMachine(message: string, machine: string, userComputer: boolean): string {
+  if (message.startsWith("ADE browser on ")) return message;
+  const where = `${machine}${userComputer ? " (the user's computer)" : ""}`;
+  return message.startsWith("ADE browser ")
+    ? `ADE browser on ${where} ${message.slice("ADE browser ".length)}`
+    : `ADE browser on ${where}: ${message}`;
+}

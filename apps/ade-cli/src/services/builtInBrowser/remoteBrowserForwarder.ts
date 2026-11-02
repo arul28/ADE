@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
@@ -9,16 +10,23 @@ import {
   BUILT_IN_BROWSER_REMOTE_CALL_MAX_FILE_BYTES,
   BUILT_IN_BROWSER_REMOTE_CALL_MAX_FILES,
   BUILT_IN_BROWSER_REMOTE_REQUEST_EVENT,
+  builtInBrowserErrorOnMachine,
   builtInBrowserRemoteCallDoneTimeoutMs,
   isBuiltInBrowserRemoteCallMethod,
   type BuiltInBrowserForwardedToDesktop,
   type BuiltInBrowserHostNote,
+  type BuiltInBrowserRemoteBroadcastMethod,
   type BuiltInBrowserRemoteCall,
   type BuiltInBrowserRemoteCallFile,
   type BuiltInBrowserRemoteCallMethod,
   type BuiltInBrowserRemoteRequest,
   type BuiltInBrowserRemoteRequestAck,
 } from "../../../../desktop/src/shared/types/builtInBrowserRemote";
+import type {
+  BuiltInBrowserOtherMachineTabs,
+  BuiltInBrowserRouteSummary,
+  BuiltInBrowserTabMachine,
+} from "../../../../desktop/src/shared/types/builtInBrowser";
 import { DesktopBridgeUnavailableError } from "./desktopBridgeClient";
 import type { SessionInputOrigin } from "../../../../desktop/src/shared/sessionInputOrigin";
 import {
@@ -45,8 +53,15 @@ import {
  *
  * The agent's own machine stays the fallback: when no desktop takes a command
  * within a few seconds (the user is on the phone, the laptop is closed), and
- * when the agent asks for it (`--here`, an isolated sign-in). A command that
- * ran here although the user is elsewhere says so in its result.
+ * when the agent asks for it (`--here`). A command that ran here although the
+ * user is elsewhere says so in its result.
+ *
+ * One task stays on one machine. Every tab id a command answers with is
+ * remembered with the machine whose browser holds it, and a later command
+ * that names the tab (`--tab`, a browser session) goes to that machine, not to
+ * wherever the chat's route points now. An id this daemon does not know (it
+ * restarted) is looked up on every machine it can reach before the command
+ * fails, and the failure names the machines it asked.
  *
  * Without a desktop on this machine: the built-in browser is a
  * `WebContentsView` owned by an Electron main process, so a box running only
@@ -68,6 +83,24 @@ const LAST_HOST_CAP = 200;
 const USER_DESKTOP_RETRY_AFTER_MS = 60_000;
 /** Replies whose files are kept for the agent to read; older ones are pruned. */
 const RECEIVED_FILE_DIR_CAP = 40;
+/** Tab and browser-session ids whose machine this daemon remembers. */
+const TAB_HOST_CAP = 2_000;
+/** How long a broadcast waits when no desktop has answered one before. */
+const BROADCAST_FIRST_WAIT_MS = 1_200;
+/** How long a broadcast waits for the desktops that answered the last ones. */
+const BROADCAST_KNOWN_WAIT_MS = 3_000;
+/** A lane release is not awaited; replies are taken for this long. */
+const RELEASE_BROADCAST_WAIT_MS = 10_000;
+/** Desktops remembered as answering broadcasts. */
+const ANSWERING_DESKTOP_CAP = 16;
+/**
+ * After a tab-list broadcast nobody answered, how long `ade browser status`
+ * skips asking again. Without it a machine with no other desktop paid the
+ * whole broadcast wait on every status.
+ */
+const EMPTY_BROADCAST_SKIP_MS = 5 * 60_000;
+/** Broadcasts that already ended, kept so a desktop that answers late is waited for next time. */
+const FINISHED_BROADCAST_CAP = 32;
 
 /** The CLI words for the commands that stay on this machine, for a message an agent can act on. */
 const LOCAL_FILE_COMMAND_WORDS: Record<BuiltInBrowserLocalFileMethod, string> = {
@@ -89,7 +122,39 @@ type PendingRequest = {
 type RemoteCallOutcome =
   | { taken: false }
   | { taken: true; desktopLabel: string; ok: true; result: unknown }
-  | { taken: true; desktopLabel: string; ok: false; error: string; needsPane?: boolean };
+  | {
+    taken: true;
+    desktopLabel: string;
+    ok: false;
+    error: string;
+    needsPane?: boolean;
+    /** With `needsPane`: the desktop's request path keeps an isolated sign-in. */
+    requestCarriesSignIn?: boolean;
+  };
+
+/** The browser a tab, a browser session or a command lives in. */
+type BrowserHost =
+  | { kind: "here" }
+  | { kind: "desktop"; clientId: string; label: string };
+
+const HERE: BrowserHost = { kind: "here" };
+
+type BroadcastReply = { label: string; ok: boolean; result: unknown };
+
+type PendingBroadcast = {
+  method: BuiltInBrowserRemoteBroadcastMethod;
+  /** Desktops that answered the last broadcasts; the wait ends early once they all have. */
+  expected: Set<string>;
+  taken: Set<string>;
+  replies: Map<string, BroadcastReply>;
+  resolve: (replies: Map<string, BroadcastReply>) => void;
+  timer: ReturnType<typeof setTimeout>;
+};
+
+/** This computer's host name, until the runtime gives the forwarder its display name. */
+function hostMachineName(): string {
+  return os.hostname().replace(/\.local$/i, "") || "this machine";
+}
 
 type PendingCall = {
   method: BuiltInBrowserRemoteCallMethod;
@@ -115,7 +180,26 @@ export type RemoteBrowserForwarder = {
   acknowledgeRemoteRequest: (input: unknown) => { ok: boolean };
   /** Runtime action a desktop calls when it takes a command, and again with its outcome. */
   replyRemoteCall: (input: unknown) => { ok: boolean };
+  /** The bridge to this machine's desktop, for the reads and releases the forwarder makes itself. */
+  attachLocalBridge: (bridge: LocalBrowserBridge) => void;
+  /**
+   * A lane was deleted or archived: free its tabs in this machine's browser
+   * and in every desktop's that holds a pin here. Closes nothing.
+   */
+  releaseLaneTabs: (laneId: string) => Promise<void>;
   dispose: () => void;
+};
+
+/** Titles and names by id; an id this machine does not know is left out. */
+export type OwnerNames = { chats: Record<string, string>; lanes: Record<string, string> };
+
+/** How long `ade browser status` waits for owner names before printing ids. */
+const OWNER_NAMES_WAIT_MS = 800;
+
+/** The two bridge-served methods the forwarder calls on this machine's desktop. */
+export type LocalBrowserBridge = {
+  listTabsForAgent: (input: Record<string, unknown>) => Promise<unknown>;
+  releaseLaneTabs: (input: { laneId: string }) => Promise<unknown>;
 };
 
 function stringOrNull(value: unknown): string | null {
@@ -200,25 +284,134 @@ export function createRemoteBrowserForwarder(args: {
    * exists only on the desktop, and the path is cleared instead.
    */
   receivedFilesDir?: string | null;
+  /** How long a broadcast waits for desktops; tests shorten it. */
+  broadcastWaitMs?: { first: number; known: number } | null;
+  /** This machine's name for an agent to read (the device's display name). */
+  machineName?: (() => string | null) | null;
+  /** Chat titles and lane names for the owners `ade browser status` lists. */
+  describeOwners?: ((ids: { chatSessionIds: string[]; laneIds: string[] }) => Promise<OwnerNames>) | null;
 }): RemoteBrowserForwarder {
+  const thisMachineName = (): string => stringOrNull(args.machineName?.()) ?? hostMachineName();
   const pending = new Map<string, PendingRequest>();
   const pendingCalls = new Map<string, PendingCall>();
+  const pendingBroadcasts = new Map<string, PendingBroadcast>();
   /** Which browser a chat's last command ran in, newest last. */
   const lastHost = new Map<string, "user-desktop" | "here">();
   /** Chat → the desktop that did not answer, and until when it is left alone. */
   const unanswered = new Map<string, { clientId: string; untilMs: number }>();
+  /** Tab id → the browser that holds it. Newest last. */
+  const tabHosts = new Map<string, BrowserHost>();
+  /** Browser-session id → the browser that holds its tab. */
+  const sessionHosts = new Map<string, BrowserHost>();
+  /** A desktop's name for itself, from its replies. */
+  const desktopLabels = new Map<string, string>();
+  /** Desktops that answered a tab-list broadcast, so the next one waits for them. */
+  const answeringDesktops = new Set<string>();
+  /** Tab-list broadcasts that ended; a late answer still marks its desktop as one to wait for. */
+  const finishedListBroadcasts = new Set<string>();
+  /** Chat → the tab its last command acted on, so a command with no `--tab` goes where that tab is. */
+  const chatLastTab = new Map<string, string>();
+  let localBridge: LocalBrowserBridge | null = null;
+  /** When a tab-list broadcast last came back with no answer from any desktop. */
+  let lastEmptyListAt = 0;
   const ackTimeoutMs = args.ackTimeoutMs ?? ACK_TIMEOUT_MS;
   const callTakenTimeoutMs = args.callTakenTimeoutMs ?? CALL_TAKEN_TIMEOUT_MS;
+  const broadcastWait = args.broadcastWaitMs ?? { first: BROADCAST_FIRST_WAIT_MS, known: BROADCAST_KNOWN_WAIT_MS };
+
+  function rememberNewest<Value>(map: Map<string, Value>, key: string, value: Value, cap: number): void {
+    map.delete(key);
+    map.set(key, value);
+    while (map.size > cap) {
+      const oldest = map.keys().next().value;
+      if (oldest === undefined) break;
+      map.delete(oldest);
+    }
+  }
 
   function rememberHost(chatSessionId: string | null, host: "user-desktop" | "here"): void {
     if (!chatSessionId) return;
-    lastHost.delete(chatSessionId);
-    lastHost.set(chatSessionId, host);
-    while (lastHost.size > LAST_HOST_CAP) {
-      const oldest = lastHost.keys().next().value;
+    rememberNewest(lastHost, chatSessionId, host, LAST_HOST_CAP);
+  }
+
+  function rememberTab(tabId: unknown, host: BrowserHost): void {
+    const id = stringOrNull(tabId);
+    if (id) rememberNewest(tabHosts, id, host, TAB_HOST_CAP);
+  }
+
+  /** Remember which browser holds every tab and browser session a result names. */
+  function rememberAnswering(clientId: string): void {
+    answeringDesktops.add(clientId);
+    while (answeringDesktops.size > ANSWERING_DESKTOP_CAP) {
+      const oldest = answeringDesktops.values().next().value;
       if (oldest === undefined) break;
-      lastHost.delete(oldest);
+      answeringDesktops.delete(oldest);
     }
+    // A desktop exists after all: the next status asks again.
+    lastEmptyListAt = 0;
+  }
+
+  /** The tab a chat's last command acted on, from its input and its result. */
+  function noteChatTab(ctx: RouteContext, result: unknown): void {
+    if (!ctx.chatSessionId) return;
+    const record = isRecord(result) ? result : {};
+    const closed = isRecord(record.closedTab) ? stringOrNull(record.closedTab.id) : null;
+    if (closed && chatLastTab.get(ctx.chatSessionId) === closed) {
+      chatLastTab.delete(ctx.chatSessionId);
+      return;
+    }
+    const tabId = stringOrNull(record.targetTabId)
+      ?? (isRecord(record.observation) ? stringOrNull(record.observation.tabId) : null)
+      ?? (isRecord(record.session) ? stringOrNull(record.session.tabId) : null)
+      ?? (closed ? null : stringOrNull(ctx.record.tabId));
+    if (tabId) rememberNewest(chatLastTab, ctx.chatSessionId, tabId, LAST_HOST_CAP);
+  }
+
+  function noteHosts(result: unknown, host: BrowserHost, depth = 0): void {
+    if (!isRecord(result) || depth > 2) return;
+    if (Array.isArray(result.tabs)) {
+      for (const tab of result.tabs) if (isRecord(tab)) rememberTab(tab.id, host);
+    }
+    rememberTab(result.targetTabId, host);
+    const noteSession = (session: unknown) => {
+      if (!isRecord(session)) return;
+      const id = stringOrNull(session.id);
+      if (id) rememberNewest(sessionHosts, id, host, TAB_HOST_CAP);
+      rememberTab(session.tabId, host);
+    };
+    noteSession(result.session);
+    if (Array.isArray(result.sessions)) result.sessions.forEach(noteSession);
+    if (isRecord(result.observation)) rememberTab(result.observation.tabId, host);
+    if (isRecord(result.status)) noteHosts(result.status, host, depth + 1);
+    const closed = isRecord(result.closedTab) ? stringOrNull(result.closedTab.id) : null;
+    if (closed) tabHosts.delete(closed);
+  }
+
+  function hostLabel(host: BrowserHost): string {
+    return host.kind === "here" ? thisMachineName() : host.label;
+  }
+
+  /** Name the machine whose browser refused, in place: the error keeps its class and code. */
+  function onMachine(error: unknown, host: BrowserHost, ctx: { remoteTargetId: string | null }): Error {
+    const userComputer = host.kind === "desktop" && host.clientId === ctx.remoteTargetId;
+    const named = builtInBrowserErrorOnMachine(
+      error instanceof Error ? error.message : String(error),
+      host.kind === "here" ? `${thisMachineName()} (this machine)` : host.label,
+      userComputer,
+    );
+    if (error instanceof Error) {
+      try {
+        error.message = named;
+        return error;
+      } catch {
+        // A frozen error: fall through to a new one.
+      }
+    }
+    return new Error(named);
+  }
+
+  function isNotFoundError(error: unknown): boolean {
+    const message = error instanceof Error ? error.message : String(error);
+    return /Browser (tab|session) not found/.test(message);
   }
 
   const settleCall = (requestId: string, outcome: RemoteCallOutcome): boolean =>
@@ -289,15 +482,20 @@ export function createRemoteBrowserForwarder(args: {
     }
   }
 
-  /** Run one command in the browser of the desktop the user sits at. */
-  async function callUserDesktop(
+  /** Which of a desktop's collections the agent means: its project's, or the personal one. */
+  function collectionOf(record: Record<string, unknown>): "project" | "personal" {
+    return record.tabCollection === "personal" ? "personal" : "project";
+  }
+
+  /** Run one command in the browser of a desktop on another machine. */
+  async function callDesktop(
     method: BuiltInBrowserRemoteCallMethod,
     record: Record<string, unknown>,
     targetClientId: string,
   ): Promise<RemoteCallOutcome> {
     // The agent's project path and tab collection name things on THIS machine;
     // the desktop answers "which tabs" from its own window.
-    const { projectRoot: _projectRoot, tabCollection: _tabCollection, here: _here, ...input } = record;
+    const { projectRoot: _projectRoot, tabCollection: _tabCollection, here: _here, allMachines: _all, ...input } = record;
     const request: BuiltInBrowserRemoteCall = {
       requestId: `bbc-${randomUUID()}`,
       method,
@@ -306,6 +504,7 @@ export function createRemoteBrowserForwarder(args: {
       laneId: stringOrNull(record.laneId),
       requestedAt: new Date().toISOString(),
       targetClientId,
+      collection: collectionOf(record),
     };
     const startedAt = Date.now();
     const outcome = await new Promise<RemoteCallOutcome>((resolve) => {
@@ -329,18 +528,17 @@ export function createRemoteBrowserForwarder(args: {
         });
       }
     });
-    if (request.chatSessionId) {
+    if (outcome.taken) rememberNewest(desktopLabels, targetClientId, outcome.desktopLabel, LAST_HOST_CAP);
+    const origin = request.chatSessionId ? args.resolveOrigin?.(request.chatSessionId) ?? null : null;
+    // Only the user's own desktop going quiet changes where the chat's next
+    // command goes; a desktop that merely holds one tab does not.
+    if (request.chatSessionId && origin && !origin.local && origin.clientId === targetClientId) {
       if (outcome.taken) unanswered.delete(request.chatSessionId);
       else {
-        unanswered.set(request.chatSessionId, {
+        rememberNewest(unanswered, request.chatSessionId, {
           clientId: targetClientId,
           untilMs: Date.now() + USER_DESKTOP_RETRY_AFTER_MS,
-        });
-        while (unanswered.size > LAST_HOST_CAP) {
-          const oldest = unanswered.keys().next().value;
-          if (oldest === undefined) break;
-          unanswered.delete(oldest);
-        }
+        }, LAST_HOST_CAP);
       }
     }
     args.logger.info("built_in_browser.remote_call", {
@@ -353,6 +551,83 @@ export function createRemoteBrowserForwarder(args: {
     return outcome;
   }
 
+  /**
+   * Ask every desktop that holds a pin on this machine at once, and gather
+   * the answers that come in time. Waits for the desktops that answered the
+   * last broadcasts, or a short while when none has yet.
+   */
+  function broadcast(
+    method: BuiltInBrowserRemoteBroadcastMethod,
+    input: Record<string, unknown>,
+    options: {
+      chatSessionId?: string | null;
+      laneId?: string | null;
+      collection?: "project" | "personal";
+      excludeClientIds?: string[];
+      waitMs?: number;
+    } = {},
+  ): Promise<Map<string, BroadcastReply>> {
+    const exclude = options.excludeClientIds ?? [];
+    const expected = new Set([...answeringDesktops].filter((id) => !exclude.includes(id)));
+    const waitMs = options.waitMs ?? (expected.size > 0 ? broadcastWait.known : broadcastWait.first);
+    const call: BuiltInBrowserRemoteCall = {
+      requestId: `bbb-${randomUUID()}`,
+      method,
+      input,
+      chatSessionId: options.chatSessionId ?? null,
+      laneId: options.laneId ?? null,
+      requestedAt: new Date().toISOString(),
+      targetClientId: "",
+      broadcast: true,
+      ...(exclude.length > 0 ? { excludeClientIds: exclude } : {}),
+      ...(options.collection ? { collection: options.collection } : {}),
+    };
+    return new Promise((resolve) => {
+      const entry: PendingBroadcast = {
+        method,
+        expected,
+        taken: new Set(),
+        replies: new Map(),
+        resolve,
+        timer: setTimeout(() => finishBroadcast(call.requestId), waitMs),
+      };
+      entry.timer.unref?.();
+      pendingBroadcasts.set(call.requestId, entry);
+      try {
+        args.emitEvent({ type: BUILT_IN_BROWSER_REMOTE_CALL_EVENT, event: call });
+      } catch (error) {
+        args.logger.warn("built_in_browser.remote_broadcast_emit_failed", {
+          method,
+          reason: error instanceof Error ? error.message : String(error),
+        });
+        finishBroadcast(call.requestId);
+      }
+    });
+  }
+
+  function finishBroadcast(requestId: string): void {
+    const entry = pendingBroadcasts.get(requestId);
+    if (!entry) return;
+    pendingBroadcasts.delete(requestId);
+    clearTimeout(entry.timer);
+    // A desktop that stopped answering is not waited for next time.
+    for (const clientId of entry.expected) if (!entry.replies.has(clientId)) answeringDesktops.delete(clientId);
+    if (entry.method === "listTabsForAgent") {
+      finishedListBroadcasts.add(requestId);
+      while (finishedListBroadcasts.size > FINISHED_BROADCAST_CAP) {
+        const oldest = finishedListBroadcasts.values().next().value;
+        if (oldest === undefined) break;
+        finishedListBroadcasts.delete(oldest);
+      }
+    }
+    entry.resolve(entry.replies);
+  }
+
+  function broadcastReplyReceived(entry: PendingBroadcast, requestId: string): void {
+    const waitingOn = [...entry.expected, ...entry.taken].filter((id) => !entry.replies.has(id));
+    if (entry.expected.size > 0 && waitingOn.length === 0) finishBroadcast(requestId);
+  }
+
   function withHostNote(result: unknown, note: BuiltInBrowserHostNote): unknown {
     return isRecord(result) ? { ...result, browserHost: note } : result;
   }
@@ -360,6 +635,7 @@ export function createRemoteBrowserForwarder(args: {
   async function forward(
     input: unknown,
     targetClientId: string | null,
+    withSignIn = false,
   ): Promise<BuiltInBrowserForwardedToDesktop> {
     const record = isRecord(input) ? input : {};
     const url = stringOrNull(record.url) ?? "";
@@ -375,6 +651,9 @@ export function createRemoteBrowserForwarder(args: {
       ...(tabId ? { tabId } : {}),
       ...(record.newTab === true ? { newTab: true } : {}),
       ...(record.reuseOwnedTab === true ? { reuseOwnedTab: true } : {}),
+      // Only for a desktop that said its request path keeps the sign-in.
+      ...(withSignIn && stringOrNull(record.profile) ? { profile: stringOrNull(record.profile)! } : {}),
+      ...(withSignIn && record.isolated === true ? { isolated: true } : {}),
     };
     const ack = await new Promise<BuiltInBrowserRemoteRequestAck | null>((resolve) => {
       const timer = setTimeout(() => {
@@ -436,6 +715,17 @@ export function createRemoteBrowserForwarder(args: {
     localBase: unknown;
     /** Send it to the user's desktop first. */
     toUserDesktop: boolean;
+    /** The user's desktop did not answer lately; its commands run here for a while. */
+    desktopSilentUntilMs: number | null;
+    /**
+     * The browser that holds the tab or session the command names, or else
+     * the tab this chat last acted on, when known.
+     */
+    targetHost: BrowserHost | null;
+    /** Only the tab or session the command names (`--tab`, `--browser-session`). */
+    namedHost: BrowserHost | null;
+    /** The chat's last message came from this machine's desktop. */
+    userHere: boolean;
   };
 
   function routeContext(input: unknown): RouteContext & { isolated: boolean; userKnown: boolean } {
@@ -445,57 +735,153 @@ export function createRemoteBrowserForwarder(args: {
     const remoteTargetId = origin && !origin.local ? origin.clientId : null;
     // `--here`: to test a page on this OS, to record, to upload a file that lives here.
     const here = record.here === true;
-    const { here: _here, ...withoutHere } = record;
-    // An isolated sign-in exists only in this machine's desktop. A copy
-    // opened anywhere else would land in the user's own sign-in, which is
-    // exactly what an isolated tab is for avoiding.
+    const { here: _here, allMachines: _all, ...withoutRouting } = record;
+    // An isolated sign-in opens where the user sits, like every other tab: the
+    // isolation is a partition on that desktop too, so their own sign-ins stay
+    // untouched, and they see the tab (ledger R2).
     const isolated = record.isolated === true || Boolean(stringOrNull(record.profile));
     const quiet = chatSessionId ? unanswered.get(chatSessionId) ?? null : null;
     const desktopSilent = Boolean(
       quiet && remoteTargetId && quiet.clientId === remoteTargetId && quiet.untilMs > Date.now(),
     );
+    const tabId = stringOrNull(record.tabId);
+    const sessionId = stringOrNull(record.sessionId);
+    const namedHost = (tabId ? tabHosts.get(tabId) : null) ?? (sessionId ? sessionHosts.get(sessionId) : null) ?? null;
+    // No tab named: the command acts on this chat's tab, so it goes where that
+    // tab is. Sent anywhere else, a desktop with no tab of this chat's would
+    // act on whatever tab the person has in front.
+    const lastTab = !tabId && !sessionId && chatSessionId ? chatLastTab.get(chatSessionId) ?? null : null;
+    const targetHost = namedHost ?? (lastTab ? tabHosts.get(lastTab) ?? null : null);
     return {
       record,
       chatSessionId,
       remoteTargetId,
       here,
-      localBase: here ? withoutHere : input,
-      toUserDesktop: Boolean(remoteTargetId) && !here && !isolated && !desktopSilent,
+      localBase: withoutRouting,
+      toUserDesktop: Boolean(remoteTargetId) && !here && !desktopSilent,
+      desktopSilentUntilMs: desktopSilent ? quiet!.untilMs : null,
+      targetHost: here ? HERE : targetHost,
+      namedHost: here ? HERE : namedHost,
+      userHere: Boolean(origin?.local),
       isolated,
       userKnown: Boolean(origin),
     };
   }
 
-  /** A tab command that ran here; it says so when the user is at another desktop. */
-  function ranHere(ctx: RouteContext, result: unknown): unknown {
-    rememberHost(ctx.chatSessionId, "here");
+  /** The note on a result that says which machine's browser ran it. */
+  function hostNote(ctx: RouteContext, host: BrowserHost): BuiltInBrowserHostNote | null {
+    if (host.kind === "desktop") {
+      return { machine: host.label, userComputer: host.clientId === ctx.remoteTargetId };
+    }
     return ctx.remoteTargetId && !ctx.here
-      ? withHostNote(result, { machine: "this machine", userComputer: false, userElsewhere: true })
-      : result;
+      ? { machine: "this machine", userComputer: false, userElsewhere: true }
+      : null;
   }
 
-  function ranOnUserDesktop(ctx: RouteContext, desktopLabel: string, result: unknown): unknown {
-    rememberHost(ctx.chatSessionId, "user-desktop");
-    return withHostNote(result, { machine: desktopLabel, userComputer: true });
+  function finish(ctx: RouteContext, host: BrowserHost, result: unknown): unknown {
+    noteHosts(result, host);
+    noteChatTab(ctx, result);
+    rememberHost(ctx.chatSessionId, host.kind === "here" ? "here" : "user-desktop");
+    const note = hostNote(ctx, host);
+    return note ? withHostNote(result, note) : result;
   }
 
-  /** A command that acts on one of the chat's tabs. */
+  /** Run on this machine's desktop. */
+  async function runHere(
+    ctx: RouteContext,
+    call: (input: unknown) => Promise<unknown>,
+    input: unknown = ctx.localBase,
+  ): Promise<unknown> {
+    try {
+      return finish(ctx, HERE, await call(input));
+    } catch (error) {
+      throw onMachine(error, HERE, ctx);
+    }
+  }
+
+  /** Run on a desktop elsewhere; null when it did not take the command. */
+  async function runOnDesktop(
+    ctx: RouteContext,
+    method: BuiltInBrowserRemoteCallMethod,
+    clientId: string,
+  ): Promise<{ result: unknown } | null> {
+    const outcome = await callDesktop(method, ctx.record, clientId);
+    if (!outcome.taken) return null;
+    const host: BrowserHost = { kind: "desktop", clientId, label: outcome.desktopLabel };
+    if (!outcome.ok) {
+      if (clientId === ctx.remoteTargetId) rememberHost(ctx.chatSessionId, "user-desktop");
+      throw onMachine(new Error(outcome.error), host, ctx);
+    }
+    return { result: finish(ctx, host, outcome.result) };
+  }
+
+  /**
+   * Find the browser that holds a tab this daemon does not know (it restarted,
+   * or another chat opened the tab): this machine's, then every desktop's.
+   */
+  async function locateTab(ctx: RouteContext, tabId: string): Promise<BrowserHost | null> {
+    await listEverywhere(ctx, null, { alwaysAsk: true });
+    return tabHosts.get(tabId) ?? null;
+  }
+
+  /** A command that acts on one tab: the tab's browser, else the chat's. */
   async function routeTabCommand(
     ctx: RouteContext,
     method: BuiltInBrowserRemoteCallMethod,
     call: (input: unknown) => Promise<unknown>,
   ): Promise<unknown> {
-    if (ctx.toUserDesktop && ctx.remoteTargetId) {
-      const outcome = await callUserDesktop(method, ctx.record, ctx.remoteTargetId);
-      if (outcome.taken) {
-        if (!outcome.ok) {
-          rememberHost(ctx.chatSessionId, "user-desktop");
-          throw new Error(outcome.error);
-        }
-        return ranOnUserDesktop(ctx, outcome.desktopLabel, outcome.result);
+    const known = ctx.targetHost;
+    if (known) return await runOnHost(ctx, known, method, call);
+    const tabId = stringOrNull(ctx.record.tabId);
+    try {
+      if (ctx.toUserDesktop && ctx.remoteTargetId) {
+        const ran = await runOnDesktop(ctx, method, ctx.remoteTargetId);
+        if (ran) return ran.result;
       }
+      return await runHere(ctx, call);
+    } catch (error) {
+      if (!tabId || !isNotFoundError(error)) throw error;
+      // Not in the chat's browser: it may be in another machine's.
+      const found = await locateTab(ctx, tabId);
+      if (found) return await runOnHost(ctx, found, method, call);
+      const asked = [
+        ctx.toUserDesktop && ctx.remoteTargetId
+          ? `${desktopLabels.get(ctx.remoteTargetId) ?? UNNAMED_USER_DESKTOP} (the user's computer)`
+          : null,
+        `${thisMachineName()} (this machine)`,
+        ...[...answeringDesktops].filter((id) => id !== ctx.remoteTargetId).map((id) => desktopLabels.get(id) ?? "another desktop"),
+      ].filter(Boolean);
+      throw new Error(
+        `Browser tab not found: ${tabId}. No ADE browser that this machine can reach holds it (asked: ${asked.join(", ")}). It was closed, or it was an agent's tab that ADE did not bring back after a restart. Run \`ade browser status\` for the tabs that exist.`,
+      );
     }
-    return ranHere(ctx, await call(ctx.localBase));
+  }
+
+  /** Run where the tab is. A desktop that holds the tab and does not answer is an error, never a run here. */
+  async function runOnHost(
+    ctx: RouteContext,
+    host: BrowserHost,
+    method: BuiltInBrowserRemoteCallMethod,
+    call: (input: unknown) => Promise<unknown>,
+  ): Promise<unknown> {
+    if (host.kind === "here") return await runHere(ctx, call);
+    // The user's computer stopped answering a moment ago: say so at once
+    // rather than wait out the clock again.
+    if (host.clientId === ctx.remoteTargetId && ctx.desktopSilentUntilMs) throw notAnsweredError(ctx, host);
+    const ran = await runOnDesktop(ctx, method, host.clientId);
+    if (ran) return ran.result;
+    throw notAnsweredError(ctx, host);
+  }
+
+  function notAnsweredError(ctx: RouteContext, host: BrowserHost): Error {
+    const target = stringOrNull(ctx.record.tabId)
+      ?? stringOrNull(ctx.record.sessionId)
+      ?? (ctx.chatSessionId ? chatLastTab.get(ctx.chatSessionId) : null)
+      ?? "This tab";
+    const label = hostLabel(host);
+    return new Error(
+      `${target} is in the ADE browser on ${label}, which did not answer within ${Math.round(callTakenTimeoutMs / 1000)}s (ADE closed, or the computer is asleep). The command did not run anywhere. Try again when ${label} is back, or work in a tab on another machine.`,
+    );
   }
 
   /** A command that reads or writes a file on this machine. */
@@ -504,15 +890,16 @@ export function createRemoteBrowserForwarder(args: {
     method: BuiltInBrowserLocalFileMethod,
     call: (input: unknown) => Promise<unknown>,
   ): Promise<unknown> {
-    // Unless this chat's last command ran here, its browser is the user's: a
-    // restart of this daemon forgets where the tabs are, but they stay on the
-    // user's desktop.
-    if (ctx.toUserDesktop && lastHost.get(ctx.chatSessionId ?? "") !== "here") {
+    // The tab it names is here, or this chat's last command ran here: run it.
+    // Otherwise the chat's browser is the user's. A restart of this daemon
+    // forgets where the tabs are, but they stay on the user's desktop.
+    const tabHere = ctx.targetHost?.kind === "here";
+    if (ctx.targetHost?.kind === "desktop" || (ctx.toUserDesktop && !tabHere && lastHost.get(ctx.chatSessionId ?? "") !== "here")) {
       throw new Error(
-        `${LOCAL_FILE_COMMAND_WORDS[method]} reads or writes a file on this machine, but this chat's browser is on the user's computer. To use the browser on this machine, open the page with --here, then run this command with --here.`,
+        `${LOCAL_FILE_COMMAND_WORDS[method]} reads or writes a file on this machine, but this chat's browser is on ${ctx.targetHost?.kind === "desktop" ? ctx.targetHost.label : "the user's computer"}. To use the browser on this machine, open the page with --here, then run this command with --here.`,
       );
     }
-    return await call(ctx.localBase);
+    return await runHere(ctx, call);
   }
 
   /** "Put this URL on a screen": `navigate`, `createTab`, `showPanel`. */
@@ -522,7 +909,28 @@ export function createRemoteBrowserForwarder(args: {
     input: unknown,
     call: (input: unknown) => Promise<unknown>,
   ): Promise<unknown> {
-    const { record, remoteTargetId, here, isolated } = ctx;
+    const { record, here, isolated } = ctx;
+    // `open --tab <id>` drives that tab, wherever it is. A plain `open`
+    // follows the user instead: it opens where they sit now.
+    const named = ctx.namedHost;
+    if (named && !here && isBuiltInBrowserRemoteCallMethod(method)) {
+      if (named.kind === "here") return await runHere(ctx, call);
+      const clientId = named.clientId;
+      const outcome = await callDesktop(method, record, clientId);
+      if (!outcome.taken) throw notAnsweredError(ctx, named);
+      const host: BrowserHost = { kind: "desktop", clientId, label: outcome.desktopLabel };
+      if (outcome.ok) return finish(ctx, host, outcome.result);
+      if (!outcome.needsPane) throw onMachine(new Error(outcome.error), host, ctx);
+      // A loopback URL in a tab on that desktop: its Browser pane opens it.
+      // The tab keeps the sign-in it opened with, so naming it is enough.
+      const forwarded = await forward(input, clientId, outcome.requestCarriesSignIn === true);
+      if (forwarded.acknowledged) {
+        rememberHost(ctx.chatSessionId, "user-desktop");
+        return forwarded;
+      }
+      throw onMachine(new Error(forwarded.reason ?? "Its Browser pane did not take the page."), host, ctx);
+    }
+    const remoteTargetId = named?.kind === "here" ? null : ctx.remoteTargetId;
     // "Show the user": `showPanel` always, a navigation with `--panel` (or a
     // person's own call).
     const showToUser = method === "showPanel" || record.openPanel === true;
@@ -534,18 +942,28 @@ export function createRemoteBrowserForwarder(args: {
     // The request path only navigates; a new tab is its `newTab` flag.
     const requestInput = method === "createTab" && isRecord(input) ? { ...input, newTab: true } : input;
     let forwarded: BuiltInBrowserForwardedToDesktop | null = null;
+    let isolatedStaysHere = false;
     if (ctx.toUserDesktop && remoteTargetId) {
-      if (!showToUser && isBuiltInBrowserRemoteCallMethod(method)) {
-        const outcome = await callUserDesktop(method, record, remoteTargetId);
-        if (outcome.taken && outcome.ok) return ranOnUserDesktop(ctx, outcome.desktopLabel, outcome.result);
-        if (outcome.taken && !outcome.needsPane) throw new Error(outcome.error);
+      // An isolated open always tries the command path first, even to show
+      // the pane: only a desktop that said so may take it down the request
+      // path, where an older desktop would use the user's own sign-in.
+      if ((!showToUser || isolated) && isBuiltInBrowserRemoteCallMethod(method)) {
+        const outcome = await callDesktop(method, record, remoteTargetId);
+        const host: BrowserHost = { kind: "desktop", clientId: remoteTargetId, label: outcome.taken ? outcome.desktopLabel : UNNAMED_USER_DESKTOP };
+        if (outcome.taken && outcome.ok) return finish(ctx, host, outcome.result);
+        if (outcome.taken && !outcome.needsPane) throw onMachine(new Error(outcome.error), host, ctx);
+        if (isolated && (!outcome.taken || !outcome.requestCarriesSignIn)) isolatedStaysHere = true;
       }
-      forwarded = showToUser
-        ? await forwardToUser(requestInput, remoteTargetId)
-        : await forward(requestInput, remoteTargetId);
-      if (forwarded.acknowledged) {
-        rememberHost(ctx.chatSessionId, "user-desktop");
-        return forwarded;
+      if (!isolatedStaysHere) {
+        // An isolated open goes to the user's desktop only: another desktop
+        // has not said its request path keeps the sign-in.
+        forwarded = showToUser && !isolated
+          ? await forwardToUser(requestInput, remoteTargetId)
+          : await forward(requestInput, remoteTargetId, isolated);
+        if (forwarded.acknowledged) {
+          rememberHost(ctx.chatSessionId, "user-desktop");
+          return forwarded;
+        }
       }
     }
     // Nobody there took it: this machine's desktop does. It reveals its panel
@@ -557,10 +975,10 @@ export function createRemoteBrowserForwarder(args: {
     try {
       result = await call(localInput);
     } catch (error) {
-      if (!(error instanceof DesktopBridgeUnavailableError)) throw error;
+      if (!(error instanceof DesktopBridgeUnavailableError)) throw onMachine(error, HERE, ctx);
       if (isolated) {
         throw new Error(
-          "An isolated tab (--isolated or --profile) opens only in ADE Desktop on this machine, and none is attached. It was not forwarded, because another desktop would open it in the user's own sign-in. Open ADE Desktop here with this project.",
+          "An isolated tab (--isolated or --profile) opens in the ADE browser of the computer the user sits at, or on this machine. Neither took it: the user's computer did not answer (or its ADE is too old to keep an isolated sign-in for a localhost page), and ADE Desktop is not open here. It was not sent anywhere else, because another desktop would open it in the user's own sign-in.",
         );
       }
       if (here) {
@@ -575,13 +993,187 @@ export function createRemoteBrowserForwarder(args: {
       // or every connected one when nobody can tell.
       void forwardToUser(requestInput, remoteTargetId).catch(() => {});
     }
-    return ranHere(ctx, result);
+    return finish(ctx, HERE, result);
+  }
+
+  /** This machine and the user's computer by name, for a route line. */
+  function machineOf(host: BrowserHost, ctx: RouteContext): BuiltInBrowserTabMachine {
+    return host.kind === "here"
+      ? { name: thisMachineName(), here: true, userComputer: ctx.userHere }
+      : { name: host.label, here: false, userComputer: host.clientId === ctx.remoteTargetId };
+  }
+
+  function clock(ms: number): string {
+    return new Date(ms).toTimeString().slice(0, 5);
+  }
+
+  /** Where this chat's commands go, and why, for `ade browser status`. */
+  function routeSummary(ctx: RouteContext & { userKnown: boolean }): BuiltInBrowserRouteSummary {
+    const userLabel = ctx.remoteTargetId ? desktopLabels.get(ctx.remoteTargetId) ?? UNNAMED_USER_DESKTOP : null;
+    const browser: BrowserHost = ctx.toUserDesktop && ctx.remoteTargetId
+      ? { kind: "desktop", clientId: ctx.remoteTargetId, label: userLabel! }
+      : HERE;
+    const reason = ctx.remoteTargetId
+      ? ctx.desktopSilentUntilMs
+        ? `the user sends this chat's messages from ${userLabel}, but it did not answer a command, so commands without a tab id run here until ${clock(ctx.desktopSilentUntilMs)}`
+        : `the user sends this chat's messages from ${userLabel}, so its browser is the one they can see`
+      : ctx.userKnown
+        ? "the user sends this chat's messages from this machine"
+        : ctx.chatSessionId
+          ? "no message from a desktop yet; this machine's browser, and any desktop holding this project shows `--panel` opens"
+          : "not run from a chat, so this machine's browser";
+    return {
+      browser: machineOf(browser, ctx),
+      reason,
+      isolatedTabs: ctx.remoteTargetId
+        ? `${userLabel}, beside the user's tabs (an older ADE there opens an isolated localhost page on this machine instead, and says so)`
+        : "this machine's browser",
+      tabCommands: "a command with --tab or --browser-session goes to the machine whose browser holds that tab (the machine column); --here forces this machine",
+      fallback: ctx.desktopSilentUntilMs
+        ? `${userLabel} did not answer within ${Math.round(callTakenTimeoutMs / 1000)}s; asking it again after ${clock(ctx.desktopSilentUntilMs)}`
+        : null,
+    };
+  }
+
+  function annotateTabs(tabs: unknown, machine: BuiltInBrowserTabMachine): unknown[] {
+    return Array.isArray(tabs) ? tabs.map((tab) => (isRecord(tab) ? { ...tab, machine } : tab)) : [];
+  }
+
+  /**
+   * Every machine's tabs for this project except `skip`'s: this machine's
+   * (read without restoring anything) and every desktop's that answers a
+   * broadcast. Each tab is remembered with its machine.
+   */
+  async function listEverywhere(
+    ctx: RouteContext,
+    skip: BrowserHost | null,
+    options: { alwaysAsk?: boolean } = {},
+  ): Promise<BuiltInBrowserOtherMachineTabs[]> {
+    const { tabId: _tabId, sessionId: _sessionId, ...listInput } = isRecord(ctx.localBase) ? ctx.localBase : {};
+    const exclude = skip?.kind === "desktop" ? [skip.clientId] : [];
+    const quiet = !options.alwaysAsk
+      && ![...answeringDesktops].some((id) => !exclude.includes(id))
+      && Date.now() - lastEmptyListAt < EMPTY_BROADCAST_SKIP_MS;
+    const [local, remote] = await Promise.all([
+      skip?.kind === "here" || !localBridge
+        ? Promise.resolve(null)
+        : localBridge.listTabsForAgent(listInput).catch(() => null),
+      quiet
+        ? Promise.resolve(new Map<string, BroadcastReply>())
+        : broadcast("listTabsForAgent", listInput, {
+          chatSessionId: ctx.chatSessionId,
+          laneId: stringOrNull(ctx.record.laneId),
+          collection: collectionOf(ctx.record),
+          excludeClientIds: exclude,
+        }).then((replies) => {
+          if (![...replies].some(([clientId, reply]) => reply.ok && !exclude.includes(clientId))) lastEmptyListAt = Date.now();
+          return replies;
+        }),
+    ]);
+    const others: BuiltInBrowserOtherMachineTabs[] = [];
+    const add = (host: BrowserHost, status: unknown) => {
+      if (!isRecord(status) || !Array.isArray(status.tabs)) return;
+      noteHosts(status, host);
+      const machine = machineOf(host, ctx);
+      others.push({
+        machine,
+        tabs: annotateTabs(status.tabs, machine) as BuiltInBrowserOtherMachineTabs["tabs"],
+        tabCount: typeof status.tabCount === "number" ? status.tabCount : status.tabs.length,
+        tabLimit: typeof status.tabLimit === "number" ? status.tabLimit : 0,
+      });
+    };
+    add(HERE, local);
+    for (const [clientId, reply] of remote) {
+      if (!reply.ok || exclude.includes(clientId)) continue;
+      add({ kind: "desktop", clientId, label: reply.label }, reply.result);
+    }
+    return others;
+  }
+
+  /**
+   * `ade browser status`: the chat's browser, then every other machine's
+   * tabs, and the route. `getStatus` with a tab is a tab command like any.
+   */
+  async function routeStatus(
+    ctx: RouteContext & { isolated: boolean; userKnown: boolean },
+    call: (input: unknown) => Promise<unknown>,
+  ): Promise<unknown> {
+    const wantsAll = ctx.record.allMachines === true;
+    if (!wantsAll || stringOrNull(ctx.record.tabId) || stringOrNull(ctx.record.sessionId)) {
+      return await routeTabCommand(ctx, "getStatus", call);
+    }
+    let primary: unknown = null;
+    let primaryHost: BrowserHost = HERE;
+    if (ctx.toUserDesktop && ctx.remoteTargetId) {
+      const outcome = await callDesktop("getStatus", ctx.record, ctx.remoteTargetId);
+      if (outcome.taken) {
+        primaryHost = { kind: "desktop", clientId: ctx.remoteTargetId, label: outcome.desktopLabel };
+        if (!outcome.ok) throw onMachine(new Error(outcome.error), primaryHost, ctx);
+        primary = outcome.result;
+      }
+    }
+    // This machine's own status is read without building its collection when
+    // it is not the chat's browser: listing must not restore saved tabs.
+    const primaryKnown = primary !== null;
+    const [ownStatus, others] = await Promise.all([
+      primaryKnown ? Promise.resolve(primary) : call(ctx.localBase).catch((error) => {
+        throw onMachine(error, HERE, ctx);
+      }),
+      listEverywhere(ctx, primaryHost),
+    ]);
+    const machine = machineOf(primaryHost, ctx);
+    const status = isRecord(ownStatus) ? ownStatus : {};
+    const merged = {
+      ...status,
+      tabs: annotateTabs(status.tabs, machine),
+      machine,
+      otherBrowsers: others.filter((entry) => entry.tabs.length > 0 || entry.machine.userComputer),
+      route: routeSummary(ctx),
+    };
+    await nameOwners([merged.tabs, ...merged.otherBrowsers.map((entry) => entry.tabs as unknown[])]);
+    return finish(ctx, primaryHost, merged);
+  }
+
+  /** Put chat titles and lane names beside the ids, so a person and an agent can tell whose a tab is. */
+  async function nameOwners(lists: unknown[][]): Promise<void> {
+    if (!args.describeOwners) return;
+    const tabs = lists.flat().filter(isRecord);
+    const chatSessionIds = new Set<string>();
+    const laneIds = new Set<string>();
+    for (const tab of tabs) {
+      const owner = stringOrNull(tab.ownerChatSessionId);
+      const opener = stringOrNull(tab.openedByChatSessionId);
+      const lane = stringOrNull(tab.ownerLaneId);
+      if (owner) chatSessionIds.add(owner);
+      if (opener) chatSessionIds.add(opener);
+      if (lane) laneIds.add(lane);
+    }
+    if (chatSessionIds.size === 0 && laneIds.size === 0) return;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const names = await Promise.race([
+      args.describeOwners({ chatSessionIds: [...chatSessionIds], laneIds: [...laneIds] }).catch(() => null),
+      new Promise<null>((resolve) => {
+        timer = setTimeout(() => resolve(null), OWNER_NAMES_WAIT_MS);
+        timer.unref?.();
+      }),
+    ]);
+    if (timer) clearTimeout(timer);
+    if (!names) return;
+    for (const tab of tabs) {
+      const owner = stringOrNull(tab.ownerChatSessionId);
+      const opener = stringOrNull(tab.openedByChatSessionId);
+      const lane = stringOrNull(tab.ownerLaneId);
+      if (owner && names.chats[owner]) tab.ownerChatTitle = names.chats[owner];
+      if (opener && names.chats[opener]) tab.openedByChatTitle = names.chats[opener];
+      if (lane && names.lanes[lane]) tab.ownerLaneName = names.lanes[lane];
+    }
   }
 
   return {
     route: async (input, call, method) => {
       const ctx = routeContext(input);
       if (!isBuiltInBrowserDesktopBridgeMethod(method)) return await call(ctx.localBase);
+      if (method === "getStatus") return await routeStatus(ctx, call);
       const route = BUILT_IN_BROWSER_METHOD_ROUTES[method];
       switch (route) {
         case "open":
@@ -611,6 +1203,29 @@ export function createRemoteBrowserForwarder(args: {
     replyRemoteCall: (input) => {
       const record = isRecord(input) ? input : {};
       const requestId = stringOrNull(record.requestId);
+      const broadcastEntry = requestId ? pendingBroadcasts.get(requestId) : null;
+      if (requestId && !broadcastEntry && finishedListBroadcasts.has(requestId)) {
+        // Too late for that list, but the desktop is there: wait for it next time.
+        const lateClientId = stringOrNull(record.clientId);
+        if (lateClientId) rememberAnswering(lateClientId);
+        return { ok: false };
+      }
+      if (requestId && broadcastEntry) {
+        // Any desktop may answer a broadcast, once.
+        const clientId = stringOrNull(record.clientId);
+        if (!clientId) return { ok: false };
+        if (record.phase === "taken") {
+          broadcastEntry.taken.add(clientId);
+          return { ok: true };
+        }
+        if (record.phase !== "done" || broadcastEntry.replies.has(clientId)) return { ok: false };
+        const label = desktopLabelFrom(record.desktopLabel) ?? desktopLabels.get(clientId) ?? "another desktop";
+        rememberNewest(desktopLabels, clientId, label, LAST_HOST_CAP);
+        broadcastEntry.replies.set(clientId, { label, ok: record.ok === true, result: record.ok === true ? record.result : null });
+        if (record.ok === true && broadcastEntry.method === "listTabsForAgent") rememberAnswering(clientId);
+        broadcastReplyReceived(broadcastEntry, requestId);
+        return { ok: true };
+      }
       const entry = requestId ? pendingCalls.get(requestId) : null;
       // Only the desktop the command was sent to may answer it.
       if (!requestId || !entry || stringOrNull(record.clientId) !== entry.targetClientId) return { ok: false };
@@ -639,6 +1254,7 @@ export function createRemoteBrowserForwarder(args: {
             ok: false,
             error: stringOrNull(record.error) ?? `The browser on ${desktopLabel} could not run \`${entry.method}\`.`,
             ...(record.code === "needs_pane" ? { needsPane: true } : {}),
+            ...(record.requestCarriesSignIn === true ? { requestCarriesSignIn: true } : {}),
           }),
         };
       }
@@ -651,9 +1267,31 @@ export function createRemoteBrowserForwarder(args: {
         }),
       };
     },
+    attachLocalBridge: (bridge) => {
+      localBridge = bridge;
+    },
+    releaseLaneTabs: async (laneId) => {
+      const id = laneId.trim();
+      if (!id) return;
+      const local = localBridge
+        ? localBridge.releaseLaneTabs({ laneId: id }).catch((error: unknown) => {
+          // No desktop here, or one too old to know the method: nothing to free.
+          args.logger.debug("built_in_browser.release_lane_local_skipped", {
+            laneId: id,
+            reason: error instanceof Error ? error.message : String(error),
+          });
+        })
+        : Promise.resolve();
+      const remote = broadcast("releaseLaneTabs", { laneId: id }, { waitMs: RELEASE_BROADCAST_WAIT_MS });
+      await local;
+      void remote.then((replies) => {
+        args.logger.info("built_in_browser.release_lane", { laneId: id, desktops: replies.size });
+      });
+    },
     dispose: () => {
       for (const requestId of [...pending.keys()]) settle(requestId, null);
       for (const requestId of [...pendingCalls.keys()]) settleCall(requestId, { taken: false });
+      for (const requestId of [...pendingBroadcasts.keys()]) finishBroadcast(requestId);
     },
   };
 }
@@ -670,6 +1308,10 @@ export function withRemoteBrowserForwarding(
   bridge: BuiltInBrowserDesktopBridgeClient,
   forwarder: RemoteBrowserForwarder,
 ): BuiltInBrowserDesktopBridgeClient {
+  forwarder.attachLocalBridge({
+    listTabsForAgent: (input) => bridge.listTabsForAgent(input),
+    releaseLaneTabs: (input) => bridge.releaseLaneTabs(input),
+  });
   return new Proxy(bridge, {
     get(target, property, receiver) {
       if (property === BUILT_IN_BROWSER_ACKNOWLEDGE_REMOTE_REQUEST_METHOD) {

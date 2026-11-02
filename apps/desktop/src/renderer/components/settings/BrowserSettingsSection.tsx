@@ -107,8 +107,8 @@ function BrowserBehaviourSection() {
       <ModernRows>
         <ModernRow
           anchor="browser-tab-limit"
-          title="Tabs per browser"
-          hint={`How many tabs it keeps open, ${BUILT_IN_BROWSER_TAB_LIMIT_MIN}–${BUILT_IN_BROWSER_TAB_LIMIT_MAX}. Agents close their own.`}
+          title="Tabs per project"
+          hint={`How many tabs this computer's browser keeps open for each project, and for chats with no project, ${BUILT_IN_BROWSER_TAB_LIMIT_MIN}–${BUILT_IN_BROWSER_TAB_LIMIT_MAX}. Agents close their own.`}
           control={(
             <span
               onBlur={commitLimit}
@@ -117,7 +117,7 @@ function BrowserBehaviourSection() {
               }}
             >
               <SettingsNumber
-                ariaLabel="Tabs per browser"
+                ariaLabel="Tabs per project"
                 value={draftLimit ?? settings.tabLimit}
                 min={BUILT_IN_BROWSER_TAB_LIMIT_MIN}
                 max={BUILT_IN_BROWSER_TAB_LIMIT_MAX}

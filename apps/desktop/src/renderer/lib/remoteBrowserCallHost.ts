@@ -1,9 +1,10 @@
 import { useEffect, useRef } from "react";
 import type { OpenProjectBinding } from "../../shared/types";
 import { parseLoopbackUrl } from "../../shared/remoteLoopbackUrl";
-import type {
-  BuiltInBrowserRemoteCall,
-  BuiltInBrowserRemoteCallReplyBody,
+import {
+  isBuiltInBrowserRemoteBroadcastMethod,
+  type BuiltInBrowserRemoteCall,
+  type BuiltInBrowserRemoteCallReplyBody,
 } from "../../shared/types/builtInBrowserRemote";
 import { getDesktopClientId, isAddressedToThisDesktop } from "./desktopClient";
 
@@ -19,9 +20,16 @@ import { getDesktopClientId, isAddressedToThisDesktop } from "./desktopClient";
  *
  * Not a component, on purpose. The agent keeps working while the user reads
  * another chat or has Git in the tools pane, so the answer cannot depend on
- * what is mounted. A chat is registered when the Work page shows it and stays
- * registered after the user moves on; only the least recently shown machines
- * are dropped, so an agent that worked an hour ago does not keep a stream open.
+ * what is mounted. A machine is served once a chat on it is shown (the Work
+ * page, a chat pane anywhere) and stays served after the user moves on; only
+ * the least recently shown machines are dropped, so an agent that worked an
+ * hour ago does not keep a stream open.
+ *
+ * A command addressed to this desktop by name is run even for a chat this
+ * window has not shown since it started: the daemon names this desktop only
+ * because the chat's last message came from here, or because the tab is here.
+ * Answering only for chats shown since the last reload made the route depend
+ * on what the user happened to look at (ledger R3).
  */
 
 type RemoteBinding = Extract<OpenProjectBinding, { kind: "remote" }>;
@@ -39,6 +47,10 @@ type ServedMachine = {
   /** Commands already answered, so a replayed event is not run twice. */
   handledIds: Set<string>;
   unsubscribe: () => void;
+  /** When a chat on this machine was last shown here (saved, for resuming after a reload). */
+  shownAt: number;
+  /** The `shownAt` last written to storage. */
+  savedShownAt: number;
 };
 
 /** Machines whose chats are answered at once; each holds one event subscription. */
@@ -79,11 +91,38 @@ function rememberNewest(ids: Set<string>, id: string, cap: number): void {
   }
 }
 
+/**
+ * Which of this desktop's collections a command means, as this window names
+ * it: the chat's registered project, else what the daemon said (its project,
+ * or the personal collection). Null when there is no way to tell, which is an
+ * older daemon asking about a chat this window has not shown: left alone.
+ */
+function servedChatFor(machine: ServedMachine, call: BuiltInBrowserRemoteCall): ServedChat | null {
+  // A lane's release is about every collection, and no chat asks for it.
+  if (call.broadcast && call.method === "releaseLaneTabs") return { chatSessionId: "", laneId: null, projectRoot: null };
+  const registered = call.chatSessionId ? machine.chats.get(call.chatSessionId) ?? null : null;
+  if (registered) return registered;
+  const myId = getDesktopClientId();
+  const addressedHere = Boolean(myId && call.targetClientId === myId);
+  if (!call.broadcast && !addressedHere) return null;
+  if (call.collection !== "project" && call.collection !== "personal") return null;
+  return {
+    chatSessionId: call.chatSessionId ?? "",
+    laneId: call.laneId,
+    // A remote binding names the project by the other machine's path, and the
+    // pane keys that project's tabs by the same path.
+    projectRoot: call.collection === "personal" ? null : machine.binding.rootPath,
+  };
+}
+
 async function handleCall(machine: ServedMachine, call: BuiltInBrowserRemoteCall): Promise<void> {
-  // Meant for the desktop the user is talking from. Another desktop leaves it,
-  // and so does this one for a chat it has never shown.
+  // Meant for the desktop the user is talking from, or the one holding the
+  // tab. Another desktop leaves it. A broadcast is for every desktop.
   if (!isAddressedToThisDesktop(call.targetClientId)) return;
-  const chat = call.chatSessionId ? machine.chats.get(call.chatSessionId) ?? null : null;
+  if (Boolean(call.broadcast) !== isBuiltInBrowserRemoteBroadcastMethod(call.method)) return;
+  const myId = getDesktopClientId();
+  if (call.broadcast && myId && call.excludeClientIds?.includes(myId)) return;
+  const chat = servedChatFor(machine, call);
   if (!chat || !call.requestId || machine.handledIds.has(call.requestId)) return;
   const api = browserApi();
   // A surface with only part of the browser API (the web client) runs nothing.
@@ -112,6 +151,8 @@ async function handleCall(machine: ServedMachine, call: BuiltInBrowserRemoteCall
       ok: false,
       code: "needs_pane",
       error: "This page is on the agent's machine and opens through the Browser pane.",
+      // The pane's request path opens it in the sign-in the agent asked for.
+      requestCarriesSignIn: true,
     });
     return;
   }
@@ -120,7 +161,7 @@ async function handleCall(machine: ServedMachine, call: BuiltInBrowserRemoteCall
     input: {
       ...call.input,
       // Who is calling is the daemon's answer; which tabs is this window's.
-      chatSessionId: chat.chatSessionId,
+      chatSessionId: chat.chatSessionId || undefined,
       laneId: call.laneId ?? chat.laneId ?? undefined,
       ...(chat.projectRoot
         ? { projectRoot: chat.projectRoot, tabCollection: undefined }
@@ -139,6 +180,69 @@ async function handleCall(machine: ServedMachine, call: BuiltInBrowserRemoteCall
     : { phase: "done", desktopLabel, ok: false, error: outcome.error });
 }
 
+/** The machines served, kept so a reload or an update serves them again (ledger R3). */
+const SERVED_MACHINES_STORAGE_KEY = "ade.remoteBrowserCallHost.machines.v1";
+/** A machine not shown for this long is not served again after a reload: it may be gone. */
+const SERVED_MACHINE_RESUME_MAX_AGE_MS = 7 * 24 * 60 * 60_000;
+
+function saveServedMachines(): void {
+  try {
+    for (const machine of machines.values()) machine.savedShownAt = machine.shownAt;
+    const bindings = [...machines.values()].map((machine) => {
+      const { binding } = machine;
+      // The icon is a data URL; the rest is a few names and ids.
+      const { iconDataUrl: _icon, ...rest } = binding;
+      return { ...rest, servedAt: machine.shownAt };
+    });
+    window.localStorage.setItem(SERVED_MACHINES_STORAGE_KEY, JSON.stringify(bindings));
+  } catch {
+    // No storage (the web client, a full disk): served until the next reload.
+  }
+}
+
+/** A saved time older than this is rewritten, so a machine in steady use does not expire. */
+const SHOWN_AT_RESAVE_MS = 24 * 60 * 60_000;
+
+/**
+ * Open the machine's one subscription if it has none, and mark it the most
+ * recently shown. `shownAt` is now for a chat shown here, or the saved time
+ * for a machine served again after a reload.
+ */
+function serveMachine(binding: RemoteBinding, shownAt = Date.now()): ServedMachine | null {
+  const api = browserApi();
+  if (!api?.onRemoteCall) return null;
+  let machine = machines.get(binding.key) ?? null;
+  if (machine) {
+    machine.binding = binding;
+    machine.shownAt = Math.max(machine.shownAt, shownAt);
+  } else {
+    const created: ServedMachine = {
+      binding,
+      chats: new Map(),
+      handledIds: new Set(),
+      unsubscribe: () => {},
+      shownAt,
+      savedShownAt: 0,
+    };
+    created.unsubscribe = api.onRemoteCall((call) => {
+      void handleCall(created, call);
+    }, binding);
+    machine = created;
+  }
+  // Most recently shown last, so the oldest machine is the one dropped.
+  const isNewest = [...machines.keys()].at(-1) === binding.key;
+  machines.delete(binding.key);
+  machines.set(binding.key, machine);
+  while (machines.size > MAX_SERVED_MACHINES) {
+    const oldestKey = machines.keys().next().value;
+    if (oldestKey === undefined) break;
+    machines.get(oldestKey)?.unsubscribe();
+    machines.delete(oldestKey);
+  }
+  if (!isNewest || machine.shownAt - machine.savedShownAt > SHOWN_AT_RESAVE_MS) saveServedMachines();
+  return machine;
+}
+
 /**
  * Answer the browser commands of one chat that runs on `binding`'s machine.
  *
@@ -151,21 +255,8 @@ export function serveRemoteBrowserCalls(
   chat: ServedChat,
 ): void {
   if (binding?.kind !== "remote" || !chat.chatSessionId) return;
-  const api = browserApi();
-  if (!api?.onRemoteCall) return;
-  let machine = machines.get(binding.key) ?? null;
-  if (machine) {
-    machine.binding = binding;
-  } else {
-    const created: ServedMachine = { binding, chats: new Map(), handledIds: new Set(), unsubscribe: () => {} };
-    created.unsubscribe = api.onRemoteCall((call) => {
-      void handleCall(created, call);
-    }, binding);
-    machine = created;
-  }
-  // Most recently shown last, so the oldest machine is the one dropped.
-  machines.delete(binding.key);
-  machines.set(binding.key, machine);
+  const machine = serveMachine(binding);
+  if (!machine) return;
   machine.chats.delete(chat.chatSessionId);
   machine.chats.set(chat.chatSessionId, chat);
   while (machine.chats.size > MAX_CHATS_PER_MACHINE) {
@@ -173,11 +264,34 @@ export function serveRemoteBrowserCalls(
     if (oldest === undefined) break;
     machine.chats.delete(oldest);
   }
-  while (machines.size > MAX_SERVED_MACHINES) {
-    const oldestKey = machines.keys().next().value;
-    if (oldestKey === undefined) break;
-    machines.get(oldestKey)?.unsubscribe();
-    machines.delete(oldestKey);
+}
+
+/**
+ * Serve again the machines this desktop served before it reloaded or updated.
+ * Without it, an agent's commands went to its own machine until the user
+ * happened to open one of its chats here, while the user watched this screen.
+ */
+export function resumeServedRemoteBrowserCalls(): void {
+  let saved: unknown;
+  try {
+    saved = JSON.parse(window.localStorage.getItem(SERVED_MACHINES_STORAGE_KEY) ?? "[]");
+  } catch {
+    return;
+  }
+  if (!Array.isArray(saved)) return;
+  for (const entry of saved.slice(-MAX_SERVED_MACHINES)) {
+    const servedAt = entry && typeof entry === "object" ? (entry as { servedAt?: unknown }).servedAt : null;
+    if (typeof servedAt !== "number" || Date.now() - servedAt > SERVED_MACHINE_RESUME_MAX_AGE_MS) continue;
+    if (
+      entry && typeof entry === "object"
+      && (entry as { kind?: unknown }).kind === "remote"
+      && typeof (entry as { key?: unknown }).key === "string"
+      && typeof (entry as { targetId?: unknown }).targetId === "string"
+      && typeof (entry as { rootPath?: unknown }).rootPath === "string"
+    ) {
+      const { servedAt: _servedAt, ...binding } = entry as RemoteBinding & { servedAt?: number };
+      serveMachine(binding as RemoteBinding, servedAt);
+    }
   }
 }
 

@@ -41,7 +41,7 @@ export function assertWritableDirectory(dir: string): void {
 
 export type BuiltInBrowserSettingsStore = {
   read: () => BuiltInBrowserSettingsPersisted | null | undefined;
-  write: (state: BuiltInBrowserSettings) => void;
+  write: (state: BuiltInBrowserSettingsPersisted) => void;
 };
 
 export function createBuiltInBrowserSettingsController(args: {
@@ -61,6 +61,13 @@ export function createBuiltInBrowserSettingsController(args: {
     loaded = null;
   }
   let current = normalizeBuiltInBrowserSettings(loaded);
+  /**
+   * Whether the person chose the tab limit. Only a chosen limit is saved: one
+   * written with every other setting would pin today's default, so a machine
+   * whose user only picked a search engine kept 10 tabs after the default
+   * became 20.
+   */
+  let tabLimitChosen = typeof loaded?.tabLimit === "number";
 
   const snapshot = (): BuiltInBrowserSettings => ({
     tabLimit: current.tabLimit,
@@ -72,7 +79,8 @@ export function createBuiltInBrowserSettingsController(args: {
 
   const persist = (): void => {
     try {
-      args.store?.write(snapshot());
+      const { tabLimit, ...rest } = snapshot();
+      args.store?.write(tabLimitChosen ? { tabLimit, ...rest } : rest);
     } catch (error) {
       args.getLogger?.()?.warn("built_in_browser.settings_persist_failed", {
         error: error instanceof Error ? error.message : String(error),
@@ -113,6 +121,7 @@ export function createBuiltInBrowserSettingsController(args: {
       }
       const candidate = applyBuiltInBrowserSettingsPatch(current, next);
       if (same(candidate, current)) return snapshot();
+      if (candidate.tabLimit !== current.tabLimit) tabLimitChosen = true;
       current = candidate;
       persist();
       args.getLogger?.()?.info("built_in_browser.settings_changed", {

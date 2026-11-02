@@ -29,25 +29,43 @@ when the user asks for it; see step 10.
 
 ### 1. Open or claim one tab
 
-List tabs first. Reuse a tab owned by the current chat. Plain `open` navigates
+List tabs first: `ade browser status` lists every tab of this project on
+every machine this one can reach, each with its machine, owner, who opened it
+and its sign-in, and how full each browser is. Reuse a tab owned by the
+current chat. Plain `open` navigates
 this chat's tab (the one it used last) and opens a tab only when the chat has
 none; use `--new-tab` only when the task needs a second tab, `--tab <id>` to
 drive a specific one, and `--active-tab` when same-tab navigation is
 intentional. `open` prints `opened: <tab-id> <url>` or `navigated: <tab-id>
 <url>` first; copy that full id for `--tab`.
-Claim an unowned tab with its id and lane. `--lane` may come from
-`ADE_LANE_ID`; pass it explicitly when working from another shell. A personal
-(project-less) chat has no lane and claims with the tab id alone. Keep one
-tab per task and do not claim a tab another chat owns. A tab whose chat went
-idle for 10 minutes lists as `idle (lease lapsed)`; reuse it or close it.
+The owner column says what you may do with a tab:
 
-Treat a tab as a workspace, not a log. `ade browser tabs` prints `tabs N of M`:
-reuse your own tab for follow-up work instead of opening a second one, and when
-the task is done close it with `ade browser close --tab <id>` so the next agent
-does not inherit your tabs. At `N of M` the browser is full; the error lists
-the tabs you may close, so close one rather than asking the user. A tab leased
-by another chat cannot be taken — there is no `--force` for agents; ask the
-user to close it or hand it to this chat.
+- `this chat`: yours. Reuse it, and close it when the task is done.
+- `free — ade browser claim --tab <id>`: no chat holds it (or its chat went
+  idle for 10 minutes). Claim it with that command to drive it. `--lane` comes
+  from `ADE_LANE_ID`; pass it when working from another shell. A personal
+  (project-less) chat claims with the tab id alone.
+- `"<chat title>" · lane <name> (held)`: another chat is using it. You
+  cannot claim it (there is no `--force` for agents), and you should leave it
+  alone. It frees itself 10 minutes after that chat stops using it.
+
+A command without `--tab` acts on this chat's tab. When the chat has none,
+it is refused rather than run in the tab the user has in front: open your
+own, or name one with `--tab`.
+
+Any agent may close any tab, a held one included. Check the owner first:
+close this chat's tabs and free ones; close a held tab only when the task
+needs it; never close a tab `opened by the user` without asking them. `close`
+prints whose tab it closed. A deleted or archived lane frees its tabs and
+leaves them open. An agent's tab is not brought back after ADE restarts; a tab
+the user opened or used keeps its id across a restart.
+
+Treat a tab as a workspace, not a log: reuse your own tab for follow-up work
+instead of opening a second one, and close it with
+`ade browser close --tab <id>` when done so the next agent does not inherit
+it. When a browser is full, the error names the machine and lists only your
+tabs and free agent tabs: close one of those. When it lists none, ask the user
+to close a tab or raise "Tabs per project" in Settings › Browser.
 
 ```bash
 ade --socket browser tabs --text
@@ -192,9 +210,12 @@ retry after hand-back. A public site's certificate error is never trustable.
 A normal tab uses the user's own sign-ins. Signing in there as another
 account (a test user, a second role) signs the user out of that site, and on
 localhost that means every port. Open an isolated tab instead: it has its own
-cookies and storage, kept in memory and wiped when its last tab closes. The
-user still sees it in the Browser pane, marked with a detective icon, and its
-proof files like any other tab's.
+cookies and storage, kept in memory and wiped when its last tab closes. It
+opens in the same browser as your other tabs, so when the user sits at
+another computer it opens there, and they see it in their Browser pane,
+marked with a detective icon. Its proof files like any other tab's. (If their
+ADE is too old to keep an isolated sign-in for a `localhost` page, the tab
+opens on your machine instead and the first output line says so.)
 
 ```bash
 ade --socket browser open localhost:3000/login --profile owner --text
@@ -223,10 +244,18 @@ one you can claim. You do nothing different; the first line of `--text` output
 says where the command ran:
 
 - `browser: on <machine>, the computer the user sits at.` The normal case.
-- `browser: on this machine. The user drives this chat from another computer,
-  which did not take the command…` Their computer is not connected (asleep,
-  closed, or they are on the phone). You are working in a browser they cannot
-  see and that has none of their tabs. Say so if they ask what you see.
+- `browser: on this machine. The user drives this chat from another computer…`
+  Their computer did not answer (asleep, closed, or they are on the phone), or
+  the tab you named is here. You are working in a browser they cannot see.
+  Say so if they ask what you see.
+- `browser: on <machine>, whose browser holds this tab.` A tab on a third
+  machine, reached because you named it.
+
+One task stays on one machine: a command with `--tab` or `--browser-session`
+goes to the machine whose browser holds that tab, wherever the chat's route
+points now. `ade browser status` prints the route: which browser `open` uses,
+why, and when the user's computer last did not answer. Every error names the
+machine whose browser refused (`ADE browser on <machine> …`).
 
 The page is the size of the user's browser pane, open or closed. When that is
 under 640 px wide, `observe` adds a `note:` line (`narrowPageHint` in JSON):
@@ -240,7 +269,7 @@ Add `--here` to use the browser on the machine you run on: to test a page on
 this OS, and for `upload`, `har` and `record`, which read or write a file here
 and are refused while your browser is on the user's computer. `--here` needs
 ADE Desktop open on your machine; without it the command fails and tells you
-so. A tab id belongs to one browser, so keep a task in one of them.
+so.
 
 To show them a page, use `ade --socket browser open <url> --panel`. Writing
 `http://localhost:<port>` in a reply is fine too: their click opens this

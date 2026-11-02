@@ -15,6 +15,10 @@ import {
   BUILT_IN_BROWSER_RUNTIME_STATUS_METHOD,
   type BuiltInBrowserRuntimeStatus,
 } from "../../../shared/types/builtInBrowserRuntimeStatus";
+import {
+  BUILT_IN_BROWSER_LIST_TABS_FOR_AGENT_METHOD,
+  BUILT_IN_BROWSER_RELEASE_LANE_TABS_METHOD,
+} from "../../../../../ade-cli/src/services/builtInBrowser/desktopBridgeMethods";
 import { promisify } from "node:util";
 import type { Logger } from "../logging/logger";
 import { resolveTrustedWindowsTool } from "../../../../../ade-cli/src/lib/trustedWindowsTools";
@@ -491,6 +495,12 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
         })),
       };
       return runtimeStatus;
+    }
+    if (name === BUILT_IN_BROWSER_LIST_TABS_FOR_AGENT_METHOD) {
+      return service.listTabsForAgent(rawParams);
+    }
+    if (name === BUILT_IN_BROWSER_RELEASE_LANE_TABS_METHOD) {
+      return service.releaseLaneTabs({ laneId: normalizedString(rawParams.laneId) });
     }
     if (
       name === "getProfileDiagnostics"
