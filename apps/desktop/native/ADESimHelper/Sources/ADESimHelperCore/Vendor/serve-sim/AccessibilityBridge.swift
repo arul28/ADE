@@ -647,8 +647,10 @@ final class AccessibilityBridge: NSObject {
         // physically too large to be a single tappable element) stays
         // probe-able so we can discover "remote" elements iOS hid under
         // empty-children Groups (Nav bar / Tab Bar / scroll views).
-        if !childDicts.isEmpty || isLikelyContainer(frame: frame) {
+        if !childDicts.isEmpty {
             coverage.insertContainer(frame)
+        } else if isLikelyContainer(frame: frame) {
+            coverage.insertBar(frame)
         } else {
             coverage.insertLeaf(frame)
         }
@@ -778,6 +780,9 @@ final class AccessibilityBridge: NSObject {
 /// fractional pixel between fetches and we don't care.
 struct AccessibilityCoverage {
     private var leafRects: [NSRect] = []
+    /// ADE patch: large elements with no walked children (a tab bar, a nav
+    /// bar). iOS draws them over the content and hosts their items remotely.
+    private var barRects: [NSRect] = []
     private var keys: Set<String> = []
 
     /// Add a known-leaf rect — point-in-rect checks will skip XPC for any
@@ -800,9 +805,24 @@ struct AccessibilityCoverage {
         keys.contains(Self.key(for: rect))
     }
 
+    /// A container with no walked children: dedups by frame like any
+    /// container, and shields its own area (`contains(_ point:)`).
+    mutating func insertBar(_ rect: NSRect) {
+        if keys.insert(Self.key(for: rect)).inserted {
+            barRects.append(rect)
+        }
+    }
+
+    /// ADE patch: a point on a bar is covered only by a leaf inside that bar.
+    /// The walk also lists content scrolled behind a floating bar (a grid
+    /// tile under the tab bar); its frame must not stop the grid from asking
+    /// what is drawn on top there, or the bar's own items are never found.
     func contains(_ point: CGPoint) -> Bool {
+        let bars = barRects.filter { $0.contains(point) }
         for r in leafRects where r.contains(point) {
-            return true
+            if bars.isEmpty || bars.contains(where: { $0.insetBy(dx: -1, dy: -1).contains(r) }) {
+                return true
+            }
         }
         return false
     }

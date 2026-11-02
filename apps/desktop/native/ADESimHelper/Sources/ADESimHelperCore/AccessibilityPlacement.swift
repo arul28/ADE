@@ -98,12 +98,15 @@ extension AccessibilityBridge {
     }
 
     /// The grid's coverage, from frames already on the screen: the same rule
-    /// as the walk (a leaf blocks probes, a container does not).
+    /// as the walk (a leaf blocks probes, a container does not, a bar shields
+    /// its own area).
     static func cover(_ node: [String: Any], into coverage: inout AccessibilityCoverage) {
         let children = (node["children"] as? [[String: Any]]) ?? []
         if let frame = frameOf(node) {
-            if !children.isEmpty || max(frame.width, frame.height) >= 250 {
+            if !children.isEmpty {
                 coverage.insertContainer(frame)
+            } else if max(frame.width, frame.height) >= 250 {
+                coverage.insertBar(frame)
             } else {
                 coverage.insertLeaf(frame)
             }

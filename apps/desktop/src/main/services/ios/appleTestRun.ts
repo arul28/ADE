@@ -114,14 +114,22 @@ function xcodebuildTestTotal(output: string): { executed: number; failed: number
     failed: Number(match[3]),
   }));
   if (!lines.length) return null;
+  // "M failures" counts failed assertions: one test with two failing asserts
+  // adds two. The tests that failed are the distinct failed test cases; the
+  // assertion count stays only when no case line names one (a crash).
+  const failedCases = new Set([...output.matchAll(/Test Case '([^']+)' failed \(/g)].map((match) => match[1]));
+  const total = (line: { executed: number; failed: number; skipped: number }) => ({
+    executed: line.executed,
+    failed: line.failed > 0 && failedCases.size > 0 ? Math.min(failedCases.size, line.failed) : line.failed,
+    skipped: line.skipped,
+  });
   // The line printed after the run-wide suite's own "passed/failed at" line.
   const runSuite = [...output.matchAll(/Test Suite '(?:All tests|Selected tests)' (?:passed|failed) at/g)].pop();
   if (runSuite?.index !== undefined) {
     const after = lines.find((line) => line.index > (runSuite.index ?? 0));
-    if (after) return { executed: after.executed, failed: after.failed, skipped: after.skipped };
+    if (after) return total(after);
   }
-  const largest = lines.reduce((best, line) => (line.executed > best.executed ? line : best));
-  return { executed: largest.executed, failed: largest.failed, skipped: largest.skipped };
+  return total(lines.reduce((best, line) => (line.executed > best.executed ? line : best)));
 }
 
 const MAX_FAILURES = 200;
