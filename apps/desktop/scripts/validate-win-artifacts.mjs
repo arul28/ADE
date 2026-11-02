@@ -261,6 +261,8 @@ function validatePreflight() {
   requireFile("native/ADECaptureHelperWin/src/main.cpp", "Windows capture helper source");
   requireFile("native/ADEDesktopDriverWin/src/main.cpp", "Windows Desktop driver source");
   requireFile("scripts/build-windows-desktop-driver.mjs", "Windows Desktop driver build");
+  requireFile("native/ADEPortScanWin/src/main.cpp", "Windows port scan helper source");
+  requireFile("scripts/build-port-scan-win.mjs", "Windows port scan helper build");
   requireFile("vendor/crsqlite/win32-x64/crsqlite.dll", "Windows cr-sqlite extension");
 
   assertRequiredBundledAdeCliFiles(resolveBundledAdeCliFiles({ allowMissingSources: true }));
@@ -633,6 +635,7 @@ async function validatePackagedRuntime(appDir) {
   const desktopDriverExePath = path.join(resourcesPath, "native", "ade-desktop-driver.exe");
   const nowPlayingExePath = path.join(resourcesPath, "native", "ade-now-playing.exe");
   const cliLauncherExePath = path.join(resourcesPath, "native", "ade-cli-launcher.exe");
+  const portScanExePath = path.join(resourcesPath, "native", "ade-port-scan.exe");
   const musicHostExePath = path.join(resourcesPath, "native", "ade-music-host", "ade-music-host.exe");
   const bundledAdeCliFiles = resolveBundledAdeCliFiles();
   assertRequiredBundledAdeCliFiles(bundledAdeCliFiles);
@@ -677,6 +680,13 @@ async function validatePackagedRuntime(appDir) {
     console.warn("[validate-win-artifacts] Local test build without the CLI launcher (ADE_SKIP_CLI_LAUNCHER_BUILD=1).");
   } else {
     await assertPathExists(cliLauncherExePath, "packaged Windows ADE CLI launcher");
+  }
+  // Dev-server discovery's listener scan; without it every scan starts a
+  // PowerShell again (about a second of CPU each).
+  if (isLocalWindowsTestBuild && process.env.ADE_SKIP_PORT_SCAN_BUILD === "1") {
+    console.warn("[validate-win-artifacts] Local test build without the port scan helper (ADE_SKIP_PORT_SCAN_BUILD=1).");
+  } else {
+    await assertPathExists(portScanExePath, "packaged Windows port scan helper");
   }
   if (isLocalWindowsTestBuild && process.env.ADE_SKIP_MUSIC_HOST_BUILD === "1") {
     console.warn("[validate-win-artifacts] Local test build without the music player host (ADE_SKIP_MUSIC_HOST_BUILD=1).");
@@ -1004,6 +1014,11 @@ async function validateReleaseArtifacts() {
   await validateAuthenticodeSignature(
     path.join(appDir, "resources", "native", "ade-cli-launcher.exe"),
     "Windows ADE CLI launcher",
+    expectedIdentity,
+  );
+  await validateAuthenticodeSignature(
+    path.join(appDir, "resources", "native", "ade-port-scan.exe"),
+    "Windows port scan helper",
     expectedIdentity,
   );
   await validateAuthenticodeSignature(

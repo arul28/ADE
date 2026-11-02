@@ -2,6 +2,8 @@ import { execFile } from "node:child_process";
 import fs from "node:fs";
 
 import { resolveTrustedWindowsTool } from "../../../../../ade-cli/src/lib/trustedWindowsTools";
+import type { Logger } from "../logging/logger";
+import { runWindowsPortScan } from "./windowsPortScan";
 
 /**
  * Which local TCP ports are listening, and which process owns each one.
@@ -47,7 +49,7 @@ export type ProcessLocation = {
 
 
 const SCAN_TIMEOUT_MS = 4_000;
-/** Windows pays for a PowerShell start; give it room, it runs rarely. */
+/** The PowerShell fallback pays for a PowerShell start; give it room. */
 const WINDOWS_SCAN_TIMEOUT_MS = 10_000;
 const MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
 
@@ -140,6 +142,34 @@ const WINDOWS_LISTENER_QUERY = [
   "[Console]::Out.Write((ConvertTo-Json -InputObject @($rows) -Compress -Depth 5))",
 ].join("; ");
 
+/**
+ * The machine's listeners as rows of `WINDOWS_LISTENER_QUERY`'s shape: from
+ * `ade-port-scan.exe` (a few ms), or from that query in a new PowerShell
+ * (about a second) when the helper is missing or failed. Null when neither
+ * could answer.
+ */
+async function readWindowsListenerRows(logger?: Pick<Logger, "warn"> | null): Promise<unknown[] | null> {
+  const native = await runWindowsPortScan(["listeners", "--depth", String(WINDOWS_ANCESTOR_DEPTH)], logger);
+  if (native) return native;
+  let raw: string;
+  try {
+    // Never PATH's `powershell.exe`: this runs on agent activity.
+    raw = await runText(
+      resolveTrustedWindowsTool("powershell"),
+      ["-NoProfile", "-NonInteractive", "-Command", WINDOWS_LISTENER_QUERY],
+      WINDOWS_SCAN_TIMEOUT_MS,
+    );
+  } catch {
+    return null;
+  }
+  try {
+    const parsed: unknown = raw.trim() ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [parsed];
+  } catch {
+    return null;
+  }
+}
+
 type WindowsListenerRow = {
   pid?: unknown;
   ports?: unknown;
@@ -222,9 +252,12 @@ export async function listeningPidsOnPort(
   port: number,
   platform: NodeJS.Platform = process.platform,
   onError?: (error: unknown) => void,
+  logger?: Pick<Logger, "warn"> | null,
 ): Promise<number[] | null> {
   if (!Number.isInteger(port) || port < 1 || port > 65_535) return [];
   if (platform === "win32") {
+    const native = await runWindowsPortScan(["port", String(port)], logger);
+    if (native) return [...new Set(native.map(Number).filter((pid) => Number.isInteger(pid) && pid > 0))];
     try {
       const raw = await runText(
         resolveTrustedWindowsTool("powershell"),
@@ -264,27 +297,14 @@ export async function scanListeningProcesses(input: {
   platform?: NodeJS.Platform;
   /** Locations already known for these pids; only new pids are looked up. */
   knownLocations?: ReadonlyMap<number, ProcessLocation>;
+  /** Told once per process when Windows falls back to PowerShell. */
+  logger?: Pick<Logger, "warn"> | null;
 } = {}): Promise<{ sockets: ListeningSocket[]; locations: Map<number, ProcessLocation> } | null> {
   const platform = input.platform ?? process.platform;
   if (platform === "win32") {
-    let raw: string;
-    try {
-      // Never PATH's `powershell.exe`: this runs on agent activity.
-      raw = await runText(
-        resolveTrustedWindowsTool("powershell"),
-        ["-NoProfile", "-NonInteractive", "-Command", WINDOWS_LISTENER_QUERY],
-        WINDOWS_SCAN_TIMEOUT_MS,
-      );
-    } catch {
-      return null;
-    }
-    let parsed: unknown;
-    try {
-      parsed = raw.trim() ? JSON.parse(raw) : [];
-    } catch {
-      return null;
-    }
-    const rows = (Array.isArray(parsed) ? parsed : [parsed]) as WindowsListenerRow[];
+    const listenerRows = await readWindowsListenerRows(input.logger);
+    if (!listenerRows) return null;
+    const rows = listenerRows as WindowsListenerRow[];
     const sockets: ListeningSocket[] = [];
     const locations = new Map<number, ProcessLocation>();
     for (const row of rows) {
