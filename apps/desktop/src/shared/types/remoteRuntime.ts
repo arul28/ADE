@@ -77,16 +77,10 @@ export type RemoteRuntimeDiscoveredMachine = {
   lastSeenAt: number;
 };
 
-export type RemoteRuntimeDiscoverySeverity = "info" | "warning";
-
+/** Discovery is degraded in a way the person may want to look at. */
 export type RemoteRuntimeDiscoveryDiagnostic = {
-  source: "bonjour" | "tailscale";
-  /**
-   * "info" is a normal, non-actionable observation about the environment (e.g.
-   * optional software like the Tailscale CLI simply isn't installed). "warning"
-   * means discovery is degraded in a way the user may want to look at.
-   */
-  severity: RemoteRuntimeDiscoverySeverity;
+  source: "bonjour";
+  severity: "warning";
   code: string;
   message: string;
   detail: string | null;

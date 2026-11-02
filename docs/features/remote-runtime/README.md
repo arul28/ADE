@@ -496,16 +496,16 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   same control the Connections This Mac card renders, reading the same publisher
   health record, with the periodic `getInfo` poll extracted as a named
   `refreshPublishHealth` so a settled restart re-reads it immediately.
-  Discovery diagnostics are rendered by severity rather than lumped together:
-  `RemoteRuntimeDiscoveryDiagnostic.severity` is `"warning"` (discovery is
-  degraded and worth looking at) or `"info"` (a normal, non-actionable fact
-  about the environment). "Tailscale not installed — LAN discovery only." is
-  `info`, because Tailscale is optional and not having it is not a problem;
-  `tailscale-timeout` and `tailscale-status-failed` remain `warning`. The panel
-  keeps the raw diagnostics array as its one source of truth and derives the
-  warning line and the muted info note from it, so the two cannot drift; a
-  failed `listDiscoveredMachines` call stays a separate string rather than
-  becoming a synthetic diagnostic.
+  Discovery diagnostics are warnings only, and only Bonjour produces one (a
+  failed Wi-Fi scan). Tailscale discovery reports nothing when Tailscale is
+  missing, quit or slow: it only adds Tailscale addresses to computers Bonjour
+  found (Find nearby never lists a Tailscale-only peer), so nothing visible is
+  lost, and a Tailscale note over "Your computers" read as the reason a machine
+  would not connect. A computer whose Tailscale route fails says so in its own
+  connection test, and Account → Private network shows Tailscale's own status.
+  The panel derives its warning line from the diagnostics array; a failed
+  `listDiscoveredMachines` call stays a separate string rather than becoming a
+  synthetic diagnostic.
 - `apps/desktop/src/renderer/components/app/projectTabGrouping.ts` — collapses
   the open local and remote tabs into one group per repository, joined on the
   normalized git origin. A project with no resolvable origin is never merged,
@@ -1760,7 +1760,7 @@ diagnostics with `ADE_ENABLE_DESKTOP_SYNC_HOST=1`.
   connection closed. The destination may still finish. Check that machine
   before retrying; the handoff ID makes an explicit retry reconcile the same
   destination lane/chat rather than automatically replaying the mutation.
-- "Tailscale discovery timed out / failed" warning under the discovered-machines list — surfaced from `discoverLanRuntimes` diagnostics. LAN (Bonjour) discovery still ran; unblock `tailscale` to add tailnet peers. "Tailscale not installed — LAN discovery only." is the `info` variant of the same diagnostic and renders as a muted note rather than a warning: Tailscale is optional, so a plain Mac without it is not in a degraded state.
+- "Couldn't look for computers on this Wi-Fi" warning on the Connections pane — the one discovery diagnostic, from a failed Bonjour scan. Account computers are still listed. Tailscale discovery never reports a problem here; Tailscale's status lives in Account → Private network.
 - "Repair" next to the This Mac / route-publish failure — this Mac's brain cannot read the stored account session, so it never publishes to the account directory even though the app is signed in. The button restarts `com.ade.runtime` and waits for the replacement to answer; the new process re-reads the keychain from scratch. If it reports "Repair failed — quit and reopen ADE", a newer runtime is usually already running and must not be forced down.
 - Agent provider missing or unauthenticated — use the inline `AgentCliAuthCard` to install or authenticate that provider on the active runtime machine.
 - "<Machine> says this device's pairing is out of date — pair it again." — the host was reached and it *rejected* this desktop, so the other routes' `timed out`/`no answer` entries under **Details** are noise. When the machine is also on this ADE account the error card carries a **Pair again** button, which re-runs account-directory adoption (`account.pairMachine`) for that machine. Nothing re-pairs on its own.

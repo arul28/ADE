@@ -16,7 +16,6 @@ import type {
   RemoteRuntimeDiscoveredMachine,
   RemoteRuntimeDiscoveryDiagnostic,
   RemoteRuntimeDiscoveryResult,
-  RemoteRuntimeDiscoverySeverity,
 } from "../../../shared/types/remoteRuntime";
 
 export const ADE_SYNC_MDNS_SERVICE_TYPE = "ade-sync";
@@ -378,10 +377,15 @@ function readLocalSyncDeviceId(): string | null {
   }
 }
 
-async function discoverTailscalePeers(timeoutMs = 1_200): Promise<{
-  machines: RemoteRuntimeDiscoveredMachine[];
-  diagnostics: RemoteRuntimeDiscoveryDiagnostic[];
-}> {
+/**
+ * Peers this computer's Tailscale can see. They only add Tailscale addresses
+ * to computers Bonjour already found (Find nearby never lists a Tailscale-only
+ * peer), so when Tailscale is missing, quit or slow, nothing a person can see is
+ * lost and nothing is reported: Tailscale is optional, and a note about it
+ * above the computer list read as the reason a machine would not connect.
+ * Tailscale's own status lives in Account → Private network.
+ */
+async function discoverTailscalePeers(timeoutMs = 1_200): Promise<RemoteRuntimeDiscoveredMachine[]> {
   try {
     const { stdout } = await execFileAsync(
       resolveTailscaleCliPath(),
@@ -392,60 +396,10 @@ async function discoverTailscalePeers(timeoutMs = 1_200): Promise<{
         windowsHide: true,
       },
     );
-    return {
-      machines: discoveredRuntimesFromTailscaleStatus(
-        JSON.parse(stdout),
-        Date.now(),
-      ),
-      diagnostics: [],
-    };
-  } catch (error) {
-    const nodeError = error as NodeJS.ErrnoException & {
-      killed?: boolean;
-      signal?: NodeJS.Signals | null;
-    };
-    const message = error instanceof Error ? error.message : String(error);
-    const timedOut =
-      nodeError.killed === true || /timed out|timeout|ETIMEDOUT/i.test(message);
-    const notFound =
-      nodeError.code === "ENOENT" ||
-      /ENOENT|not found|no such file/i.test(message);
-    let code: string;
-    let summary: string;
-    // Each message has to say what is missing from the list, not just that a
-    // step failed: the user sees this next to a machine list and needs to know
-    // whether something is absent from it and what to do about that.
-    let severity: RemoteRuntimeDiscoverySeverity;
-    if (timedOut) {
-      code = "tailscale-timeout";
-      summary =
-        "Tailscale didn't answer in time, so Tailscale-only computers aren't listed. Computers on this Wi-Fi still are — reopen this panel to try again.";
-      severity = "warning";
-    } else if (notFound) {
-      // Tailscale is optional. Not having it installed is a fact about the
-      // machine, not a problem with discovery, so it must not read as a warning.
-      code = "tailscale-unavailable";
-      summary =
-        "The Tailscale command wasn't found, so Tailscale-only computers aren't listed. Computers on this Wi-Fi still are — install Tailscale, or set ADE_TAILSCALE_CLI to its path.";
-      severity = "info";
-    } else {
-      code = "tailscale-status-failed";
-      summary =
-        "Tailscale couldn't report its status, so Tailscale-only computers aren't listed. Computers on this Wi-Fi still are — check that Tailscale is running and signed in, then reopen this panel.";
-      severity = "warning";
-    }
-    return {
-      machines: [],
-      diagnostics: [
-        {
-          source: "tailscale",
-          severity,
-          code,
-          message: summary,
-          detail: message || null,
-        },
-      ],
-    };
+    return discoveredRuntimesFromTailscaleStatus(JSON.parse(stdout), Date.now());
+  } catch {
+    // Expected: not installed, not running, or not answering.
+    return [];
   }
 }
 
@@ -478,7 +432,7 @@ export async function discoverLanRuntimes(
           source: "bonjour",
           severity: "warning",
           code: "bonjour-discovery-failed",
-          message: "LAN discovery failed; Tailscale discovery still ran.",
+          message: "Couldn't look for computers on this Wi-Fi. Computers on your ADE account are still listed.",
           detail: message || null,
         });
       } finally {
@@ -490,9 +444,7 @@ export async function discoverLanRuntimes(
       }
     })(),
     (async () => {
-      const tailscale = await discoverTailscalePeers(timeoutMs);
-      diagnostics.push(...tailscale.diagnostics);
-      for (const machine of tailscale.machines) {
+      for (const machine of await discoverTailscalePeers(timeoutMs)) {
         discovered.set(machine.id, machine);
       }
     })(),
