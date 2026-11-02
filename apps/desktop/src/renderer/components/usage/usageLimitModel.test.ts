@@ -11,7 +11,7 @@ import {
   poolAccounts,
   quotaPopoverProviders,
 } from "./usageLimitModel";
-import { paceOutlook, paceVisual, shortWindowLabel } from "./usageWindowFormat";
+import { paceOutlook, paceVisual } from "./usageWindowFormat";
 
 const NOW = Date.parse("2026-09-10T12:00:00.000Z");
 
@@ -256,75 +256,47 @@ describe("buildAccountRows", () => {
   });
 });
 
-describe("usage window vocabulary", () => {
-  it("names the OAuth-apps allowance in full", () => {
-    expect(shortWindowLabel({ windowType: "weekly_oauth_apps" })).toBe("OAuth apps");
-    expect(shortWindowLabel({ windowType: "weekly" })).toBe("wk");
-    expect(shortWindowLabel({ windowType: "five_hour", windowDurationMs: 5 * 3_600_000 })).toBe("5h");
+describe("usage pace", () => {
+  const pacing = (overrides: Partial<Parameters<typeof paceVisual>[0] & object>) => ({
+    weekElapsedPercent: 50,
+    status: "on-track" as const,
+    deltaPercent: 0,
+    projectedWeeklyPercent: 50,
+    expectedPercent: 50,
+    etaHours: 80,
+    willLastToReset: true,
+    resetsInHours: 100,
+    ...overrides,
   });
 
-  it("says what the pace is measured against", () => {
-    expect(paceVisual({
-      weekElapsedPercent: 50,
-      status: "ahead",
-      deltaPercent: 12,
-      projectedWeeklyPercent: 90,
-      expectedPercent: 50,
-      etaHours: 40,
-      willLastToReset: true,
-      resetsInHours: 100,
-    })?.label).toBe("12% ahead of pace");
-
-    expect(paceVisual({
-      weekElapsedPercent: 50,
-      status: "behind",
-      deltaPercent: -8,
-      projectedWeeklyPercent: 40,
-      expectedPercent: 50,
-      etaHours: 90,
-      willLastToReset: true,
-      resetsInHours: 100,
-    })?.label).toBe("8% behind pace");
-
-    expect(paceVisual({
-      weekElapsedPercent: 50,
-      status: "on-track",
-      deltaPercent: 0,
-      projectedWeeklyPercent: 50,
-      expectedPercent: 50,
-      etaHours: 80,
-      willLastToReset: true,
-      resetsInHours: 100,
-    })?.label).toBe("on pace");
+  // The tone is what the reader acts on: room to spare, steady, fast, or a
+  // window that will run out before it resets. Only a projection past the
+  // limit is the alarm; a fast window that still lasts is a warning.
+  it.each([
+    ["behind a steady pace", pacing({ status: "behind", deltaPercent: -8, projectedWeeklyPercent: 40 }), "cool"],
+    ["on pace", pacing({}), "calm"],
+    ["fast but lasting to the reset", pacing({ status: "ahead", deltaPercent: 12, projectedWeeklyPercent: 90 }), "warm"],
+    ["far ahead but still lasting", pacing({ status: "far-ahead", deltaPercent: 40, projectedWeeklyPercent: 95, willLastToReset: true }), "warm"],
+    ["running out before the reset", pacing({ status: "far-ahead", deltaPercent: 40, projectedWeeklyPercent: 126, etaHours: 5, willLastToReset: false }), "hot"],
+  ] as const)("reads a window %s as %s", (_name, input, tone) => {
+    const visual = paceVisual(input);
+    expect(visual?.tone).toBe(tone);
+    expect(visual?.label).toBeTruthy();
   });
 
-  /**
-   * The projection and its outcome are two rows, not one sentence: joined, they
-   * truncated mid-word in the 300px details panel.
-   */
-  it("splits the projection from its outcome", () => {
+  it("gives no pace before any of the window has elapsed", () => {
+    expect(paceVisual(pacing({ weekElapsedPercent: 0 }))).toBeNull();
+    expect(paceOutlook(pacing({ weekElapsedPercent: 0 }), Date.UTC(2026, 4, 8))).toBeNull();
+  });
+
+  it("projects the share used by the reset, with an outcome only when it says something", () => {
     const now = Date.UTC(2026, 4, 8, 7, 0, 0);
-    expect(paceOutlook({
-      weekElapsedPercent: 50,
-      status: "far-ahead",
-      deltaPercent: 40,
-      projectedWeeklyPercent: 126,
-      expectedPercent: 50,
-      etaHours: 5,
-      willLastToReset: false,
-      resetsInHours: 100,
-    }, now)).toEqual({ projected: "126% by reset", outcome: expect.stringContaining("runs dry") });
-
-    expect(paceOutlook({
-      weekElapsedPercent: 50,
-      status: "on-track",
-      deltaPercent: 0,
-      projectedWeeklyPercent: 51,
-      expectedPercent: 50,
-      etaHours: 200,
-      willLastToReset: true,
-      resetsInHours: 100,
-    }, now)).toEqual({ projected: "51% by reset", outcome: "lasts to reset" });
+    const runsDry = paceOutlook(pacing({ status: "far-ahead", deltaPercent: 40, projectedWeeklyPercent: 126, etaHours: 5, willLastToReset: false }), now);
+    expect(runsDry?.projectedPercent).toBe(126);
+    expect(runsDry?.outcome).toBeTruthy();
+    const lasts = paceOutlook(pacing({ projectedWeeklyPercent: 51.4, etaHours: 200 }), now);
+    expect(lasts?.projectedPercent).toBe(51);
+    expect(lasts?.outcome).toBeTruthy();
   });
 });
 

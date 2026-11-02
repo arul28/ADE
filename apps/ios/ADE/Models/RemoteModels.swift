@@ -7772,6 +7772,36 @@ struct MobileUsageAccount: Codable, Equatable, Identifiable {
   /// them. Additive: a host that omits it has none to spend, which is what the
   /// absence already means on every other client.
   var resetCredits: MobileUsageResetCredits? = nil
+  /// The other machine whose reading these windows are, when this host's own
+  /// was missing, expired or older. Quota belongs to the login, so the freshest
+  /// reading on the ADE account wins. Absent when the reading is the host's own,
+  /// and on older hosts.
+  var readingFrom: MobileUsageAccountMachine? = nil
+  /// Signed in on another machine on the ADE account, not on this host. Shown
+  /// so every login's room is in one place; it cannot take a chat here, has no
+  /// `instanceId` and no reset credits, and is never offered as a choice.
+  var notSignedInHere: Bool? = nil
+}
+
+extension MobileUsageAccount {
+  /// Synthesized, except the cross-machine fields are read lossily: a reading
+  /// cue the phone cannot parse drops the cue, never the account (and with it
+  /// the whole snapshot). In an extension so the memberwise init stays.
+  init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    id = try c.decode(String.self, forKey: .id)
+    provider = try c.decode(String.self, forKey: .provider)
+    email = try c.decodeIfPresent(String.self, forKey: .email)
+    plan = try c.decodeIfPresent(String.self, forKey: .plan)
+    instanceId = try c.decodeIfPresent(String.self, forKey: .instanceId)
+    label = try c.decodeIfPresent(String.self, forKey: .label)
+    accentColor = try c.decodeIfPresent(String.self, forKey: .accentColor)
+    machines = try c.decode([MobileUsageAccountMachine].self, forKey: .machines)
+    url = try c.decodeIfPresent(String.self, forKey: .url)
+    resetCredits = try c.decodeIfPresent(MobileUsageResetCredits.self, forKey: .resetCredits)
+    readingFrom = (try? c.decodeIfPresent(MobileUsageAccountMachine.self, forKey: .readingFrom)) ?? nil
+    notSignedInHere = (try? c.decodeIfPresent(Bool.self, forKey: .notSignedInHere)) ?? nil
+  }
 }
 
 struct MobileUsageResetCredits: Codable, Equatable {

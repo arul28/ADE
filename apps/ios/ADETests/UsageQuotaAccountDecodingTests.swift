@@ -95,7 +95,16 @@ final class UsageQuotaAccountDecodingTests: XCTestCase {
           "id": "codex:b@example.com",
           "provider": "codex",
           "email": "b@example.com",
-          "machines": [{ "label": "nucbox-1" }]
+          "machines": [{ "label": "nucbox-1" }],
+          "readingFrom": { "machineKey": "nuc", "label": "nucbox-1", "checkedAt": "2026-09-10T11:30:00.000Z" }
+        },
+        {
+          "id": "codex:elsewhere:c@example.com",
+          "provider": "codex",
+          "email": "c@example.com",
+          "machines": [{ "machineKey": "nuc", "label": "nucbox-1" }],
+          "readingFrom": { "machineKey": "nuc", "label": "nucbox-1" },
+          "notSignedInHere": true
         }
       ],
       "lastPolledAt": "2026-09-10T12:00:00.000Z",
@@ -104,7 +113,10 @@ final class UsageQuotaAccountDecodingTests: XCTestCase {
     """)
 
     let accounts = adeUsagePoolAccounts(snapshot.accounts)
-    XCTAssertEqual(accounts.map(\.initials), ["A", "B"])
+    XCTAssertEqual(accounts.map(\.initials), ["A", "B", "C"])
+    // Another machine's fresher reading, and a login signed in only elsewhere.
+    XCTAssertEqual(accounts.map { $0.readingFrom?.label }, [nil, "nucbox-1", "nucbox-1"])
+    XCTAssertEqual(accounts.map(\.notSignedInHere), [false, false, true])
     // Fixed clock: countdowns are derived from `resetsAt` against the current
     // time, so the forecast below is only deterministic with `now` pinned.
     let now = try XCTUnwrap(adeUsageParseISODate("2026-09-10T12:00:00.000Z"))
@@ -365,7 +377,8 @@ final class UsageQuotaAccountDecodingTests: XCTestCase {
       accounts: [withWindow, quiet]
     )
     XCTAssertEqual(missing.map(\.id), ["claude:1028"])
-    XCTAssertEqual(adeUsageAccountTitle(quiet), "1028")
+    // An account is its email, never its id-shaped label.
+    XCTAssertEqual(adeUsageAccountTitle(quiet), "b@example.com")
 
     let lone = adeUsageAccountsMissingWindows(
       provider: "claude",

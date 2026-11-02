@@ -14,14 +14,23 @@ import SwiftUI
 /// Codex and Claude both grant banked reset credits; a provider that does not,
 /// or a host that predates the `resetCredits` field, gets an empty list and
 /// renders nothing. A macOS host withholds Claude's control because its OAuth
-/// token lives in the Keychain, which ADE will not read unattended.
+/// token lives in the Keychain, which ADE will not read unattended. A login
+/// signed in only on another machine is never offered: the host cannot spend it.
 func resetCreditAccounts(
   in snapshot: MobileUsageQuotaSnapshot,
   provider: String
 ) -> [MobileUsageAccount] {
   (snapshot.accounts ?? []).filter {
-    $0.provider == provider && ($0.resetCredits?.availableCount ?? 0) > 0
+    $0.provider == provider
+      && $0.notSignedInHere != true
+      && ($0.resetCredits?.availableCount ?? 0) > 0
   }
+}
+
+/// What a reset-credit row calls its account: the email, never the internal id.
+func resetCreditAccountName(_ account: MobileUsageAccount) -> String {
+  let email = account.email?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  return email.isEmpty ? "Signed in, no email" : email
 }
 
 /// One row per account with a credit banked: who it belongs to, and the way to
@@ -53,7 +62,7 @@ struct ADEResetCreditRows: View {
           Text("Reset credit banked")
             .font(ADEUsageType.detailFont(.medium))
             .foregroundStyle(ADEColor.textPrimary)
-          Text(account.email ?? account.label ?? account.id)
+          Text(resetCreditAccountName(account))
             .font(ADEUsageType.microFont())
             .foregroundStyle(ADEColor.textMuted)
             .lineLimit(1)

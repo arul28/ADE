@@ -57,8 +57,9 @@ describe("providerInstanceStore", () => {
 
     expect(instances.map((instance) => instance.id)).toEqual(["claude", "codex"]);
     expect(instances.every((instance) => instance.isDefault)).toBe(true);
-    // An account reads as its email, else its id; nothing is named "Default".
-    expect(instances.map((instance) => instance.label)).toEqual(["claude", "codex"]);
+    // An account reads as its email; before sign-in it says so. Never its id,
+    // and nothing is named "Default".
+    expect(instances.map((instance) => instance.label)).toEqual(["Not signed in", "Not signed in"]);
     expect(instances[0].configHome).toBe(path.join(homeDir, ".claude"));
     expect(instances[1].configHome).toBe(path.join(homeDir, ".codex"));
     expect(fs.existsSync(store.registryPath)).toBe(false);
@@ -86,8 +87,9 @@ describe("providerInstanceStore", () => {
     const created = store.create({ provider: "claude", label: "Work Account", accentColor: "#AABBCC" });
 
     expect(created.instance.provider).toBe("claude");
-    // The typed name only shaped the id; the label is the id until sign-in.
-    expect(created.instance.label).toBe("work-account");
+    // The typed name only shaped the id; until sign-in the account has no name.
+    expect(created.instance.id).toBe("work-account");
+    expect(created.instance.label).toBe("Not signed in");
     expect(created.instance.accentColor).toBe("#aabbcc");
     expect(created.instance.isDefault).toBe(false);
     expect(created.instance.signedIn).toBe(false);
@@ -183,7 +185,7 @@ describe("providerInstanceStore", () => {
     const second = store.create({ provider: "claude", label: "   " });
     expect(first.instance.id).toBe("claude-2");
     expect(second.instance.id).toBe("claude-3");
-    expect(first.instance.label).toBe("claude-2");
+    expect(first.instance.label).toBe("Not signed in");
     expect(() => store.create({ provider: "claude", label: "x".repeat(61) })).toThrow(/at most 60/);
     expect(() => store.create({ provider: "cursor", label: "Nope" })).toThrow(/Unknown provider/);
   });
@@ -204,8 +206,8 @@ describe("providerInstanceStore", () => {
       readAccount: async () => ({}),
     });
     const instance = reopened.get(created.instance.id);
-    // The rename is stored but not shown: an account reads as its email or id.
-    expect(instance?.label).toBe("personal");
+    // The rename is stored but not shown: an account reads as its email.
+    expect(instance?.label).toBe("Not signed in");
     expect(instance?.accentColor).toBe("#123abc");
     expect(instance?.isDefault).toBe(true);
     expect(reopened.getDefault("codex").id).toBe(created.instance.id);
@@ -227,7 +229,7 @@ describe("providerInstanceStore", () => {
     store.rename("claude", "Main");
 
     expect(store.list("claude")).toHaveLength(1);
-    expect(store.get("claude")?.label).toBe("claude");
+    expect(store.get("claude")?.label).toBe("Not signed in");
     expect(store.get("claude")?.configHome).toBe(path.join(homeDir, ".claude"));
     expect(store.get("claude")?.isDefault).toBe(true);
   });
@@ -380,8 +382,8 @@ describe("providerInstanceStore", () => {
     expect(work?.label).toBe("work@example.com");
     expect(work?.signedIn).toBe(true);
     expect(refreshed.find((instance) => instance.id === "claude")?.signedIn).toBe(false);
-    // With no email the id is the name.
-    expect(refreshed.find((instance) => instance.id === "claude")?.label).toBe("claude");
+    // With no email and no login, it is named for that, never by its id.
+    expect(refreshed.find((instance) => instance.id === "claude")?.label).toBe("Not signed in");
   });
 
   it("preserves a known account when its config is malformed", async () => {
@@ -624,7 +626,7 @@ describe("providerInstanceStore", () => {
 
     const created = store.create({ provider: "claude", label: "Work" });
 
-    expect(store.get(created.instance.id)?.label).toBe("work");
+    expect(store.get(created.instance.id)?.id).toBe("work");
   });
 
   it("writes the registry file atomically with owner-only permissions", () => {

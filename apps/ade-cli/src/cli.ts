@@ -34679,7 +34679,8 @@ function formatProviderAccounts(value: unknown): string {
       instance.id,
     ]),
     "ADE provider accounts\n(no provider accounts found)",
-    { fullColumns: ["account", "id"] },
+    // The path is copied into commands, so it is never cut short.
+    { fullColumns: ["account", "config home", "id"] },
   );
 }
 
