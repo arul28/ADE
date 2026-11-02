@@ -17,19 +17,10 @@ export type BetaTimerEnv = {
 
 const WORKFLOW_URL = "https://api.github.com/repos/arul28/ADE/actions/workflows/beta.yml";
 
-function githubHeaders(token: string): HeadersInit {
-  return {
-    accept: "application/vnd.github+json",
-    authorization: `Bearer ${token}`,
-    "user-agent": "ade-github-webhook-relay",
-    "x-github-api-version": "2022-11-28",
-  };
-}
-
 // A 4xx means the token or the workflow is wrong, which only a person can fix,
 // so it throws and reaches Sentry. A 5xx is GitHub having a bad moment; the
 // next tick tries again.
-async function checkResponse(response: Response, step: string): Promise<boolean> {
+function checkResponse(response: Response, step: string): boolean {
   if (response.ok) return true;
   if (response.status >= 500) {
     console.warn("beta_timer.github_unavailable", { step, status: response.status });
@@ -44,12 +35,18 @@ export async function runBetaTimer(env: BetaTimerEnv): Promise<void> {
     console.log("beta_timer.no_token");
     return;
   }
-  const headers = githubHeaders(token);
+  const headers = {
+    accept: "application/vnd.github+json",
+    authorization: `Bearer ${token}`,
+    "user-agent": "ade-github-webhook-relay",
+    "x-github-api-version": "2022-11-28",
+  };
 
   // A beta that is building takes about 40 minutes. A start now would only
   // wait behind it in the workflow's concurrency group, so skip this tick.
+  // A preview run counts too; it only delays the next beta by a tick or two.
   const runs = await fetch(`${WORKFLOW_URL}/runs?per_page=10`, { headers });
-  if (!(await checkResponse(runs, "list runs"))) return;
+  if (!checkResponse(runs, "list runs")) return;
   const { workflow_runs: recent = [] } = (await runs.json()) as { workflow_runs?: Array<{ status?: string }> };
   if (recent.some((run) => run.status !== "completed")) {
     console.log("beta_timer.run_active");
@@ -61,6 +58,6 @@ export async function runBetaTimer(env: BetaTimerEnv): Promise<void> {
     headers,
     body: JSON.stringify({ ref: "main" }),
   });
-  if (!(await checkResponse(dispatch, "start the workflow"))) return;
+  if (!checkResponse(dispatch, "start the workflow")) return;
   console.log("beta_timer.dispatched");
 }
