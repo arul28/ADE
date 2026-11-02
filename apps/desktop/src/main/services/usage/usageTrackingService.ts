@@ -117,7 +117,7 @@ import { requirePinnedProviderExecutable } from "../ai/pinnedProviderTools";
 import { CODEX_NO_UPDATE_CHECK_ARGS, providerSelfUpdateEnv } from "../../../shared/pinnedToolSpawnEnv";
 import { resolveCliSpawnInvocation, terminateProcessTree } from "../shared/processExecution";
 import { offThreadSpawnEnabled, OffThreadChild, spawnOffThread, terminateOffThreadChildTree } from "../shared/offThreadSpawn";
-import { stripAnsi } from "../../utils/ansiStrip";
+import { stripAnsi } from "../../../shared/ansiStrip";
 import {
   dynamicTokenPricingUpdatedAt,
   isZeroTokenPrice,

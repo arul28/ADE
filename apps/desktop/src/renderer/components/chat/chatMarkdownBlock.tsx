@@ -239,6 +239,7 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
   onOpenWorkspacePath,
   sceneScopeKey,
   sceneLive,
+  runnableCode = false,
   tone,
 }: {
   markdown: string;
@@ -273,6 +274,12 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
    * scrollback never re-executes generated code.
    */
   sceneLive?: boolean;
+  /**
+   * The body of a settled assistant reply: its shell code blocks may offer
+   * Run (`ChatCodeBlockRun`). Off for everything else, including a reply
+   * whose turn is still streaming.
+   */
+  runnableCode?: boolean;
   /**
    * `thought`: reasoning text (Thought rows, the live thinking block). Smaller
    * and muted, and a thematic break draws as a paragraph gap rather than a
@@ -503,7 +510,7 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
         );
       }
       return isBlock ? (
-        <HighlightedCode code={text} language={language} />
+        <HighlightedCode code={text} language={language} runnable={runnableCode && !sceneLive && !bubble && !thought} />
       ) : pathIsClickable ? (
         <WorkspacePathLink code neutral={neu} onOpen={() => openWorkspacePath(workspacePath!)}>
           {children}
@@ -581,7 +588,7 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
         </a>
       );
     },
-  }), [sceneScopeKey, sceneAnswer, neu, openWorkspacePath, sceneLive, sceneStreaming, streamingMermaidBody, bubble, thought, onLinkContextMenu]);
+  }), [sceneScopeKey, sceneAnswer, neu, openWorkspacePath, sceneLive, sceneStreaming, streamingMermaidBody, bubble, thought, onLinkContextMenu, runnableCode]);
 
   return (
     <div

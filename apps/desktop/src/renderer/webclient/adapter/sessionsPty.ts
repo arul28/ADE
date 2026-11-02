@@ -493,6 +493,30 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
     create: async (args: unknown, pin?: RuntimePinArg): Promise<PtyCreateResult> => {
       assertWebRuntimePinRoutable("pty.create", pin, infra);
       const record = asRecord(args);
+      // A direct launch (a chat code block's Run) runs its interpreter with
+      // argv, owned by the chat; `work.startCliSession` would type the
+      // command word into a shell and drop the rest.
+      if (typeof record.command === "string" && Array.isArray(record.args)) {
+        if (!commands.hasAction("work.runShellBlock")) {
+          throw new Error("Update ADE on this machine to run code blocks from chat.");
+        }
+        const created = await commands.call<PtyCreateResult>(
+          "work.runShellBlock",
+          {
+            laneId: record.laneId,
+            chatSessionId: record.chatSessionId,
+            title: record.title,
+            command: record.command,
+            args: record.args,
+            cols: record.cols,
+            rows: record.rows,
+          },
+          mutation,
+        );
+        terminalRegistry.register(created.sessionId, created.ptyId);
+        events.emit("sessionsChanged", { sessionId: created.sessionId, reason: "created" });
+        return created;
+      }
       const result = await commands.call<Record<string, unknown> | null>(
         "work.startCliSession",
         {

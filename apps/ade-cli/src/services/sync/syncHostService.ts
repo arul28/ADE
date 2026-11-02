@@ -1073,6 +1073,7 @@ const PERSISTED_MOBILE_COMMAND_ACTIONS = new Set<string>([
   "lanes.presence.announce",
   "lanes.presence.release",
   "work.runQuickCommand",
+  "work.runShellBlock",
   "work.startCliSession",
   "work.sendToSession",
   "work.stopRuntime",
@@ -1107,7 +1108,12 @@ function persistedMobileCommandResult(action: string, result: SyncCommandResultP
       },
     };
   }
-  if (action === "work.runQuickCommand" || action === "work.startCliSession" || action === "work.sendToSession") {
+  if (
+    action === "work.runQuickCommand"
+    || action === "work.runShellBlock"
+    || action === "work.startCliSession"
+    || action === "work.sendToSession"
+  ) {
     const raw = safeObjectValue(result.result);
     const replayResult: Record<string, unknown> = {};
     if (typeof raw?.sessionId === "string") replayResult.sessionId = raw.sessionId;

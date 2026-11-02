@@ -1,5 +1,5 @@
 import type { JevAnswer, JevQuestions } from "../../../shared/types/jev";
-import { stripAnsi } from "../../utils/ansiStrip";
+import { stripAnsi } from "../../../shared/ansiStrip";
 import { redactSecrets } from "../../utils/redaction";
 
 /**

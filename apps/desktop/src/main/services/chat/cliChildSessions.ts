@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import { stripAnsiWithOptions } from "../../utils/ansiStrip";
+import { stripAnsiWithOptions } from "../../../shared/ansiStrip";
 import { isTerminalChromeLine } from "../../utils/sessionSummary";
 import { claudeSessionPath } from "../externalSessions/discoverClaude";
 import { findCodexRolloutPathBySessionIdAsync } from "../externalSessions/discoverCodex";

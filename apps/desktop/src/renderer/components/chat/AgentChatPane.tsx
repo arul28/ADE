@@ -226,6 +226,7 @@ import {
 } from "./AgentChatMessageList";
 import { classifyLiveEventBatch, createChatLiveEventsStore, createComposerDraftStore, type ChatLiveEventsStore, type ComposerDraftStore } from "./chatLiveEvents";
 import { SceneReplyContext } from "./SceneFrame";
+import { ChatTerminalRevealContext } from "./ChatCodeBlockRun";
 import { UsageLimitChip } from "./UsageLimitChip";
 import { ChatWorkspacePathProvider, useWorkspacePathOpener } from "./chatWorkspacePaths";
 import { ChatRuntimeScopeProvider, useChatScopeDerivation } from "./ChatRuntimeScope";
@@ -4936,6 +4937,9 @@ export function AgentChatPane({
       setTerminalRevealRequest({ ...terminal, nonce: ++terminalRevealNonceRef.current });
     }
   }, [hasExternalTerminalPane, openTerminalPanel]);
+  // A code block's Run reaches the pane through context; stable so a
+  // `terminalPaneOpen` flip re-renders no armed block.
+  const revealChatTerminalStable = useLatestCallback(revealChatTerminal);
   const [rightPaneSplit, setRightPaneSplit] = useState<number>(() => {
     try {
       const raw = window.sessionStorage.getItem("ade.chat.rightPaneSplit");
@@ -19334,6 +19338,7 @@ export function AgentChatPane({
                     <ChatInfoHostContext.Provider value={true}>
                     <ThreadEntityProvider skillNames={threadEntitySkillNames}>
                       <SceneReplyContext.Provider value={subagentView ? null : handleSceneReply}>
+                      <ChatTerminalRevealContext.Provider value={subagentView || !chatTerminalVisible ? null : revealChatTerminalStable}>
                       <LiveChatMessageList
                         liveTranscript={subagentView ? null : liveTranscript}
                         key={renderedSessionId ?? "chat-draft"}
@@ -19425,6 +19430,7 @@ export function AgentChatPane({
                         onOpenTurnSources={subagentView ? undefined : openTurnSources}
                         onForkFromTurn={subagentView || !canShowHandoff || !handoffForkSupported ? undefined : openForkFromTurn}
                       />
+                      </ChatTerminalRevealContext.Provider>
                       </SceneReplyContext.Provider>
                     </ThreadEntityProvider>
                     </ChatInfoHostContext.Provider>

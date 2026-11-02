@@ -55,6 +55,9 @@ export function isMobileAppBuildTooOld(peer: {
 // hello_ok.features.commandRouting.actions. They must not become part of the
 // required set below, because older mobile builds do not implement them.
 export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
+  // Run a chat reply's shell code block in a new terminal of that chat.
+  // Optional: a client hides or refuses Run against a brain without it.
+  "work.runShellBlock",
   // Reorder one staged message. Optional: a phone hides the reorder controls
   // against a brain that does not advertise it.
   "chat.moveSteer",

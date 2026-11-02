@@ -2604,6 +2604,22 @@ export type SyncRunQuickCommandArgs = {
   tracked?: boolean;
 };
 
+/**
+ * Run a chat reply's shell code block (`work.runShellBlock`): a new terminal
+ * owned by the chat, in its lane, running the interpreter directly with the
+ * script as an argument. The client builds `command`/`args`
+ * (`planShellBlockRun`), so the script reaches the interpreter unquoted.
+ */
+export type SyncRunShellBlockArgs = {
+  laneId: string;
+  chatSessionId: string;
+  title: string;
+  command: string;
+  args: string[];
+  cols?: number;
+  rows?: number;
+};
+
 export type SyncCliLaunchProvider =
   | "claude"
   | "codex"
@@ -2841,6 +2857,7 @@ export type SyncRemoteCommandAction =
   | "session.undoBoardMove"
   | "session.clearWokeMarker"
   | "work.runQuickCommand"
+  | "work.runShellBlock"
   | "work.startCliSession"
   | "work.resumeCliSession"
   | "work.listExternalSessions"

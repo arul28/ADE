@@ -3,7 +3,7 @@
  * Relocated from packs/transcriptInsights.ts after pack system removal.
  */
 
-import { stripAnsi } from "../../utils/ansiStrip";
+import { stripAnsi } from "../../../shared/ansiStrip";
 
 export type InferredTestOutcome = {
   status: "pass" | "fail";

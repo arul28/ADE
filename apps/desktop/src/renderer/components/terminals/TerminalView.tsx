@@ -2448,6 +2448,16 @@ async function tryReadReplay(
   return null;
 }
 
+/**
+ * An ended session's replay is all it will ever print, so it can stand in for
+ * live output this view already drew, by erasing that first. Only on the
+ * normal buffer: an alternate-screen app repaints in place, and erasing there
+ * would not remove what was drawn.
+ */
+function canReplayOverLiveData(runtime: CachedRuntime): boolean {
+  return !runtime.displayedLiveDataBeforeHydration || terminalOnNormalBuffer(runtime);
+}
+
 async function readInitialHydrationData(runtime: CachedRuntime): Promise<InitialHydrationData> {
   // Determine disposed-ness via sessions.get so we work for chat-CLI sessions
   // too (terminal.preview rejects isPersistedChatToolType records and would
@@ -2467,8 +2477,10 @@ async function readInitialHydrationData(runtime: CachedRuntime): Promise<Initial
 
   // Prefer replay for disposed sessions BEFORE attempting terminal.preview —
   // preview throws for chat-CLI tool types and the throw would swallow the
-  // replay opportunity.
-  if (sessionDisposed && !runtime.displayedLiveDataBeforeHydration) {
+  // replay opportunity. A session that ended while this view was mounting
+  // (a quick command) may already have drawn its live output; the replay
+  // replaces it (`finalizeHydration`), except on the alternate screen.
+  if (sessionDisposed && canReplayOverLiveData(runtime)) {
     const replay = await tryReadReplay(runtime, sessionExitCode);
     if (replay) return replay;
   }
@@ -2493,7 +2505,7 @@ async function readInitialHydrationData(runtime: CachedRuntime): Promise<Initial
       !sessionDisposed
       && previewSessionStatus
       && previewSessionStatus !== "running"
-      && !runtime.displayedLiveDataBeforeHydration
+      && canReplayOverLiveData(runtime)
     ) {
       const replay = await tryReadReplay(runtime, previewSessionExitCode);
       if (replay) return replay;
@@ -2788,7 +2800,11 @@ function startHydration(runtime: CachedRuntime) {
     // that history again. Erase it in the same write, or every park/reveal
     // stacks another copy into scrollback. Only the normal buffer accumulates:
     // an alternate-screen payload repaints its viewport in place.
-    const eraseStale = runtime.staleContentBeforeHydration && terminalOnNormalBuffer(runtime);
+    // A replay also replaces live output drawn before it (a session that ended
+    // while this view mounted): the replay holds that output too.
+    const eraseStale = (runtime.staleContentBeforeHydration
+      || (data.source === "replay" && runtime.displayedLiveDataBeforeHydration))
+      && terminalOnNormalBuffer(runtime);
     runtime.staleContentBeforeHydration = false;
     if (data.source === "replay") {
       // Replay mode: enlarge scrollback so the full transcript stays

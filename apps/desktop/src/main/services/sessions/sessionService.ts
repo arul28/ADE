@@ -42,7 +42,7 @@ import {
   SESSION_WAKE_REASONS,
 } from "../../../shared/types";
 import { isSettleTupleSettled, isWakingSessionError } from "../../../shared/sessionCanonicalState";
-import { stripAnsi } from "../../utils/ansiStrip";
+import { stripAnsi } from "../../../shared/ansiStrip";
 import { readHistoryFileSync } from "../storage/historyCompression";
 import { resolveChatTranscriptReadPath } from "../storage/legacyChatTranscripts";
 import {

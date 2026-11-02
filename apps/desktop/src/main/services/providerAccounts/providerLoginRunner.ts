@@ -26,7 +26,7 @@ import {
   type ProviderInstanceLoginCommand,
   type ProviderLoginStatus,
 } from "../../../shared/types/providerInstances";
-import { stripAnsi } from "../../utils/ansiStrip";
+import { stripAnsi } from "../../../shared/ansiStrip";
 import { userProcessEnv } from "../shared/hostRuntimeEnv";
 import {
   killWindowsProcessTree,

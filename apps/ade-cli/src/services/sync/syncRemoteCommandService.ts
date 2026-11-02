@@ -241,6 +241,7 @@ import type {
   SyncStartCliSessionResult,
   SyncWebPairingInfo,
   SyncRunQuickCommandArgs,
+  SyncRunShellBlockArgs,
   SyncMacDesktopStatus,
   SyncMacDesktopRecordingState,
   MacDesktopClickArgs,
@@ -2192,6 +2193,34 @@ function parseQuickCommandArgs(value: Record<string, unknown>): SyncRunQuickComm
     rows: asOptionalNumber(value.rows),
     toolType,
     tracked: asOptionalBoolean(value.tracked),
+  };
+}
+
+/** The script travels as one argument; past this it would not fit a command line anyway. */
+const MAX_SHELL_BLOCK_ARGS_CHARS = 128_000;
+
+function parseRunShellBlockArgs(value: Record<string, unknown>): SyncRunShellBlockArgs {
+  const laneId = requireString(value.laneId, "work.runShellBlock requires laneId.");
+  const chatSessionId = requireString(value.chatSessionId, "work.runShellBlock requires chatSessionId.");
+  const title = requireString(value.title, "work.runShellBlock requires title.");
+  const command = requireString(value.command, "work.runShellBlock requires command.");
+  // Not `asStringArray`: arguments are passed through untrimmed, and an
+  // empty one is still an argument.
+  if (!Array.isArray(value.args) || !value.args.every((entry) => typeof entry === "string")) {
+    throw new Error("work.runShellBlock requires args as an array of strings.");
+  }
+  const commandArgs = value.args as string[];
+  if (commandArgs.reduce((total, entry) => total + entry.length, 0) > MAX_SHELL_BLOCK_ARGS_CHARS) {
+    throw new Error("work.runShellBlock: the script is too long to run.");
+  }
+  return {
+    laneId,
+    chatSessionId,
+    title,
+    command,
+    args: commandArgs,
+    cols: asOptionalNumber(value.cols),
+    rows: asOptionalNumber(value.rows),
   };
 }
 
@@ -4593,6 +4622,22 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
       cols: parsed.cols ?? 120,
       rows: parsed.rows ?? 36,
       toolType: (parsed.toolType ?? "shell") as TerminalToolType,
+    });
+  });
+  // Not queueable: a code block runs when the person confirms it, never later
+  // on a reconnect.
+  register("work.runShellBlock", { viewerAllowed: false, controllerAllowed: true, queueable: false }, async (payload) => {
+    const parsed = parseRunShellBlockArgs(payload);
+    return await args.ptyService.create({
+      laneId: parsed.laneId,
+      chatSessionId: parsed.chatSessionId,
+      title: parsed.title,
+      command: parsed.command,
+      args: parsed.args,
+      tracked: true,
+      cols: clampCliDimension(parsed.cols, 100, 20, MAX_CLI_COLS),
+      rows: clampCliDimension(parsed.rows, 28, 4, MAX_CLI_ROWS),
+      toolType: "shell",
     });
   });
   register("work.startCliSession", { viewerAllowed: false, controllerAllowed: true, queueable: true }, async (payload) => {

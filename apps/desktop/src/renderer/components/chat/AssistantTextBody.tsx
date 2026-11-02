@@ -77,6 +77,7 @@ export const AssistantTextBody = React.memo(function AssistantTextBody({
         onOpenWorkspacePath={onOpenWorkspacePath}
         sceneScopeKey={sceneScopeKey}
         sceneLive={sceneLive}
+        runnableCode={!sceneLive}
       />
     </div>
   );

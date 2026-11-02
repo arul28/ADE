@@ -166,7 +166,7 @@ import {
   PROVIDER_SESSION_HANDLE_CAPTURE_DELAYS_MS,
 } from "../externalSessions/providerSessionHandles";
 import { claudeAgentSkillPluginRoots } from "../skills/agentSkillRuntimeService";
-import { stripAnsi } from "../../utils/ansiStrip";
+import { stripAnsi } from "../../../shared/ansiStrip";
 import {
   buildCliStatusRequest,
   classifyCliStatus,

@@ -1282,7 +1282,7 @@ import {
   sanitizePortableGitRemote,
 } from "../../../shared/crossMachineHandoff";
 import { gitRemoteIdentity, isSameGitRepository, resolveGithubSshAliasUrl } from "../github/githubSshAlias";
-import { stripAnsi } from "../../utils/ansiStrip";
+import { stripAnsi } from "../../../shared/ansiStrip";
 import type { createCtoStateService } from "../cto/ctoStateService";
 import type { CtoMemoryService } from "../cto/ctoMemoryService";
 import {
