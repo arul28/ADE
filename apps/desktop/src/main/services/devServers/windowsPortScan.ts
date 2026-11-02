@@ -1,8 +1,6 @@
-import { execFile } from "node:child_process";
-
 import type { Logger } from "../logging/logger";
 import { resolveWindowsPortScanBinary } from "../native/nativeHelperPaths";
-import { execFileOffThread, offThreadSpawnEnabled } from "../shared/offThreadSpawn";
+import { runReapedCommand } from "../shared/runReapedCommand";
 
 /**
  * Windows listener and process reads through `ade-port-scan.exe`
@@ -43,33 +41,6 @@ function logFallbackOnce(logger: Pick<Logger, "warn"> | null | undefined, reason
   logger.warn("dev_servers.native_scan_fallback", { reason, ...detail });
 }
 
-function run(command: string, args: string[]): Promise<{ stdout: string; error: string | null }> {
-  if (offThreadSpawnEnabled()) {
-    // CreateProcess blocks the calling thread on Windows; keep it off the brain's loop.
-    return execFileOffThread(command, args, { timeoutMs: HELPER_TIMEOUT_MS, maxBuffer: MAX_OUTPUT_BYTES }).then((result) => ({
-      stdout: result.stdout,
-      error: result.error
-        ? result.error.message
-        : result.exitCode !== 0
-          ? `exit ${result.exitCode}: ${result.stderr.trim().slice(0, 300)}`
-          : null,
-    }));
-  }
-  return new Promise((resolve) => {
-    execFile(
-      command,
-      args,
-      { timeout: HELPER_TIMEOUT_MS, maxBuffer: MAX_OUTPUT_BYTES, windowsHide: true, encoding: "utf8" },
-      (error, stdout, stderr) => {
-        resolve({
-          stdout: stdout ?? "",
-          error: error ? `${error.message}${stderr ? `: ${String(stderr).trim().slice(0, 300)}` : ""}` : null,
-        });
-      },
-    );
-  });
-}
-
 /**
  * One helper read: `["listeners"]`, `["port", "<n>"]` or `["processes"]`.
  * Resolves to the printed JSON array, or null when the caller should ask
@@ -84,7 +55,14 @@ export async function runWindowsPortScan(
     logFallbackOnce(logger, "helper_missing");
     return null;
   }
-  const { stdout, error } = await run(command, args);
+  // Off the event loop on Windows, where CreateProcess blocks the calling thread.
+  const result = await runReapedCommand(command, args, { timeoutMs: HELPER_TIMEOUT_MS, maxBuffer: MAX_OUTPUT_BYTES });
+  const stdout = result.stdout;
+  const error = result.error
+    ? result.error.message
+    : result.exitCode !== 0
+      ? `exit ${result.exitCode}: ${result.stderr.trim().slice(0, 300)}`
+      : null;
   let parsed: unknown = null;
   if (!error) {
     try {
