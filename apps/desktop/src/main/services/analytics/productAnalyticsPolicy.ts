@@ -345,6 +345,11 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // Whether an installation opens find, on which surface, and whether the
   // palette's words get used. Never the query, the chat, the diff, or a match.
   "find_opened",
+  // A shell code block in a chat reply was run after its confirm, and its
+  // output was sent back to the agent. Never the command, its output, the
+  // chat, the lane, the machine, or the exit code.
+  "code_block_run",
+  "code_block_output_sent",
   // Lane setup choices made in the renderer: template setup, hiding its prompt,
   // and starting package updates. Never the lane, package details, or errors.
   "template_setup_started",

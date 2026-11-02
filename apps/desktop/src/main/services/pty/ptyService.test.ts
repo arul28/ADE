@@ -350,7 +350,7 @@ vi.mock("../git/git", () => ({
   runGit: mocks.runGit,
 }));
 
-vi.mock("../../utils/ansiStrip", () => ({
+vi.mock("../../../shared/ansiStrip", () => ({
   stripAnsi: mocks.stripAnsi,
 }));
 

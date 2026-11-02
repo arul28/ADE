@@ -816,6 +816,15 @@ A handful have more logic:
 - **`work.runQuickCommand`** — constructs a `PtyCreateArgs`, calls
   `ptyService.create`, and returns the PTY handle for the controller
   to subscribe to via `terminal_subscribe`.
+- **`work.runShellBlock`** — runs a chat reply's shell code block. The chat
+  must be in the given lane (the lane picks the folder, the chat owns the
+  terminal), then `ptyService.create` with `chatSessionId`, the client-built interpreter
+  `command` and `args` (the script is one argument, at most 128,000
+  UTF-8 bytes in all), `toolType: "shell"`, tracked, with the host's own
+  `SHELL_BLOCK_RUN_ENV` (pagers off); the client sends no environment. Controller-only and not
+  queueable, so a block runs when the person confirms it and never later on a
+  reconnect. Optional in the mobile compatibility contract: clients feature-
+  detect it from `hello_ok.features.commandRouting.actions`.
 - **`work.startCliSession`** — runtime-side mobile CLI launcher used by
   the iOS Work "new session" surface. Args are validated through
   `parseStartCliSessionArgs`,

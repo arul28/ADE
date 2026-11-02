@@ -1,4 +1,4 @@
-import { stripAnsi } from "../../utils/ansiStrip";
+import { stripAnsi } from "../../../shared/ansiStrip";
 
 /**
  * Splits raw terminal transcript bytes into newline-aligned chunks for FTS

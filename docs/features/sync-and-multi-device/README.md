@@ -2455,7 +2455,7 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   `usage.getAdeStats`, `usage.getUsageRollup`, `usage.getQuotaSnapshot`,
   `usage.refreshQuota`,
   `prs.getMobileSnapshot`, `lanes.presence.*`,
-  `work.runQuickCommand`,
+  `work.runQuickCommand`, `work.runShellBlock`,
   `work.startCliSession`, `work.listExternalSessions`,
   `work.getExternalSessionDetail`, `work.importExternalSession`,
   `chat.recoverCodexTurn`, `chat.regenerateSessionMetadata`, `modelPicker.*`, …).
@@ -4036,8 +4036,9 @@ short-lived `mobileCommandResultCache` (TTL 30 minutes, 512 entries)
 plus a persisted journal, so a phone that retries the same
 `commandId` after a reconnect receives the cached `command_ack` /
 `command_result` instead of double-executing the action. Persisted
-results are intentionally narrow: `work.runQuickCommand` and
-`work.startCliSession` keep only the returned `sessionId` / `ptyId`
+results are intentionally narrow: `work.runQuickCommand`,
+`work.runShellBlock` and `work.startCliSession` keep only the returned
+`sessionId` / `ptyId`
 (and the `TerminalSessionSummary` for CLI launches), while failed
 commands store a generic failure message instead of the original
 payload.

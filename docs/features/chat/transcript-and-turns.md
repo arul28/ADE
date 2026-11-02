@@ -1639,6 +1639,52 @@ The chat list owns scroll anchoring (`overflow-anchor: none` on the pane):
 - **Code blocks.** `HighlightedCode` renders a cached highlight on the first
   frame, and the plain fallback and Shiki's `<pre>` share one font size, line
   height, and wrapping, so highlighting never changes a measured row's height.
+- **Run on shell code blocks** (`ChatCodeBlockRun.tsx`, rules in
+  `shellCodeBlockRun.ts`). A settled assistant reply's `bash`, `sh`, `zsh`,
+  `shell` and `console` blocks, and `powershell`/`pwsh`/`ps1` blocks, offer
+  Run beside Copy. `MarkdownBlock` passes `runnableCode` only from
+  `AssistantTextBody` and never while the reply's turn is live; user bubbles
+  and reasoning never get it. The control mounts when the block is first
+  pointed at or focused, so an untouched block pays one flag. A click opens a
+  confirm with the exact script, the chat's machine and the lane folder;
+  confirm calls `pty.create` with the chat's runtime pin, owned by the chat
+  (`chatSessionId`), running the interpreter directly with the script as an
+  argument (`bash -c <script>`, `powershell.exe -EncodedCommand`). That keeps
+  heredocs and multi-line scripts byte-exact whatever the login shell is,
+  and the PTY's exit is the command's exit code. It runs with
+  `SHELL_BLOCK_RUN_ENV` (`PAGER=cat`, `GIT_PAGER=cat`), so `git log` or
+  `git diff` ends instead of waiting at a `less` prompt. A `console` block runs only
+  its `$ `/`% ` prompt lines (with `\` continuations). The chat's machine is
+  Windows when its lane folder is a Windows path: there PowerShell blocks run
+  and bash blocks are disabled with a reason; elsewhere the reverse. `cmd`
+  and `bat` blocks never run (cmd cannot take a multi-line script as one
+  argument). A personal chat, an archived lane, an offline machine, hidden
+  control characters and over-long scripts disable Run with a reason; a lane
+  whose folder is gone is refused by the brain (`resolveLaneLaunchContext`),
+  and the block shows that error. The new terminal opens in the chat's tools
+  pane through `ChatTerminalRevealContext` plus `requestChatTerminalFocus`,
+  which hands the drawer the terminal itself so it can show one that already
+  ended; the pane opens it only while it still shows the chat that started
+  the run. The run settles on the PTY's exit event, or on the session's own
+  status (`sessions.get`, read at start and then at a slow pace while it
+  runs) when the event feed misses it: a remote machine's feed can start
+  late, and the hosted web reports an exit only to a subscribed view. After the exit the block offers "Send output to the agent", which
+  reads what the terminal shows: the host's terminal snapshot
+  (`terminal.preview`), replayed into an offscreen xterm and read back as
+  lines, scrollback included. Not the raw transcript, because a Windows
+  terminal (ConPTY) repaints its screen with cursor moves, and its raw output
+  holds every repaint (blank rows, repeated lines). Without a snapshot (an
+  older host, the hosted web) it falls back to the raw transcript, with escapes
+  stripped and carriage-return redraws collapsed. It sends command, exit code
+  and the last 20,000 characters as a normal user message on the chat's pin.
+  Nothing is sent without that click. Windows PowerShell 5.1 itself drops
+  table output still waiting to print when a script ends in `exit` or `throw`
+  (as `powershell -Command` does anywhere); that output never reaches the
+  terminal.
+  Runs live in a module store keyed by chat and block, so a row that scrolls
+  away keeps its result. The hosted web client sends the same launch as
+  `work.runShellBlock`; a host that does not advertise it gets an "update
+  ADE" refusal.
 
 ## History snapshots, scroll-back, and misses
 

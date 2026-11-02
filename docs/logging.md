@@ -1192,6 +1192,24 @@ case is four accepted events per installation per day, inside the existing
 ceiling. No ceiling was raised. The dashboard spec is deliberately untouched: no
 card asks this yet.
 
+Running a shell code block from a chat reply records the existing
+`ade_feature_used` event with `feature: "chat"` and `source: "renderer_route"`:
+`action: "code_block_run"`, `outcome: "started"` once the confirmed run's
+terminal exists, and `action: "code_block_output_sent"`,
+`outcome: "completed"` once "Send output to the agent" delivered the message.
+It is emitted from the renderer (`ChatCodeBlockRun.tsx`) because a run has no
+backend mutation of its own: on the desktop it is an ordinary terminal create,
+and the hosted client's `work.runShellBlock` is deliberately not in the usage
+ledger, so each run is counted once whatever the client. The product question
+is whether people run blocks from chat and close the loop by sending the
+output. Nothing finer crosses: no command, language, output, exit code, chat,
+lane, folder, or machine. A cancelled confirm, a disabled button, and a failed
+start emit nothing. A per-action `chat_<action>` key with a 24-hour minimum
+interval bounds this to two accepted events per installation per UTC day,
+inside the existing `ade_feature_used` 140-per-day / 30-per-minute limits and
+the shared 200-event ceiling; no ceiling was raised. The dashboard spec is
+deliberately untouched: no card asks this yet.
+
 Which live view an installation watches an iOS simulator through records the
 same `ade_feature_used` event from the drawer's single start path, with
 `feature: "work"`, `action: "ios_live_view"`, `source: "renderer_route"`, and a

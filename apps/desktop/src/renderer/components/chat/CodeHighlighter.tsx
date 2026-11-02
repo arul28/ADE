@@ -8,6 +8,9 @@ import type { Element as HastElement, Root as HastRoot } from "hast";
 import type { BundledLanguage, GrammarState as ShikiGrammarState } from "shiki";
 import { captureError } from "../../../shared/sentry/capture";
 import { LRUCache } from "./lruCache";
+import { ShellCodeBlockRunButton, ShellCodeBlockRunStatus, shellBlockHasRun } from "./ChatCodeBlockRun";
+import { shellBlockDialect } from "./shellCodeBlockRun";
+import { CODE_BLOCK_ACTION_BUTTON_CLASS, CODE_BLOCK_ACTION_BUTTON_STYLE } from "./codeBlockActionButton";
 
 /* ── LRU cache for highlighted HTML ── */
 
@@ -272,25 +275,27 @@ function DiffCodeBlock({ code }: { code: string }) {
 
 /* ── Copy button ── */
 
-function CodeCopyButton({ code, position }: { code: string; position: CodeBlockCopyButtonPosition }) {
+/**
+ * The block's controls: Copy, and Run when the block is a runnable shell
+ * block (`leading`, drawn before Copy). Run mounts when the block takes focus,
+ * which for a keyboard is Copy, so it sits after Copy in the DOM (forward Tab
+ * reaches it) and before it on screen.
+ */
+function CodeCopyButton({ code, position, leading }: { code: string; position: CodeBlockCopyButtonPosition; leading?: React.ReactNode }) {
   const { copy, copied } = useCopyToClipboard();
 
   // "auto" wraps the button in a sticky row so it tracks the transcript scroll; top/bottom stay absolute.
   if (position === "auto") {
     return (
       <div
-        className="pointer-events-none sticky top-2 z-10 flex justify-end pr-2"
+        className="pointer-events-none sticky top-2 z-10 flex justify-end gap-1 pr-2"
         // -mb keeps the sticky row from pushing the code text down on its first line.
         style={{ marginBottom: -24 }}
       >
         <button
           type="button"
-          className="ade-chat-copy-button pointer-events-auto inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 font-sans text-[9px] opacity-0 backdrop-blur-sm transition-all group-hover:opacity-100 [@media(hover:none)]:opacity-100"
-          style={{
-            border: "1px solid var(--chat-copy-button-border)",
-            background: "var(--chat-copy-button-bg)",
-            color: "var(--chat-copy-button-fg)",
-          }}
+          className={`${CODE_BLOCK_ACTION_BUTTON_CLASS} opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100`}
+          style={CODE_BLOCK_ACTION_BUTTON_STYLE}
           onClick={() => void copy(code)}
           title={copied ? "Copied" : "Copy code"}
           aria-label={copied ? "Copied" : "Copy code"}
@@ -298,21 +303,18 @@ function CodeCopyButton({ code, position }: { code: string; position: CodeBlockC
           {copied ? <Checks size={10} weight="bold" /> : <CopySimple size={10} weight="regular" />}
           <span>{copied ? "Copied" : "Copy"}</span>
         </button>
+        {leading ? <div className="order-first flex empty:hidden">{leading}</div> : null}
       </div>
     );
   }
 
   const posClass = position === "bottom" ? "bottom-2 top-auto" : "top-2";
 
-  return (
+  const button = (
     <button
       type="button"
-      className={`ade-chat-copy-button absolute right-2 z-10 inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 font-sans text-[9px] opacity-0 backdrop-blur-sm transition-all group-hover:opacity-100 [@media(hover:none)]:opacity-100 ${posClass}`}
-      style={{
-        border: "1px solid var(--chat-copy-button-border)",
-        background: "var(--chat-copy-button-bg)",
-        color: "var(--chat-copy-button-fg)",
-      }}
+      className={`${CODE_BLOCK_ACTION_BUTTON_CLASS} ${leading ? "" : `absolute right-2 z-10 ${posClass} `}opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100`}
+      style={CODE_BLOCK_ACTION_BUTTON_STYLE}
       onClick={() => void copy(code)}
       title={copied ? "Copied" : "Copy code"}
       aria-label={copied ? "Copied" : "Copy code"}
@@ -320,6 +322,13 @@ function CodeCopyButton({ code, position }: { code: string; position: CodeBlockC
       {copied ? <Checks size={10} weight="bold" /> : <CopySimple size={10} weight="regular" />}
       <span>{copied ? "Copied" : "Copy"}</span>
     </button>
+  );
+  if (!leading) return button;
+  return (
+    <div className={`pointer-events-none absolute right-2 z-10 flex gap-1 ${posClass}`}>
+      {button}
+      <div className="order-first flex empty:hidden">{leading}</div>
+    </div>
   );
 }
 
@@ -432,9 +441,16 @@ function PlainCodeFallback({ code }: { code: string }) {
 export const HighlightedCode = React.memo(function HighlightedCode({
   code,
   language,
+  runnable = false,
 }: {
   code: string;
   language: string;
+  /**
+   * A settled block of a chat reply: a shell block may offer Run. The Run
+   * control mounts only once the block is pointed at or focused, so an
+   * untouched block costs nothing beyond this flag.
+   */
+  runnable?: boolean;
 }) {
   const copyButtonPosition = useAppStore((s) => s.codeBlockCopyButtonPosition);
   const resolvedTheme = useActiveResolvedTheme();
@@ -447,6 +463,11 @@ export const HighlightedCode = React.memo(function HighlightedCode({
   }, [resolvedTheme]);
   const trimmedCode = code.replace(/\n$/, "");
   const isDiff = language === "diff";
+  const shellBlock = runnable && shellBlockDialect(language) !== null;
+  // A block already run (it scrolled away, or the chat was switched) comes back armed.
+  const [runArmed, setRunArmed] = useState(() => shellBlock && shellBlockHasRun(language, trimmedCode));
+  const armRun = shellBlock && !runArmed ? () => setRunArmed(true) : undefined;
+  const showRun = shellBlock && runArmed;
   // `overflow-hidden` traps `position: sticky` inside the block, so drop it when the copy button
   // needs to track the transcript scroll. The border + border-radius still render the rounded corners;
   // content naturally pads within the block so nothing visibly bleeds past them.
@@ -454,8 +475,17 @@ export const HighlightedCode = React.memo(function HighlightedCode({
 
   return (
     // Code reads left to right even inside a right-to-left list or quote.
-    <div dir="ltr" className={`group relative my-3 rounded-[10px] border border-[color:var(--chat-code-border)] bg-[var(--chat-code-bg)] ${outerOverflowClass}`.trim()}>
-      <CodeCopyButton code={trimmedCode} position={copyButtonPosition} />
+    <div
+      dir="ltr"
+      className={`group relative my-3 rounded-[10px] border border-[color:var(--chat-code-border)] bg-[var(--chat-code-bg)] ${outerOverflowClass}`.trim()}
+      onPointerEnter={armRun}
+      onFocus={armRun}
+    >
+      <CodeCopyButton
+        code={trimmedCode}
+        position={copyButtonPosition}
+        leading={showRun ? <ShellCodeBlockRunButton code={trimmedCode} language={language} /> : undefined}
+      />
       <div className="overflow-x-auto whitespace-pre-wrap break-words px-4 py-3">
         {isDiff ? (
           <DiffCodeBlock code={trimmedCode} />
@@ -467,6 +497,7 @@ export const HighlightedCode = React.memo(function HighlightedCode({
           </CodeErrorBoundary>
         )}
       </div>
+      {showRun ? <ShellCodeBlockRunStatus code={trimmedCode} language={language} /> : null}
     </div>
   );
 });

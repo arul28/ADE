@@ -1,4 +1,4 @@
-import { stripAnsiWithOptions } from "../../utils/ansiStrip";
+import { stripAnsiWithOptions } from "../../../shared/ansiStrip";
 import type { TerminalWatchMatcher } from "../../../shared/terminalWatch";
 
 /**

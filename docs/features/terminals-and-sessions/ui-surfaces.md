@@ -1759,8 +1759,8 @@ Key behaviors:
   the visible rows for legacy or empty serialized snapshots. Only when no
   snapshot is available does hydration use the transcript tail. Before either path
   runs, the runtime calls `sessions.get(sessionId)` to find out whether
-  the session is disposed; for any disposed session that hasn't
-  displayed live data yet, hydration first tries **replay mode** via
+  the session is disposed; for any disposed session, hydration first
+  tries **replay mode** via
   `sessions.readTranscriptTail({ raw: true })` (capped at
   `REPLAY_TRANSCRIPT_MAX_BYTES = 8 MB`) and feeds the result through
   `stripFullScreenRedrawSequences()` before writing. The strip removes
@@ -1769,7 +1769,13 @@ Key behaviors:
   TUI redraw appends to the main buffer's scrollback instead of
   clobbering it. Replay-mode runtimes set `replayMode: true`, get
   `REPLAY_SCROLLBACK_LINES = 100_000` scrollback regardless of user
-  preference, and skip the usual `trimToLikelyTerminalFrameBoundary`
+  preference. A session that ended while its view was mounting (a quick
+  command) may already have drawn live output; the replay resets the
+  terminal first and replaces it (`canReplayOverLiveData`), since an ended
+  session prints nothing more. A replay shorter than the live output drawn
+  (read before the transcript stream finished writing) leaves the live
+  output in place. On the alternate screen it keeps the old path, where an
+  erase would not remove what was drawn. Replay-mode runtimes also skip the usual `trimToLikelyTerminalFrameBoundary`
   hydration trim so the whole transcript stays scrollable. This is
   what makes a disposed Claude / Codex chat session render as a
   scrollable transcript instead of "the last alt-screen frame" or

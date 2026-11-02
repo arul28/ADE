@@ -2604,6 +2604,32 @@ export type SyncRunQuickCommandArgs = {
   tracked?: boolean;
 };
 
+/**
+ * Run a chat reply's shell code block (`work.runShellBlock`): a new terminal
+ * owned by the chat, in its lane, running the interpreter directly with the
+ * script as an argument. The client builds `command`/`args`
+ * (`planShellBlockRun`), so the script reaches the interpreter unquoted.
+ */
+/**
+ * The environment a code block runs with, on every client and host. Pagers
+ * off: a block runs to its end and its output goes back to the agent, so
+ * `git log` or `man` must not stop at a `less` prompt nobody sees.
+ */
+export const SHELL_BLOCK_RUN_ENV: Readonly<Record<string, string>> = {
+  PAGER: "cat",
+  GIT_PAGER: "cat",
+};
+
+export type SyncRunShellBlockArgs = {
+  laneId: string;
+  chatSessionId: string;
+  title: string;
+  command: string;
+  args: string[];
+  cols?: number;
+  rows?: number;
+};
+
 export type SyncCliLaunchProvider =
   | "claude"
   | "codex"
@@ -2841,6 +2867,7 @@ export type SyncRemoteCommandAction =
   | "session.undoBoardMove"
   | "session.clearWokeMarker"
   | "work.runQuickCommand"
+  | "work.runShellBlock"
   | "work.startCliSession"
   | "work.resumeCliSession"
   | "work.listExternalSessions"

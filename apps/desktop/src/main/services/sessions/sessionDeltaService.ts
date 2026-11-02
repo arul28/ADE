@@ -10,7 +10,7 @@ import {
 import type { createSessionService } from "./sessionService";
 import { runGit } from "../git/git";
 import type { AdeDb } from "../state/kvDb";
-import { stripAnsi } from "../../utils/ansiStrip";
+import { stripAnsi } from "../../../shared/ansiStrip";
 import type { SessionDeltaSummary } from "../../../shared/types";
 
 export function createSessionDeltaService(args: {

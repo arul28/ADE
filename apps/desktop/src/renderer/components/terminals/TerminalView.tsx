@@ -2448,6 +2448,16 @@ async function tryReadReplay(
   return null;
 }
 
+/**
+ * An ended session's replay is all it will ever print, so it can stand in for
+ * live output this view already drew, by erasing that first. Only on the
+ * normal buffer: an alternate-screen app repaints in place, and erasing there
+ * would not remove what was drawn.
+ */
+function canReplayOverLiveData(runtime: CachedRuntime): boolean {
+  return !runtime.displayedLiveDataBeforeHydration || terminalOnNormalBuffer(runtime);
+}
+
 async function readInitialHydrationData(runtime: CachedRuntime): Promise<InitialHydrationData> {
   // Determine disposed-ness via sessions.get so we work for chat-CLI sessions
   // too (terminal.preview rejects isPersistedChatToolType records and would
@@ -2467,8 +2477,10 @@ async function readInitialHydrationData(runtime: CachedRuntime): Promise<Initial
 
   // Prefer replay for disposed sessions BEFORE attempting terminal.preview —
   // preview throws for chat-CLI tool types and the throw would swallow the
-  // replay opportunity.
-  if (sessionDisposed && !runtime.displayedLiveDataBeforeHydration) {
+  // replay opportunity. A session that ended while this view was mounting
+  // (a quick command) may already have drawn its live output; the replay
+  // replaces it (`finalizeHydration`), except on the alternate screen.
+  if (sessionDisposed && canReplayOverLiveData(runtime)) {
     const replay = await tryReadReplay(runtime, sessionExitCode);
     if (replay) return replay;
   }
@@ -2493,7 +2505,7 @@ async function readInitialHydrationData(runtime: CachedRuntime): Promise<Initial
       !sessionDisposed
       && previewSessionStatus
       && previewSessionStatus !== "running"
-      && !runtime.displayedLiveDataBeforeHydration
+      && canReplayOverLiveData(runtime)
     ) {
       const replay = await tryReadReplay(runtime, previewSessionExitCode);
       if (replay) return replay;
@@ -2788,9 +2800,34 @@ function startHydration(runtime: CachedRuntime) {
     // that history again. Erase it in the same write, or every park/reveal
     // stacks another copy into scrollback. Only the normal buffer accumulates:
     // an alternate-screen payload repaints its viewport in place.
-    const eraseStale = runtime.staleContentBeforeHydration && terminalOnNormalBuffer(runtime);
+    // A replay also replaces live output drawn before it (a session that ended
+    // while this view mounted): the replay holds that output too. It resets
+    // the terminal rather than erasing, so modes the live output set do not
+    // apply to the replayed bytes.
+    const replacesLive = data.source === "replay"
+      && runtime.displayedLiveDataBeforeHydration
+      && terminalOnNormalBuffer(runtime);
+    const eraseStale = runtime.staleContentBeforeHydration && terminalOnNormalBuffer(runtime) && !replacesLive;
     runtime.staleContentBeforeHydration = false;
     if (data.source === "replay") {
+      // Live output already drawn stays, as it is, unless the replay can
+      // replace it: the terminal may have moved to the alternate screen while
+      // the replay was read, and a session ends before its transcript finishes
+      // writing, so a replay read right after the exit can hold less than this
+      // view drew.
+      if (
+        runtime.displayedLiveDataBeforeHydration
+        && (!replacesLive || data.text.length < runtime.pendingHydrationBytes)
+      ) {
+        runtime.pendingHydrationChunks.length = 0;
+        runtime.pendingHydrationBytes = 0;
+        flushPendingFrameWrites(runtime);
+        runtime.hydrationCompleted = true;
+        notifyRuntime(runtime);
+        scheduleFit(runtime, true);
+        reportHydrationComplete(runtime, data.source);
+        return;
+      }
       // Replay mode: enlarge scrollback so the full transcript stays
       // scrollable, then write the stripped bytes in one pass. There is no
       // live PTY by definition, so pending live chunks (if any) are dropped.
@@ -2798,6 +2835,13 @@ function startHydration(runtime: CachedRuntime) {
       runtime.pendingHydrationChunks.length = 0;
       runtime.pendingHydrationBytes = 0;
       discardScheduledFrameWrites(runtime);
+      if (replacesLive) {
+        try {
+          runtime.term.reset();
+        } catch {
+          // a disposed renderer keeps whatever it has
+        }
+      }
       try {
         runtime.term.options.scrollback = REPLAY_SCROLLBACK_LINES;
       } catch {

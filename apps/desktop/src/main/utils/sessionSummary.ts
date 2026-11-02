@@ -1,4 +1,4 @@
-import { stripAnsiWithOptions } from "./ansiStrip";
+import { stripAnsiWithOptions } from "../../shared/ansiStrip";
 
 type ParsedTestSummary = {
   status: "PASS" | "FAIL";

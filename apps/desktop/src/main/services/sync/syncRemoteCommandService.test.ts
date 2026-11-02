@@ -2116,6 +2116,43 @@ describe("createSyncRemoteCommandService", () => {
       );
     });
 
+    it("work.runShellBlock starts the chat's terminal with the script as one untouched argument, and validates the rest", async () => {
+      const script = "  cat <<'EOF'\n$HOME stays literal\nEOF\n";
+      await service.execute(makePayload("work.runShellBlock", {
+        laneId: "lane-1",
+        chatSessionId: "chat-1",
+        title: "cat <<'EOF'",
+        command: "bash",
+        args: ["-c", script],
+      }));
+      expect(ptyService.create).toHaveBeenCalledWith(expect.objectContaining({
+        laneId: "lane-1",
+        chatSessionId: "chat-1",
+        command: "bash",
+        args: ["-c", script],
+        // Pagers off: `git log` must not stop at a prompt nobody sees.
+        env: expect.objectContaining({ PAGER: "cat", GIT_PAGER: "cat" }),
+        tracked: true,
+        toolType: "shell",
+      }));
+
+      for (const bad of [
+        { args: "-c ls" },
+        { args: ["-c", 3] },
+        { chatSessionId: undefined },
+        // The chat must be in the lane the run's folder comes from.
+        { laneId: "lane-2" },
+        { args: ["-c", "x".repeat(130_000)] },
+        // The cap is bytes: 50,000 three-byte characters are 150,000.
+        { args: ["-c", "界".repeat(50_000)] },
+      ]) {
+        await expect(service.execute(makePayload("work.runShellBlock", {
+          laneId: "lane-1", chatSessionId: "chat-1", title: "t", command: "bash", args: ["-c", "ls"], ...bad,
+        }))).rejects.toThrow(/work\.runShellBlock/);
+      }
+      expect(ptyService.create).toHaveBeenCalledTimes(1);
+    });
+
     it("work.startCliSession builds allowlisted provider launch commands", async () => {
       sessionService.get.mockReturnValue({
         id: "pty-1",

@@ -3015,6 +3015,63 @@ describe("createAdeWebAdapter", () => {
     adapter.dispose();
   });
 
+  it("runs a chat code block through work.runShellBlock with its argv intact, and refuses on a host without it", async () => {
+    const script = "cat <<'EOF'\nkeep $HOME\nEOF";
+    fake.descriptors = descriptors(["work.startCliSession", "work.runShellBlock"]);
+    fake.commandResults.set("work.runShellBlock", { sessionId: "run-1", ptyId: "pty-run-1", pid: 7 });
+    const adapter = createAdeWebAdapter(fake.asClient());
+    adapter.bindProject(project, "project-1");
+
+    const created = await adapter.ade.pty.create({
+      laneId: "lane-1",
+      chatSessionId: "chat-1",
+      toolType: "shell",
+      title: "cat <<'EOF'",
+      cols: 100,
+      rows: 28,
+      command: "bash",
+      args: ["-c", script],
+    });
+
+    expect(created).toMatchObject({ sessionId: "run-1", ptyId: "pty-run-1" });
+    expect(fake.commandCalls.map((call) => call.action)).toEqual(["work.runShellBlock"]);
+    expect(fake.commandCalls[0]?.args).toMatchObject({
+      laneId: "lane-1",
+      chatSessionId: "chat-1",
+      command: "bash",
+      args: ["-c", script],
+    });
+
+    // Another argv launch (a Devin terminal) is not a code block run.
+    fake.commandResults.set("work.startCliSession", { sessionId: "devin-1", ptyId: "pty-devin-1" });
+    await adapter.ade.pty.create({
+      laneId: "lane-1",
+      toolType: "devin",
+      title: "Devin",
+      cols: 110,
+      rows: 32,
+      command: "devin",
+      args: ["--resume", "s-1"],
+    });
+    expect(fake.commandCalls.map((call) => call.action)).toEqual(["work.runShellBlock", "work.startCliSession"]);
+
+    // A machine on an older ADE: never fall back to typing the command into a shell.
+    fake.descriptors = descriptors(["work.startCliSession"]);
+    await expect(adapter.ade.pty.create({
+      laneId: "lane-1",
+      chatSessionId: "chat-1",
+      toolType: "shell",
+      title: "ls",
+      cols: 100,
+      rows: 28,
+      command: "bash",
+      args: ["-c", "ls"],
+    })).rejects.toThrow(/Update ADE/);
+    expect(fake.commandCalls).toHaveLength(2);
+
+    adapter.dispose();
+  });
+
   it("still refuses a same-machine pin naming a different project", async () => {
     fake.descriptors = descriptors(["work.startCliSession"]);
     const adapter = createAdeWebAdapter(fake.asClient());

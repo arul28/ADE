@@ -7,6 +7,7 @@ import type { AgentChatRemoteWorkUse } from "../../../shared/types/chat";
 import { listRemoteWorkShells, useRemoteWorkPinResolver } from "../../lib/remoteWorkPins";
 import { remoteWorkUseKey } from "../../../shared/chatRemoteWork";
 import { MachinePlatformLogo } from "../remoteTargets/MachineIdentity";
+import { onChatTerminalFocusRequest, takeChatTerminalFocus } from "./chatTerminalFocus";
 import {
   WORK_TOOL_CHROME_ROW,
   WORK_TOOL_PRIMARY_BUTTON,
@@ -363,6 +364,32 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
       cancelled = true;
     };
   }, [chatSessionId, open, pinKey, revealRequest, uiStateKey]);
+
+  // A request to show one of this chat's terminals (a code block's Run):
+  // add its tab when it is not in the strip, ended or not, and switch to it.
+  // Taken when the drawer opens too, for a request made before it mounted;
+  // the restore above then keeps that tab active.
+  useEffect(() => {
+    if (!chatSessionId || !open) return undefined;
+    const show = (requestedChatSessionId: string) => {
+      if (requestedChatSessionId !== chatSessionId) return;
+      const request = takeChatTerminalFocus(chatSessionId);
+      if (!request) return;
+      const tab: TabEntry = {
+        id: `chat-term-${request.terminalId}`,
+        ptyId: request.ptyId,
+        sessionId: request.terminalId,
+        label: request.label,
+        exited: request.ended,
+      };
+      setTabs((prev) => (
+        prev.some((entry) => entry.sessionId === tab.sessionId || entry.ptyId === tab.ptyId) ? prev : [...prev, tab]
+      ));
+      setActiveTabId(tab.id);
+    };
+    show(chatSessionId);
+    return onChatTerminalFocusRequest(show);
+  }, [chatSessionId, open]);
 
   useEffect(() => {
     if (!revealRequest) return;
