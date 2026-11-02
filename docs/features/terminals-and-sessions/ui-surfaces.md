@@ -68,7 +68,9 @@ It also owns the sidebar's multi-select state:
 - `selectedSessionIds: Set<string>` with a `selectionAnchorId` tracker.
 - `handleSelectSession(id, event, visibleSessionIds, binding?)` — plain click
   clears the multi-selection and opens the tab; shift-click selects the
-  range from the anchor; meta/ctrl-click toggles the id in/out of the
+  range from the anchor, in on-screen order across every machine's rows
+  (`SessionListPane` reads the rendered `data-session-row` order; board cards
+  keep the board's column order); meta/ctrl-click toggles the id in/out of the
   set; any of the three refresh the active single-selected item. The optional
   binding is the per-session runtime pin carried into the opened view.
   A plain open runs on the **press** of the mouse button, not on its release
@@ -127,11 +129,18 @@ part of the selection show "k of N". Lifecycle writes go through the batch
 helpers in `sessionLifecycleActions.ts`, each row pinned to its own machine,
 with one failure toast and one Undo per batch. Bulk settle follows the
 header's rule and skips `Needs you` rows, so it never dismisses pending input.
-The Lanes submenu sends the selection's own-machine lanes to the Lanes tab:
-`/lanes?action=select&laneIds=…` multi-selects them, and
+The Lanes submenu sends the selection's lanes to the Lanes tab, from any
+machine: a local lane by its id, a lane on another machine by the Lanes tab's
+row key `machineId:laneId` (`buildForeignSessionLanes` in
+`state/laneMachineRouting.ts`, built from the same live union the Lanes tab
+lists). `/lanes?action=select&laneIds=…` multi-selects them, and
 `action=batch` (optionally `manageTab=archive|delete`) also opens the batch
-manage dialog. Both leave the lanes multi-selected in the Lanes sidebar, and
-the Work lane menu's "Manage N Open Lanes" shares the same `batch` link.
+manage dialog, which archives or deletes each lane on its own machine. Both
+leave the lanes multi-selected in the Lanes sidebar, and the Work lane menu's
+"Manage N Open Lanes" shares the same `batch` link. A lane that can't be acted
+on (its machine is offline or unavailable, or no machine lists it) is left out
+and the menu says so ("2 skipped · Studio is offline"); the Lanes tab's own
+multi-select menu does the same, and warns when a requested lane isn't listed.
 
 Any selection-entry that is no longer present in the rendered session
 list is pruned from `selectedSessionIds` automatically so stale ids
