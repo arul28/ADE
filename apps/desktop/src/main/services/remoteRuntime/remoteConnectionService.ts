@@ -702,10 +702,27 @@ export class RemoteConnectionService {
     if (!target && !credentials) {
       throw new Error("Remote target or paired machine was not found.");
     }
+    // An open (or opening) connection from this app must survive the test,
+    // also when the test was started from the machine's discovered row.
+    const hostIdentity = credentials?.hostIdentity?.deviceId ?? null;
+    const liveTargetId = savedTarget?.id
+      ?? (hostIdentity
+        ? this.registry.list().find((entry) => entry.pairedMachine?.hostIdentity === hostIdentity)?.id ?? null
+        : null);
+    const liveConnection = liveTargetId && this.pool.hasEntry(liveTargetId)
+      ? {
+          hostAcceptsProbes:
+            (await this.pool.openPairedHello(liveTargetId))?.features?.connectionProbe === true,
+        }
+      : null;
     return await runRemoteRuntimeDoctor({
       target,
       credentials,
       machineName: target?.name ?? discoveredMachine?.machineName ?? credentials?.hostIdentity?.name ?? null,
+      liveConnection,
+      ...(this.options.getAccountRelayProof
+        ? { getAccountRelayProof: this.options.getAccountRelayProof }
+        : {}),
     });
   }
 

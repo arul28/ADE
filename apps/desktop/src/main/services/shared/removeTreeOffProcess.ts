@@ -26,6 +26,8 @@ import { execFileOffThread } from "./offThreadSpawn";
 
 const TARGET_ENV = "ADE_REMOVE_TREE_TARGET";
 const EXPECTED_REAL_PATH_ENV = "ADE_REMOVE_TREE_EXPECTED_REAL_PATH";
+/** Whole-tree passes the child makes before it reports what stopped it. */
+const CHILD_REMOVE_PASSES = 10;
 
 const CHILD_SCRIPT = [
   `const target = process.env.${TARGET_ENV};`,
@@ -39,8 +41,24 @@ const CHILD_SCRIPT = [
   "let real;",
   "try { real = fs.realpathSync.native(target); } catch (error) { if (error && error.code === 'ENOENT') process.exit(0); fail((error && error.code) || null, String((error && error.message) || error)); }",
   "if (expected && real !== expected) fail('ECHANGED', 'The folder moved after it was checked.');",
-  "fs.promises.rm(target, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })",
-  "  .then(() => process.exit(0), (error) => fail((error && error.code) || null, String((error && error.message) || error)));",
+  // Retried here, around the whole tree, and never by `rm` itself: its
+  // `maxRetries` retries each folder on the way down, so a held folder three
+  // levels deep (a process's working directory on Windows) is retried 10^3
+  // times and the removal ran for 30 minutes. One pass removes everything that
+  // can go; ten passes over ~11 s give a held handle time to close.
+  "const retryable = new Set(['EBUSY', 'EPERM', 'EACCES', 'ENOTEMPTY', 'EMFILE', 'ENFILE']);",
+  "(async () => {",
+  "  for (let attempt = 1; ; attempt += 1) {",
+  "    try {",
+  "      await fs.promises.rm(target, { recursive: true, force: true, maxRetries: 0 });",
+  "      process.exit(0);",
+  "    } catch (error) {",
+  "      const code = (error && error.code) || null;",
+  `      if (!retryable.has(code) || attempt >= ${CHILD_REMOVE_PASSES}) fail(code, String((error && error.message) || error));`,
+  "      await new Promise((resolve) => setTimeout(resolve, 200 * attempt));",
+  "    }",
+  "  }",
+  "})();",
 ].join("\n");
 
 /**
@@ -53,6 +71,24 @@ function isSingleExecutable(): boolean {
     return (require("node:sea") as { isSea(): boolean }).isSea();
   } catch {
     return false;
+  }
+}
+
+/**
+ * The in-process removal, retried around the whole tree like the child's (see
+ * CHILD_SCRIPT for why `rm`'s own `maxRetries` must stay 0).
+ */
+async function removeInProcess(targetPath: string): Promise<void> {
+  const retryable = new Set(["EBUSY", "EPERM", "EACCES", "ENOTEMPTY", "EMFILE", "ENFILE"]);
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      await nonAsarFs.promises.rm(targetPath, { recursive: true, force: true, maxRetries: 0 });
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException | undefined)?.code;
+      if (!code || !retryable.has(code) || attempt >= 4) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 100 * attempt));
+    }
   }
 }
 
@@ -111,7 +147,7 @@ export async function removeTreeOffProcess(targetPath: string): Promise<void> {
     throw error;
   }
   if (!isDirectory || isSingleExecutable()) {
-    await nonAsarFs.promises.rm(resolved, { recursive: true, force: true, maxRetries: 3 });
+    await removeInProcess(resolved);
     return;
   }
   let realPath: string;
@@ -130,6 +166,6 @@ export async function removeTreeOffProcess(targetPath: string): Promise<void> {
       extra: { reason: error.message },
       fingerprint: ["remove-tree", "child-unavailable"],
     });
-    await nonAsarFs.promises.rm(resolved, { recursive: true, force: true, maxRetries: 3 });
+    await removeInProcess(resolved);
   }
 }

@@ -115,6 +115,8 @@ export type OpenPairedSyncConnectionOptions = OpenSyncEnvelopeConnectionOptions 
   appVersion?: string;
   /** Ephemeral Clerk access token used only for this ADE Relay hello. */
   relayAccountToken?: string | null;
+  /** `"probe"`: a connection test (see SyncPeerMetadata.connectionPurpose). */
+  purpose?: "probe";
 };
 
 export type OpenSyncRuntimeTransportOptions = Omit<
@@ -409,6 +411,7 @@ export function buildDesktopPairedHello(
   credentials: DesktopPairedMachineCredentials,
   appVersion?: string,
   relayAccountToken?: string | null,
+  purpose?: "probe",
 ): SyncHelloPayload {
   return {
     peer: {
@@ -429,6 +432,7 @@ export function buildDesktopPairedHello(
         SYNC_RUNTIME_ONLY_CAPABILITY,
       ],
       ...(appVersion?.trim() ? { appVersion: appVersion.trim() } : {}),
+      ...(purpose === "probe" ? { connectionPurpose: "probe" as const } : {}),
     },
     auth: {
       kind: "paired",
@@ -529,6 +533,7 @@ export async function openPairedSyncConnection(
       options.credentials,
       options.appVersion,
       options.relayAccountToken,
+      options.purpose,
     );
     response = waitForSyncEnvelope(
       connection,

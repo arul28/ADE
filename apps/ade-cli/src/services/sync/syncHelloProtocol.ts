@@ -146,6 +146,7 @@ export function parseHelloPayload(payload: unknown): SyncHelloPayload | null {
       dbVersion: normalizeDbVersion(peer.dbVersion),
       ...(Object.keys(dbVersionBySite).length > 0 ? { dbVersionBySite } : {}),
       ...(connectionAttempt ? { connectionAttempt } : {}),
+      ...(peer.connectionPurpose === "probe" ? { connectionPurpose: "probe" as const } : {}),
       capabilities: Array.isArray(peer.capabilities)
         ? peer.capabilities
           .filter((capability): capability is string => typeof capability === "string")

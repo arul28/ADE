@@ -27,6 +27,11 @@ export const GIT_CONFIG_OVERRIDE_ARGS = [
   "-c", "diff.mnemonicPrefix=false",
   "-c", "diff.srcPrefix=a/",
   "-c", "diff.dstPrefix=b/",
+  // Windows git stops at 260-character paths unless this is on, and it is off
+  // by default. A lane folder plus a deep repo path passes that easily: a
+  // checkout fails with "Filename too long" and leaves its new branch behind,
+  // and `git worktree remove` cannot delete the deep files.
+  ...(process.platform === "win32" ? ["-c", "core.longpaths=true"] as const : []),
 ] as const;
 
 /**

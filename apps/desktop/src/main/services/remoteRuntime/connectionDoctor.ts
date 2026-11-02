@@ -18,8 +18,10 @@ import type {
 import { hostStallFromHello } from "../../../shared/connectionDiagnosis";
 import {
   openPairedSyncConnection,
+  openSyncEnvelopeConnection,
   type AuthenticatedSyncConnection,
 } from "./syncRuntimeTransport";
+import { PairedRuntimeRelayAuthRequiredError } from "./pairedRuntimeErrors";
 import {
   buildSshRouteCandidates,
   scanSshHostKeyForTarget,
@@ -30,12 +32,20 @@ const DEFAULT_DOCTOR_TIMEOUT_MS = 5_000;
 /** What a successful paired probe learned from the machine's handshake. */
 type PairedProbeResult = { hostStall: RemoteRuntimeHostStall | null } | void;
 
+export type PairedProbeOptions = {
+  /** The ADE account token a relay route needs, as on a real connect. */
+  relayAccountToken?: string | null;
+};
+
 export type RemoteRuntimeDoctorDependencies = {
   probePaired?: (
     endpoint: string,
     credentials: DesktopPairedMachineCredentials,
     timeoutMs: number,
+    options?: PairedProbeOptions,
   ) => Promise<PairedProbeResult>;
+  /** Opens the route without logging in (see `liveConnection`). */
+  probeReachable?: (endpoint: string, timeoutMs: number) => Promise<void>;
   probeSsh?: (
     target: RemoteRuntimeTarget,
     route: RemoteRuntimeTargetRoute,
@@ -77,6 +87,7 @@ async function defaultPairedProbe(
   endpoint: string,
   credentials: DesktopPairedMachineCredentials,
   timeoutMs: number,
+  options: PairedProbeOptions = {},
 ): Promise<PairedProbeResult> {
   let connection: AuthenticatedSyncConnection | null = null;
   try {
@@ -85,6 +96,10 @@ async function defaultPairedProbe(
       credentials,
       connectTimeoutMs: timeoutMs,
       authTimeoutMs: timeoutMs,
+      relayAccountToken: options.relayAccountToken ?? null,
+      // A host that knows probes answers without replacing this device's
+      // open connection; an older one ignores the field.
+      purpose: "probe",
     });
     if (connection.hello.features?.rpcChannel !== true) {
       throw new Error("The host does not advertise runtime RPC support.");
@@ -96,6 +111,61 @@ async function defaultPairedProbe(
   } finally {
     connection?.close(1000, "Connection doctor probe finished.");
   }
+}
+
+/**
+ * How long a reachability probe waits after the socket opens. The relay
+ * accepts the socket and then closes it at once (4501) when the machine is not
+ * connected to it; a direct route stays open.
+ */
+const REACHABILITY_SETTLE_MS = 400;
+
+async function defaultReachableProbe(endpoint: string, timeoutMs: number): Promise<void> {
+  const connection = await openSyncEnvelopeConnection({ endpoint, connectTimeoutMs: timeoutMs });
+  try {
+    await new Promise<void>((resolve, reject) => {
+      let removeClose = () => {};
+      const timer = setTimeout(() => {
+        removeClose();
+        resolve();
+      }, REACHABILITY_SETTLE_MS);
+      removeClose = connection.onClose((info) => {
+        clearTimeout(timer);
+        reject(Object.assign(
+          new Error("Sync endpoint closed the connection right after it opened."),
+          { closeCode: info?.code ?? null, closeReason: info?.reason ?? null },
+        ));
+      });
+    });
+  } finally {
+    connection.close(1000, "Connection doctor probe finished.");
+  }
+}
+
+/**
+ * The account token for a relay probe, checked the way a real connect checks
+ * it, so the relay row says "Not signed in" only when this computer is not.
+ */
+async function relayProbeToken(
+  credentials: DesktopPairedMachineCredentials,
+  getAccountRelayProof: (() => Promise<{ userId: string; token: string } | null>) | undefined,
+): Promise<string> {
+  let proof: { userId: string; token: string } | null = null;
+  try {
+    proof = await getAccountRelayProof?.() ?? null;
+  } catch {
+    proof = null;
+  }
+  if (!proof?.userId.trim() || !proof.token.trim()) {
+    throw new PairedRuntimeRelayAuthRequiredError("Sign in to ADE to connect through ADE Relay.");
+  }
+  const expectedOwnerUserId = credentials.accountOwnerUserId?.trim() ?? "";
+  if (expectedOwnerUserId && proof.userId.trim() !== expectedOwnerUserId) {
+    throw new PairedRuntimeRelayAuthRequiredError(
+      "Sign in with the same ADE account as this machine to connect through ADE Relay.",
+    );
+  }
+  return proof.token.trim();
 }
 
 async function defaultSshProbe(
@@ -267,23 +337,43 @@ export async function runRemoteRuntimeDoctor(args: {
   timeoutMs?: number;
   dependencies?: RemoteRuntimeDoctorDependencies;
   machineName?: string | null;
+  /**
+   * This app has a connection to the machine open or opening. A host takes a
+   * login from this device as a newer connection and closes the open one,
+   * which then reads as "another ADE is using the connection" and stays down.
+   * So every route only gets opened, not logged in to, unless the open
+   * connection's host said it answers probes without that
+   * (`hostAcceptsProbes`). The open connection already proves the pairing.
+   */
+  liveConnection?: { hostAcceptsProbes: boolean } | null;
+  /** The ADE account proof a relay login needs, as on a real connect. */
+  getAccountRelayProof?: () => Promise<{ userId: string; token: string } | null>;
 }): Promise<RemoteRuntimeDoctorResult> {
   const timeoutMs = Math.max(250, Math.floor(args.timeoutMs ?? DEFAULT_DOCTOR_TIMEOUT_MS));
   const checks: Array<Promise<RemoteRuntimeDoctorCheck & { hostStall?: RemoteRuntimeHostStall | null }>> = [];
   const pairedProbe = args.dependencies?.probePaired ?? defaultPairedProbe;
+  const reachableProbe = args.dependencies?.probeReachable ?? defaultReachableProbe;
   const sshProbe = args.dependencies?.probeSsh ?? defaultSshProbe;
+  const reachabilityOnly = Boolean(args.liveConnection && !args.liveConnection.hostAcceptsProbes);
 
   if (args.credentials) {
+    const credentials = args.credentials;
     for (const candidate of buildPairedEndpointCandidates({
-      endpoints: args.credentials.endpoints,
-      relayUrl: args.credentials.relayUrl,
-      endpointStates: args.credentials.endpointStates,
+      endpoints: credentials.endpoints,
+      relayUrl: credentials.relayUrl,
+      endpointStates: credentials.endpointStates,
     })) {
       checks.push(checkedProbe({
         route: candidate.kind,
         endpoint: candidate.endpoint,
         timeoutMs,
-        probe: () => pairedProbe(candidate.endpoint, args.credentials!, timeoutMs),
+        probe: async () => {
+          if (reachabilityOnly) return await reachableProbe(candidate.endpoint, timeoutMs);
+          const relayAccountToken = candidate.kind === "relay"
+            ? await relayProbeToken(credentials, args.getAccountRelayProof)
+            : null;
+          return await pairedProbe(candidate.endpoint, credentials, timeoutMs, { relayAccountToken });
+        },
       }));
     }
   }

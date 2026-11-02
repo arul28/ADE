@@ -22,6 +22,7 @@ import {
 } from "../../../shared/types/remoteRuntime";
 
 import type { AdeActionRegistryEntry } from "../../../shared/types/automations";
+import type { PairedRuntimeHelloOkPayload } from "../../../shared/types/pairedRuntime";
 import {
   isRemoteRuntimeConnectionError,
   isRuntimeTransportTimeoutError,
@@ -1509,6 +1510,18 @@ export class RemoteConnectionPool {
   /** True while a connection to this target is open or opening. */
   hasEntry(targetId: string): boolean {
     return this.entries.has(targetId);
+  }
+
+  /**
+   * The handshake of this target's open paired connection: what its host
+   * advertised. Null while it is still opening, for an SSH target, and when
+   * nothing is open.
+   */
+  async openPairedHello(targetId: string): Promise<PairedRuntimeHelloOkPayload | null> {
+    const pending = this.entries.get(targetId);
+    if (!pending || !this.resolvedEntryPromises.has(pending)) return null;
+    const entry = await pending.catch(() => null);
+    return entry?.transport === "paired" ? entry.pairedTransport.connection.hello : null;
   }
 
   /**

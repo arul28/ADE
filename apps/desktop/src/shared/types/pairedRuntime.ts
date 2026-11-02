@@ -35,6 +35,9 @@ export const PAIRED_RUNTIME_RPC_OVER_BUDGET_REASON = "Runtime RPC channel fell b
 export const PAIRED_RUNTIME_SUPERSEDED_CLOSE_CODE = 4000;
 export const PAIRED_RUNTIME_SUPERSEDED_CLOSE_REASON = "Superseded by a newer connection for this device";
 
+/** The host's close after it answered a `connectionPurpose: "probe"` hello. */
+export const PAIRED_RUNTIME_PROBE_CLOSE_REASON = "Connection probe finished.";
+
 export type PairedRuntimeRpcClosePayload = {
   channelId: string;
   reason?: string | null;
@@ -136,6 +139,13 @@ export type PairedRuntimeFeatureFlags = {
   rpcChannel: boolean;
   /** Loopback-only host TCP forwarding over fwd_* envelopes. Grant-gated, as above. */
   portForward: boolean;
+  /**
+   * The host answers a `connectionPurpose: "probe"` hello without replacing
+   * the device's open connection. Older hosts treat a probe as a new
+   * connection and disconnect the open one, so a client must not send one to
+   * them while connected.
+   */
+  connectionProbe?: boolean;
 };
 
 export type PairedRuntimeHelloOkPayload = Omit<SyncHelloOkPayload, "features"> & {

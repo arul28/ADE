@@ -124,6 +124,7 @@ import {
   SYNC_CHANGESET_ACK_WINDOW_CAPABILITY,
 } from "../../../../desktop/src/shared/types";
 import {
+  PAIRED_RUNTIME_PROBE_CLOSE_REASON,
   PAIRED_RUNTIME_SUPERSEDED_CLOSE_CODE,
   PAIRED_RUNTIME_SUPERSEDED_CLOSE_REASON,
 } from "../../../../desktop/src/shared/types/pairedRuntime";
@@ -1950,6 +1951,9 @@ export function buildSyncHostHelloOkPayload(args: {
       },
       rpcChannel: runtimeChannelEnabled,
       portForward: runtimeChannelEnabled,
+      // A hello with `connectionPurpose: "probe"` is answered and closed here
+      // without replacing the device's open connection.
+      connectionProbe: true as const,
     },
   };
   const envelopeBytes = Buffer.byteLength(encodeSyncEnvelope({
@@ -8414,6 +8418,43 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       }
 
       if (!isPeerLifecycleCurrent(peer, lifecycleGeneration)) return;
+      // A connection test from a device that may already be connected. It
+      // proved its pairing above; answer and close it before arbitration, so
+      // it never replaces (and disconnects) that device's open connection,
+      // and never becomes a peer: no presence, no changesets.
+      if (
+        hello.peer.connectionPurpose === "probe"
+        && hello.auth?.kind === "paired"
+        && !sealedAdoption
+        && !connectionAttemptReserved
+        && !connectionAttemptRejected
+        && pendingPairingCommitDeviceId == null
+      ) {
+        send(peer.ws, "hello_ok", buildSyncHostHelloOkPayload({
+          peer: hello.peer,
+          brain: readBrainMetadata(),
+          serverDbVersion: args.db.sync.getDbVersion(),
+          heartbeatIntervalMs,
+          pollIntervalMs,
+          projectCatalog: { projects: [] },
+          projectCatalogEnabled: false,
+          projectActionsEnabled: false,
+          crossProjectChatEnabled: false,
+          remoteCommandSupportedActions: [],
+          remoteCommandDescriptors: [],
+          localCommandDescriptors: [],
+          omitProjectCatalog: true,
+          connectionTransport: syncConnectionTransportForOrigin(peer.transportOrigin),
+          runtimeChannelEnabled: isRuntimeHostPairingRecord(authenticatedPairingRecord),
+        }), envelope.requestId);
+        clearPeerAuthTimeout(peer);
+        try {
+          peer.ws.close(1000, PAIRED_RUNTIME_PROBE_CLOSE_REASON);
+        } catch {
+          // ignore close failures
+        }
+        return;
+      }
       if (
         connectionAttemptRejected
         || (!connectionAttemptReserved && !arbitrateConnectionAttempt(hello.peer.deviceId, peer, hello.peer))

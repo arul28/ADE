@@ -86,6 +86,14 @@ function batchHeadline({
   return parts.join(" · ");
 }
 
+/** Each failed or stuck issue's key and error, one per line, for the report. */
+function batchFailureDetail(rows: BatchLaunchItemState[]): string | null {
+  const lines = rows
+    .filter((row) => row.status === "failed" || row.status === "agent-error")
+    .map((row) => `${row.issue.key}: ${row.error?.trim() || "no error was recorded"}`);
+  return lines.length > 0 ? lines.join("\n") : null;
+}
+
 function BatchLaunchRows({
   rows,
   onOpenLane,
@@ -112,7 +120,12 @@ function BatchLaunchRows({
               <span className="kit-num shrink-0 text-[10.5px] text-[color:var(--kit-text-2)]">
                 {row.issue.key}
               </span>
-              <span className="min-w-0 flex-1 truncate text-[11.5px] text-muted-fg">{row.issue.title}</span>
+              <span className="flex min-w-0 flex-1 flex-col">
+                <span className="truncate text-[11.5px] text-muted-fg">{row.issue.title}</span>
+                {row.error && (row.status === "failed" || row.status === "agent-error") ? (
+                  <span className="truncate text-[10.5px]" style={statusTextStyle(row.status)}>{row.error}</span>
+                ) : null}
+              </span>
               <StatusIcon status={row.status} />
               <span className="shrink-0 text-[10px]" style={statusTextStyle(row.status)}>
                 {statusLabel(row.status)}
@@ -150,6 +163,7 @@ export function BatchLaunchStatusToast({
   const attentionCount = rows.filter((row) => row.status === "agent-error").length;
   const doneCount = rows.filter((row) => row.status === "done").length;
   const inFlight = rows.some((row) => isBatchLaunchInFlight(row.status));
+  const failureDetail = useMemo(() => batchFailureDetail(rows), [rows]);
 
   useEffect(() => {
     if (!rows.length) {
@@ -175,6 +189,9 @@ export function BatchLaunchStatusToast({
         inFlight,
       }),
       content: <BatchLaunchRows rows={rows} onOpenLane={onOpenLane} />,
+      // The rows are not plain text, so the report would carry no error at
+      // all: send each failed issue's own.
+      ...(failureDetail ? { report: { surface: "issue_batch_launch", code: "batch_launch_failed", technicalDetail: failureDetail } } : {}),
       actions: failedCount > 0 && !inFlight
         ? [{
             label: `Retry ${failedCount} failed`,
@@ -188,7 +205,7 @@ export function BatchLaunchStatusToast({
       // The card's lifetime is the batch's: it closes with × or the success beat below.
       durationMs: 0,
     });
-  }, [rows, inFlight, failedCount, attentionCount, doneCount, onOpenLane, onRetryFailed, onDismiss]);
+  }, [rows, inFlight, failedCount, attentionCount, doneCount, failureDetail, onOpenLane, onRetryFailed, onDismiss]);
 
   // Auto-dismiss a fully-successful run after a short beat.
   useEffect(() => {
