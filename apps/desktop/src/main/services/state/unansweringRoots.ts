@@ -1,3 +1,5 @@
+import path from "node:path";
+
 /**
  * Folders that are not answering right now, and the error a file call under
  * one gets instead of waiting.
@@ -27,7 +29,9 @@ export function setUnansweringRoots(next: readonly string[]): void {
 /** The listed folder that contains `target`, or null. Cheap when the list is empty. */
 export function unansweringRootOf(target: string): string | null {
   if (roots.length === 0) return null;
-  const candidate = comparablePath(target);
+  // A relative path is relative to this process's folder, which may itself be
+  // inside a marked root; only resolved while a root is marked.
+  const candidate = comparablePath(path.isAbsolute(target) ? target : path.resolve(target));
   for (const root of roots) {
     const comparableRoot = comparablePath(root);
     if (candidate === comparableRoot) return root;

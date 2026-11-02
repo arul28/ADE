@@ -27169,9 +27169,14 @@ async function runServe(
       // wait: the folder fails fast until a listing off the loop answers.
       const blockedFsCall = breadcrumb.blockedFsCall;
       if (blockedFsCall && isStallCapablePath(blockedFsCall.path)) {
+        // The stored paths as written, read as plain JSON: `ProjectRegistry`
+        // resolves each folder on disk, which is the very wait this avoids.
         let knownRoots: string[] = [];
         try {
-          knownRoots = new ProjectRegistry(layout).list().map((record) => record.rootPath);
+          const stored = JSON.parse(fs.readFileSync(layout.projectsPath, "utf8")) as { projects?: unknown };
+          knownRoots = (Array.isArray(stored.projects) ? stored.projects : [])
+            .map((record) => (record as { rootPath?: unknown } | null)?.rootPath)
+            .filter((rootPath): rootPath is string => typeof rootPath === "string" && rootPath.length > 0);
         } catch {
           // Without the list, the drive itself is marked; still no second wait.
         }
