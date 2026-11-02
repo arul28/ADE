@@ -82,6 +82,9 @@ export function emailInitials(email: string | undefined, fallback = ""): string 
  */
 export function poolAccounts(accounts: UsageAccount[] | undefined): UsageAccountView[] {
   const byKey = new Map<string, UsageAccountView>();
+  // When the shown plan was read: a plan change (Pro to Max) reaches one
+  // machine first, so the freshest reading wins, not the first one listed.
+  const planReadAt = new Map<string, number>();
   for (const account of accounts ?? []) {
     const instanceId = account.instanceId?.trim();
     const key = instanceId
@@ -90,7 +93,9 @@ export function poolAccounts(accounts: UsageAccount[] | undefined): UsageAccount
         ? `${account.provider}:${account.email.toLowerCase()}`
         : account.id;
     const existing = byKey.get(key);
+    const readAt = Math.max(0, ...account.machines.map(machineFreshness));
     if (!existing) {
+      if (account.plan) planReadAt.set(key, readAt);
       byKey.set(key, {
         id: account.id,
         provider: account.provider,
@@ -112,7 +117,10 @@ export function poolAccounts(accounts: UsageAccount[] | undefined): UsageAccount
       if (existing.machines.some((known) => known.label === machine.label)) continue;
       existing.machines.push(machine);
     }
-    if (!existing.plan && account.plan) existing.plan = account.plan;
+    if (account.plan && (!existing.plan || readAt > (planReadAt.get(key) ?? 0))) {
+      existing.plan = account.plan;
+      planReadAt.set(key, readAt);
+    }
     if (!existing.label && account.label) existing.label = account.label;
     // Credits belong to the login, not the machine that noticed them, so the
     // first machine to report any is enough.

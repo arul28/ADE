@@ -72,8 +72,14 @@ export type ClaudeUsageReport = {
   };
   /** `pro`, `max`, `team`, `enterprise`, or null for an API key or a cloud provider. */
   subscriptionType: string | null;
-  /** False when plan limits do not apply (API key, Bedrock, Vertex). */
+  /** False when plan limits do not apply (API key, Bedrock, Vertex), or could not be read. */
   limitsAvailable: boolean;
+  /**
+   * Why a subscriber's plan limits could not be read: the usage server refused
+   * the read (`read_failed`, a rate limit, say), or the sign-in lacks the scope
+   * that reads them (`sign_in`). Null when they were read or do not apply.
+   */
+  limitsUnreadable: "read_failed" | "sign_in" | null;
   limits: ClaudeUsageLimitWindow[];
   extraUsage: ClaudeUsageExtraUsage | null;
   /** From a scan of this machine's transcripts; null when skipped or not a subscriber. */
@@ -180,6 +186,24 @@ function readBehaviorWindow(value: unknown): ClaudeUsageBehaviorWindow | null {
   };
 }
 
+/** Plans that have plan limits; an Enterprise seat can have none. */
+const PLANS_WITH_LIMITS = new Set(["pro", "max", "ultra", "team"]);
+
+/**
+ * Why a subscriber's limits are missing. A refused read still resolves, as
+ * `rate_limits: { error: {...} }`. A plan with limits and
+ * `rate_limits_available: false` is a sign-in without the scope to read them.
+ */
+function claudeLimitsUnreadable(
+  rateLimits: Record<string, unknown> | null,
+  available: boolean,
+  subscriptionType: string | null,
+): ClaudeUsageReport["limitsUnreadable"] {
+  if (asRecord(rateLimits?.error)) return "read_failed";
+  if (!available && subscriptionType && PLANS_WITH_LIMITS.has(subscriptionType.toLowerCase())) return "sign_in";
+  return null;
+}
+
 export function normalizeClaudeUsageReport(value: unknown): ClaudeUsageReport {
   const record = asRecord(value) ?? {};
   const session = asRecord(record.session) ?? {};
@@ -217,6 +241,8 @@ export function normalizeClaudeUsageReport(value: unknown): ClaudeUsageReport {
   }
   const extra = asRecord(rateLimits?.extra_usage);
   const behaviors = asRecord(record.behaviors);
+  const subscriptionType = str(record.subscription_type);
+  const limitsUnreadable = claudeLimitsUnreadable(rateLimits, record.rate_limits_available === true, subscriptionType);
 
   return {
     session: {
@@ -227,8 +253,9 @@ export function normalizeClaudeUsageReport(value: unknown): ClaudeUsageReport {
       linesRemoved: num(session.total_lines_removed),
       models,
     },
-    subscriptionType: str(record.subscription_type),
+    subscriptionType,
     limitsAvailable: record.rate_limits_available === true && limits.length > 0,
+    limitsUnreadable,
     limits,
     extraUsage: extra
       ? {

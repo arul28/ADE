@@ -73,9 +73,33 @@ function parseBinding(binding: string): ParsedCombo[] {
     .filter((x): x is ParsedCombo => x != null);
 }
 
-function comboMatchesEvent(combo: ParsedCombo, event: KeyboardEvent): boolean {
+/** A typed key made only of letters (and combining marks) of a script other than Latin. */
+function isNonLatinLetterKey(key: string): boolean {
+  return /^[\p{L}\p{M}]+$/u.test(key) && !/\p{Script=Latin}/u.test(key);
+}
+
+export type LayoutKeyEvent = Pick<KeyboardEvent, "key"> & {
+  code?: string;
+  getModifierState?: (key: "AltGraph") => boolean;
+};
+
+/**
+ * The keys a keydown can match. On a Russian, Hebrew or Greek layout the K key
+ * types `л`, `ל` or `κ`, so a letter shortcut also accepts the physical key
+ * (`code` `KeyK`). A Latin layout matches only what it types, so Dvorak and
+ * AZERTY keep their own letters, and AltGr typing a character is text.
+ */
+export function eventKeyCandidates(event: LayoutKeyEvent): string[] {
   const key = normalizeKey(event.key);
-  if (!key || key !== combo.key) return false;
+  if (!key) return [];
+  const physical = /^Key([A-Z])$/.exec(event.code ?? "")?.[1]?.toLowerCase();
+  if (!physical || physical === key || !isNonLatinLetterKey(key)) return [key];
+  if (event.getModifierState?.("AltGraph")) return [key];
+  return [key, physical];
+}
+
+function comboMatchesEvent(combo: ParsedCombo, event: KeyboardEvent): boolean {
+  if (!eventKeyCandidates(event).includes(combo.key)) return false;
 
   const isMac = isMacPlatform();
   const requiredCtrl = combo.ctrl || (combo.mod && !isMac);

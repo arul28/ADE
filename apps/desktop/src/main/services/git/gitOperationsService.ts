@@ -5,6 +5,7 @@ import { runGitPushOrThrow } from "./gitPushFailure";
 import { branchNameFromHeadRef, getHeadSha, gitBranchRefsIdentity, gitStdoutOrThrow, gitWorktreeRootCached, resolveGitCommit, runGit, runGitOrThrow, runGitRepoCached } from "./git";
 import { detectConflictKind } from "./gitConflictState";
 import { runGitWithGithubAuthFallbackOrThrow } from "./gitTransportAuth";
+import { GIT_PULL_TIMEOUT_MS, GIT_REMOTE_FETCH_TIMEOUT_MS } from "./gitTimeouts";
 import type {
   GitActionResult,
   GitBatchFileActionArgs,
@@ -1437,14 +1438,22 @@ export function createGitOperationsService({
         rebase: ["pull", "--rebase"],
         merge: ["pull", "--no-rebase", "--no-edit"],
       };
+      // A pull waits for an earlier pull on the same lane. Its wait and its own
+      // git run share one bound, so it never starts or keeps writing after its
+      // caller stopped waiting (GIT_PULL_ACTION_TIMEOUT_MS covers this bound).
+      const deadline = Date.now() + GIT_PULL_TIMEOUT_MS;
       return serializePull(args.laneId, async () => {
+        const leftMs = deadline - Date.now();
+        if (leftMs < GIT_REMOTE_FETCH_TIMEOUT_MS) {
+          throw new Error("Another pull on this lane ran too long. Try the pull again.");
+        }
         const { action } = await runLaneOperation({
           laneId: args.laneId,
           kind: "git_pull",
           reason: `pull_${mode.replace("-", "_")}`,
           metadata: { mode },
           fn: async (lane) => {
-            await runGitWithGithubAuthFallbackOrThrow(commandByMode[mode], { cwd: lane.worktreePath, timeoutMs: 60_000 });
+            await runGitWithGithubAuthFallbackOrThrow(commandByMode[mode], { cwd: lane.worktreePath, timeoutMs: deadline - Date.now() });
           }
         });
         return action;

@@ -3,6 +3,7 @@ import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import zlib from "node:zlib";
 import { createRequire } from "node:module";
 import {
   createDynamicCursorCliModelDescriptor,
@@ -4660,6 +4661,51 @@ describe("scanCodexLogs", () => {
 
       expect(entries).toHaveLength(1);
       expect(entries[0]).toMatchObject({ inputTokens: 20, outputTokens: 3 });
+    } finally {
+      if (originalCodexHome === undefined) delete process.env.CODEX_HOME;
+      else process.env.CODEX_HOME = originalCodexHome;
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+  it("reads compressed Codex rollouts once and reports a cut-off one as an incomplete read", async () => {
+    const tmpDir = makeTmpDir();
+    const originalCodexHome = process.env.CODEX_HOME;
+    try {
+      process.env.CODEX_HOME = tmpDir;
+      const rollout = (id: string, inputTokens: number) => Buffer.from([
+        JSON.stringify({ timestamp: "2026-11-01T12:00:00.000Z", type: "session_meta", payload: { id, model: "gpt-5.5" } }),
+        JSON.stringify({
+          timestamp: "2026-11-01T12:00:01.000Z",
+          type: "event_msg",
+          payload: {
+            type: "token_count",
+            info: {
+              total_token_usage: { input_tokens: inputTokens, output_tokens: 5, total_tokens: inputTokens + 5 },
+              last_token_usage: { input_tokens: inputTokens, output_tokens: 5, total_tokens: inputTokens + 5 },
+            },
+          },
+        }),
+        "",
+      ].join("\n"));
+      const sessionDir = path.join(tmpDir, "sessions", "2026", "11", "01");
+      const archivedDir = path.join(tmpDir, "archived_sessions");
+      fs.mkdirSync(sessionDir, { recursive: true });
+      fs.mkdirSync(archivedDir, { recursive: true });
+      fs.writeFileSync(path.join(sessionDir, "rollout-plain.jsonl"), rollout("plain", 100));
+      fs.writeFileSync(path.join(sessionDir, "rollout-packed.jsonl.zst"), zlib.zstdCompressSync(rollout("packed", 400)));
+      // The same rollout, archived and compressed later, must not count twice.
+      fs.writeFileSync(path.join(archivedDir, "rollout-plain.jsonl.zst"), zlib.zstdCompressSync(rollout("plain", 100)));
+
+      const whole = await runLedgerScanWithCompleteness(() => scanCodexLogs());
+      expect(whole.complete).toBe(true);
+      expect(whole.value.map((entry) => entry.inputTokens).sort((a, b) => a - b)).toEqual([100, 400]);
+
+      // zstd ends a cut-off frame with no output and no error.
+      const packed = zlib.zstdCompressSync(Buffer.concat(Array.from({ length: 400 }, (_, index) => rollout(`cut-${index}`, index + 1))));
+      fs.writeFileSync(path.join(sessionDir, "rollout-cut.jsonl.zst"), packed.subarray(0, packed.length >> 1));
+      const partial = await runLedgerScanWithCompleteness(() => scanCodexLogs());
+      expect(partial.complete).toBe(false);
+      expect(partial.value).toHaveLength(2);
     } finally {
       if (originalCodexHome === undefined) delete process.env.CODEX_HOME;
       else process.env.CODEX_HOME = originalCodexHome;

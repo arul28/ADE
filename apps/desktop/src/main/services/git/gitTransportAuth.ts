@@ -225,6 +225,15 @@ export async function runGitWithGithubAuthFallback(
   const key = await repoKey(runOpts.cwd);
   if (!(await originIsGithubHttps(key, runOpts.cwd, commandDirection(args)))) return await runGit(args, runOpts);
 
+  // One deadline for the whole call: a retry gets only the time the earlier
+  // try left, so the caller's own budget still covers every attempt.
+  const deadline = runOpts.timeoutMs != null ? Date.now() + runOpts.timeoutMs : null;
+  const withinDeadline = (options: GitRunOptions): GitRunOptions | null => {
+    if (deadline == null) return options;
+    const leftMs = deadline - Date.now();
+    return leftMs > 0 ? { ...options, timeoutMs: leftMs } : null;
+  };
+
   // Set when ADE's token already failed to sign in during this call, so it is
   // not run a second time below.
   let refusedTokenResult: GitRunResult | null = null;
@@ -244,7 +253,12 @@ export async function runGitWithGithubAuthFallback(
     }
   }
 
-  const first = await runGit(args, runOpts);
+  const firstOptions = withinDeadline(runOpts);
+  if (!firstOptions && refusedTokenResult) {
+    recordOutcome(key, refusedTokenResult, "ade", true);
+    return refusedTokenResult;
+  }
+  const first = await runGit(args, firstOptions ?? runOpts);
   const firstOutput = resultOutput(first);
   const signInFailed = isGitAuthFailure(firstOutput);
   if (first.exitCode === 0 || first.timedOut || first.cancelled || (!signInFailed && !isGitAccessDenied(firstOutput))) {
@@ -263,11 +277,12 @@ export async function runGitWithGithubAuthFallback(
     return refusedTokenResult;
   }
   const token = await readTokenSafely(readToken);
-  if (!token) {
+  const retryOptions = withinDeadline(runOpts);
+  if (!token || !retryOptions) {
     recordOutcome(key, first, "system", false);
     return first;
   }
-  const retried = await runGit(args, withTokenEnv(runOpts, token));
+  const retried = await runGit(args, withTokenEnv(retryOptions, token));
   transportLogger?.info("git.transport_ade_credential_used", {
     command: args[0] ?? null,
     reason: signInFailed ? "sign_in_failed" : "access_denied",

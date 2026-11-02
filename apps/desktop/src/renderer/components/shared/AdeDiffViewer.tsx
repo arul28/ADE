@@ -112,8 +112,10 @@ function makeFileContents(path: string, contents: string, suffix: string): FileC
 }
 
 function normalizePatchForRenderer(patch: FilePatch): string {
-  const text = patch.patch.trimEnd();
-  if (!text) return "";
+  // Trim only to test for an empty patch: the last hunk can end with a blank
+  // context line or with spaces on an added line, and both are real content.
+  const text = patch.patch;
+  if (!text.trim()) return "";
   if (text.startsWith("diff --git ") || text.startsWith("--- ")) return text;
 
   const oldPath = patch.oldPath ?? patch.path;

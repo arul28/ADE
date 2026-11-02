@@ -45,7 +45,7 @@ import {
   WINDOWS_DESKTOP_INTERACTIVE_REMOTE_TRANSPORT_TIMEOUT_MS,
   WINDOWS_DESKTOP_TYPE_REMOTE_TRANSPORT_TIMEOUT_MS,
 } from "../localRuntime/localRuntimeTimeoutPolicy";
-import { LANE_GIT_WRITE_ACTION_TIMEOUT_MS } from "../git/gitTimeouts";
+import { GIT_PULL_ACTION_TIMEOUT_MS, LANE_GIT_WRITE_ACTION_TIMEOUT_MS } from "../git/gitTimeouts";
 import { bootstrapPairedRuntime } from "./pairedRuntimeBootstrap";
 import { ConditionalActionCache } from "./conditionalActionCache";
 import { CONDITIONAL_ACTION_IF_NONE_MATCH_PARAM, CONDITIONAL_ACTION_PARAM } from "../../../shared/conditionalActionResult";
@@ -235,6 +235,8 @@ const LONG_RUNNING_REMOTE_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> =
   ["lane.importBranch", LANE_GIT_WRITE_ACTION_TIMEOUT_MS],
   ["lane.switchBranch", LANE_GIT_WRITE_ACTION_TIMEOUT_MS],
   ["git.checkoutBranch", LANE_GIT_WRITE_ACTION_TIMEOUT_MS],
+  // A pull fetches and then writes the tree; see GIT_PULL_TIMEOUT_MS.
+  ["git.pull", GIT_PULL_ACTION_TIMEOUT_MS],
   ["lane.unarchive", LANE_GIT_WRITE_ACTION_TIMEOUT_MS],
   ["lane.archiveAndReclaim", LANE_GIT_WRITE_ACTION_TIMEOUT_MS],
   ["lane.delete", LANE_GIT_WRITE_ACTION_TIMEOUT_MS],

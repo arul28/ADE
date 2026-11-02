@@ -1,7 +1,7 @@
 import { DEMO_RECORDING_STOP_TIMEOUT_MS } from "../../../shared/demoVideo/demoContract";
 import { LEDGER_WORKER_TIMEOUT_MS } from "../usage/usageLedgerWorkerClient";
 import { WINDOWS_DESKTOP_TYPE_MAX_TIMEOUT_MS } from "../../../shared/types/macDesktop";
-import { LANE_GIT_WRITE_ACTION_TIMEOUT_MS } from "../git/gitTimeouts";
+import { GIT_PULL_ACTION_TIMEOUT_MS, LANE_GIT_WRITE_ACTION_TIMEOUT_MS } from "../git/gitTimeouts";
 import { FILE_DELETE_TIMEOUT_MS } from "../../../shared/removeTreeTimeouts";
 import {
   ARCHIVE_DELETE_TIMEOUT_MS,
@@ -305,6 +305,8 @@ const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = 
   // deletes the chat and the lane (worktree + local and remote branch).
   ["chat.cancelLaunch", CHAT_CANCEL_LAUNCH_TIMEOUT_MS],
   ["lane.archive", 120_000],
+  // A pull fetches and then writes the tree; see GIT_PULL_TIMEOUT_MS.
+  ["git.pull", GIT_PULL_ACTION_TIMEOUT_MS],
   // A GitHub Stack merge polls GitHub for up to 20s, then cleans up each
   // merged PR. The 30s default reported a failure while the merge went on.
   ["pr.land", 120_000],

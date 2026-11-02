@@ -40,7 +40,7 @@ type AdeProjectServiceArgs = {
 };
 
 const SECRET_PATTERNS: Array<{ code: string; regex: RegExp; message: string }> = [
-  { code: "openai-key", regex: /\bsk-[A-Za-z0-9]{20,}\b/, message: "Possible OpenAI-style API key found in a tracked file." },
+  { code: "openai-key", regex: /\bsk-[A-Za-z0-9_]{20,}\b/, message: "Possible OpenAI-style API key found in a tracked file." },
   { code: "github-token", regex: /\bgh[pousr]_[A-Za-z0-9]{20,}\b/, message: "Possible GitHub token found in a tracked file." },
   { code: "bearer-token", regex: /Bearer\s+[A-Za-z0-9._-]{20,}/, message: "Possible bearer token found in a tracked file." },
 ];
