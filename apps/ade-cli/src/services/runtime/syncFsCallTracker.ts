@@ -22,7 +22,9 @@ import { fileURLToPath } from "node:url";
  *   costs about a microsecond, so a per-second budget bounds it.
  * - A path under a folder that has stopped answering fails at once instead of
  *   joining the wait (see {@link setUnansweringSyncFsRoots}). Callers already
- *   handle a refused read; none of them handles a frozen brain.
+ *   handle a refused read; none of them handles a frozen brain. `existsSync`
+ *   throws too rather than answer "missing": code that cleans up after a file
+ *   it believes is gone must not act on a folder that is only waiting.
  * - A call that took a second or more is logged with its caller once it ends.
  */
 
@@ -83,8 +85,10 @@ export type SyncFsCallSnapshot = {
   method: string;
   path: string;
   caller: string | null;
-  /** Epoch ms (high resolution) the call started. */
+  /** Wall-clock ms (`Date.now()`) the call started. */
   startedAtMs: number;
+  /** Bumped by every tracked call, so a reader can tell one call from the next. */
+  sequence: number;
 };
 
 /**
@@ -104,17 +108,21 @@ export function readSyncFsCall(buffer: SharedArrayBuffer, methods: readonly stri
     path: decoder.decode(new Uint8Array(buffer, 64, pathLength).slice()),
     caller: callerLength > 0 ? decoder.decode(new Uint8Array(buffer, 64 + 1_024, callerLength).slice()) : null,
     startedAtMs: new Float64Array(buffer, 32, 1)[0] ?? 0,
+    sequence: before,
   };
   // The main thread started another call while this one was read.
   if (Atomics.load(ints, 4) !== before) return null;
   return snapshot;
 }
 
+let cachedHome: string | null = null;
+let cachedSystemDrive: string | null = null;
+
 /** Whether a path is somewhere an `open()` can wait on a person or a network. */
 export function isStallCapablePath(
   target: string,
   platform: NodeJS.Platform = process.platform,
-  home: string = os.homedir(),
+  home: string = (cachedHome ??= os.homedir()),
 ): boolean {
   if (platform === "darwin") {
     if (target.startsWith("/Volumes/") || target.startsWith("/Network/")) return true;
@@ -130,13 +138,21 @@ export function isStallCapablePath(
     if (target.startsWith("\\\\") || target.startsWith("//")) return true;
     const drive = /^([a-zA-Z]):/.exec(target)?.[1];
     if (!drive) return false;
-    const systemDrive = (process.env.SystemDrive ?? "C:").charAt(0);
-    return drive.toUpperCase() !== systemDrive.toUpperCase();
+    cachedSystemDrive ??= (process.env.SystemDrive ?? "C:").charAt(0).toUpperCase();
+    return drive.toUpperCase() !== cachedSystemDrive;
   }
   return target.startsWith("/mnt/")
     || target.startsWith("/media/")
     || target.startsWith("/run/media/")
     || target.startsWith("/net/");
+}
+
+/**
+ * Whether an error is the guard's fast failure, which the brain contains
+ * instead of exiting: it stands in for a wait, not a fault.
+ */
+export function isSyncFsRootNotAnsweringError(error: unknown): boolean {
+  return error instanceof SyncFsRootNotAnsweringError;
 }
 
 /**
@@ -157,6 +173,12 @@ export class SyncFsRootNotAnsweringError extends Error {
 let buffer: SharedArrayBuffer | null = null;
 let unansweringRoots: string[] = [];
 
+/** macOS and Windows match paths without case, and Windows either separator. */
+function comparablePath(value: string): string {
+  if (process.platform === "win32") return value.replace(/\\/g, "/").toLowerCase();
+  return process.platform === "darwin" ? value.toLowerCase() : value;
+}
+
 /** The shared buffer the watchdog worker reads, or null before install. */
 export function syncFsCallBuffer(): SharedArrayBuffer | null {
   return buffer;
@@ -171,10 +193,12 @@ export function setUnansweringSyncFsRoots(roots: readonly string[]): void {
 }
 
 function unansweringRootOf(target: string): string | null {
+  const candidate = comparablePath(target);
   for (const root of unansweringRoots) {
-    if (target === root) return root;
-    if (target.startsWith(root)) {
-      const next = target.charAt(root.length);
+    const comparableRoot = comparablePath(root);
+    if (candidate === comparableRoot) return root;
+    if (candidate.startsWith(comparableRoot)) {
+      const next = candidate.charAt(comparableRoot.length);
       if (next === "/" || next === "\\") return root;
     }
   }
@@ -221,7 +245,6 @@ export function installSyncFsCallTracker(args: { warn: Warn }): void {
   const pathBytes = new Uint8Array(buffer, PATH_BYTE, PATH_CAPACITY);
   const callerBytes = new Uint8Array(buffer, CALLER_BYTE, CALLER_CAPACITY);
   const encoder = new TextEncoder();
-  const clockOrigin = performance.timeOrigin;
   let depth = 0;
   let captureWindowStartedAt = 0;
   let capturesInWindow = 0;
@@ -277,8 +300,8 @@ export function installSyncFsCallTracker(args: { warn: Warn }): void {
     site.maxMsSinceLog = 0;
   };
 
-  const wrap = (method: TrackedMethod, methodIndex: number): void => {
-    const original = (fs as unknown as Record<string, unknown>)[method];
+  const wrap = (holder: Record<string, unknown>, key: string, method: TrackedMethod, methodIndex: number): void => {
+    const original = holder[key];
     if (typeof original !== "function") return;
     const call = original as (...callArgs: unknown[]) => unknown;
     const twoPaths = TWO_PATH_METHODS.has(method);
@@ -288,20 +311,18 @@ export function installSyncFsCallTracker(args: { warn: Warn }): void {
       const target = pathOf(callArgs[0]);
       if (target === null) return call.apply(this, callArgs);
       if (unansweringRoots.length > 0) {
-        const root = unansweringRootOf(target)
-          ?? (twoPaths ? (() => { const second = pathOf(callArgs[1]); return second ? unansweringRootOf(second) : null; })() : null);
-        if (root !== null) {
-          if (method === "existsSync") return false;
-          throw new SyncFsRootNotAnsweringError(target, root);
-        }
+        const second = twoPaths ? pathOf(callArgs[1]) : null;
+        const root = unansweringRootOf(target) ?? (second ? unansweringRootOf(second) : null);
+        if (root !== null) throw new SyncFsRootNotAnsweringError(target, root);
       }
       const caller = isStallCapablePath(target) ? captureCaller(wrapped) : null;
       Atomics.add(ints, SEQUENCE_INT32, 1);
       ints[METHOD_INT32] = methodIndex;
       ints[PATH_LENGTH_INT32] = encoder.encodeInto(target, pathBytes).written ?? 0;
       ints[CALLER_LENGTH_INT32] = caller ? encoder.encodeInto(caller, callerBytes).written ?? 0 : 0;
+      // Wall clock, which the worker reads too; the duration below is monotonic.
+      startedAt[0] = Date.now();
       const started = performance.now();
-      startedAt[0] = clockOrigin + started;
       depth += 1;
       Atomics.store(ints, STATE_INT32, 1);
       try {
@@ -320,13 +341,16 @@ export function installSyncFsCallTracker(args: { warn: Warn }): void {
       }
     };
     // realpathSync.native and the like hang off the function itself.
-    for (const key of Object.keys(call)) {
-      (wrapped as unknown as Record<string, unknown>)[key] = (call as unknown as Record<string, unknown>)[key];
+    for (const property of Object.keys(call)) {
+      (wrapped as unknown as Record<string, unknown>)[property] = (call as unknown as Record<string, unknown>)[property];
     }
-    (fs as unknown as Record<string, unknown>)[method] = wrapped;
+    holder[key] = wrapped;
   };
 
-  SYNC_FS_TRACKED_METHODS.forEach((method, index) => wrap(method, index));
+  const fsRecord = fs as unknown as Record<string, unknown>;
+  SYNC_FS_TRACKED_METHODS.forEach((method, index) => wrap(fsRecord, method, method, index));
+  // The libc realpath opens the folders it walks just the same.
+  wrap(fsRecord.realpathSync as Record<string, unknown>, "native", "realpathSync", SYNC_FS_TRACKED_METHODS.indexOf("realpathSync"));
   // ESM importers of `node:fs` read named exports from a copy; refresh it.
   syncBuiltinESMExports();
 }

@@ -54,6 +54,7 @@ import type {
   PtyExitEvent,
   PersonalChatScopeContract,
   SyncBrainStatusPayload,
+  SyncHostHealth,
   SyncApplicationCompressionCodec,
   SyncChangesetAckPayload,
   SyncChangesetBatchPayload,
@@ -5836,10 +5837,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     const connectedPeers = [...peers]
       .map((peer) => toSyncPeerConnectionState(peer, dbVersion))
       .filter((peer): peer is SyncPeerConnectionState => peer != null);
-    const storageWait = readProjectRootStorageWait();
     return {
-      // Always sent, so a device clears its notice when the wait is over.
-      hostHealth: storageWait ? { storageWait } : {},
       brain: {
         ...brainMetadata,
         dbVersion,
@@ -5871,8 +5869,16 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   }
 
   // A project folder that stops (or starts) answering is news to every device
-  // at once, not at the next periodic status.
-  const stopStorageWaitListener = onProjectRootStorageWaitChange(() => broadcastBrainStatus());
+  // at once. Its own message, read from no database: the folder that stopped
+  // answering may hold this host's project, and then a status build fails.
+  const stopStorageWaitListener = onProjectRootStorageWaitChange(() => {
+    if (disposed) return;
+    const payload: SyncHostHealth = { storageWait: readProjectRootStorageWait() };
+    for (const peer of peers) {
+      if (!peer.authenticated || peer.ws.readyState !== WebSocket.OPEN) continue;
+      send(peer.ws, "host_health", payload);
+    }
+  });
 
   function broadcastBrainStatus(): void {
     if (disposed) return;

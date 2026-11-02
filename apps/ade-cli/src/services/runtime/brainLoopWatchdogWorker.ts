@@ -83,12 +83,13 @@ export function buildBrainLoopWatchdogWorkerSource(): string {
           path: call.path,
           caller: call.caller,
           blockedMs: Math.max(0, Math.floor(Date.now() - call.startedAtMs)),
+          sequence: call.sequence,
         };
       } catch {
         return null;
       }
     };
-    let reportedSyncFsCallStartedAtMs = null;
+    let reportedSyncFsCallSequence = null;
 
     const monotonicMs = () => Number(process.hrtime.bigint() / 1000000n);
     let lastHeartbeatWallMs = null;
@@ -111,7 +112,14 @@ export function buildBrainLoopWatchdogWorkerSource(): string {
       // A synchronous file call the main thread is stuck in: the path and the
       // code that made it, which the native sample cannot name.
       const blockedFsCall = currentSyncFsCall();
-      if (blockedFsCall) breadcrumb.blockedFsCall = blockedFsCall;
+      if (blockedFsCall) {
+        breadcrumb.blockedFsCall = {
+          method: blockedFsCall.method,
+          path: blockedFsCall.path,
+          caller: blockedFsCall.caller,
+          blockedMs: blockedFsCall.blockedMs,
+        };
+      }
       const breadcrumbPath = path.join(workerData.runtimeDir, workerData.breadcrumbFile);
       let tempPath = null;
       try {
@@ -267,21 +275,19 @@ export function buildBrainLoopWatchdogWorkerSource(): string {
       // answering the prompt) still leaves the path and caller in the log.
       if (evaluation.blockedMs >= BRAIN_LOOP_SYNC_FS_BLOCK_REPORT_MS) {
         const call = currentSyncFsCall();
-        if (call && call.blockedMs >= BRAIN_LOOP_SYNC_FS_BLOCK_REPORT_MS) {
-          const startedAtMs = Date.now() - call.blockedMs;
-          if (reportedSyncFsCallStartedAtMs === null || Math.abs(startedAtMs - reportedSyncFsCallStartedAtMs) > 1000) {
-            reportedSyncFsCallStartedAtMs = startedAtMs;
-            try {
-              fs.writeSync(2, "[" + new Date().toISOString() + "] WARN brain.sync_fs_call_blocked " + JSON.stringify({
-                pid: process.pid,
-                lastCommand,
-                method: call.method,
-                path: call.path,
-                caller: call.caller,
-                blockedMs: call.blockedMs,
-              }) + "\n");
-            } catch {}
-          }
+        // Once per call: the sequence tells this call from the next one.
+        if (call && call.blockedMs >= BRAIN_LOOP_SYNC_FS_BLOCK_REPORT_MS && call.sequence !== reportedSyncFsCallSequence) {
+          reportedSyncFsCallSequence = call.sequence;
+          try {
+            fs.writeSync(2, "[" + new Date().toISOString() + "] WARN brain.sync_fs_call_blocked " + JSON.stringify({
+              pid: process.pid,
+              lastCommand,
+              method: call.method,
+              path: call.path,
+              caller: call.caller,
+              blockedMs: call.blockedMs,
+            }) + "\n");
+          } catch {}
         }
       }
 

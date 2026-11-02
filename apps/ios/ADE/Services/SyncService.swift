@@ -4268,7 +4268,7 @@ final class SyncService: ObservableObject {
   @Published private(set) var hostStallNotice: SyncHostStallNotice?
   /// A project folder on the machine is not answering (on a Mac, usually a
   /// permission prompt on its screen). Set from the hello and kept live by
-  /// `brain_status`; nil when every folder answers.
+  /// `host_health`; nil when every folder answers.
   @Published private(set) var hostStorageWaitNotice: SyncHostStorageWaitNotice?
   @Published private(set) var prefersReducedSyncLoad = false
   @Published private(set) var terminalBufferRevision = 0
@@ -22098,12 +22098,7 @@ final class SyncService: ObservableObject {
           profile.hostName = brain["deviceName"] as? String
           profile.lastHostDeviceId = brain["deviceId"] as? String
         }
-        // Hosts that send live health send it on every status; an older host
-        // never does, so an absent key leaves the hello's word in place.
-        if dict["hostHealth"] != nil {
-          let wait = parseSyncHostStorageWaitNotice(dict["hostHealth"], machineName: brain["deviceName"] as? String)
-          if wait != hostStorageWaitNotice { hostStorageWaitNotice = wait }
-        }
+
         if let peer = (dict["connectedPeers"] as? [[String: Any]])?.first(where: { $0["deviceId"] as? String == deviceId }) {
           let latencyMs = (peer["latencyMs"] as? NSNumber)?.intValue
           let syncLag = (peer["syncLag"] as? NSNumber)?.intValue
@@ -22347,6 +22342,15 @@ final class SyncService: ObservableObject {
       if let envelope = try? decode(payload, as: ChatLaunchEventEnvelope.self) {
         applyChatLaunchEventEnvelope(envelope)
       }
+    case "host_health":
+      // The machine's project folder stopped (or started again) answering
+      // while the phone stayed connected. Carries the whole state: no
+      // `storageWait` clears the notice.
+      let wait = parseSyncHostStorageWaitNotice(
+        payload,
+        machineName: remoteHostName ?? activeHostProfile?.hostName
+      )
+      if wait != hostStorageWaitNotice { hostStorageWaitNotice = wait }
     default:
       break
     }

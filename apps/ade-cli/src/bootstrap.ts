@@ -1104,11 +1104,6 @@ export async function createAdeRuntime(args: {
       error: error instanceof Error ? error.message : String(error),
     });
   });
-  // A running brain reads this folder synchronously from timers. Watching it
-  // off the loop is what turns a permission prompt into a notice and a fast
-  // failure instead of a frozen brain.
-  watchProjectRoot(projectRoot);
-  teardown.push(() => unwatchProjectRoot(projectRoot));
   // Pushed first so it pops last: writers must stop before the store closes.
   teardown.push(() => {
     try {
@@ -1118,6 +1113,11 @@ export async function createAdeRuntime(args: {
     }
     db.close();
   });
+  // A running brain reads this folder synchronously from timers. Watching it
+  // off the loop is what turns a permission prompt into a notice and a fast
+  // failure instead of a frozen brain.
+  watchProjectRoot(projectRoot);
+  teardown.push(() => unwatchProjectRoot(projectRoot));
   // Reads the `let` at drain time, so it clears whatever timer the reconcile
   // scheduler last armed. Both shutdown paths drain this stack, so the timer
   // cannot be forgotten on one of them.

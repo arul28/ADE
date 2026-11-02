@@ -1,5 +1,6 @@
 import type {
   SyncBrainStatusPayload,
+  SyncHostHealth,
   SyncChangesetBatchPayload,
   SyncEnvelope,
   SyncDpopProof,
@@ -156,6 +157,7 @@ export type SyncConnectionEvents = {
   tablesChanged: Set<string>;
   projectCatalog: SyncProjectCatalogPayload;
   brainStatus: SyncBrainStatusPayload;
+  hostHealth: SyncHostHealth;
   close: { code: number; reason: string };
   error: Error;
 };
@@ -319,6 +321,7 @@ export class SyncConnection {
     tablesChanged: new Set(),
     projectCatalog: new Set(),
     brainStatus: new Set(),
+    hostHealth: new Set(),
     close: new Set(),
     error: new Set(),
   };
@@ -1045,6 +1048,9 @@ export class SyncConnection {
       }
       case "brain_status":
         this.emit("brainStatus", envelope.payload as SyncBrainStatusPayload);
+        break;
+      case "host_health":
+        this.emit("hostHealth", envelope.payload as SyncHostHealth);
         break;
       case "project_catalog":
         this.emit("projectCatalog", envelope.payload as SyncProjectCatalogPayload);

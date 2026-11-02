@@ -610,6 +610,11 @@ import {
   startBrainLoopWatchdog,
 } from "./services/runtime/brainLoopWatchdog";
 import { recordHostStall } from "./services/runtime/hostStallRecord";
+import {
+  installSyncFsCallTracker,
+  isStallCapablePath,
+  isSyncFsRootNotAnsweringError,
+} from "./services/runtime/syncFsCallTracker";
 import type { BrainMemoryRestartGuard } from "./services/runtime/brainMemoryRestart";
 import {
   BRAIN_HEARTBEAT_STALE_MS,
@@ -23725,6 +23730,16 @@ function installRuntimeProcessErrorBoundary(label: string): () => void {
     }
   };
   const onUncaughtException = (error: Error): void => {
+    // A synchronous file call under a folder that is waiting on a permission
+    // prompt (or a hung drive) fails fast instead of freezing the brain. A
+    // timer that did not expect a throw must not turn that into an exit: the
+    // restarted brain would walk back into the wait, and the loop is what the
+    // fast failure exists to stop. The throw happened before the call did
+    // anything, so carrying on is as safe as a caught error.
+    if (isSyncFsRootNotAnsweringError(error)) {
+      write("storage wait", error);
+      return;
+    }
     write("fatal uncaught exception", error);
     // Sentry captured this already (its handler runs first); give the report
     // a moment to leave before the process does.
@@ -27134,7 +27149,6 @@ async function runServe(
   // And this names the synchronous file call, path and caller, that the main
   // thread is stuck in, for the watchdog to read while it is stuck. Installed
   // before the watchdog starts, which hands the tracker's memory to its worker.
-  const { installSyncFsCallTracker, isStallCapablePath } = await import("./services/runtime/syncFsCallTracker");
   installSyncFsCallTracker({ warn: (event, meta) => headlessProjectLogger.warn(event, meta) });
   const projectRootAccessMonitor = await import("./services/projects/projectRootAccessMonitor");
   projectRootAccessMonitor.configureProjectRootAccessMonitor({ logger: headlessProjectLogger });

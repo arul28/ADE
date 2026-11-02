@@ -2433,11 +2433,6 @@ export type SyncBrainStatusPayload = {
   };
   /** Mirrors `SyncHelloOkPayload.cloudRelayWssUrl` for connected clients. */
   cloudRelayWssUrl?: string | null;
-  /**
-   * Live host health. Present on hosts that send it, so a client clears a
-   * shown notice when `storageWait` is absent; older hosts never send it.
-   */
-  hostHealth?: SyncHostHealth;
 };
 
 // ---------------------------------------------------------------------------
@@ -3470,6 +3465,14 @@ export type SyncChatHistoryEnvelope = SyncEnvelopeWithPayload<
   SyncChatHistoryRequestPayload | SyncChatHistoryResponsePayload
 >;
 export type SyncBrainStatusEnvelope = SyncEnvelopeWithPayload<"brain_status", SyncBrainStatusPayload>;
+/**
+ * Pushed when the host's health changes while a device stays connected (today:
+ * a project folder stopped or started answering). Built from no database, so
+ * it still goes out when the waiting folder holds the host's own project.
+ * Carries the full current state; `storageWait: null` clears it. Older clients
+ * ignore the type.
+ */
+export type SyncHostHealthEnvelope = SyncEnvelopeWithPayload<"host_health", SyncHostHealth>;
 export type SyncPrsUpdatedEnvelope = SyncEnvelopeWithPayload<"prs_updated", { updatedAt: string }>;
 export type SyncRosterSubscribeEnvelope = SyncEnvelopeWithPayload<"roster_subscribe", SyncRosterSubscribePayload>;
 export type SyncRosterUnsubscribeEnvelope = SyncEnvelopeWithPayload<"roster_unsubscribe", SyncRosterUnsubscribePayload>;
@@ -3563,6 +3566,7 @@ export type SyncEnvelope =
   | SyncChatHistoryEnvelope
   | SyncChatToolResultEnvelope
   | SyncBrainStatusEnvelope
+  | SyncHostHealthEnvelope
   | SyncPrsUpdatedEnvelope
   | SyncRosterSubscribeEnvelope
   | SyncRosterUnsubscribeEnvelope

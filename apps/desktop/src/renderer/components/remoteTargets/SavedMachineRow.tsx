@@ -438,7 +438,7 @@ export function SavedMachineRow({
         ) : null}
 
         <HostStorageWaitNote
-          wait={status?.state === "connected" ? status.hostStorageWait : null}
+          wait={status?.hostStorageWait}
           machineName={target.name?.trim() || target.hostname}
         />
 

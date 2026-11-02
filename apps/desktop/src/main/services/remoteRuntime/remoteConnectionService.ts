@@ -837,6 +837,7 @@ export class RemoteConnectionService {
           lastAttemptedAt: status.lastAttemptedAt ?? null,
           connectedAt: status.connectedAt ?? target.lastConnectedAt,
           ...(status.hostStall ? { hostStall: status.hostStall } : {}),
+          // Live state, so only while connected: an old wait must not linger on a dropped machine.
           ...(status.hostStorageWait && status.state === "connected" ? { hostStorageWait: status.hostStorageWait } : {}),
           reconnectBlocked: this.isManuallyDisconnected(target) ? "disconnected" : null,
         };

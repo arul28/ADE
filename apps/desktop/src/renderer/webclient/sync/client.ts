@@ -293,6 +293,8 @@ export class AdeSyncClient {
   private clientGeneration = 0;
   private restorationPromise: Promise<void> | null = null;
   private lastTransportState: SyncConnectionStatus["state"] = "idle";
+  /** The host this connection reached, for naming it in a live `host_health` notice. */
+  private hostIdentity: { deviceId?: string; deviceName?: string } | null = null;
   private relayAccess: WebRelayAccess = SIGNED_OUT_RELAY_ACCESS;
   private readonly pendingCommands = new Map<string, PendingCommand>();
   private readonly pendingFiles = new Map<string, PendingRequest<unknown>>();
@@ -369,6 +371,7 @@ export class AdeSyncClient {
     });
     this.connection.on("envelope", (envelope) => this.handleEnvelope(envelope));
     this.connection.on("helloOk", (payload) => {
+      this.hostIdentity = { deviceId: payload.brain?.deviceId, deviceName: payload.brain?.deviceName };
       applyProjectHostHello(payload.projectHost ?? null, this);
       // The host froze just before this reconnect: say so, or the drop reads
       // as this browser's network.
@@ -396,13 +399,16 @@ export class AdeSyncClient {
       ), { preserveTerminalInputs: true });
     });
     this.connection.on("brainStatus", (payload) => {
-      // Live: a folder that stops answering while this browser stays connected.
-      announceHostStorageWait({
-        wait: hostStorageWaitFromHealth(payload.hostHealth, Date.now()),
-        machineKey: payload.brain?.deviceId,
-        machineName: payload.brain?.deviceName,
-      });
+      this.hostIdentity = { deviceId: payload.brain?.deviceId, deviceName: payload.brain?.deviceName };
       this.emit("brainStatus", payload);
+    });
+    // Live: a folder there stops answering while this browser stays connected.
+    this.connection.on("hostHealth", (payload) => {
+      announceHostStorageWait({
+        wait: hostStorageWaitFromHealth(payload, Date.now()),
+        machineKey: this.hostIdentity?.deviceId,
+        machineName: this.hostIdentity?.deviceName,
+      });
     });
     this.connection.on("tablesChanged", (tables) => this.emit("tablesChanged", tables));
     this.connection.on("projectCatalog", (payload) => {

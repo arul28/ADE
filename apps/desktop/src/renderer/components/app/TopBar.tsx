@@ -813,7 +813,7 @@ export function TopBar({
       );
       // A machine that froze says so when it is reached again; once per freeze.
       for (const connection of snapshot.connections) {
-        if (connection.hostStorageWait && connection.state === "connected") {
+        if (connection.hostStorageWait) {
           announceHostStorageWait({
             wait: connection.hostStorageWait,
             machineKey: connection.target.id,

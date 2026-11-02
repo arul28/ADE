@@ -42,8 +42,8 @@ type Logger = {
 
 type RootState = {
   root: string;
-  /** Open in this brain (kept until closed), or only waited on after a failed open or a wedge. */
-  open: boolean;
+  /** Runtimes that have it open; 0 when only waited on after a failed open or a wedge. */
+  openCount: number;
   wait: { reason: SyncHostStorageWait["reason"]; sinceMs: number; source: string } | null;
   /**
    * A file under the root that is known to have hung (the previous brain died
@@ -80,6 +80,14 @@ function startWait(state: RootState, reason: SyncHostStorageWait["reason"], sour
   if (state.wait?.reason === reason) return;
   const previous = state.wait;
   state.wait = { reason, sinceMs: previous?.sinceMs ?? Date.now(), source };
+  if (previous?.reason === "not_answering") {
+    // Answered, with a refusal: the person chose Don't Allow.
+    logger?.info("project_root.permission_wait_ended", {
+      root: state.root,
+      waitedMs: Date.now() - previous.sinceMs,
+      outcome: reason,
+    });
+  }
   if (reason === "not_answering") {
     logger?.warn("project_root.not_answering", { root: state.root, source, ...extra });
     logger?.warn("project_root.permission_wait_started", {
@@ -102,7 +110,7 @@ function endWait(state: RootState, outcome: string): void {
     logger?.info("project_root.permission_wait_ended", { root: state.root, waitedMs, outcome });
   }
   logger?.info("project_root.recovered", { root: state.root, waitedMs, previous: reason });
-  if (!state.open) roots.delete(state.root);
+  if (state.openCount === 0) roots.delete(state.root);
   notify();
 }
 
@@ -127,8 +135,14 @@ function probe(state: RootState): void {
       startWait(state, "denied", "probe", { code });
       return;
     }
+    if (state.probePath) {
+      // The file that hung answered (or is gone). The folder itself must
+      // answer too before synchronous calls are let back in.
+      state.probePath = null;
+      probe(state);
+      return;
+    }
     // Anything else (gone, unmounted) is not a wait: nothing would freeze on it.
-    state.probePath = null;
     endWait(state, error ? `error:${code ?? "unknown"}` : "answered");
   };
   const probePath = state.probePath;
@@ -176,7 +190,7 @@ function stateFor(root: string): RootState {
   const key = normalizeRoot(root);
   let state = roots.get(key);
   if (!state) {
-    state = { root: key, open: false, wait: null, probePath: null, probeInFlight: false };
+    state = { root: key, openCount: 0, wait: null, probePath: null, probeInFlight: false };
     roots.set(key, state);
   }
   return state;
@@ -186,18 +200,18 @@ export function configureProjectRootAccessMonitor(args: { logger: Logger }): voi
   logger = args.logger;
 }
 
-/** An open project: watched until {@link unwatchProjectRoot}. */
+/** An open project: watched until each {@link watchProjectRoot} has its {@link unwatchProjectRoot}. */
 export function watchProjectRoot(root: string): void {
-  stateFor(root).open = true;
+  stateFor(root).openCount += 1;
   ensureTimer();
 }
 
 export function unwatchProjectRoot(root: string): void {
   const state = roots.get(normalizeRoot(root));
   if (!state) return;
-  state.open = false;
-  if (!state.wait) roots.delete(state.root);
-  else notify();
+  state.openCount = Math.max(0, state.openCount - 1);
+  // A waiting folder stays watched (and its notice stays up) until it answers.
+  if (state.openCount === 0 && !state.wait) roots.delete(state.root);
 }
 
 /**
