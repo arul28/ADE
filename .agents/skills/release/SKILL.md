@@ -70,11 +70,14 @@ bash scripts/release-tools/scope.sh
   is the current one (`MARKETING_VERSION` in the Xcode project).
 - **iPhone minimum check.** Read `MIN_SUPPORTED_MOBILE_APP_VERSION` and
   `MIN_SUPPORTED_MOBILE_APP_BUILD` in the commit you release. The normal app's
-  newest build is its `next-build-number` minus one. If the minimum is above
-  it (a newer marketing version, or the same one with a higher build), iOS is
-  in scope even when `scope.sh` says otherwise, the build must be at least the
-  minimum, and the desktop draft stays a draft until that build reached every
-  group (the one exception to independent tiers). Machines running a beta with that minimum already refuse the normal
+  newest build is the highest processed, unexpired one (`next-build-number`
+  also counts uploads that never finished, so do not subtract one from it):
+  `asc builds list --app 6762759870 --version <mv> --platform IOS --processing-state VALID --limit 50 --output json | jq '[.data[] | select(.attributes.expired | not) | .attributes.version | tonumber] | max'`.
+  If the minimum is above it (a newer marketing version, or the same one with
+  a higher build), iOS is in scope even when `scope.sh` says otherwise, the
+  build must be at least the minimum, and the desktop draft stays a draft
+  until that build reached every group (the one exception to independent
+  tiers). Machines running a beta with that minimum already refuse the normal
   app, so do this release soon.
 - any cloudflare line with `undeployed_commits > 0` or `UNKNOWN` → Cloudflare
   needs work (step 5).
