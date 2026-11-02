@@ -1632,12 +1632,11 @@ describe("createAgentChatService", () => {
       );
       expect(authText).toBeUndefined();
 
-      // A single "logged out" notice replaces the "retry 1/10 … 10/10" storm.
-      const notice = events.find(
-        (event) => event.event.type === "system_notice"
-          && /logged out/i.test((event.event as any).message ?? ""),
+      // A single sign-in notice replaces the "retry 1/10 … 10/10" storm.
+      const authNotices = events.filter(
+        (event) => event.event.type === "system_notice" && (event.event as any).noticeKind === "auth",
       );
-      expect(notice).toBeTruthy();
+      expect(authNotices).toHaveLength(1);
 
       // The error carries the agentCli signal that renders the inline re-login card.
       const errorEvent = events.find(
@@ -1649,6 +1648,89 @@ describe("createAgentChatService", () => {
 
       const failedDone = events.filter((event) => event.event.type === "done").at(-1);
       expect((failedDone!.event as any).status).toBe("failed");
+    });
+
+    // A sign-in read that hit a keychain that did not answer is not a sign-out.
+    // A turn that ran nothing is tried once more after a wait; a turn that
+    // already did work is never re-run, so an edit or command cannot repeat.
+    it.each([
+      { name: "a turn that ran nothing is retried once", didWork: false },
+      { name: "a turn that already used a tool is not retried", didWork: true },
+    ])("keychain that did not answer: $name", async ({ didWork }) => {
+      const originalPlatform = process.platform;
+      Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      // Silent at the failure, answering when the retry checks.
+      mockState.keychainProbeExitCodes = [36];
+      mockState.keychainProbeExitCode = 0;
+      const events: AgentChatEventEnvelope[] = [];
+      let streamCall = 0;
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn().mockResolvedValue(undefined),
+        stream: vi.fn(() => (async function* () {
+          streamCall += 1;
+          yield { type: "system", subtype: "init", session_id: "sdk-keychain", model: "claude-opus-4-8", slash_commands: [] };
+          if (streamCall === 1) {
+            yield { type: "result", subtype: "success", is_error: false, session_id: "sdk-keychain" };
+            return;
+          }
+          if (didWork) {
+            yield {
+              type: "assistant",
+              message: {
+                id: "msg-work",
+                model: "claude-opus-4-8",
+                content: [{ type: "tool_use", id: "toolu_edit", name: "Edit", input: { file_path: "a.ts" } }],
+              },
+            };
+          }
+          yield {
+            type: "assistant",
+            error: "authentication_failed",
+            message: { model: "claude-opus-4-8", content: [{ type: "text", text: "Not logged in" }] },
+          };
+        })()),
+        close: vi.fn(),
+        sessionId: "sdk-keychain",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as any);
+      const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+      const retryNotices = () => events.filter((event) =>
+        event.event.type === "system_notice" && (event.event as any).status === "claude_keychain_retry");
+      const keychainErrors = () => events.filter((event) =>
+        event.event.type === "error" && /keychain isn't answering/i.test((event.event as any).message ?? ""));
+      const turnStarts = () => events.filter((event) =>
+        event.event.type === "status" && (event.event as any).turnStatus === "started").length;
+      try {
+        const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "claude-opus-4-8", modelId: "anthropic/claude-opus-4-8" });
+        await service.runSessionTurn({ sessionId: session.id, text: "fix the bug" });
+        expect(turnStarts()).toBe(1);
+
+        if (didWork) {
+          expect(retryNotices()).toHaveLength(0);
+          expect(keychainErrors()).toHaveLength(1);
+          await vi.advanceTimersByTimeAsync(20_000);
+          expect(turnStarts()).toBe(1);
+        } else {
+          expect(retryNotices()).toHaveLength(1);
+          expect(keychainErrors()).toHaveLength(0);
+          await vi.advanceTimersByTimeAsync(16_000);
+          await vi.waitFor(() => expect(turnStarts()).toBe(2));
+          // The retry runs the same message without echoing it a second time,
+          // and this time the turn goes through.
+          expect(events.filter((event) => event.event.type === "user_message")).toHaveLength(1);
+          await vi.waitFor(() => expect(events.filter((event) => event.event.type === "done")
+            .map((event) => (event.event as any).status)).toEqual(["failed", "completed"]));
+          expect(retryNotices()).toHaveLength(1);
+          expect(keychainErrors()).toHaveLength(0);
+        }
+        // Never the sign-in card for a keychain that did not answer.
+        expect(events.some((event) => (event.event as any).errorInfo?.agentCli?.category === "unauthenticated"
+          && /keychain/i.test((event.event as any).message ?? "") === false)).toBe(false);
+      } finally {
+        vi.useRealTimers();
+        Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
+      }
     });
 
     it("honors an explicit initial chat title", async () => {

@@ -1221,6 +1221,9 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
           parsed.userMessageIsRecoveryHandOff = true
         }
       }
+      if type == "system_notice" {
+        parsed.continuityNotice = workContinuityNotice(from: remoteJSONValue(from: eventDict["detail"]))
+      }
       return parsed
     }
     .sorted(by: workChatEnvelopeOrderedBefore)

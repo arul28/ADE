@@ -26,20 +26,25 @@ function setPlatform(value: NodeJS.Platform): void {
   Object.defineProperty(process, "platform", { value, configurable: true });
 }
 
-function fakeShellChild(stdout: string, exitCode = 0) {
+/**
+ * A `security` child that writes `stdout` and exits, in Node's order (exit,
+ * then close). No pid: the reaper would otherwise signal a real process group.
+ */
+function fakeSecurityChild(stdout: string, exitCode = 0) {
   const child = new EventEmitter() as EventEmitter & {
     stdout: EventEmitter;
     stderr: EventEmitter;
     kill: () => void;
-    pid: number;
+    pid: number | undefined;
   };
   child.stdout = new EventEmitter();
   child.stderr = new EventEmitter();
   child.kill = vi.fn();
-  child.pid = 1234;
+  child.pid = undefined;
   queueMicrotask(() => {
     if (stdout) child.stdout.emit("data", Buffer.from(stdout, "utf8"));
     child.emit("exit", exitCode);
+    child.emit("close", exitCode);
   });
   return child;
 }
@@ -138,7 +143,7 @@ describe("readClaudeLogin", () => {
 
   it("reports unreadable when the Keychain read fails and no file token exists", async () => {
     setPlatform("darwin");
-    mockState.spawn.mockImplementation(() => fakeShellChild("", 1));
+    mockState.spawn.mockImplementation(() => fakeSecurityChild("", 1));
     vi.spyOn(fs.promises, "readFile").mockRejectedValue(
       Object.assign(new Error("ENOENT"), { code: "ENOENT" }),
     );
@@ -149,7 +154,7 @@ describe("readClaudeLogin", () => {
 
   it("falls back to a usable file token when the Keychain read fails", async () => {
     setPlatform("darwin");
-    mockState.spawn.mockImplementation(() => fakeShellChild("", 1));
+    mockState.spawn.mockImplementation(() => fakeSecurityChild("", 1));
     vi.spyOn(fs.promises, "readFile").mockResolvedValue(JSON.stringify({
       claudeAiOauth: {
         accessToken: "file-access",
@@ -173,7 +178,7 @@ describe("readClaudeLogin", () => {
         expiresAt: Date.now() + 8 * 60 * 60_000,
       },
     });
-    mockState.spawn.mockImplementation(() => fakeShellChild(keychainPayload));
+    mockState.spawn.mockImplementation(() => fakeSecurityChild(keychainPayload));
     const readFileSpy = vi.spyOn(fs.promises, "readFile").mockRejectedValue(
       Object.assign(new Error("ENOENT"), { code: "ENOENT" }),
     );
@@ -222,7 +227,7 @@ describe("per-account credential reads", () => {
     setPlatform("darwin");
     const configHome = path.join(os.tmpdir(), "ade-instance-claude-work");
     const scopedService = claudeKeychainServiceName(configHome);
-    mockState.spawn.mockImplementation(() => fakeShellChild(JSON.stringify(liveClaudeCreds("work-access"))));
+    mockState.spawn.mockImplementation(() => fakeSecurityChild(JSON.stringify(liveClaudeCreds("work-access"))));
     fileReader({});
 
     const login = await readClaudeLogin({ configHome });
@@ -231,9 +236,10 @@ describe("per-account credential reads", () => {
       state: "ok",
       credentials: expect.objectContaining({ accessToken: "work-access", source: "macos-keychain" }),
     });
-    const command = String(mockState.spawn.mock.calls[0]?.[1]?.[1] ?? "");
-    expect(command).toContain(`-s '${scopedService}'`);
-    expect(command).not.toContain("Claude Code-credentials'");
+    const [command, args] = mockState.spawn.mock.calls[0] as [string, string[]];
+    expect(command).toBe("/usr/bin/security");
+    expect(args[args.indexOf("-s") + 1]).toBe(scopedService);
+    expect(args).not.toContain("Claude Code-credentials");
   });
 
   it("never touches the Keychain for a scoped background read", async () => {
@@ -255,7 +261,7 @@ describe("per-account credential reads", () => {
   it("caches a scoped Keychain read under that account, so background polls reuse it", async () => {
     setPlatform("darwin");
     const configHome = path.join(os.tmpdir(), "ade-instance-claude-work");
-    mockState.spawn.mockImplementation(() => fakeShellChild(JSON.stringify(liveClaudeCreds("work-access"))));
+    mockState.spawn.mockImplementation(() => fakeSecurityChild(JSON.stringify(liveClaudeCreds("work-access"))));
     const readFileSpy = vi.spyOn(fs.promises, "readFile").mockRejectedValue(
       Object.assign(new Error("ENOENT"), { code: "ENOENT" }),
     );

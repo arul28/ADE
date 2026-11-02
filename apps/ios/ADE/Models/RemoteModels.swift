@@ -2530,6 +2530,11 @@ enum AgentChatNoticeKind: String, Codable, Equatable {
   /// message body as a string `detail`. Promoted so the timeline can keep it
   /// visible as one bell line instead of folding it with routine info notices.
   case userNotified = "user_notified"
+  /// "Claude's sign-in was busy — retrying once": the Mac's keychain did not
+  /// answer and ADE is running the turn again. The host sends `noticeKind:
+  /// "info"` with `status: "claude_keychain_retry"`; promoted so the timeline
+  /// can fold the turn's FAILED rows and draw one quiet line.
+  case claudeKeychainRetry = "claude_keychain_retry"
 
   // The host's noticeKind union (see apps/desktop/src/shared/types/chat.ts) grows
   // over time. `system_notice.noticeKind` is a required, non-optional decode, so an
@@ -2574,6 +2579,7 @@ func normalizedSystemNoticeKind(from status: String?) -> AgentChatNoticeKind? {
   case AgentChatNoticeKind.crossMachineHandoffState.rawValue: return .crossMachineHandoffState
   case AgentChatNoticeKind.crossMachineHandoffArrived.rawValue: return .crossMachineHandoffArrived
   case AgentChatNoticeKind.userNotified.rawValue: return .userNotified
+  case AgentChatNoticeKind.claudeKeychainRetry.rawValue: return .claudeKeychainRetry
   default: return nil
   }
 }

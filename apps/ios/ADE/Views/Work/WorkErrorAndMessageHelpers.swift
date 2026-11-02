@@ -1111,6 +1111,9 @@ func makeWorkChatEnvelope(from entry: AgentChatEventEnvelope) -> WorkChatEnvelop
   envelope.userMessageWrittenByAde = entry.userMessageWrittenByAde
   envelope.userMessageFromSideChat = entry.userMessageFromSideChat
   envelope.userMessageIsRecoveryHandOff = entry.userMessageIsRecoveryHandOff
+  if case .systemNotice(_, _, let detail, _, _) = entry.event {
+    envelope.continuityNotice = workContinuityNotice(from: detail)
+  }
   return envelope
 }
 

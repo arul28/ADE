@@ -10,35 +10,31 @@ import { ChatContinuityRecoveryCard } from "./ChatContinuityRecoveryCard";
 const originalAde = globalThis.window.ade;
 let recoverContinuity: ReturnType<typeof vi.fn>;
 
-const requiredDetail: AgentChatNoticeDetail = {
+const lostThread: AgentChatNoticeDetail = {
   kind: "continuity_recovery",
   state: "required",
   reason: "thread_missing",
   originalThreadId: "codex-thread-abc",
-};
-
-const reconstructedDetail: AgentChatNoticeDetail = {
-  kind: "continuity_recovery",
-  state: "reconstructed",
-  reason: "thread_missing",
-  originalThreadId: "codex-thread-abc",
-  reconstructedThreadId: "codex-thread-xyz",
-};
-
-const supersededDetail: AgentChatNoticeDetail = {
-  kind: "continuity_recovery",
-  state: "required",
-  reason: "unknown",
-  originalThreadId: "codex-thread-abc",
-  supersededBySessionId: "session-new",
 };
 
 function installAdeStub() {
-  recoverContinuity = vi.fn().mockResolvedValue({ ok: true, mode: "retry_original", threadId: "codex-thread-abc" });
+  recoverContinuity = vi.fn().mockResolvedValue({ ok: true, mode: "recover_from_history", threadId: "codex-thread-xyz" });
   globalThis.window.ade = {
     agentChat: { recoverContinuity },
   } as any;
 }
+
+function onSelectSession(): { calls: () => string[]; stop: () => void } {
+  const listener = vi.fn();
+  window.addEventListener("ade:work:select-session", listener);
+  return {
+    calls: () => listener.mock.calls.map((call) => (call[0] as CustomEvent<{ sessionId?: string }>).detail.sessionId ?? ""),
+    stop: () => window.removeEventListener("ade:work:select-session", listener),
+  };
+}
+
+const tryAgain = () => screen.queryByRole("button", { name: /try again/i });
+const startNewChat = () => screen.queryByRole("button", { name: /start a new chat/i });
 
 describe("ChatContinuityRecoveryCard", () => {
   beforeEach(() => {
@@ -47,6 +43,7 @@ describe("ChatContinuityRecoveryCard", () => {
 
   afterEach(() => {
     cleanup();
+    vi.useRealTimers();
     if (originalAde === undefined) {
       delete (globalThis.window as any).ade;
     } else {
@@ -54,184 +51,101 @@ describe("ChatContinuityRecoveryCard", () => {
     }
   });
 
-  it("renders the required state with all three recovery actions and a reason line", () => {
-    render(<ChatContinuityRecoveryCard detail={requiredDetail} sessionId="chat-1" turnActive={false} />);
+  // While ADE is still reconnecting by itself there is nothing to choose. An
+  // attempt that never reported back (ADE restarted, the attempt hung) must
+  // not spin forever: past its window the choices come back.
+  it.each([
+    { name: "a fresh automatic attempt", detail: { autoRecovery: "pending" as const, autoRecoveryStartedAt: new Date().toISOString() }, offersChoices: false },
+    { name: "an attempt that never reported back", detail: { autoRecovery: "pending" as const, autoRecoveryStartedAt: new Date(Date.now() - 10 * 60_000).toISOString() }, offersChoices: true },
+    { name: "a failed automatic attempt", detail: { autoRecovery: "failed" as const }, offersChoices: true },
+    { name: "a lost thread with no automatic attempt", detail: {}, offersChoices: true },
+  ])("offers the choices only when ADE is not reconnecting by itself: $name", ({ detail, offersChoices }) => {
+    render(<ChatContinuityRecoveryCard detail={{ ...lostThread, ...detail }} sessionId="chat-1" turnActive={false} />);
 
-    expect(screen.getByText("This chat's original AI thread could not be resumed.")).toBeTruthy();
-    expect(screen.getByText("Your chat history and project files are still here.")).toBeTruthy();
-    expect(screen.getByText("The AI provider no longer has this chat's session record.")).toBeTruthy();
-    expect(screen.getByRole("button", { name: /retry original thread/i })).toBeTruthy();
-    expect(screen.getByRole("button", { name: /recover from ade history/i })).toBeTruthy();
-    expect(screen.getByRole("button", { name: /start a new chat/i })).toBeTruthy();
+    expect(Boolean(tryAgain())).toBe(offersChoices);
+    expect(Boolean(startNewChat())).toBe(offersChoices);
+    if (!offersChoices) expect(screen.getByTestId("continuity-reconnecting")).toBeTruthy();
   });
 
-  it("uses the unknown-reason copy when the failure reason is unknown", () => {
-    render(
-      <ChatContinuityRecoveryCard
-        detail={{ ...requiredDetail, reason: "unknown" }}
-        sessionId="chat-1"
-        turnActive={false}
-      />,
-    );
-    expect(screen.getByText("Something interrupted this chat's connection to its AI session.")).toBeTruthy();
+  it("offers the choices once a pending attempt runs out of time while on screen", () => {
+    vi.useFakeTimers();
+    render(<ChatContinuityRecoveryCard
+      detail={{ ...lostThread, autoRecovery: "pending", autoRecoveryStartedAt: new Date().toISOString() }}
+      sessionId="chat-1"
+      turnActive={false}
+    />);
+    expect(tryAgain()).toBeNull();
+
+    React.act(() => { vi.advanceTimersByTime(91_000); });
+
+    expect(tryAgain()).toBeTruthy();
+    expect(startNewChat()).toBeTruthy();
+    expect(screen.queryByTestId("continuity-reconnecting")).toBeNull();
   });
 
-  it("calls recoverContinuity with retry_original for the retry action", async () => {
-    render(<ChatContinuityRecoveryCard detail={requiredDetail} sessionId="chat-1" turnActive={false} />);
+  // A thread the provider no longer has cannot come back, so "Try again"
+  // rebuilds it from ADE's copy; any other failure may have been a blip.
+  it.each([
+    { reason: "thread_missing" as const, mode: "recover_from_history" },
+    { reason: "unknown" as const, mode: "retry_original" },
+  ])("Try again after $reason runs $mode and the card settles", async ({ reason, mode }) => {
+    recoverContinuity.mockResolvedValueOnce({ ok: true, mode, threadId: "codex-thread-xyz" });
+    render(<ChatContinuityRecoveryCard detail={{ ...lostThread, reason }} sessionId="chat-1" turnActive={false} />);
 
-    fireEvent.click(screen.getByRole("button", { name: /retry original thread/i }));
+    fireEvent.click(tryAgain()!);
 
-    await waitFor(() => {
-      expect(recoverContinuity).toHaveBeenCalledWith({ sessionId: "chat-1", mode: "retry_original" });
-    });
+    await waitFor(() => expect(screen.getByTestId("continuity-reconnected")).toBeTruthy());
+    expect(recoverContinuity).toHaveBeenCalledWith({ sessionId: "chat-1", mode });
+    expect(tryAgain()).toBeNull();
   });
 
-  it("disables every action while a turn is active", () => {
-    render(<ChatContinuityRecoveryCard detail={requiredDetail} sessionId="chat-1" turnActive={true} />);
+  it.each([
+    { name: "a turn is running", sessionId: "chat-1", turnActive: true },
+    { name: "there is no session to recover into", sessionId: null, turnActive: false },
+  ])("does nothing while $name", ({ sessionId, turnActive }) => {
+    render(<ChatContinuityRecoveryCard detail={lostThread} sessionId={sessionId} turnActive={turnActive} />);
 
-    expect(screen.getByRole("button", { name: /retry original thread/i })).toHaveProperty("disabled", true);
-    expect(screen.getByRole("button", { name: /recover from ade history/i })).toHaveProperty("disabled", true);
-    expect(screen.getByRole("button", { name: /start a new chat/i })).toHaveProperty("disabled", true);
-  });
-
-  it("confirms before recovering from history, then runs recover_from_history on confirm", async () => {
-    render(<ChatContinuityRecoveryCard detail={requiredDetail} sessionId="chat-1" turnActive={false} />);
-
-    fireEvent.click(screen.getByRole("button", { name: /recover from ade history/i }));
-
-    // Nothing runs until the user confirms.
+    expect(tryAgain()).toHaveProperty("disabled", true);
+    expect(startNewChat()).toHaveProperty("disabled", true);
+    fireEvent.click(tryAgain()!);
     expect(recoverContinuity).not.toHaveBeenCalled();
-    expect(screen.getByText(/ADE will start a fresh AI session/i)).toBeTruthy();
-    expect(screen.getByText(/stays saved on this computer/i)).toBeTruthy();
-
-    fireEvent.click(screen.getByRole("button", { name: /confirm recover/i }));
-
-    await waitFor(() => {
-      expect(recoverContinuity).toHaveBeenCalledWith({ sessionId: "chat-1", mode: "recover_from_history" });
-    });
   });
 
-  it("cancels the recover confirm without calling recoverContinuity", () => {
-    render(<ChatContinuityRecoveryCard detail={requiredDetail} sessionId="chat-1" turnActive={false} />);
-
-    fireEvent.click(screen.getByRole("button", { name: /recover from ade history/i }));
-    fireEvent.click(screen.getByRole("button", { name: /cancel/i }));
-
-    expect(recoverContinuity).not.toHaveBeenCalled();
-    expect(screen.getByRole("button", { name: /retry original thread/i })).toBeTruthy();
-  });
-
-  it("shows the returned capsule preview after a successful recover_from_history", async () => {
-    recoverContinuity.mockResolvedValueOnce({
-      ok: true,
-      mode: "recover_from_history",
-      threadId: "codex-thread-xyz",
-      capsulePreview: "# ADE continuity capsule\n\nContinue from this bounded ADE history.",
-    });
-    render(<ChatContinuityRecoveryCard detail={requiredDetail} sessionId="chat-1" turnActive={false} />);
-
-    fireEvent.click(screen.getByRole("button", { name: /recover from ade history/i }));
-    fireEvent.click(screen.getByRole("button", { name: /confirm recover/i }));
-
-    await waitFor(() => {
-      expect(screen.getByText("Rebuilt from ADE history")).toBeTruthy();
-    });
-    expect(screen.getByText(/What the new session was told/i)).toBeTruthy();
-    expect(screen.getByText(/Continue from this bounded ADE history/i)).toBeTruthy();
-  });
-
-  it("re-enables the actions and surfaces plain-language copy when recovery fails", async () => {
-    recoverContinuity.mockResolvedValueOnce({ ok: false, mode: "retry_original", reason: "thread_missing" });
-    render(<ChatContinuityRecoveryCard detail={requiredDetail} sessionId="chat-1" turnActive={false} />);
-
-    fireEvent.click(screen.getByRole("button", { name: /retry original thread/i }));
-
-    // A missing session is the chat's state, not ADE failing: it warns
-    // (amber, no Report) and stays actionable — the buttons come back.
-    expect(await screen.findByText(/original session is no longer available/i)).toBeTruthy();
-    expect(screen.queryByRole("alert")).toBeNull();
-    expect(screen.getByRole("button", { name: /retry original thread/i })).toHaveProperty("disabled", false);
-  });
-
-  it("sanitizes unexpected recovery failures", async () => {
+  it("keeps the choices after a failed attempt and never shows the raw failure", async () => {
     recoverContinuity.mockRejectedValueOnce(
       new Error("Error invoking remote method 'recoverContinuity': socket closed"),
     );
-    render(<ChatContinuityRecoveryCard detail={requiredDetail} sessionId="chat-1" turnActive={false} />);
+    const { container } = render(<ChatContinuityRecoveryCard detail={lostThread} sessionId="chat-1" turnActive={false} />);
 
-    fireEvent.click(screen.getByRole("button", { name: /retry original thread/i }));
+    fireEvent.click(tryAgain()!);
 
-    const alert = await screen.findByRole("alert");
-    expect(alert.textContent).toMatch(/couldn't finish recovering this chat/i);
-    expect(alert.textContent).not.toMatch(/remote method|socket/i);
-    expectNoJargon(alert.textContent ?? "");
-  });
-
-  it("navigates via ade:work:select-session after starting a new chat", async () => {
-    recoverContinuity.mockResolvedValueOnce({ ok: true, mode: "start_new_chat", newSessionId: "session-new" });
-    const onSelect = vi.fn();
-    window.addEventListener("ade:work:select-session", onSelect);
-    try {
-      render(<ChatContinuityRecoveryCard detail={requiredDetail} sessionId="chat-1" turnActive={false} />);
-
-      fireEvent.click(screen.getByRole("button", { name: /start a new chat/i }));
-
-      await waitFor(() => {
-        expect(onSelect).toHaveBeenCalledTimes(1);
-      });
-      const event = onSelect.mock.calls[0][0] as CustomEvent<{ sessionId?: string }>;
-      expect(event.detail.sessionId).toBe("session-new");
-    } finally {
-      window.removeEventListener("ade:work:select-session", onSelect);
-    }
-  });
-
-  it("renders the reconstructed state as a calm pill with thread linkage behind Details and no actions", () => {
-    render(<ChatContinuityRecoveryCard detail={reconstructedDetail} sessionId="chat-1" turnActive={false} />);
-
-    expect(screen.getByText("Rebuilt from ADE history")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: /retry original thread/i })).toBeNull();
-    expect(screen.getByText("Details")).toBeTruthy();
-    // The raw identifiers live inside the Details disclosure.
-    expect(screen.getByText(/codex-thread-xyz/)).toBeTruthy();
-  });
-
-  it("renders a superseded notice as a Continued-in-a-new-chat pill that navigates", async () => {
-    const onSelect = vi.fn();
-    window.addEventListener("ade:work:select-session", onSelect);
-    try {
-      render(<ChatContinuityRecoveryCard detail={supersededDetail} sessionId="chat-1" turnActive={false} />);
-
-      expect(screen.getByText("Continued in a new chat")).toBeTruthy();
-      fireEvent.click(screen.getByRole("button", { name: /open chat/i }));
-
-      await waitFor(() => {
-        expect(onSelect).toHaveBeenCalledTimes(1);
-      });
-      const event = onSelect.mock.calls[0][0] as CustomEvent<{ sessionId?: string }>;
-      expect(event.detail.sessionId).toBe("session-new");
-    } finally {
-      window.removeEventListener("ade:work:select-session", onSelect);
-    }
-  });
-
-  it("keeps technical jargon out of the visible required-state copy", () => {
-    const { container } = render(
-      <ChatContinuityRecoveryCard detail={requiredDetail} sessionId="chat-1" turnActive={false} />,
-    );
+    await waitFor(() => expect(tryAgain()).toHaveProperty("disabled", false));
     const text = container.textContent ?? "";
-    expectNoJargon(text);
-    expect(text).not.toMatch(/jsonl/i);
-    expect(text).not.toMatch(/thread id/i);
-    // The raw original thread identifier is not surfaced in the required state.
+    expect(text).not.toMatch(/remote method|socket/i);
     expect(text).not.toContain("codex-thread-abc");
+    expectNoJargon(text);
   });
 
-  it("does nothing when there is no session to recover into", () => {
-    render(<ChatContinuityRecoveryCard detail={requiredDetail} sessionId={null} turnActive={false} />);
+  it("opens the new chat, both right after starting it and from a superseded notice", async () => {
+    recoverContinuity.mockResolvedValueOnce({ ok: true, mode: "start_new_chat", newSessionId: "session-new" });
+    const selected = onSelectSession();
+    try {
+      render(<ChatContinuityRecoveryCard detail={lostThread} sessionId="chat-1" turnActive={false} />);
+      fireEvent.click(startNewChat()!);
+      await waitFor(() => expect(selected.calls()).toEqual(["session-new"]));
+      expect(recoverContinuity).toHaveBeenCalledWith({ sessionId: "chat-1", mode: "start_new_chat" });
+      cleanup();
 
-    expect(screen.getByRole("button", { name: /retry original thread/i })).toHaveProperty("disabled", true);
-    fireEvent.click(screen.getByRole("button", { name: /retry original thread/i }));
-    expect(recoverContinuity).not.toHaveBeenCalled();
+      render(<ChatContinuityRecoveryCard
+        detail={{ ...lostThread, supersededBySessionId: "session-later" }}
+        sessionId="chat-1"
+        turnActive={false}
+      />);
+      expect(tryAgain()).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: /open/i }));
+      await waitFor(() => expect(selected.calls()).toEqual(["session-new", "session-later"]));
+    } finally {
+      selected.stop();
+    }
   });
 });

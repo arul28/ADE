@@ -380,6 +380,21 @@ report. None of these is a PostHog event: agent browser commands are
 high-frequency agent activity, not a person's decision, and a wedge already has
 `ade_brain_recovered`.
 
+Chats that fix a failure by themselves write local lines only. A Claude turn
+whose sign-in read hit a keychain that did not answer, and that ADE tries once
+more, writes `agent_chat.claude_keychain_retry` (info) when the retry runs,
+`agent_chat.claude_keychain_retry_skipped` (info, with the coarse `login`
+result: `absent`, `unreadable`, or null when the chat moved on) when it does
+not, and `agent_chat.claude_keychain_retry_failed` (warn) when the retry itself
+threw. A lost provider thread that ADE rebuilds by itself writes
+`agent_chat.continuity_auto_recovery` (info, `ok`),
+`agent_chat.continuity_auto_recovery_failed` (warn) and
+`agent_chat.continuity_auto_recovery_notice_failed` (warn). They carry session
+and turn ids and an error message, never the transcript or the hand-off text.
+None is a PostHog event: each is ADE reacting to a provider or keychain fault,
+with no user action behind it, and the user's own Try again / Start a new chat
+choice goes through the existing recovery path.
+
 Product analytics records a small number of meaningful product facts such as "an anonymous installation opened the Work screen" or "a chat session started." It must never inherit arbitrary fields from a log record, exception, IPC payload, database row, or UI component props. Log calls and product-analytics calls should remain separate at the call site.
 
 ## Source file map

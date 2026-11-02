@@ -1229,23 +1229,40 @@ describe("explicit provider-thread continuity recovery", () => {
     };
     vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue(handle as any);
     vi.mocked(claudeSdkResumeSessionCompat).mockReturnValue(handle as any);
-    const { service } = createService();
+    const events: AgentChatEventEnvelope[] = [];
+    const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
     const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "claude-sonnet-5" });
     await service.runSessionTurn({ sessionId: session.id, text: "Start the Claude task." });
     await vi.waitFor(() => expect(readPersistedChatState(session.id).sdkSessionId).toBeTruthy());
     const originalSdkSessionId = readPersistedChatState(session.id).sdkSessionId as string;
+    const continuityNotices = () => events.flatMap((entry) =>
+      entry.event.type === "system_notice"
+      && typeof entry.event.detail === "object"
+      && entry.event.detail?.kind === "continuity_recovery"
+        ? [entry.event.detail]
+        : []);
 
     await service.sendMessage({ sessionId: session.id, text: "Continue the Claude task." });
-    await vi.waitFor(() => expect(readPersistedChatState(session.id).continuityRecovery).toMatchObject({
-      state: "required",
-      provider: "claude",
-      originalThreadId: originalSdkSessionId,
-    }));
+    // The lost thread is rebuilt by itself, once. This mock loses the rebuilt
+    // thread too; that second loss must wait for the user, not rebuild again
+    // (each rebuild is a billed turn).
+    await vi.waitFor(() => {
+      const notices = continuityNotices();
+      expect(notices[0]).toMatchObject({ originalThreadId: originalSdkSessionId, autoRecovery: "pending" });
+      expect(notices.some((detail) => detail.originalThreadId !== originalSdkSessionId && detail.autoRecovery !== "pending"))
+        .toBe(true);
+    });
+    const handOffs = events.filter((entry) =>
+      entry.event.type === "user_message" && entry.event.metadata?.kind === "continuity_recovery");
+    expect(handOffs).toHaveLength(1);
+    expect(continuityNotices().filter((detail) => detail.autoRecovery === "pending")).toHaveLength(1);
 
+    const recovery = readPersistedChatState(session.id).continuityRecovery;
+    expect(recovery).toMatchObject({ state: "required", provider: "claude" });
     expect(readPersistedChatState(session.id).sdkSessionId).toBeUndefined();
     expect(readThreadPointerLedger(path.dirname(metadataPath(session.id))).get(session.id)).toMatchObject({
       pointer: null,
-      prevPointer: originalSdkSessionId,
+      prevPointer: recovery?.originalThreadId,
     });
   });
 

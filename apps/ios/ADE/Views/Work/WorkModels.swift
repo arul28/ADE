@@ -2291,6 +2291,22 @@ func workRemoveLoadedArtifactTempFile(_ content: WorkLoadedArtifactContent?) {
   try? FileManager.default.removeItem(at: url)
 }
 
+/// A lost provider thread ADE is rebuilding (or has rebuilt). Mirrors the
+/// `continuity_recovery` shape of desktop's `AgentChatNoticeDetail`.
+struct WorkContinuityNotice: Equatable {
+  /// `required` or `reconstructed`.
+  let state: String
+  /// Keys the notices about one lost thread; empty when the host sent none.
+  let originalThreadId: String
+  let supersededBySessionId: String?
+  /// `pending` or `failed`, once ADE has tried on its own.
+  let autoRecovery: String?
+  let autoRecoveryStartedAt: String?
+
+  /// Reconnected, or moved to a new chat: the thread's failed turns are noise.
+  var isResolved: Bool { state == "reconstructed" || supersededBySessionId != nil }
+}
+
 struct WorkChatEnvelope: Identifiable, Equatable {
   var id: String {
     switch event {
@@ -2323,6 +2339,10 @@ struct WorkChatEnvelope: Identifiable, Equatable {
   /// True for a user message a side chat sent to this chat (`metadata.sideChat`).
   var userMessageFromSideChat = false
   var userMessageIsRecoveryHandOff = false
+  /// Set on a `system_notice` whose `detail.kind` is `continuity_recovery`. The
+  /// event keeps `detail` as text; this is the part the self-healed-failure fold
+  /// and the quiet reconnect lines read.
+  var continuityNotice: WorkContinuityNotice?
   /// Raw fields intentionally kept beside the normalized event so the broad
   /// WorkChatEvent associated-value surface does not need to grow just for
   /// subagent classification.

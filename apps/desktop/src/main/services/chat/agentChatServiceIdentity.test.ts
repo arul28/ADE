@@ -1515,22 +1515,21 @@ describe("createAgentChatService", () => {
       expect(await turn("What is on fire?")).toContain("CTO Runtime Identity");
       expect(await turn("And now?")).not.toContain("CTO Runtime Identity");
 
-      // The turn the thread goes missing under. It fails, and the recovery runs.
+      // The turn the thread goes missing under. It fails, and ADE rebuilds the
+      // thread by itself. The new thread has heard nothing, so the rebuild
+      // states the CTO's prefix again.
+      send.mockClear();
       failWithMissingThread = true;
       try {
         await service.sendMessage({ sessionId: session.id, text: "Carry on." });
       } catch {
         // The failure is the point; the recovery is what is under test.
       }
-      await vi.waitFor(() => { expect(failWithMissingThread).toBe(false); });
-
-      // The chat is now parked on a recovery card; reconnecting is what the
-      // user presses. Whatever thread that lands on has heard nothing.
-      await service.recoverContinuity({ sessionId: session.id, mode: "retry_original" });
-
-      const afterRecovery = await turn("Who are you?");
-      expect(afterRecovery).toContain("CTO Runtime Identity");
-      expect(afterRecovery).toContain("ADE Architecture");
+      await vi.waitFor(() => {
+        const restated = send.mock.calls.map((call) => String(call[0])).find((text) => text.includes("CTO Runtime Identity"));
+        expect(restated).toContain("ADE Architecture");
+      });
+      expect(readPersistedChatState(session.id).continuityRecovery).toMatchObject({ state: "reconstructed" });
 
       service.forceDisposeAll();
       db.close();
@@ -2316,7 +2315,7 @@ describe("createAgentChatService", () => {
       resumed.forceDisposeAll();
     });
 
-    it("persists a continuity snapshot and requires explicit recovery after identity session reset errors", async () => {
+    it("persists a continuity snapshot and rebuilds the lost thread once after identity session reset errors", async () => {
       const primarySend = vi.fn().mockResolvedValue(undefined);
       const recoverySend = vi.fn().mockResolvedValue(undefined);
       const setPermissionMode = vi.fn().mockResolvedValue(undefined);
@@ -2388,22 +2387,21 @@ describe("createAgentChatService", () => {
         text: "Please keep the runtime bridge state private.",
         timeoutMs: 15_000,
       });
-      await new Promise((resolve) => setTimeout(resolve, 25));
-
-      const persisted = readPersistedChatState(session.id);
       expect(result.outputText).toContain("Partial answer");
-      expect(persisted.sdkSessionId).toBeUndefined();
-      expect(persisted.continuityRecovery).toMatchObject({
-        state: "required",
+
+      // The thread is gone, so ADE rebuilds it on a new SDK session, once.
+      await vi.waitFor(() => expect(readPersistedChatState(session.id).continuityRecovery).toMatchObject({
+        state: "reconstructed",
         reason: "thread_missing",
         provider: "claude",
         originalThreadId: expect.any(String),
-      });
+      }));
+      const persisted = readPersistedChatState(session.id);
       expect(persisted.continuitySummary).toContain("Recent continuity snapshot:");
       expect(persisted.continuitySummary).toContain("User: Please keep the runtime bridge state private.");
       expect(persisted.continuitySummary).toContain("CTO: Partial answer");
-      expect(claudeSdkCreateSessionCompat).toHaveBeenCalledTimes(1);
-      expect(recoverySend).not.toHaveBeenCalled();
+      expect(claudeSdkCreateSessionCompat).toHaveBeenCalledTimes(2);
+      expect(recoverySend).toHaveBeenCalledTimes(1);
     });
 
     it("keeps continuity compaction scoped to identity sessions", async () => {
@@ -2477,14 +2475,12 @@ describe("createAgentChatService", () => {
         text: "Please keep the bridge state private.",
         timeoutMs: 15_000,
       });
-      await new Promise((resolve) => setTimeout(resolve, 25));
-
-      const persisted = readPersistedChatState(session.id);
       expect(result.outputText).toContain("Partial answer");
-      expect(persisted.continuitySummary).toBeUndefined();
-      expect(persisted.continuityRecovery).toMatchObject({ state: "required", provider: "claude" });
-      expect(claudeSdkCreateSessionCompat).toHaveBeenCalledTimes(1);
-      expect(recoverySend).not.toHaveBeenCalled();
+
+      await vi.waitFor(() => expect(readPersistedChatState(session.id).continuityRecovery)
+        .toMatchObject({ state: "reconstructed", provider: "claude" }));
+      expect(readPersistedChatState(session.id).continuitySummary).toBeUndefined();
+      expect(recoverySend).toHaveBeenCalledTimes(1);
     });
   });
 });

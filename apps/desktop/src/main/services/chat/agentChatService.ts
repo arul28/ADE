@@ -34809,10 +34809,11 @@ export function createAgentChatService(args: {
         // sign-out: the login is still there. Say what happened instead of
         // sending the user to log in again. Checked while the chat still reads
         // active, so no new turn can start during the check.
-        const keychainUnreadable = isClaudeRuntimeAuthError(effectiveError)
+        const authError = claudeAuthStopRequested || isClaudeRuntimeAuthError(effectiveError);
+        const keychainUnreadable = authError
           && (await probeClaudeKeychainLogin(sessionConfigHome(managed) ?? undefined)) === "unreadable";
         if (managed.runtime === runtime) markSessionIdleWithFreshCache(managed);
-        const isAuthFailure = isClaudeRuntimeAuthError(effectiveError) && !keychainUnreadable;
+        const isAuthFailure = authError && !keychainUnreadable;
         // A busy keychain usually clears in seconds. A turn that ran nothing
         // yet is tried once more by itself; one that already did work is not,
         // so a retry can never repeat an edit or a command.
