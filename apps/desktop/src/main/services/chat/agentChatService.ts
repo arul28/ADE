@@ -14836,7 +14836,8 @@ export function createAgentChatService(args: {
         // These were `undefined`, so the CTO was advertised four tools that
         // could only ever answer "not available" — the same defect this whole
         // change set exists to remove.
-        steerChat: ({ sessionId, instruction }) => steer({ sessionId, text: instruction }),
+        steerChat: ({ sessionId, instruction, dispatchMode }) =>
+          steer({ sessionId, text: instruction, dispatchMode }),
         cancelSteer: ({ sessionId, steerId }) => cancelSteer({ sessionId, steerId }),
         listSubagents: ({ sessionId }) => listSubagents({ sessionId }),
         approveToolUse: ({ sessionId, toolUseId, decision }) =>

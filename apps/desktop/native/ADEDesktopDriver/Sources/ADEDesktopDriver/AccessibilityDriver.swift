@@ -84,6 +84,32 @@ struct ObservedElement {
         }
         return false
     }
+
+    /// Whether one of its names is exactly `text`, ignoring case and the
+    /// spaces around it.
+    func matchesExactly(text: String) -> Bool {
+        let needle = text.trimmingCharacters(in: .whitespaces).lowercased()
+        return [title, label, value, identifier].contains { candidate in
+            candidate?.trimmingCharacters(in: .whitespaces).lowercased() == needle
+        }
+    }
+
+    /// The offset `text` targeting picks: an exact name with an action, then
+    /// any match with an action (the Windows driver's order), then, with no
+    /// action anywhere, an exact name before a partial one; walk order breaks
+    /// ties. A window titled "Save Probe" comes before its own "Save" button in
+    /// the walk, and a click on "Save" must reach the button.
+    static func bestTextMatch(in records: [ObservedElement], text: String) -> Int? {
+        var best: (offset: Int, rank: Int)? = nil
+        for (offset, record) in records.enumerated() {
+            let exact = record.matchesExactly(text: text)
+            guard exact || record.matches(text: text) else { continue }
+            let rank = (record.actions.isEmpty ? 2 : 0) + (exact ? 0 : 1)
+            if best.map({ rank < $0.rank }) ?? true { best = (offset, rank) }
+            if rank == 0 { break }
+        }
+        return best?.offset
+    }
 }
 
 struct ObservationResult {
@@ -380,9 +406,8 @@ final class AccessibilityDriver {
         let elements = elementsByObservation[observationId] ?? []
         let records = recordsByObservation[observationId] ?? []
         lock.unlock()
-        for (offset, record) in records.enumerated() where record.matches(text: text) {
-            guard offset < elements.count else { continue }
-            return (elements[offset], record)
+        if let offset = ObservedElement.bestTextMatch(in: records, text: text), offset < elements.count {
+            return (elements[offset], records[offset])
         }
         throw DriverError(
             code: DriverErrorCode.windowNotFound,

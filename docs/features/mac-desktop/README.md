@@ -308,7 +308,11 @@ display.
 A window joins the lane's display in one of two ways.
 
 1. **ADE launched it.** `ade mac-desktop open <app|path|url>` starts the app, and
-   the driver watches that pid for new windows and parks each one.
+   the driver watches that pid for new windows and parks each one. An app that
+   quits as it opens is an error, not a launch. Apps inherit the driver's
+   environment, which is a user process's (`userProcessEnv`), not the brain's:
+   with the brain's `ELECTRON_RUN_AS_NODE=1` an Electron app ran as Node and
+   quit at once.
 2. **Somebody claimed it.** `ade mac-desktop claim --window <id>` moves an existing
    window onto the lane's display. `ade mac-desktop release --window <id>` puts it
    back where it came from.
@@ -523,6 +527,16 @@ Accessibility actions need no lease. Real pointer and keyboard events do.
   `callerRoot` (sent by `ade mac-desktop` on every call) is inside a lane
   worktree, the call is bound to that lane and a different `--lane` is refused;
   from the project root or outside every worktree it may name any lane.
+
+## Text targets
+
+`click --text`, `type --target` and `wait --label` pick one element of the
+newest observation by its title, label, value or identifier, case-insensitive:
+an exact name with a press action, then any match with an action, then an exact
+name, then any match; walk order breaks ties. A window titled "Save Probe"
+comes before its own "Save" button in the walk, so first-partial-match pressed
+the window. The Windows and Linux drivers also put a pressable element first
+and then an exact name (`Uia::resolveText`, `resolve_text`).
 
 ## Background input
 

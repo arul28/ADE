@@ -98,7 +98,9 @@ held, idle power-off turns them off like any ADE device, and the lane's end
 free, and `device-attach` refuses one (`APPLE_DEVICE_IS_EXTRA`).
 
 An extra never streams, records, `launch`es or runs tests: those are the
-lane's device. To put the lane's app on an extra, `ade apple install --device
+lane's device. `install` builds the lane's app, so it refuses `--app-bundle`
+(a prebuilt `.app` goes to the lane's device with `launch --app-bundle <path>
+--no-build`). To put the lane's app on an extra, `ade apple install --device
 <udid|name> [--launch] [--configuration X] [--target id] [--no-build]`
 (`ios_simulator.installApp`) builds once into the lane's DerivedData (an
 incremental build, so the lane's last build is reused; `--no-build` installs it
@@ -278,7 +280,9 @@ anything when `simctl list` cannot be read.
   move ends at this project, the device is this project's, as if the marker
   named it. The current project's own rows are read before every delete.
 
-`device-detach` of an ADE device stamps the marker `detachedAt`. The device is
+`device-detach` acts only on the lane's own device and refuses `--device` (an
+extra is removed with `device-delete --device`). Detaching an ADE device stamps
+the marker `detachedAt`. The device is
 then a leftover: it is never re-adopted, and the first pass after the 5-minute
 grace deletes it (so within about 20 minutes) unless a lane attaches it again.
 The detach answer carries `deletesAfter` (detach time plus the grace), and
@@ -367,6 +371,10 @@ at most 2 hours. `testsExecuted`, `testsFailed` and `testsSkipped` come from the
 run-wide `Executed N tests, with K tests skipped and M failures` line — the one
 under `Test Suite 'All tests'`/`'Selected tests'`, not the last per-suite line,
 which is why a 1,273-test run no longer reported the 48 of its last suite.
+XCTest's M counts failed assertions, so each failed test case's assertions past
+its first (its `file:line: error: -[Mod.Class testX]` lines) are taken off: one
+test with two failing asserts is one failed test, and a crashed test, which
+prints no case line, still counts.
 Swift Testing's `Test run with N tests … passed|failed` lines are added to that
 (one per test process; a bundle with both frameworks prints both), with its
 `Test X failed after` and `Test X skipped` lines as the failed and skipped
@@ -589,6 +597,13 @@ reaches (no sidebar rows, no toolbar items hidden in groups). The helper's
 and turns each grid point by that panel's picture turn before its coverage
 check, because the probe space is the app frame while element frames are the
 picture's (measured on the iPhone Duo, iOS 27.1; see `VENDORED.md`).
+
+On every device the grid skips a point that a known leaf already covers, but a
+point on a bar (a large element with no walked children: a tab bar, a nav bar,
+a childless scroll view) counts as covered only by a leaf inside every bar over
+it. iOS draws a floating tab bar over content the walk also lists (tiles
+scrolled under it); without this, the probes over most tabs were skipped and
+`snapshot` listed two of five tabs.
 
 **3D.** Apple's own `V68.usdz` is read from the owning machine's Xcode
 (`getDuoModel`, never bundled) and parsed by serve-sim's vendored loader

@@ -98,6 +98,32 @@ describe("macDesktopDriverClient restart", () => {
     client.dispose();
   });
 
+  it("starts the helper without ELECTRON_RUN_AS_NODE, which every app it opens would inherit", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mac-driver-client-"));
+    tempDirs.push(dir);
+    const binary = path.join(dir, "ade-desktop-driver");
+    fs.writeFileSync(binary, "");
+    vi.stubEnv("ELECTRON_RUN_AS_NODE", "1");
+    try {
+      const spawnProcess = vi.fn((_command: string, _args: string[], _options: { env?: NodeJS.ProcessEnv }) => createChild(303));
+      const client = createMacDesktopDriverClient({
+        logger,
+        platform: "darwin",
+        resolveExecutablePath: () => binary,
+        spawnProcess: spawnProcess as unknown as typeof import("node:child_process").spawn,
+        env: { ADE_DESKTOP_DRIVER_HANDOFF_PATH: "/tmp/handoff.json" },
+      });
+      await client.ensureStarted();
+      const env = spawnProcess.mock.calls[0]?.[2]?.env ?? {};
+      // An Electron app on a lane's screen ran as Node and quit at once.
+      expect(env).not.toHaveProperty("ELECTRON_RUN_AS_NODE");
+      expect(env.ADE_DESKTOP_DRIVER_HANDOFF_PATH).toBe("/tmp/handoff.json");
+      client.dispose();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("gives two Darwin clients separate private copies and removes only the disposed client's copy", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mac-driver-client-copies-"));
     tempDirs.push(dir);

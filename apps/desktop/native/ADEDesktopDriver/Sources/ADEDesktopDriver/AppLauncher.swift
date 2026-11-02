@@ -129,6 +129,19 @@ extension WindowControl {
         }
 
         let pid = launched.processIdentifier
+        // An app that quit at once (a crash on start, or a "document" it
+        // cannot open) comes back with no process: pid -1. Answering that as
+        // a launch printed "its own second copy (pid -1)" for nothing running.
+        guard pid > 0, !launched.isTerminated else {
+            let name = launched.localizedName ?? target
+            let asDocuments = documents != nil && !arguments.isEmpty
+                ? " The words after -- went to it as documents, since each is an existing path; to give it a command line instead, add a flag among them."
+                : ""
+            throw DriverError(
+                code: DriverErrorCode.internalError,
+                message: "\(name) quit as soon as it opened, so nothing is running on the lane's display.\(asDocuments)"
+            )
+        }
         let isNewInstance = !runningBefore.contains(pid)
         var message: String?
         if let reusingPid {

@@ -355,7 +355,7 @@ function buildCtoEnvironmentKnowledge(): string {
   "  'Commit and push' → spawnChat with that instruction, and omit laneId so the work gets its own lane.",
   "  'Check for conflicts' → getConflictStatus or getConflictRiskMatrix.",
   "  'Resolve merge conflicts' → spawnChat on the conflicting lane. Do not apply the patch yourself.",
-  "  'Steer an active agent' → steerChat({ sessionId, instruction }).",
+  "  'Steer an active agent' → steerChat({ sessionId, instruction, machine? }). It joins the running turn when the provider allows; `delivery: \"queued\"` means it waits for the next turn.",
   "  'How is the project doing?' → getProjectHealthSummary.",
   "  'What happened recently?' → getRecentEvents.",
   "  'List all lanes' or 'show me the branches' → listLanes.",

@@ -10944,6 +10944,7 @@ function buildChatPlan(args: string[]): CliPlan {
           requireValue(sessionId, "sessionId"),
         ]),
       ],
+      exitCodeFromResult: (result) => (result == null ? 1 : 0),
     };
   if (sub === "status")
     return {
@@ -14894,6 +14895,14 @@ function buildIosSimulatorPlan(
     // into the lane's DerivedData and install it on that device. The lane
     // device's session, stream and claim are left alone, so this is how an
     // extra device gets a build.
+    // The generic args below would carry it through unread, and the install
+    // would build and install the lane's own app instead.
+    const installFlags = flagNamesOutsideFreeText(args);
+    if (installFlags.has("--app-bundle") || installFlags.has("--app")) {
+      throw new CliUsageError(
+        "apple install builds the lane's app and does not take --app-bundle. For a prebuilt .app on the lane's device, use: ade apple launch --app-bundle <path> --no-build",
+      );
+    }
     const launchAfter = readFlag(args, ["--launch", "--start"]);
     const noBuild = readFlag(args, ["--no-build"]);
     // Each value read ONCE: `readValue` consumes the flag.
@@ -15851,6 +15860,14 @@ function buildIosSimulatorPlan(
     // `--keep`: an ADE-made device stays as a free simulator instead of being
     // deleted after the grace. Only when the user asked to keep it.
     const keep = readFlag(args, ["--keep"]);
+    // Detach only ever acts on the lane's own device; a named device (an
+    // extra) must not quietly turn into detaching that one.
+    const detachFlags = flagNamesOutsideFreeText(args);
+    if (detachFlags.has("--device") || detachFlags.has("--udid")) {
+      throw new CliUsageError(
+        "apple device-detach gives up the lane's own device and does not take --device. To remove an extra device, use: ade apple device-delete --device <udid>",
+      );
+    }
     return {
       ...iosAction("Apple device detach", "deviceDetach", {
         ...(laneId ? { laneId } : {}),
@@ -32431,6 +32448,7 @@ function formatChatList(value: unknown): string {
 }
 
 function formatChatSummary(value: unknown): string {
+  if (value == null) return "No chat with this id here.";
   const record = isRecord(value) ? value : {};
   const activity = isRecord(record.activityStatus) ? record.activityStatus : null;
   const rawActivity = asString(activity?.value);
@@ -36064,6 +36082,15 @@ function summarizeExecution(args: {
     const cliChildren = unwrapActionEnvelope(values.cli);
     if (!Array.isArray(chats) || !Array.isArray(cliChildren) || cliChildren.length === 0) return chats;
     return [...chats, ...cliChildren];
+  }
+
+  if (plan.label === "chat show") {
+    // A chat this machine does not have answers null, not an error. Mark the
+    // miss so the run asks the account's other machines (or prints the
+    // `--machine` hint), as `chat status` does.
+    const summary = unwrapActionEnvelope(values.result);
+    if (summary == null) chatMissedHere = true;
+    return summary;
   }
 
   if (plan.label === "chat status") {

@@ -98,15 +98,12 @@ extension AccessibilityBridge {
     }
 
     /// The grid's coverage, from frames already on the screen: the same rule
-    /// as the walk (a leaf blocks probes, a container does not).
+    /// as the walk (a leaf blocks probes, a container does not, a bar shields
+    /// its own area).
     static func cover(_ node: [String: Any], into coverage: inout AccessibilityCoverage) {
         let children = (node["children"] as? [[String: Any]]) ?? []
         if let frame = frameOf(node) {
-            if !children.isEmpty || max(frame.width, frame.height) >= 250 {
-                coverage.insertContainer(frame)
-            } else {
-                coverage.insertLeaf(frame)
-            }
+            coverage.insert(frame, hasWalkedChildren: !children.isEmpty)
         }
         for child in children { cover(child, into: &coverage) }
     }
@@ -469,4 +466,24 @@ extension AccessibilityBridge {
     ]
 
     static let toggleRoles: Set<String> = ["CheckBox", "RadioButton", "Switch", "Toggle", "MenuItemCheckbox"]
+}
+
+extension AccessibilityCoverage {
+    /// An element at least this long on a side, with no walked children, is
+    /// a bar or a container whose items iOS hides from the walk (a tab bar, a
+    /// nav bar, a scroll view).
+    static let barMinSide: CGFloat = 250
+
+    /// Records one element the walk or the grid found: an element with walked
+    /// children is a container (frame dedup only), a large childless one a
+    /// bar, anything else a leaf that blocks probes over it.
+    mutating func insert(_ frame: NSRect, hasWalkedChildren: Bool) {
+        if hasWalkedChildren {
+            insertContainer(frame)
+        } else if max(frame.width, frame.height) >= Self.barMinSide {
+            insertBar(frame)
+        } else {
+            insertLeaf(frame)
+        }
+    }
 }

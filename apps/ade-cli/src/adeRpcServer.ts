@@ -5113,7 +5113,8 @@ async function runCtoOperatorBridgeTool(
     interruptChat: async (args) => {
       await agentChatService.interrupt(args);
     },
-    steerChat: ({ sessionId, instruction }) => agentChatService.steer({ sessionId, text: instruction }),
+    steerChat: ({ sessionId, instruction, dispatchMode }) =>
+      agentChatService.steer({ sessionId, text: instruction, dispatchMode }),
     cancelSteer: ({ sessionId, steerId }) => agentChatService.cancelSteer({ sessionId, steerId }),
     listSubagents: ({ sessionId }) => agentChatService.listSubagents({ sessionId }),
     approveToolUse: ({ sessionId, toolUseId, decision }) =>

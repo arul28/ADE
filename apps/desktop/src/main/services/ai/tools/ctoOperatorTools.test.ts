@@ -244,15 +244,73 @@ describe("createCtoOperatorTools", () => {
   // manifest and registered on every transport but could only ever answer
   // "not available" — the same defect the live-registration work exists to fix.
   describe("supervision tools reach their real implementations", () => {
-    it("steerChat forwards the instruction as the steer text", async () => {
-      const deps = buildDeps();
+    // A steer with no mode waits for the next turn, which can be minutes; the
+    // CTO asks for the live mode and stages only what the provider refuses.
+    it.each([
+      {
+        name: "joins the running turn",
+        steer: [{ steerId: "steer-1", queued: false }],
+        calls: [{ dispatchMode: "inline" }],
+        result: { success: true, steerId: "steer-1", delivery: "live" },
+      },
+      {
+        name: "stages it once when the provider cannot take it mid-turn",
+        steer: [new Error('Kimi sessions don\'t support the "inline" active-turn dispatch mode; it can only be staged for the next turn.'), { steerId: "steer-2", queued: true }],
+        calls: [{ dispatchMode: "inline" }, { dispatchMode: undefined }],
+        result: { success: true, steerId: "steer-2", delivery: "queued" },
+      },
+      {
+        name: "does not retry any other failure",
+        steer: [new Error("Chat session 'chat-7' was not found.")],
+        calls: [{ dispatchMode: "inline" }],
+        result: { success: false, error: "Chat session 'chat-7' was not found." },
+      },
+    ])("steerChat $name", async ({ steer, calls, result }) => {
+      const steerChat = vi.fn();
+      for (const answer of steer) {
+        if (answer instanceof Error) steerChat.mockRejectedValueOnce(answer);
+        else steerChat.mockResolvedValueOnce(answer);
+      }
+      const tools = createCtoOperatorTools(buildDeps({ steerChat }));
+
+      const answer = await (tools.steerChat as any).execute({ sessionId: "chat-7", instruction: "focus on the failing shard" });
+
+      expect(steerChat.mock.calls.map(([args]) => ({ dispatchMode: args.dispatchMode }))).toEqual(calls);
+      expect(steerChat).toHaveBeenCalledWith(expect.objectContaining({ sessionId: "chat-7", instruction: "focus on the failing shard" }));
+      expect(answer).toMatchObject(result);
+    });
+
+    it("steers, cancels and interrupts a chat on the machine named, with the live mode there too", async () => {
+      const studio = { machineId: "studio-id", name: "Studio", isThisMachine: false };
+      const runAction = vi.fn(async (_target: unknown, call: { action: string }) => (
+        call.action === "steer" ? { steerId: "steer-9", queued: false } : null
+      ));
+      const deps = buildDeps({
+        crossMachine: {
+          homeMachine: () => ({ machineId: "home-id", name: "Home", isThisMachine: true }),
+          resolveMachine: vi.fn(async () => studio),
+          listMachines: vi.fn(),
+          runAction,
+          listActions: vi.fn(),
+          peekRoster: () => null,
+        } as any,
+      });
       const tools = createCtoOperatorTools(deps);
 
-      const result = await (tools.steerChat as any).execute({ sessionId: "chat-7", instruction: "focus on the failing shard" });
+      const steered = await (tools.steerChat as any).execute({ sessionId: "chat-7", instruction: "stop", machine: "Studio" });
+      const cancelled = await (tools.cancelSteer as any).execute({ sessionId: "chat-7", steerId: "steer-9", machine: "Studio" });
+      const interrupted = await (tools.interruptChat as any).execute({ sessionId: "chat-7", machine: "Studio" });
 
-      expect(deps.steerChat).toHaveBeenCalledWith({ sessionId: "chat-7", instruction: "focus on the failing shard" });
-      expect(result).toMatchObject({ success: true });
-      expect(result.error).toBeUndefined();
+      expect(runAction.mock.calls.map(([target, call]) => [(target as typeof studio).machineId, call])).toEqual([
+        ["studio-id", { domain: "chat", action: "steer", args: { sessionId: "chat-7", text: "stop", dispatchMode: "inline" } }],
+        ["studio-id", { domain: "chat", action: "cancelSteer", args: { sessionId: "chat-7", steerId: "steer-9" } }],
+        ["studio-id", { domain: "chat", action: "interrupt", args: { sessionId: "chat-7" } }],
+      ]);
+      expect(deps.steerChat).not.toHaveBeenCalled();
+      expect(deps.interruptChat).not.toHaveBeenCalled();
+      expect(steered).toMatchObject({ success: true, machineId: "studio-id", steerId: "steer-9", delivery: "live" });
+      expect(cancelled).toMatchObject({ success: true, machineId: "studio-id" });
+      expect(interrupted).toMatchObject({ success: true, machineId: "studio-id" });
     });
 
     it("cancelSteer requires the steerId the underlying API needs", async () => {

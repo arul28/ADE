@@ -1773,6 +1773,15 @@ could gain: a missing actor is already the most permissive case.
   step or attempt) is capped only by the target's parent. The CTO counts as the
   CTO only from its own thread, or as a CTO-role caller with no chat and no run,
   step or attempt (`callerIsTrustedCto`); a CTO-role run agent is an agent here.
+- **A caller in another project or on another machine** is not one of the
+  target service's chats, so its level comes from what the brain recorded for it
+  (`externalChatContext`), and an unrecorded caller counts as `ask`. A remote
+  machine sends the caller's level on every call. For a caller on this machine,
+  `multiProjectRpcServer` records it (`crossScopeChats.rememberLocalCaller`)
+  before every call that starts a chat (`childParentSlot`) or runs
+  `chat.updateSession`, parent named or not. Before, only a create that named
+  the caller as parent recorded it, so `chat create --no-parent` and every
+  `chat update` from a full-auto chat in another project ended at `ask`.
 - Claude plan mode with ask-level access behind it reads as the plan rung; with
   more behind it, it reads at that level, because leaving plan mode restores it.
 - Trade-off: Cursor's `agent` mode reads as `ask`, so an `ask` agent may start

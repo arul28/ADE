@@ -417,7 +417,7 @@ import {
   collectDraftVisualAttachmentPaths,
   useDraftAttachmentTransfer,
 } from "./draftAttachmentTransfer";
-import { chatNoticeReducer } from "./chatNotice";
+import { chatNoticeReducer, shownChatNotice } from "./chatNotice";
 import {
   LAUNCH_PROFILE_TITLE,
   type CliProvider,
@@ -5462,6 +5462,12 @@ export function AgentChatPane({
   const chatRuntimePinRef = useRef<OpenProjectBinding | null>(chatRuntimePin);
   chatRuntimePinRef.current = chatRuntimePin;
   const chatRuntimePinKey = chatRuntimePin?.key ?? null;
+  // Another machine's chat: pinned there, or on the machine this project tab
+  // itself is bound to.
+  const shownNotice = shownChatNotice(
+    chatNotice,
+    (chatRuntimePin ?? projectBinding)?.kind === "remote",
+  );
   // Pending thread comments for the open chat. Null while the chat has no
   // readable session (a launch still starting, a draft) or the composer and
   // transcript disagree on which chat is open. Always null in a personal chat:
@@ -19093,14 +19099,14 @@ export function AgentChatPane({
         overlayFooter
         bodyClassName="flex min-h-0 flex-col overflow-hidden"
       >
-        {chatNotice ? (
+        {shownNotice ? (
           <Banner
             layout="inline"
             style={RUNTIME_BANNER_STYLE}
             model={{
               id: "chat-error",
-              ...noticeKindModel(chatNotice.kind),
-              title: chatNotice.message,
+              ...noticeKindModel(shownNotice.kind),
+              title: shownNotice.message,
               dismiss: { onDismiss: () => setError(null) },
               actions: [
                 ...(draftMachineRecoveryAvailable

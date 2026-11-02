@@ -114,14 +114,26 @@ function xcodebuildTestTotal(output: string): { executed: number; failed: number
     failed: Number(match[3]),
   }));
   if (!lines.length) return null;
-  // The line printed after the run-wide suite's own "passed/failed at" line.
-  const runSuite = [...output.matchAll(/Test Suite '(?:All tests|Selected tests)' (?:passed|failed) at/g)].pop();
-  if (runSuite?.index !== undefined) {
-    const after = lines.find((line) => line.index > (runSuite.index ?? 0));
-    if (after) return { executed: after.executed, failed: after.failed, skipped: after.skipped };
+  // The line printed after the run-wide suite's own "passed/failed at" line,
+  // else the largest.
+  const runIndex = [...output.matchAll(/Test Suite '(?:All tests|Selected tests)' (?:passed|failed) at/g)].pop()?.index;
+  const line = (runIndex !== undefined ? lines.find((entry) => entry.index > runIndex) : undefined)
+    ?? lines.reduce((best, entry) => (entry.executed > best.executed ? entry : best));
+  // "M failures" counts failed assertions: one test with two failing asserts
+  // adds two. Take off each failed case's assertions past its first. A failure
+  // with no case line or no assertion line (a crash) keeps its count.
+  const assertionsByCase = new Map<string, number>();
+  for (const match of output.matchAll(/: error: (-\[[^\]]+\]) :/g)) {
+    assertionsByCase.set(match[1]!, (assertionsByCase.get(match[1]!) ?? 0) + 1);
   }
-  const largest = lines.reduce((best, line) => (line.executed > best.executed ? line : best));
-  return { executed: largest.executed, failed: largest.failed, skipped: largest.skipped };
+  const failedCases = new Set([...output.matchAll(/Test Case '([^']+)' failed \(/g)].map((match) => match[1]!));
+  let repeatedAssertions = 0;
+  for (const testCase of failedCases) repeatedAssertions += Math.max(0, (assertionsByCase.get(testCase) ?? 1) - 1);
+  return {
+    executed: line.executed,
+    failed: Math.max(failedCases.size, line.failed - repeatedAssertions),
+    skipped: line.skipped,
+  };
 }
 
 const MAX_FAILURES = 200;

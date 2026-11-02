@@ -175,7 +175,9 @@ impl Lane {
         e.name.to_lowercase().contains(&n) || e.value.as_ref().map(|v| v.to_lowercase().contains(&n)).unwrap_or(false)
     }
 
-    /// The element a text names: an exact name first, interactive first.
+    /// The element a text names: interactive first, then an exact name, then
+    /// the smallest (the order the Windows and macOS drivers use): a label
+    /// "Open" must not win a click over the button "Open…".
     pub(crate) fn resolve_text(&self, text: &str) -> DResult<(Option<usize>, Element)> {
         let lower = text.to_lowercase();
         // The newest observation first: the index answered belongs to the
@@ -185,7 +187,7 @@ impl Lane {
                 .iter()
                 .enumerate()
                 .filter(|(_, e)| Self::matches(e, text))
-                .min_by_key(|(_, e)| (e.name.to_lowercase() != lower, !e.interactive, e.width * e.height));
+                .min_by_key(|(_, e)| (!e.interactive, e.name.to_lowercase() != lower, e.width * e.height));
             if let Some((i, e)) = pick {
                 return Ok((Some(i), e.clone()));
             }
@@ -196,7 +198,7 @@ impl Lane {
             .iter()
             .enumerate()
             .filter(|(_, e)| Self::matches(e, text))
-            .min_by_key(|(_, e)| (e.name.to_lowercase() != lower, !e.interactive, e.width * e.height));
+            .min_by_key(|(_, e)| (!e.interactive, e.name.to_lowercase() != lower, e.width * e.height));
         match pick {
             Some((_, e)) => Ok((None, e.clone())),
             None => fail!(code::INVALID_ARGUMENT, "Nothing on this lane's screen matches \"{text}\". Observe to see what is there."),
