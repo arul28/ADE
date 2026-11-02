@@ -150,6 +150,7 @@ be far smaller; it was not measured that way.
 | Work chat switch, warm, dev app on the owner's real ~/.ade with two other machines connected: first changed frame median / worst long frame; component renders per switch | `interaction.mjs chats 4` (3 alternated pairs), `chat-switch-renders.mjs 9333 8`; 2026-10-29 on `20465883b` (PR #1985) | 55-65 / ~86 ms; ~2,000 renders | 50-57 / 53-70 ms; 1,235 renders | 60 ms first frame |
 | Renderer busy per keystroke (production build, headless) | `scripts/perf-chat-stream.mjs` harness | 12–15 ms | 12–15 ms | 16 ms |
 | Streaming: cost per event (production build) | `scripts/perf-chat-stream.mjs` | 8.1 ms | 7.7 ms | 10 ms |
+| Shell code block Run control (mounts on first hover or focus): renderer task per streamed event / first rows, dev build, a 21,670-event transcript with ~300 shell blocks, interleaved A/B | `scripts/perf-chat-stream.mjs --stream 400 --rate 30`; Mac Studio M4 Max, 2026-11-02 on `921f81d9e` (PR #2027), not the baseline machine | 3.48–4.73 ms; 2.87–3.26 s (without Run) | 3.80–4.40 ms; 2.98–3.22 s (no measurable change) | 10 ms |
 
 ### Composer pickers
 

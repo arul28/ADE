@@ -10,6 +10,7 @@ import { captureError } from "../../../shared/sentry/capture";
 import { LRUCache } from "./lruCache";
 import { ShellCodeBlockRunButton, ShellCodeBlockRunStatus, shellBlockHasRun } from "./ChatCodeBlockRun";
 import { shellBlockDialect } from "./shellCodeBlockRun";
+import { CODE_BLOCK_ACTION_BUTTON_CLASS, CODE_BLOCK_ACTION_BUTTON_STYLE } from "./codeBlockActionButton";
 
 /* ── LRU cache for highlighted HTML ── */
 
@@ -292,12 +293,8 @@ function CodeCopyButton({ code, position, leading }: { code: string; position: C
         {leading}
         <button
           type="button"
-          className="ade-chat-copy-button pointer-events-auto inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 font-sans text-[9px] opacity-0 backdrop-blur-sm transition-all group-hover:opacity-100 [@media(hover:none)]:opacity-100"
-          style={{
-            border: "1px solid var(--chat-copy-button-border)",
-            background: "var(--chat-copy-button-bg)",
-            color: "var(--chat-copy-button-fg)",
-          }}
+          className={`${CODE_BLOCK_ACTION_BUTTON_CLASS} opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100`}
+          style={CODE_BLOCK_ACTION_BUTTON_STYLE}
           onClick={() => void copy(code)}
           title={copied ? "Copied" : "Copy code"}
           aria-label={copied ? "Copied" : "Copy code"}
@@ -314,12 +311,8 @@ function CodeCopyButton({ code, position, leading }: { code: string; position: C
   const button = (
     <button
       type="button"
-      className={`ade-chat-copy-button ${leading ? "" : `absolute right-2 z-10 ${posClass} `}inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 font-sans text-[9px] opacity-0 backdrop-blur-sm transition-all group-hover:opacity-100 [@media(hover:none)]:opacity-100`}
-      style={{
-        border: "1px solid var(--chat-copy-button-border)",
-        background: "var(--chat-copy-button-bg)",
-        color: "var(--chat-copy-button-fg)",
-      }}
+      className={`${CODE_BLOCK_ACTION_BUTTON_CLASS} ${leading ? "" : `absolute right-2 z-10 ${posClass} `}opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100`}
+      style={CODE_BLOCK_ACTION_BUTTON_STYLE}
       onClick={() => void copy(code)}
       title={copied ? "Copied" : "Copy code"}
       aria-label={copied ? "Copied" : "Copy code"}

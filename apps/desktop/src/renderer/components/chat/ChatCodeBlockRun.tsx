@@ -6,6 +6,8 @@ import { isWindowsAbsolutePath } from "../../lib/pathUtils";
 import { useChatRuntimeScope, type ChatRuntimeScope } from "./ChatRuntimeScope";
 import { planShellBlockRun, shellRunResultMessage, shellRunTerminalTitle } from "./shellCodeBlockRun";
 import { requestChatTerminalFocus } from "./chatTerminalFocus";
+import { CODE_BLOCK_ACTION_BUTTON_CLASS, CODE_BLOCK_ACTION_BUTTON_STYLE } from "./codeBlockActionButton";
+import { captureError } from "../../../shared/sentry/capture";
 
 type RevealTerminal = (terminal: { terminalId: string; ptyId: string; label: string }) => void;
 
@@ -180,7 +182,12 @@ async function startRun(args: {
     }
     // A machine's event feed can start after the command already ended;
     // one read settles it.
-    const read = await window.ade.terminal.read({ terminalId: created.sessionId, maxBytes: 1 }, pin).catch(() => null);
+    const read = await window.ade.terminal.read({ terminalId: created.sessionId, maxBytes: 1 }, pin).catch((error: unknown) => {
+      // The exit event still finishes the run; only a quick exit missed by
+      // the feed would leave the block reading "Running".
+      captureError(error, { fingerprint: ["chat-code-block-run", "exit-status-read"], level: "warning", handled: true });
+      return null;
+    });
     if (read?.status && read.status !== "running") finish(read.exitCode ?? null);
   } catch (error) {
     done = true;
@@ -241,14 +248,6 @@ function blockedReason(scope: ChatRuntimeScope): string | null {
   return null;
 }
 
-const ACTION_BUTTON_CLASS =
-  "ade-chat-copy-button pointer-events-auto inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 font-sans text-[9px] backdrop-blur-sm transition-all";
-const ACTION_BUTTON_STYLE: React.CSSProperties = {
-  border: "1px solid var(--chat-copy-button-border)",
-  background: "var(--chat-copy-button-bg)",
-  color: "var(--chat-copy-button-fg)",
-};
-
 /** The Run control beside Copy. Rendered only once the block is armed. */
 export function ShellCodeBlockRunButton({ code, language }: { code: string; language: string }) {
   const scope = useChatRuntimeScope();
@@ -304,8 +303,8 @@ export function ShellCodeBlockRunButton({ code, language }: { code: string; lang
   return (
     <button
       type="button"
-      className={`${ACTION_BUTTON_CLASS} opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 [@media(hover:none)]:opacity-100 ${reason ? "cursor-not-allowed" : ""}`}
-      style={reason ? { ...ACTION_BUTTON_STYLE, color: "color-mix(in srgb, var(--chat-copy-button-fg) 55%, transparent)" } : ACTION_BUTTON_STYLE}
+      className={`${CODE_BLOCK_ACTION_BUTTON_CLASS} opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 [@media(hover:none)]:opacity-100 ${reason ? "cursor-not-allowed" : ""}`}
+      style={reason ? { ...CODE_BLOCK_ACTION_BUTTON_STYLE, color: "color-mix(in srgb, var(--chat-copy-button-fg) 55%, transparent)" } : CODE_BLOCK_ACTION_BUTTON_STYLE}
       aria-disabled={reason ? true : undefined}
       onClick={() => void handleClick()}
       title={label}
@@ -349,8 +348,8 @@ export function ShellCodeBlockRunStatus({ code, language }: { code: string; lang
       {terminalId && ptyId ? (
         <button
           type="button"
-          className={ACTION_BUTTON_CLASS}
-          style={ACTION_BUTTON_STYLE}
+          className={CODE_BLOCK_ACTION_BUTTON_CLASS}
+          style={CODE_BLOCK_ACTION_BUTTON_STYLE}
           onClick={() => showTerminal(run.sessionId, { terminalId, ptyId, label: run.title, ended: run.status === "exited" }, reveal)}
         >
           <Terminal size={10} weight="bold" />
@@ -366,8 +365,8 @@ export function ShellCodeBlockRunStatus({ code, language }: { code: string; lang
         ) : (
           <button
             type="button"
-            className={ACTION_BUTTON_CLASS}
-            style={ACTION_BUTTON_STYLE}
+            className={CODE_BLOCK_ACTION_BUTTON_CLASS}
+            style={CODE_BLOCK_ACTION_BUTTON_STYLE}
             disabled={run.send.kind === "sending"}
             onClick={() => void sendRunOutput(key)}
           >

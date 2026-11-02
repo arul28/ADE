@@ -39,7 +39,7 @@ export function shellBlockDialect(language: string): ShellBlockDialect | null {
  * the prompt, and nothing it shows as output. A prompt line ending in `\`
  * continues on the next line, which may carry a `> ` continuation prompt.
  */
-export function consoleBlockCommands(code: string): string {
+function consoleBlockCommands(code: string): string {
   const commands: string[] = [];
   let continuing = false;
   for (const line of code.split("\n")) {
@@ -60,7 +60,7 @@ export function consoleBlockCommands(code: string): string {
 }
 
 /** The text a block would run, before any machine is considered. Empty when nothing would. */
-export function shellBlockScript(code: string, language: string): string {
+function shellBlockScript(code: string, language: string): string {
   const normalized = code.replace(/\r\n?/g, "\n");
   const script = language.trim().toLowerCase() === "console" ? consoleBlockCommands(normalized) : normalized;
   return script.trim().length > 0 ? script.replace(/\n+$/, "") : "";
@@ -139,7 +139,7 @@ export function planShellBlockRun(args: { code: string; language: string; machin
 }
 
 /** `-EncodedCommand` takes base64 of UTF-16LE: no quoting, any script survives. */
-export function encodePowerShellCommand(script: string): string {
+function encodePowerShellCommand(script: string): string {
   let binary = "";
   for (let index = 0; index < script.length; index += 1) {
     const unit = script.charCodeAt(index);
@@ -159,7 +159,7 @@ export function shellRunTerminalTitle(script: string): string {
  * and carriage-return redraws (progress bars, spinners) keep only their last
  * state.
  */
-export function plainTerminalOutput(raw: string): string {
+function plainTerminalOutput(raw: string): string {
   return stripAnsiWithOptions(raw, { preserveCarriageReturns: true })
     .replace(/\r+\n/g, "\n")
     .split("\n")
