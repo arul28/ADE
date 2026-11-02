@@ -61,6 +61,7 @@ import type {
   TurnDiffSummary,
 } from "../../../shared/types";
 import { sideChatSendBlocksToMarkdown } from "../../../shared/sideChat";
+import { SUBAGENT_ANSWER_UNSENT_NOTICE_STATUS } from "../../../shared/types/chat";
 import { SideChatTranscriptContext } from "./sideChatState";
 import type { OpenProjectBinding } from "../../../shared/types/core";
 import { CLAUDE_SYNTHETIC_MODEL, WORK_BOARD_COLUMN_LABEL, readVoiceSessionNotice, spawnCompletedNoticeMessage, spawnParentGoneNoticeMessage } from "../../../shared/types/chat";
@@ -446,6 +447,53 @@ function ResetCreditNoticeRow({
       {outcome ? (
         <span className="normal-case tracking-normal text-fg/42">{outcome}</span>
       ) : null}
+    </div>
+  );
+}
+
+/**
+ * A subagent's question answered after the subagent was gone (ADE restarted).
+ * The answer was not sent anywhere; this row offers to send it to the main
+ * agent, and only that click sends it. The send goes to this chat's machine.
+ */
+function SubagentAnswerUnsentNoticeRow({
+  message,
+  answerText,
+  sessionId,
+}: {
+  message: string;
+  answerText: string | null;
+  sessionId: string | null | undefined;
+}) {
+  const { pin } = useChatRuntimeScope();
+  const [state, setState] = useState<"idle" | "sending" | "sent" | "failed">("idle");
+  const send = useCallback(async () => {
+    const call = window.ade?.agentChat?.send;
+    if (!sessionId || !answerText || !isAdeAvailable(call)) return;
+    setState("sending");
+    try {
+      await call({ sessionId, text: answerText }, pin);
+      setState("sent");
+    } catch {
+      setState("failed");
+    }
+  }, [answerText, pin, sessionId]);
+  return (
+    <div className="inline-flex max-w-[var(--chat-content-width,52rem)] flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-border/15 bg-surface-raised/20 px-2.5 py-1.5 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-fg/60">
+      <span className="min-w-0">{message}</span>
+      {answerText && sessionId && state !== "sent" ? (
+        <button
+          type="button"
+          disabled={state === "sending"}
+          onClick={() => { void send(); }}
+          data-testid="subagent-answer-send-to-main"
+          className="rounded border border-border/30 px-1.5 py-[1px] text-[length:calc(var(--chat-font-size)*9.5/14)] font-medium text-fg/75 hover:bg-fg/[0.06] disabled:opacity-50"
+        >
+          Send my answer to the main agent
+        </button>
+      ) : null}
+      {state === "sent" ? <span className="text-fg/42">Sent to the main agent.</span> : null}
+      {state === "failed" ? <span className="text-amber-200/70">Could not send it. Try again.</span> : null}
     </div>
   );
 }
@@ -3895,6 +3943,15 @@ function renderEvent(
           <span className="min-w-0 truncate">The user took over "{childTitle}" — reports stop here.</span>
           {childSessionId ? <CaretRight size={10} className="shrink-0 text-slate-300/55" /> : null}
         </button>
+      );
+    }
+    if (event.status === SUBAGENT_ANSWER_UNSENT_NOTICE_STATUS) {
+      return (
+        <SubagentAnswerUnsentNoticeRow
+          message={event.message}
+          answerText={typeof event.detail === "string" && event.detail.trim() ? event.detail : null}
+          sessionId={options?.sessionId}
+        />
       );
     }
     if (event.noticeKind === "info" && event.status === "spawn_parent_gone") {

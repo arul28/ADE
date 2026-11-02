@@ -534,6 +534,14 @@ export type SpawnCompletedNotice = {
 export const USER_NOTIFIED_NOTICE_STATUS = "user_notified";
 
 /**
+ * `system_notice.status` of the line a chat shows when a subagent's question
+ * was answered after the subagent was gone (ADE restarted). `detail` is the
+ * answer as a message for the main agent; the row offers to send it, and
+ * nothing sends it without that click.
+ */
+export const SUBAGENT_ANSWER_UNSENT_NOTICE_STATUS = "subagent_answer_unsent";
+
+/**
  * Inverts `spawnCompletedNoticeMessage` for a notice whose detail lost its
  * completion, in EITHER wording: the current sentence, and the pre-rename
  * `Peer "<title>" turn finished` that persisted transcripts still hold and are
@@ -3007,6 +3015,22 @@ export type PendingInputRequest = {
   providerMetadata?: Record<string, unknown>;
   autoResolutionMs?: number | null;
   turnId?: string | null;
+  /**
+   * The provider-native subagent that asked, when it was not the main agent.
+   * The card still belongs to the parent chat and is answered there (parent
+   * session id + item id, the parent's machine); this only names who waits.
+   */
+  subagent?: PendingInputSubagent;
+};
+
+/** Who raised a card inside a chat: one of its provider-native subagents. */
+export type PendingInputSubagent = {
+  /** The subagent row's key in the parent chat (`subagentAgentKey`: agent id, else task id). */
+  key: string;
+  /** The row's display name (`deriveSubagentCardName`), so every client names it alike. */
+  name: string;
+  /** Runs in the background: the default Stop leaves it, and its cards, running. */
+  background?: boolean;
 };
 
 /**

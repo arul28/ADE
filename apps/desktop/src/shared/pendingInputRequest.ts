@@ -1,4 +1,4 @@
-import type { PendingInputOption, PendingInputQuestion, PendingInputRequest } from "./types/chat";
+import type { PendingInputOption, PendingInputQuestion, PendingInputRequest, PendingInputSubagent } from "./types/chat";
 
 /**
  * Read a `PendingInputRequest` back from untyped data: a transcript event, a
@@ -71,6 +71,15 @@ function readPendingInputQuestion(value: unknown): PendingInputQuestion | null {
   };
 }
 
+/** The subagent that raised a card; null when the record names none usable. */
+export function readPendingInputSubagent(value: unknown): PendingInputSubagent | null {
+  const record = readRecord(value);
+  const key = typeof record?.key === "string" ? record.key.trim() : "";
+  const name = typeof record?.name === "string" ? record.name.trim() : "";
+  if (!record || !key.length || !name.length) return null;
+  return { key, name, ...(record.background === true ? { background: true } : {}) };
+}
+
 export function readPendingInputRequest(value: unknown): PendingInputRequest | null {
   const record = readRecord(value);
   if (!record) return null;
@@ -99,5 +108,6 @@ export function readPendingInputRequest(value: unknown): PendingInputRequest | n
       : {}),
     ...(readRecord(record.providerMetadata) ? { providerMetadata: readRecord(record.providerMetadata)! } : {}),
     ...(typeof record.turnId === "string" ? { turnId: record.turnId } : {}),
+    ...(readPendingInputSubagent(record.subagent) ? { subagent: readPendingInputSubagent(record.subagent)! } : {}),
   };
 }

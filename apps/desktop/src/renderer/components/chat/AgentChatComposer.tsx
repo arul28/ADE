@@ -136,6 +136,7 @@ import {
   type ActiveTurnSendMode,
 } from "../../../shared/types/chat";
 import { cn } from "../ui/cn";
+import { PendingInputStack, type PendingInputStackEntry } from "./PendingInputStack";
 import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
 import {
   PermissionModePicker,
@@ -2313,6 +2314,8 @@ function AgentChatComposerImpl({
   allowAttachmentOnlySubmit = false,
   pinnedLinearIssue = null,
   pendingInput,
+  pendingInputQueue,
+  onSelectPendingInput,
   approvalResponding,
   turnActive,
   sendOnEnter,
@@ -2559,6 +2562,13 @@ function AgentChatComposerImpl({
   allowAttachmentOnlySubmit?: boolean;
   pinnedLinearIssue?: LaneLinearIssue | null;
   pendingInput: PendingInputRequest | null;
+  /**
+   * Every blocking card waiting in this chat, in order. With more than one,
+   * the composer lists them (who asks, what) and `onSelectPendingInput` opens
+   * another; `pendingInput` is the open one.
+   */
+  pendingInputQueue?: readonly PendingInputStackEntry[];
+  onSelectPendingInput?: (itemId: string) => void;
   approvalResponding?: boolean;
   turnActive: boolean;
   sendOnEnter: boolean;
@@ -8339,8 +8349,16 @@ function AgentChatComposerImpl({
           ? "border-0 bg-transparent shadow-none"
           : "mx-auto w-full max-w-[var(--chat-column,52rem)]",
       )}
-      pendingBanner={pendingInput && !askQuestionRequest ? (
-        pendingInput.kind === "plan_approval" ? (
+      pendingBanner={pendingInput && (!askQuestionRequest || (pendingInputQueue?.length ?? 0) > 1) ? (
+        <>
+        {pendingInputQueue && onSelectPendingInput ? (
+          <PendingInputStack
+            entries={pendingInputQueue}
+            activeItemId={pendingInput.itemId ?? pendingInput.requestId}
+            onSelect={onSelectPendingInput}
+          />
+        ) : null}
+        {askQuestionRequest ? null : pendingInput.kind === "plan_approval" ? (
           <ChatProposedPlanCard
             source={pendingInput.source}
             description={pendingInput.description ?? null}
@@ -8358,6 +8376,11 @@ function AgentChatComposerImpl({
               <span className="font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-widest text-[color:color-mix(in_srgb,var(--chat-accent)_82%,white_18%)]">
                 {pendingInputHeaderLabel(pendingInput.source, pendingInput.kind)}
               </span>
+              {pendingInput.subagent ? (
+                <span className="min-w-0 truncate font-sans text-[length:calc(var(--chat-font-size)*11/14)] font-semibold text-fg/75" data-testid="pending-input-subagent">
+                  {pendingInput.subagent.name} asks
+                </span>
+              ) : null}
             </div>
             {pendingInput.kind === "approval" || pendingInput.kind === "permissions" ? (
               <>
@@ -8382,6 +8405,11 @@ function AgentChatComposerImpl({
                   ) : null}
                   <button type="button" disabled={approvalResponding} className="rounded-[var(--chat-radius-pill)] border border-border/20 px-3 py-1 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-wider text-fg/40 transition-colors hover:bg-border/10 disabled:opacity-40 disabled:pointer-events-none" onClick={() => onApproval("decline")}>{isMcpElicitation ? "Deny" : "Decline"}</button>
                 </div>
+                {pendingInput.subagent && approvalOffersSessionChoice ? (
+                  <div className="mt-1.5 font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-fg/45">
+                    {isMcpElicitation ? "Always allow" : "Accept all"} covers this whole chat: the main agent and all its subagents.
+                  </div>
+                ) : null}
               </>
             ) : (
               /* Escape hatch for a gate that renders no controls of its own —
@@ -8410,7 +8438,8 @@ function AgentChatComposerImpl({
               </>
             )}
           </div>
-        )
+        )}
+        </>
       ) : undefined}
       trays={
         attachments.length || pendingImageAttachments.length || contextAttachmentCount || attachError || attachNotice || selectedIosContext || selectedAppControlContext || selectedBuiltInBrowserContext ? (

@@ -3026,9 +3026,23 @@ struct WorkSessionDestinationView: View {
       // list stops rebuilding while a chat covers it on a phone.
       summary: { id in syncService.chatSummaryCache[id] ?? roster.summaries[id] }
     )
+    .map(markingWaitingSubagents(workWaitingSubagentKeys(from: transcript)))
     if next != subagentSnapshots {
       subagentSnapshots = next
       subagentSnapshotsRenderSignature = workSubagentSnapshotsRenderSignature(next)
+    }
+  }
+
+  /// An in-thread subagent with an open card in this chat reads "Needs you",
+  /// like a waiting child chat.
+  private func markingWaitingSubagents(_ keys: Set<String>) -> (WorkSubagentSnapshot) -> WorkSubagentSnapshot {
+    { snapshot in
+      guard !keys.isEmpty, keys.contains(snapshot.agentId ?? snapshot.taskId) || keys.contains(snapshot.taskId) else {
+        return snapshot
+      }
+      var next = snapshot
+      next.needsInput = true
+      return next
     }
   }
 
