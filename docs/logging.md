@@ -1648,7 +1648,9 @@ message count, or machine. Volume is bounded for the account's lifetime:
 so a pill left up never re-sends it), `star_prompt_dismissed` at most twice,
 `repo_starred` once, and `star_prompt_clicked` only on a click. A 24-hour
 per-action-and-outcome dedupe key is a backstop, inside the same
-`ade_feature_used` limits; no ceiling was raised.
+`ade_feature_used` limits; no ceiling was raised. The **ADE · GitHub star prompt** dashboard in
+`scripts/posthog/dashboard-spec.mjs` charts the funnel (shown → clicked →
+starred) and splits it by showing.
 
 Opening the account-wide Activity control (renamed from "Attention" in the UI;
 the analytics taxonomy deliberately keeps the frozen `attention` keys) records
