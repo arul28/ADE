@@ -4968,6 +4968,9 @@ final class SyncService: ObservableObject {
   /// Interface addresses from the newest off-main scan. The network
   /// fingerprint reads these instead of calling `getifaddrs` on the main actor.
   private var lastInterfaceAddresses: [SyncNetworkInterfaceAddress] = []
+  /// The scan generation `lastInterfaceAddresses` came from. Behind the newest
+  /// scan, the addresses may describe the previous network.
+  private var lastInterfaceAddressesGeneration: UInt64 = 0
 
   /// Tracks `activeSessions` derivation so we do not rebuild on every
   /// unrelated `localStateRevision` bump.
@@ -9434,6 +9437,7 @@ final class SyncService: ObservableObject {
       }.value
       guard let self, !Task.isCancelled, generation == self.tailnetInterfaceScanGeneration else { return }
       self.lastInterfaceAddresses = addresses
+      self.lastInterfaceAddressesGeneration = generation
       let hasTailnet = syncHasTailnetSelfAddress(addresses)
       if self.phoneHasTailnetInterface != hasTailnet {
         self.phoneHasTailnetInterface = hasTailnet
@@ -18763,7 +18767,11 @@ final class SyncService: ObservableObject {
       usesWiFi: snapshot.usesWiFi,
       usesCellular: snapshot.usesCellular,
       usesWiredEthernet: snapshot.usesWiredEthernet,
-      interfaceAddresses: snapshot.usesWiFi ? lastInterfaceAddresses : []
+      // Addresses from an older scan may be the previous Wi-Fi's: rank by
+      // plain "wifi" until the newest scan lands, rather than the wrong subnet.
+      interfaceAddresses: snapshot.usesWiFi && lastInterfaceAddressesGeneration == tailnetInterfaceScanGeneration
+        ? lastInterfaceAddresses
+        : []
     )
   }
 

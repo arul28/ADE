@@ -118,11 +118,15 @@ const IGNORED_ERROR_PATTERNS: readonly RegExp[] = [
   // Sync turned off (or no project registered yet) is a state, not a failure;
   // presence and other sync calls answer with this on every lane change.
   /Sync service is not available/,
-  // Monaco rejecting its own pending work (hover, highlight, format) with a
-  // bare `Canceled` when an editor is disposed under it, e.g. a file tab that
-  // closes because the file is gone. Nothing of ADE's failed.
-  /^Canceled: Canceled$/,
 ];
+
+/**
+ * Monaco rejecting its own pending work (hover, highlight, format) with a bare
+ * `Canceled` when an editor is disposed under it, e.g. a file tab that closes
+ * because the file is gone. Nothing of ADE's failed. Matched on the event's
+ * own error only: a crash whose cause is a cancellation stays.
+ */
+const MONACO_CANCELED = /^Canceled: Canceled$/;
 
 type FingerprintSource = {
   fingerprint?: string[];
@@ -159,6 +163,7 @@ export function isIgnoredEvent(event: FingerprintSource): boolean {
   // An expected outcome names the event only as its own error: one quoted in a
   // `cause` must not drop the crash around it.
   const primary = values[values.length - 1];
+  if (primary && MONACO_CANCELED.test(`${primary.type ?? ""}: ${primary.value ?? ""}`)) return true;
   const primaryText = primary ? primary.value ?? "" : event.message ?? "";
   if (isExpectedOutcomeText(primaryText)) return true;
   // Sentry lists the causes before the error that carries them.

@@ -1322,7 +1322,9 @@ function parseLegacyMergeTreeConflicts(output: string): {
   const lines = output.split(/\r?\n/);
   let index = 0;
   while (index < lines.length) {
-    const header = (lines[index] ?? "").trim();
+    // Headers sit in column 0; a diff line (" merged", "+removed in remote")
+    // never does, so lines are matched as they are, not trimmed.
+    const header = lines[index] ?? "";
     if (!LEGACY_MERGE_TREE_SECTION.test(header)) {
       index += 1;
       continue;
@@ -1330,7 +1332,7 @@ function parseLegacyMergeTreeConflicts(output: string): {
     const entries = new Map<string, { sha: string; path: string }>();
     const body: string[] = [];
     index += 1;
-    while (index < lines.length && !LEGACY_MERGE_TREE_SECTION.test((lines[index] ?? "").trim())) {
+    while (index < lines.length && !LEGACY_MERGE_TREE_SECTION.test(lines[index] ?? "")) {
       const line = lines[index] ?? "";
       const entry = LEGACY_MERGE_TREE_ENTRY.exec(line);
       if (entry && body.length === 0) {
@@ -1425,6 +1427,20 @@ async function runLegacyGitMergeTree(args: {
     }
     return { ...legacy, ...base, exitCode: conflicts.length > 0 ? 1 : 0, conflicts };
   }
+  // The legacy form ran and failed on its own terms (a timeout, a bad ref,
+  // output past the cap): say that, not that git is too old.
+  if (legacy) {
+    return {
+      ...legacy,
+      ...base,
+      exitCode: legacy.exitCode === 0 ? 128 : legacy.exitCode,
+      stderr: legacy.stdoutTruncated
+        ? "git merge-tree printed more than ADE reads for a conflict check."
+        : legacy.stderr,
+      conflicts: [],
+    };
+  }
+  // No merge base: the legacy form needs one, and only --write-tree merges without.
   const version = await runGit(["--version"], { cwd: args.cwd, timeoutMs: 10_000 }).catch(() => null);
   const versionText = version?.exitCode === 0 ? version.stdout.trim().replace(/^git version\s*/i, "") : "";
   return {

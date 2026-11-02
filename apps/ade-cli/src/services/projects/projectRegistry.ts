@@ -12,7 +12,7 @@ import { codedError } from "../../../../desktop/src/shared/codedError";
 import { writeFileAtomic } from "../../../../desktop/src/main/services/state/durableFile";
 import { findMoveInProgress, readMovedMarker, type MovedMarker } from "./projectMove/moveJournal";
 import { statIdentity } from "./fileIdentity";
-import { normalizeProjectRootPath } from "./projectRoots";
+import { normalizeProjectRootPath, realpathIfExists } from "./projectRoots";
 import { pathsEqual } from "../../../../desktop/src/main/services/shared/pathCompare";
 import { ExclusiveFileLockTimeoutError, withExclusiveFileLockSync } from "../../lib/exclusiveFileLock";
 import { forwardLogToSentry } from "../../../../desktop/src/shared/sentry/logBridge";
@@ -243,7 +243,9 @@ export class ProjectRegistry {
    * into its project: a peer naming a root means that root.
    */
   findAtRootPath(rootPath: string): ProjectRecord | null {
-    const resolved = path.resolve(rootPath);
+    // Registered roots are real paths (`normalizeRoot`); a peer's may go
+    // through a symlink (`/tmp` → `/private/tmp`).
+    const resolved = realpathIfExists(path.resolve(rootPath));
     return this.list().find((record) => pathsEqual(record.rootPath, resolved)) ?? null;
   }
 

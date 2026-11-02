@@ -162,10 +162,10 @@ function expandSshPath(
   value: string,
   args: { host: string; username: string; port: number; homeDir?: string; env?: NodeJS.ProcessEnv },
 ): string {
-  const expanded = value
-    .replace(/%h/g, args.host)
-    .replace(/%r/g, args.username)
-    .replace(/%p/g, String(args.port));
+  // A token that starts a Windows `%VAR%` reference (`%home%`, `%path%`) is
+  // left for `expandUserPath`, which expands the variable.
+  const tokens: Record<string, string> = { h: args.host, r: args.username, p: String(args.port) };
+  const expanded = value.replace(/%([hrp])(?![A-Za-z0-9_]*%)/g, (_match, token: string) => tokens[token]!);
   return expandUserPath(expanded, { homeDir: args.homeDir, env: args.env });
 }
 

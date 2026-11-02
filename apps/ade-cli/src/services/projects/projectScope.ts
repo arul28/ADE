@@ -942,7 +942,12 @@ export class ProjectScopeRegistry {
       hostStartupEnabled: isHost ? base.hostStartupEnabled ?? true : false,
       hostDiscoveryEnabled: isHost ? base.hostDiscoveryEnabled ?? true : false,
       remoteCommandExecutor: base.remoteCommandExecutor ?? this.remoteCommandExecutor,
-      projectScopes: this,
+      // A peer may still name a project by the id it had before it moved
+      // here; the routed file request resolves it the same way.
+      projectScopes: {
+        getIfBooted: (peerProjectId: string) =>
+          this.getIfBooted(this.projectRegistry.resolveMovedProjectId(peerProjectId) ?? peerProjectId),
+      },
     };
   }
 

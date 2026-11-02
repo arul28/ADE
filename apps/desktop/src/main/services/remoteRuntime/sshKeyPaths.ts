@@ -66,7 +66,7 @@ export function expandUserPath(value: string, args: { homeDir?: string; env?: No
   return expanded;
 }
 
-const PUBLIC_KEY_PREFIX = /^\s*(ssh-(rsa|dss|ed25519)|ecdsa-sha2-|sk-(ssh-ed25519|ecdsa-sha2-)|---- BEGIN SSH2 PUBLIC KEY)/;
+const PUBLIC_KEY_PREFIX = /^\s*(ssh-(rsa|dss|ed25519)|ecdsa-sha2-|sk-(ssh-ed25519|ecdsa-sha2-)|---- BEGIN SSH2 PUBLIC KEY|-----BEGIN (RSA )?PUBLIC KEY-----)/;
 
 export function isFile(filePath: string): boolean {
   try {
