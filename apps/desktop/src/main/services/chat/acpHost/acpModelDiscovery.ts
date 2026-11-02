@@ -47,7 +47,7 @@ import { acpDialectFor } from "./acpDialects";
 import { ACP_EFFORT_LADDER } from "./acpDialects/shared";
 import { resolveAdeCacheFile } from "../../shared/adeCacheFile";
 import { writeTextAtomic } from "../../shared/utils";
-import { createFailureBackoff } from "../../../../shared/failureBackoff";
+import { createFailureBackoff, type FailureBackoff } from "../../../../shared/failureBackoff";
 import {
   ACP_METHOD,
   hasAcpSessionCapability,
@@ -310,8 +310,8 @@ async function discoverProviderModels(provider: AcpModelProviderGroup, env: Node
 }
 
 const inFlight = new Set<AcpModelProviderGroup>();
-const failureBackoff = new Map<AcpModelProviderGroup, ReturnType<typeof createFailureBackoff>>();
-function providerFailureBackoff(provider: AcpModelProviderGroup): ReturnType<typeof createFailureBackoff> {
+const failureBackoff = new Map<AcpModelProviderGroup, FailureBackoff>();
+function providerFailureBackoff(provider: AcpModelProviderGroup): FailureBackoff {
   let backoff = failureBackoff.get(provider);
   if (!backoff) {
     backoff = createFailureBackoff({ baseMs: RETRY_AFTER_FAILURE_MS, maxMs: CATALOG_TTL_MS });
@@ -354,7 +354,7 @@ export function warmAcpModelCatalog(
         return;
       }
       recordProbedCatalog(provider, models);
-      providerFailureBackoff(provider).recordSuccess();
+      providerFailureBackoff(provider).reset();
       options?.logger?.info?.("ai.acp_model_discovery.ready", { provider, count: models.length });
     } catch (error) {
       const retryInMs = providerFailureBackoff(provider).recordFailure();

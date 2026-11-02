@@ -3,8 +3,7 @@ import { COMPACT_FIRST_MIN_TOKENS, compactFirstIdleMs, compactFirstIdleMsFromEnv
 import { AdeExpectedError } from "../../../shared/expectedError";
 import { createWarmIdleCompactionScheduler } from "./warmIdleCompactionScheduler";
 import { formatContinuityConversation } from "./continuityConversation";
-import { runReapedCommand } from "../shared/runReapedCommand";
-import { claudeKeychainServiceName } from "../ai/providerCredentialSources";
+import { probeClaudeKeychainLogin } from "../ai/providerCredentialSources";
 import { claudePromptCacheTtlOfWrites, normalizeClaudePromptCache, type ClaudePromptCache } from "../../../shared/claudePromptCache";
 import { claudeCompactionSettings, claudeCompactWindow, compactionIdleModeDefault, compactionRuntimeSignature, normalizeCompactionSettings } from "../../../shared/compactionSettings";
 import { withClaudeSubagentCompactWindow } from "../../../shared/claudeBuiltinAgentPrompts";
@@ -3542,23 +3541,10 @@ const CLAUDE_KEYCHAIN_RETRY_NOTICE = "Claude's sign-in was busy — retrying onc
  */
 const CLAUDE_KEYCHAIN_RETRY_DELAY_MS = 15_000;
 
-/**
- * Whether Claude's login item can be read from the macOS keychain right now:
- * `present`, `absent` (really signed out), or `unreadable` (the keychain did
- * not answer, as when it waits on an unanswered password dialog). Reads the
- * item's attributes only, never the secret. Not macOS: `present`.
- */
-async function probeClaudeKeychainLogin(configHome: string | null): Promise<"present" | "absent" | "unreadable"> {
-  if (process.platform !== "darwin") return "present";
-  const result = await runReapedCommand(
-    "/usr/bin/security",
-    ["find-generic-password", "-s", claudeKeychainServiceName(configHome ?? undefined)],
-    { timeoutMs: 3_000, maxBuffer: 64 * 1024 },
-  );
-  if (result.exitCode === 0) return "present";
-  if (result.exitCode === 44) return "absent";
-  return "unreadable";
-}
+/** A chat rebuilds a lost provider thread by itself at most once in this long. */
+const CONTINUITY_AUTO_RECOVERY_INTERVAL_MS = 10 * 60_000;
+/** How long that rebuild waits for the turn that lost the thread to settle. */
+const CONTINUITY_AUTO_RECOVERY_SETTLE_MAX_MS = 30_000;
 /** A transcript up to this size is read whole when a lost provider thread is rebuilt. */
 const CONTINUITY_FULL_TRANSCRIPT_MAX_BYTES = 32 * 1024 * 1024;
 /**
@@ -32170,15 +32156,69 @@ export function createAgentChatService(args: {
     })();
   };
 
-  /** Per chat, the Claude turn waiting on its one keychain retry. */
-  const pendingClaudeKeychainRetry = new Map<string, string>();
+  /** Per chat, the Claude turn waiting on its one keychain retry, and its timer. */
+  const pendingClaudeKeychainRetry = new Map<string, { turnId: string; timer: NodeJS.Timeout }>();
 
-  /** Drops a chat's pending keychain retry and shows its turn's failure. */
-  const settlePendingClaudeKeychainRetry = (managed: ManagedChatSession): void => {
-    const turnId = pendingClaudeKeychainRetry.get(managed.session.id);
-    if (!turnId) return;
+  /**
+   * Drops a chat's pending keychain retry. Its turn then shows the failure the
+   * retry was standing in for, unless the chat is going away.
+   */
+  const settlePendingClaudeKeychainRetry = (managed: ManagedChatSession, options?: { silent?: boolean }): void => {
+    const pending = pendingClaudeKeychainRetry.get(managed.session.id);
+    if (!pending) return;
+    clearTimeout(pending.timer);
     pendingClaudeKeychainRetry.delete(managed.session.id);
-    if (!managed.deleted) emitChatEvent(managed, { type: "error", message: CLAUDE_KEYCHAIN_UNREADABLE_ERROR, turnId });
+    if (!options?.silent && !managed.deleted) {
+      emitChatEvent(managed, { type: "error", message: CLAUDE_KEYCHAIN_UNREADABLE_ERROR, turnId: pending.turnId });
+    }
+  };
+
+  /**
+   * The one retry of a Claude turn whose sign-in read hit a keychain that did
+   * not answer. After the delay the keychain is checked once more: present runs
+   * the turn again, absent is a real sign-out, and silent again shows the
+   * failure. A newer message, Stop, or a deleted chat cancels it.
+   */
+  const scheduleClaudeKeychainRetry = (
+    managed: ManagedChatSession,
+    runtime: ClaudeRuntime,
+    turnId: string,
+    rerun: () => Promise<void>,
+  ): void => {
+    const sessionId = managed.session.id;
+    const isPending = () => pendingClaudeKeychainRetry.get(sessionId)?.turnId === turnId;
+    const chatMovedOn = () => managed.deleted || managed.runtime !== runtime || runtime.busy;
+    const timer = setTimeout(() => {
+      void (async () => {
+        if (!isPending()) return;
+        const login = chatMovedOn() ? null : await probeClaudeKeychainLogin(sessionConfigHome(managed) ?? undefined);
+        // A message sent during the check already took the retry's place.
+        if (!isPending()) return;
+        if (login === "absent") {
+          pendingClaudeKeychainRetry.delete(sessionId);
+          reportProviderRuntimeAuthFailure("claude", CLAUDE_RUNTIME_AUTH_ERROR);
+          emitChatEvent(managed, { type: "error", message: CLAUDE_RUNTIME_AUTH_ERROR, turnId });
+          return;
+        }
+        if (login !== "present" || chatMovedOn()) {
+          logger.info("agent_chat.claude_keychain_retry_skipped", { sessionId, turnId, login });
+          settlePendingClaudeKeychainRetry(managed);
+          return;
+        }
+        pendingClaudeKeychainRetry.delete(sessionId);
+        logger.info("agent_chat.claude_keychain_retry", { sessionId, turnId });
+        await rerun();
+      })().catch((retryError) => {
+        logger.warn("agent_chat.claude_keychain_retry_failed", {
+          sessionId,
+          turnId,
+          error: retryError instanceof Error ? retryError.message : String(retryError),
+        });
+        if (!managed.deleted) emitChatEvent(managed, { type: "error", message: CLAUDE_KEYCHAIN_UNREADABLE_ERROR, turnId });
+      });
+    }, CLAUDE_KEYCHAIN_RETRY_DELAY_MS);
+    timer.unref?.();
+    pendingClaudeKeychainRetry.set(sessionId, { turnId, timer });
   };
 
   const runClaudeTurn = async (
@@ -32286,6 +32326,8 @@ export function createAgentChatService(args: {
     });
 
     let assistantText = "";
+    /** The turn stopped Claude's own sign-in retries; see failClaudeTurnUnauthenticated. */
+    let claudeAuthStopRequested = false;
     let usage: { inputTokens?: number | null; outputTokens?: number | null; cacheReadTokens?: number | null; cacheCreationTokens?: number | null; thinkingTokens?: number | null; cacheWrite1hTokens?: number | null } | undefined;
     let costUsd: number | null = null;
     let resultServedModelCandidate: string | undefined;
@@ -32709,18 +32751,10 @@ export function createAgentChatService(args: {
       // recognises it via isClaudeRuntimeAuthError, closes the query (halting
       // further retries), reports the runtime auth failure, and emits a decorated
       // error event that renders the inline re-login card on every chat surface.
-      let claudeAuthStopNoticeEmitted = false;
+      // The "stopped retrying" notice waits for the failure path, which first
+      // checks whether the keychain just did not answer (then it is not a sign-out).
       const failClaudeTurnUnauthenticated = (): never => {
-        if (!claudeAuthStopNoticeEmitted) {
-          claudeAuthStopNoticeEmitted = true;
-          emitChatEvent(managed, {
-            type: "system_notice",
-            noticeKind: "auth",
-            severity: "warning",
-            message: CLAUDE_AUTH_STOPPED_NOTICE,
-            turnId,
-          });
-        }
+        claudeAuthStopRequested = true;
         throw new Error(CLAUDE_RUNTIME_AUTH_ERROR);
       };
 
@@ -34771,12 +34805,13 @@ export function createAgentChatService(args: {
           });
         }
       } else {
-        if (managed.runtime === runtime) markSessionIdleWithFreshCache(managed);
         // "Not logged in" from a CLI that could not read the keychain is not a
         // sign-out: the login is still there. Say what happened instead of
-        // sending the user to log in again.
+        // sending the user to log in again. Checked while the chat still reads
+        // active, so no new turn can start during the check.
         const keychainUnreadable = isClaudeRuntimeAuthError(effectiveError)
-          && (await probeClaudeKeychainLogin(sessionConfigHome(managed))) === "unreadable";
+          && (await probeClaudeKeychainLogin(sessionConfigHome(managed) ?? undefined)) === "unreadable";
+        if (managed.runtime === runtime) markSessionIdleWithFreshCache(managed);
         const isAuthFailure = isClaudeRuntimeAuthError(effectiveError) && !keychainUnreadable;
         // A busy keychain usually clears in seconds. A turn that ran nothing
         // yet is tried once more by itself; one that already did work is not,
@@ -34786,6 +34821,7 @@ export function createAgentChatService(args: {
           && !failedBeforeBackendDispatch
           && !runtime.interrupted
           && managed.runtime === runtime
+          && !runtime.busy
           && emittedClaudeToolIds.size === 0
           && assistantText.trim().length === 0;
         let errorMessage = keychainUnreadable
@@ -34794,6 +34830,15 @@ export function createAgentChatService(args: {
             ? CLAUDE_RUNTIME_AUTH_ERROR
             : (effectiveError instanceof Error ? effectiveError.message : String(effectiveError));
         if (isAuthFailure) {
+          if (claudeAuthStopRequested) {
+            emitChatEvent(managed, {
+              type: "system_notice",
+              noticeKind: "auth",
+              severity: "warning",
+              message: CLAUDE_AUTH_STOPPED_NOTICE,
+              turnId,
+            });
+          }
           reportProviderRuntimeAuthFailure("claude", CLAUDE_RUNTIME_AUTH_ERROR);
         } else {
           reportProviderRuntimeFailure("claude", errorMessage);
@@ -34860,46 +34905,13 @@ export function createAgentChatService(args: {
           ...doneModel,
         });
         if (retryAfterKeychain) {
-          const sessionId = managed.session.id;
-          pendingClaudeKeychainRetry.set(sessionId, turnId);
-          setTimeout(() => {
-            void (async () => {
-              if (pendingClaudeKeychainRetry.get(sessionId) !== turnId) return;
-              const login = managed.deleted || managed.runtime !== runtime || runtime.busy
-                ? null
-                : await probeClaudeKeychainLogin(sessionConfigHome(managed));
-              // A message sent during the check already took the retry's place.
-              if (pendingClaudeKeychainRetry.get(sessionId) !== turnId) return;
-              if (login === "absent") {
-                // The keychain answered and the login is gone: a real sign-out.
-                pendingClaudeKeychainRetry.delete(sessionId);
-                reportProviderRuntimeAuthFailure("claude", CLAUDE_RUNTIME_AUTH_ERROR);
-                emitChatEvent(managed, { type: "error", message: CLAUDE_RUNTIME_AUTH_ERROR, turnId });
-                return;
-              }
-              if (login !== "present" || managed.runtime !== runtime || runtime.busy) {
-                logger.info("agent_chat.claude_keychain_retry_skipped", { sessionId, turnId, login });
-                settlePendingClaudeKeychainRetry(managed);
-                return;
-              }
-              pendingClaudeKeychainRetry.delete(sessionId);
-              logger.info("agent_chat.claude_keychain_retry", { sessionId, turnId });
-              await runClaudeTurn(managed, {
-                ...args,
-                keychainRetry: true,
-                suppressUserEcho: true,
-                onDispatched: undefined,
-                onBackendDispatched: undefined,
-              });
-            })().catch((retryError) => {
-              logger.warn("agent_chat.claude_keychain_retry_failed", {
-                sessionId,
-                turnId,
-                error: retryError instanceof Error ? retryError.message : String(retryError),
-              });
-              if (!managed.deleted) emitChatEvent(managed, { type: "error", message: CLAUDE_KEYCHAIN_UNREADABLE_ERROR, turnId });
-            });
-          }, CLAUDE_KEYCHAIN_RETRY_DELAY_MS);
+          scheduleClaudeKeychainRetry(managed, runtime, turnId, () => runClaudeTurn(managed, {
+            ...args,
+            keychainRetry: true,
+            suppressUserEcho: true,
+            onDispatched: undefined,
+            onBackendDispatched: undefined,
+          }));
         }
 
         // If resume failed, clear sessionId and the caller can retry fresh
@@ -55253,13 +55265,18 @@ export function createAgentChatService(args: {
         ...(recovery.reconstructedThreadId ? { reconstructedThreadId: recovery.reconstructedThreadId } : {}),
         ...(recovery.supersededBySessionId ? { supersededBySessionId: recovery.supersededBySessionId } : {}),
         ...(autoRecovery ? { autoRecovery } : {}),
+        ...(autoRecovery === "pending" ? { autoRecoveryStartedAt: nowIso() } : {}),
       },
       ...(turnId ? { turnId } : {}),
     });
   };
 
-  /** The original thread each chat already tried to rebuild by itself, so it tries once. */
-  const automaticContinuityRecoveryTried = new Map<string, string>();
+  /**
+   * When each chat last rebuilt a lost thread by itself. A rebuilt thread gets
+   * a new id, so "once per lost thread" alone would let a provider that keeps
+   * losing threads drive an endless run of billed recovery turns.
+   */
+  const automaticContinuityRecoveryAt = new Map<string, number>();
 
   /**
    * A provider thread that is simply gone (the provider says it has no such
@@ -55272,27 +55289,46 @@ export function createAgentChatService(args: {
     if (recovery?.state !== "required" || recovery.reason !== "thread_missing") return false;
     if (managed.session.provider !== "claude" && managed.session.provider !== "codex") return false;
     const sessionId = managed.session.id;
-    const originalKey = recovery.originalThreadId ?? "";
-    if (automaticContinuityRecoveryTried.get(sessionId) === originalKey) return false;
-    automaticContinuityRecoveryTried.set(sessionId, originalKey);
+    const lastTriedAt = automaticContinuityRecoveryAt.get(sessionId);
+    if (lastTriedAt !== undefined && Date.now() - lastTriedAt < CONTINUITY_AUTO_RECOVERY_INTERVAL_MS) return false;
+    automaticContinuityRecoveryAt.set(sessionId, Date.now());
     emitContinuityRecoveryNotice(managed, recovery, turnId, "pending");
+    // Codex reports the lost thread from inside the turn that hit it, and a
+    // recovery refuses to run while a turn is active: wait for it to settle.
+    const turnSettled = () => {
+      const runtime = managed.runtime;
+      if (managed.session.status === "active") return false;
+      if (runtime?.kind === "codex") return !runtime.activeTurnId;
+      if (runtime?.kind === "claude") return !runtime.busy;
+      return true;
+    };
     setTimeout(() => {
       void (async () => {
-        let ok = false;
-        try {
-          ok = (await recoverContinuity({ sessionId, mode: "recover_from_history" })).ok;
-        } catch (error) {
-          logger.warn("agent_chat.continuity_auto_recovery_failed", {
-            sessionId,
-            error: error instanceof Error ? error.message : String(error),
-          });
+        const waitUntil = Date.now() + CONTINUITY_AUTO_RECOVERY_SETTLE_MAX_MS;
+        while (!turnSettled() && !managed.deleted && Date.now() < waitUntil) {
+          await new Promise((resolve) => setTimeout(resolve, 250));
         }
+        if (managed.deleted || !turnSettled()) return false;
+        const ok = (await recoverContinuity({ sessionId, mode: "recover_from_history" })).ok;
         logger.info("agent_chat.continuity_auto_recovery", { sessionId, ok });
+        return ok;
+      })().catch((error) => {
+        logger.warn("agent_chat.continuity_auto_recovery_failed", {
+          sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return false;
+      }).then((ok) => {
         const current = managed.session.continuityRecovery;
-        if (!ok && current?.state === "required") {
+        if (!ok && !managed.deleted && current?.state === "required") {
           emitContinuityRecoveryNotice(managed, current, turnId, "failed");
         }
-      })();
+      }).catch((error) => {
+        logger.warn("agent_chat.continuity_auto_recovery_notice_failed", {
+          sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
     }, 0);
     return true;
   };
@@ -64904,6 +64940,9 @@ export function createAgentChatService(args: {
     const mode = parseAgentChatStopMode(args.mode ?? DEFAULT_AGENT_CHAT_STOP_MODE);
     assertChatRuntimeOwnedHere(args.sessionId, "interrupt");
     visited.add(args.sessionId);
+    // Stop also cancels a keychain retry that is waiting to run.
+    const waitingOnKeychain = managedSessions.get(args.sessionId);
+    if (waitingOnKeychain) settlePendingClaudeKeychainRetry(waitingOnKeychain);
     // Never throws; the sweep is a local scheduler write.
     if (internalOptions.cancelAutoResume) await autoResume.cancelForSession(args.sessionId, "stopped");
     const result = await interruptProviderTurn(
@@ -70759,6 +70798,9 @@ export function createAgentChatService(args: {
       throw new Error("Chat session id is required.");
     }
     warmIdleCompaction.clear(trimmedSessionId);
+    const deletedManaged = managedSessions.get(trimmedSessionId);
+    if (deletedManaged) settlePendingClaudeKeychainRetry(deletedManaged, { silent: true });
+    automaticContinuityRecoveryAt.delete(trimmedSessionId);
     const existing = sessionService.get(trimmedSessionId);
     if (!existing) {
       // Idempotent, for the same reason the mid-flight `if (!current) return`

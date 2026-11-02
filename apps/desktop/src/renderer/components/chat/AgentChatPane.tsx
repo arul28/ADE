@@ -11327,7 +11327,11 @@ export function AgentChatPane({
     window.dispatchEvent(new CustomEvent(CHAT_AUTH_RETRY_REJECTED_EVENT, { detail: { sessionId } }));
   }, []);
 
-  const resendLastUserMessage = useCallback(async (sessionId: string, failedTurnId?: string | null) => {
+  const resendLastUserMessage = useCallback(async (
+    sessionId: string,
+    failedTurnId?: string | null,
+    options?: { afterSignIn?: boolean },
+  ) => {
     if (submitInFlightRef.current) {
       rejectAuthRetry(sessionId);
       return "Another message is already being sent. Wait for it to finish before retrying.";
@@ -11382,9 +11386,11 @@ export function AgentChatPane({
       setBusy(true);
       setError(null);
       touchSession(sessionId);
-      // Send first: the host checks the sign-in itself. Waiting for a forced
-      // re-probe of every agent CLI first left the chat blank for up to half
-      // a minute after "Retry turn". The fresh sign-in state still lands.
+      // After a sign-out the host refuses sends until a forced re-probe clears
+      // it, so the re-login card's retry waits for one. Any other retry sends
+      // first: waiting for a re-probe of every agent CLI left the chat blank
+      // for up to half a minute.
+      if (options?.afterSignIn) await refreshAvailableModels({ force: true });
       try {
         await agentChatApiRef.current.send({ sessionId, text, displayText, ...replayContext }, chatRuntimePinRef.current);
       } catch (sendError) {
@@ -11392,7 +11398,7 @@ export function AgentChatPane({
         rejectAuthRetry(sessionId);
         return "A turn is already active in this thread. Wait for it to finish before retrying.";
       }
-      void refreshAvailableModels({ force: true }).catch(() => {});
+      if (!options?.afterSignIn) void refreshAvailableModels({ force: true }).catch(() => {});
       void refreshSessions().catch(() => {});
       return null;
     } catch (err) {
@@ -11434,7 +11440,7 @@ export function AgentChatPane({
       const detail = (event as CustomEvent<{ sessionId?: string | null }>).detail;
       const sessionId = detail?.sessionId;
       if (typeof sessionId !== "string" || sessionId !== selectedSessionIdRef.current) return;
-      void resendLastUserMessage(sessionId);
+      void resendLastUserMessage(sessionId, null, { afterSignIn: true });
     };
     window.addEventListener(CHAT_RETRY_AUTH_TURN_EVENT, handler);
     return () => window.removeEventListener(CHAT_RETRY_AUTH_TURN_EVENT, handler);

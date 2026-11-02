@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import path from "node:path";
 import { execFileOffThread, offThreadSpawnEnabled } from "./offThreadSpawn";
 import { terminateProcessTree } from "./processExecution";
 import { signalProcessGroup } from "./utils";
@@ -40,10 +41,7 @@ export function runReapedCommand(
       env: options.env ?? process.env,
       timeoutMs: options.timeoutMs,
       maxBuffer,
-    }).then((result) => ({
-      ...result,
-      timedOut: Boolean(result.error && /timed out/.test(result.error.message)),
-    }));
+    }).then((result) => ({ ...result, timedOut: result.timedOut === true }));
   }
   return new Promise((resolve) => {
     let child: ChildProcess;
@@ -137,4 +135,21 @@ export function runReapedCommand(
     child.on("error", (error: Error) => finish(null, error));
     child.on("close", (code: number | null) => finish(failure ? null : code, failure));
   });
+}
+
+/**
+ * {@link runReapedCommand} for callers that want stdout or a thrown error, as
+ * `execFile` gave them: a failed start, a timeout and a non-zero exit all throw.
+ */
+export async function runReapedCommandStdout(
+  command: string,
+  args: readonly string[],
+  options: Parameters<typeof runReapedCommand>[2],
+): Promise<string> {
+  const result = await runReapedCommand(command, args, options);
+  if (result.error) throw result.error;
+  if (result.exitCode !== 0) {
+    throw new Error(result.stderr.trim() || `${path.basename(command)} exited with code ${result.exitCode ?? "unknown"}`);
+  }
+  return result.stdout;
 }

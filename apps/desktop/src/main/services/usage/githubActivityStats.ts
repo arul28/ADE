@@ -15,7 +15,7 @@
  */
 import { isRecord, nowIso, getErrorMessage, safeJsonParse } from "../shared/utils";
 import { localDayKey } from "./localDay";
-import { runReapedCommand } from "../shared/runReapedCommand";
+import { runReapedCommandStdout } from "../shared/runReapedCommand";
 import type { GithubContributionCalendar } from "../../../shared/types";
 
 /**
@@ -113,21 +113,17 @@ export function makeEmptyGithubStats(error: string | null = null, repo: string |
   };
 }
 
-export async function runBufferedCommand(
+export function runBufferedCommand(
   command: string,
   args: string[],
   options: { cwd?: string; timeoutMs?: number; maxOutputBytes?: number } = {},
 ): Promise<string> {
   // Reaped: when the keychain hangs, gh exits but its `security` helper stays.
-  const result = await runReapedCommand(command, args, {
+  return runReapedCommandStdout(command, args, {
     cwd: options.cwd,
     timeoutMs: options.timeoutMs ?? GITHUB_STATS_COMMAND_TIMEOUT_MS,
     maxBuffer: options.maxOutputBytes ?? GITHUB_STATS_MAX_OUTPUT_BYTES,
   });
-  if (result.timedOut) throw new Error(`${command} timed out`);
-  if (result.error) throw result.error;
-  if (result.exitCode === 0) return result.stdout;
-  throw new Error(result.stderr.trim() || `${command} exited with code ${result.exitCode ?? "unknown"}`);
 }
 
 function parseGithubRepoJson(raw: string): string | null {

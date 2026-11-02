@@ -491,11 +491,21 @@ function runCommandAsync(
  */
 const ghAuthFailureBackoff = createFailureBackoff({ baseMs: 30_000, maxMs: 15 * 60_000 });
 let lastGhAuthFailure: GhAuthTokenResult | null = null;
+let lastGhAuthResult: { result: GhAuthTokenResult; at: number } | null = null;
 let ghAuthBackoffSignature: string | null = null;
 
+/** A changed hosts.yml (a gh sign-in or sign-out) ends the wait. */
+function noteGhHostsSignature(signature: string): void {
+  if (signature === ghAuthBackoffSignature) return;
+  ghAuthBackoffSignature = signature;
+  ghAuthFailureBackoff.reset();
+  lastGhAuthResult = null;
+}
+
 function noteGhAuthResult(result: GhAuthTokenResult): GhAuthTokenResult {
+  lastGhAuthResult = { result, at: Date.now() };
   if (result.token) {
-    ghAuthFailureBackoff.recordSuccess();
+    ghAuthFailureBackoff.reset();
     lastGhAuthFailure = null;
   } else {
     ghAuthFailureBackoff.recordFailure();
@@ -512,7 +522,13 @@ function ghAuthToken(): Pick<HeadlessGitHubTokenLookup, "token" | "ghCliPath" | 
   if (hostsToken) {
     return { token: hostsToken, ghCliPath: null, ghAuthError: null };
   }
+  noteGhHostsSignature(readGhHostsFileSignatureSync());
   if (lastGhAuthFailure && !ghAuthFailureBackoff.canAttempt()) return lastGhAuthFailure;
+  // spawnSync cannot reap a helper gh leaves behind (see runReapedCommand), so
+  // a recent answer from the async lookup is reused instead of asking again.
+  if (lastGhAuthResult && Date.now() - lastGhAuthResult.at < GITHUB_CREDENTIAL_CACHE_TTL_MS) {
+    return lastGhAuthResult.result;
+  }
   const ghCliPath = resolveGhCliPath();
   try {
     const result = spawnSync(ghCliPath, ["auth", "token"], {
@@ -562,10 +578,20 @@ async function readGhHostsFileSignatureAsync(): Promise<string> {
   }
 }
 
+function readGhHostsFileSignatureSync(): string {
+  try {
+    const stat = fs.statSync(path.join(ghConfigDir(), "hosts.yml"));
+    return `${stat.mtimeMs}:${stat.size}`;
+  } catch {
+    return "missing";
+  }
+}
+
 /** Drops the shared `gh` lookup, for a forced GitHub status refresh. */
 function clearGhAuthTokenCache(): void {
   ghAuthTokenCache.clear();
   ghAuthFailureBackoff.reset();
+  lastGhAuthResult = null;
 }
 
 async function ghAuthTokenAsync(): Promise<GhAuthTokenResult> {
@@ -573,10 +599,7 @@ async function ghAuthTokenAsync(): Promise<GhAuthTokenResult> {
     return { token: null, ghCliPath: null, ghAuthError: null };
   }
   const signature = await readGhHostsFileSignatureAsync();
-  if (signature !== ghAuthBackoffSignature) {
-    ghAuthBackoffSignature = signature;
-    ghAuthFailureBackoff.reset();
-  }
+  noteGhHostsSignature(signature);
   return await ghAuthTokenCache.read(signature);
 }
 

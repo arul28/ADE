@@ -705,6 +705,8 @@ export type AgentChatNoticeDetail = {
    * `failed` when that did not work and the user has to choose.
    */
   autoRecovery?: "pending" | "failed";
+  /** When a `pending` attempt started; one that never reported back reads as failed. */
+  autoRecoveryStartedAt?: string;
   title?: string;
   summary?: string;
   metrics?: AgentChatNoticeDetailMetric[];

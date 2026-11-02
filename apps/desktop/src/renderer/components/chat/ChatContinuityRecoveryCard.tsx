@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   ArrowClockwise,
   CaretRight,
@@ -12,6 +12,7 @@ import type {
 } from "../../../shared/types";
 import { useAgentChatApi } from "./agentChatApi";
 import { Banner } from "../ui/notice";
+import { QUIET_LINE_ICON_CLASS, QUIET_LINE_TEXT_CLASS } from "./quietLineStyle";
 
 /**
  * Window event the Work surface already listens for to switch the active chat
@@ -22,15 +23,6 @@ const SELECT_SESSION_EVENT = "ade:work:select-session";
 
 type RecoverMode = AgentChatContinuityRecoveryResult["mode"];
 type RecoveryFailureReason = AgentChatContinuityRecoveryResult["reason"];
-
-/**
- * A lost provider thread is ADE's problem, not the user's. ADE rebuilds it
- * from its own copy by itself, so the usual story is two quiet lines:
- * "Reconnecting…", then "Reconnected". The user only sees a choice when that
- * did not work, and then one recommended button.
- */
-const QUIET_LINE_CLASS =
-  "flex min-w-0 max-w-[var(--chat-content-width,52rem)] items-center gap-2 py-1 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-fg/55";
 
 function navigateToSession(sessionId: string, laneId?: string | null): void {
   try {
@@ -54,9 +46,9 @@ function QuietLine({
   testId: string;
 }) {
   return (
-    <div className={QUIET_LINE_CLASS} data-testid={testId}>
+    <div className="flex min-w-0 max-w-[var(--chat-content-width,52rem)] items-center gap-2 py-1 font-sans" data-testid={testId}>
       {icon}
-      <span className="min-w-0">{children}</span>
+      <span className={QUIET_LINE_TEXT_CLASS}>{children}</span>
     </div>
   );
 }
@@ -65,7 +57,7 @@ function ReconnectedLine() {
   return (
     <QuietLine
       testId="continuity-reconnected"
-      icon={<ArrowClockwise size={12} weight="regular" className="shrink-0 text-fg/35" aria-hidden />}
+      icon={<ArrowClockwise size={12} weight="regular" className={QUIET_LINE_ICON_CLASS} aria-hidden />}
     >
       Reconnected
     </QuietLine>
@@ -76,7 +68,7 @@ function ContinuedInNewChatLine({ sessionId, laneId }: { sessionId: string; lane
   return (
     <QuietLine
       testId="continuity-new-chat"
-      icon={<ChatCircleDots size={12} weight="regular" className="shrink-0 text-fg/35" aria-hidden />}
+      icon={<ChatCircleDots size={12} weight="regular" className={QUIET_LINE_ICON_CLASS} aria-hidden />}
     >
       Continued in a new chat{" "}
       <button
@@ -89,6 +81,33 @@ function ContinuedInNewChatLine({ sessionId, laneId }: { sessionId: string; lane
       </button>
     </QuietLine>
   );
+}
+
+/**
+ * How long "Reconnecting…" may show. An attempt that never reported back (ADE
+ * restarted mid-way, or the attempt hung) then offers the choices instead of
+ * spinning forever.
+ */
+const AUTO_RECOVERY_PENDING_MAX_MS = 90_000;
+
+/** Whether ADE's own attempt is still within its time; re-renders when it runs out. */
+function useAutoRecoveryPending(detail: AgentChatNoticeDetail): boolean {
+  const startedAt = detail.autoRecovery === "pending" ? Date.parse(detail.autoRecoveryStartedAt ?? "") : Number.NaN;
+  // A notice written before the start time was recorded gets the full window from now.
+  const deadline = Number.isFinite(startedAt) ? startedAt + AUTO_RECOVERY_PENDING_MAX_MS : null;
+  const [expired, setExpired] = useState(() => deadline !== null && Date.now() >= deadline);
+  useEffect(() => {
+    if (detail.autoRecovery !== "pending") return;
+    const remaining = deadline === null ? AUTO_RECOVERY_PENDING_MAX_MS : deadline - Date.now();
+    if (remaining <= 0) {
+      setExpired(true);
+      return;
+    }
+    setExpired(false);
+    const timer = window.setTimeout(() => setExpired(true), remaining);
+    return () => window.clearTimeout(timer);
+  }, [detail.autoRecovery, deadline]);
+  return detail.autoRecovery === "pending" && !expired;
 }
 
 function failureCopy(reason: RecoveryFailureReason): string {
@@ -104,6 +123,12 @@ function failureCopy(reason: RecoveryFailureReason): string {
   }
 }
 
+/**
+ * A lost provider thread is ADE's problem, not the user's. ADE rebuilds it
+ * from its own copy by itself, so the usual story is two quiet lines:
+ * "Reconnecting…", then "Reconnected". The user only sees a choice when that
+ * did not work, and then one recommended button.
+ */
 export function ChatContinuityRecoveryCard({
   detail,
   sessionId,
@@ -122,6 +147,7 @@ export function ChatContinuityRecoveryCard({
   const [failure, setFailure] = useState<{ reason: RecoveryFailureReason } | null>(null);
   const [result, setResult] = useState<AgentChatContinuityRecoveryResult | null>(null);
   const agentChatApi = useAgentChatApi();
+  const autoRecoveryPending = useAutoRecoveryPending(detail);
 
   const runRecovery = useCallback(
     async (mode: RecoverMode) => {
@@ -160,11 +186,11 @@ export function ChatContinuityRecoveryCard({
   }
 
   // ── ADE is reconnecting by itself ─────────────────────────────────────────
-  if (detail.autoRecovery === "pending") {
+  if (autoRecoveryPending) {
     return (
       <QuietLine
         testId="continuity-reconnecting"
-        icon={<CircleNotch size={12} weight="bold" className="shrink-0 animate-spin text-fg/35" aria-hidden />}
+        icon={<CircleNotch size={12} weight="bold" className={`${QUIET_LINE_ICON_CLASS} animate-spin`} aria-hidden />}
       >
         Reconnecting…
       </QuietLine>

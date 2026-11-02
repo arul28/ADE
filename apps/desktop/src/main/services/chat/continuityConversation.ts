@@ -9,15 +9,15 @@ import type { AgentChatEvent, AgentChatEventEnvelope } from "../../../shared/typ
  * a replacement thread forgot decisions and repeated work.
  *
  * When the whole conversation does not fit `budgetBytes`, the first user
- * message (the task) is kept and the newest entries fill the rest, with one
- * line saying how many earlier entries were left out.
+ * message (the task) and the latest one are kept, the newest entries fill the
+ * rest, and one line marks each run of entries that was left out.
  */
 
 const TOOL_ARGS_MAX_CHARS = 240;
 const TOOL_OUTPUT_MAX_CHARS = 320;
 
 /** `dialogue` is what was said; `work` is a tool step, kept only as room allows. */
-type Entry = { text: string; kind: "dialogue" | "work" };
+type Entry = { text: string; kind: "dialogue" | "work"; fromUser?: boolean };
 
 function clip(value: string, maxChars: number): string {
   const flat = value.replace(/\s+/g, " ").trim();
@@ -89,7 +89,12 @@ function conversationEntries(envelopes: readonly AgentChatEventEnvelope[]): Entr
       const text = userMessageText(event);
       if (!text) continue;
       flushReply();
-      entries.push({ text: isAdeAuthored(event) ? `ADE (on the user's behalf):\n${text}` : `User:\n${text}`, kind: "dialogue" });
+      const adeAuthored = isAdeAuthored(event);
+      entries.push({
+        text: adeAuthored ? `ADE (on the user's behalf):\n${text}` : `User:\n${text}`,
+        kind: "dialogue",
+        fromUser: !adeAuthored,
+      });
       continue;
     }
     if (event.type === "tool_call") {
@@ -142,27 +147,24 @@ export function formatContinuityConversation(
   // Room for the "left out" marker lines between kept entries.
   let used = 16 * 1024;
 
-  // What was said comes first. If even that is too much, keep the task (the
-  // first user message) and the newest of the rest.
-  const firstUser = entries.findIndex((entry) => entry.text.startsWith("User:"));
-  if (firstUser >= 0) {
-    keep[firstUser] = true;
-    used += size(entries[firstUser]!);
-  }
-  for (let index = entries.length - 1; index >= 0; index -= 1) {
-    const entry = entries[index]!;
-    if (keep[index] || entry.kind !== "dialogue") continue;
-    if (used + size(entry) > budgetBytes) break;
+  // The task (the first user message) and the user's latest message, which
+  // the rebuilt thread is told to answer, are always kept.
+  const userIndexes = entries.flatMap((entry, index) => (entry.fromUser ? [index] : []));
+  for (const index of [userIndexes[0] ?? -1, userIndexes.at(-1) ?? -1]) {
+    if (index < 0 || keep[index]) continue;
     keep[index] = true;
-    used += size(entry);
+    used += size(entries[index]!);
   }
-  // Tool steps fill what is left, newest first.
-  for (let index = entries.length - 1; index >= 0; index -= 1) {
-    const entry = entries[index]!;
-    if (keep[index] || entry.kind !== "work") continue;
-    if (used + size(entry) > budgetBytes) break;
-    keep[index] = true;
-    used += size(entry);
+  // Then what was said, then tool steps, each newest first. An entry too big
+  // for what is left is skipped, so one huge paste does not cost the rest.
+  for (const kind of ["dialogue", "work"] as const) {
+    for (let index = entries.length - 1; index >= 0; index -= 1) {
+      const entry = entries[index]!;
+      if (keep[index] || entry.kind !== kind) continue;
+      if (used + size(entry) > budgetBytes) continue;
+      keep[index] = true;
+      used += size(entry);
+    }
   }
 
   const parts: string[] = [];

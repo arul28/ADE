@@ -105,8 +105,8 @@ import {
 } from "./githubCredentialHealth";
 
 import { nowIso, asString } from "../shared/utils";
-import { runReapedCommand } from "../shared/runReapedCommand";
-import { createFailureBackoff } from "../../../shared/failureBackoff";
+import { runReapedCommandStdout } from "../shared/runReapedCommand";
+import { createFailureBackoff, type FailureBackoff } from "../../../shared/failureBackoff";
 import {
   GITHUB_REST_ISSUE_PR_LIST_MAX_PAGES,
   collectGithubRestPages,
@@ -176,7 +176,9 @@ type ProcessGithubAuthState = {
   statusInFlight: Map<string, Promise<SharedGithubStatusProbeResult>>;
   credentialInventoryRevision: number;
   /** Spaces out `gh auth token` while it keeps failing; see readGhAuthToken. */
-  authFailureBackoff: ReturnType<typeof createFailureBackoff>;
+  authFailureBackoff: FailureBackoff;
+  /** gh's hosts.yml (size and mtime) when the cached failure was recorded. */
+  authFailureHostsSignature: string | null;
 };
 
 const processGithubAuthStates = new WeakMap<GitHubCliAuthProvider, ProcessGithubAuthState>();
@@ -202,6 +204,7 @@ function processGithubAuthState(provider: GitHubCliAuthProvider): ProcessGithubA
     statusInFlight: new Map(),
     credentialInventoryRevision: 0,
     authFailureBackoff: createFailureBackoff({ baseMs: GH_AUTH_TOKEN_CACHE_TTL_MS, maxMs: 15 * 60_000 }),
+    authFailureHostsSignature: null,
   };
   processGithubAuthStates.set(provider, created);
   return created;
@@ -274,6 +277,16 @@ class GithubCredentialAttemptError extends Error {
  * gh binary). This is the only auth path that works reliably in headless
  * contexts (the launchd brain) where spawning gh has proven fragile.
  */
+/** Size and mtime of gh's hosts.yml, which `gh auth login` and `logout` rewrite. */
+async function ghHostsFileSignature(env: NodeJS.ProcessEnv = process.env): Promise<string> {
+  try {
+    const stat = await fs.promises.stat(path.join(ghConfigDir(env), "hosts.yml"));
+    return `${stat.size}:${stat.mtimeMs}`;
+  } catch {
+    return "missing";
+  }
+}
+
 function readGhHostsFileToken(env: NodeJS.ProcessEnv = process.env): string | null {
   const hostsPath = path.join(ghConfigDir(env), "hosts.yml");
   const cached = processGhHostsTokenCache.get(hostsPath);
@@ -329,7 +342,7 @@ async function readGitHubCliAuthToken(): Promise<GitHubCliAuthResult> {
 
   try {
     // Reaped: when the keychain hangs, gh exits but its `security` helper stays.
-    const result = await runReapedCommand(resolved.path, ["auth", "token"], {
+    const stdout = await runReapedCommandStdout(resolved.path, ["auth", "token"], {
       timeoutMs: 5_000,
       maxBuffer: 256 * 1024,
       env: {
@@ -337,11 +350,7 @@ async function readGitHubCliAuthToken(): Promise<GitHubCliAuthResult> {
         PATH: mergePathEntries(process.env.PATH, path.dirname(resolved.path)),
       },
     });
-    if (result.error) throw result.error;
-    if (result.exitCode !== 0) {
-      throw new Error(result.stderr.trim() || `gh auth token exited with code ${result.exitCode ?? "unknown"}`);
-    }
-    const token = result.stdout.trim();
+    const token = stdout.trim();
     if (token.length > 0) {
       return { token, ghCliPath: resolved.path, ghAuthError: null };
     }
@@ -921,6 +930,16 @@ export function createGithubService({
       sharedGhAuth.authCache = null;
       return { token: null, ghCliPath: null, ghAuthError: null };
     }
+    // A cached failure lasts up to 15 min; signing in or out of gh ends it.
+    if (
+      sharedGhAuth.authCache
+      && !sharedGhAuth.authCache.token
+      && sharedGhAuth.authFailureHostsSignature !== null
+      && (await ghHostsFileSignature()) !== sharedGhAuth.authFailureHostsSignature
+    ) {
+      sharedGhAuth.authCache = null;
+      sharedGhAuth.authFailureBackoff.reset();
+    }
     const now = Date.now();
     if (sharedGhAuth.authCache && sharedGhAuth.authCache.expiresAt > now) {
       return {
@@ -937,8 +956,13 @@ export function createGithubService({
       // A failure that repeats (a locked keychain, a signed-out gh) is kept
       // for longer each time instead of being retried every 30 s.
       let ttlMs = GH_AUTH_TOKEN_CACHE_TTL_MS;
-      if (result.token) sharedGhAuth.authFailureBackoff.recordSuccess();
-      else if (result.ghCliPath) ttlMs = sharedGhAuth.authFailureBackoff.recordFailure();
+      sharedGhAuth.authFailureHostsSignature = null;
+      if (result.token) {
+        sharedGhAuth.authFailureBackoff.reset();
+      } else if (result.ghCliPath) {
+        ttlMs = sharedGhAuth.authFailureBackoff.recordFailure();
+        sharedGhAuth.authFailureHostsSignature = await ghHostsFileSignature();
+      }
       sharedGhAuth.authCache = { ...result, expiresAt: Date.now() + ttlMs };
       return result;
     } finally {
@@ -2273,16 +2297,11 @@ export function createGithubService({
     runGh: async (ghArgs, options) => {
       const resolved = resolveExecutableFromKnownLocations("gh");
       if (!resolved?.path) throw new Error("GitHub CLI was not found. Install gh, or remove the pictures.");
-      const result = await runReapedCommand(resolved.path, ghArgs, {
+      return await runReapedCommandStdout(resolved.path, ghArgs, {
         cwd: options.cwd,
         timeoutMs: options.timeoutMs,
         maxBuffer: 1024 * 1024,
       });
-      if (result.error) throw result.error;
-      if (result.exitCode !== 0) {
-        throw new Error(result.stderr.trim() || `gh exited with code ${result.exitCode ?? "unknown"}`);
-      }
-      return result.stdout;
     },
   });
   const readAppIssueGrant = issueOps.readAppIssueGrant;
