@@ -123,6 +123,7 @@ import {
 import { ModelChipSegmentMenu } from "./ModelChipSegmentMenu";
 import { ComposerModelHintChip } from "./ComposerModelHintChip";
 import { useComposerModelHint } from "./useComposerModelHint";
+import { registerQuickSlotComposer, unregisterQuickSlotComposer } from "../../quickSlots/composerTarget";
 import { formatModelMentionToken, parseModelMentionToken, parseModelMentions } from "../../../shared/modelMentions";
 import {
   activeTurnDispatchModes,
@@ -148,7 +149,7 @@ import { ensureRuntimeCatalogDescriptors, resolveModelDescriptorWithRuntimeCatal
 import { fetchSharedRuntimeCatalog } from "../shared/ModelPicker/sharedCatalogFetch";
 import { getSharedRuntimeCatalog } from "../shared/ModelPicker/runtimeCatalogCache";
 import { DEFAULT_RUNTIME_CATALOG_SCOPE } from "../shared/ModelPicker/runtimeCatalogCache";
-import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
+import { ReasoningEffortPicker, resolveDisplayedReasoningEffort } from "../shared/ModelPicker/ReasoningEffortPicker";
 import {
   addUltrathinkKeyword,
   hasUltrathinkKeyword,
@@ -2345,6 +2346,7 @@ function AgentChatComposerImpl({
   effortSelectionLocked,
   modelPickerOpenRequestKey,
   onModelPickerOpenRequestHandled,
+  onOpenModelPickerRequest,
   permissionModeLocked = false,
   hideNativeControls = false,
   hideModelControls = false,
@@ -2406,6 +2408,7 @@ function AgentChatComposerImpl({
   launchPromptClipboardNoticeEnabled = true,
   onOpenLaunchPromptClipboardSettings,
   sessionId,
+  sessionLaneId = null,
   parallelChatMode = false,
   onParallelChatModeChange,
   parallelModelSlots = [],
@@ -2602,18 +2605,22 @@ function AgentChatComposerImpl({
   effortSelectionLocked?: boolean;
   modelPickerOpenRequestKey?: number;
   onModelPickerOpenRequestHandled?: () => void;
+  /** Open the model picker from outside the control (a quick slot). */
+  onOpenModelPickerRequest?: () => void;
   permissionModeLocked?: boolean;
   hideNativeControls?: boolean;
   /** Hide model, reasoning, and fast-mode controls when the host surface owns them. */
   hideModelControls?: boolean;
   messagePlaceholder?: string;
   inputLockMessage?: string | null;
+  /** The lane this chat runs in. Lane quick slots follow it, not the sidebar. */
+  sessionLaneId?: string | null;
   /**
    * `options` is the picker's own selection shape: fast mode, a Cursor Cloud
    * service tier, and — when the row came from the harnesses tab or from a
    * stored key's declared models — the brain that row names.
    */
-  onModelChange: (modelId: string, options?: ModelPickerSelection) => void;
+  onModelChange: (modelId: string, options?: ModelPickerSelection) => boolean | void;
   onReasoningEffortChange: (reasoningEffort: string | null) => void;
   onFastModeChange?: (enabled: boolean, tier?: FastTier) => void;
   /** Codex Daybreak for this chat (or draft): see `shared/codexDaybreak.ts`. */
@@ -6206,6 +6213,258 @@ function AgentChatComposerImpl({
     parallelModelSlots,
     withoutPlanning,
   ]);
+
+  // ── Quick slot target ────────────────────────────────────────────────────
+  // The dispatcher is not a React component, so the active composer publishes
+  // one stable target. Every function reads the latest values through the ref
+  // below; re-registering on every keystroke would be pointless churn, and a
+  // target that closed over one render would set a model from two renders ago.
+  const quickSlotTargetId = useId();
+  const quickSlotStateRef = useRef({
+    sessionId: sessionId ?? null,
+    laneId: sessionLaneId,
+    provider: sp,
+    modelId,
+    reasoningEffort,
+    fastMode,
+    fastModeSupported,
+    turnActive,
+    modelSelectionLocked,
+    permissionModeLocked,
+    catalogScopeKey: modelCatalogScopeKey,
+    onModelChange,
+    onReasoningEffortChange,
+    onFastModeChange,
+    onOpenModelPickerRequest,
+    onInterrupt,
+    interactionMode,
+    claudePermissionMode,
+    opencodePermissionMode,
+    droidPermissionMode,
+    copilotPermissionMode,
+    onCopilotPermissionModeChange,
+    musePermissionMode,
+    cursorModeSnapshot,
+    onCursorModeChange,
+    onClaudeModeChange,
+    onInteractionModeChange,
+    onOpenCodePermissionModeChange,
+    onDroidPermissionModeChange,
+    onMusePermissionModeChange,
+    codexPreset,
+    applyCodexPreset,
+  });
+  quickSlotStateRef.current = {
+    sessionId: sessionId ?? null,
+    laneId: sessionLaneId,
+    provider: sp,
+    modelId,
+    reasoningEffort,
+    fastMode,
+    fastModeSupported,
+    turnActive,
+    modelSelectionLocked,
+    permissionModeLocked,
+    catalogScopeKey: modelCatalogScopeKey,
+    onModelChange,
+    onReasoningEffortChange,
+    onFastModeChange,
+    onOpenModelPickerRequest,
+    onInterrupt,
+    interactionMode,
+    claudePermissionMode,
+    opencodePermissionMode,
+    droidPermissionMode,
+    copilotPermissionMode,
+    onCopilotPermissionModeChange,
+    musePermissionMode,
+    cursorModeSnapshot,
+    onCursorModeChange,
+    onClaudeModeChange,
+    onInteractionModeChange,
+    onOpenCodePermissionModeChange,
+    onDroidPermissionModeChange,
+    onMusePermissionModeChange,
+    codexPreset,
+    applyCodexPreset,
+  };
+  useEffect(() => {
+    if (!isActive) return undefined;
+    registerQuickSlotComposer({
+      id: quickSlotTargetId,
+      anchorElement: () => {
+        const editor = richEditorRef.current;
+        const textarea = textareaRef.current;
+        return editor?.closest<HTMLElement>("[data-chat-composer-dock]")
+          ?? textarea?.closest<HTMLElement>("[data-chat-composer-dock]")
+          ?? editor?.closest<HTMLElement>("[data-chat-composer-wrapper]")
+          ?? textarea?.closest<HTMLElement>("[data-chat-composer-wrapper]")
+          ?? null;
+      },
+      hasCaret: () => {
+        const active = document.activeElement;
+        return Boolean(
+          active
+          && (richEditorRef.current?.contains(active) || active === textareaRef.current),
+        );
+      },
+      focus: () => focusComposerInputRef.current(),
+      insertText: (text) => insertDictatedTextRef.current(text),
+      getSnapshot: () => {
+        const current = quickSlotStateRef.current;
+        const provider = current.provider;
+        const permission = provider === "claude"
+          ? (current.interactionMode === "plan" ? "plan" : current.claudePermissionMode ?? "default")
+          : provider === "codex"
+            ? current.codexPreset
+            : provider === "copilot"
+              ? current.copilotPermissionMode
+              : provider === "droid"
+                ? current.droidPermissionMode ?? "auto-low"
+                : provider === "muse"
+                  ? (current.interactionMode === "plan" ? "plan" : current.musePermissionMode ?? "onRequest")
+                  : provider === "cursor"
+                    ? current.cursorModeSnapshot?.currentModeId ?? null
+                    : current.opencodePermissionMode ?? "edit";
+        return {
+          sessionId: current.sessionId,
+          laneId: current.laneId,
+          provider,
+          modelId: current.modelId || null,
+          reasoningEffort: current.reasoningEffort,
+          permission,
+          fastMode: current.fastMode,
+          fastModeSupported: current.fastModeSupported,
+          turnActive: current.turnActive,
+          modelLocked: current.modelSelectionLocked || current.turnActive,
+          permissionLocked: current.permissionModeLocked,
+        };
+      },
+      setModel: (modelIdToApply) => {
+        const current = quickSlotStateRef.current;
+        if (current.modelSelectionLocked || current.turnActive) return false;
+        const result = current.onModelChange(modelIdToApply);
+        return result !== false;
+      },
+      setReasoningEffort: (effort) => {
+        quickSlotStateRef.current.onReasoningEffortChange(effort);
+      },
+      cycleReasoningEffort: () => {
+        const current = quickSlotStateRef.current;
+        const descriptor = resolveModelDescriptorWithRuntimeCatalog(
+          current.modelId,
+          current.catalogScopeKey,
+        );
+        const tiers = descriptor?.reasoningTiers ?? [];
+        if (!tiers.length) return null;
+        const displayed = resolveDisplayedReasoningEffort({
+          tiers,
+          explicitEffort: current.reasoningEffort,
+          rememberedForFamily: null,
+          modelDefault: descriptor?.defaultReasoningEffort ?? null,
+        });
+        const index = displayed ? tiers.indexOf(displayed) : -1;
+        const next = tiers[Math.min(tiers.length - 1, index < 0 ? 0 : index + 1)] ?? null;
+        if (next === displayed) return { from: displayed, to: displayed };
+        current.onReasoningEffortChange(next);
+        return { from: displayed, to: next };
+      },
+      cyclePermission: () => {
+        const current = quickSlotStateRef.current;
+        const provider = current.provider;
+        const clampNext = (options: readonly string[], value: string | null): string => {
+          const index = value ? options.indexOf(value) : -1;
+          return options[Math.min(options.length - 1, index < 0 ? 0 : index + 1)] ?? options[0]!;
+        };
+        if (provider === "claude") {
+          const options = ["default", "auto", "acceptEdits", "bypassPermissions"] as const;
+          const from = current.interactionMode === "plan" ? "plan" : current.claudePermissionMode ?? "default";
+          const to = from === "plan" ? "default" : clampNext(options, from);
+          if (to === from) return { from, to };
+          if (to === "default" && from === "plan") {
+            current.onClaudeModeChange?.("default");
+          } else {
+            current.onClaudeModeChange?.(to as "default" | "auto" | "acceptEdits" | "bypassPermissions");
+          }
+          return { from, to };
+        }
+        if (provider === "opencode") {
+          const options = ["plan", "edit", "full-auto", "config-toml"] as const;
+          const from = current.opencodePermissionMode ?? "edit";
+          const to = clampNext(options, from);
+          if (to === from) return { from, to };
+          current.onOpenCodePermissionModeChange?.(to as typeof options[number]);
+          return { from, to };
+        }
+        if (provider === "droid") {
+          const options = DROID_PERMISSION_OPTIONS.map((option) => option.value);
+          const from = current.droidPermissionMode ?? "auto-low";
+          const to = clampNext(options, from);
+          if (to === from) return { from, to };
+          current.onDroidPermissionModeChange?.(to as typeof options[number]);
+          return { from, to };
+        }
+        if (provider === "copilot") {
+          const options = ["plan", "ask", "assisted", "auto-edit", "full-auto"] as const;
+          const from = current.copilotPermissionMode ?? "ask";
+          const to = clampNext(options, from);
+          if (to === from) return { from, to };
+          current.onCopilotPermissionModeChange?.(to as typeof options[number]);
+          return { from, to };
+        }
+        if (provider === "muse") {
+          const options = ["plan", "promptUnmatched", "onRequest", "allowAll"] as const;
+          const from = current.interactionMode === "plan" ? "plan" : current.musePermissionMode ?? "onRequest";
+          const to = from === "plan" ? "promptUnmatched" : clampNext(options, from);
+          if (to === from) return { from, to };
+          if (to === "plan") current.onMusePermissionModeChange?.("denyUnmatched", "plan");
+          else current.onMusePermissionModeChange?.(to as "promptUnmatched" | "onRequest" | "allowAll", "default");
+          return { from, to };
+        }
+        if (provider === "codex") {
+          const options = ["default", "edit", "plan", "full-auto"] as const;
+          const from = current.codexPreset;
+          const to = clampNext(options, from);
+          if (to === from) return { from, to };
+          current.applyCodexPreset(to as typeof options[number]);
+          return { from, to };
+        }
+        if (provider === "cursor") {
+          const modeOption = resolveCursorModeOption(current.cursorModeSnapshot);
+          const values = modeOption?.options?.map((option) => option.value)
+            ?? current.cursorModeSnapshot?.availableModeIds
+            ?? [];
+          if (!values.length) return null;
+          const rawCurrent = modeOption?.currentValue;
+          const from = (typeof rawCurrent === "string" ? rawCurrent.trim() : "")
+            || current.cursorModeSnapshot?.currentModeId
+            || values[0]!;
+          const to = clampNext(values, from);
+          if (to === from) return { from, to };
+          current.onCursorModeChange?.(to);
+          return { from, to };
+        }
+        return null;
+      },
+      toggleFast: () => {
+        const current = quickSlotStateRef.current;
+        if (!current.fastModeSupported || !current.onFastModeChange || current.modelSelectionLocked) {
+          return false;
+        }
+        current.onFastModeChange(!current.fastMode);
+        return true;
+      },
+      openModelPicker: () => {
+        quickSlotStateRef.current.onOpenModelPickerRequest?.();
+      },
+      stopTurn: () => {
+        quickSlotStateRef.current.onInterrupt("stop_and_clear");
+      },
+    });
+    return () => unregisterQuickSlotComposer(quickSlotTargetId);
+    // The target reads every changing value through `quickSlotStateRef`; only
+    // "is this composer on screen" decides whether it is registered.
+  }, [isActive, quickSlotTargetId]);
 
   // Clean composer: no provider-tinted glow border (that produced the bright
   // "highlighted" outline).

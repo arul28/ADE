@@ -179,6 +179,7 @@ export function ChatSection() {
 
             <LaunchPromptSection />
 
+
             {noProject ? (
               <ProjectSettingsNotice
                 group="Agent behavior"
