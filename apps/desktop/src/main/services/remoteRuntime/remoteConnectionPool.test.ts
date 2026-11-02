@@ -263,7 +263,7 @@ describe("RemoteConnectionPool", () => {
     const dispose = vi.fn();
     bootstrapPairedRuntimeMock.mockResolvedValueOnce({
       client,
-      transport: { connection: { endpoint: "ws://studio.local:8787/" } },
+      transport: { connection: { endpoint: "ws://studio.local:8787/", onEnvelope: () => () => {} } },
       portForwardClient: { ensureForward, dispose },
       result: {
         ...connectResult("1.0.0"),
@@ -298,6 +298,40 @@ describe("RemoteConnectionPool", () => {
     expect(dispose).toHaveBeenCalledWith(false);
   });
 
+  it("reports a paired machine's folder wait live, including the all-clear for a wait its handshake showed", async () => {
+    let deliver: (envelope: { type: string; payload: unknown }) => void = () => {};
+    const waitAtConnect = { path: "/Volumes/Dev/Projects/ADE", reason: "not_answering" as const, since: 1, platform: "darwin" };
+    bootstrapPairedRuntimeMock.mockResolvedValueOnce({
+      client: createClient(),
+      transport: {
+        connection: {
+          endpoint: "ws://studio.local:8787/",
+          onEnvelope: (listener: typeof deliver) => {
+            deliver = listener;
+            return () => {};
+          },
+        },
+      },
+      portForwardClient: { ensureForward: vi.fn(), dispose: vi.fn() },
+      result: { ...connectResult("1.0.0"), target: pairedTarget, hostStorageWait: waitAtConnect },
+    });
+    const pool = new RemoteConnectionPool({} as RemoteTargetRegistry, "1.0.0");
+    const heard: Array<{ targetId: string; wait: { path: string; reason: string } | null }> = [];
+    pool.onHostStorageWait((targetId, wait) => heard.push({ targetId, wait }));
+    await pool.connect(pairedTarget);
+
+    // The same wait again is not news; the all-clear for the handshake's wait is.
+    deliver({ type: "host_health", payload: { storageWait: { path: waitAtConnect.path, reason: "not_answering", sinceAgoMs: 5 } } });
+    deliver({ type: "host_health", payload: { storageWait: null } });
+    deliver({ type: "brain_status", payload: { storageWait: { path: "/x", reason: "denied", sinceAgoMs: 0 } } });
+    deliver({ type: "host_health", payload: { storageWait: { path: "/Volumes/Dev/Projects/ADE", reason: "denied", sinceAgoMs: 0, platform: "darwin" } } });
+
+    expect(heard.map((entry) => entry.targetId)).toEqual([pairedTarget.id, pairedTarget.id]);
+    expect(heard[0]!.wait).toBeNull();
+    expect(heard[1]!.wait).toMatchObject({ path: "/Volumes/Dev/Projects/ADE", reason: "denied" });
+    await pool.disconnect(pairedTarget.id);
+  });
+
   it("forwards a loopback stream port through a paired relay connection", async () => {
     // Mac Desktop's live view hands back an `http://127.0.0.1:<port>` URL on
     // the machine that owns the display. A paired target reached over the
@@ -318,7 +352,7 @@ describe("RemoteConnectionPool", () => {
     const dispose = vi.fn();
     bootstrapPairedRuntimeMock.mockResolvedValueOnce({
       client,
-      transport: { connection: { endpoint: "wss://relay.example/connect/machine-1" } },
+      transport: { connection: { endpoint: "wss://relay.example/connect/machine-1", onEnvelope: () => () => {} } },
       portForwardClient: { ensureForward, dispose },
       relayAccountOwnerUserId: "account-a",
       result: {
@@ -368,7 +402,7 @@ describe("RemoteConnectionPool", () => {
     bootstrapPairedRuntimeMock
       .mockResolvedValueOnce({
         client: relayClient,
-        transport: { connection: { endpoint: "wss://relay.example/connect/machine-1" } },
+        transport: { connection: { endpoint: "wss://relay.example/connect/machine-1", onEnvelope: () => () => {} } },
         portForwardClient: { ensureForward: vi.fn(), dispose: relayDispose },
         relayAccountOwnerUserId: "account-a",
         result: {
@@ -383,7 +417,7 @@ describe("RemoteConnectionPool", () => {
       })
       .mockResolvedValueOnce({
         client: directClient,
-        transport: { connection: { endpoint: "ws://studio.local:8787/" } },
+        transport: { connection: { endpoint: "ws://studio.local:8787/", onEnvelope: () => () => {} } },
         portForwardClient: { ensureForward: vi.fn(), dispose: directDispose },
         relayAccountOwnerUserId: null,
         result: {
@@ -433,7 +467,7 @@ describe("RemoteConnectionPool", () => {
     const dispose = vi.fn();
     bootstrapPairedRuntimeMock.mockResolvedValueOnce({
       client,
-      transport: { connection: { endpoint: "ws://studio.local:8787/" } },
+      transport: { connection: { endpoint: "ws://studio.local:8787/", onEnvelope: () => () => {} } },
       portForwardClient: { ensureForward: vi.fn(), dispose },
       result: {
         ...connectResult("1.0.0"),

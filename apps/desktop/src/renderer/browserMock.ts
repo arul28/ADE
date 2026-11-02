@@ -6061,6 +6061,17 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           connectedAt: Date.now(),
           // The Studio froze just before this reconnect (from its hello).
           hostStall: { durationMs: 12_400, endedAt: Date.now() - 2 * 60_000, loadAverage1m: 21.3, cpuCount: 8 },
+          // ?mockStorageWait: a project folder there waits on a macOS permission prompt.
+          ...(browserMockFlag("mockStorageWait")
+            ? {
+              hostStorageWait: {
+                path: "/Volumes/Dev/Projects/ADE",
+                reason: "not_answering" as const,
+                since: Date.now() - 20_000,
+                platform: "darwin",
+              },
+            }
+            : {}),
         }, {
           target: {
             id: "mock-windows",

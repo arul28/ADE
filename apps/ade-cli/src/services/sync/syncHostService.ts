@@ -1,5 +1,9 @@
 import { REMOTE_PROJECT_ICON_UPLOAD_MAX_BYTES } from "../../../../desktop/src/shared/projectIcons";
 import { readRecentHostStall } from "../runtime/hostStallRecord";
+import {
+  onProjectRootStorageWaitChange,
+  readProjectRootStorageWait,
+} from "../projects/projectRootAccessMonitor";
 import type { ChatLaunchService } from "../../../../desktop/src/main/services/chat/chatLaunchService";
 import { isClaudePluginUiOnlyMetaEvent } from "../../../../desktop/src/shared/claudePluginUi";
 import { isThreadCommentsOnlyMetaEvent } from "../../../../desktop/src/shared/threadComments";
@@ -50,6 +54,7 @@ import type {
   PtyExitEvent,
   PersonalChatScopeContract,
   SyncBrainStatusPayload,
+  SyncHostHealth,
   SyncApplicationCompressionCodec,
   SyncChangesetAckPayload,
   SyncChangesetBatchPayload,
@@ -1809,6 +1814,7 @@ export function buildSyncHostHelloOkPayload(args: {
   ];
   const mobileCompatibility = evaluateMobileSyncCompatibility(supportedActions);
   const recentHostStall = readRecentHostStall();
+  const storageWait = readProjectRootStorageWait();
   const actionsDigest = syncCommandRoutingDigest(actions);
   const actionsUnchanged = typeof args.knownCommandRoutingDigest === "string"
     && args.knownCommandRoutingDigest === actionsDigest;
@@ -1855,7 +1861,14 @@ export function buildSyncHostHelloOkPayload(args: {
     ...(args.projectHost ? { projectHost: args.projectHost } : {}),
     // Only while there is something to say: a device that reconnects after
     // this machine froze learns why instead of blaming its network.
-    ...(recentHostStall ? { hostHealth: { lastStall: recentHostStall } } : {}),
+    ...(recentHostStall || storageWait
+      ? {
+        hostHealth: {
+          ...(recentHostStall ? { lastStall: recentHostStall } : {}),
+          ...(storageWait ? { storageWait } : {}),
+        },
+      }
+      : {}),
     features: {
       fileAccess: true,
       terminalStreaming: true,
@@ -5860,6 +5873,18 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       cloudRelayWssUrl,
     };
   }
+
+  // A project folder that stops (or starts) answering is news to every device
+  // at once. Its own message, read from no database: the folder that stopped
+  // answering may hold this host's project, and then a status build fails.
+  const stopStorageWaitListener = onProjectRootStorageWaitChange(() => {
+    if (disposed) return;
+    const payload: SyncHostHealth = { storageWait: readProjectRootStorageWait() };
+    for (const peer of peers) {
+      if (!peer.authenticated || peer.ws.readyState !== WebSocket.OPEN) continue;
+      send(peer.ws, "host_health", payload);
+    }
+  });
 
   function broadcastBrainStatus(): void {
     if (disposed) return;
@@ -10137,6 +10162,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     async dispose(): Promise<void> {
       if (disposed) return;
       disposed = true;
+      stopStorageWaitListener();
       // Never dispose a shared listener's registry: it outlives this host and
       // still serves the next project's uploads.
       if (ownsAttachmentUploadRegistry) attachmentUploads.dispose();

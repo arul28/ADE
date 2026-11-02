@@ -1,5 +1,6 @@
 import type {
   SyncHostStall,
+  SyncHostStorageWait,
   SyncRouteHealth,
 } from "./types/sync";
 
@@ -47,7 +48,7 @@ export type HostStallSummary = {
  * honest answer is only that ADE there was too busy to answer.
  */
 export function describeHostStall(
-  stall: Pick<SyncHostStall, "durationMs" | "loadAverage1m" | "cpuCount" | "restarted"> & { agoMs?: number },
+  stall: Pick<SyncHostStall, "durationMs" | "loadAverage1m" | "cpuCount" | "restarted" | "blockedPath"> & { agoMs?: number },
   machineName: string | null | undefined,
 ): HostStallSummary {
   const machine = machineLabel(machineName);
@@ -55,7 +56,9 @@ export function describeHostStall(
   if (stall.restarted) {
     return {
       title: `${machine} froze${when}`,
-      detail: `ADE there stopped responding for ${formatSeconds(stall.durationMs)} and restarted itself.`,
+      detail: stall.blockedPath
+        ? `ADE there waited ${formatSeconds(stall.durationMs)} to read ${stall.blockedPath} and restarted itself. macOS may have been asking for permission on its screen.`
+        : `ADE there stopped responding for ${formatSeconds(stall.durationMs)} and restarted itself.`,
     };
   }
   const load = stall.loadAverage1m;
@@ -69,6 +72,70 @@ export function describeHostStall(
   };
 }
 
+export type HostStorageWaitSummary = {
+  /** "Studio is waiting for permission" */
+  title: string;
+  /** What is happening there and what to do, in one or two sentences. */
+  detail: string;
+};
+
+/**
+ * Explain a project folder on a machine that stopped answering.
+ *
+ * On a Mac this is almost always the system asking, on that Mac's screen,
+ * whether ADE may use a drive or folder; nobody at another device can see
+ * that prompt, so the notice has to say where to look. Elsewhere it is a drive
+ * (usually a network one) that stopped responding.
+ */
+export function describeHostStorageWait(
+  wait: Pick<SyncHostStorageWait, "path" | "reason" | "platform">,
+  machineName: string | null | undefined,
+): HostStorageWaitSummary {
+  const machine = machineLabel(machineName);
+  const screen = machine === "This computer" ? "this computer's" : `${machine}'s`;
+  const onMac = wait.platform === "darwin";
+  if (wait.reason === "denied") {
+    return {
+      title: `${machine} can't read ${wait.path}`,
+      detail: onMac
+        ? `ADE isn't allowed to use it. On ${machine}, allow ADE in System Settings › Privacy & Security › Files and Folders.`
+        : `ADE there isn't allowed to read it. Check the folder's permissions on ${machine}.`,
+    };
+  }
+  if (onMac) {
+    return {
+      title: `${machine} is waiting for permission`,
+      detail: `macOS is asking on ${screen} screen whether ADE may use ${wait.path}. Click Allow there. If no prompt is showing, the drive is not responding.`,
+    };
+  }
+  return {
+    title: `${wait.path} on ${machine} is not responding`,
+    detail: "The drive it is on may be disconnected or asleep. ADE keeps working and reads it again once it answers.",
+  };
+}
+
+/**
+ * The folder wait a host reported in its handshake or status, pinned to this
+ * computer's clock. Tolerates older hosts (no field) and malformed values.
+ */
+export function hostStorageWaitFromHealth(
+  health: { storageWait?: SyncHostStorageWait | null } | null | undefined,
+  nowMs: number,
+): { path: string; reason: SyncHostStorageWait["reason"]; since: number; platform?: string } | null {
+  const wait = health?.storageWait;
+  if (!wait || typeof wait !== "object") return null;
+  const sinceAgoMs = Number(wait.sinceAgoMs);
+  if (typeof wait.path !== "string" || !wait.path.trim()) return null;
+  if (wait.reason !== "not_answering" && wait.reason !== "denied") return null;
+  if (!Number.isFinite(sinceAgoMs) || sinceAgoMs < 0) return null;
+  return {
+    path: wait.path,
+    reason: wait.reason,
+    since: nowMs - sinceAgoMs,
+    ...(typeof wait.platform === "string" ? { platform: wait.platform } : {}),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Host self-check: can other devices reach this computer?
 // ---------------------------------------------------------------------------
@@ -79,7 +146,8 @@ export type HostReachabilityCheckId =
   | "tailnet"
   | "exit_node"
   | "account"
-  | "freeze";
+  | "freeze"
+  | "storage";
 
 export type HostReachabilityCheck = {
   id: HostReachabilityCheckId;
@@ -116,6 +184,8 @@ export type HostReachabilityFacts = {
     exitNodeName: string | null;
   } | null;
   lastStall: SyncHostStall | null;
+  /** A project folder on this computer that is not answering right now. */
+  storageWait?: SyncHostStorageWait | null;
   machineName?: string | null;
 };
 
@@ -325,6 +395,17 @@ export function diagnoseHostReachability(
     });
   }
 
+  if (facts.storageWait) {
+    const wait = describeHostStorageWait(facts.storageWait, "This computer");
+    checks.push({
+      id: "storage",
+      label: "Project folders",
+      state: "warning",
+      detail: `${wait.title}. ${wait.detail}`,
+      fix: "ADE keeps serving everything else; that folder's projects wait until it answers.",
+    });
+  }
+
   const byId = new Map(checks.map((check) => [check.id, check]));
   const listener = byId.get("listener");
   const relay = byId.get("relay");
@@ -417,6 +498,7 @@ export function hostStallFromHello(
   loadAverage1m?: number;
   cpuCount?: number;
   restarted?: boolean;
+  blockedPath?: string;
 } | null {
   const stall = hello?.hostHealth?.lastStall;
   if (!stall || typeof stall !== "object") return null;
@@ -431,5 +513,6 @@ export function hostStallFromHello(
     ...(Number.isFinite(load) && load > 0 ? { loadAverage1m: load } : {}),
     ...(Number.isInteger(cores) && cores > 0 ? { cpuCount: cores } : {}),
     ...(stall.restarted === true ? { restarted: true } : {}),
+    ...(typeof stall.blockedPath === "string" && stall.blockedPath ? { blockedPath: stall.blockedPath } : {}),
   };
 }

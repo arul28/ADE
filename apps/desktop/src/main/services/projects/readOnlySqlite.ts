@@ -1,6 +1,7 @@
 import { createRequire } from "node:module";
 import path from "node:path";
 import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
+import { assertStorageAnswering } from "../state/unansweringRoots";
 
 type DatabaseSyncConstructor = new (
   dbPath: string,
@@ -33,6 +34,9 @@ export function loadNodeSqlite(): NodeSqlite {
 
 /** Open `dbPath` read-only. Throws when the file cannot be opened. */
 export function openReadOnlyDatabase(dbPath: string): DatabaseSyncType {
+  // A native open: under a folder waiting on a permission prompt it would
+  // freeze the calling thread, and no `fs` guard sees it.
+  assertStorageAnswering(dbPath);
   const { DatabaseSync } = loadNodeSqlite();
   return new DatabaseSync(dbPath, { readOnly: true });
 }

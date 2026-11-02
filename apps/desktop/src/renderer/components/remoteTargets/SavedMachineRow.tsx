@@ -21,7 +21,7 @@ import {
   outlineButton,
 } from "../lanes/laneDesignTokens";
 import { ConnectionDoctorPanel } from "./ConnectionDoctorPanel";
-import { HostStallNote } from "./HostStallNote";
+import { HostStallNote, HostStorageWaitNote } from "./HostStallNote";
 import { ConnectionRouteDetails } from "./ConnectionRouteDetails";
 import { HostKeyTrustCard } from "./HostKeyTrustCard";
 import { MachineAvatar, PresenceDot, VersionChip, machineFormFactor, machinePlatform } from "./MachineIdentity";
@@ -436,6 +436,11 @@ export function SavedMachineRow({
             ))}
           </div>
         ) : null}
+
+        <HostStorageWaitNote
+          wait={status?.hostStorageWait}
+          machineName={target.name?.trim() || target.hostname}
+        />
 
         <HostStallNote
           stall={status?.hostStall}

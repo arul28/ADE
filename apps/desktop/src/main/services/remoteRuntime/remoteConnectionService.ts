@@ -348,8 +348,15 @@ export class RemoteConnectionService {
         compatibilityWarnings: result.compatibilityWarnings,
         // A clean reconnect clears an older freeze; a fresh one replaces it.
         hostStall: result.hostStall ?? null,
+        hostStorageWait: result.hostStorageWait ?? null,
         connectedAt: result.target.lastConnectedAt ?? Date.now(),
       });
+    });
+    // A project folder there stopped (or started again) answering while the
+    // connection stayed up: the machine row says so at once.
+    this.pool.onHostStorageWait((targetId, wait) => {
+      if (!this.registry.get(targetId)) return;
+      this.mergeStatus(targetId, { hostStorageWait: wait });
     });
     this.pool.onEntryEvicted((targetId, error) => {
       const current = this.statusById.get(targetId);
@@ -830,6 +837,8 @@ export class RemoteConnectionService {
           lastAttemptedAt: status.lastAttemptedAt ?? null,
           connectedAt: status.connectedAt ?? target.lastConnectedAt,
           ...(status.hostStall ? { hostStall: status.hostStall } : {}),
+          // Live state, so only while connected: an old wait must not linger on a dropped machine.
+          ...(status.hostStorageWait && status.state === "connected" ? { hostStorageWait: status.hostStorageWait } : {}),
           reconnectBlocked: this.isManuallyDisconnected(target) ? "disconnected" : null,
         };
       });
@@ -935,6 +944,7 @@ export class RemoteConnectionService {
         capabilities: connectedResult.capabilities,
         compatibilityWarnings: connectedResult.compatibilityWarnings,
         hostStall: connectedResult.hostStall ?? null,
+        hostStorageWait: connectedResult.hostStorageWait ?? null,
         projects: connectedResult.projects,
         connectedAt: connectedResult.target.lastConnectedAt ?? Date.now(),
         lastAttemptedAt: Date.now(),

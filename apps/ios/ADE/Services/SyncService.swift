@@ -4266,6 +4266,10 @@ final class SyncService: ObservableObject {
   /// The machine froze shortly before this connection (from its hello). A
   /// clean reconnect clears it.
   @Published private(set) var hostStallNotice: SyncHostStallNotice?
+  /// A project folder on the machine is not answering (on a Mac, usually a
+  /// permission prompt on its screen). Set from the hello and kept live by
+  /// `host_health`; nil when every folder answers.
+  @Published private(set) var hostStorageWaitNotice: SyncHostStorageWaitNotice?
   @Published private(set) var prefersReducedSyncLoad = false
   @Published private(set) var terminalBufferRevision = 0
   @Published private(set) var subscribedTerminalSessionIds: Set<String> = []
@@ -21644,6 +21648,10 @@ final class SyncService: ObservableObject {
       machineName: remoteHostName ?? activeHostProfile?.hostName,
       now: Date()
     )
+    hostStorageWaitNotice = parseSyncHostStorageWaitNotice(
+      payload["hostHealth"],
+      machineName: remoteHostName ?? activeHostProfile?.hostName
+    )
     publishConnectTimingMetrics(
       connectedHost: connectedHost,
       hostTransport: payload["connectionTransport"] as? String,
@@ -22127,6 +22135,7 @@ final class SyncService: ObservableObject {
           profile.hostName = brain["deviceName"] as? String
           profile.lastHostDeviceId = brain["deviceId"] as? String
         }
+
         if let peer = (dict["connectedPeers"] as? [[String: Any]])?.first(where: { $0["deviceId"] as? String == deviceId }) {
           let latencyMs = (peer["latencyMs"] as? NSNumber)?.intValue
           let syncLag = (peer["syncLag"] as? NSNumber)?.intValue
@@ -22373,6 +22382,15 @@ final class SyncService: ObservableObject {
       if let envelope = try? decode(payload, as: ChatLaunchEventEnvelope.self) {
         applyChatLaunchEventEnvelope(envelope)
       }
+    case "host_health":
+      // The machine's project folder stopped (or started again) answering
+      // while the phone stayed connected. Carries the whole state: no
+      // `storageWait` clears the notice.
+      let wait = parseSyncHostStorageWaitNotice(
+        payload,
+        machineName: hostName ?? activeHostProfile?.hostName
+      )
+      if wait != hostStorageWaitNotice { hostStorageWaitNotice = wait }
     default:
       break
     }

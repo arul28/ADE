@@ -24,8 +24,8 @@ import type {
   SyncTerminalInputAckPayload,
   SyncTerminalSnapshotPayload,
 } from "../../../shared/types/sync";
-import { hostStallFromHello } from "../../../shared/connectionDiagnosis";
-import { announceHostStall } from "../../lib/hostStallToast";
+import { hostStallFromHello, hostStorageWaitFromHealth } from "../../../shared/connectionDiagnosis";
+import { announceHostStall, announceHostStorageWait } from "../../lib/hostStallToast";
 import type { AdeAccountMachine } from "../../../shared/types/account";
 import type { ChatLaunchEvent } from "../../../shared/types/chatLaunch";
 import { LANE_GIT_WRITE_ACTION_TIMEOUT_MS } from "../../../main/services/git/gitTimeouts";
@@ -293,6 +293,8 @@ export class AdeSyncClient {
   private clientGeneration = 0;
   private restorationPromise: Promise<void> | null = null;
   private lastTransportState: SyncConnectionStatus["state"] = "idle";
+  /** The host this connection reached, for naming it in a live `host_health` notice. */
+  private hostIdentity: { deviceId?: string; deviceName?: string } | null = null;
   private relayAccess: WebRelayAccess = SIGNED_OUT_RELAY_ACCESS;
   private readonly pendingCommands = new Map<string, PendingCommand>();
   private readonly pendingFiles = new Map<string, PendingRequest<unknown>>();
@@ -369,11 +371,18 @@ export class AdeSyncClient {
     });
     this.connection.on("envelope", (envelope) => this.handleEnvelope(envelope));
     this.connection.on("helloOk", (payload) => {
+      this.hostIdentity = { deviceId: payload.brain?.deviceId, deviceName: payload.brain?.deviceName };
       applyProjectHostHello(payload.projectHost ?? null, this);
       // The host froze just before this reconnect: say so, or the drop reads
       // as this browser's network.
       announceHostStall({
         stall: hostStallFromHello(payload, Date.now()),
+        machineKey: payload.brain?.deviceId,
+        machineName: payload.brain?.deviceName,
+      });
+      // A project folder there is waiting on a permission prompt: say where.
+      announceHostStorageWait({
+        wait: hostStorageWaitFromHealth(payload.hostHealth, Date.now()),
         machineKey: payload.brain?.deviceId,
         machineName: payload.brain?.deviceName,
       });
@@ -389,7 +398,18 @@ export class AdeSyncClient {
         { closeCode: code, reason },
       ), { preserveTerminalInputs: true });
     });
-    this.connection.on("brainStatus", (payload) => this.emit("brainStatus", payload));
+    this.connection.on("brainStatus", (payload) => {
+      this.hostIdentity = { deviceId: payload.brain?.deviceId, deviceName: payload.brain?.deviceName };
+      this.emit("brainStatus", payload);
+    });
+    // Live: a folder there stops answering while this browser stays connected.
+    this.connection.on("hostHealth", (payload) => {
+      announceHostStorageWait({
+        wait: hostStorageWaitFromHealth(payload, Date.now()),
+        machineKey: this.hostIdentity?.deviceId,
+        machineName: this.hostIdentity?.deviceName,
+      });
+    });
     this.connection.on("tablesChanged", (tables) => this.emit("tablesChanged", tables));
     this.connection.on("projectCatalog", (payload) => {
       this.currentCatalog = payload;

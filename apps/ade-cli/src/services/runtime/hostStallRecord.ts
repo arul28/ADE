@@ -24,6 +24,7 @@ type RecordedStall = {
   loadAverage1m: number | null;
   cpuCount: number | null;
   restarted: boolean;
+  blockedPath: string | null;
 };
 
 let lastStall: RecordedStall | null = null;
@@ -55,6 +56,8 @@ export function recordHostStall(args: {
   endedAtMs?: number;
   /** The watchdog killed the brain and this is the restarted one. */
   restarted?: boolean;
+  /** The folder a synchronous file call was waiting on, when that was the freeze. */
+  blockedPath?: string | null;
 }): void {
   const durationMs = Math.round(args.durationMs);
   if (!Number.isFinite(durationMs) || durationMs < HOST_STALL_REPORT_MIN_MS) return;
@@ -68,6 +71,7 @@ export function recordHostStall(args: {
     loadAverage1m: restarted ? null : loadAverage1m(),
     cpuCount: cpuCount(),
     restarted,
+    blockedPath: args.blockedPath?.trim() || null,
   };
 }
 
@@ -83,5 +87,6 @@ export function readRecentHostStall(nowMs = Date.now()): SyncHostStall | null {
     ...(stall.loadAverage1m != null ? { loadAverage1m: stall.loadAverage1m } : {}),
     ...(stall.cpuCount != null ? { cpuCount: stall.cpuCount } : {}),
     ...(stall.restarted ? { restarted: true } : {}),
+    ...(stall.blockedPath ? { blockedPath: stall.blockedPath } : {}),
   };
 }

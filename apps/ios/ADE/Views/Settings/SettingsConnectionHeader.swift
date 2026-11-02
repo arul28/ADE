@@ -200,9 +200,12 @@ func parseSyncHostStallNotice(_ hostHealth: Any?, machineName: String?, now: Dat
   let duration = seconds < 90 ? "\(seconds)s" : "\(Int((Double(seconds) / 60).rounded())) min"
   let endedAt = now.addingTimeInterval(-agoMs / 1000)
   if (stall["restarted"] as? Bool) == true {
+    let blockedPath = syncTrimmedMachineName(stall["blockedPath"] as? String)
     return SyncHostStallNotice(
       title: "\(machine) froze",
-      detail: "ADE there stopped responding for \(duration) and restarted itself.",
+      detail: blockedPath.map {
+        "ADE there waited \(duration) to read \($0) and restarted itself. macOS may have been asking for permission on its screen."
+      } ?? "ADE there stopped responding for \(duration) and restarted itself.",
       endedAt: endedAt
     )
   }
@@ -215,6 +218,48 @@ func parseSyncHostStallNotice(_ hostHealth: Any?, machineName: String?, now: Dat
     detail = "ADE on \(machine) was too busy to answer."
   }
   return SyncHostStallNotice(title: "\(machine) froze for \(duration)", detail: detail, endedAt: endedAt)
+}
+
+/// A project folder on the machine that stopped answering, live while the
+/// phone stays connected: "Studio is waiting for permission. macOS is asking on
+/// Studio's screen whether ADE may use /Volumes/Dev/Projects/ADE. Click Allow
+/// there." Mirrors the desktop's `describeHostStorageWait`
+/// (shared/connectionDiagnosis.ts).
+struct SyncHostStorageWaitNotice: Equatable {
+  let title: String
+  let detail: String
+
+  var message: String { "\(title). \(detail)" }
+}
+
+func parseSyncHostStorageWaitNotice(_ hostHealth: Any?, machineName: String?) -> SyncHostStorageWaitNotice? {
+  guard let health = hostHealth as? [String: Any],
+        let wait = health["storageWait"] as? [String: Any],
+        let path = syncTrimmedMachineName(wait["path"] as? String),
+        let reason = wait["reason"] as? String,
+        reason == "not_answering" || reason == "denied" else {
+    return nil
+  }
+  let machine = syncTrimmedMachineName(machineName) ?? "That computer"
+  let onMac = (wait["platform"] as? String) == "darwin"
+  if reason == "denied" {
+    return SyncHostStorageWaitNotice(
+      title: "\(machine) can\u{2019}t read \(path)",
+      detail: onMac
+        ? "ADE isn\u{2019}t allowed to use it. On \(machine), allow ADE in System Settings \u{203A} Privacy & Security \u{203A} Files and Folders."
+        : "ADE there isn\u{2019}t allowed to read it. Check the folder\u{2019}s permissions on \(machine)."
+    )
+  }
+  if onMac {
+    return SyncHostStorageWaitNotice(
+      title: "\(machine) is waiting for permission",
+      detail: "macOS is asking on \(machine)\u{2019}s screen whether ADE may use \(path). Click Allow there. If no prompt is showing, the drive is not responding."
+    )
+  }
+  return SyncHostStorageWaitNotice(
+    title: "\(path) on \(machine) is not responding",
+    detail: "The drive it is on may be disconnected or asleep. ADE keeps working and reads it again once it answers."
+  )
 }
 
 struct SettingsConnectionHeader: View {
@@ -335,6 +380,12 @@ struct SettingsConnectionHeader: View {
 
       if let compatibilityMessage {
         ADESettingsNotice(message: compatibilityMessage, tone: .warn)
+      }
+
+      if health.transport.isConnected,
+         outcome == .standard,
+         let wait = snapshot.hostStorageWaitNotice {
+        ADESettingsNotice(message: wait.message, tone: .warn)
       }
 
       if health.transport.isConnected,

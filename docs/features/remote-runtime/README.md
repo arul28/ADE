@@ -1477,7 +1477,24 @@ machine's connection status (`hostStall`, a note under the row for 10
 minutes) and shows one toast per freeze; the web client toasts it from its
 hello; iOS shows it on the Connection card. "Its CPU is overloaded (load 21 on
 8 cores)" when load exceeds the cores, otherwise "ADE there was too busy to
-answer". Older hosts omit the field and nothing changes. The web client's close
+answer". A restart that ended a wait on a file call names the folder
+(`lastStall.blockedPath`): "ADE there waited 42s to read /Volumes/Dev/… and
+restarted itself. macOS may have been asking for permission on its screen."
+
+While a project folder there is not answering (see
+[A folder waiting on a permission prompt](../storage-and-recovery/README.md#a-folder-waiting-on-a-permission-prompt)),
+`hello_ok` carries `hostHealth.storageWait` (path, `not_answering` or
+`denied`, an age, the host's platform), and the host pushes a `host_health`
+envelope to every connected device when it starts and ends. That envelope reads
+no database, so it still goes out when the waiting folder holds the host's own
+project; the handshake does read the host project's database, so a device that
+connects while that folder waits may not get through. The desktop keeps it on
+the machine's connection status (`hostStorageWait`, a note under the row while
+connected) and toasts it once; the web client toasts it; iOS shows it on the
+Connection card. "Studio is waiting for permission. macOS is asking on Studio's
+screen whether ADE may use /Volumes/Dev/Projects/ADE. Click Allow there."
+(`describeHostStorageWait`). The host's own self-check lists it as a "Project
+folders" row. Older clients ignore the envelope. The web client's close
 messages name the cause too: 4501 says the computer is not connected to the
 relay, and a socket that went stale after working says the computer stopped
 responding (overloaded, asleep or off the network).

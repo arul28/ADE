@@ -7,6 +7,7 @@ import type {
   RemoteRuntimeActionResult,
   RemoteRuntimeBufferedEvent,
   RemoteRuntimeConnectResult,
+  RemoteRuntimeHostStorageWait,
   RemoteRuntimePortForward,
   RemoteRuntimePortForwardRequest,
   RemoteRuntimeMachineProjectCapability,
@@ -22,6 +23,8 @@ import {
 } from "../../../shared/types/remoteRuntime";
 
 import type { AdeActionRegistryEntry } from "../../../shared/types/automations";
+import type { SyncHostHealth } from "../../../shared/types/sync";
+import { hostStorageWaitFromHealth } from "../../../shared/connectionDiagnosis";
 import {
   isRemoteRuntimeConnectionError,
   isRuntimeTransportTimeoutError,
@@ -505,6 +508,9 @@ export class RemoteConnectionPool {
   private readonly connectedListeners = new Set<
     (targetId: string, result: RemoteRuntimeConnectResult) => void
   >();
+  private readonly hostStorageWaitListeners = new Set<
+    (targetId: string, wait: RemoteRuntimeHostStorageWait | null) => void
+  >();
   private readonly portForwardInvalidationListeners = new Set<
     (targetId: string) => void
   >();
@@ -537,6 +543,18 @@ export class RemoteConnectionPool {
     this.connectedListeners.add(listener);
     return () => {
       this.connectedListeners.delete(listener);
+    };
+  }
+
+  /**
+   * A paired machine's live word on its project folders: set when one stops
+   * answering (a permission prompt on its screen), null when they all answer.
+   * Read from its `host_health` pushes, so it arrives while the connection stays up.
+   */
+  onHostStorageWait(listener: (targetId: string, wait: RemoteRuntimeHostStorageWait | null) => void): () => void {
+    this.hostStorageWaitListeners.add(listener);
+    return () => {
+      this.hostStorageWaitListeners.delete(listener);
     };
   }
 
@@ -1530,6 +1548,28 @@ export class RemoteConnectionPool {
     };
 
     entry.client.onDisconnect((error) => evict(entry.transport === "paired", true, error));
+    if (entry.transport === "paired") {
+      // The host pushes its health when it changes; an older host never does.
+      // Seeded from the handshake, which already showed any wait, so the push
+      // that clears it is not taken for "no change".
+      const waitKey = (wait: RemoteRuntimeHostStorageWait | null | undefined): string | null =>
+        wait ? `${wait.reason}:${wait.path}` : null;
+      let lastWaitKey = waitKey(entry.result.hostStorageWait);
+      entry.pairedTransport.connection.onEnvelope((envelope) => {
+        if (cleanedUp || envelope.type !== "host_health") return;
+        const wait = hostStorageWaitFromHealth(envelope.payload as SyncHostHealth | null, Date.now());
+        const key = waitKey(wait);
+        if (key === lastWaitKey) return;
+        lastWaitKey = key;
+        for (const listener of [...this.hostStorageWaitListeners]) {
+          try {
+            listener(targetId, wait);
+          } catch {
+            // Lifecycle notifications are best-effort.
+          }
+        }
+      });
+    }
     if (entry.transport === "ssh") {
       entry.ssh.once("close", () => evict(true));
       entry.ssh.once("error", (error) => evict(true, true, error instanceof Error ? error : new Error(String(error))));

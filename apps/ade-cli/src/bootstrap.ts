@@ -1,5 +1,10 @@
 import { assertLocalProjectDataAvailable, recordLocalProjectDatabaseIdentity } from "./services/projects/projectRegistry";
 import { assertProjectRootReadable } from "./services/projects/projectRootAccess";
+import {
+  reportProjectRootNotAnswering,
+  unwatchProjectRoot,
+  watchProjectRoot,
+} from "./services/projects/projectRootAccessMonitor";
 import { setSentryUserResolver } from "../../desktop/src/shared/sentry/eventFilter";
 import type { CrossMachineHandoffTransport } from "../../desktop/src/main/services/chat/crossMachineHandoffOrchestrator";
 import fs from "node:fs";
@@ -974,7 +979,16 @@ export async function createAdeRuntime(args: {
   // Before the first read inside the folder: everything below reads it
   // synchronously, and one macOS holds behind a permission prompt must fail
   // here, off the event loop. Existence checks above only stat it.
-  await assertProjectRootReadable(projectRoot);
+  try {
+    await assertProjectRootReadable(projectRoot);
+  } catch (error) {
+    // Devices are told why this project is missing, and the folder is watched
+    // until it answers; the retry that opens it then finds it readable.
+    if ((error as { timedOut?: unknown }).timedOut === true) {
+      reportProjectRootNotAnswering(projectRoot, "project_open");
+    }
+    throw error;
+  }
   assertLocalProjectDataAvailable(projectRoot);
   const hadAdeDb = fs.existsSync(path.join(projectRoot, ".ade", "ade.db"));
   // On Windows each project's credential store is sealed with its own DPAPI
@@ -1099,6 +1113,11 @@ export async function createAdeRuntime(args: {
     }
     db.close();
   });
+  // A running brain reads this folder synchronously from timers. Watching it
+  // off the loop is what turns a permission prompt into a notice and a fast
+  // failure instead of a frozen brain.
+  watchProjectRoot(projectRoot);
+  teardown.push(() => unwatchProjectRoot(projectRoot));
   // Reads the `let` at drain time, so it clears whatever timer the reconcile
   // scheduler last armed. Both shutdown paths drain this stack, so the timer
   // cannot be forgotten on one of them.

@@ -610,6 +610,8 @@ import {
   startBrainLoopWatchdog,
 } from "./services/runtime/brainLoopWatchdog";
 import { recordHostStall } from "./services/runtime/hostStallRecord";
+import { installSyncFsCallTracker, isStallCapablePath } from "./services/runtime/syncFsCallTracker";
+import { StorageNotAnsweringError } from "../../desktop/src/main/services/state/unansweringRoots";
 import type { BrainMemoryRestartGuard } from "./services/runtime/brainMemoryRestart";
 import {
   BRAIN_HEARTBEAT_STALE_MS,
@@ -23779,6 +23781,16 @@ function installRuntimeProcessErrorBoundary(label: string): () => void {
     }
   };
   const onUncaughtException = (error: Error): void => {
+    // A synchronous file call under a folder that is waiting on a permission
+    // prompt (or a hung drive) fails fast instead of freezing the brain. A
+    // timer that did not expect a throw must not turn that into an exit: the
+    // restarted brain would walk back into the wait, and the loop is what the
+    // fast failure exists to stop. The throw happened before the call did
+    // anything, so carrying on is as safe as a caught error.
+    if (error instanceof StorageNotAnsweringError) {
+      write("storage wait", error);
+      return;
+    }
     write("fatal uncaught exception", error);
     // Sentry captured this already (its handler runs first); give the report
     // a moment to leave before the process does.
@@ -27185,6 +27197,12 @@ async function runServe(
   // child process froze it, which is most of the near misses that use no CPU.
   const { installSlowSyncSpawnMonitor } = await import("./services/runtime/slowSyncSpawnMonitor");
   installSlowSyncSpawnMonitor({ warn: (event, meta) => headlessProjectLogger.warn(event, meta) });
+  // And this names the synchronous file call, path and caller, that the main
+  // thread is stuck in, for the watchdog to read while it is stuck. Installed
+  // before the watchdog starts, which hands the tracker's memory to its worker.
+  installSyncFsCallTracker({ warn: (event, meta) => headlessProjectLogger.warn(event, meta) });
+  const projectRootAccessMonitor = await import("./services/projects/projectRootAccessMonitor");
+  projectRootAccessMonitor.configureProjectRootAccessMonitor({ logger: headlessProjectLogger });
   stopBrainLoopWatchdog = startBrainLoopWatchdog({
     runtimeDir: layout.runtimeDir,
     socketPath,
@@ -27198,7 +27216,32 @@ async function runServe(
         durationMs: breadcrumb.blockedMs,
         endedAtMs: Date.parse(breadcrumb.ts),
         restarted: true,
+        blockedPath: breadcrumb.blockedFsCall?.path ?? null,
       });
+      // The last brain died waiting on a file call. If that was a folder
+      // macOS holds behind a prompt, this brain must not walk into the same
+      // wait: the folder fails fast until a listing off the loop answers.
+      const blockedFsCall = breadcrumb.blockedFsCall;
+      if (blockedFsCall && isStallCapablePath(blockedFsCall.path)) {
+        // The stored paths as written, read as plain JSON: `ProjectRegistry`
+        // resolves each folder on disk, which is the very wait this avoids.
+        let knownRoots: string[] = [];
+        try {
+          const stored = JSON.parse(fs.readFileSync(layout.projectsPath, "utf8")) as { projects?: unknown };
+          knownRoots = (Array.isArray(stored.projects) ? stored.projects : [])
+            .map((record) => (record as { rootPath?: unknown } | null)?.rootPath)
+            .filter((rootPath): rootPath is string => typeof rootPath === "string" && rootPath.length > 0);
+        } catch {
+          // Without the list, the drive itself is marked; still no second wait.
+        }
+        const root = projectRootAccessMonitor.projectRootForPath(blockedFsCall.path, knownRoots);
+        projectRootAccessMonitor.reportProjectRootNotAnswering(root, "previous_brain_wedge", {
+          method: blockedFsCall.method,
+          path: blockedFsCall.path,
+          caller: blockedFsCall.caller,
+          blockedMs: blockedFsCall.blockedMs,
+        });
+      }
       brainProductAnalytics.captureInternal({
         event: "ade_brain_recovered",
         surface: "api",

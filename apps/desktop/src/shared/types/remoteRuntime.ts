@@ -130,6 +130,19 @@ export type RemoteRuntimeConnectResult = {
   projects: RemoteRuntimeProjectRecord[];
   /** The machine froze shortly before this connect (from its handshake). */
   hostStall?: RemoteRuntimeHostStall | null;
+  /** A project folder on the machine was not answering at connect (from its handshake). */
+  hostStorageWait?: RemoteRuntimeHostStorageWait | null;
+};
+
+/**
+ * A project folder on the machine that stopped answering (on macOS, usually a
+ * permission prompt on its screen). `since` is this computer's clock.
+ */
+export type RemoteRuntimeHostStorageWait = {
+  path: string;
+  reason: "not_answering" | "denied";
+  since: number;
+  platform?: string;
 };
 
 /**
@@ -142,6 +155,8 @@ export type RemoteRuntimeHostStall = {
   loadAverage1m?: number;
   cpuCount?: number;
   restarted?: boolean;
+  /** The folder a file call was waiting on, when that was the freeze. */
+  blockedPath?: string;
 };
 
 export type RemoteRuntimePortForwardRequest = {
@@ -325,6 +340,8 @@ export type RemoteRuntimeConnectionStatus = {
   connectedAt: number | null;
   /** See `RemoteRuntimeConnectResult.hostStall`. Cleared by a clean reconnect. */
   hostStall?: RemoteRuntimeHostStall | null;
+  /** Live: set and cleared by the machine's status pushes while connected. */
+  hostStorageWait?: RemoteRuntimeHostStorageWait | null;
   /**
    * `disconnected` when the person disconnected this machine, or another ADE
    * on this computer took the connection. Calls to it are refused until

@@ -7,6 +7,7 @@ import {
   BRAIN_LOOP_WATCHDOG_HEARTBEAT_MS,
   buildBrainLoopWatchdogWorkerSource,
 } from "./brainLoopWatchdogWorker";
+import { SYNC_FS_TRACKED_METHODS, syncFsCallBuffer } from "./syncFsCallTracker";
 
 export {
   BRAIN_LOOP_WATCHDOG_HEARTBEAT_MS,
@@ -53,10 +54,20 @@ export type BrainLoopWatchdogDiagnostics = {
   };
 };
 
+/** The synchronous file call the main thread was stuck in, from the sync-fs tracker. */
+export type BrainLoopBlockedFsCall = {
+  method: string;
+  path: string;
+  /** The calling functions, innermost first; null when the path could not stall. */
+  caller: string | null;
+  blockedMs: number;
+};
+
 export type BrainLoopWatchdogBreadcrumb = {
   lastCommand: string;
   blockedMs: number;
   ts: string;
+  blockedFsCall?: BrainLoopBlockedFsCall;
   thresholdMs?: number;
   diagnostics?: BrainLoopWatchdogDiagnostics;
   diagnosticReportPath?: string | null;
@@ -415,6 +426,15 @@ function readBreadcrumb(filePath: string): BrainLoopWatchdogBreadcrumb | null {
     if (typeof parsed.nativeSamplePath === "string" || parsed.nativeSamplePath === null) {
       breadcrumb.nativeSamplePath = parsed.nativeSamplePath;
     }
+    const fsCall = parsed.blockedFsCall;
+    if (fsCall && typeof fsCall === "object" && typeof fsCall.path === "string" && typeof fsCall.method === "string") {
+      breadcrumb.blockedFsCall = {
+        method: fsCall.method,
+        path: fsCall.path,
+        caller: typeof fsCall.caller === "string" ? fsCall.caller : null,
+        blockedMs: Number.isFinite(fsCall.blockedMs) ? Math.max(0, Math.floor(fsCall.blockedMs)) : 0,
+      };
+    }
     return breadcrumb;
   } catch {
     return null;
@@ -624,6 +644,9 @@ export function startBrainLoopWatchdog(args: {
         // Symbol loading plus the 2 s of sampling took ~8 s on a Node process, so
         // 12 s leaves room; past this the brain is killed whether or not the sample is done.
         sampleTimeoutMs: 12_000,
+        // Shared with the sync-fs tracker, when the brain installed it.
+        syncFsBuffer: syncFsCallBuffer(),
+        syncFsMethods: [...SYNC_FS_TRACKED_METHODS],
       },
     });
   } catch (error) {

@@ -26,11 +26,11 @@ const PROJECT_ROOT_READ_TIMEOUT_MS = 15_000;
  */
 export async function assertProjectRootReadable(projectRoot: string): Promise<void> {
   if (process.platform !== "darwin") return;
+  let timedOut = false;
   const failure = await new Promise<string | null>((resolve) => {
     // The listing itself is discarded: only whether it finishes matters.
     const child = spawn("/bin/ls", ["-a", projectRoot], { stdio: ["ignore", "ignore", "pipe"] });
     let stderr = "";
-    let timedOut = false;
     const timer = setTimeout(() => {
       timedOut = true;
       child.kill("SIGKILL");
@@ -50,8 +50,11 @@ export async function assertProjectRootReadable(projectRoot: string): Promise<vo
     });
   });
   if (!failure) return;
-  throw codedError(
+  const error = codedError(
     `ADE can't read ${projectRoot} on this Mac (${failure}). If macOS is asking on this Mac's screen whether ADE may use this drive or folder, allow it; if the drive is not responding, reconnect it. The project opens once it can be read.`,
     "storage_read_failed",
   );
+  // A listing left waiting (a prompt, a hung drive), not refused.
+  if (timedOut) Object.assign(error, { timedOut: true });
+  throw error;
 }

@@ -7,6 +7,7 @@ import {
 } from "../../../../desktop/src/shared/connectionDiagnosis";
 import type { SyncRoleSnapshot } from "../../../../desktop/src/shared/types/sync";
 import { readRecentHostStall } from "../runtime/hostStallRecord";
+import { readProjectRootStorageWait } from "../projects/projectRootAccessMonitor";
 import { resolveTailscaleCliPath } from "./resolveTailscaleCliPath";
 
 const TAILSCALE_STATUS_TIMEOUT_MS = 4_000;
@@ -95,6 +96,7 @@ export async function checkHostReachability(args: {
     relaySelfProbe,
     tailscale,
     lastStall: readRecentHostStall(),
+    storageWait: readProjectRootStorageWait(),
     machineName: status.localDevice?.name ?? null,
   });
 }
