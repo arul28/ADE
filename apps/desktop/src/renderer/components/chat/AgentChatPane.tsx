@@ -1266,6 +1266,19 @@ function LiveChatMessageList({
  * rung fails does the message list get a latched, user-visible retry.
  */
 const OLDER_HISTORY_RETRY_DELAYS_MS = [800, 2_400];
+/** At most one full re-read per chat this often to find a lost paging position. */
+const OLDER_HISTORY_CURSOR_RECOVERY_INTERVAL_MS = 15_000;
+
+/**
+ * The oldest event on screen is not the chat's first, by its sequence number.
+ * Says nothing when the events carry no sequence (older transcripts).
+ */
+function residentHeadHasOlderEvents(events: readonly AgentChatEventEnvelope[] | undefined): boolean {
+  const head = events?.[0];
+  if (!head) return false;
+  const first = head.sequenceStart ?? head.sequence;
+  return typeof first === "number" && first > 1;
+}
 const MAX_RETAINED_CHAT_SESSION_HISTORIES = 6;
 const MAX_SELECTED_CHAT_SESSION_EVENTS = 20_000;
 // The view cache holds a reference to the SAME event array the pane already
@@ -5253,6 +5266,8 @@ export function AgentChatPane({
   );
   const olderHistoryCursorRef = useRef<Record<string, number>>({});
   const olderHistoryInFlightRef = useRef<Map<string, number>>(new Map());
+  /** When each chat last re-read its history to find a lost paging position. */
+  const olderHistoryCursorRecoveryAtRef = useRef<Map<string, number>>(new Map());
   const olderHistoryRequestSequenceRef = useRef(0);
   // Pending silent-retry waits for older-history paging. Tracked so a session
   // switch or unmount can cancel them instead of stranding a timer that
@@ -8841,9 +8856,15 @@ export function AgentChatPane({
     );
     const historyRouteKey = historyPin?.key ?? activeProjectBindingKeyRef.current;
     const heldResume = historyResumeBySessionRef.current.get(sessionId);
+    // A resumed read keeps the paging position the pane holds, so it only
+    // resumes from a known one. With the position lost (a read that fell back
+    // to the transcript tail), every resumed refresh kept it lost and "load
+    // earlier" stayed off for good on a long chat that never stops streaming;
+    // a full read sets it again.
     const resume = heldResume
       && heldResume.routeKey === historyRouteKey
       && (eventsBySessionRef.current[sessionId]?.length ?? 0) > 0
+      && olderHistoryCursorRef.current[sessionId] != null
       && !detachedHistorySessionsRef.current.has(sessionId)
       ? heldResume
       : null;
@@ -8965,6 +8986,9 @@ export function AgentChatPane({
           raw: true
         }, historyPin);
         parsed = parseAgentChatTranscript(raw).filter((entry) => entry.sessionId === sessionId);
+        // This read has no byte positions. The next one starts over in full,
+        // so it can set the paging position again.
+        historyResumeBySessionRef.current.delete(sessionId);
       }
 
       // If real-time events have already been received for this session
@@ -9008,7 +9032,15 @@ export function AgentChatPane({
           mergedEvents: merged,
           detached: detachedHistorySessionsRef.current.has(sessionId),
         })
-        : null;
+        // The transcript-tail fallback knows no position. The held one still
+        // fits while the oldest event on screen is the same; past a trimmed
+        // head it would page over a gap, so then it is dropped and a scroll
+        // up re-reads in full (loadOlderHistory).
+        : existing.length > 0
+          && merged.length > 0
+          && agentChatEventIdentityKey(merged[0]!) === agentChatEventIdentityKey(existing[0]!)
+          ? (olderHistoryCursorRef.current[sessionId] ?? null)
+          : null;
       // A successful hydrate reattaches the view to the live tail, so drop the
       // detached marker BEFORE caching — the merged window is cacheable again.
       if (detachedHistorySessionsRef.current.delete(sessionId)) {
@@ -9109,7 +9141,19 @@ export function AgentChatPane({
     options?: { interactive?: boolean; backfill?: boolean },
   ) => {
     const cursor = olderHistoryCursorRef.current[sessionId];
-    if (cursor == null || cursor <= 0) return;
+    if (cursor == null) {
+      // The paging position was lost, but the chat has older events than the
+      // ones on screen. A full read sets the position again; the next scroll
+      // pages from it.
+      if (!residentHeadHasOlderEvents(eventsBySessionRef.current[sessionId])) return;
+      const lastRecoveryAt = olderHistoryCursorRecoveryAtRef.current.get(sessionId) ?? 0;
+      if (Date.now() - lastRecoveryAt < OLDER_HISTORY_CURSOR_RECOVERY_INTERVAL_MS) return;
+      olderHistoryCursorRecoveryAtRef.current.set(sessionId, Date.now());
+      historyResumeBySessionRef.current.delete(sessionId);
+      await loadHistory(sessionId, { force: true, pin });
+      return;
+    }
+    if (cursor <= 0) return;
     if (options?.backfill) {
       // Backfill is for the chat on screen. During a switch the outgoing
       // chat's list can still ask once, which would start a page (and a retry
@@ -9251,7 +9295,7 @@ export function AgentChatPane({
         setOlderHistoryLoadingBySession((prev) => ({ ...prev, [sessionId]: false }));
       }
     }
-  }, [applyOlderHistoryCursor, lockSessionId, waitBeforeOlderHistoryRetry]);
+  }, [applyOlderHistoryCursor, loadHistory, lockSessionId, waitBeforeOlderHistoryRetry]);
 
   // Cancel pending paging retries when the selection moves or the pane
   // unmounts, so no timer outlives the view that scheduled it.
@@ -19292,7 +19336,14 @@ export function AgentChatPane({
                         hasOlderHistory={Boolean(
                           !subagentView
                           && renderedSessionId
-                          && (olderHistoryCursorBySession[renderedSessionId] ?? 0) > 0,
+                          && (
+                            (olderHistoryCursorBySession[renderedSessionId] ?? 0) > 0
+                            // Position lost but older events exist: scrolling up recovers it.
+                            || (
+                              olderHistoryCursorBySession[renderedSessionId] == null
+                              && residentHeadHasOlderEvents(eventsBySession[renderedSessionId])
+                            )
+                          ),
                         )}
                         loadingOlderHistory={Boolean(
                           !subagentView

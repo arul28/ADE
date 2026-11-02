@@ -147,6 +147,41 @@ describe("laneService.create runtime options", () => {
     }
   });
 
+  it("a checkout that fails on its own leaves no branch behind, and never deletes a branch it did not make", async () => {
+    // `worktree add -b` makes the branch before it checks files out. When the
+    // checkout then fails (on Windows: "Filename too long"; here: a required
+    // smudge filter that fails), git keeps the branch and removes the folder,
+    // and every retry of the same issue then failed on that branch.
+    const { db, repo, root, service } = await setup({ fileCount: 2 });
+    try {
+      git(repo, "config", "filter.boom.clean", "cat");
+      git(repo, "config", "filter.boom.smudge", "false");
+      git(repo, "config", "filter.boom.required", "true");
+      fs.writeFileSync(path.join(repo, ".gitattributes"), "*.bin filter=boom\n");
+      fs.writeFileSync(path.join(repo, "a.bin"), "data\n");
+      git(repo, "add", ".");
+      git(repo, "commit", "-q", "-m", "filtered file");
+
+      await expect(
+        service.create({ name: "VER-368 Auto-collect structure", branchName: "ade/44444444", start: { from: "default", on: "local" } }, { laneId: RESERVED_ID }),
+      ).rejects.toThrow(/smudge filter/);
+      expect(git(repo, "branch", "--list", "ade/44444444").trim()).toBe("");
+      expect(git(repo, "worktree", "list").trim().split("\n")).toHaveLength(1);
+      const leftovers = fs.existsSync(path.join(root, "worktrees")) ? fs.readdirSync(path.join(root, "worktrees")) : [];
+      expect(leftovers).toEqual([]);
+      expect(db.get("select id from lanes where id = ?", [RESERVED_ID])).toBeFalsy();
+
+      // A branch that already existed is someone else's, whatever stops git.
+      git(repo, "branch", "ade/55555555");
+      await expect(
+        service.create({ name: "taken", branchName: "ade/55555555", start: { from: "default", on: "local" } }),
+      ).rejects.toThrow();
+      expect(git(repo, "branch", "--list", "ade/55555555").trim()).toBe("ade/55555555");
+    } finally {
+      db.close();
+    }
+  });
+
   it("an abort mid-checkout (worktree still locked by git) leaves no worktree, branch, or dir behind", async () => {
     const { db, repo, root, service } = await setup({ fileCount: 4000, fileBytes: 2048 });
     try {

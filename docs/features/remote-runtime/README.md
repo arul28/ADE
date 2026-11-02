@@ -1405,7 +1405,17 @@ surface:
   classifier (`pairing`, `authentication`, `protocol`, `timeout`,
   `unreachable`…). `diagnoseDoctorChecks` writes one sentence and one fix over
   all routes; any route that works wins, since a LAN address failing away from
-  home is expected.
+  home is expected. A route login sends hello `peer.connectionPurpose: "probe"`
+  and, on the relay, the same account proof a real connect carries
+  (`resolveAccountRelayProof`). A host keeps one connection per device and
+  closes the older one ("Superseded by a newer connection for this device"),
+  which the client then reads as another ADE using the pairing and stops
+  reconnecting. So a host that advertises `features.connectionProbe` answers a
+  probe hello and closes it before arbitration, and while this app has a paired
+  connection open or opening to a host that has not advertised it
+  (`RemoteConnectionPool.liveConnectionState`, remembered across reconnects),
+  the test only opens each route without logging in. An SSH fallback never logs
+  in as the device, so it does not limit the test.
 - **Check** on the This machine card in Connections
   (`HostReachabilityCheck.tsx`, IPC `ade.sync.checkLocalReachability`, brain
   method `sync.checkReachability` in `hostReachabilityCheck.ts`) asks this

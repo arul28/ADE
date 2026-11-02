@@ -38,6 +38,7 @@ import {
   SYNC_RELAY_REAUTHORIZE_V1_CAPABILITY,
 } from "../../../../desktop/src/shared/types";
 import { PROVIDER_ACCOUNT_REMOTE_COMMANDS } from "../../../../desktop/src/shared/types/sync";
+import { PAIRED_RUNTIME_PROBE_CLOSE_REASON } from "../../../../desktop/src/shared/types/pairedRuntime";
 import {
   MOBILE_SYNC_COMPATIBILITY_CONTRACT_VERSION,
   MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS,
@@ -6375,6 +6376,60 @@ describe("connection-attempt arbitration", () => {
       try { winner?.ws.close(); } catch { /* ignore */ }
       try { stale?.ws.close(); } catch { /* ignore */ }
       try { recovered?.ws.close(); } catch { /* ignore */ }
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("answers a paired probe hello without replacing the device's open connection", async () => {
+    // A connection test logs in as the same device as the open connection.
+    // It must get its answer and be closed by the host, and the open
+    // connection must stay; a real second connection still replaces it.
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const pairing = createSpoofedDesktopPairing(path.join(projectRoot, "secrets"));
+    const base = createHostArgs(projectRoot, []);
+    const host = createSyncHostService({
+      ...base,
+      pairingSecretsPath: pairing.pairingSecretsPath,
+      deviceRegistryService: { ...base.deviceRegistryService, upsertPeerMetadata: vi.fn() },
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+    const sockets: WebSocket[] = [];
+    const openPaired = async (connectionPurpose?: "probe") => {
+      const ws = new WebSocket(`ws://127.0.0.1:${await host.waitUntilListening()}`);
+      sockets.push(ws);
+      const tracked = trackClientEnvelopes(ws);
+      const closes: Array<{ code: number; reason: string }> = [];
+      ws.on("close", (code, reason) => closes.push({ code, reason: reason.toString() }));
+      await new Promise<void>((resolve, reject) => { ws.once("open", resolve); ws.once("error", reject); });
+      ws.send(encodeSyncEnvelope({
+        type: "hello",
+        requestId: "paired-hello",
+        payload: {
+          peer: { ...pairing.helloPeer, ...(connectionPurpose ? { connectionPurpose } : {}) },
+          auth: { kind: "paired", deviceId: pairing.helloPeer.deviceId, secret: pairing.secret },
+        },
+      }));
+      const reply = await waitForEnvelope(tracked.envelopes, "hello_ok", "paired-hello");
+      return { ws, reply, closes };
+    };
+    try {
+      const live = await openPaired();
+      const probe = await openPaired("probe");
+      expect(probe.reply.payload).toMatchObject({
+        brain: { deviceId: "host-device-1" },
+        features: { connectionProbe: true },
+      });
+      await waitForValue(() => probe.closes[0], "probe closed by the host");
+      expect(probe.closes[0]).toEqual({ code: 1000, reason: PAIRED_RUNTIME_PROBE_CLOSE_REASON });
+      expect(live.ws.readyState).toBe(WebSocket.OPEN);
+      expect(live.closes).toEqual([]);
+      expect(host.getPeerStates()).toHaveLength(1);
+
+      await openPaired();
+      await waitForValue(() => live.closes[0], "real second connection supersedes");
+      expect(live.closes[0]?.code).toBe(4000);
+    } finally {
+      for (const ws of sockets) { try { ws.close(); } catch { /* ignore */ } }
       await host.dispose();
       cleanup();
     }
