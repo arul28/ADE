@@ -45,6 +45,24 @@ const RESIDUAL_WORKTREE_CLEANUP_SWEEP_TTL_MS = 60_000;
 const RESIDUAL_WORKTREE_EMPTY_SCAN_ENTRY_LIMIT = 256;
 const RESIDUAL_WORKTREE_ERROR_MAX_LENGTH = 2_000;
 const UNKNOWN_EMPTY_WORKTREE_MIN_AGE_MS = 10 * 60_000;
+/**
+ * The longest wait between retries of one leftover folder. Each failed retry
+ * doubles the wait from one sweep: a folder another process holds open (a dev
+ * server started in the lane, say) stays held for days, and retrying it every
+ * minute ran a removal process 500 times for nothing.
+ */
+const RESIDUAL_WORKTREE_RETRY_BACKOFF_MAX_MS = 60 * 60_000;
+
+function residualRetryIsDue(row: LocalWorktreeResidualCleanupRow, nowMs: number): boolean {
+  if (row.attempts <= 0) return true;
+  const lastAttemptMs = Date.parse(row.updated_at);
+  if (!Number.isFinite(lastAttemptMs)) return true;
+  const waitMs = Math.min(
+    RESIDUAL_WORKTREE_CLEANUP_SWEEP_TTL_MS * 2 ** Math.min(row.attempts - 1, 16),
+    RESIDUAL_WORKTREE_RETRY_BACKOFF_MAX_MS,
+  );
+  return nowMs - lastAttemptMs >= waitMs;
+}
 
 function normAbs(value: string): string {
   return path.resolve(value);
@@ -150,6 +168,7 @@ export function createWorktreeResidualCleanup({
           lane_id = excluded.lane_id,
           branch_ref = excluded.branch_ref,
           reason = excluded.reason,
+          attempts = 0,
           last_error = excluded.last_error,
           updated_at = excluded.updated_at
       `,
@@ -304,6 +323,7 @@ export function createWorktreeResidualCleanup({
           continue;
         }
         if (!row && (await directoryHasFilesOrSymlinks(pathKey))) continue;
+        if (row && !residualRetryIsDue(row, sweepStartedAt)) continue;
 
         try {
           await removeWorktreeDirectory(pathKey);

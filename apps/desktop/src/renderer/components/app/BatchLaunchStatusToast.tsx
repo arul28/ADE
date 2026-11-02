@@ -2,6 +2,7 @@ import React, { useEffect, useMemo } from "react";
 import { ArrowClockwise, CheckCircle, CircleNotch, GithubLogo, WarningCircle } from "@phosphor-icons/react";
 import {
   isBatchLaunchInFlight,
+  isBatchLaunchProblem,
   type BatchLaunchItemState,
   type BatchLaunchItemStatus,
   type LaunchIssue,
@@ -29,7 +30,7 @@ function statusLabel(status: BatchLaunchItemStatus): string {
 
 function StatusIcon({ status }: { status: BatchLaunchItemStatus }): React.ReactElement {
   if (status === "done") return <CheckCircle size={13} weight="fill" style={{ color: noticeTone("success").color }} />;
-  if (status === "failed" || status === "agent-error") {
+  if (isBatchLaunchProblem(status)) {
     return (
       <WarningCircle
         size={13}
@@ -86,6 +87,34 @@ function batchHeadline({
   return parts.join(" · ");
 }
 
+/** Each failed or stuck issue's key and error, one per line, for the report. */
+/**
+ * What stopped a launch, in a few fixed words. The row's own error can quote
+ * git or hook output (paths, branch names), which must not reach a report or
+ * Sentry; the category is enough to tell a dropped connection from a checkout
+ * that failed. The row on screen still shows the whole error.
+ */
+function launchFailureCategory(error: string | null): string {
+  const text = error?.trim() ?? "";
+  if (!text) return "no error recorded";
+  if (/connection|interrupted|not connected|superseded|disconnected/i.test(text)) return "connection to the machine lost";
+  if (/filename too long|path too long/i.test(text)) return "path too long";
+  if (/already exists|already checked out|already registered/i.test(text)) return "branch or folder already exists";
+  if (/timed? ?out/i.test(text)) return "timed out";
+  if (/cancel|abort/i.test(text)) return "cancelled";
+  if (/sign in|auth|token|unauthori[sz]ed/i.test(text)) return "sign-in";
+  if (/checkout|worktree/i.test(text)) return "checkout failed";
+  return "other";
+}
+
+/** Each failed or stuck issue's key and failure category, one per line, for the report. */
+function batchFailureDetail(rows: BatchLaunchItemState[]): string | null {
+  const lines = rows
+    .filter((row) => isBatchLaunchProblem(row.status))
+    .map((row) => `${row.issue.key} ${row.status}: ${launchFailureCategory(row.error)}`);
+  return lines.length > 0 ? lines.join("\n") : null;
+}
+
 function BatchLaunchRows({
   rows,
   onOpenLane,
@@ -112,7 +141,12 @@ function BatchLaunchRows({
               <span className="kit-num shrink-0 text-[10.5px] text-[color:var(--kit-text-2)]">
                 {row.issue.key}
               </span>
-              <span className="min-w-0 flex-1 truncate text-[11.5px] text-muted-fg">{row.issue.title}</span>
+              <span className="flex min-w-0 flex-1 flex-col">
+                <span className="truncate text-[11.5px] text-muted-fg">{row.issue.title}</span>
+                {row.error && isBatchLaunchProblem(row.status) ? (
+                  <span className="truncate text-[10.5px]" style={statusTextStyle(row.status)}>{row.error}</span>
+                ) : null}
+              </span>
               <StatusIcon status={row.status} />
               <span className="shrink-0 text-[10px]" style={statusTextStyle(row.status)}>
                 {statusLabel(row.status)}
@@ -163,6 +197,7 @@ export function BatchLaunchStatusToast({
         : attentionCount > 0
           ? "warning"
           : "success";
+    const failureDetail = batchFailureDetail(rows);
     showToast({
       id: BATCH_LAUNCH_TOAST_ID,
       tone,
@@ -175,6 +210,9 @@ export function BatchLaunchStatusToast({
         inFlight,
       }),
       content: <BatchLaunchRows rows={rows} onOpenLane={onOpenLane} />,
+      // The rows are not plain text, so the report would carry no error at
+      // all: send each failed issue's own.
+      ...(failureDetail ? { report: { surface: "issue_batch_launch", code: "batch_launch_failed", technicalDetail: failureDetail } } : {}),
       actions: failedCount > 0 && !inFlight
         ? [{
             label: `Retry ${failedCount} failed`,

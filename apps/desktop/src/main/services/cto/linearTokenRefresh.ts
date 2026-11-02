@@ -14,6 +14,15 @@ export const LINEAR_OAUTH_TOKEN_URL = "https://api.linear.app/oauth/token";
 export const LINEAR_TOKEN_REFRESH_BUFFER_MS = 2 * 60 * 1000;
 
 /**
+ * How long a machine that found another machine owns the refresh grant waits
+ * before asking the account vault again. Every Linear request checks
+ * freshness first; on a machine whose token is past its recorded expiry that
+ * meant one account-vault round trip per request, and the Linear pane, which
+ * opens with a dozen requests, took seconds to fill.
+ */
+export const LINEAR_REFRESH_OWNER_RECHECK_MS = 5 * 60 * 1000;
+
+/**
  * True when an OAuth access token with the given ISO `expiresAt` is at or within
  * the refresh buffer of expiry. Returns false when there is no usable expiry
  * (nothing to refresh proactively — the reactive 401 path still applies).

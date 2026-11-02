@@ -202,6 +202,12 @@ export type SyncPeerMetadata = {
     startedAtMs: number;
   };
   /**
+   * `"probe"`: a connection test. A host that advertises `connectionProbe`
+   * checks the pairing, answers hello_ok and closes, and never lets it replace
+   * the device's open connection. Absent means a real connection.
+   */
+  connectionPurpose?: "probe";
+  /**
    * Additive hello capabilities. `runtimeOnly` means the client consumes only
    * rpc/fwd envelopes; hosts honor it only for an authenticated pairing record
    * carrying the server-issued runtime-host grant.

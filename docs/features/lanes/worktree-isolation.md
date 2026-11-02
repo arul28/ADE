@@ -18,9 +18,16 @@ the remote host.
 
 ## Worktree placement
 
-Managed (ADE-created) worktrees live under `.ade/worktrees/<slug>/` at
-the repo root. The slug is produced by `slugify(laneName)` inside
-`laneService.ts`:
+Managed (ADE-created) worktrees live under `.ade/worktrees/<slug>-<laneId[0:8]>/`
+at the repo root. The slug is produced by `slugify(laneName)` in
+`laneWorktreeNaming.ts` and cut to 40 characters at a word boundary
+(`laneWorktreeFolderName`): the folder sits between the project path and
+every file of the checkout, and Windows stops at 260 characters, so a lane
+named after a long issue title made every checkout of a deep repository fail.
+Lane and branch names are not cut. Every git command ADE runs on Windows also
+sets `core.longpaths=true` (`GIT_CONFIG_OVERRIDE_ARGS`). A `worktree add -b`
+that fails after making its branch (a failed checkout) removes that branch,
+unless git refused because the branch or folder already existed.
 
 ```
 name → lower-cased → [^a-z0-9]+ replaced by "-" → trim leading/trailing "-"
@@ -201,8 +208,14 @@ state: `local_worktree_residual_cleanups` stores absolute paths, is
 excluded from CRR replication, and is only interpreted by the runtime
 that owns those paths.
 
-The sweep runs from `laneService.list()` with a short TTL so normal lane
-refreshes can clear previous warnings without a dedicated user action.
+The sweep starts from `laneService.list()` with a short TTL so normal lane
+refreshes can clear previous warnings without a dedicated user action. The
+list does not wait for it: removing a leftover folder can take minutes, and
+remote lane lists timed out behind it. A recorded folder that keeps failing
+(another process holds it) is retried at doubling intervals up to an hour,
+and the removal itself retries around the whole tree, never inside `fs.rm`
+(`removeTreeOffProcess.ts`), whose per-folder retries multiplied on a held
+folder deep in the tree and ran for 30 minutes.
 Before removing anything it rebuilds three guard sets:
 
 - registered non-bare paths from `git worktree list --porcelain`

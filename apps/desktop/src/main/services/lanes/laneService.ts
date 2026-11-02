@@ -62,6 +62,7 @@ import type { LaneJiraIssue } from "../../../shared/types/jira";
 import type { createOperationService } from "../history/operationService";
 import type { Logger } from "../logging/logger";
 import { createWorktreeResidualCleanup } from "./worktreeResidualCleanup";
+import { laneWorktreeFolderName, legacyLaneWorktreeFolderName, slugify } from "./laneWorktreeNaming";
 import { createLaneWorktreeLockService } from "./laneWorktreeLockService";
 import { measureTree } from "../storage/diskUsage";
 import { writeLaneUsageTombstone, type LaneUsageTombstoneMode } from "./laneUsageTombstone";
@@ -351,7 +352,7 @@ async function makeTreeWritableForRemoval(targetPath: string): Promise<void> {
   await Promise.all(entries.map((entry) => makeTreeWritableForRemoval(path.join(targetPath, entry))));
 }
 
-/** Each attempt's child already retries a held file for ~11 s (see removeTreeOffProcess). */
+/** Each attempt's child already retries a held file for ~9 s (see removeTreeOffProcess). */
 const WORKTREE_REMOVE_ATTEMPTS = 3;
 const WORKTREE_REMOVE_RETRY_MS = 250;
 
@@ -553,13 +554,14 @@ function cloneLaneSummary(summary: LaneSummary): LaneSummary {
   };
 }
 
-function slugify(input: string): string {
-  const s = input
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "");
-  return s.length ? s : "lane";
+/**
+ * `git worktree add -b` refused because its branch or folder already exists
+ * (run with `LC_ALL=C`). Whoever made those owns them; the other failures
+ * happen after git made the branch, so the branch is the failed call's own.
+ */
+function isWorktreeAddConflictError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /already exists|already registered|already checked out|already used by worktree/i.test(message);
 }
 
 function normAbs(p: string): string {
@@ -3976,11 +3978,16 @@ export function createLaneService({
     } catch (err) {
       logger.warn("laneService.repairLegacyPrimaryBaseRootLanes_failed", { error: err instanceof Error ? err.message : String(err) });
     }
-    try {
-      await residualWorktreeCleanup.retry();
-    } catch (err) {
+    // Not awaited: removing a leftover lane folder can take minutes (hundreds
+    // of thousands of files on Windows, or a folder another process holds),
+    // and every lane list, on this machine and on each one reading it
+    // remotely, waited for it. On Windows that made remote lane lists time out
+    // and the Work tab say a connected machine sent no chats. The list never
+    // needs it: a leftover folder is not a git worktree, and the sweep runs
+    // one at a time.
+    void residualWorktreeCleanup.retry().catch((err: unknown) => {
       logger.warn("laneService.residualWorktreeCleanup_failed", { error: err instanceof Error ? err.message : String(err) });
-    }
+    });
     try {
       // One `git worktree list` feeds both directions of the reconcile: adopt
       // worktrees that have no lane, drop lanes whose worktree is gone. If git
@@ -4266,15 +4273,13 @@ export function createLaneService({
   }, runtimeOptions: LaneCreateRuntimeOptions = {}): Promise<LaneSummary> => {
     const laneId = resolvePresetLaneId(runtimeOptions.laneId);
     const now = new Date().toISOString();
-    const slug = slugify(args.name);
-    const suffix = laneId.slice(0, 8);
     const branchRef = await resolveCreateBranchRef({
       name: args.name,
       laneId,
       branchName: args.branchName,
       linearIssue: args.linearIssue,
     });
-    const worktreePath = path.join(worktreesDir, `${slug}-${suffix}`);
+    const worktreePath = path.join(worktreesDir, laneWorktreeFolderName(args.name, laneId));
 
     // The worktree is visible to `git worktree list` the moment `worktree add`
     // registers it, but the lane row only lands after checkout completes. Hold
@@ -4304,12 +4309,14 @@ export function createLaneService({
           return runGitOrThrow(["worktree", "add", "-b", branchRef, worktreePath, args.startPoint], {
             cwd: projectRoot,
             ...TREE_WRITE_GIT_LIMITS,
+            // English output: the progress parser reads it, and the failure
+            // cleanup below tells "already exists" from a failed checkout
+            // (see isWorktreeAddConflictError).
+            env: { ...GIT_TREE_WRITE_PROGRESS_ENV, LC_ALL: "C" },
             cancelMessage: LANE_CREATE_CANCEL_MESSAGE,
             ...(runtimeOptions.signal ? { signal: runtimeOptions.signal } : {}),
             ...(onCheckoutProgress
               ? {
-                  // English progress lines, which the parser reads.
-                  env: { ...GIT_TREE_WRITE_PROGRESS_ENV, LC_ALL: "C" },
                   onStderrLine: (line: string) => {
                     const parsed = parseGitCheckoutProgressLine(line);
                     if (parsed) onCheckoutProgress(parsed);
@@ -4323,10 +4330,13 @@ export function createLaneService({
       } catch (addError) {
         // A cancelled or stopped checkout leaves a half-written worktree
         // registered (and still locked "initializing" by the killed git) plus
-        // a fresh branch. Nothing else owns them yet, so remove both. Only
-        // then: a plain `worktree add -b` failure (e.g. the branch already
-        // exists) must not delete a branch this call never created.
-        if (gitStarted && !branchPreexisted && (runtimeOptions.signal?.aborted || addError instanceof GitTimeoutError)) {
+        // a fresh branch. A checkout that failed on its own ("Filename too
+        // long", a full disk, an LFS download) leaves the fresh branch, and a
+        // retry then fails on it. Nothing else owns either yet, so remove
+        // both. Never when git refused because the branch or folder already
+        // exists, even if the create was also stopped: those were made by
+        // someone else in the meantime, not by this call.
+        if (gitStarted && !branchPreexisted && !isWorktreeAddConflictError(addError)) {
           await cleanupCreatedWorktreeLaneAfterCreateFailure({ laneId, branchRef, worktreePath, cause: addError });
         }
         throw addError;
@@ -5181,7 +5191,17 @@ export function createLaneService({
   async function cleanupReservedWorktree(args: { laneId: string; name: string }): Promise<void> {
     const laneId = requireNormalizedUuid(args.laneId, "A reserved lane id must be a UUID.");
     if (getLaneRow(laneId)) return;
-    const worktreePath = path.join(worktreesDir, `${slugify(args.name)}-${laneId.slice(0, 8)}`);
+    // A reservation saved by an older version points at the uncapped folder.
+    const candidates = [
+      laneWorktreeFolderName(args.name, laneId),
+      legacyLaneWorktreeFolderName(args.name, laneId),
+    ];
+    for (const folderName of new Set(candidates)) {
+      await cleanupReservedWorktreeAt(laneId, path.join(worktreesDir, folderName));
+    }
+  }
+
+  async function cleanupReservedWorktreeAt(laneId: string, worktreePath: string): Promise<void> {
     if (!isDirectlyInsideManagedWorktreesDir(normAbs(worktreePath))) return;
     if (pendingWorktreeCreationPaths.has(normAbs(worktreePath))) return;
     const owner = db.get<{ id: string }>(
@@ -6393,9 +6413,7 @@ export function createLaneService({
       const laneId = runtimeOptions.laneId?.trim() || randomUUID();
       const now = new Date().toISOString();
       const displayName = (args.name ?? "").trim() || branchRef;
-      const slug = slugify(displayName);
-      const suffix = laneId.slice(0, 8);
-      const worktreePath = path.join(worktreesDir, `${slug}-${suffix}`);
+      const worktreePath = path.join(worktreesDir, laneWorktreeFolderName(displayName, laneId));
 
       // Same create/recover race as createWorktreeLane: keep recovery away
       // from this path/branch until the lane row exists.
@@ -8187,7 +8205,7 @@ export function createLaneService({
 
       const normalizedRoot = normAbs(worktreesDir);
       const savedPath = normAbs(row.worktree_path);
-      const fallbackWorktreePath = path.join(normalizedRoot, `${slugify(row.name)}-${laneId.slice(0, 8)}`);
+      const fallbackWorktreePath = path.join(normalizedRoot, laneWorktreeFolderName(row.name, laneId));
       // Either spelling of the worktrees folder counts as managed: a row adopted
       // from git holds the resolved one, and reading that as unmanaged would
       // relocate ADE's own worktree to a freshly named path on restore.

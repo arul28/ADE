@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { LaneSummary, OpenProjectBinding } from "../../../shared/types";
+import type { LaneSummary, OpenProjectBinding, RecentProjectSummary } from "../../../shared/types";
 import { remoteProjectBindingKey } from "../../../shared/projectIdentity";
 import { useAppStore, useRootAppStore } from "../../state/appStore";
 import { buildAllMachineLanes } from "../../state/laneMachineRouting";
@@ -7,6 +7,8 @@ import { useRemoteConnectionSnapshot } from "../../state/projectMachines";
 import {
   canCreateLaneOnMachine,
   deriveLaneMachineOptions,
+  originUrlForBinding,
+  rememberProjectOriginSummaries,
   type LaneMachineOption,
   type LaneMachineProjectRef,
 } from "./laneMachines";
@@ -46,10 +48,18 @@ export function useLaneMachineChoice(open: boolean) {
   const { snapshot: remoteSnapshot, loaded: snapshotLoaded } = useRemoteConnectionSnapshot(open);
   /** The machine the user picked; "" until they pick one. */
   const [pickedMachineId, setPickedMachineId] = useState<string>("");
+  /** This computer's checkouts with their origins, read while the dialog is open. */
+  const [localProjects, setLocalProjects] = useState<RecentProjectSummary[] | undefined>(undefined);
+  /** This computer's checkouts have been read (or cannot be), so the machine list is final. */
+  const [localProjectsSettled, setLocalProjectsSettled] = useState(false);
 
   useEffect(() => {
     // Every open asks again.
-    if (!open) setPickedMachineId("");
+    if (open) return;
+    setPickedMachineId("");
+    // A reopen reads them again; the old list must not match machines first.
+    setLocalProjects(undefined);
+    setLocalProjectsSettled(false);
   }, [open]);
 
   const boundProject = useMemo<LaneMachineProjectRef | null>(() => {
@@ -74,17 +84,56 @@ export function useLaneMachineChoice(open: boolean) {
 
   const boundTargetId = projectBinding?.kind === "remote" ? projectBinding.targetId : null;
 
-  /** `origin` of the bound checkout, taken straight from the snapshot record. */
+  /**
+   * This computer's checkouts, with their origins, read while the dialog is
+   * open. A project open on this computer is identified by its origin from
+   * here: without it, the same repo on another machine matched only by folder
+   * name and could not be picked.
+   */
+  useEffect(() => {
+    if (!open) return;
+    const listRecent = window.ade?.project?.listRecent;
+    if (typeof listRecent !== "function") {
+      setLocalProjectsSettled(true);
+      return;
+    }
+    let cancelled = false;
+    void listRecent()
+      .then((projects) => {
+        if (cancelled) return;
+        rememberProjectOriginSummaries(projects, { replace: true });
+        setLocalProjects(projects.filter(
+          (candidate) => candidate.kind !== "remote" && candidate.exists !== false,
+        ));
+      })
+      .catch((error: unknown) => {
+        // Origins then fall back to what the binding and snapshot carry.
+        console.warn("[useLaneMachineChoice] listRecent failed", error);
+      })
+      .finally(() => {
+        if (!cancelled) setLocalProjectsSettled(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
+
+  /** `origin` of the bound checkout: stamped, from the snapshot, or from this computer's recents. */
   const repoOriginUrl = useMemo(() => {
-    if (!boundTargetId || !projectBinding || projectBinding.kind !== "remote") return null;
-    const connection = remoteSnapshot?.connections.find(
-      (candidate) => candidate.target.id === boundTargetId,
-    );
-    const record = connection?.projects.find(
-      (candidate) => candidate.projectId === projectBinding.projectId,
-    );
-    return record?.gitOriginUrl ?? null;
-  }, [boundTargetId, projectBinding, remoteSnapshot]);
+    const known = originUrlForBinding(projectBinding);
+    if (known) return known;
+    if (projectBinding?.kind === "remote") {
+      const connection = remoteSnapshot?.connections.find(
+        (candidate) => candidate.target.id === projectBinding.targetId,
+      );
+      return connection?.projects.find(
+        (candidate) => candidate.projectId === projectBinding.projectId,
+      )?.gitOriginUrl ?? null;
+    }
+    const rootPath = projectBinding?.rootPath ?? project?.rootPath ?? null;
+    if (!rootPath) return null;
+    return localProjects?.find((candidate) => candidate.rootPath === rootPath)?.gitOriginUrl ?? null;
+  }, [localProjects, project, projectBinding, remoteSnapshot]);
 
   const baseMachines = useMemo(
     () =>
@@ -95,8 +144,9 @@ export function useLaneMachineChoice(open: boolean) {
         repoOriginUrl,
         repoDisplayName: boundProject?.displayName ?? null,
         localProjectRoots: openProjectTabRoots,
+        ...(localProjects ? { localProjects } : {}),
       }),
-    [boundProject, boundTargetId, openProjectTabRoots, remoteSnapshot, repoOriginUrl],
+    [boundProject, boundTargetId, localProjects, openProjectTabRoots, remoteSnapshot, repoOriginUrl],
   );
   // Stats and preferences for "Least loaded", read while the dialog is open.
   const machines = useMachinePlacement(baseMachines, open);
@@ -169,7 +219,9 @@ export function useLaneMachineChoice(open: boolean) {
   // machine (once the snapshot has answered) there is nothing to ask.
   const selectedMachineId = pickedMachineId && eligibleMachineIds.includes(pickedMachineId)
     ? pickedMachineId
-    : snapshotLoaded && eligibleMachineIds.length === 1
+    // Not before the origin read settles: until then other machines' copies
+    // of the repo are unconfirmed, and "only one machine" may be wrong.
+    : snapshotLoaded && localProjectsSettled && eligibleMachineIds.length === 1
       ? eligibleMachineIds[0]!
       : "";
   const selectedTarget = selectedMachineId ? machineTargets.get(selectedMachineId) ?? null : null;

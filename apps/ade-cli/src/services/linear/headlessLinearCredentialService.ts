@@ -14,6 +14,7 @@ import type { createLinearCredentialService } from "../../../../desktop/src/main
 import { createCredentialProvenanceStore } from "../../../../desktop/src/shared/credentialProvenanceStore";
 import { deviceCredentialProvenance, type CredentialProvenance } from "../../../../desktop/src/shared/types/credentialProvenance";
 import {
+  LINEAR_REFRESH_OWNER_RECHECK_MS,
   linearInvalidGrantLikelyStaleRotation,
   linearTokenNeedsRefresh,
   refreshLinearOAuthAccessToken,
@@ -228,12 +229,16 @@ export function createHeadlessLinearCredentialService(args: {
   // so headless `ade serve` Linear connections survive past Linear's ~24h token
   // lifetime. No-op for manual tokens / env tokens / when no refresh token.
   let refreshInFlight: Promise<void> | null = null;
+  /** Until when another machine is known to own the refresh grant (see LINEAR_REFRESH_OWNER_RECHECK_MS). */
+  let refreshOwnedElsewhereUntilMs = 0;
   const ensureFreshToken = async (opts?: { force?: boolean }): Promise<void> => {
     if (readToken().source === "env") return;
     if (readCredential(authModeKey) !== "oauth") return;
     const refreshToken = readCredential(refreshTokenKey);
     if (!refreshToken) return;
     if (!opts?.force && !linearTokenNeedsRefresh(readCredential(tokenExpiresAtKey), Date.now())) return;
+    // A forced refresh follows a 401, which is worth asking the vault about again.
+    if (!opts?.force && Date.now() < refreshOwnedElsewhereUntilMs) return;
     if (refreshInFlight) {
       await refreshInFlight;
       return;
@@ -245,6 +250,7 @@ export function createHeadlessLinearCredentialService(args: {
         getAccountVault: args.getAccountVault,
         getDeviceId: args.getDeviceId,
       }))) {
+        refreshOwnedElsewhereUntilMs = Date.now() + LINEAR_REFRESH_OWNER_RECHECK_MS;
         args.logger?.info("linear_sync.oauth_refresh_skipped_other_owner", {});
         return;
       }
@@ -317,6 +323,8 @@ export function createHeadlessLinearCredentialService(args: {
     }))) {
       return;
     }
+    // This machine owns the grant now; an earlier "owned elsewhere" is stale.
+    refreshOwnedElsewhereUntilMs = 0;
 
     try {
       if (readCredential(refreshTokenKey)) return;
@@ -415,6 +423,7 @@ export function createHeadlessLinearCredentialService(args: {
       return token.trim();
     },
     setToken(nextToken: string) {
+      refreshOwnedElsewhereUntilMs = 0;
       tokenOverride = nextToken.trim();
       writeCredential(tokenKey, tokenOverride);
       writeCredential(authModeKey, "manual");
@@ -429,6 +438,7 @@ export function createHeadlessLinearCredentialService(args: {
       refreshToken?: string | null;
       expiresAt?: string | null;
     }) {
+      refreshOwnedElsewhereUntilMs = 0;
       tokenOverride = args.accessToken.trim();
       writeCredential(tokenKey, tokenOverride);
       writeCredential(authModeKey, "oauth");
@@ -444,6 +454,7 @@ export function createHeadlessLinearCredentialService(args: {
       }
     },
     clearToken() {
+      refreshOwnedElsewhereUntilMs = 0;
       tokenOverride = "";
       writeCredential(tokenKey, null);
       writeCredential(authModeKey, null);

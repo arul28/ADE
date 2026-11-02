@@ -24,6 +24,7 @@ import { createCredentialProvenanceStore } from "../../../shared/credentialProve
 import { isRecord, getErrorMessage, isEnoentError } from "../shared/utils";
 import type { SyncCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
 import {
+  LINEAR_REFRESH_OWNER_RECHECK_MS,
   linearInvalidGrantLikelyStaleRotation,
   linearTokenNeedsRefresh,
   refreshLinearOAuthAccessToken,
@@ -106,6 +107,8 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
   const oauthClientPath = path.join(secretsDir, OAUTH_CLIENT_FILE);
   const importSentinelPath = path.join(secretsDir, IMPORT_SENTINEL);
   const credentialStore = args.credentialStore ?? null;
+  /** Until when another machine is known to own the refresh grant (see LINEAR_REFRESH_OWNER_RECHECK_MS). */
+  let refreshOwnedElsewhereUntilMs = 0;
 
   const logVaultFailure = (operation: string, detail: unknown): void => {
     args.logger?.warn("linear_sync.account_vault_sync_failed", {
@@ -476,6 +479,8 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
     source: CredentialProvenance = deviceCredentialProvenance(),
     refreshSource: CredentialProvenance = source,
   ): void => {
+    // A new or cleared sign-in can move the refresh grant; ask again.
+    refreshOwnedElsewhereUntilMs = 0;
     if (credentialStore) {
       persistMachineTokenLocally(record, source, refreshSource);
       unlinkIfExists(tokenPath);
@@ -706,6 +711,8 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
     const stored = getStoredToken();
     if (!stored || stored.authMode !== "oauth" || !stored.refreshToken) return;
     if (!opts?.force && !linearTokenNeedsRefresh(stored.expiresAt, Date.now())) return;
+    // A forced refresh follows a 401, which is worth asking the vault about again.
+    if (!opts?.force && Date.now() < refreshOwnedElsewhereUntilMs) return;
     if (refreshInFlight) {
       await refreshInFlight;
       return;
@@ -718,6 +725,7 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
         getAccountVault: args.getAccountVault,
         getDeviceId: args.getDeviceId,
       }))) {
+        refreshOwnedElsewhereUntilMs = Date.now() + LINEAR_REFRESH_OWNER_RECHECK_MS;
         args.logger?.info("linear_sync.oauth_refresh_skipped_other_owner", {});
         return;
       }
@@ -811,6 +819,8 @@ export function createLinearCredentialService(args: LinearCredentialServiceArgs)
     }))) {
       return;
     }
+    // This machine owns the grant now; an earlier "owned elsewhere" is stale.
+    refreshOwnedElsewhereUntilMs = 0;
     let stored: StoredLinearToken | null;
     try {
       stored = getStoredToken();

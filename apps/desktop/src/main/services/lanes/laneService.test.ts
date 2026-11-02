@@ -4265,13 +4265,17 @@ describe("laneService delete teardown + cancellation + streaming", () => {
 
     await service.list({ includeStatus: false });
 
-    expect(fs.existsSync(childPath)).toBe(false);
-    expect(
-      db.get<{ lane_id: string }>(
-        "select lane_id from local_worktree_residual_cleanups where project_id = ? and worktree_path = ?",
-        ["proj-delete", childPath],
-      ),
-    ).toBeNull();
+    // The list starts the sweep and returns without waiting for it; the sweep
+    // removes the folder, then its record.
+    await vi.waitFor(() => {
+      expect(fs.existsSync(childPath)).toBe(false);
+      expect(
+        db.get<{ lane_id: string }>(
+          "select lane_id from local_worktree_residual_cleanups where project_id = ? and worktree_path = ?",
+          ["proj-delete", childPath],
+        ),
+      ).toBeNull();
+    });
   });
 
   it("does not clean up non-git directories still referenced by archived lanes", async () => {
@@ -4335,10 +4339,21 @@ describe("laneService delete teardown + cancellation + streaming", () => {
       if (args[0] === "worktree" && args[1] === "list") return "";
       return "";
     });
+    // A removal that has not finished (a huge folder, or one another process
+    // holds on Windows) must not hold up the list.
+    let releaseRemoval!: () => void;
+    const removalHeld = new Promise<void>((resolve) => { releaseRemoval = resolve; });
+    vi.mocked(removeTreeOffProcess).mockImplementation(async (target) =>
+      path.resolve(target) === path.resolve(emptyPath)
+        ? removalHeld.then(() => removeTreeForReal(target))
+        : removeTreeForReal(target));
 
-    await service.list({ includeStatus: false });
+    const lanes = await service.list({ includeStatus: false });
 
-    expect(fs.existsSync(emptyPath)).toBe(false);
+    expect(lanes.length).toBeGreaterThan(0);
+    expect(fs.existsSync(emptyPath)).toBe(true);
+    releaseRemoval();
+    await vi.waitFor(() => expect(fs.existsSync(emptyPath)).toBe(false));
     expect(fs.existsSync(youngEmptyPath)).toBe(true);
     expect(fs.existsSync(path.join(nonEmptyPath, "user-file.txt"))).toBe(true);
   });

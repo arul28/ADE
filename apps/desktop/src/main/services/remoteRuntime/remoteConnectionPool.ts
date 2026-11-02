@@ -474,6 +474,14 @@ export class RemoteConnectionPool {
   >();
   private readonly disconnectGenerationByTargetId = new Map<string, number>();
   private readonly relayAccountOwnerByTargetId = new Map<string, string>();
+  /**
+   * Whether each target's host answered connection probes at its last
+   * connect. Kept across disconnects, so a reconnect still in flight knows
+   * the host it is reaching.
+   */
+  private readonly hostAcceptsProbesByTargetId = new Map<string, boolean>();
+  /** How each target's latest resolved connection reached it. */
+  private readonly resolvedTransportByTargetId = new Map<string, PoolEntry["transport"]>();
   private readonly livenessProbes = new WeakMap<PoolEntry, Promise<boolean>>();
   private readonly evictionListeners = new Set<
     (targetId: string, error: Error) => void
@@ -594,6 +602,13 @@ export class RemoteConnectionPool {
         );
       } else {
         this.relayAccountOwnerByTargetId.delete(target.id);
+      }
+      this.resolvedTransportByTargetId.set(target.id, entry.transport);
+      if (entry.transport === "paired") {
+        this.hostAcceptsProbesByTargetId.set(
+          target.id,
+          entry.pairedTransport.connection.hello?.features?.connectionProbe === true,
+        );
       }
       this.resolvedEntryPromises.add(entryPromise);
       this.attachEntryLifecycle(target.id, entryPromise, entry);
@@ -1509,6 +1524,22 @@ export class RemoteConnectionPool {
   /** True while a connection to this target is open or opening. */
   hasEntry(targetId: string): boolean {
     return this.entries.has(targetId);
+  }
+
+  /**
+   * This app's paired connection to the target, open or still opening, which
+   * a login from this device could replace: null when there is none, or when
+   * the open connection went over SSH (it never logs in as this device).
+   * `hostAcceptsProbes` is what the host said at its latest paired connect;
+   * false when it never said.
+   */
+  liveConnectionState(targetId: string): { hostAcceptsProbes: boolean } | null {
+    const pending = this.entries.get(targetId);
+    if (!pending) return null;
+    if (this.resolvedEntryPromises.has(pending) && this.resolvedTransportByTargetId.get(targetId) === "ssh") {
+      return null;
+    }
+    return { hostAcceptsProbes: this.hostAcceptsProbesByTargetId.get(targetId) === true };
   }
 
   /**
