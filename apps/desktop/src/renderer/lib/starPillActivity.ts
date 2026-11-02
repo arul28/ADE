@@ -3,9 +3,10 @@ import { starPillCountsMessages } from "./starPill";
 import { isWebClientMode } from "./webClientMode";
 
 /**
- * Activity hooks behind the desktop "Star ADE on GitHub" pill. They write the
- * root store (the pill's prefs are root-only) and do nothing in the browser
- * web client, which never shows the pill.
+ * Side effects of the desktop "Star ADE on GitHub" pill: the activity hook
+ * that writes the root store (the pill's prefs are root-only; it does nothing
+ * in the browser web client, which never shows the pill) and the pill's
+ * analytics.
  */
 
 /** The user sent a chat message from this desktop app. */
