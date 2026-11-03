@@ -276,8 +276,15 @@ export function deleteAdeAndroidAvd(
   if (!same(path.dirname(folder), home) || !same(path.basename(folder), `${name}.avd`)) {
     throw new Error(`${name} lives at ${folder}, outside ${home}; ADE will not delete it.`);
   }
-  // The `.ini` first: once it is gone the emulator no longer lists the AVD, so
-  // a folder removal that fails half-way leaves nothing anyone can boot.
+  // Rename the folder first. On Windows a running emulator holds it open, so
+  // the rename fails and nothing has changed yet. Then the `.ini` (the
+  // emulator stops listing the AVD), then the disks.
+  const doomed = path.join(home, `${name}.avd.deleting-${process.pid}-${Date.now()}`);
+  try {
+    fs.renameSync(folder, doomed);
+  } catch (error) {
+    throw new Error(`${name} is in use and was not deleted: ${(error as Error).message}`);
+  }
   fs.rmSync(path.join(home, `${name}.ini`), { force: true });
-  fs.rmSync(folder, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 });
+  fs.rmSync(doomed, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 });
 }

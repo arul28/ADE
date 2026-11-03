@@ -154,45 +154,63 @@ async function main() {
   }
 
   const logPath = path.join(work, `${avd.name}.log`);
-  const launch = await launchAndroidEmulator({
-    emulatorPath: paths.emulator, sdkRoot: status.root, avdHome, avdName: avd.name, logPath, snapshot: "cold", registry,
-  });
-  out("launched", { serial: launch.serial, consolePort: launch.consolePort, grpcPort: launch.grpcPort, launcherPid: launch.launcherPid });
-  liveStop = async () => {
-    const found = (await readRunningAndroidEmulators({ registry })).find((emulator) => emulator.avdName === avd.name);
-    if (found) {
-      await stopAndroidEmulator({ adbPath: paths.adb, serial: found.serial, consolePort: found.consolePort, avdName: avd.name, pid: found.pid, launcherPid: launch.launcherPid, registry });
-    } else if (isProcessAlive(launch.launcherPid)) {
-      process.kill(launch.launcherPid);
+  for (const label of ["first boot (builds the disks)", "second cold boot"]) {
+    const free = Math.round(os.freemem() / 1024 / 1024);
+    if (free < 4000) {
+      out("SKIP BOOT", `${free} MB free`);
+      return;
     }
-  };
-  const boot = await waitForAndroidBoot(launch, { adbPath: paths.adb, timeoutMs: 180_000, registry });
-  out("booted", boot);
+    const launch = await launchAndroidEmulator({
+      emulatorPath: paths.emulator, sdkRoot: status.root, avdHome, avdName: avd.name, logPath, snapshot: "cold", registry,
+    });
+    out(`${label}: launched`, { serial: launch.serial, consolePort: launch.consolePort, grpcPort: launch.grpcPort, launcherPid: launch.launcherPid });
+    liveStop = async () => {
+      const found = (await readRunningAndroidEmulators({ registry })).find((emulator) => emulator.avdName === avd.name);
+      if (found) {
+        await stopAndroidEmulator({ adbPath: paths.adb, serial: found.serial, consolePort: found.consolePort, avdName: avd.name, pid: found.pid, launcherPid: launch.launcherPid, registry });
+      } else if (isProcessAlive(launch.launcherPid)) {
+        process.kill(launch.launcherPid);
+      }
+    };
+    const boot = await waitForAndroidBoot(launch, { adbPath: paths.adb, timeoutMs: 180_000, registry });
+    out(`${label}: booted`, boot);
 
-  const runningNow = await readRunningAndroidEmulators({ registry, adbPath: paths.adb });
-  out("running emulators while booted", runningNow);
-  out("restart-safe ownership (fresh registry from the same file)", new AdeStartedEmulators(path.join(work, "started.json")).owns(runningNow.find((emulator) => emulator.avdName === avd.name)!));
-  out("avd row shows running", listAndroidAvds(avdHome, { running: runningNow }).find((entry) => entry.name === avd.name)?.running);
-  out("start the same AVD again", await launchAndroidEmulator({
-    emulatorPath: paths.emulator, sdkRoot: status.root, avdHome, avdName: avd.name, logPath, snapshot: "cold",
-  }).then(() => "LAUNCHED (bad)", (error) => (error as Error).message));
-  out("delete while running", (() => {
-    try {
-      deleteAdeAndroidAvd(avdHome, avd.name, runningNow);
-      return "DELETED (bad)";
-    } catch (error) {
-      return (error as Error).message;
-    }
-  })());
+    const runningNow = await readRunningAndroidEmulators({ registry, adbPath: paths.adb });
+    out("running emulators while booted", runningNow);
+    const me = runningNow.find((emulator) => emulator.avdName === avd.name);
+    if (!me) throw new Error("own emulator not in discovery");
+    out("restart-safe ownership (fresh registry from the same file)", new AdeStartedEmulators(path.join(work, "started.json")).owns(me));
+    out("avd row shows running", listAndroidAvds(avdHome, { running: runningNow }).find((entry) => entry.name === avd.name)?.running?.serial);
+    out("start the same AVD again", await launchAndroidEmulator({
+      emulatorPath: paths.emulator, sdkRoot: status.root, avdHome, avdName: avd.name, logPath, snapshot: "cold",
+    }).then(() => "LAUNCHED (bad)", (error) => (error as Error).message));
+    out("delete while running", (() => {
+      try {
+        deleteAdeAndroidAvd(avdHome, avd.name, runningNow);
+        return "DELETED (bad)";
+      } catch (error) {
+        return (error as Error).message;
+      }
+    })());
+    out("delete while running, with a stale running list (rename guard)", (() => {
+      try {
+        deleteAdeAndroidAvd(avdHome, avd.name, []);
+        return "DELETED (bad)";
+      } catch (error) {
+        return `${(error as Error).message} | ini still there: ${fs.existsSync(path.join(avdHome, `${avd.name}.ini`))}`;
+      }
+    })());
 
-  const me = runningNow.find((emulator) => emulator.avdName === avd.name)!;
-  const stop = await stopAndroidEmulator({
-    adbPath: paths.adb, serial: me.serial, consolePort: me.consolePort, avdName: me.avdName, pid: me.pid, launcherPid: launch.launcherPid, registry,
-  });
-  liveStop = null;
-  out("stopped", { ...stop, qemuAlive: isProcessAlive(me.pid), launcherAlive: isProcessAlive(launch.launcherPid), exit: await Promise.race([launch.exit, sleep(3000).then(() => "no exit event")]) });
+    const stop = await stopAndroidEmulator({
+      adbPath: paths.adb, serial: me.serial, consolePort: me.consolePort, avdName: me.avdName, pid: me.pid, launcherPid: launch.launcherPid, registry,
+    });
+    liveStop = null;
+    out(`${label}: stopped`, { ...stop, qemuAlive: isProcessAlive(me.pid), launcherAlive: isProcessAlive(launch.launcherPid), exit: await Promise.race([launch.exit, sleep(3000).then(() => "no exit event")]) });
+  }
   out("owner's emulator untouched", (await readRunningAndroidEmulators({ registry })).map((emulator) => `${emulator.avdName} ${emulator.serial} ade=${emulator.startedByAde}`));
-  out("log tail", fs.readFileSync(logPath, "utf8").split(/\r?\n/u).slice(-8).join("\n"));
+  const log = fs.readFileSync(logPath, "utf8").split(/\r?\n/u);
+  out("log warnings/errors", log.filter((line) => /WARNING|ERROR|unknown|ade\./iu.test(line)).slice(0, 25).join("\n"));
+  out("log tail", log.slice(-6).join("\n"));
 }
 
 main()

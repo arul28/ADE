@@ -70,7 +70,8 @@ export type AndroidDiscoveredEmulator = Omit<AndroidRunningEmulator, "startedByA
 
 /**
  * One discovery file. Keys (emulator 37): `port.serial` (console), `port.adb`,
- * `avd.name`, `avd.id`, `avd.dir`, `grpc.port`, `cmdline`, and `grpc.token` /
+ * `avd.id` (the AVD name), `avd.name` (its display name, which can be
+ * anything), `avd.dir`, `grpc.port`, `cmdline`, and `grpc.token` /
  * `grpc.jwks` when the emulator was started with gRPC auth (Android Studio
  * does that; ADE does not).
  */
@@ -79,7 +80,7 @@ export function parseAndroidDiscoveryFile(fileName: string, text: string): Andro
   if (!Number.isInteger(pid) || pid <= 0) return null;
   const values = parseAndroidIni(text);
   const consolePort = Number(values.get("port.serial"));
-  const avdName = values.get("avd.name") || values.get("avd.id") || "";
+  const avdName = values.get("avd.id") || values.get("avd.name") || "";
   if (!Number.isInteger(consolePort) || consolePort <= 0 || !avdName) return null;
   const adbPort = Number(values.get("port.adb"));
   const grpcPort = Number(values.get("grpc.port"));
