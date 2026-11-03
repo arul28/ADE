@@ -1422,6 +1422,19 @@ agent list. Only an **externally** minted link may have its owner resolved that
 way (`WorkSessionNavigationRequest.Origin.external`); the cold-launch restore
 must not, or a plain relaunch turns into a machine transition.
 
+A link that names both its computer and its project (`accountMachineKey` plus
+`projectId`, as every shared chat, lane and PR link does) is an **owned** link,
+routed by `DeepLinkRouter.routeOwned`: it waits for the account (a cold launch
+still restoring its session, or a signed-out person signing in, up to 10
+minutes), connects that machine (with the Wake & open card for a sleeping Mac),
+waits for this connection's live project catalog (`projectForOwnedLink` trusts
+no cached list: one canonical id names the same folder on every machine), opens
+the project, then the item. Each failure lands on the Hub with one line saying
+which step failed. Copy and share buttons stamp ownership only when the project
+id is canonical and the phone is connected to the machine it names
+(`SyncService.deeplinkOwnership`); another machine's lane is named by its plain
+id.
+
 ### Tailscale-off route hint
 
 Connection surfaces show an "iPhone isn't on Tailscale" warning card

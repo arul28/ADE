@@ -1446,10 +1446,28 @@ URL contract.
 - `/open?...` in the hosted client is normalized by `parseOpenTarget` in
   `webRoutes.ts`, then mapped to the same in-app routes the desktop renderer
   uses (`/lanes`, `/work`, `/prs`).
-- If a user opens `/open` before a machine is connected, `WebClientRoot.tsx`
-  stores the target in session storage and applies it after the user opens a
-  project from the welcome surface. Merely selecting or reconnecting a machine
-  does not consume the target.
+- The arriving target is kept in localStorage for 10 minutes
+  (`shell/pendingTarget.ts`), like the sign-in stash, so it survives a sign-in
+  round trip that loses session storage.
+- **Owned links** (chat, lane or PR links carrying `accountMachineKey` +
+  `projectId`) are resolved by `shell/ownedLinkResolution.ts` after sign-in,
+  instead of restoring the last project: find the account machine by key,
+  connect it ("Connecting to <machine>…"), match the project (catalog id, then
+  a legacy `projectRoot`, then the envelope repo when unambiguous), open it
+  unless already open, confirm the chat or lane exists there, then navigate.
+  Failures show one app banner (`WebOwnedLinkBanner.tsx`) with Try again and,
+  where it helps, Your computers: computer not in this account, computers list
+  unavailable, computer offline, could not connect, project not on that
+  computer, older ADE there, project failed to open, and chat or lane gone. For
+  failures before the project opens the last project is restored behind the
+  banner and the link keeps waiting; closing the banner drops it.
+- A link without ownership keeps the old behaviour: it is applied after the
+  user opens a project from the welcome surface. A waiting owned link is used
+  only when the project opened is its own. Merely selecting or reconnecting a
+  machine does not consume the target.
+- Links reach the web client from the website's `/open` page ("Open in your
+  browser", or a remembered browser choice), which forwards the query
+  unchanged; see [Deeplinks](../deeplinks/README.md).
 
 Entry points:
 

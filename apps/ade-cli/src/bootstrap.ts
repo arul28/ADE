@@ -133,6 +133,7 @@ import { getSharedModelPickerStore } from "./services/modelPickerStore";
 import { createAutomationIngressService, createKvIngressCursorStore } from "../../desktop/src/main/services/automations/automationIngressService";
 import { createLinearAccessTokenGetter, createLinearIngressService } from "../../desktop/src/main/services/automations/linearIngressService";
 import { createLinearAgentRuntime, type LinearAgentRuntime } from "../../desktop/src/main/services/cto/linearAgentRuntime";
+import { localLinkOwnership } from "./services/projects/localLinkOwnership";
 import { createLinearInboxAttentionService } from "../../desktop/src/main/services/cto/linearInboxAttentionService";
 import { linearIssuePatchFromEvent } from "../../desktop/src/main/services/cto/linearLaneSync";
 import { createLinearProofPoster } from "../../desktop/src/main/services/cto/linearProofPoster";
@@ -1205,6 +1206,7 @@ export async function createAdeRuntime(args: {
     let prServiceRef: ReturnType<typeof createPrService> | null = null;
     const publishLinearChatLink = createLinearChatLinkPublisher({
       getIssueTracker: () => linearIssueTrackerRef,
+      linkOwnership: () => localLinkOwnership(projectRoot, { logger }),
       resolveEnvelope: async ({ laneId }) => {
         const repo = await githubServiceRef?.getRepoOrThrow().catch(() => null);
         if (!repo) return null;
@@ -2978,6 +2980,7 @@ export async function createAdeRuntime(args: {
         getAccountId: () => accountAuthService.getStatus().userId ?? null,
         getMachineId: readSyncDeviceId,
         projectId,
+        linkOwnership: () => localLinkOwnership(projectRoot, { logger }),
         chat: {
           sendMessage: (args) => agentChat.sendMessage(args, { routeActiveToSteer: true }),
           interrupt: (args) => agentChat.interrupt(args),

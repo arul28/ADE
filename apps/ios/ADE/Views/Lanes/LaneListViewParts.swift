@@ -833,7 +833,8 @@ extension LanesTabView {
     }
 
     guard let resolvedSnapshot = snapshot else {
-      errorMessage = "The requested lane is not cached on this phone yet. Refresh Lanes and try again."
+      errorMessage = request.projectName.map { "That lane isn't in \($0) any more." }
+        ?? "The requested lane is not cached on this phone yet. Refresh Lanes and try again."
       syncService.requestedLaneNavigation = nil
       return
     }

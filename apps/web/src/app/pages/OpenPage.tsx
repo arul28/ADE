@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useLocation } from "react-router-dom";
-import { ArrowUpRight, Download, GitBranch } from "lucide-react";
+import { ArrowUpRight, Download, GitBranch, Globe } from "lucide-react";
 
 import { LinkButton } from "../../components/LinkButton";
 import { Page } from "../../components/Page";
@@ -9,16 +9,27 @@ import { useDocumentTitle } from "../../lib/useDocumentTitle";
 import { MARKETING_FEATURES } from "../../lib/marketingAnalytics";
 
 type OpenTarget =
-  | { kind: "lane"; laneId: string; envelope?: OpenEnvelope }
-  | { kind: "session"; sessionId: string; laneId?: string; event?: number; offset?: number; envelope?: OpenEnvelope }
+  | { kind: "lane"; laneId: string; envelope?: OpenEnvelope; ownership?: OpenOwnership }
+  | {
+      kind: "session";
+      sessionId: string;
+      laneId?: string;
+      event?: number;
+      offset?: number;
+      envelope?: OpenEnvelope;
+      ownership?: OpenOwnership;
+    }
   | { kind: "file"; path: string; line?: number; laneId?: string }
   | { kind: "commit"; sha: string; laneId?: string; envelope?: OpenEnvelope }
   | { kind: "artifact"; artifactId: string; envelope?: OpenEnvelope }
   | { kind: "branch"; repo: string; branch: string; pr?: number }
-  | { kind: "pr"; repo: string; number: number }
+  | { kind: "pr"; repo?: string; number: number; tab?: string; ownership?: OpenOwnership }
   | { kind: "linear-issue"; issueIdentifier: string; branch?: string }
   | { kind: "settings"; entryId: string; machineId?: string }
   | { kind: "unknown" };
+
+/** The computer and project a link belongs to (`shared/deeplinks.ts` DeeplinkOwnership). */
+type OpenOwnership = { accountMachineKey: string; projectId: string; projectRoot?: string };
 
 type OpenEnvelope = {
   repo?: string;
@@ -58,12 +69,35 @@ function readEnvelope(params: URLSearchParams): OpenEnvelope | undefined {
   return Object.keys(envelope).length > 0 ? envelope : undefined;
 }
 
+/**
+ * Both or neither, with the desktop parser's limits. `null` is a link that
+ * names an owner badly (one half, too long): ADE refuses those, so the page
+ * calls the link broken instead of opening it without its owner.
+ */
+function readOwnership(params: URLSearchParams): OpenOwnership | undefined | null {
+  const named = params.has("accountMachineKey") || params.has("projectId");
+  const accountMachineKey = (params.get("accountMachineKey") ?? "").trim();
+  const projectId = (params.get("projectId") ?? "").trim();
+  if (!accountMachineKey || !projectId) return named ? null : undefined;
+  if (accountMachineKey.length > 128 || projectId.length > 512) return null;
+  if (MACHINE_ID_BAD_RE.test(accountMachineKey) || MACHINE_ID_BAD_RE.test(projectId)) return null;
+  // Older links carry the publisher's private project id with its root path,
+  // which is what lets ADE find that project. No link minted today has it.
+  const projectRoot = (params.get("projectRoot") ?? "").trim();
+  return projectRoot && projectRoot.length <= 4_096
+    ? { accountMachineKey, projectId, projectRoot }
+    : { accountMachineKey, projectId };
+}
+
 function parseQuery(search: string): OpenTarget {
   const params = new URLSearchParams(search);
   const type = (params.get("type") ?? "").toLowerCase();
+  const read = readOwnership(params);
+  if (read === null && (type === "lane" || type === "session" || type === "pr")) return { kind: "unknown" };
+  const ownership = read ?? undefined;
   if (type === "lane") {
     const laneId = params.get("id") ?? "";
-    if (laneId) return { kind: "lane", laneId, envelope: readEnvelope(params) };
+    if (laneId) return { kind: "lane", laneId, envelope: readEnvelope(params), ownership };
   }
   if (type === "session") {
     const sessionId = params.get("id") ?? "";
@@ -78,6 +112,7 @@ function parseQuery(search: string): OpenTarget {
         ...(event != null ? { event } : {}),
         ...(offset != null ? { offset } : {}),
         envelope: readEnvelope(params),
+        ownership,
       };
     }
   }
@@ -113,8 +148,15 @@ function parseQuery(search: string): OpenTarget {
   if (type === "pr") {
     const repo = params.get("repo") ?? "";
     const number = positiveInteger(params.get("number"));
-    if (repo && number) {
-      return { kind: "pr", repo, number };
+    const tab = (params.get("tab") ?? "").trim();
+    if (number && (repo.includes("/") || ownership)) {
+      return {
+        kind: "pr",
+        ...(repo.includes("/") ? { repo } : {}),
+        number,
+        ...(tab ? { tab } : {}),
+        ...(ownership ? { ownership } : {}),
+      };
     }
   }
   if (type === "linear-issue") {
@@ -142,7 +184,7 @@ function buildAdeUrl(target: OpenTarget): string | null {
   switch (target.kind) {
     case "lane": {
       const base = `ade://lane/${encodeURIComponent(target.laneId)}`;
-      return appendQuery(base, envelopeEntries(target.envelope));
+      return appendQuery(base, [...envelopeEntries(target.envelope), ...ownershipEntries(target.ownership)]);
     }
     case "session": {
       const base = `ade://session/${encodeURIComponent(target.sessionId)}`;
@@ -151,6 +193,7 @@ function buildAdeUrl(target: OpenTarget): string | null {
         ["event", target.event],
         ["offset", target.offset],
         ...envelopeEntries(target.envelope),
+        ...ownershipEntries(target.ownership),
       ]);
     }
     case "file": {
@@ -178,9 +221,11 @@ function buildAdeUrl(target: OpenTarget): string | null {
       return appendQuery(base, [["pr", target.pr]]);
     }
     case "pr": {
-      const [owner, name] = target.repo.split("/");
-      if (!owner || !name) return null;
-      return `ade://pr/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/${target.number}`;
+      const [owner, name] = (target.repo ?? "").split("/");
+      const base = owner && name
+        ? `ade://pr/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/${target.number}`
+        : `ade://pr/${target.number}`;
+      return appendQuery(base, [["tab", target.tab], ...ownershipEntries(target.ownership)]);
     }
     case "linear-issue": {
       const base = `ade://linear-issue/${encodeURIComponent(target.issueIdentifier)}`;
@@ -207,6 +252,16 @@ function envelopeEntries(envelope: OpenEnvelope | undefined): Array<[string, str
   ];
 }
 
+function ownershipEntries(ownership: OpenOwnership | undefined): Array<[string, string | undefined]> {
+  return ownership
+    ? [
+        ["accountMachineKey", ownership.accountMachineKey],
+        ["projectId", ownership.projectId],
+        ["projectRoot", ownership.projectRoot],
+      ]
+    : [];
+}
+
 function appendQuery(base: string, entries: Array<[string, string | number | undefined]>): string {
   const params = new URLSearchParams();
   for (const [key, value] of entries) {
@@ -221,13 +276,13 @@ function describeTarget(target: OpenTarget): { title: string; summary: string; v
   switch (target.kind) {
     case "lane":
       return {
-        title: "Open worktree in ADE",
-        summary: `Worktree ${target.laneId.slice(0, 8)}…`,
+        title: "Open lane in ADE",
+        summary: `Lane ${target.laneId.slice(0, 8)}…`,
       };
     case "session":
       return {
-        title: "Open work session in ADE",
-        summary: target.laneId ? `Session ${target.sessionId} · worktree ${target.laneId.slice(0, 8)}…` : `Session ${target.sessionId}`,
+        title: "Open chat in ADE",
+        summary: target.laneId ? `Chat ${target.sessionId} · lane ${target.laneId.slice(0, 8)}…` : `Chat ${target.sessionId}`,
       };
     case "file":
       return {
@@ -257,7 +312,7 @@ function describeTarget(target: OpenTarget): { title: string; summary: string; v
       };
     case "pr":
       return {
-        title: `Open ${target.repo}#${target.number} in ADE`,
+        title: target.repo ? `Open ${target.repo}#${target.number} in ADE` : `Open PR #${target.number} in ADE`,
         summary: `Pull request #${target.number}`,
       };
     case "linear-issue":
@@ -291,12 +346,84 @@ function setOgTag(property: string, content: string): void {
   el.setAttribute("content", content);
 }
 
+/** Where the person chose to open ADE links, remembered on this browser. */
+type OpenPreference = "app" | "app-beta" | "web";
+const OPEN_PREFERENCE_KEY = "ade.openLinksIn";
+/** The web client: same query, its own origin (its sign-in and keys live there). */
+const WEB_CLIENT_OPEN_URL = "https://app.ade-app.dev/open";
+/** How long a remembered "app" waits before offering the browser instead. */
+const APP_FALLBACK_MS = 2_500;
+/** A remembered "browser" pauses this long, so the choice can still be changed. */
+const WEB_REDIRECT_MS = 800;
+
+/**
+ * After trying the app: still waiting, the page went to the background (the
+ * app or the browser's "open ADE?" prompt took over), or nothing happened.
+ */
+type AppAttempt = "idle" | "trying" | "handedOff" | "noResponse";
+
+function statusLine(redirectingToWeb: boolean, attempt: AppAttempt): string {
+  if (redirectingToWeb && attempt === "idle") return "Opening in your browser…";
+  switch (attempt) {
+    case "noResponse":
+      return "ADE didn't open? Open it in your browser instead, or install the app.";
+    case "handedOff":
+      return "Opened in the ADE app. Didn't work? Open it in your browser instead.";
+    case "trying":
+      return "Opening the ADE app…";
+    case "idle":
+      return "Where do you want to open it?";
+  }
+}
+
+/** iPhone and iPad, including an iPad that reports itself as a Mac. */
+function isAppleMobile(): boolean {
+  if (typeof navigator === "undefined") return false;
+  return /iPhone|iPad|iPod/.test(navigator.userAgent)
+    || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+}
+
+function readOpenPreference(): OpenPreference | null {
+  try {
+    const value = window.localStorage.getItem(OPEN_PREFERENCE_KEY);
+    return value === "app" || value === "app-beta" || value === "web" ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeOpenPreference(value: OpenPreference | null): void {
+  try {
+    if (value) window.localStorage.setItem(OPEN_PREFERENCE_KEY, value);
+    else window.localStorage.removeItem(OPEN_PREFERENCE_KEY);
+  } catch {
+    // Private mode: the choice holds for this visit only.
+  }
+}
+
+/** The web client opens every kind of ADE link, so any link that parsed can go there. */
+function webClientUrlFor(target: OpenTarget, search: string): string | null {
+  if (target.kind === "unknown") return null;
+  return `${WEB_CLIENT_OPEN_URL}${search}`;
+}
+
 export function OpenPage() {
   const location = useLocation();
   const target = useMemo(() => parseQuery(location.search), [location.search]);
   const adeUrl = useMemo(() => buildAdeUrl(target), [target]);
+  // The whole query goes on unchanged, so nothing the link carries is lost.
+  const webUrl = useMemo(() => webClientUrlFor(target, location.search), [target, location.search]);
   const { title, summary, valueLabel, value } = describeTarget(target);
-  const [launchAttempted, setLaunchAttempted] = useState(false);
+  const [preference, setPreference] = useState<OpenPreference | null>(() => readOpenPreference());
+  // Only a choice remembered from an earlier visit opens on its own. A choice
+  // made on this page has already opened, and Change cancels a pending one.
+  const [autoOpen, setAutoOpen] = useState<OpenPreference | null>(preference);
+  const [remember, setRemember] = useState(true);
+  const [appAttempt, setAppAttempt] = useState<AppAttempt>("idle");
+  const [attemptCount, setAttemptCount] = useState(0);
+  // The ADE Beta iPhone app registers `ade-beta://` instead of `ade://`.
+  const betaUrl = useMemo(() => (adeUrl ? adeUrl.replace(/^ade:/, "ade-beta:") : null), [adeUrl]);
+  const offerBeta = useMemo(() => isAppleMobile(), []);
 
   useDocumentTitle(title);
 
@@ -313,27 +440,90 @@ export function OpenPage() {
     setOgTag("og:url", `${CANONICAL_OPEN_ORIGIN}/open${location.search}`);
   }, [title, summary, location.search]);
 
-  // Try the ade:// upgrade automatically. If the OS routes the URL away from
-  // this page we won't see the result; if it stays here, we show the fallback.
+  const launchApp = (url: string) => {
+    setAppAttempt("trying");
+    setAttemptCount((count) => count + 1);
+    window.location.href = url;
+  };
+
+  // A click decides this visit: it cancels a remembered choice still pending,
+  // so the page never opens two places.
+  const choose = (value: OpenPreference) => {
+    setAutoOpen(null);
+    if (preference || !remember) return;
+    writeOpenPreference(value);
+    setPreference(value);
+  };
+
+  const openInApp = (value: "app" | "app-beta") => {
+    const url = value === "app-beta" ? betaUrl : adeUrl;
+    if (!url) return;
+    choose(value);
+    launchApp(url);
+  };
+
+  const openInBrowser = () => {
+    if (!webUrl) return;
+    choose("web");
+    window.location.assign(webUrl);
+  };
+
+  const forgetChoice = () => {
+    writeOpenPreference(null);
+    setPreference(null);
+    setAutoOpen(null);
+    setAppAttempt("idle");
+  };
+
+  // A remembered choice runs on its own. Without one nothing launches until the
+  // person picks: a page can't tell whether an app took an ade:// link (some
+  // browsers ask, some do nothing at all), so guessing would strand them.
   useEffect(() => {
-    if (!adeUrl) return;
-    setLaunchAttempted(true);
-    const t = setTimeout(() => {
-      try {
-        window.location.href = adeUrl;
-      } catch {
-        // ignore — fallback already visible
-      }
-    }, 250);
-    return () => clearTimeout(t);
-  }, [adeUrl]);
+    if (autoOpen === "web") {
+      if (!webUrl) return;
+      // A pause long enough to press Change.
+      const redirect = setTimeout(() => window.location.replace(webUrl), WEB_REDIRECT_MS);
+      return () => clearTimeout(redirect);
+    }
+    const url = autoOpen === "app" ? adeUrl : autoOpen === "app-beta" ? betaUrl : null;
+    if (!url) return;
+    const launch = setTimeout(() => launchApp(url), 150);
+    return () => clearTimeout(launch);
+  }, [autoOpen, adeUrl, betaUrl, webUrl]);
+
+  // Still here a while after trying the app: offer the browser and the
+  // installer. A page that went to the background meanwhile handed off.
+  useEffect(() => {
+    if (attemptCount === 0) return;
+    const handedOff = () => setAppAttempt("handedOff");
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") handedOff();
+    };
+    window.addEventListener("blur", handedOff);
+    document.addEventListener("visibilitychange", onVisibility);
+    const timer = setTimeout(
+      () => setAppAttempt((attempt) => (attempt === "trying" ? "noResponse" : attempt)),
+      APP_FALLBACK_MS,
+    );
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener("blur", handedOff);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [attemptCount]);
+  const appFailed = appAttempt === "noResponse";
+
+  const primaryButton =
+    "inline-flex items-center justify-center rounded-md bg-emerald-500 px-4 py-2 text-sm font-medium text-zinc-950 transition hover:bg-emerald-400";
+  const secondaryButton =
+    "inline-flex items-center justify-center rounded-md border border-zinc-700 px-4 py-2 text-sm font-medium text-zinc-200 transition hover:bg-zinc-800";
 
   return (
     <Page>
       <Section className="pt-24">
         <div className="mx-auto max-w-xl text-center space-y-6">
           <div className="inline-flex items-center justify-center rounded-full bg-emerald-500/10 px-4 py-1 text-emerald-300">
-            <GitBranch className="mr-2 h-4 w-4" /> ADE deeplink
+            <GitBranch className="mr-2 h-4 w-4" /> ADE link
           </div>
           <h1 className="text-3xl font-semibold tracking-tight">{title}</h1>
           <p className="text-zinc-400">{summary}</p>
@@ -345,28 +535,72 @@ export function OpenPage() {
           ) : null}
           {target.kind === "unknown" ? (
             <div className="rounded-lg border border-zinc-800 bg-zinc-950/50 p-6 text-left text-sm text-zinc-300">
-              This link is missing required parameters. Verify the URL or generate a fresh link from ADE.
+              This ADE link is broken: it is missing what it should open. Ask for a fresh link, or{" "}
+              <a className="text-emerald-300 underline" href={WEB_CLIENT_OPEN_URL.replace(/\/open$/, "/")}>
+                open the ADE web app
+              </a>
+              .
             </div>
           ) : null}
-          {adeUrl ? (
+          {adeUrl || webUrl ? (
             <div className="rounded-lg border border-zinc-800 bg-zinc-950/50 p-6 text-left text-sm">
-              <div className="text-zinc-400">
-                {launchAttempted
-                  ? "Trying to open ADE — if nothing happens, ADE may not be installed."
-                  : "Click below to launch ADE."}
-              </div>
+              <div className="text-zinc-400">{statusLine(autoOpen === "web", appAttempt)}</div>
               <div className="mt-4 flex flex-wrap gap-3">
-                <a
-                  href={adeUrl}
-                  data-ade-analytics-feature={MARKETING_FEATURES.OPEN_IN_DESKTOP}
-                  className="inline-flex items-center justify-center rounded-md bg-emerald-500 px-4 py-2 text-sm font-medium text-zinc-950 transition hover:bg-emerald-400"
-                >
-                  <ArrowUpRight className="mr-1 h-4 w-4" /> Open in ADE
-                </a>
-                <LinkButton to="/" analyticsFeature={MARKETING_FEATURES.VIEW_DOWNLOAD_PAGE} variant="secondary">
-                  <Download className="mr-1 h-4 w-4" /> Install ADE
-                </LinkButton>
+                {adeUrl ? (
+                  <button
+                    type="button"
+                    onClick={() => openInApp("app")}
+                    data-ade-analytics-feature={MARKETING_FEATURES.OPEN_IN_DESKTOP}
+                    className={appFailed ? secondaryButton : primaryButton}
+                  >
+                    <ArrowUpRight className="mr-1 h-4 w-4" /> Open in the ADE app
+                  </button>
+                ) : null}
+                {betaUrl && offerBeta ? (
+                  <button
+                    type="button"
+                    onClick={() => openInApp("app-beta")}
+                    data-ade-analytics-feature={MARKETING_FEATURES.OPEN_IN_DESKTOP}
+                    className={secondaryButton}
+                  >
+                    <ArrowUpRight className="mr-1 h-4 w-4" /> Open in ADE Beta
+                  </button>
+                ) : null}
+                {webUrl ? (
+                  <button
+                    type="button"
+                    onClick={openInBrowser}
+                    data-ade-analytics-feature={MARKETING_FEATURES.OPEN_WEB_CLIENT}
+                    className={appFailed || !adeUrl ? primaryButton : secondaryButton}
+                  >
+                    <Globe className="mr-1 h-4 w-4" /> Open in your browser
+                  </button>
+                ) : null}
+                {appFailed || !preference ? (
+                  <LinkButton to="/" analyticsFeature={MARKETING_FEATURES.VIEW_DOWNLOAD_PAGE} variant="secondary">
+                    <Download className="mr-1 h-4 w-4" /> Install ADE
+                  </LinkButton>
+                ) : null}
               </div>
+              {preference ? (
+                <button
+                  type="button"
+                  onClick={forgetChoice}
+                  className="mt-4 text-xs text-zinc-500 underline hover:text-zinc-300"
+                >
+                  {preference === "web"
+                    ? "Links open in your browser."
+                    : preference === "app-beta"
+                      ? "Links open in ADE Beta."
+                      : "Links open in the ADE app."}{" "}
+                  Change
+                </button>
+              ) : (
+                <label className="mt-4 flex items-center gap-2 text-xs text-zinc-500">
+                  <input type="checkbox" checked={remember} onChange={(event) => setRemember(event.target.checked)} />
+                  Remember my choice on this browser
+                </label>
+              )}
             </div>
           ) : null}
         </div>

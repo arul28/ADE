@@ -467,7 +467,8 @@ describe("SessionContextMenu grouped actions", () => {
 
     openSubmenuByHover(screen.getByRole("button", { name: "Copy" }));
     fireEvent.click(screen.getByRole("button", { name: "Session deep link" }));
-    expect(onCopySessionDeepLink).toHaveBeenCalledWith(session);
+    // The row's machine (null: this tab's own) names the link's owner.
+    expect(onCopySessionDeepLink).toHaveBeenCalledWith(session, null);
   });
 
   it("keeps the flat menu's top-level actions on the top level", () => {

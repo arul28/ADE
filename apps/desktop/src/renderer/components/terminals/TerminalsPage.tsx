@@ -61,6 +61,7 @@ import { buildDeeplink } from "../../../shared/deeplinks";
 import { machineIdForBinding } from "../../../shared/machineIdentity";
 import { parseGithubRemoteUrl } from "../../../shared/githubRemote";
 import { buildWebClientUrl } from "../../../shared/webClientUrl";
+import { linkOwnershipFor } from "../../lib/linkOwnership";
 import type { AgentChatSessionCreatedOptions } from "../chat/AgentChatPane";
 import {
   canBulkDeleteSession,
@@ -2225,11 +2226,15 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
           ? contextMenu.waitingReason ?? work.workBoardWaitingReasons.get(contextMenu.session.id) ?? null
           : null}
         onOpenChatHandoff={handleOpenChatHandoff}
-        onCopySessionDeepLink={(session) => {
+        onCopySessionDeepLink={(session, runtimePin) => {
           void (async () => {
+            // A focus-grid tile may not know a foreign chat's binding; the
+            // chat's own machine still names the link and answers the remote.
+            const pin = runtimePin ?? resolveSessionRuntimePin(session);
+            const ownership = await linkOwnershipFor(pin);
             const lane = work.lanes.find((candidate) => candidate.id === session.laneId) ?? null;
             const remote = session.laneId
-              ? await window.ade.git.getOriginRemote({ laneId: session.laneId }).catch(() => null)
+              ? await window.ade.git.getOriginRemote({ laneId: session.laneId }, pin ?? null).catch(() => null)
               : null;
             const repo = parseGithubRemoteUrl(remote?.remoteUrl ?? null);
             const branch = lane?.branchRef?.replace(/^refs\/heads\//, "") || remote?.branch || null;
@@ -2247,14 +2252,22 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
                       },
                     }
                   : {}),
+                ...(ownership ? { ownership } : {}),
               },
-              { form: "ade" },
             );
             copyToClipboard(href, "deep link");
           })();
         }}
-        onOpenSessionInWeb={(session) => {
-          openExternalUrl(buildWebClientUrl({ kind: "session", sessionId: session.id, laneId: session.laneId }));
+        onOpenSessionInWeb={(session, runtimePin) => {
+          void (async () => {
+            const ownership = await linkOwnershipFor(runtimePin ?? resolveSessionRuntimePin(session));
+            openExternalUrl(buildWebClientUrl({
+              kind: "session",
+              sessionId: session.id,
+              ...(session.laneId ? { laneId: session.laneId } : {}),
+              ...(ownership ? { ownership } : {}),
+            }));
+          })();
         }}
         onTogglePinned={(session) => work.togglePinnedSession(session.id)}
         pinnedSessionIds={work.pinnedSessionIds}

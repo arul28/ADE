@@ -7,6 +7,11 @@ import type {
   WebMachineWorkspaceSnapshot,
 } from "./WebMachineSessionManager";
 import { mergeWebMachines, type WebMachineEntry } from "./webWorkspaceModel";
+import type { OwnedLinkFailure } from "../shell/ownedLinkResolution";
+
+export type WebOwnedLinkState =
+  | { status: "resolving"; message: string }
+  | { status: "failed"; failure: OwnedLinkFailure };
 
 export type WebWorkspaceContextValue = {
   account: BrowserAccountSnapshot;
@@ -17,7 +22,19 @@ export type WebWorkspaceContextValue = {
   directoryLoading: boolean;
   notice: string | null;
   dismissNotice(): void;
+  /**
+   * The route for the link the visitor arrived with, once the project just
+   * opened is the one it belongs to. A link owned by another machine or
+   * project stays pending (null) instead of opening in the wrong place.
+   */
   consumePendingProjectPath(): string | null;
+  /**
+   * Progress or failure of opening a link on the machine and project that own
+   * it. Absent outside the hosted shell.
+   */
+  ownedLink?: WebOwnedLinkState | null;
+  retryOwnedLink?(): void;
+  dismissOwnedLink?(): void;
   signIn(): void;
   signOut(): Promise<void>;
   retryDirectory(): Promise<void>;

@@ -388,7 +388,7 @@ describe("buildDeeplink", () => {
     expect(expectOk(parseDeeplink(https))).toEqual(target);
   });
 
-  it("round-trips exact account ownership for session and PR links", () => {
+  it("round-trips exact account ownership for session, lane and PR links", () => {
     const ownership = {
       accountMachineKey: "machine-b",
       projectId: "project-b",
@@ -402,6 +402,10 @@ describe("buildDeeplink", () => {
       buildDeeplink(session, { form: "ade" }),
     ))).toEqual(session);
     expect(expectOk(parseDeeplink(buildDeeplink(session)))).toEqual(session);
+
+    const lane = { kind: "lane", laneId: UUID, ownership } as const;
+    expect(expectOk(parseDeeplink(buildDeeplink(lane, { form: "ade" })))).toEqual(lane);
+    expect(expectOk(parseDeeplink(buildDeeplink(lane)))).toEqual(lane);
 
     const pr = {
       kind: "pr",

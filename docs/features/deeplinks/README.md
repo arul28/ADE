@@ -33,9 +33,37 @@ dropped, never failing the link). A receiver that cannot resolve the primary id
 uses the envelope for real fallbacks; see "Portable envelopes and the
 resolution ladder" below.
 
-Links minted from an Activity item additionally carry **ownership** —
-`accountMachineKey` and `projectId` — so a receiver can route to the machine that
-owns the work instead of guessing. On iOS this is also what makes a link
+Chat (`session`), lane and PR links additionally carry **ownership** —
+`accountMachineKey` and `projectId`, always together — so a receiver can route
+to the machine that owns the work instead of guessing. Every link ADE mints for
+sharing stamps it when it knows them: Activity items, ADE MCP results
+(`remoteMcpTools.ts` `chatLink`, fed `TypedShapeContext` with this computer's key
+and the project's registry id), `ade chat inbox`, `ade link` (the brain action
+`get_link_ownership`, called with the id of the project the command runs in,
+looked up in the registry without registering anything, and with what the link
+points at: the brain answers only when this project holds that chat, lane or
+PR repository, so a link to another project's work goes out unowned; outside a
+project the link carries no ownership; skipped with `--no-envelope`), the Work and lane menus'
+**Copy link** / **Open in web** (`renderer/lib/linkOwnership.ts` →
+`remoteRuntime.linkOwnership`, which names a remote row's host by its paired
+machine key and that host's project id), and the Linear agent's "Open in ADE"
+and chat cards (`localLinkOwnership(projectRoot)` in
+`ade-cli/src/services/projects/localLinkOwnership.ts`). Desktop routes owned
+`work`, `chat`, `pr` and `lane` targets through `ownerAwareNavigation.ts`
+(a local project resolves against open windows, recents, then the machine
+project registry, so a project an agent, the CLI or a phone added still opens).
+A window opened for a link may get its navigation before the app has mounted;
+the preload holds it for the first `onNavigate` subscriber, and an owned lane
+link waits briefly for the lane list. An owned link clicked inside ADE (a chat,
+a card) goes to main over `IPC.appOpenOwnedDeeplink` and takes the same owner
+routing as one from outside; the web client, with no main process, opens it in
+place without the ownership. So an owned target the renderer dispatches was
+always routed there by its owner, and one whose chat or lane is gone says so
+("no longer in this project") rather than "on another machine". The
+web client (`webclient/shell/ownedLinkResolution.ts`) connects to the machine,
+opens the project, then the item; iOS does the same, and waits for the
+account (a cold launch restoring its session, or a signed-out person signing
+in, up to 10 minutes) before looking for the machine. On iOS this is also what makes a link
 openable against a sleeping Mac: the phone reads `accountMachineKey`, sees the
 machine announced sleep, and offers to wake it rather than failing the open (see
 [iOS companion → Waking a sleeping Mac](../sync-and-multi-device/ios-companion.md#waking-a-sleeping-mac)).
@@ -59,9 +87,27 @@ into a machine transition. Two rules govern what goes in `projectId`:
 `projectId` is the publishing machine's private uuid — and an over-long value is
 dropped rather than failing the whole link, since no link minted today carries it.
 
-The HTTPS form lives on `apps/web` (Vercel) and acts as a marketing landing
-page plus an OS-level upgrade into the `ade://` form when an ADE client is
-registered. The `ade://` form routes directly through the OS to the running
+The HTTPS form lives on `apps/web` (Vercel). Its `/open` page
+(`apps/web/src/app/pages/OpenPage.tsx`) forwards everything the link carries
+(ownership included) and offers **Open in the ADE app** (the `ade://` form) or
+**Open in your browser** (the web client at `https://app.ade-app.dev/open` with
+the same query: the web client must keep its own origin, which holds its
+sign-in and device keys), plus **Install ADE**. "Remember my choice" stores
+`ade.openLinksIn` (`app` | `web`) in that browser's localStorage. With no
+choice remembered nothing launches until the person picks: a page cannot tell
+whether an app took an `ade://` link (browsers ask, or do nothing), so an
+automatic attempt would strand someone without the app. With `web` remembered
+the page goes to the web client after 0.8 s (long enough to press **Change**);
+with `app` it tries the app and, 2.5 s later, makes the browser the main button
+("ADE didn't open?") unless the page lost focus meanwhile, which means the app
+or the browser's prompt took over. A **Change** link forgets the choice. On an
+iPhone or iPad the page also offers **Open in ADE Beta** (`ade-beta://`, the
+Beta app's scheme; only the App Store app claims the universal link). Desktop
+betas are the same `com.ade.desktop` app as stable and claim `ade://`. Alpha
+(a local build) declares the scheme too, so a Mac with only Alpha still opens
+links, but never claims the default: Stable's claim wins once it has run. One link format serves every client; `ade link --web` still
+mints the web client's own `/open` form, and `app.ade-app.dev` is accepted as a
+legacy host by desktop and iOS. The `ade://` form routes directly through the OS to the running
 desktop process (or starts it cold). Both forms parse to the same
 `AppNavigationTarget` shape and dispatch through `IPC.appNavigate`.
 
@@ -404,6 +450,14 @@ handoff should still include the GitHub URL and the ADE HTTPS PR URL so
 the user can jump directly to either GitHub or the ADE PRs tab.
 
 ## Channel handling
+
+The packaged app declares the scheme (`build.protocols` in
+`apps/desktop/package.json`, which electron-builder writes into the macOS
+`Info.plist` as `CFBundleURLTypes`). macOS refuses a runtime claim for a scheme
+the bundle does not declare, so before that declaration `ade://` reached no
+desktop build on a Mac. Windows needs no declaration: the runtime claim writes
+`HKCU\Software\Classes\ade` (`"<install>\ADE.exe" "%1"`), and the uninstaller
+removes it.
 
 Only the **Stable** channel claims `ade://` as the OS-default handler.
 Alpha builds still install the single-instance lock and the

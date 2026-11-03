@@ -1391,10 +1391,22 @@ extension WorkSessionDestinationView {
       resolvedWorkNavigationLaneId(for: $0, lanes: lanes)
     }
     let lane = laneId.flatMap { id in lanes.first(where: { $0.id == id }) }
+    // A personal chat belongs to a machine, not a project: no owner pair.
+    let ownership = personalChat
+      ? nil
+      : syncService.deeplinkOwnership(
+        fleetMachineKey: crossProjectContext?.machineKey,
+        projectId: crossProjectContext?.projectId
+      )
+    // Another machine's lane is listed under a namespaced id. A link that
+    // names its machine names the plain lane, as that machine knows it; one
+    // without an owner keeps the namespaced id, which is what tells this phone
+    // the chat lives on another machine.
     UIPasteboard.general.string = workSessionDeepLink(
       sessionId: sessionId,
-      laneId: laneId,
-      envelope: LaneDeeplinkHelpers.envelope(lane: lane, pullRequest: laneOpenPr)
+      laneId: ownership == nil ? laneId : laneId.map { workParseRemoteLaneId($0)?.laneId ?? $0 },
+      envelope: LaneDeeplinkHelpers.envelope(lane: lane, pullRequest: laneOpenPr),
+      ownership: ownership
     )
     sessionDeepLinkCopied = true
     Task { @MainActor in

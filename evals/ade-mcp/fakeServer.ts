@@ -124,20 +124,25 @@ function callTool(name: string, rawInput: Input): Record<string, unknown> {
     const hit = (evalCase!.ade ?? []).find((entry) => new RegExp(entry.match, "i").test(line));
     return { content: [{ type: "text", text: `${projectLine}\n${hit?.text ?? "(no output)"}` }], isError: Boolean(hit?.isError) };
   }
-  const frame = { headLine: projectLine, project: { id: project.projectId, name: project.displayName, path: project.rootPath } };
+  const frame = {
+    headLine: projectLine,
+    project: { id: project.projectId, name: project.displayName, path: project.rootPath },
+    // Links in results name this computer and the project, as the real protocol stamps them.
+    context: { ownership: { accountMachineKey: "k-mbp", projectId: project.projectId } },
+  };
   // The CLI takes ids, not names: an unknown one fails the way ADE fails it.
   if (typeof input.lane === "string" && !LANE_IDS.has(input.lane)) {
-    return buildTypedToolResult(typed, input, scriptedRun("", 1, `ade: Lane not found: ${input.lane}`), frame);
+    return buildTypedToolResult(typed, input, scriptedRun("", 1, `ade: Lane not found: ${input.lane}`), frame).answer;
   }
   if (typeof input.session === "string" && !SESSION_IDS.has(input.session)) {
-    return buildTypedToolResult(typed, input, scriptedRun("", 1, `ade: Chat session '${input.session}' was not found.`), frame);
+    return buildTypedToolResult(typed, input, scriptedRun("", 1, `ade: Chat session '${input.session}' was not found.`), frame).answer;
   }
   const output = scripted(name, input);
   if (output === undefined) return errorResult(`${projectLine}\n(the eval has no scripted output for ${name})`);
   if (output && typeof output === "object" && "$error" in output) {
-    return buildTypedToolResult(typed, input, scriptedRun("", 1, String((output as { $error: unknown }).$error)), frame);
+    return buildTypedToolResult(typed, input, scriptedRun("", 1, String((output as { $error: unknown }).$error)), frame).answer;
   }
-  return buildTypedToolResult(typed, input, scriptedRun(JSON.stringify(output)), frame);
+  return buildTypedToolResult(typed, input, scriptedRun(JSON.stringify(output)), frame).answer;
 }
 
 const lines = readline.createInterface({ input: process.stdin });

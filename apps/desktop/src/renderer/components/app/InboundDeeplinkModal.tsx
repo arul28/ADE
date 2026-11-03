@@ -289,10 +289,17 @@ export function InboundDeeplinkModal({
     if (currentTarget.kind !== "foreign") return null;
     const envelope = currentTarget.envelope;
     const repoLabel = envelope?.repoOwner && envelope.repoName ? `${envelope.repoOwner}/${envelope.repoName}` : null;
-    const headline = repoLabel
-      ? `This ${currentTarget.entity} lives in ${repoLabel} on another machine.`
-      // No repo and no connected machine holds it: do not claim where it lives.
-      : `ADE cannot find this ${currentTarget.entity} on this machine or on a connected machine.`;
+    // A link that names its machine and project was routed to that project, so
+    // what it points at is gone from it, not somewhere else.
+    const original = currentTarget.original;
+    const owned = (original.kind === "lane" || original.kind === "chat" || original.kind === "work")
+      && Boolean(original.ownership?.accountMachineKey && original.ownership.projectId);
+    const headline = owned
+      ? `This ${currentTarget.entity} is no longer in this project. It may have been archived or deleted.`
+      : repoLabel
+        ? `This ${currentTarget.entity} lives in ${repoLabel} on another machine.`
+        // No repo and no connected machine holds it: do not claim where it lives.
+        : `ADE cannot find this ${currentTarget.entity} on this machine or on a connected machine.`;
     const hasRepo = Boolean(envelope?.repoOwner && envelope.repoName);
     const actions: React.ReactNode[] = [];
     if (hasRepo && envelope?.branch) {
@@ -370,10 +377,12 @@ export function InboundDeeplinkModal({
     }
 
     return renderFrame(
-      repoLabel ? "This link points at a machine-local ADE id." : "This link does not resolve on this machine.",
+      owned
+        ? `${currentTarget.entity === "chat" ? "Chat" : "Lane"} not found`
+        : repoLabel ? "This link points at a machine-local ADE id." : "This link does not resolve on this machine.",
       <>
         <div style={{ fontFamily: SANS_FONT, fontSize: 13, color: COLORS.textPrimary, lineHeight: 1.5 }}>{headline}</div>
-        {!repoLabel ? <div style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textSecondary, lineHeight: 1.5 }}>The link did not carry anything this machine can open.</div> : null}
+        {!repoLabel && !owned ? <div style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textSecondary, lineHeight: 1.5 }}>The link did not carry anything this machine can open.</div> : null}
         {actions.length > 0 ? <div style={{ display: "grid", gap: 8 }}>{actions}</div> : null}
       </>,
       [{ label: "Close", onClick: onClose, variant: "secondary" }],

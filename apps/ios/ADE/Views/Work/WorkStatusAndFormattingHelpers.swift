@@ -71,12 +71,14 @@ func workSessionDeepLink(
   sessionId: String,
   laneId: String?,
   envelope: ADEDeeplinkEnvelope? = nil,
+  ownership: ADEDeeplinkOwnership? = nil,
   form: ADEDeeplinkForm = .https
 ) -> String {
   LaneDeeplinkHelpers.sessionLink(
     sessionId: sessionId,
     laneId: laneId,
     envelope: envelope,
+    ownership: ownership,
     form: form
   )
 }

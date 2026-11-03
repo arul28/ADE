@@ -21,6 +21,16 @@ import { WebMachineSessionManager } from "../workspace/WebMachineSessionManager"
 import { mergeWebMachines, webMachineCatalogKeys } from "../workspace/webWorkspaceModel";
 import { createAccountNamespace } from "../adapter/account";
 import { parseOpenTarget, parseWebPath, targetToWebPath } from "./webRoutes";
+import { readPendingTarget, stashPendingTarget } from "./pendingTarget";
+import {
+  matchOwnedProject,
+  navigateMountedApp,
+  ownedLinkStageText,
+  ownershipOfTarget,
+  resolveOwnedLink,
+  type OwnedLinkResult,
+} from "./ownedLinkResolution";
+import type { WebOwnedLinkState } from "../workspace/WebWorkspaceContext";
 import { ScreenShell } from "./ScreenShell";
 import { installSessionLifecycleChrome } from "./sessionLifecycleChrome";
 import { COLORS, SANS_FONT, primaryButton } from "./shellTokens";
@@ -52,11 +62,12 @@ function loadAppStylesheet(): Promise<unknown> {
 }
 
 async function loadAppRoot(): Promise<React.ComponentType> {
-  const [, { App }, { RendererErrorBoundary }, { useAppStore }] = await Promise.all([
+  const [, { App }, { RendererErrorBoundary }, { useAppStore }, { WebOwnedLinkBanner }] = await Promise.all([
     loadAppStylesheet(),
     import("../../components/app/App"),
     import("../../components/app/RendererErrorBoundary"),
     import("../../state/appStore"),
+    import("./WebOwnedLinkBanner"),
   ]);
   try {
     useAppStore.getState().applyAutoSizeChatFontOnLargeScreenIfNotOverridden();
@@ -66,6 +77,7 @@ async function loadAppRoot(): Promise<React.ComponentType> {
   return function MountedApp() {
     return (
       <RendererErrorBoundary>
+        <WebOwnedLinkBanner />
         <App />
       </RendererErrorBoundary>
     );
@@ -87,7 +99,6 @@ function preloadWorkspaceModules(): void {
   ]).catch(() => undefined);
 }
 
-const PENDING_TARGET_KEY = "ade-web:pending-target";
 const ACCOUNT_LEASE_CHECK_INTERVAL_MS = 30_000;
 /**
  * Where a boot with nothing to restore lands. The shared App renders its
@@ -116,24 +127,6 @@ const APP_ROUTE_ROOTS = [
 
 function isAppRoute(pathname: string): boolean {
   return APP_ROUTE_ROOTS.some((root) => pathname === root || pathname.startsWith(`${root}/`));
-}
-
-function stashTarget(target: DeeplinkTarget | null): void {
-  try {
-    if (target) sessionStorage.setItem(PENDING_TARGET_KEY, JSON.stringify(target));
-    else sessionStorage.removeItem(PENDING_TARGET_KEY);
-  } catch {
-    // A private browser may deny session storage.
-  }
-}
-
-function readStashedTarget(): DeeplinkTarget | null {
-  try {
-    const raw = sessionStorage.getItem(PENDING_TARGET_KEY);
-    return raw ? (JSON.parse(raw) as DeeplinkTarget) : null;
-  } catch {
-    return null;
-  }
 }
 
 function accountEnvironmentOwner(snapshot: BrowserAccountSnapshot): string | null {
@@ -209,6 +202,8 @@ export function WebClientRoot({
   const [directoryLoading, setDirectoryLoading] = useState(false);
   const [connectingMachineKey, setConnectingMachineKey] = useState<string | null>(null);
   const [workspaceNotice, setWorkspaceNotice] = useState<string | null>(null);
+  const [ownedLink, setOwnedLink] = useState<WebOwnedLinkState | null>(null);
+  const ownedLinkRunRef = useRef(0);
   const [federatedAdapter, setFederatedAdapter] = useState<FederatedWebAdapter | null>(null);
   const [activeAdapterGeneration, setActiveAdapterGeneration] = useState(0);
   // Remounting the app tree is reserved for a genuinely different workspace —
@@ -289,6 +284,74 @@ export function WebClientRoot({
     throw new Error("This machine has no connection ADE Web can dial.");
   }, [refreshVisibleEnvironments, sessionManager]);
 
+  /** The account's machines merged with the live sessions, read fresh. */
+  const currentMachines = useCallback(() => mergeWebMachines({
+    accountMachines: accountClient.getSnapshot().machines,
+    snapshot: sessionManager.getSnapshot(),
+    relayBaseUrls: accountClient.getRelayBaseUrls(),
+  }), [accountClient, sessionManager]);
+
+  const clearPendingTarget = useCallback(() => {
+    pendingTargetRef.current = null;
+    stashPendingTarget(null);
+  }, []);
+
+  /**
+   * Record an owned link's outcome. Returns the route to land on (its item,
+   * or its project when only the item is gone), or null to stay where the
+   * person was with the link still pending.
+   */
+  const settleOwnedLink = useCallback((result: OwnedLinkResult): string | null => {
+    if (result.ok) {
+      setOwnedLink(null);
+      clearPendingTarget();
+      return result.path;
+    }
+    setOwnedLink({ status: "failed", failure: result.failure });
+    if (!result.failure.projectPath) return null;
+    clearPendingTarget();
+    return result.failure.projectPath;
+  }, [clearPendingTarget]);
+
+  /**
+   * Open an owned link on its machine and project (see ownedLinkResolution.ts).
+   * `onStage` reports each step; the result is the route or the failure.
+   */
+  const resolveOwnedTarget = useCallback(async (
+    target: DeeplinkTarget,
+    adapter: FederatedWebAdapter,
+    onStage: (message: string) => void,
+  ): Promise<OwnedLinkResult | null> => {
+    const ownership = ownershipOfTarget(target);
+    if (!ownership) return null;
+    return await resolveOwnedLink(target, ownership, {
+      machines: currentMachines,
+      directoryUnavailable: () => accountClient.getSnapshot().state === "directory_unavailable",
+      connect: connectMachineEntry,
+      catalog: (targetId) => sessionManager.getSession(targetId)?.projects ?? [],
+      // The manager skips the switch when the project is already the open
+      // one, and the adapter still has to bind the tab to it.
+      openProject: async (targetId, projectId) => {
+        await adapter.openProject(targetId, projectId);
+      },
+      sessionExists: async (sessionId) => {
+        // Unpinned on purpose: the owning project was just opened, so the
+        // displayed adapter is that machine's. Authoritative, so null is "gone"
+        // and a host that cannot answer rejects instead.
+        const detail = await adapter.ade.sessions.get(sessionId, undefined, { authoritative: true });
+        return detail != null;
+      },
+      laneExists: async (laneId) => {
+        const lanes = await adapter.ade.lanes.list({ includeArchived: true, includeStatus: false });
+        // A project always has its primary lane; an empty list is a read that
+        // fell back, not an answer.
+        if (!Array.isArray(lanes) || lanes.length === 0) return null;
+        return lanes.some((lane) => lane.id === laneId);
+      },
+      onStage: (stage) => onStage(ownedLinkStageText(stage)),
+    });
+  }, [accountClient, connectMachineEntry, currentMachines, sessionManager]);
+
   const reconnectLastActiveMachine = useCallback(async () => {
     const machineKey = sessionManager.getLastActiveMachineKey();
     if (!machineKey) return;
@@ -308,6 +371,7 @@ export function WebClientRoot({
 
   const installFederatedAdapter = useCallback(async (
     snapshot: BrowserAccountSnapshot,
+    options: { restore?: boolean } = {},
   ): Promise<{
     adapter: FederatedWebAdapter;
     restored: "project" | "chats" | null;
@@ -345,7 +409,9 @@ export function WebClientRoot({
     setFederatedAdapter(adapter);
     setWorkspaceGeneration((current) => current + 1);
     window.ade = adapter.ade;
-    const restored = await adapter.restore();
+    // A link owned by another machine or project skips the restore: dialing the
+    // last machine and reopening its project would only be undone.
+    const restored = options.restore === false ? null : await adapter.restore();
     return { adapter, restored };
   }, [accountClient, client, sessionManager]);
 
@@ -439,13 +505,16 @@ export function WebClientRoot({
         window.history.replaceState(null, "", "/");
       }
       const path = window.location.pathname;
+      const linkInUrl = path === "/open" || isAppRoute(path);
+      // A link in this URL replaces any stored one. A stored link keeps its
+      // own age, so revisiting ADE Web does not keep an abandoned link alive.
       const pendingTarget = path === "/open"
         ? parseOpenTarget(window.location.search)
         : isAppRoute(path)
           ? parseWebPath(`${path}${window.location.search}`)
-          : readStashedTarget();
+          : readPendingTarget();
       pendingTargetRef.current = pendingTarget;
-      stashTarget(pendingTarget);
+      if (linkInUrl) stashPendingTarget(pendingTarget);
 
       const wasCallback = path === "/account/callback";
       if (!wasCallback) {
@@ -487,19 +556,40 @@ export function WebClientRoot({
         return;
       }
 
-      const { restored } = await installFederatedAdapter(snapshot);
+      const linkTarget = pendingTargetRef.current ?? readPendingTarget();
+      const ownedLinkTarget = ownershipOfTarget(linkTarget) ? linkTarget : null;
+      const installed = await installFederatedAdapter(snapshot, { restore: !ownedLinkTarget });
       if (disposed) return;
-      const restoredTarget = readStashedTarget();
-      const initialPath = restored
-        ? restoredTarget
-          ? targetToWebPath(restoredTarget)
-          : isAppRoute(path)
-            ? `${path}${window.location.search}`
-            : WELCOME_PATH
-        : WELCOME_PATH;
-      if (restored) {
-        pendingTargetRef.current = null;
-        stashTarget(null);
+      let restored = installed.restored;
+      let initialPath: string;
+      if (ownedLinkTarget) {
+        // A chat, lane or PR link names its machine and project: go there, not
+        // to whatever this browser had open last.
+        const runId = ++ownedLinkRunRef.current;
+        const result = await resolveOwnedTarget(ownedLinkTarget, installed.adapter, (message) => {
+          if (!disposed && ownedLinkRunRef.current === runId) setPhase({ kind: "booting", message });
+        });
+        if (disposed) return;
+        const landing = result ? settleOwnedLink(result) : null;
+        if (landing) {
+          initialPath = landing;
+        } else {
+          // Say what went wrong over where the person was, and keep the link
+          // pending: opening its project from the welcome page still lands on it.
+          restored = await installed.adapter.restore();
+          if (disposed) return;
+          initialPath = WELCOME_PATH;
+        }
+      } else {
+        const restoredTarget = pendingTargetRef.current ?? readPendingTarget();
+        initialPath = restored
+          ? restoredTarget
+            ? targetToWebPath(restoredTarget)
+            : isAppRoute(path)
+              ? `${path}${window.location.search}`
+              : WELCOME_PATH
+          : WELCOME_PATH;
+        if (restored) clearPendingTarget();
       }
       window.history.replaceState(null, "", initialPath);
       const AppRoot = await loadAppRoot();
@@ -529,10 +619,85 @@ export function WebClientRoot({
   }, [
     accountClient,
     applyAccountPrivacy,
+    clearPendingTarget,
     installFederatedAdapter,
     reconnectLastActiveMachine,
+    resolveOwnedTarget,
     sessionManager,
+    settleOwnedLink,
   ]);
+
+  /**
+   * Whether the project tab just opened is where a pending link belongs. A link
+   * without ownership opens in any project, as it always has; an owned one only
+   * in its own, so picking another project on the welcome page leaves it waiting.
+   */
+  const pendingTargetBelongsToActiveProject = useCallback((target: DeeplinkTarget): boolean => {
+    const ownership = ownershipOfTarget(target);
+    if (!ownership) return true;
+    const binding = federatedAdapterRef.current?.getActiveBinding() ?? null;
+    if (!binding) return false;
+    const machine = currentMachines().find((entry) => (
+      entry.session?.targetId === binding.targetId || entry.environment?.envId === binding.targetId
+    ));
+    if (machine?.accountMachine?.machineKey !== ownership.accountMachineKey) return false;
+    const match = matchOwnedProject(sessionManager.getSession(binding.targetId)?.projects ?? [], ownership, target);
+    return match.kind === "found" && match.project.id === binding.projectId;
+  }, [currentMachines, sessionManager]);
+
+  const dismissOwnedLink = useCallback(() => {
+    ownedLinkRunRef.current += 1;
+    setOwnedLink(null);
+    clearPendingTarget();
+  }, [clearPendingTarget]);
+
+  /**
+   * Try the pending link again with the app up: progress and failure ride the
+   * app banner, and success moves the mounted router to the link's route.
+   */
+  const retryOwnedLink = useCallback(() => {
+    const target = pendingTargetRef.current ?? readPendingTarget();
+    const adapter = federatedAdapterRef.current;
+    if (!target || !adapter || !ownershipOfTarget(target)) {
+      setOwnedLink(null);
+      return;
+    }
+    const runId = ++ownedLinkRunRef.current;
+    const current = () => ownedLinkRunRef.current === runId;
+    setOwnedLink({ status: "resolving", message: "Checking your computers…" });
+    void (async () => {
+      try {
+        // The machine may have come online, or joined the account, since the
+        // last try: read the directory again before deciding.
+        const snapshot = await accountClient.loadMachines();
+        if (!current()) return;
+        setAccount(snapshot);
+        sessionManager.setRelayAccess(
+          relayAccessFromAccount(snapshot, () => accountClient.getAccessToken()),
+        );
+      } catch {
+        // The cached directory still answers; a stale one is retried next time.
+      }
+      const result = await resolveOwnedTarget(target, adapter, (message) => {
+        if (current()) setOwnedLink({ status: "resolving", message });
+      });
+      if (!current() || !result) return;
+      const landing = settleOwnedLink(result);
+      if (landing) navigateMountedApp(landing);
+    })().catch((error) => {
+      if (!current()) return;
+      setOwnedLink({
+        status: "failed",
+        failure: {
+          kind: "open-failed",
+          title: "Couldn't open this link.",
+          detail: error instanceof Error ? error.message : String(error),
+          retryable: true,
+          offerComputers: true,
+        },
+      });
+    });
+  }, [accountClient, resolveOwnedTarget, sessionManager, settleOwnedLink]);
 
   const signIn = useCallback(() => {
     void accountClient.startSignIn().catch((error) => {
@@ -553,12 +718,16 @@ export function WebClientRoot({
       notice: workspaceNotice,
       dismissNotice: () => setWorkspaceNotice(null),
       consumePendingProjectPath() {
-        const target = pendingTargetRef.current ?? readStashedTarget();
+        const target = pendingTargetRef.current ?? readPendingTarget();
         if (!target) return null;
-        pendingTargetRef.current = null;
-        stashTarget(null);
+        if (!pendingTargetBelongsToActiveProject(target)) return null;
+        clearPendingTarget();
+        setOwnedLink(null);
         return targetToWebPath(target);
       },
+      ownedLink,
+      retryOwnedLink,
+      dismissOwnedLink,
       signIn,
       async signOut() {
         const snapshot = await accountClient.signOut();
@@ -639,10 +808,15 @@ export function WebClientRoot({
     connectMachineEntry,
     connectingMachineKey,
     directoryLoading,
+    clearPendingTarget,
     federatedAdapter,
+    dismissOwnedLink,
     installFederatedAdapter,
+    ownedLink,
+    pendingTargetBelongsToActiveProject,
     refreshVisibleEnvironments,
     retryDirectory,
+    retryOwnedLink,
     sessionManager,
     signIn,
     workspaceNotice,

@@ -111,7 +111,8 @@ the **ade-pr-workflows** skill for the limits.
 ade proof attach "$TMPDIR/checkout.png" --caption "Checkout completes" --text
 ade proof list --text          # confirm the row is there
 ade proof status --text
-ade proof review <id> --text   # a frame sheet (video) or the file (picture) to check
+ade proof review <id> --text   # a sheet of a video's key moments (or the picture) to check
+ade proof review <id> --from 12 --to 18 --text   # a closer look at part of it
 ade proof capture --caption "Checkout confirmation visible" --text     # the lane's display
 ade proof record --seconds 20 --caption "Retry flow recovers" --text  # the lane's display
 ade help proof

@@ -2,7 +2,7 @@ import type { PendingInputRequest } from "../../desktop/src/shared/types/chat";
 import { optionsForQuestion } from "../../desktop/src/shared/pendingInputAnswers";
 import { pendingInputIsAnswerable, pendingInputItemId } from "../../desktop/src/shared/pendingInputCommand";
 import { isChatToolType } from "../../desktop/src/shared/sessionSpawnNesting";
-import { buildDeeplink } from "../../desktop/src/shared/deeplinks";
+import { buildDeeplink, parseDeeplinkOwnership } from "../../desktop/src/shared/deeplinks";
 import {
   actionStep,
   asString,
@@ -153,8 +153,19 @@ function isInboxItem(row: JsonObject): row is JsonObject & ChatInboxItem {
     && Array.isArray(row.respond);
 }
 
-function chatLink(sessionId: string, laneId: string): string {
-  return buildDeeplink({ kind: "session", sessionId, ...(laneId ? { laneId } : {}) });
+/**
+ * A link to the chat that carries this computer and project when the brain
+ * named them (`get_link_ownership`; an older brain does not), so it opens on
+ * the right computer and project from anywhere.
+ */
+function chatLink(sessionId: string, laneId: string, values: JsonObject): string {
+  const ownership = parseDeeplinkOwnership(unwrapActionEnvelope(values.ownership));
+  return buildDeeplink({
+    kind: "session",
+    sessionId,
+    ...(laneId ? { laneId } : {}),
+    ...(ownership ? { ownership } : {}),
+  });
 }
 
 /** The result of `ade chat inbox`, from its steps' values. */
@@ -171,7 +182,7 @@ function chatInboxFromValues(values: JsonObject): { items: ChatInboxItem[] } {
       lane: asString(row.laneName),
       model: asString(row.model),
     };
-    const link = chatLink(sessionId, laneId);
+    const link = chatLink(sessionId, laneId, values);
     const since = asString(row.attentionRequestedAt) ?? asString(row.lastActivityAt);
     const index = detailed.indexOf(row);
     const listed = index >= 0 ? unwrapActionEnvelope(values[`pending${index}`]) : null;
@@ -246,6 +257,13 @@ export function buildChatInboxPlan(): CliPlan {
     steps: [
       actionStep("sessions", "session", "list", { includeArchived: false, limit: 500, settledLimit: 50 }),
       ...pendingSteps,
+      {
+        key: "ownership",
+        method: "ade/actions/call",
+        unwrapToolResult: true,
+        optional: true,
+        params: { name: "get_link_ownership", arguments: {} },
+      },
     ],
     shapeResult: chatInboxFromValues,
     formatText: formatChatInbox,

@@ -9,7 +9,9 @@ import {
 import { resolveCurrentCliEntry } from "./lib/cliDelegation";
 import { DEMO_STEP_MAX_CHARS, RECORDING_MAX_MS, parseDemoStepFocus } from "../../desktop/src/shared/demoVideo/demoContract";
 import { createDemoEngineSet } from "../../desktop/src/main/services/demoVideo/demoEngines";
-import { reviewProofFile } from "../../desktop/src/main/services/demoVideo/proofReview";
+import { localLinkOwnership } from "./services/projects/localLinkOwnership";
+import { reviewProofFile, type ProofReviewWindow } from "../../desktop/src/main/services/demoVideo/proofReview";
+import { SHEET_MAX_FRAMES } from "../../desktop/src/main/services/demoVideo/sheetFrames";
 import { resolveStoredProofFile } from "../../desktop/src/main/services/prs/prBodyProofStaging";
 import { QUESTION_DECLINED_MODEL_MESSAGE, answersForModel } from "../../desktop/src/shared/pendingInputAnswers";
 import { THREAD_COMMENT_ACTION_NAMES } from "../../desktop/src/shared/threadComments";
@@ -102,6 +104,7 @@ import {
 import { buildDeeplink, isValidCommitSha, isValidRepoRelativePath } from "../../desktop/src/shared/deeplinks";
 import {
   PROOF_LISTING_ARTIFACT_FILTER,
+  type ComputerUseArtifactView,
   type ComputerUseProofProvenanceInput,
 } from "../../desktop/src/shared/types/computerUseArtifacts";
 import { normalizeLaneStart } from "../../desktop/src/shared/laneStart";
@@ -828,13 +831,16 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "review_computer_use_artifact",
-    description: "Check a proof before a person sees it (`ade proof review`). For a video, writes a contact sheet of frames across it (a PNG under the project's .ade/cache/proof-review) to look at; for a picture, returns its path. Both come with findings ADE can tell from the file and its record (too short, no captions, a plain recording, a thin strip).",
+    description: "Check a proof before a person sees it (`ade proof review`). For a video, writes a contact sheet of its key moments (the ends, each step's outcome, the biggest changes; a PNG under the project's .ade/cache/proof-review) to look at, with why each frame is there; from/to look closer at part of it. For a picture, returns its path. Both come with findings ADE can tell from the file and its record (too short, no captions, a plain recording, a thin strip). With chatSessionId instead of artifactId, reviews that chat's newest video (else its newest proof).",
     inputSchema: {
       type: "object",
       additionalProperties: false,
-      required: ["artifactId"],
       properties: {
         artifactId: { type: "string", minLength: 1 },
+        chatSessionId: { type: "string", minLength: 1 },
+        from: { type: "number", minimum: 0 },
+        to: { type: "number", minimum: 0 },
+        frames: { type: "integer", minimum: 1, maximum: SHEET_MAX_FRAMES },
       }
     }
   },
@@ -948,6 +954,19 @@ const TOOL_SPECS: ToolSpec[] = [
       properties: {
         includeArchived: { type: "boolean", default: false }
       }
+    }
+  },
+  {
+    name: "get_link_ownership",
+    description: "This computer's account machine key and this project's id, which ADE links carry so they open on the right computer and project from anywhere. Pass what the link points at (a chat, a lane, a PR's owner/repo): both come back null unless this project holds it.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        sessionId: { type: "string" },
+        laneId: { type: "string" },
+        repo: { type: "string", description: "owner/name of a PR's repository" },
+      },
     }
   },
   {
@@ -1664,6 +1683,7 @@ const READ_ONLY_TOOLS = new Set([
   "get_lane_status",
   "get_lane_conflict_state",
   "list_lanes",
+  "get_link_ownership",
   "git_get_sync_status",
   "git_list_branches",
   "git_get_user_identity",
@@ -1841,6 +1861,28 @@ function prLinkUrls(pr: unknown): { githubUrl?: string; adeUrl?: string } {
     ...(resolvedGithubUrl ? { githubUrl: resolvedGithubUrl } : {}),
     ...(adeUrl ? { adeUrl } : {}),
   };
+}
+
+/** `from`/`to`/`frames` of a proof review, checked; an error names the bad one. */
+function proofReviewWindow(toolArgs: Record<string, unknown>): ProofReviewWindow {
+  const seconds = (key: "from" | "to"): number | null => {
+    const value = toolArgs[key];
+    if (value == null) return null;
+    if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
+      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `\`${key}\` is seconds into the video, 0 or more.`);
+    }
+    return value;
+  };
+  const from = seconds("from");
+  const to = seconds("to");
+  if (from != null && to != null && to <= from) {
+    throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "`to` must be after `from`.");
+  }
+  const frames = toolArgs.frames;
+  if (frames != null && (typeof frames !== "number" || !Number.isInteger(frames) || frames < 1 || frames > SHEET_MAX_FRAMES)) {
+    throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `\`frames\` is a whole number from 1 to ${SHEET_MAX_FRAMES}.`);
+  }
+  return { from, to, frames: typeof frames === "number" ? frames : null };
 }
 
 function asNumber(value: unknown, fallback: number): number {
@@ -7179,6 +7221,30 @@ async function runTool(args: {
     };
   }
 
+  if (name === "get_link_ownership") {
+    const none = { accountMachineKey: null, projectId: null };
+    // A link names this project only for what is this project's, checked
+    // here with the brain's own services: a chat it holds (on the lane the
+    // link names), a lane it lists, a PR in its repository.
+    const sessionId = asOptionalTrimmedString(toolArgs.sessionId);
+    const laneId = asOptionalTrimmedString(toolArgs.laneId);
+    const repo = asOptionalTrimmedString(toolArgs.repo)?.toLowerCase() ?? null;
+    if (sessionId) {
+      const chat = runtime.sessionService.get(sessionId);
+      if (!chat) return none;
+      if (laneId && chat.laneId && chat.laneId !== laneId) return none;
+    } else if (laneId) {
+      const lanes = await runtime.laneService.list({ includeArchived: true, includeStatus: false }).catch(() => []);
+      if (!lanes.some((lane) => lane.id === laneId)) return none;
+    }
+    if (repo) {
+      const own = await runtime.githubService?.getRepoOrThrow().catch(() => null);
+      if (!own || `${own.owner}/${own.name}`.toLowerCase() !== repo) return none;
+    }
+    const ownership = localLinkOwnership(runtime.projectRoot, { logger: runtime.logger });
+    return { accountMachineKey: ownership?.accountMachineKey ?? null, projectId: ownership?.projectId ?? null };
+  }
+
   if (name === "list_lanes") {
     const includeArchived = asBoolean(toolArgs.includeArchived, false);
     const lanes = await runtime.laneService.list({ includeArchived });
@@ -7919,7 +7985,11 @@ async function runTool(args: {
 
   if (name === "review_computer_use_artifact") {
     const artifactId = asOptionalTrimmedString(toolArgs.artifactId);
-    if (!artifactId) throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "Provide the proof's id.");
+    const chatSessionId = asOptionalTrimmedString(toolArgs.chatSessionId);
+    if (!artifactId && !chatSessionId) {
+      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "Provide the proof's id, or the chat whose newest proof to review.");
+    }
+    const window = proofReviewWindow(toolArgs);
     // The same owner rule as listing: a caller reviews only proof it can see.
     const projectWide = isProjectWideProofMaintenanceAuthorized(session);
     const owners = resolveAuthorizedProofOwners(runtime, session);
@@ -7927,26 +7997,70 @@ async function runTool(args: {
       throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, "Proof review requires an authenticated owner scope.");
     }
     const broker = runtime.computerUseArtifactBrokerService;
-    const artifact = projectWide
-      ? broker.listArtifacts({ artifactId, ...PROOF_LISTING_ARTIFACT_FILTER, limit: 1 })[0]
-      : broker.findProofForOwners({ ids: [artifactId], owners })[0];
-    if (!artifact) {
-      throw new JsonRpcError(
-        JsonRpcErrorCode.invalidParams,
-        `No proof ${artifactId} in this chat's or lane's proof. Copy the id from a cite: line or the \`id\` field of \`ade proof list --json\`.`,
-      );
+    let artifact: ComputerUseArtifactView | undefined;
+    let otherProof: Array<{ id: string; kind: string; title: string; createdAt: string }> | null = null;
+    if (artifactId) {
+      artifact = projectWide
+        ? broker.listArtifacts({ artifactId, ...PROOF_LISTING_ARTIFACT_FILTER, limit: 1 })[0]
+        : broker.findProofForOwners({ ids: [artifactId], owners })[0];
+      if (!artifact) {
+        throw new JsonRpcError(
+          JsonRpcErrorCode.invalidParams,
+          `No proof ${artifactId} in this chat's or lane's proof. Copy the id from a cite: line or the \`id\` field of \`ade proof list --json\`.`,
+        );
+      }
+    } else if (chatSessionId) {
+      if (!projectWide && !owners.some((owner) => owner.kind === "chat_session" && owner.id === chatSessionId)) {
+        throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, "The requested proof owner is not authorized for this caller.");
+      }
+      // Newest first. The video is what a person asked for, a picture only when
+      // there is none. Each kind is looked up on its own, so newer proof of
+      // another kind can't crowd it out, and only proof with a file on this
+      // machine counts (a linked URL has nothing to review here).
+      const listChatProof = (kind?: "video_recording" | "screenshot") => broker.listArtifacts({
+        ownerKind: "chat_session",
+        ownerId: chatSessionId,
+        ...PROOF_LISTING_ARTIFACT_FILTER,
+        ...(kind ? { kind } : {}),
+        // Wide for one kind, so linked or missing files can't hide a local one.
+        limit: kind ? 200 : 20,
+      }).filter((entry) => (entry.availability ?? "available") === "available");
+      const reviewable = (kind: "video_recording" | "screenshot") =>
+        listChatProof(kind).find((entry) => resolveStoredProofFile(runtime.projectRoot, entry.uri) != null);
+      const chatProof = listChatProof();
+      artifact = reviewable("video_recording") ?? reviewable("screenshot");
+      if (!artifact) {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `Chat ${chatSessionId} has no video or picture to review yet. Wait for it to finish (chat wait), or ask it to record one.`);
+      }
+      const shown = artifact.id;
+      otherProof = chatProof
+        .filter((entry) => entry.id !== shown)
+        .slice(0, 10)
+        .map((entry) => ({ id: entry.id, kind: entry.kind, title: entry.title, createdAt: entry.createdAt }));
     }
+    if (!artifact) throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "Provide the proof's id.");
     const filePath = resolveStoredProofFile(runtime.projectRoot, artifact.uri);
     if (!filePath) {
-      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `Proof ${artifactId} has no file on this machine to review (\`ade proof broken\` lists missing files).`);
+      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `Proof ${artifact.id} has no file on this machine to review (\`ade proof broken\` lists missing files).`);
     }
-    return await reviewProofFile({
+    const review = await reviewProofFile({
       artifact: { id: artifact.id, kind: artifact.kind, metadata: artifact.metadata ?? null },
       logger: runtime.logger,
       filePath,
       projectRoot: runtime.projectRoot,
       engines: createDemoEngineSet({ logger: runtime.logger }).engines(),
+      window,
     });
+    // Where a person watches it: the chat that filed it.
+    const ownerChat = artifact.links?.find((link) => link.ownerKind === "chat_session")?.ownerId ?? chatSessionId ?? null;
+    return {
+      ...review,
+      title: artifact.title,
+      createdAt: artifact.createdAt,
+      chatSessionId: ownerChat,
+      laneId: artifact.laneId ?? null,
+      ...(otherProof ? { otherProof } : {}),
+    };
   }
 
   if (name === "note_demo_step") {

@@ -1,6 +1,8 @@
 import { app, BrowserWindow, ipcMain, powerMonitor, type WebContents } from "electron";
 import { showRememberedOpenDialog } from "../shared/rememberedOpenDialog";
 import { resolveMovedProjectRoot } from "../../../../../ade-cli/src/services/projects/projectMove/moveJournal";
+import { localLinkOwnership } from "../../../../../ade-cli/src/services/projects/localLinkOwnership";
+import type { DeeplinkOwnership } from "../../../shared/deeplinks";
 import path from "node:path";
 import { IPC } from "../../../shared/ipc";
 import { describeReportForMachine, type HostReachabilityReport } from "../../../shared/connectionDiagnosis";
@@ -995,6 +997,29 @@ export function registerRuntimeBridge({
     IPC.remoteRuntimeListTargets,
     async (): Promise<RemoteRuntimeTarget[]> => {
       return remoteConnectionService.listTargets();
+    },
+  );
+
+  // Which account computer and project a link to something in this project
+  // should name, so it opens there from anywhere. A remote binding names its
+  // host (the paired machine's account key) and that host's canonical project
+  // id; a local one, this computer and the canonical id of its root. Answered
+  // here from what this desktop already knows, without a call to the host.
+  ipcMain.handle(
+    IPC.remoteRuntimeLinkOwnership,
+    async (_event, args: { binding?: OpenProjectBinding | null } | null): Promise<DeeplinkOwnership | null> => {
+      const binding = args?.binding ?? null;
+      if (!binding) return null;
+      if (binding.kind === "remote") {
+        const target = remoteConnectionService.listTargets().find((entry) => entry.id === binding.targetId);
+        const accountMachineKey = target?.pairedMachine?.machineKey?.trim() ?? "";
+        const projectId = binding.projectId?.trim() ?? "";
+        return accountMachineKey && projectId ? { accountMachineKey, projectId } : null;
+      }
+      return localLinkOwnership(binding.rootPath ?? "", {
+        logger: getMachineMainLogger(),
+        ...(getLocalMachineIdentity ? { identity: getLocalMachineIdentity } : {}),
+      });
     },
   );
 
