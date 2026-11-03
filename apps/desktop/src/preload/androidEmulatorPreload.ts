@@ -11,6 +11,7 @@ import type {
   AndroidLaneArgs,
   AndroidLaneDeviceStatus,
   AndroidReleaseDeviceArgs,
+  AndroidRotateArgs,
   AndroidScreenshot,
   AndroidScreenshotArgs,
   AndroidStartStreamArgs,
@@ -88,6 +89,7 @@ export function createAndroidEmulatorBridge(deps: AndroidEmulatorBridgeDeps): An
     sendTouch: call<AndroidTouchArgs, void>("sendTouch", IPC.androidEmulatorSendTouch),
     sendKey: call<AndroidKeyArgs, void>("sendKey", IPC.androidEmulatorSendKey),
     sendText: call<AndroidTextArgs, void>("sendText", IPC.androidEmulatorSendText),
+    rotate: call<AndroidRotateArgs, void>("rotate", IPC.androidEmulatorRotate),
     screenshot: call<AndroidScreenshotArgs, AndroidScreenshot>("screenshot", IPC.androidEmulatorScreenshot),
     /**
      * Turn the host's loopback stream URL into one this desktop can open. Not a

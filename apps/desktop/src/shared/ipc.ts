@@ -676,6 +676,7 @@ export const IPC = {
   androidEmulatorSendTouch: "ade.androidEmulator.sendTouch",
   androidEmulatorSendKey: "ade.androidEmulator.sendKey",
   androidEmulatorSendText: "ade.androidEmulator.sendText",
+  androidEmulatorRotate: "ade.androidEmulator.rotate",
   androidEmulatorScreenshot: "ade.androidEmulator.screenshot",
   androidEmulatorEvent: "ade.androidEmulator.event",
   appControlGetStatus: "ade.appControl.getStatus",

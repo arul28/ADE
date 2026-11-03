@@ -10493,6 +10493,7 @@ export function registerIpc({
   ipcMain.handle(IPC.androidEmulatorSendTouch, async (_event, arg) => ensureAndroidEmulator().sendTouch(arg));
   ipcMain.handle(IPC.androidEmulatorSendKey, async (_event, arg) => ensureAndroidEmulator().sendKey(arg));
   ipcMain.handle(IPC.androidEmulatorSendText, async (_event, arg) => ensureAndroidEmulator().sendText(arg));
+  ipcMain.handle(IPC.androidEmulatorRotate, async (_event, arg) => ensureAndroidEmulator().rotate(arg));
   ipcMain.handle(IPC.androidEmulatorScreenshot, async (_event, arg) => ensureAndroidEmulator().screenshot(arg));
 
   ipcMain.handle(IPC.appControlGetStatus, async (event, arg) => {

@@ -293,6 +293,9 @@ export type AndroidSwipeArgs = AndroidLaneArgs & {
   durationMs?: number | null;
 };
 export type AndroidKeyArgs = AndroidLaneArgs & { key: AndroidHardwareKey };
+export type AndroidOrientation = "portrait" | "landscape";
+/** Locks the display to this orientation (auto-rotate off). An app that fixes its own orientation keeps it. */
+export type AndroidRotateArgs = AndroidLaneArgs & { orientation: AndroidOrientation };
 export type AndroidTextArgs = AndroidLaneArgs & { text: string };
 
 export type AndroidScreenshotArgs = AndroidLaneArgs & {
@@ -339,6 +342,7 @@ export type AndroidEmulatorServiceApi = {
   swipe(args: AndroidSwipeArgs): Promise<void>;
   sendKey(args: AndroidKeyArgs): Promise<void>;
   sendText(args: AndroidTextArgs): Promise<void>;
+  rotate(args: AndroidRotateArgs): Promise<void>;
   screenshot(args: AndroidScreenshotArgs): Promise<AndroidScreenshot>;
   /** Lane archive/delete: stop the lane's stream and emulator. Not an action. */
   stopForLane(laneId: string): Promise<void>;
@@ -365,6 +369,7 @@ export const ANDROID_AGENT_ACTIONS = [
   "swipe",
   "sendKey",
   "sendText",
+  "rotate",
   "screenshot",
 ] as const;
 export type AndroidAgentAction = (typeof ANDROID_AGENT_ACTIONS)[number];
@@ -391,6 +396,7 @@ export type AndroidEmulatorPreloadApi = {
   sendTouch(args: AndroidTouchArgs, pin?: Pin): Promise<void>;
   sendKey(args: AndroidKeyArgs, pin?: Pin): Promise<void>;
   sendText(args: AndroidTextArgs, pin?: Pin): Promise<void>;
+  rotate(args: AndroidRotateArgs, pin?: Pin): Promise<void>;
   screenshot(args: AndroidScreenshotArgs, pin?: Pin): Promise<AndroidScreenshot>;
   /**
    * Turns a loopback stream URL from another machine into one this renderer

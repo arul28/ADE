@@ -80,13 +80,9 @@ async function main() {
     log("booted", { serial, avd: booted.device?.avdName });
     const shell = async (...args: string[]) =>
       (await runAdb(adbPath, ["shell", ...args], { serial, allowFailure: true, timeoutMs: 15_000 })).stdout.toString("utf8").trim();
-    const emu = async (...args: string[]) => {
-      const result = await runAdb(adbPath, ["emu", ...args], { serial, allowFailure: true, timeoutMs: 15_000 });
-      return { code: result.exitCode, out: result.stdout.toString("utf8").trim(), err: result.stderr.trim() };
-    };
     const read = async (label: string) => {
       const orientation = (await shell("dumpsys", "window", "displays")).split("\n")
-        .filter((line) => /mRotation|mCurrentRotation|cur=|mUserRotation\b/u.test(line)).map((line) => line.trim()).slice(0, 4);
+        .find((line) => /cur=\d+x\d+/u.test(line))?.trim().split(" ").find((part) => part.startsWith("cur=")) ?? null;
       const shot = await service.screenshot({ laneId: LANE });
       log(`read.${label}`, {
         orientation,
@@ -135,24 +131,12 @@ async function main() {
       await read(label);
     };
 
-    // A: the emulator console's rotate (sensor + display, 90° each call).
-    await timeTo("emu_rotate", () => emu("rotate"), true);
-    await timeTo("emu_rotate_back_1", () => emu("rotate"), false);
-    await emu("rotate");
-    await emu("rotate");
-    await sleep(2_000);
-    await read("after_emu_cycle");
-
-    // B: settings (absolute, no sensor).
-    await timeTo("settings_landscape", async () => {
-      await shell("settings", "put", "system", "accelerometer_rotation", "0");
-      return shell("settings", "put", "system", "user_rotation", "1");
-    }, true);
-    await timeTo("settings_portrait", () => shell("settings", "put", "system", "user_rotation", "0"), false);
-
-    // C: cmd window user-rotation (Android 11+).
-    await timeTo("cmd_lock_landscape", () => shell("cmd", "window", "user-rotation", "lock", "1"), true);
-    await timeTo("cmd_lock_portrait", () => shell("cmd", "window", "user-rotation", "lock", "0"), false);
+    // The service's rotate, with the stream running.
+    await timeTo("service_landscape", () => service.rotate({ laneId: LANE, orientation: "landscape" }), true);
+    await timeTo("service_landscape_again", () => service.rotate({ laneId: LANE, orientation: "landscape" }), true);
+    await timeTo("service_portrait", () => service.rotate({ laneId: LANE, orientation: "portrait" }), false);
+    const bad = await service.rotate({ laneId: LANE, orientation: "sideways" as "portrait" }).then(() => "accepted", (error: Error) => error.message);
+    log("service_bad_orientation", bad);
   } finally {
     request?.destroy();
     await service.releaseDevice({ laneId: LANE }).then(

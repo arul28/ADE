@@ -1210,6 +1210,32 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
       await adbInput(booted.adbPath, booted.serial, ["text", shellInputText(text)]);
     },
 
+    async rotate(args) {
+      const laneId = requireLaneId(args.laneId);
+      const orientation = args.orientation;
+      if (orientation !== "portrait" && orientation !== "landscape") throw new Error("orientation must be portrait or landscape.");
+      const { serial, adbPath } = await requireBooted(laneId);
+      const shell = async (command: string[]) => {
+        const result = await runAdb(adbPath, ["shell", ...command], { serial, timeoutMs: 15_000, signal: lifetime.signal, allowFailure: true });
+        return { exitCode: result.exitCode, text: `${result.stdout.toString("utf8")}${result.stderr}`.trim() };
+      };
+      // Rotation 0 is the display's natural orientation: portrait on a phone,
+      // landscape on most tablets.
+      const size = /Physical size:\s*(\d+)x(\d+)/u.exec((await shell(["wm", "size"])).text);
+      const naturalLandscape = size ? Number(size[1]) > Number(size[2]) : false;
+      const rotation = (orientation === "landscape") === naturalLandscape ? "0" : "1";
+      // Absolute and headless; `adb emu rotate` only turns 90° from wherever
+      // the sensor is. Measured on Windows: the stream shows the new size in
+      // about 0.5 s.
+      const locked = await shell(["cmd", "window", "user-rotation", "lock", rotation]);
+      if (locked.exitCode !== 0 || /unknown|error|exception/iu.test(locked.text)) {
+        // Android 10 and older have no `cmd window user-rotation`.
+        await shell(["settings", "put", "system", "accelerometer_rotation", "0"]);
+        const set = await shell(["settings", "put", "system", "user_rotation", rotation]);
+        if (set.exitCode !== 0) throw new Error(`The emulator ${serial} did not rotate: ${set.text || locked.text}`);
+      }
+    },
+
     async screenshot(args) {
       const laneId = requireLaneId(args.laneId);
       const requested = args.outPath?.trim() || null;
