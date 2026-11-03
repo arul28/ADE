@@ -99,6 +99,7 @@ async function main() {
     laneDevices: repo,
     dataDir: work,
     serverJarPath: path.resolve("apps/desktop/resources/android/scrcpy-server"),
+    resolveLaneWorktreePath: () => work,
     logger: {
       debug: () => undefined,
       info: (event, meta) => log(`log.${event}`, meta),
@@ -184,6 +185,16 @@ async function main() {
     log("screenshot", shot);
     const shotOut = await timed("screenshot.outPath", () => service.screenshot({ laneId: LANE, outPath: path.join(work, "explicit.png") }));
     log("screenshot.outPath", { path: shotOut.path, w: shotOut.width, h: shotOut.height });
+    const relative = await service.screenshot({ laneId: LANE, outPath: "shots/relative.png" });
+    log("screenshot.relative", { path: relative.path, exists: fs.existsSync(relative.path) });
+    await service.screenshot({ laneId: LANE, outPath: path.join(os.tmpdir(), "ade-android-escape.png") }).then(
+      () => log("refusal.outside_path", "UNEXPECTED"),
+      (error) => log("refusal.outside_path", (error as Error).message),
+    );
+    await service.screenshot({ laneId: LANE, outPath: "../escape.png" }).then(
+      () => log("refusal.dotdot_path", "UNEXPECTED"),
+      (error) => log("refusal.dotdot_path", (error as Error).message),
+    );
 
     // A brain restart: a second service on the same data folder still owns
     // the emulator (the state file) and stops it.
