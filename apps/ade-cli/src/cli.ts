@@ -481,6 +481,16 @@ import {
   recordingStopLeftNoFile,
 } from "./cliMacDesktopFormat";
 import {
+  androidEmulatorErrorHint,
+  buildAndroidPlan,
+  formatAndroidAction,
+  formatAndroidDevice,
+  formatAndroidDevices,
+  formatAndroidRelease,
+  formatAndroidScreenshot,
+  formatAndroidStatus,
+} from "./cliAndroid";
+import {
   appleLeaseAnswer,
   appleLeaseNotAcquired,
   formatAppleInstall,
@@ -808,6 +818,13 @@ export type FormatterId =
   | "mac-desktop-screenshot"
   | "mac-desktop-lease"
   | "mac-desktop-window-action"
+  | "android-status"
+  | "android-devices"
+  | "android-devices-profiles"
+  | "android-device"
+  | "android-release"
+  | "android-screenshot"
+  | "android-action"
   | "app-control-status"
   | "app-control-snapshot"
   | "app-control-selection"
@@ -1400,13 +1417,15 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade tests list | run | stop | runs | logs     Run configured test suites
     $ ade proof status | list | screenshot | record Manage proof and computer-use artifacts
     $ ade apple devices | apps | launch | tap      Control Apple simulators, capture, and input
+    $ ade android status | create | start | tap    Drive this lane's Android emulator
     $ ade app-control launch | observe | click | record
                                                     Drive this lane's Electron app, record it, file proof
     $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
     $ ade browser attach | detach                  The user's own browser, only when they ask
     $ ade work-tools state | actions               Read the desktop Work tools pane for a lane
     $ ade ui show apple | floating-apple | browser | proof | mac-desktop | floating-mac-desktop
-        | app-control | floating-app-control         Show a surface of this chat to the user
+        | app-control | floating-app-control | android
+                                                    Show a surface of this chat to the user
     $ ade usage limits --text                       What's left of each subscription, per account
     $ ade usage snapshot | stats | refresh | budget Read provider quota, token/cost stats, and budget guardrails
     $ ade router routes | pick | shadow | efficiency | refresh  Model router: rated routes, dry-run picks, shadow and efficiency reports
@@ -1559,6 +1578,7 @@ export const CLI_COMMAND_ALIASES: Record<string, string> = {
   simulator: "apple",
   "mac-desk": "mac-desktop",
   desk: "mac-desktop",
+  emulator: "android",
   app: "app-control",
   apps: "app-control",
   electron: "app-control",
@@ -3422,6 +3442,60 @@ export const HELP_BY_COMMAND: Record<string, string> = {
 
   For the full Mac surface, run \`ade mac-desktop --help\`; the verbs match.
 `,
+  "android": `${ADE_BANNER}
+  Android Emulator
+
+  One Android emulator per lane, on the machine that runs the lane's brain
+  (macOS, Windows or Linux with the Android SDK). Alias: \`ade emulator\`.
+
+  Every subcommand is lane-scoped. --lane defaults to ADE_LANE_ID; with
+  neither, a call made from inside a lane worktree is bound to that lane, and
+  a chat-bound caller is pinned to its chat's lane. Points are device pixels,
+  the same pixels as the screenshot.
+
+  Setup and the lane's device:
+    $ ade android status --text                    SDK, acceleration, the lane's emulator
+    $ ade android devices --text                   AVDs (and the lane holding each), system images
+    $ ade android devices --profiles --text        Also list the hardware profiles
+    $ ade android create --profile medium_phone --text
+                                                   Make an AVD for this lane and boot it
+                                                   (--image <package>, --name <shown name>, --no-start)
+    $ ade android attach <avd> --text              Hold an existing AVD no other lane holds (--no-start)
+    $ ade android start --text                     Boot the lane's AVD (waits for boot completed)
+    $ ade android stop --text                      Stop it; the lane keeps its AVD
+    $ ade android release --text                   Stop it and let the AVD go. An AVD ADE made
+                                                   for the lane is deleted; --keep keeps it.
+                                                   The user's own AVD is never deleted.
+
+  Input and capture:
+    $ ade android screenshot --out shot.png --text Write a PNG (on the emulator's machine)
+    $ ade android tap 540 1200 --text              Tap a point
+    $ ade android swipe 540 1800 540 600 --ms 300 --text
+                                                   Swipe from one point to another
+    $ ade android key back --text                  back | home | recents | power | volume_up | volume_down
+    $ ade android text "hello world" --text        Type into the focused field (--value "<text>" too)
+    $ ade android show --text                      Show the emulator to the user (tools pane)
+    $ ade android actions --text                   List the android_emulator actions
+
+  Aliases: create = device-create, attach = device-attach, release = detach =
+  device-detach, key = press, text = type.
+
+  Another machine: --machine <name> runs the command where that machine's
+  brain runs; pass --lane <id> for a lane on that machine. The screenshot is
+  written there.
+
+  Errors (each prints its next step):
+    ANDROID_SDK_NOT_FOUND            install the SDK or set ANDROID_HOME
+    ANDROID_TOOL_MISSING             install the missing SDK package
+    ANDROID_NO_ACCELERATION          turn on hardware acceleration
+    ANDROID_NO_SYSTEM_IMAGE          install a system image, or pass --image
+    ANDROID_AVD_HELD_BY_OTHER_LANE   pick a free AVD, or create one
+    ANDROID_AVD_RUNNING              that AVD already runs outside this lane
+    ANDROID_BOOT_TIMEOUT / ANDROID_EMULATOR_EXITED   read the log the error names
+    ANDROID_NOT_RUNNING              ade android start first
+  The live view (stream and live touch) and deleting an AVD no lane holds are
+  the user's, in the Android panel; an agent uses tap, swipe, key and text.
+`,
   "app-control": `${ADE_BANNER}
   App Control
 
@@ -3838,6 +3912,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade ui show app-control      The lane's App Control app, in the tools pane
     $ ade ui show floating-app-control
                                    The floating App Control card over the chat
+    $ ade ui show android          The lane's Android emulator, in the tools pane
 
   Results:
     shown       The surface is on screen now.
@@ -3857,7 +3932,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
 
   "ade apple show" is the same as "ade ui show apple"; "apple show --floating"
   is "ui show floating-apple". "ade mac-desktop show [--floating]" is the same
-  for the Mac Desktop, and "ade app-control show [--floating]" for App Control.
+  for the Mac Desktop, "ade app-control show [--floating]" for App Control, and
+  "ade android show" for the Android emulator.
 `,
   "work-tools": `${ADE_BANNER}
   ADE work tools
@@ -17202,6 +17278,8 @@ const WORK_TOOL_SHOW_SURFACE_ALIASES: Record<string, WorkToolShowSurface> = {
   electron: "app-control",
   "floating-app-control": "floating-app-control",
   "floating-app": "floating-app-control",
+  android: "android",
+  emulator: "android",
 };
 
 /**
@@ -22296,6 +22374,7 @@ function buildCliPlan(
     primary === "windows-desk"
   )
     return buildMacDesktopPlan(args);
+  if (primary === "android" || primary === "emulator") return buildAndroidPlan(args);
   if (
     primary === "app-control" ||
     primary === "app" ||
@@ -35615,6 +35694,20 @@ function formatTextOutput(
       return formatMacDesktopLease(value);
     case "mac-desktop-window-action":
       return formatMacDesktopWindowAction(value);
+    case "android-status":
+      return formatAndroidStatus(value);
+    case "android-devices":
+      return formatAndroidDevices(value);
+    case "android-devices-profiles":
+      return formatAndroidDevices(value, { profiles: true });
+    case "android-device":
+      return formatAndroidDevice(value);
+    case "android-release":
+      return formatAndroidRelease(value);
+    case "android-screenshot":
+      return formatAndroidScreenshot(value);
+    case "android-action":
+      return formatAndroidAction(value);
     case "app-control-status":
       return formatAppControlStatus(value);
     case "app-control-snapshot":
@@ -38540,6 +38633,8 @@ async function main(): Promise<void> {
       if (iosHint) await writeProcessOutput(process.stderr, `${iosHint}\n`);
       const desktopHint = macDesktopErrorHint(error.message);
       if (desktopHint) await writeProcessOutput(process.stderr, `${desktopHint}\n`);
+      const androidHint = androidEmulatorErrorHint(error.message);
+      if (androidHint) await writeProcessOutput(process.stderr, `${androidHint}\n`);
       const machineHint = await chatNotFoundHintNamingMachine(error.message, process.argv.slice(2));
       if (machineHint) await writeProcessOutput(process.stderr, `${machineHint}\n`);
       if (error.details !== undefined) {

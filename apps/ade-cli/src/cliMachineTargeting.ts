@@ -66,6 +66,8 @@ const MACHINE_TARGETABLE_PRIMARIES: ReadonlySet<string> = new Set([
   "windows-desktop",
   "windows-desk",
   "app-control",
+  // The lane's Android emulator runs where that machine's brain runs.
+  "android",
   "usage",
 ]);
 /**
@@ -118,7 +120,7 @@ export function extractMachineTargeting(parsed: ParsedCli): ParsedCli {
       }
       throw new CliUsageError(
         `ade ${typed} runs on this machine only; --machine and --all-machines don't apply to it. `
-        + "Commands that run on another machine: chat, lanes, shell, terminal, projects, usage, apple, screen (mac-desktop, windows-desktop), app-control.",
+        + "Commands that run on another machine: chat, lanes, shell, terminal, projects, usage, apple, android, screen (mac-desktop, windows-desktop), app-control.",
       );
     }
     return parsed;

@@ -71,6 +71,7 @@ const WORK_TOOL_SHOW_SURFACE_LABELS: Record<WorkToolShowSurface, string> = {
   "floating-mac-desktop": "floating Mac Desktop",
   "app-control": "App Control in the tools pane",
   "floating-app-control": "floating App Control",
+  android: "Android emulator in the tools pane",
 };
 
 type HeldAnswer = { desktopLabel: string | null; opened: boolean };
