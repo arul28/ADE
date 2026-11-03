@@ -93,9 +93,12 @@ export function ErrorSurfaceCard({
 }) {
   return (
     <section className="kit-card" data-tone={tone}>
-      <header className="kit-card-head">
+      {/* Session replay shows the head, headline and body (ADE's words,
+          scrubbed); a label other than "ADE" names the project, so it stays
+          masked, as do the children. */}
+      <header className="kit-card-head" data-ph-unmask="">
         {icon}
-        <span className="min-w-0 truncate">{label}</span>
+        <span className="min-w-0 truncate" data-ph-mask={label === "ADE" ? undefined : ""}>{label}</span>
         {status ? (
           <span className="kit-tag shrink-0" data-tone={TONE_TAG[tone]}>
             {status}
@@ -107,8 +110,8 @@ export function ErrorSurfaceCard({
       <div className="kit-card-body" style={{ padding: "2px 18px 18px" }}>
         {hero ?? (
           <>
-            <h1 className={ERROR_HEADLINE}>{headline}</h1>
-            {body ? <p className={ERROR_BODY}>{body}</p> : null}
+            <h1 className={ERROR_HEADLINE} data-ph-unmask="">{headline}</h1>
+            {body ? <p className={ERROR_BODY} data-ph-unmask="">{body}</p> : null}
           </>
         )}
         {children}
@@ -154,7 +157,7 @@ export function TechnicalDetailsFold({
     // itself the disclosure control, and a button nested in one is flattened
     // away by some assistive technology and has to fight the toggle with
     // `preventDefault`. Overlaying it keeps the row people already know.
-    <div className={"kit-card " + (className ?? "")}>
+    <div className={"kit-card " + (className ?? "")} data-ph-unmask="">
       <details className="group">
         <summary className="flex h-9 cursor-pointer select-none items-center gap-3 px-3.5 pr-24 text-[12px] font-medium text-(color:--kit-text-3) transition-colors hover:text-fg">
           <span className="inline-flex items-center gap-1.5">

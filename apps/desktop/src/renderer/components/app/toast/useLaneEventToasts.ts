@@ -38,6 +38,7 @@ export function useLaneEventToasts(navigate: NavigateFunction): void {
           showToast({
             id: `lane-${event.type}-${event.laneId}`,
             title: event.laneName,
+            replayMask: { title: true },
             message: "Lane created",
             tone: "success",
             colorDot: dot,
@@ -55,6 +56,7 @@ export function useLaneEventToasts(navigate: NavigateFunction): void {
         showToast({
           id: `lane-${event.type}-${event.laneId}`,
           title: event.laneName,
+          replayMask: { title: true },
           message:
             event.type === "lane-archived"
               ? "Lane archived"
@@ -92,6 +94,7 @@ export function useLaneEventToasts(navigate: NavigateFunction): void {
           showToast({
             id: `lane-rebase-${run.runId}`,
             title: laneLabel,
+            replayMask: { title: true },
             message: "Rebase completed",
             tone: "success",
           });
@@ -100,6 +103,7 @@ export function useLaneEventToasts(navigate: NavigateFunction): void {
         showToast({
           id: `lane-rebase-${run.runId}`,
           title: laneLabel,
+          replayMask: { title: true },
           message:
             run.state === "aborted"
               ? "Rebase aborted"
