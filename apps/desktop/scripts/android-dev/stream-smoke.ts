@@ -132,10 +132,11 @@ function openReader(name: string, url: string, keepAus = false): ReaderStats {
   return stats;
 }
 
+/** The resumed activity's component (`pkg/.Activity`), from `dumpsys activity activities`. */
 async function focus(serial: string): Promise<string> {
-  const text = await runAdbText(ADB, ["shell", "dumpsys", "window"], { serial, timeoutMs: 15_000 }).catch(() => "");
-  const line = text.split(/\r?\n/).find((entry) => entry.includes("mCurrentFocus")) ?? "";
-  return line.trim();
+  const text = await runAdbText(ADB, ["shell", "dumpsys", "activity", "activities"], { serial, timeoutMs: 15_000 }).catch(() => "");
+  const line = text.split(/\r?\n/).find((entry) => /topResumedActivity=|mResumedActivity|ResumedActivity:/.test(entry)) ?? "";
+  return /\s(\S+\/\S+)/.exec(line)?.[1] ?? line.trim();
 }
 
 async function waitFor(check: () => Promise<boolean>, timeoutMs: number, stepMs = 250): Promise<number | null> {
@@ -348,6 +349,8 @@ async function main(): Promise<void> {
     await sleep(1_500);
     results.swipe = await measureSwiping(serial, 5_000, size);
     log("swipe", results.swipe as Record<string, unknown>);
+    results.idleSettings = await measureIdle(serial, 3_000);
+    log("idle.settings", results.idleSettings as Record<string, unknown>);
 
     // ── 5. a second reader joins mid-stream ─────────────────────────────────
     const swipeTail = measureSwiping(serial, 2_500, size);
