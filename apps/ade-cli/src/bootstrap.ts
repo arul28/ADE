@@ -225,9 +225,8 @@ import {
   type MacDesktopService,
 } from "../../desktop/src/main/services/macDesktop/macDesktopService";
 import { createMacDesktopLogger } from "../../desktop/src/main/services/macDesktop/macDesktopLogger";
-import { createAndroidEmulatorService } from "../../desktop/src/main/services/android/androidEmulatorService";
+import { createAndroidEmulatorService, findScrcpyServerJar } from "../../desktop/src/main/services/android/androidEmulatorService";
 import { sqlAndroidLaneDeviceRepo } from "../../desktop/src/main/services/android/androidLaneRelease";
-import { resolveScrcpyServerJarPath } from "../../desktop/src/main/services/android/scrcpyServer";
 import { createWindowsDesktopSeatAdapter } from "../../desktop/src/main/services/windowsDesktop/windowsDesktopSeatProvider";
 import { createLinuxDesktopSeatAdapter } from "../../desktop/src/main/services/linuxDesktop/linuxDesktopSeatProvider";
 import { feedDemoTrackFromChatEvent } from "../../desktop/src/main/services/demoVideo/demoTrackRegistry";
@@ -596,23 +595,6 @@ if (
   && process.env.ADE_RUNTIME_PACKAGED === undefined
 ) {
   process.env.ADE_RUNTIME_PACKAGED = "1";
-}
-
-/**
- * The bundled scrcpy server for this brain. A brain started by the packaged
- * app has Electron's `resourcesPath` (electron-builder copies
- * `resources/android` there); a source checkout reads the desktop app's own
- * `resources/android`. A standalone brain archive ships no jar yet: the path
- * then names a missing file, the live view fails with `ANDROID_STREAM_FAILED`,
- * and input falls back to `adb shell input`.
- */
-function brainScrcpyServerJarPath(): string {
-  const resourcesPath = (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath ?? "";
-  return resolveScrcpyServerJarPath({
-    isPackaged: !isSourceCheckoutRuntimeModule(currentModulePath) && resourcesPath.length > 0,
-    resourcesPath,
-    appPath: path.resolve(path.dirname(currentModulePath), "..", "..", "desktop"),
-  });
 }
 
 function automationsEnabledForHeadlessRuntime(): boolean {
@@ -2256,7 +2238,22 @@ export async function createAdeRuntime(args: {
       : createAndroidEmulatorService({
         laneDevices: sqlAndroidLaneDeviceRepo(db),
         dataDir: path.join(paths.adeDir, "android"),
-        serverJarPath: brainScrcpyServerJarPath(),
+        // The packaged app's `resources/android` first, then a source
+        // checkout's. A standalone brain archive ships no jar yet: only
+        // `startStream` fails then (`ANDROID_STREAM_FAILED`, naming the path).
+        serverJarPath: findScrcpyServerJar({
+          resourcesPath: (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath ?? null,
+          startDir: path.dirname(currentModulePath),
+        }),
+        // Where a screenshot's `outPath` must stay; without it a named path
+        // is refused.
+        resolveLaneWorktreePath: (laneId: string): string | null => {
+          try {
+            return laneService.getLaneWorktreePath(laneId);
+          } catch {
+            return null;
+          }
+        },
         logger,
         onEvent: (event) => pushEvent("runtime", { type: "android_emulator_event", event }),
       });
