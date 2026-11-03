@@ -115,6 +115,8 @@ const ANDROID_ERROR_HINTS: Record<AndroidEmulatorErrorCode, string> = {
     "hint: the emulator quit. Read the log it names (`ade android status --text` shows the path).",
   ANDROID_STREAM_FAILED:
     "hint: the live view failed. `tap`, `key`, `text` and `screenshot` do not need it.",
+  ANDROID_PATH_OUTSIDE_LANE:
+    "hint: --out must be inside the lane worktree. Pass a path there, or leave out --out for a file under ADE's data folder.",
   ANDROID_NOT_RUNNING:
     "hint: boot the lane's emulator first: `ade android start`, or `ade android create --profile <id>` when the lane has none.",
 };
