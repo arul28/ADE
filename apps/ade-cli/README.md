@@ -804,6 +804,7 @@ ade android attach <avd> --text                       # hold an AVD no other lan
 ade android start --text                              # also: stop; release [--keep] (an ADE-made AVD is deleted unless --keep)
 ade android screenshot --out shot.png --text          # PNG on the emulator's machine
 ade android tap 540 1200 --text                       # device pixels; also: swipe x1 y1 x2 y2 --ms 300, key back, text "hi"
+ade android create --profile medium_phone --machine windows --text  # on another machine, for this chat's work copy there (no new lane); --lane <id> for a lane there
 ade --socket app-control launch --command "npm run dev" --text
 ade --socket app-control connect --cdp-port 9222 --text           # attach to an already-running app
 ade --socket app-control focus --text

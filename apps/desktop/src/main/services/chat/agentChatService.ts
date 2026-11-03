@@ -76809,8 +76809,9 @@ export function createAgentChatService(args: {
   };
 
   /**
-   * This chat started a shell on another machine (`ade shell start --machine`,
-   * recorded by this brain as it forwards the call). Open views get the whole
+   * This chat started a shell on another machine (`ade shell start --machine`),
+   * or drove a simulator or Android emulator there through its work copy;
+   * recorded by this brain as it forwards the call. Open views get the whole
    * list at once, so the header can show where the chat is working.
    */
   const noteRemoteWork = (args: {
@@ -76823,6 +76824,7 @@ export function createAgentChatService(args: {
     terminalId: string | null;
     workCopyLaneId: string | null;
     usesSimulator: boolean;
+    usesAndroidEmulator?: boolean;
   }): void => {
     const sessionId = args.sessionId.trim();
     if (!sessionId || !args.machineKey.trim()) return;
@@ -76846,14 +76848,16 @@ export function createAgentChatService(args: {
       terminalIds,
       workCopyLaneId: args.workCopyLaneId ?? previous?.workCopyLaneId ?? null,
       usesSimulator: args.usesSimulator === true || previous?.usesSimulator === true,
+      ...(args.usesAndroidEmulator === true || previous?.usesAndroidEmulator === true ? { usesAndroidEmulator: true } : {}),
       lastStartedAt: new Date().toISOString(),
     };
-    // At most six. The oldest entry without a simulator goes first, so the iOS
-    // tool keeps a simulator the chat uses; the entry just recorded always stays.
+    // At most six. The oldest entry without a device goes first, so the iOS
+    // and Android tools keep a device the chat uses; the entry just recorded
+    // always stays.
     const list = [...uses.filter((use) => !sameUse(use)), next];
     while (list.length > 6) {
-      const withoutSimulator = list.slice(0, -1).findIndex((use) => !use.usesSimulator);
-      list.splice(withoutSimulator >= 0 ? withoutSimulator : 0, 1);
+      const withoutDevice = list.slice(0, -1).findIndex((use) => !use.usesSimulator && !use.usesAndroidEmulator);
+      list.splice(withoutDevice >= 0 ? withoutDevice : 0, 1);
     }
     remoteWorkBySession.set(sessionId, list);
     emitTransientChatEnvelope(sessionId, { type: "session_meta_updated", remoteWork: list });

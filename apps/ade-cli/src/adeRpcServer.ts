@@ -29,6 +29,7 @@ import {
 import {
   isRemoteWorkSyncMode,
   createRemoteWorkCopyService,
+  findRemoteWorkCopyForLane,
   remoteWorkLaneIdFor,
   RemoteWorkError,
   type RemoteWorkPrepareResult,
@@ -6680,7 +6681,35 @@ async function runTool(args: {
         : scopeAppleAdeActionArgs(runtime, session, action, appleArgs);
     } else if (domain === "android_emulator" && (!isUserClient || isUnboundAdeCliCaller(session))) {
       // Agent callers use only their own lane's emulator; see the function.
-      const androidArgs = requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs);
+      let androidArgs = requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs);
+      // A chat on another machine with no lane here: its work copy stands in
+      // for the lane (the emulator's owner and the screenshot root).
+      if (isRecord(androidArgs.remoteWork)) {
+        const { remoteWork, laneId: _laneId, projectRoot: _projectRoot, ...rest } = androidArgs;
+        const workCopyLaneId = remoteWorkLaneIdFor(workCopyOwner(session));
+        const withWorkCopy = (value: unknown): unknown => (isRecord(value)
+          ? { ...value, workCopy: { laneId: workCopyLaneId } }
+          // Input actions answer nothing; the caller's machine still learns the lane.
+          : value == null ? { workCopy: { laneId: workCopyLaneId } } : value);
+        if (ANDROID_LANE_FREE_ACTIONS.has(action)) {
+          // Status and the AVD list make no copy: they name this chat's
+          // emulator only when its copy is here already.
+          const copyExists = findRemoteWorkCopyForLane(runtime.projectRoot, workCopyLaneId) !== null;
+          androidArgs = copyExists ? { ...rest, laneId: workCopyLaneId } : rest;
+          if (copyExists) transformScopedResult = withWorkCopy;
+        } else {
+          androidArgs = { ...rest, laneId: workCopyLaneId };
+          // Used as it is (P0 has no build verb), made at the caller's commit
+          // when missing; busy until the call returns (a boot runs for its length).
+          prepareBeforeCall = async () => {
+            const { prepared } = await prepareCallerWorkCopy(runtime, session, { ...(remoteWork as Record<string, unknown>), sync: "none" });
+            afterScopedCall = prepared.done;
+          };
+          // The caller's machine learns which lane here is its work copy, so
+          // its views can show this emulator.
+          transformScopedResult = withWorkCopy;
+        }
+      }
       scopedObjectArgs = isUserClient
         ? await scopeUnboundAndroidAdeActionArgs(runtime, session, action, androidArgs, toolArgs.callerRoot)
         : scopeAndroidAdeActionArgs(runtime, session, action, androidArgs);

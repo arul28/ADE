@@ -3480,9 +3480,14 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   Aliases: create = device-create, attach = device-attach, release = detach =
   device-detach, key = press, text = type.
 
-  Another machine: --machine <name> runs the command where that machine's
-  brain runs; pass --lane <id> for a lane on that machine. The screenshot is
-  written there.
+  Another machine: --machine <name> runs the command on that machine, with
+  no new lane. Without --lane, the emulator there works for this chat's work
+  copy (a hidden worktree at your commit, made on first use; the commit must
+  be on origin). Every view of this chat then shows it in the Android tool.
+  status and devices make no copy. --lane <id> uses a lane on that machine
+  instead. The screenshot is written there.
+    $ ade android create --profile medium_phone --machine windows --text
+    $ ade android tap 540 1200 --machine windows --text
 
   Errors (each prints its next step):
     ANDROID_SDK_NOT_FOUND            install the SDK or set ANDROID_HOME
