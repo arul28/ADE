@@ -37068,25 +37068,13 @@ function createLinkOwnershipResolver(
     try {
       const linked = await connectForLink(options);
       connection = linked.connection;
-      // Name this project only for what is this project's: a lane it lists,
-      // a PR in its repository. Anything else goes out without an owner and
-      // opens through ordinary navigation.
-      if (target.kind === "lane") {
-        const lanes = linkRecords(unwrapToolResult(await linked.call("list_lanes", { includeArchived: true })), ["lanes", "items", "result"]);
-        if (!lanes.some((lane) => asString(lane.id) === target.laneId)) return null;
-      }
-      if (target.kind === "pr" && target.repoOwner && target.repoName) {
-        const status = unwrapActionEnvelope(unwrapToolResult(await linked.call("run_ade_action", {
-          domain: "github",
-          action: "getRemoteStatus",
-          args: {},
-        })));
-        const repo = isRecord(status) && isRecord(status.repo) ? status.repo : null;
-        const sameRepo = asString(repo?.owner)?.toLowerCase() === target.repoOwner.toLowerCase()
-          && asString(repo?.name)?.toLowerCase() === target.repoName.toLowerCase();
-        if (!sameRepo) return null;
-      }
-      return parseDeeplinkOwnership(unwrapToolResult(await linked.call("get_link_ownership")));
+      // The brain names this project only for what is this project's.
+      const subject: JsonObject = target.kind === "session"
+        ? { sessionId: target.sessionId, ...(target.laneId ? { laneId: target.laneId } : {}) }
+        : target.kind === "lane"
+          ? { laneId: target.laneId }
+          : target.repoOwner && target.repoName ? { repo: `${target.repoOwner}/${target.repoName}` } : {};
+      return parseDeeplinkOwnership(unwrapToolResult(await linked.call("get_link_ownership", subject)));
     } catch {
       return null;
     } finally {

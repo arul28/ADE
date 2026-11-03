@@ -958,8 +958,16 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "get_link_ownership",
-    description: "This computer's account machine key and this project's id, which ADE links carry so they open on the right computer and project from anywhere.",
-    inputSchema: { type: "object", additionalProperties: false, properties: {} }
+    description: "This computer's account machine key and this project's id, which ADE links carry so they open on the right computer and project from anywhere. Pass what the link points at (a chat, a lane, a PR's owner/repo): both come back null unless this project holds it.",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        sessionId: { type: "string" },
+        laneId: { type: "string" },
+        repo: { type: "string", description: "owner/name of a PR's repository" },
+      },
+    }
   },
   {
     name: "import_lane",
@@ -7214,6 +7222,25 @@ async function runTool(args: {
   }
 
   if (name === "get_link_ownership") {
+    const none = { accountMachineKey: null, projectId: null };
+    // A link names this project only for what is this project's, checked
+    // here with the brain's own services: a chat it holds (on the lane the
+    // link names), a lane it lists, a PR in its repository.
+    const sessionId = asOptionalTrimmedString(toolArgs.sessionId);
+    const laneId = asOptionalTrimmedString(toolArgs.laneId);
+    const repo = asOptionalTrimmedString(toolArgs.repo)?.toLowerCase() ?? null;
+    if (sessionId) {
+      const chat = runtime.sessionService.get(sessionId);
+      if (!chat) return none;
+      if (laneId && chat.laneId && chat.laneId !== laneId) return none;
+    } else if (laneId) {
+      const lanes = await runtime.laneService.list({ includeArchived: true, includeStatus: false }).catch(() => []);
+      if (!lanes.some((lane) => lane.id === laneId)) return none;
+    }
+    if (repo) {
+      const own = await runtime.githubService?.getRepoOrThrow().catch(() => null);
+      if (!own || `${own.owner}/${own.name}`.toLowerCase() !== repo) return none;
+    }
     const ownership = localLinkOwnership(runtime.projectRoot, { logger: runtime.logger });
     return { accountMachineKey: ownership?.accountMachineKey ?? null, projectId: ownership?.projectId ?? null };
   }
@@ -7995,7 +8022,8 @@ async function runTool(args: {
         ownerId: chatSessionId,
         ...PROOF_LISTING_ARTIFACT_FILTER,
         ...(kind ? { kind } : {}),
-        limit: 20,
+        // Wide for one kind, so linked or missing files can't hide a local one.
+        limit: kind ? 200 : 20,
       }).filter((entry) => (entry.availability ?? "available") === "available");
       const reviewable = (kind: "video_recording" | "screenshot") =>
         listChatProof(kind).find((entry) => resolveStoredProofFile(runtime.projectRoot, entry.uri) != null);

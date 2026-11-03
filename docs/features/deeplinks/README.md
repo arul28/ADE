@@ -40,8 +40,10 @@ sharing stamps it when it knows them: Activity items, ADE MCP results
 (`remoteMcpTools.ts` `chatLink`, fed `TypedShapeContext` with this computer's key
 and the project's registry id), `ade chat inbox`, `ade link` (the brain action
 `get_link_ownership`, called with the id of the project the command runs in,
-looked up in the registry without registering anything; outside a project the
-link carries no ownership; skipped with `--no-envelope`), the Work and lane menus'
+looked up in the registry without registering anything, and with what the link
+points at: the brain answers only when this project holds that chat, lane or
+PR repository, so a link to another project's work goes out unowned; outside a
+project the link carries no ownership; skipped with `--no-envelope`), the Work and lane menus'
 **Copy link** / **Open in web** (`renderer/lib/linkOwnership.ts` →
 `remoteRuntime.linkOwnership`, which names a remote row's host by its paired
 machine key and that host's project id), and the Linear agent's "Open in ADE"
