@@ -81,6 +81,12 @@ function buildConfig(apiHost: string, distinctId: string, allowed: { value: bool
       maskAllInputs: true,
       maskInputOptions: { password: true },
       maskTextSelector: `[${MASK_ALL_TEXT_ATTRIBUTE}] *`,
+      // On the link pages an "Open in ADE" `href` (and any other attribute)
+      // carries repository, branch and path from the link: masked there.
+      maskAttributeFn: (name, value) =>
+        document.documentElement.hasAttribute(MASK_ALL_TEXT_ATTRIBUTE) && name !== "class" && name !== "style"
+          ? "*".repeat(Math.min(value.length, 16))
+          : value,
       blockSelector: "iframe, video, canvas, [data-ph-block]",
       recordCrossOriginIframes: false,
       recordHeaders: false,

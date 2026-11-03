@@ -134,7 +134,12 @@ export function ToastCard({
             <div style={{ minWidth: 0, flex: 1, display: "flex", flexDirection: "column", gap: 5 }}>
               {hasHead ? (
                 <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-                  {model.badge ? <NoticeBadge tone={model.tone}>{model.badge}</NoticeBadge> : null}
+                  {/* A badge can be a PR title or a name: masked in replays. */}
+                  {model.badge ? (
+                    <span data-ph-mask="" style={{ display: "contents" }}>
+                      <NoticeBadge tone={model.tone}>{model.badge}</NoticeBadge>
+                    </span>
+                  ) : null}
                   {model.eyebrow ? (
                     <span style={{ fontSize: 11, fontWeight: 500, color: "var(--color-muted-fg)" }}>
                       {model.eyebrow}

@@ -165,7 +165,8 @@ export function TechnicalDetailsFold({
             Show technical details
           </span>
         </summary>
-        <pre className="max-h-52 overflow-auto whitespace-pre-wrap break-words border-t border-(color:--kit-rule) px-3.5 py-3 font-mono text-[11px] leading-relaxed text-(color:--kit-text-2)">
+        {/* Raw error and stack output can hold command output, git messages or code: masked. */}
+        <pre data-ph-mask="" className="max-h-52 overflow-auto whitespace-pre-wrap break-words border-t border-(color:--kit-rule) px-3.5 py-3 font-mono text-[11px] leading-relaxed text-(color:--kit-text-2)">
           {text}
         </pre>
       </details>

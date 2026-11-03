@@ -1879,7 +1879,9 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
           projectId: options.projectId ?? null,
           // Local-only dedupe fingerprint (hashed before send): collapses repeat
           // runs within 20 h into one PostHog event.
-          dedupeKey: `storage_doctor_run:${options.projectId ?? projectRoot}`,
+          // Per mode, so a run the person asked for is never swallowed by an
+          // automatic sweep earlier in the window.
+          dedupeKey: `storage_doctor_run:${trigger === "manual" ? "manual" : "automatic"}:${options.projectId ?? projectRoot}`,
           minimumIntervalMs: MAINTENANCE_ANALYTICS_MIN_INTERVAL_MS,
         });
       } catch (error) {

@@ -39,17 +39,27 @@ const SAMPLE_OK = 0.02;
 const SAMPLE_CLIENT_ERROR = 0.1;
 const MAX_RECORDS_PER_MINUTE = 120;
 const SEND_TIMEOUT_MS = 2000;
-const WORD_SEGMENT = /^[a-z][a-z-]{0,29}$/;
+// The static words of the four Workers' routes. A segment outside this list
+// (a repository owner or name, a user name, an id) is `:id`, so a path segment
+// a person chose never reaches a log. Add a word when a Worker gains a route.
+const ROUTE_WORDS = new Set([
+  "account", "ack", "agent", "agents", "approve", "attention", "bindings", "callback", "claim", "clerk",
+  "code", "coding-agents", "connect", "cursor", "daily", "developer-token", "device", "diagnostics",
+  "events", "graphql", "health", "hooks", "host", "integrations", "jev", "leaderboards", "linear",
+  "machines", "models", "music", "notify", "oauth", "orgs", "pairing", "pipe", "prewarm", "register",
+  "registry", "repos", "router", "settings", "state", "subscribe", "systemone", "token", "upload",
+  "usage-research", "user", "vault", "webhook", "webhooks",
+]);
 // Segments after which the rest of the path is a secret (machine keys, hook tokens).
 const KEY_CARRIERS = new Set(["host", "connect", "prewarm", "machines", "hooks", "webhooks"]);
 const MAX_SEGMENTS = 5;
 
-/** `/machines/abc123/state` becomes `/machines/:id`; only short lowercase words survive. */
+/** `/machines/abc123/state` becomes `/machines/:id`; only the Workers' own route words survive. */
 export function routeTemplate(pathname: string): string {
   const out: string[] = [];
   for (const segment of pathname.split("/").slice(1, 1 + MAX_SEGMENTS)) {
     if (!segment) continue;
-    if (!WORD_SEGMENT.test(segment)) {
+    if (!ROUTE_WORDS.has(segment)) {
       out.push(":id");
       continue;
     }
@@ -102,7 +112,8 @@ function send(
   attrs: Record<string, Attr>,
 ): void {
   try {
-    const token = (env.POSTHOG_LOGS_TOKEN ?? env.POSTHOG_PROJECT_TOKEN ?? "").trim();
+    // `||`: CI passes an empty POSTHOG_LOGS_TOKEN when its secret is unset.
+    const token = (env.POSTHOG_LOGS_TOKEN?.trim() || env.POSTHOG_PROJECT_TOKEN?.trim() || "");
     if (!PUBLIC_TOKEN.test(token)) return;
     const host = (env.POSTHOG_LOGS_HOST ?? env.POSTHOG_HOST ?? DEFAULT_HOST).trim().replace(/\/+$/, "");
     const body = JSON.stringify({

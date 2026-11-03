@@ -100,14 +100,14 @@ export function useLaneEventToasts(navigate: NavigateFunction): void {
           });
           return;
         }
+        // Git's own error text can name commits and files: masked in replays.
+        // The fixed "Rebase aborted" / "Rebase failed" stay readable.
+        const gitError = run.state === "aborted" ? "" : run.error?.trim() ?? "";
         showToast({
           id: `lane-rebase-${run.runId}`,
           title: laneLabel,
-          replayMask: { title: true },
-          message:
-            run.state === "aborted"
-              ? "Rebase aborted"
-              : run.error?.trim() || "Rebase failed",
+          replayMask: { title: true, message: Boolean(gitError) },
+          message: run.state === "aborted" ? "Rebase aborted" : gitError || "Rebase failed",
           tone: "error",
         });
       },
