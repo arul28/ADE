@@ -3320,10 +3320,12 @@ export type AgentChatRemoteWorkUse = {
   projectRootPath: string | null;
   /** Terminal ids there, newest last (at most a few). */
   terminalIds: string[];
-  /** The work copy's lane id there (`remote-work-…`); what its simulator is keyed by. */
+  /** The work copy's lane id there (`remote-work-…`); what its simulator and emulator are keyed by. */
   workCopyLaneId: string | null;
   /** The chat drove a simulator there through its work copy. */
   usesSimulator: boolean;
+  /** The chat drove an Android emulator there through its work copy (`ade android … --machine`). */
+  usesAndroidEmulator?: boolean;
   lastStartedAt: string;
 };
 

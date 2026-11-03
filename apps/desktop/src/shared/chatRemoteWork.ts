@@ -34,6 +34,19 @@ export function remoteSimulatorUses(
 }
 
 /**
+ * The machines whose Android emulator this chat drives through its work copy,
+ * newest first. Only those whose machine told us the copy's lane.
+ */
+export function remoteAndroidEmulatorUses(
+  session: { remoteWork?: AgentChatRemoteWorkUse[] | null } | null | undefined,
+): Array<AgentChatRemoteWorkUse & { workCopyLaneId: string }> {
+  return (session?.remoteWork ?? [])
+    .filter((use): use is AgentChatRemoteWorkUse & { workCopyLaneId: string } =>
+      use.usesAndroidEmulator === true && typeof use.workCopyLaneId === "string" && use.workCopyLaneId.length > 0)
+    .sort((a, b) => Date.parse(b.lastStartedAt) - Date.parse(a.lastStartedAt));
+}
+
+/**
  * Of a session row's remote work (`TerminalSessionSummary.remoteWork`), the
  * machines its current turn uses right now (`remoteWorkActiveMachineKeys`).
  */
