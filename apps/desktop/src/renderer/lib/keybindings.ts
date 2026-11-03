@@ -227,6 +227,13 @@ function keyLabel(key: string, mac: boolean): string {
  * read rather than as a spelled-out token.
  */
 export function bindingChipLabel(binding: string): string | null {
+  const keys = bindingKeyCaps(binding);
+  if (!keys) return null;
+  return isMacPlatform() ? keys.join("") : keys.join("+");
+}
+
+/** The keys of a binding's first chord, one label per key ("⌘", "K"), in the OS's order. */
+export function bindingKeyCaps(binding: string): string[] | null {
   const combo = parsePrimaryCombo(binding);
   if (!combo) return null;
   const mac = isMacPlatform();
@@ -242,7 +249,7 @@ export function bindingChipLabel(binding: string): string | null {
     parts.push(mac ? "⌘" : modifierKeyLabel);
   }
   parts.push(keyLabel(combo.key, mac));
-  return mac ? parts.join("") : parts.join("+");
+  return parts;
 }
 
 /**

@@ -1,28 +1,26 @@
 import React, { useMemo, useState } from "react";
-import { Plus, Trash } from "@phosphor-icons/react";
+import { ArrowCounterClockwise, Cpu, Plus, SquaresFour, Trash } from "@phosphor-icons/react";
 import {
   QUICK_SLOT_COMMAND_IDS,
   reasoningEffortLabel,
   quickSlotLeaderLabel,
   type QuickSlot,
-} from "../../../shared/quickSlots";
-import { confirmDialog, Dialog, promptDialog } from "../ui/dialog";
-import { SettingsSelect, SettingsTextField, SettingsToggle } from "./primitives/SettingsControls";
-import { ModernRow, ModernRows, ModernSection } from "./primitives/SettingsModern";
-import { isMacPlatform, isWindowsPlatform } from "../../lib/platform";
-import { getEffectiveBinding } from "../../lib/keybindings";
-import { isWebClientMode } from "../../lib/webClientMode";
-import { useAppStore } from "../../state/appStore";
-import { KEYBINDING_DEFINITIONS, WEB_KEYBINDING_DEFINITIONS } from "../../../shared/keybindings";
-import { quickSlotChordConflict, resolveBindingChords } from "../../../shared/keybindingEditor";
+} from "../../../../shared/quickSlots";
+import type { KeybindingsSnapshot } from "../../../../shared/types";
+import { quickSlotChordConflict, resolveBindingChords, type KeyboardPlatform } from "../../../../shared/keybindingEditor";
+import { getEffectiveBinding } from "../../../lib/keybindings";
 import {
   QUICK_SLOT_COMMANDS,
   profileCommands,
   quickSlotCommandKey,
   type QuickSlotCommand,
-} from "../../quickSlots/commands";
-import { newModelProfileId, useQuickSlotsStore } from "../../quickSlots/quickSlotsStore";
-import "../../quickSlots/quickSlots.css";
+} from "../../../quickSlots/commands";
+import { newModelProfileId, useQuickSlotsStore } from "../../../quickSlots/quickSlotsStore";
+import { confirmDialog, Dialog, promptDialog } from "../../ui/dialog";
+import { IntegrationCard } from "../integrations/IntegrationChrome";
+import { SettingsSelect, SettingsTextField, SettingsToggle } from "../primitives/SettingsControls";
+import { KeyCaps, leaderKeyCaps } from "./keyboardParts";
+import "../../../quickSlots/quickSlots.css";
 
 const GROUP_ORDER: QuickSlotCommand["group"][] = ["Chat", "Model", "Lane", "Tools", "Navigate"];
 
@@ -55,7 +53,21 @@ const QUICK_SLOT_GROUP_DETAIL: Record<QuickSlotCommand["group"], string> = {
   Navigate: "Opens this page or panel.",
 };
 
-export function QuickSlotsSection() {
+/** A settings row inside a card: title and hint on the left, the control on the right. */
+function SettingRow({ title, hint, control, warn }: { title: React.ReactNode; hint?: React.ReactNode; control?: React.ReactNode; warn?: boolean }) {
+  return (
+    <div className="ade-kbp-setting">
+      <div className="ade-kbp-setting-text">
+        <b>{title}</b>
+        {hint ? <small className={warn ? "ade-kbp-warn" : undefined}>{hint}</small> : null}
+      </div>
+      {control ? <div className="ade-kbp-setting-control">{control}</div> : null}
+    </div>
+  );
+}
+
+/** Settings › Keyboard › Quick slots and Model profiles. */
+export function QuickSlotsCards({ snapshot, platform }: { snapshot: KeybindingsSnapshot; platform: KeyboardPlatform }) {
   const {
     slots,
     profiles,
@@ -81,22 +93,20 @@ export function QuickSlotsSection() {
     () => [...QUICK_SLOT_COMMANDS, ...profileCommands(profiles)],
     [profiles],
   );
-  const mac = isMacPlatform();
-  const keybindings = useAppStore((state) => state.keybindings);
+  const mac = platform === "mac";
+  const leaderKeys = leaderKeyCaps(leader, platform);
   // Shortcuts a slot chord would shadow: Quick slots read the leader first.
   const shadowed = useMemo(() => {
-    const platform = mac ? "mac" as const : isWindowsPlatform() ? "windows" as const : "linux" as const;
-    const definitions = isWebClientMode() ? WEB_KEYBINDING_DEFINITIONS : KEYBINDING_DEFINITIONS;
     const out: string[] = [];
-    for (const definition of definitions) {
-      const binding = getEffectiveBinding(keybindings, definition.id, definition.defaultBinding);
+    for (const definition of snapshot.definitions) {
+      const binding = getEffectiveBinding(snapshot, definition.id, definition.defaultBinding);
       for (const chord of resolveBindingChords(binding, platform)) {
         const slot = quickSlotChordConflict(chord, leader, platform);
         if (slot) out.push(`slot ${slot} hides “${definition.description}”`);
       }
     }
     return out;
-  }, [keybindings, leader, mac]);
+  }, [snapshot, leader, platform]);
 
   const grouped = useMemo(() => {
     const visible = commands.filter((command) => matches(command, query));
@@ -141,20 +151,15 @@ export function QuickSlotsSection() {
 
   return (
     <>
-      <ModernSection
-        group="Quick slots"
+      <IntegrationCard
         anchor="quick-slots"
+        icon={<SquaresFour size={16} weight="duotone" />}
         title="Quick slots"
-        hint={
-          <>
-            Hold <kbd className="kit-kbd" data-size="sm">{quickSlotLeaderLabel(leader, mac)}</kbd> and tap 1–9 to run
-            a slot on the chat, lane or tool in front of you.
-          </>
-        }
-        actions={
+        hint={<>Hold <KeyCaps keys={leaderKeys} /> and tap 1–9 to run a slot on the chat, lane or tool in front of you.</>}
+        actions={(
           <button
             type="button"
-            className="kit-btn kit-btn-ghost"
+            className="ade-modern-btn"
             data-size="sm"
             onClick={async () => {
               const ok = await confirmDialog({
@@ -165,11 +170,12 @@ export function QuickSlotsSection() {
               if (ok) resetSlots();
             }}
           >
+            <ArrowCounterClockwise size={12} />
             Reset
           </button>
-        }
+        )}
       >
-        <div className="ade-ap-grid3 ade-qs-slots">
+        <div className="ade-kbp-slots">
           {slots.map((slot) => {
             const command = slotCommand(slot, commands);
             const label = slot.commandId
@@ -184,31 +190,37 @@ export function QuickSlotsSection() {
             const detail = command
               ? (command.hint ?? QUICK_SLOT_GROUP_DETAIL[command.group])
               : (slot.commandId ? "Action unavailable. Pick another." : "Click to assign");
+            const Icon = command?.icon ?? null;
             return (
               <button
                 key={slot.index}
                 type="button"
-                className="ade-ap-choice ade-qs-slot"
+                className="ade-kbp-slot"
                 data-empty={!slot.commandId || undefined}
+                aria-label={`Slot ${slot.index}: ${label}. Change`}
                 onClick={() => {
                   setPickerSlot(slot.index);
                   setQuery("");
                 }}
               >
-                <span className="kit-num ade-qs-slot-num">{slot.index}</span>
-                <span className="ade-qs-slot-label">{label}</span>
-                <span className="ade-qs-slot-detail">{detail}</span>
+                <KeyCaps keys={[String(slot.index)]} />
+                <span className="ade-kbp-slot-text">
+                  <b>{label}</b>
+                  <small>{detail}</small>
+                </span>
+                {Icon ? <Icon size={16} weight="duotone" className="ade-kbp-slot-icon" aria-hidden /> : null}
               </button>
             );
           })}
         </div>
 
-        <ModernRows>
-          <ModernRow
+        <div className="ade-ig-rows">
+          <SettingRow
             title="Leader keys"
             hint={shadowed.length
               ? `With these keys, ${shadowed.join("; ")}. Change the leader or that shortcut.`
               : mac ? "Option+Command is the default. Slot 8 can collide with macOS Zoom when zoom is on." : "Ctrl+Shift keeps Ctrl+Alt (AltGr) free."}
+            warn={shadowed.length > 0}
             control={
               <SettingsSelect
                 value={leader}
@@ -218,7 +230,7 @@ export function QuickSlotsSection() {
               />
             }
           />
-          <ModernRow
+          <SettingRow
             title="Keep the panel open"
             hint="Release the keys without choosing. Useful when holding two modifiers is hard."
             control={
@@ -229,7 +241,7 @@ export function QuickSlotsSection() {
               />
             }
           />
-          <ModernRow
+          <SettingRow
             title="A model profile with the caret in the prompt"
             hint="The other case always sets this chat's model. A mention names the model in the instruction instead."
             control={
@@ -244,32 +256,32 @@ export function QuickSlotsSection() {
               />
             }
           />
-        </ModernRows>
+        </div>
+      </IntegrationCard>
 
-      </ModernSection>
-
-      <ModernSection
-        group="Model profiles"
+      <IntegrationCard
         anchor="model-profiles"
+        icon={<Cpu size={16} weight="duotone" />}
         title="Model profiles"
-        hint="A model and a thinking level. Permissions stay in the composer."
-        actions={
-          <button type="button" className="kit-btn" data-size="sm" onClick={() => setAddProfileOpen(true)}>
-            <Plus size={12} /> Add profile
+        hint="A model and a thinking level, for a Quick slot. Permissions stay in the composer."
+        actions={(
+          <button type="button" className="ade-modern-btn" data-size="sm" onClick={() => setAddProfileOpen(true)}>
+            <Plus size={12} />
+            Add profile
           </button>
-        }
+        )}
       >
         {profiles.length === 0 ? (
-          <p className="ade-qs-empty">
+          <p className="ade-kbp-empty">
             No profiles yet. Save one from a chat with the “Save this chat's model as a profile” slot, or add one by model id.
           </p>
         ) : (
-          <ModernRows>
+          <div className="ade-ig-rows">
             {profiles.map((profile) => (
-              <ModernRow
+              <SettingRow
                 key={profile.id}
                 title={profile.name}
-                hint={`${profile.modelId} · ${reasoningEffortLabel(profile.reasoningEffort)}`}
+                hint={<span className="kit-num">{profile.modelId} · {reasoningEffortLabel(profile.reasoningEffort)}</span>}
                 control={(
                   <button
                     type="button"
@@ -291,9 +303,9 @@ export function QuickSlotsSection() {
                 )}
               />
             ))}
-          </ModernRows>
+          </div>
         )}
-      </ModernSection>
+      </IntegrationCard>
 
       <Dialog
         open={pickerSlot != null}

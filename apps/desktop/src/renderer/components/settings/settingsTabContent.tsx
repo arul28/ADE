@@ -15,7 +15,7 @@ import { AppearanceSection } from "./AppearanceSection";
 import { AppleDevicesSection } from "./AppleDevicesSection";
 import { ModernPage, SettingsColumn, SettingsSectionRail, type SettingsTone } from "./primitives";
 import { ChatSection } from "./ChatSection";
-import { KeyboardSection } from "./KeyboardSection";
+import { KeyboardPage } from "./keyboard/KeyboardPage";
 import { BudgetCapSettings } from "./BudgetCapEditor";
 import { AdeCliSection } from "./AdeCliSection";
 import { AdeUsageSection } from "./AdeUsageSection";
@@ -475,7 +475,7 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
   keyboard: [
     {
       entryIds: "tab",
-      render: () => <KeyboardSection />,
+      render: () => <KeyboardPage />,
       machine: "local",
     },
   ],

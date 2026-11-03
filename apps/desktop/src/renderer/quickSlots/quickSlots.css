@@ -207,47 +207,8 @@ html[data-reduce-motion="true"] .ade-qs-cell {
 
 /* ── Settings ───────────────────────────────────────────────────────────── */
 
-/* Settings › Keyboard › Quick slots: the nine slots are `.ade-ap-choice`
-   cards in `.ade-ap-grid3`; this only lays out what is inside a card. */
-/* Doubled class: `.ade-ap-choice` sets padding 0 and loads after this file. */
-.ade-ap-choice.ade-qs-slot {
-  gap: 2px;
-  padding: 10px 12px;
-  min-height: 76px;
-}
-
-.ade-ap-choice.ade-qs-slot[data-empty="true"] {
-  border-style: dashed;
-  color: var(--kit-text-3);
-}
-
-.ade-qs-slot-num {
-  font-size: 11px;
-  color: var(--kit-text-3);
-}
-
-.ade-qs-slot-label {
-  font-size: 12.5px;
-  font-weight: 500;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.ade-qs-slot-detail {
-  font-size: 11px;
-  line-height: 1.4;
-  color: var(--kit-text-3);
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-
-.ade-qs-slots + .ade-modern-rows {
-  margin-top: 14px;
-}
-
+/* Settings › Keyboard lays out its own slot cards (`settings/keyboard/keyboardPage.css`);
+   the action picker below is shared with it. */
 .ade-qs-empty {
   margin: 0;
   padding: 6px 2px;

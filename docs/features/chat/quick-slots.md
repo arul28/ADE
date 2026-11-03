@@ -137,8 +137,8 @@ A prompt slot asks for its text when it is assigned.
 | `apps/desktop/src/renderer/quickSlots/QuickSlotsHost.tsx` | The chord dispatcher, target resolution, and the HUD. Mounted once in `AppShell`. |
 | `apps/desktop/src/renderer/quickSlots/quickSlotsStore.ts` | The nine slots and profiles, persisted to `ade.quickSlots.v1`. |
 | `apps/desktop/src/renderer/quickSlots/quickSlots.css` | HUD and settings styling, including reduced-motion behavior. |
-| `apps/desktop/src/renderer/components/settings/QuickSlotsSection.tsx` | The Settings surface: grid, action picker, profiles, leader, sticky mode. |
-| `apps/desktop/src/renderer/components/settings/KeyboardSection.tsx` | Settings › Keyboard, the This-computer page that hosts the section. |
+| `apps/desktop/src/renderer/components/settings/keyboard/QuickSlotsCards.tsx` | The Settings surface: grid, action picker, profiles, leader, sticky mode. |
+| `apps/desktop/src/renderer/components/settings/keyboard/KeyboardPage.tsx` | Settings › Keyboard, the This-computer page that hosts the cards. |
 | `apps/desktop/src/renderer/components/chat/AgentChatComposer.tsx` | Publishes the composer target while the pane is active; exposes insert, model, thinking, permission, fast, picker and stop. |
 | `apps/desktop/src/renderer/components/app/AppShell.tsx` | Hosts `QuickSlotsHost` once for the whole window. |
 | `apps/desktop/src/renderer/components/ui/zLayers.ts` | The `quickSlots` layer (130): above sheets, below dialogs. |

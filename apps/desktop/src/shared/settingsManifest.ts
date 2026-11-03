@@ -736,7 +736,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     keywords: ["keyboard", "shortcut", "keybinding", "hotkey", "rebind", "chord", "key", "reset"],
     tab: "keyboard",
     anchor: "keyboard-shortcuts",
-    // The brain's per-machine keybinding store; the hosted client keeps its own copy in the browser.
+    // This computer's renderer storage (lib/keybindingStore.ts); the hosted client keeps its own in the browser.
     scope: "machine",
     web: "browser",
     group: "Shortcuts",

@@ -3,7 +3,7 @@
 ADE is driven with modifier chords: one **⌘**-chord per action, with a mnemonic
 second key, so the keys are easy to remember and never collide with typing. The
 registry that declares them is `shared/keybindings.ts`, rebindable in
-Settings › Keyboard (`KeyboardShortcutsSection.tsx`, which writes the
+Settings › Keyboard (`settings/keyboard/ShortcutsCard.tsx`, which writes the
 `keybindings` store), and each surface adds only the ids it handles.
 
 Work is the first surface wired this way (`components/work/workShortcuts.ts`).

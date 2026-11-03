@@ -305,6 +305,26 @@ button.kit-row:hover, a.kit-row:hover { background: var(--kit-hover); }
 }
 .kit-kbd[data-size="sm"] { min-width: 0; height: 16px; padding: 0 4px; font-size: 10px; border-radius: 4px; }
 
+/* A chord as separate keycaps: <span class="kit-keys"><kbd>⌘</kbd><kbd>K</kbd></span>.
+   The thicker bottom edge reads as a key you press. */
+.kit-keys { display: inline-flex; align-items: center; gap: 3px; white-space: nowrap; }
+.kit-keys > kbd {
+  display: inline-grid;
+  place-items: center;
+  min-width: 24px;
+  height: 24px;
+  padding: 0 7px;
+  border-radius: 6px;
+  border: 1px solid color-mix(in srgb, var(--color-fg) 14%, transparent);
+  border-bottom-width: 2px;
+  background: color-mix(in srgb, var(--color-fg) 7%, transparent);
+  color: var(--color-fg);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1;
+}
+.kit-keys[data-size="lg"] > kbd { min-width: 34px; height: 34px; padding: 0 10px; border-radius: 8px; font-size: 15px; }
+
 /* Big stat number. */
 .kit-stat {
   font-size: 26px;
