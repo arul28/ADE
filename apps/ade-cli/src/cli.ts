@@ -132,6 +132,8 @@ import {
 } from "../../desktop/src/shared/sentry/diagnostics";
 import { projectRegistryDiagnosticAttachment } from "./services/projects/projectRegistryJournal";
 import { initBrainSentry } from "./sentry/initBrain";
+import { setSentryEventMirror, setSentryUserResolver } from "../../desktop/src/shared/sentry/eventFilter";
+import { createExceptionAnalyticsMirror } from "../../desktop/src/main/services/analytics/exceptionProductAnalytics";
 import { resolveSelectedUpdateTrack } from "./services/runtime/updateTrackStore";
 import { updateTrackOfVersion } from "../../desktop/src/shared/updateTrack";
 import { resolveReleaseChannel } from "../../desktop/src/shared/packageChannel";
@@ -27201,6 +27203,12 @@ async function runServe(
       }),
     }),
   );
+  // From the brain's start, not only once a project opens: a brain that only
+  // hosts sync still reports its errors under the analytics distinct id and
+  // mirrors them to PostHog error tracking. Project scopes set the same shared
+  // service again.
+  setSentryUserResolver(() => brainProductAnalytics.getDistinctId());
+  setSentryEventMirror(createExceptionAnalyticsMirror({ analytics: brainProductAnalytics, surface: "api" }));
   /**
    * The brain's half of automatic diagnostics. It shares the desktop's consent
    * flag and daily budget on disk, and reads the machine's credential store, so
