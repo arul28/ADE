@@ -66,9 +66,9 @@ export const IOS_SIMULATOR_DEVICE_CLEANUP_TIMEOUT_MS = 15 * 60_000;
 
 /**
  * Android emulator lifecycle: a boot waits on `sys.boot_completed` (the first
- * boot of a new AVD measured 54 s on Windows, and the service allows 120 s or
- * more), create and attach boot right after, and a stop or release waits up
- * to 20 s for the emulator to exit after `emu kill`. On the 30 s default the
+ * boot of a new AVD measured 54 s on Windows; the service allows 180 s, plus
+ * up to about 25 s to stop a boot that failed), create and attach boot right
+ * after, and a stop or release takes up to about 45 s. On the 30 s default the
  * renderer and `ade android` gave up while the emulator was still booting.
  */
 export const ANDROID_EMULATOR_LIFECYCLE_TIMEOUT_MS = 4 * 60_000;

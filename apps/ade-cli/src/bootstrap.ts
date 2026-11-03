@@ -225,6 +225,9 @@ import {
   type MacDesktopService,
 } from "../../desktop/src/main/services/macDesktop/macDesktopService";
 import { createMacDesktopLogger } from "../../desktop/src/main/services/macDesktop/macDesktopLogger";
+import { createAndroidEmulatorService } from "../../desktop/src/main/services/android/androidEmulatorService";
+import { sqlAndroidLaneDeviceRepo } from "../../desktop/src/main/services/android/androidLaneRelease";
+import { resolveScrcpyServerJarPath } from "../../desktop/src/main/services/android/scrcpyServer";
 import { createWindowsDesktopSeatAdapter } from "../../desktop/src/main/services/windowsDesktop/windowsDesktopSeatProvider";
 import { createLinuxDesktopSeatAdapter } from "../../desktop/src/main/services/linuxDesktop/linuxDesktopSeatProvider";
 import { feedDemoTrackFromChatEvent } from "../../desktop/src/main/services/demoVideo/demoTrackRegistry";
@@ -593,6 +596,23 @@ if (
   && process.env.ADE_RUNTIME_PACKAGED === undefined
 ) {
   process.env.ADE_RUNTIME_PACKAGED = "1";
+}
+
+/**
+ * The bundled scrcpy server for this brain. A brain started by the packaged
+ * app has Electron's `resourcesPath` (electron-builder copies
+ * `resources/android` there); a source checkout reads the desktop app's own
+ * `resources/android`. A standalone brain archive ships no jar yet: the path
+ * then names a missing file, the live view fails with `ANDROID_STREAM_FAILED`,
+ * and input falls back to `adb shell input`.
+ */
+function brainScrcpyServerJarPath(): string {
+  const resourcesPath = (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath ?? "";
+  return resolveScrcpyServerJarPath({
+    isPackaged: !isSourceCheckoutRuntimeModule(currentModulePath) && resourcesPath.length > 0,
+    resourcesPath,
+    appPath: path.resolve(path.dirname(currentModulePath), "..", "..", "desktop"),
+  });
 }
 
 function automationsEnabledForHeadlessRuntime(): boolean {
@@ -2224,6 +2244,23 @@ export async function createAdeRuntime(args: {
         }),
       });
     teardown.push(() => macDesktopService?.dispose());
+    /**
+     * The lane's Android emulator (`android_emulator` domain, `ade android`).
+     * Built on every host OS: Android runs on macOS, Windows and Linux, and
+     * `getStatus` is how a host without an SDK shows the setup card. The same
+     * per-project data folder as the desktop's copy, so both read one
+     * started-emulators file and one lane table.
+     */
+    const androidEmulatorService = chatOnlyRuntime
+      ? null
+      : createAndroidEmulatorService({
+        laneDevices: sqlAndroidLaneDeviceRepo(db),
+        dataDir: path.join(paths.adeDir, "android"),
+        serverJarPath: brainScrcpyServerJarPath(),
+        logger,
+        onEvent: (event) => pushEvent("runtime", { type: "android_emulator_event", event }),
+      });
+    teardown.push(() => androidEmulatorService?.dispose());
     // A chat-only runtime has no browser surface: no forwarder, no user-browser
     // attachments, no bridge. Everything else has all three. That includes the
     // machine's personal-chat runtime: nothing reaches its action registry
@@ -2480,6 +2517,13 @@ export async function createAdeRuntime(args: {
       // teardown step never has to know what host it is on.
       laneTeardownDeps.macDesktopService = {
         destroyForLane: (laneId: string) => macDesktopService.destroyForLane(laneId),
+      };
+    }
+    if (androidEmulatorService) {
+      // Archive and delete stop the lane's stream and emulator; the AVD itself
+      // goes in the lane service's Android release step, which needs no service.
+      laneTeardownDeps.androidEmulatorService = {
+        stopForLane: (laneId: string) => androidEmulatorService.stopForLane(laneId),
       };
     }
     laneTeardownDeps.fileWatcherService = {
@@ -3923,6 +3967,7 @@ export async function createAdeRuntime(args: {
       appControlService,
       getScenePreviewer: () => (desktopBridgeAttached() ? desktopBridgeHolder.scenePreview : null),
       macDesktopService,
+      androidEmulatorService,
       builtInBrowserService: builtInBrowserBridge,
       userBrowserAttachService,
       workToolsStateService,
