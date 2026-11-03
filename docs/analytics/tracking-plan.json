@@ -430,7 +430,8 @@
       "name": "$exception",
       "platforms": [
         "desktop",
-        "runtime"
+        "runtime",
+        "ios"
       ],
       "owner": "apps/desktop/src/main/services/analytics/exceptionProductAnalytics.ts",
       "source": "desktop_policy",
