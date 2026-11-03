@@ -67,7 +67,7 @@ final class AppleDeviceViewerModel: ObservableObject {
   private var pendingFold: AppleFoldTarget?
   private var foldInFlight = false
   private var lastFold: AppleFoldTarget?
-  private var lastHold: String?
+  private var lastAskedOrientation: String?
 
   #if DEBUG
   private var isPreview = false
@@ -221,6 +221,11 @@ final class AppleDeviceViewerModel: ObservableObject {
     guard let next = try? await syncService.fetchAppleDeviceStatus(laneId: laneId) else { return }
     let previousUdid = status?.device?.udid
     status = next
+    // A pose belongs to the device it came from: another one (perhaps rigid)
+    // must not be drawn or folded a Duo's way until its own stream says so.
+    if let previousUdid, next.device?.udid != previousUdid {
+      posture = nil
+    }
     // Another device is behind the picture now: a touch aimed at the old one
     // must not land on it.
     if mode == .controlling, let previousUdid, next.device?.udid != previousUdid {
@@ -271,7 +276,7 @@ final class AppleDeviceViewerModel: ObservableObject {
     mode = .controlling
     // The first target after taking control is always sent.
     lastFold = nil
-    lastHold = nil
+    lastAskedOrientation = nil
     // Whether anyone drives a simulator from a phone at all. Nothing about
     // the device, lane or machine crosses; repeats in one foreground are one.
     ProductAnalytics.shared.captureFeature(.simulatorControl, outcome: .started)
@@ -352,14 +357,21 @@ final class AppleDeviceViewerModel: ObservableObject {
       }
       // On the front screen the hold is the pose's own (Tent turns it); the
       // inner display gets its turn again when the phone opens.
-      if next.hold == nil { lastHold = nil }
+      if next.askedOrientation == nil { lastAskedOrientation = nil }
       // Held the other way: turn it, unless the picture already runs that way.
-      if let hold = next.hold, hold != lastHold {
-        lastHold = hold
+      // Remembered only once it took, so the next target tries again.
+      if let asked = next.askedOrientation, asked != lastAskedOrientation {
         let alreadyThere = posture?.screen == "inner" && posture?.pictureIsWide == next.wantsWidePicture
         if !alreadyThere {
-          try? await syncService.rotateAppleDevice(laneId: laneId, chatSessionId: chatSessionId, orientation: hold)
+          do {
+            try await syncService.rotateAppleDevice(laneId: laneId, chatSessionId: chatSessionId, orientation: asked)
+          } catch {
+            appleViewerLog.error("fold mirror rotate failed: \((error as NSError).localizedDescription, privacy: .public)")
+            inputFailed(error)
+            return
+          }
         }
+        lastAskedOrientation = asked
       }
     }
   }

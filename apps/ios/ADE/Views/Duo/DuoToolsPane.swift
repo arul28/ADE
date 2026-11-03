@@ -79,14 +79,6 @@ enum DuoToolTab: String, CaseIterable, Identifiable, Hashable {
     }
   }
 
-  /// A live picture of another machine's screen. These are the only tabs that
-  /// hold a video stream.
-  var isLiveViewer: Bool {
-    switch self {
-    case .simulator, .macDesktop, .appControl: return true
-    default: return false
-    }
-  }
 }
 
 extension WorkToolChip {
@@ -204,51 +196,31 @@ final class DuoWorkPaneModel: ObservableObject {
   }
 }
 
-/// Reads which surface the pane shows, for a view that is not otherwise
-/// observing the pane (the chat's pill row draws that pill selected). With no
-/// pane (the phone) it reports nil.
-struct DuoPaneSelectionReader<Content: View>: View {
+/// Reads one fact about the pane, for a view that is not otherwise observing
+/// it: which surface it shows (the chat's pill row draws that pill
+/// selected), or whether it holds a live stream on the stage. With no pane
+/// (the phone) it reads `fallback`.
+struct DuoPaneReader<Value, Content: View>: View {
   let pane: DuoWorkPaneModel?
-  @ViewBuilder var content: (DuoToolTab?) -> Content
+  let read: (DuoWorkPaneModel) -> Value
+  let fallback: Value
+  @ViewBuilder var content: (Value) -> Content
 
   var body: some View {
     if let pane {
-      Observed(pane: pane, content: content)
+      Observed(pane: pane, read: read, content: content)
     } else {
-      content(nil)
+      content(fallback)
     }
   }
 
   private struct Observed: View {
     @ObservedObject var pane: DuoWorkPaneModel
-    let content: (DuoToolTab?) -> Content
+    let read: (DuoWorkPaneModel) -> Value
+    let content: (Value) -> Content
 
     var body: some View {
-      content(pane.isOpen ? pane.tab : nil)
-    }
-  }
-}
-
-/// Reads whether the pane holds a live stream on the stage (see
-/// `DuoWorkPaneModel.showsLiveStage`). With no pane it reports false.
-struct DuoPaneLiveStageReader<Content: View>: View {
-  let pane: DuoWorkPaneModel?
-  @ViewBuilder var content: (Bool) -> Content
-
-  var body: some View {
-    if let pane {
-      Observed(pane: pane, content: content)
-    } else {
-      content(false)
-    }
-  }
-
-  private struct Observed: View {
-    @ObservedObject var pane: DuoWorkPaneModel
-    let content: (Bool) -> Content
-
-    var body: some View {
-      content(pane.showsLiveStage)
+      content(read(pane))
     }
   }
 }
@@ -648,8 +620,8 @@ struct DuoWorkChatPaneSplit<Chat: View, Tools: View, Idle: View>: View {
     // The reader is always present and the thread always sits in the same slot
     // within a family, so opening a tool beside the chat does not re-create
     // the transcript (which would drop the reader's place).
-    DuoPaneLiveStageReader(pane: stagePane) { live in
-      reader(stacked: stacks(live: live), live: live)
+    DuoPaneReader(pane: stagePane, read: \.showsLiveStage, fallback: false) { live in
+      reader(stacked: placements.stacks(layout: duo, family: family, live: live), live: live)
     }
     .background {
       GeometryReader { full in
@@ -683,26 +655,18 @@ struct DuoWorkChatPaneSplit<Chat: View, Tools: View, Idle: View>: View {
     }
   }
 
-  /// Laptop always stacks; a live stream the person placed above the chat
-  /// stacks the halves on any posture.
-  private func stacks(live: Bool) -> Bool {
-    if family == .tall { return true }
-    guard live else { return false }
-    return placements.stacksAbove(layout: duo, family: family)
-  }
-
   /// Beside the chat, a live stream's column is exactly as wide as its
   /// picture at the column's full height: the chat takes every point the
   /// picture does not need, and no bars stand beside the picture. Nil (the
-  /// hinge split) for anything else, or when the chat would get too narrow
-  /// (a wide desktop: it then fits the column's width instead).
+  /// hinge split) for anything else. The chat never gets narrower than its
+  /// minimum: a wide desktop then fits the column's width instead.
   /// Above the chat, flat: the top half shrinks to a wide picture's height at
   /// the full width (it runs up under the bar, so that band counts). Nil when
   /// the picture fills the half anyway, or on a fold.
   private func huggedTopHeight(width: CGFloat, half: CGFloat, topInset: CGFloat, fold: DuoFold, live: Bool) -> CGFloat? {
     guard live, isOpen, fold == .none, let aspect = picture.aspect else { return nil }
     let gap = LiveStagePresentation.pane(.above).pictureGap
-    let needed = ((width - gap * 2) / aspect + gap * 2).rounded(.up) - topInset
+    let needed = LiveStageFit.paneHeight(aspect: aspect, width: width, gap: gap) - topInset
     guard needed < half else { return nil }
     return max(160, needed)
   }
@@ -717,7 +681,7 @@ struct DuoWorkChatPaneSplit<Chat: View, Tools: View, Idle: View>: View {
     // Beside the edge bar the stage runs the pane to both screen edges;
     // under a top bar it starts below it.
     let height = duo.hasEdgeBar ? windowHeight : paneHeight
-    let paneWidth = ((height - gap * 2) * aspect + gap * 2).rounded(.up)
+    let paneWidth = LiveStageFit.paneWidth(aspect: aspect, height: height, gap: gap)
     let chat = total - paneWidth - 1
     return max(DuoWorkMetrics.minChatWidth, chat)
   }

@@ -907,36 +907,36 @@ struct WorkSessionDestinationView: View {
   /// puts itself on stage over the pane, seeded with the state the chip was
   /// already showing; the pane only holds its place. Watching stays the
   /// default, and Control is the viewer's own deliberate act.
-  @ViewBuilder
   private func duoLiveStageSlot(_ seed: LiveStage.Seed) -> some View {
-    #if DEBUG
     LiveStagePaneSlot(
       laneId: duoToolLaneId,
       chatSessionId: sessionId,
       seed: seed,
       onClose: { [weak pane = duoPane] in pane?.close() },
-      preview: WorkRootPreviewFixture.active != nil ? Self.liveStagePreview(seed.kind) : nil
+      preview: Self.fixtureStagePreview(seed.kind)
     )
+  }
+
+  /// A fixture chat's stand-in stream; nil outside a fixture (and always in
+  /// a release build).
+  static func fixtureStagePreview(_ kind: LiveStage.Kind) -> LiveStagePreview? {
+    #if DEBUG
+    WorkRootPreviewFixture.active != nil ? liveStagePreview(kind) : nil
     #else
-    LiveStagePaneSlot(
-      laneId: duoToolLaneId,
-      chatSessionId: sessionId,
-      seed: seed,
-      onClose: { [weak pane = duoPane] in pane?.close() }
-    )
+    nil
     #endif
   }
 
   #if DEBUG
   /// A fixture chat's stream: each viewer's drawn stand-in, no sync.
-  static func liveStagePreview(_ kind: LiveStage.Kind) -> Any {
+  static func liveStagePreview(_ kind: LiveStage.Kind) -> LiveStagePreview {
     switch kind {
     case .simulator:
-      return AppleDeviceViewerPreview(status: WorkProofPreviewData.toolChipsAppleStatus, mode: .watching)
+      return .simulator(AppleDeviceViewerPreview(status: WorkProofPreviewData.toolChipsAppleStatus, mode: .watching))
     case .macDesktop:
-      return MacDesktopViewerPreview.watching
+      return .macDesktop(.watching)
     case .appControl:
-      return AppControlViewerPreview()
+      return .appControl(AppControlViewerPreview())
     }
   }
   #endif

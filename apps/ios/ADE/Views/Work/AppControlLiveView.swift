@@ -628,33 +628,15 @@ struct AppControlViewer: View {
   }
 
   var body: some View {
-    GeometryReader { proxy in
-      let insets = chromeInsets ?? proxy.safeAreaInsets
-      ZStack(alignment: .topLeading) {
-        // A tap around the picture opens the menu too.
-        LiveStageBackdrop(presentation: presentation)
-          .contentShape(Rectangle())
-          .onTapGesture { toggleMenu() }
-        stage(size: proxy.size, insets: EdgeInsets())
-          .frame(width: proxy.size.width, height: proxy.size.height)
-        LiveStageMenuButton(
-          container: proxy.size,
-          insets: insets,
-          storageKey: "ade.liveStage.button.\(presentation.isPane ? "pane" : "full").\(proxy.size.width > proxy.size.height ? "wide" : "tall")",
-          symbolName: "ellipsis",
-          isOpen: $menuOpen
-        ) {
-          menuPanel
-        }
-        .frame(width: proxy.size.width, height: proxy.size.height)
-      }
-      .frame(width: proxy.size.width, height: proxy.size.height)
-    }
-    // Over the pane it runs top to bottom but never sideways under the edge
-    // bar; full screen it runs edge to edge.
-    .ignoresSafeArea(.container, edges: presentation.isPane ? .vertical : .all)
-    .environment(\.colorScheme, .dark)
-    .statusBarHidden(hidesStatusBar || presentation.isFullScreen)
+    LiveStageScreenFrame(
+      presentation: presentation,
+      chromeInsets: chromeInsets,
+      turned: turned,
+      menuOpen: $menuOpen,
+      onBackdropTap: { toggleMenu() },
+      picture: { stageContent },
+      panel: { menuPanel }
+    )
     .fullScreenCover(isPresented: Binding(
       get: { inspect != nil },
       set: { presented in if !presented, inspect != nil { exitInspect() } }
@@ -691,29 +673,7 @@ struct AppControlViewer: View {
 
   // MARK: - Stage
 
-  /// `insets` is what of the stage is the system's: the picture stays out of
-  /// it and the black runs under it.
-  private func stage(size: CGSize, insets: EdgeInsets) -> some View {
-    // Over the pane the picture keeps a little room and its own corners;
-    // full screen it runs edge to edge.
-    let gap = presentation.pictureGap
-    let container = CGSize(
-      width: max(0, size.width - insets.leading - insets.trailing - gap * 2),
-      height: max(0, size.height - insets.top - insets.bottom - gap * 2)
-    )
-    let inner = turned ? CGSize(width: container.height, height: container.width) : container
-    return stageContent
-      .frame(width: inner.width, height: inner.height)
-      .livePictureViewport()
-      .liveStageQuarterTurn(turned, in: container)
-      .position(
-        x: insets.leading + gap + container.width / 2,
-        y: insets.top + gap + container.height / 2
-      )
-  }
-
-  private var cornerRadius: CGFloat { presentation.isPane ? 18 : 0 }
-  @Environment(\.liveStageHidesStatusBar) private var hidesStatusBar
+  private var cornerRadius: CGFloat { presentation.screenCornerRadius }
 
   @ViewBuilder
   private var stageContent: some View {

@@ -300,7 +300,7 @@ struct DuoChatRail: ViewModifier {
   /// A live stream sits above the chat and runs to the screen's top edge,
   /// over the bar's row: the title moves down onto the chat's own half.
   private var headerOnChatHalf: Bool {
-    pane.showsLiveStage && placements.stacksAbove(layout: duo, family: family)
+    pane.showsLiveStage && placements.stacks(layout: duo, family: family, live: true)
   }
 
   private func capsules(pane paneHeader: DuoChatHeaderCapsules.PaneHeader?, width: CGFloat, fills: Bool) -> some View {

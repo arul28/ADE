@@ -109,14 +109,7 @@ enum AppleDeviceTouchMapping {
     guard container.width > 0, container.height > 0 else { return nil }
     guard content.width > 0, content.height > 0 else { return nil }
     let drawn = rotation.isSideways ? CGSize(width: content.height, height: content.width) : content
-    let scale = min(container.width / drawn.width, container.height / drawn.height)
-    let size = CGSize(width: drawn.width * scale, height: drawn.height * scale)
-    return CGRect(
-      x: (container.width - size.width) / 2,
-      y: (container.height - size.height) / 2,
-      width: size.width,
-      height: size.height
-    )
+    return LiveStageFit.rect(aspect: drawn.width / drawn.height, in: container)
   }
 
   /// A point inside the drawn picture, back to the same point on the RAW
@@ -183,20 +176,24 @@ enum AppleDeviceTouchMapping {
 
 /// Where a Duo simulator should be folded to match the phone in the person's
 /// hand, while they control it: closed, tent, or open at the phone's hinge
-/// angle, held the way the phone is held.
+/// angle, turned so its inner picture runs the way the phone's does.
 struct AppleFoldTarget: Equatable {
   /// A Device Hub pose (`tent`), or nil for a raw angle.
   var pose: String?
   /// The hinge, in degrees, when there is no pose.
   var angle: Double?
-  /// How the phone is held, in `rotate`'s names, when the inner display is on.
-  var hold: String?
+  /// The orientation to send `rotate` while the inner display is on. The
+  /// Duo's inner panel is mounted a quarter turn from the phone, so this is a
+  /// quarter turn from how the phone is held: a phone on its side asks for
+  /// `portrait`, an upright one for `landscape-left`. The desktop owns the same
+  /// rule as `appleDuoPanelOrientation`.
+  var askedOrientation: String?
 
-  /// The inner display's picture runs wide when the phone is held upright
-  /// (its panel is mounted a quarter turn on), tall when held on its side.
+  /// The inner picture this asks for runs wide: a `portrait` ask (the phone
+  /// on its side) gives a wide picture, a `landscape-left` ask a tall one.
   var wantsWidePicture: Bool? {
-    guard let hold else { return nil }
-    return hold == "portrait"
+    guard let askedOrientation else { return nil }
+    return askedOrientation == "portrait"
   }
 
   /// The target for the phone's layout, or nil on a phone that does not fold.
@@ -215,7 +212,7 @@ struct AppleFoldTarget: Equatable {
     guard phoneFolds else { return nil }
     if isInnerDisplay {
       let angle = min(180, max(70, hingeAngle ?? 180))
-      return AppleFoldTarget(pose: nil, angle: angle, hold: isLandscape ? "portrait" : "landscape-left")
+      return AppleFoldTarget(pose: nil, angle: angle, askedOrientation: isLandscape ? "portrait" : "landscape-left")
     }
     if let hingeAngle {
       return hingeAngle >= 25 ? AppleFoldTarget(pose: "tent") : AppleFoldTarget(angle: 0)
@@ -224,7 +221,7 @@ struct AppleFoldTarget: Equatable {
   }
 
   /// The fold half alone, to tell whether a new target moves the hinge.
-  var fold: AppleFoldTarget { AppleFoldTarget(pose: pose, angle: angle, hold: nil) }
+  var fold: AppleFoldTarget { AppleFoldTarget(pose: pose, angle: angle, askedOrientation: nil) }
 }
 
 // MARK: - Gestures

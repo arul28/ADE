@@ -262,11 +262,11 @@ final class WorkLaneToolsModel: ObservableObject {
   /// out keeps it, so one slow reply does not blank every chip.
   private var lastTools: WorkToolsLaneState?
 
-  /// True while a tool sheet or a viewer is up. Both poll the same
-  /// reads faster and are the authoritative view, so a tick here would be a
-  /// duplicate RPC for chips nobody can see. The next tick after dismissal
-  /// catches up.
-  var paused: Bool { presented != nil }
+  /// True while a tool sheet or a live stream is up (a stream lives on the
+  /// stage, not in `presented`). Both poll the same reads faster and are the
+  /// authoritative view, so a tick here would be a duplicate RPC for chips
+  /// nobody can see. The next tick after dismissal catches up.
+  var paused: Bool { presented != nil || LiveStage.shared.session != nil }
 
   /// `macDesktopStream`: the host can stream the lane's screen. A host
   /// without the live stream can still describe the screen, so the sheet shows
@@ -454,7 +454,7 @@ struct WorkLaneToolsPresenter: ViewModifier {
         case .toolSheet, nil: return
         }
         model.presented = nil
-        var stagePreview: Any?
+        var stagePreview: LiveStagePreview?
         #if DEBUG
         // A fixture chat streams each viewer's drawn stand-in, as its pane does.
         if preview != nil || WorkRootPreviewFixture.active != nil {

@@ -192,6 +192,19 @@ export function createAppleDuoService<Runtime extends { key: string | null }>(de
     return posture;
   };
 
+  /** Send a fold to the helper: true when the hinge took it. */
+  const sendFold = async (
+    deviceUdid: string,
+    target: { pose?: AppleDevicePose | null; angle?: number | null },
+  ): Promise<boolean> => {
+    const payload = await deps.helperSend({
+      type: "posture",
+      udid: deviceUdid,
+      ...(target.pose ? { pose: target.pose } : { angle: target.angle }),
+    });
+    return payload.applied === true;
+  };
+
   /**
    * Fold, then read the pose back once it has settled, so the answer is what
    * happened. The hinge sweeps and the guest elects its panel a moment later;
@@ -203,12 +216,7 @@ export function createAppleDuoService<Runtime extends { key: string | null }>(de
     target: { pose?: AppleDevicePose | null; angle?: number | null },
     settleMs = FOLD_SETTLE_MS,
   ): Promise<AppleSetPostureResult> => {
-    const payload = await deps.helperSend({
-      type: "posture",
-      udid: deviceUdid,
-      ...(target.pose ? { pose: target.pose } : { angle: target.angle }),
-    });
-    const applied = payload.applied === true;
+    const applied = await sendFold(deviceUdid, target);
     const expected = expectedScreenFor(target);
     const expectedShape = target.pose ? POSE_INNER_PICTURE_SHAPE[target.pose] ?? null : null;
     /*
@@ -286,14 +294,9 @@ export function createAppleDuoService<Runtime extends { key: string | null }>(de
     deviceUdid: string,
     target: { pose?: AppleDevicePose | null; angle?: number | null },
   ): Promise<AppleSetPostureResult> => {
-    const payload = await deps.helperSend({
-      type: "posture",
-      udid: deviceUdid,
-      ...(target.pose ? { pose: target.pose } : { angle: target.angle }),
-    });
-    const applied = payload.applied === true;
+    const applied = await sendFold(deviceUdid, target);
     const last = lastPanelPosture.get(deviceUdid);
-    const angle = target.pose ? APPLE_DEVICE_POSE_TARGETS[target.pose].angle : target.angle ?? null;
+    const angle = expectedScreenFor(target)?.angle ?? null;
     return {
       applied,
       posture: last

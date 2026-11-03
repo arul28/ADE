@@ -1935,6 +1935,8 @@ struct WorkRootListScreen: View, Equatable {
         #endif
         applyWorkViewStateScope()
         resetWorkProjectionForProjectChange(projectId)
+        // A live stream belongs to a lane of the project just left.
+        LiveStage.shared.end()
       }
       .modifier(WorkSearchOutputRevisionModifier(
         publisher: syncService.$terminalBufferRevision,

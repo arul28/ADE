@@ -1248,7 +1248,7 @@ struct WorkChatSessionView: View {
   /// never narrows the prompt box.
   @ViewBuilder
   var composerBadgeChipRow: some View {
-    DuoPaneSelectionReader(pane: duoPane) { selected in
+    DuoPaneReader(pane: duoPane, read: { $0.isOpen ? $0.tab : nil }, fallback: nil) { selected in
       let chips = HStack(spacing: 8) {
         // First: the chips that change what the next send carries.
         if showsComposerCompactFirstPill, let offer = composerCompactFirstOffer {

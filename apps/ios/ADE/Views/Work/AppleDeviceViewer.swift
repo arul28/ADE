@@ -6,9 +6,11 @@ import UIKit
 ///
 /// The picture is the whole surface: full screen on a phone (and the Duo's
 /// front screen), or the whole tools pane beside or above the chat on a large
-/// display (see `LiveStage`). Nothing is drawn over it but one floating menu
-/// button, which the person can drag out of the way. A tap on the picture
-/// opens that menu; holding the picture takes control.
+/// display (see `LiveStage`). The one control over it is a floating menu
+/// button the person can drag out of the way; the rest is passing (a hint,
+/// the speed readout, a status card while the stream is down, the keyboard
+/// bar while controlling). A tap on the picture opens the menu; holding the
+/// picture takes control.
 ///
 /// Watching is the default and the state everything falls back to. Control is
 /// a deliberate act, never a single tap: the device belongs to someone's Mac,
@@ -44,7 +46,6 @@ struct AppleDeviceViewer: View {
 
   @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
   private var syncService: SyncService { syncPublishes.service }
-  @ObservedObject private var placements = LiveStagePlacements.shared
   @Environment(\.dismiss) private var dismiss
   @Environment(\.scenePhase) private var scenePhase
   @Environment(\.liveStageClose) private var stageClose
@@ -126,7 +127,7 @@ struct AppleDeviceViewer: View {
         LiveStageMenuButton(
           container: stageSize,
           insets: buttonInsets,
-          storageKey: "ade.liveStage.button.\(presentation.isPane ? "pane" : "full").\(proxy.size.width > proxy.size.height ? "wide" : "tall")",
+          storageKey: LiveStageButtonSpot.storageKey(presentation: presentation, size: proxy.size),
           symbolName: controlling ? "hand.point.up.left.fill" : "ellipsis",
           alert: controlling,
           pictureAspect: drawnAspect,
@@ -273,7 +274,7 @@ struct AppleDeviceViewer: View {
   // MARK: - Stage
 
   /// `insets` is what of the stage is the system's: the picture stays out of
-  /// it and the black runs under it.
+  /// it and the page (or full screen, black) runs under it.
   private func stageView(size: CGSize, insets: EdgeInsets) -> some View {
     // Over the pane the device keeps a little room and its own corners; full
     // screen it runs edge to edge.
@@ -516,7 +517,7 @@ struct AppleDeviceViewer: View {
         }
         Spacer(minLength: 0)
         if let hint, drawsHint {
-          hintChip(hint)
+          LiveStageHintChip(text: hint)
             .padding(.bottom, insets.bottom + (showsKeyboardBar ? Self.keyboardBarHeight + 8 : 20))
         }
       }
@@ -529,27 +530,11 @@ struct AppleDeviceViewer: View {
 
   private var menuPanel: some View {
     LiveStageMenuPanel {
-      VStack(alignment: .leading, spacing: 2) {
-        HStack(spacing: 6) {
-          Text(model.status?.device?.name ?? "Simulator")
-            .font(.subheadline.weight(.semibold))
-            .foregroundStyle(.white)
-            .lineLimit(1)
-          if model.status?.recording?.active == true {
-            Image(systemName: "record.circle")
-              .font(.system(size: 12, weight: .semibold))
-              .foregroundStyle(ADEColor.danger)
-              .accessibilityLabel("Recording")
-          }
-        }
-        Text(ribbon)
-          .font(.caption)
-          .foregroundStyle(.white.opacity(0.6))
-          .lineLimit(2)
-      }
-      .padding(.horizontal, 10)
-      .padding(.top, 4)
-      .padding(.bottom, 6)
+      LiveStageMenuHeader(
+        title: model.status?.device?.name ?? "Simulator",
+        detail: ribbon,
+        recording: model.status?.recording?.active == true
+      )
 
       if controlling {
         LiveStageMenuRow(title: "Stop controlling", systemImage: "eye") {
@@ -612,7 +597,7 @@ struct AppleDeviceViewer: View {
       .padding(.vertical, 2)
 
       if stageClose != nil, stageContext.choices.count > 1 {
-        placementMenu
+        LiveStagePlacementMenu(context: stageContext) { menuOpen = false }
       }
       if model.health.offersReconnect {
         LiveStageMenuRow(title: "Reconnect", systemImage: "arrow.clockwise") {
@@ -628,31 +613,6 @@ struct AppleDeviceViewer: View {
       }
       .accessibilityIdentifier("AppleViewer.Close")
     }
-  }
-
-  /// Where the stream sits on this display: beside the chat, above it, or the
-  /// whole screen. Remembered for the way the phone is held or folded.
-  private var placementMenu: some View {
-    let current = placements.arrangement(for: stageContext)
-    return Menu {
-      ForEach(stageContext.choices) { choice in
-        Button {
-          menuOpen = false
-          withAnimation(.spring(response: 0.42, dampingFraction: 0.86)) {
-            placements.setArrangement(choice, for: stageContext)
-          }
-        } label: {
-          if choice == current {
-            Label(choice.title, systemImage: "checkmark")
-          } else {
-            Label(choice.title, systemImage: choice.symbolName)
-          }
-        }
-      }
-    } label: {
-      LiveStageMenuRowLabel(title: "Placement", systemImage: current.symbolName, detail: current.title)
-    }
-    .accessibilityIdentifier("AppleViewer.Placement")
   }
 
   private func close() {
@@ -832,20 +792,6 @@ struct AppleDeviceViewer: View {
     .padding(.vertical, 18)
     .background(.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
     .padding(.horizontal, 24)
-  }
-
-  private func hintChip(_ text: String) -> some View {
-    Text(text)
-      .font(.caption.weight(.semibold))
-      .foregroundStyle(.white)
-      .multilineTextAlignment(.center)
-      .padding(.horizontal, 14)
-      .padding(.vertical, 8)
-      .background(Color(white: 0.16).opacity(0.92), in: Capsule())
-      .overlay(Capsule().strokeBorder(Color.white.opacity(0.14), lineWidth: 1))
-      .padding(.horizontal, 24)
-      .transition(.opacity)
-      .allowsHitTesting(false)
   }
 
   /// "Watching · owned by <chat>" — the one sentence that stops a viewer from

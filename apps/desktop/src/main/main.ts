@@ -476,7 +476,7 @@ import { createMacDesktopLogger } from "./services/macDesktop/macDesktopLogger";
 import { createWindowsDesktopSeatAdapter } from "./services/windowsDesktop/windowsDesktopSeatProvider";
 import { createLinuxDesktopSeatAdapter } from "./services/linuxDesktop/linuxDesktopSeatProvider";
 import { feedDemoTrackFromChatEvent } from "./services/demoVideo/demoTrackRegistry";
-import { createAppleStreamRelayForService } from "./services/ios/appleStreamRelay";
+import { createAppleStreamRelayForService } from "./services/ios/appleStreamRelayForService";
 import { hasAppleLocalViewer } from "./services/ios/appleLocalViewers";
 import { setActiveAppleStreamRouter } from "../../../ade-cli/src/services/sync/appleStreamListenerRoute";
 import { DEFAULT_APPLE_REMOTE_BITRATE_KBPS } from "../shared/appleDeviceSettings";
@@ -5594,9 +5594,6 @@ app.whenReady().then(async () => {
         provider,
       }),
     });
-    // Built after the service it forwards for; its posture notes come from
-    // the service's events.
-    const appleStreamRelayHolder: { current: ReturnType<typeof createAppleStreamRelayForService> | null } = { current: null };
     const iosSimulatorService = createIosSimulatorService({
       projectRoot,
       logger,
@@ -5626,13 +5623,8 @@ app.whenReady().then(async () => {
       // the renderer today, so the recorder's own defaults (both ON) stand
       // until a main-process reader exists; the proof-drawer broker is real.
       recordingDeps: { artifactFiler: computerUseArtifactBrokerService },
-      onEvent: (payload) => {
-        // A phone draws a Duo's live panel from the stream's posture notes.
-        if (payload.type === "apple.device.posture") {
-          appleStreamRelayHolder.current?.notePosture(payload.laneId, payload.posture);
-        }
-        emitProjectEvent(projectRoot, IPC.iosSimulatorEvent, payload);
-      },
+      onEvent: (payload) =>
+        emitProjectEvent(projectRoot, IPC.iosSimulatorEvent, payload),
       // Lane-device cleanup and idle power-off for this project.
       backgroundMaintenance: true,
     });
@@ -5660,7 +5652,6 @@ app.whenReady().then(async () => {
         hasAppleLocalViewer(laneId) || (iosSimulatorService.hasLocalViewer?.(laneId) ?? false),
       logger,
     });
-    appleStreamRelayHolder.current = appleStreamRelay;
     const detachAppleStreamRoute = setActiveAppleStreamRouter(appleStreamRelay);
     app.on("will-quit", () => {
       detachAppleStreamRoute();

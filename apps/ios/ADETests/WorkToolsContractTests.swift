@@ -728,8 +728,6 @@ final class WorkToolsContractTests: XCTestCase {
     XCTAssertTrue(orientation.locksLandscape)
     // A second begin (a re-render) asks for nothing new.
     XCTAssertNil(orientation.beginControl(current: .landscapeRight))
-    // Rotate is off while control holds landscape.
-    XCTAssertNil(orientation.toggleRotation(current: .landscapeRight))
     XCTAssertEqual(orientation.endControl(), .portrait)
     XCTAssertFalse(orientation.locksLandscape)
     XCTAssertNil(orientation.endControl())
@@ -742,19 +740,6 @@ final class WorkToolsContractTests: XCTestCase {
     XCTAssertNil(orientation.endControl())
     XCTAssertFalse(orientation.locksLandscape)
     // Nothing was turned by the viewer, so closing leaves the phone alone.
-    XCTAssertNil(orientation.close())
-  }
-
-  func testRotateTogglesAndCloseUndoesOnlyTheViewersOwnTurn() {
-    var untouched = MacDesktopViewerOrientation()
-    XCTAssertNil(untouched.close())
-
-    var orientation = MacDesktopViewerOrientation()
-    orientation.openedIn = .portrait
-    XCTAssertEqual(orientation.toggleRotation(current: .portrait), .landscape)
-    XCTAssertEqual(orientation.toggleRotation(current: .landscapeRight), .portrait)
-    XCTAssertEqual(orientation.toggleRotation(current: .portrait), .landscape)
-    XCTAssertEqual(orientation.close(), .portrait)
     XCTAssertNil(orientation.close())
   }
 

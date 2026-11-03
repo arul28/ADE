@@ -767,7 +767,7 @@ minimized" for that chat.
 | `apps/desktop/src/main/services/ios/laneDeviceLifecycle.ts` | `deviceDetach`, `deviceDelete`, the takeover release, and `deviceDeleteInstalled`. Runs each verb's teardown in one order. |
 | `apps/desktop/src/main/services/ios/simulatorPower.ts` | The one place ADE boots or powers off a simulator. It resets the helper session, stops a recording, and drops the cached `simctl list`. |
 | `apps/desktop/src/main/services/ios/iosDeviceHub.ts`, `simHelperClient.ts` | Device sessions, and the NDJSON client that supervises the helper. |
-| `apps/desktop/src/main/services/ios/appleStreamRelay.ts`, `appleLocalViewers.ts` | Brain-side forwarder for the H.264 stream, and which lanes have a viewer on this machine. |
+| `apps/desktop/src/main/services/ios/appleStreamRelay.ts`, `appleStreamRelayForService.ts`, `appleLocalViewers.ts` | Brain-side forwarder for the H.264 stream and a Duo's pose notes, the relay over the simulator service (which captures it starts and stops, the pose it forwards), and which lanes have a viewer on this machine. |
 | `apps/desktop/src/main/services/ios/appleStreamPacing.ts` | Per-viewer pacing from acks and the lane's adaptive encoder cap. |
 | `apps/desktop/src/main/services/ios/recording/simRecordingService.ts` | Recording rules: auto-record, caps, orphan recovery, filing each recording as proof. |
 | `apps/desktop/src/main/services/ios/recording/appleRecordingsStore.ts` | The on-disk layout `<projectRoot>/.ade/artifacts/apple-recordings/<laneId>/<id>.mp4` plus the `<id>.json` sidecar. Every walk of that layout goes through it. |
@@ -797,7 +797,7 @@ minimized" for that chat.
 | `apps/ade-cli/src/services/workTools/workToolShowRequests.ts` | `ade apple show` / `ade ui show` on the brain side. |
 | `apps/desktop/resources/agent-skills/ade-apple/SKILL.md` | Agent skill for the verbs below. |
 | `apps/ios/ADE/Views/Work/AppleDeviceViewer.swift`, `AppleDeviceViewerModel.swift` | The phone's simulator viewer on the live stage (watch, hold to control, the menu, fold mirroring) and the model that owns its ticket, socket, decoder, posture and mode. |
-| `apps/ios/ADE/Views/Work/LiveStage.swift` | The phone's live stage: placement per context, the root host that draws the stream full screen or over the Duo's pane, the pane slot, and the floating menu button and its panel. |
+| `apps/ios/ADE/Views/Work/LiveStage.swift`, `LiveStageChrome.swift` | The phone's live stage: placement and Turn per context and the root host that draws the stream full screen or over the Duo's pane, with the pane slot (`LiveStage.swift`); the aspect-fit rule, the screen viewers' shared frame, and the floating menu button and its panel (`LiveStageChrome.swift`). |
 | `apps/ios/ADE/Views/Work/AppleDeviceControl.swift` | The phone's touch mapping, gesture rule, input commands, Control blockers and the tap→screen probe. |
 | `apps/ios/ADE/Views/Work/AppleDeviceStream.swift` | The phone's ticket, record parser, health clock, decoder layer and the acking stream socket. |
 | `apps/ios/ADE/Services/SyncService+AppleDevice.swift` | The phone's `apple.*` calls, asked of the machine that owns the lane. |
@@ -1338,7 +1338,7 @@ whole display or over the Duo's tools pane. The stream is never drawn inside
 the chat, so moving it between the pane and the whole display, or folding
 the phone so the app moves to its front screen, changes only where that view
 is laid out: the socket, the decoder and Control carry on with no reconnect.
-The pane shows a black slot (`LiveStagePaneSlot`) that reports its frame; a
+The pane shows an empty slot in the app's page colour (`LiveStagePaneSlot`) that reports its frame; a
 re-laid-out pane builds its new slot before the old one goes, so only the
 slot holding the anchor can give it up, and a pane that goes away on a large
 display ends the stream after a short grace (one that goes because the phone
@@ -1409,8 +1409,10 @@ still turns the phone to landscape unless the desktop is already turned.
 **Fold mirroring.** On an iPhone Duo controlling a Duo simulator, folding the
 phone folds the simulator (`AppleFoldTarget.mirroring`, `mirrorFold`): on the
 inner display the simulator opens to the phone's hinge angle (never below 70°,
-below about 60° the simulator moves to its front screen) and is held the way
-the phone is (inner picture wide when the phone is upright); on the front
+below about 60° the simulator moves to its front screen) and its inner
+picture is turned to run the way the phone's does: tall with the phone
+upright, wide with it on its side (`rotate` is asked a quarter turn from the
+phone's hold, since the Duo's inner panel is mounted a quarter turn on); on the front
 screen it closes, or goes to Tent when the hinge is open past 25° (or, with
 no hinge reported, when the phone is on its side). Folds are sent as
 `apple.invoke setPosture` with `follow: true`, one in flight and only the

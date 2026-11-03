@@ -13,16 +13,24 @@ import Foundation
 /// So a lookup that misses the device, or finds it not booted, asks a new
 /// context once. If the new one knows the device it becomes the context from
 /// then on. A device that really is off costs one extra context (about 50 ms)
-/// at most once a second.
+/// at most once a second. A listing cannot tell a stale set from a current
+/// one, so it always asks a new context (inside the same once-a-second
+/// limit) and keeps it.
 enum SimServiceContextCache {
     private static let lock = NSLock()
     nonisolated(unsafe) private static var adopted: NSObject?
     nonisolated(unsafe) private static var lastRefresh: Date?
     private static let refreshInterval: TimeInterval = 1
 
-    /// Every device in the current context's default set.
+    /// Every device in the default set, from a new context when the last one
+    /// is more than a second old.
     static func devices() -> [NSObject]? {
-        guard let context = current(developerDir: Xcode.developerDir()) else { return nil }
+        let developerDir = Xcode.developerDir()
+        if let fresh = refreshedContext(developerDir: developerDir), let listed = devices(in: fresh) {
+            adopt(fresh)
+            return listed
+        }
+        guard let context = current(developerDir: developerDir) else { return nil }
         return devices(in: context)
     }
 
@@ -34,13 +42,17 @@ enum SimServiceContextCache {
         let known = current(developerDir: developerDir).flatMap { find(udid, in: $0) }
         if let known, state(of: known) == "Booted" { return known }
         guard let fresh = refreshedContext(developerDir: developerDir), let found = find(udid, in: fresh) else { return known }
-        lock.lock()
-        adopted = fresh
-        lock.unlock()
+        adopt(fresh)
         return found
     }
 
     // MARK: - private
+
+    private static func adopt(_ context: NSObject) {
+        lock.lock()
+        adopted = context
+        lock.unlock()
+    }
 
     private static func current(developerDir: String) -> NSObject? {
         lock.lock()
