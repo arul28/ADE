@@ -25,6 +25,8 @@ export type PostHogLogsEnv = {
   POSTHOG_LOGS_HOST?: string;
   POSTHOG_HOST?: string;
   SENTRY_ENVIRONMENT?: string;
+  /** `ade@<version>`, set on every deploy; reported as `service.version`. */
+  SENTRY_RELEASE?: string;
 };
 
 type LogsContext = { waitUntil(promise: Promise<unknown>): void };
@@ -109,6 +111,7 @@ function send(
           attributes: attributeList({
             "service.name": worker,
             "deployment.environment": env.SENTRY_ENVIRONMENT?.trim() || "development",
+            ...(env.SENTRY_RELEASE?.trim() ? { "service.version": env.SENTRY_RELEASE.trim().replace(/^ade@/, "") } : {}),
           }),
         },
         scopeLogs: [{

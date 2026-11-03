@@ -22,8 +22,8 @@ export function exceptionPayloadFromSentryEvent(
   for (const image of event.debug_meta?.images ?? []) {
     if (image?.type === "sourcemap" && image.code_file && image.debug_id) debugIds.set(image.code_file, image.debug_id);
   }
-  // Sentry lists a cause chain innermost-last; PostHog reads the first entry as
-  // the headline, so the outermost (what was actually thrown at the top) leads.
+  // Sentry lists a cause chain oldest first, so the outermost error comes last.
+  // PostHog reads the first entry as the headline, so it is reversed to lead.
   const exceptions: ProductAnalyticsException["exceptions"] = [...values].reverse().map((value) => ({
     type: value.type ?? "Error",
     value: value.value ?? null,
@@ -51,8 +51,11 @@ export function exceptionPayloadFromSentryEvent(
     // one, PostHog groups by the stack, which the scrubbed message and the
     // trimmed frames keep stable across machines.
     fingerprint: event.fingerprint?.length ? event.fingerprint.join("|") : null,
+    // The build that raised it, which differs from the sender's `app_version`
+    // for a crash reported on the first launch after an update.
+    releaseVersion: event.release?.startsWith("ade@") ? event.release.slice(4) : null,
     // `worker:<name>` tags name a worker; the policy keeps only the kind.
-    process: typeof processTag === "string" ? processTag.split(":", 1)[0] ?? null : null,
+    process: typeof processTag === "string" ? processTag.split(":", 1)[0] : null,
   };
 }
 

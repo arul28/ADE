@@ -256,8 +256,9 @@ jobs:
           CLERK_SECRET_KEY: ${{ secrets.CLERK_SECRET_KEY }}
           CLERK_PUBLISHABLE_KEY: ${{ secrets.CLERK_PUBLISHABLE_KEY }}
           ADE_PUSH_RELAY_SECONDARY_SMOKE_USER_ID: ${{ secrets.ADE_PUSH_RELAY_SECONDARY_SMOKE_USER_ID }}
-          # Public project token for PostHog Logs (src/posthogLogs.ts).
-          ADE_DEPLOY_EXTRA_ARGS: --var POSTHOG_LOGS_TOKEN:${{ secrets.ADE_POSTHOG_PROJECT_TOKEN }}
+          # Public project token for PostHog Logs (src/posthogLogs.ts);
+          # scripts/wrangler-deploy.mjs passes it to wrangler.
+          POSTHOG_LOGS_TOKEN: ${{ secrets.ADE_POSTHOG_PROJECT_TOKEN }}
         run: cd apps/push-relay && npm run deploy:ci
       - name: Upload source maps to Sentry
         # Never fails the deploy: a missing token or a Sentry outage only means

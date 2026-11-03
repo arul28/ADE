@@ -97,6 +97,19 @@ function buildConfig(apiHost: string, distinctId: string, allowed: { value: bool
           delete properties[key];
         }
       }
+      if (event.event === "$$heatmap") {
+        // Heatmaps key their data by the raw page address. The link pages carry
+        // repo, branch and path in the query, so they get no heatmap at all;
+        // elsewhere each key is rewritten to the masked address.
+        const pathname = window.location.pathname.replace(/\/+$/, "") || "/";
+        if (MASK_ALL_TEXT_ROUTES.has(pathname)) return null;
+        const data = properties.$heatmap_data;
+        if (data && typeof data === "object") {
+          properties.$heatmap_data = Object.fromEntries(
+            Object.entries(data as Record<string, unknown>).map(([href, value]) => [maskedPageUrl(href), value]),
+          );
+        }
+      }
       const page = marketingCurrentUrl(window.location.href);
       if (page) {
         properties.$current_url = page.url;
@@ -124,6 +137,8 @@ async function createClient(config: { projectToken: string; apiHost: string; dis
     config.projectToken,
     {
       ...buildConfig(config.apiHost, latest.distinctId, allowed),
+      // The slim build takes its replay extension here. `__extensionClasses`
+      // is not in posthog-js's public config type, hence the cast below.
       __extensionClasses: { ...SessionReplayExtensions },
     } as Partial<PostHogConfig>,
     "ade_marketing_replay",

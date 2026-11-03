@@ -7,11 +7,12 @@ import { scrubString } from "./sentryScrub";
 import { reportJobFailure, reportRequest, type PostHogLogsEnv } from "./posthogLogs";
 import { sentryOptions, type SentryEnv } from "./sentry";
 
+const WORKER_NAME = "ade-github-webhook-relay";
+
 // wrangler.jsonc binds this export name, so the wrapped class is exported under it. The
 // class implements DurableObject rather than extending it, which the wrapper's
 // `DurableObject<any>` constraint rejects, so the instance type is passed as `any`. The
 // returned type is still the exact class.
-const WORKER_NAME = "ade-github-webhook-relay";
 
 export const RepoEventsDurableObject = Sentry.instrumentDurableObjectWithSentry<
   SentryEnv,

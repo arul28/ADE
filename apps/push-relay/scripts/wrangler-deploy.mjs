@@ -9,6 +9,9 @@ import { fileURLToPath } from "node:url";
 const wranglerBin = fileURLToPath(new URL("../node_modules/wrangler/bin/wrangler.js", import.meta.url));
 const args = ["deploy", "--upload-source-maps"];
 if (process.env.SENTRY_RELEASE) args.push("--var", `SENTRY_RELEASE:${process.env.SENTRY_RELEASE}`);
+// Public PostHog project token for PostHog Logs (src/posthogLogs.ts). Read from
+// the environment: `npm run deploy` is a chain, so appended flags never reach here.
+if (process.env.POSTHOG_LOGS_TOKEN) args.push("--var", `POSTHOG_LOGS_TOKEN:${process.env.POSTHOG_LOGS_TOKEN}`);
 args.push(...process.argv.slice(2));
 
 const result = spawnSync(process.execPath, [wranglerBin, ...args], { stdio: "inherit" });

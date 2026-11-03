@@ -4,7 +4,7 @@ import type { ChatAutoResumeAnalyticsProperties } from "../chat/chatAutoResumeCo
 import type { CrossMachineMoveOutcome } from "../chat/crossMachineHandoffOrchestrator";
 import type { MacDesktopAnalyticsProperties } from "../macDesktop/macDesktopService";
 import type { ProductAnalyticsService } from "./productAnalyticsService";
-import { createHash } from "node:crypto";
+import { derivedEventId } from "./analyticsEventId";
 import { detectInstallSource } from "./installSource";
 
 type AgentTurnAnalytics = Pick<ProductAnalyticsService, "captureInternal">;
@@ -419,15 +419,6 @@ export function captureClaudePluginsIgnoredAnalytics(args: {
   });
 }
 
-/** A v4-shaped id derived from the turn, so PostHog keeps one event per turn. */
-function turnEventId(sessionId: string, turnId: string): string {
-  const chars = createHash("sha256").update(`ai-generation:${sessionId}:${turnId}`).digest("hex").slice(0, 32).split("");
-  chars[12] = "4";
-  chars[16] = "8";
-  const value = chars.join("");
-  return `${value.slice(0, 8)}-${value.slice(8, 12)}-${value.slice(12, 16)}-${value.slice(16, 20)}-${value.slice(20)}`;
-}
-
 export function captureAgentTurnSettledAnalytics(args: {
   analytics: AgentTurnAnalytics;
   projectId: string;
@@ -449,7 +440,7 @@ export function captureAgentTurnSettledAnalytics(args: {
     surface: "api",
     projectId,
     sessionId: event.sessionId,
-    clientEventId: turnEventId(event.sessionId, event.turnId),
+    clientEventId: derivedEventId(`ai-generation:${event.sessionId}`, event.turnId),
     aiGeneration: {
       provider: event.provider,
       model: event.model ?? null,

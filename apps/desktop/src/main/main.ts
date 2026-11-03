@@ -10216,7 +10216,12 @@ app.whenReady().then(async () => {
   // The in-app survey card: this desktop app's user only, so no pin.
   registerSurveyIpc({ surveyService, logger: getMachineMainLogger() });
   // Session replay settings for this window only (analytics consent), so no pin.
-  registerSessionReplayIpc({ analytics: productAnalyticsService, logger: getMachineMainLogger() });
+  registerSessionReplayIpc({
+    analytics: productAnalyticsService,
+    logger: getMachineMainLogger(),
+    appVersion: app.getVersion(),
+    releaseChannel: resolveReleaseChannel({ env: process.env, packaged: app.isPackaged, version: app.getVersion() }),
+  });
   // The home page's clipboard, machine-health and weather widgets.
   registerHomeWidgetsIpc({
     logger: getMachineMainLogger(),

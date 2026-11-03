@@ -2575,10 +2575,13 @@ export function registerIpc({
               productAnalyticsService?.captureInternal({
                 event: "ade_brain_action_failed",
                 surface: "desktop",
-                // Per action+code per hour: a brain that rejects every call in
+                // Per domain+code per hour: a brain that rejects every call in
                 // a retry loop costs one accepted event an hour, not one per
-                // call, and the per-event daily cap bounds the rest.
-                dedupeKey: `brain-action-failed:${actionDomain ?? "unknown"}:${brainAction ?? "unknown"}:${errorCode}`,
+                // call, and the per-event daily cap bounds the rest. Kept at
+                // domain+code (not +action) so a build that also reports
+                // `brain_action` counts failures exactly as older builds do and
+                // a beta-vs-stable comparison stays like for like.
+                dedupeKey: `brain-action-failed:${actionDomain ?? "unknown"}:${errorCode}`,
                 minimumIntervalMs: 60 * 60 * 1_000,
                 properties: {
                   ...(actionDomain ? { action_domain: actionDomain } : {}),

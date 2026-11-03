@@ -21,35 +21,9 @@
 // https://us.posthog.com. Skips with a notice without them, and never exits
 // non-zero: PostHog must not fail a release. No dependencies (Node 18+ fetch).
 
-const DEFAULT_HOST = "https://us.posthog.com";
+import { DEFAULT_POSTHOG_HOST, notice, parseArgs, warn } from "./cli.mjs";
 const TIMEOUT_MS = 15_000;
 
-function notice(message) {
-  console.log(`${process.env.GITHUB_ACTIONS === "true" ? "::notice::" : "[posthog] "}${message}`);
-}
-
-function warn(message) {
-  console.log(`${process.env.GITHUB_ACTIONS === "true" ? "::warning::" : "[posthog] warning: "}${message}`);
-}
-
-function parseArgs(argv) {
-  const options = {};
-  for (let index = 0; index < argv.length; index += 1) {
-    const arg = argv[index];
-    if (!arg.startsWith("--")) continue;
-    const [key, inline] = arg.slice(2).split("=", 2);
-    const next = argv[index + 1];
-    if (inline !== undefined) {
-      options[key] = inline;
-    } else if (next === undefined || next.startsWith("--")) {
-      options[key] = true;
-    } else {
-      options[key] = next;
-      index += 1;
-    }
-  }
-  return options;
-}
 
 /** The annotation text, or null (with the reason) when nothing should be marked. */
 function annotationContent(options) {
@@ -105,7 +79,7 @@ async function main() {
     notice(`POSTHOG_PERSONAL_API_KEY or POSTHOG_PROJECT_ID is empty; skipping the PostHog annotation "${content}".`);
     return;
   }
-  const host = (process.env.POSTHOG_HOST?.trim() || DEFAULT_HOST).replace(/\/+$/, "");
+  const host = (process.env.POSTHOG_HOST?.trim() || DEFAULT_POSTHOG_HOST).replace(/\/+$/, "");
   const base = `${host}/api/projects/${encodeURIComponent(projectId)}/annotations/`;
   const headers = { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" };
 

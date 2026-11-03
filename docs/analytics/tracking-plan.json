@@ -451,7 +451,7 @@
       ],
       "owner": "apps/desktop/src/main/services/analytics/agentTurnProductAnalytics.ts",
       "source": "desktop_policy",
-      "purpose": "PostHog LLM analytics: one settled agent turn's provider, catalog model, token counts, cost and latency. Content-free; local and custom models report as other. Own 150/day allowance outside the shared ceiling.",
+      "purpose": "PostHog LLM analytics: one settled agent turn's provider, catalog model, token counts, cost and latency. Content-free; local and custom models report as other. Own 400/day allowance outside the shared ceiling.",
       "properties": [
         "$ai_provider",
         "$ai_model",

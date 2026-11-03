@@ -57,9 +57,13 @@ export const EVENTS = Object.freeze({
 });
 
 export const ALL_INGESTED_EVENTS = Object.freeze([...Object.values(EVENTS), ...SYSTEM_EVENTS]);
+// Billed against their own PostHog allowances (LLM analytics, error tracking),
+// not the 1,000,000 product-analytics events the volume cards measure.
+const SEPARATELY_BILLED_EVENTS = new Set([EVENTS.AI_GENERATION, EVENTS.EXCEPTION]);
+const PRODUCT_ANALYTICS_BILLED_EVENTS = ALL_INGESTED_EVENTS.filter((event) => !SEPARATELY_BILLED_EVENTS.has(event));
 const INGESTED_EVENT_CHUNKS = Object.freeze(
-  Array.from({ length: Math.ceil(ALL_INGESTED_EVENTS.length / 26) }, (_, index) =>
-    Object.freeze(ALL_INGESTED_EVENTS.slice(index * 26, (index + 1) * 26))),
+  Array.from({ length: Math.ceil(PRODUCT_ANALYTICS_BILLED_EVENTS.length / 26) }, (_, index) =>
+    Object.freeze(PRODUCT_ANALYTICS_BILLED_EVENTS.slice(index * 26, (index + 1) * 26))),
 );
 const eventFormula = (events) => events
   .map((_, index) => String.fromCharCode("A".charCodeAt(0) + index))

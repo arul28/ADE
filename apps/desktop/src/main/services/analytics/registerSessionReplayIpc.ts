@@ -16,6 +16,8 @@ import { resolveProductAnalyticsEndpoint, type ProductAnalyticsService } from ".
  */
 export function registerSessionReplayIpc(args: {
   analytics: Pick<ProductAnalyticsService, "getDistinctId">;
+  appVersion: string;
+  releaseChannel: string;
   logger: { warn: (event: string, data: Record<string, unknown>) => void };
 }): void {
   ipcMain.handle(IPC.analyticsGetReplayConfig, async (event): Promise<ProductAnalyticsReplayConfig | null> => {
@@ -29,7 +31,13 @@ export function registerSessionReplayIpc(args: {
     const distinctId = args.analytics.getDistinctId();
     const endpoint = resolveProductAnalyticsEndpoint();
     if (!distinctId || !endpoint) return null;
-    return { projectToken: endpoint.token, apiHost: endpoint.host, distinctId };
+    return {
+      projectToken: endpoint.token,
+      apiHost: endpoint.host,
+      distinctId,
+      appVersion: args.appVersion,
+      releaseChannel: args.releaseChannel,
+    };
   });
 }
 

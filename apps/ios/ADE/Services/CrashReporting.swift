@@ -186,8 +186,8 @@ enum CrashReporting {
     case .warning: level = "warning"
     default: return nil
     }
-    // Sentry lists a cause chain innermost-last; PostHog reads the first
-    // entry as the headline, so the outermost leads.
+    // Sentry lists a cause chain oldest first, so the outermost error comes
+    // last. PostHog reads the first entry as the headline, so it is reversed.
     // A handled error carries its stack on the thread that captured it.
     let currentThreadStack = event.threads?.first(where: { $0.current?.boolValue == true })?.stacktrace
     let sentryExceptions = event.exceptions ?? []

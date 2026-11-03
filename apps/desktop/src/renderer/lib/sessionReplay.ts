@@ -29,6 +29,8 @@ import { scrubFreeText } from "../../shared/sentry/scrub";
 import type { ProductAnalyticsReplayConfig } from "../../shared/types/productAnalytics";
 import { productAnalyticsScreenForPathname } from "../components/app/AppShell";
 import { rootAppStoreApi, workViewStoreForProject, type AppState } from "../state/appStore";
+import { captureError } from "../../shared/sentry/capture";
+import { subscribeAccountStatus } from "./account";
 import { isWebClientMode } from "./webClientMode";
 
 /**
@@ -405,6 +407,13 @@ function buildConfig(config: ProductAnalyticsReplayConfig, allowed: { value: boo
       properties.$current_url = url;
       properties.$host = "desktop";
       properties.$pathname = new URL(url).pathname;
+      // The same build labels the product events carry, so recordings filter
+      // by version and beta vs stable. Internal installs never record.
+      properties.surface = "desktop";
+      properties.client = "desktop";
+      properties.app_version = config.appVersion;
+      properties.release_channel = config.releaseChannel;
+      properties.is_internal = false;
       properties.$process_person_profile = false;
       properties.$geoip_disable = true;
       return { ...event, properties };
@@ -425,6 +434,8 @@ async function createClient(config: ProductAnalyticsReplayConfig, endpointKey: s
     config.projectToken,
     {
       ...buildConfig(config, allowed),
+      // The slim build takes its replay extension here. `__extensionClasses`
+      // is not in posthog-js's public config type, hence the cast below.
       __extensionClasses: { ...SessionReplayExtensions },
     } as Partial<PostHogConfig>,
     "ade_replay",
@@ -451,9 +462,10 @@ async function syncOnce(): Promise<void> {
   if (!client) {
     try {
       await createClient(config, endpointKey);
-    } catch {
+    } catch (error) {
       // posthog-js failed to load or start: no replay this launch.
       client = null;
+      captureError(error, { fingerprint: ["session-replay", "start"] });
     }
     return;
   }
@@ -495,5 +507,8 @@ export function startSessionReplay(): void {
   started = true;
   window.addEventListener("focus", () => void syncSessionReplay());
   window.addEventListener("pagehide", stopRecording);
+  // Sign-in, sign-out and an account switch change the distinct id; switch
+  // the recording now rather than at the next focus or 60-second check.
+  subscribeAccountStatus(() => void syncSessionReplay());
   void syncSessionReplay();
 }

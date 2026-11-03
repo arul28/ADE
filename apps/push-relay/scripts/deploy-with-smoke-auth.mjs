@@ -11,9 +11,7 @@ const tokens = await mintDeploySmokeTokens();
 applySmokeTokensToEnv(tokens);
 
 const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
-// Extra wrangler flags from CI (the PostHog Logs token var), split on spaces.
-const extraArgs = (process.env.ADE_DEPLOY_EXTRA_ARGS ?? "").split(" ").filter(Boolean);
-const child = spawn(npmCommand, ["run", "deploy", ...(extraArgs.length ? ["--", ...extraArgs] : [])], {
+const child = spawn(npmCommand, ["run", "deploy"], {
   cwd: fileURLToPath(new URL("..", import.meta.url)),
   env: process.env,
   stdio: "inherit",

@@ -79,7 +79,7 @@ export type ProductAnalyticsCapture = {
 
 /** `$exception` only: one scrubbed Sentry error, reduced to what PostHog error tracking reads. */
 export type ProductAnalyticsException = {
-  /** Outermost first, as Sentry lists them (a cause chain). */
+  /** A cause chain, outermost first (Sentry lists it outermost last; the mirror reverses it). */
   exceptions: Array<{
     type: string;
     value?: string | null;
@@ -97,6 +97,8 @@ export type ProductAnalyticsException = {
   }>;
   level: "error" | "fatal" | "warning";
   fingerprint?: string | null;
+  /** The version of the build that raised it (Sentry's release), when known. */
+  releaseVersion?: string | null;
   /** Which ADE process: main, renderer, brain. */
   process?: string | null;
 };
@@ -209,4 +211,7 @@ export type ProductAnalyticsReplayConfig = {
   projectToken: string;
   apiHost: string;
   distinctId: string;
+  /** Stamped on every recording so replays filter by build like the events do. */
+  appVersion: string;
+  releaseChannel: string;
 };

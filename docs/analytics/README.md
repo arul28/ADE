@@ -144,6 +144,20 @@ them in PostHog and update this list in the same branch.
   `LINEAR_POSTHOG_API_KEY`. Automation gaps found along the way are tracked in
   `docs/features/automations/known-gaps.md`.
 
+## Known breaks in the series
+
+- **Automatic feature uses are non-interactive** from the first desktop release
+  after 1.2.128: a scheduled storage sweep and a chat title regenerated after a
+  turn now carry `mode: "automatic"` and `interactive: false`. Charts filtered
+  to interactive events step down at that release; it is a correction, not a
+  drop in use.
+- **`release_channel`** is sent by 1.2.128 and later; older builds' events from
+  2026-11-03 on get it from the transformation above, and earlier history has
+  none (use `app_version`).
+- **`$ai_generation` and `$exception`** start with the first release after
+  1.2.128. They have their own allowances and are left out of the 30-day
+  product-analytics volume cards.
+
 ## Sources of truth
 
 - **Clerk is the record of accounts.** `ade_signed_up` (and

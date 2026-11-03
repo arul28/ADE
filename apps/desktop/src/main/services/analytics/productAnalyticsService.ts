@@ -22,18 +22,29 @@ import {
   EVENT_DAILY_BUDGETS,
   EVENT_MINUTE_BUDGETS,
   INTERNAL_ONLY_EVENTS,
-  isSurveyAnalyticsEvent,
   MAX_HISTORICAL_EVENT_AGE_MS,
   MAX_LOCAL_IDENTIFIER_LENGTH,
   PROCESS_INGRESS_LIMIT_PER_MINUTE,
   productAnalyticsEventContext,
   safeProductAnalyticsString,
   sanitizeProductAnalyticsProperties,
-  sanitizeAiGenerationProperties,
-  sanitizeExceptionProperties,
   sanitizeSurveyEventProperties,
   SEPARATE_ALLOWANCE_EVENTS,
 } from "./productAnalyticsPolicy";
+import { sanitizeAiGenerationProperties } from "./aiGenerationPolicy";
+import { sanitizeExceptionProperties } from "./exceptionPolicy";
+
+/** Events whose properties come from a typed payload the main process built, never from `properties`. */
+const TYPED_PAYLOAD_SANITIZERS: Partial<Record<
+  ProductAnalyticsEventName,
+  (input: ProductAnalyticsCapture) => Record<string, unknown> | null
+>> = {
+  "survey shown": (input) => sanitizeSurveyEventProperties(input.event, input.survey),
+  "survey dismissed": (input) => sanitizeSurveyEventProperties(input.event, input.survey),
+  "survey sent": (input) => sanitizeSurveyEventProperties(input.event, input.survey),
+  $ai_generation: (input) => sanitizeAiGenerationProperties(input.aiGeneration),
+  $exception: (input) => sanitizeExceptionProperties(input.exception),
+};
 
 declare const __ADE_POSTHOG_PROJECT_TOKEN__: string | undefined;
 declare const __ADE_POSTHOG_HOST__: string | undefined;
@@ -878,7 +889,11 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
               // distinct id stays the hash every ADE client and the sign-up
               // webhook use, which keeps one person one person.
               clerk_user_id: normalizedUserId,
-              is_internal: isInternalInstall(),
+              // Only ever raised, never lowered: the account directory marks
+              // ADE's own accounts internal from Clerk, and a sign-in on an
+              // unmarked machine must not undo that (recording and every
+              // person-filtered insight key off it).
+              ...(isInternalInstall() ? { is_internal: true } : {}),
             },
             $geoip_disable: true,
           },
@@ -1056,25 +1071,16 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
         if (previous != null && nowMs - previous < minimumIntervalMs) return drop("duplicate");
       }
 
-      const surveyProperties = isSurveyAnalyticsEvent(input.event)
-        ? sanitizeSurveyEventProperties(input.event, input.survey)
-        : null;
-      if (isSurveyAnalyticsEvent(input.event) && !surveyProperties) return drop("invalid_event");
-      const aiProperties = input.event === "$ai_generation"
-        ? sanitizeAiGenerationProperties(input.aiGeneration)
-        : null;
-      if (input.event === "$ai_generation" && !aiProperties) return drop("invalid_event");
-      const exceptionProperties = input.event === "$exception"
-        ? sanitizeExceptionProperties(input.exception)
-        : null;
-      if (input.event === "$exception" && !exceptionProperties) return drop("invalid_event");
+      // Survey, LLM and error events build their properties from a typed
+      // payload; every other event goes through the allowlist.
+      const typedSanitizer = TYPED_PAYLOAD_SANITIZERS[input.event];
+      const typedProperties = typedSanitizer ? typedSanitizer(input) : null;
+      if (typedSanitizer && !typedProperties) return drop("invalid_event");
+      const eventProperties = typedProperties ?? sanitizeProductAnalyticsProperties(input.event, input.properties);
       const properties: Record<string, unknown> = {
-        ...(exceptionProperties
-          ?? aiProperties
-          ?? surveyProperties
-          ?? sanitizeProductAnalyticsProperties(input.event, input.properties)),
+        ...eventProperties,
         surface,
-        ...productAnalyticsEventContext(input.event, surface, aiProperties ?? input.properties),
+        ...productAnalyticsEventContext(input.event, surface, typedProperties ?? input.properties),
         is_internal: isInternalInstall(),
         release_channel: releaseChannel,
         app_version: appVersion,
@@ -1099,7 +1105,7 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
       if (projectId) properties.project_id = projectId;
       if (sessionId) properties.session_id = sessionId;
       // A chat is one trace: its turns group under the same salted session id.
-      if (aiProperties && sessionId) properties.$ai_trace_id = sessionId;
+      if (input.event === "$ai_generation" && sessionId) properties.$ai_trace_id = sessionId;
 
       let timestamp: Date | undefined;
       if (input.occurredAt && input.occurredAt.length <= 64) {
@@ -1147,7 +1153,7 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
           event: input.event,
           errorKind: error instanceof Error ? error.name : "unknown",
         });
-        state.quota.accepted = Math.max(0, state.quota.accepted - 1);
+        if (!separateAllowance) state.quota.accepted = Math.max(0, state.quota.accepted - 1);
         const acceptedByEvent = Math.max(0, (state.quota.acceptedByEvent[input.event] ?? 1) - 1);
         if (acceptedByEvent === 0) delete state.quota.acceptedByEvent[input.event];
         else state.quota.acceptedByEvent[input.event] = acceptedByEvent;

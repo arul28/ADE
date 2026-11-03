@@ -29,29 +29,10 @@
 import path from "node:path";
 import { scriptsMissingDebugIds } from "../sentry/inject-debug-ids.mjs";
 import { SOURCE_MAP_TARGETS, existingDirs, runNpxPackage } from "../sentry/sentry-cli.mjs";
+import { DEFAULT_POSTHOG_HOST, notice, parseArgs, warn } from "./cli.mjs";
 
 export const POSTHOG_CLI_VERSION = "0.19.0";
-const DEFAULT_HOST = "https://us.posthog.com";
 
-function notice(message) {
-  console.log(`${process.env.GITHUB_ACTIONS === "true" ? "::notice::" : "[posthog] "}${message}`);
-}
-
-function warn(message) {
-  console.log(`${process.env.GITHUB_ACTIONS === "true" ? "::warning::" : "[posthog] warning: "}${message}`);
-}
-
-function parseArgs(argv) {
-  const options = {};
-  for (let index = 0; index < argv.length; index += 1) {
-    const arg = argv[index];
-    if (!arg.startsWith("--")) continue;
-    const [key, inline] = arg.slice(2).split("=", 2);
-    options[key] = inline ?? argv[index + 1];
-    if (inline === undefined) index += 1;
-  }
-  return options;
-}
 
 function main() {
   const options = parseArgs(process.argv.slice(2));
@@ -80,7 +61,7 @@ function main() {
   const env = {
     POSTHOG_CLI_API_KEY: apiKey,
     POSTHOG_CLI_PROJECT_ID: projectId,
-    POSTHOG_CLI_HOST: process.env.POSTHOG_HOST?.trim() || DEFAULT_HOST,
+    POSTHOG_CLI_HOST: process.env.POSTHOG_HOST?.trim() || DEFAULT_POSTHOG_HOST,
   };
   for (const dir of dirs) {
     console.log(`[posthog] Uploading source maps for ${version} from ${dir}`);

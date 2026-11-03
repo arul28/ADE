@@ -13,7 +13,7 @@ final class ADEAppDelegate: NSObject, UIApplicationDelegate {
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
-        ProductAnalytics.shared.configure()
+        // `ProductAnalytics` is configured in `ADEApp.init`, before crash reporting.
         UNUserNotificationCenter.current().delegate = self
         registerNotificationCategories()
         registerBackgroundRefreshTask()

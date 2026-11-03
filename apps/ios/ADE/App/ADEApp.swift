@@ -31,7 +31,10 @@ struct ADEApp: App {
 
   @MainActor
   init() {
-    // First, so a crash later in launch is still captured.
+    // Analytics first: the crash reporter mirrors errors into it, and Sentry
+    // can send the previous launch's crash as soon as it starts.
+    ProductAnalytics.shared.configure()
+    // Then crash reporting, so a crash later in launch is still captured.
     CrashReporting.start()
     // Before `SyncService` creates a device id, which marks an install as one that ran before.
     ADEColorSchemeChoice.seedDefaultIfNeeded()

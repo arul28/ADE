@@ -19,7 +19,7 @@ import {
   type ScrubbableSpan,
 } from "./scrub";
 
-type FilterableEvent = ScrubbableEvent & Parameters<typeof eventBudgetKey>[0] & DiagnosticEvent & { type?: string; level?: string };
+type FilterableEvent = ScrubbableEvent & Parameters<typeof eventBudgetKey>[0] & DiagnosticEvent & SentryMirrorEvent & { type?: string; level?: string };
 
 let resolveUserId: (() => string | null | undefined) | null = null;
 
@@ -44,6 +44,8 @@ export type SentryEventMirror = (event: Readonly<SentryMirrorEvent>) => void;
 
 export type SentryMirrorEvent = {
   level?: string;
+  /** `ade@<version>` of the build that raised it; a crash from the previous launch keeps its own. */
+  release?: string;
   /** Set only where ADE named the failure (`captureError(..., { fingerprint })`). */
   fingerprint?: string[];
   message?: string;
@@ -138,7 +140,7 @@ export function createSentryEventHooks(budget?: SentryBudget) {
       const scrubbed = scrubEvent(candidate);
       if (mirrorEvent && (scrubbed.exception?.values?.length || scrubbed.level === "error" || scrubbed.level === "fatal")) {
         try {
-          mirrorEvent(scrubbed as unknown as SentryMirrorEvent);
+          mirrorEvent(scrubbed);
         } catch {
           // The mirror is a second copy; it never costs Sentry the event.
         }

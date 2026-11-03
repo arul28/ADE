@@ -180,11 +180,6 @@ export function isMarketingAnalyticsConfigured(): boolean {
   return analytics !== null;
 }
 
-/**
- * What the session replay (`marketingReplay.ts`) records under: this site's
- * public project token, its PostHog host, and the anonymous id the site's
- * events already carry. Null while analytics is off or not configured.
- */
 const NO_REPLAY_STORAGE_KEY = "ade.marketing.noReplay";
 
 /**
@@ -204,6 +199,12 @@ function replayOptedOut(): boolean {
   }
 }
 
+/**
+ * What the session replay (`marketingReplay.ts`) records under: this site's
+ * public project token, its PostHog host, and the anonymous id the site's
+ * events already carry. Null while analytics is off, not configured, or this
+ * browser opted out of replay.
+ */
 export function marketingReplayConfig(): { projectToken: string; apiHost: string; distinctId: string } | null {
   if (!analytics || !captureUrl) return null;
   if (replayOptedOut()) return null;

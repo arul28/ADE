@@ -17,6 +17,7 @@ import { initPerfRuntime } from "./perf/harness";
 import { rendererPlatformAttribute } from "./lib/platform";
 import { trackWindowsCaptionInset } from "./lib/windowControlsOverlay";
 import { installScrollingIndicator } from "./lib/scrollingIndicator";
+import { captureError } from "../shared/sentry/capture";
 import { installAnimationPhaseAlignment } from "./lib/animationPhaseAlignment";
 
 // Error tracking, loaded as its own chunk and only when main's Sentry client is
@@ -232,6 +233,6 @@ if (typeof window.ade?.analytics?.getReplayConfig === "function") {
   window.setTimeout(() => {
     void import("./lib/sessionReplay")
       .then((module) => module.startSessionReplay())
-      .catch(() => undefined);
+      .catch((error: unknown) => captureError(error, { fingerprint: ["session-replay", "load"] }));
   }, 3_000);
 }
