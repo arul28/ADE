@@ -67,9 +67,9 @@ export type ToastCardModel = {
   /**
    * Session replay shows a toast's words (ADE's copy, scrubbed). Mark the
    * parts that are the person's content instead: a lane name or PR title as
-   * the title, a PR title as the message. Chips and `content` are always masked.
+   * the title, a PR title as the message or badge. Chips and `content` are always masked.
    */
-  replayMask?: { title?: boolean; message?: boolean };
+  replayMask?: { title?: boolean; message?: boolean; badge?: boolean };
 };
 
 export function ToastCard({
@@ -134,9 +134,8 @@ export function ToastCard({
             <div style={{ minWidth: 0, flex: 1, display: "flex", flexDirection: "column", gap: 5 }}>
               {hasHead ? (
                 <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-                  {/* A badge can be a PR title or a name: masked in replays. */}
                   {model.badge ? (
-                    <span data-ph-mask="" style={{ display: "contents" }}>
+                    <span data-ph-mask={model.replayMask?.badge ? "" : undefined} style={{ display: "contents" }}>
                       <NoticeBadge tone={model.tone}>{model.badge}</NoticeBadge>
                     </span>
                   ) : null}

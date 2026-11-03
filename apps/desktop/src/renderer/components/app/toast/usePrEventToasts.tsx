@@ -113,8 +113,9 @@ export function buildPrNotificationToast(
     badge: event.title,
     eyebrow: `#${event.prNumber}`,
     title: getPrToastHeadline(event),
-    // The summary can quote a reviewer or name a person: masked like the title.
-    replayMask: { title: true, message: true },
+    // The badge is the PR title, and the summary can quote a reviewer or name
+    // a person: masked like the title.
+    replayMask: { title: true, message: true, badge: true },
     chips,
     message: getPrToastSummary(event),
     actions,

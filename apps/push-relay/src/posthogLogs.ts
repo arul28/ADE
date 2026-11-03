@@ -43,12 +43,15 @@ const SEND_TIMEOUT_MS = 2000;
 // (a repository owner or name, a user name, an id) is `:id`, so a path segment
 // a person chose never reaches a log. Add a word when a Worker gains a route.
 const ROUTE_WORDS = new Set([
-  "account", "ack", "agent", "agents", "approve", "attention", "bindings", "callback", "claim", "clerk",
-  "code", "coding-agents", "connect", "cursor", "daily", "developer-token", "device", "diagnostics",
-  "events", "graphql", "health", "hooks", "host", "integrations", "jev", "leaderboards", "linear",
-  "machines", "models", "music", "notify", "oauth", "orgs", "pairing", "pipe", "prewarm", "register",
-  "registry", "repos", "router", "settings", "state", "subscribe", "systemone", "token", "upload",
-  "usage-research", "user", "vault", "webhook", "webhooks",
+  ".well-known", "a", "account", "ack", "activities", "admin", "agent", "agents", "approve", "attention",
+  "bindings", "callback", "claim", "clerk", "code", "coding-agents", "connect", "cursor", "daily",
+  "deliveries", "developer-token", "device", "devices", "diagnostics", "events", "github", "graphql", "heal",
+  "health", "hooks", "host", "install", "installation", "integrations", "jev", "leaderboards", "linear", "m",
+  "machines", "maintain", "mcp", "mcp-account", "members", "models", "music", "notify", "oauth",
+  "oauth-authorization-server", "oauth-protected-resource", "openid-configuration", "orgs", "pairing",
+  "pipe", "preferences", "presence", "prewarm", "projects", "reconcile", "register", "registry", "repos",
+  "router", "runner", "session", "sessions", "settings", "snapshot", "start", "state", "status", "subscribe",
+  "systemone", "token", "update", "upload", "usage-research", "user", "vault", "webhook", "webhooks",
 ]);
 // Segments after which the rest of the path is a secret (machine keys, hook tokens).
 const KEY_CARRIERS = new Set(["host", "connect", "prewarm", "machines", "hooks", "webhooks"]);

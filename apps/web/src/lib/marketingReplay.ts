@@ -18,6 +18,8 @@ import { marketingReplayConfig } from "./marketingAnalyticsBrowser";
 /** Set on <html> while a page that shows link-carried data is open. */
 const MASK_ALL_TEXT_ATTRIBUTE = "data-ade-replay-mask";
 const MASK_ALL_TEXT_ROUTES = new Set(["/open", "/pair"]);
+/** Attributes that can carry a link's repo, branch or path on the link pages. */
+const LINK_DATA_ATTRIBUTE = /^(?:href|src|srcset|title|alt|value|placeholder|content|action|aria-.*|data-.*)$/i;
 
 type ReplayClient = {
   instance: PostHog;
@@ -81,10 +83,12 @@ function buildConfig(apiHost: string, distinctId: string, allowed: { value: bool
       maskAllInputs: true,
       maskInputOptions: { password: true },
       maskTextSelector: `[${MASK_ALL_TEXT_ATTRIBUTE}] *`,
-      // On the link pages an "Open in ADE" `href` (and any other attribute)
-      // carries repository, branch and path from the link: masked there.
+      // On the link pages an "Open in ADE" `href` and similar attributes carry
+      // repository, branch and path from the link: masked there. Layout and
+      // the recorder's own attributes (`_cssText`, `rr_*`) pass, so the page
+      // still plays back styled.
       maskAttributeFn: (name, value) =>
-        document.documentElement.hasAttribute(MASK_ALL_TEXT_ATTRIBUTE) && name !== "class" && name !== "style"
+        document.documentElement.hasAttribute(MASK_ALL_TEXT_ATTRIBUTE) && LINK_DATA_ATTRIBUTE.test(name)
           ? "*".repeat(Math.min(value.length, 16))
           : value,
       blockSelector: "iframe, video, canvas, [data-ph-block]",

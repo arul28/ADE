@@ -68672,6 +68672,7 @@ export function createAgentChatService(args: {
     clearAcceptedStartWatch(sessionId);
     claudePluginUi.end(sessionId);
     lastTurnStartedAtBySession.delete(sessionId);
+    pendingTurnStartMsBySession.delete(sessionId);
     lastTurnIdBySession.delete(sessionId);
     releaseChatBrowser(sessionId);
     eventHistoryBySession.delete(sessionId);
@@ -71335,6 +71336,7 @@ export function createAgentChatService(args: {
     transcriptHistoryCacheBySession.delete(trimmedSessionId);
     resolvedTranscriptPathBySession.delete(trimmedSessionId);
     lastTurnStartedAtBySession.delete(trimmedSessionId);
+    pendingTurnStartMsBySession.delete(trimmedSessionId);
     lastTurnIdBySession.delete(trimmedSessionId);
     lastPersistedPointerFingerprints.delete(trimmedSessionId);
 
