@@ -26,7 +26,7 @@ Other pages keep their existing scoped bindings until they get their own set.
 | `⌃⇥` / `⇧⌃⇥` | next / previous project tab, from anywhere (with a single project, opens the picker) |
 | `⌘⇧E` / `⌘⇧D` | thinking level up / down in the prompt box you last worked in |
 | `⌘⇧F` | fast mode on or off in that prompt box |
-| `⌘⇧→` / `⌘⇧←` | next / previous shell in the terminal tool, wrapping, while the caret is in it |
+| `⌘⇧→` / `⌘⇧←` (Ctrl+PageDown / Ctrl+PageUp on Windows and Linux) | next / previous shell in the terminal tool, wrapping, while the caret is in it and two or more shells are open; with one shell the keys stay the shell's. Off macOS Ctrl+Shift+←/→ is word selection in PowerShell and many line editors, so the desktop uses the usual tab chord there (`NON_MAC_KEYBINDING_DEFAULTS` in `shared/keybindings.ts`); the hosted client keeps the arrows because browsers own Ctrl+PageUp/PageDown |
 
 Mnemonic rules: `I` is "insert" (the prompt box), `A` is the chat's actions,
 `N` is a new chat, `T` is the tools pane, `B` is the sidebar, `↑`/`↓` move

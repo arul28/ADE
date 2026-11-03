@@ -85,10 +85,18 @@ composer's own picker; capturing a preset into a profile is a follow-up.
 
 ## Model action edge cases
 
-`AgentChatComposer` publishes the active composer through
-`renderer/quickSlots/composerTarget.ts` while its pane is the active tile. Every
-function reads the live props through a ref, so a slot never acts on a stale
-model.
+`AgentChatComposer` publishes itself through `useQuickSlotComposerTarget`
+while its pane is the active tile. Every function reads the live props through a
+ref, so a slot never acts on a stale model. Work pages and other project tabs
+stay mounted (parked) while another page shows, so several composers can be
+registered at once: `getQuickSlotComposer()` returns the newest one that is on
+screen and not inside a parked surface, and a slot or prompt-box shortcut
+pressed with none on screen says "Open a chat first" instead of changing,
+stopping or pushing a chat the user cannot see.
+
+A quick tap (no panel) that a slot refuses shows the reason as a toast, so a
+refused chord is never a dead key. Slots, profiles and the leader follow a save
+made in another ADE window on this computer (`storage` event), as shortcuts do.
 
 - **Draft:** model, thinking and fast mode are composer state only; nothing
   reaches the runtime before the first send.
@@ -133,13 +141,14 @@ A prompt slot asks for its text when it is assigned.
 |---|---|
 | `apps/desktop/src/shared/quickSlots.ts` | Slot/profile types, defaults, normalisation, leader and digit grammar, profile→mention token. Pure; no React. |
 | `apps/desktop/src/renderer/quickSlots/commands.ts` | The renderer command catalogue, target checks, safety classes, and the model-profile runner. |
-| `apps/desktop/src/renderer/quickSlots/composerTarget.ts` | Module-level registry of the active composer and the functions a slot may call. |
+| `apps/desktop/src/renderer/quickSlots/composerTarget.ts` | Registry of active composers; answers with the newest one on screen and not parked, plus the functions a slot may call. |
+| `apps/desktop/src/renderer/quickSlots/useQuickSlotComposerTarget.ts` | The hook a composer calls to publish itself; the permission cycles follow the pickers' own option lists. |
 | `apps/desktop/src/renderer/quickSlots/QuickSlotsHost.tsx` | The chord dispatcher, target resolution, and the HUD. Mounted once in `AppShell`. |
 | `apps/desktop/src/renderer/quickSlots/quickSlotsStore.ts` | The nine slots and profiles, persisted to `ade.quickSlots.v1`. |
 | `apps/desktop/src/renderer/quickSlots/quickSlots.css` | HUD and settings styling, including reduced-motion behavior. |
 | `apps/desktop/src/renderer/components/settings/keyboard/QuickSlotsCards.tsx` | The Settings surface: grid, action picker, profiles, leader, sticky mode. |
 | `apps/desktop/src/renderer/components/settings/keyboard/KeyboardPage.tsx` | Settings › Keyboard, the This-computer page that hosts the cards. |
-| `apps/desktop/src/renderer/components/chat/AgentChatComposer.tsx` | Publishes the composer target while the pane is active; exposes insert, model, thinking, permission, fast, picker and stop. |
+| `apps/desktop/src/renderer/components/chat/AgentChatComposer.tsx` | Calls `useQuickSlotComposerTarget` while the pane is active, handing it the model, thinking, permission, fast, picker and stop state. |
 | `apps/desktop/src/renderer/components/app/AppShell.tsx` | Hosts `QuickSlotsHost` once for the whole window. |
 | `apps/desktop/src/renderer/components/ui/zLayers.ts` | The `quickSlots` layer (130): above sheets, below dialogs. |
 

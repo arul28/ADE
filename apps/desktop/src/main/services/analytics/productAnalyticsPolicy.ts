@@ -339,6 +339,10 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // The composer's model hint: what the user did with a chip, by the kind of
   // suggestion. Never the prompt, the models, or the efforts.
   "hint_model", "hint_effort", "hint_cheaper",
+  // Settings › Keyboard (feature "keyboard"): whether an installation changes a
+  // shortcut and whether it uses Quick slots, once a day each. Never the keys,
+  // the action, or which slot.
+  "shortcut_changed", "quick_slot_used",
   "music_connected",
   "spotify_connected",
   // Find in a chat or a diff (⌘F), and the ⌘K "Find … in this chat" hand-off.
@@ -487,6 +491,8 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     "ade_mcp",
     // Jev's model and effort hint in the chat composer.
     "model_hint",
+    // Settings › Keyboard: rebinding shortcuts and using Quick slots.
+    "keyboard",
     // The ADE account sign-in funnel (action "sign_in").
     "account_sign_in",
     // The desktop "Star ADE on GitHub" pill.

@@ -30,8 +30,9 @@ function readPreferences(): QuickSlotsPreferences {
 function persist(preferences: QuickSlotsPreferences): void {
   try {
     window.localStorage.setItem(QUICK_SLOTS_STORAGE_KEY, JSON.stringify(preferences));
-  } catch {
+  } catch (error) {
     // localStorage can be unavailable or full; the in-memory list still works.
+    console.warn("[quick-slots] could not save the slots on this computer", error);
   }
 }
 

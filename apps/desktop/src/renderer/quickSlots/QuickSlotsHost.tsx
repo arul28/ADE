@@ -270,6 +270,13 @@ export function QuickSlotsHost() {
       // The command owns its own toast; a thrown promise must not keep the
       // panel in a running state.
     });
+    // Product analytics: that Quick slots get used at all, once a day.
+    void window.ade?.analytics?.capture({
+      event: "ade_feature_used",
+      properties: { feature: "keyboard", action: "quick_slot_used", outcome: "completed", source: "renderer_route" },
+      dedupeKey: "keyboard:quick_slot_used",
+      minimumIntervalMs: 24 * 60 * 60_000,
+    })?.catch(() => undefined);
   }, [close, contextFor, navigate]);
 
   /**

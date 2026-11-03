@@ -109,6 +109,13 @@ export function ShortcutsCard({
   const save = useCallback((overrides: KeybindingsSnapshot["overrides"]) => {
     try {
       writeKeybindingOverrides(overrides);
+      // Product analytics: that shortcuts get changed at all, once a day.
+      void window.ade?.analytics?.capture({
+        event: "ade_feature_used",
+        properties: { feature: "keyboard", action: "shortcut_changed", outcome: "completed", source: "renderer_route" },
+        dedupeKey: "keyboard:shortcut_changed",
+        minimumIntervalMs: 24 * 60 * 60_000,
+      })?.catch(() => undefined);
     } catch (error) {
       showToast({
         tone: "error",

@@ -49,11 +49,17 @@ let snapshotCache: KeybindingsSnapshot | null = null;
 function readStored(): KeybindingOverride[] | null {
   if (cached) return cached.overrides;
   let overrides: KeybindingOverride[] | null = null;
+  // No window (a test or a worker): nothing is saved here, and that is not an error.
+  if (typeof window === "undefined" || !window.localStorage) {
+    cached = { overrides };
+    return overrides;
+  }
   try {
     const raw = window.localStorage.getItem(KEYBINDINGS_STORAGE_KEY);
     if (raw != null) overrides = sanitizeKeybindingOverrides((JSON.parse(raw) as Partial<StoredKeybindings>)?.overrides);
-  } catch {
+  } catch (error) {
     // Unreadable storage reads as "nothing saved"; the defaults still work.
+    console.warn("[keybindings] could not read this computer's saved shortcuts", error);
   }
   cached = { overrides };
   return overrides;
