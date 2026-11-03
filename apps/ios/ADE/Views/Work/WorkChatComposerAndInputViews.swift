@@ -418,7 +418,12 @@ struct WorkComposerControlsRow: View {
     let tint = workRuntimeModeTint(provider: provider, mode: currentMode)
 
     if modeOptions.isEmpty || onSelectMode == nil {
-      accessDotButton(tint: tint)
+      // Nothing to pick from (a side chat, a chat whose summary has not
+      // arrived, an account that cannot write the setting). The dot alone
+      // would leave the mode readable only by its color, so this state keeps
+      // the name beside it.
+      accessLabelPill(tint: tint, label: modeLabel)
+        .accessibilityElement(children: .ignore)
         .accessibilityLabel("Access mode: \(modeLabel)")
     } else {
       Menu {
@@ -435,6 +440,28 @@ struct WorkComposerControlsRow: View {
       }
       .accessibilityLabel("Access mode: \(modeLabel). Tap to change.")
     }
+  }
+
+  /// Read-only access state: the tier dot plus its name in the same capsule
+  /// the dot button uses, so a sighted user who cannot tell the colors apart
+  /// can still read the mode.
+  private func accessLabelPill(tint: Color, label: String) -> some View {
+    HStack(spacing: 6) {
+      Circle()
+        .fill(tint)
+        .frame(width: 6, height: 6)
+      Text(label)
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(ADEColor.textPrimary)
+        .lineLimit(1)
+    }
+    .padding(.horizontal, 8)
+    .padding(.vertical, 5)
+    .background(ADEColor.surfaceBackground.opacity(0.38), in: Capsule(style: .continuous))
+    .overlay(
+      Capsule(style: .continuous)
+        .stroke(ADEColor.border.opacity(0.24), lineWidth: 0.5)
+    )
   }
 
   /// Compact ~1.5rem square showing just the tone dot, mirroring the desktop
