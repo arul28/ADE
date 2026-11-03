@@ -15,8 +15,11 @@ import {
   SURVEY_RESPONSE_MAX_LENGTH,
   type ProductSurveyEventPayload,
 } from "../../../shared/types/productSurveys";
+import { MODEL_REGISTRY } from "../../../shared/modelRegistry";
 import type {
+  ProductAnalyticsAiGeneration,
   ProductAnalyticsCapture,
+  ProductAnalyticsException,
   ProductAnalyticsEventName,
   ProductAnalyticsPropertyValue,
 } from "../../../shared/types/productAnalytics";
@@ -53,6 +56,22 @@ export const INTERNAL_ONLY_EVENTS = new Set<ProductAnalyticsEventName>([
   // Survey events come only from the main process's survey service, which
   // checks every answer against the survey it showed.
   "survey shown", "survey dismissed", "survey sent",
+  // Built from a settled turn by the runtime, never from renderer input.
+  "$ai_generation",
+  // Built from a scrubbed Sentry event in main or the brain.
+  "$exception",
+]);
+
+/**
+ * Events with an allowance of their own, outside the shared daily ceiling.
+ * PostHog bills `$ai_*` events against LLM analytics (100,000 a month free),
+ * not product analytics, so one busy day of agent turns must not spend the
+ * ceiling every other product fact shares, and must not be starved by it.
+ */
+export const SEPARATE_ALLOWANCE_EVENTS: ReadonlySet<ProductAnalyticsEventName> = new Set([
+  "$ai_generation",
+  // Billed against error tracking (100,000 exceptions a month free).
+  "$exception",
 ]);
 
 export const EVENT_DAILY_BUDGETS: Record<ProductAnalyticsEventName, number> = {
@@ -92,6 +111,12 @@ export const EVENT_DAILY_BUDGETS: Record<ProductAnalyticsEventName, number> = {
   "survey shown": 3,
   "survey dismissed": 3,
   "survey sent": 3,
+  // One per agent turn. A heavy day is well under this; the cap keeps a
+  // runaway automation from spending the month's LLM-analytics allowance.
+  $ai_generation: 150,
+  // Sentry's own per-process budget (150 a day) admits these first; this caps
+  // the machine, across main, renderer and the brain.
+  $exception: 100,
 };
 
 export const EVENT_MINUTE_BUDGETS: Record<ProductAnalyticsEventName, number> = {
@@ -128,6 +153,8 @@ export const EVENT_MINUTE_BUDGETS: Record<ProductAnalyticsEventName, number> = {
   "survey shown": 2,
   "survey dismissed": 2,
   "survey sent": 2,
+  $ai_generation: 20,
+  $exception: 10,
 };
 
 const STRING_PROPERTIES = new Set([
@@ -136,7 +163,7 @@ const STRING_PROPERTIES = new Set([
   "entry_point", "release_channel", "summary_kind", "reason", "last_command", "leg", "code",
   "escalation_reason", "install_source", "trigger", "from_version", "to_version", "user_action",
   "tool_error_kind", "crash_reason", "count_bucket",
-  "action_domain", "error_code", "refusal_code",
+  "action_domain", "error_code", "refusal_code", "brain_action", "expected_kind",
 ]);
 const NUMBER_PROPERTIES = new Set([
   "sent_count", "dropped_count", "interaction_count", "session_count", "chat_session_count",
@@ -418,12 +445,20 @@ const EVENT_PROPERTY_KEYS: Record<ProductAnalyticsEventName, ReadonlySet<string>
   // event exists to keep: which brain domain, and the structured code the brain
   // attached. Reusing it would also put a new high-volume emitter inside
   // `ade_error`'s 20/day cap and dilute the one signal that already works.
-  ade_brain_action_failed: new Set(["action_domain", "error_code"]),
+  // `brain_action` is the action's code identifier inside its domain, and
+  // `expected_kind` is the brain's own expected-failure mark (or `unexpected`):
+  // most brain errors carry no structured code, and without these two every
+  // failure read as `unknown` with nothing to tell a bug from a user outcome.
+  ade_brain_action_failed: new Set(["action_domain", "error_code", "brain_action", "expected_kind"]),
   // Survey properties are PostHog's `$survey_*` set, built from the survey
   // payload by `sanitizeSurveyEventProperties`, never from `properties`.
   "survey shown": new Set(),
   "survey dismissed": new Set(),
   "survey sent": new Set(),
+  // Built by `sanitizeAiGenerationProperties`, never from `properties`.
+  $ai_generation: new Set(),
+  // Built by `sanitizeExceptionProperties`, never from `properties`.
+  $exception: new Set(),
 };
 
 const SLUG_VALUE = /^[a-z0-9][a-z0-9._+-]*$/i;
@@ -653,6 +688,7 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     "lock-timeout", "filesystem",
   ]),
   action_domain: ADE_ACTION_DOMAIN_ALLOWLIST,
+  expected_kind: new Set<string>(["user", "environment", "network", "unexpected"]),
   // The account directory's own refusals, read off the one list that defines
   // them, plus the honest bucket for a refusal a newer directory names and this
   // build has never heard of. The brain's user-facing sentence is NOT a
@@ -710,6 +746,7 @@ const BACKGROUND_EVENTS = new Set<ProductAnalyticsEventName>([
   "ade_update_auto_applied", "ade_update_auto_apply_cancelled", "ade_update_prompted",
   "ade_brain_recovered", "ade_renderer_recovered", "ade_publish_failing", "ade_relay_suppressed",
   "ade_account_session_unreadable", "ade_tool_fetched", "ade_brain_action_failed",
+  "$exception",
 ]);
 
 /** The app a person used. `api` is the brain or CLI, which cannot see one. */
@@ -723,18 +760,25 @@ const CLIENT_BY_SURFACE: Record<ProductAnalyticsCapture["surface"], string> = {
 
 /**
  * `client` and `interactive`, added to every event the service sends.
- * An automation's work session is a run nobody started by hand.
+ * An automation's work session is a run nobody started by hand, and so is a
+ * feature use the app ran on its own (`mode: "automatic"`: a scheduled
+ * storage sweep, an automatic compaction, a chat title regenerated after a
+ * turn). Those are product facts, but counting them as use would make every
+ * open install look feature-active.
  */
 export function productAnalyticsEventContext(
   event: ProductAnalyticsEventName,
   surface: ProductAnalyticsCapture["surface"],
-  feature: unknown,
+  properties: ProductAnalyticsCapture["properties"] | null | undefined,
 ): { client: string; interactive: boolean } {
+  const feature = properties?.feature;
   const automationRun = feature === "automations"
     && (event === "ade_work_session_started" || event === "ade_work_session_completed");
+  const automaticFeatureUse = (event === "ade_feature_used" && properties?.mode === "automatic")
+    || (event === "$ai_generation" && feature === "automations");
   return {
     client: CLIENT_BY_SURFACE[surface],
-    interactive: !BACKGROUND_EVENTS.has(event) && !automationRun,
+    interactive: !BACKGROUND_EVENTS.has(event) && !automationRun && !automaticFeatureUse,
   };
 }
 
@@ -845,4 +889,154 @@ export function sanitizeSurveyEventProperties(
     if (index === 0) properties.$survey_response = value;
   });
   return properties;
+}
+
+let catalogModelIds: ReadonlySet<string> | null = null;
+
+/**
+ * A model id leaves the machine only when it names a model in ADE's built-in
+ * catalog. Local, custom-endpoint and runtime-discovered models can carry a
+ * name the person chose, so they report as `other`.
+ */
+function catalogModelId(value: unknown): string {
+  if (typeof value !== "string") return "other";
+  const id = value.trim();
+  if (!id || id.length > 120) return "other";
+  catalogModelIds ??= new Set(MODEL_REGISTRY.map((model) => model.id));
+  return catalogModelIds.has(id) ? id : "other";
+}
+
+function boundedCount(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? Math.min(1_000_000_000, Math.floor(value))
+    : null;
+}
+
+const AI_PROVIDERS = SAFE_STRING_VALUES.provider;
+
+/**
+ * PostHog's LLM-analytics properties for one settled agent turn: provider,
+ * catalog model, token counts, cost and latency. Content-free by construction:
+ * there is no input, output, tool, or prompt field to fill.
+ */
+export function sanitizeAiGenerationProperties(
+  payload: ProductAnalyticsAiGeneration | undefined,
+): Record<string, string | number | boolean> | null {
+  if (!payload || typeof payload !== "object") return null;
+  if (payload.status !== "completed" && payload.status !== "interrupted" && payload.status !== "failed") return null;
+  if (payload.feature !== "chat" && payload.feature !== "automations") return null;
+  const provider = typeof payload.provider === "string" ? payload.provider.trim().toLowerCase() : "";
+  const properties: Record<string, string | number | boolean> = {
+    $ai_provider: AI_PROVIDERS?.has(provider) ? provider : "other",
+    $ai_model: catalogModelId(payload.model),
+    $ai_span_name: "agent_turn",
+    $ai_is_error: payload.status === "failed",
+    feature: payload.feature,
+    outcome: payload.status === "completed" ? "completed" : payload.status === "interrupted" ? "cancelled" : "failure",
+  };
+  const counts: Array<[string, unknown]> = [
+    ["$ai_input_tokens", payload.inputTokens],
+    ["$ai_output_tokens", payload.outputTokens],
+    ["$ai_cache_read_input_tokens", payload.cacheReadTokens],
+    ["$ai_cache_creation_input_tokens", payload.cacheCreationTokens],
+    ["$ai_reasoning_tokens", payload.reasoningTokens],
+  ];
+  for (const [key, value] of counts) {
+    const count = boundedCount(value);
+    if (count != null) properties[key] = count;
+  }
+  if (typeof payload.costUsd === "number" && Number.isFinite(payload.costUsd) && payload.costUsd >= 0) {
+    properties.$ai_total_cost_usd = Math.min(10_000, Math.round(payload.costUsd * 1_000_000) / 1_000_000);
+  }
+  if (typeof payload.durationMs === "number" && Number.isFinite(payload.durationMs) && payload.durationMs >= 0) {
+    properties.$ai_latency = Math.min(86_400, Math.round(payload.durationMs) / 1_000);
+  }
+  return properties;
+}
+
+const EXCEPTION_TYPE_VALUE = /^[A-Za-z_$][\w$.:-]{0,79}$/;
+const FRAME_FUNCTION_VALUE = /^[\w$.<>\[\] /:-]{1,160}$/;
+const PROCESS_VALUES = new Set(["main", "renderer", "brain", "worker", "utility"]);
+const MAX_EXCEPTIONS = 5;
+const MAX_FRAMES = 50;
+
+/**
+ * A stack frame's file, reduced to where it sits inside ADE: the part after
+ * `app.asar/`, `dist/`, `src/` or `node_modules/`, else the bare file name.
+ * Never the folder it was installed to, which names the person's machine.
+ */
+function frameFile(value: unknown): string | null {
+  if (typeof value !== "string" || !value.trim()) return null;
+  const normalized = value.trim().replace(/\\/g, "/").replace(/^file:\/\//i, "");
+  const anchors = ["app.asar/", "/node_modules/", "/dist/", "/src/"];
+  for (const anchor of anchors) {
+    const index = normalized.lastIndexOf(anchor);
+    if (index >= 0) {
+      const tail = normalized.slice(index + anchor.length);
+      const prefix = anchor === "/node_modules/" ? "node_modules/" : "";
+      return `${prefix}${tail}`.slice(0, 200);
+    }
+  }
+  const base = normalized.split("/").pop() ?? "";
+  return base ? base.slice(0, 120) : null;
+}
+
+function frameNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 && value < 10_000_000 ? value : undefined;
+}
+
+/**
+ * PostHog error tracking's `$exception` properties from one scrubbed Sentry
+ * event. On top of Sentry's scrub, the message loses email addresses and
+ * absolute paths, frames keep only their in-app file, function and position
+ * (no source lines, no variables), and every string is bounded.
+ */
+export function sanitizeExceptionProperties(
+  payload: ProductAnalyticsException | undefined,
+): Record<string, unknown> | null {
+  if (!payload || typeof payload !== "object" || !Array.isArray(payload.exceptions)) return null;
+  if (payload.level !== "error" && payload.level !== "fatal" && payload.level !== "warning") return null;
+  const exceptionList = payload.exceptions.slice(0, MAX_EXCEPTIONS).flatMap((exception) => {
+    if (!exception || typeof exception !== "object") return [];
+    const type = typeof exception.type === "string" && EXCEPTION_TYPE_VALUE.test(exception.type.trim())
+      ? exception.type.trim()
+      : "Error";
+    const value = typeof exception.value === "string" ? scrubFreeText(exception.value, { maxLength: 500 }) : "";
+    const frames = (Array.isArray(exception.frames) ? exception.frames : []).slice(-MAX_FRAMES).flatMap((frame) => {
+      if (!frame || typeof frame !== "object") return [];
+      const filename = frameFile(frame.filename);
+      const fn = typeof frame.function === "string" && FRAME_FUNCTION_VALUE.test(frame.function.trim())
+        ? frame.function.trim()
+        : undefined;
+      if (!filename && !fn) return [];
+      return [{
+        platform: "node:javascript",
+        ...(filename ? { filename } : {}),
+        ...(fn ? { function: fn } : {}),
+        ...(frameNumber(frame.lineno) !== undefined ? { lineno: frameNumber(frame.lineno) } : {}),
+        ...(frameNumber(frame.colno) !== undefined ? { colno: frameNumber(frame.colno) } : {}),
+        in_app: frame.inApp === true,
+      }];
+    });
+    const mechanism = typeof exception.mechanism === "string" && SLUG_VALUE.test(exception.mechanism.trim().toLowerCase())
+      ? exception.mechanism.trim().toLowerCase()
+      : "generic";
+    return [{
+      type,
+      value,
+      mechanism: { type: mechanism, handled: exception.handled !== false, synthetic: false },
+      ...(frames.length ? { stacktrace: { type: "raw", frames } } : {}),
+    }];
+  });
+  if (exceptionList.length === 0) return null;
+  const fingerprint = typeof payload.fingerprint === "string" ? payload.fingerprint.trim() : "";
+  const process = typeof payload.process === "string" && PROCESS_VALUES.has(payload.process) ? payload.process : null;
+  return {
+    $exception_list: exceptionList,
+    $exception_level: payload.level,
+    ...(fingerprint
+      ? { $exception_fingerprint: scrubFreeText(fingerprint, { maxLength: 200 }) }
+      : {}),
+    ...(process ? { process } : {}),
+  };
 }

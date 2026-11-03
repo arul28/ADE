@@ -29,7 +29,10 @@ import {
   productAnalyticsEventContext,
   safeProductAnalyticsString,
   sanitizeProductAnalyticsProperties,
+  sanitizeAiGenerationProperties,
+  sanitizeExceptionProperties,
   sanitizeSurveyEventProperties,
+  SEPARATE_ALLOWANCE_EVENTS,
 } from "./productAnalyticsPolicy";
 
 declare const __ADE_POSTHOG_PROJECT_TOKEN__: string | undefined;
@@ -1017,7 +1020,8 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
       const posthog = ensureClient(state);
       if (!posthog) return { accepted: false, reason: "disabled" };
       emitPendingBudgetSummary(state, posthog);
-      if (state.quota.accepted >= dailyBudget) return drop("daily_budget");
+      const separateAllowance = SEPARATE_ALLOWANCE_EVENTS.has(input.event);
+      if (!separateAllowance && state.quota.accepted >= dailyBudget) return drop("daily_budget");
       if ((state.quota.acceptedByEvent[input.event] ?? 0) >= EVENT_DAILY_BUDGETS[input.event]) {
         return drop("daily_budget");
       }
@@ -1056,10 +1060,21 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
         ? sanitizeSurveyEventProperties(input.event, input.survey)
         : null;
       if (isSurveyAnalyticsEvent(input.event) && !surveyProperties) return drop("invalid_event");
+      const aiProperties = input.event === "$ai_generation"
+        ? sanitizeAiGenerationProperties(input.aiGeneration)
+        : null;
+      if (input.event === "$ai_generation" && !aiProperties) return drop("invalid_event");
+      const exceptionProperties = input.event === "$exception"
+        ? sanitizeExceptionProperties(input.exception)
+        : null;
+      if (input.event === "$exception" && !exceptionProperties) return drop("invalid_event");
       const properties: Record<string, unknown> = {
-        ...(surveyProperties ?? sanitizeProductAnalyticsProperties(input.event, input.properties)),
+        ...(exceptionProperties
+          ?? aiProperties
+          ?? surveyProperties
+          ?? sanitizeProductAnalyticsProperties(input.event, input.properties)),
         surface,
-        ...productAnalyticsEventContext(input.event, surface, input.properties?.feature),
+        ...productAnalyticsEventContext(input.event, surface, aiProperties ?? input.properties),
         is_internal: isInternalInstall(),
         release_channel: releaseChannel,
         app_version: appVersion,
@@ -1083,6 +1098,8 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
       const sessionId = opaqueId("session", input.sessionId);
       if (projectId) properties.project_id = projectId;
       if (sessionId) properties.session_id = sessionId;
+      // A chat is one trace: its turns group under the same salted session id.
+      if (aiProperties && sessionId) properties.$ai_trace_id = sessionId;
 
       let timestamp: Date | undefined;
       if (input.occurredAt && input.occurredAt.length <= 64) {
@@ -1099,7 +1116,7 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
       const milestoneEvent = isMilestoneEvent(input.event) ? input.event : null;
       if (milestoneEvent) state.pendingMilestones[milestoneEvent] = { uuid, atMs: milestoneAtMs };
       if (firstOpen) state.openedSurfaces.push(surface);
-      state.quota.accepted += 1;
+      if (!separateAllowance) state.quota.accepted += 1;
       state.quota.acceptedByEvent[input.event] = (state.quota.acceptedByEvent[input.event] ?? 0) + 1;
       recent.push(nowMs);
       state.quota.minuteWindows[input.event] = recent;

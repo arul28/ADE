@@ -5,7 +5,8 @@ import { configureOutboundProxyFromEnv, trustSystemCertificates } from "./servic
 import { SENTRY_ENABLED_ARGV } from "../shared/sentry/config";
 import { flushSentry } from "../shared/sentry/capture";
 import { registerSentryDiagnosticAttachment, registerSentryDiagnosticContext } from "../shared/sentry/diagnostics";
-import { setSentryUserResolver } from "../shared/sentry/eventFilter";
+import { setSentryEventMirror, setSentryUserResolver } from "../shared/sentry/eventFilter";
+import { createExceptionAnalyticsMirror } from "./services/analytics/exceptionProductAnalytics";
 
 if (app.isPackaged && process.env.ADE_RUNTIME_PACKAGED === undefined) {
   process.env.ADE_RUNTIME_PACKAGED = "1";
@@ -2408,6 +2409,7 @@ app.whenReady().then(async () => {
       releaseChannel: resolveReleaseChannel({ env: process.env, packaged: app.isPackaged, version: app.getVersion() }),
     }));
   setSentryUserResolver(() => productAnalyticsService.getDistinctId());
+  setSentryEventMirror(createExceptionAnalyticsMirror({ analytics: productAnalyticsService, surface: "desktop" }));
   // In-app surveys: this computer's own usage days, kept only while analytics
   // is on. A launch is counted a moment after startup, and a window focus
   // records the day once (no I/O for any later focus that day).

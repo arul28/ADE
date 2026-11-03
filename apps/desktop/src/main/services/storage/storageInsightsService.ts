@@ -1870,6 +1870,9 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
             feature: "storage_doctor",
             action: "maintenance_run",
             outcome,
+            // Only a run the person asked for is use; the post-boot and daily
+            // sweeps are the app looking after itself.
+            mode: trigger === "manual" ? "manual" : "automatic",
             bytes_freed: reclaimedBytes,
             files_compressed: filesCompressed,
           },

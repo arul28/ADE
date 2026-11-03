@@ -49,6 +49,9 @@ export const EVENTS = Object.freeze({
   SURVEY_SHOWN: "survey shown",
   SURVEY_DISMISSED: "survey dismissed",
   SURVEY_SENT: "survey sent",
+  // PostHog's LLM-analytics event, one per settled agent turn (desktop and
+  // brain). Billed against LLM analytics, not the product-event allowance.
+  AI_GENERATION: "$ai_generation",
 });
 
 export const ALL_INGESTED_EVENTS = Object.freeze([...Object.values(EVENTS), ...SYSTEM_EVENTS]);
@@ -97,6 +100,12 @@ export const PROPERTIES = Object.freeze({
   SURVEY_RESPONSE: "$survey_response",
   // PostHog's traffic classification, computed at query time from `$raw_user_agent`.
   IS_BOT: "$virt_is_bot",
+  // PostHog LLM analytics (`$ai_generation`).
+  AI_PROVIDER: "$ai_provider",
+  AI_MODEL: "$ai_model",
+  AI_IS_ERROR: "$ai_is_error",
+  AI_TOTAL_COST_USD: "$ai_total_cost_usd",
+  AI_LATENCY: "$ai_latency",
 });
 
 /**
@@ -934,6 +943,54 @@ export const dashboardSpec = Object.freeze({
           trends({
             series: [eventNode(EVENTS.SURVEY_SENT, "Responses")],
             breakdown: PROPERTIES.SURVEY_NAME,
+          }),
+        ),
+      ],
+    },
+    {
+      key: "agent-turns",
+      name: "ADE · Agent turns (LLM analytics)",
+      description: "One `$ai_generation` per settled agent turn: provider, catalog model (`other` for local and custom models), tokens, cost and wall-clock latency. No prompts, output or tool data. PostHog's own LLM analytics page reads the same events.",
+      pinned: false,
+      insights: [
+        insight(
+          "agent-turns-by-provider",
+          "Agent turns by provider and outcome",
+          "Turns per week split by provider. Failures and cancellations are `outcome`; read them against the completed line.",
+          trends({
+            series: [eventNode(EVENTS.AI_GENERATION, "Turns")],
+            breakdown: PROPERTIES.AI_PROVIDER,
+          }),
+        ),
+        insight(
+          "agent-turn-failure-rate",
+          "Agent turn failure rate",
+          "Failed turns over all turns, per week. A jump after a release or a provider update is the first thing to check.",
+          trends({
+            series: [
+              eventNode(EVENTS.AI_GENERATION, "Failed", { properties: [eventProperty(PROPERTIES.AI_IS_ERROR, "true")] }),
+              eventNode(EVENTS.AI_GENERATION, "All"),
+            ],
+            formula: "A / B",
+            aggregationAxisFormat: "percentage_scaled",
+          }),
+        ),
+        insight(
+          "agent-turn-cost-by-model",
+          "Agent spend by model",
+          "Sum of `$ai_total_cost_usd` per week by model: the provider's billed figure where it reports one, else ADE's list-price estimate. Subscription turns count at list price.",
+          trends({
+            series: [eventNode(EVENTS.AI_GENERATION, "Cost (USD)", { math: "sum", mathProperty: PROPERTIES.AI_TOTAL_COST_USD })],
+            breakdown: PROPERTIES.AI_MODEL,
+          }),
+        ),
+        insight(
+          "agent-turn-latency",
+          "Median turn latency by provider",
+          "Median seconds from a turn's start to its end, per provider. Long agent turns are normal; a step change is not.",
+          trends({
+            series: [eventNode(EVENTS.AI_GENERATION, "Median latency (s)", { math: "median", mathProperty: PROPERTIES.AI_LATENCY })],
+            breakdown: PROPERTIES.AI_PROVIDER,
           }),
         ),
       ],

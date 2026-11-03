@@ -5,7 +5,8 @@ import {
   unwatchProjectRoot,
   watchProjectRoot,
 } from "./services/projects/projectRootAccessMonitor";
-import { setSentryUserResolver } from "../../desktop/src/shared/sentry/eventFilter";
+import { setSentryEventMirror, setSentryUserResolver } from "../../desktop/src/shared/sentry/eventFilter";
+import { createExceptionAnalyticsMirror } from "../../desktop/src/main/services/analytics/exceptionProductAnalytics";
 import type { CrossMachineHandoffTransport } from "../../desktop/src/main/services/chat/crossMachineHandoffOrchestrator";
 import fs from "node:fs";
 import os from "node:os";
@@ -1176,6 +1177,7 @@ export async function createAdeRuntime(args: {
         }),
       }));
     setSentryUserResolver(() => productAnalyticsService.getDistinctId());
+    setSentryEventMirror(createExceptionAnalyticsMirror({ analytics: productAnalyticsService, surface: "api" }));
     productAnalyticsForProxy = productAnalyticsService;
     const usageProductAnalyticsExporter = createUsageProductAnalyticsExporter({
       db,

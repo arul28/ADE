@@ -4,6 +4,7 @@ import type { ChatAutoResumeAnalyticsProperties } from "../chat/chatAutoResumeCo
 import type { CrossMachineMoveOutcome } from "../chat/crossMachineHandoffOrchestrator";
 import type { MacDesktopAnalyticsProperties } from "../macDesktop/macDesktopService";
 import type { ProductAnalyticsService } from "./productAnalyticsService";
+import { createHash } from "node:crypto";
 import { detectInstallSource } from "./installSource";
 
 type AgentTurnAnalytics = Pick<ProductAnalyticsService, "captureInternal">;
@@ -22,6 +23,8 @@ export function captureSessionMetadataRegeneratedAnalytics(args: {
       feature: "chat",
       action: "metadata_regenerated",
       outcome: args.event.outcome,
+      // Regenerated after a turn, never on request: not a person's use.
+      mode: "automatic",
       source: "runtime",
     },
   });
@@ -416,6 +419,15 @@ export function captureClaudePluginsIgnoredAnalytics(args: {
   });
 }
 
+/** A v4-shaped id derived from the turn, so PostHog keeps one event per turn. */
+function turnEventId(sessionId: string, turnId: string): string {
+  const chars = createHash("sha256").update(`ai-generation:${sessionId}:${turnId}`).digest("hex").slice(0, 32).split("");
+  chars[12] = "4";
+  chars[16] = "8";
+  const value = chars.join("");
+  return `${value.slice(0, 8)}-${value.slice(8, 12)}-${value.slice(12, 16)}-${value.slice(16, 20)}-${value.slice(20)}`;
+}
+
 export function captureAgentTurnSettledAnalytics(args: {
   analytics: AgentTurnAnalytics;
   projectId: string;
@@ -428,6 +440,30 @@ export function captureAgentTurnSettledAnalytics(args: {
     : event.status === "interrupted"
       ? "cancelled"
       : "failure";
+
+  // Every turn, not just the first: PostHog's LLM analytics (cost, tokens,
+  // latency and failures per provider and model). A stable id per turn makes a
+  // repeated settle notification one event in PostHog.
+  analytics.captureInternal({
+    event: "$ai_generation",
+    surface: "api",
+    projectId,
+    sessionId: event.sessionId,
+    clientEventId: turnEventId(event.sessionId, event.turnId),
+    aiGeneration: {
+      provider: event.provider,
+      model: event.model ?? null,
+      status: event.status,
+      feature,
+      inputTokens: event.usage?.inputTokens ?? null,
+      outputTokens: event.usage?.outputTokens ?? null,
+      cacheReadTokens: event.usage?.cacheReadTokens ?? null,
+      cacheCreationTokens: event.usage?.cacheCreationTokens ?? null,
+      reasoningTokens: event.usage?.reasoningTokens ?? null,
+      costUsd: event.costUsd ?? null,
+      durationMs: event.durationMs ?? null,
+    },
+  });
 
   analytics.captureInternal({
     event: "ade_work_session_completed",

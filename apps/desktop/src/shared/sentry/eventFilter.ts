@@ -34,6 +34,38 @@ export function setSentryUserResolver(resolver: (() => string | null | undefined
   resolveUserId = resolver;
 }
 
+/**
+ * Receives each error event `beforeSend` admitted, after the budget and the
+ * scrub. Main and the brain mirror it to
+ * PostHog error tracking, so PostHog sees exactly what Sentry was allowed to
+ * see and never more. Must not throw or keep the event.
+ */
+export type SentryEventMirror = (event: Readonly<SentryMirrorEvent>) => void;
+
+export type SentryMirrorEvent = {
+  level?: string;
+  /** Set only where ADE named the failure (`captureError(..., { fingerprint })`). */
+  fingerprint?: string[];
+  message?: string;
+  tags?: Record<string, unknown>;
+  exception?: {
+    values?: Array<{
+      type?: string;
+      value?: string;
+      mechanism?: { handled?: boolean; type?: string };
+      stacktrace?: {
+        frames?: Array<{ filename?: string; function?: string; lineno?: number; colno?: number; in_app?: boolean }>;
+      };
+    }>;
+  };
+};
+
+let mirrorEvent: SentryEventMirror | null = null;
+
+export function setSentryEventMirror(mirror: SentryEventMirror | null): void {
+  mirrorEvent = mirror;
+}
+
 /** The user `beforeSend` puts on an event; for events that skip it (User Feedback). */
 export function resolveSentryUserId(): string | null {
   try {
@@ -95,7 +127,15 @@ export function createSentryEventHooks(budget?: SentryBudget) {
       if (userId) candidate.user = { ...(candidate.user ?? {}), id: userId };
       // A no-op outside main and the brain (`enableSentryDiagnostics`).
       applySentryDiagnostics(candidate, hint, budgetKey);
-      return scrubEvent(candidate) as unknown as T;
+      const scrubbed = scrubEvent(candidate);
+      if (mirrorEvent && (scrubbed.exception?.values?.length || scrubbed.level === "error" || scrubbed.level === "fatal")) {
+        try {
+          mirrorEvent(scrubbed as unknown as SentryMirrorEvent);
+        } catch {
+          // The mirror is a second copy; it never costs Sentry the event.
+        }
+      }
+      return scrubbed as unknown as T;
     },
     beforeBreadcrumb<T>(breadcrumb: T): T | null {
       const crumb = breadcrumb as unknown as ScrubbableBreadcrumb & { category?: string; message?: string };

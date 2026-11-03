@@ -31,6 +31,12 @@ export const PRODUCT_ANALYTICS_EVENTS = [
   "survey shown",
   "survey dismissed",
   "survey sent",
+  // PostHog's LLM-analytics event, one per settled agent turn. Main-process
+  // and brain only (`agentTurnProductAnalytics.ts`); never accepted over IPC.
+  "$ai_generation",
+  // PostHog error tracking. A mirror of each error Sentry admitted, after its
+  // budget and scrub (`exceptionProductAnalytics.ts`); never accepted over IPC.
+  "$exception",
 ] as const;
 
 export type ProductAnalyticsEventName = (typeof PRODUCT_ANALYTICS_EVENTS)[number];
@@ -61,6 +67,45 @@ export type ProductAnalyticsCapture = {
    * process. Never read from IPC input (`parseProductAnalyticsCapture` drops it).
    */
   survey?: ProductSurveyEventPayload;
+  /**
+   * `$ai_generation` only: one agent turn's model, token counts, cost and
+   * duration, built by the runtime. Never read from IPC input
+   * (`parseProductAnalyticsCapture` drops it). No prompt, output, or tool data.
+   */
+  aiGeneration?: ProductAnalyticsAiGeneration;
+  /** `$exception` only: built from a scrubbed Sentry event in main or the brain, never from IPC. */
+  exception?: ProductAnalyticsException;
+};
+
+/** `$exception` only: one scrubbed Sentry error, reduced to what PostHog error tracking reads. */
+export type ProductAnalyticsException = {
+  /** Outermost first, as Sentry lists them (a cause chain). */
+  exceptions: Array<{
+    type: string;
+    value?: string | null;
+    handled?: boolean | null;
+    mechanism?: string | null;
+    frames?: Array<{ filename?: string | null; function?: string | null; lineno?: number | null; colno?: number | null; inApp?: boolean | null }>;
+  }>;
+  level: "error" | "fatal" | "warning";
+  fingerprint?: string | null;
+  /** Which ADE process: main, renderer, brain. */
+  process?: string | null;
+};
+
+export type ProductAnalyticsAiGeneration = {
+  provider: string;
+  /** The model id the runtime reported; sent only when it is a built-in catalog model. */
+  model?: string | null;
+  status: "completed" | "interrupted" | "failed";
+  feature: "chat" | "automations";
+  inputTokens?: number | null;
+  outputTokens?: number | null;
+  cacheReadTokens?: number | null;
+  cacheCreationTokens?: number | null;
+  reasoningTokens?: number | null;
+  costUsd?: number | null;
+  durationMs?: number | null;
 };
 
 export type ProductAnalyticsCaptureResult = {

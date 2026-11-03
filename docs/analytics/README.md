@@ -98,6 +98,34 @@ Every Monday, about 20 minutes:
 4. **Reliability.** `ADE · Reliability and analytics budget`: incidents, errors,
    and the 30-day volume against the free allowance.
 
+## Project settings that live in PostHog, not code
+
+Set through the PostHog API on 2026-11-02 (free tier, billing limit $0). Change
+them in PostHog and update this list in the same branch.
+
+- **Transformation "Drop bots from website events"** (Filter Bot Events
+  template): drops `ade_marketing_*` events from known bot, crawler, headless
+  and scripted user agents and PostHog's known bot IPs, before ingestion, so
+  they never count against the allowance. App, brain and iOS events are not
+  touched. The site has sent `$raw_user_agent` since 2026-11-02; older site
+  events have no user agent and cannot be filtered.
+- **Alerts** (5 of 5, email to the owner): weekly active installs down 25% or
+  more week over week; weekly sign-ups under 10; brain recoveries over 40 a
+  day; renderer crash recoveries over 5 a day; brain action failures doubling
+  day over day.
+- **Subscriptions** (5 of 5): a Monday 14:00 UTC email with PostHog AI's
+  summary of Sign-ups & activation, Retention & churn, Feedback, Reliability
+  and analytics budget, and the 1,000 MAU goal dashboard.
+- **Self-driving** (reports only, PR generation off): connected to
+  `arul28/ADE`. The destination "Self-driving reports → Linear (ADE)" files
+  every surfaced `$scout_report_emitted` as a Linear issue in team ADE with
+  the `posthog` label and Linear priority (P0 Urgent, P1 High, P2 Medium,
+  P3–P4 Low). P0 and P1 also get `auto-fix`, which starts an ADE agent in a
+  new lane (automation rules `posthog-report-investigate` and
+  `linear-auto-fix-labeled`). It authenticates with the project secret
+  `LINEAR_POSTHOG_API_KEY`. Automation gaps found along the way are tracked in
+  `docs/features/automations/known-gaps.md`.
+
 ## Sources of truth
 
 - **Clerk is the record of accounts.** `ade_signed_up` (and

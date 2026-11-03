@@ -11360,6 +11360,12 @@ export type AgentChatTurnSettledEvent = Readonly<{
   status: Extract<AgentChatEvent, { type: "done" }>["status"];
   provider: AgentChatProvider;
   sessionSurface: AgentChatSurface;
+  /** The model that answered, as the runtime reported it (registry id when known). */
+  model?: string | null;
+  usage?: Extract<AgentChatEvent, { type: "done" }>["usage"];
+  costUsd?: number | null;
+  /** Wall time from the turn's start to its done event. */
+  durationMs?: number | null;
 }>;
 
 type AgentChatAutomationService = {
@@ -24001,12 +24007,18 @@ export function createAgentChatService(args: {
     if (notifiedSettledTurns.has(callbackKey)) return;
     rememberBoundedId(notifiedSettledTurns, callbackKey, 1_024);
     try {
+      const turnStartedAt = lastTurnStartedAtBySession.get(managed.session.id);
+      const turnStartedMs = turnStartedAt ? Date.parse(turnStartedAt) : Number.NaN;
       onTurnSettled({
         sessionId: managed.session.id,
         turnId: event.turnId,
         status: event.status,
         provider: managed.session.provider,
         sessionSurface: managed.session.surface ?? "work",
+        model: event.modelId ?? event.model ?? null,
+        usage: event.usage,
+        costUsd: event.costUsd ?? null,
+        durationMs: Number.isFinite(turnStartedMs) ? Math.max(0, Date.now() - turnStartedMs) : null,
       });
     } catch (error) {
       logger.warn("agent_chat.turn_settled_callback_failed", {

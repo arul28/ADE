@@ -1570,7 +1570,7 @@ capture in `registerIpc` has never fired for it — an installation whose brain
 rejected every action was silent. The channel is deliberately **not** added to
 `MEANINGFUL_ACTIONS`: that set defines the durable `usage_events` mutation
 ledger, and joining it would write a mutation row per brain call. Instead the
-`callAction` error path emits exactly two properties: `action_domain`, the ADE
+`callAction` error path emits four properties: `action_domain`, the ADE
 action domain, allowlisted against the closed `ADE_ACTION_DOMAIN_NAMES` list in
 `services/adeActions/domains.ts` — its own zero-import module, because
 `registry.ts` pulls in the whole runtime service graph and the analytics policy
@@ -1581,7 +1581,13 @@ message, never a path, and `ipc_timeout` or `unknown` when there is no code.
 Because codes are an open code-authored vocabulary (seeing an unpredicted one is
 the point), `error_code` is bounded by shape rather than a literal allowlist: a
 lower-case identifier of at most 48 characters, which no path, URL, email,
-hostname, or sentence fragment can satisfy. A per-domain-per-code one-hour
+hostname, or sentence fragment can satisfy. Most brain errors carry no code,
+so two more properties say which call failed and how: `brain_action`, the
+action's code identifier inside its domain (a lower-case slug of at most 80
+characters; it names a registry entry, never anything a person typed), and
+`expected_kind`, the brain's expected-failure mark (`user`, `environment`,
+`network`) or `unexpected` when the error carries none, which is what separates
+a bug from a refusal the person caused. A per-action-per-code one-hour
 deduplication key turns an error loop into one accepted event an hour, and the
 event's own 20-per-day / 3-per-minute caps bound the rest without touching
 `ade_error`'s budget.

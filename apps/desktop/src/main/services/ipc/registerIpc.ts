@@ -2567,19 +2567,24 @@ export function registerIpc({
             try {
               // The analytics policy re-checks this against the closed domain
               // list, so an unrecognised domain is dropped rather than reported.
-              const actionDomain = readRuntimeActionRequest(args)?.domain ?? null;
+              const actionRequest = readRuntimeActionRequest(args);
+              const actionDomain = actionRequest?.domain ?? null;
+              const brainAction = actionRequest?.action ?? null;
               const errorCode = brainActionErrorCode(error, didTimeout);
+              const expectedKind = expectedErrorKind(error) ?? "unexpected";
               productAnalyticsService?.captureInternal({
                 event: "ade_brain_action_failed",
                 surface: "desktop",
-                // Per domain+code per hour: a brain that rejects every call in
+                // Per action+code per hour: a brain that rejects every call in
                 // a retry loop costs one accepted event an hour, not one per
                 // call, and the per-event daily cap bounds the rest.
-                dedupeKey: `brain-action-failed:${actionDomain ?? "unknown"}:${errorCode}`,
+                dedupeKey: `brain-action-failed:${actionDomain ?? "unknown"}:${brainAction ?? "unknown"}:${errorCode}`,
                 minimumIntervalMs: 60 * 60 * 1_000,
                 properties: {
                   ...(actionDomain ? { action_domain: actionDomain } : {}),
+                  ...(brainAction ? { brain_action: brainAction } : {}),
                   error_code: errorCode,
+                  expected_kind: expectedKind,
                 },
               });
             } catch {
