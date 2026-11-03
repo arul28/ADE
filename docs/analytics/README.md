@@ -116,6 +116,12 @@ them in PostHog and update this list in the same branch.
 - **Subscriptions** (5 of 5): a Monday 14:00 UTC email with PostHog AI's
   summary of Sign-ups & activation, Retention & churn, Feedback, Reliability
   and analytics budget, and the 1,000 MAU goal dashboard.
+- **Session replay**: recording on, minimum duration 5 seconds, console and
+  performance capture off, project masking of all inputs and text as a safety
+  net (code settings override it). See `docs/logging.md` › Session replay.
+- **Dashboard "ADE · Agent turns (LLM analytics)"** is managed by
+  `scripts/posthog/provision.mjs` like the others; PostHog's own LLM analytics
+  and Error tracking pages read `$ai_generation` and `$exception` directly.
 - **Self-driving** (reports only, PR generation off): connected to
   `arul28/ADE`. The destination "Self-driving reports → Linear (ADE)" files
   every surfaced `$scout_report_emitted` as a Linear issue in team ADE with

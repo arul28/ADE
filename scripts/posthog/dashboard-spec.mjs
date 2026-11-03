@@ -52,6 +52,8 @@ export const EVENTS = Object.freeze({
   // PostHog's LLM-analytics event, one per settled agent turn (desktop and
   // brain). Billed against LLM analytics, not the product-event allowance.
   AI_GENERATION: "$ai_generation",
+  // PostHog error tracking: a scrubbed mirror of Sentry-admitted errors.
+  EXCEPTION: "$exception",
 });
 
 export const ALL_INGESTED_EVENTS = Object.freeze([...Object.values(EVENTS), ...SYSTEM_EVENTS]);

@@ -427,6 +427,22 @@
       ]
     },
     {
+      "name": "$exception",
+      "platforms": [
+        "desktop",
+        "runtime"
+      ],
+      "owner": "apps/desktop/src/main/services/analytics/exceptionProductAnalytics.ts",
+      "source": "desktop_policy",
+      "purpose": "PostHog error tracking: a mirror of each error Sentry admitted in desktop main (incl. renderer) and the brain, after Sentry's scrub, with emails and absolute paths removed and frames reduced to in-app file, function and position. Own 100/day allowance outside the shared ceiling.",
+      "properties": [
+        "$exception_list",
+        "$exception_level",
+        "$exception_fingerprint",
+        "process"
+      ]
+    },
+    {
       "name": "$ai_generation",
       "platforms": [
         "desktop",
