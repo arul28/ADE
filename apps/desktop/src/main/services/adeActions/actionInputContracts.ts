@@ -1018,7 +1018,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
     sendKey: {
       description: "Press a hardware or navigation key on the lane's emulator.",
       input: "object { laneId: string, key: \"back\" | \"home\" | \"recents\" | \"power\" | \"volume_up\" | \"volume_down\" }",
-      example: "ade android key back --json",
+      example: "ade android button back --json",
     },
     rotate: {
       description: "Lock the lane's emulator screen to portrait or landscape. Apps that fix their orientation, such as the home screen, keep it.",
@@ -1028,7 +1028,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
     sendText: {
       description: "Type text into the focused field on the lane's emulator.",
       input: "object { laneId: string, text: string }",
-      example: "ade android text \"hello\" --json",
+      example: "ade android type \"hello\" --json",
     },
     screenshot: {
       description: "Write a PNG of the lane's emulator screen, on the machine that runs it. outPath defaults to a file under the ADE data folder.",

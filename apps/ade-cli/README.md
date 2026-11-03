@@ -803,7 +803,7 @@ ade android create --profile medium_phone --text      # make an AVD for this lan
 ade android attach <avd> --text                       # hold an AVD no other lane holds, and boot it
 ade android start --text                              # also: stop; release [--keep] (an ADE-made AVD is deleted unless --keep)
 ade android screenshot --out shot.png --text          # PNG on the emulator's machine
-ade android tap 540 1200 --text                       # device pixels; also: swipe x1 y1 x2 y2 --ms 300, key back, text "hi"
+ade android tap 540 1200 --text                       # device pixels; also: swipe x1 y1 x2 y2 --duration-ms 300, button back, type "hi"
 ade android rotate landscape --text                   # lock the screen to portrait or landscape; apps that fix their orientation keep it
 ade android create --profile medium_phone --machine windows --text  # on another machine, for this chat's work copy there (no new lane); --lane <id> for a lane there
 ade --socket app-control launch --command "npm run dev" --text

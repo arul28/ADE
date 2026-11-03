@@ -3469,16 +3469,17 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   Input and capture:
     $ ade android screenshot --out shot.png --text Write a PNG (on the emulator's machine)
     $ ade android tap 540 1200 --text              Tap a point
-    $ ade android swipe 540 1800 540 600 --ms 300 --text
+    $ ade android swipe 540 1800 540 600 --duration-ms 300 --text
                                                    Swipe from one point to another
-    $ ade android key back --text                  back | home | recents | power | volume_up | volume_down
+    $ ade android button back --text               back | home | recents | power | volume_up | volume_down
     $ ade android rotate landscape --text          Lock the screen to portrait or landscape. Apps that
                                                    fix their orientation, such as the home screen, keep it.
-    $ ade android text "hello world" --text        Type into the focused field (--value "<text>" too)
+    $ ade android type "hello world" --text        Type into the focused field (--value "<text>" for text
+                                                   that starts with a dash)
     $ ade android show --text                      Show the emulator to the user (tools pane)
     $ ade android actions --text                   List the android_emulator actions
 
-  Aliases: release = detach, key = press, text = type.
+  The verbs and flags are the ones \`ade apple\` uses for the same job.
 
   Another machine: --machine <name> runs the command on that machine, with
   no new lane. Without --lane, the emulator there works for this chat's work

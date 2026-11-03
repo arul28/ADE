@@ -50,11 +50,11 @@ import {
 /* ──────────────────────────────────────────────────────────────────────────
    ANDROID EMULATOR — `ade android`.
 
-   One emulator per lane, on the machine that runs the lane's brain. The verbs
-   follow `ade apple` where the meaning is the same (`status`, `devices`,
-   `start`, `stop`, `screenshot`, `tap`, `swipe`, `key`); the device verbs take
-   the short names (`create`, `attach`, `release`) and keep `ade apple`'s
-   `device-*` spellings as aliases.
+   One emulator per lane, on the machine that runs the lane's brain. One
+   spelling per verb and flag: `ade apple`'s where the job is the same
+   (`status`, `devices`, `start`, `stop`, `screenshot`, `tap`, `swipe`,
+   `button`, `type`, `show`); the device verbs are `create`, `attach` and
+   `release`.
    ────────────────────────────────────────────────────────────────────────── */
 
 /**
@@ -72,18 +72,13 @@ export const ANDROID_VALUE_FLAGS: readonly string[] = [
   "--input",
   "--input-json",
   "--json-input",
-  "--key",
   "--lane",
   "--lane-id",
-  "--ms",
   "--name",
   "--out",
-  "--out-path",
-  "--output",
   "--profile",
   "--set",
   "--set-json",
-  "--system-image",
   "--value",
   "--x",
   "--y",
@@ -188,16 +183,16 @@ export function buildAndroidPlan(args: string[]): CliPlan {
     return androidAction("android status", "getStatus", laneClaim(), "android-status");
   // Same verb as `ade ui show android`, spelled where an agent driving the
   // emulator looks for it.
-  if (sub === "show" || sub === "reveal") return workToolShowPlan(claimArgs, "android");
-  if (sub === "devices" || sub === "list" || sub === "avds") {
+  if (sub === "show") return workToolShowPlan(claimArgs, "android");
+  if (sub === "devices") {
     const showProfiles = readFlag(args, ["--profiles"]);
     return androidAction("android devices", "listDevices", laneClaim(), showProfiles ? "android-devices-profiles" : "android-devices");
   }
   if (sub === "create") {
     const profileId = requireValue(readValue(args, ["--profile"]) ?? positionals()[0] ?? null, "--profile <hardware profile id>");
-    const systemImage = readValue(args, ["--image", "--system-image"]);
+    const systemImage = readValue(args, ["--image"]);
     const displayName = readValue(args, ["--name"]);
-    const noStart = readFlag(args, ["--no-start", "--no-boot"]);
+    const noStart = readFlag(args, ["--no-start"]);
     return androidAction("android create", "createDevice", {
       ...laneClaim(),
       profileId,
@@ -207,35 +202,35 @@ export function buildAndroidPlan(args: string[]): CliPlan {
     }, "android-device", noStart ? {} : { progressNotice: bootNotice });
   }
   if (sub === "attach") {
-    const avdName = requireValue(readValue(args, ["--avd", "--name"]) ?? positionals()[0] ?? null, "AVD name");
-    const noStart = readFlag(args, ["--no-start", "--no-boot"]);
+    const avdName = requireValue(readValue(args, ["--avd"]) ?? positionals()[0] ?? null, "AVD name");
+    const noStart = readFlag(args, ["--no-start"]);
     return androidAction("android attach", "attachDevice", {
       ...laneClaim(),
       avdName,
       ...(noStart ? { start: false } : {}),
     }, "android-device", noStart ? {} : { progressNotice: bootNotice });
   }
-  if (sub === "start" || sub === "boot")
+  if (sub === "start")
     return androidAction("android start", "start", laneClaim(), "android-device", { progressNotice: bootNotice });
-  if (sub === "stop" || sub === "shutdown")
+  if (sub === "stop")
     return androidAction("android stop", "stop", laneClaim(), "android-device");
-  if (sub === "release" || sub === "detach") {
+  if (sub === "release") {
     // An AVD ADE made for the lane is deleted on release; --keep keeps it on
     // disk. The user's own AVD is never deleted either way.
-    const keep = readFlag(args, ["--keep", "--keep-avd"]);
+    const keep = readFlag(args, ["--keep"]);
     return androidAction("android release", "releaseDevice", {
       ...laneClaim(),
       ...(keep ? { deleteCreated: false } : {}),
     }, "android-release");
   }
-  if (sub === "screenshot" || sub === "capture") {
-    const outPath = androidOutPath(readValue(args, ["--out", "--out-path", "--output"]) ?? positionals()[0] ?? null);
+  if (sub === "screenshot") {
+    const outPath = androidOutPath(readValue(args, ["--out"]) ?? positionals()[0] ?? null);
     return androidAction("android screenshot", "screenshot", {
       ...laneClaim(),
       ...(outPath ? { outPath } : {}),
     }, "android-screenshot");
   }
-  if (sub === "tap" || sub === "click") {
+  if (sub === "tap") {
     const rest = positionals();
     const flagX = readNumberOption(args, ["--x"]);
     const flagY = readNumberOption(args, ["--y"]);
@@ -251,7 +246,7 @@ export function buildAndroidPlan(args: string[]): CliPlan {
       throw new CliUsageError("android swipe requires <x1> <y1> <x2> <y2> (device pixels).");
     }
     const [fromX, fromY, toX, toY] = rest.slice(0, 4).map((value, index) => finiteNumber(value, ["x1", "y1", "x2", "y2"][index]!, "swipe"));
-    const durationMs = readNumberOption(args, ["--ms", "--duration-ms"]);
+    const durationMs = readNumberOption(args, ["--duration-ms"]);
     return androidAction("android swipe", "swipe", {
       ...laneClaim(),
       fromX: fromX!,
@@ -263,13 +258,15 @@ export function buildAndroidPlan(args: string[]): CliPlan {
       shapeResult: done({ action: "swipe", fromX: fromX!, fromY: fromY!, toX: toX!, toY: toY! }),
     });
   }
-  if (sub === "key" || sub === "press" || sub === "button") {
-    const key = requireValue(readValue(args, ["--key"]) ?? positionals()[0] ?? null, "key").toLowerCase();
+  // The verbs and flags are `ade apple`'s for the same job (button, type,
+  // --duration-ms, --out), so an agent learns one set of words.
+  if (sub === "button") {
+    const key = requireValue(readValue(args, ["--name"]) ?? positionals()[0] ?? null, "the button").toLowerCase();
     if (!(ANDROID_HARDWARE_KEYS as readonly string[]).includes(key)) {
-      throw new CliUsageError(`android key: unknown key '${key}'. Valid keys: ${ANDROID_HARDWARE_KEYS.join(", ")}.`);
+      throw new CliUsageError(`android button: unknown button '${key}'. Valid buttons: ${ANDROID_HARDWARE_KEYS.join(", ")}.`);
     }
-    return androidAction("android key", "sendKey", { ...laneClaim(), key }, "android-action", {
-      shapeResult: done({ action: "key", key }),
+    return androidAction("android button", "sendKey", { ...laneClaim(), key }, "android-action", {
+      shapeResult: done({ action: "button", key }),
     });
   }
   if (sub === "rotate") {
@@ -281,11 +278,11 @@ export function buildAndroidPlan(args: string[]): CliPlan {
       shapeResult: done({ action: "rotate", orientation }),
     });
   }
-  if (sub === "text" || sub === "type") {
+  if (sub === "type") {
     // Typed exactly as given: a leading or trailing space is part of the text.
     const text = requireTypedText(readValue(args, ["--value"]) ?? positionals()[0] ?? null, "text");
-    return androidAction("android text", "sendText", { ...laneClaim(), text }, "android-action", {
-      shapeResult: done({ action: "text", characters: text.length }),
+    return androidAction("android type", "sendText", { ...laneClaim(), text }, "android-action", {
+      shapeResult: done({ action: "type", characters: text.length }),
     });
   }
   throw new CliUsageError(`Unknown android subcommand '${sub}'. Run 'ade android --help'.`);
@@ -460,9 +457,9 @@ export function formatAndroidAction(value: unknown): string {
     ? `(${result.x}, ${result.y})`
     : action === "swipe"
       ? `(${result.fromX}, ${result.fromY}) -> (${result.toX}, ${result.toY})`
-      : action === "key" || action === "rotate"
-        ? String(action === "key" ? result.key : result.orientation)
-        : action === "text"
+      : action === "button" || action === "rotate"
+        ? String(action === "button" ? result.key : result.orientation)
+        : action === "type"
           ? `${result.characters} characters`
           : "";
   return `android ${action} ${detail}`.trimEnd() + " done";
