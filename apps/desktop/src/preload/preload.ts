@@ -53,6 +53,8 @@ import {
   type SystemSettingsPaneId,
 } from "../shared/types/systemSettings";
 import { createMacDesktopBridge } from "./macDesktopPreload";
+import { createAndroidEmulatorBridge } from "./androidEmulatorPreload";
+import type { AndroidEmulatorEvent } from "../shared/types/androidEmulator";
 import { createRemoteTargetGate } from "./remoteTargetGate";
 import { IPC } from "../shared/ipc";
 import { APP_CONTROL_FRAME_ALL_LANES } from "../shared/appControlFrameDemand";
@@ -2693,6 +2695,20 @@ function callAppControlActionOr<T>(
 }
 
 /**
+ * The lane's Android emulator runs on the machine that owns the lane, so
+ * every call is per-lane in exactly the way `callIosSimulatorActionOr`
+ * documents. The local arm is the Electron channel.
+ */
+function callAndroidEmulatorActionOr<T>(
+  pin: OpenProjectBinding | null | undefined,
+  action: string,
+  request: Omit<RemoteRuntimeActionRequest, "domain" | "action">,
+  local: () => Promise<T>,
+): Promise<T> {
+  return callPinnedOrBoundRuntimeActionOr(pin, "android_emulator", action, request, local);
+}
+
+/**
  * The "local" arm for App Control actions that exist only on the runtime action
  * domain. Rejecting with the reason beats inventing an IPC channel with no
  * handler behind it, which would surface as an opaque
@@ -3079,6 +3095,11 @@ const remoteMacDesktopEventFanout = createRemoteRuntimeFanout<MacDesktopEventPay
   label: "Mac Desktop",
   onSubscribe: () => ensureRemoteRuntimeEventPump(),
 });
+const remoteAndroidEmulatorEventFanout = createRemoteRuntimeFanout<AndroidEmulatorEvent>({
+  eventType: "android_emulator_event",
+  label: "Android emulator",
+  onSubscribe: () => ensureRemoteRuntimeEventPump(),
+});
 const remoteAppControlEventFanout = createRemoteRuntimeFanout<AppControlEventPayload>({
   eventType: "app_control_event",
   label: "App Control",
@@ -3142,6 +3163,7 @@ export const REMOTE_RUNTIME_FANOUTS: readonly RemoteRuntimeFanoutEntry[] = [
   remoteComputerUseEventFanout,
   remoteIosSimulatorEventFanout,
   remoteMacDesktopEventFanout,
+  remoteAndroidEmulatorEventFanout,
   remoteAppControlEventFanout,
   remoteBuiltInBrowserRemoteRequestFanout,
   remoteBuiltInBrowserRemoteCallFanout,
@@ -4103,6 +4125,67 @@ function subscribeMacDesktopEvents(
 }
 
 /**
+ * Android emulator events for whichever machine hosts the lane's emulator.
+ * Same three arms as Mac Desktop: the pinned machine's event pump, this
+ * process's own service, and the bound remote runtime.
+ */
+function subscribeAndroidEmulatorEvents(
+  cb: (payload: AndroidEmulatorEvent) => void,
+  pin?: OpenProjectBinding | null,
+): () => void {
+  const removePinned = subscribePinnedProjectRuntimeEvents(
+    pin,
+    (payload) => toWrappedEvent<AndroidEmulatorEvent>(payload, "android_emulator_event"),
+    cb,
+    "Android emulator",
+  );
+  if (removePinned) return removePinned;
+  const removeLocal = androidEmulatorEventFanout(cb);
+  const removeRemote = remoteAndroidEmulatorEventFanout.subscribe(cb);
+  return () => {
+    removeRemote();
+    removeLocal();
+  };
+}
+
+/**
+ * Turns an Android stream URL into one this desktop can open. The URL names
+ * loopback on the machine that runs the emulator, which is not this machine
+ * whenever the lane is remote.
+ */
+const resolveAndroidEmulatorStreamUrl = async (
+  streamUrl: string | null,
+  pin?: OpenProjectBinding | null,
+): Promise<{ url: string | null; forwarded: boolean; error: string | null }> => {
+  const text = (streamUrl ?? "").trim();
+  if (!text) return { url: null, forwarded: false, error: null };
+  try {
+    const binding = pin ?? (await getProjectRuntimeBinding());
+    if (binding?.kind !== "remote") {
+      return { url: text, forwarded: false, error: null };
+    }
+    const parsed = parseLoopbackUrl(text);
+    if (!parsed) return { url: text, forwarded: false, error: null };
+    const forward = await ensureRemoteLoopbackForward(
+      binding,
+      parsed.port,
+      `${binding.displayName}:android:${parsed.port}`,
+    );
+    return {
+      url: rewriteUrlHostPort(text, forward.localHost, forward.localPort),
+      forwarded: true,
+      error: null,
+    };
+  } catch (error) {
+    return {
+      url: null,
+      forwarded: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+};
+
+/**
  * Turns a Mac Desktop stream URL into one this desktop can open, exactly as the
  * simulator's does — the URL names loopback on the Mac that owns the display,
  * which is not this machine whenever the lane is remote.
@@ -4547,6 +4630,9 @@ const iosSimulatorEventFanout = createIpcEventFanout<IosSimulatorEventPayload>(
 );
 const macDesktopEventFanout = createIpcEventFanout<MacDesktopEventPayload>(
   IPC.macDesktopEvent,
+);
+const androidEmulatorEventFanout = createIpcEventFanout<AndroidEmulatorEvent>(
+  IPC.androidEmulatorEvent,
 );
 const appControlEventFanout = createIpcEventFanout<AppControlEventPayload>(
   IPC.appControlEvent,
@@ -10146,6 +10232,17 @@ const adeBridge = {
       return () => ipcRenderer.removeListener(IPC.macDesktopEscapeHotkeyPressed, listener);
     },
     onEvent: subscribeMacDesktopEvents,
+  }),
+  /**
+   * The lane's Android emulator. Every method takes an optional pin, because
+   * the emulator belongs to the lane's machine and not to this window.
+   * Nothing here is gated on this desktop's platform.
+   */
+  androidEmulator: createAndroidEmulatorBridge({
+    callAction: callAndroidEmulatorActionOr,
+    invoke: (channel, args) => ipcRenderer.invoke(channel, args),
+    resolveStreamUrl: resolveAndroidEmulatorStreamUrl,
+    onEvent: subscribeAndroidEmulatorEvents,
   }),
   appControl: {
     // Every call names its lane: App Control keeps one session per lane, and

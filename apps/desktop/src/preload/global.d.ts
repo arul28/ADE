@@ -7,6 +7,7 @@ import type { MuseBinaryStatus } from "../shared/museBinary";
 import type { JevAnswers, JevDecideRequest, JevQuestions, JevStatus } from "../shared/types/jev";
 import type { MuseSettingsRequest, MuseSettingsResult, MuseSettingsRunArgs } from "../shared/museSettings";
 import type { HomeWidgetsBridge } from "../shared/types/homeWidgets";
+import type { AndroidEmulatorPreloadApi } from "../shared/types/androidEmulator";
 import type { AppBundleOwnershipBridge } from "../shared/types/appBundleOwnership";
 import type { DatabaseCopiesBridge } from "../shared/types/startupRecovery";
 import type { ProductSurveyBridge } from "../shared/types/productSurveys";
@@ -3445,6 +3446,11 @@ declare global {
           pin?: OpenProjectBinding | null,
         ) => () => void;
       };
+      /**
+       * The lane's Android emulator. Every method takes an optional pin, because
+       * the emulator belongs to the lane's machine rather than to this window.
+       */
+      androidEmulator: AndroidEmulatorPreloadApi;
       /**
        * The lane's private macOS screen. Mirrors `iosSimulator`: every method
        * takes an optional pin, because the display belongs to the lane's host
