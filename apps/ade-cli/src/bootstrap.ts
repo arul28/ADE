@@ -306,6 +306,7 @@ import { getSharedPushPublisherService, resolvePushRelayStateFile, type PushPrNo
 import type { createFileService } from "../../desktop/src/main/services/files/fileService";
 import type { AppNavigationRequest, AppNavigationResult, PortLease, SyncRoleSnapshot, PrSummary } from "../../desktop/src/shared/types";
 import type { PrEventPayload } from "../../desktop/src/shared/types/prs";
+import type { AndroidEmulatorServiceApi } from "../../desktop/src/shared/types/androidEmulator";
 import { createAutomationService } from "../../desktop/src/main/services/automations/automationService";
 import { createAutomationPlannerService } from "../../desktop/src/main/services/automations/automationPlannerService";
 import {
@@ -518,6 +519,11 @@ export type AdeRuntime = {
    */
   getScenePreviewer?: () => ScenePreviewer | null;
   macDesktopService?: MacDesktopService | null;
+  /**
+   * One Android emulator per lane (`android_emulator` domain, `ade android`).
+   * Null on a chat-only runtime and on a host that built no service.
+   */
+  androidEmulatorService?: AndroidEmulatorServiceApi | null;
   builtInBrowserService?: BuiltInBrowserService | BuiltInBrowserDesktopBridgeClient | null;
   /**
    * `ade browser attach`: chats driving a tab of the user's own browser on
