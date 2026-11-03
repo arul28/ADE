@@ -6203,7 +6203,6 @@ function AgentChatComposerImpl({
     codexCustomSummary,
     nativeControlsDisabled,
     hideNativeControls,
-    onClaudeModeChange,
     onCursorModeChange,
     onDroidPermissionModeChange,
     copilotPermissionMode,
