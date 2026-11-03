@@ -1,5 +1,5 @@
 import type { KeybindingDefinition, KeybindingsSnapshot } from "../../shared/types";
-import { KEYBINDING_UNASSIGNED, WEB_KEYBINDING_DEFAULTS } from "../../shared/keybindings";
+import { clientKeybindingDefault, KEYBINDING_UNASSIGNED } from "../../shared/keybindings";
 import { isMacPlatform, modifierKeyLabel } from "./platform";
 import { isWebClientMode } from "./webClientMode";
 
@@ -143,13 +143,14 @@ export function getEffectiveBinding(
   desktopFallback: string
 ): string {
   // In the hosted web client a browser-reserved desktop default (⌘T, Ctrl+Tab)
-  // never reaches the page, so the web default replaces it — including over a
-  // snapshot that still carries the desktop table. An override still wins.
-  const webDefault = isWebClientMode() ? WEB_KEYBINDING_DEFAULTS[actionId] : undefined;
-  const fallback = webDefault ?? desktopFallback;
+  // never reaches the page, and off macOS a few defaults change (terminal
+  // switching), so this client's default replaces the table's — including over
+  // a snapshot that still carries the desktop table. An override still wins.
+  const clientDefault = clientKeybindingDefault(actionId, { web: isWebClientMode(), mac: isMacPlatform() });
+  const fallback = clientDefault ?? desktopFallback;
   if (!snapshot) return fallback;
   const def = snapshot.definitions.find((d) => d.id === actionId) as KeybindingDefinition | undefined;
-  const defaultBinding = webDefault ?? def?.defaultBinding;
+  const defaultBinding = clientDefault ?? def?.defaultBinding;
   const override = snapshot.overrides.find((o) => o.id === actionId);
   if (override?.binding.trim().toLowerCase() === KEYBINDING_UNASSIGNED) return "";
   const candidate = (override?.binding ?? defaultBinding ?? fallback).trim();
@@ -224,6 +225,8 @@ const WINDOWS_KEY_GLYPHS: Record<string, string> = {
   return: "Enter",
   backspace: "Backspace",
   delete: "Del",
+  pageup: "PgUp",
+  pagedown: "PgDn",
 };
 
 function keyLabel(key: string, mac: boolean): string {

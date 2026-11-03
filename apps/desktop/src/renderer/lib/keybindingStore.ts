@@ -1,5 +1,6 @@
 import type { KeybindingOverride, KeybindingsSnapshot } from "../../shared/types";
-import { KEYBINDING_DEFINITIONS, WEB_KEYBINDING_DEFINITIONS } from "../../shared/keybindings";
+import { keybindingDefinitionsFor } from "../../shared/keybindings";
+import { isMacPlatform } from "./platform";
 import { isWebClientMode } from "./webClientMode";
 
 /**
@@ -12,10 +13,9 @@ import { isWebClientMode } from "./webClientMode";
  * Appearance and Quick slots, and every project reads the same set. The hosted
  * client keeps them in the browser for the same reason.
  *
- * Before this, overrides went to each project's database through
- * `window.ade.keybindings` (no screen ever wrote them, but `ade actions` could).
- * The first read on a computer with nothing saved yet copies the open
- * project's overrides once, so nothing set that way is lost.
+ * Before this, overrides lived in each project's database behind
+ * `window.ade.keybindings`. The first read on a computer with nothing saved yet
+ * copies the open project's overrides once, so nothing saved there is lost.
  */
 
 export const KEYBINDINGS_STORAGE_KEY = "ade.keybindings.v1";
@@ -39,7 +39,7 @@ export function sanitizeKeybindingOverrides(raw: unknown): KeybindingOverride[] 
 }
 
 function definitions(): KeybindingsSnapshot["definitions"] {
-  return isWebClientMode() ? WEB_KEYBINDING_DEFINITIONS : KEYBINDING_DEFINITIONS;
+  return keybindingDefinitionsFor({ web: isWebClientMode(), mac: isMacPlatform() });
 }
 
 /** `null` = nothing saved on this computer yet (the one-time copy may run). */
@@ -125,7 +125,9 @@ export function migrateProjectKeybindingsOnce(
       if (readStored() !== null) return;
       writeKeybindingOverrides(sanitizeKeybindingOverrides(snapshot?.overrides));
     })
-    .catch(() => {
+    .catch((error: unknown) => {
+      // Defaults still work; the copy is tried again on the next refresh.
+      console.warn("[keybindings] could not copy the project's saved shortcuts", error);
       migration = null;
     });
   return migration;

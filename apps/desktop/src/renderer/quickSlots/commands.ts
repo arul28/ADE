@@ -42,6 +42,7 @@ import {
 import { focusWorkInputSoon } from "../components/work/workShortcuts";
 import { fireBinding, getEffectiveBinding } from "../lib/keybindings";
 import { getGitHubSnapshotCoalesced, listPrsCoalesced } from "../lib/prReadCache";
+import { revealLaneWorktree } from "../lib/revealLaneWorktree";
 import { openStartChatDraft } from "../lib/workDraft";
 import {
   laneWorkViewScopeKey,
@@ -585,11 +586,12 @@ export const QUICK_SLOT_COMMANDS: readonly QuickSlotCommand[] = [
     run: async (context) => {
       const lane = context.lane;
       if (!lane) return;
-      const state = useAppStore.getState();
       const toastId = "quick-slot-lane-push";
       showToast({ id: toastId, title: `Pushing ${lane.branchRef || lane.name}…`, durationMs: 0 });
       try {
-        await window.ade.git.push({ laneId: lane.id }, state.projectBinding);
+        // The lane is from this project's list, so it lives on the machine the
+        // tab is bound to: the unpinned route reaches it.
+        await window.ade.git.push({ laneId: lane.id });
         showToast({ id: toastId, title: "Pushed", message: lane.branchRef || lane.name, tone: "success" });
       } catch (error) {
         showToast({
@@ -618,13 +620,7 @@ export const QUICK_SLOT_COMMANDS: readonly QuickSlotCommand[] = [
         : { ok: false, reason: "This lane has no worktree" };
     },
     run: async (context) => {
-      const lane = context.lane;
-      if (!lane) return;
-      try {
-        await window.ade.lanes.revealWorktree({ laneId: lane.id });
-      } catch (error) {
-        toast("Could not open the worktree", errorText(error), "error");
-      }
+      if (context.lane) await revealLaneWorktree(context.lane.id);
     },
   },
   {

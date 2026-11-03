@@ -93,18 +93,6 @@ const NAMED_KEYS = new Set([
 const FUNCTION_KEY = /^F([1-9]|1[0-9]|2[0-4])$/;
 
 /**
- * The key part of a binding, chosen so the shortcut keeps working on any
- * keyboard layout.
- *
- * Letters and digits come from `event.code` (the physical key), not
- * `event.key`: on a Russian layout `key` is "к" for the K key, and on macOS
- * Option+K produces "˚". Recording the physical key keeps the binding the
- * same key on every layout, which is what the matcher's `event.code` check
- * for letters reads. Punctuation keeps
- * the character the layout typed, because its position differs between
- * layouts and the character is what the user sees on the keycap.
- */
-/**
  * The key a press is saved as. It follows the shortcut matcher
  * (`eventKeyCandidates` in `renderer/lib/keybindings.ts`), so a recorded chord
  * is one the matcher fires on:
@@ -112,6 +100,7 @@ const FUNCTION_KEY = /^F([1-9]|1[0-9]|2[0-4])$/;
  * - a non-Latin layout (Russian `л`) saves the physical key (`KeyK` → K);
  * - Option on macOS changes what a key types (⌥K types `˚`), so with Option
  *   held a letter or digit is saved by its physical key.
+ * Punctuation keeps the character the layout typed: it is what the keycap shows.
  */
 function captureKeyName(event: CaptureKeyEvent, platform: KeyboardPlatform): string | null {
   const code = event.code ?? "";
@@ -305,6 +294,8 @@ const BROWSER_ROWS: ReservedRow[] = [
   { chord: "Mod+Q", owner: "browser", what: "quitting the browser" },
   { chord: "Ctrl+Tab", owner: "browser", what: "switching tabs" },
   { chord: "Ctrl+Shift+Tab", owner: "browser", what: "switching tabs" },
+  { chord: "Ctrl+PageDown", owner: "browser", what: "switching tabs" },
+  { chord: "Ctrl+PageUp", owner: "browser", what: "switching tabs" },
   ...[1, 2, 3, 4, 5, 6, 7, 8, 9].map((digit) => ({ chord: `Mod+${digit}`, owner: "browser" as const, what: "switching tabs" })),
 ];
 

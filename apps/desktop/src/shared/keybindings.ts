@@ -221,8 +221,33 @@ export const WEB_KEYBINDING_DEFAULTS: Readonly<Record<string, string>> = {
   "project.tab.prev": "Ctrl+Shift+~",
 };
 
+/**
+ * Defaults for the desktop app off macOS. ⇧⌘←/→ becomes Ctrl+Shift+←/→ there,
+ * which selects a word in PowerShell and many line editors, so a terminal
+ * shortcut would take it from the shell; Ctrl+PageUp/PageDown is the usual
+ * previous/next tab chord on Windows and Linux. The hosted client keeps the
+ * table's default, because browsers keep Ctrl+PageUp/PageDown for their tabs.
+ */
+export const NON_MAC_KEYBINDING_DEFAULTS: Readonly<Record<string, string>> = {
+  "terminal.next": "Ctrl+PageDown",
+  "terminal.prev": "Ctrl+PageUp",
+};
+
+export type KeybindingClient = { web: boolean; mac: boolean };
+
+/** The default an action has on this client when it differs from the table's. */
+export function clientKeybindingDefault(id: string, client: KeybindingClient): string | undefined {
+  if (client.web) return WEB_KEYBINDING_DEFAULTS[id];
+  return client.mac ? undefined : NON_MAC_KEYBINDING_DEFAULTS[id];
+}
+
+/** The table one client advertises: desktop's, with that client's defaults. */
+export function keybindingDefinitionsFor(client: KeybindingClient): KeybindingDefinition[] {
+  return KEYBINDING_DEFINITIONS.map((definition) => {
+    const clientDefault = clientKeybindingDefault(definition.id, client);
+    return clientDefault ? { ...definition, defaultBinding: clientDefault } : definition;
+  });
+}
+
 /** The table the hosted web client advertises: desktop's, with the web defaults. */
-export const WEB_KEYBINDING_DEFINITIONS: KeybindingDefinition[] = KEYBINDING_DEFINITIONS.map((definition) => {
-  const webDefault = WEB_KEYBINDING_DEFAULTS[definition.id];
-  return webDefault ? { ...definition, defaultBinding: webDefault } : definition;
-});
+export const WEB_KEYBINDING_DEFINITIONS: KeybindingDefinition[] = keybindingDefinitionsFor({ web: true, mac: false });

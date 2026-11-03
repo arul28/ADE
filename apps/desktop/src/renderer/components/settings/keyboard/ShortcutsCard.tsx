@@ -251,7 +251,10 @@ export function ShortcutsCard({
   const scopes = SCOPE_ORDER
     .map((entry) => ({ ...entry, rows: matching.filter((definition) => definition.scope === entry.scope) }))
     .filter((entry) => entry.rows.length > 0);
-  const shownScopes = scopeFilter === "all" ? scopes : scopes.filter((entry) => entry.scope === scopeFilter);
+  // A search that leaves the chosen scope empty shows every scope again, so a
+  // filter whose button just disappeared never hides the results.
+  const activeScope = scopes.some((entry) => entry.scope === scopeFilter) ? scopeFilter : "all";
+  const shownScopes = activeScope === "all" ? scopes : scopes.filter((entry) => entry.scope === activeScope);
 
   const renderHint = (definition: KeybindingDefinition): React.ReactNode => {
     if (recording?.id === definition.id) {
@@ -388,11 +391,11 @@ export function ShortcutsCard({
     >
       <div className="ade-kbp-toolbar">
         <div className="kit-seg ade-kbp-scopes" data-case="sentence" role="radiogroup" aria-label="Where the shortcut works">
-          <button type="button" role="radio" aria-checked={scopeFilter === "all"} onClick={() => setScopeFilter("all")}>
+          <button type="button" role="radio" aria-checked={activeScope === "all"} onClick={() => setScopeFilter("all")}>
             All <span className="kit-num">{matching.length}</span>
           </button>
           {scopes.map(({ scope, label, rows }) => (
-            <button key={scope} type="button" role="radio" aria-checked={scopeFilter === scope} onClick={() => setScopeFilter(scope)}>
+            <button key={scope} type="button" role="radio" aria-checked={activeScope === scope} onClick={() => setScopeFilter(scope)}>
               {label} <span className="kit-num">{rows.length}</span>
             </button>
           ))}

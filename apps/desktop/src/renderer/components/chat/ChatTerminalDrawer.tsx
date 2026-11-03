@@ -685,8 +685,8 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
   /**
    * `terminal.next` / `terminal.prev`: step through this drawer's shells,
    * wrapping at both ends. Capture phase, so the chord is answered before the
-   * shell sees it; a matched chord is always kept from the shell, even with
-   * one shell open, so pressing it never types into the terminal.
+   * shell sees it. With one shell there is nothing to switch to, so the keys
+   * stay the shell's (its own line editor may use them).
    */
   const onCycleKeyDownCapture = (event: React.KeyboardEvent<HTMLDivElement>) => {
     const native = event.nativeEvent;
@@ -696,10 +696,10 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
       : eventMatchesBinding(native, terminalBindings.prev)
         ? -1
         : 0;
-    if (!direction) return;
+    if (!direction || tabs.length < 2) return;
     event.preventDefault();
     event.stopPropagation();
-    if (native.repeat || tabs.length < 2) return;
+    if (native.repeat) return;
     const index = Math.max(0, tabs.findIndex((tab) => tab.id === activeTab?.id));
     const next = tabs[(index + direction + tabs.length) % tabs.length];
     if (!next) return;
