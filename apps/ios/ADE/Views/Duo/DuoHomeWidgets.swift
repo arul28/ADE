@@ -121,7 +121,7 @@ struct DuoTwoPages<First: View, Second: View>: View {
   /// The share the first part takes when the screen is flat, 0…1.
   var flatShare: CGFloat = 0.5
   /// Keep the parts side by side when the screen is taller than wide, as long
-  /// as it is not folded laptop or tent: upright and flat, the inner display
+  /// as it is not folded laptop: upright and flat, the inner display
   /// (or an iPad) is the same two columns, just narrower.
   var sideBySideWhenUpright = false
   @ViewBuilder var first: () -> First

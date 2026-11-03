@@ -8,7 +8,9 @@ import {
   IOS_VIDEO_RECORD_MAGIC,
   IOS_VIDEO_RECORD_TYPE_ACCESS_UNIT,
   IOS_VIDEO_RECORD_TYPE_CONFIG,
+  type AppleDevicePosture,
 } from "../../../shared/types/iosSimulator";
+import { appleDuoScreenName } from "../../../shared/appleOrientation";
 import {
   createAppleStreamBitrateAdapter,
   createAppleStreamViewerPacer,
@@ -65,6 +67,22 @@ export const APPLE_STREAM_NOT_RUNNING_CODE = "APPLE_STREAM_NOT_RUNNING" as const
 const KEYFRAME_REQUEST_MIN_INTERVAL_MS = 1_000;
 /** A keyframe probe that never sees a byte is abandoned after this. */
 const KEYFRAME_PROBE_TIMEOUT_MS = 3_000;
+
+/**
+ * The relay's `{t:"posture"}` note: a foldable's hinge, the panel that is on,
+ * and how its picture sits on the framebuffer. Text, like `{t:"stats"}`, so a
+ * viewer that does not know it skips it.
+ */
+export function appleStreamPostureNote(posture: AppleDevicePosture): string | null {
+  if (!posture.supported) return null;
+  return JSON.stringify({
+    t: "posture",
+    angle: posture.angle,
+    screen: appleDuoScreenName(posture.activeScreenId),
+    displayOrientation: posture.displayOrientation,
+    tableMode: posture.tableMode,
+  });
+}
 
 /** A ticket, as the requester receives it over the JSON sync channel. */
 export type AppleStreamTicket = {
@@ -160,6 +178,13 @@ export type AppleStreamRelay = {
    * has already closed the socket in that case.
    */
   attach(socket: AppleStreamViewerSocket, args: { ticket: string; token: string | null }): Promise<boolean>;
+  /**
+   * A foldable's pose changed (or was read): every viewer of the lane hears
+   * it as a `{t:"posture"}` note, and a viewer that joins later gets the last
+   * one before its first frame. A phone draws the live panel the way the
+   * guest says it sits, as the desktop does.
+   */
+  notePosture(laneId: string | null | undefined, posture: AppleDevicePosture): void;
   /** Remote viewers currently attached (visible or hidden). */
   viewerCount(laneId?: string): number;
   /** Remote viewers currently asking for frames. */
@@ -325,6 +350,8 @@ export function createAppleStreamRelay(deps: AppleStreamRelayDeps): AppleStreamR
   const connect = deps.connect ?? defaultConnect;
   const tickets = new Map<string, PendingTicket>();
   const lanes = new Map<string, LaneStream>();
+  /** The last posture note per lane, for viewers that join after it. */
+  const postureNotes = new Map<string, string>();
   let disposed = false;
 
   const debug = (event: string, data?: Record<string, unknown>): void => {
@@ -626,6 +653,15 @@ export function createAppleStreamRelay(deps: AppleStreamRelayDeps): AppleStreamR
    * the lane finds nothing cached and reads the upstream from its start.
    */
   const primeViewer = (stream: LaneStream, viewer: Viewer): void => {
+    // The pose first, so the first frame is drawn the right way up.
+    const posture = postureNotes.get(stream.laneId);
+    if (posture && !viewer.closed) {
+      try {
+        viewer.socket.send(posture);
+      } catch {
+        // The close handler drops it.
+      }
+    }
     if (!stream.configRecord && !stream.keyframeRecord) return;
     if (stream.configRecord) sendTo(stream, viewer, stream.configRecord);
     if (stream.keyframeRecord) sendTo(stream, viewer, stream.keyframeRecord);
@@ -751,6 +787,25 @@ export function createAppleStreamRelay(deps: AppleStreamRelayDeps): AppleStreamR
       return true;
     },
 
+    notePosture(laneId, posture) {
+      const key = laneId?.trim();
+      if (!key || disposed) return;
+      const note = appleStreamPostureNote(posture);
+      if (!note) return;
+      if (postureNotes.get(key) === note) return;
+      postureNotes.set(key, note);
+      const stream = lanes.get(key);
+      if (!stream) return;
+      for (const viewer of stream.viewers) {
+        if (viewer.closed) continue;
+        try {
+          viewer.socket.send(note);
+        } catch {
+          // The close handler drops it.
+        }
+      }
+    },
+
     viewerCount(laneId) {
       if (laneId) return lanes.get(laneId)?.viewers.size ?? 0;
       let total = 0;
@@ -778,6 +833,7 @@ export function createAppleStreamRelay(deps: AppleStreamRelayDeps): AppleStreamR
     dispose() {
       disposed = true;
       tickets.clear();
+      postureNotes.clear();
       for (const stream of [...lanes.values()]) {
         closeUpstream(stream);
         for (const viewer of [...stream.viewers]) {
@@ -834,6 +890,8 @@ export type AppleStreamOwningService = {
   liftStreamBitrateCap?: (args: { laneId: string }) => Promise<unknown>;
   /** Re-cap the capture that is running now, and never start one. Pacing uses it. */
   capLiveStream?: (args: { laneId: string; bitrateKbps: number }) => Promise<unknown>;
+  /** A foldable's pose now, read when the relay opens its capture. */
+  getPosture?: (args: { laneId: string }) => Promise<AppleDevicePosture>;
 };
 
 /**
@@ -888,6 +946,13 @@ export function createAppleStreamRelayForService(deps: {
         bitrateKbps: deps.remoteBitrateKbpsCap(),
       });
       if (!alreadyRunning) startedLanes.add(laneId);
+      // The posture watcher reports changes from here on; the pose the
+      // device is already in is read once, so the first viewer draws it
+      // the right way up. A rigid device answers "not supported" and adds
+      // nothing.
+      void deps.service.getPosture?.({ laneId })
+        .then((posture) => relay.notePosture(laneId, posture))
+        .catch(() => {});
       const transport = status.transport;
       if (!transport?.url || !transport.token) {
         throw new Error(

@@ -7,8 +7,10 @@ import UIKit
 // Watching stays the default and is untouched. Inspect is a step away from it:
 // the stream stops, one still plus the elements on it arrive from the machine
 // that owns the lane, and the person taps an element and draws on the picture.
-// Leaving resumes the stream. The handoff back to a chat is a notification so a
-// viewer does not need a composer of its own — see LiveInspectComposerHandoff.
+// Leaving resumes the stream. "Add to chat" puts an element straight into the
+// chat's draft (nothing is sent); the handoff is a request the composer
+// answers, so a viewer needs no composer of its own and a failure is visible —
+// see LiveInspectComposerHandoff.
 //
 // Geometry mirrors `appleInspectGeometry.ts`: hit-testing keeps the smallest
 // element under the point, and the packet is formatted like
@@ -16,30 +18,176 @@ import UIKit
 
 // MARK: - Composer handoff
 
-/// What one Send hands the chat composer: the annotated picture and the packet
-/// describing the elements picked while inspecting.
+/// What the chat composer answered to one handoff.
+enum LiveInspectHandoffResult: Equatable {
+  /// An insert or a picture replacement landed in the draft.
+  case attached
+  /// An undo ran. Whatever the add inserted and is still there verbatim is
+  /// gone; text the person has since edited is left alone.
+  case removed
+  /// No composer for this chat answered within `replyWindow`.
+  case noComposer
+  /// The draft already holds `workChatInputAttachmentLimit` attachments.
+  case attachmentLimit
+  /// This chat takes no attachments, or the picture couldn't be encoded.
+  case attachmentsUnavailable
+
+  /// The sentence the stage shows for a failed handoff; nil on success.
+  var failureMessage: String? {
+    switch self {
+    case .attached, .removed:
+      return nil
+    case .noComposer:
+      return "Couldn't reach this chat's composer"
+    case .attachmentLimit:
+      return "The message already has \(workChatInputAttachmentLimit) attachments. Remove one and try again."
+    case .attachmentsUnavailable:
+      return "This chat can't take pictures"
+    }
+  }
+}
+
+/// One request from Inspect to a chat composer, posted on
+/// `.liveInspectComposerHandoff` with this object.
 ///
-/// Posted on `.liveInspectComposerHandoff` with this object. The receiver (the
-/// chat that mounts the composer) turns `image` into a `WorkChatInputAttachment`
-/// and prepends `text` to the draft. `laneId` is always set; `sessionId` is set
-/// only for a viewer that was opened from a chat.
+/// Every request is answered once: the composer that takes it calls `reply`,
+/// and the sender treats silence past `replyWindow` as `.noComposer`. An
+/// insert is all-or-nothing, so a failure leaves the draft as it was. The
+/// composer keeps no bookkeeping of its own: undo carries the exact text block
+/// the insert added (removed only while it is still in the draft verbatim) and
+/// the attachment id the sender chose, so it works across a remount.
+///
+/// A handoff names its chat (`sessionId`), or only its lane for a viewer opened
+/// outside a chat; then the lane's chat on screen takes it. The first composer
+/// to `claim()` it is the only one that acts, so a chat mounted twice (a split)
+/// does not insert twice.
+@MainActor
 final class LiveInspectComposerHandoff: NSObject {
+  enum Request {
+    /// Append `text` to the draft as its own block and, with an image, attach
+    /// it under `attachmentId`.
+    case insert(text: String, image: UIImage?, attachmentId: UUID?)
+    /// Remove a block an insert added, and its attachment.
+    case remove(text: String?, attachmentId: UUID?)
+    /// Swap the attachment `replacing` for `image` under `attachmentId` (the
+    /// picture with the markup finished after the first add). A missing old
+    /// attachment just means the new one is appended.
+    case replaceImage(replacing: UUID, image: UIImage, attachmentId: UUID)
+  }
+
+  /// How long a sender waits for a composer before calling it unreachable.
+  /// Composers answer synchronously from the notification, so this only runs
+  /// out when none is mounted for the chat.
+  static var replyWindow: Duration = .milliseconds(1500)
+
+  let id = UUID()
   let sessionId: String?
   let laneId: String
-  let image: UIImage
-  let text: String
+  let request: Request
+  private var claimed = false
+  private var onReply: ((LiveInspectHandoffResult) -> Void)?
 
-  init(sessionId: String?, laneId: String, image: UIImage, text: String) {
+  init(
+    sessionId: String?,
+    laneId: String,
+    request: Request,
+    onReply: @escaping (LiveInspectHandoffResult) -> Void
+  ) {
     self.sessionId = sessionId
     self.laneId = laneId
-    self.image = image
-    self.text = text
+    self.request = request
+    self.onReply = onReply
   }
+
+  /// True for the first composer that asks; it then owns the reply.
+  func claim() -> Bool {
+    guard !claimed else { return false }
+    claimed = true
+    return true
+  }
+
+  func reply(_ result: LiveInspectHandoffResult) {
+    let callback = onReply
+    onReply = nil
+    callback?(result)
+  }
+
+  /// Posts a request and waits for its answer, or `.noComposer` once
+  /// `replyWindow` passes with none.
+  static func deliver(
+    _ request: Request,
+    sessionId: String?,
+    laneId: String
+  ) async -> LiveInspectHandoffResult {
+    await withCheckedContinuation { (continuation: CheckedContinuation<LiveInspectHandoffResult, Never>) in
+      let once = LiveInspectReplyOnce(continuation)
+      let handoff = LiveInspectComposerHandoff(
+        sessionId: sessionId,
+        laneId: laneId,
+        request: request,
+        onReply: { once.finish($0) }
+      )
+      let window = replyWindow
+      Task { @MainActor in
+        try? await Task.sleep(for: window)
+        once.finish(.noComposer)
+      }
+      NotificationCenter.default.post(name: .liveInspectComposerHandoff, object: handoff)
+    }
+  }
+}
+
+/// Resumes a handoff's continuation once: the reply or the timeout, whichever
+/// comes first.
+@MainActor
+private final class LiveInspectReplyOnce {
+  private var continuation: CheckedContinuation<LiveInspectHandoffResult, Never>?
+
+  init(_ continuation: CheckedContinuation<LiveInspectHandoffResult, Never>) {
+    self.continuation = continuation
+  }
+
+  func finish(_ result: LiveInspectHandoffResult) {
+    continuation?.resume(returning: result)
+    continuation = nil
+  }
+}
+
+/// `text` without one block an insert added, and the blank line that joined
+/// it to its neighbour. The latest copy wins (an element added, undone, and
+/// added again). Text with no verbatim copy is returned unchanged: an edited
+/// block is the person's now.
+func liveInspectTextRemovingBlock(_ block: String, from text: String) -> String {
+  guard !block.isEmpty, let range = text.range(of: block, options: .backwards) else { return text }
+  var lower = range.lowerBound
+  var upper = range.upperBound
+  if text[..<lower].hasSuffix("\n\n") {
+    lower = text.index(lower, offsetBy: -2)
+  } else if text[upper...].hasPrefix("\n\n") {
+    upper = text.index(upper, offsetBy: 2)
+  }
+  var result = text
+  result.removeSubrange(lower..<upper)
+  return result
 }
 
 extension Notification.Name {
   /// Carries a `LiveInspectComposerHandoff` in `object`.
   static let liveInspectComposerHandoff = Notification.Name("com.ade.ios.liveInspectComposerHandoff")
+}
+
+/// The one transient line at the bottom of the stage.
+struct LiveInspectToast: Equatable, Identifiable {
+  enum Kind: Equatable {
+    case attached
+    case error
+  }
+
+  let id = UUID()
+  var kind: Kind
+  var message: String
+  /// The add an Undo on this toast takes back; nil when it can't be undone.
+  var undoAddId: UUID?
 }
 
 // MARK: - Surfaces
@@ -149,7 +297,7 @@ enum LiveInspectLoadPlan {
 }
 
 /// One inspect session: the frozen picture, its elements, the selection, the
-/// strokes, and the handoff.
+/// strokes, and what it added to the chat's draft.
 ///
 /// Owned by the viewer that froze, so leaving can resume exactly what was
 /// stopped. Nothing here fetches on a timer: one load per entry, one host call
@@ -172,19 +320,39 @@ final class LiveInspectMarkupModel: ObservableObject {
   @Published private(set) var screen: LiveInspectScreen?
   @Published private(set) var elements: [LiveInspectElement] = []
   @Published private(set) var selected: LiveInspectElement?
-  /// Elements the person added to the message. Send includes all of them, or
-  /// the current selection when nothing was added.
-  @Published private(set) var staged: [LiveInspectElement] = []
+  /// Where the last App Control tap landed, in image pixels, while the host
+  /// looks the element up: the card shows its spinner there.
+  @Published private(set) var pendingTapPoint: CGPoint?
   @Published var tool: LiveInspectTool = .select
   @Published private(set) var strokes: [LiveInspectStroke] = []
   @Published private(set) var draft: LiveInspectStroke?
   @Published private(set) var busy = false
   @Published private(set) var errorText: String?
   @Published private(set) var note: String?
+  /// How many adds landed in the draft this session, after undos. A viewer
+  /// reads it on close to decide whether to land on the chat.
+  @Published private(set) var attachedCount = 0
+  /// Elements whose packet is in the draft now; their card reads "Added".
+  @Published private(set) var addedElementIds: Set<String> = []
+  /// An add, an undo, or Done's picture is waiting on the composer.
+  @Published private(set) var handingOff = false
+  @Published private(set) var toast: LiveInspectToast?
+  /// False until the first selection or stroke; the first-run hint shows
+  /// until then.
+  @Published private(set) var hasInteracted = false
 
   private weak var syncService: SyncService?
   private var plan: LiveInspectLoadPlan?
-  private var didSend = false
+  /// Every add still in the draft, oldest first.
+  private var adds: [LiveInspectAdd] = []
+  /// The attachment carrying the frozen picture, once one landed.
+  private var pictureAttachmentId: UUID?
+  /// `markupRevision` when that picture was rendered, so Done knows whether
+  /// the draft's picture is missing marks drawn (or cleared) since.
+  private var pictureMarkupRevision: Int?
+  /// Bumped on every finished stroke, undo, and clear.
+  private var markupRevision = 0
+  private var toastGeneration = 0
   /// Bumped by every load and every tap so an older answer cannot land on a
   /// newer state (a retry pressed twice, or two taps in one second).
   private var loadGeneration = 0
@@ -379,10 +547,11 @@ final class LiveInspectMarkupModel: ObservableObject {
     self.screen = screen
     self.elements = elements
     self.selected = nil
-    self.staged = []
+    self.pendingTapPoint = nil
     self.strokes = []
     self.draft = nil
     self.errorText = nil
+    self.markupRevision += 1
     self.phase = .ready
   }
 
@@ -406,6 +575,8 @@ final class LiveInspectMarkupModel: ObservableObject {
     if surface == .appControl {
       selectionGeneration += 1
       let generation = selectionGeneration
+      selected = nil
+      pendingTapPoint = point
       Task { await selectAppControl(atImagePoint: point, generation: generation) }
       return
     }
@@ -413,7 +584,18 @@ final class LiveInspectMarkupModel: ObservableObject {
     selected = hit
     errorText = nil
     note = hit == nil ? "Nothing on this screen is under that point." : nil
-    if hit != nil { ADEHaptics.light() }
+    if hit != nil {
+      hasInteracted = true
+      ADEHaptics.light()
+    }
+  }
+
+  /// Drops the selection (a tap outside the picture).
+  func clearSelection() {
+    selectionGeneration += 1
+    selected = nil
+    pendingTapPoint = nil
+    busy = false
   }
 
   private func selectAppControl(atImagePoint point: CGPoint, generation: Int) async {
@@ -421,13 +603,17 @@ final class LiveInspectMarkupModel: ObservableObject {
           let syncService, pixelSize.width > 0, pixelSize.height > 0 else { return }
     let viewport = appControlViewport()
     guard let viewport else {
+      pendingTapPoint = nil
       errorText = "This host didn't send the frame's scale, so taps can't be placed."
       return
     }
     busy = true
     errorText = nil
     defer {
-      if generation == selectionGeneration { busy = false }
+      if generation == selectionGeneration {
+        busy = false
+        pendingTapPoint = nil
+      }
     }
     let x = point.x / pixelSize.width * CGFloat(viewport.width)
     let y = point.y / pixelSize.height * CGFloat(viewport.height)
@@ -441,6 +627,7 @@ final class LiveInspectMarkupModel: ObservableObject {
       }
       let element = appControlElement(item, snapshot: reply.snapshot)
       selected = element
+      hasInteracted = true
       note = element.hasIdentity ? nil : "This element carries no identifier."
       ADEHaptics.light()
     } catch {
@@ -547,20 +734,155 @@ final class LiveInspectMarkupModel: ObservableObject {
     )
   }
 
-  // MARK: Staging
+  // MARK: Adding to the chat
 
-  func isStaged(_ element: LiveInspectElement) -> Bool {
-    staged.contains { $0.id == element.id }
+  func isAdded(_ element: LiveInspectElement) -> Bool {
+    addedElementIds.contains(element.id)
   }
 
-  func stageSelection() {
-    guard let selected else { return }
-    if let index = staged.firstIndex(where: { $0.id == selected.id }) {
-      staged.remove(at: index)
+  /// Puts the selected element straight into the chat's draft: its packet as
+  /// a text block, plus the frozen picture the first time. Nothing is sent.
+  func addSelectionToChat() {
+    guard phase == .ready, !handingOff, let element = selected, !isAdded(element) else { return }
+    let carriesPreamble = !adds.contains { $0.carriesPreamble }
+    let picture: UIImage?
+    if pictureAttachmentId == nil {
+      guard let rendered = exportedImage() else {
+        showToast(.error, LiveInspectHandoffResult.attachmentsUnavailable.failureMessage ?? "")
+        return
+      }
+      picture = rendered
     } else {
-      staged.append(selected)
+      picture = nil
     }
-    ADEHaptics.light()
+    let add = LiveInspectAdd(
+      elementId: element.id,
+      text: elementBlock(element, number: adds.count + 1, preamble: carriesPreamble),
+      attachmentId: picture == nil ? nil : UUID(),
+      carriesPreamble: carriesPreamble
+    )
+    let revision = markupRevision
+    handingOff = true
+    Task {
+      let result = await deliver(.insert(text: add.text, image: picture, attachmentId: add.attachmentId))
+      handingOff = false
+      guard result == .attached else {
+        fail(handoff: result)
+        return
+      }
+      record(add, pictureRevision: revision)
+      ADEHaptics.success()
+      showToast(.attached, "Attached to chat", undo: add.id)
+    }
+  }
+
+  /// Takes back the latest add: its text block (while still verbatim in the
+  /// draft) and the picture if that add attached it.
+  func undoAdd(_ addId: UUID) {
+    guard !handingOff, let add = adds.last, add.id == addId else { return }
+    handingOff = true
+    Task {
+      let result = await deliver(.remove(text: add.text, attachmentId: add.attachmentId))
+      handingOff = false
+      guard result == .removed else {
+        fail(handoff: result)
+        return
+      }
+      adds.removeLast()
+      if let attachmentId = add.attachmentId, attachmentId == pictureAttachmentId {
+        pictureAttachmentId = nil
+        pictureMarkupRevision = nil
+      }
+      if let elementId = add.elementId { addedElementIds.remove(elementId) }
+      attachedCount = max(0, attachedCount - 1)
+      dismissToast()
+      ADEHaptics.light()
+    }
+  }
+
+  /// Done: makes the draft's picture carry the markup as it stands. Replaces
+  /// the picture an add attached when marks changed since, or attaches the
+  /// marked-up picture now when nothing was added. A failure keeps the stage
+  /// open with the error showing.
+  func finish() async -> LiveInspectFinishOutcome {
+    guard !handingOff else { return .failed }
+    guard phase == .ready, image != nil else { return .unchanged }
+    let replacing = pictureAttachmentId.flatMap { id in pictureMarkupRevision == markupRevision ? nil : id }
+    let attachingMarkup = pictureAttachmentId == nil && !strokes.isEmpty
+    guard replacing != nil || attachingMarkup else { return .unchanged }
+    guard let picture = exportedImage() else {
+      fail(handoff: .attachmentsUnavailable)
+      return .failed
+    }
+    let attachmentId = UUID()
+    let revision = markupRevision
+    handingOff = true
+    defer { handingOff = false }
+    if let replacing {
+      let result = await deliver(.replaceImage(replacing: replacing, image: picture, attachmentId: attachmentId))
+      guard result == .attached else {
+        fail(handoff: result)
+        return .failed
+      }
+      if let index = adds.firstIndex(where: { $0.attachmentId == replacing }) {
+        adds[index].attachmentId = attachmentId
+      }
+      pictureAttachmentId = attachmentId
+      pictureMarkupRevision = revision
+      ADEHaptics.success()
+      showToast(.attached, "Markup attached to chat")
+      return .attached
+    }
+    let add = LiveInspectAdd(
+      elementId: nil,
+      text: markupBlock,
+      attachmentId: attachmentId,
+      carriesPreamble: true
+    )
+    let result = await deliver(.insert(text: add.text, image: picture, attachmentId: attachmentId))
+    guard result == .attached else {
+      fail(handoff: result)
+      return .failed
+    }
+    record(add, pictureRevision: revision)
+    ADEHaptics.success()
+    showToast(.attached, "Attached to chat")
+    return .attached
+  }
+
+  func dismissToast() {
+    toastGeneration += 1
+    toast = nil
+  }
+
+  private func record(_ add: LiveInspectAdd, pictureRevision: Int) {
+    adds.append(add)
+    if let attachmentId = add.attachmentId {
+      pictureAttachmentId = attachmentId
+      pictureMarkupRevision = pictureRevision
+    }
+    if let elementId = add.elementId { addedElementIds.insert(elementId) }
+    attachedCount += 1
+  }
+
+  private func deliver(_ request: LiveInspectComposerHandoff.Request) async -> LiveInspectHandoffResult {
+    await LiveInspectComposerHandoff.deliver(request, sessionId: chatSessionId, laneId: laneId)
+  }
+
+  private func fail(handoff result: LiveInspectHandoffResult) {
+    ADEHaptics.error()
+    showToast(.error, result.failureMessage ?? "Couldn't reach this chat's composer")
+  }
+
+  private func showToast(_ kind: LiveInspectToast.Kind, _ message: String, undo: UUID? = nil) {
+    toastGeneration += 1
+    let generation = toastGeneration
+    toast = LiveInspectToast(kind: kind, message: message, undoAddId: undo)
+    Task {
+      try? await Task.sleep(for: .seconds(undo == nil ? 3 : 5))
+      guard generation == toastGeneration else { return }
+      toast = nil
+    }
   }
 
   // MARK: Markup
@@ -598,6 +920,8 @@ final class LiveInspectMarkupModel: ObservableObject {
       return
     }
     strokes.append(stroke)
+    markupRevision += 1
+    hasInteracted = true
   }
 
   var canUndo: Bool { !strokes.isEmpty }
@@ -605,12 +929,14 @@ final class LiveInspectMarkupModel: ObservableObject {
   func undo() {
     guard !strokes.isEmpty else { return }
     strokes.removeLast()
+    markupRevision += 1
     ADEHaptics.light()
   }
 
   func clearMarkup() {
     guard !strokes.isEmpty else { return }
     strokes.removeAll()
+    markupRevision += 1
     ADEHaptics.light()
   }
 
@@ -622,10 +948,6 @@ final class LiveInspectMarkupModel: ObservableObject {
   }
 
   // MARK: Export
-
-  var canSend: Bool {
-    phase == .ready && image != nil && !didSend
-  }
 
   /// The still with every stroke drawn on it, at the picture's own pixel size.
   func exportedImage() -> UIImage? {
@@ -644,31 +966,28 @@ final class LiveInspectMarkupModel: ObservableObject {
     }
   }
 
-  /// The packet for the elements that go with the picture. Empty when nothing
-  /// was picked: the picture alone is still worth sending.
-  func packetText() -> String {
-    var picked = staged
-    if let selected, !picked.contains(where: { $0.id == selected.id }) {
-      picked.append(selected)
-    }
-    guard !picked.isEmpty else {
-      let header = [
-        surface.packetName,
-        "The attached picture is the frozen \(surface.title) screen"
-          + (strokes.isEmpty ? "." : " with the user's markup drawn on it."),
-      ]
-      return header.joined(separator: "\n") + "\n"
-    }
+  /// One add's text block, in `visualContextFormatting.ts`'s shape: the
+  /// surface preamble (first add of a session only), then the numbered row and
+  /// its pretty JSON packet.
+  func elementBlock(_ element: LiveInspectElement, number: Int, preamble: Bool) -> String {
     var lines: [String] = []
-    let preamble = packetPreamble
-    lines.append(preamble)
-    for (index, element) in picked.enumerated() {
+    if preamble {
+      lines.append(packetPreamble)
       lines.append("")
-      lines.append("\(index + 1). \(element.displayTitle) (\(sourceText(element)), frame=\(element.frameLabel))")
-      lines.append("Packet:")
-      lines.append(LiveInspectPacket.json(packet(for: element)))
     }
-    return lines.joined(separator: "\n") + "\n"
+    lines.append("\(number). \(element.displayTitle) (\(sourceText(element)), frame=\(element.frameLabel))")
+    lines.append("Packet:")
+    lines.append(LiveInspectPacket.json(packet(for: element)))
+    return lines.joined(separator: "\n")
+  }
+
+  /// The text that goes with a marked-up picture attached at Done when no
+  /// element was added.
+  var markupBlock: String {
+    [
+      surface.packetName,
+      "The attached picture is the frozen \(surface.title) screen with the user's markup drawn on it.",
+    ].joined(separator: "\n")
   }
 
   private var packetPreamble: String {
@@ -678,21 +997,21 @@ final class LiveInspectMarkupModel: ObservableObject {
         surface.packetName,
         "Each packet came from the user clicking a UI element in the real iOS Simulator. Image attachments are visual evidence for the same packet and use the same screenshot coordinate space.",
         "Use exactSource when sourceConfidence is exact. Treat sourceCandidates as ranked best guesses, not proof; prefer nearbyElements and the screenshot when the source is missing or only candidate quality.",
-        "The attached picture is the frozen screen" + (strokes.isEmpty ? "." : " with the user's markup drawn on it."),
+        "The attached picture is the frozen screen; any marks drawn on it are the user's markup.",
       ].joined(separator: "\n")
     case .appControl:
       return [
         surface.packetName,
         "Each packet came from a developer-owned app session, usually Electron launched or connected through ADE CLI with a local CDP port. Image attachments are visual evidence for the same packet and use the frozen frame's pixel space.",
         "Use exactSource when sourceConfidence is exact. Treat sourceCandidates as ranked guesses from DOM text/test ids/selectors and source search, not proof. Prefer the screenshot, DOM selector, and exact source when available.",
-        "The attached picture is the frozen frame" + (strokes.isEmpty ? "." : " with the user's markup drawn on it."),
+        "The attached picture is the frozen frame; any marks drawn on it are the user's markup.",
       ].joined(separator: "\n")
     case .macDesktop:
       return [
         surface.packetName,
         "Each packet came from the user clicking an accessibility element on the lane's private macOS screen while the picture was frozen. Image attachments use the same screen-pixel space as the element frames.",
         "Accessibility elements carry no source file. Prefer the picture and the element's role, title, and frame; a truncated walk means the element under the finger may be missing.",
-        "The attached picture is the frozen screen" + (strokes.isEmpty ? "." : " with the user's markup drawn on it."),
+        "The attached picture is the frozen screen; any marks drawn on it are the user's markup.",
       ].joined(separator: "\n")
     }
   }
@@ -797,24 +1116,6 @@ final class LiveInspectMarkupModel: ObservableObject {
     }
   }
 
-  // MARK: Send
-
-  @discardableResult
-  func sendToComposer() -> Bool {
-    guard canSend, let image = exportedImage() else { return false }
-    didSend = true
-    NotificationCenter.default.post(
-      name: .liveInspectComposerHandoff,
-      object: LiveInspectComposerHandoff(
-        sessionId: chatSessionId,
-        laneId: laneId,
-        image: image,
-        text: packetText()
-      )
-    )
-    return true
-  }
-
   #if DEBUG
   /// Fixture seam: a ready model with everything already in place, no sync.
   func installPreview(
@@ -835,12 +1136,35 @@ final class LiveInspectMarkupModel: ObservableObject {
     )
     self.elements = elements
     self.selected = selected
-    self.staged = []
     self.strokes = strokes
     self.draft = nil
+    self.markupRevision += 1
+    self.hasInteracted = selected != nil || !strokes.isEmpty
     self.phase = .ready
   }
   #endif
+}
+
+/// What Done did before the stage closes.
+enum LiveInspectFinishOutcome {
+  /// Nothing to bring up to date; close now.
+  case unchanged
+  /// The marked-up picture landed; the toast is showing.
+  case attached
+  /// The composer refused or never answered; the error toast is showing.
+  case failed
+}
+
+/// What one add put in the draft, so Undo and Done can find it again.
+private struct LiveInspectAdd {
+  let id = UUID()
+  /// Nil for the marked-up picture Done attaches on its own.
+  let elementId: String?
+  /// The block exactly as inserted.
+  let text: String
+  /// Set when this add attached the picture (replaced in place by Done).
+  var attachmentId: UUID?
+  let carriesPreamble: Bool
 }
 
 struct LiveInspectFailure: LocalizedError {

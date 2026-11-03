@@ -1366,7 +1366,7 @@ struct WorkRootListScreen: View, Equatable {
 
   /// Side by side on every open, flat display, held either way (an iPad too);
   /// stacked (tools over the chat) only while the hinge is bent with the fold
-  /// across the screen: laptop and tent.
+  /// across the screen: laptop. (Tent shows the front screen.)
   private func duoFamily(fold: DuoFold) -> DuoFamily {
     #if DEBUG
     if DuoWorkPreviewState.forceStacked, WorkRootPreviewFixture.active != nil { return .tall }

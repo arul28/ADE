@@ -811,7 +811,7 @@ private enum DuoWindowsFixtureData {
       case none
       /// Book: the fold is a vertical line, with a page on each side.
       case sideBySide(CGRect)
-      /// Laptop or tent: the fold is a horizontal line.
+      /// Laptop: the fold is a horizontal line.
       case stacked(CGRect)
 
       var frame: CGRect? {

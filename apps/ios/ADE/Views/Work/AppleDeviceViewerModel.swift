@@ -32,6 +32,13 @@ final class AppleDeviceViewerModel: ObservableObject {
   @Published private(set) var contentPixelSize = CGSize(width: 9, height: 19.5)
   /// The machine the lane lives on, when it is not the focused one.
   @Published private(set) var machineName: String?
+  /// A Duo simulator's pose, from the stream. Nil for every other device and
+  /// from hosts that do not send it.
+  @Published private(set) var posture: AppleStreamPosture?
+
+  /// Whether the phone in the person's hand folds. Sticky for the app's life:
+  /// the front screen may not report the hinge.
+  static var phoneFolds = false
 
   let decoder = AppleStreamDecoder()
 
@@ -56,6 +63,11 @@ final class AppleDeviceViewerModel: ObservableObject {
   private lazy var liveTouch = AppleLiveTouchSender { [weak self] phase, point in
     await self?.sendNow(.touch(phase: phase, at: point))
   }
+  /// Fold mirroring: one fold in flight, the newest target waiting behind it.
+  private var pendingFold: AppleFoldTarget?
+  private var foldInFlight = false
+  private var lastFold: AppleFoldTarget?
+  private var lastHold: String?
 
   #if DEBUG
   private var isPreview = false
@@ -94,6 +106,10 @@ final class AppleDeviceViewerModel: ObservableObject {
     socket.onStats = { [weak self] stats in
       self?.networkStats = stats
     }
+    socket.onPosture = { [weak self] posture in
+      guard let self, self.posture != posture else { return }
+      self.posture = posture
+    }
     socket.onError = { [weak self] failure in
       guard let self else { return }
       self.endControl()
@@ -119,7 +135,18 @@ final class AppleDeviceViewerModel: ObservableObject {
     socket.close()
     decoder.reset()
     health.reset()
+    posture = nil
+    pendingFold = nil
   }
+
+  /// How far the picture turns to read upright before the person's own turn:
+  /// a Duo's live panel as the guest says it sits, nothing for other devices.
+  var guestRotation: AppleDisplayRotation {
+    AppleDisplayRotation.guestTurn(displayOrientation: posture?.displayOrientation, framePixels: contentPixelSize)
+  }
+
+  /// The simulator folds (it is a Duo whose stream says so).
+  var deviceFolds: Bool { posture != nil }
 
   /// The Reconnect action: the person asked, so the automatic budget refills.
   func reconnect() async {
@@ -242,6 +269,9 @@ final class AppleDeviceViewerModel: ObservableObject {
     }
     lastControlActivity = Date()
     mode = .controlling
+    // The first target after taking control is always sent.
+    lastFold = nil
+    lastHold = nil
     // Whether anyone drives a simulator from a phone at all. Nothing about
     // the device, lane or machine crosses; repeats in one foreground are one.
     ProductAnalytics.shared.captureFeature(.simulatorControl, outcome: .started)
@@ -250,6 +280,7 @@ final class AppleDeviceViewerModel: ObservableObject {
 
   func endControl(notice: String? = nil) {
     guard mode == .controlling else { return }
+    pendingFold = nil
     mode = .watching
     if let notice { self.notice = notice }
     appleViewerLog.notice("control off lane=\(self.laneId, privacy: .public)")
@@ -291,6 +322,46 @@ final class AppleDeviceViewerModel: ObservableObject {
   /// `volume-down`, `siri`, `app-switcher`. A swipe cannot do these.
   func press(_ button: String) {
     send(.button(button), at: Date())
+  }
+
+  /// Folds the simulator to match the phone, while controlling a Duo. Folds
+  /// go one at a time and only the newest waiting target is kept, so a hinge
+  /// swung quickly sends where it is, not every step it passed.
+  func mirrorFold(_ target: AppleFoldTarget) {
+    guard mode == .controlling, deviceFolds, syncService != nil else { return }
+    pendingFold = target
+    guard !foldInFlight else { return }
+    foldInFlight = true
+    Task { [weak self] in await self?.drainFolds() }
+  }
+
+  private func drainFolds() async {
+    defer { foldInFlight = false }
+    while let next = pendingFold, mode == .controlling, let syncService {
+      pendingFold = nil
+      lastControlActivity = Date()
+      if next.fold != lastFold {
+        do {
+          try await syncService.foldAppleDevice(laneId: laneId, chatSessionId: chatSessionId, pose: next.pose, angle: next.angle)
+          lastFold = next.fold
+        } catch {
+          appleViewerLog.error("fold mirror failed: \((error as NSError).localizedDescription, privacy: .public)")
+          inputFailed(error)
+          return
+        }
+      }
+      // On the front screen the hold is the pose's own (Tent turns it); the
+      // inner display gets its turn again when the phone opens.
+      if next.hold == nil { lastHold = nil }
+      // Held the other way: turn it, unless the picture already runs that way.
+      if let hold = next.hold, hold != lastHold {
+        lastHold = hold
+        let alreadyThere = posture?.screen == "inner" && posture?.pictureIsWide == next.wantsWidePicture
+        if !alreadyThere {
+          try? await syncService.rotateAppleDevice(laneId: laneId, chatSessionId: chatSessionId, orientation: hold)
+        }
+      }
+    }
   }
 
   /// Fired without waiting on the previous one, like the desktop pane: the

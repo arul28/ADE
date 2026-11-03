@@ -71,10 +71,31 @@ func appleDeviceForeignOwner(
 enum AppleDisplayRotation: Int, Equatable {
   case upright = 0
   case clockwise = 90
+  case upsideDown = 180
+  case counterclockwise = 270
 
-  var isSideways: Bool { self == .clockwise }
+  var isSideways: Bool { self == .clockwise || self == .counterclockwise }
 
   var degrees: Double { Double(rawValue) }
+
+  /// This turn, then `other`.
+  func adding(_ other: AppleDisplayRotation) -> AppleDisplayRotation {
+    AppleDisplayRotation(rawValue: (rawValue + other.rawValue) % 360) ?? .upright
+  }
+
+  /// How far to turn a Duo's live panel so its picture reads upright, from how
+  /// the guest says the picture sits on the framebuffer (the stream's posture
+  /// note). The desktop's `appleScreenRotation`: a frame that already arrives
+  /// wide has been turned for us and is not turned again.
+  static func guestTurn(displayOrientation: String?, framePixels: CGSize) -> AppleDisplayRotation {
+    guard let displayOrientation, framePixels.height >= framePixels.width else { return .upright }
+    switch displayOrientation {
+    case "landscape-left": return .clockwise
+    case "landscape-right": return .counterclockwise
+    case "portrait-upside-down": return .upsideDown
+    default: return .upright
+    }
+  }
 }
 
 enum AppleDeviceTouchMapping {
@@ -101,9 +122,9 @@ enum AppleDeviceTouchMapping {
   /// A point inside the drawn picture, back to the same point on the RAW
   /// frame, both as 0...1 fractions.
   ///
-  /// The inverse of turning the picture clockwise by a quarter: the raw
-  /// frame's top-left ends up at the drawn picture's top-right. Mirrors
-  /// `appleViewToFrameFraction(…, 90)` on the desktop.
+  /// The inverse of the turn: a quarter clockwise puts the raw frame's
+  /// top-left at the drawn picture's top-right. Mirrors
+  /// `appleViewToFrameFraction` on the desktop.
   static func frameFraction(of point: CGPoint, in picture: CGRect, rotation: AppleDisplayRotation) -> CGPoint? {
     guard picture.width > 0, picture.height > 0 else { return nil }
     // Clamped rather than refused: a drag that leaves the picture should end
@@ -115,6 +136,10 @@ enum AppleDeviceTouchMapping {
       return CGPoint(x: x, y: y)
     case .clockwise:
       return CGPoint(x: y, y: 1 - x)
+    case .upsideDown:
+      return CGPoint(x: 1 - x, y: 1 - y)
+    case .counterclockwise:
+      return CGPoint(x: 1 - y, y: x)
     }
   }
 
@@ -152,6 +177,54 @@ enum AppleDeviceTouchMapping {
       height: configPixels.height * ticketPoints.height / ticketPixels.height
     )
   }
+}
+
+// MARK: - Fold mirroring
+
+/// Where a Duo simulator should be folded to match the phone in the person's
+/// hand, while they control it: closed, tent, or open at the phone's hinge
+/// angle, held the way the phone is held.
+struct AppleFoldTarget: Equatable {
+  /// A Device Hub pose (`tent`), or nil for a raw angle.
+  var pose: String?
+  /// The hinge, in degrees, when there is no pose.
+  var angle: Double?
+  /// How the phone is held, in `rotate`'s names, when the inner display is on.
+  var hold: String?
+
+  /// The inner display's picture runs wide when the phone is held upright
+  /// (its panel is mounted a quarter turn on), tall when held on its side.
+  var wantsWidePicture: Bool? {
+    guard let hold else { return nil }
+    return hold == "portrait"
+  }
+
+  /// The target for the phone's layout, or nil on a phone that does not fold.
+  ///
+  /// The inner display keeps the simulator open at no less than 70°: below
+  /// about 60° the simulator moves to its front screen while the phone still
+  /// shows its inner one. On the front screen, a hinge open past 25° (or a
+  /// phone held on its side when the hinge is not reported) is Tent, which
+  /// lives on the front screen held sideways; otherwise the phone is closed.
+  static func mirroring(
+    isInnerDisplay: Bool,
+    isLandscape: Bool,
+    hingeAngle: Double?,
+    phoneFolds: Bool
+  ) -> AppleFoldTarget? {
+    guard phoneFolds else { return nil }
+    if isInnerDisplay {
+      let angle = min(180, max(70, hingeAngle ?? 180))
+      return AppleFoldTarget(pose: nil, angle: angle, hold: isLandscape ? "portrait" : "landscape-left")
+    }
+    if let hingeAngle {
+      return hingeAngle >= 25 ? AppleFoldTarget(pose: "tent") : AppleFoldTarget(angle: 0)
+    }
+    return isLandscape ? AppleFoldTarget(pose: "tent") : AppleFoldTarget(angle: 0)
+  }
+
+  /// The fold half alone, to tell whether a new target moves the hinge.
+  var fold: AppleFoldTarget { AppleFoldTarget(pose: pose, angle: angle, hold: nil) }
 }
 
 // MARK: - Gestures

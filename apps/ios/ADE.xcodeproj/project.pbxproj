@@ -185,6 +185,7 @@
 		E1000000000000000000AB02 /* AppleDeviceViewer.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000AB02 /* AppleDeviceViewer.swift */; };
 		E1000000000000000000AB0E /* AppleDeviceViewerModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000AB0E /* AppleDeviceViewerModel.swift */; };
 		E1000000000000000000AB0C /* AppleDeviceControl.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000AB0C /* AppleDeviceControl.swift */; };
+		E1000000000000000000FE01 /* LiveStage.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000FE01 /* LiveStage.swift */; };
 		E1000000000000000000AA03 /* WorkQueuedSteerDetailSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000AA03 /* WorkQueuedSteerDetailSheet.swift */; };
 		E10000000000000000000052 /* LaneDeeplinkHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000052 /* LaneDeeplinkHelpers.swift */; };
 		E10000000000000000000053 /* LaneDetailGitActionsPane.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000053 /* LaneDetailGitActionsPane.swift */; };
@@ -624,6 +625,7 @@
 		D1000000000000000000AB02 /* AppleDeviceViewer.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AppleDeviceViewer.swift; path = ADE/Views/Work/AppleDeviceViewer.swift; sourceTree = "<group>"; };
 		D1000000000000000000AB0E /* AppleDeviceViewerModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AppleDeviceViewerModel.swift; path = ADE/Views/Work/AppleDeviceViewerModel.swift; sourceTree = "<group>"; };
 		D1000000000000000000AB0C /* AppleDeviceControl.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AppleDeviceControl.swift; path = ADE/Views/Work/AppleDeviceControl.swift; sourceTree = "<group>"; };
+		D1000000000000000000FE01 /* LiveStage.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LiveStage.swift; path = ADE/Views/Work/LiveStage.swift; sourceTree = "<group>"; };
 		D1000000000000000000AA03 /* WorkQueuedSteerDetailSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkQueuedSteerDetailSheet.swift; path = ADE/Views/Work/WorkQueuedSteerDetailSheet.swift; sourceTree = "<group>"; };
 		D10000000000000000000052 /* LaneDeeplinkHelpers.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneDeeplinkHelpers.swift; path = ADE/Views/Lanes/LaneDeeplinkHelpers.swift; sourceTree = "<group>"; };
 		D10000000000000000000053 /* LaneDetailGitActionsPane.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneDetailGitActionsPane.swift; path = ADE/Views/Lanes/LaneDetailGitActionsPane.swift; sourceTree = "<group>"; };
@@ -1301,6 +1303,7 @@
 				D1000000000000000000AB02 /* AppleDeviceViewer.swift */,
 				D1000000000000000000AB0E /* AppleDeviceViewerModel.swift */,
 				D1000000000000000000AB0C /* AppleDeviceControl.swift */,
+				D1000000000000000000FE01 /* LiveStage.swift */,
 				D1000000000000000000AA03 /* WorkQueuedSteerDetailSheet.swift */,
 				D1000000000000000000002E /* WorkChatComposerAndInputViews.swift */,
 				D10000000000000000000F03 /* WorkDrafts.swift */,
@@ -2256,6 +2259,7 @@
 				E1000000000000000000AB02 /* AppleDeviceViewer.swift in Sources */,
 				E1000000000000000000AB0E /* AppleDeviceViewerModel.swift in Sources */,
 				E1000000000000000000AB0C /* AppleDeviceControl.swift in Sources */,
+				E1000000000000000000FE01 /* LiveStage.swift in Sources */,
 				E1000000000000000000AA03 /* WorkQueuedSteerDetailSheet.swift in Sources */,
 				E10000000000000000000047 /* ADEInspectable.swift in Sources */,
 				E1000000000000000000002E /* WorkChatComposerAndInputViews.swift in Sources */,

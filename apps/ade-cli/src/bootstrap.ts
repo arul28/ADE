@@ -1879,6 +1879,9 @@ export async function createAdeRuntime(args: {
       const own = deviceKey ? accountSettingsStore?.get(ACCOUNT_SCOPE_ALL, deviceKey) : undefined;
       return own ?? accountSettingsStore?.get(ACCOUNT_SCOPE_ALL, key);
     };
+    // Built after the service it forwards for; its posture notes come from
+    // the service's events.
+    const appleStreamRelayHolder: { current: ReturnType<typeof createAppleStreamRelayForService> | null } = { current: null };
     const iosSimulatorService = chatOnlyRuntime
       ? null
       : createIosSimulatorService({
@@ -1932,16 +1935,22 @@ export async function createAdeRuntime(args: {
           // video was a colour that appears nowhere in the product.
           accentColor: () => ADE_ACCENT_COLOR,
         },
-        onEvent: (event) => pushEvent("runtime", {
-          type: "ios_simulator_event",
-          // An agent revealing the device opens it where the user is talking from.
-          event: event.type === "drawer-open-requested" && event.chatSessionId
-            ? {
-              ...event,
-              targetClientId: getSessionInputOrigin(event.chatSessionId, { maxAgeMs: RECENT_INPUT_ORIGIN_MS })?.clientId ?? null,
-            }
-            : event,
-        }),
+        onEvent: (event) => {
+          // A phone draws a Duo's live panel from the stream's posture notes.
+          if (event.type === "apple.device.posture") {
+            appleStreamRelayHolder.current?.notePosture(event.laneId, event.posture);
+          }
+          pushEvent("runtime", {
+            type: "ios_simulator_event",
+            // An agent revealing the device opens it where the user is talking from.
+            event: event.type === "drawer-open-requested" && event.chatSessionId
+              ? {
+                ...event,
+                targetClientId: getSessionInputOrigin(event.chatSessionId, { maxAgeMs: RECENT_INPUT_ORIGIN_MS })?.clientId ?? null,
+              }
+              : event,
+          });
+        },
         // Lane-device cleanup and idle power-off for this project.
         backgroundMaintenance: true,
       });
@@ -1979,6 +1988,7 @@ export async function createAdeRuntime(args: {
         logger,
       })
       : null;
+    appleStreamRelayHolder.current = appleStreamRelay;
     if (appleStreamRelay) {
       const detachAppleStreamRoute = setActiveAppleStreamRouter(appleStreamRelay);
       teardown.push(() => {

@@ -54,6 +54,9 @@ struct DuoChatRailActions {
 /// is open (the PR's actions are in its own header).
 struct DuoChatRail: ViewModifier {
   @ObservedObject var pane: DuoWorkPaneModel
+  @ObservedObject private var placements = LiveStagePlacements.shared
+  /// The picture's shape picks its placement's default.
+  @ObservedObject private var picture = LiveStagePicture.shared
   @Environment(\.workCompactEdgeRail) private var compactEdgeRail
   let model: DuoChatRailModel
   /// The sessions column is away, so the chat offers the way back.
@@ -136,6 +139,9 @@ struct DuoChatRail: ViewModifier {
         }
         .ignoresSafeArea()
       }
+      .environment(\.duoChatInlineHeader, headerOnChatHalf
+        ? AnyView(capsules(pane: nil, width: max(150, columnWidth - (duo.hasEdgeBar ? 48 : 32)), fills: true))
+        : nil)
       .navigationTitle(model.title)
       .navigationBarTitleDisplayMode(.inline)
       .toolbar(removing: .title)
@@ -163,6 +169,8 @@ struct DuoChatRail: ViewModifier {
   /// pane's trailing margin.
   private func paneHeader(_ actions: DuoPaneHeaderActions?) -> DuoChatHeaderCapsules.PaneHeader? {
     guard paneBesideChat, duo.hasEdgeBar, windowMaxX > 0, columnWidth > 0 else { return nil }
+    // A live stream draws its own controls, edge to edge from the top.
+    guard !pane.showsLiveStage else { return nil }
     // Book-folded the pane's page starts past the fold band (the root's
     // fold is in window coordinates); flat, at the hinge line.
     var chatMaxX = windowMaxX / 2
@@ -279,15 +287,31 @@ struct DuoChatRail: ViewModifier {
   /// end while the list is away) and, held landscape with the room, the
   /// chat's PR as a capsule of its own to its right. One item drawing its
   /// own glass, so the bar never has a leading item to add or drop.
+  @ViewBuilder
   private func header(pane paneHeader: DuoChatHeaderCapsules.PaneHeader?) -> some View {
+    if headerOnChatHalf {
+      // The stream above has the bar's row; the title is on the chat's half.
+      Color.clear.frame(width: 1, height: 1)
+    } else {
+      capsules(pane: paneHeader, width: headerWidth, fills: spansColumn)
+    }
+  }
+
+  /// A live stream sits above the chat and runs to the screen's top edge,
+  /// over the bar's row: the title moves down onto the chat's own half.
+  private var headerOnChatHalf: Bool {
+    pane.showsLiveStage && placements.stacksAbove(layout: duo, family: family)
+  }
+
+  private func capsules(pane paneHeader: DuoChatHeaderCapsules.PaneHeader?, width: CGFloat, fills: Bool) -> some View {
     DuoChatHeaderCapsules(
       model: model,
-      width: headerWidth,
-      fills: spansColumn,
+      width: width,
+      fills: fills,
       pane: paneHeader,
       showsSidebarButton: showsSidebarButton,
       showsHubBack: isCto,
-      showsPrBadge: spansColumn,
+      showsPrBadge: fills,
       onToggleSidebar: {
         ADEHaptics.light()
         actions.onToggleSidebar?()

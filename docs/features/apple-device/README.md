@@ -539,7 +539,14 @@ name is never an input.
 `HIDVendorDefined` send (usage page `0xFF61`, usage `0x5B`, an
 IOCFSerialize'd `{provider, source: hinge-slider-control|orientation-picker-control, type, value}`)
 reaching `dtuhidd` in the guest. ADE's `DevicePosture.swift` adds the
-`posture` and `posture-get` commands, and streaming a Duo starts its posture watcher (`posture-changed`). Folds **sweep** in 10°
+`posture` and `posture-get` commands, and streaming a Duo starts its posture watcher (`posture-changed`). The stream relay forwards each change to remote viewers as a
+`{t:"posture", angle, screen, displayOrientation, tableMode}` text note (the
+last one is replayed to a viewer that joins, before its first frame, and the
+relay reads the pose once when it opens a capture); viewers that do not know
+it skip it. `setPosture` with `follow: true` sends the sweep and answers at
+once with the last reported pose instead of settling (600 ms, then reads until
+two agree): a phone mirroring its hinge sends a stream of these. Remote
+`setPosture` drives only the lane's own device, like the other input methods. Folds **sweep** in 10°
 steps: SpringBoard's fold state machine can stick on a 0°↔180° jump, leaving
 the wrong panel lit. A raw angle releases Tent's Table Mode and stands a
 face-down phone up. Service: `setPosture` / `getPosture`, events
@@ -751,7 +758,7 @@ minimized" for that chat.
 
 | Path | Role |
 |---|---|
-| `apps/desktop/native/ADESimHelper/` | Vendored Swift helper: framebuffer capture, H.264 encode, HID input, accessibility tree, recording (`RecordingSession.swift`, idle-gap cut in `IdleGapCompressor.swift`). |
+| `apps/desktop/native/ADESimHelper/` | Vendored Swift helper: framebuffer capture, H.264 encode, HID input, accessibility tree, recording (`RecordingSession.swift`, idle-gap cut in `IdleGapCompressor.swift`). Every device lookup goes through `SimServiceContextCache.swift`: the helper lives as long as the brain, and after CoreSimulatorService restarts its shared context keeps the old device list (new devices missing, booted ones reading Shutdown), so a lookup that misses or finds a device not booted asks a new context, at most once a second, and keeps it. |
 | `apps/desktop/scripts/build-sim-helper.mjs` | Builds `resources/native/ade-sim-helper` for macOS dist. |
 | `apps/desktop/src/main/services/ios/` | Device lifecycle, launch, screenshots, helper transport, recording, Preview Lab. Preload namespace stays `iosSimulator`. |
 | `apps/desktop/src/main/services/ios/iosSimulatorService.ts` | The `ios_simulator` service: app sessions, input, streams, screenshots, and the wiring of the modules below. |
@@ -789,7 +796,8 @@ minimized" for that chat.
 | `apps/ade-cli/src/services/sync/appleRemoteCommands.ts` | `apple.*` remote commands for the phone and the web client, including `apple.invoke`. |
 | `apps/ade-cli/src/services/workTools/workToolShowRequests.ts` | `ade apple show` / `ade ui show` on the brain side. |
 | `apps/desktop/resources/agent-skills/ade-apple/SKILL.md` | Agent skill for the verbs below. |
-| `apps/ios/ADE/Views/Work/AppleDeviceViewer.swift`, `AppleDeviceViewerModel.swift` | The phone's full-screen viewer (View only / Control, the speed readout) and the model that owns its ticket, socket, decoder and mode. |
+| `apps/ios/ADE/Views/Work/AppleDeviceViewer.swift`, `AppleDeviceViewerModel.swift` | The phone's simulator viewer on the live stage (watch, hold to control, the menu, fold mirroring) and the model that owns its ticket, socket, decoder, posture and mode. |
+| `apps/ios/ADE/Views/Work/LiveStage.swift` | The phone's live stage: placement per context, the root host that draws the stream full screen or over the Duo's pane, the pane slot, and the floating menu button and its panel. |
 | `apps/ios/ADE/Views/Work/AppleDeviceControl.swift` | The phone's touch mapping, gesture rule, input commands, Control blockers and the tap→screen probe. |
 | `apps/ios/ADE/Views/Work/AppleDeviceStream.swift` | The phone's ticket, record parser, health clock, decoder layer and the acking stream socket. |
 | `apps/ios/ADE/Services/SyncService+AppleDevice.swift` | The phone's `apple.*` calls, asked of the machine that owns the lane. |
@@ -1324,15 +1332,90 @@ commands, or whose ticket has no point size.
 
 ### The phone: watch and control
 
-`AppleDeviceViewer` opens full screen from the simulator chip in a chat.
-**View only** is the default: the picture fills the screen and a tap shows or
-hides the bars. **Control** is a press-and-hold (0.6 s, the half fills as it
-is held); a tap only says "Hold to take control". While controlling, the
-picture sits between the bars in an orange frame, the bar says "Controlling",
-and Home, a hardware-buttons menu (Lock, Volume up and down, Siri, App
-switcher), a keyboard and **Done** are on it. The keyboard bar has its own hide
-button and the keyboard a Done key. System edge gestures are deferred so a
-swipe up from the bottom reaches the simulator.
+The phone draws a live stream on the **live stage** (`LiveStage.swift`): one
+view at the root of the window (`liveStageHost()`), laid out either over the
+whole display or over the Duo's tools pane. The stream is never drawn inside
+the chat, so moving it between the pane and the whole display, or folding
+the phone so the app moves to its front screen, changes only where that view
+is laid out: the socket, the decoder and Control carry on with no reconnect.
+The pane shows a black slot (`LiveStagePaneSlot`) that reports its frame; a
+re-laid-out pane builds its new slot before the old one goes, so only the
+slot holding the anchor can give it up, and a pane that goes away on a large
+display ends the stream after a short grace (one that goes because the phone
+folded keeps it, full screen).
+
+**Placement.** Where the stream opens depends on how the phone is held, and
+the person can change it from the menu; each pick is remembered for that
+context (`LiveStagePlacements`, `ade.liveStage.placement`):
+
+| Context | Opens | Choices |
+|---|---|---|
+| iPhone, Duo front screen (closed or tent) | full screen | full screen |
+| Duo open flat on its side, iPad on its side | beside the chat (a wide picture: above) | beside, above, full screen |
+| Duo book fold (bent past about 165°) | the right page | beside, full screen |
+| Duo open flat upright, iPad upright | above the chat | beside, above, full screen |
+| Duo laptop fold | above the chat | above, full screen |
+
+A tall picture (a phone) and a wide one (a desktop) remember their picks
+apart. Flat, the pane hugs the picture: beside the chat it is the picture's
+width at full height, above the chat a wide picture's height at full width,
+and the chat takes the rest. On a fold nothing crosses the crease: the book
+fold gives the chat the left page and the stream the right one, and the
+laptop fold keeps the stream on the top half. "Above" stacks the Work
+split's halves on any posture (`DuoWorkChatPaneSplit` reads the pick). The pane has no header row for a stream; the edge bar keeps
+its own items and the stage never covers them.
+
+**The picture and the menu.** The picture fills the stage (edge to edge full
+screen; a small gap and the device's corners over the pane). The only thing
+drawn over it is one floating glass button (`LiveStageMenuButton`): drag it
+anywhere along either side (it snaps to the nearer side, and pushed past the
+edge it tucks half away), and it fades while untouched. Its spot is
+remembered per stage shape. When the picture leaves empty space on both
+sides (a phone above the chat), the button rests in that space against the
+picture, left of it to begin with, the passing hint sits beside it, and the
+menu opens away from the picture. A tap opens the menu: Take control / Stop
+controlling, keyboard, Home, hardware buttons (Lock, Volume up and down,
+Siri, App switcher), Turn, speed, Inspect, Placement, Reconnect, Close. Full
+screen hides the status bar and keeps the screen awake.
+
+**Watching** is the default: a tap on the picture opens the menu, and holding
+the picture for 0.6 s (a ring fills under the finger after 0.15 s, so a tap
+never flashes it) takes control. The menu's Take control is the other way
+in. **Controlling**, every touch on the picture goes to the simulator, the
+menu button wears an orange ring (over the pane the picture also keeps its
+orange frame), the home indicator is hidden and system edge gestures are
+deferred so a swipe up from the bottom reaches the simulator; a second swipe
+up still leaves the app, which iOS never gives away.
+
+**Turning.** The picture turns by the guest's own report first: a Duo's
+stream carries `{t:"posture"}` notes (below), and the live panel is drawn the
+way its `displayOrientation` says it sits (`AppleDisplayRotation.guestTurn`,
+the desktop's `appleScreenRotation`). The menu's Turn adds a quarter turn on
+top. Touches are turned back through the same rotation.
+
+Mac Desktop and App Control have the same Turn: their picture is drawn a
+quarter turn round inside the stage (`liveStageQuarterTurn`), so a wide
+desktop fills a tall place (the book fold's right page, the Duo's front
+screen, an upright iPhone) while the chat beside it stays upright. Their
+gestures sit inside the turned view, so touches land in the picture's own
+coordinates and Control needs no extra mapping. A turned picture reports
+its turned shape, so the pane hugs it and a turned desktop opens where a
+tall picture would. Every viewer remembers its turn per place
+(`LiveStageTurns`, `ade.liveStage.turned`): the stage context, and on a
+phone-sized display which way it is held. The key is never the pane's own
+shape, since turning can move the pane. Take control on an upright phone
+still turns the phone to landscape unless the desktop is already turned.
+
+**Fold mirroring.** On an iPhone Duo controlling a Duo simulator, folding the
+phone folds the simulator (`AppleFoldTarget.mirroring`, `mirrorFold`): on the
+inner display the simulator opens to the phone's hinge angle (never below 70°,
+below about 60° the simulator moves to its front screen) and is held the way
+the phone is (inner picture wide when the phone is upright); on the front
+screen it closes, or goes to Tent when the hinge is open past 25° (or, with
+no hinge reported, when the phone is on its side). Folds are sent as
+`apple.invoke setPosture` with `follow: true`, one in flight and only the
+newest waiting, and a turn (`rotate`) only when the hold changes and the
+picture does not already run that way. Watching never folds anything.
 
 Control is not offered, with the reason shown, when the host lacks
 `apple.input`/`apple.invoke` or the point size, when the device shown is not
