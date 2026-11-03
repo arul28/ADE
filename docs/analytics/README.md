@@ -120,6 +120,10 @@ them in PostHog and update this list in the same branch.
   performance capture off, project masking of inputs only. The desktop masks
   all text in code; the site keeps public text so replays show what people
   read. Heatmaps on (site). See `docs/logging.md` › Session replay.
+- **Feature flag `session-replay-real-users`** (linked to recording): false
+  for `is_internal` people, so ADE's own accounts are never recorded. Its only
+  use; do not repurpose it. The site's per-browser opt-out is
+  `?ade_no_replay=1`.
 - **Dashboard "ADE · Agent turns (LLM analytics)"** is managed by
   `scripts/posthog/provision.mjs` like the others; PostHog's own LLM analytics
   and Error tracking pages read `$ai_generation` and `$exception` directly.

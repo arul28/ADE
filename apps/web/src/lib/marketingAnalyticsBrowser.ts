@@ -169,8 +169,28 @@ export function isMarketingAnalyticsConfigured(): boolean {
  * public project token, its PostHog host, and the anonymous id the site's
  * events already carry. Null while analytics is off or not configured.
  */
+const NO_REPLAY_STORAGE_KEY = "ade.marketing.noReplay";
+
+/**
+ * The ADE team's own browsers are never recorded: opening any page once with
+ * `?ade_no_replay=1` remembers that in this browser (`=0` forgets it). The
+ * site cannot know who you are, so this is a per-browser switch; the apps rely
+ * on the project's linked recording flag instead.
+ */
+function replayOptedOut(): boolean {
+  try {
+    const param = new URLSearchParams(window.location.search).get("ade_no_replay");
+    if (param === "1") window.localStorage.setItem(NO_REPLAY_STORAGE_KEY, "true");
+    if (param === "0") window.localStorage.removeItem(NO_REPLAY_STORAGE_KEY);
+    return window.localStorage.getItem(NO_REPLAY_STORAGE_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
 export function marketingReplayConfig(): { projectToken: string; apiHost: string; distinctId: string } | null {
   if (!analytics || !captureUrl) return null;
+  if (replayOptedOut()) return null;
   const distinctId = analytics.replayDistinctId();
   if (!distinctId) return null;
   return { projectToken: projectTokenFromEnv(), apiHost: captureUrl.replace(/\/i\/v0\/e\/$/, ""), distinctId };

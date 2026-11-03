@@ -1,6 +1,7 @@
 import { ipcMain } from "electron";
 import { IPC } from "../../../shared/ipc";
 import type { ProductAnalyticsReplayConfig } from "../../../shared/types/productAnalytics";
+import { isInternalInstall } from "../../sentry/priorOptOut";
 import { isTrustedAdeRendererSenderOrWarn } from "../ipc/trustedRendererSender";
 import { resolveProductAnalyticsEndpoint, type ProductAnalyticsService } from "./productAnalyticsService";
 
@@ -21,6 +22,10 @@ export function registerSessionReplayIpc(args: {
     if (!isTrustedAdeRendererSenderOrWarn(event, args.logger, IPC.analyticsGetReplayConfig)) return null;
     // Null unless events are being sent: analytics off, DO_NOT_TRACK, or an
     // unconfigured build all answer null here.
+    // ADE's own machines are never recorded. The project's linked recording
+    // flag also skips internal accounts once signed in; the install marker
+    // covers a machine before sign-in.
+    if (isInternalInstall()) return null;
     const distinctId = args.analytics.getDistinctId();
     const endpoint = resolveProductAnalyticsEndpoint();
     if (!distinctId || !endpoint) return null;

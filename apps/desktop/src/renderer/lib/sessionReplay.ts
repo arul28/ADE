@@ -222,10 +222,13 @@ function buildConfig(config: ProductAnalyticsReplayConfig, allowed: { value: boo
     disable_conversations: true,
     disable_web_experiments: true,
     disable_external_dependency_loading: true,
-    // No /flags call. Remote config (`/array/<token>/config`) stays on: the
-    // recorder will not start without the project's replay settings.
-    advanced_disable_feature_flags: true,
-    advanced_disable_feature_flags_on_first_load: true,
+    // Flags stay on for one reason: the project links recording to the
+    // `session-replay-real-users` flag, which is false for ADE's own team and
+    // test accounts (`is_internal`), so they are never recorded. The recorder
+    // waits for that answer. Flag-call events are dropped by `before_send`.
+    // Remote config (`/array/<token>/config`) carries the replay settings.
+    advanced_disable_feature_flags: false,
+    advanced_disable_feature_flags_on_first_load: false,
     enable_recording_console_log: false,
     save_referrer: false,
     save_campaign_params: false,

@@ -63,8 +63,10 @@ function buildConfig(apiHost: string, distinctId: string, allowed: { value: bool
     disable_conversations: true,
     disable_web_experiments: true,
     disable_external_dependency_loading: true,
-    advanced_disable_feature_flags: true,
-    advanced_disable_feature_flags_on_first_load: true,
+    // On only for the project's linked recording flag (`session-replay-real-users`);
+    // `before_send` drops the flag-call events.
+    advanced_disable_feature_flags: false,
+    advanced_disable_feature_flags_on_first_load: false,
     enable_recording_console_log: false,
     save_referrer: false,
     save_campaign_params: false,
