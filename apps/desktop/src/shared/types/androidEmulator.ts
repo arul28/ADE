@@ -203,3 +203,188 @@ export type AndroidEmulatorError = {
   /** The emulator log path, when there is one ("Open log"). */
   logPath?: string | null;
 };
+
+/* ──────────────────────────────────────────────────────────────────────────
+   SERVICE, ACTIONS AND PRELOAD (P0, phase B)
+
+   One `AndroidEmulatorServiceApi` per brain. The `android_emulator` action
+   domain, the IPC handlers and `ade android` all call these methods; the
+   renderer reaches them through `window.ade.androidEmulator`, which takes an
+   optional `pin` so a call goes to the machine that owns the lane.
+   ────────────────────────────────────────────────────────────────────────── */
+
+/** The runtime action domain name. */
+export const ANDROID_EMULATOR_DOMAIN = "android_emulator" as const;
+
+/** What this host can do, before any lane is involved. */
+export type AndroidEmulatorStatus = {
+  /**
+   * False only when this host can never run the emulator (no supported OS or
+   * CPU). A missing SDK is NOT unsupported: the panel shows the setup card.
+   */
+  platformSupported: boolean;
+  /** One sentence when `platformSupported` is false. */
+  unsupportedReason: string | null;
+  sdk: AndroidSdkStatus;
+  /** The lane's device, when the call named a lane. */
+  lane: AndroidLaneDeviceStatus | null;
+};
+
+export type AndroidAvdListing = AndroidAvd & {
+  /** The lane that holds this AVD, if any (`lane_android_devices`). */
+  heldByLaneId: string | null;
+};
+
+export type AndroidDeviceInventory = {
+  avds: AndroidAvdListing[];
+  profiles: AndroidHardwareProfile[];
+  images: AndroidSystemImage[];
+};
+
+export type AndroidLaneArgs = { laneId: string };
+
+export type AndroidCreateDeviceArgs = AndroidLaneArgs & {
+  profileId: string;
+  /** A system image package id; omitted = the newest installed image for the host ABI. */
+  systemImage?: string | null;
+  displayName?: string | null;
+  /** Boot it right after create (the panel's one-click create). Default true. */
+  start?: boolean;
+};
+
+export type AndroidAttachDeviceArgs = AndroidLaneArgs & {
+  avdName: string;
+  /** Boot it right after attach. Default true. */
+  start?: boolean;
+};
+
+export type AndroidReleaseDeviceArgs = AndroidLaneArgs & {
+  /**
+   * For an AVD ADE created: delete it (default true). An attached user AVD is
+   * never deleted; ADE only uninstalls the packages it installed.
+   */
+  deleteCreated?: boolean;
+};
+
+export type AndroidStartStreamArgs = AndroidLaneArgs & {
+  /** Long side of the video in pixels. Default from the stream defaults. */
+  maxSize?: number | null;
+  bitRateBps?: number | null;
+  maxFps?: number | null;
+};
+
+export type AndroidTouchArgs = AndroidLaneArgs & { events: AndroidTouchEvent[] };
+export type AndroidTapArgs = AndroidLaneArgs & { x: number; y: number };
+export type AndroidSwipeArgs = AndroidLaneArgs & {
+  fromX: number;
+  fromY: number;
+  toX: number;
+  toY: number;
+  durationMs?: number | null;
+};
+export type AndroidKeyArgs = AndroidLaneArgs & { key: AndroidHardwareKey };
+export type AndroidTextArgs = AndroidLaneArgs & { text: string };
+
+export type AndroidScreenshotArgs = AndroidLaneArgs & {
+  /** Absolute path to write the PNG to; omitted = a file under the ADE data folder. */
+  outPath?: string | null;
+};
+
+export type AndroidScreenshot = {
+  path: string;
+  width: number;
+  height: number;
+  bytes: number;
+  capturedAt: string;
+};
+
+/** Pushed to every viewer; the renderer re-reads status on these. */
+export type AndroidEmulatorEvent =
+  | { type: "android.device.state"; laneId: string; state: AndroidLaneDeviceStatus["state"] }
+  | { type: "android.stream.state"; laneId: string; running: boolean }
+  | { type: "android.inventory.changed" }
+  | { type: "android.sdk.changed" };
+
+export type AndroidEmulatorServiceApi = {
+  getStatus(args?: { laneId?: string | null }): Promise<AndroidEmulatorStatus>;
+  listDevices(args?: { laneId?: string | null }): Promise<AndroidDeviceInventory>;
+  /** Make a new AVD for the lane from a profile and hold it. */
+  createDevice(args: AndroidCreateDeviceArgs): Promise<AndroidLaneDeviceStatus>;
+  /** Hold an existing (user or free ADE) AVD for the lane. */
+  attachDevice(args: AndroidAttachDeviceArgs): Promise<AndroidLaneDeviceStatus>;
+  /** Boot the lane's AVD (no-op when already booted). */
+  start(args: AndroidLaneArgs): Promise<AndroidLaneDeviceStatus>;
+  /** Stop the lane's emulator if ADE started it. */
+  stop(args: AndroidLaneArgs): Promise<AndroidLaneDeviceStatus>;
+  releaseDevice(args: AndroidReleaseDeviceArgs): Promise<{ released: boolean; deletedAvd: string | null }>;
+  /** Delete an ADE-created AVD that no lane holds. User-only. */
+  deleteDevice(args: { avdName: string }): Promise<{ deleted: boolean }>;
+  /** Mints the loopback stream token: viewers only, never a session-bound agent. */
+  startStream(args: AndroidStartStreamArgs): Promise<AndroidStreamStatus>;
+  stopStream(args: AndroidLaneArgs): Promise<AndroidStreamStatus>;
+  /** Redacted: `transport` is always null here. */
+  getStreamStatus(args: AndroidLaneArgs): Promise<AndroidStreamStatus>;
+  sendTouch(args: AndroidTouchArgs): Promise<void>;
+  tap(args: AndroidTapArgs): Promise<void>;
+  swipe(args: AndroidSwipeArgs): Promise<void>;
+  sendKey(args: AndroidKeyArgs): Promise<void>;
+  sendText(args: AndroidTextArgs): Promise<void>;
+  screenshot(args: AndroidScreenshotArgs): Promise<AndroidScreenshot>;
+  /** Lane archive/delete: stop the lane's stream and emulator. Not an action. */
+  stopForLane(laneId: string): Promise<void>;
+  /** Stop every stream and every emulator ADE started (brain shutdown). Not an action. */
+  dispose(): Promise<void>;
+  onEvent(listener: (event: AndroidEmulatorEvent) => void): () => void;
+};
+
+/** Actions an agent may call (a session-bound agent, through the action bus and `ade android`). */
+export const ANDROID_AGENT_ACTIONS = [
+  "getStatus",
+  "listDevices",
+  "createDevice",
+  "attachDevice",
+  "start",
+  "stop",
+  "releaseDevice",
+  "getStreamStatus",
+  "tap",
+  "swipe",
+  "sendKey",
+  "sendText",
+  "screenshot",
+] as const;
+export type AndroidAgentAction = (typeof ANDROID_AGENT_ACTIONS)[number];
+
+/** Actions only a viewing client (desktop, web, phone at cto role) may call. */
+export const ANDROID_USER_ONLY_ACTIONS = ["startStream", "stopStream", "sendTouch", "deleteDevice"] as const;
+export type AndroidUserOnlyAction = (typeof ANDROID_USER_ONLY_ACTIONS)[number];
+
+type Pin = import("./core").OpenProjectBinding | null | undefined;
+
+/** `window.ade.androidEmulator`. Every call takes the optional machine pin last. */
+export type AndroidEmulatorPreloadApi = {
+  getStatus(args?: { laneId?: string | null }, pin?: Pin): Promise<AndroidEmulatorStatus>;
+  listDevices(args?: { laneId?: string | null }, pin?: Pin): Promise<AndroidDeviceInventory>;
+  createDevice(args: AndroidCreateDeviceArgs, pin?: Pin): Promise<AndroidLaneDeviceStatus>;
+  attachDevice(args: AndroidAttachDeviceArgs, pin?: Pin): Promise<AndroidLaneDeviceStatus>;
+  start(args: AndroidLaneArgs, pin?: Pin): Promise<AndroidLaneDeviceStatus>;
+  stop(args: AndroidLaneArgs, pin?: Pin): Promise<AndroidLaneDeviceStatus>;
+  releaseDevice(args: AndroidReleaseDeviceArgs, pin?: Pin): Promise<{ released: boolean; deletedAvd: string | null }>;
+  deleteDevice(args: { avdName: string }, pin?: Pin): Promise<{ deleted: boolean }>;
+  startStream(args: AndroidStartStreamArgs, pin?: Pin): Promise<AndroidStreamStatus>;
+  stopStream(args: AndroidLaneArgs, pin?: Pin): Promise<AndroidStreamStatus>;
+  getStreamStatus(args: AndroidLaneArgs, pin?: Pin): Promise<AndroidStreamStatus>;
+  sendTouch(args: AndroidTouchArgs, pin?: Pin): Promise<void>;
+  sendKey(args: AndroidKeyArgs, pin?: Pin): Promise<void>;
+  sendText(args: AndroidTextArgs, pin?: Pin): Promise<void>;
+  screenshot(args: AndroidScreenshotArgs, pin?: Pin): Promise<AndroidScreenshot>;
+  /**
+   * Turns a loopback stream URL from another machine into one this renderer
+   * can open (the remote loopback forward iOS and Mac Desktop use).
+   */
+  resolveStreamUrl(
+    streamUrl: string | null,
+    pin?: Pin,
+  ): Promise<{ url: string | null; forwarded: boolean; error: string | null }>;
+  onEvent(listener: (event: AndroidEmulatorEvent) => void, pin?: Pin): () => void;
+};

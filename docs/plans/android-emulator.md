@@ -443,8 +443,10 @@ on 2026-11-03 (`51c6eabf6`). This lane is updated to that commit, and §4 and
     accessibility service, `android layout`, or keep a dump cache per screen).
   - `adb emu rotate`, `emu geo fix`, `cmd uimode night` work headless.
   - Discovery file: `%LOCALAPPDATA%\Temp\avd\running\pid_<qemu pid>.ini`; keys
-    include `grpc.port`, `port.adb`, `avd.name`; `grpc.token` only when the
-    emulator was started with token auth (Android Studio does this).
+    include `grpc.port`, `port.adb`, `avd.id`, `avd.name`; `grpc.token` only
+    when the emulator was started with token auth (Android Studio does this).
+    `avd.id` is the AVD name (`emulator -avd <id>`); `avd.name` is its display
+    name. Match on `avd.id` (found by the lifecycle agent, 2026-11-03).
   - `-no-snapshot-save` still rewrote the AVD's 11-byte `snapshot.pb` 7 s into
     boot (`ram.img` untouched). ADE must not assume an attached user AVD is
     left byte-identical.
