@@ -16,6 +16,7 @@ import type {
 import { useWebWorkspace } from "../../workspace/WebWorkspaceContext";
 import { WebMachineSessionManager } from "../../workspace/WebMachineSessionManager";
 import { WebClientRoot } from "../WebClientRoot";
+import { readPendingTarget } from "../pendingTarget";
 import {
   LONG_PRESS_MS,
   SESSION_LIFECYCLE_ATTRIBUTE,
@@ -201,6 +202,7 @@ afterEach(() => {
   cleanup();
   window.history.replaceState(null, "", "/");
   sessionStorage.clear();
+  localStorage.clear();
 });
 
 describe("WebClientRoot workspace bootstrap", () => {
@@ -417,7 +419,8 @@ describe("WebClientRoot workspace bootstrap", () => {
     );
 
     expect((await screen.findByTestId("app-root")).textContent).toBe("/work");
-    expect(sessionStorage.getItem("ade-web:pending-target")).toContain("session-1");
+    // Kept where a sign-in round trip in another session namespace still finds it.
+    expect(readPendingTarget()).toMatchObject({ kind: "session", sessionId: "session-1" });
   });
 
   it("boots the welcome surface under React strict mode", async () => {

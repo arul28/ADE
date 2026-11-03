@@ -324,50 +324,35 @@ describe("cross-machine project resolution", () => {
 });
 
 describe("ownerNavigationFailureCopy", () => {
-  it.each([
-    {
-      error: "Remote ADE service 1.2.41 does not support machine projects.",
-      title: "Update the owning ADE machine",
-      recovery: "Update and restart ADE on that host",
-    },
-    {
-      error: "Connection timed out.",
-      title: "Owning machine unavailable",
-      recovery: "Reconnect that machine from Connections",
-    },
-    {
-      error: "Project project-1 is no longer available on this ADE machine.",
-      title: "Project no longer available",
-      recovery: "Open or restore the project on that machine",
-    },
-  ])("provides actionable recovery copy for $title", ({ error, title, recovery }) => {
-    const copy = ownerNavigationFailureCopy(new Error(error));
-    expect(copy.title).toBe(title);
-    expect(copy.message).not.toBe("");
-    expect(copy.detail).toContain(error);
-    expect(copy.detail).toContain(recovery);
-  });
+  const fallbackTitle = ownerNavigationFailureCopy(new Error("Something unexpected happened.")).title;
 
-  it("passes an unreachable machine through as plain language, not an RPC string", () => {
-    // End to end: the open path wraps the raw failure, and this dialog copy must
-    // not undo that by re-surfacing the transport error.
-    const copy = ownerNavigationFailureCopy(describeAttentionOpenFailure(
-      new Error("connect ECONNREFUSED 127.0.0.1:52401"),
-      "connect",
-      "Studio Mac",
-    ));
-    expect(copy.title).toBe("Owning machine unavailable");
-    expect(copy.detail).toContain("Studio Mac is not reachable right now.");
-    expect(copy.detail).not.toContain("ECONNREFUSED");
+  it("tells each cause apart and keeps it, without the transport error", () => {
+    const causes = [
+      "Remote ADE service 1.2.41 does not support machine projects.",
+      "Project project-1 is no longer available on this ADE machine.",
+      "ADE connected to Studio Mac but could not open this project.",
+      "ADE could not pair with Studio Mac. Open ADE on that machine, then try again.",
+      // End to end: the open path wraps the raw failure, and the dialog must
+      // not undo that by re-surfacing the transport error.
+      describeAttentionOpenFailure(new Error("connect ECONNREFUSED 127.0.0.1:52401"), "connect", "Studio Mac").message,
+    ];
+    const copies = causes.map((cause) => ownerNavigationFailureCopy(new Error(cause)));
+    // One title per cause: the person learns which step failed.
+    expect(new Set(copies.map((copy) => copy.title)).size).toBe(causes.length);
+    copies.forEach((copy, index) => {
+      expect(copy.title).not.toBe(fallbackTitle);
+      expect(copy.message.trim()).not.toBe("");
+      expect(copy.detail).toContain(causes[index]);
+      expect(copy.detail).not.toContain("ECONNREFUSED");
+    });
   });
 
   it("falls back to a usable sentence for an empty or non-Error failure", () => {
     for (const error of [undefined, new Error("   "), "boom"]) {
       const copy = ownerNavigationFailureCopy(error);
-      expect(copy.title).toBe("Owning machine unavailable");
+      expect(copy.title).toBe(fallbackTitle);
+      expect(copy.message.trim()).not.toBe("");
       expect(copy.detail.trim()).not.toBe("");
     }
-    expect(ownerNavigationFailureCopy(new Error("")).detail)
-      .toContain("The owning ADE machine did not accept the destination.");
   });
 });

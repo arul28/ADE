@@ -49,7 +49,7 @@ Each run writes one JSON file per sample (calls, reply, the full stream) and a
 
 ## Cost
 
-A full pass (22 cases, 1 sample) costs about $0.03 with Haiku and $0.30 with
+A full pass (23 cases, 1 sample) costs about $0.03 with Haiku and $0.30 with
 Sonnet in API-equivalent dollars. On a subscription it uses that much of the
 limit. Each case runs in 5 to 40 seconds.
 

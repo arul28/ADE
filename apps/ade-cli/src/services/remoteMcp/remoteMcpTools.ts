@@ -178,7 +178,8 @@ function chatLink(sessionId: string | null, laneId: string | null, context: Type
 
 /** An engine's failure line without the local file paths it names. */
 function withoutLocalPaths(text: string): string {
-  return text.replace(/(?<![\w.])(?:[A-Za-z]:)?[\\/][^\s'"]+/g, "<file>");
+  // A path's own trailing colon is the message's ("<path>: Invalid data").
+  return text.replace(/(?<![\w.])(?:[A-Za-z]:)?[\\/][^\s'"]+/g, (found) => (found.endsWith(":") ? "<file>:" : "<file>"));
 }
 
 const PROJECT_FIELDS = ["projectId", "displayName", "rootPath", "lastOpenedAt", "exists", "gitOriginUrl"] as const;
