@@ -23,6 +23,7 @@ import { SideChatToolPanel } from "../chat/SideChatToolPanel";
 import { ChatBuiltInBrowserPanel } from "../chat/ChatBuiltInBrowserPanel";
 import { ChatMacDesktopPanel } from "../chat/ChatMacDesktopPanel";
 import { AppleDevicePane } from "../apple/AppleDevicePane";
+import { AndroidDevicePane } from "../android/AndroidDevicePane";
 import { remoteSimulatorUses, remoteWorkUseKey } from "../../../shared/chatRemoteWork";
 import type { AgentChatRemoteWorkUse } from "../../../shared/types/chat";
 import { useRemoteWorkPinResolver } from "../../lib/remoteWorkPins";
@@ -606,6 +607,39 @@ function WorkIosDevice({
   );
 }
 
+/**
+ * The Android tool: this lane's emulator, on the lane's machine.
+ *
+ * The pin is the Work row's (`runtimePin`), null for the tab's own machine,
+ * and the pane keys every effect on its key. There is no floating player yet
+ * (plan P2), so closing the tab or switching tools only gives the stream's
+ * lease back; the emulator keeps running for the lane.
+ */
+function WorkAndroidTool({
+  laneId,
+  activeLane,
+  runtimePin,
+  toolContext,
+  pinnedMachineName,
+}: WorkToolPanelProps) {
+  const mountScope = useWorkToolMountScope(runtimePin);
+  const mountRef = useWorkSurfaceMountRef<HTMLDivElement>(laneId ? workSurfaceKey("android", mountScope, laneId) : null);
+  if (!laneId) return <NoLaneEmptyLine />;
+  // Not padded, for the Apple pane's reason: the device fills its host.
+  return (
+    <NativePanelFrame frameRef={mountRef}>
+      <AndroidDevicePane
+        key={`work-android:${mountScope}`}
+        laneId={laneId}
+        laneName={activeLane?.name ?? null}
+        runtimePin={runtimePin}
+        machineName={runtimePin ? pinnedMachineName : null}
+        hostPlatform={toolContext.hostPlatform ?? null}
+      />
+    </NativePanelFrame>
+  );
+}
+
 function WorkAppControlTool({
   laneId,
   laneRoot,
@@ -801,6 +835,7 @@ export const WORK_TOOL_COMPONENTS: Record<WorkSidebarTab, ComponentType<WorkTool
   git: WorkGitTool,
   files: WorkFilesTool,
   ios: WorkIosTool,
+  android: WorkAndroidTool,
   "app-control": WorkAppControlTool,
   "mac-desktop": WorkMacDesktopTool,
   "windows-desktop": WorkWindowsDesktopTool,

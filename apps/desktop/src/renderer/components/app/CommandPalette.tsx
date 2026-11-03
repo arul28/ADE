@@ -108,6 +108,7 @@ import {
 import { requestWorkTool } from "../terminals/workToolRequests";
 import type { WorkToolContext } from "../terminals/workTools";
 import { desktopToolContext, useMacDesktopSupport } from "../terminals/useMacDesktopSupport";
+import { androidToolContext, useAndroidEmulatorSupport } from "../android/useAndroidEmulatorSupport";
 import { fadeScale } from "../../lib/motion";
 import {
   captureGestureChord,
@@ -657,13 +658,19 @@ export function CommandPalette({
   // only, a Mac host Mac Desktop only.
   // Lane tools need a project; with none open there is no runtime to ask.
   const macDesktopSupport = useMacDesktopSupport({ runtimePin: projectBinding, enabled: open && projectBinding != null });
+  // Unpinned: the bound machine, the same cache entry the Work pane reads.
+  const androidSupport = useAndroidEmulatorSupport({
+    runtimePin: null,
+    enabled: open && projectBinding != null && !isWebClientMode(),
+  });
   const workToolContext = useMemo<WorkToolContext>(
     () => ({
       supportsIosSimulator,
       isWebClient: isWebClientMode(),
       ...desktopToolContext(macDesktopSupport),
+      ...androidToolContext(androidSupport),
     }),
-    [macDesktopSupport, supportsIosSimulator],
+    [androidSupport, macDesktopSupport, supportsIosSimulator],
   );
 
   const commands: Command[] = useMemo(() => {

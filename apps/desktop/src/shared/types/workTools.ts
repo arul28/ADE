@@ -38,6 +38,7 @@ export const WORK_TOOL_IDS = [
   "git",
   "files",
   "ios",
+  "android",
   "app-control",
   "browser",
   "mac-desktop",

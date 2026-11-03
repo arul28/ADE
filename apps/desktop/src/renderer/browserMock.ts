@@ -171,6 +171,7 @@ import { ADE_SUGGESTIONS } from "./onboarding/adeTipsSuggestions";
 import { EMPTY_SUGGESTIONS_STATE, SUGGESTIONS_STORAGE_KEY, type SuggestionsState } from "./onboarding/situationalSuggestions";
 import { ONBOARDING_PROGRESS_STORAGE_KEY, type OnboardingProgress } from "./onboarding/onboardingProgress";
 import { resetOnboardingTiers } from "./onboarding/resetOnboardingTiers";
+import { createMockAndroidEmulator } from "./browserMockAndroid";
 
 // The browser preview holds no power locks, so it reports the honest default.
 const MOCK_KEEP_AWAKE_SNAPSHOT = INERT_KEEP_AWAKE_SNAPSHOT;
@@ -8382,8 +8383,13 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         capturedAt: now,
       }),
       resolveStreamUrl: resolvedArg({ url: null, forwarded: false, error: null }),
+      // The pane's recordings drawer reads these on mount.
+      recordList: resolvedArg([]),
+      recordingsTotalBytes: resolvedArg(0),
       onEvent: () => () => {},
     },
+    // Six AVDs, an SDK and one booted lane device; `?mockAndroid=` picks another state.
+    androidEmulator: createMockAndroidEmulator(),
     /**
      * Mac Desktop in the hosted web client: `getStatus` answers honestly with
      * `supported: false`, which is what hides the tab, and every other method
@@ -8393,7 +8399,9 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
      */
     macDesktop: {
       getStatus: resolvedArg({
-        platform: "browser" as unknown as NodeJS.Platform,
+        // `?mockHostPlatform=darwin` shows the host-bound tools (Apple
+        // Development) so a pane can be looked at beside them.
+        platform: (new URLSearchParams(window.location.search).get("mockHostPlatform") ?? "browser") as NodeJS.Platform,
         supported: false,
         unsupportedReason: "The hosted web client cannot host a Mac display.",
         driver: {
