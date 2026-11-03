@@ -5757,11 +5757,18 @@ app.whenReady().then(async () => {
       destroyForLane: (laneId: string) => macDesktopService.destroyForLane(laneId),
     };
     /**
-     * The lane's Android emulator. Built on every host OS: Android runs on
-     * macOS, Windows and Linux, and `getStatus` is how a host without an SDK
-     * shows the setup card instead of an error.
+     * The lane's Android emulator, only when THIS process is the project's
+     * runtime (tests). Otherwise the brain (`bootstrap.ts`) owns it: this
+     * context then exists only to host mobile sync, while the brain runs the
+     * same project. A second service here would share the brain's
+     * started-emulators file, so closing this context would stop the brain's
+     * emulators. One owner per project: the brain.
+     *
+     * Built on every host OS when it is built: Android runs on macOS, Windows
+     * and Linux, and `getStatus` is how a host without an SDK shows the setup
+     * card instead of an error.
      */
-    const androidEmulatorService = createAndroidEmulatorService({
+    const androidEmulatorService = !shouldUseInProcessProjectRuntime() ? null : createAndroidEmulatorService({
       laneDevices: sqlAndroidLaneDeviceRepo(db),
       // Per project, like `lane_android_devices`: the started-emulators state
       // file, emulator logs and default screenshots.
@@ -5784,9 +5791,11 @@ app.whenReady().then(async () => {
     });
     // Archive and delete stop the lane's stream and emulator here; the AVD
     // itself goes in `releaseAndroidSideOfLane`, which needs no service.
-    laneTeardownDeps.androidEmulatorService = {
-      stopForLane: (laneId: string) => androidEmulatorService.stopForLane(laneId),
-    };
+    if (androidEmulatorService) {
+      laneTeardownDeps.androidEmulatorService = {
+        stopForLane: (laneId: string) => androidEmulatorService.stopForLane(laneId),
+      };
+    }
     // A chat that ends drops its lease on every platform — the one Mac Desktop
     // call that is not macOS-only, because a lease must never outlive its chat.
     agentChatService.registerChatSessionEndedListener((sessionId) => {
