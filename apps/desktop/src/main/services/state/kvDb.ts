@@ -1384,6 +1384,9 @@ const LOCAL_ONLY_CRR_EXCLUDED_TABLES = new Set([
   // second machine (or a phone) believe the lane owns a device it cannot see.
   "lane_apple_devices",
   "lane_apple_extra_devices",
+  // The same for a lane's Android emulator: an AVD is a folder in ONE
+  // machine's AVD home.
+  "lane_android_devices",
   "lane_detail_snapshots",
   "lane_list_snapshots",
   "pr_auto_link_ignores",
@@ -3197,6 +3200,29 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
     )
   `);
   db.run("create index if not exists idx_lane_apple_extra_devices_lane on lane_apple_extra_devices(lane_id)");
+
+  /*
+   * A lane's Android emulator: one AVD per lane, on this machine only
+   * (`androidLaneDeviceStore.ts`). `origin` is `created` (ADE made the AVD
+   * and deletes it with the lane) or `attached` (the user's own, only
+   * released). `ade_installed_packages` is a JSON array of the apps ADE
+   * installed, so release uninstalls only those.
+   *
+   * Excluded from CRR (`LOCAL_ONLY_CRR_EXCLUDED_TABLES`): an AVD name means a
+   * folder in one machine's AVD home, so a replicated row would tell a second
+   * machine or a phone that a lane owns an emulator that is not there.
+   */
+  db.run(`
+    create table if not exists lane_android_devices (
+      lane_id text primary key,
+      avd_name text not null,
+      origin text not null default 'created',
+      profile_id text,
+      system_image text,
+      created_at text not null,
+      ade_installed_packages text
+    )
+  `);
 
   db.run(`
     create table if not exists terminal_sessions (
