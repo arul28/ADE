@@ -85,7 +85,8 @@ async function main() {
       return { code: result.exitCode, out: result.stdout.toString("utf8").trim(), err: result.stderr.trim() };
     };
     const read = async (label: string) => {
-      const orientation = (await shell("dumpsys", "input")).split("\n").find((line) => /SurfaceOrientation/u.test(line))?.trim() ?? null;
+      const orientation = (await shell("dumpsys", "window", "displays")).split("\n")
+        .filter((line) => /mRotation|mCurrentRotation|cur=|mUserRotation\b/u.test(line)).map((line) => line.trim()).slice(0, 4);
       const shot = await service.screenshot({ laneId: LANE });
       log(`read.${label}`, {
         orientation,
@@ -113,6 +114,8 @@ async function main() {
         }
       });
     });
+    // The launcher keeps a phone in portrait; Settings follows the rotation.
+    log("open.settings", await shell("am", "start", "-W", "-a", "android.settings.SETTINGS"));
     await sleep(2_000);
     await read("start");
 
