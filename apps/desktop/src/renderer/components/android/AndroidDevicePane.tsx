@@ -63,6 +63,12 @@ export type AndroidDevicePaneProps = {
   machineName: string | null;
   /** The lane host's OS when known, for the setup card's default folder. */
   hostPlatform: string | null;
+  /**
+   * Set for a lane this pane must not change, such as a chat's work copy on
+   * another machine, where the agent picks the device. The picker is never
+   * offered, and this line takes its place when the lane holds no device.
+   */
+  noPicker?: string | null;
   className?: string;
 };
 
@@ -77,6 +83,7 @@ export function AndroidDevicePane({
   runtimePin,
   machineName,
   hostPlatform,
+  noPicker = null,
   className,
 }: AndroidDevicePaneProps) {
   const api = window.ade?.androidEmulator ?? null;
@@ -234,7 +241,7 @@ export function AndroidDevicePane({
   });
 
   // The inventory is read only while the picker is on screen.
-  const pickerShown = paneState === "picker";
+  const pickerShown = paneState === "picker" && !noPicker;
   pickerShownRef.current = pickerShown;
   useEffect(() => {
     if (pickerShown) void readInventory();
@@ -401,7 +408,7 @@ export function AndroidDevicePane({
         const logPath = crash.logPath;
         actions.push({ label: "Open log", variant: "secondary", onClick: () => openLog(logPath) });
       }
-      actions.push({ label: "Choose another device", variant: "secondary", onClick: () => setPickerRequested(true) });
+      if (!noPicker) actions.push({ label: "Choose another device", variant: "secondary", onClick: () => setPickerRequested(true) });
       return (
         <AndroidDeviceErrorStrip
           sentence={crash ? describeAndroidError(crash).sentence : `${deviceName} stopped.`}
@@ -415,7 +422,7 @@ export function AndroidDevicePane({
           sentence={`${deviceName} is off.`}
           actions={[
             { label: "Start", onClick: start },
-            { label: "Choose another device", variant: "secondary", onClick: () => setPickerRequested(true) },
+            ...(noPicker ? [] : [{ label: "Choose another device", variant: "secondary" as const, onClick: () => setPickerRequested(true) }]),
           ]}
         />
       );
@@ -484,6 +491,7 @@ export function AndroidDevicePane({
           <AndroidSetupCard sdk={status.sdk} hostPlatform={hostPlatform} refreshing={refreshing} onRefresh={refreshAll} />
         ) : null;
       case "picker":
+        if (noPicker) return <AndroidPaneMessage title={noPicker} description={null} />;
         return (
           <AndroidDevicePicker
             laneId={laneId}
@@ -566,7 +574,7 @@ export function AndroidDevicePane({
                 screenshotPending={screenshotPending}
                 onKey={pressKey}
                 onScreenshot={screenshot}
-                onSwitchDevice={() => setPickerRequested(true)}
+                onSwitchDevice={noPicker ? undefined : () => setPickerRequested(true)}
                 onPowerOff={powerOff}
                 extraControls={maximize ? (
                   <WorkToolChromeButton

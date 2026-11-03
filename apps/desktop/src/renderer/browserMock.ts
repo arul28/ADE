@@ -2171,6 +2171,24 @@ const BUILTIN_MOCK_SESSIONS: any[] = [
       targetId: "mock-session-codex-1",
       launch: {},
     },
+    // `?mockAndroidRemote`: the chat drove the Studio Mac's Android emulator
+    // through its work copy there (`ade android … --machine "Studio Mac"`).
+    ...(browserMockFlag("mockAndroidRemote")
+      ? {
+        remoteWork: [{
+          machineKey: "mk_studio_mac",
+          machineName: "Studio Mac",
+          machinePlatform: "darwin",
+          projectId: "mock-project-studio",
+          projectRootPath: "/Users/mock/Projects/ADE",
+          terminalIds: [],
+          workCopyLaneId: "remote-work-0a1b2c3d4e5f",
+          usesSimulator: false,
+          usesAndroidEmulator: true,
+          lastStartedAt: new Date().toISOString(),
+        }],
+      }
+      : {}),
   },
   {
     id: "mock-session-shell-1",
@@ -6017,7 +6035,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         name: "Studio Mac",
         hostname: "studio.local",
         transport: "paired",
-        pairedMachine: { hostIdentity: "mock-studio" },
+        pairedMachine: { hostIdentity: "mock-studio", machineKey: "mk_studio_mac" },
         sshUser: null,
         port: null,
         sshKeyPath: null,
@@ -6034,7 +6052,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
             name: "Studio Mac",
             hostname: "studio.local",
             transport: "paired",
-            pairedMachine: { hostIdentity: "mock-studio" },
+            pairedMachine: { hostIdentity: "mock-studio", machineKey: "mk_studio_mac" },
             sshUser: null,
             port: null,
             sshKeyPath: null,

@@ -10,6 +10,10 @@
  * - `setup`: no SDK.  `noaccel`: the SDK, no acceleration.
  * - `starting`, `off`, `crashed`, `unsupported`.
  *
+ * `?mockAndroidRemote` (in `browserMock.ts`) gives the Codex chat a work copy
+ * on the Studio Mac that drives an emulator; `?mockAndroidRemote=none` has
+ * that work copy hold no device yet.
+ *
  * The live picture is real H.264: a canvas encoded with WebCodecs and served
  * through a `fetch` stand-in for one fake loopback address, in the same video
  * records the brain writes. A touch draws a dot where it landed (scaled from
@@ -43,6 +47,14 @@ const MOCK_STREAM_URL = `http://127.0.0.1:9${MOCK_STREAM_PATH}`;
 const VIDEO_WIDTH = 576;
 const VIDEO_HEIGHT = 1280;
 const LCD = { width: 1080, height: 2400 };
+
+function remoteWorkCopyEmpty(): boolean {
+  try {
+    return new URLSearchParams(window.location.search).get("mockAndroidRemote") === "none";
+  } catch {
+    return false;
+  }
+}
 
 function scenario(): Scenario {
   try {
@@ -186,12 +198,22 @@ export function createMockAndroidEmulator(): AndroidEmulatorPreloadApi {
         : null,
     };
   };
-  const status = (forLane: string | null | undefined): AndroidEmulatorStatus => {
+  /** `remote`: another machine answers (a pinned call), which can always run an emulator. */
+  const status = (forLane: string | null | undefined, remote = false): AndroidEmulatorStatus => {
+    const answer: Scenario = remote ? "live" : which;
+    if (forLane?.startsWith("remote-work-") && remoteWorkCopyEmpty()) {
+      return {
+        platformSupported: true,
+        unsupportedReason: null,
+        sdk: sdkStatus("live"),
+        lane: { laneId: forLane, device: null, avd: null, state: "none", error: null },
+      };
+    }
     if (forLane) laneId = forLane;
     return {
-      platformSupported: which !== "unsupported",
-      unsupportedReason: which === "unsupported" ? "This host is a 32-bit ARM Linux machine; the emulator needs x86_64 or arm64." : null,
-      sdk: sdkStatus(which),
+      platformSupported: answer !== "unsupported",
+      unsupportedReason: answer === "unsupported" ? "This host is a 32-bit ARM Linux machine; the emulator needs x86_64 or arm64." : null,
+      sdk: sdkStatus(answer),
       lane: forLane ? laneStatus() : null,
     };
   };
@@ -210,7 +232,7 @@ export function createMockAndroidEmulator(): AndroidEmulatorPreloadApi {
   installMockStreamFetch(touches);
 
   return {
-    getStatus: async (args) => delay(status(args?.laneId ?? null), 60),
+    getStatus: async (args, pin) => delay(status(args?.laneId ?? null, pin?.kind === "remote"), 60),
     listDevices: async (args) => {
       if (args?.laneId) laneId = args.laneId;
       const lane = laneAvdRecord();

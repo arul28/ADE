@@ -37,7 +37,8 @@ export type AndroidDeviceRailProps = {
   /** Rotate is not in the P0 contract yet; absent shows it disabled with the reason. */
   onRotate?: (() => void) | undefined;
   onScreenshot: () => void;
-  onSwitchDevice: () => void;
+  /** Absent when the lane's device is not this pane's to change. */
+  onSwitchDevice?: (() => void) | undefined;
   onPowerOff: () => void;
   /** The shared preview / maximize controls every screen tool carries. */
   extraControls?: ReactNode;
@@ -133,11 +134,15 @@ export function AndroidDeviceRail({
 
         <RailMenu label="More device actions" icon={<DotsThree size={16} weight="bold" />}>
           <div className={MENU_LABEL_CLASS}>{deviceSpec ? `${deviceName} · ${deviceSpec}` : deviceName}</div>
-          <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={onSwitchDevice}>
-            <DeviceMobile size={14} />
-            Switch device…
-          </DropdownMenu.Item>
-          <DropdownMenu.Separator className={MENU_SEPARATOR_CLASS} />
+          {onSwitchDevice ? (
+            <>
+              <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={onSwitchDevice}>
+                <DeviceMobile size={14} />
+                Switch device…
+              </DropdownMenu.Item>
+              <DropdownMenu.Separator className={MENU_SEPARATOR_CLASS} />
+            </>
+          ) : null}
           <DropdownMenu.Item className={cn(MENU_ITEM_CLASS, "text-[var(--color-error)]")} onSelect={onPowerOff}>
             <Power size={14} />
             Power off

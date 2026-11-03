@@ -309,6 +309,12 @@ export type WorkToolContext = {
    */
   hasRemoteSimulator?: boolean;
   /**
+   * The chat drives an Android emulator on another machine through its work
+   * copy (`ade android … --machine`). The Android tool then shows it, so it
+   * stays even on a host that cannot run one.
+   */
+  hasRemoteAndroidEmulator?: boolean;
+  /**
    * The lane's RUNTIME HOST can run the Android emulator at all
    * (`androidEmulator.getStatus().platformSupported`). A missing SDK is still
    * `true`: the panel shows the setup card. Same tri-state and the same "show
@@ -409,6 +415,7 @@ export function workToolAvailability(
   }
   if (id === "android") {
     if (context.isWebClient) return { available: false, reason: ANDROID_WEB_CLIENT_UNAVAILABLE_REASON };
+    if (context.hasRemoteAndroidEmulator) return AVAILABLE;
     if (context.supportsAndroidEmulator === false) {
       const reason = context.androidEmulatorUnsupportedReason?.trim();
       return { available: false, reason: reason || ANDROID_HOST_UNSUPPORTED_REASON };
