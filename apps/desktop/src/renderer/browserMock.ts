@@ -171,7 +171,7 @@ import { ADE_SUGGESTIONS } from "./onboarding/adeTipsSuggestions";
 import { EMPTY_SUGGESTIONS_STATE, SUGGESTIONS_STORAGE_KEY, type SuggestionsState } from "./onboarding/situationalSuggestions";
 import { ONBOARDING_PROGRESS_STORAGE_KEY, type OnboardingProgress } from "./onboarding/onboardingProgress";
 import { resetOnboardingTiers } from "./onboarding/resetOnboardingTiers";
-import { createMockAndroidEmulator } from "./browserMockAndroid";
+import { MOCK_STREAM_URL, createMockAndroidEmulator } from "./browserMockAndroid";
 
 // The browser preview holds no power locks, so it reports the honest default.
 const MOCK_KEEP_AWAKE_SNAPSHOT = INERT_KEEP_AWAKE_SNAPSHOT;
@@ -8233,9 +8233,14 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         laneDevice: null,
         helper: { present: true, path: "/mock/ade-sim-helper", version: "mock" },
       }),
-      deviceList: resolvedArg({
+      // `?mockIosLive`: the lane holds the booted iPhone 17 Pro, which streams
+      // the Android mock's test picture and records each tap in
+      // `window.__adeMockIosTaps`, so iOS taps can be checked by number.
+      deviceList: async (args?: { laneId?: string | null }) => ({
         installed: BROWSER_MOCK_SIMULATORS,
-        lane: null,
+        lane: browserMockFlag("mockIosLive") && args?.laneId
+          ? { laneId: args.laneId, udid: "pro", name: "iPhone 17 Pro", origin: "attached", family: "iphone", runtime: "iOS 26.3", createdAt: "2026-11-03T09:00:00.000Z" }
+          : null,
         owners: [{
           udid: "repro",
           laneId: "lane-other",
@@ -8253,7 +8258,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           root: "/mock/devices",
           measuredAt: "2026-09-22T00:00:00.000Z",
         },
-      } as any),
+      }) as any,
       deviceStart: resolvedArg({} as any),
       deviceStop: resolvedArg(undefined as any),
       deviceCreate: resolvedArg({} as any),
@@ -8335,10 +8340,22 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       } as any),
       renderPreview: resolvedArg({} as any),
       openPreviewWorkspace: resolved({ ok: true as const, path: "/tmp" }),
-      startStream: resolvedArg({ streaming: false, streamUrl: null, transport: null } as any),
+      startStream: browserMockFlag("mockIosLive")
+        ? async () => ({
+          deviceUdid: "pro",
+          running: true,
+          streaming: true,
+          streamUrl: MOCK_STREAM_URL,
+          transport: { url: MOCK_STREAM_URL, token: "mock-token", width: 576, height: 1280 },
+        }) as any
+        : resolvedArg({ streaming: false, streamUrl: null, transport: null } as any),
       stopStream: resolvedArg({ streaming: false, streamUrl: null } as any),
       getStreamStatus: resolvedArg({ streaming: false, streamUrl: null } as any),
-      tap: resolved({ ok: true as const }),
+      tap: async (args: unknown) => {
+        const taps = ((window as unknown as { __adeMockIosTaps?: unknown[] }).__adeMockIosTaps ??= []);
+        taps.push(args);
+        return { ok: true as const };
+      },
       longPress: resolved({ ok: true as const, action: "long-press" as const, durationMs: 1000 }),
       typeText: resolved({ ok: true as const }),
       drag: resolved({ ok: true as const }),
@@ -8400,7 +8417,9 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         caption: null,
         capturedAt: now,
       }),
-      resolveStreamUrl: resolvedArg({ url: null, forwarded: false, error: null }),
+      resolveStreamUrl: browserMockFlag("mockIosLive")
+        ? async (url: string) => ({ url, forwarded: false, error: null })
+        : resolvedArg({ url: null, forwarded: false, error: null }),
       // The pane's recordings drawer reads these on mount.
       recordList: resolvedArg([]),
       recordingsTotalBytes: resolvedArg(0),

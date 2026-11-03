@@ -113,6 +113,7 @@ export function AndroidDeviceStage({
         screenPixelSize={screenPixelSize}
         devicePointSize={devicePixelSize}
         orientation="portrait"
+        ariaLabel="Android emulator screen"
         interactive={interactive}
         onDeviceInput={onDeviceInput}
         onDeviceScroll={onDeviceScroll}

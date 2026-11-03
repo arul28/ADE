@@ -42,7 +42,8 @@ import {
 type Scenario = "live" | "picker" | "setup" | "noaccel" | "starting" | "off" | "crashed" | "unsupported";
 
 const MOCK_STREAM_PATH = "/android-mock-stream";
-const MOCK_STREAM_URL = `http://127.0.0.1:9${MOCK_STREAM_PATH}`;
+/** The fake loopback stream; `?mockIosLive` points the iOS mock at it too. */
+export const MOCK_STREAM_URL = `http://127.0.0.1:9${MOCK_STREAM_PATH}`;
 /** The video is the lane AVD's 1080×2400 at the brain's 1280 px long side, rounded to even. */
 const VIDEO_WIDTH = 576;
 const VIDEO_HEIGHT = 1280;
@@ -305,6 +306,7 @@ export function createMockAndroidEmulator(): AndroidEmulatorPreloadApi {
     sendText: async (args) => {
       typed.push(args.text);
     },
+    rotate: async () => {},
     screenshot: async () => delay({
       path: "/Users/mock/.ade/android/screenshots/ade_lane_medium_phone-1.png",
       width: LCD.width,
