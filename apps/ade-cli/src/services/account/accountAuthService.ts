@@ -333,15 +333,28 @@ export type AccountActionDomainService = {
   createToken(): Promise<AccountTokenCreateResult>;
 };
 
-export async function getSignedInAccountAccessToken(
+/**
+ * The signed-in account's access token, or `null` when there is no session to
+ * ask. Unlike `getSignedInAccountAccessToken`, a refresh that fails while
+ * signed in THROWS: a caller that retries on its own (the machine publisher)
+ * must be able to tell a network blip from a session it cannot use.
+ */
+export async function requireSignedInAccountAccessToken(
   service: Pick<AccountAuthService, "getStatus" | "getAccessToken">,
   options?: AccountAccessTokenOptions,
 ): Promise<string | null> {
   const status = service.getStatus();
   if (!status.signedIn && status.source !== "env-token") return null;
+  const accessToken = (await service.getAccessToken(options)).trim();
+  return accessToken && service.getStatus().userId ? accessToken : null;
+}
+
+export async function getSignedInAccountAccessToken(
+  service: Pick<AccountAuthService, "getStatus" | "getAccessToken">,
+  options?: AccountAccessTokenOptions,
+): Promise<string | null> {
   try {
-    const accessToken = (await service.getAccessToken(options)).trim();
-    return accessToken && service.getStatus().userId ? accessToken : null;
+    return await requireSignedInAccountAccessToken(service, options);
   } catch {
     // Relay account credentials are additive. An unavailable refresh must not
     // block the independent GitHub, Linear, or ade_proj_ authorization path.
@@ -941,6 +954,26 @@ export class AccountRefreshUnavailableError extends Error {
     super(message, options);
     this.name = "AccountRefreshUnavailableError";
   }
+}
+
+/**
+ * Whether a thrown token read is worth retrying soon, with no user action: the
+ * network or the issuer failed, or another process holds the refresh. A
+ * definitive `invalid_grant` marks the session `expired` before it throws, so
+ * a caller that re-reads the status sees that first; the `invalid_grant` that
+ * reaches here with the session still usable is the inconclusive one. Anything
+ * else (an unusable `ADE_ACCOUNT_TOKEN`, a session with no refresh token) will
+ * fail the same way next time.
+ */
+export function isTransientAccountTokenError(error: unknown): boolean {
+  if (error instanceof AccountRefreshUnavailableError) return true;
+  if (error instanceof AccountTokenRequestError) {
+    return error.status >= 500 || error.status === 429 || error.oauthErrorCode === "invalid_grant";
+  }
+  // fetch() reports a network failure as a TypeError ("fetch failed"), and an
+  // aborted or timed-out request by name.
+  return error instanceof TypeError
+    || (error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError"));
 }
 
 export function createAccountAuthService(args: {
@@ -2393,7 +2426,7 @@ export function createAccountAuthService(args: {
         // env-token exchange runs under service-owned cancellation.
         const envSharedRefresh = new AbortController();
         const envSharedTimer = setTimeout(
-          () => envSharedRefresh.abort(new Error("The shared ADE_ACCOUNT_TOKEN refresh timed out.")),
+          () => envSharedRefresh.abort(new AccountRefreshUnavailableError("The shared ADE_ACCOUNT_TOKEN refresh timed out.")),
           sharedRefreshTimeoutMs,
         );
         envSharedTimer.unref?.();
@@ -2424,8 +2457,22 @@ export function createAccountAuthService(args: {
                 client_id: config.clientId,
               },
             });
-          } catch {
+          } catch (error) {
             envSharedSignal.throwIfAborted();
+            // An env token has no rotation journal, so an invalid_grant here
+            // cannot be the inconclusive peer-rotation case the classifier
+            // retries: the provisioned token really is dead. Everything else
+            // that is transient stays retryable so the publisher can use its
+            // fast backoff instead of asking the user for a new token.
+            if (
+              isTransientAccountTokenError(error)
+              && !(error instanceof AccountTokenRequestError && error.oauthErrorCode === "invalid_grant")
+            ) {
+              throw new AccountRefreshUnavailableError(
+                "ADE could not reach the account service to refresh ADE_ACCOUNT_TOKEN.",
+                { cause: error },
+              );
+            }
             throw new Error(
               "ADE_ACCOUNT_TOKEN refresh failed. Replace it with a newly provisioned token from `ade account token create`.",
             );
@@ -2536,7 +2583,7 @@ export function createAccountAuthService(args: {
       // cancellation, and each caller races its own signal at the join below.
       const sharedRefresh = new AbortController();
       const sharedRefreshTimer = setTimeout(
-        () => sharedRefresh.abort(new Error("The shared account token refresh timed out.")),
+        () => sharedRefresh.abort(new AccountRefreshUnavailableError("The shared account token refresh timed out.")),
         sharedRefreshTimeoutMs,
       );
       sharedRefreshTimer.unref?.();
@@ -2575,7 +2622,7 @@ export function createAccountAuthService(args: {
             const rotation = await waitForRefreshRotation(refreshSnapshot, sharedSignal);
             if (rotation.kind === "rotated") return rotation.snapshot.session;
             if (rotation.kind !== "unchanged") return null;
-            throw new Error(
+            throw new AccountRefreshUnavailableError(
               "ADE is refreshing your account sign-in in another process. Retry in a moment.",
             );
           }
