@@ -969,8 +969,8 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
       const laneId = requireLaneId(args.laneId);
       const profileId = typeof args.profileId === "string" ? args.profileId.trim() : "";
       if (!profileId) throw new Error("profileId is required.");
-      assertWorkCopyLive(laneId);
       return serialize(laneId, async () => {
+        assertWorkCopyLive(laneId);
         assertLaneFree(laneId, null);
         await createLocked(laneId, profileId, args.systemImage?.trim() || null, args.displayName ?? null);
         if (args.start === false) return emitDeviceState(laneId);
@@ -983,8 +983,8 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
       const laneId = requireLaneId(args.laneId);
       const avdName = typeof args.avdName === "string" ? args.avdName.trim() : "";
       if (!avdName) throw new Error("avdName is required.");
-      assertWorkCopyLive(laneId);
       return serialize(laneId, async () => {
+        assertWorkCopyLive(laneId);
         assertLaneFree(laneId, avdName);
         assertNotHeldElsewhere(laneId, avdName);
         const ready = await requireSdk({ emulator: false });
@@ -1014,8 +1014,8 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
     start(args) {
       assertLive();
       const laneId = requireLaneId(args.laneId);
-      assertWorkCopyLive(laneId);
       return serialize(laneId, async () => {
+        assertWorkCopyLive(laneId);
         // A chat's work copy has no device until its first start asks for one.
         if (isRemoteWorkLaneId(laneId) && !deps.laneDevices.get(laneId)) await ensureWorkCopyDeviceLocked(laneId);
         return startLocked(laneState(laneId));
