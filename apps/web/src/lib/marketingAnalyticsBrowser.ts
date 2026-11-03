@@ -58,10 +58,26 @@ function browserStorage(): StorageLike | null {
   }
 }
 
+/**
+ * On the production site, analytics and replay go through this site's own
+ * `/_t/` path, which `vercel.json` rewrites to PostHog's US hosts. Content
+ * blockers drop requests to PostHog's own domain, and much of ADE's audience
+ * runs one. Elsewhere (previews, local dev) the configured host is used.
+ */
+const FIRST_PARTY_HOSTS = new Set(["ade-app.dev", "www.ade-app.dev"]);
+
+function firstPartyPostHogHost(): string | null {
+  if (typeof window === "undefined") return null;
+  return FIRST_PARTY_HOSTS.has(window.location.hostname) && window.location.protocol === "https:"
+    ? `${window.location.origin}/_t`
+    : null;
+}
+
 function captureUrlFromEnv(): string | null {
   const token = (import.meta.env.VITE_POSTHOG_PROJECT_TOKEN as string | undefined)?.trim();
   if (!token || !/^phc_[A-Za-z0-9_-]{8,}$/.test(token)) return null;
-  const rawHost = (import.meta.env.VITE_POSTHOG_HOST as string | undefined)?.trim() || DEFAULT_POSTHOG_HOST;
+  const rawHost = firstPartyPostHogHost()
+    ?? ((import.meta.env.VITE_POSTHOG_HOST as string | undefined)?.trim() || DEFAULT_POSTHOG_HOST);
   try {
     const host = new URL(rawHost);
     if (host.protocol !== "https:" || host.username || host.password || host.search || host.hash) return null;

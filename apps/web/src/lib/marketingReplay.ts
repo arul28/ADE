@@ -47,6 +47,8 @@ function buildConfig(apiHost: string, distinctId: string, allowed: { value: bool
   const currentUrl = () => maskedPageUrl(window.location.href);
   return {
     api_host: apiHost,
+    // Through the site's `/_t/` proxy, links in PostHog still point at the app.
+    ui_host: "https://us.posthog.com",
     bootstrap: { distinctID: distinctId, isIdentifiedID: false },
     persistence: "memory",
     person_profiles: "never",
