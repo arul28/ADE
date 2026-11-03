@@ -40,13 +40,18 @@ import { createScrcpyRecordBuilder } from "./scrcpyVideo";
  * Encoder defaults, measured on the Windows emulator (API 36, 4 vCPUs). The
  * emulator has only a software H.264 encoder, so the picture's size and bit
  * rate set the frame rate while the screen moves: 720x1600 at 8 Mbps gave
- * 15-27 fps, 576x1280 at 4 Mbps 29-52 fps, 464x1024 35-55. The server sets
- * real-time priority and one-frame latency itself (scrcpy 4.0 and later).
+ * 15-27 fps, 576x1280 at 4 Mbps 29-52 fps, 464x1024 35-55. With scrcpy
+ * v5.0.1, 1024 averaged 39 fps (52 max) against 23-36 at 1280. One setting
+ * serves every view, so the panel and the larger view never restart the
+ * encoder. The server sets real-time priority and one-frame latency itself
+ * (scrcpy 4.0 and later).
  */
-/** Longest side of the encoded picture (576x1280 for a 1080x2400 phone). */
-export const ANDROID_STREAM_DEFAULT_MAX_SIZE = 1280;
-export const ANDROID_STREAM_DEFAULT_BIT_RATE = 4_000_000;
-export const ANDROID_STREAM_DEFAULT_MAX_FPS = 60;
+export const ANDROID_STREAM_DEFAULTS = {
+  /** Longest side of the encoded picture (464x1024 for a 1080x2400 phone). */
+  maxSize: 1024,
+  bitRate: 4_000_000,
+  maxFps: 60,
+} as const;
 /** How long a start waits for the first config record. */
 const FIRST_CONFIG_TIMEOUT_MS = 20_000;
 const MAX_RESTARTS = 3;
@@ -148,9 +153,9 @@ async function openSession(device: DeviceStream): Promise<void> {
       adbPath: args.adbPath,
       serial: args.serial,
       serverJarPath: args.serverJarPath,
-      maxSize: args.maxSize ?? ANDROID_STREAM_DEFAULT_MAX_SIZE,
-      videoBitRate: args.bitRate ?? ANDROID_STREAM_DEFAULT_BIT_RATE,
-      maxFps: args.maxFps ?? ANDROID_STREAM_DEFAULT_MAX_FPS,
+      maxSize: args.maxSize ?? ANDROID_STREAM_DEFAULTS.maxSize,
+      videoBitRate: args.bitRate ?? ANDROID_STREAM_DEFAULTS.bitRate,
+      maxFps: args.maxFps ?? ANDROID_STREAM_DEFAULTS.maxFps,
       codecOptions: args.codecOptions ?? null,
       videoEncoder: args.videoEncoder ?? null,
       logger: args.logger ?? null,
