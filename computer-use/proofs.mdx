@@ -54,6 +54,18 @@ Accept / request-more / dismiss are first-class controls on each proof in the dr
   </Step>
 </Steps>
 
+## Demo videos
+
+A recording an agent makes as proof is meant to read like a product post. While it records:
+
+- The video rests on the part of the screen where things happen, so a small app fills the frame.
+- Typing appears one character at a time and plays at normal speed, on every surface (browser, App Control, the desktop drivers, and the simulator).
+- The drawn pointer glides to what it hovers and carries a drag to its end, and a key press shows a badge such as "Cmd + K".
+
+None of this changes input when nothing is recording. On the iPhone, a proof video in a chat plays inline; tap to play or pause, or open the full-screen player.
+
+Before posting, `ade proof review <id>` gives the agent a frame sheet of the video and flags problems such as a recording that is too short or has no captions. `ade proof publish --pr <n> --replace <id>` posts the new proof and deletes the earlier ADE proof comments on that PR.
+
 ## Good proof habits
 
 - Capture **after** the relevant change is visible, not during the work.

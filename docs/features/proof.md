@@ -445,11 +445,31 @@ metadata on both, not in the MP4 container.
 
 `ade proof review <id> --text` (`review_computer_use_artifact`,
 `proofReview.ts`) gives the agent something to look at before a person sees
-the proof. For a video it writes a contact sheet (4–12 frames across it, 4 per
-row, 6 for a portrait video) to `.ade/cache/proof-review/` (the newest 20
-kept), made by the first engine with `contactSheet` (`ade-media`, then
-ffmpeg; a request outside the contract's limits, at most 64 frames and tiles
-16–4096 px wide, gets a sheet error instead); for a picture it gives the file. Both come with findings from the
+the proof. For a video it writes a contact sheet of its key moments to
+`.ade/cache/proof-review/` (the newest 20 kept), made by the first engine with
+`contactSheet` (`ade-media`, then ffmpeg; a request outside the contract's
+limits, at most 64 frames and tiles 16–4096 px wide, gets a sheet error
+instead); for a picture it gives the file.
+
+Which frames (`sheetFrames.ts`, `pickSheetFrames`): one per second of the
+video, 4–12, raised to 16 so every step caption gets one. In order of
+importance: the first and last frame; each step's outcome (the screen 0.35 s
+after the step's last change of 2 % of the screen or more, else three quarters
+into the step); the biggest other changes, each once settled and no closer
+than half a slot to a chosen frame; then even fill in the widest gaps. Change
+comes from the engine's `analyze` of the finished file (the measure the demo
+planner cuts still stretches with; a file it cannot measure gets ends, steps
+and fill only, and the analysis also sizes a movie the MP4 reader cannot).
+Each frame comes back as `frames: [{ t, why, step }]` (`why` is `start`,
+`end`, `step`, `change` or `even`; `step` the caption showing), and `--text`
+lists them by number and time. Tiles are 384 px (4 a row; 240 px, 6 a row for
+portrait), so a 12-frame sheet stays near the 1.15 megapixels vision models
+read without scaling. `--from`/`--to` (seconds) look closer at part of it at
+three frames a second; `--frames` sets the count (1–16); `--chat <id>`
+reviews that chat's newest available video, else its newest picture, and
+lists its other proof in `otherProof`. The result names the owning chat and
+lane (`chatSessionId`, `laneId`), which ADE MCP's `proof_review` turns into a
+link to watch it. Both come with findings from the
 file and its record: under 3 s, over 90 s, no captions, a plain or fallback
 recording, recorded before the request, a picture under 700 px on its shorter side or a thin
 strip. It reads the caller's own proof only (the listing's owner rule), and a

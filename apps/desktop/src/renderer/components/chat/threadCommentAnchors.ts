@@ -2,11 +2,104 @@ import {
   MAX_THREAD_COMMENT_EXCERPT_CHARS,
   THREAD_COMMENT_CONTEXT_CHARS,
   collapseWhitespace,
+  threadMediaSourceKey,
   type ChatThreadCommentAnchor,
+  type ThreadMediaKind,
 } from "../../../shared/threadComments";
 
 /** The element a thread comment hangs off: one finished agent reply. */
 export const THREAD_COMMENT_MESSAGE_SELECTOR = "[data-thread-comment-key]";
+
+/** An image or video in a reply that can take a comment or go into the next message. */
+export const THREAD_MEDIA_SELECTOR = "[data-thread-media]";
+
+/**
+ * The attributes that mark one image or video in a reply. `source` is what
+ * the reply names it by (a markdown path, `ade-proof://<id>`); `attachPath`
+ * is where the chat's machine finds the file, or an http(s) URL. With no
+ * `attachPath` the media can take comments but cannot be attached.
+ */
+export function threadMediaAttributes(media: {
+  kind: ThreadMediaKind;
+  source: string;
+  label: string;
+  attachPath?: string | null;
+}): Record<string, string> {
+  return {
+    "data-thread-media": media.kind,
+    "data-thread-media-source": media.source,
+    "data-thread-media-label": media.label,
+    ...(media.attachPath ? { "data-thread-media-attach": media.attachPath } : {}),
+  };
+}
+
+export type ThreadMediaInfo = {
+  kind: ThreadMediaKind;
+  source: string;
+  label: string;
+  attachPath: string | null;
+};
+
+export function readThreadMedia(element: HTMLElement): ThreadMediaInfo | null {
+  const kind = element.dataset.threadMedia;
+  const source = element.dataset.threadMediaSource;
+  if ((kind !== "image" && kind !== "video") || !source) return null;
+  return {
+    kind,
+    source,
+    label: element.dataset.threadMediaLabel ?? "",
+    attachPath: element.dataset.threadMediaAttach ?? null,
+  };
+}
+
+/**
+ * The visible picture or player inside a marked media element: what a ring
+ * is drawn around and what the hover buttons sit on. The marked element also
+ * holds the caption, so it is wider and taller than the media.
+ */
+export function threadMediaBox(element: HTMLElement): HTMLElement {
+  const media = element.querySelector<HTMLElement>("img, video:not([hidden])");
+  if (media) return (media.closest("button") as HTMLElement | null) ?? media;
+  return (element.firstElementChild as HTMLElement | null) ?? element;
+}
+
+/** A range over one whole node: how a media comment marks its picture. */
+export function rangeAroundNode(node: Node): Range {
+  const range = document.createRange();
+  range.selectNode(node);
+  return range;
+}
+
+function mediaElementsOf(root: HTMLElement): HTMLElement[] {
+  return Array.from(root.querySelectorAll<HTMLElement>(THREAD_MEDIA_SELECTOR));
+}
+
+/** The anchor for one image or video inside a reply. */
+export function captureMediaAnchor(root: HTMLElement, element: HTMLElement): ChatThreadCommentAnchor | null {
+  const info = readThreadMedia(element);
+  const mediaIndex = mediaElementsOf(root).indexOf(element);
+  if (!info || mediaIndex < 0) return null;
+  return { kind: "media", mediaKind: info.kind, source: info.source, label: info.label, mediaIndex };
+}
+
+/** Finds a media anchor's element again: same source, nearest to its old place. Null when it is gone. */
+export function resolveThreadMediaElement(root: HTMLElement, anchor: ChatThreadCommentAnchor): HTMLElement | null {
+  if (anchor.kind !== "media") return null;
+  const all = mediaElementsOf(root);
+  let best: HTMLElement | null = null;
+  let bestDistance = Infinity;
+  for (let index = 0; index < all.length; index += 1) {
+    const element = all[index]!;
+    // The stored source is trimmed and capped; compare in the same form.
+    if (threadMediaSourceKey(element.dataset.threadMediaSource ?? "") !== anchor.source) continue;
+    const distance = Math.abs(index - anchor.mediaIndex);
+    if (distance < bestDistance) {
+      best = element;
+      bestDistance = distance;
+    }
+  }
+  return best;
+}
 
 /**
  * The reply's visible text as one whitespace-collapsed string, with the DOM
@@ -103,6 +196,10 @@ function commonPrefixLength(a: string, b: string): number {
 
 /** Finds a stored anchor in a reply again. Null when the text is gone. */
 export function resolveThreadCommentRange(root: HTMLElement, anchor: ChatThreadCommentAnchor): Range | null {
+  if (anchor.kind === "media") {
+    const element = resolveThreadMediaElement(root, anchor);
+    return element ? rangeAroundNode(threadMediaBox(element)) : null;
+  }
   if (anchor.kind === "table_row") {
     const row = tableRowFor(root, anchor.tableIndex, anchor.rowIndex);
     if (!row) return null;

@@ -26,6 +26,8 @@ Claude Code has its own subagent tool. Codex has its own delegation. When a prov
 
 The result: nested tool activity you can expand, collapsed by default so a deep delegation does not bury the parent's work, and no second chat cluttering Work. This is the right choice for short, parallel research or a narrowly scoped edit.
 
+When one of these subagents needs an approval, its card shows in the parent chat and names the subagent ("Explorer asks"). With several cards open, the composer lists who is waiting and for what, and the subagents panel marks a waiting subagent "needs you". The cards stay open through the default Stop and the end of the parent's turn, because the subagent keeps running; they close when that subagent ends or is stopped. **Accept all** on a subagent's card covers the whole chat. If ADE restarts while a subagent's question is open, the card closes and offers to send your answer to the main agent instead.
+
 ## ADE child chats
 
 An ADE child is a full session — its own lane-scoped context, its own tools, its own permissions — that records the parent it came from. Any chat can start one:

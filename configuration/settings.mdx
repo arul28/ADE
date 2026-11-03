@@ -1,39 +1,37 @@
 ---
 title: "Settings"
-description: "The real ADE settings tabs, a recommended first pass, and the first-run setup that detects your stack."
+description: "How ADE Settings is organized, a recommended first pass, and the first-run setup that detects your stack."
 icon: "sliders"
 ---
 
 Settings is where you connect providers, link GitHub and Linear, tune how ADE looks and behaves, and shape how lanes are created. It's organized by the kind of thing you're changing, not by which service backs it.
 
-## The tabs
+## The pages
+
+Settings opens on **General**. The sidebar groups the rest by what they belong to: you, the app, the open project, and the machines.
 
 <CardGroup cols={2}>
   <Card title="General" icon="sliders">
-    AI mode, task routing, terminal preferences, keybindings, project setup re-entry, and the `ade` CLI install / health surface.
+    Anything that needs attention, cards for you and this machine, and ADE itself: version, update track, automatic updates, and an update row for every machine.
   </Card>
-  <Card title="Appearance" icon="palette">
-    Theme, chat density and font size, code-block options, completion sound, and voice dictation.
+  <Card title="You" icon="user">
+    **Account** (sign-in, connections, your computers) and **Usage** (spend and pacing across your providers and machines).
   </Card>
-  <Card title="AI Connections" icon="brain">
-    Provider CLIs, sign-in and API keys, model availability, and provider readiness for the five agents.
+  <Card title="App" icon="window">
+    **Chat**, **Providers** (one list, with a machine picker in its title, and the **Custom** section), **MCP servers**, **ADE MCP**, **Notifications**, **Appearance**, **Behaviour**, and **Apple devices** on macOS.
   </Card>
-  <Card title="Background Jobs" icon="robot">
-    Lightweight AI helpers: auto-naming chats and lanes and summarizing finished work.
+  <Card title="Project" icon="folder-tree">
+    **Lanes**, **Agents**, **Storage & cleanup**, **Location**, **Secrets**, and **Integrations** (GitHub, Linear, and Jira) for the open project.
   </Card>
-  <Card title="Integrations" icon="plug">
-    GitHub, Linear, and the `ade` CLI integration tabs.
-  </Card>
-  <Card title="Lane Templates & Behavior" icon="code-branch">
-    Lane initialization recipes and lifecycle policies — what new lanes set up, and when old ones get cleaned up.
-  </Card>
-  <Card title="Stats" icon="chart-line">
-    A retrospective dashboard: local AI token / cost summaries and GitHub-backed PR, commit, and code-movement totals.
+  <Card title="System" icon="server">
+    **Machines**, with a page per machine (its load, its **New work** preference, and the work it keeps for chats on other machines), and **Advanced** (the background service, the `ade` command, reports, database copies, and reset).
   </Card>
 </CardGroup>
 
+**Continue chats after restarts** is one setting per machine, in **Settings › Chat › Restarts**. Old Settings links still land on the right page.
+
 <Note>
-A few controls live in the **top bar**, not in Settings: live provider quota windows and the automation budget sit in the **Usage** popup, and phone pairing and multi-device sync sit in the **Sync** popover. Settings → Stats is the retrospective view; the Usage popup is the live one.
+A few controls live in the **top bar**, not in Settings: live provider quota windows and the automation budget sit in the **Usage** popup, and phone pairing and multi-device sync sit in the **Sync** popover. **Settings › Usage** is the retrospective view; the Usage popup is the live one.
 </Note>
 
 ## First-run setup
@@ -46,7 +44,7 @@ When you open a project for the first time, ADE shows a setup dashboard — a si
 - **GitHub and Linear** — optional cards for repository auth and Linear connection.
 - **Existing worktrees** — import git branches you already have as lanes in one click.
 
-Nothing here blocks you. You can skip any card and re-run setup later from **General**.
+Nothing here blocks you. You can skip any card and re-run setup later.
 
 ## Recommended first pass
 
@@ -54,7 +52,7 @@ Only the first step is required to start running agents — the rest unlock GitH
 
 <Steps>
   <Step title="Verify one provider">
-    In **AI Connections**, make sure at least one of Claude Code, Codex, Cursor, Factory Droid, or OpenCode is green. That's all you need to start a lane chat.
+    In **Providers**, make sure at least one of Claude Code, Codex, Cursor, Factory Droid, or OpenCode is green. That's all you need to start a lane chat.
   </Step>
   <Step title="Connect GitHub">
     Do this for PR creation, CI state, comments, and merge workflows.

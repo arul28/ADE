@@ -15,11 +15,14 @@ import {
   ADE_DEEPLINK_HTTPS_HOST,
   ADE_DEEPLINK_HTTPS_PATH,
   buildDeeplink,
+  deeplinkTargetTakesOwnership,
   isAdeDeeplinkHttpsHost,
   isValidRepoRelativePath,
   parseDeeplink,
   type DeeplinkEnvelope,
+  type DeeplinkOwnership,
   type DeeplinkTarget,
+  type OwnedDeeplinkTarget,
 } from "../../../desktop/src/shared/deeplinks";
 import { WEB_CLIENT_BASE_URL, buildWebClientUrl } from "../../../desktop/src/shared/webClientUrl";
 import { copyToClipboard } from "../lib/clipboard";
@@ -40,6 +43,12 @@ export type DeeplinkCommandOptions = {
   resolveEnvelope?: (
     context: LinkEnvelopeContext,
   ) => DeeplinkEnvelope | null | Promise<DeeplinkEnvelope | null>;
+  /**
+   * This computer and project, for lane, chat and PR links: with them a link
+   * opens on the right computer and project from anywhere.
+   */
+  /** This project's machine and id, for a target that is this project's (null when it is not, or unknown). */
+  resolveOwnership?: (target: OwnedDeeplinkTarget) => DeeplinkOwnership | null | Promise<DeeplinkOwnership | null>;
 };
 
 const HELP_OPEN = [
@@ -69,7 +78,8 @@ const HELP_LINK = [
   "",
   "Options:",
   "  --ade           Emit the custom `ade://` form (default: https)",
-  "  --no-envelope   Skip best-effort repo/branch/PR envelope lookup",
+  "  --no-envelope   Skip the best-effort lookup of repo/branch/PR and of the",
+  "                  computer and project a lane, chat or PR link opens on",
   "  --web           Emit the hosted web client form (app.ade-app.dev)",
   "  --no-clipboard  Print the URL but don't copy to clipboard",
 ].join("\n");
@@ -255,6 +265,10 @@ export async function runLinkCommandAsync(
       if (target.kind === "session") target = { ...target, envelope };
       if (target.kind === "commit") target = { ...target, envelope };
     }
+  }
+  if (!plan.noEnvelope && options.resolveOwnership && deeplinkTargetTakesOwnership(target) && !target.ownership) {
+    const ownership = await Promise.resolve(options.resolveOwnership(target)).catch(() => null);
+    if (ownership) target = { ...target, ownership };
   }
   return finishLink(renderLink(target, plan), plan.skipClipboard);
 }

@@ -15,7 +15,7 @@ import type {
   TriggerContext,
 } from "../automations/automationService";
 import { getModelById, resolveProviderGroupForModel } from "../../../shared/modelRegistry";
-import { buildDeeplink } from "../../../shared/deeplinks";
+import { buildDeeplink, type DeeplinkOwnership } from "../../../shared/deeplinks";
 import { normalizedLinearIssueToLaneIssue } from "../../../shared/laneLinearIssue";
 import type { LinearAgentActivityContent, LinearAgentPlanStep, LinearAgentRelayClient } from "./linearAgentRelayClient";
 import { getErrorMessage, isRecord, toOptionalString as asString } from "../shared/utils";
@@ -57,6 +57,8 @@ export type LinearAgentServiceDeps = {
   relay: LinearAgentRelayClient;
   logger: Logger;
   machine: { id: string; name: string | null };
+  /** This computer and project, so "Open in ADE" opens here from anywhere. */
+  linkOwnership?: () => DeeplinkOwnership | null;
   /** The ADE account id of this brain's signed-in user, used to skip events routed to someone else. */
   getAccountId: () => string | null;
   kv: { getJson<T>(key: string): T | null; setJson(key: string, value: unknown): void };
@@ -509,7 +511,8 @@ export function createLinearAgentService(deps: LinearAgentServiceDeps) {
           });
         }
       }
-      const url = buildDeeplink({ kind: "session", sessionId, laneId });
+      const ownership = deps.linkOwnership?.() ?? null;
+      const url = buildDeeplink({ kind: "session", sessionId, laneId, ...(ownership ? { ownership } : {}) });
       void relay.updateSession(agentSessionId, { addedExternalUrls: [{ label: "Open in ADE", url }] }).catch(() => {});
       void relay.startWork(agentSessionId).catch(() => {});
       const laneName = await deps.lanes.getLaneName(laneId).catch(() => null);

@@ -1,3 +1,4 @@
+import type { DeeplinkOwnership } from "../shared/deeplinks";
 import type { RemoteWorkCopyListing } from "../shared/types/remoteWork";
 import type { MachineStats } from "../shared/types/machineStats";
 import type { NewLaneDefaults } from "../shared/laneStart";
@@ -1316,6 +1317,8 @@ declare global {
         onProjectBindingChanged: (
           cb: (binding: OpenProjectBinding | null) => void,
         ) => () => void;
+        /** Route a link that names its computer and project through the owner (desktop only). */
+        openOwnedDeeplink?: (url: string) => Promise<boolean>;
         onNavigate: (cb: (request: AppNavigationRequest) => void) => () => void;
         openExternal: (url: string) => Promise<void>;
         openSystemSettingsPane: (
@@ -1527,6 +1530,8 @@ declare global {
       };
       remoteRuntime: {
         listTargets: () => Promise<RemoteRuntimeTarget[]>;
+        /** The account computer and project a link to something in `binding` names. */
+        linkOwnership: (binding: OpenProjectBinding | null) => Promise<DeeplinkOwnership | null>;
         getConnectionSnapshot: () => Promise<RemoteRuntimeConnectionSnapshot>;
         onConnectionSnapshotChanged: (
           cb: (snapshot: RemoteRuntimeConnectionSnapshot) => void,

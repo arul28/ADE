@@ -44,6 +44,28 @@ Connecting a remote does not move ADE off your own machine. The desktop app rema
 Remote machines run macOS, Linux, or Windows. A Windows desktop can drive them when it is running an installed release build — a locally packaged Windows build ships no macOS or Linux runtime payloads and will refuse. Windows targets must be Windows 10 22H2 or Windows 11 x64 with OpenSSH Server and PowerShell 5.1 or newer; WSL, ARM64, and Windows Server are not supported. See [ADE on Windows](/getting-started/windows).
 </Note>
 
+## Use another machine from the chat you are in
+
+A chat can run a command or a simulator on another of your machines without a second chat or a new lane. Run the Windows tests, a build on a bigger Mac, or that Mac's simulator, and the output comes back to the chat you are in.
+
+```bash
+ade shell start --machine windows --wait -- npm test   # stream the output, exit with its code
+ade shell start --machine windows --no-sync -- git status   # use the copy as it is
+ade shell clean --machine windows                       # delete this chat's copy there
+```
+
+The other machine keeps a hidden **work copy** for the chat: a git checkout at the chat's commit, with the chat's uncommitted changes applied. It is not a lane and never shows in Lanes.
+
+- **Git moves the code.** The chat's commit must be pushed. Work done in the copy reaches the chat only by commit and push. A sync refuses while the copy holds work that is not pushed and names the files; `--discard` throws that work away.
+- **The chat shows where it works.** While a chat works on another machine, its header and card show that machine's logo, with its commands and Stop. The terminal tool lists those commands.
+- **Copies clean up after themselves:** after a week unused, when the chat is deleted or archived, when the disk is low, with `ade shell clean --machine`, or from **Settings › Machines**, where each machine lists its **Work from other machines** with size and Delete.
+
+Agents are told to ask you before they use another machine. The `@machine` mention in the composer offers three choices: run a command there, start a chat there, or move this chat there.
+
+### Pick where new work goes
+
+**Settings › Machines** shows each machine's live load and what it can run: CPU, free memory, disk, running builds, signed-in CLIs, Xcode and simulators, battery, and work copies. Each machine also has a **New work** preference: Prefer, Normal, Less often, or Manual only. The preference is saved to your account, so every machine and the phone read it. **Least loaded** in the new-lane and new-chat pickers uses both the load and the preference, and never picks a Manual only machine.
+
 ## ADE Relay: the internet fallback
 
 ADE Relay is how your phone, another Mac, or the web client reach a machine when they cannot connect directly. Relay uses ADE-hosted infrastructure, so both devices must be signed in to the same ADE account.

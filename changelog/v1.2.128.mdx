@@ -1,0 +1,55 @@
+---
+title: "v1.2.128"
+description: "Release notes for ADE v1.2.128 - November 3, 2026"
+---
+
+ADE 1.2.128 lets a chat run commands and simulators on your other computers, lets every harness use the sign-ins you already have, and makes updates across several machines easy to read. Chats stream and switch much faster, and the iPhone gets a separate ADE Beta app.
+
+## New
+
+- An agent can run a command or a simulator on another of your computers from the chat you are in, with no second chat or lane; the chat header shows that machine while it works there (#1999).
+- Every harness can use the Claude, ChatGPT, Grok, Kimi, Devin and Muse sign-ins you already have, Copilot, Pi and Kimi become custom harnesses, and the Custom editor is redesigned (#2009).
+- A shell code block in a reply can run in a new terminal, and its output can go back to the agent with one click (#2027).
+- One restart dialog lists every machine with its track and target build, each machine is offered the newest build on its own track, and Settings opens on a new General page (#1997).
+- If an update breaks startup, an "ADE could not start" window offers Try again or Go back to the previous version, and Settings › Advanced lists the database copies kept on this computer (#2002).
+- Demo videos made by agents read like a product post, and PR text written with `gh` can be repaired with ADE's proof (#1996).
+- Settings › Machines shows each machine's load, what it can run, and a preference for where new work goes (#1999).
+
+## Improved
+
+- Streaming a reply uses about a third of the main-thread time it did, and the last line lands in 19 ms instead of 602 ms (#2003).
+- Switching chats, typing and rebuilding long chats are faster (#1985).
+- Git reads, lane lists and History start far fewer git processes, and an idle brain starts 55% fewer processes (#1977, #1978, #1987, #1989, #1981).
+- A phone on a slow link shows its first chat 3 seconds sooner, and the brain no longer freezes while it connects (#1976).
+- Subagent approvals stay in the parent chat through Stop, the end of a turn and a restart; each card names its subagent and the composer lists the ones waiting (#2028).
+- Focus is on by default in Work, and the Work list shows chat counts (#1998).
+- Settling a chat no longer stops its background work (#1993).
+- Every agent sees every browser tab, and one browser task stays on one machine (#2025).
+- Usage stats are account-wide, quota follows the login, and the usage popover is cleaner (#2015).
+- Copilot uses SDK 1.0.28 with its own slash commands and errors you can trace (#1991).
+- Bulk lane actions and Shift-select work for lanes on other machines (#2014).
+- Runtime downloads that macOS kept but no longer lists show up in Apple runtimes (#2016).
+
+## Fixed
+
+- 16 bugs that T3 Code fixed and ADE also had, including git hooks with non-English locales, signed-commit text in file lists, the context meter's compaction point and shortcuts on non-Latin keyboards (#2021).
+- The CTO's steering joins a worker's running turn, Electron apps start on lane screens, and simulator snapshots find every tab-bar item (#2024).
+- New project databases open on Windows, SSH key paths with `~` or `%USERPROFILE%` work, and Sentry sends far fewer false alerts (#2019).
+- A failed account token refresh retries instead of showing an unreadable sign-in (#2035).
+- Tailscale no longer shows a warning over your computers (#2030).
+- `gh` keychain helpers no longer pile up, and a broken chat repairs itself (#2018).
+- A chat at rest no longer wakes days later, and `ade doctor` shows the real latest build (#1994).
+
+## iOS
+
+- A separate ADE Beta app installs beside the normal app, and machines running a beta show a Beta chip (#2008, #2002).
+- Chat Info has an account switcher, and its pane matches desktop (#2004).
+- Long menus scroll again, an unfolded Duo is lighter, the new-chat card has the 3D activity skyline, and charts read well with little data (#2006).
+- The permission mode is one dropdown at every width (#2032).
+- The app no longer freezes or gets killed while it finds your machines (#2019).
+
+## Windows
+
+- Lane creates and deletes no longer fail or hang, and Test connection no longer disconnects (#2017).
+- No PowerShell window flashes, and dev-server scans no longer start PowerShell each time (#1995, #2026).
+- Opening a project no longer holds the brain for about a second, and git runs one process per command instead of two (#1983, #1977).

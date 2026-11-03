@@ -45,6 +45,7 @@ Each project keeps its ADE state in `.ade/` inside the repository: the local dat
 ## What follows from this
 
 - **A lane belongs to its machine.** Chats and terminals for that lane run there and only there.
+- **A chat can still borrow another machine.** It can run a command or a simulator on another of your machines in a hidden work copy there, without moving the chat or making a lane; see [use another machine from the chat](/tools/remote-machines#use-another-machine-from-the-chat-you-are-in).
 - **Remote actions are scoped.** The app passes the target machine with every action; see [remote machines](/tools/remote-machines).
 - **Killing a client does not kill the work.** The brain keeps running, and a chat can be resumed from another client.
 

@@ -12,6 +12,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `@ade-dev/sdk` and `@ade-dev/chat-ui` are 0.7.0, with provider accounts and API credentials, isolated logins, queued messages, usage-limit events, and the single-turn `client.run()` helper.
 - **Breaking:** `useMachineLogin` now defaults to `false`. Set it to `true` to reuse the host machine's Claude or Codex login.
 
+## [1.2.128] - 2026-11-03
+
+### Desktop and web
+
+- Run commands and simulators on your other machines from one chat, with work copies, machine load and a "New work" preference; about 25 duplicate CLI spellings removed (#1999).
+- Every harness runs on your existing sign-ins; Copilot, Pi and Kimi are custom harnesses; redesigned Custom editor; Droid 1.0 and CLIProxyAPI 8 (#2009).
+- Run a shell code block from a reply in a new terminal and send its output to the agent (#2027).
+- One restart dialog, per-track updates for every machine, Sentry beta gate, Settings opens on General (#1997); startup recovery with Go back, database copies, beta notes, old-database launch check (#2002).
+- Proof demo videos and `gh` PR text repair (#1996); Focus on by default and chat counts (#1998); settling keeps background work (#1993); subagent approvals stay in the parent chat, plus agent-launch fixes (#2028).
+- Performance: streaming (#2003), chat switching and typing (#1985), git process counts (#1977, #1978, #1987, #1989), idle brain (#1981), CTO chat actions (#1980), PR refresh (#1982), slow-link phone connect (#1976, #1986), Windows project open and dev-server scans (#1983, #2026).
+- Fixes: 16 bugs T3 Code also fixed (#2021), Versic ledger bugs (#2024), Sentry noise, Windows new databases and iPhone freezes (#2019), browser tabs across agents (#2025), account-wide usage (#2015), Copilot SDK 1.0.28 (#1991), remote bulk lane actions (#2014), Apple runtimes (#2016), gh keychain helpers (#2018), Windows lanes and Test connection (#2017), PowerShell flash (#1995), resting chats waking (#1994), Tailscale warning (#2030), token refresh (#2035).
+- Analytics, web and beta-timer work (#1973, #2000, #2010, #2011, #2012, #2013, #2020, #2022).
+
+### iOS
+
+- ADE Beta app beside the normal app (#2008); Beta chip (#2002); account switcher in Chat Info (#2004); scrolling menus, lighter Duo, 3D activity skyline (#2006); one permission dropdown (#2032).
+
 ## [1.2.127] - 2026-10-30
 
 ### Desktop and web
@@ -2808,7 +2825,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.127...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.128...HEAD
+[1.2.128]: https://github.com/arul28/ADE/compare/v1.2.127...v1.2.128
 [1.2.127]: https://github.com/arul28/ADE/compare/v1.2.126...v1.2.127
 [1.2.126]: https://github.com/arul28/ADE/compare/v1.2.125...v1.2.126
 [1.2.125]: https://github.com/arul28/ADE/compare/v1.2.124...v1.2.125

@@ -1,4 +1,8 @@
-import { buildDeeplink } from "../../../../desktop/src/shared/deeplinks";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { buildDeeplink, type DeeplinkOwnership } from "../../../../desktop/src/shared/deeplinks";
+import { pathIsWithinRoot } from "../../../../desktop/src/shared/pathContainment";
 import type { RemoteMcpToolResult } from "./remoteMcpForward";
 import { MAX_OUTPUT_BYTES, type RemoteRunResult } from "./remoteMcpRunner";
 
@@ -26,6 +30,13 @@ type TypedToolInput = Record<string, unknown>;
 
 type TypedToolBuild = { argv: string[] } | { error: string };
 
+/**
+ * Where a result came from: this computer's account machine key and the
+ * project the command ran in. Links in results carry both, so opening one
+ * goes to that computer and project from anywhere (desktop, web, phone).
+ */
+export type TypedShapeContext = { ownership: DeeplinkOwnership | null };
+
 export type TypedTool = {
   name: string;
   title: string;
@@ -50,7 +61,7 @@ export type TypedTool = {
   };
   build: (input: TypedToolInput) => TypedToolBuild;
   /** Reshapes the CLI's parsed JSON into `result`. */
-  shape?: (value: unknown, input: TypedToolInput) => unknown;
+  shape?: (value: unknown, input: TypedToolInput, context: TypedShapeContext) => unknown;
   /** The next step for the model, from the shaped result; null when there is none to give. */
   next?: (result: unknown, input: TypedToolInput) => string | null;
   /** Fills inputs the call left out from the model the person last launched a chat with. */
@@ -61,6 +72,12 @@ export type TypedTool = {
   timeoutMs?: (input: TypedToolInput) => number;
   /** Raised for commands whose JSON is large before it is trimmed. */
   maxOutputBytes?: number;
+  /**
+   * A picture the command wrote, from its parsed (unshaped) JSON, sent beside
+   * the text as an image block. Only files under the project's `.ade/cache`
+   * or `.ade/artifacts` are read (`readToolImage`).
+   */
+  image?: (value: unknown) => string | null;
 };
 
 const LANE = { type: "string", description: "Lane id from lanes_list, not its name." };
@@ -150,9 +167,30 @@ function timestamp(value: unknown): number {
 }
 
 /** A link that opens the chat in ADE, for the model to hand the person. */
-function chatLink(sessionId: string | null, laneId: string | null): string | null {
+function chatLink(sessionId: string | null, laneId: string | null, context: TypedShapeContext): string | null {
   if (!sessionId) return null;
-  return buildDeeplink({ kind: "session", sessionId, ...(laneId ? { laneId } : {}) });
+  return buildDeeplink({
+    kind: "session",
+    sessionId,
+    ...(laneId ? { laneId } : {}),
+    ...(context.ownership ? { ownership: context.ownership } : {}),
+  });
+}
+
+/**
+ * An engine's failure line without the local paths it names. The paths ADE
+ * knows go whole first (they may hold spaces): the video, its project, the
+ * home folder. Any other path-shaped word goes after.
+ */
+function withoutLocalPaths(text: string, videoPath: string | null): string {
+  const projectRoot = videoPath?.match(/^(.*?)[\\/]\.ade[\\/]/)?.[1] ?? null;
+  const known: Array<[string | null, string]> = [[videoPath, "<file>"], [projectRoot, "<project>"], [os.homedir(), "~"]];
+  let redacted = text;
+  for (const [value, label] of known) {
+    if (value && value.length > 1) redacted = redacted.split(value).join(label);
+  }
+  // A path's own trailing colon is the message's ("<path>: Invalid data").
+  return redacted.replace(/(?<![\w.~<>])(?:[A-Za-z]:)?[\\/][^\s'"]+/g, (found) => (found.endsWith(":") ? "<file>:" : "<file>"));
 }
 
 const PROJECT_FIELDS = ["projectId", "displayName", "rootPath", "lastOpenedAt", "exists", "gitOriginUrl"] as const;
@@ -165,6 +203,11 @@ const CHAT_FIELDS = [
   "lastActivityAt", "archivedAt", "orchestrationParentSessionId", "lastOutputPreview",
 ] as const;
 const CHAT_WAIT_SUMMARY_FIELDS = [...CHAT_FIELDS, "awaitingInput", "pendingInputItemId"] as const;
+/** What a proof review tells a remote model; the local paths stay on the computer. */
+const PROOF_REVIEW_FIELDS = [
+  "artifactId", "media", "title", "createdAt", "width", "height", "durationSeconds",
+  "columns", "frames", "findings", "sheetError",
+] as const;
 const INBOX_FIELDS = [
   "sessionId", "title", "laneId", "lane", "model", "kind", "requestId", "text", "detail", "questions", "since", "link",
 ] as const;
@@ -462,10 +505,10 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
       return { argv };
     },
     maxOutputBytes: LARGE_OUTPUT_BYTES,
-    shape: (value, input) => records(value, ["sessions", "chats"])
+    shape: (value, input, context) => records(value, ["sessions", "chats"])
       .sort((a, b) => timestamp(b.lastActivityAt) - timestamp(a.lastActivityAt))
       .slice(0, integer(input, "limit", 30, 200))
-      .map((chat) => ({ ...pick(chat, CHAT_FIELDS), link: chatLink(nonEmptyString(chat.sessionId), nonEmptyString(chat.laneId)) })),
+      .map((chat) => ({ ...pick(chat, CHAT_FIELDS), link: chatLink(nonEmptyString(chat.sessionId), nonEmptyString(chat.laneId), context) })),
   },
   // result: the CLI's transcript read (messages, newest last)
   {
@@ -542,7 +585,7 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
     },
     next: (result, input) => {
       if (!isRecord(result)) return null;
-      if (result.ok === true) return (input.for ?? "idle") === "idle" ? "Done. chat_read shows what it did." : null;
+      if (result.ok === true) return (input.for ?? "idle") === "idle" ? "Done. chat_read shows what it did; proof_review, a video or picture it made." : null;
       if (result.error === "waiting_on_user") return WAITS_ON_PERSON;
       if (result.error === "session_not_found") {
         return "No such chat yet. A chat from chat_start appears once its lane is set up: wait again in a minute. Otherwise check the id with chat_list.";
@@ -551,6 +594,69 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
     },
     // Room for the CLI to answer after its own wait ends.
     timeoutMs: (input) => (Math.max(5, integer(input, "timeout_seconds", 120, MAX_WAIT_SECONDS)) + 30) * 1000,
+  },
+  // result: { artifactId, media: "video"|"image", title, createdAt, width, height, durationSeconds,
+  //           columns, frames: [{ t, why: "start"|"end"|"step"|"change"|"even", step }], findings,
+  //           sheetError?, otherProof?: [{ id, kind, title, createdAt }], link }
+  // The sheet (or the picture) rides beside the text as an image block: `image`.
+  {
+    name: "proof_review",
+    title: "Look at a chat's proof",
+    description: "A proof video's key moments as one image (the ends, each step's outcome, the biggest changes), "
+      + "with each frame's time and why; a picture as itself. from/to (seconds) look closer.",
+    properties: {
+      session: { type: "string", description: "Chat id: its newest video, else its newest proof." },
+      proof: { type: "string", description: "One proof id (otherProof) instead." },
+      from: { type: "number", minimum: 0 },
+      to: { type: "number", minimum: 0 },
+    },
+    build: (input) => {
+      const proof = optionalWord(input, "proof");
+      if ("error" in proof) return proof;
+      const session = optionalWord(input, "session");
+      if ("error" in session) return session;
+      if (!proof.value && !session.value) return { error: "Pass `session` (a chat id) or `proof`." };
+      const seconds = (key: "from" | "to") => {
+        const value = input[key];
+        return typeof value === "number" && Number.isFinite(value) && value >= 0 ? [`--${key}`, String(value)] : [];
+      };
+      return {
+        argv: [
+          "proof", "review",
+          ...(proof.value ? [proof.value] : ["--chat", session.value!]),
+          ...seconds("from"), ...seconds("to"),
+          "--json",
+        ],
+      };
+    },
+    shape: (value, _input, context) => {
+      const record = unwrap(value);
+      if (!isRecord(record)) return record;
+      const sessionId = nonEmptyString(record.chatSessionId);
+      const sheetError = nonEmptyString(record.sheetError);
+      return {
+        ...pick(record, PROOF_REVIEW_FIELDS),
+        ...(sheetError ? { sheetError: withoutLocalPaths(sheetError, nonEmptyString(record.path)) } : {}),
+        ...(Array.isArray(record.otherProof) && record.otherProof.length ? { otherProof: record.otherProof } : {}),
+        link: chatLink(sessionId, nonEmptyString(record.laneId), context),
+      };
+    },
+    next: (result) => {
+      if (!isRecord(result)) return null;
+      const watch = typeof result.link === "string" ? ` The person watches it in ADE: ${result.link}` : "";
+      if (result.media !== "video") return `To change it, chat_send the chat that made it.${watch}`;
+      if (typeof result.sheetError === "string") return `No frame sheet: ${result.sheetError}.${watch}`;
+      return `Frames read left to right, ${String(result.columns)} a row (result.frames). To change the video, `
+        + `chat_send its chat naming moments by time ("cut 0:12–0:18"), then chat_wait and look again. `
+        + `For a closer look, proof_review with from/to.${watch}`;
+    },
+    image: (value) => {
+      const record = unwrap(value);
+      if (!isRecord(record)) return null;
+      return nonEmptyString(record.media === "video" ? record.sheetPath : record.path);
+    },
+    // Measuring the video decodes all of it once before the sheet is made.
+    timeoutMs: () => 180_000,
   },
   // result: the CLI's usage report ({ accounts: [{ provider, accountId, windows: [{ percentLeft, resetsAt, … }] }], notes })
   {
@@ -649,7 +755,7 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
       }
       return { argv: [...argv, "--json"] };
     },
-    shape: (value, input) => {
+    shape: (value, input, context) => {
       const unwrapped = unwrap(value);
       const record = isRecord(unwrapped) ? unwrapped : {};
       const sessionId = nonEmptyString(record.sessionId) ?? text(input, "session");
@@ -659,7 +765,7 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
         decision: nonEmptyString(record.decision),
         ...(nonEmptyString(record.kind) ? { kind: nonEmptyString(record.kind) } : {}),
         ...(nonEmptyString(record.title) ? { title: nonEmptyString(record.title) } : {}),
-        link: chatLink(sessionId, null),
+        link: chatLink(sessionId, null, context),
       };
     },
     next: (result) => {
@@ -692,7 +798,7 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
       if (!message) return { error: "Pass `text`." };
       return { argv: ["chat", "send", session.value, freeText("--text", message), "--json"] };
     },
-    shape: (value, input) => {
+    shape: (value, input, context) => {
       const unwrapped = unwrap(value);
       const record = isRecord(unwrapped) ? unwrapped : {};
       const sessionId = nonEmptyString(record.sessionId) ?? text(input, "session");
@@ -700,7 +806,7 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
         sessionId,
         delivery: nonEmptyString(record.delivery),
         routedAction: nonEmptyString(record.routedAction),
-        link: chatLink(sessionId, null),
+        link: chatLink(sessionId, null, context),
       };
     },
     next: () => "Sent. chat_wait returns when the chat is done.",
@@ -738,7 +844,7 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
     // `--wait` exits 1 when the launch failed or is still setting up; the JSON says which.
     okExitCodes: [0, 1],
     timeoutMs: () => (START_WAIT_SECONDS + 30) * 1000,
-    shape: (value) => {
+    shape: (value, _input, context) => {
       const record = isRecord(value) ? value : {};
       const launch = isRecord(record.launch) ? record.launch : record;
       const sessionId = nonEmptyString(launch.sessionId) ?? nonEmptyString(record.launchId);
@@ -751,7 +857,7 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
         title: nonEmptyString(launch.title),
         phase: chatPhaseOfLaunch(nonEmptyString(record.phase) ?? nonEmptyString(launch.phase)),
         ...(error ? { error } : {}),
-        link: chatLink(sessionId, laneId),
+        link: chatLink(sessionId, laneId, context),
       };
     },
     next: (result) => {
@@ -801,13 +907,18 @@ export function toolText(result: RemoteRunResult, outputLimitBytes = MAX_OUTPUT_
   return parts.join("\n\n") || "(no output)";
 }
 
-/** A typed tool's run, parsed and shaped; null when it failed or its output is not whole JSON. */
-export function parseTypedRun(tool: TypedTool, input: TypedToolInput, run: RemoteRunResult): { value: unknown } | null {
+/** A typed tool's run, parsed (`raw`) and shaped (`value`); null when it failed or its output is not whole JSON. */
+export function parseTypedRun(
+  tool: TypedTool,
+  input: TypedToolInput,
+  run: RemoteRunResult,
+  context: TypedShapeContext,
+): { value: unknown; raw: unknown } | null {
   const answered = !run.timedOut && !run.truncated && (tool.okExitCodes ?? [0]).includes(run.exitCode ?? -1);
   if (!answered) return null;
   try {
     const parsed: unknown = JSON.parse(run.stdout);
-    return { value: tool.shape ? tool.shape(parsed, input) : parsed };
+    return { value: tool.shape ? tool.shape(parsed, input, context) : parsed, raw: parsed };
   } catch {
     return null;
   }
@@ -818,6 +929,8 @@ type TypedResultFrame = {
   headLine: string;
   /** `structuredContent.project`; null when the result spans projects or none is open. */
   project: Record<string, unknown> | null;
+  /** Where the result came from, for its links. */
+  context: TypedShapeContext;
 };
 
 /** A typed tool's answer from its shaped result: the next step, the text, and `structuredContent`. */
@@ -825,7 +938,7 @@ export function shapedToolResult(
   tool: TypedTool,
   input: TypedToolInput,
   value: unknown,
-  frame: TypedResultFrame,
+  frame: Pick<TypedResultFrame, "headLine" | "project">,
 ): RemoteMcpToolResult {
   // The next step rides in the result, where the model decides it.
   const next = tool.next?.(value, input) ?? null;
@@ -836,16 +949,85 @@ export function shapedToolResult(
   };
 }
 
-/** A typed tool's answer from one run: the shaped result, or the command's own output when it failed. */
+/**
+ * A typed tool's answer from one run: the shaped result, or the command's own
+ * output when it failed. `raw` is the parsed output (null on failure), which
+ * names the picture `withToolImage` attaches.
+ */
 export function buildTypedToolResult(
   tool: TypedTool,
   input: TypedToolInput,
   run: RemoteRunResult,
   frame: TypedResultFrame,
-): RemoteMcpToolResult {
-  const parsed = parseTypedRun(tool, input, run);
+): { answer: RemoteMcpToolResult; raw: unknown } {
+  const parsed = parseTypedRun(tool, input, run, frame.context);
   if (!parsed) {
-    return { content: [{ type: "text", text: `${frame.headLine}\n${toolText(run, tool.maxOutputBytes)}` }], isError: true };
+    return {
+      answer: { content: [{ type: "text", text: `${frame.headLine}\n${toolText(run, tool.maxOutputBytes)}` }], isError: true },
+      raw: null,
+    };
   }
-  return shapedToolResult(tool, input, parsed.value, frame);
+  return { answer: shapedToolResult(tool, input, parsed.value, frame), raw: parsed.raw };
+}
+
+/**
+ * Under this, a picture fits the relay's 4 MB answer once base64 grows it by a
+ * third, with room for the text beside it. A proof sheet is far smaller.
+ */
+const MAX_TOOL_IMAGE_BYTES = 2_500_000;
+
+const IMAGE_MIME_TYPES: Record<string, string> = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".webp": "image/webp",
+  ".gif": "image/gif",
+};
+
+/**
+ * A picture a command wrote, as an MCP image block, or a sentence saying why
+ * it is not sent. Only an image file under the project's `.ade/cache` or
+ * `.ade/artifacts` is read, after links are resolved: the path comes from the
+ * command's output, and this must never become a way to read any file.
+ */
+export async function readToolImage(
+  filePath: string,
+  projectRoot: string,
+): Promise<{ type: "image"; data: string; mimeType: string } | { error: string }> {
+  let real: string;
+  let root: string;
+  try {
+    real = await fs.promises.realpath(filePath);
+    root = await fs.promises.realpath(projectRoot);
+  } catch {
+    return { error: "The picture is no longer on this computer." };
+  }
+  const allowed = [path.join(root, ".ade", "cache"), path.join(root, ".ade", "artifacts")];
+  if (!allowed.some((dir) => pathIsWithinRoot(dir, real))) return { error: "The picture is outside the project's proof folders." };
+  // The type comes from the file read, not from a link's name.
+  const mimeType = IMAGE_MIME_TYPES[path.extname(real).toLowerCase()];
+  if (!mimeType) return { error: "The file is not a picture ADE MCP sends." };
+  const stat = await fs.promises.stat(real).catch(() => null);
+  if (!stat?.isFile()) return { error: "The picture is no longer on this computer." };
+  if (stat.size > MAX_TOOL_IMAGE_BYTES) {
+    return { error: `The picture is ${(stat.size / 1_000_000).toFixed(1)} MB, more than ADE MCP sends (${MAX_TOOL_IMAGE_BYTES / 1_000_000} MB).` };
+  }
+  return { type: "image", data: (await fs.promises.readFile(real)).toString("base64"), mimeType };
+}
+
+/** A typed tool's answer with the picture it names (`TypedTool.image`) added, or a line saying why not. */
+export async function withToolImage(
+  tool: TypedTool,
+  raw: unknown,
+  answer: RemoteMcpToolResult,
+  projectRoot: string,
+): Promise<RemoteMcpToolResult> {
+  if (!tool.image || answer.isError) return answer;
+  const imagePath = tool.image(raw);
+  if (!imagePath) return answer;
+  const image = await readToolImage(imagePath, projectRoot);
+  if ("error" in image) {
+    return { ...answer, content: [...answer.content, { type: "text", text: `No picture attached: ${image.error}` }] };
+  }
+  return { ...answer, content: [...answer.content, image] };
 }

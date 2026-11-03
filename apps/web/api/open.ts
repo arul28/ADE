@@ -146,15 +146,15 @@ function describe(target: OpenTarget): { title: string; description: string } {
   switch (target.kind) {
     case "lane":
       return {
-        title: "Open worktree in ADE",
-        description: `Open this ADE worktree (${target.laneId.slice(0, 8)}…) on your desktop.`,
+        title: "Open lane in ADE",
+        description: `Open this ADE lane (${target.laneId.slice(0, 8)}…).`,
       };
     case "session":
       return {
-        title: "Open work session in ADE",
+        title: "Open chat in ADE",
         description: target.laneId
-          ? `Open this ADE work session in worktree ${target.laneId.slice(0, 8)}…`
-          : "Open this ADE work session on your desktop.",
+          ? `Open this ADE chat in lane ${target.laneId.slice(0, 8)}…`
+          : "Open this ADE chat.",
       };
     case "file":
       return {
@@ -183,7 +183,7 @@ function describe(target: OpenTarget): { title: string; description: string } {
     case "pr":
       return {
         title: `${target.repo} #${target.number} — Open in ADE`,
-        description: `Pull request #${target.number} in ${target.repo}. Open it in your ADE desktop app.`,
+        description: `Pull request #${target.number} in ${target.repo}. Open it in ADE.`,
       };
     case "linear-issue":
       return {
@@ -195,7 +195,7 @@ function describe(target: OpenTarget): { title: string; description: string } {
     case "settings":
       return {
         title: "Open a setting in ADE",
-        description: "Opens this setting in ADE's Settings on your desktop.",
+        description: "Opens this setting in ADE's Settings.",
       };
     case "unknown":
       return {

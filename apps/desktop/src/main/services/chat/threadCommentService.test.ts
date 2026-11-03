@@ -45,12 +45,21 @@ describe("createThreadCommentService", () => {
         { id: "c2", messageKey: "message:2", body: "no anchor here" },
         "garbage",
         { id: "c3", messageKey: "message:3", anchor: { kind: "table_row", tableIndex: -1, rowIndex: 0, cells: ["x"] }, body: "bad table" },
+        {
+          id: "c4",
+          messageKey: "message:4",
+          anchor: { kind: "media", mediaKind: "image", source: `  shots/${"a".repeat(1_200)}.png `, label: " Login   page ", mediaIndex: 1 },
+          body: "this one",
+        },
+        { id: "c5", messageKey: "message:5", anchor: { kind: "media", mediaKind: "audio", source: "a.mp3", label: "", mediaIndex: 0 }, body: "bad kind" },
+        { id: "c6", messageKey: "message:6", anchor: { kind: "media", mediaKind: "video", source: "a.mp4", label: "", mediaIndex: 1e300 }, body: "bad index" },
+        { id: "c7", messageKey: "message:7", anchor: { kind: "table_row", tableIndex: 20_000, rowIndex: 0, cells: ["x"] }, body: "bad table index" },
       ],
     }));
 
     const listed = service.list({ sessionId: "s1" });
 
-    expect(listed).toHaveLength(1);
+    expect(listed.map((comment) => comment.id)).toEqual(["c1", "c4"]);
     expect(listed[0]).toMatchObject({
       id: "c1",
       sessionId: "s1",
@@ -64,6 +73,15 @@ describe("createThreadCommentService", () => {
       createdAt: "1970-01-01T00:00:00.000Z",
       updatedAt: "1970-01-01T00:00:00.000Z",
     });
+    // A media anchor is trimmed and capped, and also carries the text and
+    // table-row fields: a desktop build without media comments reads those
+    // and would throw on an anchor without them.
+    const media = listed[1]!.anchor as Record<string, unknown>;
+    expect(media).toMatchObject({ kind: "media", mediaKind: "image", label: "Login page", mediaIndex: 1 });
+    expect(media.source).toBe(`shots/${"a".repeat(1_200)}.png`.slice(0, 1_000));
+    expect(typeof media.quote).toBe("string");
+    expect(media.quote).toContain("Login page");
+    expect(media).toMatchObject({ prefix: "", suffix: "", headers: [], cells: [media.quote] });
   });
 
   it("takes only included comments and restore puts them back ahead of later ones", () => {

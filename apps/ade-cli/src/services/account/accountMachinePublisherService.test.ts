@@ -34,6 +34,7 @@ import {
   resetSharedMachinePowerMonitorForTests,
 } from "../power/sharedMachinePowerMonitor";
 import { removeTestTree } from "../../test/filesystem";
+import { AccountRefreshUnavailableError } from "./accountAuthService";
 import {
   createEpisodeAnalytics,
   EPISODE_ANALYTICS_MINIMUM_INTERVAL_MS,
@@ -680,6 +681,195 @@ describe("account machine publisher health", () => {
     await service.publishNow();
 
     expect(captureAnalytics).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    {
+      name: "a session that expired while the refresh ran",
+      cause: "session_expired",
+      statusAfterThrow: {
+        signedIn: false,
+        userId: null,
+        sessionState: "expired",
+        sessionReadState: "missing",
+      },
+    },
+    {
+      name: "a session that became unreadable while the refresh ran",
+      cause: "session_unreadable",
+      statusAfterThrow: {
+        signedIn: false,
+        userId: null,
+        sessionState: "unreadable",
+        sessionReadState: "unreadable",
+      },
+    },
+    {
+      name: "a refresh that fails in a way a retry cannot fix",
+      cause: "no_access_token",
+      statusAfterThrow: {
+        signedIn: true,
+        userId: "account-user",
+        sessionState: "active",
+        sessionReadState: "available",
+      },
+    },
+  ] as const)("reports $name as token_unreadable with cause $cause", async ({ statusAfterThrow, cause }) => {
+    let clock = 0;
+    let refreshRan = false;
+    const availableStatus = {
+      signedIn: true,
+      userId: "account-user",
+      sessionState: "active" as const,
+      sessionReadState: "available" as const,
+    };
+    const captureAnalytics = vi.fn();
+    const fetchImpl = vi.fn();
+    const service = createAccountMachinePublisherService({
+      getAccessToken: async () => {
+        // The refresh failed and, while it ran, the session changed under it.
+        refreshRan = true;
+        throw new Error("the refresh did not produce a token");
+      },
+      getAccountStatus: () => refreshRan ? statusAfterThrow : availableStatus,
+      getSnapshot: async () => {
+        // Each attempt starts from the healthy status and only the failed
+        // refresh changes it, so the second attempt exercises the re-read path.
+        refreshRan = false;
+        return snapshot();
+      },
+      getMachineKey: () => "machine-studio",
+      directoryBaseUrl: () => "https://directory.example",
+      fetchImpl,
+      now: () => clock,
+      captureAnalytics,
+    });
+
+    await service.publishNow();
+    expect(service.getPublisherHealth().state).toBe("token_unreadable");
+    clock = 121_000;
+    await service.publishNow();
+
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(captureAnalytics).toHaveBeenCalledWith({
+      event: "ade_publish_failing",
+      surface: "api",
+      properties: {
+        failing_minutes: 2,
+        leg: "token",
+        code: "token_unreadable",
+        cause,
+      },
+      dedupeKey: "publish-failing:0",
+      minimumIntervalMs: EPISODE_ANALYTICS_MINIMUM_INTERVAL_MS,
+    });
+    service.dispose();
+  });
+
+  it("clears retained Relay ownership when the account signs out during a token refresh", async () => {
+    let signedIn = true;
+    let failRefresh = false;
+    const current = routeSnapshot();
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response(null, { status: 204 }));
+    const service = createAccountMachinePublisherService({
+      getAccessToken: async () => {
+        if (failRefresh) {
+          // A deliberate sign-out is often what aborts the in-flight refresh.
+          signedIn = false;
+          throw new Error("the refresh was aborted by sign-out");
+        }
+        return "account-token";
+      },
+      getAccountStatus: () => ({
+        signedIn,
+        userId: signedIn ? "owner-a" : null,
+        sessionReadState: signedIn ? "available" as const : "missing" as const,
+      }),
+      getSnapshot: async () => current,
+      getMachineKey: () => "machine-studio",
+      directoryBaseUrl: () => "https://directory.example",
+      fetchImpl,
+    });
+
+    await service.publishNow();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+
+    failRefresh = true;
+    await service.publishNow();
+    expect(service.getPublisherHealth()).toMatchObject({ state: "account_signed_out" });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+
+    // Sign back in with Relay momentarily unready. A retained route would be
+    // re-sent here; a deliberate sign-out must have dropped it.
+    signedIn = true;
+    failRefresh = false;
+    current.routeHealth.relay.relayControlConnected = false;
+    current.routeHealth.relay.relayBridgeValidated = false;
+    await service.publishNow();
+
+    const body = JSON.parse(String(fetchImpl.mock.calls[1]?.[1]?.body)) as {
+      reachableEndpoints: Array<{ kind: string }>;
+    };
+    // The server-side retention hint is independent of this process's cache;
+    // what must be gone is the Relay endpoint the cache would have re-added.
+    expect(body.reachableEndpoints).not.toContainEqual(expect.objectContaining({ kind: "relay" }));
+    service.dispose();
+  });
+
+  it.each([
+    { name: "a network failure", error: () => new TypeError("fetch failed") },
+    {
+      name: "a refresh another process is holding",
+      error: () => new AccountRefreshUnavailableError("ADE is refreshing your account sign-in."),
+    },
+  ])("retries $name on the fast backoff as a token transport error", async ({ error }) => {
+    vi.useFakeTimers();
+    let clock = 0;
+    const captureAnalytics = vi.fn();
+    const fetchImpl = vi.fn();
+    const getAccessToken = vi.fn(async (): Promise<string> => {
+      throw error();
+    });
+    const service = createAccountMachinePublisherService({
+      getAccessToken,
+      getAccountStatus: () => ({ signedIn: true, sessionReadState: "available" as const }),
+      getSnapshot: async () => snapshot(),
+      getMachineKey: () => "machine-studio",
+      directoryBaseUrl: () => "https://directory.example",
+      fetchImpl,
+      now: () => clock,
+      captureAnalytics,
+    });
+
+    service.start();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(service.getPublisherHealth()).toMatchObject({ state: "transport_error" });
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(getAccessToken).toHaveBeenCalledTimes(1);
+
+    // The heartbeat is 30 seconds. A refresh that is transient by nature must
+    // retry on the first backoff step instead of waiting the heartbeat out as a
+    // permanent token failure used to.
+    await vi.advanceTimersByTimeAsync(ACCOUNT_MACHINE_RETRY_BACKOFF_MS[0] - 1);
+    expect(getAccessToken).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(getAccessToken).toHaveBeenCalledTimes(2);
+
+    clock = 121_000;
+    await service.publishNow();
+    expect(captureAnalytics).toHaveBeenCalledWith({
+      event: "ade_publish_failing",
+      surface: "api",
+      properties: {
+        failing_minutes: 2,
+        leg: "token",
+        code: "transport_error",
+        cause: "token_refresh_failed",
+      },
+      dedupeKey: "publish-failing:0",
+      minimumIntervalMs: EPISODE_ANALYTICS_MINIMUM_INTERVAL_MS,
+    });
+    service.dispose();
   });
 
   it("reports a sustained publish failure once per episode, five minutes in", async () => {
@@ -1511,6 +1701,35 @@ describe("brain account machine publisher directory policy", () => {
       state: "published",
       directoryOrigin: DEFAULT_ADE_ACCOUNT_DIRECTORY_URL,
     });
+  });
+
+  it("surfaces a token refresh that threw instead of treating the session as unreadable", async () => {
+    const warn = vi.fn();
+    // The brain's composition must use the throwing reader: the swallowing one
+    // turned every transient network failure into a permanent token_unreadable.
+    sharedAccountAuthService.getAccessToken.mockRejectedValueOnce(new TypeError("fetch failed"));
+    const service = createBrainAccountMachinePublisherService({
+      secretsDir: "/tmp/ade-account-publisher-token-refresh",
+      projectRoots: () => [],
+      isSyncEnabled: () => true,
+      getSnapshot: async () => snapshot(),
+      getMachineKey: () => "machine-studio",
+      confirmSupersededMachineKeys: () => [],
+      directoryBaseUrl: () => "https://directory.example",
+      logger: { info: vi.fn(), warn },
+      powerSource: null,
+    });
+
+    try {
+      await service.publishNow();
+      expect(service.getPublisherHealth()).toMatchObject({ state: "transport_error" });
+      expect(warn).toHaveBeenCalledWith("account.machine_publish_failed", expect.objectContaining({
+        leg: "token",
+        code: "token_refresh_failed",
+      }));
+    } finally {
+      service.dispose();
+    }
   });
 
   // A second monitor would mean a second poll loop and a second gap detector,

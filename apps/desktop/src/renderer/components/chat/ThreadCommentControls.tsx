@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { POPOVER_SURFACE_CLASS } from "../ui/paneMenuTokens";
 import { motion } from "motion/react";
-import { ArrowSquareOut, ChatTeardropText, PencilSimple, Trash } from "@phosphor-icons/react";
+import { ArrowSquareOut, ChatTeardropText, FilmStrip, Image as ImageIcon, PencilSimple, Trash } from "@phosphor-icons/react";
 import type { OpenProjectBinding } from "../../../shared/types";
 import { threadCommentQuoteText, threadReviewCountLabel, type ChatThreadComment } from "../../../shared/threadComments";
 import { fixedMenuAboveAnchorStyle } from "../../lib/fixedMenuPlacement";
@@ -215,6 +215,9 @@ export function ThreadCommentListItem({
   onJump?: () => void;
 }) {
   const quote = threadCommentQuoteText(comment.anchor);
+  // An image or video reads as its caption, not as the bracketed line the agent gets.
+  const media = comment.anchor.kind === "media" ? comment.anchor : null;
+  const MediaIcon = media?.mediaKind === "video" ? FilmStrip : ImageIcon;
   return (
     <div
       className={cn(
@@ -226,7 +229,12 @@ export function ThreadCommentListItem({
       <div className="flex items-start gap-2">
         <span aria-hidden className="mt-[3px] h-3 w-[3px] shrink-0 rounded-full bg-[var(--chat-accent)] opacity-80" />
         <div className="line-clamp-2 min-w-0 flex-1 font-sans text-[11px] italic leading-[1.45] text-fg/50" title={quote}>
-          {quote}
+          {media ? (
+            <>
+              <MediaIcon size={11} weight="fill" className="mr-1 inline-block -translate-y-px not-italic" aria-label={media.mediaKind} />
+              {media.label || media.source}
+            </>
+          ) : quote}
         </div>
         <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover/comment:opacity-100 focus-within:opacity-100">
           {onJump ? (

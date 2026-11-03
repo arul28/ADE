@@ -664,6 +664,8 @@ export type AppNavigationTarget =
       machineId?: string | null;
       sessionId?: string | null;
       envelope?: DeeplinkEnvelope | null;
+      /** From a link: the account machine and project that own the lane. */
+      ownership?: DeeplinkOwnership | null;
     }
   | {
       kind: "pr";

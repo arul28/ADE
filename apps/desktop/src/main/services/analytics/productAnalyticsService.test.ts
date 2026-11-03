@@ -810,11 +810,25 @@ describe("productAnalyticsService", () => {
         failing_minutes: 3,
         leg: "token",
         code: "token_timeout",
+        cause: "token_refresh_failed",
         endpoint: "https://private.example.test",
       },
     })).toEqual({ accepted: true, reason: "accepted" });
+    // A cause outside the closed set is dropped rather than widening the event
+    // into free text. It has an identifier shape on purpose, so only the value
+    // allowlist can drop it.
+    expect(harness.service.captureInternal({
+      event: "ade_publish_failing",
+      surface: "api",
+      properties: {
+        failing_minutes: 4,
+        leg: "token",
+        code: "token_unreadable",
+        cause: "token_refresh_failed_v2",
+      },
+    })).toEqual({ accepted: true, reason: "accepted" });
 
-    expect(harness.messages).toHaveLength(2);
+    expect(harness.messages).toHaveLength(3);
     expect(harness.messages[0]?.properties).toMatchObject({
       blocked_ms: 125_000,
       last_command: "sync.refresh",
@@ -823,7 +837,14 @@ describe("productAnalyticsService", () => {
       failing_minutes: 3,
       leg: "token",
       code: "token_timeout",
+      cause: "token_refresh_failed",
     });
+    expect(harness.messages[2]?.properties).toMatchObject({
+      failing_minutes: 4,
+      leg: "token",
+      code: "token_unreadable",
+    });
+    expect(harness.messages[2]?.properties).not.toHaveProperty("cause");
     expect(JSON.stringify(harness.messages)).not.toContain("private");
     fs.rmSync(harness.root, { recursive: true, force: true });
   });

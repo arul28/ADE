@@ -50,7 +50,9 @@ You can mix credentials freely — a Claude subscription for chat, an API key fo
 
 ## Harnesses and routes
 
-A **harness** is a saved setup: a provider, a model, a credential, and optional runtime flags. Routes let a launch pick a harness without repeating the configuration. Use them when you routinely start the same kind of session — a fast model for triage, a strong one for refactors, a specific account for a shared machine.
+A **harness** is the agent program ADE runs, such as Claude Code, Codex, Droid or Pi. Usually a harness runs on its own provider's models. A **custom provider** pairs a harness with a model from somewhere else (another provider's sign-in, a provider connected inside OpenCode, or a stored API key) and saves it with a name and logo. Claude Code can run on your ChatGPT plan, or Codex on your Claude plan, using the sign-ins you already have.
+
+Custom providers are saved to your ADE account and appear as the first tab of every model picker. Agents and scripts list the choices with `ade harness routes`, then launch on a saved custom provider with `--preset` or on any route with `--via`. See [custom providers](/configuration/ai-providers#custom-providers-any-harness-on-a-plan-you-have).
 
 ## Skills
 

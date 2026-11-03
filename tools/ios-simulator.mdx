@@ -67,23 +67,27 @@ Beyond a running app, the drawer can render SwiftUI **previews**. It discovers n
 
 Each launched simulator session has one owning chat or lane. If a second chat tries to launch against an active session, it's told the simulator is owned by another session until the current owner releases it or you force a shutdown.
 
+## A simulator on another Mac
+
+A chat can use the simulator on another of your Macs without moving there. `ade apple launch --machine "Mac Studio"` with no lane builds the chat's work copy on that Mac (see [remote machines](/tools/remote-machines#use-another-machine-from-the-chat-you-are-in)) and runs it on a simulator that Mac already has and no lane holds. ADE creates a new simulator only when none is free, and never deletes one it borrowed. The drawer then offers **Simulator · Mac Studio** beside **This lane**, so you can switch between them.
+
 ## Drive it from the CLI
 
-Everything the drawer does is also available from the `ade ios-sim` command group, so an agent can build, launch, inspect, and control the simulator headlessly. Use `--socket` so the CLI and the desktop drawer share the same live session, selection, and proof state.
+Everything the drawer does is also available from the `ade apple` command group (`ade ios-sim` is an older name for it), so an agent can build, launch, inspect, and control the simulator headlessly. Use `--socket` so the CLI and the desktop drawer share the same live session, selection, and proof state.
 
 <AccordionGroup>
-  <Accordion title="ade ios-sim commands" icon="terminal">
+  <Accordion title="ade apple commands" icon="terminal">
     ```bash
-    ade --socket ios-sim status --text          # tool readiness checklist
-    ade --socket ios-sim devices --text         # list simulators
-    ade --socket ios-sim apps --text             # list launch targets
-    ade --socket ios-sim launch --target <id> --text
-    ade --socket ios-sim live-start --text       # start the mirrored window stream
-    ade --socket ios-sim snapshot --text         # capture screen + elements
-    ade --socket ios-sim select --x 120 --y 420 --text   # tap → chat context
-    ade --socket ios-sim tap --x 120 --y 420 --text      # tap as input (needs idb)
-    ade --socket ios-sim preview-current --text  # render the selected element's preview
-    ade --socket ios-sim shutdown --text
+    ade --socket apple status --text          # tool readiness checklist
+    ade --socket apple devices --text         # list simulators
+    ade --socket apple apps --text             # list launch targets
+    ade --socket apple launch --target <id> --text
+    ade --socket apple live-start --text       # start the mirrored window stream
+    ade --socket apple snapshot --text         # capture screen + elements
+    ade --socket apple select --x 120 --y 420 --text   # tap → chat context
+    ade --socket apple tap --x 120 --y 420 --text      # tap as input (needs idb)
+    ade --socket apple preview-current --text  # render the selected element's preview
+    ade --socket apple shutdown --text
     ```
 
     A `no-context` result from a preview command means ADE has no selected source-backed element yet — `select` one first rather than guessing the screen.
@@ -100,7 +104,7 @@ Everything the drawer does is also available from the `ade ios-sim` command grou
     Install `idb` and `idb_companion` — they back direct input and accessibility inspection. Without them you still get the mirrored live view.
   </Accordion>
   <Accordion title="A launch is blocked by another owner" icon="lock">
-    Run `ade --socket ios-sim shutdown --force --text`, or use the drawer's takeover action.
+    Run `ade --socket apple shutdown --force --text`, or use the drawer's takeover action.
   </Accordion>
 </AccordionGroup>
 

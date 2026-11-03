@@ -23,6 +23,7 @@ import type { OpenInTarget } from "../../../shared/editorTargets";
 import { buildDeeplink } from "../../../shared/deeplinks";
 import { buildWebClientUrl } from "../../../shared/webClientUrl";
 import { openExternalUrl } from "../../lib/openExternal";
+import { linkOwnershipFor } from "../../lib/linkOwnership";
 import { revealLabel } from "../../lib/platform";
 import { revealLaneWorktree } from "../../lib/revealLaneWorktree";
 import { Z_LAYERS } from "../ui/zLayers";
@@ -242,7 +243,10 @@ export function buildLaneMenuGroups(args: LaneMenuArgs): LaneMenuGroup[] {
       icon: Globe,
       onSelect: () => {
         onClose();
-        openExternalUrl(buildWebClientUrl({ kind: "lane", laneId }));
+        void (async () => {
+          const ownership = await linkOwnershipFor(runtimePin);
+          openExternalUrl(buildWebClientUrl({ kind: "lane", laneId, ...(ownership ? { ownership } : {}) }));
+        })();
       },
     });
   }
@@ -265,10 +269,12 @@ export function buildLaneMenuGroups(args: LaneMenuArgs): LaneMenuGroup[] {
           const pr = await (runtimePin
             ? window.ade.prs.getForLane(lane.id, runtimePin)
             : window.ade.prs.getForLane(lane.id)).catch(() => null);
+          const ownership = await linkOwnershipFor(runtimePin);
           const url = buildDeeplink(
             {
               kind: "lane",
               laneId,
+              ...(ownership ? { ownership } : {}),
               ...(repo
                 ? {
                     envelope: {
@@ -283,7 +289,6 @@ export function buildLaneMenuGroups(args: LaneMenuArgs): LaneMenuGroup[] {
                   }
                 : {}),
             },
-            { form: "ade" },
           );
           await window.ade.app.writeClipboardText(url).catch(() => {});
         })();

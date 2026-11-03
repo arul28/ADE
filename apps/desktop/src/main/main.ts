@@ -272,6 +272,7 @@ import {
   ProjectRegistry,
   recordLocalProjectDatabaseIdentity,
 } from "../../../ade-cli/src/services/projects/projectRegistry";
+import { localLinkOwnership } from "../../../ade-cli/src/services/projects/localLinkOwnership";
 import { projectRegistryDiagnosticAttachment } from "../../../ade-cli/src/services/projects/projectRegistryJournal";
 import { isRemoteMachineEvent } from "./sentry/desktopDiagnostics";
 import { buildRosterSnapshot } from "../../../ade-cli/src/services/sync/rosterBuilder";
@@ -2267,6 +2268,14 @@ app.whenReady().then(async () => {
   /** Windows: this desktop runs elevated, so the background service cannot reach it. */
   let elevatedDesktop = false;
   ipcMain.handle(IPC.appGetElevatedDesktop, () => elevatedDesktop);
+  // A link clicked inside ADE that names its computer and project goes through
+  // the same owner routing as one from outside, so it opens on that computer.
+  ipcMain.handle(IPC.appOpenOwnedDeeplink, (_event, url: unknown) => {
+    if (typeof url !== "string" || url.length > 8_192) return false;
+    handleDeeplinkUrl(url, "in-app", dispatchOrQueueAppNavigationRequest, (event, fields) =>
+      logMachineEvent("info", event, fields));
+    return true;
+  });
   try {
     builtInBrowserBridgeServer = startBuiltInBrowserDesktopBridgeServer({
       socketPath: builtInBrowserBridgeSocketPath,
@@ -4078,6 +4087,7 @@ app.whenReady().then(async () => {
     const linearLiveStatusLaunchKeys = new Set<string>();
     const publishLinearChatCard = createLinearChatLinkPublisher({
       getIssueTracker: () => linearIssueTrackerRef,
+      linkOwnership: () => localLinkOwnership(projectRoot, { logger }),
       resolveEnvelope: async ({ laneId }) => {
         const repo = await githubService.getRepoOrThrow().catch(() => null);
         if (!repo) return null;
@@ -9550,6 +9560,21 @@ app.whenReady().then(async () => {
     }
   };
 
+  // Projects this computer has that no window opened yet: added by an agent,
+  // the CLI, or a phone. Read only when a link arrives.
+  const registeredLinkProjects = (): Array<{ root: string; projectId: string }> => {
+    try {
+      return new ProjectRegistry(machineAdeLayout).list()
+        .filter((record) => fs.existsSync(record.rootPath))
+        .map((record) => ({ root: record.rootPath, projectId: record.projectId }));
+    } catch (error) {
+      getActiveContext().logger.warn("deeplink.project_registry_read_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return [];
+    }
+  };
+
   dispatchAppNavigationRequest = (request) => {
     void (async () => {
       const handledByOwner = await dispatchOwnerAwareNavigation(request, {
@@ -9571,6 +9596,7 @@ app.whenReady().then(async () => {
                   root: entry.summary.rootPath,
                   projectId: entry.projectId,
                 })),
+              ...registeredLinkProjects(),
             ],
             pathsEqual,
             deriveProjectId,

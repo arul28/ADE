@@ -1,27 +1,27 @@
 /**
  * `ade proof review <id>`: what an agent needs to check its own proof before
- * a person sees it. For a video, a contact sheet of frames across it (one
- * image the agent can look at instead of the whole video); for a picture, the
- * picture itself. Both come with the findings ADE can tell from the file and
- * its record alone. What the frames show (a stray banner, a tiny subject, a
- * secret on screen) is the agent's call: the sheet is what it looks at.
+ * a person sees it. For a video, a contact sheet of its key moments (one
+ * image the agent can look at instead of the whole video; `sheetFrames.ts`
+ * picks them); for a picture, the picture itself. Both come with the findings
+ * ADE can tell from the file and its record alone. What the frames show (a
+ * stray banner, a tiny subject, a secret on screen) is the agent's call: the
+ * sheet is what it looks at.
  *
  * The sheet goes under `.ade/cache/proof-review/`, never to the proof drawer.
  */
 
 import fs from "node:fs";
 import path from "node:path";
-import type { DemoArtifactMetadata, DemoContactSheetRequest, DemoEngine } from "../../../shared/demoVideo/demoContract";
+import type { DemoAnalysis, DemoArtifactMetadata, DemoContactSheetRequest, DemoEngine } from "../../../shared/demoVideo/demoContract";
 import { DEMO_CONTACT_SHEET_MAX_FRAMES, DEMO_CONTACT_SHEET_TILE_WIDTH } from "../../../shared/demoVideo/demoContract";
 import { readProofProvenance } from "../../../shared/proofProvenance";
 import { gifDimensions, jpegDimensions, pngDimensions, webpDimensions, type ImageDimensions } from "../shared/imageDimensions";
 import type { Logger } from "../logging/logger";
 import { readDemoMp4 } from "./demoMp4Source";
+import { pickSheetFrames, type SheetFrame } from "./sheetFrames";
 
 /** Sheets kept per project; older ones are removed as new ones are written. */
 const SHEET_KEEP = 20;
-const MIN_FRAMES = 4;
-const MAX_FRAMES = 12;
 const SHORT_SECONDS = 3;
 const LONG_SECONDS = 90;
 /** A picture whose shorter side is under this reads soft once posted. */
@@ -53,6 +53,8 @@ export type ProofReview = {
   sheetError: string | null;
   /** Times of the sheet's frames, left to right, top to bottom. */
   frameTimes: number[];
+  /** The same frames with why each is there and the caption showing. */
+  frames: SheetFrame[];
   columns: number;
   /** What ADE found from the file and its record. Empty when nothing. */
   findings: string[];
@@ -60,8 +62,16 @@ export type ProofReview = {
 
 const VIDEO_EXTENSIONS = new Set([".mp4", ".mov", ".m4v", ".webm"]);
 
+/** Part of a video to look at closer, and how many frames to show. */
+export type ProofReviewWindow = {
+  from?: number | null;
+  to?: number | null;
+  frames?: number | null;
+};
+
 type ReviewArgs = {
   artifact: ProofReviewInput;
+  window?: ProofReviewWindow;
   logger?: Pick<Logger, "warn">;
   filePath: string;
   projectRoot: string;
@@ -91,6 +101,7 @@ function reviewImage(args: ReviewArgs, findings: string[]): ProofReview {
     sheetPath: null,
     sheetError: null,
     frameTimes: [],
+    frames: [],
     columns: 0,
     findings,
   };
@@ -108,6 +119,14 @@ async function reviewVideo(args: ReviewArgs, findings: string[]): Promise<ProofR
   } catch {
     // A movie this reader does not know (a WebM, HEVC): the sheet engine may still read it.
   }
+  // The same engines measure the moments; they also size a movie the MP4 reader could not.
+  const readers = args.engines.filter((engine) => engine.canRead(args.filePath));
+  const analysis = await analyzeVideo(readers, args.filePath, args.logger, args.signal);
+  if (analysis && width == null && height == null) {
+    width = analysis.width;
+    height = analysis.height;
+  }
+  if (duration == null && analysis && analysis.durationSeconds > 0) duration = analysis.durationSeconds;
   const demo = demoMetadataOf(args.artifact.metadata);
   if (duration == null && typeof demo?.outputSeconds === "number") duration = demo.outputSeconds;
   if (demo?.fallbackReason) findings.push(`Not a demo: ${demo.fallbackReason}. Record it again.`);
@@ -118,18 +137,30 @@ async function reviewVideo(args: ReviewArgs, findings: string[]): Promise<ProofR
   if (duration != null && duration < SHORT_SECONDS) findings.push(`Only ${duration.toFixed(1)} s: too short to show anything happen.`);
   if (duration != null && duration > LONG_SECONDS) findings.push(`${Math.round(duration)} s is long for a demo. Record only the flow, or split it into one video per feature.`);
 
+  // Four 384 px tiles a row, six 240 px for portrait. Twelve landscape frames
+  // come to about 1 megapixel, under the ~1.15 vision models read without
+  // scaling; a portrait sheet or a 16-frame one runs larger (up to ~1.8) and
+  // may be scaled down, which the tile labels survive.
   const portrait = width != null && height != null && height > width;
   const columns = portrait ? 6 : 4;
-  const tileWidth = portrait ? 240 : 480;
-  const count = duration == null ? MAX_FRAMES : Math.max(MIN_FRAMES, Math.min(MAX_FRAMES, Math.round(duration)));
-  const span = duration ?? 0;
-  const frameTimes = Array.from({ length: count }, (_, index) => round2(((index + 0.5) * span) / count));
+  const tileWidth = portrait ? 240 : 384;
+  const frames = duration == null
+    ? []
+    : pickSheetFrames({
+      durationSeconds: duration,
+      steps: Array.isArray(demo?.steps) ? demo.steps : [],
+      changes: analysis?.frames ?? null,
+      from: args.window?.from,
+      to: args.window?.to,
+      frames: args.window?.frames,
+    });
+  const frameTimes = frames.map((frame) => frame.t);
 
   // In engine order; one that fails (an older helper without the command, a
   // codec it cannot read) hands the video to the next.
-  const sheetMakers = args.engines.flatMap((engine) => {
+  const sheetMakers = readers.flatMap((engine) => {
     const contactSheet = engine.contactSheet?.bind(engine);
-    return contactSheet && engine.canRead(args.filePath) ? [{ id: engine.id, contactSheet }] : [];
+    return contactSheet ? [{ id: engine.id, contactSheet }] : [];
   });
   let sheetPath: string | null = null;
   let sheetError: string | null = null;
@@ -167,9 +198,35 @@ async function reviewVideo(args: ReviewArgs, findings: string[]): Promise<ProofR
     sheetPath,
     sheetError,
     frameTimes,
+    frames,
     columns,
     findings,
   };
+}
+
+/**
+ * How much the screen changed frame to frame, from the first engine that can
+ * measure this file; null when none can. Without it the sheet still has the
+ * ends, the steps and even fill, only not the moments between.
+ */
+async function analyzeVideo(
+  engines: DemoEngine[],
+  filePath: string,
+  logger: Pick<Logger, "warn"> | undefined,
+  signal: AbortSignal | undefined,
+): Promise<DemoAnalysis | null> {
+  for (const engine of engines) {
+    try {
+      return await engine.analyze(filePath, { signal });
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      logger?.warn("proof_review.analyze_failed", {
+        engine: engine.id,
+        error: error instanceof Error ? error.message.split("\n")[0] : String(error),
+      });
+    }
+  }
+  return null;
 }
 
 /** Why an engine would refuse this sheet (the contract's limits), or null. */

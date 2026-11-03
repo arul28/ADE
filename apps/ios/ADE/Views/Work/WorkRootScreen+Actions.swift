@@ -720,10 +720,12 @@ extension WorkRootListScreen {
     let laneId = resolvedWorkNavigationLaneId(for: session, lanes: lanes)
     let lane = lanes.first(where: { $0.id == laneId })
     let pullRequest = pullRequests.first(where: { $0.laneId == laneId })
+    let target = syncService.laneDeeplinkTarget(laneId: laneId)
     UIPasteboard.general.string = workSessionDeepLink(
       sessionId: session.id,
-      laneId: laneId,
-      envelope: LaneDeeplinkHelpers.envelope(lane: lane, pullRequest: pullRequest)
+      laneId: target.laneId,
+      envelope: LaneDeeplinkHelpers.envelope(lane: lane, pullRequest: pullRequest),
+      ownership: target.ownership
     )
   }
 
@@ -986,9 +988,11 @@ extension WorkRootListScreen {
 
   func openLaneInWeb(_ lane: LaneSummary) {
     let pullRequest = pullRequests.first(where: { $0.laneId == lane.id })
+    let target = syncService.laneDeeplinkTarget(laneId: lane.id)
     let link = LaneDeeplinkHelpers.laneLink(
-      laneId: lane.id,
+      laneId: target.laneId,
       envelope: LaneDeeplinkHelpers.envelope(lane: lane, pullRequest: pullRequest),
+      ownership: target.ownership,
       form: .https
     )
     guard let url = workWebClientURL(for: link) else { return }
@@ -1011,9 +1015,11 @@ extension WorkRootListScreen {
 
   func copyLaneLink(_ lane: LaneSummary) {
     let pullRequest = pullRequests.first(where: { $0.laneId == lane.id })
+    let target = syncService.laneDeeplinkTarget(laneId: lane.id)
     UIPasteboard.general.string = LaneDeeplinkHelpers.laneLink(
-      laneId: lane.id,
+      laneId: target.laneId,
       envelope: LaneDeeplinkHelpers.envelope(lane: lane, pullRequest: pullRequest),
+      ownership: target.ownership,
       form: .ade
     )
   }

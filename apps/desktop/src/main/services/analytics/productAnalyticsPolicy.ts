@@ -1,6 +1,6 @@
 import { isMeaningfulUsageAction } from "../usage/usageStatsStore";
 import { ACCOUNT_MACHINE_REFUSAL_CODES } from "../../../shared/accountMachineRefusal";
-import { AUTO_UPDATE_INSTALL_ABORT_REASONS } from "../../../shared/types";
+import { ACCOUNT_PUBLISH_FAILURE_CAUSES, AUTO_UPDATE_INSTALL_ABORT_REASONS } from "../../../shared/types";
 import {
   RENDERER_GONE_ANALYTICS_REASONS,
   RENDERER_GONE_UNKNOWN_REASON,
@@ -162,7 +162,7 @@ const STRING_PROPERTIES = new Set([
   "entry_point", "release_channel", "summary_kind", "reason", "last_command", "leg", "code",
   "escalation_reason", "install_source", "trigger", "from_version", "to_version", "user_action",
   "tool_error_kind", "crash_reason", "count_bucket",
-  "action_domain", "error_code", "refusal_code", "brain_action", "expected_kind",
+  "action_domain", "error_code", "refusal_code", "brain_action", "expected_kind", "cause",
 ]);
 const NUMBER_PROPERTIES = new Set([
   "sent_count", "dropped_count", "interaction_count", "session_count", "chat_session_count",
@@ -432,7 +432,7 @@ const EVENT_PROPERTY_KEYS: Record<ProductAnalyticsEventName, ReadonlySet<string>
   // `recovered` says whether the retry budget still allowed a reload. No URL, no
   // window title, no exit detail.
   ade_renderer_recovered: new Set(["crash_reason", "recovered"]),
-  ade_publish_failing: new Set(["failing_minutes", "leg", "code"]),
+  ade_publish_failing: new Set(["failing_minutes", "leg", "code", "cause"]),
   ade_relay_suppressed: new Set(["attempt", "code"]),
   ade_account_session_unreadable: new Set(["code"]),
   // `provider` already enumerates codex/claude/opencode, so the tool identity
@@ -698,6 +698,7 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
   // build has never heard of. The brain's user-facing sentence is NOT a
   // fallback: it is free text.
   refusal_code: new Set<string>([...ACCOUNT_MACHINE_REFUSAL_CODES, "other"]),
+  cause: new Set<string>(ACCOUNT_PUBLISH_FAILURE_CAUSES),
 };
 
 export function safeProductAnalyticsString(value: ProductAnalyticsPropertyValue): string | null {

@@ -57,6 +57,7 @@ export const IPC = {
   appAdoptProjectTab: "ade.app.adoptProjectTab",
   appCloseWindow: "ade.app.closeWindow",
   appNavigate: "ade.app.navigate",
+  appOpenOwnedDeeplink: "ade.app.openOwnedDeeplink",
   /**
    * Every native-menu command main offers the renderer, on one channel:
    * `{ kind: "zoom" | "menu", command }`. Main and preload ship in one bundle,
@@ -210,6 +211,7 @@ export const IPC = {
   projectSetRecentPinned: "ade.project.setRecentPinned",
   projectMissing: "ade.project.missing",
   remoteRuntimeListTargets: "ade.remoteRuntime.listTargets",
+  remoteRuntimeLinkOwnership: "ade.remoteRuntime.linkOwnership",
   remoteRuntimeListDiscoveredMachines:
     "ade.remoteRuntime.listDiscoveredMachines",
   remoteRuntimeParsePairingInput: "ade.remoteRuntime.parsePairingInput",

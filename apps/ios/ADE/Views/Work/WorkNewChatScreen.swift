@@ -2008,9 +2008,6 @@ private struct WorkNewChatComposerBar: View {
   /// Set by a tap on an image or file pill; the tray opens that preview.
   @State private var attachmentPreviewRequest: UUID?
   @State private var presentedPicker: WorkComposerPicker?
-  /// Live viewport width of the controls scroll area, so the access control
-  /// collapses to the in-session composer's dot-Menu at the same threshold.
-  @State private var controlsWidth: CGFloat = 0
   private let dictationTargetId = "work-new-chat-screen"
 
   private var canSend: Bool {
@@ -2024,10 +2021,6 @@ private struct WorkNewChatComposerBar: View {
 
   private var runtimeOptions: [WorkRuntimeModeOption] {
     workRuntimeModeOptions(provider: provider)
-  }
-
-  private var isControlsCollapsed: Bool {
-    controlsWidth > 0 && controlsWidth <= workComposerControlsCollapseThreshold
   }
 
   private var placeholder: String {
@@ -2096,18 +2089,12 @@ private struct WorkNewChatComposerBar: View {
             currentMode: runtimeMode,
             modeOptions: runtimeOptions,
             modeLabel: workRuntimeModeLabel(provider: provider, mode: runtimeMode),
-            isCollapsed: isControlsCollapsed,
             fastModeEnabled: codexFastMode,
             fastModeAllowed: fastModeAllowed,
             onOpenModelPicker: onOpenModelPicker,
             onSelectMode: { runtimeMode = $0 }
           )
           .padding(.trailing, 4)
-        }
-        .onGeometryChange(for: CGFloat.self) { proxy in
-          proxy.size.width
-        } action: { width in
-          controlsWidth = width
         }
       }
     )

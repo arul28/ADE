@@ -163,7 +163,7 @@ export function createThreadCommentService({
 
   const create = (args: ChatThreadCommentCreateArgs): ChatThreadComment => {
     const anchor = normalizeThreadCommentAnchor(args.anchor);
-    if (!anchor) throw new Error("A comment needs the text or table row it is about.");
+    if (!anchor) throw new Error("A comment needs the text, table row, image or video it is about.");
     const messageKey = typeof args.messageKey === "string" ? args.messageKey.trim() : "";
     if (!messageKey) throw new Error("A comment needs the message it is about.");
     const body = cleanBody(args.body);

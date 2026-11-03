@@ -24,7 +24,7 @@ export type OwnerAwareNavigationDependencies = {
 export function appNavigationOwnership(
   target: AppNavigationTarget,
 ): DeeplinkOwnership | null {
-  if (target.kind !== "work" && target.kind !== "chat" && target.kind !== "pr") {
+  if (target.kind !== "work" && target.kind !== "chat" && target.kind !== "pr" && target.kind !== "lane") {
     return null;
   }
   const accountMachineKey =
@@ -96,6 +96,12 @@ export type OwnerNavigationFailureCopy = {
   detail: string;
 };
 
+/**
+ * What to tell the person when a link or an Activity item could not be opened
+ * on the machine and project that own it. The cause is one of the sentences
+ * `describeAttentionOpenFailure` and the local resolver write; each gets the
+ * step that fixes it, never a generic "reconnect".
+ */
 export function ownerNavigationFailureCopy(
   error: unknown,
 ): OwnerNavigationFailureCopy {
@@ -108,21 +114,42 @@ export function ownerNavigationFailureCopy(
   );
   if (incompatible) {
     return {
-      title: "Update the owning ADE machine",
-      message: "This item belongs to a machine running an incompatible ADE service.",
-      detail: `${detail}\n\nUpdate and restart ADE on that host, then retry from Activity.`,
+      title: "Update ADE on that computer",
+      message: "This belongs to a computer running an older ADE.",
+      detail: `${detail}\n\nUpdate and restart ADE there, then open it again.`,
     };
   }
   if (/project .* no longer available on this ADE machine/i.test(detail)) {
     return {
-      title: "Project no longer available",
-      message: "ADE found the owning machine, but that project is no longer registered there.",
-      detail: `${detail}\n\nOpen or restore the project on that machine, then retry from Activity.`,
+      title: "Project not on this computer",
+      message: "This belongs to a project that is no longer open in ADE on this computer.",
+      detail: `${detail}\n\nAdd the project back in ADE, then open it again.`,
+    };
+  }
+  if (/could not open this project|remote project (?:is required|was not found)/i.test(detail)) {
+    return {
+      title: "Project not on that computer",
+      message: "ADE reached the computer, but that project is no longer in ADE there.",
+      detail: `${detail}\n\nAdd the project back in ADE on that computer, then open it again.`,
+    };
+  }
+  if (/not reachable right now/i.test(detail)) {
+    return {
+      title: "Computer offline",
+      message: "The computer this belongs to is not reachable right now.",
+      detail: `${detail}\n\nOpen it again once that computer is awake and ADE is running.`,
+    };
+  }
+  if (/could not pair/i.test(detail)) {
+    return {
+      title: "Couldn’t reach that computer",
+      message: "ADE couldn’t pair with the computer this belongs to.",
+      detail: `${detail}\n\nIt opens only on computers signed in to the same ADE account.`,
     };
   }
   return {
-    title: "Owning machine unavailable",
-    message: "ADE couldn’t open this item on the machine and project that own it.",
-    detail: `${detail}\n\nReconnect that machine from Connections, then retry from Activity.`,
+    title: "Couldn’t open this",
+    message: "ADE couldn’t open this on the computer and project that own it.",
+    detail: `${detail}\n\nCheck the computer in Settings → Computers, then open it again.`,
   };
 }

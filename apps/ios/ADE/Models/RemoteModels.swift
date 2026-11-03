@@ -3515,11 +3515,13 @@ struct ChatMentionSuggestionResult: Codable, Equatable {
 enum ChatThreadCommentAnchor: Equatable {
   case text(quote: String, prefix: String, suffix: String)
   case tableRow(tableIndex: Int, rowIndex: Int, headers: [String], cells: [String])
+  case media(mediaKind: String, source: String, label: String, mediaIndex: Int)
 }
 
 extension ChatThreadCommentAnchor: Decodable {
   private enum CodingKeys: String, CodingKey {
     case kind, quote, prefix, suffix, tableIndex, rowIndex, headers, cells
+    case mediaKind, source, label, mediaIndex
   }
 
   init(from decoder: Decoder) throws {
@@ -3539,6 +3541,13 @@ extension ChatThreadCommentAnchor: Decodable {
         headers: try container.decodeIfPresent([String].self, forKey: .headers) ?? [],
         cells: try container.decodeIfPresent([String].self, forKey: .cells) ?? []
       )
+    case "media":
+      self = .media(
+        mediaKind: try container.decodeIfPresent(String.self, forKey: .mediaKind) ?? "image",
+        source: try container.decodeIfPresent(String.self, forKey: .source) ?? "",
+        label: try container.decodeIfPresent(String.self, forKey: .label) ?? "",
+        mediaIndex: try container.decodeIfPresent(Int.self, forKey: .mediaIndex) ?? 0
+      )
     default:
       throw DecodingError.dataCorruptedError(
         forKey: .kind,
@@ -3548,8 +3557,9 @@ extension ChatThreadCommentAnchor: Decodable {
     }
   }
 
-  /// The words the comment quotes. A table row reads "Header: cell | …",
-  /// the same as `threadCommentQuoteText` on the host.
+  /// The words the comment quotes. A table row reads "Header: cell | …" and
+  /// an image or video reads "[image “label”: source]", the same as
+  /// `threadCommentQuoteText` on the host.
   var quoteText: String {
     switch self {
     case .text(let quote, _, _):
@@ -3562,6 +3572,9 @@ extension ChatThreadCommentAnchor: Decodable {
         return header.isEmpty ? cell : "\(header): \(cell)"
       }
       .joined(separator: " | ")
+    case .media(let mediaKind, let source, let label, _):
+      let trimmed = label.trimmingCharacters(in: .whitespacesAndNewlines)
+      return trimmed.isEmpty ? "[\(mediaKind): \(source)]" : "[\(mediaKind) \u{201C}\(trimmed)\u{201D}: \(source)]"
     }
   }
 }

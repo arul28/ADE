@@ -40,7 +40,22 @@ Each coding agent uses the login or key you already have. ADE detects your exist
 
     Models come from your Antigravity account. Antigravity cannot rewind or edit earlier turns, and it has no read-only Plan mode in ADE; use its own `/plan` command.
   </Accordion>
+  <Accordion title="GitHub Copilot" icon="github">
+    Copilot chats and Copilot terminals run the same Copilot version. Copilot's own slash commands work as they do in its CLI: the `/` menu lists the commands and skills Copilot reports, `/context`, `/usage` and `/env` answer without a model request, and `/review`, `/plan` and `/compact` run through Copilot. Commands ADE handles itself, such as `/model` and `/permissions`, point you to ADE's own control. A failed request shows the HTTP status, the error code, and GitHub's request IDs.
+  </Accordion>
 </AccordionGroup>
+
+## Custom providers: any harness on a plan you have
+
+A **custom provider** runs one harness (the agent program, such as Claude Code or Codex) on a model from somewhere else: another provider's sign-in, a provider signed in inside OpenCode, or a stored API key. Run Claude Code on your ChatGPT plan, or Codex on your Claude plan, with the sign-ins you already have. There is no extra login.
+
+Open **Settings › Providers › Custom**. With nothing saved yet it offers one-click starters built from your sign-ins. The editor shows a live preview with the harness, the model, and what it uses (the plan and email, or the key's name), then numbered steps. Saved custom providers appear as cards, are saved to your ADE account so every machine has them, and show up as the first tab of every model picker.
+
+ADE lends its local proxy only the short-lived access token of each Claude and Codex account, plus your Grok, Kimi, Devin and Muse logins. When a token is about to expire, ADE has that provider's own CLI renew it, so the renewal token never leaves the CLI and your normal chats stay signed in. Copilot, Pi and Kimi take a custom model through their own provider config. Cursor stays on its own sign-in, and Antigravity cannot be used as a source.
+
+<Note>
+On macOS, ADE does not read a Codex login kept in the Keychain, because reading it would prompt you. If Codex stores its login there, the launch explains how to switch Codex to file storage.
+</Note>
 
 ## OpenCode — universal model access
 
@@ -112,7 +127,11 @@ Set stricter modes for unfamiliar repositories. The full mapping lives in [Permi
 
 ## Cost and usage
 
-Running several agents in parallel can spend quickly. Use cheaper models for routine follow-up and stronger models for planning, architecture, and hard debugging. The top-bar **Usage** popup shows live provider quota windows and lets you set a budget cap; **Settings → Stats** is the retrospective view of token, cost, and GitHub activity.
+Running several agents in parallel can spend quickly. Use cheaper models for routine follow-up and stronger models for planning, architecture, and hard debugging.
+
+Usage is counted for your whole ADE account. Tokens, spend, requests and active days on the new-chat card, the home page, **Settings › Usage**, and each provider's page add up every machine you are signed in on. An account is shown by its email.
+
+Quota belongs to the login, not the machine. The top-bar **Usage** popup has one panel per provider, shows each account's freshest reading from any of your machines (marked "via" that machine), says the pace in words ("Room to spare", "Runs out early"), and lets you set a budget cap. A login that is signed in only on another machine shows as "Not signed in here"; smart balance and budget caps ignore it.
 
 ## Troubleshooting
 
