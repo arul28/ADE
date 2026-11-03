@@ -18,6 +18,7 @@ const EXPECTED_KIND: Partial<Record<AndroidEmulatorErrorCode, "user" | "environm
   ANDROID_NO_FREE_PORT: "environment",
   ANDROID_AVD_NOT_FOUND: "user",
   ANDROID_AVD_HELD_BY_OTHER_LANE: "user",
+  ANDROID_LANE_HAS_DEVICE: "user",
   ANDROID_AVD_RUNNING: "user",
   ANDROID_NOT_RUNNING: "user",
 };

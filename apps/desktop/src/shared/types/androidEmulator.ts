@@ -186,6 +186,8 @@ export const ANDROID_EMULATOR_ERROR_CODES = [
   "ANDROID_NO_SYSTEM_IMAGE",
   "ANDROID_AVD_NOT_FOUND",
   "ANDROID_AVD_HELD_BY_OTHER_LANE",
+  /** The lane already holds an AVD; release it before making or attaching another. */
+  "ANDROID_LANE_HAS_DEVICE",
   /** The AVD already runs (one AVD boots once at a time). */
   "ANDROID_AVD_RUNNING",
   "ANDROID_NO_FREE_PORT",

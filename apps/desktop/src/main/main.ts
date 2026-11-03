@@ -473,6 +473,9 @@ import { createArtifactMediaServer } from "./services/computerUse/artifactMediaS
 import { respondToSceneProtocolRequest } from "./services/scenes/sceneDocumentStore";
 import { createIosSimulatorService } from "./services/ios/iosSimulatorService";
 import { createMacDesktopService } from "./services/macDesktop/macDesktopService";
+import { createAndroidEmulatorService } from "./services/android/androidEmulatorService";
+import { sqlAndroidLaneDeviceRepo } from "./services/android/androidLaneRelease";
+import { resolveScrcpyServerJarPath } from "./services/android/scrcpyServer";
 import { createMacDesktopLogger } from "./services/macDesktop/macDesktopLogger";
 import { createWindowsDesktopSeatAdapter } from "./services/windowsDesktop/windowsDesktopSeatProvider";
 import { createLinuxDesktopSeatAdapter } from "./services/linuxDesktop/linuxDesktopSeatProvider";
@@ -5753,6 +5756,29 @@ app.whenReady().then(async () => {
     laneTeardownDeps.macDesktopService = {
       destroyForLane: (laneId: string) => macDesktopService.destroyForLane(laneId),
     };
+    /**
+     * The lane's Android emulator. Built on every host OS: Android runs on
+     * macOS, Windows and Linux, and `getStatus` is how a host without an SDK
+     * shows the setup card instead of an error.
+     */
+    const androidEmulatorService = createAndroidEmulatorService({
+      laneDevices: sqlAndroidLaneDeviceRepo(db),
+      // Per project, like `lane_android_devices`: the started-emulators state
+      // file, emulator logs and default screenshots.
+      dataDir: path.join(resolveAdeLayout(projectRoot).adeDir, "android"),
+      serverJarPath: resolveScrcpyServerJarPath({
+        isPackaged: app.isPackaged,
+        resourcesPath: process.resourcesPath,
+        appPath: app.getAppPath(),
+      }),
+      logger,
+      onEvent: (event) => emitProjectEvent(projectRoot, IPC.androidEmulatorEvent, event),
+    });
+    // Archive and delete stop the lane's stream and emulator here; the AVD
+    // itself goes in `releaseAndroidSideOfLane`, which needs no service.
+    laneTeardownDeps.androidEmulatorService = {
+      stopForLane: (laneId: string) => androidEmulatorService.stopForLane(laneId),
+    };
     // A chat that ends drops its lease on every platform — the one Mac Desktop
     // call that is not macOS-only, because a lease must never outlive its chat.
     agentChatService.registerChatSessionEndedListener((sessionId) => {
@@ -6416,6 +6442,7 @@ app.whenReady().then(async () => {
       computerUseArtifactBrokerService,
       iosSimulatorService,
       macDesktopService,
+      androidEmulatorService,
       appControlService,
       builtInBrowserService,
       syncHostService: syncService.getHostService(),
@@ -6648,6 +6675,7 @@ app.whenReady().then(async () => {
         computerUseArtifactBrokerService,
         iosSimulatorService,
         macDesktopService,
+        androidEmulatorService,
         appControlService,
         builtInBrowserService,
         automationService,
@@ -6710,6 +6738,7 @@ app.whenReady().then(async () => {
       computerUseArtifactBrokerService,
       iosSimulatorService,
       macDesktopService,
+      androidEmulatorService,
       appControlService,
       searchService,
       externalSessionsService,
@@ -7374,6 +7403,16 @@ app.whenReady().then(async () => {
       ctx.macDesktopService?.dispose?.();
     } catch {
       // ignore
+    }
+    // Stops this project's streams and every emulator ADE started for it. An
+    // emulator is a separate process that outlives ADE, so it is stopped here.
+    // Capped: a wedged emulator must not hold the close. The state file keeps
+    // one that is left running ADE's, so the next start still stops it.
+    if (ctx.androidEmulatorService) {
+      await Promise.race([
+        ctx.androidEmulatorService.dispose().catch(() => undefined),
+        new Promise<void>((resolve) => setTimeout(resolve, 15_000).unref?.()),
+      ]);
     }
     try {
       ctx.appControlService?.dispose?.();

@@ -379,6 +379,15 @@
         ]
       },
       {
+        "from": "resources/android",
+        "to": "android",
+        "filter": [
+          "scrcpy-server",
+          "scrcpy-LICENSE",
+          "README.md"
+        ]
+      },
+      {
         "from": "../../docs/triage",
         "to": "docs/triage"
       },
@@ -514,6 +523,9 @@
       "provisioningProfile": "build/ade-desktop.provisionprofile",
       "notarize": false,
       "mergeASARs": false,
+      "signIgnore": [
+        "/Contents/Resources/android/"
+      ],
       "x64ArchFiles": "**/{*darwin-arm64*,*darwin-x64*,darwin-arm64,darwin-x64,transcribe-cli}{,/**}",
       "artifactName": "ADE-${version}-${arch}.${ext}",
       "extraResources": [

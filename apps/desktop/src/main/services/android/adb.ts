@@ -32,6 +32,8 @@ export type AdbRunOptions = {
   timeoutMs?: number;
   /** Do not throw on a non-zero exit; the caller reads `exitCode`. */
   allowFailure?: boolean;
+  /** Ends the adb process early (a stop during a start, a service dispose). */
+  signal?: AbortSignal;
 };
 
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -53,13 +55,16 @@ export function runAdb(adbPath: string, args: readonly string[], options: AdbRun
         timeout: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
         maxBuffer: MAX_BUFFER_BYTES,
         windowsHide: true,
+        ...(options.signal ? { signal: options.signal } : {}),
       },
       (error, stdout, stderr) => {
         const stderrText = stderr.toString("utf8");
         const exitCode = error ? (typeof error.code === "number" ? error.code : null) : 0;
         if (error && !(options.allowFailure && exitCode !== null)) {
           const what = `adb ${fullArgs.join(" ")}`;
-          const reason = error.killed ? "timed out" : `failed (${exitCode ?? error.code ?? "no exit code"})`;
+          const reason = options.signal?.aborted
+            ? "was cancelled"
+            : error.killed ? "timed out" : `failed (${exitCode ?? error.code ?? "no exit code"})`;
           reject(new AdbError(`${what} ${reason}: ${stderrText.trim() || error.message}`, exitCode, stderrText));
           return;
         }
