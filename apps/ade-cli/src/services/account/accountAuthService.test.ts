@@ -21,6 +21,7 @@ import {
   createAccountAuthService,
   derivePkceChallenge,
   getSignedInAccountAccessToken,
+  isTransientAccountTokenError,
   type AccountAuthService,
   type AccountSessionRecord,
 } from "./accountAuthService";
@@ -3331,6 +3332,59 @@ describe("AccountAuthService refresh and sign-out", () => {
       source: "refresh_token",
       guidance: expect.stringContaining("self-contained secret as ADE_ACCOUNT_TOKEN"),
     });
+  });
+});
+
+describe("isTransientAccountTokenError", () => {
+  const cases: Array<{
+    name: string;
+    error?: () => unknown;
+    response?: () => Response;
+    expected: boolean;
+  }> = [
+    // The brain could not ask for a token: the record is untouched, so no user
+    // action is needed and the next attempt may succeed.
+    { name: "a refresh another process holds", error: () => new AccountRefreshUnavailableError("busy"), expected: true },
+    { name: "a network failure", error: () => new TypeError("fetch failed"), expected: true },
+    { name: "an aborted request", error: () => new DOMException("aborted", "AbortError"), expected: true },
+    {
+      name: "a timed-out request",
+      error: () => Object.assign(new Error("timed out"), { name: "TimeoutError" }),
+      expected: true,
+    },
+    // No refresh token, or a caller bug: the same attempt fails next time.
+    { name: "a session with no refresh token", error: () => new Error("session expired"), expected: false },
+    { name: "a Clerk HTTP 503", response: () => jsonResponse({ error: "server_error" }, 503), expected: true },
+    { name: "a Clerk HTTP 429", response: () => jsonResponse({ error: "rate_limited" }, 429), expected: true },
+    // A definitive invalid_grant marks the session expired before it throws, so
+    // the publisher's status re-read sees `expired` first; this is the
+    // inconclusive one, which is still worth retrying.
+    { name: "a Clerk invalid_grant", response: () => jsonResponse({ error: "invalid_grant" }, 400), expected: true },
+    { name: "a Clerk HTTP 400", response: () => jsonResponse({ error: "invalid_request" }, 400), expected: false },
+  ];
+
+  it.each(cases)("classifies $name as retryable=$expected", async ({ error, response, expected }) => {
+    let thrown: unknown = error?.();
+    if (thrown === undefined) {
+      const nowMs = Date.parse("2026-07-14T12:00:00.000Z");
+      const store = new MemoryCredentialStore();
+      store.setSync(ACCOUNT_SESSION_CREDENTIAL_KEY, JSON.stringify(storedSession({
+        accessToken: jwt({ sub: "user_old", exp: Math.floor((nowMs - 60_000) / 1000) }),
+        expiresAt: "2026-07-13T12:00:00.000Z",
+      })));
+      const service = createAccountAuthService({
+        credentialStore: store,
+        getOAuthConfig: () => ({ issuer: "https://clerk.example.test", clientId: "client-public" }),
+        fetchImpl: vi.fn(async () => response!()),
+        refreshRotationWaitMs: 0,
+        now: () => nowMs,
+      });
+      activeServices.push(service);
+      thrown = await service.getAccessToken().catch((caught) => caught);
+    }
+
+    expect(thrown).toBeInstanceOf(Error);
+    expect(isTransientAccountTokenError(thrown)).toBe(expected);
   });
 });
 
