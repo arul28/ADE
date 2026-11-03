@@ -50,6 +50,7 @@ import {
   warnDevelopmentClerkIgnored,
 } from "../../../../desktop/src/shared/accountDirectory";
 import {
+  isTransientAccountTokenError,
   requireSignedInAccountAccessToken,
   type AccountAuthStatus,
   type AccountSessionReadFailureReason,
@@ -778,9 +779,9 @@ export function relayPublishStateSignature(
 
 export function createAccountMachinePublisherService(options: {
   /**
-   * `null` means there is no usable token (`token_unreadable`). A throw while
-   * the session is still usable is a temporary refresh failure, retried with
-   * backoff as `transport_error`.
+   * `null` means there is no usable token (`token_unreadable`). A throw that
+   * `isTransientAccountTokenError` accepts, while the session is still usable,
+   * is retried with backoff as `transport_error`.
    */
   getAccessToken: (options?: {
     forceRefresh?: boolean;
@@ -1158,6 +1159,18 @@ export function createAccountMachinePublisherService(options: {
         legDurations,
       });
     };
+    const outcomeNeedsSignIn = (
+      status: PublisherAccountStatus,
+      reachableEndpointCount: number,
+    ): void => {
+      outcome("token_unreadable", {
+        attemptAt,
+        skipReason: "Sign in to ADE again — this machine stays paired.",
+        directoryOrigin,
+        reachableEndpointCount,
+        cause: sessionNeedsSignInCause(status),
+      });
+    };
     const runTokenLeg = async (
       leg: Extract<AccountMachinePublishLeg, "token" | "token_refresh_401">,
       forceRefresh: boolean,
@@ -1409,13 +1422,7 @@ export function createAccountMachinePublisherService(options: {
     // Ordered before the sign-out branch on purpose: a stale-token machine must
     // not fall through into the path that clears its retained Relay route.
     if (accountStatus && publisherSessionNeedsSignIn(accountStatus)) {
-      outcome("token_unreadable", {
-        attemptAt,
-        skipReason: "Sign in to ADE again — this machine stays paired.",
-        directoryOrigin,
-        reachableEndpointCount: observedReachableEndpointCount,
-        cause: sessionNeedsSignInCause(accountStatus),
-      });
+      outcomeNeedsSignIn(accountStatus, observedReachableEndpointCount);
       return;
     }
     if (isPublisherSignedOut(accountStatus)) {
@@ -1527,11 +1534,11 @@ export function createAccountMachinePublisherService(options: {
         warnOnce("token_timeout", "token", legDurations);
         return;
       }
-      // A refresh that threw while signed in is a network blip, a Clerk 5xx or
-      // a peer mid-rotation, and it clears on its own. Calling it
+      // A refresh that threw while signed in is often a network blip, a Clerk
+      // 5xx or a peer mid-rotation, which clears on its own. Calling it
       // `token_unreadable` skipped the fast retry and offered a brain-restart
       // Repair for a flaky network. A grant that is really dead is marked
-      // `expired` before the throw, so re-reading the status tells them apart.
+      // `expired` before the throw, so the status is re-read first.
       let statusAfterFailure: PublisherAccountStatus | null = null;
       try {
         statusAfterFailure = options.getAccountStatus?.() ?? null;
@@ -1539,28 +1546,26 @@ export function createAccountMachinePublisherService(options: {
         statusAfterFailure = null;
       }
       if (statusAfterFailure && publisherSessionNeedsSignIn(statusAfterFailure)) {
-        outcome("token_unreadable", {
+        outcomeNeedsSignIn(statusAfterFailure, reachableEndpointCount);
+        return;
+      }
+      if (isTransientAccountTokenError(error)) {
+        recordTransientFailure();
+        outcome("transport_error", {
           attemptAt,
-          skipReason: "Sign in to ADE again — this machine stays paired.",
+          skipReason: "The ADE account token refresh failed; retrying.",
           directoryOrigin,
           reachableEndpointCount,
-          cause: sessionNeedsSignInCause(statusAfterFailure),
+          leg: "token",
+          cause: "token_refresh_failed",
+        });
+        warnOnce("token_refresh_failed", "token", legDurations, {
+          errorKind: error instanceof Error ? error.name : "unknown",
         });
         return;
       }
-      recordTransientFailure();
-      outcome("transport_error", {
-        attemptAt,
-        skipReason: "The ADE account token refresh failed; retrying.",
-        directoryOrigin,
-        reachableEndpointCount,
-        leg: "token",
-        cause: "token_refresh_failed",
-      });
-      warnOnce("token_refresh_failed", "token", legDurations, {
-        errorKind: error instanceof Error ? error.name : "unknown",
-      });
-      return;
+      // Fails the same way next time: reported below as `no_access_token`.
+      accessToken = null;
     }
     if (disposed) return;
     if (!accessToken) {

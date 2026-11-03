@@ -443,10 +443,11 @@ export type SyncAccountDirectoryState =
  * - `status_read_error`: the brain could not read account status at all.
  * - `session_expired` / `session_unreadable`: the stored session needs a
  *   sign-in or a repair (the desktop shows its banner for both).
- * - `no_access_token`: signed in, yet the token read returned nothing.
- * - `token_refresh_failed`: signed in, and the refresh threw (network, Clerk
- *   5xx, a peer mid-rotation). Recorded as `transport_error`, not
- *   `token_unreadable`, because it clears on its own.
+ * - `no_access_token`: signed in, yet the token read returned nothing or
+ *   failed in a way a retry will not fix (an unusable `ADE_ACCOUNT_TOKEN`).
+ * - `token_refresh_failed`: signed in, and the refresh failed temporarily
+ *   (network, Clerk 5xx, a peer mid-rotation). Recorded as `transport_error`,
+ *   not `token_unreadable`, because it clears on its own.
  */
 export const ACCOUNT_PUBLISH_FAILURE_CAUSES = [
   "status_read_error",

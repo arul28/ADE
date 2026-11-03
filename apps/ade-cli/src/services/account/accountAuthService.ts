@@ -956,6 +956,26 @@ export class AccountRefreshUnavailableError extends Error {
   }
 }
 
+/**
+ * Whether a thrown token read is worth retrying soon, with no user action: the
+ * network or the issuer failed, or another process holds the refresh. A
+ * definitive `invalid_grant` marks the session `expired` before it throws, so
+ * a caller that re-reads the status sees that first; the `invalid_grant` that
+ * reaches here with the session still usable is the inconclusive one. Anything
+ * else (an unusable `ADE_ACCOUNT_TOKEN`, a session with no refresh token) will
+ * fail the same way next time.
+ */
+export function isTransientAccountTokenError(error: unknown): boolean {
+  if (error instanceof AccountRefreshUnavailableError) return true;
+  if (error instanceof AccountTokenRequestError) {
+    return error.status >= 500 || error.status === 429 || error.oauthErrorCode === "invalid_grant";
+  }
+  // fetch() reports a network failure as a TypeError ("fetch failed"), and an
+  // aborted or timed-out request by name.
+  return error instanceof TypeError
+    || (error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError"));
+}
+
 export function createAccountAuthService(args: {
   credentialStore: SyncCredentialStore;
   getOAuthConfig: () => AccountOAuthConfig | Promise<AccountOAuthConfig>;
@@ -2588,7 +2608,7 @@ export function createAccountAuthService(args: {
             const rotation = await waitForRefreshRotation(refreshSnapshot, sharedSignal);
             if (rotation.kind === "rotated") return rotation.snapshot.session;
             if (rotation.kind !== "unchanged") return null;
-            throw new Error(
+            throw new AccountRefreshUnavailableError(
               "ADE is refreshing your account sign-in in another process. Retry in a moment.",
             );
           }
