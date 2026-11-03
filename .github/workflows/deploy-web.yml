@@ -273,3 +273,29 @@ jobs:
           cd apps/push-relay
           npx wrangler deploy --dry-run --outdir "$RUNNER_TEMP/sentry-maps"
           npx --yes @sentry/cli@3.8.0 sourcemaps upload --org ade-app --project ade-workers --release "$SENTRY_RELEASE" --dist worker-ade-push-relay --url-prefix "~/" "$RUNNER_TEMP/sentry-maps"
+
+  # "Web deploy abc1234 (webclient, push-relay)" on PostHog's charts, naming
+  # only the surfaces this run deployed. Skips without POSTHOG_PERSONAL_API_KEY
+  # and never fails the run.
+  annotate:
+    needs: [webclient, account-directory, webhook-relay, tunnel-relay, push-relay]
+    if: ${{ always() && contains(needs.*.result, 'success') }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: scripts/posthog
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Mark the deploy on PostHog
+        continue-on-error: true
+        env:
+          POSTHOG_PERSONAL_API_KEY: ${{ secrets.POSTHOG_PERSONAL_API_KEY }}
+          POSTHOG_PROJECT_ID: ${{ secrets.POSTHOG_PROJECT_ID }}
+          POSTHOG_HOST: ${{ secrets.POSTHOG_HOST }}
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          surfaces="$(printf '%s' "$NEEDS_JSON" | jq -r '[to_entries[] | select(.value.result == "success") | .key] | join(",")')"
+          node scripts/posthog/annotate-release.mjs --web "$GITHUB_SHA" --surfaces "$surfaces"

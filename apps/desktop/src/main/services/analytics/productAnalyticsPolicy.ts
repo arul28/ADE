@@ -959,6 +959,7 @@ const FRAME_FUNCTION_VALUE = /^[\w$.<>\[\] /:-]{1,160}$/;
 const PROCESS_VALUES = new Set(["main", "renderer", "brain", "worker", "utility"]);
 const MAX_EXCEPTIONS = 5;
 const MAX_FRAMES = 50;
+const UUID_VALUE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * A stack frame's file, reduced to where it sits inside ADE: the part after
@@ -988,8 +989,9 @@ function frameNumber(value: unknown): number | undefined {
 /**
  * PostHog error tracking's `$exception` properties from one scrubbed Sentry
  * event. On top of Sentry's scrub, the message loses email addresses and
- * absolute paths, frames keep only their in-app file, function and position
- * (no source lines, no variables), and every string is bounded.
+ * absolute paths, frames keep only their in-app file, function, position and
+ * the bundle's debug id as `chunk_id` (no source lines, no variables), and
+ * every string is bounded.
  */
 export function sanitizeExceptionProperties(
   payload: ProductAnalyticsException | undefined,
@@ -1009,10 +1011,17 @@ export function sanitizeExceptionProperties(
         ? frame.function.trim()
         : undefined;
       if (!filename && !fn) return [];
+      // A bundle's Sentry debug id: PostHog finds the uploaded source map by
+      // it, and names nothing about the machine. Anything not UUID-shaped is dropped.
+      const chunkId = typeof frame.chunkId === "string" && UUID_VALUE.test(frame.chunkId.trim())
+        ? frame.chunkId.trim().toLowerCase()
+        : undefined;
       return [{
         platform: "node:javascript",
-        ...(filename ? { filename } : {}),
-        ...(fn ? { function: fn } : {}),
+        // PostHog reads a Node frame only when both strings are present.
+        filename: filename ?? "<unknown>",
+        function: fn ?? "<anonymous>",
+        ...(chunkId ? { chunk_id: chunkId } : {}),
         ...(frameNumber(frame.lineno) !== undefined ? { lineno: frameNumber(frame.lineno) } : {}),
         ...(frameNumber(frame.colno) !== undefined ? { colno: frameNumber(frame.colno) } : {}),
         in_app: frame.inApp === true,

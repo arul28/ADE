@@ -54,9 +54,17 @@ export type SentryMirrorEvent = {
       value?: string;
       mechanism?: { handled?: boolean; type?: string };
       stacktrace?: {
-        frames?: Array<{ filename?: string; function?: string; lineno?: number; colno?: number; in_app?: boolean }>;
+        frames?: Array<{ filename?: string; abs_path?: string; function?: string; lineno?: number; colno?: number; in_app?: boolean }>;
       };
     }>;
+  };
+  /**
+   * The SDK moves each frame's debug id here before `beforeSend` (one image
+   * per bundle, `code_file` = the frame's `abs_path` or `filename`). The ids
+   * are the ones `sentry-cli sourcemaps inject` stamped into the bundles.
+   */
+  debug_meta?: {
+    images?: Array<{ type?: string; code_file?: string; debug_id?: string }>;
   };
 };
 

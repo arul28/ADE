@@ -15,6 +15,13 @@ export function exceptionPayloadFromSentryEvent(
   event: Readonly<SentryMirrorEvent>,
 ): ProductAnalyticsException | null {
   const values = event.exception?.values ?? [];
+  // Each bundle's debug id, by the file the SDK recorded for it. PostHog's
+  // source maps are uploaded under the same ids (scripts/posthog/
+  // upload-sourcemaps.mjs), so a frame that carries one symbolicates.
+  const debugIds = new Map<string, string>();
+  for (const image of event.debug_meta?.images ?? []) {
+    if (image?.type === "sourcemap" && image.code_file && image.debug_id) debugIds.set(image.code_file, image.debug_id);
+  }
   // Sentry lists a cause chain innermost-last; PostHog reads the first entry as
   // the headline, so the outermost (what was actually thrown at the top) leads.
   const exceptions: ProductAnalyticsException["exceptions"] = [...values].reverse().map((value) => ({
@@ -28,6 +35,7 @@ export function exceptionPayloadFromSentryEvent(
       lineno: frame.lineno ?? null,
       colno: frame.colno ?? null,
       inApp: frame.in_app ?? null,
+      chunkId: debugIds.get(frame.abs_path ?? "") ?? debugIds.get(frame.filename ?? "") ?? null,
     })),
   }));
   if (exceptions.length === 0) {

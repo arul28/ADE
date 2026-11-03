@@ -85,7 +85,15 @@ export type ProductAnalyticsException = {
     value?: string | null;
     handled?: boolean | null;
     mechanism?: string | null;
-    frames?: Array<{ filename?: string | null; function?: string | null; lineno?: number | null; colno?: number | null; inApp?: boolean | null }>;
+    frames?: Array<{
+      filename?: string | null;
+      function?: string | null;
+      lineno?: number | null;
+      colno?: number | null;
+      inApp?: boolean | null;
+      /** The bundle's Sentry debug id, which PostHog's uploaded source maps are keyed by. */
+      chunkId?: string | null;
+    }>;
   }>;
   level: "error" | "fatal" | "warning";
   fingerprint?: string | null;
