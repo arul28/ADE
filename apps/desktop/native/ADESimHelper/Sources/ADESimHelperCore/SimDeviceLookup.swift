@@ -49,14 +49,7 @@ public enum SimDeviceLookup {
     // MARK: - private
 
     private static func allSimDevices() -> [NSObject]? {
-        guard let contextClass = NSClassFromString("SimServiceContext") as? NSObject.Type else { return nil }
-        let sharedSel = NSSelectorFromString("sharedServiceContextForDeveloperDir:error:")
-        guard let context = contextClass.perform(sharedSel, with: Xcode.developerDir(), with: nil)?
-            .takeUnretainedValue() as? NSObject else { return nil }
-        let deviceSetSel = NSSelectorFromString("defaultDeviceSetWithError:")
-        guard let deviceSet = context.perform(deviceSetSel, with: nil)?
-            .takeUnretainedValue() as? NSObject else { return nil }
-        return deviceSet.value(forKey: "devices") as? [NSObject]
+        SimServiceContextCache.devices()
     }
 
     private static func describe(_ device: NSObject) -> Device? {

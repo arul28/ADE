@@ -235,6 +235,11 @@ struct AppControlLivePicture: View {
   /// Card style (rounded, tinted slot, Live tag on the picture) or viewer
   /// style (bare, on black; the viewer's footer carries the tag, like macOS).
   var inCard: Bool = true
+  /// The viewer's corners (rounded over a pane, none full screen). The card
+  /// always rounds its slot.
+  var cornerRadius: CGFloat = 0
+  /// A single tap on the picture while it zooms (the viewer's menu).
+  var onTap: (() -> Void)?
 
   var body: some View {
     ZStack {
@@ -249,7 +254,10 @@ struct AppControlLivePicture: View {
     }
     .frame(maxWidth: .infinity)
     .aspectRatio(session.aspectRatio, contentMode: .fit)
-    .livePictureZoom(enabled: zoomable)
+    .liveStageReportsAspect(session.aspectRatio)
+    // The viewer's corners go on the picture itself, so they zoom with it.
+    .clipShape(RoundedRectangle(cornerRadius: inCard ? 0 : cornerRadius, style: .continuous))
+    .livePictureZoom(enabled: zoomable, onTap: onTap)
     .background(
       Color.black.opacity(inCard ? 0.12 : 0),
       in: RoundedRectangle(cornerRadius: inCard ? 12 : 0, style: .continuous)
@@ -533,21 +541,29 @@ func appControlStatusLabel(_ status: String) -> String {
 
 // MARK: - Viewer
 
-/// Full-screen view of the lane's App Control app. Built like the macOS
-/// viewer: black stage, Close and Rotate on top with the title between, one
-/// line underneath. Watch only.
+/// The live view of the lane's App Control app, on the live stage like the
+/// simulator (`LiveStage`). Watch only.
 ///
-/// The picture zooms (pinch, pan, double-tap) and the phone can turn to
-/// landscape, with the device or with Rotate, on the macOS viewer's rules
-/// (`MacDesktopViewerOrientation`, `livePictureZoom`).
+/// The picture is the whole surface: full screen on a phone (and the Duo's
+/// front screen), or the whole tools pane beside or above the chat on a large
+/// display. Nothing is drawn over it but one floating menu button; its menu
+/// holds Inspect, Turn, Placement, Reconnect and Close. The picture zooms
+/// (pinch, pan, double-tap) and a single tap opens the menu. Turn draws the
+/// picture a quarter turn round, remembered per place (`LiveStageTurns`).
 struct AppControlViewer: View {
   let laneId: String
   /// The chat this viewer was opened from, so an inspect handoff goes back to
   /// the right composer. Nil for a viewer opened without a chat.
   var chatSessionId: String?
-  /// A column in a split, not a full-screen cover: no close button of its own
-  /// and no window-wide dark preference (the pane scopes dark itself).
-  var embedded = false
+  /// Where the stage draws it. Changes without re-creating the viewer.
+  var presentation: LiveStagePresentation = .fullScreen
+  /// What the menu button keeps clear of; nil reads this view's safe area.
+  var chromeInsets: EdgeInsets?
+  #if DEBUG
+  /// Fixture seam (`-adePreviewScreen app-control-viewer`): a seeded state and
+  /// a drawn stand-in for the picture, with no sync and no subscription.
+  var preview: AppControlViewerPreview?
+  #endif
 
   private static let refreshInterval: Duration = .seconds(3)
 
@@ -555,74 +571,82 @@ struct AppControlViewer: View {
   private var syncService: SyncService { syncPublishes.service }
   @Environment(\.dismiss) private var dismiss
   @Environment(\.scenePhase) private var scenePhase
+  @Environment(\.liveStageClose) private var stageClose
+  @Environment(\.liveStageContext) private var stageContext
+  @Environment(\.duoLayout) private var duo
 
   @State private var appControl: WorkToolsAppControlState?
   @State private var loaded: Bool
   @State private var session: AppControlLiveSession?
-  @State private var orientation = MacDesktopViewerOrientation()
+  @ObservedObject private var turns = LiveStageTurns.shared
+  @State private var menuOpen = false
   /// The frozen inspect view, over everything, until its Close resumes the
   /// live subscription.
   @State private var inspect: LiveInspectMarkupModel?
-  @Environment(\.verticalSizeClass) private var verticalSizeClass
 
+  #if DEBUG
   init(
     laneId: String,
     initialState: WorkToolsAppControlState?,
     chatSessionId: String? = nil,
-    embedded: Bool = false
+    presentation: LiveStagePresentation = .fullScreen,
+    chromeInsets: EdgeInsets? = nil,
+    preview: AppControlViewerPreview? = nil
   ) {
     self.laneId = laneId
     self.chatSessionId = chatSessionId
-    self.embedded = embedded
+    self.presentation = presentation
+    self.chromeInsets = chromeInsets
+    self.preview = preview
+    let state = preview?.appControl ?? initialState
+    _appControl = State(initialValue: state)
+    _loaded = State(initialValue: state != nil)
+  }
+  #else
+  init(
+    laneId: String,
+    initialState: WorkToolsAppControlState?,
+    chatSessionId: String? = nil,
+    presentation: LiveStagePresentation = .fullScreen,
+    chromeInsets: EdgeInsets? = nil
+  ) {
+    self.laneId = laneId
+    self.chatSessionId = chatSessionId
+    self.presentation = presentation
+    self.chromeInsets = chromeInsets
     _appControl = State(initialValue: initialState)
     _loaded = State(initialValue: initialState != nil)
   }
+  #endif
+
+  private var isPreview: Bool {
+    #if DEBUG
+    preview != nil
+    #else
+    false
+    #endif
+  }
 
   var body: some View {
-    ZStack {
-      // In the tools pane the picture sits on the pane's own background.
-      (embedded ? ADEColor.pageBackground : Color.black).ignoresSafeArea()
-      VStack(spacing: 0) {
-        // In the Work tools pane these are the pane's toolbar items instead.
-        if !embedded {
-          controls
-        }
-        // The stage fills the space between the controls and the footer, and
-        // a zoomed picture may use all of it.
-        stage
-          .frame(maxWidth: .infinity, maxHeight: .infinity)
-          .livePictureViewport()
-        if !compactHeight && !embedded {
-          footer
-        }
-      }
-      if let inspect, !embedded {
-        LiveInspectStage(model: inspect, onClose: exitInspect)
-          .transition(.opacity)
-          .zIndex(2)
-      }
-    }
-    .animation(.easeOut(duration: 0.18), value: inspect != nil)
-    // In the Duo's tools pane the frozen inspector takes the whole screen: it
-    // has its own bar and a picture | inspector split across the fold, and
-    // drawn inside the pane its stack would take over the chat's title and
-    // rail.
+    LiveStageScreenFrame(
+      presentation: presentation,
+      chromeInsets: chromeInsets,
+      turned: turned,
+      menuOpen: $menuOpen,
+      onBackdropTap: { toggleMenu() },
+      picture: { stageContent },
+      panel: { menuPanel }
+    )
     .fullScreenCover(isPresented: Binding(
-      get: { embedded && inspect != nil },
+      get: { inspect != nil },
       set: { presented in if !presented, inspect != nil { exitInspect() } }
     )) {
       if let inspect {
         LiveInspectStage(model: inspect, onClose: exitInspect)
       }
     }
-    .preferredColorScheme(embedded ? nil : .dark)
-    .modifier(AppControlPaneChrome(
-      enabled: embedded,
-      subtitle: appControl.map { appControlIsLive($0) ? "Watching · Live" : "Watching · Off" } ?? appControlTagLabel,
-      session: syncService.supportsViewerRemoteAction("appControl.inspectPoint") ? session : nil,
-      onInspect: { beginInspect() }
-    ))
     .task(id: laneId) {
+      guard !isPreview else { return }
       await refresh()
       while !Task.isCancelled {
         try? await Task.sleep(for: Self.refreshInterval)
@@ -631,13 +655,14 @@ struct AppControlViewer: View {
       }
     }
     .onAppear {
-      orientation.openedIn = MacDesktopViewerRotation.currentOrientation()
       updateLifecycle()
+      updateIdleTimer()
     }
     .onDisappear {
       stopSession()
-      restoreOrientationOnClose()
+      if !isPreview { UIApplication.shared.isIdleTimerDisabled = false }
     }
+    .onChange(of: presentation) { _, _ in updateIdleTimer() }
     .onChange(of: scenePhase) { _, _ in updateLifecycle() }
     // Every transition, from the service itself: through the menu-safe
     // publisher a drop and reconnect under an open menu could coalesce
@@ -646,112 +671,133 @@ struct AppControlViewer: View {
     .onChange(of: isLiveCapable) { _, _ in updateLifecycle() }
   }
 
-  private var controls: some View {
-    HStack(spacing: 14) {
-      // In a pane the pane's close button is the way out.
-      if !embedded {
-        controlButton(systemName: "xmark", label: "Close") {
-          stopSession()
-          dismiss()
-        }
-      }
-      Spacer(minLength: 0)
-      if syncService.supportsViewerRemoteAction("appControl.inspectPoint"), let session {
-        AppControlInspectButton(session: session) { beginInspect() }
-      }
-      if rotates {
-        controlButton(systemName: "rotate.right", label: "Rotate") { rotate() }
-      }
+  // MARK: - Stage
+
+  private var cornerRadius: CGFloat { presentation.screenCornerRadius }
+
+  @ViewBuilder
+  private var stageContent: some View {
+    #if DEBUG
+    if preview != nil {
+      AppControlPreviewPicture()
+        .frame(maxWidth: .infinity)
+        .aspectRatio(16.0 / 10.0, contentMode: .fit)
+        .liveStageReportsAspect(16.0 / 10.0)
+        .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+        .onTapGesture { toggleMenu() }
+    } else {
+      liveStage
     }
-    .overlay {
-      Label(appControlTagLabel, systemImage: "macwindow")
-        .font(.footnote.weight(.semibold))
-        .foregroundStyle(.white.opacity(0.85))
-        .accessibilityAddTraits(.isHeader)
-    }
-    .padding(.horizontal, 18)
-    .padding(.vertical, compactHeight ? 6 : 12)
-  }
-
-  private func controlButton(systemName: String, label: String, action: @escaping () -> Void) -> some View {
-    Button {
-      ADEHaptics.light()
-      action()
-    } label: {
-      macDesktopViewerControlLabel(systemName: systemName)
-    }
-    .buttonStyle(.plain)
-    .accessibilityLabel(label)
-  }
-
-  /// Landscape on a phone. The line under the picture goes, so the picture
-  /// keeps the height.
-  private var compactHeight: Bool { verticalSizeClass == .compact }
-
-  /// Only a phone turns. An iPad keeps whatever its window is doing.
-  private var rotates: Bool { UIDevice.current.userInterfaceIdiom == .phone }
-
-  private func rotate() {
-    let request = orientation.toggleRotation(current: MacDesktopViewerRotation.currentOrientation())
-    MacDesktopViewerRotation.apply(lockLandscape: false, request: request)
-  }
-
-  /// A turn this viewer made is undone; a turn the person made with the
-  /// device stays.
-  private func restoreOrientationOnClose() {
-    guard rotates else { return }
-    MacDesktopViewerRotation.apply(lockLandscape: false, request: orientation.close())
+    #else
+    liveStage
+    #endif
   }
 
   @ViewBuilder
-  private var stage: some View {
+  private var liveStage: some View {
     if !syncService.supportsAppControlStream {
       stageMessage("Live App Control isn't available from this machine.")
     } else if appControl == nil {
       if loaded {
         stageMessage("No app is attached in this lane.")
       } else {
-        ProgressView().tint(embedded ? nil : .white)
+        ProgressView().tint(.white)
       }
     } else if let session {
-      // In the pane: the card style (a window's rounded corners, readable
-      // waiting text on the pane's background), lifted by a soft shadow.
-      AppControlLivePicture(session: session, live: appControlIsLive(appControl), zoomable: true, inCard: embedded)
-        .shadow(color: .black.opacity(embedded ? 0.14 : 0), radius: 16, y: 6)
-        .padding(.horizontal, embedded ? 16 : 12)
-        .padding(.vertical, embedded ? 16 : 0)
+      AppControlLivePicture(
+        session: session,
+        live: appControlIsLive(appControl),
+        zoomable: true,
+        inCard: false,
+        cornerRadius: cornerRadius,
+        onTap: { toggleMenu() }
+      )
     } else if syncService.connectionState != .connected {
       stageMessage("Waiting for the connection to your Mac…")
     } else {
-      ProgressView().tint(embedded ? nil : .white)
+      ProgressView().tint(.white)
     }
   }
 
   private func stageMessage(_ text: String) -> some View {
     Text(text)
       .font(.footnote)
-      .foregroundStyle(embedded ? ADEColor.textSecondary : .white.opacity(0.85))
+      .foregroundStyle(.white.opacity(0.85))
       .multilineTextAlignment(.center)
       .padding(.horizontal, 32)
   }
 
-  /// "Watching" and the Live/Off tag, where the macOS viewer puts its
-  /// ribbon. Never the host's app name: that is often the launch command.
-  private var footer: some View {
-    HStack(spacing: 8) {
-      if let appControl {
-        Text("Watching")
-          .font(.caption)
-          .foregroundStyle(.white.opacity(0.7))
-          .lineLimit(1)
-        AppControlLiveTag(live: appControlIsLive(appControl))
+  // MARK: - Menu
+
+  private var menuPanel: some View {
+    LiveStageMenuPanel {
+      LiveStageMenuHeader(
+        title: appControlTagLabel,
+        detail: appControl.map { appControlIsLive($0) ? "Watching · Live" : "Watching · Off" } ?? "Watching"
+      )
+      HStack(spacing: 6) {
+        if offersInspect, let session {
+          AppControlInspectTile(session: session) {
+            menuOpen = false
+            beginInspect()
+          }
+        }
+        LiveStageMenuTile(title: turned ? "Upright" : "Turn", systemImage: turned ? "rotate.left" : "rotate.right") {
+          withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) { turns.toggle(turnKey) }
+        }
+        .accessibilityHint("Turns the picture a quarter turn so it can fill the screen")
       }
+      .padding(.vertical, 2)
+      if stageClose != nil, stageContext.choices.count > 1 {
+        LiveStagePlacementMenu(context: stageContext) { menuOpen = false }
+      }
+      if let session {
+        AppControlReconnectRow(session: session) {
+          menuOpen = false
+          reconnect()
+        }
+      }
+      Divider()
+        .overlay(Color.white.opacity(0.1))
+        .padding(.vertical, 2)
+      LiveStageMenuRow(title: "Close", systemImage: "xmark", tint: ADEColor.danger) {
+        close()
+      }
+      .accessibilityIdentifier("AppControlViewer.Close")
     }
-    .padding(.horizontal, 24)
-    .padding(.bottom, 18)
-    .frame(maxWidth: .infinity)
-    .accessibilityElement(children: .combine)
   }
+
+  private var offersInspect: Bool {
+    !isPreview && session != nil && syncService.supportsViewerRemoteAction("appControl.inspectPoint")
+  }
+
+  private func toggleMenu() {
+    ADEHaptics.light()
+    withAnimation(.spring(response: 0.3, dampingFraction: 0.82)) { menuOpen.toggle() }
+  }
+
+  private func close() {
+    menuOpen = false
+    if let stageClose {
+      stageClose()
+    } else {
+      stopSession()
+      dismiss()
+    }
+  }
+
+  /// The screen stays awake while the app has the whole display.
+  private func updateIdleTimer() {
+    guard !isPreview else { return }
+    UIApplication.shared.isIdleTimerDisabled = presentation.isFullScreen
+  }
+
+  // MARK: - Turn
+
+  private var turnKey: String { LiveStageTurns.key("appControl", context: stageContext, layout: duo) }
+  private var turned: Bool { turns.isTurned(turnKey) }
+
+  // MARK: - Data
 
   private var isLiveCapable: Bool {
     syncService.supportsAppControlStream && appControl != nil
@@ -779,6 +825,7 @@ struct AppControlViewer: View {
   }
 
   private func updateLifecycle() {
+    guard !isPreview else { return }
     let shouldRun = isLiveCapable
       && inspect == nil
       && scenePhase == .active
@@ -802,6 +849,16 @@ struct AppControlViewer: View {
     guard let current = session else { return }
     current.stop(using: syncService)
     session = nil
+  }
+
+  /// Subscribes again on the same session, as the poll does after an end.
+  private func reconnect() {
+    guard isLiveCapable, syncService.connectionState == .connected else { return }
+    guard let session else {
+      updateLifecycle()
+      return
+    }
+    Task { await session.start(using: syncService) }
   }
 
   // MARK: - Inspect
@@ -833,59 +890,77 @@ struct AppControlViewer: View {
   }
 }
 
-/// Shows the viewer's Inspect control only once there is a frame to freeze.
-/// Its own view so the frame's arrival re-renders the button, not the viewer.
-private struct AppControlInspectButton: View {
+/// Inspect in the menu, once there is a frame to freeze. Its own view so the
+/// frame's arrival re-renders the tile, not the viewer.
+private struct AppControlInspectTile: View {
   @ObservedObject var session: AppControlLiveSession
   let action: () -> Void
 
   var body: some View {
-    if session.image != nil {
-      Button {
-        ADEHaptics.light()
-        action()
-      } label: {
-        macDesktopViewerControlLabel(systemName: "viewfinder")
-      }
-      .buttonStyle(.plain)
-      .accessibilityLabel("Inspect")
+    LiveStageMenuTile(title: "Inspect", systemImage: "viewfinder", disabled: session.image == nil, action: action)
       .accessibilityHint("Freezes the picture so you can pick an element and mark it up")
-    }
+      .accessibilityIdentifier("AppControlViewer.Inspect")
   }
 }
 
-/// The App Control viewer's controls in the Work tools pane's header, and its
-/// Live/Off tag as the header's status line. Off (the full-screen viewer),
-/// it changes nothing.
-private struct AppControlPaneChrome: ViewModifier {
-  let enabled: Bool
-  let subtitle: String
-  let session: AppControlLiveSession?
-  let onInspect: () -> Void
-
-  func body(content: Content) -> some View {
-    if enabled {
-      content
-        .duoPaneHeader(status: subtitle) {
-          if let session {
-            AppControlInspectToolbarButton(session: session, action: onInspect)
-          }
-        }
-    } else {
-      content
-    }
-  }
-}
-
-/// Inspect, as a pane header action, once there is a frame to freeze. Its own view so
-/// the frame's arrival re-renders the item, not the viewer.
-private struct AppControlInspectToolbarButton: View {
+/// Reconnect in the menu while the subscription has ended or failed.
+private struct AppControlReconnectRow: View {
   @ObservedObject var session: AppControlLiveSession
   let action: () -> Void
 
   var body: some View {
-    DuoPaneActionButton(title: "Inspect", systemImage: "viewfinder", action: action)
-      .disabled(session.image == nil)
-    .accessibilityHint("Freezes the picture so you can pick an element and mark it up")
+    switch session.phase {
+    case .ended, .failed, .idle:
+      LiveStageMenuRow(title: "Reconnect", systemImage: "arrow.clockwise", action: action)
+    default:
+      EmptyView()
+    }
   }
 }
+
+#if DEBUG
+/// What the fixture screen seeds the viewer with.
+struct AppControlViewerPreview {
+  var appControl = WorkToolsAppControlState(appName: "Ghost", status: "connected", driver: "cdp")
+}
+
+/// A drawn stand-in for an app window's picture.
+struct AppControlPreviewPicture: View {
+  var body: some View {
+    GeometryReader { proxy in
+      let unit = proxy.size.width / 1000
+      HStack(spacing: 0) {
+        VStack(alignment: .leading, spacing: 16 * unit) {
+          ForEach(0..<6, id: \.self) { row in
+            RoundedRectangle(cornerRadius: 6 * unit)
+              .fill(Color.white.opacity(row == 1 ? 0.3 : 0.12))
+              .frame(height: 26 * unit)
+          }
+          Spacer()
+        }
+        .padding(24 * unit)
+        .frame(width: 240 * unit)
+        .background(Color(red: 0.12, green: 0.13, blue: 0.17))
+        VStack(alignment: .leading, spacing: 18 * unit) {
+          Text("Dashboard")
+            .font(.system(size: 40 * unit, weight: .bold))
+            .foregroundStyle(.black)
+          HStack(spacing: 18 * unit) {
+            ForEach(0..<3, id: \.self) { _ in
+              RoundedRectangle(cornerRadius: 12 * unit)
+                .fill(Color(red: 0.36, green: 0.42, blue: 0.95).opacity(0.18))
+                .frame(height: 140 * unit)
+            }
+          }
+          RoundedRectangle(cornerRadius: 12 * unit)
+            .fill(Color.gray.opacity(0.14))
+          Spacer(minLength: 0)
+        }
+        .padding(32 * unit)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(Color(white: 0.97))
+      }
+    }
+  }
+}
+#endif

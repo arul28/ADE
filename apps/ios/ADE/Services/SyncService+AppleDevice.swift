@@ -147,6 +147,44 @@ extension SyncService {
     )
   }
 
+  /// Folds the lane's iPhone Duo simulator to a pose or a hinge angle, without
+  /// waiting for it to settle (`follow`): the phone mirrors its own hinge into
+  /// it while controlling. The stream's posture notes say where it landed.
+  func foldAppleDevice(laneId: String, chatSessionId: String?, pose: String?, angle: Double?) async throws {
+    let trimmed = laneId.trimmingCharacters(in: .whitespacesAndNewlines)
+    try requireAppleControl(laneId: trimmed)
+    var foldArgs: [String: Any] = ["follow": true]
+    if let pose { foldArgs["pose"] = pose } else if let angle { foldArgs["angle"] = (angle * 10).rounded() / 10 }
+    var args: [String: Any] = ["laneId": trimmed, "method": "setPosture", "args": foldArgs]
+    if let chatSessionId { args["chatSessionId"] = chatSessionId }
+    _ = try await sendCommand(
+      action: "apple.invoke",
+      args: args,
+      disconnectOnTimeout: false,
+      timeoutNanoseconds: Self.appleInputTimeoutNanoseconds,
+      attemptedLiveFailurePolicy: .preserveForManualRetry
+    )
+  }
+
+  /// Turns the lane's simulator. On a Duo the name is how the PHONE is held.
+  func rotateAppleDevice(laneId: String, chatSessionId: String?, orientation: String) async throws {
+    let trimmed = laneId.trimmingCharacters(in: .whitespacesAndNewlines)
+    try requireAppleControl(laneId: trimmed)
+    var args: [String: Any] = ["laneId": trimmed, "method": "rotate", "args": ["orientation": orientation]]
+    if let chatSessionId { args["chatSessionId"] = chatSessionId }
+    _ = try await sendCommand(
+      action: "apple.invoke",
+      args: args,
+      disconnectOnTimeout: false,
+      timeoutNanoseconds: Self.appleRotateTimeoutNanoseconds,
+      attemptedLiveFailurePolicy: .preserveForManualRetry
+    )
+  }
+
+  /// A Duo's turn waits for the picture to settle, and is sent once more when
+  /// it has not.
+  private static let appleRotateTimeoutNanoseconds: UInt64 = 20_000_000_000
+
   /// Long enough for a drag the host replays at its real duration (up to 2s)
   /// behind a queued tap; short enough that a dead route says so.
   private static let appleInputTimeoutNanoseconds: UInt64 = 8_000_000_000

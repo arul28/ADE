@@ -2,29 +2,42 @@ import Combine
 import SwiftUI
 import UIKit
 
-/// Full-screen view of the lane's private macOS screen.
+/// The live view of the lane's private macOS (or Windows) screen, on the live
+/// stage like the simulator (`LiveStage`).
 ///
-/// Built like `AppleDeviceViewer` — black stage, Close and Reconnect on top, one
-/// sentence underneath — with one difference: the macOS desktop takes a finger
-/// when the host advertises takeover, so the picture here is the same
-/// `MacDesktopControlPicture` the tools sheet uses, Take control and Return
-/// included.
+/// The picture is the whole surface: full screen on a phone (and the Duo's
+/// front screen), or the whole tools pane beside or above the chat on a large
+/// display. Nothing is drawn over it but one floating menu button, which the
+/// person can drag out of the way; every control is in its menu: Take control
+/// and Return to agent, Inspect, Turn, Stop (Windows), Placement,
+/// Reconnect, Close. Turn draws the picture a quarter turn round, so a wide
+/// screen can fill a tall page; it is remembered per place (`LiveStageTurns`).
 ///
-/// While watching, the picture zooms (pinch, pan, double-tap) and the phone
-/// can turn to landscape, with the device or with Rotate. Take control forces
-/// landscape and holds it; Return puts back the orientation from before.
+/// While watching, the picture zooms (pinch, pan, double-tap) and a single
+/// tap opens the menu. Take control hands the finger to the screen through
+/// the same `MacDesktopControlPicture` the tools sheet uses, with this view's
+/// lease, so the menu can return it (or Esc on a hardware keyboard). On a
+/// phone shown full screen, Take control turns the phone to landscape and
+/// holds it (unless the picture is already turned); Return puts back the
+/// orientation from before. Over a pane the phone never turns.
 ///
 /// It runs its own live subscription under its own id. The tools sheet pauses
-/// its inline picture while this is up, and even if both were live, two ids
-/// cannot unsubscribe each other on the host.
+/// its inline picture while a viewer it opened is up, and even if both were
+/// live, two ids cannot unsubscribe each other on the host.
 struct MacDesktopViewer: View {
   let laneId: String
   /// The chat this viewer was opened from, so an inspect handoff goes back to
   /// the right composer. Nil for a viewer opened without a chat.
   var chatSessionId: String?
-  /// A column in a split, not a full-screen cover: no close button of its own
-  /// and no window-wide dark preference (the pane scopes dark itself).
-  var embedded = false
+  /// Where the stage draws it. Changes without re-creating the viewer.
+  var presentation: LiveStagePresentation = .fullScreen
+  /// What the menu button keeps clear of; nil reads this view's safe area.
+  var chromeInsets: EdgeInsets?
+  #if DEBUG
+  /// Fixture seam (`-adePreviewScreen mac-desktop-viewer`): a seeded state and
+  /// a drawn stand-in for the picture, with no sync and no subscription.
+  var preview: MacDesktopViewerPreview?
+  #endif
 
   /// Poll cadence for the lease, recording and stream summary. Same as the
   /// tools sheet: this is a surface the user opened to watch.
@@ -34,230 +47,191 @@ struct MacDesktopViewer: View {
   private var syncService: SyncService { syncPublishes.service }
   @Environment(\.dismiss) private var dismiss
   @Environment(\.scenePhase) private var scenePhase
+  @Environment(\.liveStageClose) private var stageClose
+  @Environment(\.liveStageContext) private var stageContext
+  @Environment(\.duoLayout) private var duo
 
   /// Seeded with the caller's last snapshot so the ribbon and the picture's
   /// geometry are right on the first frame rather than after the first poll.
   @State private var desktop: WorkToolsMacDesktopState?
   @State private var session: MacDesktopLiveSession?
-  @State private var controlling = false
+  @StateObject private var lease = MacDesktopControlHolder()
   /// The Off card's Start is in flight. Opening this viewer never starts a
   /// display; only that button does.
   @State private var starting = false
   @State private var startError: String?
   @State private var stopping = false
   @State private var confirmingStop = false
-  @State private var stopError: String?
   @State private var orientation = MacDesktopViewerOrientation()
+  @ObservedObject private var turns = LiveStageTurns.shared
+  /// The Turn key from before Take control turned the phone; nil otherwise.
+  @State private var controlTurnKey: String?
+  @State private var menuOpen = false
+  @State private var hint: String?
+  @State private var hintTask: Task<Void, Never>?
+  #if DEBUG
+  @State private var previewControlling = false
+  #endif
   /// The frozen inspect view, over everything, until its Close resumes the live
   /// subscription.
   @State private var inspect: LiveInspectMarkupModel?
-  @Environment(\.verticalSizeClass) private var verticalSizeClass
 
+  #if DEBUG
   init(
     laneId: String,
     initialState: WorkToolsMacDesktopState?,
     chatSessionId: String? = nil,
-    embedded: Bool = false
+    presentation: LiveStagePresentation = .fullScreen,
+    chromeInsets: EdgeInsets? = nil,
+    preview: MacDesktopViewerPreview? = nil
   ) {
     self.laneId = laneId
     self.chatSessionId = chatSessionId
-    self.embedded = embedded
+    self.presentation = presentation
+    self.chromeInsets = chromeInsets
+    self.preview = preview
+    _desktop = State(initialValue: preview?.desktop ?? initialState)
+    _previewControlling = State(initialValue: preview?.controlling ?? false)
+  }
+  #else
+  init(
+    laneId: String,
+    initialState: WorkToolsMacDesktopState?,
+    chatSessionId: String? = nil,
+    presentation: LiveStagePresentation = .fullScreen,
+    chromeInsets: EdgeInsets? = nil
+  ) {
+    self.laneId = laneId
+    self.chatSessionId = chatSessionId
+    self.presentation = presentation
+    self.chromeInsets = chromeInsets
     _desktop = State(initialValue: initialState)
+  }
+  #endif
+
+  private var isPreview: Bool {
+    #if DEBUG
+    preview != nil
+    #else
+    false
+    #endif
+  }
+
+  private var controlling: Bool {
+    #if DEBUG
+    if preview != nil { return previewControlling }
+    #endif
+    return lease.controlling
   }
 
   var body: some View {
-    ZStack {
-      // In the tools pane the picture sits on the pane's own background.
-      (embedded ? ADEColor.pageBackground : Color.black).ignoresSafeArea()
+    lifecycleModifiers(viewerBody)
+  }
 
-      // One tree in both orientations. A branch per orientation would rebuild
-      // the picture on rotation and drop the control lease it holds.
-      VStack(spacing: 0) {
-        // In the Work tools pane these are the pane's toolbar items instead.
-        if !embedded {
-          controls
-        }
-        if let stopError {
-          Text(stopError).font(.caption).foregroundStyle(ADEColor.warning).padding(.horizontal)
-        }
-        // The stage fills the space between the controls and the footer, and
-        // a zoomed picture may use all of it.
-        stage
-          .frame(maxWidth: .infinity, maxHeight: .infinity)
-          .livePictureViewport()
-        if !compactHeight && !embedded {
-          footer
-        }
-      }
-      if let inspect, !embedded {
-        LiveInspectStage(model: inspect, onClose: exitInspect)
-          .transition(.opacity)
-          .zIndex(2)
-      }
-    }
-    .animation(.easeOut(duration: 0.18), value: inspect != nil)
-    // In the Duo's tools pane the frozen inspector takes the whole screen: it
-    // has its own bar and a picture | inspector split across the fold, and
-    // drawn inside the pane its stack would take over the chat's title and
-    // rail.
+  private var viewerBody: some View {
+    LiveStageScreenFrame(
+      presentation: presentation,
+      chromeInsets: chromeInsets,
+      turned: turned,
+      hint: hint,
+      symbolName: controlling ? "cursorarrow.rays" : "ellipsis",
+      alert: controlling,
+      menuOpen: $menuOpen,
+      onBackdropTap: { toggleMenu() },
+      picture: { stageContent },
+      panel: { menuPanel }
+    )
+    .persistentSystemOverlays(presentation.isFullScreen && controlling ? .hidden : .automatic)
     .fullScreenCover(isPresented: Binding(
-      get: { embedded && inspect != nil },
+      get: { inspect != nil },
       set: { presented in if !presented, inspect != nil { exitInspect() } }
     )) {
       if let inspect {
         LiveInspectStage(model: inspect, onClose: exitInspect)
       }
     }
-    .preferredColorScheme(embedded ? nil : .dark)
-    .modifier(MacDesktopPaneChrome(
-      enabled: embedded,
-      subtitle: macDesktopViewerRibbon(
-        controlling: controlling,
-        lease: desktop?.lease,
-        displayName: desktop?.display?.name
-      ),
-      stopSeat: paneStopSeat,
-      stopping: stopping,
-      canInspect: syncService.supportsViewerRemoteAction("macDesktop.observe") && desktop?.display != nil,
-      confirmingStop: $confirmingStop,
-      onInspect: { beginInspect() }
-    ))
+    // Asks first, like every Stop on the desktop: the private screen signs out
+    // and closes the lane's apps; the main desktop is handed back.
     .confirmationDialog(
-      paneStopSeat.map { "\(windowsDesktopStopCopy(seat: $0).action)?" } ?? "",
-      isPresented: Binding(get: { embedded && confirmingStop }, set: { confirmingStop = $0 }),
+      stopSeat.map { "\(windowsDesktopStopCopy(seat: $0).action)?" } ?? "",
+      isPresented: $confirmingStop,
       titleVisibility: .visible
     ) {
-      if let seat = paneStopSeat { stopDialogActions(seat: seat) }
+      if let seat = stopSeat { stopDialogActions(seat: seat) }
     } message: {
-      if let seat = paneStopSeat { Text(windowsDesktopStopCopy(seat: seat).consequence) }
+      if let seat = stopSeat { Text(windowsDesktopStopCopy(seat: seat).consequence) }
     }
-    .task(id: laneId) {
-      await refresh()
-      while !Task.isCancelled {
-        try? await Task.sleep(for: Self.refreshInterval)
-        guard !Task.isCancelled else { return }
+  }
+
+  /// The subscription's and the poll's lifetime.
+  private func lifecycleModifiers<Content: View>(_ content: Content) -> some View {
+    content
+      .task(id: laneId) {
+        guard !isPreview else { return }
         await refresh()
-      }
-    }
-    .onAppear {
-      orientation.openedIn = MacDesktopViewerRotation.currentOrientation()
-      updateLifecycle()
-    }
-    .onDisappear {
-      stopSession()
-      restoreOrientationOnClose()
-    }
-    .onChange(of: controlling) { _, next in controlOrientationChanged(next) }
-    .onChange(of: scenePhase) { _, _ in updateLifecycle() }
-    // Every transition, from the service itself: through the menu-safe
-    // publisher a drop and reconnect under an open menu could coalesce
-    // into no change, and the stream would not restart.
-    .onReceive(syncService.$connectionState.removeDuplicates().receive(on: DispatchQueue.main)) { _ in updateLifecycle() }
-    .onChange(of: isLiveCapable) { _, _ in updateLifecycle() }
-  }
-
-  // MARK: - Pieces
-
-  /// The Windows seat the pane's Stop acts on, when this host can stop it.
-  private var paneStopSeat: String? {
-    guard let seat = windowsDesktopSeat(desktop?.windowsDesktop, display: desktop?.display),
-          syncService.canStopWindowsDesktop(seat: seat) else { return nil }
-    return seat
-  }
-
-  private var controls: some View {
-    HStack(spacing: 14) {
-      // In a pane the pane's close button is the way out.
-      if !embedded {
-        controlButton(systemName: "xmark", label: "Close") {
-          stopSession()
-          dismiss()
-        }
-      }
-      Spacer(minLength: 0)
-      if let seat = windowsDesktopSeat(desktop?.windowsDesktop, display: desktop?.display),
-         syncService.canStopWindowsDesktop(seat: seat) {
-        let copy = windowsDesktopStopCopy(seat: seat)
-        // Asks first, like every Stop on the desktop: the private screen signs
-        // out and closes the lane's apps; the main desktop is handed back.
-        controlButton(systemName: "stop.fill", label: copy.action) {
-          confirmingStop = true
-        }
-        .disabled(stopping)
-        .confirmationDialog(
-          "\(copy.action)?",
-          isPresented: $confirmingStop,
-          titleVisibility: .visible
-        ) {
-          stopDialogActions(seat: seat)
-        } message: {
-          Text(copy.consequence)
-        }
-      }
-      if let session {
-        MacDesktopViewerReconnectButton(session: session) { reconnect() }
-      }
-      if syncService.supportsViewerRemoteAction("macDesktop.observe"), desktop?.display != nil {
-        controlButton(systemName: "viewfinder", label: "Inspect") { beginInspect() }
-      }
-      if rotates && !controlling {
-        controlButton(systemName: "rotate.right", label: "Rotate") { rotate() }
-      }
-    }
-    .overlay { title }
-    .padding(.horizontal, 18)
-    .padding(.vertical, compactHeight ? 6 : 12)
-  }
-
-  /// Asks first, like every Stop on the desktop: the private screen signs out
-  /// and closes the lane's apps; the main desktop is handed back.
-  @ViewBuilder
-  private func stopDialogActions(seat: String) -> some View {
-    Button(windowsDesktopStopCopy(seat: seat).action, role: .destructive) {
-      Task {
-        stopping = true
-        stopError = nil
-        defer { stopping = false }
-        do {
-          try await syncService.windowsDesktopStop(laneId: laneId, seat: seat)
+        while !Task.isCancelled {
+          try? await Task.sleep(for: Self.refreshInterval)
+          guard !Task.isCancelled else { return }
           await refresh()
-        } catch { stopError = macDesktopVisibleMessage(for: error, hostIsWindows: true) }
+        }
       }
-    }
-    Button("Keep running", role: .cancel) {}
+      .onAppear {
+        orientation.openedIn = MacDesktopViewerRotation.currentOrientation()
+        updateLifecycle()
+        updateIdleTimer()
+      }
+      .onDisappear {
+        hintTask?.cancel()
+        stopSession()
+        restoreOrientationOnClose()
+        if !isPreview { UIApplication.shared.isIdleTimerDisabled = false }
+      }
+      .onChange(of: lease.controlling) { _, next in
+        controlOrientationChanged(next)
+        updateIdleTimer()
+      }
+      // Moved off the phone's whole screen (unfolded into the pane) while
+      // holding landscape: let the display go where it wants.
+      .onChange(of: turnsPhone) { _, turns in
+        if !turns, orientation.locksLandscape {
+          _ = orientation.endControl()
+          MacDesktopViewerRotation.apply(lockLandscape: false, request: nil)
+        }
+      }
+      .onChange(of: presentation) { _, _ in updateIdleTimer() }
+      .onChange(of: lease.notice) { _, notice in
+        if let notice { flashHint(notice, warning: true) }
+      }
+      .onChange(of: lease.errorText) { _, text in
+        if let text { flashHint(text, warning: true) }
+      }
+      .onChange(of: scenePhase) { _, _ in updateLifecycle() }
+      // Every transition, from the service itself: through the menu-safe
+      // publisher a drop and reconnect under an open menu could coalesce
+      // into no change, and the stream would not restart.
+      .onReceive(syncService.$connectionState.removeDuplicates().receive(on: DispatchQueue.main)) { _ in updateLifecycle() }
+      .onChange(of: isLiveCapable) { _, _ in updateLifecycle() }
   }
 
-  private var title: some View {
-    Label(
-      windowsDesktopSeatLabel(windowsDesktopSeat(desktop?.windowsDesktop, display: desktop?.display))
-        ?? (desktop?.windowsDesktop == nil ? "macOS" : "Windows"),
-      systemImage: desktop?.windowsDesktop == nil ? "desktopcomputer" : windowsDesktopSymbolName
-    )
-      .font(.footnote.weight(.semibold))
-      .foregroundStyle(.white.opacity(0.85))
-      .accessibilityAddTraits(.isHeader)
-  }
+  // MARK: - Stage
 
-  /// Landscape on a phone. The ribbon under the picture goes, so the picture
-  /// keeps the height.
-  private var compactHeight: Bool { verticalSizeClass == .compact }
+  private var cornerRadius: CGFloat { presentation.screenCornerRadius }
 
-  /// Only a phone turns. An iPad keeps whatever its window is doing.
-  private var rotates: Bool { UIDevice.current.userInterfaceIdiom == .phone }
-
-  private func controlButton(systemName: String, label: String, action: @escaping () -> Void) -> some View {
-    Button {
-      ADEHaptics.light()
-      action()
-    } label: {
-      macDesktopViewerControlLabel(systemName: systemName)
+  @ViewBuilder
+  private var stageContent: some View {
+    #if DEBUG
+    if preview != nil {
+      previewStage
+    } else {
+      liveStage
     }
-    .buttonStyle(.plain)
-    .accessibilityLabel(label)
+    #else
+    liveStage
+    #endif
   }
 
   @ViewBuilder
-  private var stage: some View {
+  private var liveStage: some View {
     if !syncService.supportsMacDesktopStream {
       stageMessage("Live video isn't available from this machine.")
     } else if desktop?.supported == false {
@@ -272,35 +246,59 @@ struct MacDesktopViewer: View {
             placeholder: nil,
             showsPictureStatus: false,
             zoomable: true,
-            onControlChange: { controlling = $0 }
+            lease: lease,
+            cornerRadius: cornerRadius,
+            onTap: { toggleMenu() }
           )
+          .overlay { controlRing }
           MacDesktopViewerStatusOverlay(
             session: session,
             hostError: desktop?.stream?.lastError,
             onReconnect: { reconnect() }
           )
         }
-        .shadow(color: .black.opacity(embedded ? 0.14 : 0), radius: 16, y: 6)
-        .padding(.horizontal, embedded ? 16 : 12)
-        .padding(.vertical, embedded ? 16 : 0)
       } else if syncService.connectionState != .connected {
         stageMessage("Waiting for the connection to your Mac…")
       } else {
-        ProgressView().tint(embedded ? nil : .white)
+        ProgressView().tint(.white)
       }
     } else if desktop == nil {
-      ProgressView().tint(embedded ? nil : .white)
+      ProgressView().tint(.white)
     } else {
       offCard
     }
   }
+
+  /// Over the pane, an orange edge says the finger belongs to the screen.
+  /// Full screen the menu button's ring says it.
+  @ViewBuilder
+  private var controlRing: some View {
+    if controlling, presentation.isPane {
+      RoundedRectangle(cornerRadius: cornerRadius + 3, style: .continuous)
+        .strokeBorder(ADEColor.warning, lineWidth: 3)
+        .padding(-3)
+        .allowsHitTesting(false)
+    }
+  }
+
+  #if DEBUG
+  private var previewStage: some View {
+    MacDesktopPreviewPicture()
+      .frame(maxWidth: .infinity)
+      .aspectRatio(16.0 / 10.0, contentMode: .fit)
+        .liveStageReportsAspect(16.0 / 10.0)
+      .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+      .overlay { controlRing }
+      .onTapGesture { toggleMenu() }
+  }
+  #endif
 
   /// "The macOS desktop is off." and Start, like the Apple Off card. The poll brings
   /// the display in once the host has made it.
   private var offCard: some View {
     VStack(spacing: 12) {
       if starting {
-        ProgressView().tint(embedded ? nil : .white)
+        ProgressView().tint(.white)
       }
       stageMessage(macDesktopOffCardMessage(
         starting: starting,
@@ -316,10 +314,10 @@ struct MacDesktopViewer: View {
         } label: {
           Text("Start")
             .font(.footnote.weight(.semibold))
-            .foregroundStyle(embedded ? ADEColor.accent : .white)
+            .foregroundStyle(.white)
             .padding(.horizontal, 18)
             .padding(.vertical, 9)
-            .background(embedded ? ADEColor.accent.opacity(0.12) : Color.white.opacity(0.16), in: Capsule())
+            .background(Color.white.opacity(0.16), in: Capsule())
         }
         .buttonStyle(.plain)
         .disabled(syncService.connectionState != .connected)
@@ -331,32 +329,213 @@ struct MacDesktopViewer: View {
   private func stageMessage(_ text: String) -> some View {
     Text(text)
       .font(.footnote)
-      .foregroundStyle(embedded ? ADEColor.textSecondary : .white.opacity(0.85))
+      .foregroundStyle(.white.opacity(0.85))
       .multilineTextAlignment(.center)
       .padding(.horizontal, 32)
   }
 
-  private var footer: some View {
-    VStack(spacing: 6) {
-      Text(macDesktopViewerRibbon(
-        controlling: controlling,
-        lease: desktop?.lease,
-        displayName: desktop?.display?.name
-      ))
-      .font(.caption)
-      .foregroundStyle(.white.opacity(0.7))
-      .lineLimit(2)
-      .multilineTextAlignment(.center)
-      if desktop?.recording?.running == true {
-        Label("Recording", systemImage: "record.circle")
-          .font(.caption2.weight(.semibold))
-          .foregroundStyle(ADEColor.danger)
+  // MARK: - Menu
+
+  private var menuPanel: some View {
+    LiveStageMenuPanel {
+      LiveStageMenuHeader(
+        title: screenTitle,
+        detail: macDesktopViewerRibbon(
+          controlling: controlling,
+          lease: desktop?.lease,
+          displayName: desktop?.display?.name
+        ),
+        recording: desktop?.recording?.running == true
+      )
+
+      controlRows
+
+      HStack(spacing: 6) {
+        if canInspect {
+          LiveStageMenuTile(title: "Inspect", systemImage: "viewfinder") {
+            menuOpen = false
+            beginInspect()
+          }
+          .accessibilityHint("Freezes the picture so you can pick an element and mark it up")
+          .accessibilityIdentifier("MacDesktopViewer.Inspect")
+        }
+        LiveStageMenuTile(title: turned ? "Upright" : "Turn", systemImage: turned ? "rotate.left" : "rotate.right") {
+          withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) { turns.toggle(turnKey) }
+        }
+        .accessibilityHint("Turns the picture a quarter turn so it can fill the screen")
+      }
+      .padding(.vertical, 2)
+
+      if let seat = stopSeat {
+        LiveStageMenuRow(
+          title: stopping ? "Stopping…" : windowsDesktopStopCopy(seat: seat).action,
+          systemImage: "stop.fill",
+          tint: ADEColor.danger,
+          disabled: stopping
+        ) {
+          menuOpen = false
+          confirmingStop = true
+        }
+      }
+      if stageClose != nil, stageContext.choices.count > 1 {
+        LiveStagePlacementMenu(context: stageContext) { menuOpen = false }
+      }
+      if let session {
+        MacDesktopViewerReconnectRow(session: session) {
+          menuOpen = false
+          reconnect()
+        }
+      }
+      Divider()
+        .overlay(Color.white.opacity(0.1))
+        .padding(.vertical, 2)
+      LiveStageMenuRow(title: "Close", systemImage: "xmark", tint: ADEColor.danger) {
+        close()
+      }
+      .accessibilityIdentifier("MacDesktopViewer.Close")
+    }
+  }
+
+  /// Take control, or Return to agent while this phone holds the screen.
+  @ViewBuilder
+  private var controlRows: some View {
+    if controlling {
+      LiveStageMenuRow(title: "Return to agent", systemImage: "arrow.uturn.backward", detail: "Esc") {
+        menuOpen = false
+        returnControl()
+      }
+      .accessibilityIdentifier("MacDesktopViewer.ReturnControl")
+    } else if showsControl {
+      LiveStageMenuRow(
+        title: lease.busy ? "Taking control…" : "Take control",
+        systemImage: "hand.point.up.left",
+        tint: ADEColor.warning,
+        disabled: controlBlocker != nil || lease.busy
+      ) {
+        takeControl()
+      }
+      .accessibilityIdentifier("MacDesktopViewer.TakeControl")
+      if let blocker = controlBlocker {
+        Text(blocker)
+          .font(.caption)
+          .foregroundStyle(.white.opacity(0.55))
+          .padding(.horizontal, 10)
+          .padding(.bottom, 4)
       }
     }
-    .padding(.horizontal, 24)
-    .padding(.bottom, 18)
-    .frame(maxWidth: .infinity)
-    .accessibilityElement(children: .combine)
+  }
+
+  /// The host lets a phone drive the screen at all.
+  private var showsControl: Bool {
+    isPreview || syncService.supportsMacDesktopControl
+  }
+
+  /// Why Take control is off right now, or nil when it is on.
+  private var controlBlocker: String? {
+    if isPreview { return nil }
+    guard desktop?.display != nil, session != nil else { return "Waiting for the picture." }
+    if macDesktopDisplayGeometry(desktop?.display) == nil { return macDesktopNoGeometryMessage }
+    return nil
+  }
+
+  private func takeControl() {
+    #if DEBUG
+    if preview != nil {
+      previewControlling = true
+      menuOpen = false
+      return
+    }
+    #endif
+    guard controlBlocker == nil else { return }
+    ADEHaptics.success()
+    Task {
+      await lease.take(laneId: laneId, using: syncService)
+      if lease.controlling {
+        menuOpen = false
+        flashHint("You have control. The menu hands it back.", warning: false)
+      }
+    }
+  }
+
+  private func returnControl() {
+    #if DEBUG
+    if preview != nil {
+      previewControlling = false
+      return
+    }
+    #endif
+    lease.release(laneId: laneId, using: syncService)
+  }
+
+  private var screenTitle: String {
+    windowsDesktopSeatLabel(windowsDesktopSeat(desktop?.windowsDesktop, display: desktop?.display))
+      ?? (desktop?.windowsDesktop == nil ? "macOS" : "Windows")
+  }
+
+  /// The Windows seat Stop acts on, when this host can stop it.
+  private var stopSeat: String? {
+    guard let seat = windowsDesktopSeat(desktop?.windowsDesktop, display: desktop?.display),
+          syncService.canStopWindowsDesktop(seat: seat) else { return nil }
+    return seat
+  }
+
+  @ViewBuilder
+  private func stopDialogActions(seat: String) -> some View {
+    Button(windowsDesktopStopCopy(seat: seat).action, role: .destructive) {
+      Task {
+        stopping = true
+        defer { stopping = false }
+        do {
+          try await syncService.windowsDesktopStop(laneId: laneId, seat: seat)
+          await refresh()
+        } catch {
+          flashHint(macDesktopVisibleMessage(for: error, hostIsWindows: true), warning: true)
+        }
+      }
+    }
+    Button("Keep running", role: .cancel) {}
+  }
+
+  private var canInspect: Bool {
+    inspect == nil
+      && !isPreview
+      && syncService.supportsViewerRemoteAction("macDesktop.observe")
+      && desktop?.display != nil
+  }
+
+  private func toggleMenu() {
+    ADEHaptics.light()
+    withAnimation(.spring(response: 0.3, dampingFraction: 0.82)) { menuOpen.toggle() }
+  }
+
+  private func close() {
+    menuOpen = false
+    if let stageClose {
+      stageClose()
+    } else {
+      stopSession()
+      dismiss()
+    }
+  }
+
+  private func flashHint(_ text: String, warning: Bool, seconds: Double = 2.4) {
+    if warning { ADEHaptics.warning() }
+    hint = text
+    hintTask?.cancel()
+    hintTask = Task { @MainActor in
+      try? await Task.sleep(for: .seconds(seconds))
+      guard !Task.isCancelled else { return }
+      hint = nil
+      lease.notice = nil
+      lease.errorText = nil
+    }
+  }
+
+  /// The screen stays awake while the desktop has it: full screen, or while
+  /// controlling.
+  private func updateIdleTimer() {
+    guard !isPreview else { return }
+    UIApplication.shared.isIdleTimerDisabled = presentation.isFullScreen || controlling
   }
 
   // MARK: - Data
@@ -390,25 +569,44 @@ struct MacDesktopViewer: View {
 
   // MARK: - Orientation
 
+  /// Only a phone shown full screen turns: never an iPad, never the Duo's
+  /// large display, never a viewer over a pane.
+  private var turnsPhone: Bool {
+    UIDevice.current.userInterfaceIdiom == .phone
+      && presentation.isFullScreen
+      && !duo.isWide
+  }
+
   /// Take control turns the phone to landscape and holds it there. Return
   /// turns it back to the orientation from before Take control.
   private func controlOrientationChanged(_ controlling: Bool) {
-    guard rotates else { return }
-    let request = controlling
-      ? orientation.beginControl(current: MacDesktopViewerRotation.currentOrientation())
-      : orientation.endControl()
-    MacDesktopViewerRotation.apply(lockLandscape: orientation.locksLandscape, request: request)
+    guard UIDevice.current.userInterfaceIdiom == .phone else { return }
+    if controlling {
+      // A turned picture already runs the long way: the phone stays put.
+      guard turnsPhone, !turned else { return }
+      // The phone turns for Control, not because the person turned it: Turn
+      // stays the one remembered for how they were holding it.
+      controlTurnKey = turnKey
+      let request = orientation.beginControl(current: MacDesktopViewerRotation.currentOrientation())
+      MacDesktopViewerRotation.apply(lockLandscape: orientation.locksLandscape, request: request)
+    } else {
+      // Also when the lock already went (unfolded to the pane mid-control).
+      controlTurnKey = nil
+      guard orientation.locksLandscape else { return }
+      let request = orientation.endControl()
+      MacDesktopViewerRotation.apply(lockLandscape: false, request: turnsPhone ? request : nil)
+    }
   }
 
-  private func rotate() {
-    let request = orientation.toggleRotation(current: MacDesktopViewerRotation.currentOrientation())
-    MacDesktopViewerRotation.apply(lockLandscape: orientation.locksLandscape, request: request)
+  private var turnKey: String {
+    controlTurnKey ?? LiveStageTurns.key("macDesktop", context: stageContext, layout: duo)
   }
+  private var turned: Bool { turns.isTurned(turnKey) }
 
   /// The lock always goes. A turn this viewer made is undone; a turn the
   /// person made with the device stays.
   private func restoreOrientationOnClose() {
-    guard rotates else { return }
+    guard UIDevice.current.userInterfaceIdiom == .phone else { return }
     let request = orientation.close()
     MacDesktopViewerRotation.apply(lockLandscape: false, request: request)
   }
@@ -418,6 +616,7 @@ struct MacDesktopViewer: View {
   /// Same rule as the tools sheet: on screen, foreground, connected, and the
   /// lane has a display.
   private func updateLifecycle() {
+    guard !isPreview else { return }
     let shouldRun = isLiveCapable
       && inspect == nil
       && scenePhase == .active
@@ -441,11 +640,12 @@ struct MacDesktopViewer: View {
     Task { await next.start(using: syncService) }
   }
 
+  /// Unmounting the picture hands back any control it held.
   private func stopSession() {
     guard let current = session else { return }
     current.stop(using: syncService)
     session = nil
-    controlling = false
+    lease.release(laneId: laneId, using: syncService)
   }
 
   // MARK: - Inspect
@@ -494,32 +694,15 @@ struct MacDesktopViewer: View {
   }
 }
 
-/// A round white-on-dark button face for the top bar of every full-screen
-/// live viewer (macOS, App Control).
-func macDesktopViewerControlLabel(systemName: String) -> some View {
-  Image(systemName: systemName)
-    .font(.system(size: 15, weight: .semibold))
-    .foregroundStyle(.white)
-    .frame(width: 44, height: 44)
-    .background(Color.white.opacity(0.12), in: Circle())
-}
-
-/// The top-right Reconnect, shown only when the overlay offers one. Its own
+/// Reconnect in the menu, shown only when the status card offers one. Its own
 /// view so it observes the session's phase.
-private struct MacDesktopViewerReconnectButton: View {
+private struct MacDesktopViewerReconnectRow: View {
   @ObservedObject var session: MacDesktopLiveSession
   let onReconnect: () -> Void
 
   var body: some View {
     if macDesktopViewerOverlay(phase: session.phase, hasFrame: session.hasFrame, hostError: nil)?.offersReconnect == true {
-      Button {
-        ADEHaptics.light()
-        onReconnect()
-      } label: {
-        macDesktopViewerControlLabel(systemName: "arrow.clockwise")
-      }
-      .buttonStyle(.plain)
-      .accessibilityLabel("Reconnect")
+      LiveStageMenuRow(title: "Reconnect", systemImage: "arrow.clockwise", action: onReconnect)
     }
   }
 }
@@ -559,306 +742,6 @@ private struct MacDesktopViewerStatusOverlay: View {
       .padding(.vertical, 18)
       .background(.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
       .padding(.horizontal, 24)
-    }
-  }
-}
-
-// MARK: - Pure helpers
-
-/// Turns host errors into phone copy. Mac Desktop driver errors cross the
-/// runtime boundary as `CODE: message`, while sync commands can also carry the
-/// code separately in `ADEErrorCode`. Strip either form before displaying it.
-func macDesktopVisibleMessage(_ rawMessage: String?, code explicitCode: String? = nil) -> String? {
-  guard let message = rawMessage?.trimmingCharacters(in: .whitespacesAndNewlines), !message.isEmpty else {
-    return nil
-  }
-
-  let prefixedError: (code: String, message: String)? = {
-    guard let colon = message.firstIndex(of: ":") else { return nil }
-    let candidate = String(message[..<colon])
-    guard
-      !candidate.isEmpty,
-      candidate.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "_" }),
-      candidate.contains("_") || candidate == candidate.uppercased()
-    else { return nil }
-    let detail = String(message[message.index(after: colon)...])
-      .trimmingCharacters(in: .whitespacesAndNewlines)
-    return (candidate, detail)
-  }()
-  let standaloneCode = message.contains("_")
-    && message.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "_" })
-    ? message
-    : nil
-  let code = explicitCode?.trimmingCharacters(in: .whitespacesAndNewlines)
-  let resolvedCode = (code?.isEmpty == false ? code : nil) ?? prefixedError?.code ?? standaloneCode
-
-  switch resolvedCode?.lowercased() {
-  case "mac_desktop_no_window":
-    return "No windows are open on this desktop yet."
-  case "lane_stopping":
-    return "This lane is stopping. Try again when it is ready."
-  default:
-    if let prefixedError {
-      return prefixedError.message.isEmpty ? "The Mac Desktop request failed. Try again." : prefixedError.message
-    }
-    if standaloneCode != nil { return "The Mac Desktop request failed. Try again." }
-    return message
-  }
-}
-
-/// The phone's Stop for a Windows screen, in the desktop's words
-/// (`STOP_CONFIRM_COPY` in `MacDesktopStopConfirm.tsx`), per seat.
-let windowsPrivateStopAction = "Stop the private Windows screen"
-let windowsPrivateStopConsequence = "The private screen signs out, and apps this lane opened there close, even with unsaved work."
-let windowsSharedStopAction = "Stop using your main Windows desktop"
-let windowsSharedStopConsequence = "The agent stops working on your desktop, and windows it moved off-screen come back."
-
-/// The confirm title and consequence for stopping a seat (`private` | `shared`).
-func windowsDesktopStopCopy(seat: String?) -> (action: String, consequence: String) {
-  seat == "shared"
-    ? (windowsSharedStopAction, windowsSharedStopConsequence)
-    : (windowsPrivateStopAction, windowsPrivateStopConsequence)
-}
-
-func macDesktopVisibleMessage(for error: Error, hostIsWindows: Bool = false) -> String {
-  let nsError = error as NSError
-  return macDesktopVisibleMessage(
-    nsError.localizedDescription,
-    code: nsError.userInfo["ADEErrorCode"] as? String
-  ) ?? (hostIsWindows
-    ? "The Windows desktop could not complete the request. Try again."
-    : "The macOS desktop could not complete the request. Try again.")
-}
-
-/// The Off card's one line: the start in flight, why the last one failed, or
-/// that the display is off. `pcOperation` is the Windows host's own in-flight
-/// step (`windowsDesktop.operation.kind`), so a start begun on the PC reads as
-/// under way here too instead of offering a second one.
-func macDesktopOffCardMessage(
-  starting: Bool,
-  error: String?,
-  canStart: Bool,
-  hostIsWindows: Bool = false,
-  pcOperation: String? = nil
-) -> String {
-  if hostIsWindows {
-    if starting { return "Waiting for Windows sign-in…" }
-    switch pcOperation {
-    case "start_private": return "The private Windows screen is starting on the PC…"
-    case "setup", "save_password", "forget_password": return "Windows Desktop setup is in progress on the PC…"
-    default: break
-    }
-    if let error = macDesktopVisibleMessage(error) { return error }
-    return canStart ? "The Windows desktop is off." : "Start this lane’s Windows desktop in ADE on the PC."
-  }
-  if starting { return "Starting the macOS desktop…" }
-  if let error = macDesktopVisibleMessage(error) {
-    return error
-  }
-  return canStart
-    ? "The macOS desktop is off."
-    : "The macOS desktop is off. Start it in ADE on your Mac."
-}
-
-/// What the viewer's status card says, or nil while the picture is live.
-struct MacDesktopViewerOverlay: Equatable {
-  var message: String
-  var busy: Bool
-  var offersReconnect: Bool
-}
-
-/// The status card for a session phase. The host's own capture error wins over
-/// a generic "stopped", because the Mac knows why its encoder quit.
-func macDesktopViewerOverlay(
-  phase: MacDesktopLiveSession.Phase,
-  hasFrame: Bool,
-  hostError: String?
-) -> MacDesktopViewerOverlay? {
-  let hostMessage = macDesktopVisibleMessage(hostError)
-  switch phase {
-  case .live:
-    return nil
-  case .idle:
-    // Nothing is subscribed yet (or any more). With no picture there is
-    // nothing to look at, so offer the way back.
-    return hasFrame ? nil : MacDesktopViewerOverlay(message: "Not connected.", busy: false, offersReconnect: true)
-  case .connecting:
-    return MacDesktopViewerOverlay(
-      message: hasFrame ? "Reconnecting…" : "Connecting to the Mac…",
-      busy: true,
-      offersReconnect: false
-    )
-  case .waitingForKeyframe:
-    return MacDesktopViewerOverlay(message: "Starting the picture…", busy: true, offersReconnect: false)
-  case .ended(let reason, let message):
-    let fallback = reason == "display_destroyed" ? "This lane's desktop closed." : "The stream stopped."
-    let text = hostMessage ?? macDesktopVisibleMessage(message) ?? fallback
-    return MacDesktopViewerOverlay(message: text, busy: false, offersReconnect: true)
-  case .failed(let message):
-    return MacDesktopViewerOverlay(
-      message: macDesktopVisibleMessage(message) ?? "The desktop stream stopped.",
-      busy: false,
-      offersReconnect: true)
-  }
-}
-
-/// "Watching · <who drives> · <display>" — the sentence that tells a viewer
-/// whether the screen is theirs, an agent's, or someone else's right now.
-///
-/// This phone's own control wins over the snapshot, which lags the take by up
-/// to one poll. A lease held by a user that is not this picture is someone
-/// else — the desktop, or another phone.
-func macDesktopViewerRibbon(
-  controlling: Bool,
-  lease: WorkToolsMacDesktopLease?,
-  displayName: String?
-) -> String {
-  var parts = ["Watching"]
-  if controlling {
-    parts.append("you have control")
-  } else if let lease {
-    switch lease.holder {
-    case "agent": parts.append("agent driving")
-    case "user": parts.append("someone else has control")
-    default: break
-    }
-  }
-  if let name = displayName?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty {
-    parts.append(name)
-  }
-  return parts.joined(separator: " · ")
-}
-
-// MARK: - Orientation
-
-/// What the viewer asks of the phone's orientation, and what it gives back.
-///
-/// Pure, so the rules are testable without a window scene. Each call returns
-/// the orientations to request, or nil when nothing has to turn.
-struct MacDesktopViewerOrientation: Equatable {
-  /// The orientation when the viewer opened. A turn the viewer made itself
-  /// goes back to this on close.
-  var openedIn: UIInterfaceOrientation = .portrait
-  /// Where the phone was when Take control forced landscape. Nil while not
-  /// in control.
-  private(set) var restoreAfterControl: UIInterfaceOrientation?
-  /// True after Rotate or Take control turned the phone.
-  private(set) var turnedByViewer = false
-
-  /// Take control holds landscape until Return.
-  var locksLandscape: Bool { restoreAfterControl != nil }
-
-  /// Take control: remember the orientation, then ask for landscape. A phone
-  /// that is already in landscape stays on the side it is on.
-  mutating func beginControl(current: UIInterfaceOrientation) -> UIInterfaceOrientationMask? {
-    guard restoreAfterControl == nil else { return nil }
-    restoreAfterControl = current
-    guard !current.isLandscape else { return nil }
-    turnedByViewer = true
-    return .landscape
-  }
-
-  /// Return: the orientation from before Take control.
-  mutating func endControl() -> UIInterfaceOrientationMask? {
-    guard let previous = restoreAfterControl else { return nil }
-    restoreAfterControl = nil
-    return previous.isLandscape ? nil : macDesktopOrientationMask(previous)
-  }
-
-  /// Rotate: landscape from portrait, portrait from landscape. Nothing while
-  /// Take control holds landscape.
-  mutating func toggleRotation(current: UIInterfaceOrientation) -> UIInterfaceOrientationMask? {
-    guard restoreAfterControl == nil else { return nil }
-    turnedByViewer = true
-    return current.isLandscape ? .portrait : .landscape
-  }
-
-  /// Close: the lock goes, and a turn the viewer made goes back to the
-  /// orientation the viewer opened in.
-  mutating func close() -> UIInterfaceOrientationMask? {
-    let turned = turnedByViewer
-    restoreAfterControl = nil
-    turnedByViewer = false
-    return turned ? macDesktopOrientationMask(openedIn) : nil
-  }
-}
-
-/// The one-orientation mask for an interface orientation. An unknown
-/// orientation reads as portrait, which is how the app opens on a phone.
-func macDesktopOrientationMask(_ orientation: UIInterfaceOrientation) -> UIInterfaceOrientationMask {
-  switch orientation {
-  case .landscapeLeft: return .landscapeLeft
-  case .landscapeRight: return .landscapeRight
-  case .portraitUpsideDown: return .portraitUpsideDown
-  default: return .portrait
-  }
-}
-
-/// Applies `MacDesktopViewerOrientation` to the app's window scene.
-@MainActor
-enum MacDesktopViewerRotation {
-  static func currentOrientation() -> UIInterfaceOrientation {
-    activeScene()?.effectiveGeometry.interfaceOrientation ?? .portrait
-  }
-
-  /// Sets the app-wide lock first, tells every controller on screen to read
-  /// it again, then asks the scene to turn. The order matters: a scene refuses
-  /// a turn to an orientation that its controllers do not allow.
-  static func apply(lockLandscape: Bool, request mask: UIInterfaceOrientationMask?) {
-    ADEOrientationLock.mask = lockLandscape ? .landscape : .all
-    guard let scene = activeScene() else { return }
-    for window in scene.windows {
-      var controller = window.rootViewController
-      while let current = controller {
-        current.setNeedsUpdateOfSupportedInterfaceOrientations()
-        controller = current.presentedViewController
-      }
-    }
-    guard let mask else { return }
-    let preferences = UIWindowScene.GeometryPreferences.iOS(interfaceOrientations: mask)
-    scene.requestGeometryUpdate(preferences, errorHandler: { _ in
-      // A refused turn leaves the phone where it is. There is nothing to show.
-    })
-  }
-
-  private static func activeScene() -> UIWindowScene? {
-    let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
-    return scenes.first { $0.activationState == .foregroundActive } ?? scenes.first
-  }
-}
-
-/// The Mac Desktop viewer's controls in the Work tools pane's header, and its
-/// ribbon as the header's status line. Off (the full-screen viewer), it
-/// changes nothing.
-private struct MacDesktopPaneChrome: ViewModifier {
-  let enabled: Bool
-  let subtitle: String
-  let stopSeat: String?
-  let stopping: Bool
-  let canInspect: Bool
-  @Binding var confirmingStop: Bool
-  let onInspect: () -> Void
-
-  func body(content: Content) -> some View {
-    if enabled {
-      content
-        .duoPaneHeader(status: subtitle) {
-          if canInspect {
-            DuoPaneActionButton(title: "Inspect", systemImage: "viewfinder") { onInspect() }
-              .accessibilityHint("Freezes the picture so you can pick an element and mark it up")
-          }
-          if let stopSeat {
-            DuoPaneActionButton(
-              title: windowsDesktopStopCopy(seat: stopSeat).action,
-              systemImage: "stop.fill"
-            ) {
-              confirmingStop = true
-            }
-            .disabled(stopping)
-          }
-        }
-    } else {
-      content
     }
   }
 }

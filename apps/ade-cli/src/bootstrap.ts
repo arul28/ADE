@@ -285,7 +285,7 @@ import { createPushRegistrationStore } from "./services/push/pushRegistrationSto
 import { createPushRelayClient } from "./services/push/pushRelayClient";
 import { createAccountRuntimeLifecycle } from "./services/account/accountRuntimeLifecycle";
 import type { AccountSettingsStore } from "./services/account/accountSettingsStore";
-import { createAppleStreamRelayForService } from "../../desktop/src/main/services/ios/appleStreamRelay";
+import { createAppleStreamRelayForService } from "../../desktop/src/main/services/ios/appleStreamRelayForService";
 import { setActiveAppleStreamRouter } from "./services/sync/appleStreamListenerRoute";
 import { ACCOUNT_SCOPE_ALL, accountDeviceSettingKey } from "../../desktop/src/shared/accountSettingsScope";
 import {

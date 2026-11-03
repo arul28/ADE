@@ -180,7 +180,7 @@ private struct DuoAppNavigationRootModifier: ViewModifier {
 
   /// The posture, for crash reports: the outer display and other phones
   /// have no fold; open, the inner display is flat, book-folded, or folded
-  /// across (laptop or tent).
+  /// across (laptop).
   private var foldName: String {
     guard duo.hasFold else { return "none" }
     switch duo.fold {

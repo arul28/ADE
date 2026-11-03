@@ -196,6 +196,42 @@ via `formatIosElementContextForPrompt` so the model receives a
 structured tag containing the component id, source location, and
 metadata.
 
+### On the iOS app (Live Inspect)
+
+The phone's viewers (Simulator, App Control, Mac Desktop) freeze the
+stream into `LiveInspectStage` (`apps/ios/ADE/Views/Duo/LiveInspect*.swift`).
+The picture runs the screen's full height. Upright on a phone (or the
+Duo's front screen) it sits in the middle, with Close and Done at its top
+corners and the tools at its foot. Wherever there is room beside it (a
+phone or the front screen on its side, the Duo open, an iPad) it stands at
+the leading side with a tools strip and a column for the card; on the
+Duo's edge bar Close and Done move into the rail. On a book fold the
+picture takes one page; on a laptop fold everything (picture, tools,
+card) moves below the crease, onto the deck under the person's hands. Tapping an element outlines it and shows its card. The card's one action, **Add to
+chat**, puts the element straight into the chat's draft and never sends it:
+
+- Each add appends that element's packet (the
+  `visualContextFormatting` shape) as its own text block. The surface
+  preamble goes in once per session, and the frozen picture is attached
+  with the first add.
+- A toast confirms "Attached to chat" and offers **Undo**, which removes
+  exactly what that add inserted: the text block while it is still in the
+  draft word for word, and its attachment by id.
+- **Done** brings the draft's picture up to date with the markup. It
+  replaces the attached picture if marks changed since, or attaches the
+  marked-up picture if nothing was added. **Close** leaves without that
+  step. Anything already added stays in the draft either way.
+
+The handoff is a request and a reply (`LiveInspectComposerHandoff`, posted
+on `.liveInspectComposerHandoff`). The chat's composer claims the request
+and answers `attached`, `removed`, `attachmentLimit` or
+`attachmentsUnavailable`. If no composer answers within
+`replyWindow`, the result is `noComposer`. The stage plays the success
+haptic and shows the toast only on success; any other result shows an
+error toast. `LiveInspectMarkupModel.attachedCount` tells a viewer how
+many adds landed. Fixtures: `-adePreviewScreen duo-inspect-sim`, plus
+`-selected` and `-markup` variants.
+
 ## What does and does not need annotation
 
 The kit is opt-in by design. Without `.adeInspectable(...)`:

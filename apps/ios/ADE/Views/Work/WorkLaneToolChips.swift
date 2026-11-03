@@ -6,7 +6,8 @@ import SwiftUI
 /// or read get a chip: the Mac's active tool on its own ("Apple active") is a
 /// fact about someone else's window, not something to tap, so it has none.
 enum WorkToolChipKind: Equatable {
-  /// The lane's Apple device, while it is up. Opens `AppleDeviceViewer`.
+  /// The lane's Apple device, while it is up. Opens `AppleDeviceViewer` on
+  /// the live stage.
   /// `family` is the status's raw family, for the glyph.
   case simulator(name: String, family: String?)
   /// The desktop browser, one chip for all its tabs. Opens the browser sheet,
@@ -261,11 +262,11 @@ final class WorkLaneToolsModel: ObservableObject {
   /// out keeps it, so one slow reply does not blank every chip.
   private var lastTools: WorkToolsLaneState?
 
-  /// True while a tool sheet or a viewer is up. Both poll the same
-  /// reads faster and are the authoritative view, so a tick here would be a
-  /// duplicate RPC for chips nobody can see. The next tick after dismissal
-  /// catches up.
-  var paused: Bool { presented != nil }
+  /// True while a tool sheet or a live stream is up (a stream lives on the
+  /// stage, not in `presented`). Both poll the same reads faster and are the
+  /// authoritative view, so a tick here would be a duplicate RPC for chips
+  /// nobody can see. The next tick after dismissal catches up.
+  var paused: Bool { presented != nil || LiveStage.shared.session != nil }
 
   /// `macDesktopStream`: the host can stream the lane's screen. A host
   /// without the live stream can still describe the screen, so the sheet shows
@@ -334,6 +335,8 @@ final class WorkLaneToolsModel: ObservableObject {
     self.appleStatus = appleStatus
     macDesktopState = state?.macDesktop
     appControlState = state?.appControl
+    // The fixture's app streams from a drawn stand-in, as a streaming host's would.
+    appControlStream = state?.appControl != nil
     chips = workToolChips(state: state, appleDevice: appleStatus)
   }
   #endif
@@ -401,20 +404,33 @@ struct WorkLaneToolsPresenter: ViewModifier {
       // Which tools exist is the same answer the chips give; the pane only
       // needs the identities, and this fires only when the chip set changes.
       .onAppear {
-        let macDesktopStream = syncService.supportsMacDesktopStream
+        var macDesktopStream = syncService.supportsMacDesktopStream
+        #if DEBUG
+        // A fixture chat's lane screen streams from a drawn stand-in.
+        if preview != nil || WorkRootPreviewFixture.active != nil { macDesktopStream = true }
+        #endif
         relay?.openChip = { [weak model = self.model] chip in
           model?.open(chip, macDesktopStream: macDesktopStream)
         }
       }
       .onChange(of: model.chips, initial: true) { _, chips in
         relay?.publish(chips)
-        duoPane?.setToolTabs(chips.map(\.duoToolTab), seed: DuoToolSeed(
+        var seed = DuoToolSeed(
           appleStatus: model.appleStatus,
           macDesktop: model.macDesktopState,
           appControl: model.appControlState,
           appControlStream: model.appControlStream,
           macDesktopStream: syncService.supportsMacDesktopStream
-        ))
+        )
+        #if DEBUG
+        // A fixture chat's screens stream from a drawn stand-in, so they open
+        // on the stage as a streaming host's would.
+        if preview != nil {
+          seed.macDesktopStream = true
+          seed.appControlStream = true
+        }
+        #endif
+        duoPane?.setToolTabs(chips.map(\.duoToolTab), seed: seed)
       }
       .sheet(isPresented: model.isPresented(.toolSheet(.browser))) {
         toolSheet(.browser)
@@ -425,22 +441,33 @@ struct WorkLaneToolsPresenter: ViewModifier {
       .sheet(isPresented: model.isPresented(.toolSheet(.macDesktop))) {
         toolSheet(.macDesktop)
       }
-      // Full screen, seeded with the last status so the first frame is not an empty viewer.
-      .fullScreenCover(isPresented: model.isPresented(.appleDevice)) {
-        AppleDeviceViewer(laneId: laneId, chatSessionId: chatSessionId, initialStatus: model.appleStatus)
-      }
-      .fullScreenCover(isPresented: model.isPresented(.macDesktop)) {
-        MacDesktopViewer(
+      // A live stream (the simulator, the lane's screen, App Control frames)
+      // goes on stage, full screen over the whole app, seeded with the last
+      // state so the first frame is not an empty viewer. The stage outlives
+      // this chat's layout, so folding the phone keeps it.
+      .onChange(of: model.presented) { _, surface in
+        let seed: LiveStage.Seed
+        switch surface {
+        case .appleDevice: seed = .simulator(model.appleStatus)
+        case .macDesktop: seed = .macDesktop(model.macDesktopState)
+        case .appControl: seed = .appControl(model.appControlState)
+        case .toolSheet, nil: return
+        }
+        model.presented = nil
+        var stagePreview: LiveStagePreview?
+        #if DEBUG
+        // A fixture chat streams each viewer's drawn stand-in, as its pane does.
+        if preview != nil || WorkRootPreviewFixture.active != nil {
+          stagePreview = WorkSessionDestinationView.liveStagePreview(seed.kind)
+        }
+        #endif
+        LiveStage.shared.open(
+          seed,
           laneId: laneId,
-          initialState: model.macDesktopState,
-          chatSessionId: chatSessionId
-        )
-      }
-      .fullScreenCover(isPresented: model.isPresented(.appControl)) {
-        AppControlViewer(
-          laneId: laneId,
-          initialState: model.appControlState,
-          chatSessionId: chatSessionId
+          chatSessionId: chatSessionId,
+          fromPane: false,
+          onClose: nil,
+          preview: stagePreview
         )
       }
   }

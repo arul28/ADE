@@ -52,6 +52,7 @@ struct ADEApp: App {
       // branch is compiled out of release.
       if let duoPreview = DuoPreviewRouter.requestedName {
         DuoPreviewHost(name: duoPreview)
+          .liveStageHost()
           .duoLayoutRoot()
           .environmentObject(syncService)
           .environmentObject(machineFleet)
@@ -59,6 +60,7 @@ struct ADEApp: App {
           .environmentObject(accountService)
       } else if let previewScreen = ADEPreviewScreen.requested {
         ADEPreviewScreenHost(screen: previewScreen)
+          .liveStageHost()
           .environmentObject(syncService)
           .environmentObject(machineFleet)
           .environmentObject(dictationController)
@@ -205,6 +207,8 @@ struct ADEApp: App {
         // whole app, the same way the Duo fixture branch above does. Without it
         // every Duo-aware view would read the default (compact, no fold) and the
         // app would never show its wide layouts.
+        // The live stage (a device stream) draws over everything, inside it.
+        .liveStageHost()
         .duoLayoutRoot()
   }
 }

@@ -2,14 +2,24 @@ import SwiftUI
 import UIKit
 
 
-/// Full-screen live view of the Mac's simulator, with an opt-in Control mode.
+/// The live view of the Mac's simulator, with an opt-in Control mode.
+///
+/// The picture is the whole surface: full screen on a phone (and the Duo's
+/// front screen), or the whole tools pane beside or above the chat on a large
+/// display (see `LiveStage`). The one control over it is a floating menu
+/// button the person can drag out of the way; the rest is passing (a hint,
+/// the speed readout, a status card while the stream is down, the keyboard
+/// bar while controlling). A tap on the picture opens the menu; holding the
+/// picture takes control.
 ///
 /// Watching is the default and the state everything falls back to. Control is
-/// a press-and-hold away, never a tap: the device belongs to someone's Mac, and
-/// a touch that reached it from a pocket would be worse than useless. While
-/// controlling, the picture wears an orange frame and the bar says so; Done,
-/// leaving the app, losing the stream, or an agent claiming the device all put
-/// the viewer back to watching.
+/// a deliberate act, never a single tap: the device belongs to someone's Mac,
+/// and a touch that reached it from a pocket would be worse than useless.
+/// While controlling, every touch on the picture goes to the simulator, the
+/// menu button wears an orange ring, and the menu hands control back. Leaving
+/// the app, losing the stream, or an agent claiming the device also hand it
+/// back. On an iPhone Duo controlling a Duo simulator, folding the phone folds
+/// the simulator.
 ///
 /// Video never rides the JSON sync envelope. The host mints a ticket over sync,
 /// and this opens a second WebSocket to the address that ticket names —
@@ -24,11 +34,10 @@ struct AppleDeviceViewer: View {
   /// The card's last status, so the ribbon and the aspect are right on the
   /// first frame rather than after the viewer's own first poll.
   var initialStatus: AppleDeviceStatus?
-  /// The viewer is a column in a split, not a full-screen cover: it keeps the
-  /// device name and status (small) and gives up its own close button, the
-  /// dark window preference and the status-bar hiding, because it shares the
-  /// window with a chat that must keep its appearance.
-  var embedded = false
+  /// Where the stage draws it. Changes without re-creating the viewer.
+  var presentation: LiveStagePresentation = .fullScreen
+  /// What the menu button keeps clear of; nil reads this view's safe area.
+  var chromeInsets: EdgeInsets?
   #if DEBUG
   /// Fixture seam (`-adePreviewScreen apple-viewer`): a seeded model and a
   /// drawn stand-in for the picture, with no sync and no socket.
@@ -39,13 +48,22 @@ struct AppleDeviceViewer: View {
   private var syncService: SyncService { syncPublishes.service }
   @Environment(\.dismiss) private var dismiss
   @Environment(\.scenePhase) private var scenePhase
+  @Environment(\.liveStageClose) private var stageClose
+  @Environment(\.liveStageContext) private var stageContext
+  @Environment(\.duoLayout) private var duo
+  @Environment(\.liveStageHidesStatusBar) private var hidesStatusBar
 
   @StateObject private var model = AppleDeviceViewerModel()
   @State private var hint: String?
   @State private var hintTask: Task<Void, Never>?
-  @State private var rotation: AppleDisplayRotation = .upright
-  @State private var showsChrome = true
+  @ObservedObject private var turns = LiveStageTurns.shared
+  @State private var menuOpen = false
+  /// A finger held on the picture while watching, filling toward Control.
+  @State private var holdLocation: CGPoint?
   @State private var holdProgress: CGFloat = 0
+  @State private var holdTask: Task<Void, Never>?
+  @State private var holdFired = false
+  @State private var holdCancelled = false
   @State private var gesture: AppleDeviceGesture?
   @State private var gestureIgnored = false
   @State private var touchMarks: [AppleTouchMark] = []
@@ -53,85 +71,93 @@ struct AppleDeviceViewer: View {
   @State private var typed = ""
   @FocusState private var keyboardFocused: Bool
   @AppStorage("ade.appleViewer.showsSpeed") private var showsSpeed = false
-  /// Where the bars end, so a controlling picture can sit between them.
-  @State private var topBarBottom: CGFloat = 0
-  @State private var bottomBarHeight: CGFloat = 0
   /// The frozen inspect view, over everything, until its Close resumes the
   /// stream.
   @State private var inspect: LiveInspectMarkupModel?
 
-  /// Long enough that a thumb resting on the bar does not take control.
+  /// Long enough that a thumb resting on the picture does not take control.
   private static let holdToControl: Double = 0.6
+  /// How long a finger rests before the ring shows: a tap never flashes it.
+  private static let holdRingDelay: Double = 0.15
+  private static let keyboardBarHeight: CGFloat = 60
 
   var body: some View {
-    lifecycleModifiers(viewerChrome)
+    lifecycleModifiers(viewerBody)
   }
 
-  private var viewerChrome: some View {
-    viewerContent
-      .animation(.easeOut(duration: 0.18), value: inspect != nil)
-      // Only a full-screen viewer owns the window's appearance. In a pane the
-      // pane scopes dark itself; a preferredColorScheme here would turn the whole
-      // app dark around the chat.
-      .preferredColorScheme(embedded ? nil : .dark)
-      .statusBarHidden(!embedded && (model.mode == .controlling || !showsChrome))
-      // A swipe up from the bottom of the simulator must reach the simulator,
-      // not close this app.
-      .defersSystemGestures(on: model.mode == .controlling ? .all : [])
-      .persistentSystemOverlays(embedded ? .automatic : (model.mode == .controlling ? .hidden : .automatic))
+  private var controlling: Bool { model.mode == .controlling }
+  private var rotation: AppleDisplayRotation { model.guestRotation.adding(userTurn) }
+  private var turnKey: String { LiveStageTurns.key("simulator", context: stageContext, layout: duo) }
+  /// The person's own quarter turn, on top of the guest's, remembered per place.
+  private var userTurn: AppleDisplayRotation { turns.isTurned(turnKey) ? .clockwise : .upright }
+  private var showsKeyboardBar: Bool { showsKeyboard && controlling }
+
+  /// The picture's shape as drawn, turned included.
+  private var drawnAspect: CGFloat? {
+    let size = model.contentPixelSize
+    guard size.width > 0, size.height > 0 else { return nil }
+    return rotation.isSideways ? size.height / size.width : size.width / size.height
   }
 
-  @ViewBuilder
-  private var viewerContent: some View {
-    if embedded {
-      paneContent
-    } else {
-      fullScreenContent
-    }
-  }
-
-  /// The pane form (the Work tools pane on the Duo): the device picture, as
-  /// large as the column allows, on the pane's own background with a device's
-  /// corners and a soft shadow; every control sits in the pane's own header
-  /// row (never the toolbar, which is the chat's rail). Nothing is drawn over
-  /// the picture but the transient hint and status, and the speed readout
-  /// when asked for.
-  private var paneContent: some View {
-    ZStack {
-      ADEColor.pageBackground
-        .ignoresSafeArea()
-      stage
-        .padding(16)
-      VStack(spacing: 0) {
-        if showsSpeed {
-          speedReadout
-            .padding(.top, 10)
-            .transition(.opacity)
-        }
-        Spacer(minLength: 0)
-        if let message = model.overlayMessage {
-          statusOverlay(message)
-        }
-        Spacer(minLength: 0)
-        if let hint {
-          hintChip(hint)
-            .padding(.bottom, 10)
-        }
-        if showsKeyboard, model.mode == .controlling {
+  private var viewerBody: some View {
+    GeometryReader { proxy in
+      let insets = chromeInsets ?? proxy.safeAreaInsets
+      let keyboardSpace = showsKeyboardBar ? Self.keyboardBarHeight + insets.bottom : 0
+      let stageSize = CGSize(width: proxy.size.width, height: max(0, proxy.size.height - keyboardSpace))
+      let buttonInsets = EdgeInsets(top: insets.top, leading: insets.leading, bottom: showsKeyboardBar ? 0 : insets.bottom, trailing: insets.trailing)
+      // A phone in a wide pane: the button and its hint go in the empty
+      // space beside it, off the picture.
+      let hintBesideButton = LiveStageButtonSpot.besidePicture(
+        container: stageSize,
+        insets: buttonInsets,
+        aspect: drawnAspect,
+        gap: presentation.pictureGap
+      ) != nil
+      ZStack(alignment: .topLeading) {
+        LiveStageBackdrop(presentation: presentation)
+        stageView(size: stageSize, insets: EdgeInsets())
+          .frame(width: stageSize.width, height: stageSize.height)
+        overlays(size: proxy.size, insets: insets, drawsHint: !hintBesideButton)
+        if showsKeyboardBar {
           keyboardBar
-            .padding(.bottom, 8)
+            .frame(width: proxy.size.width, height: Self.keyboardBarHeight)
+            .position(x: proxy.size.width / 2, y: proxy.size.height - insets.bottom - Self.keyboardBarHeight / 2)
+            .transition(.move(edge: .bottom).combined(with: .opacity))
         }
+        LiveStageMenuButton(
+          container: stageSize,
+          insets: buttonInsets,
+          storageKey: LiveStageButtonSpot.storageKey(presentation: presentation, size: proxy.size),
+          symbolName: controlling ? "hand.point.up.left.fill" : "ellipsis",
+          alert: controlling,
+          pictureAspect: drawnAspect,
+          pictureGap: presentation.pictureGap,
+          note: hintBesideButton ? hint : nil,
+          isOpen: $menuOpen
+        ) {
+          menuPanel
+        }
+        .frame(width: stageSize.width, height: stageSize.height)
       }
+      .frame(width: proxy.size.width, height: proxy.size.height)
       .animation(.easeOut(duration: 0.18), value: hint)
       .animation(.easeOut(duration: 0.18), value: showsSpeed)
+      .animation(.easeOut(duration: 0.2), value: showsKeyboardBar)
     }
-    .duoPaneHeader(status: paneSubtitle) { paneActions }
-    // In the Duo's tools pane the frozen inspector takes the whole screen: it
-    // has its own bar and a picture | inspector split across the fold, and
-    // drawn inside the pane its stack would take over the chat's title and
-    // rail.
+    // Over the pane it runs top to bottom but never sideways under the edge
+    // bar; full screen it runs edge to edge.
+    .ignoresSafeArea(.container, edges: presentation.isPane ? .vertical : .all)
+    .environment(\.colorScheme, .dark)
+    .animation(.easeOut(duration: 0.18), value: inspect != nil)
+    // The whole display belongs to the device: no clock, no home bar while
+    // controlling, and a swipe up from the bottom reaches the simulator, not
+    // this app. A second swipe up still leaves (iOS never gives that away).
+    .statusBarHidden(hidesStatusBar || presentation.isFullScreen)
+    .liveStageReportsAspect(drawnAspect)
+    .defersSystemGestures(on: controlling ? .all : [])
+    .persistentSystemOverlays(presentation.isFullScreen && controlling ? .hidden : .automatic)
     .fullScreenCover(isPresented: Binding(
-      get: { embedded && inspect != nil },
+      get: { inspect != nil },
       set: { presented in if !presented, inspect != nil { exitInspect() } }
     )) {
       if let inspect {
@@ -140,131 +166,7 @@ struct AppleDeviceViewer: View {
     }
   }
 
-  /// The device and what is happening to it, under the pane's title.
-  private var paneSubtitle: String {
-    var parts = [model.status?.device?.name ?? "Simulator", ribbon]
-    if model.status?.recording?.active == true { parts.append("Recording") }
-    return parts.joined(separator: " · ")
-  }
-
-  /// The tool's controls in the pane header: Inspect, Rotate, Speed, the
-  /// controlling-only Type / Home / hardware buttons, then Watch | Control.
-  @ViewBuilder
-  private var paneActions: some View {
-    if canInspect {
-      DuoPaneActionButton(title: "Inspect", systemImage: "viewfinder") { beginInspect() }
-        .accessibilityHint("Freezes the picture so you can pick an element and mark it up")
-        .accessibilityIdentifier("AppleViewer.Inspect")
-    }
-    if model.health.offersReconnect {
-      DuoPaneActionButton(title: "Reconnect", systemImage: "arrow.clockwise") {
-        Task { await model.reconnect() }
-      }
-    }
-    DuoPaneActionButton(
-      title: rotation.isSideways ? "Show upright" : "Turn the picture",
-      systemImage: rotation.isSideways ? "rotate.left" : "rotate.right"
-    ) {
-      withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) {
-        rotation = rotation.isSideways ? .upright : .clockwise
-      }
-    }
-    DuoPaneActionButton(title: "Speed", systemImage: "speedometer", isOn: showsSpeed) {
-      showsSpeed.toggle()
-    }
-    if model.mode == .controlling {
-      DuoPaneActionButton(title: "Type", systemImage: "keyboard", isOn: showsKeyboard) {
-        showsKeyboard.toggle()
-        keyboardFocused = showsKeyboard
-      }
-      DuoPaneActionButton(title: "Home", systemImage: "house") { model.press("home") }
-      DuoPaneActionMenu(title: "Hardware buttons", systemImage: "iphone.gen3") {
-        hardwareButtonsMenuContent
-      }
-    }
-    DuoWatchControlSwitch(
-      controlling: model.mode == .controlling,
-      controlBlocker: model.controlBlocker,
-      holdDuration: Self.holdToControl,
-      holdProgress: $holdProgress,
-      onBeginControl: {
-        model.beginControl()
-        if model.mode == .controlling {
-          flashHint("You're driving the simulator. The eye hands it back.", haptic: nil)
-        }
-      },
-      onEndControl: { model.endControl() },
-      onBlocked: {
-        if let blocker = model.controlBlocker { flashHint(blocker, haptic: .warning) }
-      },
-      onEarlyRelease: {
-        if model.mode == .watching { flashHint("Hold to take control.", haptic: nil) }
-      }
-    )
-  }
-
-  /// The full-screen form: the picture fills the screen and the bars float
-  /// over it.
-  private var fullScreenContent: some View {
-    ZStack {
-      Color.black.ignoresSafeArea()
-      // Watching, the picture fills the screen and the bars float over it.
-      // Controlling, it fits between them: a back button under the top bar
-      // must still be tappable. One stage either way, so the layer is never
-      // rebuilt by a mode change.
-      stage
-        .padding(.top, model.mode == .controlling ? topBarBottom : 0)
-        .padding(.bottom, model.mode == .controlling ? bottomBarHeight : 0)
-        .ignoresSafeArea()
-      VStack(spacing: 0) {
-        if showsChrome || model.mode == .controlling {
-          VStack(spacing: 6) {
-            topBar
-            if showsSpeed {
-              speedReadout
-                .transition(.opacity)
-            }
-          }
-          .padding(.bottom, 6)
-          .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).maxY } action: { topBarBottom = $0 }
-          .transition(.move(edge: .top).combined(with: .opacity))
-        }
-        Spacer(minLength: 0)
-        if let message = model.overlayMessage {
-          statusOverlay(message)
-        }
-        Spacer(minLength: 0)
-        if let hint {
-          hintChip(hint)
-            .padding(.bottom, 10)
-        }
-        if showsChrome || model.mode == .controlling {
-          VStack(spacing: 0) {
-            if showsKeyboard, model.mode == .controlling {
-              keyboardBar
-            }
-            bottomBar
-          }
-          .onGeometryChange(for: CGFloat.self) { proxy in
-            // Height from the bar's top to the bottom of the screen, safe
-            // area included, which is what the stage gives up.
-            proxy.size.height + proxy.safeAreaInsets.bottom
-          } action: { bottomBarHeight = $0 }
-          .transition(.move(edge: .bottom).combined(with: .opacity))
-        }
-      }
-      .animation(.easeOut(duration: 0.2), value: showsChrome)
-      .animation(.easeOut(duration: 0.2), value: model.mode)
-      .animation(.easeOut(duration: 0.18), value: hint)
-      if let inspect {
-        LiveInspectStage(model: inspect, onClose: exitInspect)
-          .transition(.opacity)
-          .zIndex(2)
-      }
-    }
-  }
-
-  /// The stream's lifetime, shared by both forms.
+  /// The stream's lifetime.
   private func lifecycleModifiers<Content: View>(_ content: Content) -> some View {
     content
       .task(id: laneId) {
@@ -289,7 +191,7 @@ struct AppleDeviceViewer: View {
         // Two timers in one loop: the health watchdogs, and the status poll that
         // keeps the owner ribbon and the recording dot honest. 1s is fast enough
         // for a 3s watchdog to fire on time and cheap enough to leave running
-        // behind a full-screen view the user is actively watching.
+        // behind a view the user is actively watching.
         var tickCount = 0
         while !Task.isCancelled {
           try? await Task.sleep(for: .seconds(1))
@@ -301,6 +203,10 @@ struct AppleDeviceViewer: View {
           }
         }
       }
+      .onAppear {
+        flashHint("Tap for the menu · Hold to control", haptic: nil, seconds: 2.6)
+        updateIdleTimer()
+      }
       .onChange(of: scenePhase) { _, phase in
         // `.inactive` counts as away: the app switcher card is a screenshot, and
         // holding a capture open on someone's Mac to feed it is not worth the
@@ -311,6 +217,7 @@ struct AppleDeviceViewer: View {
         model.setVisible(phase == .active)
       }
       .onChange(of: model.mode) { _, mode in
+        updateIdleTimer()
         if mode == .watching {
           showsKeyboard = false
           keyboardFocused = false
@@ -319,75 +226,119 @@ struct AppleDeviceViewer: View {
             model.touch(.end, at: held.last)
           }
           gesture = nil
+        } else if let target = foldTarget {
+          model.mirrorFold(target)
         }
+      }
+      .onChange(of: presentation) { _, _ in updateIdleTimer() }
+      // The phone in the hand folds: mirror it into a Duo simulator while
+      // controlling.
+      .onChange(of: duo.hasFold || duo.hingeAngle != nil, initial: true) { _, folds in
+        if folds { AppleDeviceViewerModel.phoneFolds = true }
+      }
+      .onChange(of: foldTarget) { _, target in
+        if let target { model.mirrorFold(target) }
+      }
+      .onChange(of: model.deviceFolds) { _, folds in
+        if folds, let target = foldTarget { model.mirrorFold(target) }
       }
       .onChange(of: model.notice) { _, notice in
         if let notice { flashHint(notice, haptic: .warning) }
       }
       .onDisappear {
         hintTask?.cancel()
+        holdTask?.cancel()
         model.stop()
+        UIApplication.shared.isIdleTimerDisabled = false
       }
+  }
+
+  /// The screen stays awake while the device has it: full screen, or while
+  /// controlling.
+  private func updateIdleTimer() {
+    #if DEBUG
+    if preview != nil { return }
+    #endif
+    UIApplication.shared.isIdleTimerDisabled = presentation.isFullScreen || controlling
+  }
+
+  private var foldTarget: AppleFoldTarget? {
+    AppleFoldTarget.mirroring(
+      isInnerDisplay: duo.hasFold,
+      isLandscape: duo.isLandscape,
+      hingeAngle: duo.hingeAngle,
+      phoneFolds: AppleDeviceViewerModel.phoneFolds || duo.hasFold || duo.hingeAngle != nil
+    )
   }
 
   // MARK: - Stage
 
-  private var stage: some View {
-    GeometryReader { proxy in
-      let container = proxy.size
-      let rect = AppleDeviceTouchMapping.pictureRect(
-        container: container,
-        content: model.contentPixelSize,
-        rotation: rotation
-      )
-      ZStack(alignment: .topLeading) {
-        if let rect {
-          picture(in: rect)
-          if model.mode == .controlling {
-            RoundedRectangle(
-              cornerRadius: embedded ? min(rect.width, rect.height) * 0.11 + 3 : 6,
-              style: .continuous
-            )
-              .strokeBorder(ADEColor.warning, lineWidth: 3)
-              .frame(width: rect.width + 6, height: rect.height + 6)
-              .position(x: rect.midX, y: rect.midY)
-              .allowsHitTesting(false)
-          }
-          ForEach(touchMarks) { mark in
-            Circle()
-              .fill(Color.white.opacity(0.35))
-              .overlay(Circle().strokeBorder(Color.white.opacity(0.8), lineWidth: 1.5))
-              .frame(width: 34, height: 34)
-              .position(mark.location)
-              .transition(.scale(scale: 0.4).combined(with: .opacity))
-              .allowsHitTesting(false)
-          }
+  /// `insets` is what of the stage is the system's: the picture stays out of
+  /// it and the page (or full screen, black) runs under it.
+  private func stageView(size: CGSize, insets: EdgeInsets) -> some View {
+    // Over the pane the device keeps a little room and its own corners; full
+    // screen it runs edge to edge.
+    let gap = presentation.pictureGap
+    let container = CGSize(
+      width: max(0, size.width - insets.leading - insets.trailing - gap * 2),
+      height: max(0, size.height - insets.top - insets.bottom - gap * 2)
+    )
+    let turn = rotation
+    let rect = AppleDeviceTouchMapping.pictureRect(
+      container: container,
+      content: model.contentPixelSize,
+      rotation: turn
+    )?.offsetBy(dx: insets.leading + gap, dy: insets.top + gap)
+    return ZStack(alignment: .topLeading) {
+      if let rect {
+        picture(in: rect, rotation: turn)
+        if controlling, presentation.isPane {
+          RoundedRectangle(cornerRadius: presentation.cornerRadius(for: rect.size) + 3, style: .continuous)
+            .strokeBorder(ADEColor.warning, lineWidth: 3)
+            .frame(width: rect.width + 6, height: rect.height + 6)
+            .position(x: rect.midX, y: rect.midY)
+            .allowsHitTesting(false)
+        }
+        ForEach(touchMarks) { mark in
+          Circle()
+            .fill(Color.white.opacity(0.35))
+            .overlay(Circle().strokeBorder(Color.white.opacity(0.8), lineWidth: 1.5))
+            .frame(width: 34, height: 34)
+            .position(mark.location)
+            .transition(.scale(scale: 0.4).combined(with: .opacity))
+            .allowsHitTesting(false)
         }
       }
-      .frame(width: container.width, height: container.height)
-      .contentShape(Rectangle())
-      .gesture(stageGesture(picture: rect))
-      .accessibilityElement()
-      .accessibilityLabel(
-        model.mode == .controlling
-          ? "The simulator's screen. Your touches drive it."
-          : "The simulator's screen. View only."
-      )
-      .accessibilityAddTraits(model.mode == .controlling ? .allowsDirectInteraction : [])
+      if let holdLocation {
+        LiveStageHoldRing(progress: holdProgress)
+          .position(holdLocation)
+          .transition(.scale(scale: 0.6).combined(with: .opacity))
+      }
     }
+    .frame(width: size.width, height: size.height)
+    .contentShape(Rectangle())
+    .gesture(stageGesture(picture: rect, rotation: turn))
+    .accessibilityElement()
+    .accessibilityLabel(
+      controlling
+        ? "The simulator's screen. Your touches drive it."
+        : "The simulator's screen. View only."
+    )
+    .accessibilityHint(controlling ? "" : "Double-tap for the menu.")
+    .accessibilityAddTraits(controlling ? .allowsDirectInteraction : .isButton)
+    .accessibilityAction { if !controlling { menuOpen = true } }
+    .accessibilityAction(named: "Take control") { takeControl() }
   }
 
   /// The layer, laid out at the picture's own (unturned) size and turned
   /// about its centre. Turning an aspect-fit view instead of laying it out
   /// turned leaves it overflowing the stage sideways.
-  private func picture(in rect: CGRect) -> some View {
+  private func picture(in rect: CGRect, rotation: AppleDisplayRotation) -> some View {
     let size = rotation.isSideways ? CGSize(width: rect.height, height: rect.width) : rect.size
     return pictureContent
       .frame(width: size.width, height: size.height)
-      // In a pane the picture is a device: its screen's own rounded corners,
-      // lifted off the pane by a soft shadow.
-      .clipShape(RoundedRectangle(cornerRadius: embedded ? min(size.width, size.height) * 0.11 : 0, style: .continuous))
-      .shadow(color: .black.opacity(embedded ? 0.18 : 0), radius: 18, y: 8)
+      // Over the pane the picture is a device with its screen's corners.
+      .clipShape(RoundedRectangle(cornerRadius: presentation.cornerRadius(for: size), style: .continuous))
       .rotationEffect(.degrees(rotation.degrees))
       .position(x: rect.midX, y: rect.midY)
       .opacity(model.health.phase == .streaming ? 1 : 0.35)
@@ -407,10 +358,14 @@ struct AppleDeviceViewer: View {
     #endif
   }
 
-  private func stageGesture(picture rect: CGRect?) -> some Gesture {
+  private func stageGesture(picture rect: CGRect?, rotation: AppleDisplayRotation) -> some Gesture {
     DragGesture(minimumDistance: 0, coordinateSpace: .local)
       .onChanged { value in
-        guard model.mode == .controlling else { return }
+        guard !holdFired else { return }
+        guard model.mode == .controlling else {
+          watchingChanged(value)
+          return
+        }
         guard let rect, !gestureIgnored else { return }
         if gesture == nil {
           // A touch that starts outside the picture is a touch on the black
@@ -442,8 +397,14 @@ struct AppleDeviceViewer: View {
           gesture = nil
           gestureIgnored = false
         }
+        // The finger that took control lifts: it is not a touch on the device.
+        if holdFired {
+          holdFired = false
+          holdCancelled = false
+          return
+        }
         guard model.mode == .controlling else {
-          watchingTap()
+          watchingEnded(value)
           return
         }
         guard let started = gesture else { return }
@@ -458,12 +419,74 @@ struct AppleDeviceViewer: View {
       }
   }
 
-  /// What a touch on the picture does while watching: shows or hides the
-  /// bars, and says once that touches are not sent.
-  private func watchingTap() {
-    withAnimation(.easeOut(duration: 0.2)) { showsChrome.toggle() }
-    if showsChrome, model.controlBlocker == nil {
-      flashHint("View only. Hold Control to drive it.", haptic: nil)
+  /// A finger on the picture while watching: held still, it takes control
+  /// after `holdToControl`; moved, it is nothing.
+  private func watchingChanged(_ value: DragGesture.Value) {
+    let travel = hypot(value.translation.width, value.translation.height)
+    if holdTask == nil, !holdCancelled {
+      guard model.controlBlocker == nil else {
+        holdCancelled = true
+        return
+      }
+      let location = value.startLocation
+      holdTask = Task { @MainActor in
+        try? await Task.sleep(for: .seconds(Self.holdRingDelay))
+        guard !Task.isCancelled else { return }
+        ADEHaptics.light()
+        holdProgress = 0
+        withAnimation(.easeOut(duration: 0.12)) { holdLocation = location }
+        withAnimation(.linear(duration: Self.holdToControl - Self.holdRingDelay)) { holdProgress = 1 }
+        try? await Task.sleep(for: .seconds(Self.holdToControl - Self.holdRingDelay))
+        guard !Task.isCancelled else { return }
+        holdFired = true
+        withAnimation(.easeOut(duration: 0.15)) { holdLocation = nil }
+        takeControl()
+      }
+    } else if travel > 20, !holdCancelled {
+      cancelHold()
+    }
+  }
+
+  private func watchingEnded(_ value: DragGesture.Value) {
+    let travel = hypot(value.translation.width, value.translation.height)
+    let wasCancelled = holdCancelled
+    let ringShown = holdLocation != nil
+    cancelHold()
+    holdCancelled = false
+    guard travel < 12, !wasCancelled || model.controlBlocker != nil else { return }
+    // Let go while the ring was filling: they meant to take control.
+    if ringShown {
+      flashHint("Hold a little longer to take control", haptic: nil)
+      return
+    }
+    // A tap: the menu, which also says why Control is unavailable.
+    ADEHaptics.light()
+    withAnimation(.spring(response: 0.3, dampingFraction: 0.82)) { menuOpen.toggle() }
+  }
+
+  private func cancelHold() {
+    holdTask?.cancel()
+    holdTask = nil
+    holdCancelled = true
+    if holdLocation != nil {
+      withAnimation(.easeOut(duration: 0.15)) {
+        holdLocation = nil
+        holdProgress = 0
+      }
+    }
+  }
+
+  private func takeControl() {
+    guard !controlling else { return }
+    if let blocker = model.controlBlocker {
+      flashHint(blocker, haptic: .warning)
+      return
+    }
+    ADEHaptics.success()
+    model.beginControl()
+    if controlling {
+      menuOpen = false
+      flashHint("Controlling. The orange button hands it back.", haptic: nil)
     }
   }
 
@@ -476,140 +499,138 @@ struct AppleDeviceViewer: View {
     }
   }
 
-  // MARK: - Bars
+  // MARK: - Overlays
 
-  private var topBar: some View {
-    HStack(spacing: embedded ? 8 : 12) {
-      // The pane's own close button is the way out of an embedded viewer.
-      if !embedded {
-        roundButton(systemName: "xmark", label: "Close") {
-          model.stop()
-          dismiss()
+  /// The few things ever drawn on the picture: the speed readout when asked
+  /// for, the stream's status while it is not live, and a passing hint.
+  private func overlays(size: CGSize, insets: EdgeInsets, drawsHint: Bool) -> some View {
+    ZStack {
+      VStack(spacing: 0) {
+        if showsSpeed {
+          speedReadout
+            .padding(.top, insets.top + 10)
+            .transition(.opacity)
+        }
+        Spacer(minLength: 0)
+        if let message = model.overlayMessage {
+          statusOverlay(message)
+        }
+        Spacer(minLength: 0)
+        if let hint, drawsHint {
+          LiveStageHintChip(text: hint)
+            .padding(.bottom, insets.bottom + (showsKeyboardBar ? Self.keyboardBarHeight + 8 : 20))
         }
       }
-      VStack(alignment: .leading, spacing: embedded ? 0 : 2) {
-        Text(model.status?.device?.name ?? "Simulator")
-          .shadow(color: .black.opacity(0.6), radius: 3)
-          .font(embedded ? .caption.weight(.semibold) : .subheadline.weight(.semibold))
-          .foregroundStyle(.white)
-          .lineLimit(1)
-        Text(ribbon)
-          .font(.caption2)
-          .foregroundStyle(.white.opacity(0.8))
-          .lineLimit(1)
-          .shadow(color: .black.opacity(0.6), radius: 3)
+      .frame(width: size.width, height: size.height)
+    }
+    .allowsHitTesting(model.overlayMessage != nil && model.health.offersReconnect)
+  }
+
+  // MARK: - Menu
+
+  private var menuPanel: some View {
+    LiveStageMenuPanel {
+      LiveStageMenuHeader(
+        title: model.status?.device?.name ?? "Simulator",
+        detail: ribbon,
+        recording: model.status?.recording?.active == true
+      )
+
+      if controlling {
+        LiveStageMenuRow(title: "Stop controlling", systemImage: "eye") {
+          model.endControl()
+          menuOpen = false
+        }
+        .accessibilityIdentifier("AppleViewer.StopControl")
+        HStack(spacing: 6) {
+          LiveStageMenuTile(title: "Keyboard", systemImage: "keyboard", isOn: showsKeyboard) {
+            showsKeyboard.toggle()
+            keyboardFocused = showsKeyboard
+            menuOpen = false
+          }
+          LiveStageMenuTile(title: "Home", systemImage: "house") { model.press("home") }
+          Menu {
+            hardwareButtonsMenuContent
+          } label: {
+            LiveStageMenuTileLabel(title: "Buttons", systemImage: "iphone.gen3")
+          }
+          .accessibilityLabel("Hardware buttons")
+        }
+        .padding(.vertical, 2)
+      } else {
+        LiveStageMenuRow(
+          title: "Take control",
+          systemImage: "hand.point.up.left",
+          tint: ADEColor.warning,
+          disabled: model.controlBlocker != nil
+        ) {
+          takeControl()
+        }
+        .accessibilityIdentifier("AppleViewer.TakeControl")
+        if let blocker = model.controlBlocker {
+          Text(blocker)
+            .font(.caption)
+            .foregroundStyle(.white.opacity(0.55))
+            .padding(.horizontal, 10)
+            .padding(.bottom, 4)
+        }
       }
-      Spacer(minLength: 0)
-      if model.status?.recording?.active == true {
-        Image(systemName: "record.circle")
-          .font(.system(size: 15, weight: .semibold))
-          .foregroundStyle(ADEColor.danger)
-          .accessibilityLabel("Recording")
+
+      HStack(spacing: 6) {
+        LiveStageMenuTile(title: userTurn == .upright ? "Turn" : "Upright", systemImage: userTurn == .upright ? "rotate.right" : "rotate.left") {
+          withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) {
+            turns.toggle(turnKey)
+          }
+        }
+        LiveStageMenuTile(title: "Speed", systemImage: "speedometer", isOn: showsSpeed) {
+          showsSpeed.toggle()
+        }
+        if canInspect {
+          LiveStageMenuTile(title: "Inspect", systemImage: "viewfinder") {
+            menuOpen = false
+            beginInspect()
+          }
+          .accessibilityHint("Freezes the picture so you can pick an element and add it to the chat")
+          .accessibilityIdentifier("AppleViewer.Inspect")
+        }
+      }
+      .padding(.vertical, 2)
+
+      if stageClose != nil, stageContext.choices.count > 1 {
+        LiveStagePlacementMenu(context: stageContext) { menuOpen = false }
       }
       if model.health.offersReconnect {
-        roundButton(systemName: "arrow.clockwise", label: "Reconnect") {
+        LiveStageMenuRow(title: "Reconnect", systemImage: "arrow.clockwise") {
+          menuOpen = false
           Task { await model.reconnect() }
         }
       }
-      roundButton(
-        systemName: "speedometer",
-        label: showsSpeed ? "Hide speed" : "Show speed",
-        highlighted: showsSpeed
-      ) {
-        withAnimation(.easeOut(duration: 0.18)) { showsSpeed.toggle() }
+      Divider()
+        .overlay(Color.white.opacity(0.1))
+        .padding(.vertical, 2)
+      LiveStageMenuRow(title: "Close", systemImage: "xmark", tint: ADEColor.danger) {
+        close()
       }
-      roundButton(
-        systemName: rotation.isSideways ? "rotate.left" : "rotate.right",
-        label: rotation.isSideways ? "Show upright" : "Turn the picture"
-      ) {
-        withAnimation(.spring(response: 0.34, dampingFraction: 0.82)) {
-          rotation = rotation.isSideways ? .upright : .clockwise
-        }
-      }
+      .accessibilityIdentifier("AppleViewer.Close")
     }
-    .padding(.horizontal, 14)
-    .padding(.vertical, 8)
-    .background(
-      LinearGradient(colors: [.black.opacity(0.85), .black.opacity(0)], startPoint: .top, endPoint: .bottom)
-        .ignoresSafeArea(edges: .top)
-    )
   }
 
-  @ViewBuilder
-  private var bottomBar: some View {
-    Group {
-      switch model.mode {
-      case .watching:
-        modeSwitch
-      case .controlling:
-        controllingBar
-      }
-    }
-    .padding(.horizontal, 14)
-    .padding(.top, 10)
-    .padding(.bottom, 8)
-    .frame(maxWidth: .infinity)
-    .background(
-      LinearGradient(colors: [.black.opacity(0), .black.opacity(0.75)], startPoint: .top, endPoint: .bottom)
-        .ignoresSafeArea(edges: .bottom)
-    )
-  }
-
-  /// View | Control. View is where the viewer starts and the selected half;
-  /// Control fills as it is held and only then takes over.
-  private var modeSwitch: some View {
-    let blocker = model.controlBlocker
-    return VStack(spacing: 8) {
-      HStack(spacing: 0) {
-        Label("View only", systemImage: "eye")
-          .font(.footnote.weight(.semibold))
-          .foregroundStyle(.white)
-          .frame(maxWidth: .infinity)
-          .frame(height: 44)
-          .background(Color.white.opacity(0.18), in: Capsule())
-          .accessibilityAddTraits(.isSelected)
-        controlHalf(enabled: blocker == nil)
-      }
-      .padding(4)
-      .background(Color.black.opacity(0.55), in: Capsule())
-      .overlay(Capsule().strokeBorder(Color.white.opacity(0.12), lineWidth: 1))
-      .frame(maxWidth: 420)
-      if let blocker {
-        Text(blocker)
-          .font(.caption)
-          .foregroundStyle(.white.opacity(0.7))
-          .multilineTextAlignment(.center)
-      }
-      if canInspect {
-        inspectButton
-      }
+  private func close() {
+    menuOpen = false
+    if let stageClose {
+      stageClose()
+    } else {
+      model.stop()
+      dismiss()
     }
   }
 
   /// Inspect freezes the picture and hands it to the markup model. Kept apart
-  /// from the View|Control switch: inspecting is not a way to drive the device,
-  /// and the 0.6 s hold that takes control is untouched.
+  /// from Control: inspecting is not a way to drive the device.
   private var canInspect: Bool {
     inspect == nil
       && model.health.phase == .streaming
       && syncService.supportsAppleDeviceControl(laneId: laneId)
-  }
-
-  private var inspectButton: some View {
-    Button {
-      beginInspect()
-    } label: {
-      Label("Inspect", systemImage: "viewfinder")
-        .font(.footnote.weight(.semibold))
-        .foregroundStyle(.white)
-        .padding(.horizontal, 16)
-        .frame(height: 38)
-        .background(Color.white.opacity(0.14), in: Capsule())
-        .overlay(Capsule().strokeBorder(Color.white.opacity(0.12), lineWidth: 1))
-    }
-    .buttonStyle(.plain)
-    .accessibilityHint("Freezes the picture so you can pick an element and mark it up")
-    .accessibilityIdentifier("AppleViewer.Inspect")
   }
 
   /// Freezes the live picture, then stops the stream: one still and the element
@@ -629,103 +650,17 @@ struct AppleDeviceViewer: View {
     model.stop()
   }
 
-  /// Leaves inspect and reconnects the stream with a fresh ticket.
+  /// Leaves inspect and reconnects the stream with a fresh ticket. Something
+  /// added to the chat from full screen goes back to the chat, where it is
+  /// waiting in the draft; over the pane the chat is already beside it.
   private func exitInspect() {
-    guard inspect != nil else { return }
+    guard let finished = inspect else { return }
     inspect = nil
+    if finished.attachedCount > 0, presentation.isFullScreen, let stageClose {
+      stageClose()
+      return
+    }
     Task { await model.start() }
-  }
-
-  private func controlHalf(enabled: Bool) -> some View {
-    Label("Control", systemImage: "hand.point.up.left")
-      .font(.footnote.weight(.semibold))
-      .foregroundStyle(enabled ? .white : .white.opacity(0.35))
-      .frame(maxWidth: .infinity)
-      .frame(height: 44)
-      // The fill is a background so it can never size the half: it grows
-      // left to right while the half is held.
-      .background(alignment: .leading) {
-        GeometryReader { proxy in
-          Capsule()
-            .fill(ADEColor.warning.opacity(0.85))
-            .frame(width: proxy.size.width * holdProgress)
-        }
-      }
-    .clipShape(Capsule())
-    .contentShape(Capsule())
-    .onLongPressGesture(
-      minimumDuration: Self.holdToControl,
-      maximumDistance: 24,
-      perform: {
-        guard enabled else { return }
-        holdProgress = 0
-        ADEHaptics.success()
-        model.beginControl()
-        if model.mode == .controlling {
-          flashHint("You're driving the simulator. Done hands it back.", haptic: nil)
-        }
-      },
-      onPressingChanged: { pressing in
-        guard enabled else {
-          if pressing, let blocker = model.controlBlocker { flashHint(blocker, haptic: .warning) }
-          return
-        }
-        if pressing {
-          ADEHaptics.light()
-          withAnimation(.linear(duration: Self.holdToControl)) { holdProgress = 1 }
-        } else {
-          // Let go early: say how, and empty the fill.
-          if model.mode == .watching {
-            flashHint("Hold to take control.", haptic: nil)
-          }
-          withAnimation(.easeOut(duration: 0.15)) { holdProgress = 0 }
-        }
-      }
-    )
-    .accessibilityElement(children: .combine)
-    .accessibilityLabel("Control")
-    .accessibilityHint("Touch and hold to drive the simulator with your touches.")
-    .accessibilityAction(named: "Take control") {
-      guard enabled else { return }
-      model.beginControl()
-    }
-  }
-
-  private var controllingBar: some View {
-    HStack(spacing: 10) {
-      VStack(alignment: .leading, spacing: 2) {
-        Label("Controlling", systemImage: "hand.point.up.left.fill")
-          .font(.footnote.weight(.semibold))
-          .foregroundStyle(ADEColor.warning)
-        Text("Touches go to \(model.status?.device?.name ?? "the simulator")")
-          .font(.caption2)
-          .foregroundStyle(.white.opacity(0.7))
-          .lineLimit(1)
-      }
-      Spacer(minLength: 0)
-      roundButton(systemName: "keyboard", label: showsKeyboard ? "Hide keyboard" : "Type", highlighted: showsKeyboard) {
-        showsKeyboard.toggle()
-        keyboardFocused = showsKeyboard
-      }
-      roundButton(systemName: "house", label: "Home") {
-        model.press("home")
-      }
-      hardwareButtonsMenu
-      Button {
-        ADEHaptics.light()
-        model.endControl()
-      } label: {
-        Text("Done")
-          .font(.footnote.weight(.semibold))
-          .foregroundStyle(.black)
-          .padding(.horizontal, 18)
-          .frame(minHeight: 44)
-          .background(ADEColor.warning, in: Capsule())
-      }
-      .buttonStyle(.plain)
-      .accessibilityHint("Stop sending touches and go back to watching.")
-    }
-    .frame(maxWidth: 520)
   }
 
   /// The buttons a finger on the screen cannot press, the same set as the
@@ -739,20 +674,6 @@ struct AppleDeviceViewer: View {
       Button { model.press("siri") } label: { Label("Siri", systemImage: "mic") }
       Button { model.press("app-switcher") } label: { Label("App switcher", systemImage: "square.grid.2x2") }
     }
-  }
-
-  private var hardwareButtonsMenu: some View {
-    Menu {
-      hardwareButtonsMenuContent
-    } label: {
-      Image(systemName: "iphone.gen3")
-        .font(.system(size: 15, weight: .semibold))
-        .foregroundStyle(.white)
-        .frame(width: 44, height: 44)
-        .background(Color.black.opacity(0.68), in: Circle())
-        .overlay(Circle().strokeBorder(Color.white.opacity(0.18), lineWidth: 1))
-    }
-    .accessibilityLabel("Hardware buttons")
   }
 
   private func hideKeyboard() {
@@ -772,8 +693,8 @@ struct AppleDeviceViewer: View {
           typed = ""
           keyboardFocused = true
         }
-        .padding(.horizontal, 12)
-        .frame(minHeight: 40)
+        .padding(.horizontal, 14)
+        .frame(minHeight: 42)
         .background(Color.white.opacity(0.12), in: Capsule())
         .foregroundStyle(.white)
       roundButton(systemName: "return", label: "Return") {
@@ -784,8 +705,8 @@ struct AppleDeviceViewer: View {
       }
     }
     .padding(.horizontal, 14)
-    .padding(.bottom, 6)
-    .frame(maxWidth: 520)
+    .frame(maxWidth: 560)
+    .frame(maxWidth: .infinity)
     .toolbar {
       ToolbarItemGroup(placement: .keyboard) {
         Spacer()
@@ -808,6 +729,7 @@ struct AppleDeviceViewer: View {
     .padding(.horizontal, 12)
     .padding(.vertical, 6)
     .background(.black.opacity(0.6), in: Capsule())
+    .allowsHitTesting(false)
     .accessibilityElement(children: .combine)
   }
 
@@ -825,7 +747,6 @@ struct AppleDeviceViewer: View {
   private func roundButton(
     systemName: String,
     label: String,
-    highlighted: Bool = false,
     action: @escaping () -> Void
   ) -> some View {
     Button {
@@ -834,11 +755,9 @@ struct AppleDeviceViewer: View {
     } label: {
       Image(systemName: systemName)
         .font(.system(size: 15, weight: .semibold))
-        .foregroundStyle(highlighted ? .black : .white)
-        .frame(width: 44, height: 44)
-        // Dark discs read over a light picture and a dark one alike.
-        .background(highlighted ? Color.white.opacity(0.85) : Color.black.opacity(0.68), in: Circle())
-        .overlay(Circle().strokeBorder(Color.white.opacity(highlighted ? 0 : 0.18), lineWidth: 1))
+        .foregroundStyle(.white)
+        .frame(width: 42, height: 42)
+        .background(Color.white.opacity(0.12), in: Circle())
     }
     .buttonStyle(.plain)
     .accessibilityLabel(label)
@@ -875,19 +794,6 @@ struct AppleDeviceViewer: View {
     .padding(.horizontal, 24)
   }
 
-  private func hintChip(_ text: String) -> some View {
-    Text(text)
-      .font(.caption.weight(.semibold))
-      .foregroundStyle(.white)
-      .multilineTextAlignment(.center)
-      .padding(.horizontal, 14)
-      .padding(.vertical, 8)
-      .background(.black.opacity(0.7), in: Capsule())
-      .padding(.horizontal, 24)
-      .transition(.opacity)
-      .allowsHitTesting(false)
-  }
-
   /// "Watching · owned by <chat>" — the one sentence that stops a viewer from
   /// mistaking a device an agent is driving for one that is idle.
   ///
@@ -895,7 +801,7 @@ struct AppleDeviceViewer: View {
   /// name when it cannot, so a missing title costs the ribbon its name and
   /// never the claim itself.
   private var ribbon: String {
-    var parts = [model.mode == .controlling ? "Controlling" : "Watching"]
+    var parts = [controlling ? "Controlling" : "Watching"]
     if let owner = appleDeviceOwnerLabel(model.status?.owner) {
       parts.append("owned by \(owner)")
     }
@@ -907,14 +813,14 @@ struct AppleDeviceViewer: View {
 
   private enum HintHaptic { case warning }
 
-  /// One line at a time, 2s, restarted on each call rather than queued, so
+  /// One line at a time, restarted on each call rather than queued, so
   /// hammering the screen does not stack timers.
-  private func flashHint(_ text: String, haptic: HintHaptic?) {
+  private func flashHint(_ text: String, haptic: HintHaptic?, seconds: Double = 2) {
     if haptic == .warning { ADEHaptics.warning() }
     hint = text
     hintTask?.cancel()
     hintTask = Task { @MainActor in
-      try? await Task.sleep(for: .milliseconds(2_000))
+      try? await Task.sleep(for: .seconds(seconds))
       guard !Task.isCancelled else { return }
       hint = nil
       model.clearNotice()

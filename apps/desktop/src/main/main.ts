@@ -477,7 +477,7 @@ import { createMacDesktopLogger } from "./services/macDesktop/macDesktopLogger";
 import { createWindowsDesktopSeatAdapter } from "./services/windowsDesktop/windowsDesktopSeatProvider";
 import { createLinuxDesktopSeatAdapter } from "./services/linuxDesktop/linuxDesktopSeatProvider";
 import { feedDemoTrackFromChatEvent } from "./services/demoVideo/demoTrackRegistry";
-import { createAppleStreamRelayForService } from "./services/ios/appleStreamRelay";
+import { createAppleStreamRelayForService } from "./services/ios/appleStreamRelayForService";
 import { hasAppleLocalViewer } from "./services/ios/appleLocalViewers";
 import { setActiveAppleStreamRouter } from "../../../ade-cli/src/services/sync/appleStreamListenerRoute";
 import { DEFAULT_APPLE_REMOTE_BITRATE_KBPS } from "../shared/appleDeviceSettings";
