@@ -185,8 +185,20 @@ async function main() {
     const shotOut = await timed("screenshot.outPath", () => service.screenshot({ laneId: LANE, outPath: path.join(work, "explicit.png") }));
     log("screenshot.outPath", { path: shotOut.path, w: shotOut.width, h: shotOut.height });
 
-    const off = await timed("stop", () => service.stop({ laneId: LANE }));
+    // A brain restart: a second service on the same data folder still owns
+    // the emulator (the state file) and stops it.
+    await service.stopStream({ laneId: LANE });
+    const restarted = createAndroidEmulatorService({
+      laneDevices: repo,
+      dataDir: work,
+      serverJarPath: path.resolve("apps/desktop/resources/android/scrcpy-server"),
+      onEvent: (event) => log("event.restarted", event),
+    });
+    const seen = await restarted.getStatus({ laneId: LANE });
+    log("restarted.getStatus", { state: seen.lane?.state, startedByAde: seen.lane?.avd?.running?.startedByAde });
+    const off = await timed("stop.afterRestart", () => restarted.stop({ laneId: LANE }));
     log("stop", { state: off.state });
+    await restarted.dispose();
     const streamAfterStop = await service.getStreamStatus({ laneId: LANE });
     log("stream.afterStop", { running: streamAfterStop.running });
 
