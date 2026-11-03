@@ -1,19 +1,23 @@
 /**
  * scrcpy's video socket, turned into ADE's video records.
  *
- * The pinned server (`scrcpyServer.ts`, v3.3.4) writes, after the forward
+ * The pinned server (`scrcpyServer.ts`, v5.0.1) writes, after the forward
  * tunnel's dummy byte:
  *
  * 1. the device name, a 64-byte NUL-padded UTF-8 field;
- * 2. the codec metadata, 12 bytes: codec id, initial width, initial height
- *    (u32 big-endian each);
- * 3. one packet per `MediaCodec` output buffer, each behind a 12-byte header:
- *    a u64 whose top bit marks a config packet (SPS + PPS) and whose next bit
- *    marks a keyframe, with the PTS in the low 62 bits, then a u32 size.
+ * 2. the codec id, a u32 (`"h264"`; 0 or 1 when the device refuses);
+ * 3. 12-byte headers, each one of two kinds, told apart by the top bit:
+ *    - a **session packet** (top bit 1) at the start of every capture
+ *      session (start, rotation, reset): a u32 of flags, then the video width
+ *      and height as u32;
+ *    - a **media packet** header (top bit 0): a u64 whose bit 62 marks a
+ *      config packet (SPS + PPS) and bit 61 a keyframe, with the PTS in the
+ *      low 61 bits, then a u32 size and that many bytes of `MediaCodec` output.
  *
- * Source of truth: `server/.../device/Streamer.java` and `app/src/demuxer.c`
- * at tag v3.3.4. The protocol is internal to scrcpy and changes between
- * versions, which is why the server version is pinned with this file.
+ * Source of truth: `server/.../device/Streamer.java`, `app/src/demuxer.c` and
+ * `doc/develop.md` at tag v5.0.1 (the session packet is new in v4.0). The
+ * protocol is internal to scrcpy and changes between versions, which is why
+ * the server version is pinned with this file.
  *
  * Both halves here are pure: no sockets, no timers. The demuxer turns bytes
  * into packets; the record builder turns packets into the records the
@@ -31,12 +35,13 @@ import {
 export const SCRCPY_CODEC_ID_H264 = 0x68323634;
 
 const DEVICE_NAME_FIELD_BYTES = 64;
-const CODEC_META_BYTES = 12;
-const FRAME_HEADER_BYTES = 12;
-/** Top two bits of the header's high word. */
-const PACKET_FLAG_CONFIG = 0x80000000;
-const PACKET_FLAG_KEY_FRAME = 0x40000000;
-const PTS_HIGH_MASK = 0x3fffffff;
+const CODEC_ID_BYTES = 4;
+const PACKET_HEADER_BYTES = 12;
+/** Flags in the top bits of a header's high word. */
+const PACKET_FLAG_SESSION = 0x80000000;
+const PACKET_FLAG_CONFIG = 0x40000000;
+const PACKET_FLAG_KEY_FRAME = 0x20000000;
+const PTS_HIGH_MASK = 0x1fffffff;
 /**
  * A codec id of 0 means the device turned the stream off; 1 means its
  * configuration failed. Both come in the codec id's place.
@@ -58,7 +63,11 @@ export type ScrcpyVideoHeader = {
   kind: "header";
   deviceName: string;
   codecId: number;
-  /** The size the encoder starts with; a rotation changes it later. */
+};
+
+/** One capture session: the encoder (re)started at this size. */
+export type ScrcpyVideoSession = {
+  kind: "session";
   width: number;
   height: number;
 };
@@ -73,10 +82,10 @@ export type ScrcpyVideoPacket = {
   data: Buffer;
 };
 
-export type ScrcpyVideoEvent = ScrcpyVideoHeader | ScrcpyVideoPacket;
+export type ScrcpyVideoEvent = ScrcpyVideoHeader | ScrcpyVideoSession | ScrcpyVideoPacket;
 
 /**
- * Splits the video socket's bytes into the header and whole packets.
+ * Splits the video socket's bytes into the header, sessions and whole packets.
  *
  * Feed it everything after the dummy byte. Throws `ScrcpyProtocolError` when
  * the device disables the stream, names another codec, or declares a packet
@@ -97,9 +106,7 @@ export function createScrcpyVideoDemuxer(): {
       let offset = 0;
 
       if (!headerRead) {
-        if (pending.byteLength < DEVICE_NAME_FIELD_BYTES + 4) return events;
-        // The codec id comes alone when the device refuses the stream, so it
-        // is read before the width and height can be.
+        if (pending.byteLength < DEVICE_NAME_FIELD_BYTES + CODEC_ID_BYTES) return events;
         const codecId = pending.readUInt32BE(DEVICE_NAME_FIELD_BYTES);
         if (codecId === CODEC_ID_STREAM_DISABLED) {
           throw new ScrcpyProtocolError("The device turned the video stream off.");
@@ -110,28 +117,32 @@ export function createScrcpyVideoDemuxer(): {
         if (codecId !== SCRCPY_CODEC_ID_H264) {
           throw new ScrcpyProtocolError(`The device sent codec 0x${codecId.toString(16)}, not H.264.`);
         }
-        if (pending.byteLength < DEVICE_NAME_FIELD_BYTES + CODEC_META_BYTES) return events;
         const nameField = pending.subarray(0, DEVICE_NAME_FIELD_BYTES);
         const nul = nameField.indexOf(0);
         events.push({
           kind: "header",
           deviceName: nameField.subarray(0, nul === -1 ? nameField.byteLength : nul).toString("utf8"),
           codecId,
-          width: pending.readUInt32BE(DEVICE_NAME_FIELD_BYTES + 4),
-          height: pending.readUInt32BE(DEVICE_NAME_FIELD_BYTES + 8),
         });
         headerRead = true;
-        offset = DEVICE_NAME_FIELD_BYTES + CODEC_META_BYTES;
+        offset = DEVICE_NAME_FIELD_BYTES + CODEC_ID_BYTES;
       }
 
-      while (pending.byteLength - offset >= FRAME_HEADER_BYTES) {
+      while (pending.byteLength - offset >= PACKET_HEADER_BYTES) {
         const high = pending.readUInt32BE(offset);
         const low = pending.readUInt32BE(offset + 4);
         const size = pending.readUInt32BE(offset + 8);
+        if ((high & PACKET_FLAG_SESSION) !== 0) {
+          // Width and height take the PTS and size slots.
+          if (!low || !size) throw new ScrcpyProtocolError(`The device sent a ${low}x${size} capture session.`);
+          events.push({ kind: "session", width: low, height: size });
+          offset += PACKET_HEADER_BYTES;
+          continue;
+        }
         if (size > MAX_VIDEO_RECORD_BYTES) {
           throw new ScrcpyProtocolError(`The device declared a ${size} byte video packet.`);
         }
-        const end = offset + FRAME_HEADER_BYTES + size;
+        const end = offset + PACKET_HEADER_BYTES + size;
         if (pending.byteLength < end) break;
         const config = (high & PACKET_FLAG_CONFIG) !== 0;
         events.push({
@@ -140,7 +151,7 @@ export function createScrcpyVideoDemuxer(): {
           keyframe: !config && (high & PACKET_FLAG_KEY_FRAME) !== 0,
           ptsUs: config ? null : (high & PTS_HIGH_MASK) * 0x1_0000_0000 + low,
           // Copied: the tail below is re-sliced and the caller keeps packets.
-          data: Buffer.from(pending.subarray(offset + FRAME_HEADER_BYTES, end)),
+          data: Buffer.from(pending.subarray(offset + PACKET_HEADER_BYTES, end)),
         });
         offset = end;
       }

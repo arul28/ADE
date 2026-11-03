@@ -3,7 +3,7 @@
  *
  * Every message is one type byte and a fixed big-endian body. Layouts come
  * from `app/src/control_msg.c` (client) and `server/.../ControlMessageReader.java`
- * (server) at tag v3.3.4. A message the server cannot parse ends its control
+ * (server) at tag v5.0.1. A message the server cannot parse ends its control
  * thread, so the encoders here write exactly those layouts and nothing else.
  *
  * Positions are in **video** pixels with the video size beside them. The

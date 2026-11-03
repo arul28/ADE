@@ -10,13 +10,13 @@ input. ADE's own client code is in
 | Field | Value |
 |---|---|
 | Upstream | https://github.com/Genymobile/scrcpy |
-| Version | 3.3.4 (tag `v3.3.4`, released 2025-12-17) |
-| File | release asset `scrcpy-server-v3.3.4`, unchanged |
-| SHA-256 | `8588238c9a5a00aa542906b6ec7e6d5541d9ffb9b5d0f6e1bc0e365e2303079e` |
+| Version | 5.0.1 (tag `v5.0.1`, released 2026-10-08) |
+| File | release asset `scrcpy-server-v5.0.1`, unchanged |
+| SHA-256 | `764eb6f79811d5211fe9df341120882ba9994c7a61b897d7bf3fb662e53bc536` |
 | Licence | Apache License 2.0, full text in `scrcpy-LICENSE` |
 
 Copyright (C) 2018 Genymobile
-Copyright (C) 2018-2025 Romain Vimont
+Copyright (C) 2018-2026 Romain Vimont
 
 The server refuses a client that names another version. The version and the
 checksum are also in `scrcpyServer.ts` (`SCRCPY_SERVER_VERSION`,

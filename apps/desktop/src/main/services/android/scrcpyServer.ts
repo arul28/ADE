@@ -33,12 +33,13 @@ import {
   ScrcpyProtocolError,
   type ScrcpyVideoHeader,
   type ScrcpyVideoPacket,
+  type ScrcpyVideoSession,
 } from "./scrcpyVideo";
 
 /** The bundled server's version. The server refuses a client that names another. */
-export const SCRCPY_SERVER_VERSION = "3.3.4";
-/** SHA-256 of `resources/android/scrcpy-server` (release asset `scrcpy-server-v3.3.4`). */
-export const SCRCPY_SERVER_SHA256 = "8588238c9a5a00aa542906b6ec7e6d5541d9ffb9b5d0f6e1bc0e365e2303079e";
+export const SCRCPY_SERVER_VERSION = "5.0.1";
+/** SHA-256 of `resources/android/scrcpy-server` (release asset `scrcpy-server-v5.0.1`). */
+export const SCRCPY_SERVER_SHA256 = "764eb6f79811d5211fe9df341120882ba9994c7a61b897d7bf3fb662e53bc536";
 /**
  * Where the jar goes on the device. Versioned, and not scrcpy's own
  * `/data/local/tmp/scrcpy-server.jar`: a user's scrcpy of another version
@@ -134,6 +135,8 @@ export type ScrcpySessionEnd = {
 export type ScrcpySessionHandlers = {
   /** Every packet after the header, in order. May be called before `startScrcpySession` resolves. */
   onPacket: (packet: ScrcpyVideoPacket) => void;
+  /** Each capture session's size (start, rotation, reset), before its config packet. */
+  onSession?: (session: ScrcpyVideoSession) => void;
   /** Called once, when the run ends for any reason after it started. */
   onEnd: (end: ScrcpySessionEnd) => void;
 };
@@ -176,7 +179,7 @@ function serverCommand(scid: string, options: ScrcpySessionOptions): string {
     "clipboard_autosync=false",
     "cleanup=false",
     "send_device_meta=true",
-    "send_codec_meta=true",
+    "send_stream_meta=true",
     "send_frame_meta=true",
     "send_dummy_byte=true",
   ];
@@ -393,6 +396,8 @@ export async function startScrcpySession(
           headerResolve?.(event);
           headerResolve = null;
           headerReject = null;
+        } else if (event.kind === "session") {
+          handlers.onSession?.(event);
         } else {
           handlers.onPacket(event);
         }
@@ -426,8 +431,6 @@ export async function startScrcpySession(
       localPort,
       devicePid,
       deviceName: header.deviceName,
-      width: header.width,
-      height: header.height,
       pushMs,
       forwardMs,
       connectMs,

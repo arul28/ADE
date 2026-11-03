@@ -40,19 +40,13 @@ import { createScrcpyRecordBuilder } from "./scrcpyVideo";
  * Encoder defaults, measured on the Windows emulator (API 36, 4 vCPUs). The
  * emulator has only a software H.264 encoder, so the picture's size and bit
  * rate set the frame rate while the screen moves: 720x1600 at 8 Mbps gave
- * 15-27 fps, 576x1280 at 4 Mbps with the options below 52 fps, 464x1024 55.
+ * 15-27 fps, 576x1280 at 4 Mbps 29-52 fps, 464x1024 35-55. The server sets
+ * real-time priority and one-frame latency itself (scrcpy 4.0 and later).
  */
 /** Longest side of the encoded picture (576x1280 for a 1080x2400 phone). */
 export const ANDROID_STREAM_DEFAULT_MAX_SIZE = 1280;
 export const ANDROID_STREAM_DEFAULT_BIT_RATE = 4_000_000;
 export const ANDROID_STREAM_DEFAULT_MAX_FPS = 60;
-/**
- * Real-time priority, one frame out per frame in: what scrcpy 4.0 made its
- * default (it guards both on the API level, as `codecOptionsFor` does).
- */
-export const ANDROID_STREAM_DEFAULT_CODEC_OPTIONS = "priority=0,latency=1";
-/** `KEY_LATENCY` exists from API 26; older encoders get no options. */
-const CODEC_OPTIONS_MIN_API = 26;
 /** How long a start waits for the first config record. */
 const FIRST_CONFIG_TIMEOUT_MS = 20_000;
 const MAX_RESTARTS = 3;
@@ -79,7 +73,7 @@ export type AndroidStreamStartArgs = {
   maxSize?: number;
   bitRate?: number;
   maxFps?: number;
-  /** scrcpy `video_codec_options`; undefined uses `ANDROID_STREAM_DEFAULT_CODEC_OPTIONS`. */
+  /** scrcpy `video_codec_options` (`key[:type]=value,…`); none by default. */
   codecOptions?: string | null;
   videoEncoder?: string | null;
   logger?: Logger | null;
@@ -91,7 +85,6 @@ type DeviceStream = {
   builder: ReturnType<typeof createScrcpyRecordBuilder>;
   /** The display's size in its natural orientation, from `wm size`. */
   displaySize: { width: number; height: number } | null;
-  apiLevel: number | null;
   starting: Promise<AndroidStreamTransport> | null;
   restartTimer: ReturnType<typeof setTimeout> | null;
   restarts: number[];
@@ -102,6 +95,8 @@ type DeviceStream = {
   lastEnd: ScrcpySessionEnd | null;
   /** Config packets from the encoder: one per encoder start, reset or rotation. */
   configPackets: number;
+  /** Capture sessions the server announced; one per start, rotation or reset. */
+  sessions: number;
 };
 
 const devices = new Map<string, DeviceStream>();
@@ -145,11 +140,6 @@ function transportOf(device: DeviceStream): AndroidStreamTransport | null {
   return { url: transport.url, token: transport.token, codec: config.codec, width: config.width, height: config.height };
 }
 
-function codecOptionsFor(device: DeviceStream): string | null {
-  if (device.args.codecOptions !== undefined) return device.args.codecOptions;
-  return device.apiLevel !== null && device.apiLevel >= CODEC_OPTIONS_MIN_API ? ANDROID_STREAM_DEFAULT_CODEC_OPTIONS : null;
-}
-
 async function openSession(device: DeviceStream): Promise<void> {
   const { args } = device;
   const server = ensureStreamServer(args.logger ?? null);
@@ -161,7 +151,7 @@ async function openSession(device: DeviceStream): Promise<void> {
       maxSize: args.maxSize ?? ANDROID_STREAM_DEFAULT_MAX_SIZE,
       videoBitRate: args.bitRate ?? ANDROID_STREAM_DEFAULT_BIT_RATE,
       maxFps: args.maxFps ?? ANDROID_STREAM_DEFAULT_MAX_FPS,
-      codecOptions: codecOptionsFor(device),
+      codecOptions: args.codecOptions ?? null,
       videoEncoder: args.videoEncoder ?? null,
       logger: args.logger ?? null,
     },
@@ -180,6 +170,9 @@ async function openSession(device: DeviceStream): Promise<void> {
           server.publish(args.serial, output);
           if (output.kind === "config") device.firstConfig.resolve();
         }
+      },
+      onSession: () => {
+        if (devices.get(args.serial) === device) device.sessions += 1;
       },
       onEnd: (end) => handleSessionEnd(device, end),
     },
@@ -244,7 +237,6 @@ export async function startStream(args: AndroidStreamStartArgs): Promise<Android
     session: null,
     builder: createScrcpyRecordBuilder(),
     displaySize: null,
-    apiLevel: null,
     starting: null,
     restartTimer: null,
     restarts: [],
@@ -253,6 +245,7 @@ export async function startStream(args: AndroidStreamStartArgs): Promise<Android
     firstConfig: deferred(),
     lastEnd: null,
     configPackets: 0,
+    sessions: 0,
   };
   devices.set(args.serial, device);
   const server = ensureStreamServer(args.logger ?? null);
@@ -260,16 +253,10 @@ export async function startStream(args: AndroidStreamStartArgs): Promise<Android
   device.starting = (async () => {
     try {
       await server.start(args.serial);
-      // One shell round trip for both: the API level picks the encoder
-      // options, and the display size scales touches.
-      const probe = await runAdbText(
-        args.adbPath,
-        ["shell", "getprop ro.build.version.sdk; wm size"],
-        { serial: args.serial, timeoutMs: 10_000 },
-      ).catch(() => "");
-      const apiLevel = Number.parseInt(probe.split(/\r?\n/)[0] ?? "", 10);
-      device.apiLevel = Number.isInteger(apiLevel) ? apiLevel : null;
-      device.displaySize = parseWmSize(probe);
+      // The display size scales touches from device to video pixels.
+      const sizeText = await runAdbText(args.adbPath, ["shell", "wm", "size"], { serial: args.serial, timeoutMs: 10_000 })
+        .catch(() => "");
+      device.displaySize = parseWmSize(sizeText);
       await openSession(device);
       let timer: ReturnType<typeof setTimeout> | null = null;
       const timedOut = new Promise<"timeout">((resolve) => {
@@ -414,6 +401,7 @@ export type AndroidStreamDiagnostics = {
   lastEnd: ScrcpySessionEnd | null;
   failure: string | null;
   configPackets: number;
+  sessions: number;
   serverLog: string[];
   metrics: AndroidStreamMetrics | null;
 };
@@ -433,6 +421,7 @@ export function diagnostics(serial: string): AndroidStreamDiagnostics | null {
     lastEnd: device.lastEnd,
     failure: device.failure?.message ?? null,
     configPackets: device.configPackets,
+    sessions: device.sessions,
     serverLog: device.session?.serverLog() ?? device.lastEnd?.serverLog ?? [],
     metrics: streamServer?.metrics(serial) ?? null,
   };
