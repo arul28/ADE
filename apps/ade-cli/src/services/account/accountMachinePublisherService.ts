@@ -1549,6 +1549,18 @@ export function createAccountMachinePublisherService(options: {
         outcomeNeedsSignIn(statusAfterFailure, reachableEndpointCount);
         return;
       }
+      // Signed out while the refresh ran (often what aborted it): the same
+      // deliberate sign-out the status check above handles.
+      if (isPublisherSignedOut(statusAfterFailure)) {
+        clearRetainedRelayState();
+        outcome("account_signed_out", {
+          attemptAt,
+          skipReason: "The ADE brain is signed out of the ADE account.",
+          directoryOrigin,
+          reachableEndpointCount,
+        });
+        return;
+      }
       if (isTransientAccountTokenError(error)) {
         recordTransientFailure();
         outcome("transport_error", {
