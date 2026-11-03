@@ -136,7 +136,7 @@ jobs:
           node-version: 24
       - run: cd apps/account-directory && npm ci
       - name: Apply D1 migrations and deploy production Worker
-        run: cd apps/account-directory && npm run deploy:production -- --var "SENTRY_RELEASE:$SENTRY_RELEASE" --upload-source-maps
+        run: cd apps/account-directory && npm run deploy:production -- --var "SENTRY_RELEASE:$SENTRY_RELEASE" --var "POSTHOG_LOGS_TOKEN:${{ secrets.ADE_POSTHOG_PROJECT_TOKEN }}" --upload-source-maps
       - name: Upload source maps to Sentry
         # Never fails the deploy: a missing token or a Sentry outage only means
         # stack traces stay minified.
@@ -167,7 +167,7 @@ jobs:
           node-version: 24
       - run: cd apps/webhook-relay && npm ci
       - name: Deploy Worker
-        run: cd apps/webhook-relay && npm run deploy -- --var "SENTRY_RELEASE:$SENTRY_RELEASE" --upload-source-maps
+        run: cd apps/webhook-relay && npm run deploy -- --var "SENTRY_RELEASE:$SENTRY_RELEASE" --var "POSTHOG_LOGS_TOKEN:${{ secrets.ADE_POSTHOG_PROJECT_TOKEN }}" --upload-source-maps
       - name: Upload source maps to Sentry
         # Never fails the deploy: a missing token or a Sentry outage only means
         # stack traces stay minified.
@@ -196,7 +196,7 @@ jobs:
           node-version: 24
       - run: cd apps/tunnel-relay && npm ci
       - name: Deploy Worker
-        run: cd apps/tunnel-relay && npm run deploy -- --tag "$GITHUB_SHA" --message "main $GITHUB_SHA" --var "SENTRY_RELEASE:$SENTRY_RELEASE" --upload-source-maps
+        run: cd apps/tunnel-relay && npm run deploy -- --tag "$GITHUB_SHA" --message "main $GITHUB_SHA" --var "SENTRY_RELEASE:$SENTRY_RELEASE" --var "POSTHOG_LOGS_TOKEN:${{ secrets.ADE_POSTHOG_PROJECT_TOKEN }}" --upload-source-maps
       - name: Upload source maps to Sentry
         # Never fails the deploy: a missing token or a Sentry outage only means
         # stack traces stay minified.
@@ -256,6 +256,8 @@ jobs:
           CLERK_SECRET_KEY: ${{ secrets.CLERK_SECRET_KEY }}
           CLERK_PUBLISHABLE_KEY: ${{ secrets.CLERK_PUBLISHABLE_KEY }}
           ADE_PUSH_RELAY_SECONDARY_SMOKE_USER_ID: ${{ secrets.ADE_PUSH_RELAY_SECONDARY_SMOKE_USER_ID }}
+          # Public project token for PostHog Logs (src/posthogLogs.ts).
+          ADE_DEPLOY_EXTRA_ARGS: --var POSTHOG_LOGS_TOKEN:${{ secrets.ADE_POSTHOG_PROJECT_TOKEN }}
         run: cd apps/push-relay && npm run deploy:ci
       - name: Upload source maps to Sentry
         # Never fails the deploy: a missing token or a Sentry outage only means

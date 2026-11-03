@@ -39,6 +39,10 @@ ADE's own people are never recorded. The project links recording to the flag `se
 
 PostHog's project settings: recording on, minimum duration 5 seconds, console and performance capture off, project masking of inputs only (the desktop masks all text in code), heatmaps on for the site. Free tier: 5,000 recordings a month, retained one month.
 
+## Worker logs (PostHog Logs)
+
+The four Cloudflare Workers (account directory, push relay, tunnel relay, webhook relay) send sampled OTLP log records to PostHog Logs (`src/posthogLogs.ts` in each, posted to `/i/v1/logs` under `ctx.waitUntil` with a two-second timeout; a failure is swallowed), so log alerts and the self-driving logs scout can see server-side problems. A record holds only the Worker name and environment, the event (`request_completed`, `job_failed`), level, method, a route template (short lowercase path words only; ids, keys and everything after `host`, `connect`, `prewarm`, `machines`, `hooks` or `webhooks` become `:id`), status, duration, error class and, for a failed cron, the job name. Never URLs, queries, headers, bodies, tokens, emails, account ids or IPs; `/health` is not logged. Sampling: 2% of successes, 10% of 4xx, every 5xx and exception, at most 120 records per isolate per minute (worst case about 0.3 GB a month against the 10 GB free allowance). The deploy workflow passes the public project token as `POSTHOG_LOGS_TOKEN`; without it nothing is sent.
+
 ## Error tracking (Sentry)
 
 Sentry is part of ADE on every surface, with no setting and no notice. The organization is `ade-app` (US region), and each surface reports to its own project.
