@@ -105,7 +105,6 @@ struct HubInlineComposer: View {
   @State private var destinationPickerPresented = false
   @State private var presentedPicker: WorkComposerPicker?
   @State private var isDictating = false
-  @State private var controlsWidth: CGFloat = 0
   // Global top edge of the destination control, so the picker popover can size
   // itself to the room above it (and never overflow the top of the screen).
   @State private var destinationControlTopY: CGFloat = 0
@@ -259,10 +258,6 @@ struct HubInlineComposer: View {
       baseEnabled: canStart,
       canUploadAttachments: canUploadAttachments
     )
-  }
-
-  private var isControlsCollapsed: Bool {
-    controlsWidth > 0 && controlsWidth <= workComposerControlsCollapseThreshold
   }
 
   // MARK: Body
@@ -752,17 +747,11 @@ struct HubInlineComposer: View {
             currentMode: runtimeMode,
             modeOptions: workRuntimeModeOptions(provider: provider),
             modeLabel: workRuntimeModeLabel(provider: provider, mode: runtimeMode),
-            isCollapsed: isControlsCollapsed,
             fastModeEnabled: codexFastMode,
             onOpenModelPicker: { modelPickerPresented = true },
             onSelectMode: { runtimeMode = $0 }
           )
           .padding(.trailing, 4)
-        }
-        .onGeometryChange(for: CGFloat.self) { proxy in
-          proxy.size.width
-        } action: { width in
-          controlsWidth = width
         }
 
         DictationRawUndoChip(coordinator: dictationCoordinator, draft: $draft)

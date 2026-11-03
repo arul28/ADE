@@ -373,19 +373,12 @@ struct WorkComposerInputBanner: View {
   }
 }
 
-/// Width below which the access/permission control collapses from the full
-/// segmented chip row to a single dot-only Menu button — mirroring the desktop
-/// composer's container query, tuned down for the phone. Shared so the
-/// in-session and new-chat composers collapse at the same point.
-let workComposerControlsCollapseThreshold: CGFloat = 360
-
 /// The composer's access/model controls, shared verbatim by the
 /// in-session composer (`WorkComposerChipStrip`) and the new-chat composer
 /// (`WorkNewChatComposerBar`) so the two surfaces stay visually and
-/// behaviorally identical: a permission/access control (single tone-dot Menu
-/// when space is tight, segmented chips when wide) and a model pill. The caller
-/// owns width measurement and passes `isCollapsed` so the GeometryReader can sit
-/// on the scroll viewport.
+/// behaviorally identical: a permission/access control (a single tone-dot
+/// dropdown at every width, so iPad and landscape match the phone) and a model
+/// pill.
 struct WorkComposerControlsRow: View {
   let provider: String
   let modelDisplayName: String
@@ -401,7 +394,6 @@ struct WorkComposerControlsRow: View {
   let currentMode: String
   let modeOptions: [WorkRuntimeModeOption]
   let modeLabel: String
-  let isCollapsed: Bool
   let fastModeEnabled: Bool
   /// False when the account forbids Fast. The bolt then draws muted with a
   /// slash, instead of the amber "on" glyph; the picker hides the toggle.
@@ -421,24 +413,12 @@ struct WorkComposerControlsRow: View {
     }
   }
 
-  /// Access/permission control: full segmented chips above the threshold, a
-  /// single tone-dot Menu button below it (label + caret hidden, color encodes
-  /// the safety tier via `workRuntimeModeTint`).
   @ViewBuilder
   private var accessControl: some View {
-    if isCollapsed {
-      collapsedAccessControl
-    } else {
-      accessPill
-    }
-  }
-
-  @ViewBuilder
-  private var collapsedAccessControl: some View {
     let tint = workRuntimeModeTint(provider: provider, mode: currentMode)
 
     if modeOptions.isEmpty || onSelectMode == nil {
-      collapsedDotButton(tint: tint, glyph: nil)
+      accessDotButton(tint: tint)
         .accessibilityLabel("Access mode: \(modeLabel)")
     } else {
       Menu {
@@ -451,116 +431,26 @@ struct WorkComposerControlsRow: View {
           }
         }
       } label: {
-        collapsedDotButton(tint: tint, glyph: nil)
+        accessDotButton(tint: tint)
       }
       .accessibilityLabel("Access mode: \(modeLabel). Tap to change.")
     }
   }
 
-  /// Compact ~1.5rem square showing just the tone dot (and an optional short
-  /// glyph), mirroring the desktop collapsed permission control.
-  private func collapsedDotButton(tint: Color, glyph: String?) -> some View {
-    ZStack {
-      if let glyph {
-        Text(glyph)
-          .font(.system(size: 10, weight: .bold))
-          .foregroundStyle(tint)
-      } else {
-        Circle()
-          .fill(tint)
-          .frame(width: 8, height: 8)
-      }
-    }
-    .frame(width: 28, height: 28)
+  /// Compact ~1.5rem square showing just the tone dot, mirroring the desktop
+  /// collapsed permission control. The dot's color encodes the safety tier via
+  /// `workRuntimeModeTint`.
+  private func accessDotButton(tint: Color) -> some View {
+    Circle()
+      .fill(tint)
+      .frame(width: 8, height: 8)
+      .frame(width: 28, height: 28)
     .background(ADEColor.surfaceBackground.opacity(0.38), in: Capsule(style: .continuous))
     .overlay(
       Capsule(style: .continuous)
         .stroke(ADEColor.border.opacity(0.24), lineWidth: 0.5)
     )
     .contentShape(Rectangle())
-  }
-
-  @ViewBuilder
-  private var accessPill: some View {
-    if modeOptions.isEmpty || onSelectMode == nil {
-      pillContent(dotColor: workRuntimeModeTint(provider: provider, mode: currentMode), label: modeLabel, showChevron: false)
-    } else {
-      HStack(spacing: 6) {
-        ForEach(modeOptions) { option in
-          composerOptionChip(
-            title: option.title,
-            tint: workRuntimeModeTint(provider: provider, mode: option.id),
-            isSelected: option.id == currentMode,
-            accessibilityPrefix: "Access mode"
-          ) {
-            onSelectMode?(option.id)
-          }
-        }
-      }
-    }
-  }
-
-  private func composerOptionChip(
-    title: String,
-    tint: Color,
-    isSelected: Bool,
-    accessibilityPrefix: String,
-    action: @escaping () -> Void
-  ) -> some View {
-    Button(action: action) {
-      HStack(spacing: 6) {
-        Circle()
-          .fill(tint)
-          .frame(width: 6, height: 6)
-        Text(title)
-          .font(.caption.weight(.semibold))
-          .foregroundStyle(isSelected ? ADEColor.textPrimary : ADEColor.textSecondary)
-          .lineLimit(1)
-        if isSelected {
-          Image(systemName: "checkmark")
-            .font(.system(size: 9, weight: .bold))
-            .foregroundStyle(tint)
-        }
-      }
-      .padding(.horizontal, 8)
-      .padding(.vertical, 5)
-      .background(
-        ADEColor.surfaceBackground.opacity(isSelected ? 0.56 : 0.28),
-        in: Capsule(style: .continuous)
-      )
-      .overlay(
-        Capsule(style: .continuous)
-          .stroke(isSelected ? tint.opacity(0.4) : ADEColor.border.opacity(0.22), lineWidth: 0.5)
-      )
-    }
-    .buttonStyle(.plain)
-    .accessibilityLabel("\(accessibilityPrefix): \(title)")
-    .accessibilityValue(isSelected ? "Selected" : "")
-  }
-
-  @ViewBuilder
-  private func pillContent(dotColor: Color, label: String, showChevron: Bool) -> some View {
-    HStack(spacing: 6) {
-      Circle()
-        .fill(dotColor)
-        .frame(width: 6, height: 6)
-      Text(label)
-        .font(.caption.weight(.semibold))
-        .foregroundStyle(ADEColor.textPrimary)
-        .lineLimit(1)
-      if showChevron {
-        Image(systemName: "chevron.down")
-          .font(.system(size: 9, weight: .bold))
-          .foregroundStyle(ADEColor.textMuted)
-      }
-    }
-    .padding(.horizontal, 8)
-    .padding(.vertical, 5)
-    .background(ADEColor.surfaceBackground.opacity(0.38), in: Capsule(style: .continuous))
-    .overlay(
-      Capsule(style: .continuous)
-        .stroke(ADEColor.border.opacity(0.24), lineWidth: 0.5)
-    )
   }
 
   @ViewBuilder
@@ -715,20 +605,6 @@ struct WorkComposerChipStrip: View {
   let onOpenModelPicker: (() -> Void)?
   let onSelectRuntimeMode: ((String) -> Void)?
 
-  /// Width below which the access control collapses from the full segmented
-  /// chip row to a single dot-only Menu button — mirroring the desktop
-  /// composer's ≤560px container query (tuned down for the phone, where the full
-  /// strip still wants to leave room for the model pill + Send button).
-  private let collapseThreshold: CGFloat = workComposerControlsCollapseThreshold
-
-  /// Live measurement of the strip's available width, fed by a background
-  /// GeometryReader so the collapse decision tracks rotation / split-view.
-  @State private var availableWidth: CGFloat = 0
-
-  private var isCollapsed: Bool {
-    availableWidth > 0 && availableWidth <= collapseThreshold
-  }
-
   var body: some View {
     ScrollView(.horizontal, showsIndicators: false) {
       HStack(spacing: 8) {
@@ -742,7 +618,6 @@ struct WorkComposerChipStrip: View {
             currentMode: currentMode,
             modeOptions: workRuntimeModeOptions(provider: chatSummary.provider),
             modeLabel: workRuntimeModeLabel(provider: chatSummary.provider, mode: currentMode),
-            isCollapsed: isCollapsed,
             fastModeEnabled: codexFastModeOverride ?? chatSummary.effectiveFastMode,
             fastModeAllowed: chatSummary.fastModeAllowed,
             onOpenModelPicker: onOpenModelPicker,
@@ -756,15 +631,6 @@ struct WorkComposerChipStrip: View {
     .frame(maxWidth: .infinity, alignment: .leading)
     .disabled(settingsMutationInFlight)
     .opacity(settingsMutationInFlight ? 0.72 : 1)
-    .background(
-      GeometryReader { proxy in
-        Color.clear
-          .onAppear { availableWidth = proxy.size.width }
-          .onChange(of: proxy.size.width) { _, newValue in
-            availableWidth = newValue
-          }
-      }
-    )
   }
 
 }
