@@ -14,6 +14,8 @@ import type { OpenProjectBinding } from "../../../shared/types/core";
 import { createPinnedFilesApi } from "../files/v2/pinnedFilesApi";
 import { streamFileBytes } from "../files/v2/streamBytes";
 import { cn } from "../ui/cn";
+import { isPathEqualOrDescendant, isWindowsAbsolutePath } from "../../lib/pathUtils";
+import { useChatRuntimeScope } from "./ChatRuntimeScope";
 import { classifyMediaPath, parseWorkspacePathLocation } from "./chatWorkspacePaths";
 import { threadMediaAttributes } from "./threadCommentAnchors";
 import {
@@ -40,6 +42,19 @@ const MEDIA_CHIP_CLASS = cn(
   "bg-(color:--chat-ink)/[0.04] px-2.5 text-xs",
 );
 
+/**
+ * The path a send on the chat's machine accepts for this media: a relative one
+ * (read against the chat's lane there), or an absolute one inside the project
+ * or the chat's lane. Null for anything else, such as a file in another
+ * workspace, which the send would refuse.
+ */
+function mediaAttachPath(src: string, roots: ReadonlyArray<string | null>): string | null {
+  const path = parseWorkspacePathLocation(src)?.path;
+  if (!path) return null;
+  if (!path.startsWith("/") && !isWindowsAbsolutePath(path)) return path;
+  return roots.some((root) => root && isPathEqualOrDescendant(path, root)) ? path : null;
+}
+
 /** Render one local markdown media reference after it approaches the viewport. */
 export function ChatInlineMedia({
   src,
@@ -55,6 +70,7 @@ export function ChatInlineMedia({
   onOpen: (path: string) => void;
 }) {
   const { ref, near } = useNearViewport<HTMLSpanElement>();
+  const scope = useChatRuntimeScope();
   const kind = inlineMediaKind(src);
   const name = inlineMediaFilename(src);
   const [target, setTarget] = useState<Resolution>(null);
@@ -102,29 +118,35 @@ export function ChatInlineMedia({
   }, [near, src, pin?.key, laneId]);
 
   const open = useCallback(() => onOpen(src), [onOpen, src]);
+  // Marked in every state, so a comment keeps its place while a remounted row
+  // loads its picture again. Only a file that shows can be attached.
+  const markMedia = (attach: boolean) => (kind === "image" || kind === "video"
+    ? threadMediaAttributes({
+      kind,
+      source: src,
+      label: alt || name,
+      attachPath: attach ? mediaAttachPath(src, [scope.rootPath, scope.laneWorktreePath]) : null,
+    })
+    : null);
   if (!near || !resolved) {
     return (
       <span
         ref={ref}
         className="my-3 block h-10 w-56 max-w-full animate-pulse rounded-lg bg-(color:--chat-ink)/[0.06]"
+        {...markMedia(false)}
       />
     );
   }
   if (!target) {
     return (
-      <span ref={ref} className="my-3 block">
+      <span ref={ref} className="my-3 block" {...markMedia(false)}>
         <MediaFileChip name={name} kind={kind} unavailable={outside ? "outside" : "missing"} onOpen={open} />
       </span>
     );
   }
 
-  // The path as the reply wrote it: the chat's machine reads a relative one
-  // against the chat's lane, the same root it resolved against here.
-  const mediaAttributes = kind === "image" || kind === "video"
-    ? threadMediaAttributes({ kind, source: src, label: alt || name, attachPath: parseWorkspacePathLocation(src)?.path ?? null })
-    : null;
   return (
-    <span ref={ref} className="my-3 block min-w-0 max-w-full" {...mediaAttributes}>
+    <span ref={ref} className="my-3 block min-w-0 max-w-full" {...markMedia(true)}>
       {kind === "image" ? (
         <InlineImage target={target} pin={pin} name={name} alt={alt} onOpen={open} />
       ) : null}

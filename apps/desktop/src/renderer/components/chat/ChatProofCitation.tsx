@@ -3,7 +3,7 @@ import React, { createContext, useContext, useEffect, useMemo, useRef, useState 
 import type { ComputerUseArtifactView } from "../../../shared/types";
 import type { ProofCompareBlock } from "../../../shared/proofCitation";
 import { proofRecordedBeforeRequestLine, readProofProvenance } from "../../../shared/proofProvenance";
-import { projectRelativeArtifactPath } from "../../../shared/artifactStreamUrl";
+import { projectArtifactAbsolutePath } from "../../../shared/artifactStreamUrl";
 import { cn } from "../ui/cn";
 import { ArtifactLightbox, ProofPreviewFailureNotice } from "./ChatComputerUsePanel";
 import { DemoChapters } from "./DemoChapters";
@@ -137,11 +137,7 @@ function useCitedProofArtifact(artifactId: string): CitedArtifactState {
 function proofAttachPath(artifact: ComputerUseArtifactView, rootPath: string | null, image: boolean): string | null {
   const external = externalArtifactUrl(artifact.uri);
   if (external) return image ? external : null;
-  const root = rootPath?.trim().replace(/[\\/]+$/, "");
-  const relative = projectRelativeArtifactPath(artifact.uri, root);
-  if (!root || !relative) return null;
-  const separator = root.includes("\\") ? "\\" : "/";
-  return `${root}${separator}${relative.split("/").join(separator)}`;
+  return projectArtifactAbsolutePath(artifact.uri, rootPath);
 }
 
 function CitationPlaceholder({ children, tone = "muted" }: { children: React.ReactNode; tone?: "muted" | "warning" }) {
@@ -193,12 +189,14 @@ function CitedProofMedia({
   const mediaHeight = compact ? "max-h-[300px]" : "max-h-[440px]";
 
   if (failed && fallback != null) return <>{fallback}</>;
+  // Marked while it loads too, so a comment keeps its place; only a proof
+  // that shows can be attached.
   const mediaAttributes = image || video
     ? threadMediaAttributes({
       kind: image ? "image" : "video",
       source: `ade-proof://${artifact.id}`,
       label: text,
-      attachPath: proofAttachPath(artifact, scope.rootPath, image),
+      attachPath: preview && !failed ? proofAttachPath(artifact, scope.rootPath, image) : null,
     })
     : null;
   return (

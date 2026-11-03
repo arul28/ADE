@@ -17,6 +17,7 @@ import {
   captureTableRowAnchor,
   captureTextAnchor,
   messageExcerptOf,
+  rangeAroundNode,
   resolveThreadCommentRange,
   resolveThreadMediaElement,
   threadMediaBox,
@@ -230,8 +231,7 @@ export function ThreadCommentLayer({
   const resolveAll = useCallback(() => {
     const root = rootRef.current;
     if (!root) return;
-    const previousEntries = new Map(resolvedRef.current.map((entry) => [entry.comment.id, entry]));
-    const previous = new Map(resolvedRef.current.map((entry) => [entry.comment.id, entry.range]));
+    const previous = new Map(resolvedRef.current.map((entry) => [entry.comment.id, entry]));
     const next: Resolved[] = [];
     let changed = resolvedRef.current.length !== commentsRef.current.length;
     for (const comment of commentsRef.current) {
@@ -245,7 +245,7 @@ export function ThreadCommentLayer({
         // it up every time (a few elements); keep the old range while the box is the same.
         const element = resolveThreadMediaElement(message, comment.anchor);
         const box = element ? threadMediaBox(element) : null;
-        const kept = previousEntries.get(comment.id);
+        const kept = previous.get(comment.id);
         if (!element || !box) {
           if (kept) changed = true;
           continue;
@@ -254,16 +254,14 @@ export function ThreadCommentLayer({
           next.push(kept.comment === comment ? kept : { ...kept, comment });
           continue;
         }
-        const range = document.createRange();
-        range.selectNode(box);
         changed = true;
-        next.push({ comment, range, media: { element, box } });
+        next.push({ comment, range: rangeAroundNode(box), media: { element, box } });
         continue;
       }
       // A finished reply does not change, so a range whose nodes are still
       // in it is still right. Only rows that remounted are searched again —
       // which keeps a streaming reply elsewhere from re-scanning every frame.
-      const kept = previous.get(comment.id);
+      const kept = previous.get(comment.id)?.range;
       const range = kept && kept.startContainer.isConnected && kept.endContainer.isConnected && message.contains(kept.startContainer)
         ? kept
         : resolveThreadCommentRange(message, comment.anchor);
@@ -456,9 +454,7 @@ export function ThreadCommentLayer({
     const anchor = captureMediaAnchor(message, element);
     if (!anchor) return;
     const box = threadMediaBox(element);
-    const range = document.createRange();
-    range.selectNode(box);
-    openDraft({ sessionId, messageKey, messageExcerpt: messageExcerptOf(message), anchor, rect: box.getBoundingClientRect(), range, mediaBox: box });
+    openDraft({ sessionId, messageKey, messageExcerpt: messageExcerptOf(message), anchor, rect: box.getBoundingClientRect(), range: rangeAroundNode(box), mediaBox: box });
   };
 
   const mediaComments = (element: HTMLElement) => resolved.filter((entry) => entry.media?.element === element);

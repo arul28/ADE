@@ -4,6 +4,7 @@ import type { AgentChatFileRef } from "../../../shared/types";
 import { cssZoomOf } from "../../lib/webZoom";
 import { cn } from "../ui/cn";
 import { ViewportOverlayPortal } from "../ui/ViewportOverlayHost";
+import { REPLY_TOOLBAR_BUTTON_CLASS, REPLY_TOOLBAR_CLASS } from "./AssistantOutputSelectionToolbar";
 import {
   THREAD_COMMENT_MESSAGE_SELECTOR,
   THREAD_MEDIA_SELECTOR,
@@ -12,11 +13,14 @@ import {
   type ThreadMediaInfo,
 } from "./threadCommentAnchors";
 
-const BUTTON_CLASS =
-  "inline-flex items-center gap-1.5 px-2 py-1 font-sans text-[11px] font-medium transition-colors";
+const ACTIONS_SELECTOR = "[data-thread-media-actions]";
+
+function isOnActions(target: EventTarget | null): boolean {
+  return Boolean((target as Element | null)?.closest?.(ACTIONS_SELECTOR));
+}
 
 /** The attachment that puts one image or video from the thread into the next message. */
-export function threadMediaAttachment(media: ThreadMediaInfo): AgentChatFileRef | null {
+function threadMediaAttachment(media: ThreadMediaInfo): AgentChatFileRef | null {
   const path = media.attachPath?.trim();
   if (!path) return null;
   if (/^https?:\/\//i.test(path)) return media.kind === "image" ? { path, type: "image-url", url: path } : null;
@@ -26,7 +30,7 @@ export function threadMediaAttachment(media: ThreadMediaInfo): AgentChatFileRef 
   return media.kind === "image" ? { path, type: "image" } : { path, type: "file", hydrate: false };
 }
 
-type Hovered = { element: HTMLElement; rect: DOMRect };
+type Hovered = { element: HTMLElement; box: HTMLElement; rect: DOMRect };
 
 /**
  * Buttons on the image or video under the pointer in a transcript: "Comment"
@@ -64,7 +68,7 @@ export function ThreadMediaActions({
     if (!root || !enabled) return undefined;
     const onMove = (event: PointerEvent) => {
       const target = event.target as Element | null;
-      if (target?.closest?.("[data-thread-media-actions]")) return;
+      if (isOnActions(target)) return;
       const element = target?.closest?.(THREAD_MEDIA_SELECTOR) as HTMLElement | null;
       const box = element ? threadMediaBox(element) : null;
       // Only the picture or player itself, not the caption under it.
@@ -72,12 +76,18 @@ export function ThreadMediaActions({
         setHovered((current) => (current ? null : current));
         return;
       }
-      setHovered((current) => (current?.element === element ? current : { element, rect: box.getBoundingClientRect() }));
+      // Measure again when the picture swaps in for its placeholder or resizes.
+      const rect = box.getBoundingClientRect();
+      setHovered((current) => (
+        current?.element === element && current.box === box
+          && current.rect.top === rect.top && current.rect.right === rect.right
+          ? current
+          : { element, box, rect }
+      ));
     };
     // The buttons are portaled to <body>, so moving onto them leaves the root.
     const onLeave = (event: PointerEvent) => {
-      const next = event.relatedTarget as Element | null;
-      if (next?.closest?.("[data-thread-media-actions]")) return;
+      if (isOnActions(event.relatedTarget)) return;
       setHovered(null);
     };
     const onScroll = () => setHovered(null);
@@ -123,7 +133,7 @@ export function ThreadMediaActions({
         data-thread-media-actions=""
         data-thread-comment-ignore=""
         data-testid="thread-media-actions"
-        className="pointer-events-auto absolute inline-flex items-stretch overflow-hidden rounded-md border border-fg/[0.1] bg-[color:color-mix(in_srgb,var(--chat-panel-bg-strong,#1a1524)_94%,black_6%)] text-fg/85 shadow-[0_12px_32px_rgba(0,0,0,0.42)] backdrop-blur-xl"
+        className={REPLY_TOOLBAR_CLASS}
         style={style}
         onPointerLeave={(event) => {
           const next = event.relatedTarget as Element | null;
@@ -136,7 +146,7 @@ export function ThreadMediaActions({
           <button
             type="button"
             data-testid="thread-media-open-comments"
-            className={cn(BUTTON_CLASS, "tabular-nums hover:bg-fg/[0.07]")}
+            className={cn(REPLY_TOOLBAR_BUTTON_CLASS, "tabular-nums hover:bg-fg/[0.07]")}
             title={`Show the ${existing === 1 ? "comment" : "comments"} on this ${noun}`}
             onClick={() => onOpenComments(hovered.element)}
           >
@@ -150,7 +160,7 @@ export function ThreadMediaActions({
             data-testid="thread-media-comment"
             disabled={!canComment}
             className={cn(
-              BUTTON_CLASS,
+              REPLY_TOOLBAR_BUTTON_CLASS,
               existing > 0 && onOpenComments && "border-l border-fg/[0.08]",
               canComment ? "hover:bg-fg/[0.07]" : "cursor-not-allowed text-fg/35",
             )}
@@ -170,7 +180,7 @@ export function ThreadMediaActions({
           <button
             type="button"
             data-testid="thread-media-add-to-chat"
-            className={cn(BUTTON_CLASS, onComment && "border-l border-fg/[0.08]", "hover:bg-fg/[0.07]")}
+            className={cn(REPLY_TOOLBAR_BUTTON_CLASS, onComment && "border-l border-fg/[0.08]", "hover:bg-fg/[0.07]")}
             title={`Attach this ${noun} to your next message`}
             onClick={() => {
               onAttach(attachment);

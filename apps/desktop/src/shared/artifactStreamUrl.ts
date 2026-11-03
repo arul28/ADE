@@ -117,6 +117,19 @@ export function projectRelativeArtifactPath(
   return safe ? safe.join("/") : null;
 }
 
+/**
+ * The absolute path of a project proof file on the machine whose project root
+ * this is, written with that root's separator. Null when the uri is not a
+ * file inside the project.
+ */
+export function projectArtifactAbsolutePath(uri: string, projectRoot: string | null | undefined): string | null {
+  const root = projectRoot?.trim().replace(/[\\/]+$/, "");
+  const relative = projectRelativeArtifactPath(uri, root);
+  if (!root || !relative) return null;
+  const separator = root.includes("\\") ? "\\" : "/";
+  return `${root}${separator}${relative.split("/").join(separator)}`;
+}
+
 function encodePath(relativePath: string): string {
   return relativePath.split("/").map(encodeURIComponent).join("/");
 }

@@ -27,8 +27,13 @@ export const MAX_THREAD_COMMENTS_PER_SESSION = 50;
 const MAX_TABLE_ROW_CELLS = 16;
 const MAX_TABLE_CELL_CHARS = 200;
 const MAX_MEDIA_SOURCE_CHARS = 1_000;
+const MAX_MEDIA_LABEL_CHARS = 200;
+/** No reply holds more tables, rows or pictures than this; a larger index is junk. */
+const MAX_ANCHOR_INDEX = 10_000;
 /** Characters of text kept on each side of a quote to find it again. */
 export const THREAD_COMMENT_CONTEXT_CHARS = 32;
+
+export type ThreadMediaKind = "image" | "video";
 
 export type ChatThreadCommentAnchor =
   | {
@@ -50,7 +55,7 @@ export type ChatThreadCommentAnchor =
     }
   | {
       kind: "media";
-      mediaKind: "image" | "video";
+      mediaKind: ThreadMediaKind;
       /** What the reply names the media by: its markdown path or `ade-proof://<id>`. */
       source: string;
       /** The caption or file name, for the agent and the comment card. */
@@ -236,6 +241,16 @@ export function prependThreadReview(text: string, block: string | null): string 
   return text.trim() ? `${block}\n\n${text}` : block;
 }
 
+function anchorIndex(raw: unknown): number | null {
+  const index = Number(raw);
+  return Number.isInteger(index) && index >= 0 && index <= MAX_ANCHOR_INDEX ? index : null;
+}
+
+/** A media source as a stored anchor holds it, so a reply's media can be matched to it. */
+export function threadMediaSourceKey(source: string): string {
+  return cut(source.trim(), MAX_MEDIA_SOURCE_CHARS);
+}
+
 /** Returns a normalized anchor, or null when it carries nothing to find. */
 export function normalizeThreadCommentAnchor(anchor: unknown): ChatThreadCommentAnchor | null {
   if (!anchor || typeof anchor !== "object") return null;
@@ -251,9 +266,9 @@ export function normalizeThreadCommentAnchor(anchor: unknown): ChatThreadComment
     return { kind: "text", quote, prefix: side(value.prefix, true), suffix: side(value.suffix, false) };
   }
   if (value.kind === "table_row") {
-    const tableIndex = Number(value.tableIndex);
-    const rowIndex = Number(value.rowIndex);
-    if (!Number.isInteger(tableIndex) || tableIndex < 0 || !Number.isInteger(rowIndex) || rowIndex < 0) return null;
+    const tableIndex = anchorIndex(value.tableIndex);
+    const rowIndex = anchorIndex(value.rowIndex);
+    if (tableIndex == null || rowIndex == null) return null;
     const strings = (raw: unknown) => (Array.isArray(raw)
       ? raw.slice(0, MAX_TABLE_ROW_CELLS).map((cell) => cut(collapseWhitespace(String(cell ?? "")), MAX_TABLE_CELL_CHARS))
       : []);
@@ -263,11 +278,16 @@ export function normalizeThreadCommentAnchor(anchor: unknown): ChatThreadComment
   }
   if (value.kind === "media") {
     const mediaKind = value.mediaKind === "image" || value.mediaKind === "video" ? value.mediaKind : null;
-    const mediaIndex = Number(value.mediaIndex);
-    const source = typeof value.source === "string" ? cut(value.source.trim(), MAX_MEDIA_SOURCE_CHARS) : "";
-    if (!mediaKind || !source || !Number.isInteger(mediaIndex) || mediaIndex < 0) return null;
-    const label = typeof value.label === "string" ? cut(collapseWhitespace(value.label), MAX_TABLE_CELL_CHARS) : "";
-    return { kind: "media", mediaKind, source, label, mediaIndex };
+    const mediaIndex = anchorIndex(value.mediaIndex);
+    const source = typeof value.source === "string" ? threadMediaSourceKey(value.source) : "";
+    if (!mediaKind || !source || mediaIndex == null) return null;
+    const label = typeof value.label === "string" ? cut(collapseWhitespace(value.label), MAX_MEDIA_LABEL_CHARS) : "";
+    const media = { kind: "media", mediaKind, source, label, mediaIndex } as const;
+    // Desktop builds from before media comments read any other kind as text or
+    // a table row, and throw on the missing fields. With these they show the
+    // quote and find nothing to highlight. Not part of the type: no new code reads them.
+    const quote = threadCommentQuoteText(media);
+    return Object.assign({ quote, prefix: "", suffix: "", headers: [] as string[], cells: [quote] }, media);
   }
   return null;
 }

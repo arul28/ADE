@@ -2,7 +2,9 @@ import {
   MAX_THREAD_COMMENT_EXCERPT_CHARS,
   THREAD_COMMENT_CONTEXT_CHARS,
   collapseWhitespace,
+  threadMediaSourceKey,
   type ChatThreadCommentAnchor,
+  type ThreadMediaKind,
 } from "../../../shared/threadComments";
 
 /** The element a thread comment hangs off: one finished agent reply. */
@@ -10,8 +12,6 @@ export const THREAD_COMMENT_MESSAGE_SELECTOR = "[data-thread-comment-key]";
 
 /** An image or video in a reply that can take a comment or go into the next message. */
 export const THREAD_MEDIA_SELECTOR = "[data-thread-media]";
-
-export type ThreadMediaKind = "image" | "video";
 
 /**
  * The attributes that mark one image or video in a reply. `source` is what
@@ -63,6 +63,13 @@ export function threadMediaBox(element: HTMLElement): HTMLElement {
   return (element.firstElementChild as HTMLElement | null) ?? element;
 }
 
+/** A range over one whole node: how a media comment marks its picture. */
+export function rangeAroundNode(node: Node): Range {
+  const range = document.createRange();
+  range.selectNode(node);
+  return range;
+}
+
 function mediaElementsOf(root: HTMLElement): HTMLElement[] {
   return Array.from(root.querySelectorAll<HTMLElement>(THREAD_MEDIA_SELECTOR));
 }
@@ -83,7 +90,8 @@ export function resolveThreadMediaElement(root: HTMLElement, anchor: ChatThreadC
   let bestDistance = Infinity;
   for (let index = 0; index < all.length; index += 1) {
     const element = all[index]!;
-    if (element.dataset.threadMediaSource !== anchor.source) continue;
+    // The stored source is trimmed and capped; compare in the same form.
+    if (threadMediaSourceKey(element.dataset.threadMediaSource ?? "") !== anchor.source) continue;
     const distance = Math.abs(index - anchor.mediaIndex);
     if (distance < bestDistance) {
       best = element;
@@ -190,10 +198,7 @@ function commonPrefixLength(a: string, b: string): number {
 export function resolveThreadCommentRange(root: HTMLElement, anchor: ChatThreadCommentAnchor): Range | null {
   if (anchor.kind === "media") {
     const element = resolveThreadMediaElement(root, anchor);
-    if (!element) return null;
-    const range = document.createRange();
-    range.selectNode(threadMediaBox(element));
-    return range;
+    return element ? rangeAroundNode(threadMediaBox(element)) : null;
   }
   if (anchor.kind === "table_row") {
     const row = tableRowFor(root, anchor.tableIndex, anchor.rowIndex);
