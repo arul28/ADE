@@ -2426,7 +2426,7 @@ export function createAccountAuthService(args: {
         // env-token exchange runs under service-owned cancellation.
         const envSharedRefresh = new AbortController();
         const envSharedTimer = setTimeout(
-          () => envSharedRefresh.abort(new Error("The shared ADE_ACCOUNT_TOKEN refresh timed out.")),
+          () => envSharedRefresh.abort(new AccountRefreshUnavailableError("The shared ADE_ACCOUNT_TOKEN refresh timed out.")),
           sharedRefreshTimeoutMs,
         );
         envSharedTimer.unref?.();
@@ -2583,7 +2583,7 @@ export function createAccountAuthService(args: {
       // cancellation, and each caller races its own signal at the join below.
       const sharedRefresh = new AbortController();
       const sharedRefreshTimer = setTimeout(
-        () => sharedRefresh.abort(new Error("The shared account token refresh timed out.")),
+        () => sharedRefresh.abort(new AccountRefreshUnavailableError("The shared account token refresh timed out.")),
         sharedRefreshTimeoutMs,
       );
       sharedRefreshTimer.unref?.();
