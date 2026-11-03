@@ -1,6 +1,7 @@
 import React, { useEffect } from "react";
 import type { LaneSummary, OpenProjectBinding } from "../../../shared/types";
 import { buildDeeplink } from "../../../shared/deeplinks";
+import { linkOwnershipFor } from "../../lib/linkOwnership";
 import { buildWebClientUrl } from "../../../shared/webClientUrl";
 import { openExternalUrl } from "../../lib/openExternal";
 import { useClampedFixedPosition } from "../../hooks/useClampedFixedPosition";
@@ -153,10 +154,11 @@ export function ForeignLaneContextMenu({
       {separator}
       <HoverButton
         style={menuItemStyle}
-        onClick={() => copyText(buildDeeplink(
-          { kind: "lane", laneId: lane.id },
-          { form: "ade" },
-        ))}
+        onClick={() => {
+          void linkOwnershipFor({ pin: binding, tabBinding: null, projectRoot: null }).then((ownership) => {
+            copyText(buildDeeplink({ kind: "lane", laneId: lane.id, ...(ownership ? { ownership } : {}) }));
+          });
+        }}
       >
         Copy ADE Lane Link
       </HoverButton>
@@ -164,7 +166,9 @@ export function ForeignLaneContextMenu({
         style={menuItemStyle}
         onClick={() => {
           onClose();
-          openExternalUrl(buildWebClientUrl({ kind: "lane", laneId: lane.id }));
+          void linkOwnershipFor({ pin: binding, tabBinding: null, projectRoot: null }).then((ownership) => {
+            openExternalUrl(buildWebClientUrl({ kind: "lane", laneId: lane.id, ...(ownership ? { ownership } : {}) }));
+          });
         }}
       >
         Open in web

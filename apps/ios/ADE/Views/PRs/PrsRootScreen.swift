@@ -1063,7 +1063,8 @@ struct PRsTabView: View, Equatable {
       openGitHubDetail(item, initialTab: request.detailTab ?? .overview)
       destinationResolved = true
     case .unresolved:
-      errorMessage = "That pull request is not available on this phone yet."
+      errorMessage = request.projectName.map { "That pull request isn't in \($0) any more." }
+        ?? "That pull request is not available on this phone yet."
       destinationResolved = false
     }
 

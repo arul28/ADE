@@ -209,6 +209,7 @@ export const IPC = {
   projectSetRecentPinned: "ade.project.setRecentPinned",
   projectMissing: "ade.project.missing",
   remoteRuntimeListTargets: "ade.remoteRuntime.listTargets",
+  remoteRuntimeLinkOwnership: "ade.remoteRuntime.linkOwnership",
   remoteRuntimeListDiscoveredMachines:
     "ade.remoteRuntime.listDiscoveredMachines",
   remoteRuntimeParsePairingInput: "ade.remoteRuntime.parsePairingInput",

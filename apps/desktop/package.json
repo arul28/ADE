@@ -209,6 +209,15 @@
   "build": {
     "appId": "com.ade.desktop",
     "productName": "ADE",
+    "protocols": [
+      {
+        "name": "ADE link",
+        "schemes": [
+          "ade"
+        ],
+        "role": "Viewer"
+      }
+    ],
     "directories": {
       "output": "release"
     },

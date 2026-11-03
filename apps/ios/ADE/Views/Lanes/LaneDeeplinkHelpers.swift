@@ -4,14 +4,16 @@ enum LaneDeeplinkHelpers {
   static func laneLink(
     laneId: String,
     envelope: ADEDeeplinkEnvelope? = nil,
+    ownership: ADEDeeplinkOwnership? = nil,
     form: ADEDeeplinkForm = .ade
   ) -> String {
+    let owner = ADEDeepLinkURLParsing.ownershipQueryItems(ownership)
     switch form {
     case .ade:
       let base = "ade://lane/\(ADEDeepLinkURLParsing.encodedPathSegment(laneId))"
-      return appendQuery(to: base, items: envelopeItems(envelope))
+      return appendQuery(to: base, items: envelopeItems(envelope) + owner)
     case .https:
-      return httpsOpenURL(items: [("type", "lane"), ("id", laneId)] + envelopeItems(envelope))
+      return httpsOpenURL(items: [("type", "lane"), ("id", laneId)] + envelopeItems(envelope) + owner)
     }
   }
 
@@ -21,20 +23,23 @@ enum LaneDeeplinkHelpers {
     envelope: ADEDeeplinkEnvelope? = nil,
     event: Int? = nil,
     offset: Int? = nil,
+    ownership: ADEDeeplinkOwnership? = nil,
     form: ADEDeeplinkForm = .https
   ) -> String {
+    let owner = ADEDeepLinkURLParsing.ownershipQueryItems(ownership)
     switch form {
     case .ade:
       let base = "ade://session/\(ADEDeepLinkURLParsing.encodedPathSegment(sessionId))"
       return appendQuery(
         to: base,
-        items: sessionItems(laneId: laneId, event: event, offset: offset) + envelopeItems(envelope)
+        items: sessionItems(laneId: laneId, event: event, offset: offset) + envelopeItems(envelope) + owner
       )
     case .https:
       return httpsOpenURL(
         items: [("type", "session"), ("id", sessionId)]
           + sessionItems(laneId: laneId, event: event, offset: offset)
           + envelopeItems(envelope)
+          + owner
       )
     }
   }
@@ -73,8 +78,10 @@ enum LaneDeeplinkHelpers {
     repoName: String,
     number: Int,
     detailTab: PrDetailTab? = nil,
+    ownership: ADEDeeplinkOwnership? = nil,
     form: ADEDeeplinkForm = .https
   ) -> String {
+    let owner = ADEDeepLinkURLParsing.ownershipQueryItems(ownership)
     switch form {
     case .ade:
       let base = [
@@ -83,7 +90,7 @@ enum LaneDeeplinkHelpers {
         ADEDeepLinkURLParsing.encodedPathSegment(repoName),
         String(number),
       ].joined(separator: "/")
-      return appendQuery(to: base, items: [("tab", detailTab?.rawValue)])
+      return appendQuery(to: base, items: [("tab", detailTab?.rawValue)] + owner)
     case .https:
       return httpsOpenURL(
         items: [
@@ -91,7 +98,7 @@ enum LaneDeeplinkHelpers {
           ("repo", "\(repoOwner)/\(repoName)"),
           ("number", String(number)),
           ("tab", detailTab?.rawValue),
-        ]
+        ] + owner
       )
     }
   }

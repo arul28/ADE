@@ -24,7 +24,10 @@ export function describeAttentionOpenFailure(
   machineName: string | null | undefined,
 ): Error {
   const raw = errorText(error);
-  const machine = machineName?.trim() || "The owning ADE machine";
+  const named = machineName?.trim() || null;
+  // The fallback reads as a sentence start and, lowercased, mid-sentence.
+  const machine = named ?? "The owning ADE machine";
+  const machineMid = named ?? "the owning ADE machine";
   const offline =
     /offline|unreachable|not reachable|econnrefused|ehostunreach|enetunreach|etimedout|timed out|no route to host|could not connect|connection (refused|closed|reset)/i
       .test(raw);
@@ -41,14 +44,14 @@ export function describeAttentionOpenFailure(
       .test(raw);
 
   const message = signedOut
-    ? `Sign in to ADE again, then open this item from ${machine}.`
+    ? `Sign in to ADE again, then open this item from ${machineMid}.`
     : offline
       ? `${machine} is not reachable right now. Wake it or reconnect it to the network, then try again.`
       : stage === "pair"
-        ? `ADE could not pair with ${machine}. Open ADE on that machine, then try again.`
+        ? `ADE could not pair with ${machineMid}. Open ADE on that machine, then try again.`
         : stage === "connect"
-          ? `ADE could not connect to ${machine}. Make sure ADE is running there, then try again.`
-          : `ADE connected to ${machine} but could not open this project.`;
+          ? `ADE could not connect to ${machineMid}. Make sure ADE is running there, then try again.`
+          : `ADE connected to ${machineMid} but could not open this project.`;
 
   const failure = new Error(message);
   if (raw) failure.cause = error;

@@ -43,7 +43,12 @@ import type { AppNavigationTarget } from "./types/core";
 
 export const ADE_DEEPLINK_SCHEME = "ade";
 export const ADE_DEEPLINK_HTTPS_HOST = "ade-app.dev";
-export const ADE_DEEPLINK_LEGACY_HTTPS_HOSTS = ["ade.app"] as const;
+/**
+ * Hosts whose `/open` links still parse: the old domain, and the web client's
+ * own host, which `ade link --web` once minted. Every link minted now uses
+ * {@link ADE_DEEPLINK_HTTPS_HOST}; its page hands off to the web client.
+ */
+export const ADE_DEEPLINK_LEGACY_HTTPS_HOSTS = ["ade.app", "app.ade-app.dev"] as const;
 export const ADE_DEEPLINK_HTTPS_PATH = "/open";
 export const ADE_DEEPLINK_HTTPS_BASE_URL = `https://${ADE_DEEPLINK_HTTPS_HOST}${ADE_DEEPLINK_HTTPS_PATH}`;
 
@@ -57,7 +62,9 @@ export type DeeplinkEnvelope = {
 
 /**
  * Exact account ownership for destinations that are only meaningful on the
- * machine and project that published them (Attention sessions and PR work).
+ * machine and project that published them: chats, lanes and PR work. Every
+ * link minted for sharing should carry it, so whoever opens it (desktop, the
+ * web client, the phone) goes to that machine and project instead of guessing.
  */
 export type DeeplinkOwnership = {
   accountMachineKey: string;
@@ -71,7 +78,12 @@ export type DeeplinkOwnership = {
   projectRoot?: string;
 };
 
-export type DeeplinkLaneTarget = { kind: "lane"; laneId: string; envelope?: DeeplinkEnvelope };
+export type DeeplinkLaneTarget = {
+  kind: "lane";
+  laneId: string;
+  envelope?: DeeplinkEnvelope;
+  ownership?: DeeplinkOwnership;
+};
 export type DeeplinkSessionTarget = {
   kind: "session";
   sessionId: string;
@@ -387,6 +399,7 @@ function buildAdeUrl(target: DeeplinkTarget): string {
     case "lane": {
       const params = new URLSearchParams();
       appendEnvelopeParams(params, target.envelope);
+      appendOwnershipParams(params, target.ownership);
       const qs = params.toString();
       const base = `${ADE_DEEPLINK_SCHEME}://lane/${encodeURIComponent(target.laneId)}`;
       return qs ? `${base}?${qs}` : base;
@@ -459,6 +472,7 @@ function buildHttpsUrl(target: Exclude<DeeplinkTarget, DeeplinkOpenPlaceTarget>)
       params.set("type", "lane");
       params.set("id", target.laneId);
       appendEnvelopeParams(params, target.envelope);
+      appendOwnershipParams(params, target.ownership);
       break;
     case "session":
       params.set("type", "session");
@@ -562,8 +576,7 @@ function parseAdeUrl(url: URL, rawUrl: string): ParseResult {
     if (!laneId || !isUuid(laneId)) {
       return { ok: false, error: { kind: "malformed", reason: "invalid lane id" }, rawUrl };
     }
-    const envelope = readEnvelopeParams(url.searchParams);
-    return { ok: true, target: { kind: "lane", laneId, ...(envelope ? { envelope } : {}) }, rawUrl };
+    return buildLaneTarget(laneId, url.searchParams, rawUrl);
   }
 
   if (host === "session") {
@@ -675,8 +688,7 @@ function parseHttpsParams(url: URL, rawUrl: string): ParseResult {
   if (type === "lane") {
     const laneId = url.searchParams.get("id") ?? "";
     if (!isUuid(laneId)) return { ok: false, error: { kind: "malformed", reason: "invalid lane id" }, rawUrl };
-    const envelope = readEnvelopeParams(url.searchParams);
-    return { ok: true, target: { kind: "lane", laneId, ...(envelope ? { envelope } : {}) }, rawUrl };
+    return buildLaneTarget(laneId, url.searchParams, rawUrl);
   }
   if (type === "session") {
     const sessionId = url.searchParams.get("id") ?? "";
@@ -786,6 +798,22 @@ function buildPrTarget(
       ...(hasRepoIdentity ? { repoOwner: owner, repoName: repo } : {}),
       prNumber: number,
       ...(detailTab ? { detailTab } : {}),
+      ...(ownershipResult.ownership ? { ownership: ownershipResult.ownership } : {}),
+    },
+    rawUrl,
+  };
+}
+
+function buildLaneTarget(laneId: string, searchParams: URLSearchParams, rawUrl: string): ParseResult {
+  const envelope = readEnvelopeParams(searchParams);
+  const ownershipResult = readOwnershipParams(searchParams, rawUrl);
+  if (!ownershipResult.ok) return ownershipResult;
+  return {
+    ok: true,
+    target: {
+      kind: "lane",
+      laneId,
+      ...(envelope ? { envelope } : {}),
       ...(ownershipResult.ownership ? { ownership: ownershipResult.ownership } : {}),
     },
     rawUrl,
@@ -931,7 +959,12 @@ export function describeTarget(target: DeeplinkTarget): string {
 export function deeplinkToNavigationTarget(target: DeeplinkTarget): AppNavigationTarget {
   switch (target.kind) {
     case "lane":
-      return { kind: "lane", laneId: target.laneId, envelope: target.envelope ?? null };
+      return {
+        kind: "lane",
+        laneId: target.laneId,
+        envelope: target.envelope ?? null,
+        ...(target.ownership ? { ownership: target.ownership } : {}),
+      };
     case "session":
       return {
         kind: "work",

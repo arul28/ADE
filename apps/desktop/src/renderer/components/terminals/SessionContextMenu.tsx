@@ -190,8 +190,9 @@ type SessionContextMenuProps = {
     tag: string | null,
     binding?: OpenProjectBinding | null,
   ) => void;
-  onCopySessionDeepLink?: (session: TerminalSessionSummary) => void;
-  onOpenSessionInWeb?: (session: TerminalSessionSummary) => void;
+  /** `binding` is the row's machine when it is not this tab's, so the link names it. */
+  onCopySessionDeepLink?: (session: TerminalSessionSummary, binding?: OpenProjectBinding | null) => void;
+  onOpenSessionInWeb?: (session: TerminalSessionSummary, binding?: OpenProjectBinding | null) => void;
   onTogglePinned?: (session: TerminalSessionSummary) => void;
   /**
    * Move a row between the Work-board columns it can actually be in.
@@ -916,7 +917,7 @@ function SessionContextMenuPanel({
           <button
             type="button"
             className={MENU_ITEM_CLASS}
-            onClick={() => { onOpenSessionInWeb(session); onClose(); }}
+            onClick={() => { onOpenSessionInWeb(session, binding); onClose(); }}
           >
             <MenuRowIcon icon={Globe} />
             Open in web
@@ -938,7 +939,7 @@ function SessionContextMenuPanel({
             <button
               type="button"
               className={MENU_ITEM_CLASS}
-              onClick={() => { onCopySessionDeepLink(session); onClose(); }}
+              onClick={() => { onCopySessionDeepLink(session, binding); onClose(); }}
             >
               <MenuRowIcon icon={Link} />
               Session deep link

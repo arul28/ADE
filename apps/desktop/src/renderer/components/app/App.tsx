@@ -1459,7 +1459,17 @@ function AppNavigationBridge() {
     }
 
     if (target.kind === "lane") {
-      const lane = localLane(target.laneId, target.machineId);
+      let lane = localLane(target.laneId, target.machineId);
+      if (!lane && target.ownership && !options.forceLocal) {
+        // An owned link was routed to this window because it holds the lane's
+        // project, which may have just opened: wait briefly for its lanes, as
+        // a file link does, before calling the lane missing.
+        void refreshLanes({ includeStatus: false }).catch(() => undefined);
+        for (let attempt = 0; attempt < 6 && !lane; attempt += 1) {
+          await new Promise((resolve) => window.setTimeout(resolve, 500));
+          lane = localLane(target.laneId, target.machineId);
+        }
+      }
       const laneMachineId = lane ? null : await otherMachineIdForLane(target.laneId, target.machineId);
       if (laneMachineId) {
         // Lanes selects a lane on another machine from `?laneId&machineId`.

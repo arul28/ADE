@@ -74,6 +74,7 @@ import { isRemoteEditorOpenRequest, type EditorTarget, type OpenPathInEditorRemo
 import type { InstalledBrowser } from "../shared/browserTargets";
 import { projectBindingKey } from "../shared/projectIdentity";
 import { machineNameForBinding } from "../shared/machineIdentity";
+import type { DeeplinkOwnership } from "../shared/deeplinks";
 import type { MachineInventoryDetail } from "../shared/types/machineInventory";
 import type { MachineConnectionRoutes } from "../shared/types/account";
 import {
@@ -1646,6 +1647,23 @@ let activeRemoteProjectOpenPromise: Promise<OpenProjectBinding> | null = null;
  * serve.
  */
 let lastProjectRuntimeBindingKind: OpenProjectBinding["kind"] | null = null;
+
+/**
+ * A window opened for a link gets its navigation once its project is open,
+ * which can be before the app has mounted and subscribed. Hold what arrives
+ * before the first subscriber and hand it over then, so a link that opens a
+ * new window still lands on its chat or lane.
+ */
+const earlyAppNavigations: AppNavigationRequest[] = [];
+const appNavigateCallbacks = new Set<(request: AppNavigationRequest) => void>();
+ipcRenderer.on(IPC.appNavigate, (_event: Electron.IpcRendererEvent, payload: AppNavigationRequest) => {
+  if (appNavigateCallbacks.size === 0) {
+    earlyAppNavigations.push(payload);
+    if (earlyAppNavigations.length > 8) earlyAppNavigations.shift();
+    return;
+  }
+  for (const callback of [...appNavigateCallbacks]) callback(payload);
+});
 const projectBindingChangedCallbacks = new Set<
   (binding: OpenProjectBinding | null) => void
 >();
@@ -4791,12 +4809,11 @@ const adeBridge = {
       };
     },
     onNavigate: (cb: (request: AppNavigationRequest) => void) => {
-      const listener = (
-        _event: Electron.IpcRendererEvent,
-        payload: AppNavigationRequest,
-      ) => cb(payload);
-      ipcRenderer.on(IPC.appNavigate, listener);
-      return () => ipcRenderer.removeListener(IPC.appNavigate, listener);
+      appNavigateCallbacks.add(cb);
+      for (const request of earlyAppNavigations.splice(0)) cb(request);
+      return () => {
+        appNavigateCallbacks.delete(cb);
+      };
     },
     openExternal: async (url: string): Promise<void> =>
       ipcRenderer.invoke(IPC.appOpenExternal, { url }),
@@ -5242,6 +5259,9 @@ const adeBridge = {
   remoteRuntime: {
     listTargets: async (): Promise<RemoteRuntimeTarget[]> =>
       ipcRenderer.invoke(IPC.remoteRuntimeListTargets),
+    /** The account computer and project a link to something in `binding` names. */
+    linkOwnership: async (binding: OpenProjectBinding | null): Promise<DeeplinkOwnership | null> =>
+      ipcRenderer.invoke(IPC.remoteRuntimeLinkOwnership, { binding }),
     getConnectionSnapshot: async (): Promise<RemoteRuntimeConnectionSnapshot> =>
       ipcRenderer.invoke(IPC.remoteRuntimeGetConnectionSnapshot),
     onConnectionSnapshotChanged: (

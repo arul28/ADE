@@ -209,8 +209,8 @@ this code) and which one is answering. Another computer's `serving` is a guess
 Reads: `projects_list`, `lanes_list`, `lanes_show`, `files_tree`, `files_read`,
 `files_search`, `diff_changes`, `diff_patch`, `git_status`, `prs_list`,
 `prs_show`, `prs_checks`, `chat_list`, `chat_read`, `chat_status`,
-`chat_wait`, `usage_limits`, `machines_list`, and `inbox`, the attention
-loop. Without `project`, `inbox` reads each project opened on the computer in
+`chat_wait`, `proof_review`, `usage_limits`, `machines_list`, and `inbox`,
+the attention loop. Without `project`, `inbox` reads each project opened on the computer in
 the last 30 days (at most six, two at a time, in one run slot) and tags every
 item with its project; `chat_start` without `provider` or `model` starts on the
 model the computer last launched a chat with (`chat-launch-defaults.json`).
@@ -222,6 +222,22 @@ repository (URL or `owner/name`) with that computer's own GitHub sign-in and
 registers it as a project (`ade projects clone`). A read-only connection that
 calls one anyway is refused with the reason, before anything runs.
 
+- `proof_review` is how an app sees what an agent made: `session` (a chat
+  id) reviews that chat's newest video, else its newest picture; `proof`
+  one proof (ids in `otherProof`). It runs `ade proof review --json`
+  (`--from`/`--to` for a closer look) and returns the frames with each one's
+  time, why it is there and the caption showing, plus `link`, the chat in
+  ADE, where the person watches the video itself (the desktop app, or the web
+  client at `app.ade-app.dev`, which previews proof videos up to 10 MB). The
+  contact sheet, or the picture, rides beside the text as an MCP `image`
+  block: the one typed tool that returns one (`TypedTool.image`,
+  `readToolImage`). That file is read only when the call resolved an open
+  project and the file is a PNG, JPEG, WebP or GIF under that project's
+  `.ade/cache` or `.ade/artifacts` after links are resolved, at most 2.5 MB
+  (the relay's 4 MB answer once base64 grows it); otherwise the text says why
+  no picture came. The model judges the video from the sheet and asks for
+  changes with `chat_send`, naming moments by time. No video bytes cross
+  MCP: no model reads them, and no MCP content type carries them.
 - `projects_list` hides projects whose folder is gone (deleted temp
   projects, an unplugged drive) and says how many in `next`;
   `include_missing` lists them. Its result is `{projects, hiddenMissing}`.
@@ -242,7 +258,10 @@ calls one anyway is refused with the reason, before anything runs.
   as `{ project, result, next? }`. `result` is trimmed (the CLI's `prs list`
   and `chat list` run past a megabyte), and its shape per tool is noted in
   `remoteMcpTools.ts`, because the ADE MCP app renders it. Chat results carry
-  a `link` that opens the chat in ADE.
+  a `link` that opens the chat in ADE. It names this computer's account machine
+  key and the project's canonical id (`TypedShapeContext`, passed to `shape`),
+  so it opens that chat on that computer and project from the desktop app, the
+  web client or the phone.
 - **Guidance lives in results.** `next` is the next step, written where the
   model decides it (T3 Code's lesson, pingdotgg/t3code#24782). A running
   `chat_status` says "chat_wait returns when it is done". A `chat_wait` that

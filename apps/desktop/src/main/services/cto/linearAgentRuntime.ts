@@ -1,4 +1,5 @@
 import os from "node:os";
+import type { DeeplinkOwnership } from "../../../shared/deeplinks";
 import type { Logger } from "../logging/logger";
 import type { AgentChatEventEnvelope, LaneLinearIssue, LinearAgentOverview, NormalizedLinearIssue } from "../../../shared/types";
 import type { LinearIngressEventRecord } from "../../../shared/types/linearSync";
@@ -24,6 +25,8 @@ export function createLinearAgentRuntime(args: {
   /** The machine's sync device id; the claim id adds the project so two projects on one machine never both claim. */
   getMachineId: () => string | null;
   projectId: string;
+  /** This computer and project, for the "Open in ADE" link. */
+  linkOwnership?: () => DeeplinkOwnership | null;
   chat: LinearAgentServiceDeps["chat"];
   laneService: {
     create(args: { name: string; linearIssue?: LaneLinearIssue | null; branchName?: string }): Promise<{ id: string; name: string }>;
@@ -51,6 +54,7 @@ export function createLinearAgentRuntime(args: {
     relay,
     logger: args.logger,
     machine: { id: `${args.getMachineId() ?? `host:${os.hostname()}`}:${args.projectId}`, name: machineName },
+    ...(args.linkOwnership ? { linkOwnership: args.linkOwnership } : {}),
     getAccountId: args.getAccountId,
     kv: args.db,
     automation: {

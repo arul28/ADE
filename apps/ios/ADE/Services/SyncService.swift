@@ -3220,10 +3220,14 @@ struct FilesNavigationRequest: Equatable, Identifiable {
 struct LaneNavigationRequest: Equatable, Identifiable {
   let id: String
   let laneId: String
+  /// Set when an owned link (one naming its machine and project) asked for
+  /// this lane, so a miss can say "That lane isn't in <project> any more."
+  let projectName: String?
 
-  init(laneId: String) {
+  init(laneId: String, projectName: String? = nil) {
     self.id = UUID().uuidString
     self.laneId = laneId
+    self.projectName = projectName
   }
 }
 
@@ -3273,6 +3277,9 @@ struct WorkSessionNavigationRequest: Equatable, Identifiable {
   let event: Int?
   let offset: Int?
   let origin: Origin
+  /// The owning project's name, when an owned link already opened that project
+  /// for this request. A miss then reads "That chat isn't in <project> any more."
+  let projectName: String?
 
   /// The session id, but only where owner resolution is allowed to use it.
   /// `ensureAccountMachineForNavigation` reads this rather than `sessionId`, so
@@ -3311,9 +3318,11 @@ struct WorkSessionNavigationRequest: Equatable, Identifiable {
     // Defaults to the conservative reading. A producer that IS a link from
     // outside says so; forgetting costs a link its owner lookup, while the
     // reverse would cost every cold launch a machine transition.
-    origin: Origin = .inApp
+    origin: Origin = .inApp,
+    projectName: String? = nil
   ) {
     self.id = UUID().uuidString
+    self.projectName = projectName
     self.sessionId = sessionId
     self.laneId = laneId
     self.repoOwner = repoOwner
@@ -3583,6 +3592,9 @@ struct PrNavigationRequest: Equatable, Identifiable {
   let accountMachineKey: String?
   let attentionItemId: String?
   let eventId: String?
+  /// Set when an owned link already opened the PR's project, so a miss can
+  /// name it: "That pull request isn't in <project> any more."
+  var projectName: String? = nil
 
   init(
     prId: String,
@@ -5175,6 +5187,9 @@ final class SyncService: ObservableObject {
     }
     let name = machine.displayName
     if accountMachineIsCurrent(machineKey) {
+      if let projectName = syncNonEmpty(request.projectName) {
+        return "That chat isn't in \(projectName) any more."
+      }
       return "ADE could not find that chat on \(name)."
     }
     return machine.online ? "ADE could not reach \(name)." : "\(name) is offline."
@@ -8867,6 +8882,64 @@ final class SyncService: ObservableObject {
       ?? syncNonEmpty(hostName)
       ?? "This computer"
     return (key: machine.machineKey, name: name)
+  }
+
+  /// The owner stamp for a link minted on this phone: the account machine key
+  /// of the machine the item lives on, and that machine's canonical project id.
+  ///
+  /// - Parameters:
+  ///   - fleetMachineKey: the item's machine as the fleet names it
+  ///     (`machine:<device id>`); nil for the attached machine.
+  ///   - projectId: the item's project; nil for the active project.
+  ///
+  /// Nil when either half is unknown (signed out, a machine missing from the
+  /// account, an older host's non-canonical project id). The link is then
+  /// minted without ownership, exactly as before.
+  func deeplinkOwnership(
+    fleetMachineKey: String? = nil,
+    projectId: String? = nil
+  ) -> ADEDeeplinkOwnership? {
+    let machineKey: String?
+    if let fleetKey = syncNonEmpty(fleetMachineKey), fleetKey != focusedMachineKey {
+      guard fleetKey.hasPrefix("machine:") else { return nil }
+      let deviceId = String(fleetKey.dropFirst("machine:".count))
+      machineKey = AccountService.shared.machines.first {
+        syncNonEmpty($0.deviceId)?.lowercased() == deviceId
+      }?.machineKey
+    } else {
+      machineKey = currentAccountMachineIdentity()?.key
+    }
+    guard let machineKey = syncNonEmpty(machineKey),
+          let projectId = syncNonEmpty(projectId ?? activeProjectId),
+          projectId.hasPrefix("project_") else { return nil }
+    return ADEDeeplinkOwnership(accountMachineKey: machineKey, projectId: projectId)
+  }
+
+  /// A lane as a shared link names it: the plain lane id (another machine's
+  /// lane is listed under a namespaced id) and the machine and project it
+  /// lives on.
+  func laneDeeplinkTarget(laneId: String) -> (laneId: String, ownership: ADEDeeplinkOwnership?) {
+    guard let remote = workParseRemoteLaneId(laneId) else {
+      return (laneId, deeplinkOwnership())
+    }
+    let ownership = remoteLaneRepo(machineKey: remote.machineKey).flatMap {
+      deeplinkOwnership(fleetMachineKey: remote.machineKey, projectId: $0.projectId)
+    }
+    return (remote.laneId, ownership)
+  }
+
+  /// The project an owned link names, from the attached machine's catalog.
+  /// Nil until the catalog lists it, which on a fresh connect can be a moment
+  /// after `hello`.
+  func projectForOwnedLink(projectId: String) -> MobileProjectSummary? {
+    projects.first { $0.id == projectId }
+      ?? remoteProjectCatalog.first { $0.id == projectId }
+  }
+
+  /// Whether the attached machine has sent a project catalog this connection,
+  /// so a project missing from it is really missing rather than not loaded yet.
+  var hasLiveProjectCatalog: Bool {
+    connectionState == .connected && (!remoteProjectCatalog.isEmpty || helloCarriedProjectCatalog)
   }
 
   func accountMachineIsCurrent(_ rawMachineKey: String?) -> Bool {

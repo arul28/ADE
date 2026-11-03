@@ -17,6 +17,24 @@ struct ADEDeeplinkEnvelope: Equatable {
   }
 }
 
+/// Which machine and project a shared link belongs to. Mirrors
+/// `DeeplinkOwnership` in `apps/desktop/src/shared/deeplinks.ts`: both keys
+/// travel together, and a link that carries one without the other is broken.
+struct ADEDeeplinkOwnership: Equatable {
+  var accountMachineKey: String
+  /// The owning machine's canonical project id (`project_<hash>`), never a path.
+  var projectId: String
+}
+
+/// What a link's ownership pair parsed to.
+enum ADEDeeplinkOwnershipParse: Equatable {
+  /// The link names no owner: it keeps the pre-ownership behaviour.
+  case none
+  case owned(ADEDeeplinkOwnership)
+  /// One key without the other, or a value no machine could have minted.
+  case malformed
+}
+
 enum ADEDeeplinkForm {
   case ade
   case https
@@ -24,7 +42,10 @@ enum ADEDeeplinkForm {
 
 enum ADEDeepLinkURLParsing {
   static let canonicalWebHost = "ade-app.dev"
-  static let legacyWebHosts: Set<String> = ["ade.app"]
+  /// `app.ade-app.dev` is the web client's host, which older `ade link --web`
+  /// builds minted `/open` links on. Same list as
+  /// `ADE_DEEPLINK_LEGACY_HTTPS_HOSTS` on desktop.
+  static let legacyWebHosts: Set<String> = ["ade.app", "app.ade-app.dev"]
   private static let pathValueAllowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "-._~"))
 
   static func isADEWebHost(_ value: String?) -> Bool {
@@ -91,6 +112,38 @@ enum ADEDeepLinkURLParsing {
       envelope.linearIssue = linear
     }
     return envelope.isEmpty ? nil : envelope
+  }
+
+  /// Reads `accountMachineKey` + `projectId` off a lowercased query map (see
+  /// `adeQueryValues`). Desktop's `readOwnershipParams` rules, with one iOS
+  /// carve-out: a lone `accountMachineKey` is the Activity / widget / push
+  /// link this app has always minted (machine only, the session finds its
+  /// project). It stays `.none` so those links keep their old route; only a
+  /// link that carries `projectId` must carry a valid pair.
+  static func ownership(from query: [String: String]) -> ADEDeeplinkOwnershipParse {
+    let machineKey = query["accountmachinekey"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    let projectId = query["projectid"]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    if projectId.isEmpty && query["projectid"] == nil { return .none }
+    guard !machineKey.isEmpty, !projectId.isEmpty,
+          machineKey.count <= 128,
+          projectId.count <= 512,
+          isValidOpaqueId(machineKey),
+          isValidOpaqueId(projectId) else {
+      return .malformed
+    }
+    return .owned(ADEDeeplinkOwnership(accountMachineKey: machineKey, projectId: projectId))
+  }
+
+  /// The ownership query items for a minted link, or none when either half is
+  /// unknown. Only a canonical `project_<hash>` id is minted: an older host's
+  /// local id or a path would point the reader at nothing (or leak the path).
+  static func ownershipQueryItems(_ ownership: ADEDeeplinkOwnership?) -> [(String, String?)] {
+    guard let ownership,
+          isValidScopeComponent(ownership.accountMachineKey),
+          ownership.accountMachineKey.count <= 128,
+          ownership.projectId.hasPrefix("project_"),
+          isValidScopeComponent(ownership.projectId) else { return [] }
+    return [("accountMachineKey", ownership.accountMachineKey), ("projectId", ownership.projectId)]
   }
 
   static func isValidUUID(_ value: String?) -> Bool {

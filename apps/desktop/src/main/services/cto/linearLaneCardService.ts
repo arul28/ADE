@@ -1,7 +1,7 @@
 import path from "node:path";
 import type { LaneLinearIssue, LaneSummary, NormalizedLinearIssue } from "../../../shared/types";
 import type { IssueTracker, IssueTrackerIssueAttachmentInput } from "./issueTracker";
-import { buildDeeplink } from "../../../shared/deeplinks";
+import { buildDeeplink, type DeeplinkOwnership } from "../../../shared/deeplinks";
 
 function truncate(value: string, maxLength: number): string {
   const trimmed = value.trim();
@@ -223,6 +223,8 @@ export function buildLinearChatSessionAttachment(args: {
   repoName?: string | null;
   branch?: string | null;
   prNumber?: number | null;
+  /** This computer and project, so the card opens the chat here from anywhere. */
+  ownership?: DeeplinkOwnership | null;
 }): IssueTrackerIssueAttachmentInput {
   const linkedAt = args.linkedAt?.trim() || new Date().toISOString();
   const url = buildDeeplink(
@@ -230,6 +232,7 @@ export function buildLinearChatSessionAttachment(args: {
       kind: "session",
       sessionId: args.sessionId,
       laneId: args.laneId,
+      ...(args.ownership ? { ownership: args.ownership } : {}),
       ...(args.repoOwner && args.repoName
         ? {
             envelope: {
@@ -241,7 +244,7 @@ export function buildLinearChatSessionAttachment(args: {
           }
         : {}),
     },
-    { form: "ade" },
+    { form: "https" },
   );
   const sessionLabel = args.sessionTitle?.trim() || args.sessionId;
 
@@ -443,6 +446,7 @@ export async function publishLinearChatSessionCard(args: {
   repoName?: string | null;
   branch?: string | null;
   prNumber?: number | null;
+  ownership?: DeeplinkOwnership | null;
 }): Promise<{ url: string; id?: string }> {
   return await args.issueTracker.createIssueAttachment(
     buildLinearChatSessionAttachment({
@@ -455,6 +459,7 @@ export async function publishLinearChatSessionCard(args: {
       repoName: args.repoName ?? null,
       branch: args.branch ?? null,
       prNumber: args.prNumber ?? null,
+      ownership: args.ownership ?? null,
     }),
   );
 }
@@ -465,6 +470,8 @@ export function createLinearChatLinkPublisher(args: {
     laneId: string;
     issue: LinearIssueCardIssue;
   }) => Promise<{ repoOwner: string; repoName: string; branch?: string | null; prNumber?: number | null } | null>;
+  /** This computer and project, stamped on every card's link. */
+  linkOwnership?: () => DeeplinkOwnership | null;
   log?: (event: string, fields: Record<string, unknown>) => void;
 }) {
   const publishKeys = new Set<string>();
@@ -499,6 +506,7 @@ export function createLinearChatLinkPublisher(args: {
         repoName: envelope?.repoName ?? null,
         branch: envelope?.branch ?? null,
         prNumber: envelope?.prNumber ?? null,
+        ownership: args.linkOwnership?.() ?? null,
       });
     })().catch((error) => {
       publishKeys.delete(key);

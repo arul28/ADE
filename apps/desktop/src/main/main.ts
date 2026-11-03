@@ -270,6 +270,7 @@ import {
   ProjectRegistry,
   recordLocalProjectDatabaseIdentity,
 } from "../../../ade-cli/src/services/projects/projectRegistry";
+import { localLinkOwnership } from "../../../ade-cli/src/services/projects/localLinkOwnership";
 import { projectRegistryDiagnosticAttachment } from "../../../ade-cli/src/services/projects/projectRegistryJournal";
 import { isRemoteMachineEvent } from "./sentry/desktopDiagnostics";
 import { buildRosterSnapshot } from "../../../ade-cli/src/services/sync/rosterBuilder";
@@ -4074,6 +4075,7 @@ app.whenReady().then(async () => {
     const linearLiveStatusLaunchKeys = new Set<string>();
     const publishLinearChatCard = createLinearChatLinkPublisher({
       getIssueTracker: () => linearIssueTrackerRef,
+      linkOwnership: () => localLinkOwnership(projectRoot),
       resolveEnvelope: async ({ laneId }) => {
         const repo = await githubService.getRepoOrThrow().catch(() => null);
         if (!repo) return null;
@@ -9567,6 +9569,17 @@ app.whenReady().then(async () => {
                   root: entry.summary.rootPath,
                   projectId: entry.projectId,
                 })),
+              // Projects this computer has that no window opened yet: added by
+              // an agent, the CLI, or a phone. Read only when a link arrives.
+              ...(() => {
+                try {
+                  return new ProjectRegistry(machineAdeLayout).list()
+                    .filter((record) => fs.existsSync(record.rootPath))
+                    .map((record) => ({ root: record.rootPath, projectId: record.projectId }));
+                } catch {
+                  return [];
+                }
+              })(),
             ],
             pathsEqual,
             deriveProjectId,

@@ -1521,6 +1521,8 @@ declare global {
       };
       remoteRuntime: {
         listTargets: () => Promise<RemoteRuntimeTarget[]>;
+        /** The account computer and project a link to something in `binding` names. */
+        linkOwnership: (binding: OpenProjectBinding | null) => Promise<import("../shared/deeplinks").DeeplinkOwnership | null>;
         getConnectionSnapshot: () => Promise<RemoteRuntimeConnectionSnapshot>;
         onConnectionSnapshotChanged: (
           cb: (snapshot: RemoteRuntimeConnectionSnapshot) => void,

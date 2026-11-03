@@ -26,6 +26,7 @@ import {
   nonEmptyString,
   parseTypedRun,
   shapedToolResult,
+  withToolImage,
   toolText,
   TYPED_TOOLS,
   type TypedTool,
@@ -466,7 +467,15 @@ export function createRemoteMcpProtocol(deps: {
     }
     deps.record({ ...logged, outcome, exitCode: result.exitCode, durationMs: result.durationMs });
     const headLine = projectLine(resolved);
-    if (typed) return buildTypedToolResult(typed, input, result, { headLine, project: projectSummary(resolved) });
+    if (typed) {
+      const answer = buildTypedToolResult(typed, input, result, {
+        headLine,
+        project: projectSummary(resolved),
+        context: { machineKey: deps.machines.thisMachine().key ?? null, projectId: resolved.project?.projectId ?? null },
+      });
+      // A picture is read only from inside an open project's folder.
+      return typed.image && resolved.project ? await withToolImage(typed, input, result, answer, resolved.project.rootPath) : answer;
+    }
     return {
       content: [{ type: "text", text: `${headLine}\n${toolText(result)}` }],
       isError: result.timedOut || result.exitCode !== 0,
@@ -494,7 +503,8 @@ export function createRemoteMcpProtocol(deps: {
         // Settle like a failed run, so the slot is held until every sibling is done.
         run = failedRun(getErrorMessage(error));
       }
-      return { project, run, parsed: parseTypedRun(tool, input, run) };
+      const context = { machineKey: deps.machines.thisMachine().key ?? null, projectId: project.projectId };
+      return { project, run, parsed: parseTypedRun(tool, input, run, context) };
     });
     const answered = parts.flatMap((part) => (part.parsed ? [{ project: part.project, value: part.parsed.value }] : []));
     const durationMs = Math.max(0, ...parts.map((part) => part.run.durationMs));

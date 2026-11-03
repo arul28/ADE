@@ -137,7 +137,7 @@ import { updateTrackOfVersion } from "../../desktop/src/shared/updateTrack";
 import { resolveReleaseChannel } from "../../desktop/src/shared/packageChannel";
 import { isSourceCheckoutRuntimeModule } from "./runtimePackaging";
 import { configureOutboundProxyFromEnv, trustSystemCertificates } from "../../desktop/src/main/services/shared/outboundNetwork";
-import { buildDeeplink, type DeeplinkEnvelope } from "../../desktop/src/shared/deeplinks";
+import { buildDeeplink, type DeeplinkEnvelope, type DeeplinkOwnership } from "../../desktop/src/shared/deeplinks";
 import { laneIsOnBaseBranch } from "../../desktop/src/shared/laneBaseResolution";
 import {
   DEFAULT_LANE_START,
@@ -3024,7 +3024,9 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade proof publish --pr 12 --in-body           Upload the proof the PR text cites, in place (gh 2.99+)
     $ ade proof step "Open the settings page"       Caption the next part of every recording running on this lane (${DEMO_STEP_MAX_CHARS} chars max)
     $ ade proof step "Pick a model" --focus 0.6,0.1,0.4,0.8  Same, and hold the camera on that region (x,y,w,h fractions)
-    $ ade proof review artifact-id --text           A frame sheet of a video (or a picture's path) to check before publishing
+    $ ade proof review artifact-id --text           A sheet of a video's key moments (or a picture's path) to check before publishing
+    $ ade proof review artifact-id --from 12 --to 18 --text  A closer look at seconds 12–18
+    $ ade proof review --chat <session-id> --text   The newest video (else proof) a chat filed
     $ ade proof rm artifact-id                      Delete stored proof and its record
     $ ade proof broken --text                       List proof whose stored file is unavailable
     $ ade proof recover artifact-id                 Re-import a broken proof from its surviving source
@@ -13965,13 +13967,25 @@ function buildProofPlan(args: string[], explicitProjectRoot: string | null = nul
   if (sub === "review") {
     // `ade proof review <id>`: a contact sheet (video) or the file (picture)
     // to look at, plus what ADE can tell from the record, before publishing.
+    // Flags first: they take their values out of `args`, and the word left is the id.
+    const chatSessionId = readValue(args, ["--chat", "--chat-session"]);
+    const from = readNumberOption(args, ["--from"]);
+    const to = readNumberOption(args, ["--to"]);
+    const frames = readNumberOption(args, ["--frames"]);
     const artifactId = readValue(args, ["--id", "--artifact-id"]) ?? args.find((value) => !value.startsWith("-"));
-    if (!artifactId) throw new CliUsageError("ade proof review needs a proof id: ade proof review <id>. Copy it from a cite: line or the `id` field of `ade proof list --json`.");
+    if (!artifactId && !chatSessionId) {
+      throw new CliUsageError("ade proof review needs a proof id: ade proof review <id>, or a chat: ade proof review --chat <session-id>. Copy the id from a cite: line or the `id` field of `ade proof list --json`.");
+    }
     return {
       kind: "execute",
       label: "proof review",
       formatter: "proof-review",
-      steps: [actionCallStep("result", "review_computer_use_artifact", { artifactId })],
+      steps: [actionCallStep("result", "review_computer_use_artifact", {
+        ...(artifactId ? { artifactId } : { chatSessionId }),
+        ...(from != null ? { from } : {}),
+        ...(to != null ? { to } : {}),
+        ...(frames != null ? { frames } : {}),
+      })],
     };
   }
 
@@ -32873,6 +32887,13 @@ function proofListScopeLabel(value: unknown, artifactCount: number): string {
   return `Proof for ${target}: ${artifactCount} artifact${artifactCount === 1 ? "" : "s"}`;
 }
 
+/** Seconds as `m:ss.s`, the way a person names a moment in a video. */
+function formatSheetTime(value: unknown): string {
+  const seconds = typeof value === "number" && Number.isFinite(value) ? value : 0;
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes}:${(seconds - minutes * 60).toFixed(1).padStart(4, "0")}`;
+}
+
 /** `ade proof review --text`: the file, its size and length, the contact sheet, then one finding per line. */
 function formatProofReview(value: unknown): string {
   const record = (unwrapActionEnvelope(value) ?? {}) as Record<string, unknown>;
@@ -32883,8 +32904,12 @@ function formatProofReview(value: unknown): string {
     const seconds = typeof record.durationSeconds === "number" ? `${record.durationSeconds} s` : "length unknown";
     lines.push(`video ${size} · ${seconds}`);
     if (typeof record.sheetPath === "string") {
-      const times = Array.isArray(record.frameTimes) ? record.frameTimes.map((t) => `${t}s`).join(" ") : "";
-      lines.push(`sheet ${record.sheetPath}`, `      frames at ${times}, ${record.columns} per row`);
+      lines.push(`sheet ${record.sheetPath}`, `      ${record.columns} frames per row, left to right:`);
+      const frames = Array.isArray(record.frames) ? record.frames as Array<Record<string, unknown>> : [];
+      frames.forEach((frame, index) => {
+        const step = typeof frame.step === "string" ? ` · "${frame.step}"` : "";
+        lines.push(`      ${String(index + 1).padStart(2)}  ${formatSheetTime(frame.t)}  ${String(frame.why ?? "")}${step}`);
+      });
     } else {
       lines.push(`sheet none: ${String(record.sheetError ?? "unknown error")}. Watch the video itself: ${String(record.path ?? "")}`);
     }
@@ -36894,30 +36919,64 @@ async function runGithubAppLogin(
   }
 }
 
+/**
+ * A brain connection for `ade link`, plus the id of the project this command
+ * runs in. The machine brain answers project actions only with a project id,
+ * and minting a link must not register a folder as a project, so the id comes
+ * from the registry; a folder that is not a project gets none. A legacy
+ * desktop socket serves one project and needs no id.
+ */
+async function connectForLink(
+  options: GlobalOptions,
+): Promise<{ connection: CliConnection; call: (name: string, args?: JsonObject) => Promise<unknown> }> {
+  const connection = await createConnection(
+    { ...options, headless: false, requireSocket: true },
+    { autoRegisterProject: false },
+  );
+  let projectId: string | null = null;
+  if (connection.mode === "runtime-socket") {
+    const listed = await connection.request("projects.list", {}).catch(() => null);
+    const key = (root: string) => {
+      const resolved = normalizeProjectRootPath(root);
+      return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+    };
+    const here = key(connection.projectRoot);
+    const match = Array.isArray(listed)
+      ? listed.filter(isRecord).find((entry) => {
+        const rootPath = asString(entry.rootPath);
+        return rootPath != null && key(rootPath) === here;
+      })
+      : null;
+    projectId = match ? asString(match.projectId) : null;
+  }
+  const call = (name: string, args: JsonObject = {}) =>
+    connection.request("ade/actions/call", {
+      name,
+      arguments: args,
+      ...(projectId ? { projectId } : {}),
+    });
+  return { connection, call };
+}
+
 function createLinkEnvelopeResolver(
   options: GlobalOptions,
 ): (context: LinkEnvelopeContext) => Promise<DeeplinkEnvelope | null> {
+  type LinkCall = (name: string, args?: JsonObject) => Promise<unknown>;
   const action = async (
-    connection: CliConnection,
+    call: LinkCall,
     domain: string,
     name: string,
     args: JsonObject = {},
   ): Promise<unknown> => {
-    const raw = await connection.request("ade/actions/call", {
-      name: "run_ade_action",
-      arguments: { domain, action: name, args },
-    });
+    const raw = await call("run_ade_action", { domain, action: name, args });
     return unwrapActionEnvelope(unwrapToolResult(raw));
   };
 
   const directAction = async (
-    connection: CliConnection,
+    call: LinkCall,
     name: string,
     args: JsonObject = {},
-  ): Promise<unknown> => {
-    const raw = await connection.request("ade/actions/call", { name, arguments: args });
-    return unwrapToolResult(raw);
-  };
+  ): Promise<unknown> => unwrapToolResult(await call(name, args));
 
   const records = (value: unknown, keys: string[]): Record<string, unknown>[] => {
     const unwrapped = unwrapActionEnvelope(value);
@@ -36933,16 +36992,14 @@ function createLinkEnvelopeResolver(
   return async (context) => {
     let connection: CliConnection | null = null;
     try {
-      connection = await createConnection(
-        { ...options, headless: false, requireSocket: true },
-        { autoRegisterProject: false },
-      );
-      const lanesValue = await directAction(connection, "list_lanes", { includeArchived: false }).catch(() => null);
+      const linked = await connectForLink(options);
+      connection = linked.connection;
+      const lanesValue = await directAction(linked.call, "list_lanes", { includeArchived: false }).catch(() => null);
       const lane = records(lanesValue, ["lanes", "items", "result"])
         .find((candidate) => asString(candidate.id) === context.laneId) ?? null;
-      const githubValue = await action(connection, "github", "getRemoteStatus").catch(() => null);
+      const githubValue = await action(linked.call, "github", "getRemoteStatus").catch(() => null);
       const repo = isRecord(githubValue) && isRecord(githubValue.repo) ? githubValue.repo : null;
-      const prsValue = await action(connection, "pr", "listAll", { laneId: context.laneId }).catch(() => null);
+      const prsValue = await action(linked.call, "pr", "listAll", { laneId: context.laneId }).catch(() => null);
       // A lane owns N PRs now — identity is (repo, number), not the lane's
       // branch — so the first matching row is not "the" lane's PR. Stamp the
       // deeplink envelope with the PR a human would name: open before draft
@@ -36979,6 +37036,26 @@ function createLinkEnvelopeResolver(
       if (prNumber && prNumber > 0) envelope.prNumber = prNumber;
       if (linearIssue) envelope.linearIssue = linearIssue;
       return Object.keys(envelope).length > 0 ? envelope : null;
+    } catch {
+      return null;
+    } finally {
+      if (connection) await Promise.resolve(connection.close()).catch(() => undefined);
+    }
+  };
+}
+
+/** This computer's account machine key and the project's id, from the brain that serves the project. */
+function createLinkOwnershipResolver(options: GlobalOptions): () => Promise<DeeplinkOwnership | null> {
+  return async () => {
+    let connection: CliConnection | null = null;
+    try {
+      const linked = await connectForLink(options);
+      connection = linked.connection;
+      const raw = await linked.call("get_link_ownership");
+      const value = unwrapToolResult(raw);
+      const accountMachineKey = isRecord(value) ? asString(value.accountMachineKey) : null;
+      const projectId = isRecord(value) ? asString(value.projectId) : null;
+      return accountMachineKey && projectId ? { accountMachineKey, projectId } : null;
     } catch {
       return null;
     } finally {
@@ -38080,6 +38157,7 @@ async function runParsedCli(
       try {
         const result = await runDeeplinkCommandAsync(plan.rest, {
           resolveEnvelope: createLinkEnvelopeResolver(parsed.options),
+          resolveOwnership: createLinkOwnershipResolver(parsed.options),
         });
         return { output: result.output, exitCode: result.exitCode };
       } catch (error) {

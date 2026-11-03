@@ -783,7 +783,14 @@ struct PrDetailView: View {
             copy("gh pr checkout \(currentPr.githubPrNumber) --repo \(currentPr.repoOwner)/\(currentPr.repoName)", "Checkout command copied")
           } label: { Label("Checkout command", systemImage: "terminal") }
           Button {
-            copy(LaneDeeplinkHelpers.prLink(repoOwner: currentPr.repoOwner, repoName: currentPr.repoName, number: currentPr.githubPrNumber), "ADE link copied")
+            copy(LaneDeeplinkHelpers.prLink(
+              repoOwner: currentPr.repoOwner,
+              repoName: currentPr.repoName,
+              number: currentPr.githubPrNumber,
+              ownership: currentPr.laneId.isEmpty
+                ? syncService.deeplinkOwnership()
+                : syncService.laneDeeplinkTarget(laneId: currentPr.laneId).ownership
+            ), "ADE link copied")
           } label: { Label("ADE link", systemImage: "link.badge.plus") }
             .disabled(currentPr.repoOwner.isEmpty || currentPr.repoName.isEmpty)
         } label: {
