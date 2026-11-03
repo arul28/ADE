@@ -362,7 +362,7 @@ function AvdCard({
             )}
           </span>
           <span className="min-w-0 break-words font-sans text-[11px] leading-4 text-muted-fg">
-            {avd.adeCreated ? `${spec} · ADE made` : spec}
+            {avd.madeForOtherLane ? `${spec} · ADE made, other lane` : avd.adeCreated ? `${spec} · ADE made` : spec}
           </span>
         </span>
       </button>

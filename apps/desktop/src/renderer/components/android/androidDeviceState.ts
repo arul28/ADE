@@ -220,8 +220,9 @@ export function androidAvdMenuActions(avd: AndroidAvdListing, laneId: string | n
 } {
   return {
     release: Boolean(laneId) && avd.heldByLaneId === laneId,
-    // The brain deletes only an ADE-made AVD that no lane holds and that is off.
-    delete: avd.adeCreated && !avd.heldByLaneId && !avd.running,
+    // The brain deletes only an ADE-made AVD that no lane holds and that is off,
+    // and never one ADE made for a lane outside this project.
+    delete: avd.adeCreated && !avd.madeForOtherLane && !avd.heldByLaneId && !avd.running,
   };
 }
 
@@ -258,6 +259,7 @@ const ANDROID_ERROR_SENTENCE: Record<AndroidEmulatorErrorCode, string> = {
   ANDROID_EMULATOR_EXITED: "The emulator stopped.",
   ANDROID_STREAM_FAILED: "The live view could not start.",
   ANDROID_NOT_RUNNING: "The device is not running.",
+  ANDROID_PATH_OUTSIDE_LANE: "That file path is outside this lane's folder.",
 };
 
 const IPC_PREFIX = /^Error invoking remote method '[^']*':\s*(?:[A-Za-z]*Error:\s*)?/;

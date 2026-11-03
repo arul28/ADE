@@ -114,6 +114,7 @@ function avd(partial: Partial<AndroidAvdListing> & Pick<AndroidAvdListing, "name
     adeCreated: false,
     running: null,
     heldByLaneId: null,
+    madeForOtherLane: false,
     ...partial,
   };
 }
@@ -150,7 +151,7 @@ export function createMockAndroidEmulator(): AndroidEmulatorPreloadApi {
     avd({ name: "versic_fold", profileId: "pixel_9_pro_fold", lcdWidth: 2076, lcdHeight: 2152, density: 390, sizeBytes: 4.8e9 }),
     avd({ name: "vphone4", displayName: "Medium Phone API 36", sizeBytes: 3.2e9 }),
     avd({ name: "vphone3", profileId: "small_phone", apiLevel: 35, lcdWidth: 720, lcdHeight: 1280, density: 320, sizeBytes: 1.9e9 }),
-    avd({ name: "ade_9f2c71ab_pixel_9", displayName: "ADE · fix-login", profileId: "pixel_9", lcdWidth: 1080, lcdHeight: 2424, adeCreated: true, sizeBytes: 1.1e9 }),
+    avd({ name: "ade_9f2c71ab_pixel_9", displayName: "ADE · fix-login", profileId: "pixel_9", lcdWidth: 1080, lcdHeight: 2424, adeCreated: true, madeForOtherLane: true, sizeBytes: 1.1e9 }),
   ];
   const laneAvdRecord = (): AndroidAvdListing | null => {
     if (!laneAvd) return null;
