@@ -22,7 +22,7 @@ import type {
 } from "../../../shared/types/androidEmulator";
 import type { Logger } from "../logging/logger";
 import { runAdb } from "./adb";
-import { createAndroidAvd, deleteAdeAndroidAvd, listAndroidAvds, readAndroidAvd } from "./androidAvds";
+import { createAndroidAvd, deleteAdeAndroidAvd, listAndroidAvds, readAdeAvdLaneId, readAndroidAvd } from "./androidAvds";
 import { AndroidEmulatorFailure } from "./androidEmulatorErrors";
 import {
   AdeStartedEmulators,
@@ -780,9 +780,11 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
           deps.laneDevices.set({
             laneId,
             avdName: avd.name,
-            // A free AVD ADE made is still ADE's to clean up with the lane;
-            // only the user's own AVD is never deleted.
-            origin: avd.adeCreated ? "created" : "attached",
+            // Only the lane an AVD was made for deletes it with the lane. An
+            // ADE AVD made for another lane may belong to a lane of another
+            // project (this lane table cannot see it), so it is attached:
+            // never deleted on release, like the user's own AVDs.
+            origin: avd.adeCreated && readAdeAvdLaneId(avd) === laneId ? "created" : "attached",
             profileId: avd.profileId,
             systemImage: null,
             createdAt: now().toISOString(),
