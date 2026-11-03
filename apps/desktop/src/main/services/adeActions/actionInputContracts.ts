@@ -961,6 +961,76 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "ade actions run mac_desktop.getStreamStatus --input-json '{\"laneId\":\"lane-1\"}' --json",
     },
   },
+  android_emulator: {
+    getStatus: {
+      description:
+        "Read whether this host can run the Android emulator: the SDK and its tools, hardware acceleration, and (with laneId) the lane's emulator and its state.",
+      input: "object { laneId?: string }",
+      example: "ade android status --json",
+    },
+    listDevices: {
+      description: "List this machine's AVDs (with the lane holding each), the hardware profiles a new AVD can use, and the installed system images.",
+      input: "object { laneId?: string }",
+      example: "ade android devices --json",
+    },
+    createDevice: {
+      description:
+        "Make a new AVD for the lane from a hardware profile and hold it. Boots it unless start is false. systemImage defaults to the newest installed image for the host ABI.",
+      input: "object { laneId: string, profileId: string, systemImage?: string, displayName?: string, start?: boolean }",
+      example: "ade android create --profile medium_phone --json",
+    },
+    attachDevice: {
+      description: "Hold an existing AVD (one no other lane holds) for the lane. Boots it unless start is false.",
+      input: "object { laneId: string, avdName: string, start?: boolean }",
+      example: "ade android attach Pixel_9_API_36 --json",
+    },
+    start: {
+      description: "Boot the lane's AVD and wait until Android reports boot completed. No-op when it is already booted.",
+      input: "object { laneId: string }",
+      example: "ade android start --json",
+    },
+    stop: {
+      description: "Stop the lane's emulator, if ADE started it. The lane keeps its AVD.",
+      input: "object { laneId: string }",
+      example: "ade android stop --json",
+    },
+    releaseDevice: {
+      description:
+        "Stop the lane's emulator and let the AVD go. An AVD ADE made for the lane is deleted unless deleteCreated is false; the user's own AVD is never deleted.",
+      input: "object { laneId: string, deleteCreated?: boolean }",
+      example: "ade android release --json",
+    },
+    getStreamStatus: {
+      description: "Read the lane's live-view stream: running, backend and frame rate. The transport (URL and token) is always null here.",
+      input: "object { laneId: string }",
+      example: "ade actions run android_emulator.getStreamStatus --input-json '{\"laneId\":\"lane-1\"}' --json",
+    },
+    tap: {
+      description: "Tap one point on the lane's emulator, in device pixels (the screenshot's pixels).",
+      input: "object { laneId: string, x: number, y: number }",
+      example: "ade android tap 540 1200 --json",
+    },
+    swipe: {
+      description: "Swipe from one point to another on the lane's emulator, in device pixels.",
+      input: "object { laneId: string, fromX: number, fromY: number, toX: number, toY: number, durationMs?: number }",
+      example: "ade android swipe 540 1800 540 600 --ms 300 --json",
+    },
+    sendKey: {
+      description: "Press a hardware or navigation key on the lane's emulator.",
+      input: "object { laneId: string, key: \"back\" | \"home\" | \"recents\" | \"power\" | \"volume_up\" | \"volume_down\" }",
+      example: "ade android key back --json",
+    },
+    sendText: {
+      description: "Type text into the focused field on the lane's emulator.",
+      input: "object { laneId: string, text: string }",
+      example: "ade android text \"hello\" --json",
+    },
+    screenshot: {
+      description: "Write a PNG of the lane's emulator screen, on the machine that runs it. outPath defaults to a file under the ADE data folder.",
+      input: "object { laneId: string, outPath?: string }",
+      example: "ade android screenshot --out /tmp/screen.png --json",
+    },
+  },
   app_control: {
     getStatus: {
       description: "Read the desktop app-control session status: what is attached and which chat owns it.",

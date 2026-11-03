@@ -593,6 +593,17 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "takeoverWindows", "useSharedDesktop",
     ],
   },
+  android_emulator: {
+    live: "all",
+    read: [
+      "getStatus", "listDevices", "getStreamStatus",
+    ],
+    write: [
+      "createDevice", "attachDevice", "start", "stop", "releaseDevice", "deleteDevice",
+      "startStream", "stopStream", "sendTouch", "tap", "swipe", "sendKey", "sendText",
+      "screenshot",
+    ],
+  },
   app_control: {
     live: "all",
     read: [

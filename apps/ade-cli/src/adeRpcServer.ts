@@ -4660,6 +4660,82 @@ export async function scopeUnboundAppleAdeActionArgs(
   return withAppleAgentCaller(rest, laneId, null);
 }
 
+/** `android_emulator` reads an agent may make without a lane: status and the AVD list. */
+const ANDROID_LANE_FREE_ACTIONS = new Set<string>(["getStatus", "listDevices"]);
+
+function androidMissingLaneMessage(action: string): string | null {
+  return ANDROID_LANE_FREE_ACTIONS.has(action)
+    ? null
+    : `android_emulator.${action} needs a lane: run ade from a lane worktree, or pass --lane <lane-id>.`;
+}
+
+/**
+ * `android_emulator` for an agent caller (a bound chat, run or step, or a
+ * brain forwarding another machine's agent).
+ *
+ * - The viewing calls (`ANDROID_USER_ONLY_ACTIONS`: `startStream`,
+ *   `stopStream`, `sendTouch`, `deleteDevice`) are refused by caller shape,
+ *   not role, for the reason `scopeMacDesktopAdeActionArgs` gives: a run or
+ *   step identity keeps `cto` role and is still an agent, and `startStream`
+ *   hands back the loopback stream token.
+ * - The lane is pinned as for `ios_simulator`: a bound agent acts on its own
+ *   chat's lane, and naming another lane is refused, naming both lanes. With
+ *   no lane it may only read status and the AVD list.
+ *
+ * The service holds no chat identity, so there is nothing else to strip.
+ */
+export function scopeAndroidAdeActionArgs(
+  runtime: AdeRuntime,
+  session: SessionState,
+  action: string,
+  androidArgs: Record<string, unknown>,
+): Record<string, unknown> {
+  const method = `run_ade_action:android_emulator.${action}`;
+  if (isCtoOnlyAdeAction("android_emulator", action)) {
+    scopeAccessDenied(
+      "android_emulator viewing actions (the live stream, live touch, deleting an AVD) belong to user clients; "
+        + "an agent uses tap, swipe, key and text, and releases its own lane's device",
+      method,
+    );
+  }
+  const requestedLaneId = asOptionalTrimmedString(androidArgs.laneId);
+  const boundLaneId = resolveChatSessionLaneId(runtime, session);
+  if (boundLaneId && requestedLaneId && requestedLaneId !== boundLaneId) {
+    throw new JsonRpcError(
+      JsonRpcErrorCode.policyDenied,
+      `This chat is bound to lane ${boundLaneId}; --lane ${requestedLaneId} was refused. An agent uses only its own lane's Android emulator.`,
+      { kind: "lane_bound", method, callerLaneId: boundLaneId, requestedLaneId },
+    );
+  }
+  const laneId = boundLaneId ?? requestedLaneId;
+  const missingLaneMessage = androidMissingLaneMessage(action);
+  if (!laneId && missingLaneMessage !== null) {
+    throw new JsonRpcError(JsonRpcErrorCode.invalidParams, missingLaneMessage);
+  }
+  return { ...androidArgs, ...(laneId ? { laneId } : {}) };
+}
+
+/**
+ * `android_emulator` for an `ade` process with no chat identity: placed by the
+ * lane worktree it stands in (`callerRoot`), as for `ios_simulator`. The
+ * viewing calls stay behind the CTO role gate for it, as on `mac_desktop`.
+ */
+export async function scopeUnboundAndroidAdeActionArgs(
+  runtime: AdeRuntime,
+  session: SessionState,
+  action: string,
+  androidArgs: Record<string, unknown>,
+  callerRootRaw: unknown,
+): Promise<Record<string, unknown>> {
+  const laneId = await resolveUnboundCallerLane(runtime, session, {
+    method: `run_ade_action:android_emulator.${action}`,
+    callerRoot: callerRootRaw,
+    requestedLaneId: asOptionalTrimmedString(androidArgs.laneId),
+    missingLaneMessage: androidMissingLaneMessage(action),
+  });
+  return { ...androidArgs, ...(laneId ? { laneId } : {}) };
+}
+
 /**
  * `app_control` actions that answer without a lane: the capability probe and
  * the driver list. Everything else acts on, or reads, one lane's session, so a
@@ -6602,6 +6678,12 @@ async function runTool(args: {
       scopedObjectArgs = isUserClient
         ? await scopeUnboundAppleAdeActionArgs(runtime, session, action, appleArgs, toolArgs.callerRoot)
         : scopeAppleAdeActionArgs(runtime, session, action, appleArgs);
+    } else if (domain === "android_emulator" && (!isUserClient || isUnboundAdeCliCaller(session))) {
+      // Agent callers use only their own lane's emulator; see the function.
+      const androidArgs = requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs);
+      scopedObjectArgs = isUserClient
+        ? await scopeUnboundAndroidAdeActionArgs(runtime, session, action, androidArgs, toolArgs.callerRoot)
+        : scopeAndroidAdeActionArgs(runtime, session, action, androidArgs);
     } else if (
       domain === "work_tools"
       && (!callerIsCto || WORK_TOOLS_ALWAYS_SCOPED_ACTIONS.has(action))

@@ -65,6 +65,18 @@ export const IOS_SIMULATOR_RUN_TESTS_TIMEOUT_MS = 2 * 60 * 60_000 + 5 * 60_000;
 export const IOS_SIMULATOR_DEVICE_CLEANUP_TIMEOUT_MS = 15 * 60_000;
 
 /**
+ * Android emulator lifecycle: a boot waits on `sys.boot_completed` (the first
+ * boot of a new AVD measured 54 s on Windows, and the service allows 120 s or
+ * more), create and attach boot right after, and a stop or release waits up
+ * to 20 s for the emulator to exit after `emu kill`. On the 30 s default the
+ * renderer and `ade android` gave up while the emulator was still booting.
+ */
+export const ANDROID_EMULATOR_LIFECYCLE_TIMEOUT_MS = 4 * 60_000;
+/** The remote transport outlives the brain's own budget, so its real reason wins. */
+export const ANDROID_EMULATOR_LIFECYCLE_REMOTE_TRANSPORT_TIMEOUT_MS =
+  ANDROID_EMULATOR_LIFECYCLE_TIMEOUT_MS + 15_000;
+
+/**
  * The innermost budgets on the remote path: the JSON-RPC transport carrying
  * these actions to a paired/SSH runtime, whose daemon runs the very same
  * xcodebuild and Xcode preview toolchain a local one does. Without entries
@@ -390,6 +402,13 @@ const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = 
   ["app_control.stopRecording", DEMO_RECORDING_STOP_TIMEOUT_MS],
   ["built_in_browser.stopRecording", DEMO_RECORDING_STOP_TIMEOUT_MS],
   ["ios_simulator.recordStop", DEMO_RECORDING_STOP_TIMEOUT_MS],
+  // See ANDROID_EMULATOR_LIFECYCLE_TIMEOUT_MS.
+  ["android_emulator.createDevice", ANDROID_EMULATOR_LIFECYCLE_TIMEOUT_MS],
+  ["android_emulator.attachDevice", ANDROID_EMULATOR_LIFECYCLE_TIMEOUT_MS],
+  ["android_emulator.start", ANDROID_EMULATOR_LIFECYCLE_TIMEOUT_MS],
+  ["android_emulator.stop", ANDROID_EMULATOR_LIFECYCLE_TIMEOUT_MS],
+  ["android_emulator.releaseDevice", ANDROID_EMULATOR_LIFECYCLE_TIMEOUT_MS],
+  ["android_emulator.deleteDevice", ANDROID_EMULATOR_LIFECYCLE_TIMEOUT_MS],
 ]);
 
 export function longRunningLocalRuntimeActionTimeoutMs(

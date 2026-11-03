@@ -7,6 +7,7 @@ import {
 import { THREAD_COMMENT_ACTION_NAMES } from "../../../shared/threadComments";
 import { CLAUDE_PLUGIN_UI_ACTION_NAMES } from "../../../shared/claudePluginUi";
 import { APPLE_AGENT_ACTIONS, APPLE_USER_ONLY_ACTIONS } from "../../../shared/types/iosSimulator";
+import { ANDROID_AGENT_ACTIONS, ANDROID_USER_ONLY_ACTIONS } from "../../../shared/types/androidEmulator";
 import type { AdeActionDomain } from "./domains";
 
 /* ──────────────────────────────────────────────────────────────────────────
@@ -311,6 +312,12 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
       "useSharedDesktop",
     ],
   },
+  // The Android emulator's viewing calls, on the Mac Desktop rule: the stream
+  // token (`startStream`), the viewer's own stream and live finger
+  // (`stopStream`, `sendTouch`), and deleting an AVD no lane holds. An agent
+  // reads `getStreamStatus` (redacted), taps and swipes, and releases only
+  // its own lane's device. The RPC server also refuses these by caller shape.
+  android_emulator: { only: ANDROID_USER_ONLY_ACTIONS },
   computer_use_artifacts: {
     only: [
       "deleteArtifacts",
@@ -393,6 +400,7 @@ export const ADE_ACTION_SECRET_BEARING: Partial<Record<AdeActionDomain, readonly
   computer_use_artifacts: ["readArtifactRange"],
   // Mints the loopback stream token.
   mac_desktop: ["startStream"],
+  android_emulator: ["startStream"],
   jira: ["connect"],
   // A token gives an outside AI app this computer.
   remote_mcp: ["createToken"],
@@ -1312,6 +1320,9 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "takeoverWindows",
     "useSharedDesktop",
   ],
+  // ONE pair of lists, in `shared/types/androidEmulator.ts`, as for iOS. The
+  // user-only half is allowlisted for viewing clients and CTO-only above.
+  android_emulator: [...ANDROID_AGENT_ACTIONS, ...ANDROID_USER_ONLY_ACTIONS],
   app_control: ["getStatus", "claim", "launch", "launchInTerminal", "connect", "stop", "focusWindow", "minimizeWindow", "screenshot", "getSnapshot", "inspectPoint", "selectPoint", "click", "typeText", "scroll", "dispatchKey", "listTargets", "attachToTarget", "readTerminal", "writeTerminal", "signalTerminal", "listDrivers", "observe", "agentClick", "agentHover", "agentFill", "agentClear", "agentType", "agentPress", "agentScroll", "agentWait", "getTrace", "windows", "switchWindow", "startRecording", "stopRecording", "getRecordingStatus", "captureProof", "getLatestFrame"],
   // `acknowledgeRemoteRequest` is not a `BuiltInBrowserService` method: it is
   // served by the runtime daemon itself, so a desktop that took a forwarded

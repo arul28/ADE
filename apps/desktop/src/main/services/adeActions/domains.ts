@@ -57,6 +57,7 @@ export const ADE_ACTION_DOMAIN_NAMES = [
   "computer_use_artifacts",
   "ios_simulator",
   "mac_desktop",
+  "android_emulator",
   "app_control",
   "built_in_browser",
   "issues",
