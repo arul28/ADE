@@ -4,6 +4,7 @@ import type { AndroidAvd, AndroidRunningEmulator, AndroidSystemImage } from "../
 import { AndroidEmulatorFailure } from "./androidEmulatorErrors";
 import { androidHardwareConfig, type AndroidDeviceDefinition } from "./androidHardwareProfiles";
 import { readAndroidIniFile } from "./androidSdk";
+import { REMOTE_WORK_LANE_PREFIX } from "../remoteWork/remoteWorkCopyService";
 
 /*
  * The AVDs on this machine: list them, make one for a lane, delete one ADE
@@ -131,11 +132,15 @@ export function listAndroidAvds(
 
 /**
  * `ade_<short lane id>_<profile>`, plus `_2`, `_3`… when that name is taken.
- * Only AVD-name characters survive, so any lane id or profile id is safe.
+ * Only AVD-name characters survive, so any lane id or profile id is safe. A
+ * chat's work copy (`remote-work-<hash>`) is `rw` and its hash's start, so
+ * two chats' AVDs differ by more than a suffix.
  */
 export function adeAvdName(laneId: string, profileId: string, taken: ReadonlySet<string>): string {
   const clean = (value: string) => value.replace(/[^A-Za-z0-9_]+/gu, "_").replace(/^_+|_+$/gu, "");
-  const shortLane = clean(laneId).slice(0, 8) || "lane";
+  const shortLane = (laneId.startsWith(REMOTE_WORK_LANE_PREFIX)
+    ? `rw${clean(laneId.slice(REMOTE_WORK_LANE_PREFIX.length)).slice(0, 6)}`
+    : clean(laneId).slice(0, 8)) || "lane";
   const base = `ade_${shortLane}_${clean(profileId) || "device"}`;
   const lowerTaken = new Set([...taken].map((name) => name.toLowerCase()));
   if (!lowerTaken.has(base.toLowerCase())) return base;

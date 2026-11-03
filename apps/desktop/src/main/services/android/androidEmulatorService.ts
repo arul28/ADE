@@ -47,6 +47,7 @@ import {
 } from "./androidSdk";
 import * as androidStream from "./androidStream";
 import { ANDROID_HARDWARE_KEYCODES } from "./scrcpyControl";
+import { findRemoteWorkCopyForLane, isRemoteWorkLaneId, onRemoteWorkCopyReleased } from "../remoteWork/remoteWorkCopyService";
 
 /*
  * The lane's Android emulator: one per brain, composing the phase A modules
@@ -60,6 +61,11 @@ import { ANDROID_HARDWARE_KEYCODES } from "./scrcpyControl";
  *   start: it ends the boot at once instead of waiting behind it.
  * - The SDK is read on every use (phase A caches the slow part), never only
  *   at start, so an SDK installed while ADE runs is seen on the next call.
+ * - A chat on another machine stands in for a lane with its work copy here
+ *   (`remote-work-…`, as in the Apple service). The copy is the lane's folder
+ *   and the lane lives as long as the copy. Its first start borrows a free
+ *   AVD (attached, so never deleted) or makes one; the copy's delete gives
+ *   the device back.
  *
  * Node built-ins and relative imports only, so the service also runs under a
  * plain `tsx` harness with an in-memory lane store.
@@ -71,6 +77,8 @@ const SWIPE_DEFAULT_MS = 300;
 const SWIPE_STEP_MS = 16;
 const SCREENSHOT_TIMEOUT_MS = 20_000;
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+/** The profile a chat's work copy gets when no AVD here is free. */
+const WORK_COPY_PROFILE_ID = "medium_phone";
 
 export type AndroidEmulatorServiceDeps = {
   /** The lane rows (`lane_android_devices`); `sqlAndroidLaneDeviceRepo(db)` in the app. */
@@ -87,6 +95,11 @@ export type AndroidEmulatorServiceDeps = {
    * stay inside it; without one, a call that names an `outPath` is refused.
    */
   resolveLaneWorktreePath?: (laneId: string) => string | null;
+  /**
+   * The project's root, where chats on other machines keep their work copies
+   * (`remoteWorkCopyService`). Without it a `remote-work-…` lane is refused.
+   */
+  projectRoot?: string | null;
   logger?: Logger | null;
   /** The SDK the user picked in Settings, read on every use. */
   readSdkSettingPath?: () => string | null;
@@ -349,6 +362,35 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
 
   const assertLive = () => {
     if (disposed) throw new Error("The Android emulator service has shut down.");
+  };
+
+  /* ---------- lanes and work copies ---------- */
+
+  const projectRoot = deps.projectRoot?.trim() || null;
+
+  /** The work copy a `remote-work-…` lane names here, while it exists. */
+  const workCopyPath = (laneId: string): string | null =>
+    projectRoot ? findRemoteWorkCopyForLane(projectRoot, laneId)?.path ?? null : null;
+
+  /** The folder a lane's files stay in: its worktree, or a chat's work copy. */
+  const laneRoot = (laneId: string): string | null =>
+    isRemoteWorkLaneId(laneId) ? workCopyPath(laneId) : deps.resolveLaneWorktreePath?.(laneId) ?? null;
+
+  /** Whether the lane still exists; null when this service cannot tell. */
+  const laneLiveness = (laneId: string): "active" | "archived" | "missing" | null => {
+    if (isRemoteWorkLaneId(laneId)) return projectRoot ? (workCopyPath(laneId) ? "active" : "missing") : null;
+    return deps.laneDevices.laneState?.(laneId) ?? null;
+  };
+
+  /** A chat's work copy that is gone (or that this service cannot see) has no device here. */
+  const assertWorkCopyLive = (laneId: string) => {
+    if (!isRemoteWorkLaneId(laneId) || workCopyPath(laneId)) return;
+    throw new AndroidEmulatorFailure(
+      "ANDROID_NOT_RUNNING",
+      projectRoot
+        ? "This chat's work copy on this machine is gone, so it has no Android device here. Run the command again to make a new copy."
+        : "This ADE cannot find work copies of chats on other machines, so it has no Android device for one.",
+    );
   };
 
   /* ---------- the SDK, read on use ---------- */
@@ -700,12 +742,144 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
     await runAdb(adbPath, ["shell", "input", ...args], { serial, timeoutMs: 15_000, signal: lifetime.signal });
   };
 
+  /**
+   * Makes a new AVD for the lane and records it as the lane's own (deleted
+   * with the lane). The caller holds the lane's queue and checked the lane
+   * is free.
+   */
+  const createLocked = async (laneId: string, profileId: string, wanted: string | null, displayName: string | null): Promise<void> => {
+    const ready = await requireSdk({ emulator: true });
+    const images = listAndroidSystemImages(ready.root);
+    const definition = definitionsFor(ready.root, images).find((entry) => entry.profile.id === profileId);
+    if (!definition) {
+      throw new AndroidEmulatorFailure("ANDROID_AVD_NOT_FOUND", `No hardware profile named ${profileId} is on this machine.`);
+    }
+    const image = wanted
+      ? images.find((entry) => entry.packageId === wanted) ?? null
+      : pickAndroidSystemImage(images, ready.sdk.hostAbi, definition);
+    if (!image) {
+      throw new AndroidEmulatorFailure(
+        "ANDROID_NO_SYSTEM_IMAGE",
+        wanted
+          ? `The system image ${wanted} is not installed.`
+          : `No ${ready.sdk.hostAbi} system image is installed. Install one with the SDK Manager.`,
+      );
+    }
+    const avd = createAndroidAvd({
+      sdkRoot: ready.root,
+      avdHome: ready.avdHome,
+      userHome: androidUserHome(env, home),
+      laneId,
+      definition,
+      image,
+      displayName,
+    });
+    deps.laneDevices.set({
+      laneId,
+      avdName: avd.name,
+      origin: "created",
+      profileId,
+      systemImage: image.packageId,
+      createdAt: now().toISOString(),
+      adeInstalledPackages: [],
+    });
+    logger?.info("android.device_created", { laneId, avdName: avd.name, profileId, systemImage: image.packageId });
+    emit({ type: "android.inventory.changed" });
+  };
+
+  /**
+   * A chat's work copy gets its first device: a free AVD this machine already
+   * has before a new one, since a new one costs gigabytes and a first boot.
+   * ADE's own AVDs come first, then the user's; stopped ones before running
+   * ones. Free means no lane here holds it and it does not run outside ADE.
+   * An ADE AVD qualifies only when it was made for a lane of this project: one
+   * made for a lane this project cannot see may be another project's lane's.
+   * The borrowed AVD is attached, so releasing it never deletes it. The caller
+   * holds the lane's queue.
+   */
+  const ensureWorkCopyDeviceLocked = async (laneId: string): Promise<void> => {
+    const ready = await requireSdk({ emulator: true });
+    const running = discovered();
+    const runningAvd = (avd: AndroidAvd) => running.find((emulator) => sameName(emulator.avdName, avd.name)) ?? null;
+    const madeForThisProject = (avd: AndroidAvd): boolean => {
+      const madeFor = readAdeAvdLaneId(avd);
+      if (!madeFor || isRemoteWorkLaneId(madeFor)) return false;
+      const liveness = deps.laneDevices.laneState?.(madeFor) ?? null;
+      return liveness === "active" || liveness === "archived";
+    };
+    const rank = (avd: AndroidAvd): number => (avd.adeCreated ? 0 : 2) + (runningAvd(avd) ? 1 : 0);
+    // No await from here to the row write: two lanes asking at once cannot
+    // both take one AVD.
+    const free = listAndroidAvds(ready.avdHome)
+      .filter((avd) => {
+        if (deps.laneDevices.holder(avd.name) !== null) return false;
+        const emulator = runningAvd(avd);
+        if (emulator && !ownsEmulator(emulator)) return false;
+        return !avd.adeCreated || madeForThisProject(avd);
+      })
+      .sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));
+    const borrowed = free[0] ?? null;
+    if (borrowed) {
+      deps.laneDevices.set({
+        laneId,
+        avdName: borrowed.name,
+        origin: "attached",
+        profileId: borrowed.profileId,
+        systemImage: null,
+        createdAt: now().toISOString(),
+        adeInstalledPackages: [],
+      });
+      logger?.info("android.work_copy_borrowed", { laneId, avdName: borrowed.name, adeCreated: borrowed.adeCreated });
+      emit({ type: "android.inventory.changed" });
+      return;
+    }
+    await createLocked(laneId, WORK_COPY_PROFILE_ID, null, null);
+  };
+
+  /**
+   * Stops the lane's emulator and releases its AVD by the normal rules (an
+   * attached AVD stays). The caller holds the lane's queue.
+   */
+  const endLaneLocked = async (device: AndroidLaneDevice) => {
+    await stopLocked(laneState(device.laneId), device, { refuseForeign: false });
+    const result = await releaseAndroidLaneDevice(device.laneId, deps.laneDevices, {
+      sdkSettingPath: deps.readSdkSettingPath?.() ?? null,
+      env,
+      platform,
+      home,
+      discoveryDirs,
+      signal: lifetime.signal,
+      logger,
+    });
+    lanes.delete(device.laneId);
+    return result;
+  };
+
+  /** A chat's work copy here was deleted: give its device back. */
+  const releaseGoneWorkCopy = (laneId: string) => {
+    if (disposed || !deps.laneDevices.get(laneId)) return;
+    void serialize(laneId, async () => {
+      // A new copy for the same chat may have come back while this waited.
+      if (workCopyPath(laneId)) return;
+      const device = deps.laneDevices.get(laneId);
+      if (!device) return;
+      const result = await endLaneLocked(device);
+      logger?.info("android.work_copy_released", { laneId, avdName: device.avdName, ...result });
+      emit({ type: "android.inventory.changed" });
+      emit({ type: "android.device.state", laneId, state: "none" });
+    }).catch((error: unknown) => {
+      logger?.warn("android.work_copy_release_failed", { laneId, error: messageOf(error) });
+    });
+  };
+  const offCopyReleased = projectRoot ? onRemoteWorkCopyReleased(projectRoot, releaseGoneWorkCopy) : () => undefined;
+
   /* ---------- start-up reconcile ---------- */
 
   /**
    * Runs once when the service starts. A lane archived or deleted while no
-   * brain ran left its row (the release keeps a running AVD's row) and maybe
-   * its emulator: stop that emulator and release the AVD by the normal rules.
+   * brain ran (or a chat's work copy deleted then) left its row (the release
+   * keeps a running AVD's row) and maybe its emulator: stop that emulator and
+   * release the AVD by the normal rules.
    * Then an emulator ADE started that no lane holds at all is stopped.
    * Lanes that are still active keep their emulators: those are re-adopted.
    */
@@ -713,10 +887,11 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
     // Cheap reads first (the lane rows, the discovery files, the state file):
     // a brain start with nothing to reconcile never reads the SDK, which would
     // run `emulator -accel-check` once per project.
-    const readLaneState = deps.laneDevices.laneState;
-    const endedLanes = readLaneState
-      ? (deps.laneDevices.list?.() ?? []).filter((device) => readLaneState(device.laneId) !== "active")
-      : [];
+    // A chat's work copy counts as a lane while the copy exists.
+    const endedLanes = (deps.laneDevices.list?.() ?? []).filter((device) => {
+      const liveness = laneLiveness(device.laneId);
+      return liveness !== null && liveness !== "active";
+    });
     const orphans = () => discovered().filter((emulator) =>
       registry.owns(emulator) && deps.laneDevices.holder(emulator.avdName) === null);
     if (endedLanes.length === 0 && orphans().length === 0) return;
@@ -726,18 +901,7 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
     let changed = false;
     for (const device of endedLanes) {
       await serialize(device.laneId, async () => {
-        const state = laneState(device.laneId);
-        await stopLocked(state, device, { refuseForeign: false });
-        const result = await releaseAndroidLaneDevice(device.laneId, deps.laneDevices, {
-          sdkSettingPath: deps.readSdkSettingPath?.() ?? null,
-          env,
-          platform,
-          home,
-          discoveryDirs,
-          signal: lifetime.signal,
-          logger,
-        });
-        lanes.delete(device.laneId);
+        const result = await endLaneLocked(device);
         changed = true;
         logger?.info("android.reconcile.released", { laneId: device.laneId, avdName: device.avdName, ...result });
       }).catch((error: unknown) => {
@@ -791,7 +955,7 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
           ...avd,
           running: running.find((emulator) => sameName(emulator.avdName, avd.name)) ?? null,
           heldByLaneId: deps.laneDevices.holder(avd.name),
-          madeForOtherLane: madeFor !== null && deps.laneDevices.laneState?.(madeFor) === "missing",
+          madeForOtherLane: madeFor !== null && laneLiveness(madeFor) === "missing",
         };
       });
       const images = listAndroidSystemImages(sdk.root);
@@ -805,46 +969,10 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
       const laneId = requireLaneId(args.laneId);
       const profileId = typeof args.profileId === "string" ? args.profileId.trim() : "";
       if (!profileId) throw new Error("profileId is required.");
+      assertWorkCopyLive(laneId);
       return serialize(laneId, async () => {
         assertLaneFree(laneId, null);
-        const ready = await requireSdk({ emulator: true });
-        const images = listAndroidSystemImages(ready.root);
-        const definition = definitionsFor(ready.root, images).find((entry) => entry.profile.id === profileId);
-        if (!definition) {
-          throw new AndroidEmulatorFailure("ANDROID_AVD_NOT_FOUND", `No hardware profile named ${profileId} is on this machine.`);
-        }
-        const wanted = args.systemImage?.trim() || null;
-        const image = wanted
-          ? images.find((entry) => entry.packageId === wanted) ?? null
-          : pickAndroidSystemImage(images, ready.sdk.hostAbi, definition);
-        if (!image) {
-          throw new AndroidEmulatorFailure(
-            "ANDROID_NO_SYSTEM_IMAGE",
-            wanted
-              ? `The system image ${wanted} is not installed.`
-              : `No ${ready.sdk.hostAbi} system image is installed. Install one with the SDK Manager.`,
-          );
-        }
-        const avd = createAndroidAvd({
-          sdkRoot: ready.root,
-          avdHome: ready.avdHome,
-          userHome: androidUserHome(env, home),
-          laneId,
-          definition,
-          image,
-          displayName: args.displayName ?? null,
-        });
-        deps.laneDevices.set({
-          laneId,
-          avdName: avd.name,
-          origin: "created",
-          profileId,
-          systemImage: image.packageId,
-          createdAt: now().toISOString(),
-          adeInstalledPackages: [],
-        });
-        logger?.info("android.device_created", { laneId, avdName: avd.name, profileId, systemImage: image.packageId });
-        emit({ type: "android.inventory.changed" });
+        await createLocked(laneId, profileId, args.systemImage?.trim() || null, args.displayName ?? null);
         if (args.start === false) return emitDeviceState(laneId);
         return startLocked(laneState(laneId));
       });
@@ -855,6 +983,7 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
       const laneId = requireLaneId(args.laneId);
       const avdName = typeof args.avdName === "string" ? args.avdName.trim() : "";
       if (!avdName) throw new Error("avdName is required.");
+      assertWorkCopyLive(laneId);
       return serialize(laneId, async () => {
         assertLaneFree(laneId, avdName);
         assertNotHeldElsewhere(laneId, avdName);
@@ -885,7 +1014,12 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
     start(args) {
       assertLive();
       const laneId = requireLaneId(args.laneId);
-      return serialize(laneId, () => startLocked(laneState(laneId)));
+      assertWorkCopyLive(laneId);
+      return serialize(laneId, async () => {
+        // A chat's work copy has no device until its first start asks for one.
+        if (isRemoteWorkLaneId(laneId) && !deps.laneDevices.get(laneId)) await ensureWorkCopyDeviceLocked(laneId);
+        return startLocked(laneState(laneId));
+      });
     },
 
     async stop(args) {
@@ -959,6 +1093,7 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
     async startStream(args) {
       assertLive();
       const laneId = requireLaneId(args.laneId);
+      assertWorkCopyLive(laneId);
       const { serial, adbPath } = await requireBooted(laneId);
       const state = laneState(laneId);
       if (state.streamSerial && state.streamSerial !== serial) await stopLaneStream(state);
@@ -1080,11 +1215,13 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
       const requested = args.outPath?.trim() || null;
       let outPath: string | null = null;
       if (requested) {
-        const root = deps.resolveLaneWorktreePath?.(laneId) ?? null;
+        const root = laneRoot(laneId);
         if (!root) {
           throw new AndroidEmulatorFailure(
             "ANDROID_PATH_OUTSIDE_LANE",
-            "ADE cannot find this lane's worktree, so it will not write a screenshot to a chosen path. Leave the path out.",
+            isRemoteWorkLaneId(laneId)
+              ? "This chat's work copy on this machine is gone, so ADE will not write a screenshot to a chosen path. Leave the path out."
+              : "ADE cannot find this lane's worktree, so it will not write a screenshot to a chosen path. Leave the path out.",
           );
         }
         outPath = containAndroidOutPath(requested, root);
@@ -1104,7 +1241,7 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
       fs.mkdirSync(path.dirname(target), { recursive: true });
       // Checked again right before the write (a link swapped in during the
       // capture), and the file is opened without following a link.
-      if (outPath) containAndroidOutPath(outPath, deps.resolveLaneWorktreePath?.(laneId) ?? path.dirname(outPath));
+      if (outPath) containAndroidOutPath(outPath, laneRoot(laneId) ?? path.dirname(outPath));
       const handle = fs.openSync(target, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC | (fs.constants.O_NOFOLLOW ?? 0), 0o644);
       try {
         fs.writeSync(handle, png);
@@ -1145,6 +1282,7 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
       disposed = true;
       liveServices -= 1;
       lifetime.abort();
+      offCopyReleased();
       const sdk = await requireSdk({ emulator: false }).catch(() => null);
       const handOff = deps.handOffOnDispose === true;
       await Promise.all([...lanes.values()].map(async (state) => {

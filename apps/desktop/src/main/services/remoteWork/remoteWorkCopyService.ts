@@ -171,13 +171,15 @@ export type RemoteWorkLogger = {
 
 /**
  * What every service for one project shares, whoever made it: one lock per
- * copy, the copies whose command has not started yet, and the newest way to
- * ask whether a shell still runs in a copy (from the project's runtime).
+ * copy, the copies whose command has not started yet, the newest way to
+ * ask whether a shell still runs in a copy (from the project's runtime), and
+ * who wants to hear that a copy is gone (the Android device service).
  */
 type ProjectState = {
   locks: Map<string, Promise<unknown>>;
   starting: Map<string, number>;
   shellRunsIn: ((owner: string) => boolean) | null;
+  released: Set<(laneId: string) => void>;
 };
 const projectStates = new Map<string, ProjectState>();
 
@@ -186,7 +188,7 @@ function projectStateFor(projectRoot: string): ProjectState {
   const key = pathComparisonKey(path.resolve(projectRoot));
   let state = projectStates.get(key);
   if (!state) {
-    state = { locks: new Map(), starting: new Map(), shellRunsIn: null };
+    state = { locks: new Map(), starting: new Map(), shellRunsIn: null, released: new Set() };
     projectStates.set(key, state);
   }
   return state;
@@ -488,7 +490,10 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
       const existed = Boolean(copy) || fs.existsSync(copyPath);
       if (fs.existsSync(copyPath)) await removeCopyFiles(copyPath);
       updateCopy(owner, () => null);
-      if (existed) logger?.info("remote_work.released", { owner });
+      if (existed) {
+        logger?.info("remote_work.released", { owner });
+        notifyCopyReleased(projectRoot, owner, logger);
+      }
       return existed;
     });
 
@@ -687,6 +692,32 @@ export function registerRemoteWorkShellCheck(projectRoot: string, shellRunsIn: (
   return () => {
     if (state.shellRunsIn === shellRunsIn) state.shellRunsIn = null;
   };
+}
+
+/**
+ * Calls `listener` with the copy's lane id (`remote-work-…`) each time a copy
+ * of this project is deleted here: `ade shell clean`, a delete in Settings,
+ * the idle or low-disk sweep, or its chat gone. The Android service gives the
+ * copy's device back on it. A copy deleted while no listener runs is caught
+ * by that service's start-up pass. Returns the function that removes it.
+ */
+export function onRemoteWorkCopyReleased(projectRoot: string, listener: (laneId: string) => void): () => void {
+  const state = projectStateFor(projectRoot);
+  state.released.add(listener);
+  return () => {
+    state.released.delete(listener);
+  };
+}
+
+function notifyCopyReleased(projectRoot: string, owner: string, logger?: RemoteWorkLogger): void {
+  const laneId = remoteWorkLaneIdFor(owner);
+  for (const listener of projectStateFor(projectRoot).released) {
+    try {
+      listener(laneId);
+    } catch (error) {
+      logger?.warn("remote_work.release_listener_failed", { owner, error: error instanceof Error ? error.message : String(error) });
+    }
+  }
 }
 
 /** A command was readied for this copy and has not started, or a shell still runs in it. */

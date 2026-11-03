@@ -5786,6 +5786,8 @@ app.whenReady().then(async () => {
           return null;
         }
       },
+      // Chats on other machines drive an emulator here through their work copy.
+      projectRoot,
       logger,
       onEvent: (event) => emitProjectEvent(projectRoot, IPC.androidEmulatorEvent, event),
     });
