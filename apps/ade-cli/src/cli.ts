@@ -3456,13 +3456,14 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade android status --text                    SDK, acceleration, the lane's emulator
     $ ade android devices --text                   AVDs (and the lane holding each), system images
     $ ade android devices --profiles --text        Also list the hardware profiles
-    $ ade android create --profile medium_phone --text
+    $ ade android device-create --profile medium_phone --text
                                                    Make an AVD for this lane and boot it
                                                    (--image <package>, --name <shown name>, --no-start)
-    $ ade android attach <avd> --text              Hold an existing AVD no other lane holds (--no-start)
+    $ ade android device-attach --avd <name> --text
+                                                   Hold an existing AVD no other lane holds (--no-start)
     $ ade android start --text                     Boot the lane's AVD (waits for boot completed)
     $ ade android stop --text                      Stop it; the lane keeps its AVD
-    $ ade android release --text                   Stop it and let the AVD go. An AVD ADE made
+    $ ade android device-detach --text             Stop it and let the AVD go. An AVD ADE made
                                                    for the lane is deleted; --keep keeps it.
                                                    The user's own AVD is never deleted.
 
@@ -3471,7 +3472,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade android tap 540 1200 --text              Tap a point
     $ ade android swipe 540 1800 540 600 --duration-ms 300 --text
                                                    Swipe from one point to another
-    $ ade android button back --text               back | home | recents | power | volume_up | volume_down
+    $ ade android button back --text               back | home | recents | power | volume-up | volume-down
     $ ade android rotate landscape --text          Lock the screen to portrait or landscape. Apps that
                                                    fix their orientation, such as the home screen, keep it.
     $ ade android type "hello world" --text        Type into the focused field (--value "<text>" for text
@@ -3479,7 +3480,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade android show --text                      Show the emulator to the user (tools pane)
     $ ade android actions --text                   List the android_emulator actions
 
-  The verbs and flags are the ones \`ade apple\` uses for the same job.
+  The verbs and flags are the ones \`ade apple\` uses for the same job (tap
+  also takes --x/--y, button --name, type --value). Any other flag is refused.
 
   Another machine: --machine <name> runs the command on that machine, with
   no new lane. Without --lane, the emulator there works for this chat's work
@@ -3487,7 +3489,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   be on origin). Every view of this chat then shows it in the Android tool.
   status and devices make no copy. --lane <id> uses a lane on that machine
   instead. The screenshot is written there.
-    $ ade android create --profile medium_phone --machine windows --text
+    $ ade android device-create --profile medium_phone --machine windows --text
     $ ade android tap 540 1200 --machine windows --text
 
   Errors (each prints its next step):

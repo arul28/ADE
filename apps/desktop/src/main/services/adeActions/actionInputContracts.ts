@@ -977,12 +977,12 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       description:
         "Make a new AVD for the lane from a hardware profile and hold it. Boots it unless start is false. systemImage defaults to the newest installed image for the host ABI.",
       input: "object { laneId: string, profileId: string, systemImage?: string, displayName?: string, start?: boolean }",
-      example: "ade android create --profile medium_phone --json",
+      example: "ade android device-create --profile medium_phone --json",
     },
     attachDevice: {
       description: "Hold an existing AVD (one no other lane holds) for the lane. Boots it unless start is false.",
       input: "object { laneId: string, avdName: string, start?: boolean }",
-      example: "ade android attach Pixel_9_API_36 --json",
+      example: "ade android device-attach --avd Pixel_9_API_36 --json",
     },
     start: {
       description: "Boot the lane's AVD and wait until Android reports boot completed. No-op when it is already booted.",
@@ -998,7 +998,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       description:
         "Stop the lane's emulator and let the AVD go. An AVD ADE made for the lane is deleted unless deleteCreated is false; the user's own AVD is never deleted.",
       input: "object { laneId: string, deleteCreated?: boolean }",
-      example: "ade android release --json",
+      example: "ade android device-detach --json",
     },
     getStreamStatus: {
       description: "Read the lane's live-view stream: running, backend and frame rate. The transport (URL and token) is always null here.",
@@ -1013,7 +1013,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
     swipe: {
       description: "Swipe from one point to another on the lane's emulator, in device pixels.",
       input: "object { laneId: string, fromX: number, fromY: number, toX: number, toY: number, durationMs?: number }",
-      example: "ade android swipe 540 1800 540 600 --ms 300 --json",
+      example: "ade android swipe 540 1800 540 600 --duration-ms 300 --json",
     },
     sendKey: {
       description: "Press a hardware or navigation key on the lane's emulator.",

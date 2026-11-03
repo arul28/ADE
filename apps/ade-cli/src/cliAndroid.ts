@@ -9,8 +9,8 @@
  *   NEITHER FILE MAY USE THE OTHER'S IMPORTS AS A VALUE AT MODULE SCOPE.
  *
  * Every value use of those imports happens inside a function body. The hint
- * table and the flag list are built at module scope from the shared contract
- * only.
+ * table, the flag lists and the button names are built at module scope from
+ * the shared contract only.
  */
 import path from "node:path";
 import {
@@ -18,6 +18,7 @@ import {
   ANDROID_HARDWARE_KEYS,
   ANDROID_ORIENTATIONS,
   type AndroidEmulatorErrorCode,
+  type AndroidHardwareKey,
 } from "../../desktop/src/shared/types/androidEmulator";
 import { localRuntimeActionTimeoutMs } from "../../desktop/src/main/services/localRuntime/localRuntimeTimeoutPolicy";
 import {
@@ -25,7 +26,6 @@ import {
   HELP_BY_COMMAND,
   actionStep,
   asString,
-  collectGenericObjectArgs,
   firstStandalonePositional,
   isRecord,
   listActionsStep,
@@ -52,9 +52,9 @@ import {
 
    One emulator per lane, on the machine that runs the lane's brain. One
    spelling per verb and flag: `ade apple`'s where the job is the same
-   (`status`, `devices`, `start`, `stop`, `screenshot`, `tap`, `swipe`,
-   `button`, `type`, `show`); the device verbs are `create`, `attach` and
-   `release`.
+   (`status`, `devices`, `device-create`, `device-attach`, `device-detach`,
+   `start`, `stop`, `screenshot`, `tap`, `swipe`, `button`, `type`, `show`),
+   and unknown flags are refused.
    ────────────────────────────────────────────────────────────────────────── */
 
 /**
@@ -64,27 +64,63 @@ import {
  * swallowed as its value.
  */
 export const ANDROID_VALUE_FLAGS: readonly string[] = [
-  "--arg",
-  "--arg-json",
   "--avd",
   "--duration-ms",
   "--image",
-  "--input",
-  "--input-json",
-  "--json-input",
   "--lane",
-  "--lane-id",
   "--name",
   "--out",
   "--profile",
-  "--set",
-  "--set-json",
   "--value",
   "--x",
   "--y",
 ];
 
 const ANDROID_VALUE_CARRIER_FLAGS: ValueCarrierFlags = new Set(ANDROID_VALUE_FLAGS);
+
+/**
+ * Each verb and the only flags it takes (besides `--lane`). One spelling per
+ * job, `ade apple`'s where the job is the same. Anything else is refused,
+ * never dropped: a dropped `--duration-ms` would swipe at the default speed
+ * and still say done.
+ */
+const ANDROID_VERB_FLAGS: Readonly<Record<string, readonly string[]>> = {
+  help: [],
+  actions: [],
+  status: [],
+  show: [],
+  devices: ["--profiles"],
+  "device-create": ["--profile", "--image", "--name", "--no-start"],
+  "device-attach": ["--avd", "--no-start"],
+  start: [],
+  stop: [],
+  "device-detach": ["--keep"],
+  screenshot: ["--out"],
+  tap: ["--x", "--y"],
+  swipe: ["--duration-ms"],
+  button: ["--name"],
+  rotate: [],
+  type: ["--value"],
+};
+
+/** `ade apple`'s button names (hyphens), each to the service's key. */
+const ANDROID_BUTTONS: ReadonlyMap<string, AndroidHardwareKey> = new Map(
+  ANDROID_HARDWARE_KEYS.map((key) => [key.replace(/_/gu, "-"), key] as const),
+);
+
+/** The `--flag` names in `args`, skipping each value flag's value and everything after `--`. */
+function androidFlagNames(args: readonly string[]): string[] {
+  const names: string[] = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const token = args[index]!;
+    if (token === "--") break;
+    if (!token.startsWith("--")) continue;
+    const name = token.split("=")[0]!;
+    names.push(name);
+    if (!token.includes("=") && ANDROID_VALUE_CARRIER_FLAGS.has(name)) index += 1;
+  }
+  return names;
+}
 
 /** The next step for each coded refusal. Keyed on the contract's codes, so a new code needs a line. */
 const ANDROID_ERROR_HINTS: Record<AndroidEmulatorErrorCode, string> = {
@@ -98,9 +134,9 @@ const ANDROID_ERROR_HINTS: Record<AndroidEmulatorErrorCode, string> = {
     "hint: install a system image for this machine's ABI with sdkmanager, or pass --image <package>. `ade android devices --text` lists the installed ones.",
   ANDROID_AVD_NOT_FOUND: "hint: `ade android devices --text` lists this machine's AVDs.",
   ANDROID_AVD_HELD_BY_OTHER_LANE:
-    "hint: another lane holds that AVD. Pick a free one (`ade android devices --text`), or make one: `ade android create --profile <id>`.",
+    "hint: another lane holds that AVD. Pick a free one (`ade android devices --text`), or make one: `ade android device-create --profile <id>`.",
   ANDROID_LANE_HAS_DEVICE:
-    "hint: this lane already holds an AVD. Use it (`ade android start`), or `ade android release` it before you create or attach another.",
+    "hint: this lane already holds an AVD. Use it (`ade android start`), or `ade android device-detach` before you create or attach another.",
   ANDROID_AVD_RUNNING:
     "hint: that AVD already runs outside this lane. Close that emulator first, or attach another AVD.",
   ANDROID_NO_FREE_PORT:
@@ -114,7 +150,7 @@ const ANDROID_ERROR_HINTS: Record<AndroidEmulatorErrorCode, string> = {
   ANDROID_PATH_OUTSIDE_LANE:
     "hint: --out must be inside the lane worktree. Pass a path there, or leave out --out for a file under ADE's data folder.",
   ANDROID_NOT_RUNNING:
-    "hint: boot the lane's emulator first: `ade android start`, or `ade android create --profile <id>` when the lane has none.",
+    "hint: boot the lane's emulator first: `ade android start`, or `ade android device-create --profile <id>` when the lane has none.",
 };
 
 const ANDROID_ERROR_HINT_ENTRIES = Object.entries(ANDROID_ERROR_HINTS) as Array<[AndroidEmulatorErrorCode, string]>;
@@ -146,6 +182,13 @@ function finiteNumber(raw: string | undefined, label: string, verb: string): num
 export function buildAndroidPlan(args: string[]): CliPlan {
   const sub = firstStandalonePositional(args, ANDROID_VALUE_CARRIER_FLAGS) ?? "status";
   const positionals = (): string[] => standalonePositionals(args, ANDROID_VALUE_CARRIER_FLAGS);
+  const verbFlags = ANDROID_VERB_FLAGS[sub];
+  if (verbFlags) {
+    const unknown = androidFlagNames(args).find((name) => name !== "--lane" && !verbFlags.includes(name));
+    if (unknown) {
+      throw new CliUsageError(`android ${sub} does not take ${unknown}. Run 'ade android --help'.`);
+    }
+  }
   if (sub === "help") return { kind: "help", text: HELP_BY_COMMAND["android"]! };
   if (sub === "actions")
     return { kind: "execute", label: "android actions", steps: [listActionsStep("actions", ANDROID_EMULATOR_DOMAIN)] };
@@ -170,7 +213,7 @@ export function buildAndroidPlan(args: string[]): CliPlan {
       kind: "execute",
       label,
       formatter,
-      steps: [actionStep("result", ANDROID_EMULATOR_DOMAIN, method, collectGenericObjectArgs(args, payload), callerRootArgs)],
+      steps: [actionStep("result", ANDROID_EMULATOR_DOMAIN, method, payload, callerRootArgs)],
       ...(minTimeoutMs > 30_000 ? { minTimeoutMs: minTimeoutMs + 15_000 } : {}),
       ...extra,
     };
@@ -188,12 +231,12 @@ export function buildAndroidPlan(args: string[]): CliPlan {
     const showProfiles = readFlag(args, ["--profiles"]);
     return androidAction("android devices", "listDevices", laneClaim(), showProfiles ? "android-devices-profiles" : "android-devices");
   }
-  if (sub === "create") {
-    const profileId = requireValue(readValue(args, ["--profile"]) ?? positionals()[0] ?? null, "--profile <hardware profile id>");
+  if (sub === "device-create") {
+    const profileId = requireValue(readValue(args, ["--profile"]), "--profile <hardware profile id>");
     const systemImage = readValue(args, ["--image"]);
     const displayName = readValue(args, ["--name"]);
     const noStart = readFlag(args, ["--no-start"]);
-    return androidAction("android create", "createDevice", {
+    return androidAction("android device-create", "createDevice", {
       ...laneClaim(),
       profileId,
       ...(systemImage ? { systemImage } : {}),
@@ -201,10 +244,10 @@ export function buildAndroidPlan(args: string[]): CliPlan {
       ...(noStart ? { start: false } : {}),
     }, "android-device", noStart ? {} : { progressNotice: bootNotice });
   }
-  if (sub === "attach") {
-    const avdName = requireValue(readValue(args, ["--avd"]) ?? positionals()[0] ?? null, "AVD name");
+  if (sub === "device-attach") {
+    const avdName = requireValue(readValue(args, ["--avd"]), "--avd <AVD name>");
     const noStart = readFlag(args, ["--no-start"]);
-    return androidAction("android attach", "attachDevice", {
+    return androidAction("android device-attach", "attachDevice", {
       ...laneClaim(),
       avdName,
       ...(noStart ? { start: false } : {}),
@@ -214,17 +257,17 @@ export function buildAndroidPlan(args: string[]): CliPlan {
     return androidAction("android start", "start", laneClaim(), "android-device", { progressNotice: bootNotice });
   if (sub === "stop")
     return androidAction("android stop", "stop", laneClaim(), "android-device");
-  if (sub === "release") {
+  if (sub === "device-detach") {
     // An AVD ADE made for the lane is deleted on release; --keep keeps it on
     // disk. The user's own AVD is never deleted either way.
     const keep = readFlag(args, ["--keep"]);
-    return androidAction("android release", "releaseDevice", {
+    return androidAction("android device-detach", "releaseDevice", {
       ...laneClaim(),
       ...(keep ? { deleteCreated: false } : {}),
     }, "android-release");
   }
   if (sub === "screenshot") {
-    const outPath = androidOutPath(readValue(args, ["--out"]) ?? positionals()[0] ?? null);
+    const outPath = androidOutPath(readValue(args, ["--out"]));
     return androidAction("android screenshot", "screenshot", {
       ...laneClaim(),
       ...(outPath ? { outPath } : {}),
@@ -261,12 +304,13 @@ export function buildAndroidPlan(args: string[]): CliPlan {
   // The verbs and flags are `ade apple`'s for the same job (button, type,
   // --duration-ms, --out), so an agent learns one set of words.
   if (sub === "button") {
-    const key = requireValue(readValue(args, ["--name"]) ?? positionals()[0] ?? null, "the button").toLowerCase();
-    if (!(ANDROID_HARDWARE_KEYS as readonly string[]).includes(key)) {
-      throw new CliUsageError(`android button: unknown button '${key}'. Valid buttons: ${ANDROID_HARDWARE_KEYS.join(", ")}.`);
+    const button = requireValue(readValue(args, ["--name"]) ?? positionals()[0] ?? null, "the button").toLowerCase();
+    const key = ANDROID_BUTTONS.get(button);
+    if (!key) {
+      throw new CliUsageError(`android button: unknown button '${button}'. Valid buttons: ${[...ANDROID_BUTTONS.keys()].join(", ")}.`);
     }
     return androidAction("android button", "sendKey", { ...laneClaim(), key }, "android-action", {
-      shapeResult: done({ action: "button", key }),
+      shapeResult: done({ action: "button", button }),
     });
   }
   if (sub === "rotate") {
@@ -329,7 +373,7 @@ function laneDeviceLines(lane: JsonObject): string[] {
     if (logPath) lines.push(`log: ${logPath}`);
   }
   if (!device) {
-    lines.push("", "next: ade android create --profile <id> (ade android devices --profiles lists them), or ade android attach <avd>");
+    lines.push("", "next: ade android device-create --profile <id> (ade android devices --profiles lists them), or ade android device-attach --avd <name>");
   } else if (lane.state === "off" || lane.state === "crashed") {
     lines.push("", "next: ade android start");
   }
@@ -386,7 +430,7 @@ function formatAvdTable(avds: JsonObject[]): string {
         yesNo(avd.adeCreated),
       ];
     }),
-    "No AVDs on this machine. Make one: ade android create --profile <id>.",
+    "No AVDs on this machine. Make one: ade android device-create --profile <id>.",
     { fullColumns: ["avd", "lane"] },
   );
 }
@@ -458,7 +502,7 @@ export function formatAndroidAction(value: unknown): string {
     : action === "swipe"
       ? `(${result.fromX}, ${result.fromY}) -> (${result.toX}, ${result.toY})`
       : action === "button" || action === "rotate"
-        ? String(action === "button" ? result.key : result.orientation)
+        ? String(action === "button" ? result.button : result.orientation)
         : action === "type"
           ? `${result.characters} characters`
           : "";
