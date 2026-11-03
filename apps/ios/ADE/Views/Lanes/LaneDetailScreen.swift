@@ -515,10 +515,13 @@ struct LaneDetailScreen: View {
     )
     UIPasteboard.general.string = url
     ADEHaptics.success()
-    copiedLinkNotice = "Copied lane link"
+    // Without its computer (still connecting, or an older host) the link
+    // opens wherever it is tapped; say so rather than claim a full link.
+    let notice = target.ownership == nil ? "Copied lane link, without its computer" : "Copied lane link"
+    copiedLinkNotice = notice
     Task {
       try? await Task.sleep(for: .seconds(2))
-      if copiedLinkNotice == "Copied lane link" { copiedLinkNotice = nil }
+      if copiedLinkNotice == notice { copiedLinkNotice = nil }
     }
   }
 

@@ -137,7 +137,13 @@ import { updateTrackOfVersion } from "../../desktop/src/shared/updateTrack";
 import { resolveReleaseChannel } from "../../desktop/src/shared/packageChannel";
 import { isSourceCheckoutRuntimeModule } from "./runtimePackaging";
 import { configureOutboundProxyFromEnv, trustSystemCertificates } from "../../desktop/src/main/services/shared/outboundNetwork";
-import { buildDeeplink, parseDeeplinkOwnership, type DeeplinkEnvelope, type DeeplinkOwnership } from "../../desktop/src/shared/deeplinks";
+import {
+  buildDeeplink,
+  parseDeeplinkOwnership,
+  type DeeplinkEnvelope,
+  type DeeplinkOwnership,
+  type OwnedDeeplinkTarget,
+} from "../../desktop/src/shared/deeplinks";
 import { laneIsOnBaseBranch } from "../../desktop/src/shared/laneBaseResolution";
 import {
   DEFAULT_LANE_START,
@@ -36944,13 +36950,19 @@ async function connectForLink(
   // project list answers for its single project with no id.
   const listed = await connection.request("projects.list", {}).catch(() => null);
   const here = normalizeProjectRootPath(connection.projectRoot);
-  const match = Array.isArray(listed)
-    ? listed.filter(isRecord).find((entry) => {
+  const registered = Array.isArray(listed)
+    ? listed.filter(isRecord).flatMap((entry) => {
       const rootPath = asString(entry.rootPath);
-      return rootPath != null && pathsEqual(normalizeProjectRootPath(rootPath), here);
+      const id = asString(entry.projectId);
+      return rootPath && id ? [{ root: normalizeProjectRootPath(rootPath), id }] : [];
     })
-    : null;
-  const projectId = match ? asString(match.projectId) : null;
+    : [];
+  // The exact root first: a case-sensitive volume can hold two projects whose
+  // roots differ only by case. Folding case is the fallback, and only when it
+  // names one project.
+  const exact = registered.find((entry) => entry.root === here);
+  const folded = registered.filter((entry) => pathsEqual(entry.root, here));
+  const projectId = exact?.id ?? (folded.length === 1 ? folded[0]!.id : null);
   const call = (name: string, args: JsonObject = {}) =>
     connection.request("ade/actions/call", {
       name,
@@ -36958,6 +36970,18 @@ async function connectForLink(
       ...(projectId ? { projectId } : {}),
     });
   return { connection, call };
+}
+
+/** The rows of an action's answer: the array itself, or under the first of `keys` that holds one. */
+function linkRecords(value: unknown, keys: string[]): Record<string, unknown>[] {
+  const unwrapped = unwrapActionEnvelope(value);
+  if (Array.isArray(unwrapped)) return unwrapped.filter(isRecord);
+  if (!isRecord(unwrapped)) return [];
+  for (const key of keys) {
+    const nested = unwrapped[key];
+    if (Array.isArray(nested)) return nested.filter(isRecord);
+  }
+  return [];
 }
 
 function createLinkEnvelopeResolver(
@@ -36980,24 +37004,13 @@ function createLinkEnvelopeResolver(
     args: JsonObject = {},
   ): Promise<unknown> => unwrapToolResult(await call(name, args));
 
-  const records = (value: unknown, keys: string[]): Record<string, unknown>[] => {
-    const unwrapped = unwrapActionEnvelope(value);
-    if (Array.isArray(unwrapped)) return unwrapped.filter(isRecord);
-    if (!isRecord(unwrapped)) return [];
-    for (const key of keys) {
-      const nested = unwrapped[key];
-      if (Array.isArray(nested)) return nested.filter(isRecord);
-    }
-    return [];
-  };
-
   return async (context) => {
     let connection: CliConnection | null = null;
     try {
       const linked = await connectForLink(options);
       connection = linked.connection;
       const lanesValue = await directAction(linked.call, "list_lanes", { includeArchived: false }).catch(() => null);
-      const lane = records(lanesValue, ["lanes", "items", "result"])
+      const lane = linkRecords(lanesValue, ["lanes", "items", "result"])
         .find((candidate) => asString(candidate.id) === context.laneId) ?? null;
       const githubValue = await action(linked.call, "github", "getRemoteStatus").catch(() => null);
       const repo = isRecord(githubValue) && isRecord(githubValue.repo) ? githubValue.repo : null;
@@ -37018,7 +37031,7 @@ function createLinkEnvelopeResolver(
         branchRef: asString(lane?.branchRef),
         baseRef: asString(lane?.baseRef),
       });
-      const pr = primaryOnBase ? null : pickPrimaryPrRecord(records(prsValue, ["prs", "items", "result"])
+      const pr = primaryOnBase ? null : pickPrimaryPrRecord(linkRecords(prsValue, ["prs", "items", "result"])
         .filter((candidate) => asString(candidate.laneId) === context.laneId));
 
       const branch = laneBranch;
@@ -37047,12 +37060,32 @@ function createLinkEnvelopeResolver(
 }
 
 /** This computer's account machine key and the project's id, from the brain that serves the project. */
-function createLinkOwnershipResolver(options: GlobalOptions): () => Promise<DeeplinkOwnership | null> {
-  return async () => {
+function createLinkOwnershipResolver(
+  options: GlobalOptions,
+): (target: OwnedDeeplinkTarget) => Promise<DeeplinkOwnership | null> {
+  return async (target) => {
     let connection: CliConnection | null = null;
     try {
       const linked = await connectForLink(options);
       connection = linked.connection;
+      // Name this project only for what is this project's: a lane it lists,
+      // a PR in its repository. Anything else goes out without an owner and
+      // opens through ordinary navigation.
+      if (target.kind === "lane") {
+        const lanes = linkRecords(unwrapToolResult(await linked.call("list_lanes", { includeArchived: true })), ["lanes", "items", "result"]);
+        if (!lanes.some((lane) => asString(lane.id) === target.laneId)) return null;
+      }
+      if (target.kind === "pr" && target.repoOwner && target.repoName) {
+        const status = unwrapActionEnvelope(unwrapToolResult(await linked.call("run_ade_action", {
+          domain: "github",
+          action: "getRemoteStatus",
+          args: {},
+        })));
+        const repo = isRecord(status) && isRecord(status.repo) ? status.repo : null;
+        const sameRepo = asString(repo?.owner)?.toLowerCase() === target.repoOwner.toLowerCase()
+          && asString(repo?.name)?.toLowerCase() === target.repoName.toLowerCase();
+        if (!sameRepo) return null;
+      }
       return parseDeeplinkOwnership(unwrapToolResult(await linked.call("get_link_ownership")));
     } catch {
       return null;

@@ -22,6 +22,7 @@ import {
   type DeeplinkEnvelope,
   type DeeplinkOwnership,
   type DeeplinkTarget,
+  type OwnedDeeplinkTarget,
 } from "../../../desktop/src/shared/deeplinks";
 import { WEB_CLIENT_BASE_URL, buildWebClientUrl } from "../../../desktop/src/shared/webClientUrl";
 import { copyToClipboard } from "../lib/clipboard";
@@ -46,7 +47,8 @@ export type DeeplinkCommandOptions = {
    * This computer and project, for lane, chat and PR links: with them a link
    * opens on the right computer and project from anywhere.
    */
-  resolveOwnership?: () => DeeplinkOwnership | null | Promise<DeeplinkOwnership | null>;
+  /** This project's machine and id, for a target that is this project's (null when it is not, or unknown). */
+  resolveOwnership?: (target: OwnedDeeplinkTarget) => DeeplinkOwnership | null | Promise<DeeplinkOwnership | null>;
 };
 
 const HELP_OPEN = [
@@ -265,7 +267,7 @@ export async function runLinkCommandAsync(
     }
   }
   if (!plan.noEnvelope && options.resolveOwnership && deeplinkTargetTakesOwnership(target) && !target.ownership) {
-    const ownership = await Promise.resolve(options.resolveOwnership()).catch(() => null);
+    const ownership = await Promise.resolve(options.resolveOwnership(target)).catch(() => null);
     if (ownership) target = { ...target, ownership };
   }
   return finishLink(renderLink(target, plan), plan.skipClipboard);

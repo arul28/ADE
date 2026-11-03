@@ -446,7 +446,10 @@ export function OpenPage() {
     window.location.href = url;
   };
 
+  // A click decides this visit: it cancels a remembered choice still pending,
+  // so the page never opens two places.
   const choose = (value: OpenPreference) => {
+    setAutoOpen(null);
     if (preference || !remember) return;
     writeOpenPreference(value);
     setPreference(value);

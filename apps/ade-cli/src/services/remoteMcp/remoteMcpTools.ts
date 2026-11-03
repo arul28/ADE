@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { buildDeeplink, type DeeplinkOwnership } from "../../../../desktop/src/shared/deeplinks";
 import { pathIsWithinRoot } from "../../../../desktop/src/shared/pathContainment";
@@ -176,10 +177,20 @@ function chatLink(sessionId: string | null, laneId: string | null, context: Type
   });
 }
 
-/** An engine's failure line without the local file paths it names. */
-function withoutLocalPaths(text: string): string {
+/**
+ * An engine's failure line without the local paths it names. The paths ADE
+ * knows go whole first (they may hold spaces): the video, its project, the
+ * home folder. Any other path-shaped word goes after.
+ */
+function withoutLocalPaths(text: string, videoPath: string | null): string {
+  const projectRoot = videoPath?.match(/^(.*?)[\\/]\.ade[\\/]/)?.[1] ?? null;
+  const known: Array<[string | null, string]> = [[videoPath, "<file>"], [projectRoot, "<project>"], [os.homedir(), "~"]];
+  let redacted = text;
+  for (const [value, label] of known) {
+    if (value && value.length > 1) redacted = redacted.split(value).join(label);
+  }
   // A path's own trailing colon is the message's ("<path>: Invalid data").
-  return text.replace(/(?<![\w.])(?:[A-Za-z]:)?[\\/][^\s'"]+/g, (found) => (found.endsWith(":") ? "<file>:" : "<file>"));
+  return redacted.replace(/(?<![\w.~<>])(?:[A-Za-z]:)?[\\/][^\s'"]+/g, (found) => (found.endsWith(":") ? "<file>:" : "<file>"));
 }
 
 const PROJECT_FIELDS = ["projectId", "displayName", "rootPath", "lastOpenedAt", "exists", "gitOriginUrl"] as const;
@@ -625,7 +636,7 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
       const sheetError = nonEmptyString(record.sheetError);
       return {
         ...pick(record, PROOF_REVIEW_FIELDS),
-        ...(sheetError ? { sheetError: withoutLocalPaths(sheetError) } : {}),
+        ...(sheetError ? { sheetError: withoutLocalPaths(sheetError, nonEmptyString(record.path)) } : {}),
         ...(Array.isArray(record.otherProof) && record.otherProof.length ? { otherProof: record.otherProof } : {}),
         link: chatLink(sessionId, nonEmptyString(record.laneId), context),
       };

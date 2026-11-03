@@ -7986,21 +7986,23 @@ async function runTool(args: {
       if (!projectWide && !owners.some((owner) => owner.kind === "chat_session" && owner.id === chatSessionId)) {
         throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, "The requested proof owner is not authorized for this caller.");
       }
-      // Newest first. The video is what a person asked for, looked up on its
-      // own so newer pictures can't crowd it out; a picture only when there is none.
-      const listChatProof = (kind?: "video_recording") => broker.listArtifacts({
+      // Newest first. The video is what a person asked for, a picture only when
+      // there is none. Each kind is looked up on its own, so newer proof of
+      // another kind can't crowd it out, and only proof with a file on this
+      // machine counts (a linked URL has nothing to review here).
+      const listChatProof = (kind?: "video_recording" | "screenshot") => broker.listArtifacts({
         ownerKind: "chat_session",
         ownerId: chatSessionId,
         ...PROOF_LISTING_ARTIFACT_FILTER,
         ...(kind ? { kind } : {}),
         limit: 20,
       }).filter((entry) => (entry.availability ?? "available") === "available");
+      const reviewable = (kind: "video_recording" | "screenshot") =>
+        listChatProof(kind).find((entry) => resolveStoredProofFile(runtime.projectRoot, entry.uri) != null);
       const chatProof = listChatProof();
-      artifact = listChatProof("video_recording")[0]
-        ?? chatProof.find((entry) => entry.kind === "screenshot")
-        ?? chatProof[0];
+      artifact = reviewable("video_recording") ?? reviewable("screenshot");
       if (!artifact) {
-        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `Chat ${chatSessionId} has no proof yet. Wait for it to finish (chat wait), or ask it to record one.`);
+        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `Chat ${chatSessionId} has no video or picture to review yet. Wait for it to finish (chat wait), or ask it to record one.`);
       }
       const shown = artifact.id;
       otherProof = chatProof

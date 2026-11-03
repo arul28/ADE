@@ -78,19 +78,31 @@ describe("ADE MCP pictures", () => {
     }
   });
 
-  it("keeps local paths out of a sheet failure it reports", () => {
+  it.each([
+    {
+      video: "/Users/someone/Projects/client/.ade/artifacts/demo.mp4",
+      error: "ffmpeg: /Users/someone/Projects/client/.ade/artifacts/demo.mp4: Invalid data; C:\\Users\\someone\\out.png",
+      shown: "ffmpeg: <file>: Invalid data; <file>",
+    },
+    {
+      video: "/Users/some one/Client Project/.ade/artifacts/demo.mp4",
+      error: "ffmpeg: /Users/some one/Client Project/.ade/artifacts/demo.mp4: Invalid; "
+        + "/Users/some one/Client Project/.ade/cache/proof-review/out.png: cannot write",
+      shown: "ffmpeg: <file>: Invalid; <project>/.ade/cache/proof-review/out.png: cannot write",
+    },
+  ])("keeps local paths out of a sheet failure it reports ($shown)", ({ video, error, shown }) => {
     const tool = findTypedTool("proof_review");
     if (!tool?.shape) throw new Error("proof_review has no shape");
     const shaped = tool.shape({
       artifactId: "proof-1",
       media: "video",
-      path: "/Users/someone/Projects/client/.ade/artifacts/demo.mp4",
+      path: video,
       sheetPath: null,
-      sheetError: "ffmpeg: /Users/someone/Projects/client/.ade/artifacts/demo.mp4: Invalid data; C:\\Users\\someone\\out.png",
+      sheetError: error,
       chatSessionId: "chat-1",
     }, { session: "chat-1" }, { ownership: null }) as Record<string, unknown>;
-    expect(shaped.sheetError).toBe("ffmpeg: <file>: Invalid data; <file>");
-    expect(JSON.stringify(shaped)).not.toContain("someone");
+    expect(shaped.sheetError).toBe(shown);
+    expect(JSON.stringify(shaped)).not.toMatch(/someone|some one|Client Project/);
     expect(shaped.artifactId).toBe("proof-1");
   });
 });
