@@ -178,6 +178,25 @@ Design round (owner, 2026-11-03):
   this.
 - Gate on capability, not on `darwin`: `supported` = SDK found + emulator
   binary + acceleration usable, reported per machine in `status`.
+- **A chat drives an emulator on another machine with no new lane** (owner,
+  2026-11-03; P0). Same model as `ade apple --machine` since #1999:
+  1. `ade android … --machine <m>` with no `--lane` uses the chat's work copy
+     on that machine. The copy stands in for a lane in the Android service
+     (its `remote-work-<hash>` lane id). Its first device is a free AVD that
+     machine already has (free ADE AVDs first, then the user's, stopped
+     first), attached so it is never deleted. ADE creates a new AVD only when
+     none is free. The cleanup gives the device back when the copy goes.
+  2. That machine returns the copy's lane id with each Android answer. The
+     chat's brain records the use (`usesAndroidEmulator`, `workCopyLaneId` on
+     `AgentChatRemoteWorkUse`).
+  3. Every window that views the chat sees an "Android · <machine>" target in
+     the chat's Android tool (beside "This lane") and opens the stream
+     through its own pin to that machine. Example: a MacBook Pro views a
+     chat that runs on a Mac Studio; the chat drives the Windows emulator;
+     the MacBook Pro shows the Windows emulator live. The tool stays visible
+     on a host that cannot run the emulator.
+- Phone and web viewers (the `android.*` sync commands, a stream ticket
+  issuer) are P2, not P0.
 
 ## 4. Shared device layer (move, do not copy)
 
