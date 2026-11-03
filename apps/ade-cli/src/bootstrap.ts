@@ -86,7 +86,7 @@ import {
 import { createOAuthRedirectService } from "../../desktop/src/main/services/lanes/oauthRedirectService";
 import { createRuntimeDiagnosticsService } from "../../desktop/src/main/services/lanes/runtimeDiagnosticsService";
 import { createDiskPressureMonitor } from "../../desktop/src/main/services/storage/diskPressure";
-import { findRemoteWorkCopyForLane, isRemoteWorkLaneId, registerRemoteWorkShellCheck } from "../../desktop/src/main/services/remoteWork/remoteWorkCopyService";
+import { registerRemoteWorkShellCheck } from "../../desktop/src/main/services/remoteWork/remoteWorkCopyService";
 import { createStorageInsightsService } from "../../desktop/src/main/services/storage/storageInsightsService";
 import {
   createProjectHealthService,
@@ -2245,11 +2245,12 @@ export async function createAdeRuntime(args: {
           resourcesPath: (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath ?? null,
           startDir: path.dirname(currentModulePath),
         }),
+        // A chat on another machine (`remote-work-…`) uses its work copy in
+        // this project as its lane.
+        projectRoot,
         // Where a screenshot's `outPath` must stay; without it a named path
-        // is refused. A chat on another machine (`remote-work-…`) stays in
-        // its work copy here.
+        // is refused.
         resolveLaneWorktreePath: (laneId: string): string | null => {
-          if (isRemoteWorkLaneId(laneId)) return findRemoteWorkCopyForLane(projectRoot, laneId)?.path ?? null;
           try {
             return laneService.getLaneWorktreePath(laneId);
           } catch {
