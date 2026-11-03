@@ -3340,6 +3340,7 @@ describe("isTransientAccountTokenError", () => {
     name: string;
     error?: () => unknown;
     response?: () => Response;
+    envTokenFetch?: () => Promise<Response>;
     expected: boolean;
   }> = [
     // The brain could not ask for a token: the record is untouched, so no user
@@ -3361,11 +3362,39 @@ describe("isTransientAccountTokenError", () => {
     // inconclusive one, which is still worth retrying.
     { name: "a Clerk invalid_grant", response: () => jsonResponse({ error: "invalid_grant" }, 400), expected: true },
     { name: "a Clerk HTTP 400", response: () => jsonResponse({ error: "invalid_request" }, 400), expected: false },
+    // The env-token refresh path used to replace every thrown error with a
+    // plain Error, hiding the transient cases from this same classifier.
+    {
+      name: "an env token refresh that hits a network failure",
+      envTokenFetch: async () => { throw new TypeError("fetch failed"); },
+      expected: true,
+    },
+    {
+      name: "an env token refresh that hits a Clerk HTTP 503",
+      envTokenFetch: async () => jsonResponse({ error: "server_error" }, 503),
+      expected: true,
+    },
+    // An env token has no rotation journal, so invalid_grant is definitive and
+    // must stay a plain, non-retryable Error.
+    {
+      name: "an env token refresh rejected with invalid_grant",
+      envTokenFetch: async () => jsonResponse({ error: "invalid_grant" }, 400),
+      expected: false,
+    },
   ];
 
-  it.each(cases)("classifies $name as retryable=$expected", async ({ error, response, expected }) => {
+  it.each(cases)("classifies $name as retryable=$expected", async ({ error, response, envTokenFetch, expected }) => {
     let thrown: unknown = error?.();
-    if (thrown === undefined) {
+    if (thrown === undefined && envTokenFetch) {
+      const service = createAccountAuthService({
+        credentialStore: new MemoryCredentialStore(),
+        getOAuthConfig: () => ({ issuer: "https://clerk.example.test", clientId: "client-public" }),
+        env: { ADE_ACCOUNT_TOKEN: "refresh-env-token" } as NodeJS.ProcessEnv,
+        fetchImpl: vi.fn(envTokenFetch),
+      });
+      activeServices.push(service);
+      thrown = await service.getAccessToken().catch((caught) => caught);
+    } else if (thrown === undefined) {
       const nowMs = Date.parse("2026-07-14T12:00:00.000Z");
       const store = new MemoryCredentialStore();
       store.setSync(ACCOUNT_SESSION_CREDENTIAL_KEY, JSON.stringify(storedSession({

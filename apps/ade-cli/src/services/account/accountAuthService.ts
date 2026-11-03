@@ -2457,8 +2457,22 @@ export function createAccountAuthService(args: {
                 client_id: config.clientId,
               },
             });
-          } catch {
+          } catch (error) {
             envSharedSignal.throwIfAborted();
+            // An env token has no rotation journal, so an invalid_grant here
+            // cannot be the inconclusive peer-rotation case the classifier
+            // retries: the provisioned token really is dead. Everything else
+            // that is transient stays retryable so the publisher can use its
+            // fast backoff instead of asking the user for a new token.
+            if (
+              isTransientAccountTokenError(error)
+              && !(error instanceof AccountTokenRequestError && error.oauthErrorCode === "invalid_grant")
+            ) {
+              throw new AccountRefreshUnavailableError(
+                "ADE could not reach the account service to refresh ADE_ACCOUNT_TOKEN.",
+                { cause: error },
+              );
+            }
             throw new Error(
               "ADE_ACCOUNT_TOKEN refresh failed. Replace it with a newly provisioned token from `ade account token create`.",
             );
