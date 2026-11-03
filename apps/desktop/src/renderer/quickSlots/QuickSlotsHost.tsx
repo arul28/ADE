@@ -16,10 +16,7 @@ import { eventMatchesBinding, getEffectiveBinding } from "../lib/keybindings";
 import { KEYBINDING_DEFINITIONS } from "../../shared/keybindings";
 import { showToast } from "../components/app/toast/toastStore";
 import { isMacPlatform } from "../lib/platform";
-import {
-  useAppStore,
-  useRootAppStore,
-} from "../state/appStore";
+import { useRootAppStore } from "../state/appStore";
 import { ViewportOverlayPortal } from "../components/ui/ViewportOverlayHost";
 import {
   QUICK_SLOT_COMMANDS,
@@ -291,14 +288,13 @@ export function QuickSlotsHost() {
     event.preventDefault();
     event.stopPropagation();
     if (event.repeat) return true;
+    // Only a composer on screen is returned, so a Work page left mounted
+    // off-route never has its chat changed out of sight.
     const composer = getQuickSlotComposer();
-    // A Work page left mounted off-route still has a registered composer; a
-    // shortcut must not change a chat the user cannot see.
-    const visible = composer?.anchorElement()?.getClientRects().length ?? 0;
     const context = contextFor(composer?.hasCaret() ?? false);
     const command = commandsRef.current.find((entry) => entry.id === match.commandId);
     if (!command) return true;
-    const availability = visible > 0
+    const availability = composer
       ? (command.enabled?.(context) ?? { ok: true as const })
       : { ok: false as const, reason: "Open a chat first" };
     if (!availability.ok) {

@@ -119,6 +119,13 @@ export const useQuickSlotsStore = create<QuickSlotsState>((set, get) => ({
   reload: () => set(readPreferences()),
 }));
 
+// Another ADE window on this computer saved: follow it, as shortcuts do.
+if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
+  window.addEventListener("storage", (event) => {
+    if (event.key === QUICK_SLOTS_STORAGE_KEY) useQuickSlotsStore.getState().reload();
+  });
+}
+
 /** Read outside React (the dispatcher runs on a window event). */
 export function getQuickSlotsPreferences(): QuickSlotsPreferences {
   return useQuickSlotsStore.getState();

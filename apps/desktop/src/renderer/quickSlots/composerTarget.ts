@@ -1,3 +1,5 @@
+import { isInParkedSurface } from "../lib/parkedSurface";
+
 /**
  * The composer a quick slot acts on.
  *
@@ -50,16 +52,31 @@ export type QuickSlotComposerTarget = {
   stopTurn: () => void;
 };
 
-let current: QuickSlotComposerTarget | null = null;
+/**
+ * Every composer that says it is its tile's active one, newest last. A Work
+ * page can stay mounted while another page or project tab shows, so several
+ * can be registered at once; only one the user can see may answer.
+ */
+const targets: QuickSlotComposerTarget[] = [];
 
 export function registerQuickSlotComposer(target: QuickSlotComposerTarget): void {
-  current = target;
+  unregisterQuickSlotComposer(target.id);
+  targets.push(target);
 }
 
 export function unregisterQuickSlotComposer(id: string): void {
-  if (current?.id === id) current = null;
+  const index = targets.findIndex((target) => target.id === id);
+  if (index >= 0) targets.splice(index, 1);
 }
 
+/** The newest registered composer that is on screen, or null when none is. */
 export function getQuickSlotComposer(): QuickSlotComposerTarget | null {
-  return current;
+  for (let index = targets.length - 1; index >= 0; index -= 1) {
+    const target = targets[index]!;
+    const anchor = target.anchorElement();
+    // A parked surface (another page or project tab is showing) keeps its
+    // layout, so only its parked marker says the user cannot see it.
+    if (anchor && anchor.getClientRects().length > 0 && !isInParkedSurface(anchor)) return target;
+  }
+  return null;
 }
