@@ -3333,6 +3333,22 @@ button, [role="button"] {
   text-underline-offset: 3px;
 }
 
+/* The same three states on an image or video, which a highlight cannot paint. */
+[data-thread-comment-media-state] {
+  outline: 2px solid color-mix(in srgb, var(--chat-accent, #8b5cf6) 70%, transparent);
+  outline-offset: 2px;
+}
+
+[data-thread-comment-media-state="held"] {
+  outline-style: dashed;
+  outline-color: color-mix(in srgb, var(--chat-accent, #8b5cf6) 40%, transparent);
+}
+
+[data-thread-comment-media-state="active"] {
+  outline-width: 3px;
+  outline-color: var(--chat-accent, #8b5cf6);
+}
+
 /* Find (⌘F) in a chat or a diff: every match amber, the current one gold with
    dark text, so neither reads as a code tint or a comment highlight. Diffs
    repeat these two rules inside their shadow roots (AdeDiffViewer). */

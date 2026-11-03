@@ -14,7 +14,8 @@ import type { OpenProjectBinding } from "../../../shared/types/core";
 import { createPinnedFilesApi } from "../files/v2/pinnedFilesApi";
 import { streamFileBytes } from "../files/v2/streamBytes";
 import { cn } from "../ui/cn";
-import { classifyMediaPath } from "./chatWorkspacePaths";
+import { classifyMediaPath, parseWorkspacePathLocation } from "./chatWorkspacePaths";
+import { threadMediaAttributes } from "./threadCommentAnchors";
 import {
   inlineMediaFilename,
   inlineMediaKind,
@@ -117,8 +118,13 @@ export function ChatInlineMedia({
     );
   }
 
+  // The path as the reply wrote it: the chat's machine reads a relative one
+  // against the chat's lane, the same root it resolved against here.
+  const mediaAttributes = kind === "image" || kind === "video"
+    ? threadMediaAttributes({ kind, source: src, label: alt || name, attachPath: parseWorkspacePathLocation(src)?.path ?? null })
+    : null;
   return (
-    <span ref={ref} className="my-3 block min-w-0 max-w-full">
+    <span ref={ref} className="my-3 block min-w-0 max-w-full" {...mediaAttributes}>
       {kind === "image" ? (
         <InlineImage target={target} pin={pin} name={name} alt={alt} onOpen={open} />
       ) : null}
@@ -335,7 +341,8 @@ function InlineVideo({
   };
 
   return (
-    <span className="block">
+    // As wide as the chip or player, so a comment ring hugs it.
+    <span className="inline-block max-w-full align-top">
       {failed ? (
         <MediaChip className="py-2 text-(color:--chat-ink)/75">
           <span className="min-w-0 truncate">Couldn’t load {name}</span>

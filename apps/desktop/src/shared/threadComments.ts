@@ -26,6 +26,7 @@ export const MAX_THREAD_COMMENT_EXCERPT_CHARS = 120;
 export const MAX_THREAD_COMMENTS_PER_SESSION = 50;
 const MAX_TABLE_ROW_CELLS = 16;
 const MAX_TABLE_CELL_CHARS = 200;
+const MAX_MEDIA_SOURCE_CHARS = 1_000;
 /** Characters of text kept on each side of a quote to find it again. */
 export const THREAD_COMMENT_CONTEXT_CHARS = 32;
 
@@ -46,6 +47,16 @@ export type ChatThreadCommentAnchor =
       rowIndex: number;
       headers: string[];
       cells: string[];
+    }
+  | {
+      kind: "media";
+      mediaKind: "image" | "video";
+      /** What the reply names the media by: its markdown path or `ade-proof://<id>`. */
+      source: string;
+      /** The caption or file name, for the agent and the comment card. */
+      label: string;
+      /** 0-based index among the message's images and videos, to tell repeats apart. */
+      mediaIndex: number;
     };
 
 export type ChatThreadComment = {
@@ -118,6 +129,10 @@ function attr(value: string): string {
 
 export function threadCommentQuoteText(anchor: ChatThreadCommentAnchor): string {
   if (anchor.kind === "text") return anchor.quote;
+  if (anchor.kind === "media") {
+    const label = anchor.label.trim();
+    return `[${anchor.mediaKind}${label ? ` \u201c${label}\u201d` : ""}: ${anchor.source}]`;
+  }
   return anchor.cells
     .map((cell, index) => {
       const header = anchor.headers[index]?.trim();
@@ -131,6 +146,9 @@ export function threadCommentSourceLabel(comment: Pick<ChatThreadComment, "messa
   const base = excerpt ? `your reply that starts \u201c${excerpt}\u201d` : "one of your earlier replies";
   if (comment.anchor.kind === "table_row") {
     return `${base}, table ${comment.anchor.tableIndex + 1}, row ${comment.anchor.rowIndex + 1}`;
+  }
+  if (comment.anchor.kind === "media") {
+    return `${base}, ${comment.anchor.mediaKind} ${comment.anchor.mediaIndex + 1}`;
   }
   return base;
 }
@@ -242,6 +260,14 @@ export function normalizeThreadCommentAnchor(anchor: unknown): ChatThreadComment
     const cells = strings(value.cells);
     if (!cells.some(Boolean)) return null;
     return { kind: "table_row", tableIndex, rowIndex, headers: strings(value.headers), cells };
+  }
+  if (value.kind === "media") {
+    const mediaKind = value.mediaKind === "image" || value.mediaKind === "video" ? value.mediaKind : null;
+    const mediaIndex = Number(value.mediaIndex);
+    const source = typeof value.source === "string" ? cut(value.source.trim(), MAX_MEDIA_SOURCE_CHARS) : "";
+    if (!mediaKind || !source || !Number.isInteger(mediaIndex) || mediaIndex < 0) return null;
+    const label = typeof value.label === "string" ? cut(collapseWhitespace(value.label), MAX_TABLE_CELL_CHARS) : "";
+    return { kind: "media", mediaKind, source, label, mediaIndex };
   }
   return null;
 }
