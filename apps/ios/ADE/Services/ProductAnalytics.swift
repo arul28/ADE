@@ -134,6 +134,39 @@ enum ADEAnalyticsErrorCategory: String, CaseIterable {
   case voiceDictation = "voice_dictation"
 }
 
+/// One error Sentry admitted, read off its scrubbed event by `CrashReporting`
+/// and reduced again by `ProductAnalytics.sanitizedExceptionProperties`
+/// before it becomes a PostHog `$exception`.
+struct ADEAnalyticsExceptionReport {
+  struct Frame {
+    var module: String?
+    var filename: String?
+    var function: String?
+    var line: Int?
+    var instructionAddress: String?
+    var imageAddress: String?
+    var inApp: Bool
+  }
+
+  struct Exception {
+    var type: String
+    var value: String?
+    var mechanism: String?
+    var handled: Bool
+    /// Outermost caller first, the failing frame last.
+    var frames: [Frame]
+  }
+
+  /// The headline exception first.
+  var exceptions: [Exception]
+  /// `fatal`, `error` or `warning`.
+  var level: String
+  /// Only a fingerprint ADE chose (`CrashReporting.capture`).
+  var fingerprint: String?
+  /// The replay session running when it happened, so PostHog links the two.
+  var replaySessionId: String?
+}
+
 protocol ProductAnalyticsSink: AnyObject {
   var isConfigured: Bool { get }
   var canCapture: Bool { get }
@@ -146,10 +179,14 @@ protocol ProductAnalyticsSink: AnyObject {
   func flush()
   /// The id events are sent under right now, when the sink has one.
   func currentDistinctId() -> String?
+  /// Sends one `$exception` whose properties `ProductAnalytics` already
+  /// reduced (`sanitizedExceptionProperties`).
+  func captureException(properties: [String: Any])
 }
 
 extension ProductAnalyticsSink {
   func currentDistinctId() -> String? { nil }
+  func captureException(properties _: [String: Any]) {}
 }
 
 protocol ProductAnalyticsHTTPTransport: AnyObject {
@@ -215,13 +252,15 @@ final class DirectProductAnalyticsHTTPTransport: ProductAnalyticsHTTPTransport {
   }
 }
 
-/// Minimal PostHog Capture API client. ADE intentionally does not link the
-/// PostHog SDK: that keeps remote config, replay, crash collection, automatic
-/// lifecycle hooks, and an offline event queue out of the mobile binary.
+/// Minimal PostHog Capture API client. Every event goes through here, never
+/// through the PostHog SDK: the SDK is linked for session replay only
+/// (`SessionReplay.swift`), and its own events are dropped before they leave.
 final class DirectPostHogProductAnalyticsSink: ProductAnalyticsSink {
   struct Configuration: Equatable {
     let projectToken: String
     let endpoint: URL
+    /// The ingestion host the endpoint is on, for the replay SDK.
+    let host: URL
   }
 
   static let defaultHost = "https://us.i.posthog.com"
@@ -250,6 +289,11 @@ final class DirectPostHogProductAnalyticsSink: ProductAnalyticsSink {
 
   var canCapture: Bool {
     lock.withLock { requestedEnabled && configuration != nil }
+  }
+
+  /// The validated token and host while capture is on, else nil.
+  var activeConfiguration: Configuration? {
+    lock.withLock { requestedEnabled ? configuration : nil }
   }
 
   func configure(projectToken: String?, host: String?, enabled: Bool) {
@@ -294,30 +338,67 @@ final class DirectPostHogProductAnalyticsSink: ProductAnalyticsSink {
       privateProperties["$process_person_profile"] = false
       privateProperties["$geoip_disable"] = true
 
-      let payload: [String: Any] = [
-        "api_key": configuration.projectToken,
-        "distinct_id": identifiedAccountHash() ?? installationID(),
-        "event": event,
-        "properties": privateProperties,
-        "uuid": UUID().uuidString.lowercased(),
-      ]
-      guard JSONSerialization.isValidJSONObject(payload),
-            let body = try? JSONSerialization.data(withJSONObject: payload) else {
-        return
-      }
-
-      var request = URLRequest(
-        url: configuration.endpoint,
-        cachePolicy: .reloadIgnoringLocalCacheData,
-        timeoutInterval: 5
+      send(
+        event: event,
+        distinctId: identifiedAccountHash() ?? installationID(),
+        properties: privateProperties,
+        configuration: configuration
       )
-      request.httpMethod = "POST"
-      request.httpBody = body
-      request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-      let activeTransport = transport ?? transportFactory()
-      transport = activeTransport
-      activeTransport.send(request)
     }
+  }
+
+  func captureException(properties: [String: Any]) {
+    lock.withLock {
+      guard requestedEnabled, let configuration else { return }
+      var exceptionProperties = properties
+      exceptionProperties["surface"] = "mobile"
+      exceptionProperties["platform"] = "ios"
+      exceptionProperties["client"] = "ios"
+      exceptionProperties["interactive"] = false
+      exceptionProperties["app_version"] = Self.appVersion()
+      exceptionProperties["build_number"] = Self.buildNumber()
+      exceptionProperties["distribution"] = Self.distribution.rawValue
+      exceptionProperties["release_channel"] = Self.distribution.releaseChannel
+      exceptionProperties["$process_person_profile"] = false
+      exceptionProperties["$geoip_disable"] = true
+      send(
+        event: ProductAnalytics.exceptionEventName,
+        distinctId: identifiedAccountHash() ?? installationID(),
+        properties: exceptionProperties,
+        configuration: configuration
+      )
+    }
+  }
+
+  /// One POST to the Capture API. Called with `lock` held.
+  private func send(
+    event: String,
+    distinctId: String,
+    properties: [String: Any],
+    configuration: Configuration
+  ) {
+    let payload: [String: Any] = [
+      "api_key": configuration.projectToken,
+      "distinct_id": distinctId,
+      "event": event,
+      "properties": properties,
+      "uuid": UUID().uuidString.lowercased(),
+    ]
+    guard JSONSerialization.isValidJSONObject(payload),
+          let body = try? JSONSerialization.data(withJSONObject: payload) else {
+      return
+    }
+    var request = URLRequest(
+      url: configuration.endpoint,
+      cachePolicy: .reloadIgnoringLocalCacheData,
+      timeoutInterval: 5
+    )
+    request.httpMethod = "POST"
+    request.httpBody = body
+    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    let activeTransport = transport ?? transportFactory()
+    transport = activeTransport
+    activeTransport.send(request)
   }
 
   func identify(userHash: String, accountId: String) {
@@ -327,11 +408,10 @@ final class DirectPostHogProductAnalyticsSink: ProductAnalyticsSink {
             let configuration else {
         return
       }
-      let payload: [String: Any] = [
-        "api_key": configuration.projectToken,
-        "distinct_id": userHash,
-        "event": "$identify",
-        "properties": [
+      send(
+        event: "$identify",
+        distinctId: userHash,
+        properties: [
           "$anon_distinct_id": installationID(),
           "$set": [
             "plan": "free",
@@ -341,23 +421,8 @@ final class DirectPostHogProductAnalyticsSink: ProductAnalyticsSink {
           ],
           "$geoip_disable": true,
         ],
-        "uuid": UUID().uuidString.lowercased(),
-      ]
-      guard JSONSerialization.isValidJSONObject(payload),
-            let body = try? JSONSerialization.data(withJSONObject: payload) else {
-        return
-      }
-      var request = URLRequest(
-        url: configuration.endpoint,
-        cachePolicy: .reloadIgnoringLocalCacheData,
-        timeoutInterval: 5
+        configuration: configuration
       )
-      request.httpMethod = "POST"
-      request.httpBody = body
-      request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-      let activeTransport = transport ?? transportFactory()
-      transport = activeTransport
-      activeTransport.send(request)
     }
   }
 
@@ -402,7 +467,7 @@ final class DirectPostHogProductAnalyticsSink: ProductAnalyticsSink {
 
     let hostValue = normalizedConfigurationValue(host) ?? defaultHost
     guard var components = URLComponents(string: hostValue),
-          components.scheme?.lowercased() == "https",
+          components.scheme?.lowercased() == "https" || isDebugLoopback(components),
           components.host?.isEmpty == false,
           components.user == nil,
           components.password == nil,
@@ -411,9 +476,23 @@ final class DirectPostHogProductAnalyticsSink: ProductAnalyticsSink {
           components.path.isEmpty || components.path == "/" else {
       return nil
     }
+    components.path = ""
+    guard let hostURL = components.url else { return nil }
     components.path = "/i/v0/e/"
     guard let endpoint = components.url else { return nil }
-    return Configuration(projectToken: projectToken, endpoint: endpoint)
+    return Configuration(projectToken: projectToken, endpoint: endpoint, host: hostURL)
+  }
+
+  /// Plain `http` is accepted only in a Debug build and only for this
+  /// computer, so a developer can point capture and replay at a stand-in
+  /// server (`ADE_POSTHOG_DEV_HOST`). Release builds require `https`.
+  private static func isDebugLoopback(_ components: URLComponents) -> Bool {
+    #if DEBUG
+    return components.scheme?.lowercased() == "http"
+      && ["127.0.0.1", "localhost"].contains(components.host?.lowercased() ?? "")
+    #else
+    return false
+    #endif
   }
 
   private static func sanitizedProperties(
@@ -594,6 +673,11 @@ final class ProductAnalytics {
   static let clerkIdSetForHashDefaultsKey = "ade.analytics.clerk-id-set-for-hash.v1"
   static let allowedEventNames = Set(ADEAnalyticsEventName.allCases.map(\.rawValue))
   static let dailyEventLimit = 20
+  /// PostHog's own name, so error tracking reads it. Not an `ade_mobile_*`
+  /// event: it has its own allowance and its own builder.
+  static let exceptionEventName = "$exception"
+  /// Sentry admits at most 60 an hour first; this caps what PostHog gets.
+  static let exceptionDailyLimit = 10
 
   private static let budgetDefaultsKey = "ade.analytics.daily-budget.v2"
   private static let identifyEventName = "$identify"
@@ -670,11 +754,29 @@ final class ProductAnalytics {
 
   func configure(bundle: Bundle = .main) {
     guard let postHogSink = sink as? DirectPostHogProductAnalyticsSink else { return }
-    postHogSink.configure(
-      projectToken: Self.configurationValue(for: "ADEPostHogProjectToken", in: bundle),
-      host: Self.configurationValue(for: "ADEPostHogHost", in: bundle),
-      enabled: isEnabled
-    )
+    var projectToken = Self.configurationValue(for: "ADEPostHogProjectToken", in: bundle)
+    var host = Self.configurationValue(for: "ADEPostHogHost", in: bundle)
+    #if DEBUG
+    // A developer run can point analytics and replay at a stand-in server.
+    let environment = ProcessInfo.processInfo.environment
+    if let devHost = environment["ADE_POSTHOG_DEV_HOST"], !devHost.isEmpty {
+      host = devHost
+      projectToken = environment["ADE_POSTHOG_DEV_TOKEN"] ?? projectToken
+    }
+    #endif
+    postHogSink.configure(projectToken: projectToken, host: host, enabled: isEnabled)
+  }
+
+  /// The project token and ingestion host session replay may use: present
+  /// only while analytics is on and configured, so replay follows the same
+  /// switch (`DO_NOT_TRACK`) and the same validated configuration.
+  func replayConfiguration() -> (projectToken: String, host: URL)? {
+    guard isEnabled,
+          let postHogSink = sink as? DirectPostHogProductAnalyticsSink,
+          let configuration = postHogSink.activeConfiguration else {
+      return nil
+    }
+    return (configuration.projectToken, configuration.host)
   }
 
   func setEnabled(_ enabled: Bool) {
@@ -806,6 +908,42 @@ final class ProductAnalytics {
       ],
       foregroundDeduplicationKey: "error:\(category.rawValue)"
     )
+  }
+
+  /// Mirrors one error Sentry already admitted (after its budget and scrub) to
+  /// PostHog error tracking. It has an allowance of its own, outside the
+  /// shared ceiling: PostHog bills exceptions separately, and a bad day of
+  /// errors must not spend the product events' budget.
+  func captureException(_ report: ADEAnalyticsExceptionReport) {
+    guard sink.canCapture,
+          var properties = Self.sanitizedExceptionProperties(report) else { return }
+    let (admitted, pendingEvents) = lock.withLock { () -> (Bool, [PendingEvent]) in
+      var pendingEvents: [PendingEvent] = []
+      var currentBudget = currentDailyBudget(pendingEvents: &pendingEvents)
+      let count = currentBudget.counts[Self.exceptionEventName, default: 0]
+      let admitted = count < Self.exceptionDailyLimit
+      if admitted {
+        // Counted by name only: `total` is the shared ceiling's.
+        currentBudget.counts[Self.exceptionEventName] = count + 1
+      }
+      budget = currentBudget
+      persist(currentBudget)
+      return (admitted, pendingEvents)
+    }
+    // The previous day's summary, when this is the day's first event.
+    for pendingEvent in pendingEvents {
+      var eventProperties = pendingEvent.properties
+      eventProperties["surface"] = "mobile"
+      eventProperties["platform"] = "ios"
+      eventProperties["$process_person_profile"] = false
+      eventProperties["$geoip_disable"] = true
+      sink.capture(event: pendingEvent.name.rawValue, properties: eventProperties)
+    }
+    guard admitted else { return }
+    if let sessionId = report.replaySessionId {
+      properties["$session_id"] = sessionId
+    }
+    sink.captureException(properties: properties)
   }
 
   func identifyAccount(_ userId: String) {
@@ -1027,6 +1165,116 @@ final class ProductAnalytics {
     let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !value.isEmpty, !value.contains("$(") else { return nil }
     return value
+  }
+
+  // MARK: - `$exception`
+
+  private static let maxExceptions = 5
+  private static let maxFrames = 50
+  private static let exceptionTypePattern = try? NSRegularExpression(pattern: #"^[A-Za-z_$][\w$.: -]{0,79}$"#)
+  private static let frameFunctionPattern = try? NSRegularExpression(pattern: #"^[\w$.<>\[\]() ,:?!&@*+=~-]{1,160}$"#)
+  private static let hexAddressPattern = try? NSRegularExpression(pattern: #"^0x[0-9a-fA-F]{1,16}$"#)
+  private static let mechanismPattern = try? NSRegularExpression(pattern: #"^[a-z0-9][a-z0-9._+-]{0,63}$"#)
+  /// What desktop's `scrubFreeText` removes on top of the secret scrub:
+  /// email addresses, `file:` URLs and absolute paths, which name the person
+  /// or their device.
+  private static let freeTextPatterns: [(NSRegularExpression, String)] = [
+    (#"(?i)[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}"#, "[email]"),
+    (#"(?i)\bfile://[^\s"'`<>]*"#, "[path]"),
+    (#"(?<![\w./\\~-])(?:~/[^\s"'`<>]+|/(?:[^\s/"'`<>]+/)+[^\s/"'`<>]*)"#, "[path]"),
+  ].compactMap { pattern, template in
+    (try? NSRegularExpression(pattern: pattern)).map { ($0, template) }
+  }
+
+  private static func matches(_ pattern: NSRegularExpression?, _ value: String) -> Bool {
+    guard let pattern else { return false }
+    return pattern.firstMatch(in: value, range: NSRange(value.startIndex..., in: value)) != nil
+  }
+
+  /// An error message as it may leave the phone: Sentry's scrub already ran,
+  /// then emails and absolute paths go, and it is cut to `maxLength`.
+  static func scrubExceptionText(_ input: String, maxLength: Int) -> String {
+    var output = String(input.prefix(maxLength * 2))
+    for (pattern, template) in freeTextPatterns {
+      output = pattern.stringByReplacingMatches(
+        in: output,
+        range: NSRange(output.startIndex..., in: output),
+        withTemplate: template
+      )
+    }
+    return String(output.prefix(maxLength))
+  }
+
+  /// A path reduced to its last component (`/private/var/.../ADE.app/ADE`
+  /// becomes `ADE`), never the folder it was installed to.
+  private static func lastPathComponent(_ value: String?) -> String? {
+    guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else {
+      return nil
+    }
+    let last = trimmed.split(whereSeparator: { $0 == "/" || $0 == "\\" }).last.map(String.init) ?? trimmed
+    return last.isEmpty ? nil : String(last.prefix(120))
+  }
+
+  /// PostHog error tracking's properties for one report, the same contract
+  /// as desktop's `sanitizeExceptionProperties`: at most five chained
+  /// exceptions of 50 frames, the type, the scrubbed message (500
+  /// characters), and per frame only the module and file name, function,
+  /// line, instruction and image address, and whether it is in-app. No
+  /// source lines, variables, breadcrumbs, contexts or tags.
+  static func sanitizedExceptionProperties(_ report: ADEAnalyticsExceptionReport) -> [String: Any]? {
+    let level: String
+    switch report.level {
+    case "fatal", "error", "warning": level = report.level
+    default: return nil
+    }
+    let exceptionList: [[String: Any]] = report.exceptions.prefix(maxExceptions).map { exception in
+      let trimmedType = exception.type.trimmingCharacters(in: .whitespacesAndNewlines)
+      let type = matches(exceptionTypePattern, trimmedType) ? trimmedType : "Error"
+      let frames: [[String: Any]] = exception.frames.suffix(maxFrames).compactMap { frame in
+        let module = lastPathComponent(frame.module)
+        let filename = lastPathComponent(frame.filename)
+        let trimmedFunction = frame.function?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let function = trimmedFunction.flatMap { matches(frameFunctionPattern, $0) ? $0 : nil }
+        let instructionAddress = frame.instructionAddress.flatMap { matches(hexAddressPattern, $0) ? $0 : nil }
+        guard module != nil || filename != nil || function != nil || instructionAddress != nil else {
+          return nil
+        }
+        var output: [String: Any] = ["platform": "apple", "in_app": frame.inApp]
+        if let module { output["module"] = module }
+        if let filename { output["filename"] = filename }
+        if let function { output["function"] = function }
+        if let line = frame.line, (0..<10_000_000).contains(line) { output["lineno"] = line }
+        if let instructionAddress { output["instruction_addr"] = instructionAddress }
+        if let imageAddress = frame.imageAddress, matches(hexAddressPattern, imageAddress) {
+          output["image_addr"] = imageAddress
+        }
+        return output
+      }
+      let mechanismValue = exception.mechanism?.lowercased() ?? ""
+      var output: [String: Any] = [
+        "type": type,
+        "value": scrubExceptionText(exception.value ?? "", maxLength: 500),
+        "mechanism": [
+          "type": matches(mechanismPattern, mechanismValue) ? mechanismValue : "generic",
+          "handled": exception.handled,
+          "synthetic": false,
+        ],
+      ]
+      if !frames.isEmpty {
+        output["stacktrace"] = ["type": "raw", "frames": frames]
+      }
+      return output
+    }
+    guard !exceptionList.isEmpty else { return nil }
+    var properties: [String: Any] = [
+      "$exception_list": exceptionList,
+      "$exception_level": level,
+    ]
+    if let fingerprint = report.fingerprint?.trimmingCharacters(in: .whitespacesAndNewlines),
+       !fingerprint.isEmpty {
+      properties["$exception_fingerprint"] = scrubExceptionText(fingerprint, maxLength: 200)
+    }
+    return properties
   }
 
   static func accountHash(_ userId: String) -> String {

@@ -454,6 +454,8 @@
 		E20000000000000000000F04 /* WorkRemoteMachineRows.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F04 /* WorkRemoteMachineRows.swift */; };
 		5E0000000000000000000B01 /* Sentry in Frameworks */ = {isa = PBXBuildFile; productRef = 5E0000000000000000000A02 /* Sentry */; };
 		5E0000000000000000000B02 /* CrashReporting.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E0000000000000000000C01 /* CrashReporting.swift */; };
+		5F0000000000000000000B01 /* PostHog in Frameworks */ = {isa = PBXBuildFile; productRef = 5F0000000000000000000A02 /* PostHog */; };
+		5F0000000000000000000B02 /* SessionReplay.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5F0000000000000000000C01 /* SessionReplay.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -930,6 +932,7 @@
 		D20000000000000000000F03 /* HubMachineSections.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = HubMachineSections.swift; path = ADE/Views/Hub/HubMachineSections.swift; sourceTree = "<group>"; };
 		D20000000000000000000F04 /* WorkRemoteMachineRows.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkRemoteMachineRows.swift; path = ADE/Views/Work/WorkRemoteMachineRows.swift; sourceTree = "<group>"; };
 		5E0000000000000000000C01 /* CrashReporting.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CrashReporting.swift; path = ADE/Services/CrashReporting.swift; sourceTree = "<group>"; };
+		5F0000000000000000000C01 /* SessionReplay.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SessionReplay.swift; path = ADE/Services/SessionReplay.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -947,6 +950,7 @@
 				60F4CDDB763C0A9F0E650B40 /* Foundation.framework in Frameworks */,
 				DD20000000000000000000B1 /* SwiftTerm in Frameworks */,
 				5E0000000000000000000B01 /* Sentry in Frameworks */,
+				5F0000000000000000000B01 /* PostHog in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1402,6 +1406,7 @@
 				B5D5B5B87564C73F2FF34B0D /* KeychainService.swift */,
 				A90000000000000000000011 /* ProductAnalytics.swift */,
 				5E0000000000000000000C01 /* CrashReporting.swift */,
+				5F0000000000000000000C01 /* SessionReplay.swift */,
 				66B5024B0A05F3D9754101F1 /* SyncService.swift */,
 				D10000000000000000000F82 /* SyncService+SessionHandoff.swift */,
 				D20000000000000000000F02 /* MachineFleet.swift */,
@@ -1732,6 +1737,7 @@
 				DD10000000000000000000C2 /* ClerkKit */,
 				C5C000000000000000000002 /* Citadel */,
 				5E0000000000000000000A02 /* Sentry */,
+				5F0000000000000000000A02 /* PostHog */,
 			);
 			productName = ADE;
 			productReference = 27A125DE2C17BA32F9291513 /* ADE.app */;
@@ -1865,6 +1871,7 @@
 				DD10000000000000000000C1 /* XCRemoteSwiftPackageReference "clerk-ios" */,
 				C5C000000000000000000001 /* XCRemoteSwiftPackageReference "Citadel" */,
 				5E0000000000000000000A01 /* XCRemoteSwiftPackageReference "sentry-cocoa" */,
+				5F0000000000000000000A01 /* XCRemoteSwiftPackageReference "posthog-ios" */,
 			);
 			productRefGroup = 7FAD2BF35AA6A286BCF68D49 /* Products */;
 			projectDirPath = "";
@@ -2013,6 +2020,7 @@
 				D1C7A70000000000000001B1 /* DictationController.swift in Sources */,
 				A90000000000000000000001 /* ProductAnalytics.swift in Sources */,
 				5E0000000000000000000B02 /* CrashReporting.swift in Sources */,
+				5F0000000000000000000B02 /* SessionReplay.swift in Sources */,
 				91D46087242081A9F29BBFF5 /* DictationMicButton.swift in Sources */,
 				C85070CCC923CAB6FD61AF85 /* RecordingPill.swift in Sources */,
 				B1D40000000000000000A001 /* GlobalDictationPill.swift in Sources */,
@@ -3097,6 +3105,14 @@
 				minimumVersion = 9.30.1;
 			};
 		};
+		5F0000000000000000000A01 /* XCRemoteSwiftPackageReference "posthog-ios" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/PostHog/posthog-ios";
+			requirement = {
+				kind = exactVersion;
+				version = 3.93.3;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -3119,6 +3135,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 5E0000000000000000000A01 /* XCRemoteSwiftPackageReference "sentry-cocoa" */;
 			productName = Sentry;
+		};
+		5F0000000000000000000A02 /* PostHog */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 5F0000000000000000000A01 /* XCRemoteSwiftPackageReference "posthog-ios" */;
+			productName = PostHog;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

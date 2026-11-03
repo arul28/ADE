@@ -70,9 +70,13 @@ enum CrashReporting {
       // The budget decides first, on the raw event; the scrubber only cleans.
       options.beforeSend = { event in
         if isIdleRunLoopAppHang(event) { return nil }
-        return ADECrashEventLimiter.shared.admit(ADECrashScrubber.fingerprint(for: event))
-          ? ADECrashScrubber.scrub(event)
-          : nil
+        guard ADECrashEventLimiter.shared.admit(ADECrashScrubber.fingerprint(for: event)) else { return nil }
+        let scrubbed = ADECrashScrubber.scrub(event)
+        // PostHog error tracking gets what Sentry admitted, never more.
+        if let report = exceptionReport(from: scrubbed) {
+          ProductAnalytics.shared.captureException(report)
+        }
+        return scrubbed
       }
     }
     // The tags every ADE Sentry project carries (`sentryCommonTags` in
@@ -168,6 +172,58 @@ enum CrashReporting {
     return ADEAppHangStack.isIdleRunLoop(frames.map {
       ADEAppHangStack.Frame(package: $0.package, inApp: $0.inApp?.boolValue == true)
     })
+  }
+
+  /// Reads a scrubbed Sentry error event into the report PostHog's
+  /// `$exception` is built from. Transactions and info/debug messages are
+  /// not errors and are not mirrored.
+  static func exceptionReport(from event: Sentry.Event) -> ADEAnalyticsExceptionReport? {
+    if let type = event.type, type != "event" { return nil }
+    let level: String
+    switch event.level {
+    case .fatal: level = "fatal"
+    case .error: level = "error"
+    case .warning: level = "warning"
+    default: return nil
+    }
+    // Sentry lists a cause chain innermost-last; PostHog reads the first
+    // entry as the headline, so the outermost leads.
+    // A handled error carries its stack on the thread that captured it.
+    let currentThreadStack = event.threads?.first(where: { $0.current?.boolValue == true })?.stacktrace
+    let sentryExceptions = event.exceptions ?? []
+    var exceptions: [ADEAnalyticsExceptionReport.Exception] = sentryExceptions.enumerated().reversed().map { index, exception in
+      let stacktrace = exception.stacktrace
+        ?? (index == sentryExceptions.count - 1 ? currentThreadStack : nil)
+      return ADEAnalyticsExceptionReport.Exception(
+        type: exception.type ?? "Error",
+        value: exception.value,
+        mechanism: exception.mechanism?.type,
+        handled: exception.mechanism?.handled?.boolValue ?? true,
+        frames: (stacktrace?.frames ?? []).map { frame in
+          ADEAnalyticsExceptionReport.Frame(
+            module: frame.package ?? frame.module,
+            filename: frame.fileName,
+            function: frame.function,
+            line: frame.lineNumber?.intValue,
+            instructionAddress: frame.instructionAddress,
+            imageAddress: frame.imageAddress,
+            inApp: frame.inApp?.boolValue ?? false
+          )
+        }
+      )
+    }
+    if exceptions.isEmpty {
+      // A captured message: no stack, the scrubbed text is the value.
+      guard let message = event.message?.formatted, !message.isEmpty else { return nil }
+      exceptions = [.init(type: "Problem", value: message, mechanism: "capture_message", handled: true, frames: [])]
+    }
+    let fingerprint = event.fingerprint.flatMap { $0.isEmpty ? nil : $0.joined(separator: "|") }
+    return ADEAnalyticsExceptionReport(
+      exceptions: exceptions,
+      level: level,
+      fingerprint: fingerprint,
+      replaySessionId: SessionReplay.currentSessionId()
+    )
   }
 
   // MARK: - Configuration helpers

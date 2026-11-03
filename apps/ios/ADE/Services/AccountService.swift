@@ -925,6 +925,7 @@ final class AccountService: ObservableObject {
     guard let key = AccountConfig.clerkPublishableKey else {
       phase = .unconfigured
       ProductAnalytics.shared.captureColdStart(afterReconcilingAccount: nil)
+      SessionReplay.scheduleStart()
       return
     }
 
@@ -952,6 +953,8 @@ final class AccountService: ObservableObject {
     ProductAnalytics.shared.captureColdStart(
       afterReconcilingAccount: phase == .signedIn ? identity?.userId : nil
     )
+    // After the account is reconciled, so replay starts as the right person.
+    SessionReplay.scheduleStart()
   }
 
   private func observeAuthEvents() {
@@ -1015,6 +1018,7 @@ final class AccountService: ObservableObject {
       SyncService.shared?.removeAccountOwnedPairings(exceptOwnerId: nextIdentity.userId)
       identity = nextIdentity
       ProductAnalytics.shared.identifyAccount(nextIdentity.userId)
+      SessionReplay.syncIdentity()
       if phase != .signedIn {
         phase = .signedIn
       }
@@ -1080,6 +1084,7 @@ final class AccountService: ObservableObject {
     SyncService.shared?.removeAccountOwnedPairings(exceptOwnerId: nil)
     identity = nil
     ProductAnalytics.shared.resetAccountIdentity()
+    SessionReplay.syncIdentity()
     if previousOwnerId != nil { CrashReporting.setUser(accountId: nil) }
     machines = []
     machinesState = .idle
