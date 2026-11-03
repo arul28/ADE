@@ -437,6 +437,28 @@ export type SyncAccountDirectoryState =
   | "transport_error";
 
 /**
+ * Which path ended a token-leg publish attempt, sent as `cause` on
+ * `ade_publish_failing`. `token_unreadable` alone is reached three ways, and
+ * only this splits them in analytics:
+ * - `status_read_error`: the brain could not read account status at all.
+ * - `session_expired` / `session_unreadable`: the stored session needs a
+ *   sign-in or a repair (the desktop shows its banner for both).
+ * - `no_access_token`: signed in, yet the token read returned nothing.
+ * - `token_refresh_failed`: signed in, and the refresh threw (network, Clerk
+ *   5xx, a peer mid-rotation). Recorded as `transport_error`, not
+ *   `token_unreadable`, because it clears on its own.
+ */
+export const ACCOUNT_PUBLISH_FAILURE_CAUSES = [
+  "status_read_error",
+  "session_expired",
+  "session_unreadable",
+  "no_access_token",
+  "token_refresh_failed",
+] as const;
+
+export type AccountPublishFailureCause = (typeof ACCOUNT_PUBLISH_FAILURE_CAUSES)[number];
+
+/**
  * True for publish failures caused by the brain's own copy of the account
  * session being unreadable on this Mac — it could not decrypt the stored
  * session, could not read account status, or could not read/refresh the

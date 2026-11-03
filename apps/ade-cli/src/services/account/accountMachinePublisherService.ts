@@ -5,6 +5,7 @@ import {
   competingSyncHostSkipReason,
   createSyncAccountDirectoryHealth,
   MAX_ADE_HOME_DISPLAY_CHARS,
+  type AccountPublishFailureCause,
   type AdeAccountMachineEndpoint,
   type CompetingSyncHostOwner,
   type AdeInstallChannel,
@@ -49,7 +50,7 @@ import {
   warnDevelopmentClerkIgnored,
 } from "../../../../desktop/src/shared/accountDirectory";
 import {
-  getSignedInAccountAccessToken,
+  requireSignedInAccountAccessToken,
   type AccountAuthStatus,
   type AccountSessionReadFailureReason,
   type AccountSessionReadState,
@@ -555,6 +556,13 @@ function publisherSessionNeedsSignIn(
     || status.sessionReadState === "unreadable";
 }
 
+/** The analytics cause for a session `publisherSessionNeedsSignIn` refused. */
+function sessionNeedsSignInCause(
+  status: PublisherAccountStatus,
+): AccountPublishFailureCause {
+  return status.sessionState === "expired" ? "session_expired" : "session_unreadable";
+}
+
 function validatedRelayUrl(raw: string, machineKey: string): string | null {
   let url: URL;
   try {
@@ -769,6 +777,11 @@ export function relayPublishStateSignature(
 }
 
 export function createAccountMachinePublisherService(options: {
+  /**
+   * `null` means there is no usable token (`token_unreadable`). A throw while
+   * the session is still usable is a temporary refresh failure, retried with
+   * backoff as `transport_error`.
+   */
   getAccessToken: (options?: {
     forceRefresh?: boolean;
     signal?: AbortSignal;
@@ -1028,6 +1041,9 @@ export function createAccountMachinePublisherService(options: {
       reachableEndpointCount?: number;
       succeededAt?: number;
       legDurations?: SyncAccountDirectoryLegDurations;
+      /** The leg that failed, when the state alone names the wrong one. */
+      leg?: AccountMachinePublishLeg;
+      cause?: AccountPublishFailureCause;
     },
   ): void => {
     const failureStates = new Set<SyncAccountDirectoryHealth["state"]>([
@@ -1093,8 +1109,9 @@ export function createAccountMachinePublisherService(options: {
         dedupeValue: health.failingSinceMs,
         properties: {
           failing_minutes: Math.max(2, Math.floor((args.attemptAt - health.failingSinceMs) / 60_000)),
-          leg: failureLegForState(state),
+          leg: args.leg ?? failureLegForState(state),
           code: state,
+          ...(args.cause ? { cause: args.cause } : {}),
         },
       });
     }
@@ -1384,18 +1401,20 @@ export function createAccountMachinePublisherService(options: {
         skipReason: "The ADE brain could not read account status.",
         directoryOrigin,
         reachableEndpointCount: observedReachableEndpointCount,
+        cause: "status_read_error",
       });
       return;
     }
     observeSessionReadState(accountStatus);
     // Ordered before the sign-out branch on purpose: a stale-token machine must
     // not fall through into the path that clears its retained Relay route.
-    if (publisherSessionNeedsSignIn(accountStatus)) {
+    if (accountStatus && publisherSessionNeedsSignIn(accountStatus)) {
       outcome("token_unreadable", {
         attemptAt,
         skipReason: "Sign in to ADE again — this machine stays paired.",
         directoryOrigin,
         reachableEndpointCount: observedReachableEndpointCount,
+        cause: sessionNeedsSignInCause(accountStatus),
       });
       return;
     }
@@ -1508,7 +1527,40 @@ export function createAccountMachinePublisherService(options: {
         warnOnce("token_timeout", "token", legDurations);
         return;
       }
-      accessToken = null;
+      // A refresh that threw while signed in is a network blip, a Clerk 5xx or
+      // a peer mid-rotation, and it clears on its own. Calling it
+      // `token_unreadable` skipped the fast retry and offered a brain-restart
+      // Repair for a flaky network. A grant that is really dead is marked
+      // `expired` before the throw, so re-reading the status tells them apart.
+      let statusAfterFailure: PublisherAccountStatus | null = null;
+      try {
+        statusAfterFailure = options.getAccountStatus?.() ?? null;
+      } catch {
+        statusAfterFailure = null;
+      }
+      if (statusAfterFailure && publisherSessionNeedsSignIn(statusAfterFailure)) {
+        outcome("token_unreadable", {
+          attemptAt,
+          skipReason: "Sign in to ADE again — this machine stays paired.",
+          directoryOrigin,
+          reachableEndpointCount,
+          cause: sessionNeedsSignInCause(statusAfterFailure),
+        });
+        return;
+      }
+      recordTransientFailure();
+      outcome("transport_error", {
+        attemptAt,
+        skipReason: "The ADE account token refresh failed; retrying.",
+        directoryOrigin,
+        reachableEndpointCount,
+        leg: "token",
+        cause: "token_refresh_failed",
+      });
+      warnOnce("token_refresh_failed", "token", legDurations, {
+        errorKind: error instanceof Error ? error.name : "unknown",
+      });
+      return;
     }
     if (disposed) return;
     if (!accessToken) {
@@ -1517,6 +1569,7 @@ export function createAccountMachinePublisherService(options: {
         skipReason: "The ADE brain could not read or refresh the account token.",
         directoryOrigin,
         reachableEndpointCount,
+        cause: "no_access_token",
       });
       return;
     }
@@ -2070,7 +2123,7 @@ export function createBrainAccountMachinePublisherService(options: {
     : options.powerSource;
   return createAccountMachinePublisherService({
     ...(powerSource ? { powerSource } : {}),
-    getAccessToken: (tokenOptions) => getSignedInAccountAccessToken(
+    getAccessToken: (tokenOptions) => requireSignedInAccountAccessToken(
       accountAuthService,
       tokenOptions,
     ),

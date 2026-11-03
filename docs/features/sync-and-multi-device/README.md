@@ -831,7 +831,14 @@ Runtime support files outside `services/sync/`:
   edge-triggered helper that emits at most one event while a condition holds and
   re-arms only once it clears, with a 24-hour deduplication window on top.
   `ade_publish_failing` covers a publication that has been failing for at least
-  two minutes; `ade_account_session_unreadable` covers the brain being unable to
+  two minutes, with `code` (the health state), `leg`, and, for the token leg, a
+  closed `cause` (`ACCOUNT_PUBLISH_FAILURE_CAUSES` in `shared/types/sync.ts`)
+  that splits the three ways to `token_unreadable` (`status_read_error`,
+  `session_expired` / `session_unreadable`, `no_access_token`) from a refresh
+  that threw while signed in (`token_refresh_failed`). That last one is recorded
+  as `transport_error` and retried with backoff, not as `token_unreadable`: it
+  clears on its own, and the Repair control would restart a healthy brain for a
+  network blip. `ade_account_session_unreadable` covers the brain being unable to
   read the account session at all (`sessionReadState === "unreadable"`, or a
   status read that threw), carrying only a coarse `code` for the read path
   (`decrypt_failure`, `no_os_key_material`, `store_format`, `session_parse`,

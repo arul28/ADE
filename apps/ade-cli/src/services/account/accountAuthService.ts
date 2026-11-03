@@ -333,15 +333,28 @@ export type AccountActionDomainService = {
   createToken(): Promise<AccountTokenCreateResult>;
 };
 
-export async function getSignedInAccountAccessToken(
+/**
+ * The signed-in account's access token, or `null` when there is no session to
+ * ask. Unlike `getSignedInAccountAccessToken`, a refresh that fails while
+ * signed in THROWS: a caller that retries on its own (the machine publisher)
+ * must be able to tell a network blip from a session it cannot use.
+ */
+export async function requireSignedInAccountAccessToken(
   service: Pick<AccountAuthService, "getStatus" | "getAccessToken">,
   options?: AccountAccessTokenOptions,
 ): Promise<string | null> {
   const status = service.getStatus();
   if (!status.signedIn && status.source !== "env-token") return null;
+  const accessToken = (await service.getAccessToken(options)).trim();
+  return accessToken && service.getStatus().userId ? accessToken : null;
+}
+
+export async function getSignedInAccountAccessToken(
+  service: Pick<AccountAuthService, "getStatus" | "getAccessToken">,
+  options?: AccountAccessTokenOptions,
+): Promise<string | null> {
   try {
-    const accessToken = (await service.getAccessToken(options)).trim();
-    return accessToken && service.getStatus().userId ? accessToken : null;
+    return await requireSignedInAccountAccessToken(service, options);
   } catch {
     // Relay account credentials are additive. An unavailable refresh must not
     // block the independent GitHub, Linear, or ade_proj_ authorization path.
