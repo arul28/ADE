@@ -38,7 +38,7 @@ import { BindingCaps, KeyCaps } from "./keyboardParts";
 type Scope = KeybindingDefinition["scope"];
 
 const SCOPE_ORDER: ReadonlyArray<{ scope: Scope; label: string; hint: string }> = [
-  { scope: "global", label: "Everywhere", hint: "On any page, even while you type." },
+  { scope: "global", label: "Everywhere", hint: "In any project, even while you type." },
   { scope: "work", label: "Work", hint: "While the Work page is showing." },
   { scope: "chat", label: "Prompt box", hint: "The chat you last worked in, wherever it is." },
   { scope: "terminal", label: "Terminal", hint: "While the caret is in the terminal tool." },

@@ -23,6 +23,7 @@ import {
 import { ViewportOverlayPortal } from "../components/ui/ViewportOverlayHost";
 import {
   QUICK_SLOT_COMMANDS,
+  activeProjectStore,
   findQuickSlotCommand,
   profileCommands,
   type QuickSlotCommand,
@@ -186,7 +187,7 @@ export function QuickSlotsHost() {
   }, [clearTimers]);
 
   const contextFor = useCallback((caret: boolean): QuickSlotContext => {
-    const state = useAppStore.getState();
+    const state = activeProjectStore().getState();
     const composer = getQuickSlotComposer();
     const composerLaneId = composer?.getSnapshot().laneId ?? null;
     // A chat on another machine keeps its lane id, but that lane is not in this
@@ -238,25 +239,31 @@ export function QuickSlotsHost() {
     const context = contextFor(caretOverride ?? caretInsideRef.current);
     const resolved = resolveSlots(slotsRef.current, commandsRef.current, context)[index - 1];
     if (!resolved) return;
+    // A quick tap never opens the panel, so what it would have said there
+    // becomes a toast; otherwise a refused slot looks like a dead key.
+    const say = (text: string) => {
+      if (openRef.current) setMessage(text);
+      else showToast({ id: "quick-slot", title: `Slot ${index}: ${text}`, tone: "info" });
+    };
     if (!resolved.command) {
       if (!resolved.reason) {
         // An empty slot is an invitation, not an error.
         navigate("/settings?tab=keyboard#quick-slots");
         close();
       } else {
-        setMessage(resolved.reason);
+        say(resolved.reason);
       }
       return;
     }
     if (!resolved.enabled) {
-      setMessage(resolved.reason ?? "This action cannot run right now.");
+      say(resolved.reason ?? "This action cannot run right now.");
       return;
     }
     const wasArmed = armedRef.current === index;
     if (armedRef.current != null && !wasArmed) setArmed(null);
     if (resolved.command.safety === "confirm" && !wasArmed) {
       setArmed(index);
-      setMessage(`Press ${index} again to ${resolved.label.toLowerCase()}`);
+      say(`Press ${index} again to ${resolved.label.toLowerCase()}`);
       return;
     }
     setArmed(null);
@@ -353,7 +360,14 @@ export function QuickSlotsHost() {
         return;
       }
 
-      if (suppressUntilReleaseRef.current) return;
+      if (suppressUntilReleaseRef.current) {
+        // The leader was let go where this window could not hear it (a web
+        // view had focus, or another app did): any press without it starts over.
+        if (!leaderHeld) suppressUntilReleaseRef.current = false;
+        // Still holding after a slot ran: another digit runs its slot, but the
+        // hold does not open the panel.
+        else if (digit == null) return;
+      }
       if (!leaderHeld) return;
       if (modalOpen(event.target)) return;
 

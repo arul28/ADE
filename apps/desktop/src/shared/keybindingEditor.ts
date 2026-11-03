@@ -104,12 +104,23 @@ const FUNCTION_KEY = /^F([1-9]|1[0-9]|2[0-4])$/;
  * the character the layout typed, because its position differs between
  * layouts and the character is what the user sees on the keycap.
  */
-function captureKeyName(event: CaptureKeyEvent): string | null {
+/**
+ * The key a press is saved as. It follows the shortcut matcher
+ * (`eventKeyCandidates` in `renderer/lib/keybindings.ts`), so a recorded chord
+ * is one the matcher fires on:
+ * - a Latin layout saves the letter it types (Dvorak's K is K, wherever it sits);
+ * - a non-Latin layout (Russian `л`) saves the physical key (`KeyK` → K);
+ * - Option on macOS changes what a key types (⌥K types `˚`), so with Option
+ *   held a letter or digit is saved by its physical key.
+ */
+function captureKeyName(event: CaptureKeyEvent, platform: KeyboardPlatform): string | null {
   const code = event.code ?? "";
   const letter = /^Key([A-Z])$/.exec(code);
-  if (letter) return letter[1]!;
   const digit = /^Digit([0-9])$/.exec(code);
-  if (digit) return digit[1]!;
+  if (platform === "mac" && event.altKey && (letter || digit)) return (letter?.[1] ?? digit?.[1])!;
+  if (/^[a-z]$/i.test(event.key)) return event.key.toUpperCase();
+  if (/^[0-9]$/.test(event.key)) return event.key;
+  if (letter && /^[\p{L}\p{M}]+$/u.test(event.key) && !/\p{Script=Latin}/u.test(event.key)) return letter[1]!;
   // Num Lock off turns the numpad into navigation keys; keep what it produced.
   const numpad = /^Numpad([0-9])$/.exec(code);
   if (numpad && /^[0-9]$/.test(event.key)) return numpad[1]!;
@@ -152,7 +163,7 @@ export function captureBinding(event: CaptureKeyEvent, platform: KeyboardPlatfor
         : "The Super key belongs to the desktop. Use Ctrl, Alt or Shift.",
     };
   }
-  const key = captureKeyName(event);
+  const key = captureKeyName(event, platform);
   if (!key) return { kind: "refuse", reason: "That key can't be used in a shortcut." };
   if (platform === "mac" && event.altKey && isPunctuationKey(key)) {
     return { kind: "refuse", reason: "Option changes what this key types on macOS. Use a letter or digit with Option." };

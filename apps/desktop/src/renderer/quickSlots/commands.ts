@@ -49,6 +49,8 @@ import {
   selectActiveProjectStateKey,
   selectActiveProjectRoot,
   useAppStore,
+  workViewStoreForProject,
+  type AppStoreApi,
   type WorkSidebarTab,
 } from "../state/appStore";
 import type { QuickSlotComposerTarget } from "./composerTarget";
@@ -107,6 +109,15 @@ function activeProjectStateKey(): string | null {
   return projectStateKeyForBinding(state.projectBinding, state.project?.rootPath) || null;
 }
 
+/**
+ * The open project's own store. Each project tab renders from its own store
+ * (`AppStoreProvider`); the root store only knows which project is active, so
+ * lanes, the selected lane and the Work view are read and written here.
+ */
+export function activeProjectStore(): AppStoreApi {
+  return workViewStoreForProject(activeProjectStateKey());
+}
+
 function toast(title: string, message?: string, tone: "info" | "success" | "warning" | "error" = "info"): void {
   showToast({ title, ...(message ? { message } : {}), tone });
 }
@@ -125,8 +136,8 @@ function openWorkToolTab(
 
 /** The quick-slot work-tool write, mirroring `useWorkSidebarTool.setTool`. */
 function openWorkTool(tool: WorkSidebarTab, laneIdOverride?: string | null): void {
-  const state = useAppStore.getState();
-  const projectKey = selectActiveProjectStateKey(state);
+  const projectKey = selectActiveProjectStateKey(useAppStore.getState());
+  const state = workViewStoreForProject(projectKey).getState();
   if (!projectKey) {
     toast("Open a project first", "Work tools belong to a project.", "warning");
     return;
@@ -148,7 +159,7 @@ function openWorkTool(tool: WorkSidebarTab, laneIdOverride?: string | null): voi
 }
 
 function openStartChat(context: QuickSlotContext): void {
-  const state = useAppStore.getState();
+  const state = activeProjectStore().getState();
   const projectKey = activeProjectStateKey();
   if (!projectKey) {
     toast("Open a project first", "A chat needs a project and a lane.", "warning");

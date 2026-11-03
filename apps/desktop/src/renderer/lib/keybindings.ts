@@ -80,6 +80,7 @@ function isNonLatinLetterKey(key: string): boolean {
 
 export type LayoutKeyEvent = Pick<KeyboardEvent, "key"> & {
   code?: string;
+  altKey?: boolean;
   getModifierState?: (key: "AltGraph") => boolean;
 };
 
@@ -88,11 +89,22 @@ export type LayoutKeyEvent = Pick<KeyboardEvent, "key"> & {
  * types `л`, `ל` or `κ`, so a letter shortcut also accepts the physical key
  * (`code` `KeyK`). A Latin layout matches only what it types, so Dvorak and
  * AZERTY keep their own letters, and AltGr typing a character is text.
+ *
+ * On macOS, Option changes what a key types (⌥K types `˚`, ⌥1 types `¡`), so
+ * with Option held a letter or digit shortcut is read by its physical key.
+ * Settings › Keyboard records Option chords the same way
+ * (`captureBinding` in `shared/keybindingEditor.ts`).
  */
 export function eventKeyCandidates(event: LayoutKeyEvent): string[] {
   const key = normalizeKey(event.key);
   if (!key) return [];
-  const physical = /^Key([A-Z])$/.exec(event.code ?? "")?.[1]?.toLowerCase();
+  const code = event.code ?? "";
+  if (event.altKey && isMacPlatform()) {
+    const optionPhysical = /^(?:Key([A-Z])|Digit([0-9]))$/.exec(code);
+    const physicalKey = (optionPhysical?.[1] ?? optionPhysical?.[2])?.toLowerCase();
+    if (physicalKey && physicalKey !== key) return [key, physicalKey];
+  }
+  const physical = /^Key([A-Z])$/.exec(code)?.[1]?.toLowerCase();
   if (!physical || physical === key || !isNonLatinLetterKey(key)) return [key];
   if (event.getModifierState?.("AltGraph")) return [key];
   return [key, physical];
