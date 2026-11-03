@@ -55,7 +55,9 @@ function buildConfig(apiHost: string, distinctId: string, allowed: { value: bool
     capture_pageview: false,
     capture_pageleave: false,
     capture_dead_clicks: false,
-    capture_heatmaps: false,
+    // Website only: click and scroll positions for PostHog heatmaps
+    // (`$$heatmap`), on the same public pages the replay records.
+    capture_heatmaps: true,
     capture_exceptions: false,
     capture_performance: false,
     disable_surveys: true,
@@ -86,7 +88,7 @@ function buildConfig(apiHost: string, distinctId: string, allowed: { value: bool
       maskCapturedNetworkRequestFn: (request) => ({ ...request, name: maskedPageUrl(request.name) }),
     },
     before_send: (event) => {
-      if (!allowed.value || !event || event.event !== "$snapshot") return null;
+      if (!allowed.value || !event || (event.event !== "$snapshot" && event.event !== "$$heatmap")) return null;
       const properties = event.properties ?? {};
       for (const key of Object.keys(properties)) {
         if (key.startsWith("$initial_") || key.startsWith("$referr") || key.startsWith("utm_")) {
