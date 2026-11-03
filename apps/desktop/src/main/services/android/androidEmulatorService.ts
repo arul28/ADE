@@ -1225,8 +1225,8 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
       const naturalLandscape = size ? Number(size[1]) > Number(size[2]) : false;
       const rotation = (orientation === "landscape") === naturalLandscape ? "0" : "1";
       // Absolute and headless; `adb emu rotate` only turns 90° from wherever
-      // the sensor is. Measured on Windows: the stream shows the new size in
-      // about 0.5 s.
+      // the sensor is. Measured on Windows: the stream shows the new size
+      // 0.8–1.2 s after the call starts.
       const locked = await shell(["cmd", "window", "user-rotation", "lock", rotation]);
       if (locked.exitCode !== 0 || /unknown|error|exception/iu.test(locked.text)) {
         // Android 10 and older have no `cmd window user-rotation`.
