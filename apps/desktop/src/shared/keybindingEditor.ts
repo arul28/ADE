@@ -171,7 +171,13 @@ export function captureBinding(event: CaptureKeyEvent, platform: KeyboardPlatfor
   if (event.shiftKey) parts.push("Shift");
   parts.push(key);
   const binding = parts.join("+");
-  return { kind: "binding", binding, chord: resolveBindingChords(binding, platform)[0]! };
+  // "," separates alternatives and "+" separates keys in a stored binding, so
+  // a chord on either key cannot be written down.
+  const chord = resolveBindingChords(binding, platform)[0];
+  if (!chord || key === "," || key === "+") {
+    return { kind: "refuse", reason: "Comma and plus can't be saved in a shortcut. Pick another key." };
+  }
+  return { kind: "binding", binding, chord };
 }
 
 /**

@@ -39,4 +39,17 @@ describe("shortcut keys: what Settings › Keyboard records is what fires", () =
     // The same key without its modifiers is a different chord.
     expect(eventMatchesBinding(press({ key: event.key, code: event.code }) as unknown as KeyboardEvent, binding)).toBe(false);
   });
+
+  // "," and "+" are the binding format's own separators, so a chord on either
+  // cannot be stored; the recorder must say so rather than keep listening.
+  it.each([
+    { name: "⌘,", event: { key: ",", code: "Comma", metaKey: true } },
+    { name: "⇧⌘+", event: { key: "+", code: "Equal", metaKey: true, shiftKey: true } },
+  ])("refuses $name with a reason", ({ event }) => {
+    const recorded = captureBinding(press(event), "mac");
+
+    expect(recorded.kind).toBe("refuse");
+    expect(recorded.kind === "refuse" && recorded.reason.length > 0).toBe(true);
+    expect("binding" in recorded).toBe(false);
+  });
 });

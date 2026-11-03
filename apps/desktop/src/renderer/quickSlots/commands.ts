@@ -736,6 +736,11 @@ export const QUICK_SLOT_COMMANDS: readonly QuickSlotCommand[] = [
     keywords: ["search", "everything", "cmd k"],
     run: (context) => {
       const binding = getEffectiveBinding(context.keybindings, "commandPalette.open", "Mod+K");
+      // Unassigned in Settings › Keyboard: there is no chord to replay.
+      if (!binding) {
+        toast("The command palette has no shortcut", "Give it one in Settings › Keyboard.", "warning");
+        return;
+      }
       // The palette owns no programmatic entry point; replaying its own chord
       // is the documented route to it (`lib/keybindings.ts`).
       window.setTimeout(() => fireBinding(binding), 0);

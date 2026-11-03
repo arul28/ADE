@@ -7,6 +7,7 @@ import {
   type QuickSlot,
 } from "../../../../shared/quickSlots";
 import type { KeybindingsSnapshot } from "../../../../shared/types";
+import { resolveModelDescriptor } from "../../../../shared/modelRegistry";
 import { quickSlotChordConflict, resolveBindingChords, type KeyboardPlatform } from "../../../../shared/keybindingEditor";
 import { getEffectiveBinding } from "../../../lib/keybindings";
 import {
@@ -21,6 +22,9 @@ import { IntegrationCard } from "../integrations/IntegrationChrome";
 import { SettingsSelect, SettingsTextField, SettingsToggle } from "../primitives/SettingsControls";
 import { KeyCaps, leaderKeyCaps } from "./keyboardParts";
 import "../../../quickSlots/quickSlots.css";
+
+/** Every thinking level ADE knows, for a model id the registry does not. */
+const PROFILE_EFFORT_FALLBACK: readonly string[] = ["low", "medium", "high", "xhigh", "max", "ultra", "ultracode"];
 
 const GROUP_ORDER: QuickSlotCommand["group"][] = ["Chat", "Model", "Lane", "Tools", "Navigate"];
 
@@ -88,6 +92,11 @@ export function QuickSlotsCards({ snapshot, platform }: { snapshot: KeybindingsS
   const [profileName, setProfileName] = useState("");
   const [profileModel, setProfileModel] = useState("");
   const [profileEffort, setProfileEffort] = useState("default");
+  // The thinking levels the typed model offers; every level ADE knows while the
+  // id is not one the registry recognises. A level the model lacks never saves.
+  const profileTiers = resolveModelDescriptor(profileModel)?.reasoningTiers;
+  const profileEffortChoices = profileTiers ?? PROFILE_EFFORT_FALLBACK;
+  const effectiveProfileEffort = profileEffortChoices.includes(profileEffort) ? profileEffort : "default";
 
   const commands = useMemo(
     () => [...QUICK_SLOT_COMMANDS, ...profileCommands(profiles)],
@@ -386,13 +395,10 @@ export function QuickSlotsCards({ snapshot, platform }: { snapshot: KeybindingsS
           <label className="ade-qs-form-label">
             Thinking
             <SettingsSelect
-              value={profileEffort}
+              value={effectiveProfileEffort}
               options={[
                 { value: "default", label: "Default" },
-                { value: "low", label: "Low" },
-                { value: "medium", label: "Medium" },
-                { value: "high", label: "High" },
-                { value: "max", label: "Max" },
+                ...profileEffortChoices.map((effort) => ({ value: effort, label: reasoningEffortLabel(effort) })),
               ]}
               onChange={setProfileEffort}
               ariaLabel="Profile thinking level"
@@ -409,7 +415,7 @@ export function QuickSlotsCards({ snapshot, platform }: { snapshot: KeybindingsS
                   id: newModelProfileId(),
                   name: profileName,
                   modelId: profileModel,
-                  reasoningEffort: profileEffort === "default" ? null : profileEffort,
+                  reasoningEffort: effectiveProfileEffort === "default" ? null : effectiveProfileEffort,
                 });
                 setAddProfileOpen(false);
                 setProfileName("");

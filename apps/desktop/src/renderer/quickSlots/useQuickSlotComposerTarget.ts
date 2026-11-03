@@ -19,6 +19,7 @@ import {
   MUSE_PERMISSION_OPTIONS,
   OPENCODE_PERMISSION_OPTIONS,
   type CodexPermissionPreset,
+  type MusePermissionPickerValue,
 } from "../components/shared/permissionModePickerOptions";
 import { registerQuickSlotComposer, unregisterQuickSlotComposer, type QuickSlotComposerSnapshot } from "./composerTarget";
 
@@ -55,12 +56,14 @@ export type QuickSlotComposerState = {
   onFastModeChange?: (enabled: boolean, tier?: FastTier) => void;
   onOpenModelPickerRequest?: () => void;
   onInterrupt: (mode?: AgentChatStopMode) => void;
-  onClaudeModeChange?: (mode: AgentChatClaudePermissionMode) => void;
-  onOpenCodePermissionModeChange?: (mode: AgentChatOpenCodePermissionMode) => void;
-  onDroidPermissionModeChange?: (mode: AgentChatDroidPermissionMode) => void;
-  onCopilotPermissionModeChange?: (mode: CopilotPermissionMode) => void;
-  onMusePermissionModeChange?: (mode: AgentChatMusePermissionMode, interaction: AgentChatInteractionMode) => void;
-  onCursorModeChange?: (modeId: string) => void;
+  // The composer's own picker appliers (`permissionAppliers`), so a cycle sets
+  // exactly what picking that mode would.
+  applyClaudeMode: (mode: AgentChatClaudePermissionMode) => void;
+  applyOpenCodeMode: (mode: AgentChatOpenCodePermissionMode) => void;
+  applyDroidMode: (mode: AgentChatDroidPermissionMode) => void;
+  applyCopilotMode: (mode: CopilotPermissionMode) => void;
+  applyMuseMode: (value: MusePermissionPickerValue) => void;
+  applyCursorMode: (modeId: string) => void;
   applyCodexPreset: (preset: CodexPreset) => void;
 };
 
@@ -106,33 +109,31 @@ function cyclePermission(state: QuickSlotComposerState): { from: string; to: str
     case "claude": {
       const from = state.interactionMode === "plan" ? "plan" : state.claudePermissionMode ?? "default";
       const to = from === "plan" ? "default" : clampNext(CLAUDE_CYCLE, from);
-      if (to !== from) state.onClaudeModeChange?.(to);
+      if (to !== from) state.applyClaudeMode(to);
       return { from, to };
     }
     case "opencode": {
       const from = state.opencodePermissionMode ?? "edit";
       const to = clampNext(OPENCODE_CYCLE, from);
-      if (to !== from) state.onOpenCodePermissionModeChange?.(to);
+      if (to !== from) state.applyOpenCodeMode(to);
       return { from, to };
     }
     case "droid": {
       const from = state.droidPermissionMode ?? "auto-low";
       const to = clampNext(DROID_CYCLE, from);
-      if (to !== from) state.onDroidPermissionModeChange?.(to);
+      if (to !== from) state.applyDroidMode(to);
       return { from, to };
     }
     case "copilot": {
       const from = state.copilotPermissionMode ?? "ask";
       const to = clampNext(COPILOT_CYCLE, from);
-      if (to !== from) state.onCopilotPermissionModeChange?.(to);
+      if (to !== from) state.applyCopilotMode(to);
       return { from, to };
     }
     case "muse": {
       const from = state.interactionMode === "plan" ? "plan" : state.musePermissionMode ?? "onRequest";
       const to = from === "plan" ? "promptUnmatched" : clampNext(MUSE_CYCLE, from);
-      if (to === from) return { from, to };
-      if (to === "plan") state.onMusePermissionModeChange?.("denyUnmatched", "plan");
-      else state.onMusePermissionModeChange?.(to as AgentChatMusePermissionMode, "default");
+      if (to !== from) state.applyMuseMode(to);
       return { from, to };
     }
     case "codex": {
@@ -150,7 +151,7 @@ function cyclePermission(state: QuickSlotComposerState): { from: string; to: str
         || state.cursorModeSnapshot?.currentModeId
         || values[0]!;
       const to = clampNext(values, from);
-      if (to !== from) state.onCursorModeChange?.(to);
+      if (to !== from) state.applyCursorMode(to);
       return { from, to };
     }
     default:

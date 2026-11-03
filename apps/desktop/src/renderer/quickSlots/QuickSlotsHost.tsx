@@ -381,6 +381,15 @@ export function QuickSlotsHost() {
         if (!event.repeat) runSlot(digit, getQuickSlotComposer()?.hasCaret() ?? false);
         return;
       }
+      // Any other key with the leader held is someone else's chord (Ctrl+Shift+N,
+      // ⌥⌘I): it must not flash the panel.
+      if (!isLeaderModifier(event)) {
+        if (holdTimerRef.current != null) {
+          window.clearTimeout(holdTimerRef.current);
+          holdTimerRef.current = null;
+        }
+        return;
+      }
       if (holdTimerRef.current == null) {
         holdTimerRef.current = window.setTimeout(() => {
           holdTimerRef.current = null;
@@ -423,9 +432,17 @@ export function QuickSlotsHost() {
       window.removeEventListener("keyup", onKeyUp, true);
       window.removeEventListener("blur", onBlur);
       window.removeEventListener("resize", onResize);
-      clearTimers();
+      // Only the pending hold belongs to these listeners. The close and idle
+      // timers outlive a re-subscription (a slot that navigates re-runs this
+      // effect mid-close); they are cleared on unmount below.
+      if (holdTimerRef.current != null) {
+        window.clearTimeout(holdTimerRef.current);
+        holdTimerRef.current = null;
+      }
     };
-  }, [clearTimers, close, openPanel, runChatShortcut, runSlot]);
+  }, [close, openPanel, runChatShortcut, runSlot]);
+
+  useEffect(() => clearTimers, [clearTimers]);
 
   // Nine rows of cheap lookups, and none of them run while the panel is
   // closed. Memoizing was not worth a hand-written dependency list: the host
