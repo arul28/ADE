@@ -97,6 +97,7 @@ import {
 import { AssistantOutputSelectionToolbar } from "./AssistantOutputSelectionToolbar";
 import { issueCreateRequestFromSelection, requestIssueCreate } from "../../lib/issueCreateRequests";
 import { ThreadCommentLayer } from "./ThreadCommentLayer";
+import { ThreadMediaActions } from "./ThreadMediaActions";
 import {
   resolveUserMessageBody,
   userMessageHasPastedPrompt,
@@ -6111,6 +6112,7 @@ function AgentChatMessageListMain({
   scrollMemoryKey,
   transcriptCollapseCacheKey,
   onInsertDraft,
+  onAddAttachment,
   onRevealChatTerminal,
   onRewindFiles,
   onCancelQueuedMessage,
@@ -6191,6 +6193,8 @@ function AgentChatMessageListMain({
   usageLimitResumeTurnId?: string | null;
   onOpenWorkspacePath?: (path: string, laneId?: string | null) => void;
   onInsertDraft?: (text: string) => void;
+  /** Attaches an image or video from the thread to the next message ("Add to chat" on media). */
+  onAddAttachment?: (attachment: AgentChatFileRef) => void;
   onRevealChatTerminal?: (terminal: { terminalId: string; ptyId: string; label: string }) => void;
   onRewindFiles?: (request: { messageId: string; timestamp: string; text: string }) => void;
   /** Cancel an ADE-owned queued message by uuid (stop-receipt affordance). */
@@ -9292,10 +9296,14 @@ function AgentChatMessageListMain({
           comments={threadComments.comments}
           layoutVersion={`${groupedRows.length}:${shouldVirtualize ? `${startIndex}-${endIndex}` : "all"}`}
           onAddToChat={onInsertDraft}
+          onAttachMedia={onAddAttachment}
           onCreateIssue={createIssueFromSelection}
         />
       ) : (
-        <AssistantOutputSelectionToolbar rootRef={listRootRef} onAddToChat={onInsertDraft} onCreateIssue={createIssueFromSelection} />
+        <>
+          <ThreadMediaActions rootRef={listRootRef} scrollRef={scrollRef} onAttach={onAddAttachment} />
+          <AssistantOutputSelectionToolbar rootRef={listRootRef} onAddToChat={onInsertDraft} onCreateIssue={createIssueFromSelection} />
+        </>
       )}
     </div>
     </RowEntranceGateContext.Provider>

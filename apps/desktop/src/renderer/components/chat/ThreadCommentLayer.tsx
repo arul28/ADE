@@ -3,7 +3,7 @@ import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef,
 import { POPOVER_SURFACE_CLASS } from "../ui/paneMenuTokens";
 import { createPortal } from "react-dom";
 import { ChatTeardropText } from "@phosphor-icons/react";
-import type { OpenProjectBinding } from "../../../shared/types";
+import type { AgentChatFileRef, OpenProjectBinding } from "../../../shared/types";
 import type { ChatThreadComment, ChatThreadCommentAnchor } from "../../../shared/threadComments";
 import { cssZoomOf } from "../../lib/webZoom";
 import { cn } from "../ui/cn";
@@ -13,11 +13,16 @@ import type { AssistantOutputSelection } from "./assistantOutputSelection";
 import { createHighlightGroup } from "../../lib/highlightRegistry";
 import {
   THREAD_COMMENT_MESSAGE_SELECTOR,
+  captureMediaAnchor,
   captureTableRowAnchor,
   captureTextAnchor,
   messageExcerptOf,
+  rangeAroundNode,
   resolveThreadCommentRange,
+  resolveThreadMediaElement,
+  threadMediaBox,
 } from "./threadCommentAnchors";
+import { ThreadMediaActions } from "./ThreadMediaActions";
 import {
   ThreadCommentEditor,
   ThreadCommentListItem,
@@ -54,12 +59,19 @@ type Draft = {
   range: Range;
   /** What the box holds when it reopens after a failed save. */
   body?: string;
+  /** The picture or player, for a comment on an image or video. */
+  mediaBox?: HTMLElement;
 };
 
 type Resolved = {
   comment: ChatThreadComment;
   range: Range;
+  /** For a media comment: the marked image or video element, and its visible box. */
+  media?: { element: HTMLElement; box: HTMLElement };
 };
+
+/** The attribute that rings an image or video carrying a comment (see index.css). */
+const MEDIA_STATE_ATTRIBUTE = "data-thread-comment-media-state";
 
 /**
  * A grid can show several chats at once; each layer publishes its ranges under
@@ -107,11 +119,12 @@ function placeNear(rect: DOMRect, prefer: "above" | "below"): { left: number; to
  * margin cards when the window leaves room for them, a row button on agent
  * tables, the selection toolbar, and the popovers that write or edit a comment.
  *
- * The highlights and cards never change the reply's DOM. Highlights use the
- * CSS Custom Highlight API, so markdown re-renders and the virtualized list
+ * The highlights and cards never change the reply's structure. Highlights use
+ * the CSS Custom Highlight API, so markdown re-renders and the virtualized list
  * are untouched, and cards live in the column's own scroll content, so they
- * scroll with the message they belong to. Only the transient popovers and the
- * row button float, in a viewport overlay layer.
+ * scroll with the message they belong to. An image or video with a comment
+ * gets one data attribute, which rings it. Only the transient popovers, the
+ * row button and the media buttons float, in a viewport overlay layer.
  */
 export function ThreadCommentLayer({
   rootRef,
@@ -122,6 +135,7 @@ export function ThreadCommentLayer({
   comments,
   layoutVersion,
   onAddToChat,
+  onAttachMedia,
   onCreateIssue,
 }: {
   rootRef: { current: HTMLElement | null };
@@ -134,6 +148,8 @@ export function ThreadCommentLayer({
   layoutVersion: unknown;
   /** The selection toolbar's "Add to chat" action. */
   onAddToChat?: (text: string) => void;
+  /** Attaches an image or video from the thread to the next message. */
+  onAttachMedia?: (attachment: AgentChatFileRef) => void;
   onCreateIssue?: (text: string) => void;
 }) {
   const actions = useThreadCommentActions(sessionId, pin);
@@ -215,7 +231,7 @@ export function ThreadCommentLayer({
   const resolveAll = useCallback(() => {
     const root = rootRef.current;
     if (!root) return;
-    const previous = new Map(resolvedRef.current.map((entry) => [entry.comment.id, entry.range]));
+    const previous = new Map(resolvedRef.current.map((entry) => [entry.comment.id, entry]));
     const next: Resolved[] = [];
     let changed = resolvedRef.current.length !== commentsRef.current.length;
     for (const comment of commentsRef.current) {
@@ -224,10 +240,28 @@ export function ThreadCommentLayer({
         if (previous.has(comment.id)) changed = true;
         continue;
       }
+      if (comment.anchor.kind === "media") {
+        // Media loads late and swaps its placeholder for the picture, so look
+        // it up every time (a few elements); keep the old range while the box is the same.
+        const element = resolveThreadMediaElement(message, comment.anchor);
+        const box = element ? threadMediaBox(element) : null;
+        const kept = previous.get(comment.id);
+        if (!element || !box) {
+          if (kept) changed = true;
+          continue;
+        }
+        if (kept?.media?.box === box && kept.media.element === element) {
+          next.push(kept.comment === comment ? kept : { ...kept, comment });
+          continue;
+        }
+        changed = true;
+        next.push({ comment, range: rangeAroundNode(box), media: { element, box } });
+        continue;
+      }
       // A finished reply does not change, so a range whose nodes are still
       // in it is still right. Only rows that remounted are searched again —
       // which keeps a streaming reply elsewhere from re-scanning every frame.
-      const kept = previous.get(comment.id);
+      const kept = previous.get(comment.id)?.range;
       const range = kept && kept.startContainer.isConnected && kept.endContainer.isConnected && message.contains(kept.startContainer)
         ? kept
         : resolveThreadCommentRange(message, comment.anchor);
@@ -298,17 +332,48 @@ export function ThreadCommentLayer({
   const layerId = useId();
   useEffect(() => {
     const active = openCommentId ?? editingId;
+    // Highlights paint text only; images and videos get a ring below instead.
+    const text = resolved.filter((entry) => !entry.media);
     publishLayerHighlights(layerId, {
-      [HIGHLIGHT_PENDING]: resolved.filter((entry) => entry.comment.includeInNextSend && entry.comment.id !== active).map((entry) => entry.range),
-      [HIGHLIGHT_HELD]: resolved.filter((entry) => !entry.comment.includeInNextSend && entry.comment.id !== active).map((entry) => entry.range),
+      [HIGHLIGHT_PENDING]: text.filter((entry) => entry.comment.includeInNextSend && entry.comment.id !== active).map((entry) => entry.range),
+      [HIGHLIGHT_HELD]: text.filter((entry) => !entry.comment.includeInNextSend && entry.comment.id !== active).map((entry) => entry.range),
       [HIGHLIGHT_ACTIVE]: [
-        ...resolved.filter((entry) => entry.comment.id === active).map((entry) => entry.range),
-        ...(draft ? [draft.range] : []),
+        ...text.filter((entry) => entry.comment.id === active).map((entry) => entry.range),
+        ...(draft && !draft.mediaBox ? [draft.range] : []),
       ],
     });
   }, [draft, editingId, layerId, openCommentId, resolved]);
 
   useEffect(() => () => publishLayerHighlights(layerId, null), [layerId]);
+
+  // ── Ring the images and videos that carry a comment ──
+  // The one attribute this layer writes into a reply: React does not own it,
+  // and a remounted row is found and ringed again on the next resolve.
+  const ringedRef = useRef(new Set<HTMLElement>());
+  useEffect(() => {
+    const active = openCommentId ?? editingId;
+    const rank = { held: 0, pending: 1, active: 2 } as const;
+    const states = new Map<HTMLElement, keyof typeof rank>();
+    const mark = (box: HTMLElement, state: keyof typeof rank) => {
+      const current = states.get(box);
+      if (!current || rank[state] > rank[current]) states.set(box, state);
+    };
+    for (const entry of resolved) {
+      if (!entry.media) continue;
+      mark(entry.media.box, entry.comment.id === active ? "active" : entry.comment.includeInNextSend ? "pending" : "held");
+    }
+    if (draft?.mediaBox) mark(draft.mediaBox, "active");
+    for (const box of ringedRef.current) {
+      if (!states.has(box)) box.removeAttribute(MEDIA_STATE_ATTRIBUTE);
+    }
+    for (const [box, state] of states) box.setAttribute(MEDIA_STATE_ATTRIBUTE, state);
+    ringedRef.current = new Set(states.keys());
+  }, [draft, editingId, openCommentId, resolved]);
+
+  useEffect(() => () => {
+    for (const box of ringedRef.current) box.removeAttribute(MEDIA_STATE_ATTRIBUTE);
+    ringedRef.current.clear();
+  }, []);
 
   // ── Click on highlighted text opens its comment ──
   useEffect(() => {
@@ -322,6 +387,8 @@ export function ThreadCommentLayer({
       const caret = doc.caretRangeFromPoint?.(event.clientX, event.clientY);
       if (!caret) return;
       const hit = resolved.find((entry) => {
+        // A click on a picture opens it; its comment opens from the hover buttons or the card.
+        if (entry.media) return false;
         try {
           return entry.range.isPointInRange(caret.startContainer, caret.startOffset);
         } catch {
@@ -379,6 +446,18 @@ export function ThreadCommentLayer({
     range.selectNodeContents(row);
     openDraft({ sessionId, messageKey, messageExcerpt: messageExcerptOf(message), anchor, rect: row.getBoundingClientRect(), range });
   };
+
+  const startFromMedia = (element: HTMLElement) => {
+    const message = element.closest(THREAD_COMMENT_MESSAGE_SELECTOR) as HTMLElement | null;
+    const messageKey = message?.dataset.threadCommentKey;
+    if (!message || !messageKey) return;
+    const anchor = captureMediaAnchor(message, element);
+    if (!anchor) return;
+    const box = threadMediaBox(element);
+    openDraft({ sessionId, messageKey, messageExcerpt: messageExcerptOf(message), anchor, rect: box.getBoundingClientRect(), range: rangeAroundNode(box), mediaBox: box });
+  };
+
+  const mediaComments = (element: HTMLElement) => resolved.filter((entry) => entry.media?.element === element);
 
   // ── "Show in thread" from the composer list ──
   useEffect(() => {
@@ -608,6 +687,21 @@ export function ThreadCommentLayer({
           </ViewportOverlayPortal>
         )
         : null}
+
+      <ThreadMediaActions
+        rootRef={rootRef}
+        scrollRef={scrollRef}
+        disabled={Boolean(draft)}
+        onComment={startFromMedia}
+        onAttach={onAttachMedia}
+        commentCount={(element) => mediaComments(element).length}
+        onOpenComments={(element) => {
+          const first = mediaComments(element)[0];
+          if (!first) return;
+          closeDraftKeepingText();
+          setOpenCommentId(first.comment.id);
+        }}
+      />
 
       <AssistantOutputSelectionToolbar rootRef={rootRef} onAddToChat={onAddToChat} onComment={startFromSelection} onCreateIssue={onCreateIssue} />
     </>

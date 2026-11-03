@@ -3,10 +3,12 @@ import React, { createContext, useContext, useEffect, useMemo, useRef, useState 
 import type { ComputerUseArtifactView } from "../../../shared/types";
 import type { ProofCompareBlock } from "../../../shared/proofCitation";
 import { proofRecordedBeforeRequestLine, readProofProvenance } from "../../../shared/proofProvenance";
+import { projectArtifactAbsolutePath } from "../../../shared/artifactStreamUrl";
 import { cn } from "../ui/cn";
 import { ArtifactLightbox, ProofPreviewFailureNotice } from "./ChatComputerUsePanel";
 import { DemoChapters } from "./DemoChapters";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
+import { threadMediaAttributes } from "./threadCommentAnchors";
 import {
   externalArtifactUrl,
   isImageArtifact,
@@ -127,6 +129,17 @@ function useCitedProofArtifact(artifactId: string): CitedArtifactState {
   return fetched.lookup.artifact ? { status: "ready", artifact: fetched.lookup.artifact } : { status: "missing" };
 }
 
+/**
+ * Where the chat's machine finds a proof file, for attaching it to a message:
+ * an absolute path in its project (the root is that machine's own), or the
+ * proof's web URL for a picture. Null when neither is known.
+ */
+function proofAttachPath(artifact: ComputerUseArtifactView, rootPath: string | null, image: boolean): string | null {
+  const external = externalArtifactUrl(artifact.uri);
+  if (external) return image ? external : null;
+  return projectArtifactAbsolutePath(artifact.uri, rootPath);
+}
+
 function CitationPlaceholder({ children, tone = "muted" }: { children: React.ReactNode; tone?: "muted" | "warning" }) {
   return (
     <span
@@ -160,6 +173,7 @@ function CitedProofMedia({
   fallback?: React.ReactNode;
 }) {
   const { allowLocalArtifactProtocol } = useContext(ProofCitationContext);
+  const scope = useChatRuntimeScope();
   const { containerRef, preview, loading, failed, explanation, onMediaError, retry } = useArtifactPreview<HTMLSpanElement>(
     artifact,
     allowLocalArtifactProtocol,
@@ -175,11 +189,22 @@ function CitedProofMedia({
   const mediaHeight = compact ? "max-h-[300px]" : "max-h-[440px]";
 
   if (failed && fallback != null) return <>{fallback}</>;
+  // Marked while it loads too, so a comment keeps its place; only a proof
+  // that shows can be attached.
+  const mediaAttributes = image || video
+    ? threadMediaAttributes({
+      kind: image ? "image" : "video",
+      source: `ade-proof://${artifact.id}`,
+      label: text,
+      attachPath: preview && !failed ? proofAttachPath(artifact, scope.rootPath, image) : null,
+    })
+    : null;
   return (
     <span
       ref={containerRef}
       data-proof-citation={artifact.id}
       className="block min-w-0"
+      {...mediaAttributes}
     >
       {loading ? (
         <span className="flex min-h-40 items-center justify-center rounded-xl border border-fg/[0.06] bg-black/20 text-muted-fg/35">

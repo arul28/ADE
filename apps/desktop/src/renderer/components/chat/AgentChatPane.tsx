@@ -16793,6 +16793,7 @@ export function AgentChatPane({
   // Both close over the draft, so each keystroke made them new and re-rendered
   // every mounted transcript row.
   const listInsertDraft = useLatestCallback(insertComposerDraft);
+  const listAddAttachment = useLatestCallback(addAttachment);
   const listEditUnprocessedMessage = useLatestCallback(handleEditUnprocessedMessage);
   const listRewindFiles = useLatestCallback(
     selectedSession?.provider === "claude" || selectedSession?.provider === "codex" || selectedSession?.provider === "copilot" ? rewindFilesFromMessage : undefined,
@@ -19433,6 +19434,7 @@ export function AgentChatPane({
                         jiraIssueSnapshotsById={jiraIssueSnapshots?.sessionId === renderedSessionId ? jiraIssueSnapshots.byId : undefined}
                         transcriptCollapseCacheKey={subagentViewCacheKey}
                         onInsertDraft={listInsertDraft}
+                        onAddAttachment={listAddAttachment}
                         onRevealChatTerminal={listRevealChatTerminal}
                         turnDiffSummaries={selectedTurnDiffSummaries}
                         onRewindFiles={personalScope ? undefined : listRewindFiles}

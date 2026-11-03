@@ -6,7 +6,10 @@ import { ViewportOverlayPortal } from "../ui/ViewportOverlayHost";
 import { useSelectionAnchor } from "../ui/useSelectionAnchor";
 import { readAssistantOutputSelection, type AssistantOutputSelection } from "./assistantOutputSelection";
 
-const BUTTON_CLASS =
+/** The floating toolbar on reply content: this selection toolbar and the image/video buttons. */
+export const REPLY_TOOLBAR_CLASS =
+  "pointer-events-auto absolute inline-flex items-stretch overflow-hidden rounded-md border border-fg/[0.1] bg-[color:color-mix(in_srgb,var(--chat-panel-bg-strong,#1a1524)_94%,black_6%)] text-fg/85 shadow-[0_12px_32px_rgba(0,0,0,0.42)] backdrop-blur-xl";
+export const REPLY_TOOLBAR_BUTTON_CLASS =
   "inline-flex items-center gap-1.5 px-2 py-1 font-sans text-[11px] font-medium transition-colors";
 
 export function AssistantOutputSelectionToolbar({
@@ -44,7 +47,7 @@ export function AssistantOutputSelectionToolbar({
     <ViewportOverlayPortal layer="popover">
       <div
         data-testid="assistant-output-selection-toolbar"
-        className="ade-assistant-add-to-chat pointer-events-auto absolute inline-flex items-stretch overflow-hidden rounded-md border border-fg/[0.1] bg-[color:color-mix(in_srgb,var(--chat-panel-bg-strong,#1a1524)_94%,black_6%)] text-fg/85 shadow-[0_12px_32px_rgba(0,0,0,0.42)] backdrop-blur-xl"
+        className={cn("ade-assistant-add-to-chat", REPLY_TOOLBAR_CLASS)}
         style={{ left: state.left, top: state.top }}
         onMouseDown={keepSelection}
       >
@@ -52,7 +55,7 @@ export function AssistantOutputSelectionToolbar({
           <button
             type="button"
             data-testid="assistant-output-add-to-chat"
-            className={cn(BUTTON_CLASS, "hover:bg-fg/[0.07]")}
+            className={cn(REPLY_TOOLBAR_BUTTON_CLASS, "hover:bg-fg/[0.07]")}
             title="Quote this in your message"
             onClick={(event) => {
               event.preventDefault();
@@ -72,7 +75,7 @@ export function AssistantOutputSelectionToolbar({
             data-testid="assistant-output-comment"
             disabled={!state.canComment}
             className={cn(
-              BUTTON_CLASS,
+              REPLY_TOOLBAR_BUTTON_CLASS,
               onAddToChat && "border-l border-fg/[0.08]",
               state.canComment ? "hover:bg-fg/[0.07]" : "cursor-not-allowed text-fg/35",
             )}
@@ -93,7 +96,7 @@ export function AssistantOutputSelectionToolbar({
           <button
             type="button"
             data-testid="assistant-output-create-issue"
-            className={cn(BUTTON_CLASS, (onAddToChat || onComment) && "border-l border-fg/[0.08]", "hover:bg-fg/[0.07]")}
+            className={cn(REPLY_TOOLBAR_BUTTON_CLASS, (onAddToChat || onComment) && "border-l border-fg/[0.08]", "hover:bg-fg/[0.07]")}
             title="Start a Linear or GitHub issue from this text"
             onClick={(event) => {
               event.preventDefault();
