@@ -44,6 +44,12 @@ Point the browser at a dev server started from a lane-scoped shell or agent sess
 
 The same browser is scriptable. The `ade browser` CLI surface lets an agent — or you — navigate, screenshot, inspect, and pick context from the shared tabs, so a chat agent can drive the page it's reasoning about.
 
+- **Every agent sees every tab.** `ade browser status` lists every tab of the project on every machine ADE can reach, with its machine, its owner (by chat title and lane), who opened it, and where the next `open` will go.
+- **One task stays on one machine.** ADE remembers which machine's browser holds each tab. A command that names a tab goes to that machine, a command without one goes where the chat's own tab is, and a plain `open` follows you. Errors name the machine that refused.
+- **Isolated tabs open on your computer**, so you can see them.
+- **Any agent can close any tab**, and `close` says whose tab it closed. Agents are told to check the owner first.
+- **A project holds 20 tabs by default**; change it with **Tabs per project** in **Settings › Behaviour**. Archiving or deleting a lane frees its tabs without closing them. After a restart, tab ids and openers are kept, but an agent's tab comes back only if a person used it.
+
 <CardGroup cols={2}>
   <Card title="Agent chat" icon="comments" href="/chat/overview">
     Hand browser context to an agent and let it work.

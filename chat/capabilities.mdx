@@ -82,6 +82,17 @@ Some capabilities depend on the provider runtime behind the chat.
 Scheduled chat work resumes one chat at a turn boundary. For event-triggered,
 rule-based workflows across ADE, use [automations](/tools/automations).
 
+## Run a command from a reply
+
+When a finished reply contains a shell code block, a **Run** button sits beside Copy (it appears on hover or focus). Run first shows the exact command, the machine it will run on, and the lane folder; nothing runs until you confirm. The command then runs in a new terminal in the chat's tools pane, on the chat's own machine, in the chat's lane folder. Pagers are turned off, so `git log` or `git diff` finishes instead of waiting at a prompt.
+
+When it finishes, the block shows the exit code and offers **Send output to the agent**, which sends the command, exit code and output as a normal message. Nothing is sent without that click.
+
+- `bash`, `sh`, `zsh` and `shell` blocks run through that shell, whatever your login shell is. A `console` block runs only its `$` or `%` prompt lines.
+- `powershell`, `pwsh` and `ps1` blocks run in Windows PowerShell on a Windows chat.
+- Run is disabled, with the reason, when the block's shell is not on the chat's machine (a bash block on Windows, a PowerShell block on a Mac), for `cmd` and `bat` blocks, for scripts too long for a command line, for blocks with hidden control characters, and in a personal chat, an archived lane, or on an offline machine.
+- Run never appears while the reply is still streaming, or on your own messages.
+
 ## See what an agent can reach
 
 Open the tools panel from the composer to see what a session has available and which actions need your approval before they run.

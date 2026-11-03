@@ -29,6 +29,12 @@ Sessions can report two extra details about themselves:
 
 ADE also infers activity from what the agent is doing, so a row is useful without the agent having to narrate.
 
+## Focus, and settling a chat
+
+The Work sidebar opens with **Focus** on, on desktop and iOS: busy lanes fold away until they need you. Turn it off and it stays off. The **Working**, **Snoozed**, and **Settled** groups count chats, not lanes, and a chat nested under a parent chat is counted once.
+
+Settling a chat only files it out of the way. It stops nothing: background shells, subagents, cloud runs, scheduled wakes and crons keep running. A chat that is mid-turn cannot be settled, and any new turn (your message, a wake, a cron, a subagent reporting back, or a resume after a restart) takes the chat out of Settled. After an ADE restart a settled chat resumes like any other; an archived one does not.
+
 ## Background and scheduled work
 
 Agent work does not have to happen while you watch. A chat can be launched in the background, and any chat runtime can schedule its own durable future work: a wake in ten minutes, a daily cron, or a re-check when CI finishes.
