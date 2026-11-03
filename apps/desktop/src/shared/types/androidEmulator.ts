@@ -237,6 +237,12 @@ export type AndroidEmulatorStatus = {
 export type AndroidAvdListing = AndroidAvd & {
   /** The lane that holds this AVD, if any (`lane_android_devices`). */
   heldByLaneId: string | null;
+  /**
+   * ADE made this AVD for a lane that is not in this project (another
+   * project's lane, or one deleted since). The panel badges it; attaching it
+   * never lets this project delete it.
+   */
+  madeForOtherLane: boolean;
 };
 
 export type AndroidDeviceInventory = {
@@ -336,7 +342,11 @@ export type AndroidEmulatorServiceApi = {
   screenshot(args: AndroidScreenshotArgs): Promise<AndroidScreenshot>;
   /** Lane archive/delete: stop the lane's stream and emulator. Not an action. */
   stopForLane(laneId: string): Promise<void>;
-  /** Stop every stream and every emulator ADE started (brain shutdown). Not an action. */
+  /**
+   * Stop every stream. A service built to hand off (the brain) leaves ADE's
+   * emulators running for the next brain to re-adopt; otherwise every
+   * emulator ADE started is stopped too. Not an action.
+   */
   dispose(): Promise<void>;
   onEvent(listener: (event: AndroidEmulatorEvent) => void): () => void;
 };

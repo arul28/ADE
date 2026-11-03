@@ -34,15 +34,35 @@ export type AndroidLaneDeviceRepo = {
   forget: (laneId: string, avdName: string) => void;
   /** The lane holding this AVD, other than `exceptLaneId`. */
   holder: (avdName: string, exceptLaneId?: string | null) => string | null;
+  /** Every row, for the start-up reconcile. Absent = no reconcile of rows. */
+  list?: () => AndroidLaneDevice[];
+  /**
+   * Whether the lane is still a working lane of this project. Absent = every
+   * lane counts as active and as this project's.
+   */
+  laneState?: (laneId: string) => "active" | "archived" | "missing";
 };
 
-/** The `lane_android_devices` table as a repo. */
-export function sqlAndroidLaneDeviceRepo(store: AndroidLaneDeviceStore): AndroidLaneDeviceRepo {
+type AndroidLaneDeviceSqlStore = AndroidLaneDeviceStore & {
+  all: <T extends Record<string, unknown> = Record<string, unknown>>(sql: string, params?: Array<string | number | null>) => T[];
+};
+
+/** The `lane_android_devices` table (and the `lanes` table for lane state) as a repo. */
+export function sqlAndroidLaneDeviceRepo(store: AndroidLaneDeviceSqlStore): AndroidLaneDeviceRepo {
   return {
     get: (laneId) => readLaneAndroidDevice(store, laneId),
     set: (device) => writeLaneAndroidDevice(store, device),
     forget: (laneId, avdName) => forgetLaneAndroidDevice(store, laneId, avdName),
     holder: (avdName, exceptLaneId = null) => laneHoldingAndroidAvd(store, avdName, exceptLaneId),
+    list: () => store
+      .all<{ lane_id: string }>("select lane_id from lane_android_devices")
+      .map((row) => readLaneAndroidDevice(store, row.lane_id))
+      .filter((device): device is AndroidLaneDevice => device !== null),
+    laneState: (laneId) => {
+      const row = store.get<{ status: string }>("select status from lanes where id = ? limit 1", [laneId]);
+      if (!row) return "missing";
+      return row.status === "archived" ? "archived" : "active";
+    },
   };
 }
 

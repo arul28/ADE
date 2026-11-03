@@ -2254,6 +2254,10 @@ export async function createAdeRuntime(args: {
             return null;
           }
         },
+        // This brain's exits are restarts (an update, a service restart, a
+        // project repair): the lanes' emulators keep running and the next
+        // brain re-adopts them, as Mac Desktop hands its apps off.
+        handOffOnDispose: true,
         logger,
         onEvent: (event) => pushEvent("runtime", { type: "android_emulator_event", event }),
       });

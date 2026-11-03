@@ -37,7 +37,14 @@ import {
 } from "./androidEmulatorProcess";
 import { listAndroidDeviceDefinitions, type AndroidDeviceDefinition } from "./androidHardwareProfiles";
 import { releaseAndroidLaneDevice, type AndroidLaneDeviceRepo } from "./androidLaneRelease";
-import { androidSdkPaths, androidUserHome, listAndroidSystemImages, readAndroidSdkStatus, type AndroidEnv } from "./androidSdk";
+import {
+  androidSdkPaths,
+  androidUserHome,
+  listAndroidSystemImages,
+  locateAndroidSdk,
+  readAndroidSdkStatus,
+  type AndroidEnv,
+} from "./androidSdk";
 import * as androidStream from "./androidStream";
 import { ANDROID_HARDWARE_KEYCODES } from "./scrcpyControl";
 
@@ -88,6 +95,14 @@ export type AndroidEmulatorServiceDeps = {
   home?: string;
   discoveryDirs?: readonly string[];
   bootTimeoutMs?: number;
+  /**
+   * The brain sets this. Its exits are restarts (an update, a service
+   * restart, a crash), so `dispose` leaves ADE's emulators running, they
+   * start in their own process group, and the next service re-adopts them
+   * through the state file. An in-process runtime leaves it off: closing the
+   * project there stops every emulator ADE started for it.
+   */
+  handOffOnDispose?: boolean;
   now?: () => Date;
   onEvent?: (event: AndroidEmulatorEvent) => void;
 };
@@ -581,6 +596,7 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
         registry,
         discoveryDirs,
         env: env as NodeJS.ProcessEnv,
+        detached: deps.handOffOnDispose === true,
       });
       state.launch = launch;
       // A stop that came while the launch was still picking ports.
@@ -684,6 +700,71 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
     await runAdb(adbPath, ["shell", "input", ...args], { serial, timeoutMs: 15_000, signal: lifetime.signal });
   };
 
+  /* ---------- start-up reconcile ---------- */
+
+  /**
+   * Runs once when the service starts. A lane archived or deleted while no
+   * brain ran left its row (the release keeps a running AVD's row) and maybe
+   * its emulator: stop that emulator and release the AVD by the normal rules.
+   * Then an emulator ADE started that no lane holds at all is stopped.
+   * Lanes that are still active keep their emulators: those are re-adopted.
+   */
+  const reconcile = async (): Promise<void> => {
+    // Cheap reads first (the lane rows, the discovery files, the state file):
+    // a brain start with nothing to reconcile never reads the SDK, which would
+    // run `emulator -accel-check` once per project.
+    const readLaneState = deps.laneDevices.laneState;
+    const endedLanes = readLaneState
+      ? (deps.laneDevices.list?.() ?? []).filter((device) => readLaneState(device.laneId) !== "active")
+      : [];
+    const orphans = () => discovered().filter((emulator) =>
+      registry.owns(emulator) && deps.laneDevices.holder(emulator.avdName) === null);
+    if (endedLanes.length === 0 && orphans().length === 0) return;
+    const located = locateAndroidSdk({ settingPath: deps.readSdkSettingPath?.() ?? null, env, platform, home });
+    if (!located || disposed) return;
+    const adbPath = androidSdkPaths(located.root, platform).adb;
+    let changed = false;
+    for (const device of endedLanes) {
+      await serialize(device.laneId, async () => {
+        const state = laneState(device.laneId);
+        await stopLocked(state, device, { refuseForeign: false });
+        const result = await releaseAndroidLaneDevice(device.laneId, deps.laneDevices, {
+          sdkSettingPath: deps.readSdkSettingPath?.() ?? null,
+          env,
+          platform,
+          home,
+          discoveryDirs,
+          signal: lifetime.signal,
+          logger,
+        });
+        lanes.delete(device.laneId);
+        changed = true;
+        logger?.info("android.reconcile.released", { laneId: device.laneId, avdName: device.avdName, ...result });
+      }).catch((error: unknown) => {
+        logger?.warn("android.reconcile.release_failed", { laneId: device.laneId, error: messageOf(error) });
+      });
+    }
+    for (const emulator of orphans()) {
+      if (disposed) return;
+      await stopAndroidEmulator({
+        adbPath,
+        serial: emulator.serial,
+        consolePort: emulator.consolePort,
+        avdName: emulator.avdName,
+        pid: emulator.pid,
+        registry,
+        discoveryDirs,
+      }).then(
+        () => {
+          changed = true;
+          logger?.info("android.reconcile.stopped_orphan", { serial: emulator.serial, avdName: emulator.avdName });
+        },
+        (error: unknown) => logger?.warn("android.reconcile.stop_failed", { serial: emulator.serial, error: messageOf(error) }),
+      );
+    }
+    if (changed) emit({ type: "android.inventory.changed" });
+  };
+
   /* ---------- the API ---------- */
 
   const service: AndroidEmulatorServiceApi = {
@@ -704,11 +785,15 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
       if (!sdk.found || !sdk.root || !sdk.avdHome) return { avds: [], profiles: [], images: [] };
       const adbPath = androidSdkPaths(sdk.root, platform).adb;
       const running = await Promise.all(discovered().map((emulator) => asRunning(adbPath, emulator)));
-      const avds: AndroidAvdListing[] = listAndroidAvds(sdk.avdHome, { running }).map((avd) => ({
-        ...avd,
-        running: running.find((emulator) => sameName(emulator.avdName, avd.name)) ?? null,
-        heldByLaneId: deps.laneDevices.holder(avd.name),
-      }));
+      const avds: AndroidAvdListing[] = listAndroidAvds(sdk.avdHome, { running }).map((avd) => {
+        const madeFor = avd.adeCreated ? readAdeAvdLaneId(avd) : null;
+        return {
+          ...avd,
+          running: running.find((emulator) => sameName(emulator.avdName, avd.name)) ?? null,
+          heldByLaneId: deps.laneDevices.holder(avd.name),
+          madeForOtherLane: madeFor !== null && deps.laneDevices.laneState?.(madeFor) === "missing",
+        };
+      });
       const images = listAndroidSystemImages(sdk.root);
       const profiles = definitionsFor(sdk.root, images).map((definition) => definition.profile);
       const inventory: AndroidDeviceInventory = { avds, profiles, images };
@@ -1061,15 +1146,23 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
       liveServices -= 1;
       lifetime.abort();
       const sdk = await requireSdk({ emulator: false }).catch(() => null);
+      const handOff = deps.handOffOnDispose === true;
       await Promise.all([...lanes.values()].map(async (state) => {
         await stopLaneStream(state);
-        if (state.transient === "starting" && state.launch && sdk) {
+        if (!handOff && state.transient === "starting" && state.launch && sdk) {
           state.stopRequested = true;
           state.launchStop ??= stopLaunch(state.launch, sdk.adbPath);
           await state.launchStop.catch(() => undefined);
         }
       }));
-      if (sdk) {
+      if (handOff) {
+        // A brain exit: the emulators stay up and stay in the state file, and
+        // the next service re-adopts them. A boot still in progress finishes
+        // on its own and reads as "starting" there until it is done.
+        logger?.info("android.dispose_hand_off", {
+          emulators: discovered().filter((emulator) => registry.owns(emulator)).map((emulator) => emulator.serial),
+        });
+      } else if (sdk) {
         // Every emulator ADE started for this project, this run or an earlier
         // one (the state file), and nothing else.
         for (const emulator of discovered()) {
@@ -1100,5 +1193,12 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
       };
     },
   };
+  // After construction returns, so a caller's first call is not held up by it;
+  // lane steps still queue behind it through `serialize`.
+  setTimeout(() => {
+    void reconcile().catch((error: unknown) => {
+      logger?.warn("android.reconcile_failed", { error: messageOf(error) });
+    });
+  }, 0);
   return service;
 }

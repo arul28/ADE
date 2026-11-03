@@ -341,6 +341,12 @@ export type LaunchAndroidEmulatorInput = {
   registry?: AdeStartedEmulators | null;
   discoveryDirs?: readonly string[];
   env?: NodeJS.ProcessEnv;
+  /**
+   * Its own process group, so the emulator outlives this process: a brain
+   * that exits (an update, a restart) hands it to the next brain instead of
+   * taking it down with its own group.
+   */
+  detached?: boolean;
 };
 
 export type AndroidEmulatorExit = { code: number | null; signal: NodeJS.Signals | null; error: string | null };
@@ -410,6 +416,7 @@ export async function launchAndroidEmulator(input: LaunchAndroidEmulatorInput): 
       cwd: path.dirname(input.emulatorPath),
       stdio: ["ignore", logFd, logFd],
       windowsHide: true,
+      detached: input.detached === true,
       env: {
         ...(input.env ?? process.env),
         // Both names, equal, so the emulator finds this SDK and never warns
