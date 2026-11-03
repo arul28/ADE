@@ -796,7 +796,7 @@ ade screen start --text                               # Windows: the private sea
 ade screen start --shared --reason "<why>" --text     # Windows: ask the user in this chat for their main desktop; their Allow is the consent
 ade screen focus --window <id> --text                 # Windows: raise one of this lane's windows; also: minimize, close
 ade screen setup --allow-prompt --text                # Windows: the user's one-time admin step; also: takeover (user only)
-# Android emulator: one per lane, on the machine that runs the lane's brain (alias: ade emulator).
+# Android emulator: one per lane, on the machine that runs the lane's brain.
 ade android status --text                             # SDK, tools, acceleration, and this lane's emulator
 ade android devices --profiles --text                 # AVDs (and the lane holding each), system images, hardware profiles
 ade android create --profile medium_phone --text      # make an AVD for this lane and boot it; --image <pkg>, --no-start

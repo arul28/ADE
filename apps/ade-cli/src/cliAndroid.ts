@@ -1,5 +1,5 @@
 /**
- * `ade android` (also `ade emulator`): the plan builder, the text formatters
+ * `ade android`: the plan builder, the text formatters
  * and the error hints for the lane's Android emulator.
  *
  * cli.ts keeps the dispatch case, the help page and the output switch. The
@@ -77,7 +77,6 @@ export const ANDROID_VALUE_FLAGS: readonly string[] = [
   "--lane-id",
   "--ms",
   "--name",
-  "--orientation",
   "--out",
   "--out-path",
   "--output",
@@ -194,7 +193,7 @@ export function buildAndroidPlan(args: string[]): CliPlan {
     const showProfiles = readFlag(args, ["--profiles"]);
     return androidAction("android devices", "listDevices", laneClaim(), showProfiles ? "android-devices-profiles" : "android-devices");
   }
-  if (sub === "create" || sub === "device-create") {
+  if (sub === "create") {
     const profileId = requireValue(readValue(args, ["--profile"]) ?? positionals()[0] ?? null, "--profile <hardware profile id>");
     const systemImage = readValue(args, ["--image", "--system-image"]);
     const displayName = readValue(args, ["--name"]);
@@ -207,7 +206,7 @@ export function buildAndroidPlan(args: string[]): CliPlan {
       ...(noStart ? { start: false } : {}),
     }, "android-device", noStart ? {} : { progressNotice: bootNotice });
   }
-  if (sub === "attach" || sub === "device-attach") {
+  if (sub === "attach") {
     const avdName = requireValue(readValue(args, ["--avd", "--name"]) ?? positionals()[0] ?? null, "AVD name");
     const noStart = readFlag(args, ["--no-start", "--no-boot"]);
     return androidAction("android attach", "attachDevice", {
@@ -220,7 +219,7 @@ export function buildAndroidPlan(args: string[]): CliPlan {
     return androidAction("android start", "start", laneClaim(), "android-device", { progressNotice: bootNotice });
   if (sub === "stop" || sub === "shutdown")
     return androidAction("android stop", "stop", laneClaim(), "android-device");
-  if (sub === "release" || sub === "detach" || sub === "device-detach") {
+  if (sub === "release" || sub === "detach") {
     // An AVD ADE made for the lane is deleted on release; --keep keeps it on
     // disk. The user's own AVD is never deleted either way.
     const keep = readFlag(args, ["--keep", "--keep-avd"]);
@@ -273,8 +272,8 @@ export function buildAndroidPlan(args: string[]): CliPlan {
       shapeResult: done({ action: "key", key }),
     });
   }
-  if (sub === "rotate" || sub === "orientation") {
-    const orientation = requireValue(readValue(args, ["--orientation"]) ?? positionals()[0] ?? null, "the orientation (portrait or landscape)").toLowerCase();
+  if (sub === "rotate") {
+    const orientation = requireValue(positionals()[0] ?? null, "the orientation (portrait or landscape)").toLowerCase();
     if (!(ANDROID_ORIENTATIONS as readonly string[]).includes(orientation)) {
       throw new CliUsageError(`android rotate: unknown orientation '${orientation}'. Use ${ANDROID_ORIENTATIONS.join(" or ")}.`);
     }

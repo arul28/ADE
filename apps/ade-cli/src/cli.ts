@@ -1578,7 +1578,6 @@ export const CLI_COMMAND_ALIASES: Record<string, string> = {
   simulator: "apple",
   "mac-desk": "mac-desktop",
   desk: "mac-desktop",
-  emulator: "android",
   app: "app-control",
   apps: "app-control",
   electron: "app-control",
@@ -3446,7 +3445,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   Android Emulator
 
   One Android emulator per lane, on the machine that runs the lane's brain
-  (macOS, Windows or Linux with the Android SDK). Alias: \`ade emulator\`.
+  (macOS, Windows or Linux with the Android SDK).
 
   Every subcommand is lane-scoped. --lane defaults to ADE_LANE_ID; with
   neither, a call made from inside a lane worktree is bound to that lane, and
@@ -3479,8 +3478,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade android show --text                      Show the emulator to the user (tools pane)
     $ ade android actions --text                   List the android_emulator actions
 
-  Aliases: create = device-create, attach = device-attach, release = detach =
-  device-detach, key = press, rotate = orientation, text = type.
+  Aliases: release = detach, key = press, text = type.
 
   Another machine: --machine <name> runs the command on that machine, with
   no new lane. Without --lane, the emulator there works for this chat's work
@@ -17286,7 +17284,6 @@ const WORK_TOOL_SHOW_SURFACE_ALIASES: Record<string, WorkToolShowSurface> = {
   "floating-app-control": "floating-app-control",
   "floating-app": "floating-app-control",
   android: "android",
-  emulator: "android",
 };
 
 /**
@@ -22381,7 +22378,7 @@ function buildCliPlan(
     primary === "windows-desk"
   )
     return buildMacDesktopPlan(args);
-  if (primary === "android" || primary === "emulator") return buildAndroidPlan(args);
+  if (primary === "android") return buildAndroidPlan(args);
   if (
     primary === "app-control" ||
     primary === "app" ||
