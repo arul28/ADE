@@ -75,13 +75,15 @@ Agent-focused command-line interface for ADE.
     $ ade tests list | run | stop | runs | logs     Run configured test suites
     $ ade proof status | list | screenshot | record Manage proof and computer-use artifacts
     $ ade apple devices | apps | launch | tap      Control Apple simulators, capture, and input
+    $ ade android status | create | start | tap    Drive this lane's Android emulator
     $ ade app-control launch | observe | click | record
                                                     Drive this lane's Electron app, record it, file proof
     $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
     $ ade browser attach | detach                  The user's own browser, only when they ask
     $ ade work-tools state | actions               Read the desktop Work tools pane for a lane
     $ ade ui show apple | floating-apple | browser | proof | mac-desktop | floating-mac-desktop
-        | app-control | floating-app-control         Show a surface of this chat to the user
+        | app-control | floating-app-control | android
+                                                    Show a surface of this chat to the user
     $ ade usage limits --text                       What's left of each subscription, per account
     $ ade usage snapshot | stats | refresh | budget Read provider quota, token/cost stats, and budget guardrails
     $ ade router routes | pick | shadow | efficiency | refresh  Model router: rated routes, dry-run picks, shadow and efficiency reports
@@ -237,13 +239,15 @@ Agent-focused command-line interface for ADE.
     $ ade tests list | run | stop | runs | logs     Run configured test suites
     $ ade proof status | list | screenshot | record Manage proof and computer-use artifacts
     $ ade apple devices | apps | launch | tap      Control Apple simulators, capture, and input
+    $ ade android status | create | start | tap    Drive this lane's Android emulator
     $ ade app-control launch | observe | click | record
                                                     Drive this lane's Electron app, record it, file proof
     $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
     $ ade browser attach | detach                  The user's own browser, only when they ask
     $ ade work-tools state | actions               Read the desktop Work tools pane for a lane
     $ ade ui show apple | floating-apple | browser | proof | mac-desktop | floating-mac-desktop
-        | app-control | floating-app-control         Show a surface of this chat to the user
+        | app-control | floating-app-control | android
+                                                    Show a surface of this chat to the user
     $ ade usage limits --text                       What's left of each subscription, per account
     $ ade usage snapshot | stats | refresh | budget Read provider quota, token/cost stats, and budget guardrails
     $ ade router routes | pick | shadow | efficiency | refresh  Model router: rated routes, dry-run picks, shadow and efficiency reports
@@ -599,6 +603,7 @@ Shell sessions
   active owner session automatically.
 
     $ ade shell start --lane <lane> -- npm test     Start a tracked shell session
+    $ ade shell start -- npm test                   Without --lane: your own lane, else the project's primary lane
     $ ade shell start --lane <lane> -c "npm test"   Start with a command string
     $ ade new chat --mode cli --lane <lane> --provider codex --permission-mode edit --no-parent --prompt "fix tests"
     $ ade shell start-cli codex --lane <lane> --permission-mode edit --no-parent
@@ -611,6 +616,13 @@ Shell sessions
 
   After start, use the returned session id with:
     $ ade terminal read --terminal <session-id> --text
+
+  On another machine (this chat's work copy there: a hidden worktree at your
+  commit, which must be on origin, with your uncommitted changes applied):
+    $ ade shell start --machine <name> --wait -- npm test   Stream the output, exit with its code
+    $ ade shell start --machine <name> --no-sync -- git status   Run in the copy as it is
+    $ ade shell start --machine <name> --discard --wait -- npm test   Throw away unpushed work there first
+    $ ade shell clean --machine <name>               Delete this chat's work copy there
 
   Provider CLI launches accept --instance for Claude/Codex accounts and
   --preset or --credential for saved harness brains.
@@ -722,8 +734,8 @@ Work chats
                                                     Exit 1 when the host reports no live usage limit.
     $ ade chat continue-on-account <session>        Continue a usage-limited chat on another account that still has room
                                                     Exit 1 when no other account can take it.
-    $ ade chat switch-account <session> --account <id>  Move a Claude or Codex chat to another account; same thread
-                                                    Account ids: ade providers accounts list. Exit 1 when refused.
+    $ ade chat switch-account <session> --account <email>  Move a Claude or Codex chat to another account; same thread
+                                                    Accounts: ade providers accounts list. Exit 1 when refused.
     $ ade chat note "testing desktop auth fallback" # Update the Work status line (aim for 6 words or fewer; truncated past 72 characters)
     $ ade chat activity debugging                    Name what this turn is doing when ADE's own detection (from tool calls) cannot tell; use clear to remove it
                                                     Values: planning | exploring | implementing | testing | debugging | reviewing | shipping | monitoring. Agent callers need a bound ADE Work chat; --session may target that chat or a tracked terminal it owns. CTO callers may target sessions explicitly.
@@ -891,8 +903,9 @@ Work chats
     --prompt-file <path|->  The first message from a file, or stdin with -. Use it
                             for multi-line text (ade.cmd on Windows cuts arguments
                             at the first line break).
-    --instance <id>         Provider account; --credential <id> and --preset <id> pick
-                            a saved credential or harness preset (ade help providers).
+    --instance <email>      Provider account, by its email (its id works too);
+                            --credential <id> and --preset <id> pick a saved
+                            credential or harness preset (ade help providers).
     --permissions <mode>    Alias for --permission-mode.
     --permission-mode <m>   default | auto | plan | edit | full-auto | config-toml.
                             The host may lower it for an agent caller (stderr note).
@@ -1011,13 +1024,15 @@ Agent-focused command-line interface for ADE.
     $ ade tests list | run | stop | runs | logs     Run configured test suites
     $ ade proof status | list | screenshot | record Manage proof and computer-use artifacts
     $ ade apple devices | apps | launch | tap      Control Apple simulators, capture, and input
+    $ ade android status | create | start | tap    Drive this lane's Android emulator
     $ ade app-control launch | observe | click | record
                                                     Drive this lane's Electron app, record it, file proof
     $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
     $ ade browser attach | detach                  The user's own browser, only when they ask
     $ ade work-tools state | actions               Read the desktop Work tools pane for a lane
     $ ade ui show apple | floating-apple | browser | proof | mac-desktop | floating-mac-desktop
-        | app-control | floating-app-control         Show a surface of this chat to the user
+        | app-control | floating-app-control | android
+                                                    Show a surface of this chat to the user
     $ ade usage limits --text                       What's left of each subscription, per account
     $ ade usage snapshot | stats | refresh | budget Read provider quota, token/cost stats, and budget guardrails
     $ ade router routes | pick | shadow | efficiency | refresh  Model router: rated routes, dry-run picks, shadow and efficiency reports
@@ -1277,13 +1292,15 @@ Agent-focused command-line interface for ADE.
     $ ade tests list | run | stop | runs | logs     Run configured test suites
     $ ade proof status | list | screenshot | record Manage proof and computer-use artifacts
     $ ade apple devices | apps | launch | tap      Control Apple simulators, capture, and input
+    $ ade android status | create | start | tap    Drive this lane's Android emulator
     $ ade app-control launch | observe | click | record
                                                     Drive this lane's Electron app, record it, file proof
     $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
     $ ade browser attach | detach                  The user's own browser, only when they ask
     $ ade work-tools state | actions               Read the desktop Work tools pane for a lane
     $ ade ui show apple | floating-apple | browser | proof | mac-desktop | floating-mac-desktop
-        | app-control | floating-app-control         Show a surface of this chat to the user
+        | app-control | floating-app-control | android
+                                                    Show a surface of this chat to the user
     $ ade usage limits --text                       What's left of each subscription, per account
     $ ade usage snapshot | stats | refresh | budget Read provider quota, token/cost stats, and budget guardrails
     $ ade router routes | pick | shadow | efficiency | refresh  Model router: rated routes, dry-run picks, shadow and efficiency reports
@@ -1374,8 +1391,13 @@ Proof and computer use
     $ ade proof capture --real-screen --caption "Done"  Capture the whole real screen
     $ ade proof attach "$TMPDIR/proof.png" --caption "Done" Attach an existing image/video
     $ ade proof publish --pr 12 <id> <id>           Post chosen proof to a PR as one comment (gh 2.99+)
+    $ ade proof publish --pr 12 --replace <id>      Same, and delete your earlier ADE proof comments on it
     $ ade proof publish --pr 12 --in-body           Upload the proof the PR text cites, in place (gh 2.99+)
-    $ ade proof step "Open the settings page"       Caption the next part of every recording running on this lane
+    $ ade proof step "Open the settings page"       Caption the next part of every recording running on this lane (60 chars max)
+    $ ade proof step "Pick a model" --focus 0.6,0.1,0.4,0.8  Same, and hold the camera on that region (x,y,w,h fractions)
+    $ ade proof review artifact-id --text           A sheet of a video's key moments (or a picture's path) to check before publishing
+    $ ade proof review artifact-id --from 12 --to 18 --text  A closer look at seconds 12–18
+    $ ade proof review --chat <session-id> --text   The newest video (else proof) a chat filed
     $ ade proof rm artifact-id                      Delete stored proof and its record
     $ ade proof broken --text                       List proof whose stored file is unavailable
     $ ade proof recover artifact-id                 Re-import a broken proof from its surviving source
@@ -1587,6 +1609,65 @@ Apple Development
   tap-element and fill-element; fall back to tap when no query matches.
 ade ios-sim is now ade apple; the alias goes away next minor release
 
+## ade android --help
+Android Emulator
+
+  One Android emulator per lane, on the machine that runs the lane's brain
+  (macOS, Windows or Linux with the Android SDK). Alias: `ade emulator`.
+
+  Every subcommand is lane-scoped. --lane defaults to ADE_LANE_ID; with
+  neither, a call made from inside a lane worktree is bound to that lane, and
+  a chat-bound caller is pinned to its chat's lane. Points are device pixels,
+  the same pixels as the screenshot.
+
+  Setup and the lane's device:
+    $ ade android status --text                    SDK, acceleration, the lane's emulator
+    $ ade android devices --text                   AVDs (and the lane holding each), system images
+    $ ade android devices --profiles --text        Also list the hardware profiles
+    $ ade android create --profile medium_phone --text
+                                                   Make an AVD for this lane and boot it
+                                                   (--image <package>, --name <shown name>, --no-start)
+    $ ade android attach <avd> --text              Hold an existing AVD no other lane holds (--no-start)
+    $ ade android start --text                     Boot the lane's AVD (waits for boot completed)
+    $ ade android stop --text                      Stop it; the lane keeps its AVD
+    $ ade android release --text                   Stop it and let the AVD go. An AVD ADE made
+                                                   for the lane is deleted; --keep keeps it.
+                                                   The user's own AVD is never deleted.
+
+  Input and capture:
+    $ ade android screenshot --out shot.png --text Write a PNG (on the emulator's machine)
+    $ ade android tap 540 1200 --text              Tap a point
+    $ ade android swipe 540 1800 540 600 --ms 300 --text
+                                                   Swipe from one point to another
+    $ ade android key back --text                  back | home | recents | power | volume_up | volume_down
+    $ ade android text "hello world" --text        Type into the focused field (--value "<text>" too)
+    $ ade android show --text                      Show the emulator to the user (tools pane)
+    $ ade android actions --text                   List the android_emulator actions
+
+  Aliases: create = device-create, attach = device-attach, release = detach =
+  device-detach, key = press, text = type.
+
+  Another machine: --machine <name> runs the command on that machine, with
+  no new lane. Without --lane, the emulator there works for this chat's work
+  copy (a hidden worktree at your commit, made on first use; the commit must
+  be on origin). Every view of this chat then shows it in the Android tool.
+  status and devices make no copy. --lane <id> uses a lane on that machine
+  instead. The screenshot is written there.
+    $ ade android create --profile medium_phone --machine windows --text
+    $ ade android tap 540 1200 --machine windows --text
+
+  Errors (each prints its next step):
+    ANDROID_SDK_NOT_FOUND            install the SDK or set ANDROID_HOME
+    ANDROID_TOOL_MISSING             install the missing SDK package
+    ANDROID_NO_ACCELERATION          turn on hardware acceleration
+    ANDROID_NO_SYSTEM_IMAGE          install a system image, or pass --image
+    ANDROID_AVD_HELD_BY_OTHER_LANE   pick a free AVD, or create one
+    ANDROID_AVD_RUNNING              that AVD already runs outside this lane
+    ANDROID_BOOT_TIMEOUT / ANDROID_EMULATOR_EXITED   read the log the error names
+    ANDROID_NOT_RUNNING              ade android start first
+  The live view (stream and live touch) and deleting an AVD no lane holds are
+  the user's, in the Android panel; an agent uses tap, swipe, key and text.
+
 ## ade app-control --help
 App Control
 
@@ -1727,7 +1808,30 @@ ADE browser
   user out. --profile <name> names the sign-in (one per chat and name), so a
   test can keep "owner" and "viewer" signed in side by side. A tab's sign-in is
   fixed when it opens: plain "open" reuses only this chat's shared-profile tab,
-  and "open --profile viewer" reuses only this chat's "viewer" tab.
+  and "open --profile viewer" reuses only this chat's "viewer" tab. An
+  isolated tab opens where the user sits, like any other, and they see it.
+
+  Every tab, every machine. "status" lists every tab of this project on every
+  machine this one can reach, with its machine, owner, opener and sign-in:
+    owner "this chat"          yours; reuse it, close it when done
+    owner "free — claim …"     no chat holds it; claim it to drive it
+    owner ""<title>" · lane … (held)"  another chat's live tab; leave it alone
+  A command without --tab acts on a tab this chat owns; with none, it is
+  refused rather than run in whatever tab is in front. Plain "open" uses a tab
+  this chat owns where the user sits; pass --tab <id> to stay in one tab.
+  Any agent may close any tab, a held one included, but check the owner first:
+  prefer this chat's tabs and free ones, close a held tab only when the task
+  needs it, and never close a tab the user opened or kept without asking them.
+  "close" prints whose tab it closed. When the browser is full, the error lists
+  only your tabs and free agent tabs; ask the user about the rest. A deleted or
+  archived lane frees its tabs (they stay open). An agent's tab is not brought
+  back after ADE restarts; a tab the user opened or kept keeps its id.
+
+  Which machine. "status" prints the route: the browser "open" uses (the
+  computer the user sends this chat's messages from, else this machine) and
+  why. A command with --tab or --browser-session goes to the machine whose
+  browser holds that tab, so one task stays on one machine; --here forces this
+  machine. Every error names the machine whose browser refused.
 
   The user's own browser (only when the user asks for it):
     $ ade --socket browser attach --text           The tab the user is looking at
@@ -1752,7 +1856,7 @@ ADE browser
   --user-data-dir <dir> checks a browser started with that profile directory.
 
   Tabs and navigation:
-    $ ade --socket browser status --text           Show active tab and tab list
+    $ ade --socket browser status --text           Every tab on every machine, owners, and the route
     $ ade --socket browser authorize --tab <id>    Ask the user to let this chat use the ADE browser
     $ ade --socket browser claim --lane <lane-id>  Attribute the active browser tab to a lane
     $ ade --socket browser panel --text            Open the Work sidebar Browser panel
@@ -2038,13 +2142,15 @@ Agent-focused command-line interface for ADE.
     $ ade tests list | run | stop | runs | logs     Run configured test suites
     $ ade proof status | list | screenshot | record Manage proof and computer-use artifacts
     $ ade apple devices | apps | launch | tap      Control Apple simulators, capture, and input
+    $ ade android status | create | start | tap    Drive this lane's Android emulator
     $ ade app-control launch | observe | click | record
                                                     Drive this lane's Electron app, record it, file proof
     $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
     $ ade browser attach | detach                  The user's own browser, only when they ask
     $ ade work-tools state | actions               Read the desktop Work tools pane for a lane
     $ ade ui show apple | floating-apple | browser | proof | mac-desktop | floating-mac-desktop
-        | app-control | floating-app-control         Show a surface of this chat to the user
+        | app-control | floating-app-control | android
+                                                    Show a surface of this chat to the user
     $ ade usage limits --text                       What's left of each subscription, per account
     $ ade usage snapshot | stats | refresh | budget Read provider quota, token/cost stats, and budget guardrails
     $ ade router routes | pick | shadow | efficiency | refresh  Model router: rated routes, dry-run picks, shadow and efficiency reports
