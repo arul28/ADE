@@ -15,6 +15,7 @@ import {
   ADE_DEEPLINK_HTTPS_HOST,
   ADE_DEEPLINK_HTTPS_PATH,
   buildDeeplink,
+  deeplinkTargetTakesOwnership,
   isAdeDeeplinkHttpsHost,
   isValidRepoRelativePath,
   parseDeeplink,
@@ -263,17 +264,11 @@ export async function runLinkCommandAsync(
       if (target.kind === "commit") target = { ...target, envelope };
     }
   }
-  if (!plan.noEnvelope && options.resolveOwnership && targetTakesOwnership(target) && !target.ownership) {
+  if (!plan.noEnvelope && options.resolveOwnership && deeplinkTargetTakesOwnership(target) && !target.ownership) {
     const ownership = await Promise.resolve(options.resolveOwnership()).catch(() => null);
     if (ownership) target = { ...target, ownership };
   }
   return finishLink(renderLink(target, plan), plan.skipClipboard);
-}
-
-function targetTakesOwnership(
-  target: DeeplinkTarget,
-): target is Extract<DeeplinkTarget, { kind: "lane" | "session" | "pr" }> {
-  return target.kind === "lane" || target.kind === "session" || target.kind === "pr";
 }
 
 type LinkPlan =

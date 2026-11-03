@@ -7214,7 +7214,7 @@ async function runTool(args: {
   }
 
   if (name === "get_link_ownership") {
-    const ownership = localLinkOwnership(runtime.projectRoot);
+    const ownership = localLinkOwnership(runtime.projectRoot, { logger: runtime.logger });
     return { accountMachineKey: ownership?.accountMachineKey ?? null, projectId: ownership?.projectId ?? null };
   }
 
@@ -7986,10 +7986,17 @@ async function runTool(args: {
       if (!projectWide && !owners.some((owner) => owner.kind === "chat_session" && owner.id === chatSessionId)) {
         throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, "The requested proof owner is not authorized for this caller.");
       }
-      // Newest first. The video is what a person asked for; a picture only when there is none.
-      const chatProof = broker.listArtifacts({ ownerKind: "chat_session", ownerId: chatSessionId, ...PROOF_LISTING_ARTIFACT_FILTER, limit: 20 })
-        .filter((entry) => (entry.availability ?? "available") === "available");
-      artifact = chatProof.find((entry) => entry.kind === "video_recording")
+      // Newest first. The video is what a person asked for, looked up on its
+      // own so newer pictures can't crowd it out; a picture only when there is none.
+      const listChatProof = (kind?: "video_recording") => broker.listArtifacts({
+        ownerKind: "chat_session",
+        ownerId: chatSessionId,
+        ...PROOF_LISTING_ARTIFACT_FILTER,
+        ...(kind ? { kind } : {}),
+        limit: 20,
+      }).filter((entry) => (entry.availability ?? "available") === "available");
+      const chatProof = listChatProof();
+      artifact = listChatProof("video_recording")[0]
         ?? chatProof.find((entry) => entry.kind === "screenshot")
         ?? chatProof[0];
       if (!artifact) {

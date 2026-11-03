@@ -29,7 +29,7 @@ type OpenTarget =
   | { kind: "unknown" };
 
 /** The computer and project a link belongs to (`shared/deeplinks.ts` DeeplinkOwnership). */
-type OpenOwnership = { accountMachineKey: string; projectId: string };
+type OpenOwnership = { accountMachineKey: string; projectId: string; projectRoot?: string };
 
 type OpenEnvelope = {
   repo?: string;
@@ -69,22 +69,35 @@ function readEnvelope(params: URLSearchParams): OpenEnvelope | undefined {
   return Object.keys(envelope).length > 0 ? envelope : undefined;
 }
 
-/** Both or neither, with the desktop parser's limits; a malformed pair is dropped here (ADE reports it). */
-function readOwnership(params: URLSearchParams): OpenOwnership | undefined {
+/**
+ * Both or neither, with the desktop parser's limits. `null` is a link that
+ * names an owner badly (one half, too long): ADE refuses those, so the page
+ * calls the link broken instead of opening it without its owner.
+ */
+function readOwnership(params: URLSearchParams): OpenOwnership | undefined | null {
+  const named = params.has("accountMachineKey") || params.has("projectId");
   const accountMachineKey = (params.get("accountMachineKey") ?? "").trim();
   const projectId = (params.get("projectId") ?? "").trim();
-  if (!accountMachineKey || !projectId) return undefined;
-  if (accountMachineKey.length > 128 || projectId.length > 512) return undefined;
-  if (MACHINE_ID_BAD_RE.test(accountMachineKey) || MACHINE_ID_BAD_RE.test(projectId)) return undefined;
-  return { accountMachineKey, projectId };
+  if (!accountMachineKey || !projectId) return named ? null : undefined;
+  if (accountMachineKey.length > 128 || projectId.length > 512) return null;
+  if (MACHINE_ID_BAD_RE.test(accountMachineKey) || MACHINE_ID_BAD_RE.test(projectId)) return null;
+  // Older links carry the publisher's private project id with its root path,
+  // which is what lets ADE find that project. No link minted today has it.
+  const projectRoot = (params.get("projectRoot") ?? "").trim();
+  return projectRoot && projectRoot.length <= 4_096
+    ? { accountMachineKey, projectId, projectRoot }
+    : { accountMachineKey, projectId };
 }
 
 function parseQuery(search: string): OpenTarget {
   const params = new URLSearchParams(search);
   const type = (params.get("type") ?? "").toLowerCase();
+  const read = readOwnership(params);
+  if (read === null && (type === "lane" || type === "session" || type === "pr")) return { kind: "unknown" };
+  const ownership = read ?? undefined;
   if (type === "lane") {
     const laneId = params.get("id") ?? "";
-    if (laneId) return { kind: "lane", laneId, envelope: readEnvelope(params), ownership: readOwnership(params) };
+    if (laneId) return { kind: "lane", laneId, envelope: readEnvelope(params), ownership };
   }
   if (type === "session") {
     const sessionId = params.get("id") ?? "";
@@ -99,7 +112,7 @@ function parseQuery(search: string): OpenTarget {
         ...(event != null ? { event } : {}),
         ...(offset != null ? { offset } : {}),
         envelope: readEnvelope(params),
-        ownership: readOwnership(params),
+        ownership,
       };
     }
   }
@@ -135,7 +148,6 @@ function parseQuery(search: string): OpenTarget {
   if (type === "pr") {
     const repo = params.get("repo") ?? "";
     const number = positiveInteger(params.get("number"));
-    const ownership = readOwnership(params);
     const tab = (params.get("tab") ?? "").trim();
     if (number && (repo.includes("/") || ownership)) {
       return {
@@ -242,7 +254,11 @@ function envelopeEntries(envelope: OpenEnvelope | undefined): Array<[string, str
 
 function ownershipEntries(ownership: OpenOwnership | undefined): Array<[string, string | undefined]> {
   return ownership
-    ? [["accountMachineKey", ownership.accountMachineKey], ["projectId", ownership.projectId]]
+    ? [
+        ["accountMachineKey", ownership.accountMachineKey],
+        ["projectId", ownership.projectId],
+        ["projectRoot", ownership.projectRoot],
+      ]
     : [];
 }
 
@@ -331,7 +347,7 @@ function setOgTag(property: string, content: string): void {
 }
 
 /** Where the person chose to open ADE links, remembered on this browser. */
-type OpenPreference = "app" | "web";
+type OpenPreference = "app" | "app-beta" | "web";
 const OPEN_PREFERENCE_KEY = "ade.openLinksIn";
 /** The web client: same query, its own origin (its sign-in and keys live there). */
 const WEB_CLIENT_OPEN_URL = "https://app.ade-app.dev/open";
@@ -339,6 +355,26 @@ const WEB_CLIENT_OPEN_URL = "https://app.ade-app.dev/open";
 const APP_FALLBACK_MS = 2_500;
 /** A remembered "browser" pauses this long, so the choice can still be changed. */
 const WEB_REDIRECT_MS = 800;
+
+/**
+ * After trying the app: still waiting, the page went to the background (the
+ * app or the browser's "open ADE?" prompt took over), or nothing happened.
+ */
+type AppAttempt = "idle" | "trying" | "handedOff" | "noResponse";
+
+function statusLine(redirectingToWeb: boolean, attempt: AppAttempt): string {
+  if (redirectingToWeb && attempt === "idle") return "Opening in your browser…";
+  switch (attempt) {
+    case "noResponse":
+      return "ADE didn't open? Open it in your browser instead, or install the app.";
+    case "handedOff":
+      return "Opened in the ADE app. Didn't work? Open it in your browser instead.";
+    case "trying":
+      return "Opening the ADE app…";
+    case "idle":
+      return "Where do you want to open it?";
+  }
+}
 
 /** iPhone and iPad, including an iPad that reports itself as a Mac. */
 function isAppleMobile(): boolean {
@@ -350,7 +386,7 @@ function isAppleMobile(): boolean {
 function readOpenPreference(): OpenPreference | null {
   try {
     const value = window.localStorage.getItem(OPEN_PREFERENCE_KEY);
-    return value === "app" || value === "web" ? value : null;
+    return value === "app" || value === "app-beta" || value === "web" ? value : null;
   } catch {
     return null;
   }
@@ -379,17 +415,15 @@ export function OpenPage() {
   const webUrl = useMemo(() => webClientUrlFor(target, location.search), [target, location.search]);
   const { title, summary, valueLabel, value } = describeTarget(target);
   const [preference, setPreference] = useState<OpenPreference | null>(() => readOpenPreference());
+  // Only a choice remembered from an earlier visit opens on its own. A choice
+  // made on this page has already opened, and Change cancels a pending one.
+  const [autoOpen, setAutoOpen] = useState<OpenPreference | null>(preference);
   const [remember, setRemember] = useState(true);
-  const [appTried, setAppTried] = useState(false);
-  const [appMayHaveFailed, setAppMayHaveFailed] = useState(false);
-  // The page lost focus or went to the background after the app was tried:
-  // the app (or the browser's "open ADE?" prompt) took over.
-  const [appTookOver, setAppTookOver] = useState(false);
+  const [appAttempt, setAppAttempt] = useState<AppAttempt>("idle");
+  const [attemptCount, setAttemptCount] = useState(0);
   // The ADE Beta iPhone app registers `ade-beta://` instead of `ade://`.
-  const betaUrl = useMemo(
-    () => (adeUrl && isAppleMobile() ? adeUrl.replace(/^ade:/, "ade-beta:") : null),
-    [adeUrl],
-  );
+  const betaUrl = useMemo(() => (adeUrl ? adeUrl.replace(/^ade:/, "ade-beta:") : null), [adeUrl]);
+  const offerBeta = useMemo(() => isAppleMobile(), []);
 
   useDocumentTitle(title);
 
@@ -406,73 +440,75 @@ export function OpenPage() {
     setOgTag("og:url", `${CANONICAL_OPEN_ORIGIN}/open${location.search}`);
   }, [title, summary, location.search]);
 
-  const openInApp = (choose: boolean, url: string | null = adeUrl) => {
-    if (!url) return;
-    if (choose && remember) {
-      writeOpenPreference("app");
-      setPreference("app");
-    }
-    setAppTried(true);
-    setAppMayHaveFailed(false);
-    setAppTookOver(false);
+  const launchApp = (url: string) => {
+    setAppAttempt("trying");
+    setAttemptCount((count) => count + 1);
     window.location.href = url;
   };
 
-  const openInBrowser = (choose: boolean) => {
+  const choose = (value: OpenPreference) => {
+    if (preference || !remember) return;
+    writeOpenPreference(value);
+    setPreference(value);
+  };
+
+  const openInApp = (value: "app" | "app-beta") => {
+    const url = value === "app-beta" ? betaUrl : adeUrl;
+    if (!url) return;
+    choose(value);
+    launchApp(url);
+  };
+
+  const openInBrowser = () => {
     if (!webUrl) return;
-    if (choose && remember) {
-      writeOpenPreference("web");
-      setPreference("web");
-    }
+    choose("web");
     window.location.assign(webUrl);
   };
 
   const forgetChoice = () => {
     writeOpenPreference(null);
     setPreference(null);
-    setAppTried(false);
-    setAppMayHaveFailed(false);
-    setAppTookOver(false);
+    setAutoOpen(null);
+    setAppAttempt("idle");
   };
 
   // A remembered choice runs on its own. Without one nothing launches until the
   // person picks: a page can't tell whether an app took an ade:// link (some
   // browsers ask, some do nothing at all), so guessing would strand them.
   useEffect(() => {
-    if (preference === "web" && webUrl) {
+    if (autoOpen === "web") {
+      if (!webUrl) return;
+      // A pause long enough to press Change.
       const redirect = setTimeout(() => window.location.replace(webUrl), WEB_REDIRECT_MS);
       return () => clearTimeout(redirect);
     }
-    if (preference !== "app" || !adeUrl) return;
-    setAppTried(true);
-    const launch = setTimeout(() => {
-      try {
-        window.location.href = adeUrl;
-      } catch {
-        // The fallback row below appears anyway.
-      }
-    }, 150);
+    const url = autoOpen === "app" ? adeUrl : autoOpen === "app-beta" ? betaUrl : null;
+    if (!url) return;
+    const launch = setTimeout(() => launchApp(url), 150);
     return () => clearTimeout(launch);
-  }, [preference, adeUrl, webUrl]);
+  }, [autoOpen, adeUrl, betaUrl, webUrl]);
 
   // Still here a while after trying the app: offer the browser and the
   // installer. A page that went to the background meanwhile handed off.
   useEffect(() => {
-    if (!appTried) return;
-    const tookOver = () => setAppTookOver(true);
+    if (attemptCount === 0) return;
+    const handedOff = () => setAppAttempt("handedOff");
     const onVisibility = () => {
-      if (document.visibilityState === "hidden") tookOver();
+      if (document.visibilityState === "hidden") handedOff();
     };
-    window.addEventListener("blur", tookOver);
+    window.addEventListener("blur", handedOff);
     document.addEventListener("visibilitychange", onVisibility);
-    const timer = setTimeout(() => setAppMayHaveFailed(true), APP_FALLBACK_MS);
+    const timer = setTimeout(
+      () => setAppAttempt((attempt) => (attempt === "trying" ? "noResponse" : attempt)),
+      APP_FALLBACK_MS,
+    );
     return () => {
       clearTimeout(timer);
-      window.removeEventListener("blur", tookOver);
+      window.removeEventListener("blur", handedOff);
       document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, [appTried]);
-  const appFailed = appMayHaveFailed && !appTookOver;
+  }, [attemptCount]);
+  const appFailed = appAttempt === "noResponse";
 
   const primaryButton =
     "inline-flex items-center justify-center rounded-md bg-emerald-500 px-4 py-2 text-sm font-medium text-zinc-950 transition hover:bg-emerald-400";
@@ -505,32 +541,22 @@ export function OpenPage() {
           ) : null}
           {adeUrl || webUrl ? (
             <div className="rounded-lg border border-zinc-800 bg-zinc-950/50 p-6 text-left text-sm">
-              <div className="text-zinc-400">
-                {preference === "web"
-                  ? "Opening in your browser…"
-                  : appFailed
-                    ? "ADE didn't open? Open it in your browser instead, or install the app."
-                    : appTookOver
-                      ? "Opened in the ADE app. Didn't work? Open it in your browser instead."
-                      : appTried
-                        ? "Opening the ADE app…"
-                        : "Where do you want to open it?"}
-              </div>
+              <div className="text-zinc-400">{statusLine(autoOpen === "web", appAttempt)}</div>
               <div className="mt-4 flex flex-wrap gap-3">
                 {adeUrl ? (
                   <button
                     type="button"
-                    onClick={() => openInApp(!preference)}
+                    onClick={() => openInApp("app")}
                     data-ade-analytics-feature={MARKETING_FEATURES.OPEN_IN_DESKTOP}
                     className={appFailed ? secondaryButton : primaryButton}
                   >
                     <ArrowUpRight className="mr-1 h-4 w-4" /> Open in the ADE app
                   </button>
                 ) : null}
-                {betaUrl ? (
+                {betaUrl && offerBeta ? (
                   <button
                     type="button"
-                    onClick={() => openInApp(!preference, betaUrl)}
+                    onClick={() => openInApp("app-beta")}
                     data-ade-analytics-feature={MARKETING_FEATURES.OPEN_IN_DESKTOP}
                     className={secondaryButton}
                   >
@@ -540,7 +566,7 @@ export function OpenPage() {
                 {webUrl ? (
                   <button
                     type="button"
-                    onClick={() => openInBrowser(!preference)}
+                    onClick={openInBrowser}
                     data-ade-analytics-feature={MARKETING_FEATURES.OPEN_WEB_CLIENT}
                     className={appFailed || !adeUrl ? primaryButton : secondaryButton}
                   >
@@ -559,7 +585,12 @@ export function OpenPage() {
                   onClick={forgetChoice}
                   className="mt-4 text-xs text-zinc-500 underline hover:text-zinc-300"
                 >
-                  {preference === "app" ? "Links open in the ADE app." : "Links open in your browser."} Change
+                  {preference === "web"
+                    ? "Links open in your browser."
+                    : preference === "app-beta"
+                      ? "Links open in ADE Beta."
+                      : "Links open in the ADE app."}{" "}
+                  Change
                 </button>
               ) : (
                 <label className="mt-4 flex items-center gap-2 text-xs text-zinc-500">

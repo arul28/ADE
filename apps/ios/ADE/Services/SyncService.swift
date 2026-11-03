@@ -8907,6 +8907,9 @@ final class SyncService: ObservableObject {
         syncNonEmpty($0.deviceId)?.lowercased() == deviceId
       }?.machineKey
     } else {
+      // Mid-switch the new machine's profile is active before its project
+      // is: wait until it is connected, or the pair would mix two machines.
+      guard connectionState == .connected else { return nil }
       machineKey = currentAccountMachineIdentity()?.key
     }
     guard let machineKey = syncNonEmpty(machineKey),
@@ -8929,10 +8932,12 @@ final class SyncService: ObservableObject {
   }
 
   /// The project an owned link names, from the attached machine's catalog.
-  /// Nil until the catalog lists it, which on a fresh connect can be a moment
-  /// after `hello`.
+  /// Nil until this connection's catalog lists it, which on a fresh connect
+  /// can be a moment after `hello`: a cached list may be another machine's,
+  /// and one canonical id names the same folder path on every machine.
   func projectForOwnedLink(projectId: String) -> MobileProjectSummary? {
-    projects.first { $0.id == projectId }
+    guard hasLiveProjectCatalog else { return nil }
+    return projects.first { $0.id == projectId }
       ?? remoteProjectCatalog.first { $0.id == projectId }
   }
 

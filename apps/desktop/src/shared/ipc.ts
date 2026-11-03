@@ -57,6 +57,7 @@ export const IPC = {
   appAdoptProjectTab: "ade.app.adoptProjectTab",
   appCloseWindow: "ade.app.closeWindow",
   appNavigate: "ade.app.navigate",
+  appOpenOwnedDeeplink: "ade.app.openOwnedDeeplink",
   /**
    * Every native-menu command main offers the renderer, on one channel:
    * `{ kind: "zoom" | "menu", command }`. Main and preload ship in one bundle,

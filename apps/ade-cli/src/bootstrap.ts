@@ -1206,7 +1206,7 @@ export async function createAdeRuntime(args: {
     let prServiceRef: ReturnType<typeof createPrService> | null = null;
     const publishLinearChatLink = createLinearChatLinkPublisher({
       getIssueTracker: () => linearIssueTrackerRef,
-      linkOwnership: () => localLinkOwnership(projectRoot),
+      linkOwnership: () => localLinkOwnership(projectRoot, { logger }),
       resolveEnvelope: async ({ laneId }) => {
         const repo = await githubServiceRef?.getRepoOrThrow().catch(() => null);
         if (!repo) return null;
@@ -2980,7 +2980,7 @@ export async function createAdeRuntime(args: {
         getAccountId: () => accountAuthService.getStatus().userId ?? null,
         getMachineId: readSyncDeviceId,
         projectId,
-        linkOwnership: () => localLinkOwnership(projectRoot),
+        linkOwnership: () => localLinkOwnership(projectRoot, { logger }),
         chat: {
           sendMessage: (args) => agentChat.sendMessage(args, { routeActiveToSteer: true }),
           interrupt: (args) => agentChat.interrupt(args),

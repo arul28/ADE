@@ -284,6 +284,35 @@ export function WebClientRoot({
     throw new Error("This machine has no connection ADE Web can dial.");
   }, [refreshVisibleEnvironments, sessionManager]);
 
+  /** The account's machines merged with the live sessions, read fresh. */
+  const currentMachines = useCallback(() => mergeWebMachines({
+    accountMachines: accountClient.getSnapshot().machines,
+    snapshot: sessionManager.getSnapshot(),
+    relayBaseUrls: accountClient.getRelayBaseUrls(),
+  }), [accountClient, sessionManager]);
+
+  const clearPendingTarget = useCallback(() => {
+    pendingTargetRef.current = null;
+    stashPendingTarget(null);
+  }, []);
+
+  /**
+   * Record an owned link's outcome. Returns the route to land on (its item,
+   * or its project when only the item is gone), or null to stay where the
+   * person was with the link still pending.
+   */
+  const settleOwnedLink = useCallback((result: OwnedLinkResult): string | null => {
+    if (result.ok) {
+      setOwnedLink(null);
+      clearPendingTarget();
+      return result.path;
+    }
+    setOwnedLink({ status: "failed", failure: result.failure });
+    if (!result.failure.projectPath) return null;
+    clearPendingTarget();
+    return result.failure.projectPath;
+  }, [clearPendingTarget]);
+
   /**
    * Open an owned link on its machine and project (see ownedLinkResolution.ts).
    * `onStage` reports each step; the result is the route or the failure.
@@ -295,13 +324,8 @@ export function WebClientRoot({
   ): Promise<OwnedLinkResult | null> => {
     const ownership = ownershipOfTarget(target);
     if (!ownership) return null;
-    const machines = () => mergeWebMachines({
-      accountMachines: accountClient.getSnapshot().machines,
-      snapshot: sessionManager.getSnapshot(),
-      relayBaseUrls: accountClient.getRelayBaseUrls(),
-    });
     return await resolveOwnedLink(target, ownership, {
-      machines,
+      machines: currentMachines,
       directoryUnavailable: () => accountClient.getSnapshot().state === "directory_unavailable",
       connect: connectMachineEntry,
       catalog: (targetId) => sessionManager.getSession(targetId)?.projects ?? [],
@@ -326,7 +350,7 @@ export function WebClientRoot({
       },
       onStage: (stage) => onStage(ownedLinkStageText(stage)),
     });
-  }, [accountClient, connectMachineEntry, sessionManager]);
+  }, [accountClient, connectMachineEntry, currentMachines, sessionManager]);
 
   const reconnectLastActiveMachine = useCallback(async () => {
     const machineKey = sessionManager.getLastActiveMachineKey();
@@ -481,13 +505,16 @@ export function WebClientRoot({
         window.history.replaceState(null, "", "/");
       }
       const path = window.location.pathname;
+      const linkInUrl = path === "/open" || isAppRoute(path);
+      // A link in this URL replaces any stored one. A stored link keeps its
+      // own age, so revisiting ADE Web does not keep an abandoned link alive.
       const pendingTarget = path === "/open"
         ? parseOpenTarget(window.location.search)
         : isAppRoute(path)
           ? parseWebPath(`${path}${window.location.search}`)
           : readPendingTarget();
       pendingTargetRef.current = pendingTarget;
-      stashPendingTarget(pendingTarget);
+      if (linkInUrl) stashPendingTarget(pendingTarget);
 
       const wasCallback = path === "/account/callback";
       if (!wasCallback) {
@@ -543,20 +570,12 @@ export function WebClientRoot({
           if (!disposed && ownedLinkRunRef.current === runId) setPhase({ kind: "booting", message });
         });
         if (disposed) return;
-        if (result?.ok) {
-          initialPath = result.path;
-          pendingTargetRef.current = null;
-          stashPendingTarget(null);
-        } else if (result && result.failure.projectPath) {
-          // The project opened; only the chat or lane is gone. Land in it.
-          setOwnedLink({ status: "failed", failure: result.failure });
-          initialPath = result.failure.projectPath;
-          pendingTargetRef.current = null;
-          stashPendingTarget(null);
+        const landing = result ? settleOwnedLink(result) : null;
+        if (landing) {
+          initialPath = landing;
         } else {
           // Say what went wrong over where the person was, and keep the link
           // pending: opening its project from the welcome page still lands on it.
-          if (result) setOwnedLink({ status: "failed", failure: result.failure });
           restored = await installed.adapter.restore();
           if (disposed) return;
           initialPath = WELCOME_PATH;
@@ -570,10 +589,7 @@ export function WebClientRoot({
               ? `${path}${window.location.search}`
               : WELCOME_PATH
           : WELCOME_PATH;
-        if (restored) {
-          pendingTargetRef.current = null;
-          stashPendingTarget(null);
-        }
+        if (restored) clearPendingTarget();
       }
       window.history.replaceState(null, "", initialPath);
       const AppRoot = await loadAppRoot();
@@ -603,10 +619,12 @@ export function WebClientRoot({
   }, [
     accountClient,
     applyAccountPrivacy,
+    clearPendingTarget,
     installFederatedAdapter,
     reconnectLastActiveMachine,
     resolveOwnedTarget,
     sessionManager,
+    settleOwnedLink,
   ]);
 
   /**
@@ -619,24 +637,19 @@ export function WebClientRoot({
     if (!ownership) return true;
     const binding = federatedAdapterRef.current?.getActiveBinding() ?? null;
     if (!binding) return false;
-    const machine = mergeWebMachines({
-      accountMachines: accountClient.getSnapshot().machines,
-      snapshot: sessionManager.getSnapshot(),
-      relayBaseUrls: accountClient.getRelayBaseUrls(),
-    }).find((entry) => (
+    const machine = currentMachines().find((entry) => (
       entry.session?.targetId === binding.targetId || entry.environment?.envId === binding.targetId
     ));
     if (machine?.accountMachine?.machineKey !== ownership.accountMachineKey) return false;
     const match = matchOwnedProject(sessionManager.getSession(binding.targetId)?.projects ?? [], ownership, target);
     return match.kind === "found" && match.project.id === binding.projectId;
-  }, [accountClient, sessionManager]);
+  }, [currentMachines, sessionManager]);
 
   const dismissOwnedLink = useCallback(() => {
     ownedLinkRunRef.current += 1;
     setOwnedLink(null);
-    pendingTargetRef.current = null;
-    stashPendingTarget(null);
-  }, []);
+    clearPendingTarget();
+  }, [clearPendingTarget]);
 
   /**
    * Try the pending link again with the app up: progress and failure ride the
@@ -669,19 +682,8 @@ export function WebClientRoot({
         if (current()) setOwnedLink({ status: "resolving", message });
       });
       if (!current() || !result) return;
-      if (result.ok) {
-        setOwnedLink(null);
-        pendingTargetRef.current = null;
-        stashPendingTarget(null);
-        navigateMountedApp(result.path);
-        return;
-      }
-      setOwnedLink({ status: "failed", failure: result.failure });
-      if (result.failure.projectPath) {
-        pendingTargetRef.current = null;
-        stashPendingTarget(null);
-        navigateMountedApp(result.failure.projectPath);
-      }
+      const landing = settleOwnedLink(result);
+      if (landing) navigateMountedApp(landing);
     })().catch((error) => {
       if (!current()) return;
       setOwnedLink({
@@ -695,7 +697,7 @@ export function WebClientRoot({
         },
       });
     });
-  }, [accountClient, resolveOwnedTarget, sessionManager]);
+  }, [accountClient, resolveOwnedTarget, sessionManager, settleOwnedLink]);
 
   const signIn = useCallback(() => {
     void accountClient.startSignIn().catch((error) => {
@@ -719,8 +721,7 @@ export function WebClientRoot({
         const target = pendingTargetRef.current ?? readPendingTarget();
         if (!target) return null;
         if (!pendingTargetBelongsToActiveProject(target)) return null;
-        pendingTargetRef.current = null;
-        stashPendingTarget(null);
+        clearPendingTarget();
         setOwnedLink(null);
         return targetToWebPath(target);
       },
@@ -807,6 +808,7 @@ export function WebClientRoot({
     connectMachineEntry,
     connectingMachineKey,
     directoryLoading,
+    clearPendingTarget,
     federatedAdapter,
     dismissOwnedLink,
     installFederatedAdapter,

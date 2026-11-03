@@ -1654,12 +1654,13 @@ let lastProjectRuntimeBindingKind: OpenProjectBinding["kind"] | null = null;
  * before the first subscriber and hand it over then, so a link that opens a
  * new window still lands on its chat or lane.
  */
+const MAX_EARLY_APP_NAVIGATIONS = 8;
 const earlyAppNavigations: AppNavigationRequest[] = [];
 const appNavigateCallbacks = new Set<(request: AppNavigationRequest) => void>();
 ipcRenderer.on(IPC.appNavigate, (_event: Electron.IpcRendererEvent, payload: AppNavigationRequest) => {
   if (appNavigateCallbacks.size === 0) {
     earlyAppNavigations.push(payload);
-    if (earlyAppNavigations.length > 8) earlyAppNavigations.shift();
+    if (earlyAppNavigations.length > MAX_EARLY_APP_NAVIGATIONS) earlyAppNavigations.shift();
     return;
   }
   for (const callback of [...appNavigateCallbacks]) callback(payload);
@@ -4808,6 +4809,8 @@ const adeBridge = {
         ipcRenderer.removeListener(IPC.appProjectBindingChanged, listener);
       };
     },
+    openOwnedDeeplink: async (url: string): Promise<boolean> =>
+      Boolean(await ipcRenderer.invoke(IPC.appOpenOwnedDeeplink, url)),
     onNavigate: (cb: (request: AppNavigationRequest) => void) => {
       appNavigateCallbacks.add(cb);
       for (const request of earlyAppNavigations.splice(0)) cb(request);

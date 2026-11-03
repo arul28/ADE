@@ -52,8 +52,12 @@ and chat cards (`localLinkOwnership(projectRoot)` in
 project registry, so a project an agent, the CLI or a phone added still opens).
 A window opened for a link may get its navigation before the app has mounted;
 the preload holds it for the first `onNavigate` subscriber, and an owned lane
-link waits briefly for the lane list. An owned link whose chat or lane is gone
-says so ("no longer in this project") rather than "on another machine". The
+link waits briefly for the lane list. An owned link clicked inside ADE (a chat,
+a card) goes to main over `IPC.appOpenOwnedDeeplink` and takes the same owner
+routing as one from outside; the web client, with no main process, opens it in
+place without the ownership. So an owned target the renderer dispatches was
+always routed there by its owner, and one whose chat or lane is gone says so
+("no longer in this project") rather than "on another machine". The
 web client (`webclient/shell/ownedLinkResolution.ts`) connects to the machine,
 opens the project, then the item; iOS does the same, and waits for the
 account (a cold launch restoring its session, or a signed-out person signing
@@ -97,8 +101,9 @@ with `app` it tries the app and, 2.5 s later, makes the browser the main button
 or the browser's prompt took over. A **Change** link forgets the choice. On an
 iPhone or iPad the page also offers **Open in ADE Beta** (`ade-beta://`, the
 Beta app's scheme; only the App Store app claims the universal link). Desktop
-betas are the same `com.ade.desktop` app as stable and claim `ade://`; only
-Alpha does not. One link format serves every client; `ade link --web` still
+betas are the same `com.ade.desktop` app as stable and claim `ade://`. Alpha
+(a local build) declares the scheme too, so a Mac with only Alpha still opens
+links, but never claims the default: Stable's claim wins once it has run. One link format serves every client; `ade link --web` still
 mints the web client's own `/open` form, and `app.ade-app.dev` is accepted as a
 legacy host by desktop and iOS. The `ade://` form routes directly through the OS to the running
 desktop process (or starts it cold). Both forms parse to the same

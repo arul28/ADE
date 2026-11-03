@@ -1,7 +1,7 @@
 import { app, BrowserWindow, ipcMain, powerMonitor, type WebContents } from "electron";
 import { showRememberedOpenDialog } from "../shared/rememberedOpenDialog";
 import { resolveMovedProjectRoot } from "../../../../../ade-cli/src/services/projects/projectMove/moveJournal";
-import { deriveProjectId } from "../../../../../ade-cli/src/services/projects/projectRegistry";
+import { localLinkOwnership } from "../../../../../ade-cli/src/services/projects/localLinkOwnership";
 import type { DeeplinkOwnership } from "../../../shared/deeplinks";
 import path from "node:path";
 import { IPC } from "../../../shared/ipc";
@@ -1016,10 +1016,10 @@ export function registerRuntimeBridge({
         const projectId = binding.projectId?.trim() ?? "";
         return accountMachineKey && projectId ? { accountMachineKey, projectId } : null;
       }
-      const rootPath = binding.rootPath?.trim() ?? "";
-      if (!rootPath) return null;
-      const accountMachineKey = (getLocalMachineIdentity?.() ?? getOrCreateLocalAccountMachineIdentity()).machineKey?.trim() ?? "";
-      return accountMachineKey ? { accountMachineKey, projectId: deriveProjectId(rootPath) } : null;
+      return localLinkOwnership(binding.rootPath ?? "", {
+        logger: getMachineMainLogger(),
+        ...(getLocalMachineIdentity ? { identity: getLocalMachineIdentity } : {}),
+      });
     },
   );
 

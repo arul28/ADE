@@ -2228,10 +2228,13 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         onOpenChatHandoff={handleOpenChatHandoff}
         onCopySessionDeepLink={(session, runtimePin) => {
           void (async () => {
-            const ownership = await linkOwnershipFor({ pin: runtimePin, tabBinding: projectBinding, projectRoot });
+            // A focus-grid tile may not know a foreign chat's binding; the
+            // chat's own machine still names the link and answers the remote.
+            const pin = runtimePin ?? resolveSessionRuntimePin(session);
+            const ownership = await linkOwnershipFor(pin);
             const lane = work.lanes.find((candidate) => candidate.id === session.laneId) ?? null;
             const remote = session.laneId
-              ? await window.ade.git.getOriginRemote({ laneId: session.laneId }, runtimePin ?? null).catch(() => null)
+              ? await window.ade.git.getOriginRemote({ laneId: session.laneId }, pin ?? null).catch(() => null)
               : null;
             const repo = parseGithubRemoteUrl(remote?.remoteUrl ?? null);
             const branch = lane?.branchRef?.replace(/^refs\/heads\//, "") || remote?.branch || null;
@@ -2257,7 +2260,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         }}
         onOpenSessionInWeb={(session, runtimePin) => {
           void (async () => {
-            const ownership = await linkOwnershipFor({ pin: runtimePin, tabBinding: projectBinding, projectRoot });
+            const ownership = await linkOwnershipFor(runtimePin ?? resolveSessionRuntimePin(session));
             openExternalUrl(buildWebClientUrl({
               kind: "session",
               sessionId: session.id,

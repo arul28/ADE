@@ -169,6 +169,7 @@ import {
 import {
   deeplinkToNavigationTarget,
   isValidRepoRelativePath,
+  ownershipOfTarget,
   parseDeeplink,
 } from "../../../shared/deeplinks";
 import { buildPrsRouteSearch } from "../prs/prsRouteState";
@@ -1309,6 +1310,18 @@ function AppNavigationBridge() {
     // tab holds a lane with the same id: lane ids are unique per machine only.
     const localLane = (laneId: string | null | undefined, machineId: string | null | undefined) =>
       machineId && !readOtherMachinesNow().isActiveMachine(machineId) ? null : laneById(laneId);
+    // Lanes may still be loading (cold start, a project that just opened):
+    // refresh and wait briefly before calling a lane missing.
+    const waitForLane = async (find: () => ReturnType<typeof laneById>) => {
+      let lane = find();
+      if (lane) return lane;
+      void refreshLanes({ includeStatus: false }).catch(() => undefined);
+      for (let attempt = 0; attempt < 6 && !lane; attempt += 1) {
+        await new Promise((resolve) => window.setTimeout(resolve, 500));
+        lane = find();
+      }
+      return lane;
+    };
     // Lanes and chats on the other connected machines open there, not in the
     // "cannot find" modal. A project-switch retry does not wait for them: it
     // already retries on its own.
@@ -1350,14 +1363,8 @@ function AppNavigationBridge() {
       let lane = laneById(target.laneId);
       if (target.laneId && !lane) {
         // An explicit lane must never silently degrade to the project root —
-        // the same relative path exists in every worktree. Lanes may still be
-        // loading (cold start, just-switched project): refresh and wait
-        // briefly before giving up.
-        void refreshLanes({ includeStatus: false }).catch(() => undefined);
-        for (let attempt = 0; attempt < 6 && !lane; attempt += 1) {
-          await new Promise((resolve) => window.setTimeout(resolve, 500));
-          lane = laneById(target.laneId);
-        }
+        // the same relative path exists in every worktree.
+        lane = await waitForLane(() => laneById(target.laneId));
         if (!lane) {
           if (options.suppressUnresolved) return false;
           navigate("/files");
@@ -1459,17 +1466,11 @@ function AppNavigationBridge() {
     }
 
     if (target.kind === "lane") {
-      let lane = localLane(target.laneId, target.machineId);
-      if (!lane && target.ownership && !options.forceLocal) {
-        // An owned link was routed to this window because it holds the lane's
-        // project, which may have just opened: wait briefly for its lanes, as
-        // a file link does, before calling the lane missing.
-        void refreshLanes({ includeStatus: false }).catch(() => undefined);
-        for (let attempt = 0; attempt < 6 && !lane; attempt += 1) {
-          await new Promise((resolve) => window.setTimeout(resolve, 500));
-          lane = localLane(target.laneId, target.machineId);
-        }
-      }
+      // An owned link was routed to this window because it holds the lane's
+      // project, which may have just opened.
+      const lane = target.ownership && !options.forceLocal
+        ? await waitForLane(() => localLane(target.laneId, target.machineId))
+        : localLane(target.laneId, target.machineId);
       const laneMachineId = lane ? null : await otherMachineIdForLane(target.laneId, target.machineId);
       if (laneMachineId) {
         // Lanes selects a lane on another machine from `?laneId&machineId`.
@@ -1562,7 +1563,26 @@ function AppNavigationBridge() {
       if (!url) return;
       const parsed = parseDeeplink(url);
       if (!parsed.ok) return;
-      void dispatchLatest(deeplinkToNavigationTarget(parsed.target));
+      const target = deeplinkToNavigationTarget(parsed.target);
+      if (!ownershipOfTarget(parsed.target)) {
+        void dispatchLatest(target);
+        return;
+      }
+      // A link that names its computer and project opens there, the way one
+      // from outside does. Ownership on a target this window dispatches means
+      // the owner already sent it here, so where the main process can't take
+      // it (the web client) it opens here without that claim.
+      const unowned = { ...target, ownership: null } as AppNavigationTarget;
+      const handOff = window.ade?.app?.openOwnedDeeplink;
+      if (!handOff) {
+        void dispatchLatest(unowned);
+        return;
+      }
+      void handOff(url)
+        .then((accepted) => {
+          if (!accepted) void dispatchLatest(unowned);
+        })
+        .catch(() => dispatchLatest(unowned));
     };
     window.addEventListener(ADE_OPEN_DEEPLINK_EVENT, onOpenDeeplink);
     return () => window.removeEventListener(ADE_OPEN_DEEPLINK_EVENT, onOpenDeeplink);

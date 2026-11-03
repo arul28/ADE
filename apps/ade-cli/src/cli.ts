@@ -137,7 +137,7 @@ import { updateTrackOfVersion } from "../../desktop/src/shared/updateTrack";
 import { resolveReleaseChannel } from "../../desktop/src/shared/packageChannel";
 import { isSourceCheckoutRuntimeModule } from "./runtimePackaging";
 import { configureOutboundProxyFromEnv, trustSystemCertificates } from "../../desktop/src/main/services/shared/outboundNetwork";
-import { buildDeeplink, type DeeplinkEnvelope, type DeeplinkOwnership } from "../../desktop/src/shared/deeplinks";
+import { buildDeeplink, parseDeeplinkOwnership, type DeeplinkEnvelope, type DeeplinkOwnership } from "../../desktop/src/shared/deeplinks";
 import { laneIsOnBaseBranch } from "../../desktop/src/shared/laneBaseResolution";
 import {
   DEFAULT_LANE_START,
@@ -32900,6 +32900,10 @@ function formatProofReview(value: unknown): string {
   const findings = Array.isArray(record.findings) ? record.findings.map(String) : [];
   const size = record.width && record.height ? `${record.width}×${record.height}` : "size unknown";
   const lines: string[] = [];
+  // `--chat` picks one of the chat's proofs: say which, and what else it has.
+  if (typeof record.artifactId === "string") {
+    lines.push(`proof ${record.artifactId}${typeof record.title === "string" && record.title ? ` · ${record.title}` : ""}`);
+  }
   if (record.media === "video") {
     const seconds = typeof record.durationSeconds === "number" ? `${record.durationSeconds} s` : "length unknown";
     lines.push(`video ${size} · ${seconds}`);
@@ -32917,6 +32921,10 @@ function formatProofReview(value: unknown): string {
     lines.push(`image ${size}`, `file  ${String(record.path ?? "")}`);
   }
   lines.push(...findings.map((finding) => `fix   ${finding}`));
+  const otherProof = Array.isArray(record.otherProof) ? record.otherProof as Array<Record<string, unknown>> : [];
+  if (otherProof.length) {
+    lines.push(`also  ${otherProof.map((entry) => `${String(entry.id)} (${String(entry.kind)})`).join(", ")}: \`ade proof review <id>\``);
+  }
   lines.push("look  Open the image. Only the subject on screen (no banners, toasts, dev overlays, other windows)? Subject fills the frame (no big empty areas) and reads at phone size? Captions short? No secrets? If not: fix the stage, record again, `ade proof rm` this one.");
   return lines.join("\n");
 }
@@ -36923,8 +36931,7 @@ async function runGithubAppLogin(
  * A brain connection for `ade link`, plus the id of the project this command
  * runs in. The machine brain answers project actions only with a project id,
  * and minting a link must not register a folder as a project, so the id comes
- * from the registry; a folder that is not a project gets none. A legacy
- * desktop socket serves one project and needs no id.
+ * from the registry; a folder that is not a project gets none.
  */
 async function connectForLink(
   options: GlobalOptions,
@@ -36933,22 +36940,17 @@ async function connectForLink(
     { ...options, headless: false, requireSocket: true },
     { autoRegisterProject: false },
   );
-  let projectId: string | null = null;
-  if (connection.mode === "runtime-socket") {
-    const listed = await connection.request("projects.list", {}).catch(() => null);
-    const key = (root: string) => {
-      const resolved = normalizeProjectRootPath(root);
-      return process.platform === "win32" ? resolved.toLowerCase() : resolved;
-    };
-    const here = key(connection.projectRoot);
-    const match = Array.isArray(listed)
-      ? listed.filter(isRecord).find((entry) => {
-        const rootPath = asString(entry.rootPath);
-        return rootPath != null && key(rootPath) === here;
-      })
-      : null;
-    projectId = match ? asString(match.projectId) : null;
-  }
+  // Both socket kinds can serve several projects; a legacy one without a
+  // project list answers for its single project with no id.
+  const listed = await connection.request("projects.list", {}).catch(() => null);
+  const here = normalizeProjectRootPath(connection.projectRoot);
+  const match = Array.isArray(listed)
+    ? listed.filter(isRecord).find((entry) => {
+      const rootPath = asString(entry.rootPath);
+      return rootPath != null && pathsEqual(normalizeProjectRootPath(rootPath), here);
+    })
+    : null;
+  const projectId = match ? asString(match.projectId) : null;
   const call = (name: string, args: JsonObject = {}) =>
     connection.request("ade/actions/call", {
       name,
@@ -37051,11 +37053,7 @@ function createLinkOwnershipResolver(options: GlobalOptions): () => Promise<Deep
     try {
       const linked = await connectForLink(options);
       connection = linked.connection;
-      const raw = await linked.call("get_link_ownership");
-      const value = unwrapToolResult(raw);
-      const accountMachineKey = isRecord(value) ? asString(value.accountMachineKey) : null;
-      const projectId = isRecord(value) ? asString(value.projectId) : null;
-      return accountMachineKey && projectId ? { accountMachineKey, projectId } : null;
+      return parseDeeplinkOwnership(unwrapToolResult(await linked.call("get_link_ownership")));
     } catch {
       return null;
     } finally {

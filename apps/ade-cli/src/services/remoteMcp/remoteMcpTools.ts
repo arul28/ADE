@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { buildDeeplink } from "../../../../desktop/src/shared/deeplinks";
+import { buildDeeplink, type DeeplinkOwnership } from "../../../../desktop/src/shared/deeplinks";
 import { pathIsWithinRoot } from "../../../../desktop/src/shared/pathContainment";
 import type { RemoteMcpToolResult } from "./remoteMcpForward";
 import { MAX_OUTPUT_BYTES, type RemoteRunResult } from "./remoteMcpRunner";
@@ -34,9 +34,7 @@ type TypedToolBuild = { argv: string[] } | { error: string };
  * project the command ran in. Links in results carry both, so opening one
  * goes to that computer and project from anywhere (desktop, web, phone).
  */
-export type TypedShapeContext = { machineKey: string | null; projectId: string | null };
-
-const NO_SHAPE_CONTEXT: TypedShapeContext = { machineKey: null, projectId: null };
+export type TypedShapeContext = { ownership: DeeplinkOwnership | null };
 
 export type TypedTool = {
   name: string;
@@ -170,10 +168,17 @@ function timestamp(value: unknown): number {
 /** A link that opens the chat in ADE, for the model to hand the person. */
 function chatLink(sessionId: string | null, laneId: string | null, context: TypedShapeContext): string | null {
   if (!sessionId) return null;
-  const ownership = context.machineKey && context.projectId
-    ? { ownership: { accountMachineKey: context.machineKey, projectId: context.projectId } }
-    : {};
-  return buildDeeplink({ kind: "session", sessionId, ...(laneId ? { laneId } : {}), ...ownership });
+  return buildDeeplink({
+    kind: "session",
+    sessionId,
+    ...(laneId ? { laneId } : {}),
+    ...(context.ownership ? { ownership: context.ownership } : {}),
+  });
+}
+
+/** An engine's failure line without the local file paths it names. */
+function withoutLocalPaths(text: string): string {
+  return text.replace(/(?<![\w.])(?:[A-Za-z]:)?[\\/][^\s'"]+/g, "<file>");
 }
 
 const PROJECT_FIELDS = ["projectId", "displayName", "rootPath", "lastOpenedAt", "exists", "gitOriginUrl"] as const;
@@ -616,8 +621,10 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
       const record = unwrap(value);
       if (!isRecord(record)) return record;
       const sessionId = nonEmptyString(record.chatSessionId);
+      const sheetError = nonEmptyString(record.sheetError);
       return {
         ...pick(record, PROOF_REVIEW_FIELDS),
+        ...(sheetError ? { sheetError: withoutLocalPaths(sheetError) } : {}),
         ...(Array.isArray(record.otherProof) && record.otherProof.length ? { otherProof: record.otherProof } : {}),
         link: chatLink(sessionId, nonEmptyString(record.laneId), context),
       };
@@ -893,7 +900,7 @@ export function parseTypedRun(
   tool: TypedTool,
   input: TypedToolInput,
   run: RemoteRunResult,
-  context: TypedShapeContext = NO_SHAPE_CONTEXT,
+  context: TypedShapeContext,
 ): { value: unknown; raw: unknown } | null {
   const answered = !run.timedOut && !run.truncated && (tool.okExitCodes ?? [0]).includes(run.exitCode ?? -1);
   if (!answered) return null;
@@ -911,7 +918,7 @@ type TypedResultFrame = {
   /** `structuredContent.project`; null when the result spans projects or none is open. */
   project: Record<string, unknown> | null;
   /** Where the result came from, for its links. */
-  context?: TypedShapeContext;
+  context: TypedShapeContext;
 };
 
 /** A typed tool's answer from its shaped result: the next step, the text, and `structuredContent`. */
@@ -919,7 +926,7 @@ export function shapedToolResult(
   tool: TypedTool,
   input: TypedToolInput,
   value: unknown,
-  frame: TypedResultFrame,
+  frame: Pick<TypedResultFrame, "headLine" | "project">,
 ): RemoteMcpToolResult {
   // The next step rides in the result, where the model decides it.
   const next = tool.next?.(value, input) ?? null;
@@ -930,18 +937,25 @@ export function shapedToolResult(
   };
 }
 
-/** A typed tool's answer from one run: the shaped result, or the command's own output when it failed. */
+/**
+ * A typed tool's answer from one run: the shaped result, or the command's own
+ * output when it failed. `raw` is the parsed output (null on failure), which
+ * names the picture `withToolImage` attaches.
+ */
 export function buildTypedToolResult(
   tool: TypedTool,
   input: TypedToolInput,
   run: RemoteRunResult,
   frame: TypedResultFrame,
-): RemoteMcpToolResult {
+): { answer: RemoteMcpToolResult; raw: unknown } {
   const parsed = parseTypedRun(tool, input, run, frame.context);
   if (!parsed) {
-    return { content: [{ type: "text", text: `${frame.headLine}\n${toolText(run, tool.maxOutputBytes)}` }], isError: true };
+    return {
+      answer: { content: [{ type: "text", text: `${frame.headLine}\n${toolText(run, tool.maxOutputBytes)}` }], isError: true },
+      raw: null,
+    };
   }
-  return shapedToolResult(tool, input, parsed.value, frame);
+  return { answer: shapedToolResult(tool, input, parsed.value, frame), raw: parsed.raw };
 }
 
 /**
@@ -968,8 +982,6 @@ export async function readToolImage(
   filePath: string,
   projectRoot: string,
 ): Promise<{ type: "image"; data: string; mimeType: string } | { error: string }> {
-  const mimeType = IMAGE_MIME_TYPES[path.extname(filePath).toLowerCase()];
-  if (!mimeType) return { error: "The file is not a picture ADE MCP sends." };
   let real: string;
   let root: string;
   try {
@@ -980,6 +992,9 @@ export async function readToolImage(
   }
   const allowed = [path.join(root, ".ade", "cache"), path.join(root, ".ade", "artifacts")];
   if (!allowed.some((dir) => pathIsWithinRoot(dir, real))) return { error: "The picture is outside the project's proof folders." };
+  // The type comes from the file read, not from a link's name.
+  const mimeType = IMAGE_MIME_TYPES[path.extname(real).toLowerCase()];
+  if (!mimeType) return { error: "The file is not a picture ADE MCP sends." };
   const stat = await fs.promises.stat(real).catch(() => null);
   if (!stat?.isFile()) return { error: "The picture is no longer on this computer." };
   if (stat.size > MAX_TOOL_IMAGE_BYTES) {
@@ -991,14 +1006,12 @@ export async function readToolImage(
 /** A typed tool's answer with the picture it names (`TypedTool.image`) added, or a line saying why not. */
 export async function withToolImage(
   tool: TypedTool,
-  input: TypedToolInput,
-  run: RemoteRunResult,
+  raw: unknown,
   answer: RemoteMcpToolResult,
   projectRoot: string,
 ): Promise<RemoteMcpToolResult> {
   if (!tool.image || answer.isError) return answer;
-  const parsed = parseTypedRun(tool, input, run);
-  const imagePath = parsed ? tool.image(parsed.raw) : null;
+  const imagePath = tool.image(raw);
   if (!imagePath) return answer;
   const image = await readToolImage(imagePath, projectRoot);
   if ("error" in image) {

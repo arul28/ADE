@@ -78,6 +78,32 @@ export type DeeplinkOwnership = {
   projectRoot?: string;
 };
 
+/** Link kinds that name the computer and project they belong to. */
+export type OwnedDeeplinkTarget = Extract<DeeplinkTarget, { kind: "lane" | "session" | "pr" }>;
+
+export function deeplinkTargetTakesOwnership(target: DeeplinkTarget): target is OwnedDeeplinkTarget {
+  return target.kind === "lane" || target.kind === "session" || target.kind === "pr";
+}
+
+/** The ownership a target carries, or null for a link any project can open. */
+export function ownershipOfTarget(target: DeeplinkTarget | null | undefined): DeeplinkOwnership | null {
+  if (!target || !deeplinkTargetTakesOwnership(target)) return null;
+  const accountMachineKey = target.ownership?.accountMachineKey?.trim() ?? "";
+  const projectId = target.ownership?.projectId?.trim() ?? "";
+  if (!accountMachineKey || !projectId) return null;
+  const projectRoot = target.ownership?.projectRoot?.trim() ?? "";
+  return { accountMachineKey, projectId, ...(projectRoot ? { projectRoot } : {}) };
+}
+
+/** The ownership an answer named (`get_link_ownership`, the IPC), or null unless it named both halves. */
+export function parseDeeplinkOwnership(value: unknown): DeeplinkOwnership | null {
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  const accountMachineKey = typeof record.accountMachineKey === "string" ? record.accountMachineKey.trim() : "";
+  const projectId = typeof record.projectId === "string" ? record.projectId.trim() : "";
+  return accountMachineKey && projectId ? { accountMachineKey, projectId } : null;
+}
+
 export type DeeplinkLaneTarget = {
   kind: "lane";
   laneId: string;

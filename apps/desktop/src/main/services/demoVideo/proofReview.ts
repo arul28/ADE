@@ -2,9 +2,10 @@
  * `ade proof review <id>`: what an agent needs to check its own proof before
  * a person sees it. For a video, a contact sheet of its key moments (one
  * image the agent can look at instead of the whole video; `sheetFrames.ts`
- * picks them); for a picture, the picture itself. Both come with the findings ADE can tell from the file and
- * its record alone. What the frames show (a stray banner, a tiny subject, a
- * secret on screen) is the agent's call: the sheet is what it looks at.
+ * picks them); for a picture, the picture itself. Both come with the findings
+ * ADE can tell from the file and its record alone. What the frames show (a
+ * stray banner, a tiny subject, a secret on screen) is the agent's call: the
+ * sheet is what it looks at.
  *
  * The sheet goes under `.ade/cache/proof-review/`, never to the proof drawer.
  */
@@ -136,8 +137,10 @@ async function reviewVideo(args: ReviewArgs, findings: string[]): Promise<ProofR
   if (duration != null && duration < SHORT_SECONDS) findings.push(`Only ${duration.toFixed(1)} s: too short to show anything happen.`);
   if (duration != null && duration > LONG_SECONDS) findings.push(`${Math.round(duration)} s is long for a demo. Record only the flow, or split it into one video per feature.`);
 
-  // Sized so the sheet stays under the ~1.15 megapixels vision models read
-  // without scaling it down: four 384 px tiles a row, six 240 px for portrait.
+  // Four 384 px tiles a row, six 240 px for portrait. Twelve landscape frames
+  // come to about 1 megapixel, under the ~1.15 vision models read without
+  // scaling; a portrait sheet or a 16-frame one runs larger (up to ~1.8) and
+  // may be scaled down, which the tile labels survive.
   const portrait = width != null && height != null && height > width;
   const columns = portrait ? 6 : 4;
   const tileWidth = portrait ? 240 : 384;

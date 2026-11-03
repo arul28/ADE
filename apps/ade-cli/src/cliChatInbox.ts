@@ -2,7 +2,7 @@ import type { PendingInputRequest } from "../../desktop/src/shared/types/chat";
 import { optionsForQuestion } from "../../desktop/src/shared/pendingInputAnswers";
 import { pendingInputIsAnswerable, pendingInputItemId } from "../../desktop/src/shared/pendingInputCommand";
 import { isChatToolType } from "../../desktop/src/shared/sessionSpawnNesting";
-import { buildDeeplink } from "../../desktop/src/shared/deeplinks";
+import { buildDeeplink, parseDeeplinkOwnership } from "../../desktop/src/shared/deeplinks";
 import {
   actionStep,
   asString,
@@ -159,14 +159,12 @@ function isInboxItem(row: JsonObject): row is JsonObject & ChatInboxItem {
  * the right computer and project from anywhere.
  */
 function chatLink(sessionId: string, laneId: string, values: JsonObject): string {
-  const named = unwrapActionEnvelope(values.ownership);
-  const accountMachineKey = isRecord(named) ? asString(named.accountMachineKey) : null;
-  const projectId = isRecord(named) ? asString(named.projectId) : null;
+  const ownership = parseDeeplinkOwnership(unwrapActionEnvelope(values.ownership));
   return buildDeeplink({
     kind: "session",
     sessionId,
     ...(laneId ? { laneId } : {}),
-    ...(accountMachineKey && projectId ? { ownership: { accountMachineKey, projectId } } : {}),
+    ...(ownership ? { ownership } : {}),
   });
 }
 

@@ -155,7 +155,7 @@ export function ForeignLaneContextMenu({
       <HoverButton
         style={menuItemStyle}
         onClick={() => {
-          void linkOwnershipFor({ pin: binding, tabBinding: null, projectRoot: null }).then((ownership) => {
+          void linkOwnershipFor(binding).then((ownership) => {
             copyText(buildDeeplink({ kind: "lane", laneId: lane.id, ...(ownership ? { ownership } : {}) }));
           });
         }}
@@ -166,7 +166,7 @@ export function ForeignLaneContextMenu({
         style={menuItemStyle}
         onClick={() => {
           onClose();
-          void linkOwnershipFor({ pin: binding, tabBinding: null, projectRoot: null }).then((ownership) => {
+          void linkOwnershipFor(binding).then((ownership) => {
             openExternalUrl(buildWebClientUrl({ kind: "lane", laneId: lane.id, ...(ownership ? { ownership } : {}) }));
           });
         }}

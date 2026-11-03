@@ -1398,9 +1398,11 @@ extension WorkSessionDestinationView {
         fleetMachineKey: crossProjectContext?.machineKey,
         projectId: crossProjectContext?.projectId
       )
+    // Another machine's lane is listed under a namespaced id; a link names
+    // the plain one, as that machine knows it.
     UIPasteboard.general.string = workSessionDeepLink(
       sessionId: sessionId,
-      laneId: laneId,
+      laneId: laneId.map { workParseRemoteLaneId($0)?.laneId ?? $0 },
       envelope: LaneDeeplinkHelpers.envelope(lane: lane, pullRequest: laneOpenPr),
       ownership: ownership
     )

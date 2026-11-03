@@ -24,7 +24,6 @@ import { buildDeeplink } from "../../../shared/deeplinks";
 import { buildWebClientUrl } from "../../../shared/webClientUrl";
 import { openExternalUrl } from "../../lib/openExternal";
 import { linkOwnershipFor } from "../../lib/linkOwnership";
-import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
 import { revealLabel } from "../../lib/platform";
 import { revealLaneWorktree } from "../../lib/revealLaneWorktree";
 import { Z_LAYERS } from "../ui/zLayers";
@@ -245,12 +244,7 @@ export function buildLaneMenuGroups(args: LaneMenuArgs): LaneMenuGroup[] {
       onSelect: () => {
         onClose();
         void (async () => {
-          const appState = useAppStore.getState();
-          const ownership = await linkOwnershipFor({
-            pin: runtimePin,
-            tabBinding: appState.projectBinding,
-            projectRoot: selectActiveProjectRoot(appState),
-          });
+          const ownership = await linkOwnershipFor(runtimePin);
           openExternalUrl(buildWebClientUrl({ kind: "lane", laneId, ...(ownership ? { ownership } : {}) }));
         })();
       },
@@ -275,12 +269,7 @@ export function buildLaneMenuGroups(args: LaneMenuArgs): LaneMenuGroup[] {
           const pr = await (runtimePin
             ? window.ade.prs.getForLane(lane.id, runtimePin)
             : window.ade.prs.getForLane(lane.id)).catch(() => null);
-          const appState = useAppStore.getState();
-          const ownership = await linkOwnershipFor({
-            pin: runtimePin,
-            tabBinding: appState.projectBinding,
-            projectRoot: selectActiveProjectRoot(appState),
-          });
+          const ownership = await linkOwnershipFor(runtimePin);
           const url = buildDeeplink(
             {
               kind: "lane",

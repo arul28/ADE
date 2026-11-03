@@ -1,5 +1,6 @@
 import type { DeeplinkOwnership } from "../../shared/deeplinks";
 import type { OpenProjectBinding } from "../../shared/types";
+import { selectActiveProjectRoot, useAppStore } from "../state/appStore";
 
 /**
  * The account computer and project a link to something in this project should
@@ -9,19 +10,17 @@ import type { OpenProjectBinding } from "../../shared/types";
  * host that never paired through the account): the link still opens, without
  * the machine.
  */
-export async function linkOwnershipFor(args: {
-  pin: OpenProjectBinding | null | undefined;
-  tabBinding: OpenProjectBinding | null | undefined;
-  projectRoot: string | null | undefined;
-}): Promise<DeeplinkOwnership | null> {
-  const root = args.projectRoot?.trim() ?? "";
-  const binding: OpenProjectBinding | null = args.pin
-    ?? args.tabBinding
+export async function linkOwnershipFor(pin: OpenProjectBinding | null | undefined): Promise<DeeplinkOwnership | null> {
+  const state = useAppStore.getState();
+  const root = selectActiveProjectRoot(state)?.trim() ?? "";
+  const binding: OpenProjectBinding | null = pin
+    ?? state.projectBinding
     ?? (root ? { kind: "local", key: `local:${root}`, rootPath: root, displayName: "" } : null);
   if (!binding) return null;
   try {
     return (await window.ade.remoteRuntime.linkOwnership(binding)) ?? null;
-  } catch {
+  } catch (error) {
+    console.warn("deeplink.link_ownership_failed", { pinned: Boolean(pin), error });
     return null;
   }
 }

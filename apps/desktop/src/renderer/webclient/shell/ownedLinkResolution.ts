@@ -14,20 +14,10 @@
 // ---------------------------------------------------------------------------
 
 import type { DeeplinkOwnership, DeeplinkTarget } from "../../../shared/deeplinks";
+export { ownershipOfTarget } from "../../../shared/deeplinks";
 import type { SyncMobileProjectSummary } from "../../../shared/types/sync";
 import type { WebMachineEntry } from "../workspace/webWorkspaceModel";
 import { targetToWebPath } from "./webRoutes";
-
-/** The ownership a target carries, or null for a link any project can open. */
-export function ownershipOfTarget(target: DeeplinkTarget | null | undefined): DeeplinkOwnership | null {
-  if (!target) return null;
-  if (target.kind !== "session" && target.kind !== "lane" && target.kind !== "pr") return null;
-  const accountMachineKey = target.ownership?.accountMachineKey?.trim() ?? "";
-  const projectId = target.ownership?.projectId?.trim() ?? "";
-  if (!accountMachineKey || !projectId) return null;
-  const projectRoot = target.ownership?.projectRoot?.trim() ?? "";
-  return { accountMachineKey, projectId, ...(projectRoot ? { projectRoot } : {}) };
-}
 
 /** The GitHub repo a target names, when it names one. */
 function targetRepo(target: DeeplinkTarget): { owner: string; name: string } | null {
