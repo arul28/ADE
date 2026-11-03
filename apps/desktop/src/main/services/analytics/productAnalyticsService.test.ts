@@ -30,6 +30,8 @@ import {
   coarseProviderFamily,
 } from "./featureProductAnalytics";
 import { sanitizeProductAnalyticsProperties } from "./productAnalyticsPolicy";
+import { createExceptionAnalyticsMirror } from "./exceptionProductAnalytics";
+import { createSentryEventHooks, setSentryEventMirror } from "../../../shared/sentry/eventFilter";
 import { reportCaptureGesture } from "./captureGestureProductAnalytics";
 import {
   captureDailyUsageAnalytics,
@@ -540,6 +542,7 @@ describe("productAnalyticsService", () => {
         feature: "chat",
         action: "metadata_regenerated",
         outcome: "completed",
+        mode: "automatic",
         source: "runtime",
       },
     }]);
@@ -1577,10 +1580,12 @@ describe("productAnalyticsService", () => {
         platform: process.platform,
         app_version: "1.2.3",
         clerk_user_id: "clerk_user_private_123",
-        is_internal: false,
       },
       $geoip_disable: true,
     });
+    // An unmarked machine never sends `is_internal: false`: that would clear
+    // the internal flag the account directory set from Clerk.
+    expect(identify.properties.$set).not.toHaveProperty("is_internal");
     expect(harness.service.identifyAccount("clerk_user_private_123")).toEqual({
       accepted: false,
       reason: "duplicate",
@@ -1594,6 +1599,118 @@ describe("productAnalyticsService", () => {
     expect(harness.messages[3]?.distinctId).not.toBe(anonymousId);
     expect(harness.messages[3]?.distinctId).not.toBe(identify.distinctId);
     fs.rmSync(harness.root, { recursive: true, force: true });
+  });
+
+  it.each([
+    ["a macOS home path", "/Users/alice/Projects/secret-repo/src/app.ts", "/Users/alice/.ade/node_modules/foo/index.js"],
+    ["a Windows profile path", "C:\\Users\\alice\\secret-repo\\src\\app.ts", "C:\\Users\\alice\\AppData\\Local\\ADE\\resources\\app.asar\\dist\\main\\main.cjs"],
+    ["a file URL", "file:///Users/alice/secret-repo/src/app.ts", "file:///Applications/ADE.app/Contents/Resources/app.asar/dist/main/main.cjs"],
+  ])("mirrors a Sentry error to $exception without %s, an email or a token", (_label, messagePath, framePath) => {
+    const harness = makeHarness();
+    setSentryEventMirror(createExceptionAnalyticsMirror({ analytics: harness.service, surface: "desktop" }));
+    try {
+      const error = new TypeError(`open ${messagePath} for alice@example.com with sk-ant-api03-abcdefabcdefabcdefabcdef`);
+      createSentryEventHooks().beforeSend({
+        level: "error",
+        release: "ade@1.2.130-beta.3",
+        fingerprint: ["provider", "claude", "auth"],
+        tags: { process: "main" },
+        exception: { values: [{
+          type: "TypeError",
+          value: error.message,
+          mechanism: { type: "onunhandledrejection", handled: false },
+          stacktrace: { frames: [{ filename: framePath, function: "runAction", lineno: 12, colno: 3, in_app: true, vars: { secret: "x" } }] },
+        }] },
+      }, { originalException: error });
+
+      const sent = harness.messages.find((message) => message.event === "$exception") as
+        | { properties: Record<string, unknown> }
+        | undefined;
+      expect(sent, "the error reached PostHog").toBeTruthy();
+      const payload = JSON.stringify(sent);
+      for (const leaked of ["alice", "secret-repo", "example.com", "sk-ant-api03", "AppData", "Applications"]) {
+        expect(payload).not.toContain(leaked);
+      }
+      const [exception] = sent!.properties.$exception_list as Array<{ type: string; value: string; stacktrace: { frames: Array<Record<string, unknown>> } }>;
+      expect(exception.type).toBe("TypeError");
+      expect(exception.value).toContain("[path]");
+      expect(exception.stacktrace.frames[0]).toMatchObject({ function: "runAction", lineno: 12, in_app: true });
+      expect(exception.stacktrace.frames[0]).not.toHaveProperty("vars");
+      expect(sent!.properties).toMatchObject({
+        $exception_fingerprint: "provider|claude|auth",
+        error_app_version: "1.2.130-beta.3",
+        process: "main",
+      });
+    } finally {
+      setSentryEventMirror(null);
+      fs.rmSync(harness.root, { recursive: true, force: true });
+    }
+  });
+
+  it("sends one content-free $ai_generation per turn, outside the shared daily ceiling", () => {
+    const harness = makeHarness({ dailyBudget: 25 });
+    for (let index = 0; index < 30; index += 1) {
+      harness.service.capture({ event: "ade_feature_used", surface: "desktop", properties: { feature: "chat", action: "chat.send", outcome: "success" } });
+    }
+    captureAgentTurnSettledAnalytics({
+      analytics: harness.service,
+      projectId: "project-1",
+      event: settledEvent({ provider: "claude", model: "anthropic/claude-opus-5-5", usage: { inputTokens: 1200, outputTokens: 340 }, costUsd: 0.0421, durationMs: 18_450 }),
+    });
+    captureAgentTurnSettledAnalytics({
+      analytics: harness.service,
+      projectId: "project-1",
+      event: settledEvent({ turnId: "turn-2", provider: "opencode", model: "lmstudio/acme-internal-finetune", status: "failed" }),
+    });
+    // A repeated settle of the same turn is the same PostHog event.
+    captureAgentTurnSettledAnalytics({
+      analytics: harness.service,
+      projectId: "project-1",
+      event: settledEvent({ provider: "claude", model: "anthropic/claude-opus-5-5" }),
+    });
+
+    const generations = harness.messages.filter((message) => message.event === "$ai_generation") as Array<{
+      uuid: string;
+      properties: Record<string, unknown>;
+    }>;
+    expect(generations).toHaveLength(3);
+    expect(generations[0]!.uuid).toBe(generations[2]!.uuid);
+    expect(generations[0]!.properties).toMatchObject({
+      $ai_provider: "claude",
+      $ai_model: "anthropic/claude-opus-5-5",
+      $ai_input_tokens: 1200,
+      $ai_output_tokens: 340,
+      $ai_total_cost_usd: 0.0421,
+      $ai_latency: 18.45,
+      $ai_is_error: false,
+    });
+    expect(generations[0]!.properties.$ai_trace_id).toBe(generations[0]!.properties.session_id);
+    // A model outside the catalog is a name the person chose.
+    expect(generations[1]!.properties).toMatchObject({ $ai_provider: "opencode", $ai_model: "other", $ai_is_error: true });
+    expect(JSON.stringify(generations)).not.toContain("acme-internal-finetune");
+    for (const field of ["$ai_input", "$ai_output_choices", "$ai_tools"]) {
+      expect(generations[0]!.properties).not.toHaveProperty(field);
+    }
+    fs.rmSync(harness.root, { recursive: true, force: true });
+  });
+
+  it("marks the person internal from an internal install, and only ever raises the flag", () => {
+    const previous = process.env.ADE_ANALYTICS_INTERNAL;
+    process.env.ADE_ANALYTICS_INTERNAL = "1";
+    try {
+      const harness = makeHarness();
+      harness.service.identifyAccount("clerk_user_team_1");
+      const identify = harness.messages.find((message) => message.event === "$identify") as
+        | { properties: { $set: Record<string, unknown> } }
+        | undefined;
+      expect(identify, "identify was sent").toBeTruthy();
+      expect(identify?.properties.$set.is_internal).toBe(true);
+      expect(identify?.properties.$set.clerk_user_id).toBe("clerk_user_team_1");
+      fs.rmSync(harness.root, { recursive: true, force: true });
+    } finally {
+      if (previous === undefined) delete process.env.ADE_ANALYTICS_INTERNAL;
+      else process.env.ADE_ANALYTICS_INTERNAL = previous;
+    }
   });
 
   it.each([
@@ -2399,6 +2516,12 @@ describe("product analytics producers", () => {
       event: settledEvent({ status: "failed", sessionId: "session-2" }),
     });
 
+    // Each turn also sends one content-free `$ai_generation`; the session
+    // facts below are the rest.
+    const generations = captures.filter((capture) => capture.event === "$ai_generation");
+    expect(generations.map((capture) => [capture.sessionId, capture.aiGeneration?.feature, capture.aiGeneration?.status]))
+      .toEqual([["session-1", "automations", "completed"], ["session-2", "chat", "failed"]]);
+    captures.splice(0, captures.length, ...captures.filter((capture) => capture.event !== "$ai_generation"));
     expect(captures).toHaveLength(5);
     expect(captures[0]).toEqual({
       event: "ade_work_session_completed",
