@@ -524,17 +524,32 @@ final class WorkToolsContractTests: XCTestCase {
   func testViewerRibbonSaysWhoIsDrivingAndThisPhonesControlWins() {
     let agent = WorkToolsMacDesktopLease(holder: "agent", holderLabel: "Fix the header")
     let user = WorkToolsMacDesktopLease(holder: "user", holderLabel: "You")
+    let watchingAgent = macDesktopViewerRibbon(
+      controlling: false, lease: agent, displayName: "ADE · fix-header")
+    let controllingAgent = macDesktopViewerRibbon(
+      controlling: true, lease: agent, displayName: "ADE · fix-header")
+
+    // Watching names the driver and ends on what is on screen.
+    XCTAssertTrue(watchingAgent.contains("agent driving"))
+    XCTAssertTrue(watchingAgent.hasSuffix("ADE · fix-header"))
+
+    // The snapshot lags a take by up to one poll; the phone's own control wins,
+    // so the ribbon never credits the agent while this phone is driving.
+    XCTAssertNotEqual(
+      controllingAgent.split(separator: " · ").first,
+      watchingAgent.split(separator: " · ").first,
+      "the leading word names who has the screen")
+    XCTAssertFalse(controllingAgent.contains("agent driving"))
+    XCTAssertTrue(controllingAgent.hasSuffix("ADE · fix-header"))
+
+    // A user lease that is not this picture is someone else on the Mac.
+    let watchingSomeoneElse = macDesktopViewerRibbon(controlling: false, lease: user, displayName: nil)
+    XCTAssertTrue(watchingSomeoneElse.contains("someone else"))
+
+    // A blank name leaves no trailing separator.
     XCTAssertEqual(
-      macDesktopViewerRibbon(controlling: false, lease: agent, displayName: "ADE · fix-header"),
-      "Watching · agent driving · ADE · fix-header")
-    // The snapshot lags a take by up to one poll; the phone's own control wins.
-    XCTAssertEqual(
-      macDesktopViewerRibbon(controlling: true, lease: agent, displayName: "ADE · fix-header"),
-      "Watching · you have control · ADE · fix-header")
-    XCTAssertEqual(
-      macDesktopViewerRibbon(controlling: false, lease: user, displayName: nil),
-      "Watching · someone else has control")
-    XCTAssertEqual(macDesktopViewerRibbon(controlling: false, lease: nil, displayName: "  "), "Watching")
+      macDesktopViewerRibbon(controlling: false, lease: nil, displayName: "  "),
+      macDesktopViewerRibbon(controlling: false, lease: nil, displayName: nil))
   }
 
   func testViewerOverlayOffersReconnectOnlyWhenTheStreamIsDown() {

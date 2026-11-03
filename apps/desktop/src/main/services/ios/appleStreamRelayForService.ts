@@ -145,7 +145,16 @@ export function createAppleStreamRelayForService(deps: {
         await deps.service.liftStreamBitrateCap?.({ laneId });
         return;
       }
-      await Promise.resolve(deps.service.stopStream({ laneId })).catch(() => null);
+      try {
+        await Promise.resolve(deps.service.stopStream({ laneId }));
+      } catch (error) {
+        // The body this relay read is already closed, but the helper may still
+        // hold a capture. Reports under the relay's own close-failure name.
+        deps.logger?.warn?.("apple.stream_close_failed", {
+          laneId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
     },
   });
   // A desktop viewer leaving must not cut off a phone still reading the same

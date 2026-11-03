@@ -10,11 +10,13 @@ import {
   type AppleStreamViewerSocket,
 } from "./appleStreamRelay";
 import {
+  APPLE_DUO_INNER_SCREEN_ID,
   IOS_VIDEO_RECORD_FLAG_KEYFRAME,
   IOS_VIDEO_RECORD_HEADER_BYTES,
   IOS_VIDEO_RECORD_MAGIC,
   IOS_VIDEO_RECORD_TYPE_ACCESS_UNIT,
   IOS_VIDEO_RECORD_TYPE_CONFIG,
+  type AppleDevicePosture,
 } from "../../../shared/types/iosSimulator";
 
 function record(type: number, payload: Uint8Array, keyframe = false): Uint8Array {
@@ -345,5 +347,71 @@ describe("createAppleStreamRelay forwarding", () => {
     upstream.end(new Error("helper went away"));
     expect(socket.closeCode).toBe(1012);
     expect(relay.viewerCount("lane-a")).toBe(0);
+  });
+});
+
+describe("createAppleStreamRelay posture", () => {
+  const openDuo: AppleDevicePosture = {
+    supported: true,
+    angle: 180,
+    orientation: "portrait",
+    tableMode: false,
+    activeScreenId: APPLE_DUO_INNER_SCREEN_ID,
+    displayOrientation: "landscape-left",
+  };
+  const rigid: AppleDevicePosture = {
+    supported: false,
+    angle: null,
+    orientation: null,
+    tableMode: null,
+    activeScreenId: null,
+    displayOrientation: null,
+  };
+
+  it("sends the last pose ahead of the cached start, and forgets it once the device stops folding", async () => {
+    const { relay, upstream } = harness();
+    relay.notePosture("lane-a", openDuo);
+    const first = relay.issue({ laneId: "lane-a" });
+    await relay.attach(fakeSocket(), { ticket: first.ticket, token: first.token });
+    upstream.push(configRecord);
+
+    const second = relay.issue({ laneId: "lane-a" });
+    const secondSocket = fakeSocket();
+    await relay.attach(secondSocket, { ticket: second.ticket, token: second.token });
+    // The pose first, so the first frame is drawn the right way up.
+    expect(secondSocket.sent).toHaveLength(2);
+    expect(JSON.parse(String(secondSocket.sent[0]))).toMatchObject({
+      t: "posture",
+      angle: 180,
+      screen: "inner",
+      displayOrientation: "landscape-left",
+    });
+    expect(Buffer.from(secondSocket.sent[1] as Uint8Array)).toEqual(Buffer.from(configRecord));
+
+    // Another device now holds the lane and it does not fold: a replayed pose
+    // would draw a rigid screen a Duo's way up, so the note is dropped.
+    relay.notePosture("lane-a", rigid);
+    const third = relay.issue({ laneId: "lane-a" });
+    const thirdSocket = fakeSocket();
+    await relay.attach(thirdSocket, { ticket: third.ticket, token: third.token });
+    expect(thirdSocket.sent.map((data) => typeof data === "string")).toEqual([false]);
+  });
+
+  it("starts the capture when the pose read never answers", async () => {
+    vi.useFakeTimers();
+    try {
+      const readPosture = vi.fn(() => new Promise<void>(() => {}));
+      const { relay } = harness({ readPosture });
+      const ticket = relay.issue({ laneId: "lane-a" });
+      const socket = fakeSocket();
+      const attached = relay.attach(socket, { ticket: ticket.ticket, token: ticket.token });
+      // Well past the relay's wait: the point is that a read that never
+      // answers cannot hold the first frame for good.
+      await vi.advanceTimersByTimeAsync(1_000);
+      await expect(attached).resolves.toBe(true);
+      expect(readPosture).toHaveBeenCalledWith({ laneId: "lane-a" });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
