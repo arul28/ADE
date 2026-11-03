@@ -120,6 +120,13 @@ them in PostHog and update this list in the same branch.
   performance capture off, project masking of inputs only. The desktop masks
   all text in code; the site keeps public text so replays show what people
   read. Heatmaps on (site). See `docs/logging.md` › Session replay.
+- **Transformation "Fill release_channel from app_version"**: builds before
+  1.2.128 do not send `release_channel`. For `ade_*` app events missing it,
+  it is inferred from `app_version` (`-beta` → beta, `-alpha` → alpha, a
+  development runtime → development, else stable) and marked
+  `release_channel_inferred: true`. A sent value is never overwritten. It only
+  applies to events ingested after 2026-11-03; older history still lacks the
+  property (group by `app_version` for that).
 - **Feature flag `session-replay-real-users`** (linked to recording): false
   for `is_internal` people, so ADE's own accounts are never recorded. Its only
   use; do not repurpose it. The site's per-browser opt-out is

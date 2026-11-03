@@ -102,6 +102,9 @@ export const PROPERTIES = Object.freeze({
   SURVEY_RESPONSE: "$survey_response",
   // PostHog's traffic classification, computed at query time from `$raw_user_agent`.
   IS_BOT: "$virt_is_bot",
+  // Sent by 1.2.128+; filled in from app_version for older builds by the
+  // project transformation "Fill release_channel from app_version".
+  RELEASE_CHANNEL: "release_channel",
   // PostHog LLM analytics (`$ai_generation`).
   AI_PROVIDER: "$ai_provider",
   AI_MODEL: "$ai_model",
@@ -767,6 +770,23 @@ export const dashboardSpec = Object.freeze({
           }),
         ),
         insight(
+          "reliability-per-install-by-channel",
+          "Failures per active install: beta vs stable",
+          "Brain wedge recoveries, failed brain actions and route-publish failures per install that opened ADE, split by release channel. Beta has far fewer installs, so compare rates, not counts: a beta line that climbs above stable is a regression to stop before it reaches stable.",
+          trends({
+            series: [
+              eventNode(EVENTS.BRAIN_RECOVERED, "Brain recoveries"),
+              eventNode(EVENTS.BRAIN_ACTION_FAILED, "Brain action failures"),
+              eventNode(EVENTS.PUBLISH_FAILING, "Publish failing"),
+              eventNode(EVENTS.APP_OPENED, "Active installs", { math: "dau" }),
+            ],
+            formula: "(A + B + C) / D",
+            interval: "day",
+            dateFrom: "-30d",
+            breakdown: PROPERTIES.RELEASE_CHANNEL,
+          }),
+        ),
+        insight(
           "update-prompt-decisions",
           "Manual update prompt decisions",
           "Accepted, deferred, and dismissed decisions for downloaded desktop updates.",
@@ -975,6 +995,20 @@ export const dashboardSpec = Object.freeze({
             ],
             formula: "A / B",
             aggregationAxisFormat: "percentage_scaled",
+          }),
+        ),
+        insight(
+          "agent-turn-failure-rate-by-channel",
+          "Agent turn failure rate: beta vs stable",
+          "Failed turns over all turns per week, by release channel. A provider or harness update lands on beta first; this is where it shows.",
+          trends({
+            series: [
+              eventNode(EVENTS.AI_GENERATION, "Failed", { properties: [eventProperty(PROPERTIES.AI_IS_ERROR, "true")] }),
+              eventNode(EVENTS.AI_GENERATION, "All"),
+            ],
+            formula: "A / B",
+            aggregationAxisFormat: "percentage_scaled",
+            breakdown: PROPERTIES.RELEASE_CHANNEL,
           }),
         ),
         insight(
