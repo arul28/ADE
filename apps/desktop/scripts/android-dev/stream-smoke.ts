@@ -79,6 +79,7 @@ type ReaderStats = {
   firstRecordAtMs: number | null;
   bytes: number;
   aus: Buffer[];
+  auAt: number[];
   keepAus: boolean;
   request: http.ClientRequest;
 };
@@ -96,6 +97,7 @@ function openReader(name: string, url: string, keepAus = false): ReaderStats {
     firstRecordAtMs: null,
     bytes: 0,
     aus: [],
+    auAt: [],
     keepAus,
   } as unknown as ReaderStats;
   stats.request = http.get(url, (response) => {
@@ -119,6 +121,7 @@ function openReader(name: string, url: string, keepAus = false): ReaderStats {
           continue;
         }
         stats.accessUnits += 1;
+        stats.auAt.push(Date.now());
         if (keyframe) stats.keyframes.push(Date.now());
         else if (stats.keyframes.length === 0) stats.deltasBeforeFirstKeyframe += 1;
         if (stats.keepAus && (stats.aus.length > 0 || keyframe)) stats.aus.push(Buffer.from(record.payload));
@@ -205,7 +208,8 @@ async function measureSwiping(serial: string, ms: number, size: { w: number; h: 
 }
 
 async function measureIdle(serial: string, ms: number) {
-  await sleep(1_000);
+  // Past the 2 s rate window, so no motion from before is counted.
+  await sleep(2_500);
   const samples: number[] = [];
   const bps: number[] = [];
   const end = Date.now() + ms;
@@ -272,8 +276,8 @@ async function main(): Promise<void> {
     if (booted === null) throw new Error(`boot timed out: ${emulatorTail.join(" | ")}`);
     results.bootMs = Date.now() - bootAt;
     log("boot.done", { bootMs: results.bootMs });
-    // Let the launcher settle.
-    await sleep(4_000);
+    // Let first-boot work (dexopt, Play services) settle so numbers compare.
+    await sleep(Number(process.env.ADE_STREAM_SETTLE_MS ?? 40_000));
     await runAdb(ADB, ["shell", "input", "keyevent", "KEYCODE_WAKEUP"], { serial, allowFailure: true });
     await runAdb(ADB, ["shell", "wm", "dismiss-keyguard"], { serial, allowFailure: true });
 
@@ -362,6 +366,12 @@ async function main(): Promise<void> {
       accessUnits: readerB.accessUnits,
       keyframeRequests: afterJoin.totals.keyframeRequests - beforeJoin.totals.keyframeRequests,
       readers: afterJoin.readers,
+      readerAMaxGapAroundJoinMs: (() => {
+        const window = readerA.auAt.filter((at) => at >= readerB.openedAtMs - 300 && at <= readerB.openedAtMs + 3_000);
+        let gap = 0;
+        for (let i = 1; i < window.length; i += 1) gap = Math.max(gap, window[i] - window[i - 1]);
+        return gap;
+      })(),
     };
     log("join", results.joinMidStream as Record<string, unknown>);
 
@@ -372,7 +382,7 @@ async function main(): Promise<void> {
       if (search) {
         const [x1, y1, x2, y2] = search.bounds;
         await tap(serial, (x1 + x2) / 2, (y1 + y2) / 2);
-        await sleep(1_500);
+        await sleep(3_000);
         await sendText(serial, "network");
         await sleep(1_000);
         const after = await uiNodes(serial);
@@ -484,20 +494,6 @@ async function main(): Promise<void> {
     }
     log("ffprobe", { ffprobe: results.ffprobe });
 
-    // ── 11. size comparison ─────────────────────────────────────────────────
-    const sizes: Record<string, unknown> = {};
-    for (const maxSize of [0, 1280, 1024]) {
-      await runAdb(ADB, ["shell", "am", "start", "-n", "com.android.settings/.Settings"], { serial, allowFailure: true });
-      await sleep(1_000);
-      const at = Date.now();
-      const t = await startStream({ adbPath: ADB, serial, serverJarPath: JAR, maxSize });
-      const startMs = Date.now() - at;
-      const swipe = await measureSwiping(serial, 4_000, size);
-      sizes[String(maxSize)] = { video: `${t.width}x${t.height}`, codec: t.codec, startMs, ...swipe };
-      log("size", { maxSize, ...(sizes[String(maxSize)] as Record<string, unknown>) });
-      await stopStream(serial);
-    }
-    results.sizes = sizes;
   } finally {
     await stopAllStreams().catch((error) => log("stopAll.error", { error: String(error) }));
     const leftForwards = (await runAdbText(ADB, ["forward", "--list"]).catch(() => "")).split(/\r?\n/).filter((line) => line.includes(serial));
@@ -517,7 +513,7 @@ async function main(): Promise<void> {
     }
     const devicesAfter = await runAdbText(ADB, ["devices"]).catch(() => "");
     log("adb.devices.after", { devicesAfter });
-    console.log("RESULTS " + JSON.stringify(results, null, 2));
+    for (const [key, value] of Object.entries(results)) console.log(`RESULT ${key} = ${JSON.stringify(value, null, 1)}`);
   }
 }
 
@@ -525,6 +521,10 @@ main().then(
   () => process.exit(0),
   (error) => {
     console.error("FAILED", error instanceof Error ? error.stack : error);
+    for (const serial of ["emulator-5610", "emulator-5612", "emulator-5614"]) {
+      const d = diagnostics(serial);
+      if (d) console.log("DIAG " + JSON.stringify({ serial, lastEnd: d.lastEnd, restarts: d.restarts, failure: d.failure, serverLog: d.serverLog }));
+    }
     console.log("RESULTS " + JSON.stringify(results, null, 2));
     process.exit(1);
   },

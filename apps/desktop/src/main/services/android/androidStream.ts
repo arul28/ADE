@@ -36,11 +36,23 @@ import {
 import { startScrcpySession, type ScrcpySession, type ScrcpySessionEnd } from "./scrcpyServer";
 import { createScrcpyRecordBuilder } from "./scrcpyVideo";
 
-/** Longest side of the encoded picture. Measured on the Windows emulator; see the plan's §9. */
-export const ANDROID_STREAM_DEFAULT_MAX_SIZE = 1600;
-export const ANDROID_STREAM_DEFAULT_BIT_RATE = 8_000_000;
+/*
+ * Encoder defaults, measured on the Windows emulator (API 36, 4 vCPUs). The
+ * emulator has only a software H.264 encoder, so the picture's size and bit
+ * rate set the frame rate while the screen moves: 720x1600 at 8 Mbps gave
+ * 15-27 fps, 576x1280 at 4 Mbps with the options below 52 fps, 464x1024 55.
+ */
+/** Longest side of the encoded picture (576x1280 for a 1080x2400 phone). */
+export const ANDROID_STREAM_DEFAULT_MAX_SIZE = 1280;
+export const ANDROID_STREAM_DEFAULT_BIT_RATE = 4_000_000;
 export const ANDROID_STREAM_DEFAULT_MAX_FPS = 60;
-export const ANDROID_STREAM_DEFAULT_CODEC_OPTIONS: string | null = null;
+/**
+ * Real-time priority, one frame out per frame in: what scrcpy 4.0 made its
+ * default (it guards both on the API level, as `codecOptionsFor` does).
+ */
+export const ANDROID_STREAM_DEFAULT_CODEC_OPTIONS = "priority=0,latency=1";
+/** `KEY_LATENCY` exists from API 26; older encoders get no options. */
+const CODEC_OPTIONS_MIN_API = 26;
 /** How long a start waits for the first config record. */
 const FIRST_CONFIG_TIMEOUT_MS = 20_000;
 const MAX_RESTARTS = 3;
@@ -79,6 +91,7 @@ type DeviceStream = {
   builder: ReturnType<typeof createScrcpyRecordBuilder>;
   /** The display's size in its natural orientation, from `wm size`. */
   displaySize: { width: number; height: number } | null;
+  apiLevel: number | null;
   starting: Promise<AndroidStreamTransport> | null;
   restartTimer: ReturnType<typeof setTimeout> | null;
   restarts: number[];
@@ -132,6 +145,11 @@ function transportOf(device: DeviceStream): AndroidStreamTransport | null {
   return { url: transport.url, token: transport.token, codec: config.codec, width: config.width, height: config.height };
 }
 
+function codecOptionsFor(device: DeviceStream): string | null {
+  if (device.args.codecOptions !== undefined) return device.args.codecOptions;
+  return device.apiLevel !== null && device.apiLevel >= CODEC_OPTIONS_MIN_API ? ANDROID_STREAM_DEFAULT_CODEC_OPTIONS : null;
+}
+
 async function openSession(device: DeviceStream): Promise<void> {
   const { args } = device;
   const server = ensureStreamServer(args.logger ?? null);
@@ -143,7 +161,7 @@ async function openSession(device: DeviceStream): Promise<void> {
       maxSize: args.maxSize ?? ANDROID_STREAM_DEFAULT_MAX_SIZE,
       videoBitRate: args.bitRate ?? ANDROID_STREAM_DEFAULT_BIT_RATE,
       maxFps: args.maxFps ?? ANDROID_STREAM_DEFAULT_MAX_FPS,
-      codecOptions: args.codecOptions === undefined ? ANDROID_STREAM_DEFAULT_CODEC_OPTIONS : args.codecOptions,
+      codecOptions: codecOptionsFor(device),
       videoEncoder: args.videoEncoder ?? null,
       logger: args.logger ?? null,
     },
@@ -226,6 +244,7 @@ export async function startStream(args: AndroidStreamStartArgs): Promise<Android
     session: null,
     builder: createScrcpyRecordBuilder(),
     displaySize: null,
+    apiLevel: null,
     starting: null,
     restartTimer: null,
     restarts: [],
@@ -241,11 +260,17 @@ export async function startStream(args: AndroidStreamStartArgs): Promise<Android
   device.starting = (async () => {
     try {
       await server.start(args.serial);
-      const [, sizeText] = await Promise.all([
-        openSession(device),
-        runAdbText(args.adbPath, ["shell", "wm", "size"], { serial: args.serial, timeoutMs: 10_000 }).catch(() => ""),
-      ]);
-      device.displaySize = parseWmSize(sizeText);
+      // One shell round trip for both: the API level picks the encoder
+      // options, and the display size scales touches.
+      const probe = await runAdbText(
+        args.adbPath,
+        ["shell", "getprop ro.build.version.sdk; wm size"],
+        { serial: args.serial, timeoutMs: 10_000 },
+      ).catch(() => "");
+      const apiLevel = Number.parseInt(probe.split(/\r?\n/)[0] ?? "", 10);
+      device.apiLevel = Number.isInteger(apiLevel) ? apiLevel : null;
+      device.displaySize = parseWmSize(probe);
+      await openSession(device);
       let timer: ReturnType<typeof setTimeout> | null = null;
       const timedOut = new Promise<"timeout">((resolve) => {
         timer = setTimeout(() => resolve("timeout"), FIRST_CONFIG_TIMEOUT_MS);
@@ -297,7 +322,13 @@ function runningDevice(serial: string): { device: DeviceStream; session: ScrcpyS
   if (device?.failure) throw device.failure;
   const session = device?.session;
   if (!device || !session || !session.control.isOpen()) {
-    throw new AndroidStreamError("ANDROID_NOT_RUNNING", `No stream is running for ${serial}.`);
+    const restarting = Boolean(device && !device.stopped && (device.restartTimer || device.lastEnd));
+    throw new AndroidStreamError(
+      "ANDROID_NOT_RUNNING",
+      restarting
+        ? `The stream for ${serial} is restarting (${device?.lastEnd?.message ?? "the server stopped"}).`
+        : `No stream is running for ${serial}.`,
+    );
   }
   return { device, session };
 }
