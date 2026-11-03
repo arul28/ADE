@@ -2401,13 +2401,14 @@ app.whenReady().then(async () => {
     return status?.signedIn ? status.userId?.trim() || null : null;
   };
   const productAnalyticsStateFile = defaultProductAnalyticsStateFile(machineAdeLayout.adeDir);
+  const analyticsReleaseChannel = resolveReleaseChannel({ env: process.env, packaged: app.isPackaged, version: app.getVersion() });
   const productAnalyticsService = getSharedProductAnalyticsService(productAnalyticsStateFile, () =>
     createProductAnalyticsService({
       stateFilePath: productAnalyticsStateFile,
       logger: localRuntimeLogger,
       appVersion: app.getVersion(),
       runtimeMode: app.isPackaged ? "desktop_packaged" : "desktop_development",
-      releaseChannel: resolveReleaseChannel({ env: process.env, packaged: app.isPackaged, version: app.getVersion() }),
+      releaseChannel: analyticsReleaseChannel,
     }));
   setSentryUserResolver(() => productAnalyticsService.getDistinctId());
   setSentryEventMirror(createExceptionAnalyticsMirror({ analytics: productAnalyticsService, surface: "desktop" }));
@@ -10220,7 +10221,7 @@ app.whenReady().then(async () => {
     analytics: productAnalyticsService,
     logger: getMachineMainLogger(),
     appVersion: app.getVersion(),
-    releaseChannel: resolveReleaseChannel({ env: process.env, packaged: app.isPackaged, version: app.getVersion() }),
+    releaseChannel: analyticsReleaseChannel,
   });
   // The home page's clipboard, machine-health and weather widgets.
   registerHomeWidgetsIpc({

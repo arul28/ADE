@@ -33,7 +33,6 @@ import { DEFAULT_POSTHOG_HOST, notice, parseArgs, warn } from "./cli.mjs";
 
 export const POSTHOG_CLI_VERSION = "0.19.0";
 
-
 function main() {
   const options = parseArgs(process.argv.slice(2));
   const version = String(options.version ?? "").trim().replace(/^v/, "");

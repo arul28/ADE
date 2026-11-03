@@ -24,7 +24,6 @@
 import { DEFAULT_POSTHOG_HOST, notice, parseArgs, warn } from "./cli.mjs";
 const TIMEOUT_MS = 15_000;
 
-
 /** The annotation text, or null (with the reason) when nothing should be marked. */
 function annotationContent(options) {
   if (typeof options.content === "string" && options.content.trim()) {

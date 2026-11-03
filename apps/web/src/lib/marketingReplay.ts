@@ -104,17 +104,28 @@ function buildConfig(apiHost: string, distinctId: string, allowed: { value: bool
         }
       }
       if (event.event === "$$heatmap") {
-        // Heatmaps key their data by the raw page address. The link pages carry
-        // repo, branch and path in the query, so they get no heatmap at all;
-        // elsewhere each key is rewritten to the masked address.
-        const pathname = window.location.pathname.replace(/\/+$/, "") || "/";
-        if (MASK_ALL_TEXT_ROUTES.has(pathname)) return null;
+        // Heatmap points are grouped by the page address they were recorded
+        // on and sent in batches, possibly after the visitor moved on. Each
+        // group is judged by its own address: the link pages, whose query
+        // carries repo, branch and path, are dropped; the rest are keyed by
+        // the masked address, merging groups that mask to the same key.
         const data = properties.$heatmap_data;
+        const kept: Record<string, unknown[]> = {};
         if (data && typeof data === "object") {
-          properties.$heatmap_data = Object.fromEntries(
-            Object.entries(data as Record<string, unknown>).map(([href, value]) => [maskedPageUrl(href), value]),
-          );
+          for (const [href, points] of Object.entries(data as Record<string, unknown>)) {
+            let pathname: string;
+            try {
+              pathname = new URL(href).pathname.replace(/\/+$/, "") || "/";
+            } catch {
+              continue;
+            }
+            if (MASK_ALL_TEXT_ROUTES.has(pathname)) continue;
+            const key = maskedPageUrl(href);
+            kept[key] = [...(kept[key] ?? []), ...(Array.isArray(points) ? points : [])];
+          }
         }
+        if (Object.keys(kept).length === 0) return null;
+        properties.$heatmap_data = kept;
       }
       const page = marketingCurrentUrl(window.location.href);
       if (page) {
@@ -131,7 +142,7 @@ function buildConfig(apiHost: string, distinctId: string, allowed: { value: bool
 
 async function createClient(config: { projectToken: string; apiHost: string; distinctId: string }): Promise<void> {
   await import("posthog-js/dist/posthog-recorder");
-  const [{ posthog }, { SessionReplayExtensions }] = await Promise.all([
+  const [{ posthog }, { SessionReplayExtensions, AnalyticsExtensions }] = await Promise.all([
     import("posthog-js/dist/module.slim.no-external"),
     import("posthog-js/dist/extension-bundles"),
   ]);
@@ -145,7 +156,8 @@ async function createClient(config: { projectToken: string; apiHost: string; dis
       ...buildConfig(config.apiHost, latest.distinctId, allowed),
       // The slim build takes its replay extension here. `__extensionClasses`
       // is not in posthog-js's public config type, hence the cast below.
-      __extensionClasses: { ...SessionReplayExtensions },
+      // Heatmaps only from the analytics bundle: autocapture stays off.
+      __extensionClasses: { ...SessionReplayExtensions, heatmaps: AnalyticsExtensions.heatmaps },
     } as Partial<PostHogConfig>,
     "ade_marketing_replay",
   );

@@ -440,7 +440,8 @@
         "$exception_list",
         "$exception_level",
         "$exception_fingerprint",
-        "process"
+        "process",
+        "error_app_version"
       ]
     },
     {

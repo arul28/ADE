@@ -23,7 +23,6 @@ function boundedCount(value: unknown): number | null {
     : null;
 }
 
-
 /**
  * PostHog's LLM-analytics properties for one settled agent turn: provider,
  * catalog model, token counts, cost and latency. Content-free by construction:
