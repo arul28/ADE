@@ -148,13 +148,15 @@ Design round (owner, 2026-11-03):
 ### 3.5 Agent surface
 
 - `ade android` mirrors `ade apple` verb names and flags wherever the meaning is
-  the same. `status` reports `capabilities` from one constant that also feeds
-  the action allowlist (the `APPLE_AGENT_ACTIONS` pattern).
+  the same, with one spelling per job and no aliases. Unknown flags are
+  refused. `ANDROID_AGENT_ACTIONS` feeds the action allowlist (the
+  `APPLE_AGENT_ACTIONS` pattern). A `capabilities` field in `status` is P1
+  (P0 has none).
 - Verbs (target set; phases in §6): `status`, `devices`, `start`, `stop`,
   `device-create`, `device-attach`, `device-detach`, `device-delete`, `apps`,
   `install`, `launch` (Gradle `installDebug` or a given APK, then `am start`),
   `terminate`, `uninstall`, `open-url`, `tap`, `long-press`, `drag`, `swipe`,
-  `scroll`, `type`, `key`, `button`, `rotate`, `fold`, `screenshot`, `frame`,
+  `scroll`, `type`, `button`, `rotate`, `fold`, `screenshot`, `frame`,
   `stream-start/status/stop`, `snapshot` (UI tree), `find`, `tap-element`,
   `fill`, `wait-for`, `assert`, `record-start/stop/list/delete`, `log` (logcat
   by package), `location`, `appearance`, `permission`, `lease`, `show`,
@@ -370,7 +372,9 @@ on 2026-11-03 (`51c6eabf6`). This lane is updated to that commit, and §4 and
   marker; lane archive/delete teardown. scrcpy stream into the pane, flat view
   only. Touch and the hardware keys (rail in the §5 order). The picker's "This
   lane" and "On this machine" cards. The no-acceleration and crashed banners.
-  `ade android status/devices/start/stop/device-create/screenshot/tap/key`.
+  `ade android status | devices | device-create | device-attach | start |
+  stop | device-detach | screenshot | tap | swipe | button | rotate | type |
+  show`, each also with `--machine` (the chat's work copy there, §3.6).
   The new domain with policy, IPC, preload, remote reachability. Perf rows
   measured.
 - **P1 — agent suite, setup and look.** May split into two PRs (agent + setup,
