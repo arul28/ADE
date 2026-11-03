@@ -85,6 +85,8 @@ export type AppleDeviceFlatViewProps = {
    * reader and black-frame the device — which the spec calls a bug by name.
    */
   screenOverlay?: ReactNode;
+  /** What a screen reader calls the screen. Defaults to "iOS Simulator screen". */
+  ariaLabel?: string;
   className?: string;
 };
 
@@ -293,6 +295,7 @@ export function AppleDeviceFlatView({
   onDeviceKey,
   onGeometryChange,
   screenOverlay,
+  ariaLabel = "iOS Simulator screen",
   className,
 }: AppleDeviceFlatViewProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -383,8 +386,14 @@ export function AppleDeviceFlatView({
     if (!node || !geometry || !frameSize) return null;
     if (geometry.width <= 0 || geometry.height <= 0) return null;
     const rect = node.getBoundingClientRect();
-    const normalizedX = (event.clientX - rect.left - geometry.left) / geometry.width;
-    const normalizedY = (event.clientY - rect.top - geometry.top) / geometry.height;
+    // The box is laid out in the ResizeObserver's size, which CSS zoom on an
+    // ancestor does not scale; the client rect and the pointer are zoomed. The
+    // hosted web client zooms <body>, so without this a tap there lands off by
+    // the zoom factor (10% at the default 1.1). The ratio is 1 without zoom.
+    const zoomX = containerSize.width > 0 && rect.width > 0 ? rect.width / containerSize.width : 1;
+    const zoomY = containerSize.height > 0 && rect.height > 0 ? rect.height / containerSize.height : 1;
+    const normalizedX = (event.clientX - rect.left - geometry.left * zoomX) / (geometry.width * zoomX);
+    const normalizedY = (event.clientY - rect.top - geometry.top * zoomY) / (geometry.height * zoomY);
     // Clamped rather than refused: a drag that leaves the screen edge should
     // end at the edge, not vanish and leave the device holding a touch.
     const clampedX = Math.max(0, Math.min(1, normalizedX));
@@ -397,7 +406,7 @@ export function AppleDeviceFlatView({
       x: onFrame.x * frameSize.width,
       y: onFrame.y * frameSize.height,
     };
-  }, [frameSize, geometry]);
+  }, [containerSize, frameSize, geometry]);
 
   const handlePointerDown = useCallback((event: PointerEvent<HTMLDivElement>) => {
     if (!interactive) return;
@@ -474,7 +483,7 @@ export function AppleDeviceFlatView({
         className,
       )}
       role="application"
-      aria-label="iOS Simulator screen"
+      aria-label={ariaLabel}
       tabIndex={interactive ? 0 : -1}
       onKeyDown={handleKeyDown}
       onPointerDown={handlePointerDown}
