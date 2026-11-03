@@ -445,12 +445,12 @@ struct WorkComposerControlsRow: View {
       .fill(tint)
       .frame(width: 8, height: 8)
       .frame(width: 28, height: 28)
-    .background(ADEColor.surfaceBackground.opacity(0.38), in: Capsule(style: .continuous))
-    .overlay(
-      Capsule(style: .continuous)
-        .stroke(ADEColor.border.opacity(0.24), lineWidth: 0.5)
-    )
-    .contentShape(Rectangle())
+      .background(ADEColor.surfaceBackground.opacity(0.38), in: Capsule(style: .continuous))
+      .overlay(
+        Capsule(style: .continuous)
+          .stroke(ADEColor.border.opacity(0.24), lineWidth: 0.5)
+      )
+      .contentShape(Rectangle())
   }
 
   @ViewBuilder
@@ -632,7 +632,6 @@ struct WorkComposerChipStrip: View {
     .disabled(settingsMutationInFlight)
     .opacity(settingsMutationInFlight ? 0.72 : 1)
   }
-
 }
 
 /// The strip only ever renders messages the user explicitly queued — an
