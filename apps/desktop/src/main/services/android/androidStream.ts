@@ -277,6 +277,7 @@ export async function startStream(args: AndroidStreamStartArgs): Promise<Android
       });
       const result = await Promise.race([device.firstConfig.promise.then(() => "config" as const), timedOut]);
       if (timer) clearTimeout(timer);
+      if (device.stopped) throw new AndroidStreamError("ANDROID_NOT_RUNNING", "The stream was stopped while it was starting.");
       if (result === "timeout") {
         throw new AndroidStreamError("ANDROID_STREAM_FAILED", `The emulator sent no video within ${FIRST_CONFIG_TIMEOUT_MS / 1000} s.`);
       }
@@ -301,6 +302,8 @@ export async function stopStream(serial: string): Promise<void> {
   if (!device) return;
   devices.delete(serial);
   device.stopped = true;
+  // A start still waiting for its first picture fails now, not at its timeout.
+  device.firstConfig.resolve();
   if (device.restartTimer) clearTimeout(device.restartTimer);
   device.restartTimer = null;
   streamServer?.stop(serial);
