@@ -113,6 +113,14 @@ export type ScrcpySessionOptions = {
   videoBitRate: number;
   /** 0 leaves the rate to the encoder. */
   maxFps: number;
+  /**
+   * `MediaFormat` keys for the encoder, in scrcpy's `key[:type]=value,…` form.
+   * They go into the device shell command, so only a safe character set is
+   * accepted.
+   */
+  codecOptions?: string | null;
+  /** A specific `MediaCodec` encoder name; null lets the device pick. */
+  videoEncoder?: string | null;
   logger?: Logger | null;
   connectTimeoutMs?: number;
 };
@@ -144,7 +152,15 @@ export type ScrcpySession = {
   stop(): Promise<void>;
 };
 
+/** Characters a codec option or encoder name may hold: nothing the device shell would read. */
+const SAFE_SERVER_VALUE = /^[A-Za-z0-9._:=,-]+$/;
+
 function serverCommand(scid: string, options: ScrcpySessionOptions): string {
+  for (const value of [options.codecOptions, options.videoEncoder]) {
+    if (value && !SAFE_SERVER_VALUE.test(value)) {
+      throw new ScrcpySessionError(`Unsafe scrcpy server option: ${JSON.stringify(value)}`, []);
+    }
+  }
   const params = [
     `scid=${scid}`,
     "log_level=info",
@@ -155,6 +171,8 @@ function serverCommand(scid: string, options: ScrcpySessionOptions): string {
     `max_size=${Math.max(0, Math.round(options.maxSize))}`,
     `video_bit_rate=${Math.max(1, Math.round(options.videoBitRate))}`,
     ...(options.maxFps > 0 ? [`max_fps=${options.maxFps}`] : []),
+    ...(options.codecOptions ? [`video_codec_options=${options.codecOptions}`] : []),
+    ...(options.videoEncoder ? [`video_encoder=${options.videoEncoder}`] : []),
     "clipboard_autosync=false",
     "cleanup=false",
     "send_device_meta=true",

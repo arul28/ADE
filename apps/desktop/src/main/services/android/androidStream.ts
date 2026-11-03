@@ -40,6 +40,7 @@ import { createScrcpyRecordBuilder } from "./scrcpyVideo";
 export const ANDROID_STREAM_DEFAULT_MAX_SIZE = 1600;
 export const ANDROID_STREAM_DEFAULT_BIT_RATE = 8_000_000;
 export const ANDROID_STREAM_DEFAULT_MAX_FPS = 60;
+export const ANDROID_STREAM_DEFAULT_CODEC_OPTIONS: string | null = null;
 /** How long a start waits for the first config record. */
 const FIRST_CONFIG_TIMEOUT_MS = 20_000;
 const MAX_RESTARTS = 3;
@@ -66,6 +67,9 @@ export type AndroidStreamStartArgs = {
   maxSize?: number;
   bitRate?: number;
   maxFps?: number;
+  /** scrcpy `video_codec_options`; undefined uses `ANDROID_STREAM_DEFAULT_CODEC_OPTIONS`. */
+  codecOptions?: string | null;
+  videoEncoder?: string | null;
   logger?: Logger | null;
 };
 
@@ -83,6 +87,8 @@ type DeviceStream = {
   failure: AndroidStreamError | null;
   firstConfig: { promise: Promise<void>; resolve: () => void };
   lastEnd: ScrcpySessionEnd | null;
+  /** Config packets from the encoder: one per encoder start, reset or rotation. */
+  configPackets: number;
 };
 
 const devices = new Map<string, DeviceStream>();
@@ -137,11 +143,14 @@ async function openSession(device: DeviceStream): Promise<void> {
       maxSize: args.maxSize ?? ANDROID_STREAM_DEFAULT_MAX_SIZE,
       videoBitRate: args.bitRate ?? ANDROID_STREAM_DEFAULT_BIT_RATE,
       maxFps: args.maxFps ?? ANDROID_STREAM_DEFAULT_MAX_FPS,
+      codecOptions: args.codecOptions === undefined ? ANDROID_STREAM_DEFAULT_CODEC_OPTIONS : args.codecOptions,
+      videoEncoder: args.videoEncoder ?? null,
       logger: args.logger ?? null,
     },
     {
       onPacket: (packet) => {
         if (devices.get(args.serial) !== device) return;
+        if (packet.config) device.configPackets += 1;
         let outputs;
         try {
           outputs = device.builder.push(packet);
@@ -224,6 +233,7 @@ export async function startStream(args: AndroidStreamStartArgs): Promise<Android
     failure: null,
     firstConfig: deferred(),
     lastEnd: null,
+    configPackets: 0,
   };
   devices.set(args.serial, device);
   const server = ensureStreamServer(args.logger ?? null);
@@ -369,6 +379,8 @@ export type AndroidStreamDiagnostics = {
   restarts: number;
   lastEnd: ScrcpySessionEnd | null;
   failure: string | null;
+  configPackets: number;
+  serverLog: string[];
   metrics: AndroidStreamMetrics | null;
 };
 
@@ -386,6 +398,8 @@ export function diagnostics(serial: string): AndroidStreamDiagnostics | null {
     restarts: device.restarts.length,
     lastEnd: device.lastEnd,
     failure: device.failure?.message ?? null,
+    configPackets: device.configPackets,
+    serverLog: device.session?.serverLog() ?? device.lastEnd?.serverLog ?? [],
     metrics: streamServer?.metrics(serial) ?? null,
   };
 }
