@@ -165,6 +165,7 @@ import type {
 import type {
   ProductAnalyticsCapture,
   ProductAnalyticsCaptureResult,
+  ProductAnalyticsReplayConfig,
   ProductAnalyticsStatus,
 } from "../shared/types/productAnalytics";
 import type { DiskPressureSnapshot } from "../main/services/storage/diskPressure";
@@ -4598,6 +4599,9 @@ const adeBridge = {
       ipcRenderer.invoke(IPC.analyticsGetStatus),
     setEnabled: async (enabled: boolean): Promise<ProductAnalyticsStatus> =>
       ipcRenderer.invoke(IPC.analyticsSetEnabled, enabled),
+    // This desktop window's own replay settings; no pin (see registerSessionReplayIpc).
+    getReplayConfig: async (): Promise<ProductAnalyticsReplayConfig | null> =>
+      ipcRenderer.invoke(IPC.analyticsGetReplayConfig),
     // This desktop app's own in-app survey; no pin (see registerSurveyIpc).
     surveys: {
       getEligible: () => ipcRenderer.invoke(IPC.analyticsGetEligibleSurvey),

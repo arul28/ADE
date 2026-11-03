@@ -189,3 +189,16 @@ export type ProductAnalyticsStatus = {
   droppedToday: number;
   day: string;
 };
+
+/**
+ * What this desktop window needs to record a session replay, or null while
+ * analytics is off. Desktop renderer only (one IPC, not a runtime action), so
+ * no other machine, the web client or the CLI ever reads it. `distinctId` is
+ * the id main's events carry (the account hash once signed in, else the
+ * install's anonymous id) so a recording joins the same PostHog person.
+ */
+export type ProductAnalyticsReplayConfig = {
+  projectToken: string;
+  apiHost: string;
+  distinctId: string;
+};

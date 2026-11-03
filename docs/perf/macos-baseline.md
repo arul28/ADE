@@ -151,6 +151,7 @@ be far smaller; it was not measured that way.
 | Renderer busy per keystroke (production build, headless) | `scripts/perf-chat-stream.mjs` harness | 12–15 ms | 12–15 ms | 16 ms |
 | Streaming: cost per event (production build) | `scripts/perf-chat-stream.mjs` | 8.1 ms | 7.7 ms | 10 ms |
 | Shell code block Run control (mounts on first hover or focus): renderer task per streamed event / first rows, dev build, a 21,670-event transcript with ~300 shell blocks, interleaved A/B | `scripts/perf-chat-stream.mjs --stream 400 --rate 30`; Mac Studio M4 Max, 2026-11-02 on `921f81d9e` (PR #2027), not the baseline machine | 3.48–4.73 ms; 2.87–3.26 s (without Run) | 3.80–4.40 ms; 2.98–3.22 s (no measurable change) | 10 ms |
+| Session replay recording (analytics on; `renderer/lib/sessionReplay.ts`): renderer task per streamed event / renderer CPU while streaming; Work idle with no input, main-thread work / JS heap after GC | Browser mock + headless Chrome, `scripts/perf-chat-stream.mjs --stream 400 --rate 30` on a 580-line real transcript, 3 alternated pairs; idle: 20 s of `Performance.getMetrics` after 15 s settle, 2 pairs; replay pointed at a local mock PostHog. Mac Studio M4 Max, 2026-11-02 on `387f683d5`, not the baseline machine | off: 5.20–5.59 ms, 24.8–26.1%; idle 5.0–5.1 ms/s, 98 MB | on: 5.84–6.50 ms (+14%), 25.2–27.9%; idle 5.8–6.2 ms/s (+18%), 105 MB. With a click every 2 s idle is 7.3–7.5 ms/s (each interaction flushes a compressed chunk) | 10 ms per event; 30 ms/s idle |
 
 ### Composer pickers
 

@@ -224,3 +224,14 @@ window.setTimeout(() => {
     .then((module) => module.resumeServedRemoteBrowserCalls())
     .catch(() => undefined);
 }, 4_000);
+
+// Session replay, desktop window only and only while analytics is on. Its
+// module and posthog-js load after launch settles, never on the startup path;
+// the web client and the browser mock have no `getReplayConfig`.
+if (typeof window.ade?.analytics?.getReplayConfig === "function") {
+  window.setTimeout(() => {
+    void import("./lib/sessionReplay")
+      .then((module) => module.startSessionReplay())
+      .catch(() => undefined);
+  }, 3_000);
+}

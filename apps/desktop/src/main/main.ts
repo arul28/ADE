@@ -102,6 +102,7 @@ import {
 import { detectInstallSource } from "./services/analytics/installSource";
 import { createSurveyService, defaultSurveyStateFile } from "./services/analytics/surveyService";
 import { registerSurveyIpc } from "./services/analytics/registerSurveyIpc";
+import { registerSessionReplayIpc, sessionReplayConnectSources } from "./services/analytics/registerSessionReplayIpc";
 import {
   captureAgentTurnSettledAnalytics,
   captureChatAutoResumeAnalytics,
@@ -1151,7 +1152,7 @@ async function createWindow(args: {
 
   // Set CSP dynamically so it works with both http:// (dev) and file:// (production).
   const isDevMode = !!process.env.VITE_DEV_SERVER_URL;
-  const cspPolicy = buildRendererCspPolicy(isDevMode);
+  const cspPolicy = buildRendererCspPolicy(isDevMode, { replayConnectSources: sessionReplayConnectSources() });
 
   win.webContents.session.webRequest.onHeadersReceived((details, callback) => {
     if (
@@ -10214,6 +10215,8 @@ app.whenReady().then(async () => {
   registerDatabaseCopiesIpc({ logger: getMachineMainLogger() });
   // The in-app survey card: this desktop app's user only, so no pin.
   registerSurveyIpc({ surveyService, logger: getMachineMainLogger() });
+  // Session replay settings for this window only (analytics consent), so no pin.
+  registerSessionReplayIpc({ analytics: productAnalyticsService, logger: getMachineMainLogger() });
   // The home page's clipboard, machine-health and weather widgets.
   registerHomeWidgetsIpc({
     logger: getMachineMainLogger(),
