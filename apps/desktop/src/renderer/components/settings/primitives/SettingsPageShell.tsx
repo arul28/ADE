@@ -80,7 +80,7 @@ export function SettingsPageShell({
       >
         <div style={{ display: "flex", alignItems: "center", gap: 12, minWidth: 0, flex: 1, width: headerStacked ? "100%" : undefined }}>
           {icon ?? null}
-          <div style={{ minWidth: 0, flex: 1, alignSelf: "center" }}>
+          <div data-ph-unmask="" style={{ minWidth: 0, flex: 1, alignSelf: "center" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
               {leading}
               <h3

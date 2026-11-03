@@ -11360,6 +11360,12 @@ export type AgentChatTurnSettledEvent = Readonly<{
   status: Extract<AgentChatEvent, { type: "done" }>["status"];
   provider: AgentChatProvider;
   sessionSurface: AgentChatSurface;
+  /** The model that answered, as the runtime reported it (registry id when known). */
+  model?: string | null;
+  usage?: Extract<AgentChatEvent, { type: "done" }>["usage"];
+  costUsd?: number | null;
+  /** Wall time from the turn's start to its done event. */
+  durationMs?: number | null;
 }>;
 
 type AgentChatAutomationService = {
@@ -13533,6 +13539,8 @@ export function createAgentChatService(args: {
    * or is deleted.
    */
   const lastTurnStartedAtBySession = new Map<string, string>();
+  /** When the turn now running started, consumed by its settle (analytics latency). */
+  const pendingTurnStartMsBySession = new Map<string, number>();
   /**
    * The turn id of each chat's latest emitted event that named one. Proof that
    * a chat files is stamped with it, so the proof belongs to the same turn the
@@ -22012,6 +22020,7 @@ export function createAgentChatService(args: {
       }
       managed.session.currentTurnStartedAt = nowIso();
       lastTurnStartedAtBySession.set(managed.session.id, managed.session.currentTurnStartedAt);
+      pendingTurnStartMsBySession.set(managed.session.id, Date.now());
       // A new turn starts: the last turn's id no longer applies. Proof filed
       // before this turn's first event is placed by its time instead.
       lastTurnIdBySession.delete(managed.session.id);
@@ -24001,12 +24010,24 @@ export function createAgentChatService(args: {
     if (notifiedSettledTurns.has(callbackKey)) return;
     rememberBoundedId(notifiedSettledTurns, callbackKey, 1_024);
     try {
+      // Consumed here, so a `done` with no start of its own (a runtime that
+      // failed during setup) reports no latency rather than the idle gap since
+      // the previous turn.
+      const turnStartedMs = pendingTurnStartMsBySession.get(managed.session.id);
+      pendingTurnStartMsBySession.delete(managed.session.id);
+      // The model that answered: a reroute's served model when it is a catalog
+      // model, else the requested one. Non-catalog names report as `other`.
+      const servedModelId = event.servedModel ? getModelById(event.servedModel)?.id : undefined;
       onTurnSettled({
         sessionId: managed.session.id,
         turnId: event.turnId,
         status: event.status,
         provider: managed.session.provider,
         sessionSurface: managed.session.surface ?? "work",
+        model: servedModelId ?? event.modelId ?? event.model ?? null,
+        usage: event.usage,
+        costUsd: event.costUsd ?? null,
+        durationMs: turnStartedMs === undefined ? null : Math.max(0, Date.now() - turnStartedMs),
       });
     } catch (error) {
       logger.warn("agent_chat.turn_settled_callback_failed", {
@@ -29062,6 +29083,7 @@ export function createAgentChatService(args: {
     clearAcceptedStartWatch(managed.session.id);
     claudePluginUi.end(managed.session.id);
     lastTurnStartedAtBySession.delete(managed.session.id);
+    pendingTurnStartMsBySession.delete(managed.session.id);
     lastTurnIdBySession.delete(managed.session.id);
     laneBranchAtTurnStart.delete(managed.session.id);
     releaseChatBrowser(managed.session.id);
@@ -68650,6 +68672,7 @@ export function createAgentChatService(args: {
     clearAcceptedStartWatch(sessionId);
     claudePluginUi.end(sessionId);
     lastTurnStartedAtBySession.delete(sessionId);
+    pendingTurnStartMsBySession.delete(sessionId);
     lastTurnIdBySession.delete(sessionId);
     releaseChatBrowser(sessionId);
     eventHistoryBySession.delete(sessionId);
@@ -71313,6 +71336,7 @@ export function createAgentChatService(args: {
     transcriptHistoryCacheBySession.delete(trimmedSessionId);
     resolvedTranscriptPathBySession.delete(trimmedSessionId);
     lastTurnStartedAtBySession.delete(trimmedSessionId);
+    pendingTurnStartMsBySession.delete(trimmedSessionId);
     lastTurnIdBySession.delete(trimmedSessionId);
     lastPersistedPointerFingerprints.delete(trimmedSessionId);
 

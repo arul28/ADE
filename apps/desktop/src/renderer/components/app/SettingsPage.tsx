@@ -618,6 +618,8 @@ export function SettingsPage({
         return (
           <div key={group.id} style={{ marginBottom: 14 }}>
             <div
+              // The Project group is labelled with the repository's name.
+              data-ph-mask={group.id === "project" ? "" : undefined}
               style={{
                 ...LABEL_STYLE,
                 fontFamily: SANS_FONT,
@@ -650,6 +652,7 @@ export function SettingsPage({
           {sidebarHeader}
           <nav
             aria-label="Settings sections"
+            data-ph-unmask=""
             style={{ flex: 1, minHeight: 0, padding: "4px 8px 12px", overflowY: "auto" }}
           >
             {sectionList}
@@ -669,7 +672,7 @@ export function SettingsPage({
           }}
         >
           {sidebarHeader}
-          <nav aria-label="Settings sections" style={{ flex: 1, minHeight: 0, padding: "4px 8px 12px", overflowY: "auto" }}>
+          <nav aria-label="Settings sections" data-ph-unmask="" style={{ flex: 1, minHeight: 0, padding: "4px 8px 12px", overflowY: "auto" }}>
             {sectionList}
           </nav>
         </div>
@@ -689,7 +692,7 @@ export function SettingsPage({
         {/* Pages built on the centred settings column get a page wrapper of the
             same measure, so the title and search line up with the content. */}
         <div className={CENTERED_COLUMN_TABS.has(section) ? "ade-settings-page--column" : undefined}>
-        <header className="ade-settings-page-header" style={{ marginBottom: 20 }}>
+        <header className="ade-settings-page-header" style={{ marginBottom: 20 }} data-ph-unmask="">
           {/* One fixed title row on every page: back, machine breadcrumb,
               title and search share a 32px line, so the title and the search
               box sit at the same height whichever page is open. The page's
@@ -743,7 +746,7 @@ export function SettingsPage({
               {/* Providers names its machine in its title: one picker for the
                   machine the providers run on, never a copy per machine. */}
               {providersPicker ? (
-                <span style={{ marginLeft: 8 }}>
+                <span style={{ marginLeft: 8 }} data-ph-mask="">
                   <MachinePicker
                     variant="title"
                     machines={machines}

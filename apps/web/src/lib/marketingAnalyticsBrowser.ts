@@ -58,10 +58,26 @@ function browserStorage(): StorageLike | null {
   }
 }
 
+/**
+ * On the production site, analytics and replay go through this site's own
+ * `/_t/` path, which `vercel.json` rewrites to PostHog's US hosts. Content
+ * blockers drop requests to PostHog's own domain, and much of ADE's audience
+ * runs one. Elsewhere (previews, local dev) the configured host is used.
+ */
+const FIRST_PARTY_HOSTS = new Set(["ade-app.dev", "www.ade-app.dev"]);
+
+function firstPartyPostHogHost(): string | null {
+  if (typeof window === "undefined") return null;
+  return FIRST_PARTY_HOSTS.has(window.location.hostname) && window.location.protocol === "https:"
+    ? `${window.location.origin}/_t`
+    : null;
+}
+
 function captureUrlFromEnv(): string | null {
   const token = (import.meta.env.VITE_POSTHOG_PROJECT_TOKEN as string | undefined)?.trim();
   if (!token || !/^phc_[A-Za-z0-9_-]{8,}$/.test(token)) return null;
-  const rawHost = (import.meta.env.VITE_POSTHOG_HOST as string | undefined)?.trim() || DEFAULT_POSTHOG_HOST;
+  const rawHost = firstPartyPostHogHost()
+    ?? ((import.meta.env.VITE_POSTHOG_HOST as string | undefined)?.trim() || DEFAULT_POSTHOG_HOST);
   try {
     const host = new URL(rawHost);
     if (host.protocol !== "https:" || host.username || host.password || host.search || host.hash) return null;
@@ -162,6 +178,39 @@ export function isMarketingAnalyticsEnabled(): boolean {
 
 export function isMarketingAnalyticsConfigured(): boolean {
   return analytics !== null;
+}
+
+const NO_REPLAY_STORAGE_KEY = "ade.marketing.noReplay";
+
+/**
+ * The ADE team's own browsers are never recorded: opening any page once with
+ * `?ade_no_replay=1` remembers that in this browser (`=0` forgets it). The
+ * site cannot know who you are, so this is a per-browser switch; the apps rely
+ * on the project's linked recording flag instead.
+ */
+function replayOptedOut(): boolean {
+  try {
+    const param = new URLSearchParams(window.location.search).get("ade_no_replay");
+    if (param === "1") window.localStorage.setItem(NO_REPLAY_STORAGE_KEY, "true");
+    if (param === "0") window.localStorage.removeItem(NO_REPLAY_STORAGE_KEY);
+    return window.localStorage.getItem(NO_REPLAY_STORAGE_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * What the session replay (`marketingReplay.ts`) records under: this site's
+ * public project token, its PostHog host, and the anonymous id the site's
+ * events already carry. Null while analytics is off, not configured, or this
+ * browser opted out of replay.
+ */
+export function marketingReplayConfig(): { projectToken: string; apiHost: string; distinctId: string } | null {
+  if (!analytics || !captureUrl) return null;
+  if (replayOptedOut()) return null;
+  const distinctId = analytics.replayDistinctId();
+  if (!distinctId) return null;
+  return { projectToken: projectTokenFromEnv(), apiHost: captureUrl.replace(/\/i\/v0\/e\/$/, ""), distinctId };
 }
 
 export function setMarketingAnalyticsEnabled(enabled: boolean): void {

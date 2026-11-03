@@ -113,6 +113,9 @@ export function buildPrNotificationToast(
     badge: event.title,
     eyebrow: `#${event.prNumber}`,
     title: getPrToastHeadline(event),
+    // The badge is the PR title, and the summary can quote a reviewer or name
+    // a person: masked like the title.
+    replayMask: { title: true, message: true, badge: true },
     chips,
     message: getPrToastSummary(event),
     actions,
@@ -175,6 +178,7 @@ export function buildAutoLinkedPrToast(
     title: `Auto-linked PR #${event.prNumber}`,
     chips: laneName ? [laneChip(laneName, lane?.color)] : undefined,
     message: event.prTitle,
+    replayMask: { message: true },
     actions: [autoLinkUndoAction(id, event, { undoing: false, failed: false })],
     closeTitle: "Dismiss",
     durationMs: READABLE_TOAST_DURATION_MS,

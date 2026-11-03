@@ -31,6 +31,12 @@ export const PRODUCT_ANALYTICS_EVENTS = [
   "survey shown",
   "survey dismissed",
   "survey sent",
+  // PostHog's LLM-analytics event, one per settled agent turn. Main-process
+  // and brain only (`agentTurnProductAnalytics.ts`); never accepted over IPC.
+  "$ai_generation",
+  // PostHog error tracking. A mirror of each error Sentry admitted, after its
+  // budget and scrub (`exceptionProductAnalytics.ts`); never accepted over IPC.
+  "$exception",
 ] as const;
 
 export type ProductAnalyticsEventName = (typeof PRODUCT_ANALYTICS_EVENTS)[number];
@@ -61,6 +67,55 @@ export type ProductAnalyticsCapture = {
    * process. Never read from IPC input (`parseProductAnalyticsCapture` drops it).
    */
   survey?: ProductSurveyEventPayload;
+  /**
+   * `$ai_generation` only: one agent turn's model, token counts, cost and
+   * duration, built by the runtime. Never read from IPC input
+   * (`parseProductAnalyticsCapture` drops it). No prompt, output, or tool data.
+   */
+  aiGeneration?: ProductAnalyticsAiGeneration;
+  /** `$exception` only: built from a scrubbed Sentry event in main or the brain, never from IPC. */
+  exception?: ProductAnalyticsException;
+};
+
+/** `$exception` only: one scrubbed Sentry error, reduced to what PostHog error tracking reads. */
+export type ProductAnalyticsException = {
+  /** A cause chain, outermost first (Sentry lists it outermost last; the mirror reverses it). */
+  exceptions: Array<{
+    type: string;
+    value?: string | null;
+    handled?: boolean | null;
+    mechanism?: string | null;
+    frames?: Array<{
+      filename?: string | null;
+      function?: string | null;
+      lineno?: number | null;
+      colno?: number | null;
+      inApp?: boolean | null;
+      /** The bundle's Sentry debug id, which PostHog's uploaded source maps are keyed by. */
+      chunkId?: string | null;
+    }>;
+  }>;
+  level: "error" | "fatal" | "warning";
+  fingerprint?: string | null;
+  /** The version of the build that raised it (Sentry's release), when known. */
+  releaseVersion?: string | null;
+  /** Which ADE process: main, renderer, brain. */
+  process?: string | null;
+};
+
+export type ProductAnalyticsAiGeneration = {
+  provider: string;
+  /** The model id the runtime reported; sent only when it is a built-in catalog model. */
+  model?: string | null;
+  status: "completed" | "interrupted" | "failed";
+  feature: "chat" | "automations";
+  inputTokens?: number | null;
+  outputTokens?: number | null;
+  cacheReadTokens?: number | null;
+  cacheCreationTokens?: number | null;
+  reasoningTokens?: number | null;
+  costUsd?: number | null;
+  durationMs?: number | null;
 };
 
 export type ProductAnalyticsCaptureResult = {
@@ -143,4 +198,20 @@ export type ProductAnalyticsStatus = {
   acceptedToday: number;
   droppedToday: number;
   day: string;
+};
+
+/**
+ * What this desktop window needs to record a session replay, or null while
+ * analytics is off. Desktop renderer only (one IPC, not a runtime action), so
+ * no other machine, the web client or the CLI ever reads it. `distinctId` is
+ * the id main's events carry (the account hash once signed in, else the
+ * install's anonymous id) so a recording joins the same PostHog person.
+ */
+export type ProductAnalyticsReplayConfig = {
+  projectToken: string;
+  apiHost: string;
+  distinctId: string;
+  /** Stamped on every recording so replays filter by build like the events do. */
+  appVersion: string;
+  releaseChannel: string;
 };

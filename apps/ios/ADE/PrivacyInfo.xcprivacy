@@ -2,7 +2,7 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<!-- Default-on product analytics; signed-in activity is linked only through a pseudonymous account hash. -->
+	<!-- Default-on product analytics, masked session replay (PostHog) and error mirroring; signed-in activity is linked only through a pseudonymous account hash. -->
 	<key>NSPrivacyTracking</key>
 	<false/>
 	<key>NSPrivacyTrackingDomains</key>
@@ -79,6 +79,7 @@
 				<key>NSPrivacyCollectedDataTypePurposes</key>
 				<array>
 					<string>NSPrivacyCollectedDataTypePurposeAppFunctionality</string>
+					<string>NSPrivacyCollectedDataTypePurposeAnalytics</string>
 				</array>
 			</dict>
 			<dict>

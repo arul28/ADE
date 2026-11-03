@@ -470,6 +470,15 @@ export class MarketingAnalytics {
     );
   }
 
+  /**
+   * The anonymous id this browser's events carry, so a session replay joins
+   * them. Null while analytics is off or storage is unusable.
+   */
+  replayDistinctId(): string | null {
+    if (!this.projectToken || !this.isEnabled() || !this.storageHealthy) return null;
+    return this.distinctId();
+  }
+
   reset(): void {
     // Opting out rotates the anonymous identity without resetting quota state;
     // repeated off/on cycles therefore cannot bypass the daily event ceiling.

@@ -848,6 +848,7 @@ private struct WorkMcpAppLiveView: View {
         }
       } else {
         WorkMcpAppContainer(controller: controller, bridge: bridge)
+          .adeReplayMasked()
           .frame(maxWidth: .infinity)
           .frame(height: controller.height)
           .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))

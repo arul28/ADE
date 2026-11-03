@@ -1155,6 +1155,7 @@ import type { AppPackageChannel } from "../shared/packageChannel";
 import type {
   ProductAnalyticsCapture,
   ProductAnalyticsCaptureResult,
+  ProductAnalyticsReplayConfig,
   ProductAnalyticsStatus,
 } from "../shared/types/productAnalytics";
 
@@ -1171,6 +1172,11 @@ declare global {
         setEnabled: (enabled: boolean) => Promise<ProductAnalyticsStatus>;
         /** This desktop app's in-app survey. Absent on the web client, which shows none. */
         surveys?: ProductSurveyBridge;
+        /**
+         * Session replay settings for this desktop window, null while analytics
+         * is off. Absent on the web client, which records no replay.
+         */
+        getReplayConfig?: () => Promise<ProductAnalyticsReplayConfig | null>;
       };
       app: {
         /**

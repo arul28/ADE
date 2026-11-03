@@ -1,0 +1,40 @@
+name: Release annotation
+
+# Marks a stable desktop release on PostHog's charts ("Desktop 1.2.130 ·
+# stable") when /release makes it public. Fires on publish, like
+# update-brew-tap.yml, because a stable sits as a draft until then. Betas are
+# marked by beta.yml once the beta feed serves them (a prerelease undrafted with
+# GITHUB_TOKEN starts no workflow, so this never sees them anyway).
+#
+# Skips without POSTHOG_PERSONAL_API_KEY / POSTHOG_PROJECT_ID, never fails, and
+# a re-run does not add a second annotation. See scripts/posthog/annotate-release.mjs.
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  annotate:
+    if: ${{ !github.event.release.prerelease }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: scripts/posthog
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Mark the stable release on PostHog
+        continue-on-error: true
+        env:
+          POSTHOG_PERSONAL_API_KEY: ${{ secrets.POSTHOG_PERSONAL_API_KEY }}
+          POSTHOG_PROJECT_ID: ${{ secrets.POSTHOG_PROJECT_ID }}
+          POSTHOG_HOST: ${{ secrets.POSTHOG_HOST }}
+          TAG_NAME: ${{ github.event.release.tag_name }}
+        run: node scripts/posthog/annotate-release.mjs --desktop "$TAG_NAME"

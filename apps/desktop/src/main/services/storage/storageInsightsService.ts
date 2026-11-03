@@ -1862,6 +1862,7 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
         failedSteps: failedCount,
         durationMs: Date.parse(finishedAt) - Date.parse(startedAt),
       });
+      const runMode = trigger === "manual" ? "manual" : "automatic";
       try {
         options.captureAnalytics?.({
           event: "ade_feature_used",
@@ -1870,13 +1871,18 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
             feature: "storage_doctor",
             action: "maintenance_run",
             outcome,
+            // Only a run the person asked for is use; the post-boot and daily
+            // sweeps are the app looking after itself.
+            mode: runMode,
             bytes_freed: reclaimedBytes,
             files_compressed: filesCompressed,
           },
           projectId: options.projectId ?? null,
           // Local-only dedupe fingerprint (hashed before send): collapses repeat
           // runs within 20 h into one PostHog event.
-          dedupeKey: `storage_doctor_run:${options.projectId ?? projectRoot}`,
+          // Per mode, so a run the person asked for is never swallowed by an
+          // automatic sweep earlier in the window.
+          dedupeKey: `storage_doctor_run:${runMode}:${options.projectId ?? projectRoot}`,
           minimumIntervalMs: MAINTENANCE_ANALYTICS_MIN_INTERVAL_MS,
         });
       } catch (error) {

@@ -391,19 +391,28 @@ describe("createAgentChatService", () => {
 
     expect(onTurnSettled).toHaveBeenCalledTimes(1);
     const settled = onTurnSettled.mock.calls[0]?.[0];
+    // Identity, outcome, model and counts only: never prompt, reply or tool text.
     expect(settled).toEqual({
       sessionId: session.id,
       turnId: expect.any(String),
       status: "completed",
       provider: "claude",
       sessionSurface: "work",
+      model: expect.any(String),
+      usage: expect.objectContaining({ inputTokens: expect.any(Number), outputTokens: expect.any(Number) }),
+      costUsd: null,
+      durationMs: expect.any(Number),
     });
     expect(Object.keys(settled).sort()).toEqual([
+      "costUsd",
+      "durationMs",
+      "model",
       "provider",
       "sessionId",
       "sessionSurface",
       "status",
       "turnId",
+      "usage",
     ]);
     service.forceDisposeAll();
   });
