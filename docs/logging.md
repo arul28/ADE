@@ -35,7 +35,7 @@ What a desktop recording holds: layout and styling, with every text node replace
 
 The marketing site (`apps/web/src/lib/marketingReplay.ts`) records only while the site's analytics preference is on, with the same switches, except that public page text is kept; inputs are masked, all text on `/open` and `/pair` is masked (those pages show paths and repository names from the link), and iframes, video and canvases (the live demo) are not recorded. Its addresses keep origin, path and `utm_*` only.
 
-PostHog's project settings add a safety net: recording on, minimum duration 5 seconds, console and performance capture off, and project masking of all inputs and text. Code settings override the project's. Free tier: 5,000 recordings a month, retained one month.
+PostHog's project settings: recording on, minimum duration 5 seconds, console and performance capture off, project masking of inputs only (the desktop masks all text in code), heatmaps on for the site. Free tier: 5,000 recordings a month, retained one month.
 
 ## Error tracking (Sentry)
 

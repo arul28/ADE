@@ -117,8 +117,9 @@ them in PostHog and update this list in the same branch.
   summary of Sign-ups & activation, Retention & churn, Feedback, Reliability
   and analytics budget, and the 1,000 MAU goal dashboard.
 - **Session replay**: recording on, minimum duration 5 seconds, console and
-  performance capture off, project masking of all inputs and text as a safety
-  net (code settings override it). See `docs/logging.md` › Session replay.
+  performance capture off, project masking of inputs only. The desktop masks
+  all text in code; the site keeps public text so replays show what people
+  read. Heatmaps on (site). See `docs/logging.md` › Session replay.
 - **Dashboard "ADE · Agent turns (LLM analytics)"** is managed by
   `scripts/posthog/provision.mjs` like the others; PostHog's own LLM analytics
   and Error tracking pages read `$ai_generation` and `$exception` directly.
