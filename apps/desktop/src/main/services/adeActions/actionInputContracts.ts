@@ -1020,6 +1020,11 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       input: "object { laneId: string, key: \"back\" | \"home\" | \"recents\" | \"power\" | \"volume_up\" | \"volume_down\" }",
       example: "ade android key back --json",
     },
+    rotate: {
+      description: "Lock the lane's emulator screen to portrait or landscape. Apps that fix their orientation, such as the home screen, keep it.",
+      input: "object { laneId: string, orientation: \"portrait\" | \"landscape\" }",
+      example: "ade android rotate landscape --json",
+    },
     sendText: {
       description: "Type text into the focused field on the lane's emulator.",
       input: "object { laneId: string, text: string }",

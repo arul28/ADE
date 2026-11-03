@@ -294,6 +294,7 @@ export type AndroidSwipeArgs = AndroidLaneArgs & {
 };
 export type AndroidKeyArgs = AndroidLaneArgs & { key: AndroidHardwareKey };
 export type AndroidOrientation = "portrait" | "landscape";
+export const ANDROID_ORIENTATIONS: readonly AndroidOrientation[] = ["portrait", "landscape"];
 /** Locks the display to this orientation (auto-rotate off). An app that fixes its own orientation keeps it. */
 export type AndroidRotateArgs = AndroidLaneArgs & { orientation: AndroidOrientation };
 export type AndroidTextArgs = AndroidLaneArgs & { text: string };

@@ -16,6 +16,7 @@ import path from "node:path";
 import {
   ANDROID_EMULATOR_DOMAIN,
   ANDROID_HARDWARE_KEYS,
+  ANDROID_ORIENTATIONS,
   type AndroidEmulatorErrorCode,
 } from "../../desktop/src/shared/types/androidEmulator";
 import { localRuntimeActionTimeoutMs } from "../../desktop/src/main/services/localRuntime/localRuntimeTimeoutPolicy";
@@ -76,6 +77,7 @@ export const ANDROID_VALUE_FLAGS: readonly string[] = [
   "--lane-id",
   "--ms",
   "--name",
+  "--orientation",
   "--out",
   "--out-path",
   "--output",
@@ -271,6 +273,15 @@ export function buildAndroidPlan(args: string[]): CliPlan {
       shapeResult: done({ action: "key", key }),
     });
   }
+  if (sub === "rotate" || sub === "orientation") {
+    const orientation = requireValue(readValue(args, ["--orientation"]) ?? positionals()[0] ?? null, "the orientation (portrait or landscape)").toLowerCase();
+    if (!(ANDROID_ORIENTATIONS as readonly string[]).includes(orientation)) {
+      throw new CliUsageError(`android rotate: unknown orientation '${orientation}'. Use ${ANDROID_ORIENTATIONS.join(" or ")}.`);
+    }
+    return androidAction("android rotate", "rotate", { ...laneClaim(), orientation }, "android-action", {
+      shapeResult: done({ action: "rotate", orientation }),
+    });
+  }
   if (sub === "text" || sub === "type") {
     // Typed exactly as given: a leading or trailing space is part of the text.
     const text = requireTypedText(readValue(args, ["--value"]) ?? positionals()[0] ?? null, "text");
@@ -450,8 +461,8 @@ export function formatAndroidAction(value: unknown): string {
     ? `(${result.x}, ${result.y})`
     : action === "swipe"
       ? `(${result.fromX}, ${result.fromY}) -> (${result.toX}, ${result.toY})`
-      : action === "key"
-        ? String(result.key)
+      : action === "key" || action === "rotate"
+        ? String(action === "key" ? result.key : result.orientation)
         : action === "text"
           ? `${result.characters} characters`
           : "";

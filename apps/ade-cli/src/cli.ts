@@ -3473,12 +3473,14 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade android swipe 540 1800 540 600 --ms 300 --text
                                                    Swipe from one point to another
     $ ade android key back --text                  back | home | recents | power | volume_up | volume_down
+    $ ade android rotate landscape --text          Lock the screen to portrait or landscape. Apps that
+                                                   fix their orientation, such as the home screen, keep it.
     $ ade android text "hello world" --text        Type into the focused field (--value "<text>" too)
     $ ade android show --text                      Show the emulator to the user (tools pane)
     $ ade android actions --text                   List the android_emulator actions
 
   Aliases: create = device-create, attach = device-attach, release = detach =
-  device-detach, key = press, text = type.
+  device-detach, key = press, rotate = orientation, text = type.
 
   Another machine: --machine <name> runs the command on that machine, with
   no new lane. Without --lane, the emulator there works for this chat's work

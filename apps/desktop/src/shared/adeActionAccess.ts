@@ -601,7 +601,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
     write: [
       "createDevice", "attachDevice", "start", "stop", "releaseDevice", "deleteDevice",
       "startStream", "stopStream", "sendTouch", "tap", "swipe", "sendKey", "sendText",
-      "screenshot",
+      "rotate", "screenshot",
     ],
   },
   app_control: {

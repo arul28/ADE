@@ -17,6 +17,7 @@
 
 import {
   ANDROID_HARDWARE_KEYS,
+  ANDROID_ORIENTATIONS,
   type AndroidEmulatorServiceApi,
   type AndroidTouchEvent,
 } from "../../../shared/types/androidEmulator";
@@ -172,6 +173,10 @@ export function buildAndroidDomainService(runtime: AndroidActionRuntime): Opaque
     sendKey: (args?: unknown) => service.sendKey({
       ...laneArgs(args, "sendKey"),
       key: enumOf(optionalString(args, "key"), "key", ANDROID_HARDWARE_KEYS, "sendKey"),
+    }),
+    rotate: (args?: unknown) => service.rotate({
+      ...laneArgs(args, "rotate"),
+      orientation: enumOf(optionalString(args, "orientation"), "orientation", ANDROID_ORIENTATIONS, "rotate"),
     }),
     sendText: (args?: unknown) => {
       // Not trimmed: a leading or trailing space is part of what is typed.
