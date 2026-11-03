@@ -136,15 +136,12 @@ async function main(): Promise<void> {
     log("encoders", { lines: encoders.split(/\r?\n/).filter((line) => /--video-codec|encoder/i.test(line)) });
 
     const configs: Array<{ name: string; maxSize: number; codecOptions?: string | null; bitRate?: number; videoEncoder?: string }> = [
-      { name: "1600 8M", maxSize: 1600, bitRate: 8_000_000 },
-      { name: "1280 8M", maxSize: 1280, bitRate: 8_000_000 },
       { name: "1280 4M", maxSize: 1280, bitRate: 4_000_000 },
-      { name: "1600 4M", maxSize: 1600, bitRate: 4_000_000 },
       { name: "1024 4M", maxSize: 1024, bitRate: 4_000_000 },
       { name: "800 4M", maxSize: 800, bitRate: 4_000_000 },
+      { name: "1600 4M", maxSize: 1600, bitRate: 4_000_000 },
       { name: "1280 2M", maxSize: 1280, bitRate: 2_000_000 },
-      { name: "1280+prio", maxSize: 1280, bitRate: 4_000_000, codecOptions: "priority=0,latency=1" },
-      { name: "1600 8M again", maxSize: 1600, bitRate: 8_000_000 },
+      { name: "1280 4M again", maxSize: 1280, bitRate: 4_000_000 },
     ];
     const results: Record<string, unknown> = {};
     for (const config of configs) {
