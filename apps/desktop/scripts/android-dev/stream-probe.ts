@@ -47,7 +47,7 @@ async function waitFor(check: () => Promise<boolean>, timeoutMs: number, stepMs 
 
 function reader(url: string) {
   const splitter = createVideoRecordSplitter();
-  const stats = { openedAt: Date.now(), types: [] as string[], keyframesAt: [] as number[], aus: 0 };
+  const stats = { openedAt: Date.now(), types: [] as string[], keyframesAt: [] as number[], aus: 0, auAt: [] as number[] };
   const request = http.get(url, (response) => {
     response.on("data", (chunk: Buffer) => {
       for (const record of splitter.push(chunk)) {
@@ -55,6 +55,7 @@ function reader(url: string) {
         if (stats.types.length < 8) stats.types.push(record.type === 1 ? "C" : key ? "K" : "d");
         if (record.type === 2) {
           stats.aus += 1;
+          stats.auAt.push(Date.now());
           if (key) stats.keyframesAt.push(Date.now() - stats.openedAt);
         }
       }
@@ -124,7 +125,8 @@ async function main(): Promise<void> {
     const booted = await waitFor(async () => (await runAdbText(ADB, ["shell", "getprop", "sys.boot_completed"], { serial, allowFailure: true, timeoutMs: 5_000 }).catch(() => "")) === "1", 180_000, 1_000);
     if (booted === null) throw new Error("boot timeout");
     log("booted", { serial });
-    await sleep(4_000);
+    // Let first-boot work (dexopt, Play services) settle so runs compare.
+    await sleep(Number(process.env.ADE_STREAM_SETTLE_MS ?? 45_000));
     await runAdb(ADB, ["shell", "input", "keyevent", "KEYCODE_WAKEUP"], { serial, allowFailure: true });
 
     const info = await runAdbText(ADB, ["shell", "nproc; getprop ro.product.model; getprop ro.build.version.release; getprop ro.kernel.qemu.gles; getprop ro.hardware.egl; cat /proc/meminfo | head -2"], { serial });
@@ -134,12 +136,15 @@ async function main(): Promise<void> {
     log("encoders", { lines: encoders.split(/\r?\n/).filter((line) => /--video-codec|encoder/i.test(line)) });
 
     const configs: Array<{ name: string; maxSize: number; codecOptions?: string | null; bitRate?: number; videoEncoder?: string }> = [
-      { name: "1600", maxSize: 1600, codecOptions: null },
-      { name: "1600+prio", maxSize: 1600, codecOptions: "priority=0,latency=1" },
-      { name: "1280+prio", maxSize: 1280, codecOptions: "priority=0,latency=1" },
-      { name: "full+prio", maxSize: 0, codecOptions: "priority=0,latency=1" },
-      { name: "1600+prio 4M", maxSize: 1600, codecOptions: "priority=0,latency=1", bitRate: 4_000_000 },
-      { name: "1024+prio", maxSize: 1024, codecOptions: "priority=0,latency=1" },
+      { name: "1600 8M", maxSize: 1600, bitRate: 8_000_000 },
+      { name: "1280 8M", maxSize: 1280, bitRate: 8_000_000 },
+      { name: "1280 4M", maxSize: 1280, bitRate: 4_000_000 },
+      { name: "1600 4M", maxSize: 1600, bitRate: 4_000_000 },
+      { name: "1024 4M", maxSize: 1024, bitRate: 4_000_000 },
+      { name: "800 4M", maxSize: 800, bitRate: 4_000_000 },
+      { name: "1280 2M", maxSize: 1280, bitRate: 2_000_000 },
+      { name: "1280+prio", maxSize: 1280, bitRate: 4_000_000, codecOptions: "priority=0,latency=1" },
+      { name: "1600 8M again", maxSize: 1600, bitRate: 8_000_000 },
     ];
     const results: Record<string, unknown> = {};
     for (const config of configs) {
@@ -170,6 +175,10 @@ async function main(): Promise<void> {
         await tail;
         await sleep(2_500);
         const after = diagnostics(serial)!;
+        const joinAt = b.stats.openedAt;
+        const aWindow = a.stats.auAt.filter((x) => x >= joinAt - 300 && x <= joinAt + 3_000);
+        let maxGap = 0;
+        for (let i = 1; i < aWindow.length; i += 1) maxGap = Math.max(maxGap, aWindow[i] - aWindow[i - 1]);
         results[config.name] = {
           video: `${transport.width}x${transport.height}`,
           codec: transport.codec,
@@ -185,6 +194,8 @@ async function main(): Promise<void> {
             keyframeRequests: after.metrics!.totals.keyframeRequests - before.metrics!.totals.keyframeRequests,
             configPackets: after.configPackets - before.configPackets,
             keyframesTotal: after.metrics!.totals.keyframes,
+            readerAMaxGapAroundJoinMs: maxGap,
+            readerAFramesInJoinWindow: aWindow.length,
           },
           serverLog: after.serverLog.slice(-6),
         };
@@ -192,7 +203,8 @@ async function main(): Promise<void> {
         a.close();
         b.close();
       } catch (error) {
-        results[config.name] = { error: error instanceof Error ? error.message : String(error), serverLog: (error as { serverLog?: string[] }).serverLog };
+        const d = diagnostics(serial);
+        results[config.name] = { error: error instanceof Error ? error.message : String(error), serverLog: (error as { serverLog?: string[] }).serverLog, lastEnd: d?.lastEnd, restarts: d?.restarts, diagLog: d?.serverLog };
         log("config.error", { name: config.name, ...(results[config.name] as Record<string, unknown>) });
       }
       await stopStream(serial);
