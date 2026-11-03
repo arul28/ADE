@@ -21,6 +21,7 @@ const EXPECTED_KIND: Partial<Record<AndroidEmulatorErrorCode, "user" | "environm
   ANDROID_LANE_HAS_DEVICE: "user",
   ANDROID_AVD_RUNNING: "user",
   ANDROID_NOT_RUNNING: "user",
+  ANDROID_PATH_OUTSIDE_LANE: "user",
 };
 
 export class AndroidEmulatorFailure extends Error {

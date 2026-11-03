@@ -5771,6 +5771,14 @@ app.whenReady().then(async () => {
         resourcesPath: process.resourcesPath,
         appPath: app.getAppPath(),
       }),
+      // A screenshot `outPath` must stay inside the lane's worktree.
+      resolveLaneWorktreePath: (laneId: string): string | null => {
+        try {
+          return laneService.getLaneWorktreePath(laneId);
+        } catch {
+          return null;
+        }
+      },
       logger,
       onEvent: (event) => emitProjectEvent(projectRoot, IPC.androidEmulatorEvent, event),
     });

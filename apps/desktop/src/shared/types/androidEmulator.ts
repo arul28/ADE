@@ -195,6 +195,8 @@ export const ANDROID_EMULATOR_ERROR_CODES = [
   "ANDROID_EMULATOR_EXITED",
   "ANDROID_STREAM_FAILED",
   "ANDROID_NOT_RUNNING",
+  /** A screenshot `outPath` that resolves outside the lane's worktree. */
+  "ANDROID_PATH_OUTSIDE_LANE",
 ] as const;
 export type AndroidEmulatorErrorCode = (typeof ANDROID_EMULATOR_ERROR_CODES)[number];
 

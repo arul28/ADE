@@ -73,8 +73,13 @@ export type AndroidEmulatorServiceDeps = {
    * file, the emulator logs, default screenshots.
    */
   dataDir: string;
-  /** The bundled scrcpy server (`resolveScrcpyServerJarPath`). */
+  /** The bundled scrcpy server (`resolveScrcpyServerJarPath` or `findScrcpyServerJar`). */
   serverJarPath: string;
+  /**
+   * The lane's worktree. A screenshot `outPath` resolves against it and must
+   * stay inside it; without one, a call that names an `outPath` is refused.
+   */
+  resolveLaneWorktreePath?: (laneId: string) => string | null;
   logger?: Logger | null;
   /** The SDK the user picked in Settings, read on every use. */
   readSdkSettingPath?: () => string | null;
@@ -103,6 +108,102 @@ type LaneState = {
   /** The serial the lane's stream runs on, while it runs. */
   streamSerial: string | null;
 };
+
+/**
+ * The started-emulators registry, read from its file on every call.
+ *
+ * Two services can share one project's file (the desktop's own copy in a dev
+ * build and the brain's). A registry that loaded once would write its stale
+ * list over the other's starts, and those emulators would stop counting as
+ * ADE's. Reading per call keeps both, short of two writes in one instant.
+ */
+class FileBackedStartedEmulators extends AdeStartedEmulators {
+  constructor(private readonly file: string) {
+    super(null);
+  }
+
+  private fresh(): AdeStartedEmulators {
+    return new AdeStartedEmulators(this.file);
+  }
+
+  override record(entry: Parameters<AdeStartedEmulators["record"]>[0]): void {
+    this.fresh().record(entry);
+  }
+
+  override forget(match: Parameters<AdeStartedEmulators["forget"]>[0]): void {
+    this.fresh().forget(match);
+  }
+
+  override owns(emulator: Parameters<AdeStartedEmulators["owns"]>[0]): boolean {
+    return this.fresh().owns(emulator);
+  }
+
+  override prune(): void {
+    this.fresh().prune();
+  }
+}
+
+/**
+ * The scrcpy server jar for a brain that is not the Electron main process:
+ * `<resources>/android/scrcpy-server` when it runs from the packaged app, else
+ * the checkout's `apps/desktop/resources/android/scrcpy-server`, found by
+ * walking up from `startDir`. Returns the first candidate when none exists, so
+ * the stream's error names a real place to look.
+ */
+export function findScrcpyServerJar(input: { resourcesPath?: string | null; startDir: string }): string {
+  const candidates: string[] = [];
+  if (input.resourcesPath) candidates.push(path.join(input.resourcesPath, "android", "scrcpy-server"));
+  let dir = path.resolve(input.startDir);
+  for (;;) {
+    candidates.push(path.join(dir, "apps", "desktop", "resources", "android", "scrcpy-server"));
+    candidates.push(path.join(dir, "resources", "android", "scrcpy-server"));
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return candidates.find((candidate) => fs.existsSync(candidate)) ?? candidates[0]!;
+}
+
+const samePath = (a: string, b: string) => (process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b);
+
+function isInside(child: string, root: string): boolean {
+  const relative = path.relative(root, child);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+/** The real path of `target`'s nearest existing ancestor, joined with the missing tail. */
+function realPathAllowMissing(target: string): string {
+  const missing: string[] = [];
+  let current = path.resolve(target);
+  for (;;) {
+    try {
+      return path.join(fs.realpathSync.native(current), ...missing.reverse());
+    } catch {
+      const parent = path.dirname(current);
+      if (samePath(parent, current)) return path.resolve(target);
+      missing.push(path.basename(current));
+      current = parent;
+    }
+  }
+}
+
+/**
+ * Where an agent's screenshot may go: inside the lane's worktree, after both
+ * a lexical check and a real-path check (a symlink inside the worktree can
+ * point anywhere). `outPath` comes from agents and other machines, so an
+ * unchecked one could overwrite any file the brain can write.
+ */
+export function containAndroidOutPath(outPath: string, root: string): string {
+  const resolvedRoot = path.resolve(root);
+  const target = path.resolve(resolvedRoot, outPath);
+  const outside = () => new AndroidEmulatorFailure(
+    "ANDROID_PATH_OUTSIDE_LANE",
+    `${target} is outside the lane's worktree (${resolvedRoot}). Pick a path inside it, or leave the path out.`,
+  );
+  if (!isInside(target, resolvedRoot)) throw outside();
+  if (fs.existsSync(resolvedRoot) && !isInside(realPathAllowMissing(target), realPathAllowMissing(resolvedRoot))) throw outside();
+  return target;
+}
 
 /** The services alive in this process; the last one to go stops the shared stream server. */
 let liveServices = 0;
@@ -174,7 +275,7 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
   const discoveryDirs = deps.discoveryDirs ?? androidDiscoveryDirs(platform, env, home);
   const bootTimeoutMs = Math.max(deps.bootTimeoutMs ?? ANDROID_BOOT_TIMEOUT_MS, 120_000);
   const now = deps.now ?? (() => new Date());
-  const registry = new AdeStartedEmulators(path.join(deps.dataDir, "started-emulators.json"));
+  const registry = new FileBackedStartedEmulators(path.join(deps.dataDir, "started-emulators.json"));
   const listeners = new Set<(event: AndroidEmulatorEvent) => void>();
   const lanes = new Map<string, LaneState>();
   /** `serial:pid` of emulators already seen booted; booted stays booted for one process. */
@@ -249,6 +350,7 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
 
   /** The SDK with adb and the emulator, or the refusal that says what is missing. */
   const requireSdk = async (needs: { emulator: boolean }): Promise<ReadySdk> => {
+    if (!platformSupported) throw new AndroidEmulatorFailure("ANDROID_SDK_NOT_FOUND", unsupportedReason!);
     const sdk = await readSdk();
     if (!sdk.found || !sdk.root || !sdk.avdHome) {
       throw new AndroidEmulatorFailure("ANDROID_SDK_NOT_FOUND", "No Android SDK was found on this machine. Install Android Studio or the SDK command-line tools.");
@@ -888,8 +990,18 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
 
     async screenshot(args) {
       const laneId = requireLaneId(args.laneId);
-      const outPath = args.outPath?.trim() || null;
-      if (outPath && !path.isAbsolute(outPath)) throw new Error("outPath must be an absolute path.");
+      const requested = args.outPath?.trim() || null;
+      let outPath: string | null = null;
+      if (requested) {
+        const root = deps.resolveLaneWorktreePath?.(laneId) ?? null;
+        if (!root) {
+          throw new AndroidEmulatorFailure(
+            "ANDROID_PATH_OUTSIDE_LANE",
+            "ADE cannot find this lane's worktree, so it will not write a screenshot to a chosen path. Leave the path out.",
+          );
+        }
+        outPath = containAndroidOutPath(requested, root);
+      }
       const { serial, adbPath } = await requireBooted(laneId);
       const result = await runAdb(adbPath, ["exec-out", "screencap", "-p"], {
         serial,
@@ -903,7 +1015,15 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
       const target = outPath
         ?? path.join(deps.dataDir, "screenshots", `${laneId.replace(/[^A-Za-z0-9_-]+/gu, "_")}-${capturedAt.toISOString().replace(/[:.]/gu, "-")}.png`);
       fs.mkdirSync(path.dirname(target), { recursive: true });
-      fs.writeFileSync(target, png);
+      // Checked again right before the write (a link swapped in during the
+      // capture), and the file is opened without following a link.
+      if (outPath) containAndroidOutPath(outPath, deps.resolveLaneWorktreePath?.(laneId) ?? path.dirname(outPath));
+      const handle = fs.openSync(target, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC | (fs.constants.O_NOFOLLOW ?? 0), 0o644);
+      try {
+        fs.writeSync(handle, png);
+      } finally {
+        fs.closeSync(handle);
+      }
       const shot: AndroidScreenshot = { path: target, width: size.width, height: size.height, bytes: png.length, capturedAt: capturedAt.toISOString() };
       return shot;
     },
