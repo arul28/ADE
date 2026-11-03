@@ -17,7 +17,12 @@ const UUID_VALUE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12
  */
 function frameFile(value: unknown): string | null {
   if (typeof value !== "string" || !value.trim()) return null;
-  const normalized = value.trim().replace(/\\/g, "/").replace(/^file:\/\//i, "");
+  // No query or fragment (a bundle URL can carry a token), no scheme or host.
+  const normalized = value.trim()
+    .replace(/[?#].*$/, "")
+    .replace(/\\/g, "/")
+    .replace(/^file:\/\//i, "")
+    .replace(/^[a-z][a-z0-9+.-]*:\/\/[^/]*/i, "");
   const anchors = ["app.asar/", "/node_modules/", "/dist/", "/src/"];
   for (const anchor of anchors) {
     const index = normalized.lastIndexOf(anchor);
@@ -27,8 +32,10 @@ function frameFile(value: unknown): string | null {
       return `${prefix}${tail}`.slice(0, 200);
     }
   }
+  // Anything else is reduced to a bare script name; a name that is not one
+  // (no extension, odd characters) is not sent at all.
   const base = normalized.split("/").pop() ?? "";
-  return base ? base.slice(0, 120) : null;
+  return /^[\w.-]{1,120}\.[cm]?[jt]sx?$/.test(base) ? base : null;
 }
 
 function frameNumber(value: unknown): number | undefined {

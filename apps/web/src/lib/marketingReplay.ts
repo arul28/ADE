@@ -37,7 +37,8 @@ function maskedPageUrl(href: string): string {
 /** Marks or unmarks the document for full text masking; call on every route change. */
 export function markMarketingReplayRoute(pathname: string): void {
   if (typeof document === "undefined") return;
-  const normalized = pathname.replace(/\/+$/, "") || "/";
+  // The router matches routes case-insensitively, so `/Open` is `/open`.
+  const normalized = pathname.replace(/\/+$/, "").toLowerCase() || "/";
   if (MASK_ALL_TEXT_ROUTES.has(normalized)) {
     document.documentElement.setAttribute(MASK_ALL_TEXT_ATTRIBUTE, "");
   } else {
@@ -119,7 +120,7 @@ function buildConfig(apiHost: string, distinctId: string, allowed: { value: bool
           for (const [href, points] of Object.entries(data as Record<string, unknown>)) {
             let pathname: string;
             try {
-              pathname = new URL(href).pathname.replace(/\/+$/, "") || "/";
+              pathname = new URL(href).pathname.replace(/\/+$/, "").toLowerCase() || "/";
             } catch {
               continue;
             }
@@ -173,6 +174,9 @@ function stop(): void {
   client.allowed.value = false;
   try {
     client.instance.stopSessionRecording();
+    // Removes the heatmap listeners and drops their buffered points, so
+    // clicks made while analytics is off are never sent after an opt-in.
+    client.instance.set_config({ capture_heatmaps: false });
   } catch {
     // The gate is closed either way.
   }
@@ -205,6 +209,7 @@ export function syncMarketingReplay(): void {
   }
   if (!client.allowed.value) {
     client.allowed.value = true;
+    client.instance.set_config({ capture_heatmaps: true });
     client.instance.startSessionRecording();
   }
 }

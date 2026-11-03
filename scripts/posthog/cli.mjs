@@ -18,7 +18,10 @@ export function parseArgs(argv) {
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (!arg.startsWith("--")) continue;
-    const [key, inline] = arg.slice(2).split("=", 2);
+    const body = arg.slice(2);
+    const equals = body.indexOf("=");
+    const key = equals === -1 ? body : body.slice(0, equals);
+    const inline = equals === -1 ? undefined : body.slice(equals + 1);
     const next = argv[index + 1];
     if (inline !== undefined) {
       options[key] = inline;

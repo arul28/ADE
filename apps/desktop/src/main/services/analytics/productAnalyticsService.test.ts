@@ -1605,6 +1605,7 @@ describe("productAnalyticsService", () => {
     ["a macOS home path", "/Users/alice/Projects/secret-repo/src/app.ts", "/Users/alice/.ade/node_modules/foo/index.js"],
     ["a Windows profile path", "C:\\Users\\alice\\secret-repo\\src\\app.ts", "C:\\Users\\alice\\AppData\\Local\\ADE\\resources\\app.asar\\dist\\main\\main.cjs"],
     ["a file URL", "file:///Users/alice/secret-repo/src/app.ts", "file:///Applications/ADE.app/Contents/Resources/app.asar/dist/main/main.cjs"],
+    ["a bundle URL carrying a token", "/home/alice/secret-repo/app.ts", "https://cdn.alice.dev/assets/app.js?token=sk-ant-api03-zyxwvzyxwvzyxwvzyxwv"],
   ])("mirrors a Sentry error to $exception without %s, an email or a token", (_label, messagePath, framePath) => {
     const harness = makeHarness();
     setSentryEventMirror(createExceptionAnalyticsMirror({ analytics: harness.service, surface: "desktop" }));
