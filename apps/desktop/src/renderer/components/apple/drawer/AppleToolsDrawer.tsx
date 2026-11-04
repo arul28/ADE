@@ -10,7 +10,7 @@ import {
   Group,
   isAppleDrawerGroupId,
   type AppleDrawerGroupId,
-} from "./drawerPrimitives";
+} from "../../ui/drawerPrimitives";
 import { useAppleDrawerActions, type AppleDrawerScope } from "./useAppleDrawerActions";
 import type { AppleDrawerContext } from "./drawerContext";
 import { AppSection } from "./sections/AppSection";

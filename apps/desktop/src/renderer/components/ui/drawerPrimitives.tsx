@@ -1,8 +1,8 @@
 import { useState, type FormEvent, type ReactNode } from "react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { CaretDown, Check } from "@phosphor-icons/react";
-import { cn } from "../../ui/cn";
-import { MENU_CONTENT_CLASS, MENU_ITEM_CLASS, MENU_LABEL_CLASS } from "../../ui/paneMenuTokens";
+import { cn } from "./cn";
+import { MENU_CONTENT_CLASS, MENU_ITEM_CLASS, MENU_LABEL_CLASS } from "./paneMenuTokens";
 
 /**
  * The drawer's vocabulary (round 4 §B2): one GROUP card, one row shape, one

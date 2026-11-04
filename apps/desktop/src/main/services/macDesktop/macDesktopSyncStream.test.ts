@@ -2,9 +2,9 @@ import { createServer } from "node:http";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
-  IOS_VIDEO_RECORD_TYPE_ACCESS_UNIT,
-  IOS_VIDEO_RECORD_TYPE_CONFIG,
-} from "../../../shared/types/iosSimulator";
+  VIDEO_RECORD_TYPE_ACCESS_UNIT,
+  VIDEO_RECORD_TYPE_CONFIG,
+} from "../../../shared/types/videoRecords";
 import type { MacDesktopEventPayload } from "../../../shared/types/macDesktop";
 import type {
   SyncMacDesktopStreamEndedPayload,
@@ -34,11 +34,11 @@ const CONFIG_JSON = JSON.stringify({
 });
 
 function configRecord(): Buffer {
-  return Buffer.from(encodeVideoRecord(IOS_VIDEO_RECORD_TYPE_CONFIG, Buffer.from(CONFIG_JSON, "utf8")));
+  return Buffer.from(encodeVideoRecord(VIDEO_RECORD_TYPE_CONFIG, Buffer.from(CONFIG_JSON, "utf8")));
 }
 
 function frameRecord(payload: Buffer, keyframe: boolean): Buffer {
-  return Buffer.from(encodeVideoRecord(IOS_VIDEO_RECORD_TYPE_ACCESS_UNIT, payload, { keyframe }));
+  return Buffer.from(encodeVideoRecord(VIDEO_RECORD_TYPE_ACCESS_UNIT, payload, { keyframe }));
 }
 
 function createFakeReader() {

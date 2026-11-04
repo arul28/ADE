@@ -30,7 +30,7 @@ import {
 } from "../terminals/workToolChrome";
 import { WorkToolPreviewControls } from "../terminals/workToolPreviewControls";
 import { Banner } from "../ui/notice";
-import { H264StreamView } from "./H264StreamView";
+import { H264StreamView } from "../device/H264StreamView";
 import { MacDesktopAgentCursor } from "./MacDesktopAgentCursor";
 import { MacDesktopPermissionCard } from "./MacDesktopPermissionCard";
 import { MAC_DESKTOP_SECONDARY_BUTTON, MacDesktopStateCard } from "./MacDesktopStateCard";

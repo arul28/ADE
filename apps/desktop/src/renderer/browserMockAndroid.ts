@@ -32,12 +32,12 @@ import type {
   AndroidTouchEvent,
 } from "../shared/types/androidEmulator";
 import {
-  IOS_VIDEO_RECORD_FLAG_KEYFRAME,
-  IOS_VIDEO_RECORD_HEADER_BYTES,
-  IOS_VIDEO_RECORD_MAGIC,
-  IOS_VIDEO_RECORD_TYPE_ACCESS_UNIT,
-  IOS_VIDEO_RECORD_TYPE_CONFIG,
-} from "../shared/types/iosSimulator";
+  VIDEO_RECORD_FLAG_KEYFRAME,
+  VIDEO_RECORD_HEADER_BYTES,
+  VIDEO_RECORD_MAGIC,
+  VIDEO_RECORD_TYPE_ACCESS_UNIT,
+  VIDEO_RECORD_TYPE_CONFIG,
+} from "../shared/types/videoRecords";
 
 type Scenario = "live" | "picker" | "setup" | "noaccel" | "starting" | "off" | "crashed" | "unsupported";
 
@@ -346,13 +346,13 @@ type WebCodecsEncoderScope = {
 };
 
 function record(type: number, flags: number, payload: Uint8Array): Uint8Array {
-  const out = new Uint8Array(IOS_VIDEO_RECORD_HEADER_BYTES + payload.byteLength);
+  const out = new Uint8Array(VIDEO_RECORD_HEADER_BYTES + payload.byteLength);
   const view = new DataView(out.buffer);
-  view.setUint32(0, IOS_VIDEO_RECORD_MAGIC, false);
+  view.setUint32(0, VIDEO_RECORD_MAGIC, false);
   view.setUint8(4, type);
   view.setUint8(5, flags);
   view.setUint32(8, payload.byteLength, false);
-  out.set(payload, IOS_VIDEO_RECORD_HEADER_BYTES);
+  out.set(payload, VIDEO_RECORD_HEADER_BYTES);
   return out;
 }
 
@@ -424,7 +424,7 @@ function mockStreamBody(signal: AbortSignal | null | undefined, touches: Android
       }
       const codec = "avc1.42001f";
       controller.enqueue(record(
-        IOS_VIDEO_RECORD_TYPE_CONFIG,
+        VIDEO_RECORD_TYPE_CONFIG,
         0,
         new TextEncoder().encode(JSON.stringify({ codec, width: VIDEO_WIDTH, height: VIDEO_HEIGHT, annexB: true })),
       ));
@@ -433,7 +433,7 @@ function mockStreamBody(signal: AbortSignal | null | undefined, touches: Android
           const bytes = new Uint8Array(chunk.byteLength);
           chunk.copyTo(bytes);
           try {
-            controller.enqueue(record(IOS_VIDEO_RECORD_TYPE_ACCESS_UNIT, chunk.type === "key" ? IOS_VIDEO_RECORD_FLAG_KEYFRAME : 0, bytes));
+            controller.enqueue(record(VIDEO_RECORD_TYPE_ACCESS_UNIT, chunk.type === "key" ? VIDEO_RECORD_FLAG_KEYFRAME : 0, bytes));
           } catch {
             stop();
           }
@@ -467,7 +467,7 @@ function mockStreamBody(signal: AbortSignal | null | undefined, touches: Android
             if (!encoder || encoder.state !== "configured") return;
             const [width, height] = next === "landscape" ? [VIDEO_HEIGHT, VIDEO_WIDTH] : [VIDEO_WIDTH, VIDEO_HEIGHT];
             controller.enqueue(record(
-              IOS_VIDEO_RECORD_TYPE_CONFIG,
+              VIDEO_RECORD_TYPE_CONFIG,
               0,
               new TextEncoder().encode(JSON.stringify({ codec, width, height, annexB: true })),
             ));

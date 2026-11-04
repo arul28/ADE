@@ -6,7 +6,7 @@ import { isAdeOwnedLaneDevice } from "../../../shared/types/iosSimulator";
 import { showToast } from "../app/toast/toastStore";
 import { Button } from "../ui/Button";
 import { MENU_CONTENT_CLASS, MENU_ITEM_CLASS, MENU_LABEL_CLASS, MENU_SEPARATOR_CLASS } from "../ui/paneMenuTokens";
-import { DangerConfirmMenuItem } from "./DangerConfirmMenuItem";
+import { DangerConfirmMenuItem } from "../ui/DangerConfirmMenuItem";
 import { confirmAppleDeviceRelease } from "./appleReleaseConfirm";
 import type { AppleLaneDeviceCard } from "./useAppleLaneDeviceCard";
 

@@ -1,15 +1,16 @@
 import { useCallback, useMemo, useState, type ReactNode } from "react";
-import { H264StreamView } from "../chat/H264StreamView";
-import { h264SourceForUrl } from "../chat/h264StreamPlayer";
+import { H264StreamView } from "../device/H264StreamView";
+import { h264SourceForUrl } from "../device/h264StreamPlayer";
 import { cn } from "../ui/cn";
 import {
-  AppleDeviceFlatView,
-  type AppleDeviceGeometry,
-  type AppleDeviceInput,
-} from "../apple/AppleDeviceFlatView";
+  DeviceFlatView,
+  type DeviceGeometry,
+  type DeviceInput,
+} from "../device/DeviceFlatView";
 
 /**
- * The Android stage: black, the decoder, and the Apple flat view over it.
+ * The Android stage: black, the decoder, and the shared flat view
+ * (`device/DeviceFlatView`) over it.
  *
  * The flat view is generic: it letterboxes a box of the device's size and maps
  * a pointer to that box's units. Android hands it the device's size in device
@@ -56,7 +57,7 @@ export function AndroidDeviceStage({
   /** The device in device pixels, in the orientation the video shows. */
   devicePixelSize: { width: number; height: number } | null;
   interactive: boolean;
-  onDeviceInput: (input: AppleDeviceInput) => void;
+  onDeviceInput: (input: DeviceInput) => void;
   onDeviceScroll?: (delta: { x: number; y: number; deltaX: number; deltaY: number }) => void;
   onDeviceKey?: (event: { key: string; metaKey: boolean; ctrlKey: boolean; altKey: boolean }) => boolean;
   onReaderStatus: (status: "connecting" | "playing" | "error" | "stopped", error: string | null) => void;
@@ -68,7 +69,7 @@ export function AndroidDeviceStage({
   className?: string;
 }) {
   const [screenPixelSize, setScreenPixelSize] = useState<{ width: number; height: number } | null>(null);
-  const [geometry, setGeometry] = useState<AppleDeviceGeometry | null>(null);
+  const [geometry, setGeometry] = useState<DeviceGeometry | null>(null);
 
   const handleDimensions = useCallback((size: { width: number; height: number }) => {
     setScreenPixelSize((current) => (current && current.width === size.width && current.height === size.height ? current : size));
@@ -112,7 +113,7 @@ export function AndroidDeviceStage({
           />
         ) : null}
       </div>
-      <AppleDeviceFlatView
+      <DeviceFlatView
         screenPixelSize={screenPixelSize}
         devicePointSize={devicePixelSize}
         orientation="portrait"

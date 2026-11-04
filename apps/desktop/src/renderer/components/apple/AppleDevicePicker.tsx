@@ -41,8 +41,8 @@ import {
   type AppleDeviceFamilyId,
 } from "./appleDeviceFamily";
 import { isAppleSimulatorBooted } from "./appleDeviceState";
-import { DangerConfirmMenuItem } from "./DangerConfirmMenuItem";
-import { DrawerMenu, type DrawerMenuOption } from "./drawer/drawerPrimitives";
+import { DangerConfirmMenuItem } from "../ui/DangerConfirmMenuItem";
+import { DrawerMenu, type DrawerMenuOption } from "../ui/drawerPrimitives";
 import {
   appleDeviceDiskLabel,
   appleDiskLabel,
@@ -52,7 +52,7 @@ import {
 } from "./applePickerInventory";
 import { AppleRuntimeInstallProgress, AppleRuntimesSection, AppleXcodeNote } from "./AppleRuntimesSection";
 import { appleRuntimeInstallActive } from "../../../shared/appleRuntimeVersions";
-import { AppleSpinner } from "./AppleSpinner";
+import { Spinner } from "../ui/Spinner";
 import { useTicker } from "../../lib/ticker";
 
 /**
@@ -469,7 +469,7 @@ function DeviceCard({
             <span className="min-w-0 flex-1 break-words font-sans text-[13px] font-medium leading-5 text-fg">
               {simulator.name}
             </span>
-            {pending ? <AppleSpinner /> : mine ? (
+            {pending ? <Spinner /> : mine ? (
               <span className="shrink-0 font-sans text-[10px] font-medium uppercase tracking-[0.08em] text-accent">
                 Yours
               </span>
@@ -754,7 +754,7 @@ function CreateSection({
             }}
             className="shrink-0"
           >
-            {creating || (pickedMissing && installing) ? <AppleSpinner /> : null}
+            {creating || (pickedMissing && installing) ? <Spinner /> : null}
             {pickedMissing ? "Install & create" : "Create"}
           </Button>
         </div>
@@ -837,7 +837,7 @@ function StorageSection({
               onClick={onCleanup}
               className="shrink-0"
             >
-              {cleaning ? <AppleSpinner /> : null}
+              {cleaning ? <Spinner /> : null}
               Clean up
             </Button>
           ) : null}

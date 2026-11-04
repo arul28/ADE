@@ -1,5 +1,6 @@
 /**
- * Reads the framed byte stream the simulator video server writes.
+ * Reads the framed byte stream every device video server writes: the iOS
+ * simulator, Mac Desktop and the Android emulator (`shared/types/videoRecords.ts`).
  *
  * A chunked HTTP body has no message boundaries, so the server prefixes every
  * record with a fixed 12-byte header. This parser is deliberately free of DOM
@@ -8,14 +9,14 @@
  */
 
 import {
-  IOS_VIDEO_RECORD_FLAG_KEYFRAME,
-  IOS_VIDEO_RECORD_HEADER_BYTES,
-  IOS_VIDEO_RECORD_MAGIC,
-  IOS_VIDEO_RECORD_TYPE_ACCESS_UNIT,
-  IOS_VIDEO_RECORD_TYPE_CONFIG,
-} from "../../../shared/types/iosSimulator";
+  VIDEO_RECORD_FLAG_KEYFRAME,
+  VIDEO_RECORD_HEADER_BYTES,
+  VIDEO_RECORD_MAGIC,
+  VIDEO_RECORD_TYPE_ACCESS_UNIT,
+  VIDEO_RECORD_TYPE_CONFIG,
+} from "../../../shared/types/videoRecords";
 
-export type IosSimVideoConfigRecord = {
+export type VideoConfigRecord = {
   kind: "config";
   codec: string;
   width: number | null;
@@ -23,7 +24,7 @@ export type IosSimVideoConfigRecord = {
   annexB: boolean;
 };
 
-export type IosSimVideoAccessUnitRecord = {
+export type VideoAccessUnitRecord = {
   kind: "access-unit";
   keyframe: boolean;
   bytes: Uint8Array;
@@ -35,7 +36,7 @@ export type IosSimVideoAccessUnitRecord = {
   seq?: number;
 };
 
-export type IosSimVideoRecord = IosSimVideoConfigRecord | IosSimVideoAccessUnitRecord;
+export type ParsedVideoRecord = VideoConfigRecord | VideoAccessUnitRecord;
 
 /**
  * A record larger than this is not something the server sends. Refusing it
@@ -43,15 +44,15 @@ export type IosSimVideoRecord = IosSimVideoConfigRecord | IosSimVideoAccessUnitR
  */
 const MAX_RECORD_BYTES = 16 * 1024 * 1024;
 
-export class IosSimVideoProtocolError extends Error {
+export class VideoRecordProtocolError extends Error {
   constructor(message: string) {
     super(message);
-    this.name = "IosSimVideoProtocolError";
+    this.name = "VideoRecordProtocolError";
   }
 }
 
-export function createIosSimVideoRecordParser(): {
-  push(chunk: Uint8Array): IosSimVideoRecord[];
+export function createVideoRecordParser(): {
+  push(chunk: Uint8Array): ParsedVideoRecord[];
   reset(): void;
   pendingBytes(): number;
 } {
@@ -69,35 +70,35 @@ export function createIosSimVideoRecordParser(): {
   };
 
   return {
-    push(chunk: Uint8Array): IosSimVideoRecord[] {
+    push(chunk: Uint8Array): ParsedVideoRecord[] {
       append(chunk);
-      const records: IosSimVideoRecord[] = [];
+      const records: ParsedVideoRecord[] = [];
       let offset = 0;
-      while (buffer.byteLength - offset >= IOS_VIDEO_RECORD_HEADER_BYTES) {
-        const view = new DataView(buffer.buffer, buffer.byteOffset + offset, IOS_VIDEO_RECORD_HEADER_BYTES);
+      while (buffer.byteLength - offset >= VIDEO_RECORD_HEADER_BYTES) {
+        const view = new DataView(buffer.buffer, buffer.byteOffset + offset, VIDEO_RECORD_HEADER_BYTES);
         const magic = view.getUint32(0, false);
-        if (magic !== IOS_VIDEO_RECORD_MAGIC) {
-          throw new IosSimVideoProtocolError("The video stream is not framed as expected.");
+        if (magic !== VIDEO_RECORD_MAGIC) {
+          throw new VideoRecordProtocolError("The video stream is not framed as expected.");
         }
         const type = view.getUint8(4);
         const flags = view.getUint8(5);
         const length = view.getUint32(8, false);
         if (length > MAX_RECORD_BYTES) {
-          throw new IosSimVideoProtocolError(`The video stream declared a ${length} byte record.`);
+          throw new VideoRecordProtocolError(`The video stream declared a ${length} byte record.`);
         }
-        const end = offset + IOS_VIDEO_RECORD_HEADER_BYTES + length;
+        const end = offset + VIDEO_RECORD_HEADER_BYTES + length;
         if (buffer.byteLength < end) break;
-        const payload = buffer.subarray(offset + IOS_VIDEO_RECORD_HEADER_BYTES, end);
-        if (type === IOS_VIDEO_RECORD_TYPE_CONFIG) {
+        const payload = buffer.subarray(offset + VIDEO_RECORD_HEADER_BYTES, end);
+        if (type === VIDEO_RECORD_TYPE_CONFIG) {
           const text = new TextDecoder().decode(payload);
           let parsed: { codec?: unknown; width?: unknown; height?: unknown; annexB?: unknown };
           try {
             parsed = JSON.parse(text) as typeof parsed;
           } catch {
-            throw new IosSimVideoProtocolError("The video stream sent an unreadable configuration.");
+            throw new VideoRecordProtocolError("The video stream sent an unreadable configuration.");
           }
           if (typeof parsed.codec !== "string" || !parsed.codec) {
-            throw new IosSimVideoProtocolError("The video stream sent no codec.");
+            throw new VideoRecordProtocolError("The video stream sent no codec.");
           }
           records.push({
             kind: "config",
@@ -106,10 +107,10 @@ export function createIosSimVideoRecordParser(): {
             height: typeof parsed.height === "number" ? parsed.height : null,
             annexB: parsed.annexB !== false,
           });
-        } else if (type === IOS_VIDEO_RECORD_TYPE_ACCESS_UNIT) {
+        } else if (type === VIDEO_RECORD_TYPE_ACCESS_UNIT) {
           records.push({
             kind: "access-unit",
-            keyframe: (flags & IOS_VIDEO_RECORD_FLAG_KEYFRAME) !== 0,
+            keyframe: (flags & VIDEO_RECORD_FLAG_KEYFRAME) !== 0,
             // Copy: the buffer below is re-sliced, and a decoder keeps the view.
             bytes: payload.slice(),
           });

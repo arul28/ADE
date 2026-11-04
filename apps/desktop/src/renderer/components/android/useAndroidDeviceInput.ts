@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, type MutableRefObject } from "react";
 import type { OpenProjectBinding } from "../../../shared/types";
 import type { AndroidHardwareKey, AndroidTouchEvent } from "../../../shared/types/androidEmulator";
-import type { AppleDeviceInput } from "../apple/AppleDeviceFlatView";
+import type { DeviceInput } from "../device/DeviceFlatView";
 import { androidKeyText } from "./androidDeviceState";
 
 /**
@@ -30,7 +30,7 @@ const WHEEL_POINTER_ID = 1;
 
 export type AndroidDeviceInputSender = {
   /** Wire to the flat view's `onDeviceInput` (its points are device pixels here). */
-  send: (input: AppleDeviceInput) => void;
+  send: (input: DeviceInput) => void;
   scroll: (delta: { x: number; y: number; deltaX: number; deltaY: number }) => void;
   /** Wire to the focused screen's `onDeviceKey`. True when the key was used. */
   key: (event: { key: string; metaKey: boolean; ctrlKey: boolean; altKey: boolean }) => boolean;
@@ -102,7 +102,7 @@ export function useAndroidDeviceInput({
     flush();
   }, [flush]);
 
-  const send = useCallback((input: AppleDeviceInput) => {
+  const send = useCallback((input: DeviceInput) => {
     if (!enabledRef.current) return;
     const action = input.phase === "begin" ? "down" : input.phase === "end" ? "up" : "move";
     queue({ action, x: Math.round(input.x), y: Math.round(input.y), pointerId: 0 });

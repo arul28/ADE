@@ -419,7 +419,7 @@ export const APPLE_ORIENTATION_CHOICES = [
 /**
  * How far to turn the control's own glyph so it reads as the device's pose.
  *
- * The same sign convention as the picture (`appleScreenRotation`): positive is
+ * The same sign convention as the picture (`screenRotationFor`): positive is
  * clockwise, so a device in `landscape-left` shows an icon turned the way the
  * device itself is turned.
  */

@@ -1,15 +1,16 @@
 import { createH264FrameGate } from "./h264FrameGate";
 import {
-  IosSimVideoProtocolError,
-  createIosSimVideoRecordParser,
-  type IosSimVideoConfigRecord,
-  type IosSimVideoRecord,
-} from "./iosSimVideoRecords";
+  VideoRecordProtocolError,
+  createVideoRecordParser,
+  type VideoConfigRecord,
+  type ParsedVideoRecord,
+} from "./videoRecordParser";
 
 /**
- * Plays a host-encoded H.264 stream onto a canvas: the Apple device's, or a
- * lane's macOS display. Framework-free, so the one React view over it
- * (`H264StreamView`) stays thin and every transport gets the same decoder.
+ * Plays a host-encoded H.264 stream onto a canvas: the Apple device's, the
+ * Android emulator's, or a lane's macOS display. Framework-free, so the one
+ * React view over it (`H264StreamView`) stays thin and every transport gets
+ * the same decoder.
  *
  * Window capture cannot cross a machine boundary, because the renderer
  * captures a window that only exists on the host Mac. The host encodes
@@ -30,7 +31,7 @@ import {
 export type H264StreamStatus = "connecting" | "playing" | "error" | "stopped";
 
 export type H264RecordHandlers = {
-  onRecord: (record: IosSimVideoRecord) => void;
+  onRecord: (record: ParsedVideoRecord) => void;
   onError: (message: string) => void;
   onEnd: () => void;
 };
@@ -155,7 +156,7 @@ export type H264StreamPlayer = {
 };
 
 function errorMessage(caught: unknown): string {
-  if (caught instanceof IosSimVideoProtocolError) return caught.message;
+  if (caught instanceof VideoRecordProtocolError) return caught.message;
   return caught instanceof Error ? caught.message : String(caught);
 }
 
@@ -315,7 +316,7 @@ export function createH264StreamPlayer(options: H264StreamPlayerOptions): H264St
   // or a skipped delta, only a keyframe may restart the picture.
   const gate = createH264FrameGate();
   let decoder: VideoDecoderLike | null = null;
-  let lastConfig: IosSimVideoConfigRecord | null = null;
+  let lastConfig: VideoConfigRecord | null = null;
   let timestampUs = 0;
   let lastWidth = 0;
   let lastHeight = 0;
@@ -416,7 +417,7 @@ export function createH264StreamPlayer(options: H264StreamPlayerOptions): H264St
   let connection: AbortController | null = null;
   let unsubscribe: (() => void) | null = null;
 
-  const buildDecoder = (config: IosSimVideoConfigRecord): void => {
+  const buildDecoder = (config: VideoConfigRecord): void => {
     closeDecoder();
     let failed = false;
     const next: VideoDecoderLike = new VideoDecoderCtor({
@@ -461,7 +462,7 @@ export function createH264StreamPlayer(options: H264StreamPlayerOptions): H264St
     }
   };
 
-  const consume = (record: IosSimVideoRecord): void => {
+  const consume = (record: ParsedVideoRecord): void => {
     if (record.kind === "config") {
       lastConfig = record;
       clearKeyframeRedial();
@@ -515,7 +516,7 @@ export function createH264StreamPlayer(options: H264StreamPlayerOptions): H264St
         const chunks = source.kind === "socket"
           ? readSocket(source.url, name, abort.signal)
           : readHttpBody(source.url, source.bearerToken ?? null, name, abort.signal);
-        const parser = createIosSimVideoRecordParser();
+        const parser = createVideoRecordParser();
         for await (const value of chunks) {
           if (!current()) break;
           for (const record of parser.push(value)) {

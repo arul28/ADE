@@ -14,7 +14,7 @@ import {
 } from "../../appleRecording";
 import { PaneTooltip } from "../../../ui/PaneTooltip";
 import { appleRecordingProofArtifactId } from "../../appleDeviceState";
-import { DRAWER_BUTTON, DRAWER_ICON_BUTTON } from "../drawerPrimitives";
+import { DRAWER_BUTTON, DRAWER_ICON_BUTTON } from "../../../ui/drawerPrimitives";
 import type { AppleDrawerContext } from "../drawerContext";
 
 /** How often the open Capture card re-reads the lane's recordings. */

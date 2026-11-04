@@ -493,7 +493,7 @@ public enum DriverOutput: Encodable, Equatable, Sendable {
 /// Reused rather than reinvented: the renderer's reader is the same code for
 /// both surfaces, and two independent copies of a binary contract desynchronise
 /// at runtime instead of failing to compile. The constants are mirrored from
-/// `IOS_VIDEO_RECORD_*` in `apps/desktop/src/shared/types/iosSimulator.ts`.
+/// `VIDEO_RECORD_*` in `apps/desktop/src/shared/types/videoRecords.ts`.
 ///
 /// Layout, big-endian: u32 magic, u8 type, u8 flags, u16 reserved (0), u32
 /// payload length.

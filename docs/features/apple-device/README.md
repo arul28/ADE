@@ -788,7 +788,7 @@ minimized" for that chat.
 | `apps/desktop/src/renderer/components/apple/AppleDevicePicker.tsx`, `applePickerInventory.ts` | The picker and its grouping (this lane's device, free devices, devices another lane holds), the Create control (runtime and model), and the Storage section (total size, Leftover / Old ADE? tags, Clean up). |
 | `apps/desktop/src/renderer/components/apple/useLaneAppleDevices.ts`, `LaneAppleDeviceMarker.tsx` | The Apple mark beside each lane in the Work session list that holds a device; green while booted, muted while claimed but off. |
 | `apps/desktop/src/renderer/components/apple/AppleToolCardMenu.tsx`, `useAppleLaneDeviceCard.ts` | The Work tools picker card's claim state and its corner menu (boot / open / release / delete). |
-| `apps/desktop/src/renderer/components/apple/DangerConfirmMenuItem.tsx` | The shared two-row destructive menu item (a disabled idle row plus a confirmation row) used by the card menu and the device picker. |
+| `apps/desktop/src/renderer/components/ui/DangerConfirmMenuItem.tsx` | The shared two-row destructive menu item (a disabled idle row plus a confirmation row) used by the card menu and the Apple and Android device pickers. |
 | `apps/desktop/src/renderer/components/apple/AppleDeviceMiniPlayer.tsx`, `appleMiniPlayerStore.ts` | The floating device player over the chat. |
 | `apps/desktop/src/renderer/components/apple/AppleRenderHost.tsx`, `AppleRenderHostJob.tsx`, `useAppleRenderRequests.ts` | `ade apple render`: the pane's render and broker handshake, the shared render body, and the per-project host that renders off screen when no pane takes the request. |
 | `apps/ade-cli/src/cli.ts` | `ade apple` typed commands. `ade ios-sim` is the deprecated alias. |

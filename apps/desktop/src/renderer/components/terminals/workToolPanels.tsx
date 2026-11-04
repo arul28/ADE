@@ -44,7 +44,7 @@ import { cn } from "../ui/cn";
 import { isReadOnlyWorkTool, type WorkToolContext } from "./workTools";
 import { WORK_TOOL_CHROME_CHIP, WORK_TOOL_CHROME_ROW, WorkToolEmptyLine } from "./workToolChrome";
 import { WorkToolReadOnlyView } from "./WorkToolReadOnlyView";
-import { isWebCodecsAvailable } from "../chat/h264StreamPlayer";
+import { isWebCodecsAvailable } from "../device/h264StreamPlayer";
 import { macDesktopWebApi } from "../chat/macDesktopWebStream";
 
 /** App Control loads when its tool is first opened; the chat pane shares the chunk. */

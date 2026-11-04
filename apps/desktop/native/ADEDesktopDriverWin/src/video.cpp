@@ -18,7 +18,7 @@ namespace ade {
 
 namespace {
 
-constexpr uint32_t kRecordMagic = 0xade1f00d;  // IOS_VIDEO_RECORD_MAGIC in iosSimulator.ts
+constexpr uint32_t kRecordMagic = 0xade1f00d;  // VIDEO_RECORD_MAGIC in videoRecords.ts
 constexpr size_t kHeaderBytes = 12;
 
 std::string hrText(const char* what, HRESULT hr) {

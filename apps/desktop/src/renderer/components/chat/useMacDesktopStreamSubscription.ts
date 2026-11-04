@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { OpenProjectBinding } from "../../../shared/types";
 import type { MacDesktopWebApi } from "../../webclient/adapter/macDesktop";
-import type { H264StreamSource } from "./h264StreamPlayer";
+import type { H264StreamSource } from "../device/h264StreamPlayer";
 import {
   createMacDesktopStreamSource,
   randomMacDesktopSubscriptionId,

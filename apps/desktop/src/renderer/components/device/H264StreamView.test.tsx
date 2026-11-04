@@ -4,12 +4,12 @@ import { act, cleanup, render, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
-  IOS_VIDEO_RECORD_FLAG_KEYFRAME,
-  IOS_VIDEO_RECORD_HEADER_BYTES,
-  IOS_VIDEO_RECORD_MAGIC,
-  IOS_VIDEO_RECORD_TYPE_ACCESS_UNIT,
-  IOS_VIDEO_RECORD_TYPE_CONFIG,
-} from "../../../shared/types/iosSimulator";
+  VIDEO_RECORD_FLAG_KEYFRAME,
+  VIDEO_RECORD_HEADER_BYTES,
+  VIDEO_RECORD_MAGIC,
+  VIDEO_RECORD_TYPE_ACCESS_UNIT,
+  VIDEO_RECORD_TYPE_CONFIG,
+} from "../../../shared/types/videoRecords";
 import { H264StreamView } from "./H264StreamView";
 import type { H264PushSource, H264RecordHandlers } from "./h264StreamPlayer";
 
@@ -91,23 +91,23 @@ const decoders = () => FakeVideoDecoder.instances;
 
 /** One framed record, written the way the host writes it. */
 function framed(type: number, payload: Uint8Array, keyframe = false): Uint8Array {
-  const record = new Uint8Array(IOS_VIDEO_RECORD_HEADER_BYTES + payload.byteLength);
+  const record = new Uint8Array(VIDEO_RECORD_HEADER_BYTES + payload.byteLength);
   const view = new DataView(record.buffer);
-  view.setUint32(0, IOS_VIDEO_RECORD_MAGIC, false);
+  view.setUint32(0, VIDEO_RECORD_MAGIC, false);
   view.setUint8(4, type);
-  view.setUint8(5, keyframe ? IOS_VIDEO_RECORD_FLAG_KEYFRAME : 0);
+  view.setUint8(5, keyframe ? VIDEO_RECORD_FLAG_KEYFRAME : 0);
   view.setUint32(8, payload.byteLength, false);
-  record.set(payload, IOS_VIDEO_RECORD_HEADER_BYTES);
+  record.set(payload, VIDEO_RECORD_HEADER_BYTES);
   return record;
 }
 
 /** A config record and a keyframe, as the host sends to a reader that attaches. */
 function attachBytes(): Uint8Array {
   const config = framed(
-    IOS_VIDEO_RECORD_TYPE_CONFIG,
+    VIDEO_RECORD_TYPE_CONFIG,
     new TextEncoder().encode(JSON.stringify({ codec: "avc1.640032", width: 1179, height: 2556 })),
   );
-  const keyframe = framed(IOS_VIDEO_RECORD_TYPE_ACCESS_UNIT, new Uint8Array([1, 2, 3]), true);
+  const keyframe = framed(VIDEO_RECORD_TYPE_ACCESS_UNIT, new Uint8Array([1, 2, 3]), true);
   const out = new Uint8Array(config.byteLength + keyframe.byteLength);
   out.set(config, 0);
   out.set(keyframe, config.byteLength);
@@ -282,9 +282,9 @@ describe("H264StreamView over a loopback body", () => {
 
     // A config, then a delta the new decoder cannot use, then nothing: a
     // still screen sends no next keyframe, so the player has to ask again.
-    const config = attachBytes().subarray(0, attachBytes().byteLength - (IOS_VIDEO_RECORD_HEADER_BYTES + 3));
+    const config = attachBytes().subarray(0, attachBytes().byteLength - (VIDEO_RECORD_HEADER_BYTES + 3));
     dials[0]!.write(config);
-    dials[0]!.write(framed(IOS_VIDEO_RECORD_TYPE_ACCESS_UNIT, new Uint8Array([4]), false));
+    dials[0]!.write(framed(VIDEO_RECORD_TYPE_ACCESS_UNIT, new Uint8Array([4]), false));
     await settle();
     expect(decoders()[0]?.decode).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1_000);

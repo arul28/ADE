@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useState, type ReactNode } from "react";
-import { H264StreamView } from "../chat/H264StreamView";
-import { h264SourceForUrl, isWebCodecsAvailable } from "../chat/h264StreamPlayer";
+import { H264StreamView } from "../device/H264StreamView";
+import { h264SourceForUrl, isWebCodecsAvailable } from "../device/h264StreamPlayer";
 import { cn } from "../ui/cn";
 import type { AppleDeviceOrientation } from "../../../shared/types";
 import { APPLE_STREAM_NOT_RUNNING_CODE } from "../../../shared/types/iosSimulator";
@@ -13,11 +13,11 @@ import {
   type AppleDeviceFamily,
 } from "./AppleDevice3DView";
 import {
-  AppleDeviceFlatView,
-  appleScreenMediaRect,
-  type AppleDeviceGeometry,
-  type AppleDeviceInput,
-} from "./AppleDeviceFlatView";
+  DeviceFlatView,
+  screenMediaRect,
+  type DeviceGeometry,
+  type DeviceInput,
+} from "../device/DeviceFlatView";
 
 /**
  * The stage: black, the decoder, and whichever presenter is showing it.
@@ -62,7 +62,7 @@ export type AppleDeviceStageProps = {
   duo?: AppleDeviceDuoProps | undefined;
   /** The 3D view's render methods, for the Render sheet. */
   rendererRef?: { current: AppleDeviceRenderer | null } | undefined;
-  onDeviceInput: (input: AppleDeviceInput) => void;
+  onDeviceInput: (input: DeviceInput) => void;
   onDeviceScroll?: (delta: { x: number; y: number; deltaX: number; deltaY: number }) => void;
   /** A key pressed while the flat screen holds focus. True = forwarded. */
   onDeviceKey?: (event: { key: string; metaKey: boolean; ctrlKey: boolean; altKey: boolean }) => boolean;
@@ -155,7 +155,7 @@ export function AppleDeviceStage({
 }: AppleDeviceStageProps) {
   const [canvas, setCanvas] = useState<HTMLCanvasElement | null>(null);
   const [screenPixelSize, setScreenPixelSize] = useState<{ width: number; height: number } | null>(null);
-  const [geometry, setGeometry] = useState<AppleDeviceGeometry | null>(null);
+  const [geometry, setGeometry] = useState<DeviceGeometry | null>(null);
 
   const handleDimensions = useCallback((size: { width: number; height: number }) => {
     setScreenPixelSize((current) => (
@@ -181,7 +181,7 @@ export function AppleDeviceStage({
   const videoStyle = useMemo(() => {
     if (!flat) return PARKED_CANVAS_STYLE;
     if (!geometry) return { ...PARKED_CANVAS_STYLE, opacity: 0 };
-    const rect = appleScreenMediaRect(geometry, geometry.rotation);
+    const rect = screenMediaRect(geometry, geometry.rotation);
     return {
       position: "absolute" as const,
       left: rect.left,
@@ -217,7 +217,7 @@ export function AppleDeviceStage({
       </div>
 
       {flat ? (
-        <AppleDeviceFlatView
+        <DeviceFlatView
           screenPixelSize={screenPixelSize}
           devicePointSize={devicePointSize}
           orientation={orientation}
@@ -268,7 +268,7 @@ export function AppleDeviceStage({
  * term here: both sides rotated together, and the one scale still holds.
  */
 export function flatDeviceToView(
-  geometry: AppleDeviceGeometry | null,
+  geometry: DeviceGeometry | null,
 ): ((point: { x: number; y: number }) => { x: number; y: number }) | null {
   if (!geometry || geometry.scale <= 0) return null;
   return (point) => ({ x: point.x / geometry.scale, y: point.y / geometry.scale });

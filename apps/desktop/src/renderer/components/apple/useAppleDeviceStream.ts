@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 import type { IosSimulatorStreamStatus, OpenProjectBinding } from "../../../shared/types";
-import type { H264StreamStatus } from "../chat/h264StreamPlayer";
+import type { H264StreamStatus } from "../device/h264StreamPlayer";
 import { workRuntimeScopeKey } from "../../lib/chatMachineRouting";
 import { useAppStore } from "../../state/appStore";
 import {

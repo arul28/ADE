@@ -39,8 +39,8 @@ import {
   VideoRecordFramingError,
 } from "../media/videoRecords";
 import {
-  IOS_VIDEO_RECORD_TYPE_CONFIG,
-} from "../../../shared/types/iosSimulator";
+  VIDEO_RECORD_TYPE_CONFIG,
+} from "../../../shared/types/videoRecords";
 import {
   MAC_DESKTOP_ACTIVE_FPS,
   MAC_DESKTOP_IDLE_FPS,
@@ -387,7 +387,7 @@ export function createMacDesktopStreamServer(deps: MacDesktopStreamServerDeps) {
         }
         const out: Uint8Array[] = [];
         for (const record of records) {
-          if (record.type !== IOS_VIDEO_RECORD_TYPE_CONFIG) {
+          if (record.type !== VIDEO_RECORD_TYPE_CONFIG) {
             out.push(record.raw);
             continue;
           }
@@ -402,7 +402,7 @@ export function createMacDesktopStreamServer(deps: MacDesktopStreamServerDeps) {
           // one on attach and on transition, so only a change is worth sending.
           if (sentConfig === json) continue;
           sentConfig = json;
-          out.push(encodeVideoRecord(IOS_VIDEO_RECORD_TYPE_CONFIG, config.json));
+          out.push(encodeVideoRecord(VIDEO_RECORD_TYPE_CONFIG, config.json));
         }
         return out;
       },

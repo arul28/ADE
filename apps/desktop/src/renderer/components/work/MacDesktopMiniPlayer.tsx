@@ -13,7 +13,7 @@ import { isWorkLivePreviewDisabled } from "../../state/workLiveCardState";
 import { cn } from "../ui/cn";
 import { Banner } from "../ui/notice";
 import { clearMacDesktopFrame, useMacDesktopFrame } from "../chat/macDesktopFrameStore";
-import { H264StreamView } from "../chat/H264StreamView";
+import { H264StreamView } from "../device/H264StreamView";
 import { useMacDesktopLiveView } from "../chat/useMacDesktopLiveView";
 import { MAC_DESKTOP_LIVE_VIEW_CARD_PRIORITY } from "../chat/macDesktopLiveViewLease";
 import { macDesktopErrorText } from "../chat/macDesktopErrorText";

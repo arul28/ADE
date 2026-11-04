@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { OpenProjectBinding } from "../../../shared/types";
-import { isWebCodecsAvailable, type H264StreamStatus } from "./h264StreamPlayer";
+import { isWebCodecsAvailable, type H264StreamStatus } from "../device/h264StreamPlayer";
 import { macDesktopWebApi } from "./macDesktopWebStream";
 import { useMacDesktopStreamSubscription } from "./useMacDesktopStreamSubscription";
 import {

@@ -26,9 +26,9 @@ import {
   MENU_LABEL_CLASS,
   MENU_SEPARATOR_CLASS,
 } from "../ui/paneMenuTokens";
-import { AppleSpinner } from "../apple/AppleSpinner";
-import { DangerConfirmMenuItem } from "../apple/DangerConfirmMenuItem";
-import { DrawerMenu, type DrawerMenuOption } from "../apple/drawer/drawerPrimitives";
+import { Spinner } from "../ui/Spinner";
+import { DangerConfirmMenuItem } from "../ui/DangerConfirmMenuItem";
+import { DrawerMenu, type DrawerMenuOption } from "../ui/drawerPrimitives";
 import {
   androidAvdLabel,
   androidAvdMenuActions,
@@ -353,7 +353,7 @@ function AvdCard({
         <span className="flex min-w-0 flex-1 flex-col gap-0.5">
           <span className="flex min-w-0 items-center gap-2">
             <span className="min-w-0 flex-1 break-words font-sans text-[13px] font-medium leading-5 text-fg">{name}</span>
-            {pending ? <AppleSpinner /> : runningElsewhere ? (
+            {pending ? <Spinner /> : runningElsewhere ? (
               <StateTag tone="muted" tooltip="Another app started this emulator. Stop it there to use it here.">In use</StateTag>
             ) : avd.running ? (
               <StateTag tone="success">Running</StateTag>
@@ -530,7 +530,7 @@ function NewDeviceSection({
       ) : null}
       {creating ? (
         <p className="flex min-w-0 items-center gap-2 px-0.5 font-sans text-[11px] leading-4 text-muted-fg">
-          <AppleSpinner />
+          <Spinner />
           Creating the device…
         </p>
       ) : null}

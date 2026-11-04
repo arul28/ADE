@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type MutableRefObject } from "react";
 import type { OpenProjectBinding } from "../../../shared/types";
-import type { H264StreamStatus } from "../chat/h264StreamPlayer";
+import type { H264StreamStatus } from "../device/h264StreamPlayer";
 import { useAppStore } from "../../state/appStore";
 import {
   acquireAndroidStreamLease,

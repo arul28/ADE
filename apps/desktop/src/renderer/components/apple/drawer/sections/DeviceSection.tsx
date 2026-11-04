@@ -16,7 +16,7 @@ import {
   Subhead,
   SwitchRow,
   type DrawerMenuOption,
-} from "../drawerPrimitives";
+} from "../../../ui/drawerPrimitives";
 import type { AppleDrawerContext } from "../drawerContext";
 
 /**

@@ -2,9 +2,9 @@ import Foundation
 
 /// ADE's existing simulator-video wire format, reproduced byte-for-byte.
 ///
-/// The authority is `src/shared/types/iosSimulator.ts`; this helper is now the
+/// The authority is `src/shared/types/videoRecords.ts`; this helper is now the
 /// only writer, and the reader is
-/// `src/renderer/components/chat/iosSimVideoRecords.ts`. Matching it exactly is
+/// `src/renderer/components/device/videoRecordParser.ts`. Matching it exactly is
 /// the whole point — the renderer's decoder must play this helper's stream with
 /// no change at all, so the sim helper can replace `idb video-stream`
 /// underneath a UI that never learns it happened.

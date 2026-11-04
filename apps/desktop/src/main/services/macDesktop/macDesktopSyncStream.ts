@@ -22,9 +22,9 @@
 import { request as httpRequest } from "node:http";
 
 import {
-  IOS_VIDEO_RECORD_FLAG_KEYFRAME,
-  IOS_VIDEO_RECORD_TYPE_CONFIG,
-} from "../../../shared/types/iosSimulator";
+  VIDEO_RECORD_FLAG_KEYFRAME,
+  VIDEO_RECORD_TYPE_CONFIG,
+} from "../../../shared/types/videoRecords";
 import {
   MAC_DESKTOP_STREAM_SUBSCRIPTION_ID_TOO_LONG_CODE,
   MAC_DESKTOP_STREAM_SUBSCRIPTION_LIMIT_CODE,
@@ -299,13 +299,13 @@ export function createMacDesktopSyncStream(deps: MacDesktopSyncStreamDeps) {
     }
     for (const record of records) {
       if (subscription.ended) return;
-      if (record.type === IOS_VIDEO_RECORD_TYPE_CONFIG) {
+      if (record.type === VIDEO_RECORD_TYPE_CONFIG) {
         // A config always goes: it is small, and it is what lets a client that
         // joined mid-stream configure a decoder at all.
         pushRecord(subscription, "config", false, record.payload);
         continue;
       }
-      const keyframe = (record.flags & IOS_VIDEO_RECORD_FLAG_KEYFRAME) !== 0;
+      const keyframe = (record.flags & VIDEO_RECORD_FLAG_KEYFRAME) !== 0;
       if (subscription.droppingFrames || subscription.sink.pendingBytes() > MAC_DESKTOP_SYNC_STREAM_PENDING_LIMIT_BYTES) {
         if (!keyframe) {
           subscription.droppingFrames = true;

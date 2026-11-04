@@ -369,7 +369,7 @@ function AppleMiniPlayerFrameView({
            * flex column and nothing at all here: every child of the stage is
            * absolutely positioned, so as a plain block inside `absolute
            * inset-0` it laid out 0px tall. The flat view then measured a
-           * zero-height container, `measureAppleScreenBox` answered null, and
+           * zero-height container, `measureScreenBox` answered null, and
            * the stage parked the decoder off-screen — the empty frame A5
            * describes. The stream, the lease and the decoder were all fine;
            * only the box was missing.

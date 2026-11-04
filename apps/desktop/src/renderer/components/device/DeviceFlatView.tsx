@@ -10,7 +10,8 @@ import { cn } from "../ui/cn";
 
 /**
  * The flat presenter: the decoded canvas, centred and `object-contain`, plus
- * the pointer mapping from screen pixels to device points.
+ * the pointer mapping from screen pixels to device points. The iOS simulator
+ * and the Android emulator both draw through it.
  *
  * There is no bezel and no window chrome to compensate for — the frames ARE
  * the device screen — so the mapping is the `object-contain` box and nothing
@@ -19,7 +20,7 @@ import { cn } from "../ui/cn";
  * title bar) came from that compensation being wrong.
  */
 
-export type AppleDeviceGeometry = {
+export type DeviceGeometry = {
   /**
    * Rendered screen box in container-local CSS pixels.
    *
@@ -34,17 +35,17 @@ export type AppleDeviceGeometry = {
   /** Device POINTS per CSS pixel, in the ORIENTED (drawn) space. */
   scale: number;
   /** How far the raw frame is turned to stand the picture upright. */
-  rotation: AppleScreenRotation;
+  rotation: ScreenRotation;
 };
 
-export type AppleDeviceInput = {
+export type DeviceInput = {
   phase: "begin" | "move" | "end";
   /** Device POINTS, origin top-left. */
   x: number;
   y: number;
 };
 
-export type AppleDeviceFlatViewProps = {
+export type DeviceFlatViewProps = {
   /** Decoded frame size in PIXELS. Null before the first frame. */
   screenPixelSize: { width: number; height: number } | null;
   /**
@@ -63,7 +64,7 @@ export type AppleDeviceFlatViewProps = {
   orientation: AppleDeviceOrientation;
   /** False while watching, or while inspect owns the pointer. */
   interactive: boolean;
-  onDeviceInput: (input: AppleDeviceInput) => void;
+  onDeviceInput: (input: DeviceInput) => void;
   /** Wheel over the device is forwarded as a scroll, in device points. */
   onDeviceScroll?: (delta: { x: number; y: number; deltaX: number; deltaY: number }) => void;
   /**
@@ -75,7 +76,7 @@ export type AppleDeviceFlatViewProps = {
    * Publishes the device→view mapping the inspect overlay draws with. Null
    * whenever there is nothing to map against yet.
    */
-  onGeometryChange?: (geometry: AppleDeviceGeometry | null) => void;
+  onGeometryChange?: (geometry: DeviceGeometry | null) => void;
   /**
    * Drawn above the screen box, inside its bounds — the inspect overlay.
    *
@@ -102,7 +103,7 @@ export type AppleDeviceFlatViewProps = {
  * frames in, and nothing on screen. Nullish coalescing cannot see that; this
  * can.
  */
-export function appleScreenContentSize(
+export function screenContentSize(
   pointSize: { width: number; height: number } | null | undefined,
   pixelSize: { width: number; height: number } | null | undefined,
 ): { width: number; height: number } | null {
@@ -125,7 +126,7 @@ export function appleScreenContentSize(
  * Never returns less than 1: a stream whose pixel size is unknown, or already
  * below its point size, keeps the round-3 behaviour rather than shrinking.
  */
-export function appleScreenMaxScale(
+export function screenMaxScale(
   content: { width: number; height: number },
   nativePixelSize: { width: number; height: number } | null | undefined,
   pixelRatio: number,
@@ -138,7 +139,7 @@ export function appleScreenMaxScale(
 /**
  * The `object-contain` box for `content` inside `container`.
  *
- * Grows to fill the pane, capped by `appleScreenMaxScale` so the picture is
+ * Grows to fill the pane, capped by `screenMaxScale` so the picture is
  * never blown up past the resolution the stream actually carries.
  *
  * `clearRight` is a strip on the right the box must stay out of (the floating
@@ -146,7 +147,7 @@ export function appleScreenMaxScale(
  * strip, so a wide pane looks the same; only a box that would run under it is
  * fitted and centred in the width left of it.
  */
-export function measureAppleScreenBox(
+export function measureScreenBox(
   container: { width: number; height: number },
   content: { width: number; height: number },
   options?: {
@@ -160,7 +161,7 @@ export function measureAppleScreenBox(
 ): { left: number; top: number; width: number; height: number } | null {
   if (container.width <= 0 || container.height <= 0) return null;
   if (content.width <= 0 || content.height <= 0) return null;
-  const maxScale = appleScreenMaxScale(content, options?.nativePixelSize, options?.pixelRatio ?? 1);
+  const maxScale = screenMaxScale(content, options?.nativePixelSize, options?.pixelRatio ?? 1);
   const place = (room: number) => {
     const scale = Math.min(room / content.width, container.height / content.height, maxScale);
     const width = content.width * scale;
@@ -178,7 +179,7 @@ export function measureAppleScreenBox(
  * Degrees the RAW frame is turned by to stand the picture upright. CSS's
  * sign convention: positive is clockwise.
  */
-export type AppleScreenRotation = 0 | 90 | 180 | -90;
+export type ScreenRotation = 0 | 90 | 180 | -90;
 
 /**
  * How far to turn the frame for a device in `orientation`.
@@ -192,10 +193,10 @@ export type AppleScreenRotation = 0 | 90 | 180 | -90;
  * has rotated for us, and turning it again would put the picture back on its
  * side. This is the `screen.width > screen.height` guard in the port.
  */
-export function appleScreenRotation(
+export function screenRotationFor(
   orientation: AppleDeviceOrientation,
   framePixelSize?: { width: number; height: number } | null,
-): AppleScreenRotation {
+): ScreenRotation {
   if (framePixelSize && framePixelSize.width > 0 && framePixelSize.width > framePixelSize.height) {
     return 0;
   }
@@ -216,7 +217,7 @@ export function appleScreenRotation(
 }
 
 /** A quarter turn, which is what makes the drawn box a different shape. */
-export function appleRotationIsSideways(rotation: AppleScreenRotation): boolean {
+export function rotationIsSideways(rotation: ScreenRotation): boolean {
   return rotation === 90 || rotation === -90;
 }
 
@@ -225,11 +226,11 @@ export function appleRotationIsSideways(rotation: AppleScreenRotation): boolean 
  * otherwise. Used for both the point size (which sets the box's shape) and the
  * pixel size (which sets the ceiling on how far it may grow).
  */
-export function appleRotatedSize<T extends { width: number; height: number }>(
+export function rotatedSize<T extends { width: number; height: number }>(
   size: T,
-  rotation: AppleScreenRotation,
+  rotation: ScreenRotation,
 ): { width: number; height: number } {
-  return appleRotationIsSideways(rotation)
+  return rotationIsSideways(rotation)
     ? { width: size.height, height: size.width }
     : { width: size.width, height: size.height };
 }
@@ -243,11 +244,11 @@ export function appleRotatedSize<T extends { width: number; height: number }>(
  * frame into a landscape box instead — which is what "just set the width" does
  * — squashes the picture, and rotating without transposing crops it.
  */
-export function appleScreenMediaRect(
+export function screenMediaRect(
   box: { left: number; top: number; width: number; height: number },
-  rotation: AppleScreenRotation,
+  rotation: ScreenRotation,
 ): { left: number; top: number; width: number; height: number; transform: string | undefined } {
-  if (!appleRotationIsSideways(rotation)) {
+  if (!rotationIsSideways(rotation)) {
     return {
       left: box.left,
       top: box.top,
@@ -274,9 +275,9 @@ export function appleScreenMediaRect(
  * interface orientation itself, so the device point a tap carries is a point
  * on the framebuffer, not on the picture the user is looking at.
  */
-export function appleViewToFrameFraction(
+export function viewToFrameFraction(
   point: { x: number; y: number },
-  rotation: AppleScreenRotation,
+  rotation: ScreenRotation,
 ): { x: number; y: number } {
   switch (rotation) {
     case 90:
@@ -294,7 +295,7 @@ export function appleViewToFrameFraction(
   }
 }
 
-export function AppleDeviceFlatView({
+export function DeviceFlatView({
   screenPixelSize,
   devicePointSize,
   orientation,
@@ -307,7 +308,7 @@ export function AppleDeviceFlatView({
   ariaLabel = "iOS Simulator screen",
   railInset = 0,
   className,
-}: AppleDeviceFlatViewProps) {
+}: DeviceFlatViewProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [containerSize, setContainerSize] = useState({ width: 0, height: 0 });
   const draggingRef = useRef(false);
@@ -337,7 +338,7 @@ export function AppleDeviceFlatView({
    * per CSS pixel — falls out of the box directly.
    */
   const frameSize = useMemo(
-    () => appleScreenContentSize(devicePointSize, screenPixelSize),
+    () => screenContentSize(devicePointSize, screenPixelSize),
     [devicePointSize, screenPixelSize],
   );
 
@@ -351,21 +352,21 @@ export function AppleDeviceFlatView({
    * ceiling is transposed with it so the fit rule keeps comparing a long edge
    * to a long edge.
    */
-  const rotation = appleScreenRotation(orientation, screenPixelSize);
+  const rotation = screenRotationFor(orientation, screenPixelSize);
   // Memoized on purpose: these feed `box`, which feeds `geometry`, which the
   // host stores in state. A fresh object per render would make that a loop.
   const contentSize = useMemo(
-    () => (frameSize ? appleRotatedSize(frameSize, rotation) : null),
+    () => (frameSize ? rotatedSize(frameSize, rotation) : null),
     [frameSize, rotation],
   );
   const rotatedPixelSize = useMemo(
-    () => (screenPixelSize ? appleRotatedSize(screenPixelSize, rotation) : null),
+    () => (screenPixelSize ? rotatedSize(screenPixelSize, rotation) : null),
     [rotation, screenPixelSize],
   );
 
   const box = useMemo(() => (
     contentSize
-      ? measureAppleScreenBox(containerSize, contentSize, {
+      ? measureScreenBox(containerSize, contentSize, {
         nativePixelSize: rotatedPixelSize,
         pixelRatio: typeof window === "undefined" ? 1 : window.devicePixelRatio || 1,
         clearRight: railInset,
@@ -373,7 +374,7 @@ export function AppleDeviceFlatView({
       : null
   ), [containerSize, contentSize, railInset, rotatedPixelSize]);
 
-  const geometry = useMemo<AppleDeviceGeometry | null>(() => {
+  const geometry = useMemo<DeviceGeometry | null>(() => {
     if (!box || !contentSize || box.width <= 0) return null;
     return { ...box, scale: contentSize.width / box.width, rotation };
   }, [box, contentSize, rotation]);
@@ -412,7 +413,7 @@ export function AppleDeviceFlatView({
     // §V1: back out the rotation before the fraction becomes a device point.
     // The fraction above is of the picture on screen; the device answers in
     // its own framebuffer, which the picture is a turned copy of.
-    const onFrame = appleViewToFrameFraction({ x: clampedX, y: clampedY }, geometry.rotation);
+    const onFrame = viewToFrameFraction({ x: clampedX, y: clampedY }, geometry.rotation);
     return {
       x: onFrame.x * frameSize.width,
       y: onFrame.y * frameSize.height,

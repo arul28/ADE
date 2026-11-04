@@ -16,7 +16,7 @@ import {
   Subhead,
   SubmitRow,
   SwitchRow,
-} from "../drawerPrimitives";
+} from "../../../ui/drawerPrimitives";
 import type { AppleDrawerContext } from "../drawerContext";
 
 /**

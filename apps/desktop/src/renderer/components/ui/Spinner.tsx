@@ -1,5 +1,5 @@
 /** The Apple panel's small inline spinner (a pending start, an install, a removal). */
-export function AppleSpinner() {
+export function Spinner() {
   return (
     <span
       aria-hidden="true"

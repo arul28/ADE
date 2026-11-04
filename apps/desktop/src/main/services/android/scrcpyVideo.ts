@@ -21,15 +21,15 @@
  *
  * Both halves here are pure: no sockets, no timers. The demuxer turns bytes
  * into packets; the record builder turns packets into the records the
- * renderer's reader (`iosSimVideoRecords.ts`) and the relay already play.
+ * renderer's reader (`videoRecordParser.ts`) and the relay already play.
  */
 
 import { encodeVideoRecord, MAX_VIDEO_RECORD_BYTES } from "../media/videoRecords";
 import { createH264AnnexBParser } from "../media/h264AnnexB";
 import {
-  IOS_VIDEO_RECORD_TYPE_ACCESS_UNIT,
-  IOS_VIDEO_RECORD_TYPE_CONFIG,
-} from "../../../shared/types/iosSimulator";
+  VIDEO_RECORD_TYPE_ACCESS_UNIT,
+  VIDEO_RECORD_TYPE_CONFIG,
+} from "../../../shared/types/videoRecords";
 
 /** `"h264"` in ASCII: the only codec ADE asks the server for. */
 export const SCRCPY_CODEC_ID_H264 = 0x68323634;
@@ -232,7 +232,7 @@ export function createScrcpyRecordBuilder(): {
     }
     current = next;
     const payload = Buffer.from(JSON.stringify({ ...next, annexB: true }));
-    return [{ kind: "config", record: encodeVideoRecord(IOS_VIDEO_RECORD_TYPE_CONFIG, payload), ...next }];
+    return [{ kind: "config", record: encodeVideoRecord(VIDEO_RECORD_TYPE_CONFIG, payload), ...next }];
   };
 
   return {
@@ -251,7 +251,7 @@ export function createScrcpyRecordBuilder(): {
       }
       return [{
         kind: "access-unit",
-        record: encodeVideoRecord(IOS_VIDEO_RECORD_TYPE_ACCESS_UNIT, payload, { keyframe }),
+        record: encodeVideoRecord(VIDEO_RECORD_TYPE_ACCESS_UNIT, payload, { keyframe }),
         keyframe,
       }];
     },
