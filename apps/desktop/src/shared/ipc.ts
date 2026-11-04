@@ -1103,6 +1103,7 @@ export const IPC = {
   agent37GetTemplateStatus: "ade.agent37.getTemplateStatus",
   agent37RetryTemplate: "ade.agent37.retryTemplate",
   agent37TemplateStatus: "agent37:templateStatus",
+  agent37StatusChanged: "agent37:statusChanged",
 
   /**
    * The account settings store, reached through the brain's `account_settings`

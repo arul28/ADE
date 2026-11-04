@@ -103,6 +103,17 @@ export function Agent37Section() {
   useEffect(() => {
     void load();
   }, [load]);
+  // A key saved or removed elsewhere (a chat's connect card, another window, or
+  // another computer through the account) shows here without reopening the page.
+  useEffect(() => {
+    const off = bridge?.onStatusChanged?.(() => { void load(); });
+    const onFocus = () => { void load(); };
+    window.addEventListener("focus", onFocus);
+    return () => {
+      off?.();
+      window.removeEventListener("focus", onFocus);
+    };
+  }, [bridge, load]);
 
   const connect = async () => {
     if (!bridge || busy) return;

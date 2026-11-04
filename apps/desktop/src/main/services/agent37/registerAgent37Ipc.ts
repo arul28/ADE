@@ -187,6 +187,18 @@ export function openAgent37ApprovalWindow(
  * ADE account, never on a lane, chat or another machine. The new box's own
  * actions afterwards go through the machine list like any other computer.
  */
+/** Every open window, skipping one that is closing right now (the next send reaches the rest). */
+function sendToAllWindows(channel: string, payload?: unknown): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (win.isDestroyed() || win.webContents.isDestroyed()) continue;
+    try {
+      win.webContents.send(channel, payload);
+    } catch {
+      // Closing mid-send.
+    }
+  }
+}
+
 export function registerAgent37Ipc(args: {
   vaultBridge: Parameters<typeof agent37VaultFromBridge>[0];
   listAccountMachines: () => Promise<AdeAccountMachinesResult>;
@@ -229,16 +241,7 @@ export function registerAgent37Ipc(args: {
     readContext: readAgent37TemplateContext,
     records: templateBuildRecords(args.vaultBridge, credentials, getMachineStore, logger),
     machineLabel: os.hostname(),
-    onStatus: (status) => {
-      for (const win of BrowserWindow.getAllWindows()) {
-        if (win.isDestroyed() || win.webContents.isDestroyed()) continue;
-        try {
-          win.webContents.send(IPC.agent37TemplateStatus, status);
-        } catch {
-          // A window closing right now; the next status reaches the rest.
-        }
-      }
-    },
+    onStatus: (status) => sendToAllWindows(IPC.agent37TemplateStatus, status),
     logger,
   });
 
@@ -273,6 +276,7 @@ export function registerAgent37Ipc(args: {
     // A new key may be a new workspace: forget what the old one said, then check.
     builder.reset();
     void builder.ensure();
+    sendToAllWindows(IPC.agent37StatusChanged);
     return status;
   });
 
@@ -287,6 +291,7 @@ export function registerAgent37Ipc(args: {
       throw error;
     }
     builder.reset();
+    sendToAllWindows(IPC.agent37StatusChanged);
     return status;
   });
 

@@ -4662,6 +4662,7 @@ declare global {
         /** ADE's template in the Agent37 workspace; asking also starts a check when none ran yet. */
         getTemplateStatus: () => Promise<Agent37TemplateStatus | null>;
         retryTemplate: () => Promise<Agent37TemplateStatus | null>;
+        onStatusChanged?: (cb: () => void) => () => void;
         onTemplateStatus: (cb: (status: Agent37TemplateStatus) => void) => () => void;
       };
       /**

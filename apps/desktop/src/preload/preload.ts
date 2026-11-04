@@ -12874,6 +12874,12 @@ const adeBridge = {
       ipcRenderer.invoke(IPC.agent37CancelCreate, { requestId }),
     getTemplateStatus: (): Promise<Agent37TemplateStatus | null> => ipcRenderer.invoke(IPC.agent37GetTemplateStatus),
     retryTemplate: (): Promise<Agent37TemplateStatus | null> => ipcRenderer.invoke(IPC.agent37RetryTemplate),
+    /** The key was saved or removed in this app; read the status again. */
+    onStatusChanged: (cb: () => void): (() => void) => {
+      const listener = () => cb();
+      ipcRenderer.on(IPC.agent37StatusChanged, listener);
+      return () => ipcRenderer.removeListener(IPC.agent37StatusChanged, listener);
+    },
     onTemplateStatus: (cb: (status: Agent37TemplateStatus) => void): (() => void) => {
       const listener = (_event: Electron.IpcRendererEvent, status: Agent37TemplateStatus) => cb(status);
       ipcRenderer.on(IPC.agent37TemplateStatus, listener);
