@@ -26,7 +26,7 @@ import type { PinnedToolState } from "../../../../../ade-cli/src/services/tools/
 import { loadQwenUserSettings } from "./qwenUserSettings";
 import { COPILOT_TOKEN_ENV_KEYS, copilotConfigHome, devinCredentialFiles, factoryConfigHome, ghHostsFiles, grokConfigHome } from "../shared/providerConfigHomes";
 import { resolveKimiCodeLogin } from "../shared/kimiCodeLogin";
-import type { AgentCliLoginProvider } from "../../../shared/types/agentCliLogin";
+import type { AgentCliLoginProvider, AgentCliSavedLogin } from "../../../shared/types/agentCliLogin";
 import {
   reportProviderRuntimeAuthFailure,
   reportProviderRuntimeFailure,
@@ -583,6 +583,12 @@ async function inspectCursorCliAuthentication(pinned: PinnedCliCommand): Promise
  */
 const DROID_SIGN_IN_FILES = ["auth.v2.keyring", "auth.v2.loginkeychain", "auth.v2.file"] as const;
 
+/** Droid's own "has a login" test: any one of its sign-in stores under `home`. */
+async function droidSignInPresent(home: string): Promise<boolean> {
+  const present = await Promise.all(DROID_SIGN_IN_FILES.map((name) => nonEmptyFile(path.join(home, name))));
+  return present.some(Boolean);
+}
+
 async function droidCredentialSeen(): Promise<"key" | "sign_in" | null> {
   if (process.env.FACTORY_API_KEY?.trim()) {
     return "key";
@@ -603,9 +609,7 @@ async function droidCredentialSeen(): Promise<"key" | "sign_in" | null> {
     // No readable settings token; the sign-in file below is the usual case.
   }
 
-  const home = factoryConfigHome();
-  const present = await Promise.all(DROID_SIGN_IN_FILES.map((name) => nonEmptyFile(path.join(home, name))));
-  return present.some(Boolean) ? "sign_in" : null;
+  return (await droidSignInPresent(factoryConfigHome())) ? "sign_in" : null;
 }
 
 async function inspectDroidCliPresence(pinned: PinnedCliCommand, options?: { deep?: boolean }): Promise<{
@@ -1335,6 +1339,12 @@ export async function detectCliAuthStatuses(options?: { force?: boolean; skipAut
         const auth = await inspectAcpCliCredentials(cli);
         return { ...base, authenticated: auth.authenticated, verified: auth.verified };
       }
+      // Droid's sign-in is on disk too: signed in before ADE's copy lands, it
+      // reads "downloading", and its Sign in would only open a normal session.
+      if (!pinned && cli === "droid") {
+        const seen = await droidCredentialSeen();
+        return { ...base, authenticated: seen !== null, verified: seen === "key" };
+      }
       // Every other probe runs ADE's copy, so it waits for that copy.
       if (!pinned) {
         return { ...base, authenticated: false, verified: false };
@@ -1498,19 +1508,6 @@ export function resetLocalProviderDetectionCache(): void {
 // One agent CLI's saved sign-in, for a sign-in ADE just ran
 // ---------------------------------------------------------------------------
 
-export type AgentCliSavedLogin = {
-  /** The login the CLI saves is on disk, read the way detection reads it. */
-  signedIn: boolean;
-  /**
-   * When and how big each file of that login is (or that it is missing). A
-   * sign-in that just finished changes it; the same value means the login on
-   * disk is the one that was there before.
-   */
-  fingerprint: string;
-  /** The account the saved login names, when it names one (Copilot's GitHub login). */
-  account?: string;
-};
-
 async function fileFingerprint(target: string): Promise<string> {
   try {
     const info = await stat(target);
@@ -1563,15 +1560,15 @@ export async function readAgentCliSavedLogin(
     case "copilot": {
       const file = path.join(copilotConfigHome({ env }), "config.json");
       const users = parseCopilotLoggedInUsers(await readFile(file, "utf8").catch(() => ""));
-      const account = users.find(Boolean);
+      // Several logins: which one is current is not recorded here, so none is named.
+      const account = users.length === 1 ? users[0] : undefined;
       return { signedIn: users.length > 0, fingerprint: await fingerprintOf([file]), ...(account ? { account } : {}) };
     }
     case "droid": {
       // Encrypted, in whichever store this machine uses (see droidCredentialSeen).
       const home = factoryConfigHome({ env });
-      const files = DROID_SIGN_IN_FILES.map((name) => path.join(home, name));
-      const present = await Promise.all(files.map(nonEmptyFile));
-      return { signedIn: present.some(Boolean), fingerprint: await fingerprintOf([...files, path.join(home, "auth.v2.key")]) };
+      const files = [...DROID_SIGN_IN_FILES, "auth.v2.key"].map((name) => path.join(home, name));
+      return { signedIn: await droidSignInPresent(home), fingerprint: await fingerprintOf(files) };
     }
     case "kimi": {
       // The token file Kimi reads for this environment, not `config.toml`:

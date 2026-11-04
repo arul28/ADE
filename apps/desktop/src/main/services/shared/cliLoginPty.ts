@@ -88,21 +88,18 @@ export function stopLoginPty(pty: Pick<IPty, "pid" | "kill"> | null, options: { 
 
 /**
  * The CLI's raw output as text: no terminal escapes, a lone carriage return
- * or a cursor move to a new row read as a line break, and every pasted code
- * blanked. Windows' ConPTY sends a CLI's blank lines as a cursor move, so
- * without the break a link runs into the next line's first word.
- * `cursorMovesAsSpace` is for full-screen TUIs that move the cursor forward
- * instead of writing a space, so words they draw apart do not run together.
+ * or a cursor move to a new row read as a line break, a cursor move forward
+ * read as a space, and every pasted code blanked. Windows' ConPTY sends a
+ * CLI's blank lines and runs of spaces as cursor moves, and full-screen TUIs
+ * (Droid) draw their words apart with them, so without these a link runs into
+ * the next word.
  */
-export function cleanLoginOutput(
-  raw: string,
-  submittedCodes: readonly string[],
-  options: { cursorMovesAsSpace?: boolean } = {},
-): string {
-  // Cursor position (row;col H / f) starts a new line.
-  let input = raw.replace(/\u001b\[\d*(?:;\d*)?[Hf]/g, "\n");
-  // Cursor forward stands in for spaces.
-  if (options.cursorMovesAsSpace) input = input.replace(/\u001b\[\d*C/g, " ");
+export function cleanLoginOutput(raw: string, submittedCodes: readonly string[]): string {
+  const input = raw
+    // Cursor position (row;col H / f) starts a new line.
+    .replace(/\u001b\[\d*(?:;\d*)?[Hf]/g, "\n")
+    // Cursor forward stands in for spaces.
+    .replace(/\u001b\[\d*C/g, " ");
   let text = stripAnsi(input).replace(/\r(?!\n)/g, "\n");
   for (const code of submittedCodes) text = text.split(code).join("[code]");
   return text;
@@ -136,4 +133,60 @@ export function findDeviceCode(text: string): string | null {
 export function lastOutputLine(text: string): string | null {
   const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
   return lines.at(-1) ?? null;
+}
+
+/** The part of a sign-in record the output reader and the code paste share. */
+export type LoginOutputRecord = {
+  rawOutput: string;
+  /** Codes pasted into this sign-in, redacted from the output if the CLI echoes them. */
+  submittedCodes: string[];
+  /** Output since the last pasted code; null before one. Only it can show the code prompt again. */
+  rawSinceSubmit: string | null;
+  pty: { write: (data: string) => void } | null;
+  status: { state: string; output: string; url: string | null; deviceCode?: string; awaitingCode: boolean };
+};
+
+/**
+ * Reads one chunk of the CLI's output into the record: the cleaned output,
+ * the sign-in link, the device code, and whether it asks for a pasted code
+ * (`pasteCode`). Returns the whole cleaned text.
+ */
+export function readLoginOutput(
+  record: LoginOutputRecord,
+  data: string,
+  options: { hosts: readonly string[]; deviceCode: boolean; pasteCode: boolean; promptTailLines: number },
+): string {
+  record.rawOutput = `${record.rawOutput}${data}`.slice(-LOGIN_OUTPUT_LIMIT * 2);
+  const text = cleanLoginOutput(record.rawOutput, record.submittedCodes);
+  record.status.output = text.slice(-LOGIN_OUTPUT_LIMIT);
+  // Read again on every chunk: a link split across two reads is cut off in
+  // the first one, and the next read completes it.
+  record.status.url = findSignInUrl(text, options.hosts) ?? record.status.url;
+  if (options.deviceCode) {
+    const deviceCode = findDeviceCode(text);
+    if (deviceCode) record.status.deviceCode = deviceCode;
+  }
+  if (record.rawSinceSubmit !== null) record.rawSinceSubmit = `${record.rawSinceSubmit}${data}`.slice(-LOGIN_OUTPUT_LIMIT);
+  if (options.pasteCode) {
+    // The prompt can be followed by the CLI's own "Signed in", so only the
+    // latest lines decide whether it is still waiting. After a paste, the
+    // prompt it answered is still there; only a new one counts.
+    const promptText = record.rawSinceSubmit === null ? text : cleanLoginOutput(record.rawSinceSubmit, record.submittedCodes);
+    record.status.awaitingCode = CODE_PROMPT_PATTERN.test(promptText.split("\n").slice(-options.promptTailLines).join("\n"));
+  }
+  return text;
+}
+
+/** Types a code pasted from the browser into the CLI, or throws why it cannot. */
+export function writeLoginCode(record: LoginOutputRecord, code: unknown): void {
+  const trimmed = typeof code === "string" ? code.trim() : "";
+  if (!trimmed) throw new Error("Paste the code from the browser first.");
+  if (!record.pty || record.status.state !== "running") {
+    throw new Error("This sign-in is not waiting for a code any more.");
+  }
+  // A paste as short as "y" would blank every match in the output.
+  if (trimmed.length >= 4) record.submittedCodes.push(trimmed);
+  record.rawSinceSubmit = "";
+  record.pty.write(`${trimmed}\r`);
+  record.status.awaitingCode = false;
 }

@@ -4,9 +4,9 @@
  * neighbours; the strip under the rail wears the faced agent's banner, as its
  * Settings page does, with its name, where it stands, and its sign-in button.
  *
- * A prototype of the skate-deck-rail idea (21st.dev): the hanging, swinging
- * and facing come from it; the decks became the logos ADE already stands on
- * each provider page (`providerBrand`, the same stacked-in-depth marks).
+ * After the skate-deck-rail component on 21st.dev: the hanging, swinging and
+ * facing come from it; the decks became the logos ADE already stands on each
+ * provider page (`providerBrand`, the same stacked-in-depth marks).
  *
  * The rail reads the same status and signs in through the same flows the
  * tiles did: Claude Code and Codex through the account sheet, Cursor through
@@ -18,7 +18,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent, ReactNode } from "react";
 import { CircleNotch, SignIn } from "@phosphor-icons/react";
-import { isAgentCliLoginProvider, type AgentCliLoginProvider, type AntigravitySignInState } from "../../../shared/types";
+import { isAgentCliLoginProvider, isAntigravitySignInRunning, type AgentCliLoginProvider, type AntigravitySignInState } from "../../../shared/types";
 import { useAgentCliSignInSheet } from "../settings/providers/AgentCliSignInSheet";
 import { ProviderLogo } from "../shared/ProviderLogos";
 import { useAccountSignInSheet } from "../settings/providers/accounts/AddProviderAccountSheet";
@@ -113,28 +113,25 @@ export function FirstRunAgentRail({
     const unit = Math.min(140, usable / Math.max(1, shares));
     const big = Math.round(clamp(unit * 0.78, 36, 80));
     const centres: number[] = [];
-    const slots: number[] = [];
     const cords: number[] = [];
     let cursor = EDGE + Math.max(0, (usable - unit * shares) / 2);
     tiles.forEach((_, index) => {
       if (index === primary.length && divider) cursor += divider;
-      const slot = unit;
-      centres.push(cursor + slot / 2);
-      slots.push(slot);
+      centres.push(cursor + unit / 2);
       cords.push(CORDS[index % CORDS.length] ?? 34);
-      cursor += slot;
+      cursor += unit;
     });
     const lastPrimary = primary.length - 1;
-    const dividerX = divider ? (centres[lastPrimary] ?? 0) + (slots[lastPrimary] ?? 0) / 2 + divider / 2 : null;
+    const dividerX = divider ? (centres[lastPrimary] ?? 0) + unit / 2 + divider / 2 : null;
     const deepest = Math.max(0, ...cords.map((cord) => cord + big));
-    return { big, centres, slots, cords, dividerX, band: RAIL_TOP + deepest + 12, height: RAIL_TOP + deepest + 34 };
+    return { big, slot: unit, centres, cords, dividerX, band: RAIL_TOP + deepest + 12, height: RAIL_TOP + deepest + 34 };
   }, [later.length, primary.length, tiles, width]);
 
   // A longer cord (or a bigger charm) is a longer pendulum: lower stiffness, a slower swing.
   useEffect(() => {
     sim.current.stiff = layout.cords.map((cord, index) =>
       SWING_STIFFNESS / (cord + layout.big * 0.6));
-  }, [layout, primary.length]);
+  }, [layout]);
 
   const paint = useCallback((index: number) => {
     const swing = swings.current[index];
@@ -259,7 +256,7 @@ export function FirstRunAgentRail({
     let distance = Infinity;
     layout.centres.forEach((centre, index) => {
       const d = Math.abs(x - centre);
-      if (d <= (layout.slots[index] ?? 0) / 2 + 2 && d < distance) {
+      if (d <= layout.slot / 2 + 2 && d < distance) {
         best = index;
         distance = d;
       }
@@ -374,7 +371,7 @@ export function FirstRunAgentRail({
         {width
           ? tiles.map((tile, index) => {
             const isPrimary = index < primary.length;
-            const slot = layout.slots[index] ?? 0;
+            const slot = layout.slot;
             return (
               <RailItem
                 key={tile.agent.id}
@@ -520,10 +517,6 @@ function CliRailItem(props: RailItemProps & { provider: AgentCliLoginProvider })
   );
 }
 
-function antigravityRunning(state: AntigravitySignInState | null): boolean {
-  return state?.phase === "starting" || state?.phase === "waiting" || state?.phase === "verifying";
-}
-
 /**
  * Antigravity: the agent's own Google sign-in (its ACP `authenticate`), the
  * same `ai.antigravitySignIn*` actions Settings runs, on this computer.
@@ -537,7 +530,7 @@ function AntigravityRailItem(props: RailItemProps) {
   const opened = useRef<string | null>(null);
   const finished = useRef<string | null>(null);
   const supported = typeof window.ade?.ai?.antigravitySignInStart === "function";
-  const running = antigravityRunning(state);
+  const running = isAntigravitySignInRunning(state);
 
   const apply = useCallback((next: AntigravitySignInState | null) => {
     if (!next) return;

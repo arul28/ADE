@@ -26,18 +26,17 @@ import {
   type AgentCliLoginProvider,
   type AgentCliLoginStartArgs,
   type AgentCliLoginStatus,
+  type AgentCliSavedLogin,
   type KimiLoginRegion,
 } from "../../../shared/types/agentCliLogin";
 import { isProviderLoginLive } from "../../../shared/types/providerInstances";
+import { captureError } from "../../../shared/sentry/capture";
 import {
-  CODE_PROMPT_PATTERN,
   LOGIN_FINISHED_RETENTION_MS,
-  LOGIN_OUTPUT_LIMIT,
   LOGIN_TIMEOUT_MS,
-  cleanLoginOutput,
-  findDeviceCode,
-  findSignInUrl,
   lastOutputLine,
+  readLoginOutput,
+  writeLoginCode,
 } from "../shared/cliLoginPty";
 
 /** How often the saved login is read while the CLI runs. */
@@ -66,8 +65,6 @@ export type AgentCliLoginCliState =
   | { kind: "downloading"; line: string; done: Promise<AgentCliLoginCli> }
   | { kind: "blocked"; message: string };
 
-export type AgentCliSavedLoginRead = { signedIn: boolean; fingerprint: string; account?: string };
-
 export type AgentCliLoginRunnerDeps = {
   /** Where ADE's copy of the provider's CLI stands on this machine. Never a CLI from the PATH. */
   resolveCli: (provider: AgentCliLoginProvider) => AgentCliLoginCliState;
@@ -77,7 +74,7 @@ export type AgentCliLoginRunnerDeps = {
   /** Stops the CLI; `sync` on process exit. */
   stopPty: (pty: AgentCliLoginPty, options: { sync?: boolean }) => void;
   /** The provider's saved login on disk, read with the CLI's environment. */
-  readSavedLogin: (provider: AgentCliLoginProvider, env: NodeJS.ProcessEnv) => Promise<AgentCliSavedLoginRead>;
+  readSavedLogin: (provider: AgentCliLoginProvider, env: NodeJS.ProcessEnv) => Promise<AgentCliSavedLogin>;
   /** A sign-in verified: drop whatever caches the provider's signed-in state. */
   onSignedIn?: (provider: AgentCliLoginProvider) => void;
   pollMs?: number;
@@ -100,9 +97,11 @@ type ProviderLoginSpec = {
   opensBrowser: boolean;
   /** A prompt the CLI waits on, answered with `send` once. */
   keypress?: { when: RegExp; send: string };
-  /** A full-screen TUI that positions its words with cursor moves. */
-  tui?: boolean;
-  /** Runs its normal session, not a sign-in, when it is already signed in. */
+  /**
+   * Runs its normal session, not a sign-in, when it is already signed in. A
+   * login already on disk then ends the sign-in as signed in, once ADE's copy
+   * is there, instead of opening that session.
+   */
   refusesWhenSignedIn?: boolean;
   /**
    * Rewrites its login file while it still waits for approval, so a changed
@@ -133,7 +132,7 @@ const SPECS: Readonly<Record<AgentCliLoginProvider, ProviderLoginSpec>> = {
   // Prints the device link and code, then waits on Enter before it opens a
   // browser and polls; Enter is pressed for it.
   muse: {
-    label: "Muse Code",
+    label: "Muse",
     args: () => ["login"],
     hosts: ["meta.com"],
     deviceCode: true,
@@ -165,7 +164,6 @@ const SPECS: Readonly<Record<AgentCliLoginProvider, ProviderLoginSpec>> = {
     pasteCode: false,
     opensBrowser: true,
     keypress: { when: /factory\s*private\s*deployment/i, send: "\r" },
-    tui: true,
     refusesWhenSignedIn: true,
   },
   kimi: {
@@ -184,7 +182,7 @@ type LoginRecord = {
   kimiRegion: KimiLoginRegion;
   env: NodeJS.ProcessEnv;
   /** The saved login when the sign-in started; a verified one must differ. */
-  baseline: AgentCliSavedLoginRead | null;
+  baseline: AgentCliSavedLogin | null;
   pty: AgentCliLoginPty | null;
   rawOutput: string;
   /** Codes pasted into this sign-in, redacted from the output if the CLI echoes them. */
@@ -193,6 +191,8 @@ type LoginRecord = {
   rawSinceSubmit: string | null;
   keypressSent: boolean;
   polling: boolean;
+  /** A failed read of the saved login was reported once; the polls after it stay quiet. */
+  readFailureReported: boolean;
   timers: Set<ReturnType<typeof setTimeout>>;
   poll: ReturnType<typeof setInterval> | null;
   cleanup: ReturnType<typeof setTimeout> | null;
@@ -256,7 +256,7 @@ export function createAgentCliLoginRunner(deps: AgentCliLoginRunnerDeps) {
   }
 
   /** The saved login is there and is not the one that was there at the start. */
-  function isFresh(record: LoginRecord, saved: AgentCliSavedLoginRead): boolean {
+  function isFresh(record: LoginRecord, saved: AgentCliSavedLogin): boolean {
     return saved.signedIn && saved.fingerprint !== record.baseline?.fingerprint;
   }
 
@@ -277,8 +277,12 @@ export function createAgentCliLoginRunner(deps: AgentCliLoginRunnerDeps) {
       const saved = await deps.readSavedLogin(record.status.provider, record.env);
       // The CLI may have exited, or a cancel landed, while this read ran.
       if (record.status.state === "running" && isFresh(record, saved)) succeed(record, saved.account);
-    } catch {
+    } catch (error) {
       // A read that fails says nothing; the next poll or the exit decides.
+      if (!record.readFailureReported) {
+        record.readFailureReported = true;
+        captureError(error, { level: "warning", fingerprint: ["agent-cli-login", "poll-read"], tags: { provider: record.status.provider } });
+      }
     } finally {
       record.polling = false;
     }
@@ -317,27 +321,13 @@ export function createAgentCliLoginRunner(deps: AgentCliLoginRunnerDeps) {
 
   function onData(record: LoginRecord, spec: ProviderLoginSpec, data: string): void {
     if (!isLive(record)) return;
-    record.rawOutput = `${record.rawOutput}${data}`.slice(-LOGIN_OUTPUT_LIMIT * 2);
-    const text = cleanLoginOutput(record.rawOutput, record.submittedCodes, { cursorMovesAsSpace: spec.tui });
-    record.status.output = text.slice(-LOGIN_OUTPUT_LIMIT);
-    // Read again on every chunk: a link split across two reads is cut off in
-    // the first one, and the next read completes it.
-    record.status.url = findSignInUrl(text, spec.hosts) ?? record.status.url;
-    if (spec.deviceCode) {
-      const deviceCode = findDeviceCode(text);
-      if (deviceCode) record.status.deviceCode = deviceCode;
-    }
+    const text = readLoginOutput(record, data, {
+      hosts: spec.hosts,
+      deviceCode: spec.deviceCode,
+      pasteCode: spec.pasteCode,
+      promptTailLines: PROMPT_TAIL_LINES,
+    });
     const tail = text.split("\n").slice(-PROMPT_TAIL_LINES).join("\n");
-    // The prompt can be followed by the CLI's own "Signed in", so only the
-    // latest lines decide whether it is still waiting.
-    if (record.rawSinceSubmit !== null) record.rawSinceSubmit = `${record.rawSinceSubmit}${data}`.slice(-LOGIN_OUTPUT_LIMIT);
-    if (spec.pasteCode) {
-      // After a paste, the prompt it answered is still on screen; only a new one counts.
-      const promptTail = record.rawSinceSubmit === null
-        ? tail
-        : cleanLoginOutput(record.rawSinceSubmit, record.submittedCodes).split("\n").slice(-PROMPT_TAIL_LINES).join("\n");
-      record.status.awaitingCode = CODE_PROMPT_PATTERN.test(promptTail);
-    }
     if (spec.keypress && !record.keypressSent && spec.keypress.when.test(tail)) {
       record.keypressSent = true;
       const pty = record.pty;
@@ -346,6 +336,16 @@ export function createAgentCliLoginRunner(deps: AgentCliLoginRunnerDeps) {
         if (isLive(record) && record.pty === pty) pty?.write(send);
       });
     }
+  }
+
+  /** ADE's copy is here: run the sign-in, or, for a CLI that would open its session instead, end it signed in. */
+  function launch(record: LoginRecord, cli: AgentCliLoginCli): void {
+    const spec = SPECS[record.status.provider];
+    if (spec.refusesWhenSignedIn && record.baseline?.signedIn) {
+      succeed(record, record.baseline.account);
+      return;
+    }
+    spawnLogin(record, cli);
   }
 
   function spawnLogin(record: LoginRecord, cli: AgentCliLoginCli): void {
@@ -392,10 +392,11 @@ export function createAgentCliLoginRunner(deps: AgentCliLoginRunnerDeps) {
     const cliState = deps.resolveCli(provider);
     if (cliState.kind === "blocked") throw new Error(cliState.message);
     const env = deps.baseEnv();
-    const baseline = await deps.readSavedLogin(provider, env).catch(() => null);
-    if (spec.refusesWhenSignedIn && baseline?.signedIn) {
-      throw new Error(`${spec.label} is already signed in on this machine. To use another account, sign out in ${spec.label} first.`);
-    }
+    const baseline = await deps.readSavedLogin(provider, env).catch((error: unknown) => {
+      // Without a baseline any login counts as new; say so where it can be seen.
+      captureError(error, { level: "warning", fingerprint: ["agent-cli-login", "baseline-read"], tags: { provider } });
+      return null;
+    });
     const record: LoginRecord = {
       status: {
         loginId: randomUUID(),
@@ -417,27 +418,31 @@ export function createAgentCliLoginRunner(deps: AgentCliLoginRunnerDeps) {
       rawSinceSubmit: null,
       keypressSent: false,
       polling: false,
+      readFailureReported: false,
       timers: new Set(),
       poll: null,
       cleanup: null,
     };
     if (cliState.kind === "ready") {
-      spawnLogin(record, cliState.cli);
+      launch(record, cliState.cli);
     } else {
       // This machine has no copy yet: the sign-in reads as running with the
       // download's line, and starts once the copy lands (or fails with why).
       record.status.downloading = cliState.line;
       void cliState.done
         .then((cli) => {
-          if (isLive(record)) spawnLogin(record, cli);
+          if (isLive(record)) launch(record, cli);
         })
         .catch((error: unknown) => {
           if (isLive(record)) finish(record, { state: "failed", message: errorMessage(error) });
         });
     }
-    later(record, timeoutMs, () => {
-      if (isLive(record)) finish(record, { state: "failed", message: "The sign-in timed out after 10 minutes." });
-    });
+    // A login already there may have ended it at once (`launch`).
+    if (isLive(record)) {
+      later(record, timeoutMs, () => {
+        if (isLive(record)) finish(record, { state: "failed", message: "The sign-in timed out after 10 minutes." });
+      });
+    }
     logins.set(record.status.loginId, record);
     return snapshot(record);
   }
@@ -455,16 +460,7 @@ export function createAgentCliLoginRunner(deps: AgentCliLoginRunnerDeps) {
     },
     submitCode(loginId: string, code: string): AgentCliLoginStatus {
       const record = requireLogin(loginId);
-      const trimmed = typeof code === "string" ? code.trim() : "";
-      if (!trimmed) throw new Error("Paste the code from the browser first.");
-      if (!record.pty || record.status.state !== "running") {
-        throw new Error("This sign-in is not waiting for a code any more.");
-      }
-      // A paste as short as "y" would blank every match in the output.
-      if (trimmed.length >= 4) record.submittedCodes.push(trimmed);
-      record.rawSinceSubmit = "";
-      record.pty.write(`${trimmed}\r`);
-      record.status.awaitingCode = false;
+      writeLoginCode(record, code);
       return snapshot(record);
     },
     cancel(loginId: string): AgentCliLoginStatus {

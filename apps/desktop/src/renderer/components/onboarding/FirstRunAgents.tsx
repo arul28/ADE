@@ -11,7 +11,6 @@ import {
   type FirstRunAgentStatus,
 } from "./firstRunAgentModel";
 import "./firstRun.css";
-import "./firstRunAgents.css";
 
 /**
  * First-run step 3, "Connect your agents": every coding agent ADE runs, with

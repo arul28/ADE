@@ -13,11 +13,10 @@
  * runs on the machine it sets up).
  */
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { ArrowSquareOut, Check, CheckCircle, CircleNotch, Copy, SignIn } from "@phosphor-icons/react";
+import { CheckCircle, CircleNotch, SignIn } from "@phosphor-icons/react";
 import { COLORS, MONO_FONT, SANS_FONT, outlineButton } from "../../lanes/laneDesignTokens";
 import { Dialog, type DialogAction } from "../../ui/dialog";
 import { Banner } from "../../ui/notice/Banner";
-import { ProviderLogo } from "../../shared/ProviderLogos";
 import { isImeComposing } from "../../../lib/imeComposition";
 import { isWebClientMode } from "../../../lib/webClientMode";
 import { isUnsupportedAdeActionError } from "../../../../shared/codedError";
@@ -28,13 +27,15 @@ import {
   type AgentCliLoginStatus,
   type KimiLoginRegion,
 } from "../../../../shared/types";
-import { OutputDisclosure } from "./accounts/AddProviderAccountSheet";
+import { OutputDisclosure, SignInProgressCard, linkHost } from "./signInSheetParts";
 import { providerActionMessage } from "./providerErrorMessage";
 import { useSettingsMachineScope } from "../SettingsMachineScope";
 import type { ProvidersViewContext } from "./types";
 
 const SUCCESS_HOLD_MS = 1_600;
 const STATUS_POLL_MS = 1_000;
+/** Status reads that may fail in a row (a relay hiccup) before the sheet gives up on a sign-in still running. */
+const STATUS_READ_RETRIES = 3;
 
 /** The `ProviderLogo` family for each CLI. */
 const LOGO_FAMILY: Record<AgentCliLoginProvider, string> = {
@@ -58,15 +59,6 @@ function startFailureMessage(err: unknown): string {
     return "That machine runs an older ADE that cannot sign in here. Update ADE there, or sign in from its Settings.";
   }
   return providerActionMessage(err, "That sign-in could not be started.");
-}
-
-function linkHost(url: string | null): string | null {
-  if (!url) return null;
-  try {
-    return new URL(url).hostname;
-  } catch {
-    return null;
-  }
 }
 
 /** Whether this host can run the in-app sign-in (an older one has no `cliLogin*`). */
@@ -93,10 +85,11 @@ export function AgentCliSignInSheet({ provider, providerLabel, pin, isThisMachin
   const [error, setError] = useState<string | null>(null);
   const [code, setCode] = useState("");
   const [submitting, setSubmitting] = useState(false);
-  const [copied, setCopied] = useState(false);
   const [showOutput, setShowOutput] = useState(false);
   /** A pasted code went in: the CLI is checking it, so the sheet says so instead of "open your browser". */
   const [codeSent, setCodeSent] = useState(false);
+  /** Status reads failed in a row; a new one is tried until STATUS_READ_RETRIES. */
+  const [failedReads, setFailedReads] = useState(0);
 
   /** The machine the current sign-in runs on, fixed when it starts: its polls, code and cancel go there. */
   const pinRef = useRef(pin);
@@ -171,6 +164,7 @@ export function AgentCliSignInSheet({ provider, providerLabel, pin, isThisMachin
     setCodeSent(false);
     setShowOutput(false);
     setLogin(null);
+    setFailedReads(0);
     loginRef.current = null;
     setPhase("signing");
     try {
@@ -202,15 +196,24 @@ export function AgentCliSignInSheet({ provider, providerLabel, pin, isThisMachin
     const loginId = login.loginId;
     const timer = window.setTimeout(() => {
       void read({ loginId }, pinRef.current)
-        .then(applyLogin)
+        .then((next) => {
+          setFailedReads(0);
+          applyLogin(next);
+        })
         .catch((err) => {
           if (!aliveRef.current) return;
+          // The machine forgot the sign-in: no retry brings it back.
+          const gone = err instanceof Error && /no longer running/i.test(err.message);
+          if (!gone && failedReads + 1 < STATUS_READ_RETRIES) {
+            setFailedReads((count) => count + 1);
+            return;
+          }
           setError(providerActionMessage(err, "Lost track of that sign-in."));
           setPhase("failed");
         });
     }, STATUS_POLL_MS);
     return () => window.clearTimeout(timer);
-  }, [applyLogin, login]);
+  }, [applyLogin, failedReads, login]);
 
   useEffect(() => {
     if (phase !== "success") return;
@@ -238,18 +241,6 @@ export function AgentCliSignInSheet({ provider, providerLabel, pin, isThisMachin
       if (aliveRef.current) setSubmitting(false);
     }
   }, [applyLogin, code]);
-
-  const copyLink = useCallback(() => {
-    const url = loginRef.current?.url;
-    if (!url) return;
-    void navigator.clipboard?.writeText(url).then(() => {
-      if (!aliveRef.current) return;
-      setCopied(true);
-      window.setTimeout(() => {
-        if (aliveRef.current) setCopied(false);
-      }, 1_500);
-    }).catch(() => undefined);
-  }, []);
 
   // After a pasted code the CLI checks it; the link and the field are done with.
   const verifying = login?.state === "verifying" || (codeSent && login?.state === "running" && !login.awaitingCode);
@@ -351,70 +342,13 @@ export function AgentCliSignInSheet({ provider, providerLabel, pin, isThisMachin
 
       {phase === "signing" ? (
         <div style={{ display: "flex", flexDirection: "column", gap: 12, padding: "16px 20px 8px" }}>
-          <div
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              alignItems: "center",
-              gap: 10,
-              padding: "22px 20px 18px",
-              borderRadius: 12,
-              border: `1px solid ${COLORS.borderMuted}`,
-              background: COLORS.recessedBg,
-              textAlign: "center",
-            }}
-          >
-            <span
-              aria-hidden
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                justifyContent: "center",
-                width: 44,
-                height: 44,
-                borderRadius: 12,
-                background: COLORS.cardBg,
-                border: `1px solid ${COLORS.outlineBorder}`,
-              }}
-            >
-              <ProviderLogo family={LOGO_FAMILY[provider]} size={22} />
-            </span>
-            <span style={{ fontSize: 14, fontWeight: 500, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>{headline}</span>
-            <span style={{ maxWidth: 400, fontSize: 12, lineHeight: 1.5, fontFamily: SANS_FONT, color: COLORS.textMuted }}>{detail}</span>
-            {login?.deviceCode && !verifying ? (
-              <span
-                aria-label="One-time sign-in code"
-                style={{
-                  padding: "6px 14px",
-                  fontSize: 18,
-                  fontWeight: 600,
-                  letterSpacing: "0.08em",
-                  fontFamily: MONO_FONT,
-                  color: COLORS.textPrimary,
-                  background: COLORS.recessedBg,
-                  border: `1px solid ${COLORS.outlineBorder}`,
-                  borderRadius: 8,
-                  userSelect: "all",
-                }}
-              >
-                {login.deviceCode}
-              </span>
-            ) : null}
-            {login?.url && !verifying ? (
-              <span style={{ display: "inline-flex", gap: 8, marginTop: 4 }}>
-                <button
-                  type="button"
-                  onClick={() => void window.ade?.app?.openExternal?.(login.url!)}
-                  style={outlineButton({ height: 28, padding: "0 12px", fontSize: 12 })}
-                >
-                  <ArrowSquareOut size={13} /> Open sign-in page
-                </button>
-                <button type="button" onClick={copyLink} style={outlineButton({ height: 28, padding: "0 12px", fontSize: 12 })}>
-                  {copied ? <Check size={13} /> : <Copy size={13} />} {copied ? "Copied" : "Copy link"}
-                </button>
-              </span>
-            ) : null}
-          </div>
+          <SignInProgressCard
+            logoFamily={LOGO_FAMILY[provider]}
+            headline={headline}
+            detail={detail}
+            deviceCode={verifying ? null : login?.deviceCode ?? null}
+            url={verifying ? null : login?.url ?? null}
+          />
 
           {login?.awaitingCode ? (
             <div style={{ display: "flex", gap: 8 }}>

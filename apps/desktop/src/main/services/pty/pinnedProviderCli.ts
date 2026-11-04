@@ -343,3 +343,21 @@ export async function requirePinnedProviderCli(
 export function pinnedCliDownloadingLine(label: string): string {
   return `ADE is downloading ${label} for this machine. It starts here when the download finishes.`;
 }
+
+/** What a sign-in runs on: ADE's copy, or the download's line and the copy once it lands, or why not. */
+export type PinnedLoginCliState =
+  | { kind: "ready"; cli: PinnedProviderCli }
+  /** `done` resolves to the copy, or rejects with why it cannot run here. */
+  | { kind: "downloading"; line: string; done: Promise<PinnedProviderCli> }
+  | { kind: "blocked"; message: string };
+
+/** `pinnedProviderCliState` for a sign-in, which starts on the copy once its download ends. */
+export function pinnedLoginCliState(provider: PinnedCliProvider): PinnedLoginCliState {
+  const state = pinnedProviderCliState(provider);
+  if (state.kind !== "downloading") return state;
+  return {
+    kind: "downloading",
+    line: pinnedCliDownloadingLine(state.label),
+    done: state.done.then(() => requirePinnedProviderCli(provider)),
+  };
+}

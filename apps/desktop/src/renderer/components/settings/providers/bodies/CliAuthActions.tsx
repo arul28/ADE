@@ -84,8 +84,8 @@ function CliAuthActions({ ctx, cli }: { ctx: ProvidersViewContext; cli: "codex" 
     // Copilot can sign in again (switch accounts, renew). Droid cannot: signed
     // in, its CLI opens a normal session instead of a login, so only the host
     // of a sheet still showing its result stays. Codex has accounts.
-    if (cli === "copilot") return <SettingsAgentCliSignIn ctx={ctx} provider="copilot" providerLabel="GitHub Copilot" fallback={null} again />;
-    if (cli === "droid") return <SettingsAgentCliSignIn ctx={ctx} provider="droid" providerLabel="Droid" fallback={null} offered={false} />;
+    if (cli === "copilot") return <SettingsAgentCliSignIn ctx={ctx} provider="copilot" providerLabel={tool.label} fallback={null} again />;
+    if (cli === "droid") return <SettingsAgentCliSignIn ctx={ctx} provider="droid" providerLabel={tool.label} fallback={null} offered={false} />;
     return null;
   }
   if (cli === "codex") return <DefaultAccountSignIn ctx={ctx} provider="codex" providerLabel="Codex" />;
@@ -101,7 +101,7 @@ function CliAuthActions({ ctx, cli }: { ctx: ProvidersViewContext; cli: "codex" 
     <SettingsAgentCliSignIn
       ctx={ctx}
       provider={cli}
-      providerLabel={cli === "copilot" ? "GitHub Copilot" : "Droid"}
+      providerLabel={tool.label}
       fallback={commandToRun}
     />
   );

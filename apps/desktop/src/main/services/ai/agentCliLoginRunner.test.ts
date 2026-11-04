@@ -1,10 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AgentCliLoginProvider } from "../../../shared/types/agentCliLogin";
-import {
-  createAgentCliLoginRunner,
-  type AgentCliLoginPty,
-  type AgentCliSavedLoginRead,
-} from "./agentCliLoginRunner";
+import type { AgentCliLoginProvider, AgentCliSavedLogin } from "../../../shared/types/agentCliLogin";
+import { createAgentCliLoginRunner, type AgentCliLoginPty } from "./agentCliLoginRunner";
 
 /** A stand-in for the CLI's PTY: the test prints its output and ends it. */
 function fakePty() {
@@ -21,11 +17,11 @@ function fakePty() {
 }
 
 /** The provider's login on disk, as the test changes it. */
-function savedLogin(initial: AgentCliSavedLoginRead) {
+function savedLogin(initial: AgentCliSavedLogin) {
   let current = initial;
   return {
     read: async () => current,
-    set: (next: AgentCliSavedLoginRead) => { current = next; },
+    set: (next: AgentCliSavedLogin) => { current = next; },
   };
 }
 

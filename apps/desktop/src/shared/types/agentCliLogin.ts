@@ -32,6 +32,20 @@ export type AgentCliLoginRefArgs = { loginId: string };
 
 export type AgentCliLoginSubmitCodeArgs = { loginId: string; code: string };
 
+/** One CLI's saved login as its machine reads it from disk; ADE never reads the token. */
+export type AgentCliSavedLogin = {
+  /** The login the CLI saves is on disk, read the way detection reads it. */
+  signedIn: boolean;
+  /**
+   * When and how big each file of that login is (or that it is missing). A
+   * sign-in that just finished changes it; the same value means the login on
+   * disk is the one that was there before.
+   */
+  fingerprint: string;
+  /** The account the saved login names, when it names one (Copilot's GitHub login). */
+  account?: string;
+};
+
 export type AgentCliLoginStatus = {
   loginId: string;
   provider: AgentCliLoginProvider;

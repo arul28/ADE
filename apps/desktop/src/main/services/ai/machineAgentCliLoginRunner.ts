@@ -1,10 +1,6 @@
 import { userProcessEnv } from "../shared/hostRuntimeEnv";
 import { spawnLoginPty, stopLoginPty } from "../shared/cliLoginPty";
-import {
-  pinnedCliDownloadingLine,
-  pinnedProviderCliState,
-  requirePinnedProviderCli,
-} from "../pty/pinnedProviderCli";
+import { pinnedLoginCliState } from "../pty/pinnedProviderCli";
 import { invalidateCliAuthStatusCache, readAgentCliSavedLogin } from "./authDetector";
 import { createAgentCliLoginRunner, type AgentCliLoginRunner } from "./agentCliLoginRunner";
 
@@ -18,16 +14,7 @@ let runner: AgentCliLoginRunner | null = null;
 export function getMachineAgentCliLoginRunner(): AgentCliLoginRunner {
   if (runner) return runner;
   runner = createAgentCliLoginRunner({
-    resolveCli: (provider) => {
-      const state = pinnedProviderCliState(provider);
-      if (state.kind === "ready") return state;
-      if (state.kind === "blocked") return { kind: "blocked", message: state.message };
-      return {
-        kind: "downloading",
-        line: pinnedCliDownloadingLine(state.label),
-        done: state.done.then(() => requirePinnedProviderCli(provider)),
-      };
-    },
+    resolveCli: pinnedLoginCliState,
     baseEnv: () => userProcessEnv(),
     spawnPty: spawnLoginPty,
     stopPty: stopLoginPty,

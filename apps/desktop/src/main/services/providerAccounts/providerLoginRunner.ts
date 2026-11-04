@@ -24,23 +24,15 @@ import {
 } from "../../../shared/types/providerInstances";
 import { userProcessEnv } from "../shared/hostRuntimeEnv";
 import {
-  CODE_PROMPT_PATTERN,
   LOGIN_FINISHED_RETENTION_MS,
-  LOGIN_OUTPUT_LIMIT,
   LOGIN_TIMEOUT_MS,
-  cleanLoginOutput,
-  findDeviceCode,
-  findSignInUrl,
   lastOutputLine,
+  readLoginOutput,
   spawnLoginPty,
   stopLoginPty,
+  writeLoginCode,
 } from "../shared/cliLoginPty";
-import {
-  pinnedCliDownloadingLine,
-  pinnedProviderCliState,
-  requirePinnedProviderCli,
-  type PinnedProviderCli,
-} from "../pty/pinnedProviderCli";
+import { pinnedLoginCliState, type PinnedProviderCli } from "../pty/pinnedProviderCli";
 
 /** Hosts a provider sign-in link lives on; any other link is a fallback. */
 const AUTH_HOSTS = ["claude.ai", "anthropic.com", "auth.openai.com", "chatgpt.com", "openai.com"];
@@ -155,23 +147,8 @@ export function createProviderLoginRunner(deps: ProviderLoginRunnerDeps) {
     }
     pty.onData((data) => {
       if (!isLive(record)) return;
-      record.rawOutput = `${record.rawOutput}${data}`.slice(-LOGIN_OUTPUT_LIMIT * 2);
-      const text = cleanLoginOutput(record.rawOutput, record.submittedCodes);
-      record.status.output = text.slice(-LOGIN_OUTPUT_LIMIT);
-      // Read again on every chunk: a link split across two reads is cut off
-      // in the first one, and the next read completes it.
-      record.status.url = findSignInUrl(text, AUTH_HOSTS) ?? record.status.url;
-      if (deviceAuth) {
-        // The last match: the code is the last thing Codex prints before it waits.
-        const deviceCode = findDeviceCode(text);
-        if (deviceCode) record.status.deviceCode = deviceCode;
-      }
-      // The prompt can be followed by the CLI's own "Login successful", so
-      // only the latest few lines decide whether it is still waiting. After a
-      // paste, the prompt it answered is still there; only a new one counts.
-      if (record.rawSinceSubmit !== null) record.rawSinceSubmit = `${record.rawSinceSubmit}${data}`.slice(-LOGIN_OUTPUT_LIMIT);
-      const promptText = record.rawSinceSubmit === null ? text : cleanLoginOutput(record.rawSinceSubmit, record.submittedCodes);
-      record.status.awaitingCode = CODE_PROMPT_PATTERN.test(promptText.split("\n").slice(-4).join("\n"));
+      // A device code is the last thing Codex prints before it waits.
+      readLoginOutput(record, data, { hosts: AUTH_HOSTS, deviceCode: deviceAuth, pasteCode: true, promptTailLines: 4 });
     });
     pty.onExit(({ exitCode }) => {
       void onExit(record, exitCode);
@@ -183,7 +160,7 @@ export function createProviderLoginRunner(deps: ProviderLoginRunnerDeps) {
     if (!instance) throw new Error(`No provider account ${JSON.stringify(id)}.`);
     // Only Codex has a device sign-in; Claude's link already ends in a pasted code.
     const deviceAuth = options.deviceAuth === true && instance.provider === "codex";
-    const pinned = pinnedProviderCliState(instance.provider);
+    const pinned = pinnedLoginCliState(instance.provider);
     if (pinned.kind === "blocked") throw new Error(pinned.message);
     const loginId = randomUUID();
     const record: LoginRecord = {
@@ -209,9 +186,8 @@ export function createProviderLoginRunner(deps: ProviderLoginRunnerDeps) {
     } else {
       // This machine has no copy yet: the sign-in reads as running with the
       // download's line, and starts once the copy lands (or fails with why).
-      record.status.output = pinnedCliDownloadingLine(pinned.label);
+      record.status.output = pinned.line;
       void pinned.done
-        .then(() => requirePinnedProviderCli(instance.provider))
         .then((cli) => {
           if (!isLive(record)) return;
           record.status.output = "";
@@ -243,16 +219,7 @@ export function createProviderLoginRunner(deps: ProviderLoginRunnerDeps) {
     },
     submitCode(loginId: string, code: string): ProviderLoginStatus {
       const record = requireLogin(loginId);
-      const trimmed = typeof code === "string" ? code.trim() : "";
-      if (!trimmed) throw new Error("Paste the code from the browser first.");
-      if (!record.pty || record.status.state !== "running") {
-        throw new Error("This sign-in is not waiting for a code any more.");
-      }
-      // A paste as short as "y" would blank every match in the output.
-      if (trimmed.length >= 4) record.submittedCodes.push(trimmed);
-      record.rawSinceSubmit = "";
-      record.pty.write(`${trimmed}\r`);
-      record.status.awaitingCode = false;
+      writeLoginCode(record, code);
       return snapshot(record);
     },
     cancel(loginId: string): ProviderLoginStatus {
