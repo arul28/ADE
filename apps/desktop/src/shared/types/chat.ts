@@ -3652,6 +3652,21 @@ export type AgentChatTranscriptEntry = {
   phase?: AgentChatTextPhase;
 };
 
+/**
+ * A turn that ended failed, with the error that ended it. A failed turn often
+ * has no assistant text at all, so a transcript read reports these beside its
+ * entries: without them a caller sees only the prompt and cannot tell a
+ * failure from a turn that is still running.
+ */
+export type AgentChatTranscriptTurnFailure = {
+  turnId?: string;
+  status: "failed";
+  /** The turn's last error, or the failed status's own message. */
+  message: string;
+  detail?: string;
+  timestamp: string;
+};
+
 export type AgentChatSubagentSnapshot = {
   taskId: string;
   agentId?: string;

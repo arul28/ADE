@@ -1101,7 +1101,7 @@ describe("brain project actions fallback handler", () => {
     }
   });
 
-  it("answers a sealed account challenge with a readable error instead of invalid_hello", async () => {
+  it("answers a sealed account challenge on a brain with no project: signed when well formed, readable when not", async () => {
     const { projectRoot, cleanup } = createTempProjectRoot();
     const secretsDir = path.join(projectRoot, "secrets");
     fs.mkdirSync(secretsDir, { recursive: true });
@@ -1124,6 +1124,7 @@ describe("brain project actions fallback handler", () => {
       transportOrigin: "direct",
     }));
     let client: WebSocket | null = null;
+    let fresh: WebSocket | null = null;
     try {
       await new Promise<void>((resolve, reject) => {
         server.once("listening", resolve);
@@ -1135,16 +1136,65 @@ describe("brain project actions fallback handler", () => {
         client!.once("open", resolve);
         client!.once("error", reject);
       });
-      // The phone's first frame when it adopts a machine over sealed credentials.
+      // The first frame a desktop or phone sends when it adopts a machine over
+      // sealed credentials. A fresh cloud box has no project yet, and it must
+      // still answer, or no other machine on the account can reach it.
+      const nonce = Buffer.alloc(32, 7);
+      const ephemeral = generateX25519EphemeralKeyPair();
       client.send(encodeSyncEnvelope({
         type: "account_challenge",
         requestId: "adopt-challenge",
-        payload: { v: 1, nonce: "bm9uY2U=", clientEphemeralPublicKey: "a2V5", supportedAeads: ["chacha20-poly1305"] },
+        payload: {
+          v: 1,
+          nonce: nonce.toString("base64"),
+          clientEphemeralPublicKey: ephemeral.publicKeyRaw.toString("base64"),
+        },
       }));
-      const answer = await waitForEnvelope(envelopes, "account_challenge_error", "adopt-challenge");
-      expect((answer.payload as { message?: string }).message).toMatch(/open a project/i);
-      expect(envelopes.some((entry) => entry.type === "hello_error")).toBe(false);
+      const answer = await waitForEnvelope(envelopes, "account_challenge_ok", "adopt-challenge");
+      const challenge = answer.payload as {
+        hostDeviceId: string;
+        ts: number;
+        hostEphemeralPublicKey: string;
+        signature: string;
+        aead?: string;
+      };
+      const signing = createMachineIdentitySigningStore({
+        filePath: path.join(secretsDir, "machine-identity-signing.json"),
+      }).getOrCreate();
+      expect(verifyEd25519(
+        Buffer.from(signing.publicKeyRawBase64, "base64"),
+        buildAdoptChallengeSignatureInput({
+          hostDeviceId: challenge.hostDeviceId,
+          nonce: nonce.toString("base64"),
+          clientEphemeralPublicKey: ephemeral.publicKeyRaw.toString("base64"),
+          hostEphemeralPublicKey: challenge.hostEphemeralPublicKey,
+          ts: challenge.ts,
+          ...(challenge.aead ? { aead: challenge.aead } : {}),
+        }),
+        Buffer.from(challenge.signature, "base64"),
+      )).toBe(true);
+
+      // A malformed one gets a readable refusal, never the generic invalid_hello.
+      // On a fresh connection: this one already holds a challenge, and would
+      // refuse a second before ever reading it.
+      fresh = new WebSocket(`ws://127.0.0.1:${(server.address() as AddressInfo).port}`);
+      const freshEnvelopes = trackClientEnvelopes(fresh).envelopes;
+      await new Promise<void>((resolve, reject) => {
+        fresh!.once("open", resolve);
+        fresh!.once("error", reject);
+      });
+      fresh.send(encodeSyncEnvelope({
+        type: "account_challenge",
+        requestId: "bad-challenge",
+        payload: { v: 1, nonce: "bm9uY2U=", clientEphemeralPublicKey: "a2V5" },
+      }));
+      const refusal = await waitForEnvelope(freshEnvelopes, "account_challenge_error", "bad-challenge");
+      const message = (refusal.payload as { message?: string }).message?.trim() ?? "";
+      expect(message).toBeTruthy();
+      expect(message).not.toMatch(/already active/i);
+      expect(freshEnvelopes.some((entry) => entry.type === "hello_error")).toBe(false);
     } finally {
+      fresh?.close();
       client?.close();
       await new Promise<void>((resolve) => server.close(() => resolve()));
       cleanup();

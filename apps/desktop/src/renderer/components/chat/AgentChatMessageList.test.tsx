@@ -5572,7 +5572,7 @@ describe("AgentChatMessageList question receipts", () => {
     const row = screen.getByTestId("open-question-receipt");
     expect(row.textContent ?? "").toContain("ADE asks");
     expect(row.textContent ?? "").toContain("Plan");
-    expect(row.textContent ?? "").toContain("Answer it in the composer below.");
+    expect(row.textContent ?? "").toContain("awaiting you");
     // No radios, no Send: the transcript is a record, not a control surface.
     expect(screen.queryAllByRole("radio")).toHaveLength(0);
     expect(screen.queryByTestId("ask-question-send")).toBeNull();

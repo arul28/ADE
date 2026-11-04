@@ -6,6 +6,7 @@ import { THIS_MACHINE_NAME } from "../../desktop/src/shared/machineIdentity";
 import { pickLiveCheckout } from "../../desktop/src/shared/crossMachineHandoff";
 import { gitRemoteIdentity } from "../../desktop/src/main/services/github/githubSshAlias";
 import { samePathOnPlatform } from "../../desktop/src/shared/pathContainment";
+import { PROOF_DUPLICATE_CODE } from "../../desktop/src/shared/proofProvenance";
 import {
   CLI_COMMAND_ALIASES,
   CliExecutionError,
@@ -325,7 +326,8 @@ export async function createMachineRemoteConnection(
     return originCache.value;
   };
 
-  const callRemote = async (method: string, params?: JsonObject): Promise<unknown> => {
+  /** The other machine's answer, and its display name when the brain says it. */
+  const callRemoteAnswer = async (method: string, params?: JsonObject): Promise<{ result: unknown; machineName: string | null }> => {
     const answer = await socketClient.request("machines.call", {
       machine,
       scope: machineCallScopeFor(method, params, options, localOriginUrl),
@@ -333,8 +335,11 @@ export async function createMachineRemoteConnection(
       timeoutMs: options.timeoutMs,
       ...(options.machineClone ? { clone: true } : {}),
     });
-    return isRecord(answer) && "result" in answer ? answer.result : answer;
+    const machineName = isRecord(answer) && isRecord(answer.machine) ? asString(answer.machine.name) : null;
+    return { result: isRecord(answer) && "result" in answer ? answer.result : answer, machineName };
   };
+  const callRemote = async (method: string, params?: JsonObject): Promise<unknown> =>
+    (await callRemoteAnswer(method, params)).result;
 
   let localProjectId: string | null = null;
   const callLocalProject = async (method: string, params: JsonObject): Promise<unknown> => {
@@ -448,6 +453,106 @@ export async function createMachineRemoteConnection(
     });
   };
 
+  /**
+   * The Apple verbs that file proof (`screenshot`, `captureProofBundle`,
+   * `duoAppStoreScreenshots`, `recordStop`) file it where they run, which on
+   * another machine is that machine's drawer: the chat would cite an id its
+   * own machine has never heard of. So the verb runs there with `proof: false`,
+   * the files it made are read back, and each is filed in THIS chat's drawer;
+   * the answer carries the ids filed here.
+   */
+  const fileOneRemoteAppleCaptureHere = async (
+    where: string,
+    input: { kind: "screenshot" | "video_recording"; title: string; description: string; path: string; mimeType: string; metadata: JsonObject },
+    toolName: string,
+  ): Promise<string | null> => {
+    try {
+      const filed = unwrapToolResult(await fileRemoteCapturesHere({
+        name: "ingest_computer_use_artifacts",
+        arguments: { backendStyle: "manual", backendName: "ade-ios-simulator", toolName, inputs: [input] },
+      }));
+      return firstFiledArtifactId(filed);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      // Bytes read back are filed as an attach, so a screen that has not
+      // changed since the last shot is refused as a duplicate; that earlier
+      // proof shows exactly these pixels, so it is the one to cite.
+      const duplicateOf = message.includes(PROOF_DUPLICATE_CODE)
+        ? /ade-proof:\/\/([0-9a-f-]{36})/iu.exec(message)?.[1] ?? null
+        : null;
+      // The capture is what was asked for; a drawer that refused it is said, not thrown.
+      if (!duplicateOf) process.stderr.write(`Could not file the ${toolName} capture from ${where} as proof here: ${message}\n`);
+      return duplicateOf;
+    }
+  };
+
+  const fileRemoteAppleProofHere = async (params: JsonObject, action: AppleProofAction): Promise<unknown> => {
+    const toolArgs = isRecord(params.arguments) ? params.arguments : {};
+    const actionArgs = isRecord(toolArgs.args) ? toolArgs.args : {};
+    const { result: answer, machineName } = await callRemoteAnswer("ade/actions/call", {
+      ...params,
+      arguments: { ...toolArgs, args: { ...actionArgs, proof: false } },
+    });
+    if (isRecord(answer) && (answer.isError === true || answer.ok === false)) return answer;
+    const record = appleActionResult(answer);
+    if (!record) return answer;
+    const where = machineName ?? machine;
+    const capturedAt = asString(record.capturedAt);
+    const caption = asString(actionArgs.caption);
+    const stillInput = (filePath: string, title: string, metadata: JsonObject) => ({
+      kind: "screenshot" as const,
+      title,
+      description: `Screen of the Apple device on ${where}${capturedAt ? ` at ${capturedAt}` : ""}.`,
+      path: filePath,
+      mimeType: "image/png",
+      metadata,
+    });
+
+    if (action === "screenshot" || action === "captureProofBundle") {
+      const filePath = asString(action === "screenshot" ? record.filePath : record.screenshotPath);
+      if (!filePath) return answer;
+      const title = caption ?? `${action === "screenshot" ? "Simulator screenshot" : "Simulator proof bundle"} · ${where}`;
+      const proofArtifactId = await fileOneRemoteAppleCaptureHere(where, stillInput(filePath, title, {
+        udid: asString(record.deviceUdid),
+        width: typeof record.width === "number" ? record.width : null,
+        height: typeof record.height === "number" ? record.height : null,
+        capturedAt,
+        ...(action === "captureProofBundle" && asString(record.dir) ? { bundleDir: asString(record.dir) } : {}),
+      }), action === "screenshot" ? "apple screenshot" : "apple proof-bundle");
+      return withAppleActionResult(answer, { ...record, proofArtifactId });
+    }
+
+    if (action === "duoAppStoreScreenshots") {
+      const shots = Array.isArray(record.shots) ? record.shots.filter(isRecord) : [];
+      const filedShots: JsonObject[] = [];
+      for (const shot of shots) {
+        const filePath = asString(shot.filePath);
+        const display = asString(shot.display) ?? "panel";
+        const width = typeof shot.width === "number" ? shot.width : 0;
+        const height = typeof shot.height === "number" ? shot.height : 0;
+        const proofArtifactId = filePath
+          ? await fileOneRemoteAppleCaptureHere(where, stillInput(filePath, `App Store · iPhone Duo ${display} display ${width}×${height} · ${where}`, { display, width, height }), "apple app-store-shots")
+          : null;
+        filedShots.push({ ...shot, proofArtifactId });
+      }
+      return withAppleActionResult(answer, { ...record, shots: filedShots });
+    }
+
+    // recordStop: a discarded or failed recording has no file to file.
+    const videoPath = asString(record.path);
+    if (!videoPath || actionArgs.discard === true || asString(record.lastError)) return answer;
+    const durationMs = typeof record.durationMs === "number" ? record.durationMs : null;
+    const proofArtifactId = await fileOneRemoteAppleCaptureHere(where, {
+      kind: "video_recording",
+      title: asString(record.label) ?? `Simulator recording · ${where}`,
+      description: `Screen recording of the Apple device on ${where}.`,
+      path: videoPath,
+      mimeType: "video/mp4",
+      metadata: { udid: asString(record.udid), durationMs, recordingId: asString(record.id) },
+    }, "apple record-stop");
+    return withAppleActionResult(answer, { ...record, proof: proofArtifactId != null, proofArtifactId });
+  };
+
   return {
     mode: "runtime-socket",
     projectRoot: roots.projectRoot,
@@ -478,7 +583,10 @@ export async function createMachineRemoteConnection(
         }
       }
       if (method === "ade/actions/call" && params?.name === "run_ade_action" && isRecord(params.arguments) && params.arguments.domain === "ios_simulator") {
-        return await callRemote(method, withRemoteAppleArgs(params, roots.workspaceRoot, options.machineWorkCopy ?? null));
+        const appleParams = withRemoteAppleArgs(params, roots.workspaceRoot, options.machineWorkCopy ?? null);
+        const proofAction = appleActionFiledAsProof(appleParams);
+        if (proofAction) return await fileRemoteAppleProofHere(appleParams, proofAction);
+        return await callRemote(method, appleParams);
       }
       if (method === "ade/actions/call" && params?.name === "run_ade_action" && isRecord(params.arguments) && params.arguments.domain === "android_emulator") {
         return await callRemote(method, withRemoteAndroidArgs(params, roots.workspaceRoot));
@@ -497,6 +605,50 @@ export async function createMachineRemoteConnection(
 function isShellOrTerminalAction(params: JsonObject): boolean {
   const toolArgs = isRecord(params.arguments) ? params.arguments : null;
   return params.name === "run_ade_action" && (toolArgs?.domain === "pty" || toolArgs?.domain === "terminal");
+}
+
+const APPLE_PROOF_ACTIONS = ["screenshot", "captureProofBundle", "duoAppStoreScreenshots", "recordStop"] as const;
+type AppleProofAction = (typeof APPLE_PROOF_ACTIONS)[number];
+
+/**
+ * An Apple action the device's machine would file as proof, so a `--machine`
+ * call files it here instead. A caller that already sent `proof: false` (the
+ * `proof` plan's own screenshot step, `--no-proof`) files nothing at all.
+ */
+function appleActionFiledAsProof(params: JsonObject): AppleProofAction | null {
+  const toolArgs = isRecord(params.arguments) ? params.arguments : null;
+  const args = toolArgs && isRecord(toolArgs.args) ? toolArgs.args : null;
+  if (params.name !== "run_ade_action" || toolArgs?.domain !== "ios_simulator" || args?.proof === false) return null;
+  const action = asString(toolArgs.action);
+  return (APPLE_PROOF_ACTIONS as readonly string[]).includes(action ?? "") ? action as AppleProofAction : null;
+}
+
+/** The action's own record in an `ade/actions/call` answer: `{ structuredContent: { domain, action, result } }` or a bare one. */
+function appleActionResult(answer: unknown): JsonObject | null {
+  let value: unknown = answer;
+  if (isRecord(value) && "structuredContent" in value) value = value.structuredContent;
+  if (isRecord(value) && "result" in value && (asString(value.domain) || asString(value.action))) value = value.result;
+  return isRecord(value) ? value : null;
+}
+
+/** The same answer with the action's record replaced. */
+function withAppleActionResult(answer: unknown, next: JsonObject): unknown {
+  const replaceIn = (value: unknown): unknown =>
+    isRecord(value) && "result" in value && (asString(value.domain) || asString(value.action))
+      ? { ...value, result: next }
+      : next;
+  if (isRecord(answer) && "structuredContent" in answer) {
+    return { ...answer, structuredContent: replaceIn(answer.structuredContent) };
+  }
+  return replaceIn(answer);
+}
+
+/** The id of the first artifact an ingest filed. */
+function firstFiledArtifactId(value: unknown): string | null {
+  const record = appleActionResult(value);
+  const artifacts = record && Array.isArray(record.artifacts) ? record.artifacts : [];
+  const first = artifacts.find(isRecord);
+  return first ? asString(first.artifactId) ?? asString(first.id) : null;
 }
 
 function isAppControlCaptureProof(params: JsonObject | undefined): boolean {

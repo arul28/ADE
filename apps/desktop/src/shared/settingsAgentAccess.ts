@@ -80,6 +80,7 @@ const OWNER_ONLY: Record<Exclude<SettingOwnerOnlyReason, "preference">, readonly
     "integrations.github",
     "integrations.linear",
     "integrations.jira",
+    "integrations.agent37",
   ],
   money: [
     "agents.budget",

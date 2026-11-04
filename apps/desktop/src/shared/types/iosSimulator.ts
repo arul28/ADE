@@ -1720,6 +1720,8 @@ export type IosSimulatorProofBundleArgs = {
   caption?: string | null;
   includeElements?: boolean | null;
   logRowLimit?: number | null;
+  /** `false`: write the bundle but file nothing on the device's machine (a `--machine` caller files it). */
+  proof?: boolean | null;
 };
 
 export type IosSimulatorProofBundle = {
@@ -2925,6 +2927,8 @@ export type AppleRecordStartArgs = AppleRecordScopeArgs & {
 export type AppleRecordStopArgs = AppleRecordScopeArgs & {
   keep?: boolean | null;
   discard?: boolean | null;
+  /** `false`: do not file the finished video as proof on the device's machine (the caller files it). */
+  proof?: boolean | null;
 };
 
 export type AppleRecordListArgs = AppleRecordScopeArgs;

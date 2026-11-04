@@ -10,6 +10,7 @@ import { formatCost, formatTokens } from "../../../lib/format";
 import { providerBrand, type ProviderBrandLogo } from "./providerBrand";
 import { providerStatusColor } from "./providerUi";
 import type { ProviderDescriptor, ProviderStatusState } from "./types";
+import "./providerPage.css";
 
 type HeroUsage = {
   tokens: number;
@@ -78,7 +79,14 @@ const SOLID_DEPTH = 10;
  */
 export function SolidLogo({ spec, straight = false }: { spec: Extract<ProviderBrandLogo, { kind: "solid" }>; straight?: boolean }) {
   const size = spec.size ?? 84;
-  const layers = Array.from({ length: SOLID_DEPTH }, (_, index) => SOLID_DEPTH - index);
+  // A straight mark is seen from the front: a thin edge, in proportion to the
+  // mark. A fixed depth would make a small mark look tall and tipped back.
+  const straightEdge = SOLID_DEPTH * 0.45 * (size / 84);
+  // That edge is a pixel or two at tile sizes, and one copy per half pixel
+  // draws it as solid as ten: a grid of tiles stays a few thousand elements.
+  const count = straight ? Math.min(SOLID_DEPTH, Math.max(2, Math.ceil(straightEdge / 0.5))) : SOLID_DEPTH;
+  const straightStep = straightEdge / count;
+  const layers = Array.from({ length: count }, (_, index) => count - index);
   return (
     <div className="ade-pv-mark3d" data-straight={straight ? "true" : undefined} aria-hidden>
       <div className="ade-pv-mark3d-floor" />
@@ -88,11 +96,11 @@ export function SolidLogo({ spec, straight = false }: { spec: Extract<ProviderBr
             key={depth}
             className="ade-pv-mark3d-layer"
             style={{
-              transform: straight ? `translateY(${depth * 0.7}px)` : `translate(${depth * 0.8}px, ${depth * 1}px)`,
+              transform: straight ? `translateY(${depth * straightStep}px)` : `translate(${depth * 0.8}px, ${depth * 1}px)`,
               // The far layers are darker, so the side reads as lit from the front.
               ...(spec.fullColor
-                ? { filter: `brightness(${0.32 + (SOLID_DEPTH - depth) * 0.035}) saturate(1.3)` }
-                : { color: spec.side, filter: `brightness(${0.7 + (SOLID_DEPTH - depth) * 0.04})` }),
+                ? { filter: `brightness(${0.32 + (SOLID_DEPTH - depth * (SOLID_DEPTH / count)) * 0.035}) saturate(1.3)` }
+                : { color: spec.side, filter: `brightness(${0.7 + (SOLID_DEPTH - depth * (SOLID_DEPTH / count)) * 0.04})` }),
             }}
           >
             {spec.mark(size)}

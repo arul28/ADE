@@ -20,7 +20,7 @@ import { ProviderLogo } from "../shared/ProviderLogos";
 import { Dialog } from "../ui/dialog";
 import { cn } from "../ui/cn";
 import { Banner } from "../ui/notice";
-import { ChatCard, ChatCardRow, ChatCardSub, ChatCardTitle } from "./chatCardPrimitives";
+import { ChatCard, ChatCardRow, ChatCardTitle } from "./chatCardPrimitives";
 import { isImeComposing } from "../../lib/imeComposition";
 
 /**
@@ -444,7 +444,6 @@ export function ProjectSecretRequestReceipt({
             <span className="font-normal text-fg/55">Secret needed · </span>
             <span className="font-mono">{card.name}</span>
           </ChatCardTitle>
-          <ChatCardSub>Answer it in the composer below.</ChatCardSub>
         </ChatCardRow>
       </ChatCard>
     );

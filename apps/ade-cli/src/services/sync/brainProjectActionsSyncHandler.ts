@@ -131,6 +131,20 @@ import {
   type SyncProjectCatalogProvider,
 } from "./syncHostService";
 import { resolveDeviceDisplayName } from "./deviceRegistryService";
+import { supportedAdoptChannelAeads } from "../../../../desktop/src/shared/sync/adoptChannelCrypto";
+import {
+  issueAdoptChallenge,
+  openSealedAccountHello,
+  sealAdoptHelloOk,
+  validateAccountChallenge,
+  type AdoptChallengeState,
+  type SealedAdoption,
+} from "./adoptChannelHandshake";
+import {
+  createMachineIdentitySigningStore,
+  MACHINE_IDENTITY_SIGNING_FILE_NAME,
+  type MachineIdentitySigningStore,
+} from "./machineIdentitySigningStore";
 import type { AccountAuthService } from "../account/accountAuthService";
 import {
   getSharedAccountAttestationConfig,
@@ -168,6 +182,12 @@ type BrainProjectActionsSyncHandlerArgs = {
   /** `null` when this build cannot verify accounts at all — a distinct rejection. */
   getAccountAttestationConfig?: () => AccountAttestationConfig | null;
   verifyAccountAttestation?: typeof verifyClerkAccountAttestation;
+  /**
+   * The key whose public half this machine publishes to the account
+   * directory. Defaults to the one under `secretsDir`, the same file the
+   * account publisher reads.
+   */
+  machineIdentitySigningStore?: MachineIdentitySigningStore;
   personalChatScope?: PersonalChatScopeContract;
   /**
    * Machine-wide roster (the same provider the project host uses). With it,
@@ -195,9 +215,6 @@ type BrainProjectActionsSyncHandlerArgs = {
   }) => void;
 };
 
-const SEALED_ACCOUNT_ADOPTION_UNAVAILABLE_MESSAGE =
-  "This machine cannot finish that sign-in here. Pair with a code, or open a project on it and try again.";
-
 export type { BrainProjectCommandRouter };
 
 type BrainPeerState = SyncRosterPeerState & {
@@ -218,6 +235,8 @@ type BrainPeerState = SyncRosterPeerState & {
    */
   commandChain: Promise<void>;
   envelopeChunks: ReturnType<typeof createSyncEnvelopeChunkAssembler>;
+  /** The sealed-adoption challenge this socket was issued, single use. */
+  adoptChallenge: AdoptChallengeState | null;
 };
 
 const WS_OPEN = 1;
@@ -633,6 +652,19 @@ export function createBrainProjectActionsSyncHandler(
   const pollIntervalMs = Math.max(100, Math.floor(args.pollIntervalMs ?? 1_500));
   const authTimeoutMs = Math.max(1_000, Math.floor(args.authTimeoutMs ?? BRAIN_SYNC_AUTH_TIMEOUT_MS));
   const pairFailures = createPairFailureTracker();
+  // Sealed account adoption, served exactly as the project host serves it.
+  // A desktop adopting a machine whose directory entry carries a signing key
+  // always opens with this challenge, on every route, so refusing it here
+  // meant a computer with no project hosting sync (a fresh cloud box, or one
+  // whose projects arrived after its brain started) could not be added from
+  // another computer until its brain was restarted with a project.
+  // Only malformed challenges feed this limiter, as on the project host.
+  const adoptChallengeFailures = createPairFailureTracker();
+  const machineIdentitySigningStore = args.machineIdentitySigningStore
+    ?? createMachineIdentitySigningStore({
+      filePath: path.join(args.secretsDir, MACHINE_IDENTITY_SIGNING_FILE_NAME),
+      logger: args.logger,
+    });
   const pairedChannelService = createSyncPairedChannelService<WebSocket>({
     logger: args.logger,
     getBufferedAmount: (ws) => ws.bufferedAmount,
@@ -1211,6 +1243,7 @@ export function createBrainProjectActionsSyncHandler(
       messageQueue: Promise.resolve(),
       commandChain: Promise.resolve(),
       envelopeChunks: createSyncEnvelopeChunkAssembler(),
+      adoptChallenge: null,
       ...createSyncRosterPeerState(),
     };
     peers.add(peer);
@@ -1422,16 +1455,56 @@ export function createBrainProjectActionsSyncHandler(
             return;
           }
           if (envelope.type === "account_challenge") {
-            // Sealed account adoption opens with this challenge, which only a
-            // project host serves. Without this answer the phone's first frame
-            // drew a bare `invalid_hello`, and the user saw a protocol message
-            // instead of what to do next.
-            send(ws, "account_challenge_error", {
-              message: SEALED_ACCOUNT_ADOPTION_UNAVAILABLE_MESSAGE,
-              // Lets the phone tell this known refusal (it has a next step) from
-              // a challenge that failed for a reason worth reporting.
-              code: "sealed_adoption_unavailable",
-            }, envelope.requestId);
+            const cooldownMs = adoptChallengeFailures.cooldownMsRemaining({ ip: remoteAddress ?? null });
+            if (cooldownMs > 0) {
+              const minutes = Math.ceil(cooldownMs / 60_000);
+              send(ws, "account_challenge_error", {
+                message: `Too many failed authentication attempts. Try again in ${minutes} minute${minutes === 1 ? "" : "s"}.`,
+              }, envelope.requestId);
+              return;
+            }
+            if (peer.adoptChallenge) {
+              adoptChallengeFailures.registerFailure({ ip: remoteAddress ?? null });
+              send(ws, "account_challenge_error", {
+                message: "An account adoption challenge is already active on this connection.",
+              }, envelope.requestId);
+              return;
+            }
+            const validated = validateAccountChallenge({
+              requestId: envelope.requestId,
+              payload: envelope.payload,
+              hostSupportedAeads: supportedAdoptChannelAeads(),
+            });
+            if (!validated.ok) {
+              if (validated.refusal.kind === "invalid") {
+                adoptChallengeFailures.registerFailure({ ip: remoteAddress ?? null });
+              }
+              send(ws, "account_challenge_error", {
+                message: validated.refusal.message,
+              }, envelope.requestId);
+              return;
+            }
+            try {
+              const issued = issueAdoptChallenge({
+                challenge: validated.challenge,
+                aead: validated.aead,
+                signingPrivateKey: () => machineIdentitySigningStore.getOrCreate().privateKey,
+                hostDeviceId: () => brainMetadata().deviceId,
+                now: Date.now,
+              });
+              peer.adoptChallenge = issued.state;
+              send(ws, "account_challenge_ok", issued.reply, envelope.requestId);
+            } catch (error) {
+              peer.adoptChallenge = null;
+              adoptChallengeFailures.registerFailure({ ip: remoteAddress ?? null });
+              args.logger.warn("sync_ingress.account_challenge_failed", {
+                remoteAddress: remoteAddress ?? null,
+                reason: error instanceof Error ? error.message : String(error),
+              });
+              send(ws, "account_challenge_error", {
+                message: "Host identity is unavailable.",
+              }, envelope.requestId);
+            }
             return;
           }
           if (envelope.type !== "hello") {
@@ -1473,7 +1546,40 @@ export function createBrainProjectActionsSyncHandler(
             });
             return;
           }
-          const auth = hello.auth;
+          // A sealed hello carries the account credentials encrypted to the
+          // challenge this socket was issued. Opened here, it continues as the
+          // plain account hello it wraps, and its reply is sealed the same way.
+          let sealedAdoption: SealedAdoption | null = null;
+          let unsealedAuth: SyncAccountHelloAuth | null = null;
+          if (hello.auth?.kind === "account_sealed") {
+            const challenge = peer.adoptChallenge;
+            peer.adoptChallenge = null;
+            const opened = openSealedAccountHello({
+              challenge,
+              now: Date.now(),
+              helloPeerDeviceId: hello.peer.deviceId,
+              sealedAuth: hello.auth,
+            });
+            if (!opened.ok) {
+              if (opened.openError !== undefined) {
+                args.logger.warn("sync_ingress.account_sealed_open_failed", {
+                  remoteAddress: remoteAddress ?? null,
+                  transportOrigin: transportOrigin ?? null,
+                  errorName: opened.openError instanceof Error ? opened.openError.name : "UnknownError",
+                });
+              }
+              send(ws, "hello_error", { code: "invalid_hello", message: opened.message }, envelope.requestId);
+              try {
+                ws.close(4003, "Invalid sealed account hello");
+              } catch {
+                // ignore close failures
+              }
+              return;
+            }
+            unsealedAuth = opened.auth;
+            sealedAdoption = opened.adoption;
+          }
+          const auth = unsealedAuth ?? hello.auth;
           let authenticatedPairingRecord: SyncPairingRecord | null = null;
           let relayAccountOwnerUserId: string | null = null;
           let relayAccountExpiresAtMs: number | null = null;
@@ -1524,6 +1630,7 @@ export function createBrainProjectActionsSyncHandler(
               verifyAccountAttestation,
               withCommitLock: withAccountHelloCommitLock,
               isPeerCurrent: () => isPeerCurrent(lifecycleGeneration),
+              sealedAdoption: Boolean(sealedAdoption),
               pairingCodeNoun: "code",
               // The brain's only account route is Relay, so a machine with no
               // session is a relay-account problem, not a pairing one.
@@ -1618,13 +1725,6 @@ export function createBrainProjectActionsSyncHandler(
             if (auth?.kind === "account") {
               return await authenticateAccountHello(auth);
             }
-            if (auth?.kind === "account_sealed") {
-              // Sealed adoption rides an `account_challenge` round trip this
-              // handler does not serve. Say so plainly instead of failing as an
-              // unreadable payload — the device's next move is a PIN pair. Not
-              // `auth_failed`: the saved pairing, if any, is untouched by this.
-              return authFail(SEALED_ACCOUNT_ADOPTION_UNAVAILABLE_MESSAGE, "account_session_changed");
-            }
             if (!auth || auth.kind !== "bootstrap" || !safeStringEquals(bootstrapToken, auth.token)) return true;
             if (transportOrigin === "relay-bridge") {
               authFailure.code = "relay_account_required";
@@ -1670,6 +1770,8 @@ export function createBrainProjectActionsSyncHandler(
             return;
           }
           peer.authenticated = true;
+          if (sealedAdoption) adoptChallengeFailures.clearAfterSuccess({ ip: remoteAddress ?? null });
+          peer.adoptChallenge = null;
           // `account` is record-backed exactly like `paired` once it commits:
           // the device now holds a real pairing record and must be treated as
           // paired for channel access and cleanup.
@@ -1754,7 +1856,10 @@ export function createBrainProjectActionsSyncHandler(
           else brainPeerChunkedSockets.delete(ws);
           // The selection frame itself must retain the legacy wire encoding.
           // Apply the selected codec only after it has been queued successfully.
-          if (send(ws, "hello_ok", helloOkPayload, envelope.requestId)) {
+          const helloOkSent = sealedAdoption
+            ? send(ws, "hello_ok", sealAdoptHelloOk(sealedAdoption, helloOkPayload), envelope.requestId)
+            : send(ws, "hello_ok", helloOkPayload, envelope.requestId);
+          if (helloOkSent) {
             if (negotiatedCompression) {
               brainPeerCompressionBySocket.set(ws, negotiatedCompression);
             } else {

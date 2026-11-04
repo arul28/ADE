@@ -115,8 +115,10 @@ sha256_file() {
 
 checksum_for_asset() {
   asset="$1"
+  # No {64} interval in the regex: mawk 1.3.4 20200120, the default awk on
+  # Debian 12, does not support it, so no line matched and every install failed.
   awk -v asset="$asset" '
-    $1 ~ /^[[:xdigit:]]{64}$/ {
+    length($1) == 64 && $1 ~ /^[0-9A-Fa-f]+$/ {
       name = $2
       sub(/^\*/, "", name)
       count = split(name, parts, "/")

@@ -237,6 +237,11 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // and the one that produced no telemetry at all last time.
   "machine_removed",
   "machine_register_refused",
+  // "New Agent 37 machine" (feature "connections"): whether installations make
+  // cloud boxes from ADE at all, and how often a create fails. completed (it
+  // joined) | partial (signed in, still starting) | cancelled | failed. Never
+  // the box, its size, name, price, workspace, or the error.
+  "agent37_machine_create",
   // One coarse fact per automatic diagnostic send: whether it went, was refused
   // by the client budget, or failed. Never the failure code that triggered it,
   // never the surface, never the report or its upload reference — those are the
@@ -350,6 +355,10 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // ended. Never the URL, the hook, the secret's name or value, or the chat.
   "webhook_url_created",
   "secret_requested",
+  // How an agent's connect card or MCP server card ended. Never the account,
+  // the server's name, its command or URL, or the chat.
+  "connect_requested",
+  "mcp_server_requested",
   // A person started a safe or live test of an automation. Never the rule or event.
   "safe_test_started",
   "live_test_started",
@@ -524,7 +533,7 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     "home",
     // Find (⌘F) in a chat or a diff, and the ⌘K hand-off into a chat's find bar.
     "find",
-    // Settings › MCP servers: a browser sign-in to a registry server.
+    // Settings › Integrations › MCP servers: a browser sign-in to a registry server.
     "mcp_servers",
     // ADE MCP: this computer as an MCP server for outside AI apps.
     "ade_mcp",

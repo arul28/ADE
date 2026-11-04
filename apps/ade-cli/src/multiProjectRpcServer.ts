@@ -2607,6 +2607,47 @@ export function createMultiProjectRpcRequestHandler(
         return { domain: "account", action, result, statusHints: {} };
       }
       const accountActionArgs = isRecord(params.args) ? params.args : {};
+      // People only, as `account.deleteMachine` is: the removal revokes this
+      // machine and purges its Activity, which an agent may not do. An agent's
+      // sign-out still signs out, as it always did, and leaves the row (signing
+      // in again re-pairs it).
+      const signOutRemovesMachine = action === "signOut" && !callerIdentityIsAgent(callerIdentity());
+      // An `ADE_ACCOUNT_TOKEN` survives sign-out (sign-out clears only the
+      // stored session), whether it is the session in use or one a device
+      // sign-in was shadowing: either way the machine is still on the account
+      // afterwards and must keep its row. A token set but unusable errs on the
+      // side of keeping the row, as before this branch.
+      const accountTokenSet = Boolean(process.env.ADE_ACCOUNT_TOKEN?.trim());
+      const statusBeforeSignOut = signOutRemovesMachine && !accountTokenSet ? accountAuthService.getStatus() : null;
+      if (statusBeforeSignOut?.signedIn && statusBeforeSignOut.source !== "env-token") {
+        // Signing this computer out unlinks it from the account, so it leaves
+        // the account's machine list too. Clearing the session alone left the
+        // row in the directory, listed on every other device as an offline
+        // machine with Connect and "Why offline?" for good, because nothing
+        // signed out can ever publish again to update or remove it. It has to
+        // happen first: after the sign-out there is no token to remove it with.
+        // The same removal `ade machines remove` does; signing in again here
+        // re-pairs it (`repairMachinePairing` below). Best effort: an
+        // unreachable directory must not keep a person from signing out.
+        try {
+          const ownMachineKey = createSyncCloudRelayStore({
+            filePath: path.join(resolveMachineAdeLayout().secretsDir, "sync-cloud-relay.json"),
+          }).getMachineIdentity().machineKey.trim();
+          if (ownMachineKey) {
+            await new AccountMachineDirectoryService(accountAuthService, {
+              appVersion: options.serverVersion,
+              directoryBaseUrl: () => getSharedAccountDirectoryBaseUrl({
+                projectRoots: () => projectRegistry.list().map((record) => record.rootPath),
+              }),
+            }).deleteMachine(ownMachineKey, { timeoutMs: 5_000 });
+          }
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : String(error);
+          machineProjectLogger.warn("account.sign_out_unlist_failed", { error: reason });
+          // `machineProjectLogger` writes nowhere; the brain's log must say it.
+          console.warn("[account] signing out could not remove this machine from the account's list", reason);
+        }
+      }
       const signIn = accountSignInAnalyticsForCaller();
       const signInSource = SIGN_IN_SOURCE_BY_ACTION[action] ?? null;
       let response: Awaited<ReturnType<typeof callAccountAction>>;

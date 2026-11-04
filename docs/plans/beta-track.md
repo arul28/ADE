@@ -358,20 +358,24 @@ How the pipeline is built, and what is still open.
 - A failure never fails the beta: the step and the job continue on error,
   and the job opens or comments on the "iOS TestFlight failed" issue (label
   `beta`), closed by the next build that reaches testers.
-- Signing. With no `IOS_SIGNING_P12_BASE64` secret it is cloud signing:
-  Xcode makes an Apple Development certificate on the runner for the archive
-  and signs the export with a cloud-managed Apple Distribution certificate.
-  Both need the `APPLE_API_KEY_*` key to have the **Admin** role; an App
-  Manager or Developer key fails at the archive ("No signing certificate")
-  or the export (cloud signing permission). The app's capabilities (push,
-  Sign in with Apple, associated domains, App Group, App Clip) all work with
-  automatic signing; none needs a manual profile. Each cloud run leaves one
-  "Created via API" development certificate on the team; revoke old ones now
-  and then. If the key is not Admin, the owner adds two secrets and nothing
-  else changes: `IOS_SIGNING_P12_BASE64` (a base64 .p12 with an Apple
-  Development and an Apple Distribution certificate and their private keys)
-  and `IOS_SIGNING_P12_PASSWORD`. The key then needs only App Manager, for
-  profiles and uploads.
+- Signing. The archive signs with the CI's own Apple Development
+  certificate, kept in the `IOS_SIGNING_P12_BASE64` and
+  `IOS_SIGNING_P12_PASSWORD` secrets (made 2026-11-04 from a key generated
+  for CI alone, certificate `A4AM7ADKW2`, expires 2027-11-04). The export is
+  signed with a cloud-managed Apple Distribution certificate, which takes no
+  certificate slot but needs the `APPLE_API_KEY_*` key to have the **Admin**
+  role. The app's capabilities (push, Sign in with Apple, associated domains,
+  App Group, App Clip) all work with automatic signing; none needs a manual
+  profile. To renew: generate a key and CSR, `asc certificates create
+  --certificate-type DEVELOPMENT --csr <csr>`, bundle key and certificate
+  into a .p12, set both secrets, then revoke the old certificate. A .p12 that
+  also holds an Apple Distribution identity signs the export with it instead,
+  and then an App Manager key is enough.
+  Without the .p12, Xcode makes a new "Created via API" development
+  certificate on every runner and nothing removes it. From 2026-11-02 that
+  filled the team's limit, and every ADE Beta archive failed ("reached the
+  maximum number of certificates") until the 10 runner certificates were
+  revoked and the .p12 was added.
 - Not yet checked on a runner: the first real run. Start it with a dry run
   (`gh workflow run ios-testflight.yml -f dry_run=true`) once the key role is
   known.

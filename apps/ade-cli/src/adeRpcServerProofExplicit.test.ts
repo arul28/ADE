@@ -361,13 +361,20 @@ describe("explicit proof capture", () => {
     ]);
   });
 
-  it("lets a caller on another machine read back only its own fresh capture", async () => {
+  // Every Apple verb a `--machine` caller files as proof, with the result it
+  // really returns: run with `proof: false` there, its file is read back here.
+  it.each([
+    { action: "screenshot", result: (file: string) => ({ filePath: file, deviceUdid: "SIM-1" }) },
+    { action: "captureProofBundle", result: (file: string) => ({ dir: path.dirname(file), screenshotPath: file, deviceUdid: "SIM-1" }) },
+    { action: "duoAppStoreScreenshots", result: (file: string) => ({ shots: [{ display: "cover", width: 1, height: 1, filePath: file, proofArtifactId: null }] }) },
+    { action: "recordStop", result: (file: string) => ({ id: "rec-1", path: file, udid: "SIM-1", proof: false }) },
+  ])("lets a caller on another machine read back only its own fresh capture ($action)", async ({ action, result }) => {
     const fixture = createRuntime();
     const shotPath = path.join(projectRoot, "remote-screen.png");
     fixture.runtime.iosSimulatorService = {
-      screenshot: vi.fn(async () => {
+      [action]: vi.fn(async () => {
         fs.writeFileSync(shotPath, "device pixels");
-        return { filePath: shotPath, deviceUdid: "SIM-1" };
+        return result(shotPath);
       }),
     };
     const remoteCaller = async (foreignId: string) => {
@@ -381,7 +388,8 @@ describe("explicit proof capture", () => {
       return handler;
     };
     const owner = await remoteCaller("remote:device-a:chat-a");
-    await callTool(owner, "run_ade_action", { domain: "ios_simulator", action: "screenshot", args: {} });
+    const ran = await callTool(owner, "run_ade_action", { domain: "ios_simulator", action, args: { proof: false } });
+    expect(ran.isError).toBeUndefined();
 
     const read = await callTool(owner, "read_remote_caller_capture", { path: shotPath, offset: 0 });
     expect(read.isError).toBeUndefined();

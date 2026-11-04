@@ -52,7 +52,7 @@ const CLAUDE_USER: ProviderContextItem[] = [
   },
   { id: "claude:mcp:rea", owner: "user", kind: "mcp-server", label: "MCP server: rea", setIn: "~/.claude.json", path: "/Users/ada/.claude.json", settingsEntry: "mcp.found", tokens: 2400, sizeKind: "estimated", timing: "every-request" },
   { id: "claude:mcp:ghost", owner: "user", kind: "mcp-server", label: "MCP server: ghost-os", setIn: "~/.claude.json", path: "/Users/ada/.claude.json", settingsEntry: "mcp.found", detail: "Its instructions are sent with every request.", tokens: 2800, sizeKind: "estimated", timing: "every-request" },
-  { id: "claude:mcp:xcode", owner: "user", kind: "mcp-server", label: "MCP server: XcodeBuildMCP", setIn: "ADE Settings › MCP servers", settingsEntry: "mcp.servers", tokens: 1300, sizeKind: "estimated", timing: "every-request" },
+  { id: "claude:mcp:xcode", owner: "user", kind: "mcp-server", label: "MCP server: XcodeBuildMCP", setIn: "ADE Settings › Integrations › MCP servers", settingsEntry: "mcp.servers", tokens: 1300, sizeKind: "estimated", timing: "every-request" },
   { id: "claude:agents", owner: "user", kind: "agent", label: "Agent types", source: "plugins", tokens: 1800, sizeKind: "estimated", timing: "every-request" },
   { id: "claude:global-md", owner: "user", kind: "instructions", label: "Your CLAUDE.md", source: "~/.claude/CLAUDE.md", path: "/Users/ada/.claude/CLAUDE.md", tokens: 900, sizeKind: "estimated", timing: "every-request" },
 ];

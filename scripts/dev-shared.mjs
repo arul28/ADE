@@ -659,6 +659,17 @@ export function printDevIsolationReport(socketPath, projectRoot, { ownsRuntime =
   const remoteMachines = process.env.ADE_DEV_REMOTE_AUTOCONNECT === "1"
     ? "AUTO-CONNECT (ADE_DEV_REMOTE_AUTOCONNECT=1): this app will take paired machines from the installed ADE"
     : "only on Connect (the installed ADE keeps its machine connections)";
+  // With sync on, the account stores come with it (ADE_DEV_ACCOUNT_STORES is
+  // only read with sync off; see bootstrap.ts).
+  const requestedAccount = process.env.ADE_DEV_RUNTIME_SYNC === "1"
+    ? "REAL, with sync (ADE_DEV_RUNTIME_SYNC=1): your account's settings and vault; saves reach all your machines"
+    : process.env.ADE_DEV_ACCOUNT_STORES === "1"
+      ? "REAL (ADE_DEV_ACCOUNT_STORES=1): your account's settings and vault, in a folder of this brain's own; saves reach all your machines"
+      : "none (sync off): anything saved to the account cannot be tested here";
+  // Like sync: the process already on the socket keeps the stores it started with.
+  const accountStores = ownsRuntime
+    ? requestedAccount
+    : `${requestedAccount} — requested; the process already on the socket keeps the account stores it started with`;
   const homeNote = isDefault
     ? "(shared with the installed brain)"
     : "(ADE_HOME override — NOT the installed brain's machine state: different account, runtime dir and heartbeat)";
@@ -669,6 +680,7 @@ export function printDevIsolationReport(socketPath, projectRoot, { ownsRuntime =
     `[ade]   sync       : ${sync}`,
     `[ade]   project    : ${projectRoot ?? "(launcher default)"}`,
     `[ade]   machines   : ${remoteMachines}`,
+    `[ade]   account    : ${accountStores}`,
     "[ade]   installed brain: untouched (its own socket, its own sync lease, service never repaired by a dev app)",
     "",
   ].join("\n"));

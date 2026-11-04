@@ -57,6 +57,8 @@ export type FeatureAnalyticsAction =
   | "safe_test_started"
   | "live_test_started"
   | "secret_requested"
+  | "connect_requested"
+  | "mcp_server_requested"
   | "notification_sent"
   | "music_connected"
   | "spotify_connected"
@@ -316,6 +318,25 @@ export function captureSecretRequestedAnalytics(args: {
   outcome: Extract<FeatureAnalyticsOutcome, "completed" | "kept" | "cancelled" | "failed">;
 }): void {
   captureFeatureUsedAnalytics({ ...args, feature: "chat", action: "secret_requested", outcome: args.outcome });
+}
+
+/**
+ * How a connect card or an MCP server card an agent raised ended. Never the
+ * integration's account, the server's name, its command or URL, or the chat.
+ */
+export function captureAgentCardAnalytics(args: {
+  analytics: FeatureAnalytics | null | undefined;
+  surface: ProductAnalyticsSurface;
+  card: "connect" | "mcp_server";
+  outcome: Extract<FeatureAnalyticsOutcome, "completed" | "kept" | "cancelled" | "failed">;
+}): void {
+  captureFeatureUsedAnalytics({
+    analytics: args.analytics,
+    surface: args.surface,
+    feature: "chat",
+    action: args.card === "connect" ? "connect_requested" : "mcp_server_requested",
+    outcome: args.outcome,
+  });
 }
 
 /** The user moved a chat to another account of its provider. */

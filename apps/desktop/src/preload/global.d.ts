@@ -1,4 +1,5 @@
 import type { DeeplinkOwnership } from "../shared/deeplinks";
+import type { Agent37CreateMachineArgs, Agent37CreateProgress, Agent37Status, Agent37TemplateStatus } from "../shared/agent37";
 import type { RemoteWorkCopyListing } from "../shared/types/remoteWork";
 import type { MachineStats } from "../shared/types/machineStats";
 import type { NewLaneDefaults } from "../shared/laneStart";
@@ -32,6 +33,7 @@ import type {
   JiraUser,
 } from "../shared/types/jira";
 import type { McpRegistryServer } from "../shared/mcpRegistry";
+import type { McpRegistryChatStatus } from "../shared/mcpServerRequest";
 import type { GetPrChatWatchArgs, PrChatWatchSummary, SetPrChatWatchArgs } from "../shared/prWatch";
 import type { ResolvePrMediaArgs, ResolvePrMediaResult } from "../shared/githubMedia";
 import type {
@@ -4650,6 +4652,26 @@ declare global {
         repairSession?: () => Promise<AdeAccountSessionRepairResult>;
       };
       /**
+       * Agent37, account-wide: the workspace key (in the account vault) and
+       * new machines made on it. No pin: nothing here acts on a lane, chat or
+       * another machine. Optional because the web client does not expose it.
+       */
+      agent37?: {
+        getStatus: () => Promise<Agent37Status | null>;
+        saveKey: (apiKey: string) => Promise<Agent37Status | null>;
+        removeKey: () => Promise<Agent37Status | null>;
+        /** Returns at once; the create reports through `onCreateProgress`, ending in `done` or `failed`. */
+        createMachine: (requestId: string, machine: Agent37CreateMachineArgs) => Promise<{ started: boolean }>;
+        onCreateProgress: (cb: (progress: Agent37CreateProgress) => void) => () => void;
+        /** Stops a create and deletes the box it made, unless it already signed in. */
+        cancelCreate: (requestId: string) => Promise<{ cancelled: boolean }>;
+        /** ADE's template in the Agent37 workspace; asking also starts a check when none ran yet. */
+        getTemplateStatus: () => Promise<Agent37TemplateStatus | null>;
+        retryTemplate: () => Promise<Agent37TemplateStatus | null>;
+        onStatusChanged?: (cb: () => void) => () => void;
+        onTemplateStatus: (cb: (status: Agent37TemplateStatus) => void) => () => void;
+      };
+      /**
        * The account settings store (the `account_settings` action domain),
        * which is what makes "stored in your ADE account" true for the
        * account-scoped preferences in Settings.
@@ -4668,7 +4690,7 @@ declare global {
         onChanged?: (listener: () => void) => () => void;
       };
       /**
-       * Settings > MCP servers: this computer's view of the registry, and the
+       * Settings > Integrations > MCP servers: this computer's view of the registry, and the
        * one path that writes a registry secret to the account vault. No call
        * returns a secret value.
        *
@@ -4691,6 +4713,11 @@ declare global {
         signIn: (args: { server: McpRegistryServer }) => Promise<McpRegistrySignInResult>;
         cancelSignIn: (args: { server: string }) => Promise<boolean>;
         signOut: (args: { server: string }) => Promise<McpRegistryResult<null>>;
+        /**
+         * Registry servers a chat's running agent did not start with, read on
+         * the chat's machine: `pin`, else the tab's runtime.
+         */
+        chatStatus?: (args: { chatSessionId: string }, pin?: OpenProjectBinding | null) => Promise<McpRegistryChatStatus>;
       };
       prs: {
         createFromLane: (args: CreatePrFromLaneArgs) => Promise<PrSummary>;

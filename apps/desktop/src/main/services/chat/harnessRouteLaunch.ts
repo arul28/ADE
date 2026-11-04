@@ -41,6 +41,7 @@ import {
   isOpenCodeHouseSource,
   KNOWN_SOURCE_ENDPOINTS,
   resolveHarnessRoute,
+  sourceModelIdFor,
   stripTrailingV1,
   type HarnessRoute,
   type HarnessSourceSignInKind,
@@ -164,6 +165,8 @@ export type ResolvedRouteSource = {
   needsSessionHeader: boolean;
   /** How the source is signed in, for the route decision. */
   signInKind: HarnessSourceSignInKind | null;
+  /** A key carrying its own base URL: a gateway whose model ids are taken exactly as typed. */
+  customEndpoint?: boolean;
 };
 
 /** Per-source identity for a key or OpenCode source, without reading a secret. */
@@ -171,6 +174,24 @@ export function routeSourceKey(source: Extract<HarnessPresetSource, { kind: "key
   return source.kind === "key"
     ? `${source.provider.trim().toLowerCase()}:${source.credentialId.trim()}`
     : source.providerId.trim();
+}
+
+/**
+ * How a key or OpenCode route spells a model for its source: exactly as typed
+ * on a key with its own base URL (a gateway), else the source's own id
+ * (`sourceModelIdFor`). The same rule `buildRouteLaunch` applies to the main
+ * model, without reading a secret, so a caller can spell the rest of a preset's
+ * models (its subagents and pins) to match.
+ */
+export function routeModelSpelling(
+  source: Extract<HarnessPresetSource, { kind: "key" } | { kind: "opencode" }>,
+  deps: Pick<RouteLaunchDeps, "getCredentialSummary">,
+): (model: string) => string {
+  const customEndpoint = source.kind === "key"
+    && isSafeIdentifier(source.provider.trim())
+    && isSafeIdentifier(source.credentialId.trim())
+    && Boolean((deps.getCredentialSummary ?? getApiCredentialSummary)(source.provider.trim(), source.credentialId.trim())?.baseUrl?.trim());
+  return (model) => (customEndpoint ? model.trim() : sourceModelIdFor(source, model));
 }
 
 /** The secret and endpoints behind a key or OpenCode source, on this machine. */
@@ -197,6 +218,7 @@ export function resolveRouteSource(
       expiresAt: null,
       needsSessionHeader: isOpenCodeHouseSource(provider),
       signInKind: "key",
+      ...(credential.baseUrl?.trim() ? { customEndpoint: true } : {}),
     };
   }
   const providerId = source.providerId.trim();
@@ -719,7 +741,6 @@ export function buildRouteLaunch(args: {
   deps: RouteLaunchDeps;
 }): RouteLaunchResult {
   const { harness, deps } = args;
-  const model = args.model.trim();
   const resolved = resolveRouteSource(args.source, deps);
   if ("unsupported" in resolved) {
     return {
@@ -728,6 +749,9 @@ export function buildRouteLaunch(args: {
       ...(resolved.reasonCode ? { reasonCode: resolved.reasonCode } : {}),
     };
   }
+  // The vendor's own API never sees ADE's `openai/` namespace; a gateway
+  // (a key with its own base URL) takes its ids exactly as typed.
+  const model = resolved.customEndpoint ? args.model.trim() : sourceModelIdFor(args.source, args.model);
 
   const route = resolveHarnessRoute({
     harness,

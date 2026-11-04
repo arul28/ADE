@@ -37,6 +37,7 @@ import type {
   JiraUser,
 } from "../shared/types/jira";
 import type { McpRegistryServer } from "../shared/mcpRegistry";
+import type { McpRegistryChatStatus } from "../shared/mcpServerRequest";
 import type { GetPrChatWatchArgs, PrChatWatchSummary, SetPrChatWatchArgs } from "../shared/prWatch";
 import type {
   TerminalListWatchesArgs,
@@ -79,6 +80,7 @@ import { machineNameForBinding } from "../shared/machineIdentity";
 import type { DeeplinkOwnership } from "../shared/deeplinks";
 import type { MachineInventoryDetail } from "../shared/types/machineInventory";
 import type { MachineConnectionRoutes } from "../shared/types/account";
+import type { Agent37CreateMachineArgs, Agent37CreateProgress, Agent37Status, Agent37TemplateStatus } from "../shared/agent37";
 import {
   loopbackOriginLabel,
   parseLoopbackUrl,
@@ -12919,6 +12921,35 @@ const adeBridge = {
     repairSession: (): Promise<AdeAccountSessionRepairResult> =>
       ipcRenderer.invoke(IPC.accountRepairSession),
   },
+  // Account-wide: the key lives in the account vault and a new box joins the
+  // account, so none of these take a pin.
+  agent37: {
+    getStatus: (): Promise<Agent37Status | null> => ipcRenderer.invoke(IPC.agent37GetStatus),
+    saveKey: (apiKey: string): Promise<Agent37Status | null> => ipcRenderer.invoke(IPC.agent37SaveKey, { apiKey }),
+    removeKey: (): Promise<Agent37Status | null> => ipcRenderer.invoke(IPC.agent37RemoveKey),
+    createMachine: (requestId: string, machine: Agent37CreateMachineArgs): Promise<{ started: boolean }> =>
+      ipcRenderer.invoke(IPC.agent37CreateMachine, { requestId, machine }),
+    onCreateProgress: (cb: (progress: Agent37CreateProgress) => void): (() => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, progress: Agent37CreateProgress) => cb(progress);
+      ipcRenderer.on(IPC.agent37CreateProgress, listener);
+      return () => ipcRenderer.removeListener(IPC.agent37CreateProgress, listener);
+    },
+    cancelCreate: (requestId: string): Promise<{ cancelled: boolean }> =>
+      ipcRenderer.invoke(IPC.agent37CancelCreate, { requestId }),
+    getTemplateStatus: (): Promise<Agent37TemplateStatus | null> => ipcRenderer.invoke(IPC.agent37GetTemplateStatus),
+    retryTemplate: (): Promise<Agent37TemplateStatus | null> => ipcRenderer.invoke(IPC.agent37RetryTemplate),
+    /** The key was saved or removed in this app; read the status again. */
+    onStatusChanged: (cb: () => void): (() => void) => {
+      const listener = () => cb();
+      ipcRenderer.on(IPC.agent37StatusChanged, listener);
+      return () => ipcRenderer.removeListener(IPC.agent37StatusChanged, listener);
+    },
+    onTemplateStatus: (cb: (status: Agent37TemplateStatus) => void): (() => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, status: Agent37TemplateStatus) => cb(status);
+      ipcRenderer.on(IPC.agent37TemplateStatus, listener);
+      return () => ipcRenderer.removeListener(IPC.agent37TemplateStatus, listener);
+    },
+  },
   /**
    * The account settings store. Every method resolves to an
    * `{ ok: false, unavailable: true }` result rather than rejecting when no
@@ -12940,7 +12971,7 @@ const adeBridge = {
       remoteAccountSettingsChangedFanout.subscribe(() => cb()),
   },
   /**
-   * Settings > MCP servers. Secret values go in; none come out. Each call
+   * Settings > Integrations > MCP servers. Secret values go in; none come out. Each call
    * that reaches the vault resolves to an `ok: false` result rather than
    * rejecting when no brain is reachable.
    */
@@ -12965,6 +12996,18 @@ const adeBridge = {
       ipcRenderer.invoke(IPC.mcpRegistryCancelSignIn, args),
     signOut: (args: { server: string }): Promise<McpRegistryResult<null>> =>
       ipcRenderer.invoke(IPC.mcpRegistrySignOut, args),
+    /**
+     * Registry servers a chat's running agent did not start with, read on the
+     * chat's machine (`pin`, else the tab's runtime). Nothing without a runtime.
+     */
+    chatStatus: (args: { chatSessionId: string }, pin?: OpenProjectBinding | null): Promise<McpRegistryChatStatus> =>
+      callPinnedOrBoundRuntimeActionOr<McpRegistryChatStatus>(
+        pin,
+        "mcp_registry",
+        "chatStatus",
+        { args },
+        async () => ({ missing: [] }),
+      ),
   },
   prs: {
     createFromLane: async (args: CreatePrFromLaneArgs): Promise<PrSummary> =>

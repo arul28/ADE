@@ -42,6 +42,15 @@ import {
   type RemoteTargetFormPrefill,
 } from "./RemoteTargetForm";
 import { PairMachineForm } from "./PairMachineForm";
+import { NewAgent37MachineForm } from "./NewAgent37MachineForm";
+import {
+  AGENT37_JOIN_WATCH_MS,
+  type Agent37CreateMachineResult,
+  type Agent37Status,
+} from "../../../shared/agent37";
+import { accountMachineConnectionState } from "../../../shared/accountDirectory";
+import { captureError } from "../../../shared/sentry/capture";
+import { Banner } from "../ui/notice";
 import {
   accountMachineMatchesTarget,
   assignMachineSections,
@@ -72,6 +81,7 @@ import {
   helperTextStyle,
   panelStyle,
 } from "./remoteTargetListStyles";
+import { Agent37Mark, AGENT37_NAME } from "./agent37Brand";
 
 type RemoteTargetListProps = {
   onConnected?: (result: RemoteRuntimeConnectResult) => void;
@@ -107,7 +117,31 @@ type ConnectTargetOptions = {
   onTrustRequired?: (state: "needs_trust" | "changed") => void;
 };
 
-type AddMode = "choose" | "nearby" | "pair" | "ssh" | "code";
+type AddMode = "choose" | "nearby" | "pair" | "ssh" | "code" | "agent37";
+
+/**
+ * Agent37 in the add sheet. `loading` shows nothing extra; `unreachable` is a
+ * saved key whose status couldn't be read (or that Agent37 refused): the
+ * option still shows and opens a Retry.
+ */
+type Agent37PickerState =
+  | { kind: "loading" }
+  | { kind: "none" }
+  | { kind: "ready"; status: Agent37Status }
+  | { kind: "unreachable"; refused: boolean; message: string };
+
+function agent37PickerState(status: Agent37Status | null): Agent37PickerState {
+  if (!status) return { kind: "unreachable", refused: false, message: "ADE couldn't read Agent 37's status." };
+  if (status.connected && !status.error) return { kind: "ready", status };
+  // A key is saved (it has a storage place) but it couldn't be used right now.
+  if (status.credentialStorage || status.error) {
+    return { kind: "unreachable", refused: !status.connected, message: status.error ?? "ADE couldn't reach Agent 37." };
+  }
+  return { kind: "none" };
+}
+
+/** While a new box finishes starting, how often the account list is refreshed. */
+const AGENT37_JOIN_REFRESH_MS = 15_000;
 
 type AccountConnectionToast = {
   targetId: string;
@@ -895,6 +929,92 @@ export function RemoteTargetList({
     ],
   );
 
+  // Agent37 is account-wide (its key is in the account vault), so this asks
+  // with no pin. Read when the sheet opens, not polled. A saved key whose
+  // status couldn't be read still offers the option, which then says so.
+  const [agent37, setAgent37] = useState<Agent37PickerState>({ kind: "loading" });
+  const loadAgent37Status = useCallback((): (() => void) => {
+    const bridge = window.ade.agent37;
+    if (!bridge) {
+      setAgent37({ kind: "none" });
+      return () => undefined;
+    }
+    let cancelled = false;
+    void bridge.getStatus().then((next) => {
+      if (!cancelled) setAgent37(agent37PickerState(next));
+    }, (error: unknown) => {
+      if (!cancelled) setAgent37({ kind: "unreachable", refused: false, message: extractError(error) });
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  useEffect(() => {
+    if (addMode !== "choose") return;
+    // The last answer stays up while this one loads, so the option never flickers.
+    return loadAgent37Status();
+  }, [addMode, loadAgent37Status]);
+  const retryAgent37Status = useCallback(() => {
+    setAgent37({ kind: "loading" });
+    loadAgent37Status();
+  }, [loadAgent37Status]);
+
+  // A box that signed in but wasn't ready to connect when the create ended:
+  // keep refreshing the account list (the same refresh the list uses) for a
+  // few minutes and connect when its row is ready. Otherwise its row stays
+  // for a manual Connect.
+  const [agent37Join, setAgent37Join] = useState<{ machineKey: string; name: string; renamed: boolean; until: number } | null>(null);
+  useEffect(() => {
+    if (!agent37Join) return;
+    const remaining = agent37Join.until - Date.now();
+    if (remaining <= 0) {
+      setAgent37Join(null);
+      return;
+    }
+    const refresh = setInterval(() => onAccountMachinesChanged?.(), AGENT37_JOIN_REFRESH_MS);
+    const stop = setTimeout(() => setAgent37Join(null), remaining);
+    return () => {
+      clearInterval(refresh);
+      clearTimeout(stop);
+    };
+  }, [agent37Join, onAccountMachinesChanged]);
+  useEffect(() => {
+    if (!agent37Join) return;
+    const row = accountMachines?.find((machine) => machine.machineKey === agent37Join.machineKey) ?? null;
+    if (!row || accountMachineConnectionState(row) !== "available") return;
+    setAgent37Join(null);
+    if (!agent37Join.renamed && row.name !== agent37Join.name) {
+      void window.ade.account.renameMachine(row.machineKey, agent37Join.name).then(
+        () => onAccountMachinesChanged?.(),
+        (error: unknown) => captureError(error, { fingerprint: ["agent37", "join_rename"], handled: true }),
+      );
+    }
+    setAddMode((mode) => (mode === "agent37" ? null : mode));
+    void connectAccountMachine(row);
+  }, [accountMachines, agent37Join, connectAccountMachine, onAccountMachinesChanged]);
+
+  // A new box signed in to this account on its own: find its row and connect.
+  const onAgent37MachineCreated = useCallback(async (result: Agent37CreateMachineResult) => {
+    onAccountMachinesChanged?.();
+    if (!result.machineKey) return;
+    if (!result.joined) {
+      setAgent37Join({ machineKey: result.machineKey, name: result.name, renamed: result.renamed, until: Date.now() + AGENT37_JOIN_WATCH_MS });
+      return;
+    }
+    const listed = await window.ade.account.listMachines().catch((error: unknown) => {
+      captureError(error, { fingerprint: ["agent37", "created_list"], handled: true });
+      return null;
+    });
+    const machine = listed?.machines.find((candidate) => candidate.machineKey === result.machineKey);
+    if (!machine) {
+      // Joined a moment ago but not in this read: watch for it like a slow one.
+      setAgent37Join({ machineKey: result.machineKey, name: result.name, renamed: result.renamed, until: Date.now() + AGENT37_JOIN_WATCH_MS });
+      return;
+    }
+    setAddMode(null);
+    await connectAccountMachine(machine);
+  }, [connectAccountMachine, onAccountMachinesChanged]);
+
   const onPaired = useCallback(
     async (targetId: string) => {
       await loadTargets();
@@ -1361,6 +1481,15 @@ export function RemoteTargetList({
     label: string;
     detail: string;
   }> = [
+    // Once an Agent37 key is saved: a new cloud machine, signed in for you.
+    ...(agent37.kind === "ready" || agent37.kind === "unreachable"
+      ? [{
+          key: "agent37" as const,
+          icon: <Agent37Mark size={18} strokeWidth={24} />,
+          label: `New ${AGENT37_NAME} machine`,
+          detail: "A cloud Linux box or VM, signed in to your account for you",
+        }]
+      : []),
     {
       key: "nearby",
       icon: <WifiHigh size={18} weight="bold" />,
@@ -1389,6 +1518,7 @@ export function RemoteTargetList({
     pair: "Pair with a nearby computer",
     ssh: "Add over SSH",
     code: "This computer's pairing code",
+    agent37: `New ${AGENT37_NAME} machine`,
   };
 
   const showEmptyState = !loading
@@ -1506,6 +1636,31 @@ export function RemoteTargetList({
               </>
             ) : null}
 
+            {addMode === "agent37" && agent37.kind === "ready" ? (
+              <NewAgent37MachineForm status={agent37.status} onCreated={(result) => void onAgent37MachineCreated(result)} />
+            ) : null}
+            {addMode === "agent37" && agent37.kind === "unreachable" ? (
+              <Banner
+                layout="inline"
+                model={{
+                  id: "agent37-status-unreachable",
+                  tone: agent37.refused ? "warning" : "error",
+                  icon: <Agent37Mark size={16} />,
+                  title: agent37.refused ? `${AGENT37_NAME} refused the saved key` : `ADE couldn't reach ${AGENT37_NAME}`,
+                  detail: agent37.message,
+                  actions: [{ label: "Retry", icon: <ArrowClockwise size={12} />, onClick: retryAgent37Status }],
+                  ...(agent37.refused ? { report: false as const } : {}),
+                }}
+              />
+            ) : null}
+            {addMode === "agent37" && agent37.kind === "loading" ? (
+              <div role="status" style={{ ...helperTextStyle, display: "flex", gap: 8, alignItems: "center" }}>
+                <CircleNotch size={14} className="animate-spin" /> Checking {AGENT37_NAME}…
+              </div>
+            ) : null}
+            {addMode === "agent37" && agent37.kind === "none" ? (
+              <div style={helperTextStyle}>Connect {AGENT37_NAME} in Settings › Connections first.</div>
+            ) : null}
             {addMode === "code" ? (
               <div style={{ display: "grid", gap: 10 }}>
                 <div style={helperTextStyle}>

@@ -1417,12 +1417,28 @@ export async function createAdeRuntime(args: {
     const pushRelayFilePath = resolvePushRelayStateFile(resolveMachineAdeLayout().secretsDir);
     let projectSecretServiceForAccount: ReturnType<typeof createProjectSecretService> | null = null;
     let linearCredentialServiceForAccount: ReturnType<typeof createLinearCredentialService> | null = null;
+    let jiraCredentialServiceForAccount: ReturnType<typeof createJiraCredentialService> | null = null;
+    let githubServiceForAccount: { hydratePatFromVault(): Promise<void>; purgeAccountPat(): void } | null = null;
     const getAccountAccessToken = (
       options?: Parameters<typeof getSignedInAccountAccessToken>[1],
     ) => getSignedInAccountAccessToken(accountAuthService, options);
+    // A dev brain runs with sync off, so it has no account stores and cannot
+    // test anything saved to the account (MCP servers, the vault).
+    // ADE_DEV_ACCOUNT_STORES=1 opens the two stores alone, in a folder of
+    // their own: they sync with the account through the relay but never write
+    // the installed brain's files, and no migration or credential pull runs.
+    const devAccountStoresDir = syncRuntimeOptions?.enabled !== true && process.env.ADE_DEV_ACCOUNT_STORES === "1"
+      ? path.join(accountStoreAdeDir, "dev-account-stores", String(process.pid))
+      : null;
+    if (devAccountStoresDir) {
+      logger.warn("account.dev_account_stores_open", { dir: devAccountStoresDir });
+      // The folder holds a copy of the vault: it goes when the brain stops.
+      teardown.push(() => fs.rmSync(devAccountStoresDir, { recursive: true, force: true }));
+    }
     const accountRuntimeLifecycle = createAccountRuntimeLifecycle({
       enabled: syncRuntimeOptions?.enabled === true,
-      accountStoreAdeDir,
+      storesOnly: devAccountStoresDir != null,
+      accountStoreAdeDir: devAccountStoresDir ?? accountStoreAdeDir,
       pushRelayFilePath,
       syncDeviceIdPath,
       receiptDir: accountStoreAdeDir,
@@ -1436,6 +1452,8 @@ export async function createAdeRuntime(args: {
       getContexts: () => [{
         project: { rootPath: projectRoot },
         linearCredentialService: linearCredentialServiceForAccount,
+        jiraCredentialService: jiraCredentialServiceForAccount,
+        githubService: githubServiceForAccount,
         projectSecretService: projectSecretServiceForAccount,
       }],
       teardown,
@@ -2512,8 +2530,19 @@ export async function createAdeRuntime(args: {
     teardown.push(() => headlessLinearServices.dispose());
     linearIssueTrackerRef = headlessLinearServices.linearIssueTracker;
     githubServiceRef = headlessLinearServices.githubService as ReturnType<typeof createGithubService>;
+    githubServiceForAccount = headlessLinearServices.githubService;
+    // Jira is per project and follows the project to the account's other
+    // machines. A project with none of its own adopts the machine's old one.
+    jiraCredentialServiceForAccount = createJiraCredentialService({
+      credentialStore: new EncryptedFileCredentialStore({ secretsDir: path.join(paths.adeDir, "secrets") }),
+      legacyCredentialStore: new EncryptedFileCredentialStore(),
+      projectRoot,
+      getAccountVault: accountRuntimeLifecycle.getAccountVault,
+      getAccountUserId: () => accountAuthService.getStatus().userId,
+      logger,
+    });
     jiraServiceRef = createJiraService({
-      credentials: createJiraCredentialService({ credentialStore: new EncryptedFileCredentialStore() }),
+      credentials: jiraCredentialServiceForAccount,
     });
     const issueTrackerService = createIssueTrackerService({
       linearIssueTracker: headlessLinearServices.linearIssueTracker,
@@ -2635,7 +2664,14 @@ export async function createAdeRuntime(args: {
         resolveMcpAuthToken: createMcpRegistryAuthTokenResolver({
           adeHome: resolveMachineAdeLayout().adeDir,
           readSecret: (key) => accountVaultStore?.get("all", MCP_SECRET_VAULT_KIND, key) ?? null,
-          writeSecret: (key, value) => accountVaultStore?.set("all", MCP_SECRET_VAULT_KIND, key, value) ?? false,
+          writeSecret: (key, value, refreshOwner) => accountVaultStore?.set(
+            "all",
+            MCP_SECRET_VAULT_KIND,
+            key,
+            value,
+            refreshOwner ? { refreshOwner } : undefined,
+          ) ?? false,
+          getVault: () => accountRuntimeLifecycle.getAccountVault(),
           logger,
         }),
         runtimeBudget: chatRuntimeBudget,

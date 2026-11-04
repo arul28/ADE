@@ -1,0 +1,45 @@
+/*
+ * The MCP server card. It is the connect card's family (`ade-icc-*` in
+ * integrationConnectCard.css: banner, row, fields, buttons). A catalogue
+ * server's banner takes its brand (`mcpCatalogueBrand`); any other server
+ * keeps MCP's violet. The Runs line is `McpRunsLine`.
+ */
+
+.ade-mcpc-banner {
+  background:
+    radial-gradient(90% 180% at 0% 0%, color-mix(in srgb, var(--ig-accent) 30%, transparent), transparent 62%),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.03), transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--color-fg) 6%, transparent);
+}
+.ade-mcpc-tile {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  color: color-mix(in srgb, var(--ig-accent) 55%, white 45%);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0) 60%),
+    color-mix(in srgb, var(--ig-accent) 32%, rgba(14, 15, 19, 0.9));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.16),
+    0 0 0 1px color-mix(in srgb, var(--ig-accent) 45%, transparent);
+}
+.ade-mcpc-title-mono { font-family: var(--font-mono, ui-monospace, monospace); }
+
+.ade-mcpc-from { display: inline-flex; align-items: center; gap: 4px; flex: none; align-self: center; opacity: 0.8; }
+.ade-mcpc-copied { gap: 5px; background: color-mix(in srgb, var(--color-fg) 6%, transparent); color: color-mix(in srgb, var(--color-fg) 65%, transparent); }
+.ade-mcpc-spacer { flex: 1 1 auto; }
+
+/* A server outside the catalogue: MCP's violet tile with a plug. */
+.ade-mcpc-receipt-plain {
+  color: #ede9fe;
+  background: color-mix(in srgb, #8b7cf6 55%, rgba(14, 15, 19, 0.9));
+}
+
+/* A black-and-white brand (Notion): a white button with dark text, as its own are. */
+.ade-mcpc[data-ink="dark"] .ade-icc-primary:not(:disabled) {
+  background: linear-gradient(180deg, #ffffff, #e4e4e7);
+  color: #111114;
+  box-shadow: inset 0 -1px 0 rgba(0, 0, 0, 0.12), 0 6px 16px -10px rgba(255, 255, 255, 0.5);
+}

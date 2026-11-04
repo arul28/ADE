@@ -200,6 +200,7 @@ export function createJiraService(args: {
     account,
     error: lastError,
     checkedAt,
+    credentialStorage: args.credentials.storage(),
   });
 
   // Bumped whenever the saved credentials change, so a request or status probe

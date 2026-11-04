@@ -19,8 +19,7 @@ import {
   MagnifyingGlass,
   MapPin,
   Palette,
-  Plugs,
-  PlugsConnected,
+  PuzzlePiece,
   Robot,
   ShareNetwork,
   SlidersHorizontal,
@@ -69,7 +68,7 @@ import {
   STANDALONE_TAB_IDS,
   TabContent,
   decodeSettingsHash,
-  integrationIdForAnchor,
+  integrationPageForAnchor,
   openIntegrationFromUrl,
 } from "../settings/settingsTabContent";
 import { isIntegrationId } from "../settings/integrations/integrationBrand";
@@ -91,14 +90,13 @@ const TAB_ICONS: Record<SettingsTabId, PhosphorIcon> = {
   chat: ChatCircle,
   keyboard: Keyboard,
   notifications: Bell,
-  mcp: Plugs,
   stats: ChartLineUp,
   "lanes-git": GitBranch,
   "project-agents": Robot,
   storage: HardDrives,
   location: MapPin,
   secrets: Key,
-  integrations: PlugsConnected,
+  integrations: PuzzlePiece,
   agents: Brain,
   apple: DeviceMobile,
   appearance: Palette,
@@ -116,7 +114,6 @@ const CENTERED_COLUMN_TABS: ReadonlySet<SettingsTabId> = new Set<SettingsTabId>(
   "keyboard",
   "apple",
   "notifications",
-  "mcp",
   "stats",
   "secrets",
   "behaviour",
@@ -335,6 +332,13 @@ export function SettingsPage({
     if (!tabParam || !resolvedTab || tabParam === resolvedTab) return;
     const nextParams = new URLSearchParams(searchParams);
     nextParams.set("tab", resolvedTab);
+    // A legacy tab that was one integration's page (`?tab=github`,
+    // `?tab=mcp`) opens that page, unless the link already names one.
+    const legacyIntegration = tabParam.trim().toLowerCase().replace(/^mcp-servers$/, "mcp");
+    if (resolvedTab === "integrations" && !location.hash && !nextParams.has("integration")
+      && (legacyIntegration === "mcp" || isIntegrationId(legacyIntegration))) {
+      nextParams.set("integration", legacyIntegration);
+    }
     // A legacy tab that was one card's page (`?tab=archive`) lands on that
     // card on its new page, unless the link already names a card.
     const legacyAnchor = location.hash ? null : legacyTabAnchor(tabParam);
@@ -382,7 +386,10 @@ export function SettingsPage({
     const nextParams = new URLSearchParams(searchParams);
     nextParams.set("tab", next);
     // One integration's page belongs to the Integrations tab only.
-    if (next !== "integrations") nextParams.delete("integration");
+    if (next !== "integrations") {
+      nextParams.delete("integration");
+      nextParams.delete("mcpServer");
+    }
     // The machine travels with Machines pages only. Account and Project pages
     // have no machine, and a stale one in the URL would mislead the next link.
     // Appearance describes this computer's own screen, so it never carries one.
@@ -434,12 +441,12 @@ export function SettingsPage({
       return { matchesThisTab: null as SettingEntry[] | null, matchesOtherTabs: [] as SettingEntry[] };
     }
     const all = searchSettingsEntries(trimmedQuery);
-    // Integrations mount one integration's page at a time (or the grid), so a
+    // Integrations mounts one integration's page at a time (or the home), so a
     // match on another integration's page is a link, like another tab's.
     const openIntegration = section === "integrations" ? openIntegrationFromUrl(searchParams, location.hash) : null;
     const elsewhere = (entry: SettingEntry) =>
       entry.tab !== section
-      || (section === "integrations" && integrationIdForAnchor(entry.anchor) !== openIntegration);
+      || (section === "integrations" && integrationPageForAnchor(entry.anchor) !== openIntegration);
     return {
       matchesThisTab: all.filter((entry) => !elsewhere(entry)),
       matchesOtherTabs: all.filter(elsewhere),

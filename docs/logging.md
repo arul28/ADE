@@ -658,6 +658,8 @@ raise a ceiling. The taxonomy is closed at the producer and again by
 | `automations` | `webhook_url_created` | `completed` | omitted; never the URL, hook id, preset, or rule |
 | `automations` | `safe_test_started`, `live_test_started` | `completed`, `failed` | omitted; never the rule, its steps, the event, or the lanes it made |
 | `chat` | `secret_requested` | `completed` (saved), `kept`, `cancelled` (declined), `failed` (unanswered in time or the request failed) | omitted; never the secret's name, value, reason, or chat |
+| `chat` | `connect_requested` | `completed` (connected), `kept` (already connected), `cancelled` (declined), `failed` (unanswered in time or the request failed) | omitted; never the integration's account, the key, or the chat |
+| `chat` | `mcp_server_requested` | `completed` (added), `kept` (already in ADE), `cancelled` (declined), `failed` (unanswered in time or the request failed) | omitted; never the server's name, its command or URL, a key, or the chat |
 | `home` | `tab_opened` | `tab_browser`, `tab_music` | omitted; never a URL, tab, song, or page |
 | `home` | `widget_added` | `widget_<type>` (one per home widget type) | omitted; never the layout, a preset name, or a widget's settings |
 | `home` | `music_connected` | `completed`, `cancelled`, `failed` | omitted; never the Apple account, storefront, or token |
@@ -678,7 +680,7 @@ path drops arbitrary strings. Provider mapping is also performed by
 `featureProductAnalytics.ts` before capture, and local dedupe keys are hashed
 by the analytics service rather than transmitted.
 
-A browser sign-in to an MCP server (Settings › MCP servers) records
+A browser sign-in to an MCP server (Settings › Integrations › MCP servers) records
 `mcp_servers/sign_in` once when it ends, in the desktop IPC handler that runs
 it (`desktop`). It is a deliberate click that waits on a browser, deduplicated
 per outcome for an hour, so the worst case is three events a day inside the
@@ -701,7 +703,11 @@ the URL is made: the desktop's IPC handler (`desktop`) or the
 `automations.webhookCreateEndpoint` / `webhookCreateAutomation` actions
 (`api`, the CLI and agents). An agent's private secret card records
 `chat/secret_requested` once, when `project_secret.request` returns or fails,
-at the brain action that owns it. Neither carries a name, URL, value, or id;
+at the brain action that owns it. The connect card and the MCP server card do
+the same: `chat/connect_requested` at `integration_connect.request`, and
+`chat/mcp_server_requested` at `mcp_registry.request`. When an MCP server name
+is a built-in integration, the connect card runs instead and records only
+`connect_requested`. Neither carries a name, URL, value, or id;
 both are rare user decisions inside the existing `ade_feature_used` 140-per-day
 and 30-per-minute ceilings, and the per-action-and-outcome dedupe holds a burst
 (an agent creating several URLs, or re-asking) to one event per outcome per
@@ -1600,6 +1606,20 @@ only the edge into a refusal is captured; a per-code one-hour key bounds the
 case the in-process latch cannot see, an app or brain restarting inside the
 refusal. Both events reuse the existing `ade_feature_used` 140-per-day /
 30-per-minute limits and the shared 200-event ceiling; no ceiling was raised.
+
+Making a cloud box with **New Agent 37 machine** records `feature:
+"connections"`, `action: "agent37_machine_create"` once per finished create,
+in the desktop IPC handler that runs it (`registerAgent37Ipc.ts`, where the
+outcome is known): `completed` (the box joined the account), `partial` (signed
+in, still starting), `cancelled`, or `failed`. The product question is whether
+installations make Agent 37 machines from ADE at all and how often a create
+fails. No box id, name, size, price, workspace, or error travels; those stay in
+the local `agent37.*` log lines. A box takes minutes and costs money, so a
+six-hour deduplication key per outcome bounds it to 16 accepted events per
+installation per UTC day, inside the existing `ade_feature_used` ceilings.
+Connecting the key, the template build and the startup cleanup of half-made
+boxes are not analytics: the first is a one-time setting, the other two run
+without a person deciding anything.
 
 `ade_brain_action_failed` is the one new event. Every brain action the desktop
 performs goes through the single `ade.localRuntime.callAction` IPC channel, and

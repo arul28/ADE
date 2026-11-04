@@ -66,7 +66,7 @@ const SETTINGS_PALETTE_CAPTIONS: Record<string, string> = {
   storage: "Space, archive, and cleanup",
   notifications: "What ADE interrupts you for",
   activity: "What's running everywhere",
-  integrations: "GitHub, Linear and Jira",
+  integrations: "GitHub, Linear, Jira and MCP servers",
   overview: "What needs attention",
   location: "Where this project lives",
   service: "Service, updates, and the CLI",

@@ -8,7 +8,8 @@
  */
 
 import type { CallerMcpServers } from "../../../shared/callerMcpServers";
-import { providerOwnMcpServerNames } from "./mcpProviderConfigScan";
+import { sameMcpServerTarget } from "../../../shared/mcpRegistry";
+import { providerLoadedMcpServers, providerOwnMcpServerNames } from "./mcpProviderConfigScan";
 import {
   claudeUserServersForLaunch,
   NPX_DIRECT_OWN_SERVER_PROVIDERS,
@@ -31,6 +32,9 @@ export type ChatMcpLaunchTarget = {
   env: NodeJS.ProcessEnv;
 };
 
+/** What the registry step reads of a launch. */
+type RegistryLaunchTarget = Pick<ChatMcpLaunchTarget, "provider" | "cwd"> & { env?: NodeJS.ProcessEnv };
+
 /** The Claude query options the Claude step reads and extends. */
 export type ClaudeMcpOptions = {
   strictMcpConfig?: boolean;
@@ -47,20 +51,50 @@ function servesOwnServers(provider: string): boolean {
 export function createChatUserMcp(args: { projectRoot: string; logger?: Logger | null }) {
   const launcher = sharedNpxDirectLauncher(args.logger ?? null);
 
+  /**
+   * The registry servers this launch leaves to the provider's own config: a
+   * name the provider has and cannot drop its own copy of, and a server the
+   * provider already starts under another name (same URL, or same command
+   * and arguments), which would otherwise run every tool twice. A same-named
+   * server is left to the first rule: the launch's copy replaces the
+   * provider's where the provider allows it.
+   */
+  const leftToProvider = (target: RegistryLaunchTarget, registry: CallerMcpServers): Set<string> => {
+    const left = new Set<string>();
+    const names = Object.keys(registry);
+    if (!names.length) return left;
+    const ownNames = providerOwnMcpServerNames(target.provider, { cwd: target.cwd });
+    const loaded = providerLoadedMcpServers(target.provider, {
+      cwd: target.cwd,
+      ...(target.env ? { env: target.env } : {}),
+      projectRoots: [args.projectRoot],
+    });
+    for (const [name, server] of Object.entries(registry)) {
+      const twin = loaded.some((own) => own.name !== name && sameMcpServerTarget(own, {
+        transport: server.type,
+        ...(server.type === "stdio" ? { command: server.command, args: server.args ?? [] } : { url: server.url }),
+      }));
+      if (ownNames.has(name) || twin) left.add(name);
+    }
+    return left;
+  };
+
   return {
+    /** The registry server names a launch leaves to the provider's own config (see `leftToProvider`). Reads files only. */
+    registryServersLeftToProvider: leftToProvider,
+
     /**
-     * The registry's servers as this provider should get them: a name the
-     * provider's own config also has is left to it when the provider cannot
-     * drop its own copy (an imported server is a copy, not a move), and
-     * `npx` servers start without npm's launcher. ADE hands these over itself,
-     * so the rewrite cannot add a copy. Synchronous: a tag npx would check
+     * The registry's servers as this provider should get them: the ones its
+     * own config already starts are left to it (`leftToProvider`; an imported
+     * server is a copy, not a move), and `npx` servers start without npm's
+     * launcher. ADE hands these over itself, so the rewrite cannot add a copy. Synchronous: a tag npx would check
      * online starts that check and is re-pointed from the next launch on.
      */
-    registryServers(target: Pick<ChatMcpLaunchTarget, "provider" | "cwd">, registry: CallerMcpServers): CallerMcpServers | null {
-      const ownNames = providerOwnMcpServerNames(target.provider, { cwd: target.cwd });
+    registryServers(target: RegistryLaunchTarget, registry: CallerMcpServers): CallerMcpServers | null {
+      const leftOut = leftToProvider(target, registry);
       const servers: CallerMcpServers = {};
       for (const [name, server] of Object.entries(registry)) {
-        if (ownNames.has(name)) continue;
+        if (leftOut.has(name)) continue;
         if (server.type !== "stdio") {
           servers[name] = server;
           continue;

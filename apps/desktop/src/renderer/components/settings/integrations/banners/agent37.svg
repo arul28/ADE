@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 240" width="480" height="240">
+  <!-- Agent 37's own mark (agent37.com/logo.svg), large and faint, as the banner art. -->
+  <g transform="translate(250 -26) scale(0.58)" fill="none" stroke="#FFFFFF" stroke-width="10" stroke-linejoin="round" opacity="0.22">
+    <path d="M226.31 69.18 L280.18 69.18 L442.82 231.82 L442.82 278.38 L284.11 437.1 L230.73 437.1 L68.93 275.3 L68.93 226.56 Z"/>
+    <path d="M281.22 70.22 L126.17 225.26 L256.67 355.76"/>
+    <path d="M73.6 221.89 L232.07 380.36 L354.43 258"/>
+    <path d="M230.19 436.56 L381.59 285.16 L249.23 152.8"/>
+    <path d="M438.45 282.76 L278.86 123.17 L151.47 250.56"/>
+  </g>
+</svg>

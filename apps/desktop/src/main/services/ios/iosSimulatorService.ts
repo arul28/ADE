@@ -7242,7 +7242,9 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         // An agent gets its lane's own device rather than an error it has to
         // translate into a second command: a new, empty one, the same one
         // `device-create` makes, so nobody else's device is booted or used.
-        laneDevice = await laneDevices.deviceCreate({ laneId });
+        // A chat on another machine's work copy borrows a free simulator of
+        // the user's first (`ensure`), as `launch` does.
+        laneDevice = await laneDevices.ensure({ laneId });
       } else {
         throw new AdeExpectedError(
           "This lane has no Apple device yet. Run `ade apple device-create` to give it its own, "
@@ -7764,6 +7766,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       laneId: runtime.key,
       keep: recordArgs.keep ?? undefined,
       discard: recordArgs.discard ?? undefined,
+      ...(recordArgs.proof === false ? { proof: false } : {}),
       chatSessionId: recordArgs.chatSessionId ?? runtime.activeSession?.chatSessionId ?? null,
       // Resolved without a boot or a fallback to another lane's device: the
       // helper is asked about THIS lane's device only.
@@ -8279,7 +8282,9 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       const bundle = await darwinHub(proofArgs).captureProofBundle(proofArgs);
       // Per the auto-record contract: proof-bundle pins the active recording,
       // or this chat's most recent one, and pinning is what makes it
-      // undeletable by any agent.
+      // undeletable by any agent. A `proof: false` caller (another machine's
+      // `--machine`) files on its own side, so nothing is filed or pinned here.
+      if (proofArgs.proof === false) return bundle;
       if (runtime.key) {
         await recordings.pinActiveOrLatest({
           laneId: runtime.key,

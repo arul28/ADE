@@ -3,7 +3,7 @@ import {
   findRemoteWorkCopyForLane,
   isRemoteWorkLaneId,
   onRemoteWorkCopyReleased,
-  remoteWorkCopyExists,
+  remoteWorkLaneState,
 } from "../remoteWork/remoteWorkCopyService";
 import { readAdeAvdLaneId, sameAvdName } from "./androidAvds";
 import { AndroidEmulatorFailure } from "./androidEmulatorErrors";
@@ -39,8 +39,8 @@ export function createAndroidLaneScope(input: {
     /** Whether the lane still exists; null when this service cannot tell. */
     laneLiveness: (laneId: string): "active" | "archived" | "missing" | null => {
       if (isRemoteWorkLaneId(laneId)) {
-        const exists = projectRoot ? remoteWorkCopyExists(projectRoot, laneId) : null;
-        return exists === null ? null : exists ? "active" : "missing";
+        const state = projectRoot ? remoteWorkLaneState(projectRoot, laneId) : "unknown";
+        return state === "unknown" ? null : state === "live" ? "active" : "missing";
       }
       return input.laneDevices.laneState?.(laneId) ?? null;
     },

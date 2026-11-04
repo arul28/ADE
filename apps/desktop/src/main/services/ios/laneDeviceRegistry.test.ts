@@ -359,7 +359,7 @@ describe("laneDeviceRegistry device lifecycle", () => {
       listInstalledSimulators: async () => devices,
       projectRoot: currentProject,
       deviceDataRoot: dataRoot,
-      openProjectDatabase: () => ({ prepare: () => ({ get: () => ({ one: 1 }) }), close: () => {} }),
+      openProjectDatabase: () => ({ prepare: () => ({ get: () => ({ one: 1 }), all: () => [] }), close: () => {} }),
       store: memoryStore(),
       now: () => new Date(),
       logger: noopLogger,
@@ -405,7 +405,7 @@ describe("laneDeviceRegistry device lifecycle", () => {
       listInstalledSimulators: async () => installed,
       projectRoot: currentProject,
       deviceDataRoot: dataRoot,
-      openProjectDatabase: () => ({ prepare: () => ({ get: () => null }), close: () => {} }),
+      openProjectDatabase: () => ({ prepare: () => ({ get: () => null, all: () => [] }), close: () => {} }),
       store: memoryStore(),
       logger: noopLogger,
     });

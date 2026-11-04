@@ -21,8 +21,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ACCOUNT_SCOPE_ALL } from "../../../../shared/accountSettingsScope";
 import {
   MCP_OFF_SETTING_KEY,
-  MCP_REGISTRY_LIMITS,
   MCP_SERVERS_SETTING_KEY,
+  addMcpRegistryServer,
   mcpSecretVaultKey,
   normalizeMcpOffList,
   normalizeMcpRegistry,
@@ -273,11 +273,7 @@ export function useMcpRegistry(): McpRegistryApi {
     }
     const written = await writeServers((current) => {
       const index = current.findIndex((entry) => entry.name === server.name);
-      if (mode === "create") {
-        if (index >= 0) return `You already have a server named ${server.name}.`;
-        if (current.length >= MCP_REGISTRY_LIMITS.maxServers) return `You can have up to ${MCP_REGISTRY_LIMITS.maxServers} servers.`;
-        return [...current, server];
-      }
+      if (mode === "create") return addMcpRegistryServer(current, server);
       if (index < 0) return `${server.name} was removed on another computer.`;
       return current.map((entry, at) => (at === index ? server : entry));
     });
@@ -335,11 +331,7 @@ export function useMcpRegistry(): McpRegistryApi {
     if (normalizeMcpRegistry(row.value).some((entry) => entry.name === name)) return `You already have a server named ${name}.`;
     const imported = await registry.import({ name, projectRoot });
     if (!imported.ok) return imported.message;
-    return await writeServers((current) => {
-      if (current.some((entry) => entry.name === imported.value.name)) return `You already have a server named ${imported.value.name}.`;
-      if (current.length >= MCP_REGISTRY_LIMITS.maxServers) return `You can have up to ${MCP_REGISTRY_LIMITS.maxServers} servers.`;
-      return [...current, imported.value];
-    });
+    return await writeServers((current) => addMcpRegistryServer(current, imported.value));
   }), [mutate, projectRoot, writeServers]);
 
   const signIn = useCallback(async (server: McpRegistryServer) => {

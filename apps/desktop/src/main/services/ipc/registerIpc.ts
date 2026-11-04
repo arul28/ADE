@@ -926,6 +926,7 @@ import {
   createBrainRefreshBroker,
 } from "../account/accountBridge";
 import { createAccountVaultBridge } from "../account/accountVaultBridge";
+import { registerAgent37Ipc } from "../agent37/registerAgent37Ipc";
 import { createMcpRegistryService } from "../mcp/mcpRegistryService";
 import type { McpRegistryServer } from "../../../shared/mcpRegistry";
 import type {
@@ -1672,6 +1673,7 @@ async function buildLinearConnectionStatus(
     authMode: null,
     oauthConfigured: false,
     tokenExpiresAt: null,
+    credentialStorage: null,
   };
   if (!ctx.linearIssueTracker || !tokenStored) {
     return {
@@ -1683,6 +1685,7 @@ async function buildLinearConnectionStatus(
       authMode: credentialStatus.authMode,
       oauthAvailable: credentialStatus.oauthConfigured,
       tokenExpiresAt: credentialStatus.tokenExpiresAt,
+      credentialStorage: credentialStatus.credentialStorage ?? null,
       message: message ?? (tokenStored ? "Linear tracker service unavailable." : "Linear token not configured."),
     };
   }
@@ -1703,6 +1706,7 @@ async function buildLinearConnectionStatus(
     authMode: credentialStatus.authMode,
     oauthAvailable: credentialStatus.oauthConfigured,
     tokenExpiresAt: credentialStatus.tokenExpiresAt,
+    credentialStorage: credentialStatus.credentialStorage ?? null,
     message: formatLinearConnectionMessage(status.message, credentialStatus.authMode),
   };
 }
@@ -12149,6 +12153,13 @@ export function registerIpc({
             error: error instanceof Error ? error.message : String(error ?? ""),
           });
         }
+        try {
+          context.githubService?.purgeAccountPat?.();
+        } catch (error) {
+          getCtx().logger.warn("account.local_github_pat_purge_failed", {
+            error: error instanceof Error ? error.message : String(error ?? ""),
+          });
+        }
       }
       try {
         purgeClosedAccountCredentials?.();
@@ -12351,6 +12362,26 @@ export function registerIpc({
     getPool: () => localRuntimeConnectionPool,
     getRootPath: () => bootedUsageScopeRoot(getResourceUsageContexts?.() ?? []) ?? getCtx().project?.rootPath ?? null,
     logger: { debug: (message, meta) => getCtx().logger.debug(message, meta) },
+  });
+
+  // Agent37: the account-wide key and new machines made on it (no pin; see the module).
+  registerAgent37Ipc({
+    vaultBridge: accountVaultBridge,
+    listAccountMachines: () => accountBridge.listMachines(),
+    renameMachine: (machineKey, name) => accountBridge.renameMachine(machineKey, name),
+    // Where the create's outcome is known. Coarse outcome only; a six-hour
+    // dedupe per outcome bounds it to 16 accepted events a day.
+    recordMachineCreate: (outcome) => {
+      productAnalyticsService?.capture({
+        event: "ade_feature_used",
+        surface: "desktop",
+        properties: { feature: "connections", action: "agent37_machine_create", outcome },
+        projectId: null,
+        dedupeKey: `agent37_machine_create:${outcome}`,
+        minimumIntervalMs: 6 * 60 * 60 * 1_000,
+      });
+    },
+    logger: { info: (event, meta) => getCtx().logger.info(event, meta), warn: (event, meta) => getCtx().logger.warn(event, meta) },
   });
 
   const mcpRegistryService = createMcpRegistryService({

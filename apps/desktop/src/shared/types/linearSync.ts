@@ -1,3 +1,4 @@
+import type { IntegrationCredentialStorage } from "./integrationCredentialStorage";
 export type LinearIssueStateKey = "todo" | "in_progress" | "in_review" | "done" | "canceled" | "blocked";
 
 export type LinearPriorityLabel = "urgent" | "high" | "normal" | "low" | "none";
@@ -265,6 +266,8 @@ export type LinearConnectionStatus = {
   authMode?: "manual" | "oauth" | null;
   oauthAvailable?: boolean;
   tokenExpiresAt?: string | null;
+  /** Where the project's Linear credential is kept (account vault or this computer). */
+  credentialStorage?: IntegrationCredentialStorage | null;
 };
 
 export type CtoSetLinearTokenArgs = {

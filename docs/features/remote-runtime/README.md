@@ -20,6 +20,10 @@ relay payload E2E encryption is planned security work. See the trust boundary in
 
 ## Source file map
 
+- `apps/desktop/src/main/services/agent37/` — the Agent 37 integration
+  (client, key, template builder, New Agent 37 machine, half-made box
+  cleanup); see [Agent 37 machines](agent37.md).
+
 - `apps/desktop/src/main/services/remoteRuntime/remoteTerminalUpdate.ts` —
   `updateViaRemoteTerminal`, the terminal-driven `ade brain update` for a
   connected Windows machine on a build that cannot self-install.
@@ -2108,6 +2112,7 @@ tailnet routes to a paired device never consulted account state at all.
 ## Related docs
 
 - [Internal architecture](./internal-architecture.md) — protocol shape, bootstrap sequence, sync command scoping.
+- [Agent 37 machines](./agent37.md) — cloud Linux boxes made from ADE: the key, the template built in the person's workspace, zero-touch sign-in, half-made box cleanup, and the copied-home guard a forked box needs.
 - [ADE CLI](../../../apps/ade-cli/README.md) — runtime modes, service manager, machine layout, and legacy compatibility command names.
 - [Sync and Multi-Device](../sync-and-multi-device/README.md) — phone pairing and multi-device sync (hosted by the same runtime).
 - [Cross-machine session handoff](../sync-and-multi-device/cross-machine-session-handoff.md) — route, repository, Git, capsule, and retry contract for continuing a Work chat on another connected machine.

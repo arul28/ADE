@@ -96,18 +96,45 @@ export function createAdeCaptureRegistry(options: {
   };
 }
 
+/** An action's capture output: who made it, and the result values that name its files. */
+export type AdeCaptureAction = {
+  source: AdeCaptureSource;
+  /** The values in the action's result that name a file it wrote; non-strings are skipped. */
+  paths(result: Record<string, unknown>): unknown[];
+};
+
+const resultField = (field: string, source: AdeCaptureSource): AdeCaptureAction => ({
+  source,
+  paths: (result) => [result[field]],
+});
+
 /**
- * ADE actions that write a capture file, with the result field that names it.
+ * ADE actions that write a capture file, with the result fields that name it.
  * Keyed `domain.action`, as `run_ade_action` dispatches them.
+ *
+ * Also the list of what a caller on another machine may read back
+ * (`read_remote_caller_capture`): an Apple proof verb run there with
+ * `proof: false` files nothing where it ran, and its caller files these files
+ * in its own drawer. A proof verb missing here leaves that caller with nothing.
  */
-export const ADE_CAPTURE_ACTIONS: ReadonlyMap<string, { field: "filePath" | "path"; source: AdeCaptureSource }> =
+export const ADE_CAPTURE_ACTIONS: ReadonlyMap<string, AdeCaptureAction> =
   new Map([
-    ["ios_simulator.screenshot", { field: "filePath", source: "ade-capture" }],
-    ["app_control.observe", { field: "filePath", source: "ade-capture" }],
-    ["built_in_browser.observe", { field: "filePath", source: "ade-capture" }],
-    ["built_in_browser.exportHar", { field: "filePath", source: "ade-capture" }],
-    ["built_in_browser.stopRecording", { field: "path", source: "ade-recorder" }],
+    ["ios_simulator.screenshot", resultField("filePath", "ade-capture")],
+    // `ade apple proof-bundle`: the bundle's still is what gets filed.
+    ["ios_simulator.captureProofBundle", resultField("screenshotPath", "ade-capture")],
+    // One still per iPhone Duo panel.
+    ["ios_simulator.duoAppStoreScreenshots", {
+      source: "ade-capture",
+      paths: (result) => (Array.isArray(result.shots) ? result.shots : [])
+        .map((shot) => (shot && typeof shot === "object" ? (shot as Record<string, unknown>).filePath : null)),
+    }],
+    // `SimRecording.path`; a discarded recording's file is gone and hashes to nothing.
+    ["ios_simulator.recordStop", resultField("path", "ade-recorder")],
+    ["app_control.observe", resultField("filePath", "ade-capture")],
+    ["built_in_browser.observe", resultField("filePath", "ade-capture")],
+    ["built_in_browser.exportHar", resultField("filePath", "ade-capture")],
+    ["built_in_browser.stopRecording", resultField("path", "ade-recorder")],
     // `ade mac-desktop proof` files the frame its own `screenshot` step wrote.
-    ["mac_desktop.screenshot", { field: "filePath", source: "ade-capture" }],
-    ["android_emulator.screenshot", { field: "path", source: "ade-capture" }],
+    ["mac_desktop.screenshot", resultField("filePath", "ade-capture")],
+    ["android_emulator.screenshot", resultField("path", "ade-capture")],
   ]);

@@ -368,7 +368,10 @@ import {
 } from "../../desktop/src/shared/types/builtInBrowser";
 import { parseLinearGraphQLInput } from "../../desktop/src/main/services/cto/linearGraphQLInput";
 import { longRunningLocalRuntimeActionTimeoutMs } from "../../desktop/src/main/services/localRuntime/localRuntimeTimeoutPolicy";
-import { PROJECT_SECRET_REQUEST_DEFAULT_TIMEOUT_MS } from "../../desktop/src/main/services/secrets/projectSecretRequest";
+import { CARD_REQUEST_DEFAULT_TIMEOUT_MS } from "../../desktop/src/main/services/chat/chatCardRequest";
+import { CONNECT_PROVIDER_IDS, connectProviderSpec, isConnectProviderId } from "../../desktop/src/shared/integrationConnect";
+import { MCP_CATALOGUE } from "../../desktop/src/shared/mcpCatalogue";
+import { isValidMcpFieldName } from "../../desktop/src/shared/mcpRegistry";
 import { browseProjectDirectories } from "../../desktop/src/main/services/projects/projectBrowserService";
 import { createProjectScaffoldService } from "../../desktop/src/main/services/projects/projectScaffoldService";
 import { resolveRepoRoot } from "../../desktop/src/main/services/projects/projectService";
@@ -646,6 +649,23 @@ import { remoteCommandAvailability } from "./services/remoteMcp/remoteMcpCommand
 import { isSyntheticCallerId, syntheticCallerId } from "../../desktop/src/shared/syntheticCallerId";
 import { formatProofDuration, hasDrawerOwner, proofIdleCutLabel } from "../../desktop/src/shared/proofProvenance";
 
+/** The catalogue's names for the `mcp servers` help, wrapped to fit the terminal's usual width. */
+function catalogueNameLines(): string {
+  const lines: string[] = [];
+  let line = "";
+  for (const id of MCP_CATALOGUE.filter((entry) => !entry.native).map((entry) => entry.id)) {
+    const next = line ? `${line}, ${id}` : id;
+    if (next.length > 72 && line) {
+      lines.push(`${line},`);
+      line = id;
+    } else {
+      line = next;
+    }
+  }
+  if (line) lines.push(line);
+  return lines.join("\n      ");
+}
+
 export type JsonObject = Record<string, unknown>;
 
 type SyncWebPairingCliOutput = {
@@ -850,6 +870,8 @@ export type FormatterId =
   | "terminal-list"
   | "terminal-read"
   | "project-secrets"
+  | "integrations"
+  | "mcp-servers"
   | "history-list"
   | "history-commits"
   | "history-show"
@@ -1439,6 +1461,8 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade proxy status | start | stop | login | logout
                                                     Manage local subscription sign-ins
     $ ade secrets list | get | set | request | delete  Manage encrypted ADE project secrets (account or device)
+    $ ade integrations status | connect <provider>    See and connect GitHub, Linear, Jira and Agent 37
+    $ ade mcp servers | servers add <name>          Read the MCP servers your agents get; ask to add one
     $ ade settings find <words>                     Where an ADE setting or page is, as a link the chat shows as a chip
     $ ade update status | check | install | dismiss Read auto-update state and drive install
     $ ade tools status | ensure | gc                Inspect and populate the pinned agent-CLI cache
@@ -2154,6 +2178,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     --socket <path>         Local RPC endpoint to listen on.
     --port <n>              Also listen for local TCP JSON-RPC on 127.0.0.1:n.
     --no-sync               Disable machine sync discovery for this foreground brain process.
+    --dev-test-machine      Dev only: run as its own machine on the account, beside the
+                            installed ADE (own home required). Use npm run dev:machine -- start.
     --install-service       Register the per-user login service and exit.
     --uninstall-service     Remove the per-user login service and exit.
     --service-status        Print per-user login service status and exit.
@@ -4268,6 +4294,63 @@ export const HELP_BY_COMMAND: Record<string, string> = {
       archived or deleted, or after --ttl (24h, the maximum). Re-running with
       the same --request-id returns the same file without asking again.
 `,
+  integrations: `${ADE_BANNER}
+  ADE integrations
+
+  GitHub, Linear, Jira and Agent 37 (cloud machines). Status never shows a key or token.
+
+    $ ade integrations status --text                 Which are connected here, and as whom
+
+  Asking the person to connect one (agents: use this, never ask them to paste
+  a key into chat). The chat shows a connect card with the provider's own
+  ways to connect: a browser sign-in where there is one, otherwise a key. ADE
+  checks the key with the provider and saves it into the integration on the
+  machine that runs this chat. Only the outcome comes back:
+
+    $ ade integrations connect linear --reason "To read and update the issues you mentioned"
+      --timeout 30m (default, 2h at most). Returns at once if it is already connected.
+      GitHub counts as connected only with a token that can push and open PRs;
+      ADE's GitHub app alone only reads.
+      Prints {provider, connected: true, method, account} | {provider, connected: false, declined: true}
+
+  When to ask: if the person named the integration ("use Linear"), raise the
+  card at once. If it was your own idea, ask in words first and raise the
+  card only after they say yes.
+`,
+  "mcp servers": `${ADE_BANNER}
+  ADE MCP servers (Settings › Integrations › MCP servers)
+
+  The MCP servers every agent ADE launches gets, defined once for the
+  person's account. Values (tokens, keys) live in the account vault and are
+  never shown: the list says only whether each one is set.
+
+    $ ade mcp servers --text                         Every server in ADE, where it is on, what is set;
+                                                     and servers other tools' configs here have that ADE does not
+
+  Asking the person to add one (agents: use this, never ask them to paste a
+  key into chat). The chat shows an MCP server card with exactly what runs;
+  the person approves it, in every permission mode, and types any values.
+  ADE saves the server to their account, on all their machines:
+
+    $ ade mcp servers add notion --reason "To read the spec page"
+      A quick setup from ADE's catalogue: the vendor's own address. Names:
+      ${catalogueNameLines()}.
+      github, linear and atlassian open ADE's own connect card instead (one connection for ADE and agents).
+    $ ade mcp servers add sentry --import --reason "To read the crash"
+      A server another tool here already has (see the list); its values are copied.
+    $ ade mcp servers add team-db --reason "To query the staging data" --env DB_TOKEN -- npx -y @example/db-mcp
+      A local server: the command line after --. --env NAME for each value it reads.
+    $ ade mcp servers add team-wiki --reason "To read the runbook" --url https://mcp.example.com/mcp [--sse] [--header Authorization]
+      A remote server.
+      --timeout 30m (default, 2h at most). Returns at once if ADE already has that name, URL, or command line.
+      Prints {name, added: true, missing, next} | {name, already: true, existing, next} | {name, declined: true}
+        | {name, integration, connected, next} (github, linear, atlassian)
+
+  When to ask: if the person named the server ("add the GitHub MCP"), raise
+  the card at once. If it was your own idea, ask in words first and raise the
+  card only after they say yes. Once added, your own chat gets the tools only
+  after the person presses Refresh chat; ask them to.
+`,
   linear: `${ADE_BANNER}
   Linear workflows
 
@@ -6049,7 +6132,12 @@ const CHAT_VALUE_FLAGS: ReadonlySet<string> = new Set([
 const LANES_VALUE_FLAGS: ReadonlySet<string> = new Set([
   "--name", "--description", "--desc", "--branch-name", "--linear-issue-json", "--reason",
 ]);
+const INTEGRATIONS_VALUE_FLAGS: ReadonlySet<string> = new Set([
+  "--provider", "--reason", "--why", "--message", "--session", "--session-id", "--timeout",
+]);
 const TRAILING_ROOT_FLAG_COMMANDS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+  ["integrations", INTEGRATIONS_VALUE_FLAGS],
+  ["integration", INTEGRATIONS_VALUE_FLAGS],
   ["lanes", LANES_VALUE_FLAGS],
   ["lane", LANES_VALUE_FLAGS],
   ["secrets", SECRETS_VALUE_FLAGS],
@@ -15090,11 +15178,16 @@ function buildIosSimulatorPlan(
     const title =
       readValue(args, ["--title", "--name"]) ?? caption ?? "ADE iOS simulator proof";
     const ownerBase = readProofOwnerBase(args);
-    const screenshotArgs = collectGenericObjectArgs(args, {
-      deviceUdid: readIosSimulatorDevice(args),
-      ...rootArgs(),
-      ...readIosSimulatorOutPath(args),
-    });
+    const screenshotArgs = {
+      ...collectGenericObjectArgs(args, {
+        deviceUdid: readIosSimulatorDevice(args),
+        ...rootArgs(),
+        ...readIosSimulatorOutPath(args),
+      }),
+      // The ingest below files this shot; filing it in the capture too would
+      // make two rows (and, through --machine, one on the device's machine).
+      proof: false,
+    };
     return {
       kind: "execute",
       label: "iOS simulator proof",
@@ -19752,6 +19845,128 @@ function formatProjectHealthFix(value: unknown): string {
   ].join("\n");
 }
 
+function buildIntegrationsPlan(args: string[]): CliPlan {
+  if (hasHelpFlag(args)) {
+    return { kind: "help", text: HELP_BY_COMMAND.integrations ?? topLevelHelpText() };
+  }
+  const sub = firstPositional(args) ?? "status";
+  if (sub === "status" || sub === "list" || sub === "ls") {
+    return {
+      kind: "execute",
+      label: "integrations status",
+      formatter: "integrations",
+      steps: [actionStep("result", "integration_connect", "status", {})],
+    };
+  }
+  if (sub === "connect" || sub === "request" || sub === "add") {
+    // Read every value flag before the positional helper, as `secrets request` does.
+    const providerFlag = readValue(args, ["--provider"]);
+    const reason = readValue(args, ["--reason", "--why", "--message"]);
+    const timeoutValue = readValue(args, ["--timeout"]);
+    const sessionId = readValue(args, ["--session", "--session-id"]);
+    const provider = (providerFlag ?? firstPositional(args) ?? "").trim().toLowerCase();
+    if (!isConnectProviderId(provider)) {
+      throw new CliUsageError(`Name the integration to connect: ${CONNECT_PROVIDER_IDS.join(", ")}.`);
+    }
+    if (!reason?.trim()) {
+      throw new CliUsageError("integrations connect needs --reason \"…\": one line telling the person why you need it.");
+    }
+    const timeoutMs = timeoutValue ? parseSnoozeDurationMs(timeoutValue) : CARD_REQUEST_DEFAULT_TIMEOUT_MS;
+    return {
+      kind: "execute",
+      label: "integrations connect",
+      formatter: "integrations",
+      steps: [actionStep("result", "integration_connect", "request", {
+        provider,
+        reason: reason.trim(),
+        timeoutMs,
+        ...(sessionId ? { chatSessionId: sessionId } : {}),
+      })],
+      // The wait for the person is the point of the command; the transport
+      // must outlive it.
+      minTimeoutMs: timeoutMs + 30_000,
+      progressNotice: `Asked the user to connect ${connectProviderSpec(provider).label} in the chat. Waiting for them to connect or decline…`,
+    };
+  }
+  throw new CliUsageError(`Unknown integrations command "${sub}". Use status or connect.`);
+}
+
+/** `ade mcp servers …`: the MCP registry. `args` are the words after `servers`. */
+function buildMcpServersPlan(args: string[]): CliPlan {
+  if (hasHelpFlag(args)) {
+    return { kind: "help", text: HELP_BY_COMMAND["mcp servers"] ?? topLevelHelpText() };
+  }
+  // The command line of a local server is everything after `--`, split off
+  // before any flag reader can take a token from it.
+  const fence = args.indexOf("--");
+  const commandLine = fence >= 0 ? args.splice(fence).slice(1) : [];
+  const sub = firstPositional(args) ?? "list";
+  if (sub === "list" || sub === "ls" || sub === "status") {
+    return {
+      kind: "execute",
+      label: "mcp servers",
+      formatter: "mcp-servers",
+      steps: [actionStep("result", "mcp_registry", "list", {})],
+    };
+  }
+  if (sub === "add" || sub === "request") {
+    const reason = readValue(args, ["--reason", "--why", "--message"]);
+    const timeoutValue = readValue(args, ["--timeout"]);
+    const sessionId = readValue(args, ["--session", "--session-id"]);
+    const commandFlag = readValue(args, ["--command"]);
+    const url = readValue(args, ["--url"]);
+    const transport = readValue(args, ["--transport"]);
+    const sse = readFlag(args, ["--sse"]);
+    const imported = readFlag(args, ["--import", "--imported"]);
+    const extraArgs = readRepeatedValues(args, ["--arg"]);
+    // Names only: a value given here would travel in the request. The person types it in the card.
+    const fieldNames = (flag: string): string[] => {
+      const names = readRepeatedValues(args, [flag]).flatMap((value) => value.split(",")).map((value) => value.trim()).filter(Boolean);
+      const bad = names.find((entry) => !isValidMcpFieldName(entry));
+      if (bad != null) throw new CliUsageError(`${flag} takes a name only (like ${flag === "--env" ? "API_KEY" : "Authorization"}), never its value. The person types the value in the card.`);
+      return names;
+    };
+    const envNames = fieldNames("--env");
+    const headerNames = fieldNames("--header");
+    const name = (readValue(args, ["--name"]) ?? firstPositional(args) ?? "").trim();
+    if (!name) throw new CliUsageError("Name the server: ade mcp servers add <name> --reason \"…\" …");
+    if (!reason?.trim()) {
+      throw new CliUsageError("mcp servers add needs --reason \"…\": one line telling the person why you want it.");
+    }
+    const [fencedCommand, ...fencedArgs] = commandLine;
+    const command = commandFlag?.trim() || fencedCommand || "";
+    const commandArgs = commandFlag?.trim() ? [...extraArgs, ...commandLine] : [...extraArgs, ...fencedArgs];
+    const describes = Boolean(command || url?.trim());
+    if (imported && describes) {
+      throw new CliUsageError("--import copies a server another tool has. Leave out --command, -- and --url with it.");
+    }
+    const timeoutMs = timeoutValue ? parseSnoozeDurationMs(timeoutValue) : CARD_REQUEST_DEFAULT_TIMEOUT_MS;
+    return {
+      kind: "execute",
+      label: "mcp servers add",
+      formatter: "mcp-servers",
+      steps: [actionStep("result", "mcp_registry", "request", {
+        name,
+        reason: reason.trim(),
+        // A bare name: ADE's catalogue entry when there is one, else another
+        // tool's server. The host decides; --import forces the other tool's.
+        ...(describes ? { source: "agent" } : imported ? { source: "imported" } : {}),
+        ...(command ? { command, args: commandArgs } : {}),
+        ...(url?.trim() ? { url: url.trim(), transport: sse ? "sse" : (transport?.trim() || "http") } : {}),
+        ...(envNames.length ? { envNames } : {}),
+        ...(headerNames.length ? { headerNames } : {}),
+        timeoutMs,
+        ...(sessionId ? { chatSessionId: sessionId } : {}),
+      })],
+      // The wait for the person is the point of the command; the transport
+      // must outlive it.
+      minTimeoutMs: timeoutMs + 30_000,
+      progressNotice: `Asked the user to add the MCP server ${name} in the chat. Waiting for them to add it or decline…`,
+    };
+  }
+  throw new CliUsageError(`Unknown 'ade mcp servers' command "${sub}". Use list or add.`);
+}
+
 function buildSecretsPlan(args: string[]): CliPlan {
   if (hasHelpFlag(args)) {
     return { kind: "help", text: HELP_BY_COMMAND.secrets ?? topLevelHelpText() };
@@ -19824,7 +20039,7 @@ function buildSecretsPlan(args: string[]): CliPlan {
     if (!reason?.trim()) {
       throw new CliUsageError("secrets request needs --reason \"…\": one line telling the person what the secret is for.");
     }
-    const timeoutMs = timeoutValue ? parseSnoozeDurationMs(timeoutValue) : PROJECT_SECRET_REQUEST_DEFAULT_TIMEOUT_MS;
+    const timeoutMs = timeoutValue ? parseSnoozeDurationMs(timeoutValue) : CARD_REQUEST_DEFAULT_TIMEOUT_MS;
     return {
       kind: "execute",
       label: "secrets request",
@@ -22164,6 +22379,13 @@ function buildCliPlan(
     return buildSyncPlan(args);
   }
   if (primary === "mcp") {
+    // `ade mcp servers` is the MCP registry (Settings › Integrations › MCP servers); every
+    // other `ade mcp` word is ADE MCP.
+    const word = args.find((arg) => !arg.startsWith("-"));
+    if (word === "servers" || word === "server") {
+      args.splice(args.indexOf(word), 1);
+      return buildMcpServersPlan(args);
+    }
     return buildRemoteMcpPlan(args);
   }
   if (primary === "notify") {
@@ -22414,6 +22636,8 @@ function buildCliPlan(
     return buildArchivePlan(args);
   if (primary === "secrets" || primary === "secret")
     return buildSecretsPlan(args);
+  if (primary === "integrations" || primary === "integration")
+    return buildIntegrationsPlan(args);
   if (primary === "proxy") return buildProxyPlan(args);
   if (primary === "harness" || primary === "harnesses") return buildHarnessPlan(args);
   if (primary === "providers" || primary === "provider")
@@ -25761,11 +25985,19 @@ async function spawnMachineRuntimeDaemon(
   if (isEphemeralRuntimeSocketPath(socketPath) && !args.includes("--no-sync")) {
     args.push("--no-sync");
   }
+  // The machine socket's brain serves the desktop, phone and web (all `cto`),
+  // so it starts at `cto` like the service would, whatever role this command
+  // runs at. It used to take the caller's role, and a plain `ade lanes list`
+  // (role `agent`) left an `agent` brain on the machine socket that refused
+  // every other device. A command run from an agent's shell still gets an
+  // `agent` brain: `serve` lowers the role itself when it sees that shell's
+  // caller identity (#1832), and that stays as it is.
+  const spawnRole: GlobalOptions["role"] = isMachineDefaultRuntimeSocket(socketPath) ? "cto" : options.role;
 
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     ...(serviceCommand.env ?? {}),
-    ADE_DEFAULT_ROLE: options.role,
+    ADE_DEFAULT_ROLE: spawnRole,
     ADE_RPC_SOCKET_PATH: socketPath,
     ADE_RUNTIME_SOCKET_PATH: socketPath,
   };
@@ -27162,6 +27394,25 @@ async function runServe(
     roleCeilingNote,
   ].filter((note): note is string => note !== null);
   for (const note of brainIdentityNotes) process.stderr.write(`ADE: ${note}\n`);
+  // A dev test machine (`npm run dev:machine`): this checkout's brain as its
+  // own machine on the account, beside the installed one. Set before anything
+  // reads the home, the sync lease or Tailscale; see devTestMachine.ts.
+  if (readFlag(args, ["--dev-test-machine"])) {
+    const [{ DEV_TEST_MACHINE_ENV, markDevTestMachineHome }, { isSyncCapableAdeHome }] = await Promise.all([
+      import("./services/sync/devTestMachine"),
+      import("./services/projects/machineLayout"),
+    ]);
+    const adeDir = resolveMachineAdeLayout().adeDir;
+    if (!isSyncCapableAdeHome(adeDir, { ...process.env, [DEV_TEST_MACHINE_ENV]: "1" })) {
+      throw new CliUsageError(
+        `A dev test machine needs its own ADE home; ${adeDir} belongs to an installed ADE. Start it with npm run dev:machine -- start.`,
+      );
+    }
+    markDevTestMachineHome(adeDir);
+    process.env[DEV_TEST_MACHINE_ENV] = "1";
+    process.env.ADE_TAILSCALE_SERVE = "0";
+    process.env.ADE_SYNC_HOST_LOCK_PATH ||= path.join(adeDir, "sync-host-lock.json");
+  }
   if (process.platform === "darwin" || process.platform === "linux") {
     const runtimeDir = path.dirname(lastFailurePathForMachine());
     boundServiceOutputLogs(runtimeDir);
@@ -27220,7 +27471,35 @@ async function runServe(
   // only restart a brain the service manager owns, and whether this one is that
   // brain is not known until the service command has been resolved.
   let brainMemoryRestartGuard: BrainMemoryRestartGuard | null = null;
+  // Read here: the `try` below declares its own `resolveMachineAdeLayout`.
+  const copiedHomeGuardAdeDir = resolveMachineAdeLayout().adeDir;
   try {
+  // Before anything reads this machine's identity: a home copied onto another
+  // box (a cloud fork) must come up as a new machine, not as this one. Inside
+  // the startup `try`, so a blocked or failed reset is recorded as a brain
+  // startup failure like any other, and counts toward the startup backoff.
+  if (!embedded) {
+    const { guardAgainstCopiedAdeHome } = await import("./services/sync/hostInstanceGuard");
+    const hostGuard = guardAgainstCopiedAdeHome({ adeDir: copiedHomeGuardAdeDir });
+    if (hostGuard.action === "blocked") {
+      // Serving now would let a project write under the original machine's
+      // site id. Refuse; the next start runs the rest of the reset.
+      const lines = hostGuard.failures.map((failure) => `  ${failure.path}: ${failure.error}`);
+      throw new CliToolError(
+        `This ADE home was copied from ${hostGuard.previousInstanceId}, and ADE couldn't finish giving this box and every project its own identity, `
+          + "so the brain won't start (it would write as the machine it was copied from):\n"
+          + `${lines.join("\n")}\n`
+          + "Fix the problem above (usually file permissions), then start ADE again; it picks up where it stopped.",
+        undefined,
+      );
+    }
+    if (hostGuard.action === "reset") {
+      process.stderr.write(
+        `ADE: this ADE home was copied from ${hostGuard.previousInstanceId}, so this box starts as a new machine `
+          + `(signed out; the old identity is kept in ${hostGuard.movedTo}).\n`,
+      );
+    }
+  }
   const removeRuntimeProcessErrorBoundary = installRuntimeProcessErrorBoundary("ADE brain");
   const [
     { brainLogPath, resolveMachineAdeLayout, isSyncCapableAdeHome },
@@ -32912,15 +33191,35 @@ function formatChatRead(value: unknown): string {
   const entries = Array.isArray(value)
     ? value.filter(isRecord)
     : firstArray(value, ["entries", "messages", "items"]);
+  // A failed turn often wrote no assistant text, so its error is listed in
+  // time order among the messages; without it the read shows a bare prompt.
+  const failures = firstArray(record, ["turnFailures"]).map((failure) => ({
+    role: "turn failed",
+    timestamp: asString(failure.timestamp),
+    text: [asString(failure.message), asString(failure.detail)].filter(Boolean).join("\n"),
+  }));
+  const messages = entries.map((entry) => ({
+    role: asString(entry.role) ?? "message",
+    timestamp: asString(entry.timestamp),
+    text: asString(entry.displayText) ?? asString(entry.text) ?? "",
+  }));
+  // The transcript keeps its own order. Each failure goes in after the last
+  // message at or before its time (an untimed one goes at the end), so a
+  // message with no timestamp never moves.
+  const rows: typeof messages = [];
+  const timed = failures.filter((failure) => failure.timestamp).sort((a, b) => a.timestamp!.localeCompare(b.timestamp!));
+  let next = 0;
+  for (const message of messages) {
+    while (next < timed.length && message.timestamp && timed[next]!.timestamp! < message.timestamp) rows.push(timed[next++]!);
+    rows.push(message);
+  }
+  rows.push(...timed.slice(next), ...failures.filter((failure) => !failure.timestamp));
   const lines = ["ADE chat transcript"];
   if (!entries.length) lines.push("(no messages in this physical page)");
-  for (const entry of entries) {
-    const role = asString(entry.role) ?? "message";
-    const timestamp = asString(entry.timestamp);
-    const text = asString(entry.displayText) ?? asString(entry.text) ?? "";
+  for (const row of rows) {
     lines.push("");
-    lines.push(timestamp ? `${role} ${timestamp}` : role);
-    lines.push(text.length ? text : "(empty)");
+    lines.push(row.timestamp ? `${row.role} ${row.timestamp}` : row.role);
+    lines.push(row.text.length ? row.text : "(empty)");
   }
   if (record.truncated === true) lines.push("", "(bounded transcript window; more content exists)");
   if (typeof record.nextCursor === "number") {
@@ -34811,6 +35110,76 @@ function formatHarnessTest(value: unknown): string {
   return `Failed: ${typeof record.error === "string" ? record.error : "unknown error"}`;
 }
 
+function formatIntegrations(value: unknown): string {
+  if (Array.isArray(value)) {
+    const rows = value.filter(isRecord);
+    if (rows.length === 0) return "No integrations on this machine.";
+    return rows.map((row) => {
+      const label = typeof row.label === "string" ? row.label : cell(row.provider);
+      const account = typeof row.account === "string" && row.account ? ` as ${row.account}` : "";
+      const detail = typeof row.detail === "string" && row.detail ? ` (${row.detail})` : "";
+      return row.connected ? `${label}: connected${account}` : `${label}: not connected${detail}`;
+    }).join("\n") + "\n\nConnect one from a chat: ade integrations connect <provider> --reason \"…\"";
+  }
+  const record = isRecord(value) ? value : {};
+  const label = isConnectProviderId(record.provider) ? connectProviderSpec(record.provider).label : cell(record.provider);
+  if (record.connected === true) {
+    const account = typeof record.account === "string" && record.account ? ` as ${record.account}` : "";
+    const next = typeof record.next === "string" && record.next ? ` ${record.next}` : "";
+    return record.method === "already"
+      ? `${label} is already connected${account}.${next}`
+      : `Connected ${label}${account}. The key stays hidden from you.${next}`;
+  }
+  if (record.declined === true) return `The user declined to connect ${label}.`;
+  return JSON.stringify(value, null, 2);
+}
+
+function formatMcpServers(value: unknown): string {
+  const record = isRecord(value) ? value : {};
+  if (Array.isArray(record.servers) && Array.isArray(record.found)) {
+    const lines: string[] = [];
+    if (typeof record.notice === "string" && record.notice) lines.push(record.notice, "");
+    const servers = record.servers.filter(isRecord);
+    lines.push(servers.length ? "In ADE (every agent ADE launches gets these):" : "ADE's MCP registry is empty.");
+    for (const server of servers) {
+      const where = server.state === "on" ? "on"
+        : server.state === "off-account" ? "off everywhere"
+          : server.state === "off-machine" ? "off on this machine" : "off in this project";
+      lines.push(`  ${cell(server.name)}  ${cell(server.transport)}  ${where}`);
+      lines.push(`    ${server.transport === "stdio" ? "runs" : "url"}: ${cell(server.runs)}`);
+      const secrets = Array.isArray(server.secrets) ? server.secrets.filter(isRecord) : [];
+      if (secrets.length) {
+        lines.push(`    ${secrets.map((secret) => `${cell(secret.name)} (${secret.field === "header" ? "header" : "env"}) ${secret.set ? "set" : "NOT SET"}`).join(", ")}`);
+      }
+    }
+    const found = record.found.filter(isRecord);
+    if (found.length) {
+      lines.push("", "Found in other tools' configs on this machine, not in ADE:");
+      for (const server of found) {
+        const runs = server.transport === "stdio"
+          ? [server.command, ...(Array.isArray(server.args) ? server.args : [])].map((part) => String(part ?? "")).join(" ")
+          : cell(server.url);
+        const providers = Array.isArray(server.providers) ? server.providers.join(", ") : "";
+        lines.push(`  ${cell(server.name)}  ${cell(server.transport)}  from ${providers}`);
+        lines.push(`    ${server.transport === "stdio" ? "runs" : "url"}: ${runs}`);
+      }
+      lines.push("", "Ask to add one from a chat: ade mcp servers add <name> --import --reason \"…\"");
+    }
+    return lines.join("\n");
+  }
+  if (record.added === true) {
+    const missing = Array.isArray(record.missing) && record.missing.length
+      ? ` Not set yet (the person can add them in Settings › Integrations › MCP servers): ${record.missing.join(", ")}.`
+      : "";
+    const next = typeof record.next === "string" && record.next ? record.next : `Added ${cell(record.name)}.`;
+    return `${next}${missing}`;
+  }
+  if (record.already === true) return typeof record.next === "string" ? record.next : `${cell(record.name)} is already in ADE.`;
+  if (typeof record.integration === "string" && typeof record.next === "string") return record.next;
+  if (record.declined === true) return `The user declined to add the MCP server ${cell(record.name)}.`;
+  return JSON.stringify(value, null, 2);
+}
+
 function formatProjectSecrets(value: unknown): string {
   const record = isRecord(value) ? value : {};
   if (isProjectSecretPullResult(value)) {
@@ -35759,6 +36128,10 @@ function formatTextOutput(
       return formatTerminalRead(value);
     case "project-secrets":
       return formatProjectSecrets(value);
+    case "integrations":
+      return formatIntegrations(value);
+    case "mcp-servers":
+      return formatMcpServers(value);
     case "harness-env":
       return formatHarnessEnv(value);
     case "harness-routes":

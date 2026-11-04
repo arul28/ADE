@@ -305,7 +305,6 @@ describe("buildCodingAgentSystemPrompt", () => {
     expect(result).toMatch(/new instructions, from the user or from another agent, replaces the old ones/);
     expect(result).toContain("## ADE");
     expect(result).toContain("read the matching `ade-*` skill");
-    expect(result).toContain("ADE capabilities ship as Agent Skills");
     expect(result).toContain("ade-apple");
     // The deprecated alias resolves by name but is not advertised.
     expect(result).not.toContain("ade-ios-simulator");
@@ -325,7 +324,7 @@ describe("buildCodingAgentSystemPrompt", () => {
 
     expect(result).not.toContain("/repo/.ade/worktrees/chat-lane/apps/desktop/resources/agent-skills");
     expect(result).not.toContain("/repo/.ade/worktrees/chat-lane/resources/agent-skills");
-    expect(result).toContain("ADE capabilities ship as Agent Skills");
+    expect(result).toContain("read the matching `ade-*` skill");
   });
 
   it("names an explicitly supplied skill root verbatim", () => {

@@ -1364,7 +1364,40 @@ describe("multi-project RPC server", () => {
         ).rejects.toThrow(refusal);
         handler.dispose();
       }
+
+      // Signing out removes this machine from the account the same way, so an
+      // agent's sign-out signs out but never reaches the directory; a person's does.
+      vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 503 })));
+      (accountAuthService.getStatus as ReturnType<typeof vi.fn>).mockReturnValue({
+        signedIn: true,
+        userId: "account-a",
+        email: null,
+        name: null,
+        expiresAt: "2026-07-15T22:00:00.000Z",
+      });
+      for (const [identity, removes] of [
+        [{ role: "cto", runId: "run-1" }, false],
+        [{ role: "cto", attemptId: "attempt-1" }, false],
+        [{ role: "cto" }, true],
+      ] as const) {
+        const getAccessToken = accountAuthService.getAccessToken as ReturnType<typeof vi.fn>;
+        const signOut = accountAuthService.signOut as ReturnType<typeof vi.fn>;
+        getAccessToken.mockClear();
+        signOut.mockClear();
+        const handler = createMultiProjectRpcRequestHandler({
+          serverVersion: "test",
+          projectRegistry: registry,
+          accountAuthService,
+        });
+        await handler({ jsonrpc: "2.0", id: 1, method: "ade/initialize", params: { identity } });
+        await handler({ jsonrpc: "2.0", id: 2, method: "account.call", params: { action: "signOut", args: {} } });
+        expect(signOut).toHaveBeenCalledTimes(1);
+        // The directory removal is the only thing on this path that asks for a token.
+        expect(getAccessToken.mock.calls.length > 0).toBe(removes);
+        handler.dispose();
+      }
     } finally {
+      vi.unstubAllGlobals();
       restoreEnvVar("ADE_DEFAULT_ROLE", previousDefaultRole);
     }
   });

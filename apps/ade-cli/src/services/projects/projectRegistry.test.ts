@@ -262,6 +262,39 @@ describe("ProjectRegistry", () => {
     expect(() => registry.add(homeDir)).toThrow(/Refusing to register/);
   });
 
+  // Two brains with different device ids writing one project database corrupt
+  // it, so a dev test machine's home (marked by its launcher) stays out of
+  // every project the installed ADE serves, and out when it can't tell.
+  it.each([
+    { refused: "the installed ADE's project", target: ["work", "repo"], damageInstalledRegistry: false, error: /already uses/ },
+    { refused: "a folder inside it", target: ["work", "repo", "packages", "web"], damageInstalledRegistry: false, error: /already uses/ },
+    { refused: "any project while the installed registry is unreadable", target: ["work", "another-clone"], damageInstalledRegistry: true, error: /cannot check which projects/ },
+  ])("a dev test machine refuses $refused and keeps it out of its registry", ({ target, damageInstalledRegistry, error }) => {
+    const homeDir = fs.realpathSync(makeTempRoot("ade-dev-test-machine-home-"));
+    vi.spyOn(os, "homedir").mockReturnValue(homeDir);
+    const installedProject = path.join(homeDir, "work", "repo");
+    const clone = path.join(homeDir, "work", "repo-dev-clone");
+    fs.mkdirSync(path.join(installedProject, "packages", "web"), { recursive: true });
+    fs.mkdirSync(clone, { recursive: true });
+    fs.mkdirSync(path.join(homeDir, ".ade"), { recursive: true });
+    const installedProjects = JSON.stringify({ version: 2, projects: [{ projectId: "installed", rootPath: installedProject }] });
+    fs.writeFileSync(path.join(homeDir, ".ade", "projects.json"), installedProjects);
+    const adeDir = path.join(homeDir, ".ade-dev-machine-dev");
+    fs.mkdirSync(adeDir, { recursive: true });
+    fs.writeFileSync(path.join(adeDir, "dev-test-machine.json"), "{}\n");
+    const registry = new ProjectRegistry({ adeDir, projectsPath: path.join(adeDir, "projects.json") } as any);
+
+    // Its own clone is fine while the installed list can be read.
+    expect(registry.add(clone).rootPath).toBe(clone);
+    if (damageInstalledRegistry) fs.writeFileSync(path.join(homeDir, ".ade", "projects.json"), "{\"projects\": [");
+    const refusedRoot = path.join(homeDir, ...target);
+    fs.mkdirSync(refusedRoot, { recursive: true });
+
+    expect(() => registry.add(refusedRoot)).toThrow(error);
+    expect(registry.list().map((record) => record.rootPath)).toEqual([clone]);
+    expect(fs.existsSync(path.join(refusedRoot, ".ade"))).toBe(false);
+  });
+
   it("filters already-persisted user home entries from project lists", () => {
     const homeDir = makeTempRoot("ade-project-registry-home-");
     const rawProjectRoot = path.join(homeDir, "Projects", "ADE");

@@ -1026,6 +1026,15 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   // `request` asks the person through the private secret card; it returns the
   // outcome only, never the value, so it is not secret-bearing.
   project_secret: ["list", "get", "set", "delete", "previewEnvImport", "importEnv", "exportEnv", "pullFromAccount", "request"],
+  // `request` raises the connect card in the caller's own chat; the person
+  // types the key, and the host saves it. `status` reports connected or not,
+  // never a credential. Neither is secret-bearing.
+  integration_connect: ["request", "status"],
+  // `list` reads the MCP setup (names and set/not-set, never a value).
+  // `request` raises the MCP server card in the caller's own chat; the person
+  // approves and types any value, and the host saves it. `chatStatus` names
+  // the registry servers a chat's agent lacks. None is secret-bearing.
+  mcp_registry: ["list", "request", "chatStatus"],
   // Reads and writes of the user's own account-scoped settings. No secret
   // values pass through here — the vault is a separate domain with its own
   // approval rules, precisely so "change my theme" and "read my API key"

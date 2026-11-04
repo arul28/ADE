@@ -233,6 +233,8 @@ import {
   type CrossMachineMoveLock,
 } from "../../../shared/crossMachineMoveLock";
 import { isUserOnlyConsentCard, USER_ONLY_CONSENT_CARD_REFUSAL } from "../../../shared/types/macDesktop";
+import { CONNECT_METHOD_QUESTION_ID, connectMethod, connectProviderSpec, isSelfRunConnectMethod, readIntegrationConnectRequestCard } from "../../../shared/integrationConnect";
+import { readMcpServerRequestCard } from "../../../shared/mcpServerRequest";
 import { personalHostPathContext, validatePersonalAttachmentRoots } from "./personalHostPaths";
 import { MAX_PERSONAL_CHAT_ATTACHMENT_ROOTS } from "../../../shared/types/personalChats";
 import {
@@ -286,7 +288,7 @@ import {
   recordChatTextFlush,
   type ChatTextFlushReason,
 } from "../perf/chatTextProbe";
-import { transcriptEntriesFromEnvelopes } from "./chatTranscriptEntries";
+import { transcriptEntriesFromEnvelopes, transcriptTurnFailuresFromEnvelopes } from "./chatTranscriptEntries";
 import {
   buildFittedTranscriptReplay,
   buildTranscriptReplayDocument,
@@ -711,6 +713,7 @@ import type {
   AgentChatSubagentSnapshot,
   AgentChatUsageAccount,
   AgentChatTranscriptEntry,
+  AgentChatTranscriptTurnFailure,
   AgentChatSurface,
   AgentChatPersonalProfile,
   AgentChatSteerArgs,
@@ -5716,9 +5719,12 @@ type ManagedChatSession = {
     /**
      * Runs on an accepting answer BEFORE the card resolves. Throwing keeps the
      * card open and fails the user's respond call, so a card whose work did
-     * not happen never reads as done.
+     * not happen never reads as done. It may be async (a connect card checks
+     * the key with the provider); the card stays open while it runs.
      */
-    beforeAccept?: (answers: Record<string, string[]>) => void;
+    beforeAccept?: (answers: Record<string, string[]>) => void | Promise<void>;
+    /** Set while an async `beforeAccept` runs, so a second answer cannot run it twice. */
+    accepting?: boolean;
   }>;
   /**
    * Codex async questions, keyed by item id. Deliberately NOT in
@@ -11431,7 +11437,7 @@ export type RequestChatInputArgs = {
    */
   signal?: AbortSignal;
   /** Do the answer's work before the card resolves; throw to keep it open. */
-  beforeAccept?: (answers: Record<string, string[]>) => void;
+  beforeAccept?: (answers: Record<string, string[]>) => void | Promise<void>;
   /** The provider-native subagent that asks, when it is not the main agent. */
   subagent?: PendingInputSubagent;
   questions?: Array<{
@@ -12060,6 +12066,20 @@ export function createAgentChatService(args: {
   const mcpRegistryNoticeBySession = new Map<string, string>();
 
   /**
+   * The registry servers each chat's running agent was started with, by the
+   * runtime epoch they were read in. A teardown bumps the epoch, so the next
+   * launch records afresh and a stale record reads as "nothing missing".
+   * In memory only: a chat with no live runtime gets every server on its next
+   * launch anyway. Read by `mcpRegistryChatStatus` (the "Refresh chat" chip).
+   */
+  const mcpRegistryLaunchedBySession = new WeakMap<ManagedChatSession, { epoch: number; targets: ReadonlyMap<string, string> }>();
+
+  /** What a registry server reaches (its URL, or its command line), never its env or header values. */
+  const mcpRegistryTarget = (server: CallerMcpServers[string]): string => JSON.stringify(
+    server.type === "stdio" ? [server.type, server.command, server.args ?? []] : [server.type, server.url],
+  );
+
+  /**
    * The servers the user defined once in Settings (the MCP registry), for an
    * ordinary chat. A chat that asked for a strict MCP surface, and the light
    * profile (side jobs, embedders, personal chats), get none: those callers
@@ -12078,6 +12098,15 @@ export function createAgentChatService(args: {
       provider: managed.session.provider,
       readSecret: (vaultKey) => args.readAccountSecret?.(vaultKey) ?? null,
     });
+    // The first read in a runtime's life is its launch; later reads in the
+    // same epoch (redaction, status lookups) see what it already runs.
+    const epoch = runtimeTeardownEpoch(managed);
+    if (mcpRegistryLaunchedBySession.get(managed)?.epoch !== epoch) {
+      mcpRegistryLaunchedBySession.set(managed, {
+        epoch,
+        targets: new Map(Object.entries(registry.servers ?? {}).map(([name, server]) => [name, mcpRegistryTarget(server)])),
+      });
+    }
     const gaps = mcpRegistryLaunchNotices(registry);
     const key = gaps.join("\n");
     if (!key) {
@@ -12089,6 +12118,34 @@ export function createAgentChatService(args: {
       }
     }
     return registry.servers ? chatUserMcp.registryServers(chatMcpTarget(managed), registry.servers) : null;
+  };
+
+  /**
+   * Registry servers on for this chat now that its running agent did not
+   * start with (new, or edited to reach another URL or command), minus the
+   * ones the provider's own config already runs. Empty
+   * when the chat has no live agent (its next launch gets everything) or is a
+   * chat the registry does not reach. Reads files only; never restarts.
+   */
+  const mcpRegistryChatStatus = (sessionId: string): { missing: string[] } => {
+    const managed = managedSessions.get(sessionId);
+    const adeHome = args.machineAdeHome?.trim();
+    if (!managed || !managed.runtime || !adeHome) return { missing: [] };
+    const launched = mcpRegistryLaunchedBySession.get(managed);
+    if (!launched || launched.epoch !== runtimeTeardownEpoch(managed)) return { missing: [] };
+    const current = resolveMcpRegistryForLaunch({
+      adeHome,
+      projectRoot: args.projectRoot,
+      provider: managed.session.provider,
+      readSecret: () => null,
+    }).servers ?? {};
+    const added: CallerMcpServers = {};
+    for (const [name, server] of Object.entries(current)) {
+      if (launched.targets.get(name) !== mcpRegistryTarget(server)) added[name] = server;
+    }
+    if (!Object.keys(added).length) return { missing: [] };
+    const leftOut = chatUserMcp.registryServersLeftToProvider(chatMcpTarget(managed), added);
+    return { missing: Object.keys(added).filter((name) => !leftOut.has(name)).sort() };
   };
 
   /** The caller's servers on top of the registry's: a caller that names a server keeps its own definition. */
@@ -15160,11 +15217,75 @@ export function createAgentChatService(args: {
   const readTranscriptEntries = async (
     managed: ManagedChatSession,
     signal?: AbortSignal,
-  ): Promise<AgentChatTranscriptEntry[]> => {
-    return transcriptEntriesFromEnvelopes(
-      managed.session.id,
-      await readRecentTranscriptEnvelopesForSessionIdAsync(managed.session.id, signal),
-    );
+  ): Promise<{ entries: AgentChatTranscriptEntry[]; turnFailures: AgentChatTranscriptTurnFailure[] }> => {
+    const envelopes = await readRecentTranscriptEnvelopesForSessionIdAsync(managed.session.id, signal);
+    return {
+      entries: transcriptEntriesFromEnvelopes(managed.session.id, envelopes),
+      turnFailures: transcriptTurnFailuresFromEnvelopes(managed.session.id, envelopes),
+    };
+  };
+
+  /** The failed turns at or after `oldest` (every one with no oldest), newest kept within the limit. */
+  const turnFailuresSince = (
+    failures: readonly AgentChatTranscriptTurnFailure[],
+    oldest: string | undefined,
+    limit: number,
+  ): AgentChatTranscriptTurnFailure[] =>
+    failures.filter((failure) => !oldest || failure.timestamp >= oldest).slice(-limit);
+
+  const turnFailureCharCount = (failure: AgentChatTranscriptTurnFailure): number =>
+    failure.message.length + (failure.detail?.length ?? 0);
+
+  /**
+   * What a read keeps back from its entries for failed turns: what they need,
+   * up to a quarter of the read's `maxChars`. Sized on the failures `byLimit`
+   * covers, which hold every failure the bounded window can end up with.
+   */
+  const turnFailureCharReserve = (
+    failures: readonly AgentChatTranscriptTurnFailure[],
+    byLimit: readonly AgentChatTranscriptEntry[],
+    limit: number,
+    maxChars: number,
+  ): number => Math.min(
+    Math.floor(maxChars / 4),
+    turnFailuresSince(failures, byLimit[0]?.timestamp, limit)
+      .reduce((total, failure) => total + turnFailureCharCount(failure), 0),
+  );
+
+  /**
+   * The failed turns a read window covers: those at or after its oldest entry
+   * (every one when the window holds no entry), newest kept within the limit
+   * and within `budget`, the characters the read has left after its entries.
+   * One budget for the whole answer: `truncated` says a failure was clipped
+   * or left out.
+   */
+  const turnFailuresForWindow = (
+    failures: readonly AgentChatTranscriptTurnFailure[],
+    entries: readonly AgentChatTranscriptEntry[],
+    limit: number,
+    budget: number,
+  ): { turnFailures: AgentChatTranscriptTurnFailure[]; truncated: boolean } => {
+    const oldest = entries[0]?.timestamp;
+    const inWindow = failures.filter((failure) => !oldest || failure.timestamp >= oldest);
+    const candidates = inWindow.slice(-limit);
+    let truncated = candidates.length < inWindow.length;
+    let remaining = budget;
+    const keptNewestFirst: AgentChatTranscriptTurnFailure[] = [];
+    for (let index = candidates.length - 1; index >= 0; index -= 1) {
+      const failure = candidates[index]!;
+      if (remaining <= 0) {
+        truncated = true;
+        break;
+      }
+      const message = clipTranscriptField(failure.message, remaining);
+      remaining -= message.length;
+      const detail = failure.detail && remaining > 0 ? clipTranscriptField(failure.detail, remaining) : "";
+      remaining -= detail.length;
+      if (message !== failure.message || (failure.detail ?? "") !== detail) truncated = true;
+      const { detail: _detail, ...rest } = failure;
+      keptNewestFirst.push({ ...rest, message, ...(detail ? { detail } : {}) });
+    }
+    return { turnFailures: keptNewestFirst.reverse(), truncated };
   };
 
   const readLatestTranscriptTodoItems = (
@@ -15274,6 +15395,8 @@ export function createAgentChatService(args: {
     entries: AgentChatTranscriptEntry[];
     truncated: boolean;
     totalEntries: number;
+    /** Failed turns in this window, with the error that ended each. Absent when none failed. */
+    turnFailures?: AgentChatTranscriptTurnFailure[];
     /** Set when the id names a tracked CLI terminal: the entry is its report, not a chat transcript. */
     cliSession?: CliSessionFacts;
   }> => {
@@ -15291,7 +15414,7 @@ export function createAgentChatService(args: {
     const managed = ensureManagedSession(sessionId);
     // Flush any pending buffered text so the transcript includes all content
     flushBufferedText(managed);
-    const transcriptEntries = await readTranscriptEntries(managed, signal);
+    const { entries: transcriptEntries, turnFailures: allTurnFailures } = await readTranscriptEntries(managed, signal);
     const fallbackEntries = transcriptEntries.length
       ? transcriptEntries
       : managed.recentConversationEntries.map((entry) => ({
@@ -15304,7 +15427,9 @@ export function createAgentChatService(args: {
 
     const byLimit = fallbackEntries.slice(-normalizedLimit);
     let truncated = fallbackEntries.length > byLimit.length;
-    let remainingChars = normalizedMaxChars;
+    // `maxChars` bounds the whole answer, failed turns included.
+    const failureReserve = turnFailureCharReserve(allTurnFailures, byLimit, normalizedLimit, normalizedMaxChars);
+    let remainingChars = normalizedMaxChars - failureReserve;
     const bounded: AgentChatTranscriptEntry[] = [];
 
     for (let index = byLimit.length - 1; index >= 0; index -= 1) {
@@ -15326,11 +15451,14 @@ export function createAgentChatService(args: {
     }
 
     bounded.reverse();
+    const failureWindow = turnFailuresForWindow(allTurnFailures, bounded, normalizedLimit, failureReserve + remainingChars);
+    const turnFailures = failureWindow.turnFailures;
     return {
       sessionId: managed.session.id,
       entries: bounded,
-      truncated,
+      truncated: truncated || failureWindow.truncated,
       totalEntries: fallbackEntries.length,
+      ...(turnFailures.length ? { turnFailures } : {}),
     };
   };
 
@@ -15353,6 +15481,8 @@ export function createAgentChatService(args: {
     totalEntries: number;
     nextCursor: number | null;
     cursorKind: "byte";
+    /** Failed turns in this page, with the error that ended each. Absent when none failed. */
+    turnFailures?: AgentChatTranscriptTurnFailure[];
   }> => {
     if (!managedSessions.has(sessionId.trim()) && readTrackedCliRow(sessionId)) {
       throw new Error(
@@ -15425,7 +15555,10 @@ export function createAgentChatService(args: {
 
     const byLimit = converted.slice(-normalizedLimit);
     let charTruncated = converted.length > byLimit.length;
-    let remainingChars = normalizedMaxChars;
+    // `maxChars` bounds the whole page, failed turns included.
+    const pageTurnFailures = transcriptTurnFailuresFromEnvelopes(sessionId, collected.map((row) => row.envelope));
+    const failureReserve = turnFailureCharReserve(pageTurnFailures, byLimit, normalizedLimit, normalizedMaxChars);
+    let remainingChars = normalizedMaxChars - failureReserve;
     const boundedNewestFirst: AgentChatTranscriptEntry[] = [];
     for (let index = byLimit.length - 1; index >= 0; index -= 1) {
       const entry = byLimit[index]!;
@@ -15457,10 +15590,13 @@ export function createAgentChatService(args: {
         nextCursor = oldestSourceOffset > 0 ? oldestSourceOffset : null;
       }
     }
+    const failureWindow = turnFailuresForWindow(pageTurnFailures, entries, normalizedLimit, failureReserve + remainingChars);
+    const turnFailures = failureWindow.turnFailures;
     return {
       sessionId,
       entries,
-      truncated: charTruncated || nextCursor != null,
+      ...(turnFailures.length ? { turnFailures } : {}),
+      truncated: charTruncated || failureWindow.truncated || nextCursor != null,
       // Byte-cursor consumers must treat this as the count resident in this
       // bounded page, not as a global transcript index.
       totalEntries: entries.length,
@@ -16202,7 +16338,9 @@ export function createAgentChatService(args: {
     const newestFirst: AgentChatEventEnvelope[] = [];
     let retainedChars = 0;
     let retainedConversationEvents = 0;
+    let retainedFailureEvents = 0;
     const maxRetainedEvents = 10_000;
+    const maxRetainedFailureEvents = 2_000;
     const maxRetainedChars = 4_000_000;
     for (let pageCount = 0; cursor > 0 && pageCount < 8; pageCount += 1) {
       let page: TranscriptHistoryPageRead;
@@ -16228,15 +16366,27 @@ export function createAgentChatService(args: {
       for (let index = page.envelopes.length - 1; index >= 0; index -= 1) {
         const envelope = page.envelopes[index]!;
         const conversational = envelope.event.type === "user_message" || envelope.event.type === "text";
-        const envelopeChars = conversational ? safeJsonChars(envelope) : 0;
+        // What `transcriptTurnFailuresFromEnvelopes` reads: a failed turn and
+        // the error that ended it. Kept as they are (within the same budget),
+        // or `ade chat read` would never report a failed turn. Each is a
+        // content event, so it ends an assistant run exactly as the stand-in
+        // status below does.
+        const failureSignal = envelope.event.type === "error"
+          || (envelope.event.type === "done" && envelope.event.status === "failed")
+          || (envelope.event.type === "status" && envelope.event.turnStatus === "failed");
+        const envelopeChars = conversational || failureSignal ? safeJsonChars(envelope) : 0;
+        const fitsChars = envelopeChars <= maxRetainedChars && retainedChars + envelopeChars <= maxRetainedChars;
         if (
           conversational
-          && envelopeChars <= maxRetainedChars
+          && fitsChars
           && retainedConversationEvents < maxRetainedEvents
-          && retainedChars + envelopeChars <= maxRetainedChars
         ) {
           newestFirst.push(envelope);
           retainedConversationEvents += 1;
+          retainedChars += envelopeChars;
+        } else if (failureSignal && fitsChars && retainedFailureEvents < maxRetainedFailureEvents) {
+          newestFirst.push(envelope);
+          retainedFailureEvents += 1;
           retainedChars += envelopeChars;
         } else if (newestFirst.length > 0 && newestFirst.at(-1)?.event.type !== "status") {
           newestFirst.push({
@@ -69535,13 +69685,28 @@ export function createAgentChatService(args: {
     // A secret card is never re-routed (its value must not reach the
     // transcript), so say plainly that nothing was saved and where to add it.
     const secretCard = readProjectSecretRequestCard(request);
+    const connectCard = readIntegrationConnectRequestCard(request);
+    const mcpServerCard = readMcpServerRequestCard(request);
+    const connectLabel = connectCard ? connectProviderSpec(connectCard.provider).label : null;
+    // A browser or device sign-in finished on its own before the answer; a
+    // typed key was never saved, because only the asker's host saves it.
+    const connectMethodAnswer = answer?.answers?.[CONNECT_METHOD_QUESTION_ID];
+    const connectMethodId = Array.isArray(connectMethodAnswer) ? connectMethodAnswer[0] : connectMethodAnswer;
+    const connectAnswered = connectCard ? connectMethod(connectCard.provider, typeof connectMethodId === "string" ? connectMethodId : null) : null;
+    const connectSignedIn = connectAnswered != null && isSelfRunConnectMethod(connectAnswered);
     settleDeadPendingInput(
       managed,
       itemId,
       decision,
       secretCard && accepted
         ? `The agent that asked for ${secretCard.name} stopped waiting, so ADE did not save it. Add it with Add secret… in the composer, or ask the agent again.`
-        : undefined,
+        : connectLabel && accepted
+          ? connectSignedIn
+            ? `${connectLabel} is signed in, but the agent that asked stopped waiting. Tell it to go on.`
+            : `The agent that asked to connect ${connectLabel} stopped waiting, so ADE did not save the key. Connect it in Settings › Integrations, or ask the agent again.`
+          : mcpServerCard && accepted
+            ? `The agent that asked to add the MCP server ${mcpServerCard.server.name} stopped waiting, so ADE did not add it. Add it in Settings › Integrations › MCP servers, or ask the agent again.`
+            : undefined,
     );
   };
 
@@ -69618,8 +69783,20 @@ export function createAgentChatService(args: {
 
     const localPending = managed.localPendingInputs.get(itemId);
     if (localPending) {
+      // A decline from another window while an answer saves would close the
+      // card over a key that is then saved; the save decides first.
+      if (localPending.accepting) throw new Error("This answer is already being saved.");
       if (localPending.beforeAccept && resolvedDecision !== "decline" && resolvedDecision !== "cancel") {
-        localPending.beforeAccept(normalizePendingInputAnswers(localPending.request, answers, responseText));
+        localPending.accepting = true;
+        try {
+          await localPending.beforeAccept(normalizePendingInputAnswers(localPending.request, answers, responseText));
+        } finally {
+          localPending.accepting = false;
+        }
+        // The card may have timed out or been cancelled while the work ran.
+        if (managed.localPendingInputs.get(itemId) !== localPending) {
+          throw new Error("This request is no longer open.");
+        }
       }
       managed.localPendingInputs.delete(itemId);
       emitPendingInputResolved(managed, {
@@ -75669,13 +75846,21 @@ export function createAgentChatService(args: {
       });
       args.signal?.addEventListener("abort", () => cancelLocalPendingInput(managed, itemId), { once: true });
       if (args.timeoutMs && args.timeoutMs > 0) {
-        expiry = setTimeout(() => {
+        const expire = () => {
+          const pending = managed.localPendingInputs.get(itemId);
           // Answered, or cancelled by a turn ending, in the meantime.
-          if (managed.localPendingInputs.get(itemId)?.resolve !== resolve) return;
+          if (pending?.resolve !== resolve) return;
+          // An answer still saving (`beforeAccept`) finishes first, so a key
+          // that was saved is never reported as timed out.
+          if (pending.accepting) {
+            expiry = setTimeout(expire, 1_000);
+            return;
+          }
           timedOut = true;
           cancelLocalPendingInput(managed, itemId);
           persistChatState(managed);
-        }, args.timeoutMs);
+        };
+        expiry = setTimeout(expire, args.timeoutMs);
       }
     }).finally(() => {
       if (expiry) clearTimeout(expiry);
@@ -77074,6 +77259,7 @@ export function createAgentChatService(args: {
     messageSubagent,
     controlSubagent,
     restartSession,
+    mcpRegistryChatStatus,
     waitFor: chatWaitRegistry.waitFor,
     armWait: chatWaitRegistry.arm,
     listWaits: chatWaitRegistry.list,

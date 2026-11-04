@@ -68,6 +68,11 @@ export function isMachineAdeHome(adeDir: string, machineHome = resolveMachineAde
  * with sync on; their launcher starts the brain with `--no-sync`.
  */
 export function isSyncCapableAdeHome(adeDir: string, env: NodeJS.ProcessEnv = process.env): boolean {
+  // A dev test machine (`npm run dev:machine`) is its own machine in its own
+  // home, never an installed one's; see services/sync/devTestMachine.ts.
+  if (env.ADE_DEV_TEST_MACHINE === "1") {
+    return !isMachineAdeHome(adeDir) && !isMachineAdeHome(adeDir, adeHomeForChannel("alpha"));
+  }
   if (isMachineAdeHome(adeDir)) return true;
   const channel = env.ADE_PACKAGE_CHANNEL?.trim().toLowerCase();
   if (channel !== "alpha") return false;
