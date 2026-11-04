@@ -47,22 +47,28 @@ describe("agentCliLoginRunner verification", () => {
   beforeEach(() => { vi.useFakeTimers(); });
   afterEach(() => { vi.useRealTimers(); });
 
-  // Copilot rewrites config.json when its login starts: a changed file while
-  // it still waits must not read as signed in (a real sign-in did).
-  it("does not call Copilot signed in until its CLI exits after approval", async () => {
+  // A changed login file while the CLI still waits is not a sign-in when the
+  // CLI rewrites it at start (Copilot, measured with a real sign-in) or a
+  // login was already there (signing in again: a session using it refreshes
+  // its token in the same file). Only the CLI's clean exit after that counts.
+  it.each([
+    ["copilot", "To authenticate, visit https://github.com/login/device and enter code 1278-FC40\nWaiting for authorization...\n", "octo"],
+    ["kimi", "Opening browser for Kimi device login: https://www.kimi.ai/code/authorize_device?user_code=HIM4-52GR\n", undefined],
+  ] as const)("does not call %s signed in on a rewritten login until its CLI exits", async (provider, prompt, account) => {
     const cli = fakePty();
     const saved = savedLogin({ signedIn: true, fingerprint: "old" });
     const runner = runnerWith(saved, cli);
-    const loginId = await startAndWait("copilot", runner);
+    const loginId = await startAndWait(provider, runner);
 
-    cli.print("To authenticate, visit https://github.com/login/device and enter code 1278-FC40\nWaiting for authorization...\n");
-    saved.set({ signedIn: true, fingerprint: "rewritten-at-start", account: "octo" });
+    cli.print(prompt);
+    saved.set({ signedIn: true, fingerprint: "rewritten-while-waiting", ...(account ? { account } : {}) });
     await vi.advanceTimersByTimeAsync(1_000);
     expect(runner.status(loginId).state).toBe("running");
+    expect(cli.pty.kill).not.toHaveBeenCalled();
 
     cli.exit(0);
     await vi.advanceTimersByTimeAsync(0);
-    expect(runner.status(loginId)).toMatchObject({ state: "succeeded", email: "octo" });
+    expect(runner.status(loginId)).toMatchObject({ state: "succeeded", ...(account ? { email: account } : {}) });
   });
 
   it("calls Grok signed in as soon as a new login lands, while its CLI still runs", async () => {
@@ -82,21 +88,7 @@ describe("agentCliLoginRunner verification", () => {
     expect(cli.pty.kill).toHaveBeenCalled();
   });
 
-  // Signing in again: a session using the login refreshes its token in the
-  // same file, and a CLI can exit 0 on an expired code.
-  it("does not count a rewritten login as signing in again while the CLI waits", async () => {
-    const cli = fakePty();
-    const saved = savedLogin({ signedIn: true, fingerprint: "old" });
-    const runner = runnerWith(saved, cli);
-    const loginId = await startAndWait("kimi", runner);
-
-    cli.print("Opening browser for Kimi device login: https://www.kimi.ai/code/authorize_device?user_code=HIM4-52GR\n");
-    saved.set({ signedIn: true, fingerprint: "refreshed-by-a-session" });
-    await vi.advanceTimersByTimeAsync(1_000);
-    expect(runner.status(loginId).state).toBe("running");
-    expect(cli.pty.kill).not.toHaveBeenCalled();
-  });
-
+  // A CLI can exit 0 on an expired code; with a login already there, nothing new was saved.
   it("fails signing in again when the CLI exits cleanly without a new login", async () => {
     const cli = fakePty();
     const saved = savedLogin({ signedIn: true, fingerprint: "old" });
