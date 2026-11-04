@@ -123,11 +123,16 @@ shared ACP host. Their spec is `acp-providers-spec.md`.
 
 ## Auth and plan
 
-- ADE signs no one in. The runtime reuses the login the machine already has, in
-  the CLI's order: `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, `GITHUB_TOKEN`, then the
-  stored `copilot login` (keychain), then `gh auth login`. ADE's runtime is
-  headless and has no `login` command, so Settings shows `copilot login` and the
-  empty state names `gh auth login` too.
+- The runtime reuses the login the machine already has, in the CLI's order:
+  `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, `GITHUB_TOKEN`, then the stored
+  `copilot login` (keychain), then `gh auth login`. The SDK runtime has no
+  `login` command, so Settings (and first-run setup) sign in with ADE's pinned
+  Copilot CLI instead: `copilot login --device-code` in a private PTY on the
+  machine (`agentCliLoginRunner.ts`), showing GitHub's code in a sheet. Copilot
+  rewrites `config.json` when that login starts, so only its exit after
+  approval counts. `config.json` is JSONC with `//` comment lines and camelCase
+  `loggedInUsers` (`parseCopilotLoggedInUsers`). Hosts without the in-app
+  sign-in still show `copilot login` to copy.
 - ADE reads the signed-in state with `client.getAuthStatus()` on every status
   refresh. This needs no session, so checking auth never starts a session or an
   MCP server. Its answer is the truth for Copilot's Settings tile and

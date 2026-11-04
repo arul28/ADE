@@ -17,19 +17,10 @@
  * page pinned to another machine.
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  ArrowSquareOut,
-  CaretRight,
-  Check,
-  CheckCircle,
-  CircleNotch,
-  Copy,
-  ShieldCheck,
-} from "@phosphor-icons/react";
+import { Check, CheckCircle, CircleNotch, ShieldCheck } from "@phosphor-icons/react";
 import { COLORS, MONO_FONT, SANS_FONT, outlineButton } from "../../../lanes/laneDesignTokens";
 import { Dialog, type DialogAction } from "../../../ui/dialog";
 import { Banner } from "../../../ui/notice/Banner";
-import { ProviderLogo } from "../../../shared/ProviderLogos";
 import {
   isProviderLoginLive,
   type ProviderInstance,
@@ -39,6 +30,7 @@ import {
 import { isUnsupportedAdeActionError } from "../../../../../shared/codedError";
 import { accountIdentityLine } from "./accountPresentation";
 import { providerActionMessage } from "../providerErrorMessage";
+import { OutputDisclosure, SignInProgressCard, linkHost } from "../signInSheetParts";
 import { pinnedProviderInstances } from "./useProviderInstances";
 import { useSettingsMachineScope } from "../../SettingsMachineScope";
 import { isWebClientMode } from "../../../../lib/webClientMode";
@@ -71,16 +63,6 @@ function startFailureMessage(err: unknown): string {
   return providerActionMessage(err, "That sign-in could not be started.");
 }
 
-/** `claude.ai`, `auth.openai.com` — the host a sign-in link points at. */
-function linkHost(url: string | null): string | null {
-  if (!url) return null;
-  try {
-    return new URL(url).hostname;
-  } catch {
-    return null;
-  }
-}
-
 export function AddProviderAccountSheet({
   provider,
   providerLabel,
@@ -98,7 +80,6 @@ export function AddProviderAccountSheet({
   const [login, setLogin] = useState<ProviderLoginStatus | null>(null);
   const [code, setCode] = useState("");
   const [submitting, setSubmitting] = useState(false);
-  const [copied, setCopied] = useState(false);
   const [showOutput, setShowOutput] = useState(false);
   const [signedInAs, setSignedInAs] = useState<string | null>(null);
 
@@ -283,18 +264,6 @@ export function AddProviderAccountSheet({
     }
   }, [api, applyLogin, code]);
 
-  const copyLink = useCallback(() => {
-    const url = loginRef.current?.url;
-    if (!url) return;
-    void navigator.clipboard?.writeText(url).then(() => {
-      if (!aliveRef.current) return;
-      setCopied(true);
-      window.setTimeout(() => {
-        if (aliveRef.current) setCopied(false);
-      }, 1_500);
-    }).catch(() => undefined);
-  }, []);
-
   // An account is called by its email. One that has never signed in has none
   // yet: the machine's own login is just "the provider" to the person signing
   // in (first run, the provider card), any other is "this account".
@@ -389,82 +358,17 @@ export function AddProviderAccountSheet({
 
       {phase === "signing" ? (
         <div style={{ display: "flex", flexDirection: "column", gap: 12, padding: "16px 20px 8px" }}>
-          <div
-            style={{
-              display: "flex",
-              flexDirection: "column",
-              alignItems: "center",
-              gap: 10,
-              padding: "22px 20px 18px",
-              borderRadius: 12,
-              border: `1px solid ${COLORS.borderMuted}`,
-              background: COLORS.recessedBg,
-              textAlign: "center",
-            }}
-          >
-            <span
-              aria-hidden
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                justifyContent: "center",
-                width: 44,
-                height: 44,
-                borderRadius: 12,
-                background: COLORS.cardBg,
-                border: `1px solid ${COLORS.outlineBorder}`,
-              }}
-            >
-              <ProviderLogo family={provider} size={22} />
-            </span>
-            <span style={{ fontSize: 14, fontWeight: 500, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>
-              {verifying ? "Checking the new login…" : "Finish signing in with your browser"}
-            </span>
-            <span style={{ maxWidth: 400, fontSize: 12, lineHeight: 1.5, fontFamily: SANS_FONT, color: COLORS.textMuted }}>
-              {verifying
-                ? `${providerLabel} finished. ADE is reading the saved login for ${accountName}.`
-                : login?.deviceCode
-                  ? `Open the sign-in page, choose the account for ${accountName}, and enter this code:`
-                  : `${host ?? providerLabel} should be open in your browser. Choose the account for ${accountName} and approve.`}
-            </span>
-            {login?.deviceCode && !verifying ? (
-              <span
-                aria-label="One-time sign-in code"
-                style={{
-                  padding: "6px 14px",
-                  fontSize: 18,
-                  fontWeight: 600,
-                  letterSpacing: "0.08em",
-                  fontFamily: MONO_FONT,
-                  color: COLORS.textPrimary,
-                  background: COLORS.recessedBg,
-                  border: `1px solid ${COLORS.outlineBorder}`,
-                  borderRadius: 8,
-                  userSelect: "all",
-                }}
-              >
-                {login.deviceCode}
-              </span>
-            ) : null}
-            {login?.url && !verifying ? (
-              <span style={{ display: "inline-flex", gap: 8, marginTop: 4 }}>
-                <button
-                  type="button"
-                  onClick={() => void window.ade?.app?.openExternal?.(login.url!)}
-                  style={outlineButton({ height: 28, padding: "0 12px", fontSize: 12 })}
-                >
-                  <ArrowSquareOut size={13} /> Open sign-in page
-                </button>
-                <button
-                  type="button"
-                  onClick={copyLink}
-                  style={outlineButton({ height: 28, padding: "0 12px", fontSize: 12 })}
-                >
-                  {copied ? <Check size={13} /> : <Copy size={13} />} {copied ? "Copied" : "Copy link"}
-                </button>
-              </span>
-            ) : null}
-          </div>
+          <SignInProgressCard
+            logoFamily={provider}
+            headline={verifying ? "Checking the new login…" : "Finish signing in with your browser"}
+            detail={verifying
+              ? `${providerLabel} finished. ADE is reading the saved login for ${accountName}.`
+              : login?.deviceCode
+                ? `Open the sign-in page, choose the account for ${accountName}, and enter this code:`
+                : `${host ?? providerLabel} should be open in your browser. Choose the account for ${accountName} and approve.`}
+            deviceCode={verifying ? null : login?.deviceCode ?? null}
+            url={verifying ? null : login?.url ?? null}
+          />
 
           {login?.awaitingCode ? (
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
@@ -548,57 +452,6 @@ export function AddProviderAccountSheet({
         </div>
       ) : null}
     </Dialog>
-  );
-}
-
-/** The CLI's own words, for when the friendly view is not enough. Closed by default. */
-function OutputDisclosure({ output, open, onToggle }: { output: string; open: boolean; onToggle: () => void }) {
-  if (!output.trim()) return null;
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-      <button
-        type="button"
-        aria-expanded={open}
-        onClick={onToggle}
-        style={{
-          display: "inline-flex",
-          alignItems: "center",
-          gap: 4,
-          alignSelf: "flex-start",
-          padding: 0,
-          border: "none",
-          background: "transparent",
-          fontSize: 11,
-          fontFamily: SANS_FONT,
-          color: COLORS.textDim,
-          cursor: "pointer",
-        }}
-      >
-        <CaretRight size={10} style={{ transform: open ? "rotate(90deg)" : undefined, transition: "transform 120ms ease" }} />
-        Sign-in output
-      </button>
-      {open ? (
-        <pre
-          style={{
-            margin: 0,
-            maxHeight: 140,
-            overflow: "auto",
-            padding: "8px 10px",
-            borderRadius: 8,
-            border: `1px solid ${COLORS.borderMuted}`,
-            background: COLORS.recessedBg,
-            fontSize: 11,
-            lineHeight: 1.5,
-            fontFamily: MONO_FONT,
-            color: COLORS.textSecondary,
-            whiteSpace: "pre-wrap",
-            wordBreak: "break-all",
-          }}
-        >
-          {output.trim()}
-        </pre>
-      ) : null}
-    </div>
   );
 }
 

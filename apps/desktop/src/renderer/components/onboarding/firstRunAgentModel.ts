@@ -21,6 +21,10 @@ export type FirstRunSignIn =
   | "account"
   /** Cursor's own browser login. */
   | "cursor"
+  /** The agent's own Google sign-in, which ADE runs with its copy (no terminal). */
+  | "antigravity"
+  /** The CLI's own login in a private PTY (`ai.cliLoginStart`), like Claude and Codex. */
+  | "cli"
   /** A terminal login or a key: needs Settings, which opens after setup. */
   | "settings";
 
@@ -38,15 +42,15 @@ const AGENTS: Record<SettingsProviderId, Omit<FirstRunAgent, "id">> = {
   claude: { label: "Claude Code", logo: "claude", signIn: "account" },
   codex: { label: "Codex", logo: "codex", signIn: "account" },
   cursor: { label: "Cursor", logo: "cursor", signIn: "cursor" },
-  copilot: { label: "GitHub Copilot", logo: "github-copilot", signIn: "settings" },
+  copilot: { label: "GitHub Copilot", logo: "github-copilot", signIn: "cli" },
   opencode: { label: "OpenCode", logo: "opencode", signIn: "settings" },
-  droid: { label: "Droid", logo: "droid", signIn: "settings" },
-  antigravity: { label: ACP_PROVIDER_METADATA.antigravity.label, logo: "antigravity", signIn: "settings" },
-  devin: { label: ACP_PROVIDER_METADATA.devin.label, logo: "devin", signIn: "settings" },
-  grok: { label: ACP_PROVIDER_METADATA.grok.label, logo: "grok", signIn: "settings" },
-  kimi: { label: ACP_PROVIDER_METADATA.kimi.label, logo: "kimi", signIn: "settings" },
+  droid: { label: "Droid", logo: "droid", signIn: "cli" },
+  antigravity: { label: ACP_PROVIDER_METADATA.antigravity.label, logo: "antigravity", signIn: "antigravity" },
+  devin: { label: ACP_PROVIDER_METADATA.devin.label, logo: "devin", signIn: "cli" },
+  grok: { label: ACP_PROVIDER_METADATA.grok.label, logo: "grok", signIn: "cli" },
+  kimi: { label: ACP_PROVIDER_METADATA.kimi.label, logo: "kimi", signIn: "cli" },
   qwen: { label: ACP_PROVIDER_METADATA.qwen.label, logo: "qwen", signIn: "settings" },
-  muse: { label: PROVIDER_DISPLAY_NAME.muse, logo: "muse", signIn: "settings" },
+  muse: { label: PROVIDER_DISPLAY_NAME.muse, logo: "muse", signIn: "cli" },
   pi: { label: "Pi", logo: "pi", signIn: "settings" },
 };
 
@@ -65,6 +69,10 @@ export type FirstRunAgentStatus = {
   state: FirstRunAgentState;
   /** One short line: the account when connected, what is missing otherwise. */
   detail: string;
+  /** The signed-in account (an email or a username), when the status names one. */
+  account?: string;
+  /** The account's plan, e.g. "Claude Max", when the status names one. */
+  plan?: string;
 };
 
 function accountLine(connection: AiProviderConnectionStatus | null | undefined): string | null {
@@ -74,8 +82,13 @@ function accountLine(connection: AiProviderConnectionStatus | null | undefined):
   return parts.length ? parts.join(" · ") : null;
 }
 
+/** An older host has no in-app CLI sign-in; its CLIs sign in later, in Settings. */
+function agentCliSignInAvailable(): boolean {
+  return typeof window !== "undefined" && typeof window.ade?.ai?.cliLoginStart === "function";
+}
+
 function notConnected(agent: FirstRunAgent, connection: AiProviderConnectionStatus | null): FirstRunAgentStatus {
-  if (agent.signIn !== "settings") {
+  if (agent.signIn !== "settings" && (agent.signIn !== "cli" || agentCliSignInAvailable())) {
     // The tile's own "Sign in" button says what to do; the line only says where it stands.
     return { state: "sign-in", detail: "Not signed in" };
   }
@@ -122,7 +135,14 @@ export function firstRunAgentStatus(
     || (connection?.runtimeDetected === true && connection.authAvailable === true)
   );
   if (providerStatusConnected(agent.id, status) || runnable) {
-    return { state: "connected", detail: accountLine(connection) ?? "Ready on this computer" };
+    const account = connection?.accountEmail?.trim() || undefined;
+    const plan = connection?.accountPlan?.trim() || undefined;
+    return {
+      state: "connected",
+      detail: accountLine(connection) ?? "Ready on this computer",
+      ...(account ? { account } : {}),
+      ...(plan ? { plan } : {}),
+    };
   }
   return notConnected(agent, connection);
 }

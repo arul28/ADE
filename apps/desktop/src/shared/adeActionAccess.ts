@@ -232,7 +232,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
   },
   ai: {
     read: [
-      "getStatus", "jevDecide", "jevStatus", "getContinueAfterRestart", "getMachineUpdateTrack", "getOpenCodeRuntimeDiagnostics", "isOpenCodeInstalled", "museBinaryStatus", "pinnedToolStatus", "getProviderContextInventory", "antigravitySignInStatus", "listApiCredentials",
+      "getStatus", "jevDecide", "jevStatus", "getContinueAfterRestart", "getMachineUpdateTrack", "getOpenCodeRuntimeDiagnostics", "isOpenCodeInstalled", "museBinaryStatus", "pinnedToolStatus", "getProviderContextInventory", "antigravitySignInStatus", "cliLoginStatus", "listApiCredentials",
       "getApiCredential", "listApiKeys", "opencodeAuthMethods", "opencodeAccounts", "listHarnessRoutes",
       "piLoginProviders", "cursorAuthStatus", "listCursorCloudRepositories",
       "listCursorCloudAgents", "listCursorCloudRuns", "getCursorCloudLaneSecretNames",
@@ -241,7 +241,8 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
     ],
     write: [
       "getCursorAgentUsage", "ensureMuseBinary", "pinnedToolDownload", "antigravitySignInStart", "antigravitySignInComplete",
-      "antigravitySignInCancel", "museSettings", "museSettingsClose",
+      "antigravitySignInCancel", "cliLoginStart", "cliLoginSubmitCode", "cliLoginCancel",
+      "museSettings", "museSettingsClose",
       "acpProviderDiagnostics", "storeApiCredential", "removeApiCredential",
       "verifyApiKeyConnection", "storeApiKey", "deleteApiKey", "updateConfig", "setContinueAfterRestart",
       "opencodeOAuthStart", "opencodeOAuthCancel", "setOpencodeProviderKey",

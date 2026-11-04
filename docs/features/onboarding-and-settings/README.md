@@ -253,6 +253,24 @@ Main process:
   runner per machine, shared by local IPC and the pinned `provider_instances`
   actions. `refreshProviderAccounts.ts` re-reads a provider's accounts (and one
   named account's saved login) after a sign-in.
+- `apps/desktop/src/main/services/ai/agentCliLoginRunner.ts` — the same
+  terminal-free sign-in for the agent CLIs ADE runs from its pinned copy
+  (Grok, Devin, Muse, GitHub Copilot, Droid, Kimi), behind
+  `ai.cliLoginStart` / `cliLoginStatus` / `cliLoginSubmitCode` /
+  `cliLoginCancel`. Each CLI's own login runs in a private PTY on the machine
+  that owns it; the result is that CLI's saved login read back from disk
+  (`readAgentCliSavedLogin` in `authDetector.ts`, by file fingerprint), never
+  its text. A login counts only once it differs from the one there at the
+  start. When a login was already there (Sign in again), or the CLI rewrites
+  its file before approval (Copilot), only a clean exit with a changed login
+  counts. Muse on macOS keeps its login in the Keychain, so there a clean
+  exit counts unless Muse printed a failure. Droid, already signed in, ends
+  at once as signed in instead of opening its normal session.
+  `machineAgentCliLoginRunner.ts` is the one runner per machine.
+  `main/services/shared/cliLoginPty.ts` holds what both runners share: the
+  PTY spawn and Windows tree kill, output cleaning (a ConPTY cursor move
+  reads as a line break or a space), the link, device-code and paste-prompt
+  reading, and the pasted code.
 - `apps/desktop/src/shared/types/providerInstances.ts` — the shared provider,
   account, environment-key, and per-provider-settings contracts used by the
   registry, IPC, renderer, and CLI action surface. It also carries the
@@ -640,7 +658,7 @@ Renderer — onboarding:
   `describeThisComputerMissing` for existing tests.
 - `apps/desktop/src/renderer/components/onboarding/FirstRunFlow.tsx` +
   `firstRun.css` (shared frame and motion) with one stylesheet per step
-  (`firstRunWelcome.css`, `firstRunAgents.css`, `firstRunProjects.css`,
+  (`firstRunWelcome.css`, `firstRunAgentRail.css`, `firstRunProjects.css`,
   `firstRunDevices.css`) — first-run setup on a computer: the welcome card (the
   website's "Every AI coding tool" promise, one button, Skip setup) and "Bring
   your projects in" (the git projects found on this computer, the phone QR and
@@ -2034,16 +2052,29 @@ video it replaced), so a computer set up before it existed never sees it.
    headline, one sentence, the provider marks, **Get started** and **Skip
    setup**. Skip marks onboarding skipped, so no hint shows later either.
 2. **Sign in**, if this computer has no ADE session (the account is required).
-3. **Connect your agents** (`FirstRunAgents.tsx`). Claude Code, Codex and
-   Cursor, each Connected (with its account) or with a **Sign in** button,
-   read from the same `ai.getStatus` Settings › Agents & Models reads (it
-   answers before any project is open). Claude Code and Codex sign in through
-   the Settings account sheet, a machine-level login that needs no project;
-   Cursor through its browser login. Other providers show as chips only when
-   already connected; the card points at Settings for the rest. Status is
-   re-read on open, after a sign-in and on window focus, never polled. While
-   this card is up, project discovery starts in the background so the next
-   card opens with its list.
+3. **Connect your agents** (`FirstRunAgents.tsx`, `FirstRunAgentRail.tsx`).
+   Every agent's 3D logo (`providerBrand`, the marks on its Settings page)
+   hangs from a rail on a cord, the agents that can sign in here first and the
+   rest past a divider. Moving along the rail swings the logos and turns the
+   nearest one to face you; the banner under the rail wears that agent's
+   Settings banner with its name, where it stands ("Signed in as … · plan",
+   "Not signed in on this computer", or "Set this one up later, in Settings ›
+   Agents & Models") and its **Sign in** button. A logo spins once when its
+   agent connects. Status comes from the same `ai.getStatus` Settings › Agents
+   & Models reads (it answers before any project is open). Sign-in uses the
+   same flows as Settings, on this computer:
+   - Claude Code and Codex use the account sheet.
+   - Cursor uses its browser login.
+   - Antigravity uses its Google sign-in.
+   - Grok, Devin, Muse, Copilot, Droid and Kimi use the agent CLI sheet (`AgentCliSignInSheet.tsx`).
+
+   A sheet's item stays mounted when the status turns connected, so a refresh
+   never cancels the sign-in it is finishing. The swing runs on animation
+   frames only until it settles (none under reduced motion). Status is re-read
+   on open, after a sign-in (a re-read asked for during one in flight runs
+   after it) and on window focus, never polled. While this card is up,
+   project discovery starts in the background so the next card opens with its
+   list.
 4. **Bring your projects in.** `discoverOnboardingProjects` reads the history
    of every provider ADE imports chats from: Claude Code's transcripts (one
    listing, plus the head of the newest transcript per folder for its cwd),
