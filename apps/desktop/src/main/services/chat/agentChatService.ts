@@ -12075,7 +12075,12 @@ export function createAgentChatService(args: {
    * In memory only: a chat with no live runtime gets every server on its next
    * launch anyway. Read by `mcpRegistryChatStatus` (the "Refresh chat" chip).
    */
-  const mcpRegistryLaunchedBySession = new WeakMap<ManagedChatSession, { epoch: number; names: ReadonlySet<string> }>();
+  const mcpRegistryLaunchedBySession = new WeakMap<ManagedChatSession, { epoch: number; targets: ReadonlyMap<string, string> }>();
+
+  /** What a registry server reaches (its URL, or its command line), never its env or header values. */
+  const mcpRegistryTarget = (server: CallerMcpServers[string]): string => JSON.stringify(
+    server.type === "stdio" ? [server.type, server.command, server.args ?? []] : [server.type, server.url],
+  );
 
   /**
    * The servers the user defined once in Settings (the MCP registry), for an
@@ -12100,7 +12105,10 @@ export function createAgentChatService(args: {
     // same epoch (redaction, status lookups) see what it already runs.
     const epoch = runtimeTeardownEpoch(managed);
     if (mcpRegistryLaunchedBySession.get(managed)?.epoch !== epoch) {
-      mcpRegistryLaunchedBySession.set(managed, { epoch, names: new Set(Object.keys(registry.servers ?? {})) });
+      mcpRegistryLaunchedBySession.set(managed, {
+        epoch,
+        targets: new Map(Object.entries(registry.servers ?? {}).map(([name, server]) => [name, mcpRegistryTarget(server)])),
+      });
     }
     const gaps = mcpRegistryLaunchNotices(registry);
     const key = gaps.join("\n");
@@ -12117,7 +12125,8 @@ export function createAgentChatService(args: {
 
   /**
    * Registry servers on for this chat now that its running agent did not
-   * start with, minus the ones the provider's own config already runs. Empty
+   * start with (new, or edited to reach another URL or command), minus the
+   * ones the provider's own config already runs. Empty
    * when the chat has no live agent (its next launch gets everything) or is a
    * chat the registry does not reach. Reads files only; never restarts.
    */
@@ -12135,7 +12144,7 @@ export function createAgentChatService(args: {
     }).servers ?? {};
     const added: CallerMcpServers = {};
     for (const [name, server] of Object.entries(current)) {
-      if (!launched.names.has(name)) added[name] = server;
+      if (launched.targets.get(name) !== mcpRegistryTarget(server)) added[name] = server;
     }
     if (!Object.keys(added).length) return { missing: [] };
     const leftOut = chatUserMcp.registryServersLeftToProvider(chatMcpTarget(managed), added);

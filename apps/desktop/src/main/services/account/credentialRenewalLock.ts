@@ -60,12 +60,14 @@ export async function withCredentialRenewalLock<T>(
   fs.mkdirSync(lockDir, { recursive: true });
   const lockPath = path.join(lockDir, fileName);
   const deadline = Date.now() + timeoutMs;
+  // Names this acquisition, so the release never deletes a later holder's file.
+  const nonce = crypto.randomUUID();
   let fd: number | null = null;
 
   while (fd === null) {
     try {
       fd = fs.openSync(lockPath, "wx");
-      fs.writeFileSync(fd, JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() }));
+      fs.writeFileSync(fd, JSON.stringify({ pid: process.pid, nonce, createdAt: new Date().toISOString() }));
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       // Windows answers EPERM/EBUSY while a stale file is being removed.
@@ -78,18 +80,33 @@ export async function withCredentialRenewalLock<T>(
     }
   }
 
+  // A renewal can outlast `staleMs` (vault round trips, a slow token
+  // exchange): keep the file fresh so a waiter never takes it as a crash.
+  const heldFd = fd;
+  const heartbeat = setInterval(() => {
+    try {
+      const now = new Date();
+      fs.futimesSync(heldFd, now, now);
+    } catch {
+      // The next beat tries again; the release below still checks ownership.
+    }
+  }, Math.max(LOCK_RETRY_MS, Math.floor(staleMs / 3)));
+  heartbeat.unref?.();
+
   try {
     return await fn();
   } finally {
+    clearInterval(heartbeat);
     try {
       fs.closeSync(fd);
     } catch {
       // ignore
     }
     try {
-      fs.unlinkSync(lockPath);
+      const held = JSON.parse(fs.readFileSync(lockPath, "utf8")) as { nonce?: unknown };
+      if (held.nonce === nonce) fs.unlinkSync(lockPath);
     } catch {
-      // ignore
+      // Gone already, or another holder's file mid-write: not ours to remove.
     }
   }
 }
