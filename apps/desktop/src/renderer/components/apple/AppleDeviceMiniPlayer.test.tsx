@@ -2,6 +2,7 @@
 
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type * as WorkLiveIosPictureInPicture from "../work/workLiveIosPictureInPicture";
 
 vi.mock("./AppleDeviceStage", () => ({
   AppleDeviceStage: (props: { className?: string; interactive?: boolean }) => (
@@ -56,7 +57,7 @@ vi.mock("./useAppleDeviceStream", () => ({
 const pipSessions: { video: HTMLVideoElement; stop: ReturnType<typeof vi.fn> }[] = [];
 
 vi.mock("../work/workLiveIosPictureInPicture", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../work/workLiveIosPictureInPicture")>();
+  const actual = await importOriginal<typeof WorkLiveIosPictureInPicture>();
   return {
     ...actual,
     enterCanvasPictureInPicture: vi.fn(async () => {
