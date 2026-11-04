@@ -18,13 +18,16 @@ type UseGracefulStreamLeaseArgs<Lease, Scope> = {
   heldAgain: (lease: Lease) => boolean;
   /** Stops the stream on the machine that holds it. */
   stop: (lease: Lease, scope: Scope) => void;
-  /**
-   * The scope an unmount and a page hide stop with. A ref because the cleanup
-   * runs after the props are gone, and a stop aimed at a stale lane misses.
-   * Left out when the stop needs no scope (`Scope` is `void`).
-   */
-  scopeRef?: { readonly current: Scope };
-};
+} & ScopeRefArg<Scope>;
+
+/**
+ * The scope an unmount and a page hide stop with. A ref because the cleanup
+ * runs after the props are gone, and a stop aimed at a stale lane misses.
+ * Required unless the stop needs no scope (`Scope` is `void`).
+ */
+type ScopeRefArg<Scope> = [Scope] extends [void]
+  ? { scopeRef?: undefined }
+  : { scopeRef: { readonly current: Scope } };
 
 type GracefulStreamLease<Lease, Scope> = {
   /** The lease this viewer holds, or null. Set it when the viewer acquires one. */
@@ -32,6 +35,11 @@ type GracefulStreamLease<Lease, Scope> = {
   /** Give the lease back; stop the stream only when this was the last viewer. */
   releaseLease: (scope: Scope, immediate?: boolean) => void;
 };
+
+/** The scope to stop with now; `undefined` is the `void` scope. */
+function currentScope<Lease, Scope>(args: UseGracefulStreamLeaseArgs<Lease, Scope>): Scope {
+  return (args.scopeRef as { readonly current: Scope } | undefined)?.current as Scope;
+}
 
 /**
  * A viewer's hold on a device stream: the last viewer out stops it after
@@ -63,11 +71,11 @@ export function useGracefulStreamLease<Lease, Scope>(
   }, []);
 
   useEffect(() => () => {
-    releaseLease(argsRef.current.scopeRef?.current as Scope);
+    releaseLease(currentScope(argsRef.current));
   }, [releaseLease]);
 
   useEffect(() => {
-    const onPageHide = () => releaseLease(argsRef.current.scopeRef?.current as Scope, true);
+    const onPageHide = () => releaseLease(currentScope(argsRef.current), true);
     window.addEventListener("pagehide", onPageHide);
     return () => window.removeEventListener("pagehide", onPageHide);
   }, [releaseLease]);
