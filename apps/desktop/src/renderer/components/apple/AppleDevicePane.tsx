@@ -40,7 +40,7 @@ import {
 import { AppleDeviceLoadingCard, type AppleLoadingStage } from "./AppleDeviceLoadingCard";
 import { AppleDevicePicker } from "./AppleDevicePicker";
 import { READABLE_TOAST_DURATION_MS, showToast } from "../app/toast/toastStore";
-import { AppleDeviceRail } from "./AppleDeviceRail";
+import { APPLE_RAIL_WIDTH, AppleDeviceRail } from "./AppleDeviceRail";
 import { WorkToolPreviewControls } from "../terminals/workToolPreviewControls";
 import {
   AppleDeviceNoticeStrip,
@@ -1120,6 +1120,10 @@ export function AppleDevicePane({
               frameVersion={stream.frameVersion}
               onThreeUnavailable={handleThreeUnavailable}
               renderScreenOverlay={renderInspectOverlay}
+              /* The rail floats over the stage's right edge. A screen that
+                 fills a narrow pane (landscape, mostly) would sit under it
+                 and lose its taps there, so the device keeps clear of it. */
+              railInset={appleRailVisible(state) ? APPLE_RAIL_WIDTH : 0}
               className={cn(
                 "bg-transparent",
                 (state === "video-lost" || state === "stopped") && "opacity-40",

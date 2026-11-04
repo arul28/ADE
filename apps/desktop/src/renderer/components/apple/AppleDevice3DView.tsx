@@ -128,6 +128,11 @@ export type AppleDevice3DViewProps = {
   renderScreenOverlay?: ((
     deviceToView: ((point: { x: number; y: number }) => { x: number; y: number }) | null,
   ) => ReactNode) | undefined;
+  /**
+   * CSS pixels at the right edge the framed body must stay out of: the rail,
+   * while it shows. The canvas still fills the stage; only the framing moves.
+   */
+  railInset?: number | undefined;
   className?: string;
 };
 
@@ -298,6 +303,15 @@ function createViewer(
   let shownDistance = 0;
   let lastDistanceAt = 0;
   let viewport = { width: 0, height: 0, pixelRatio: 1 };
+  /**
+   * True while a render owns the renderer: the live loop does not draw, or it
+   * would resize the drawing buffer back to the pane between a turntable's
+   * frames (and flash the person's lighting into the recording).
+   */
+  let renderingOffscreen = false;
+  /** The rail inset and display turn the camera was last framed for. */
+  let lastRailInset = 0;
+  let lastFitRotation = layout.rotation;
   let drawingBuffer = { width: 0, height: 0, pixelRatio: 0 };
   let pointerMode: "input" | "orbit" | null = null;
   /** Where the touch in progress last was, so a cancel ends it there. */
@@ -341,12 +355,29 @@ function createViewer(
 
   const fitCamera = () => {
     if (!viewport.width || !viewport.height || !body) return;
-    camera.aspect = viewport.width / viewport.height;
+    const { width, height } = viewport;
     body.root.updateMatrixWorld(true);
     const bounds = new THREE.Box3().setFromObject(body.root);
     const size = bounds.getSize(new THREE.Vector3());
     const tan = Math.tan(((CAMERA_FOV * Math.PI) / 180) / 2);
-    const distance = Math.max(size.x / (tan * camera.aspect), size.y / tan) * 0.62 + Math.max(0, bounds.max.z);
+    /** Distance from the body's front face that frames it in `room` CSS pixels of width. */
+    const fitFor = (room: number) => Math.max(size.x / (tan * (room / height)), size.y / tan) * 0.62;
+    let fit = fitFor(width);
+    // The rail floats over the right edge. A body framed in the whole width
+    // that would run under it is framed in the width left of it instead, by
+    // shifting the projection's centre; one that clears it is left alone. A
+    // render's frame has no rail.
+    const inset = renderingOffscreen ? 0 : Math.min(Math.max(0, getProps().railInset ?? 0), width / 2);
+    const rightEdge = width / 2 + (bounds.max.x / (fit * tan * (width / height))) * (width / 2);
+    if (inset > 0 && rightEdge > width - inset) {
+      fit = fitFor(width - inset);
+      camera.aspect = (width + inset) / height;
+      camera.setViewOffset(width + inset, height, inset, 0, width, height);
+    } else {
+      camera.aspect = width / height;
+      camera.clearViewOffset();
+    }
+    const distance = fit + Math.max(0, bounds.max.z);
     fitDistance = Math.max(1.4, distance);
     if (!shownDistance) shownDistance = fitDistance;
     camera.position.set(0, 0, shownDistance * Math.exp(zoomLog));
@@ -653,6 +684,17 @@ function createViewer(
       body.orientation.rotation.z = layout.rotation;
       body.rewriteUvs(THREE, layout);
     }
+    // The rail came or went, or the body turned a quarter and changed shape:
+    // frame it again. Kept on the old framing, a landscape body ran past both
+    // edges of the pane and under the rail.
+    const railInset = props.railInset ?? 0;
+    if (railInset !== lastRailInset || layout.rotation !== lastFitRotation) {
+      lastRailInset = railInset;
+      lastFitRotation = layout.rotation;
+      fitCamera();
+      poseDirty = true;
+      invalidate();
+    }
 
     const duo = props.duo;
     if (duo?.enabled) {
@@ -746,12 +788,6 @@ function createViewer(
     return shadowMesh;
   };
 
-  /**
-   * True while a render owns the renderer: the live loop does not draw, or it
-   * would resize the drawing buffer back to the pane between a turntable's
-   * frames (and flash the person's lighting into the recording).
-   */
-  let renderingOffscreen = false;
   /** A resize that arrived while a render owned the viewport, applied when it ends. */
   let pendingViewport: typeof viewport | null = null;
 
@@ -1240,6 +1276,7 @@ export function AppleDevice3DView(props: AppleDevice3DViewProps) {
     props.duo?.activeScreenId,
     props.duo?.physicalOrientation,
     props.duo?.tableMode,
+    props.railInset,
   ]);
 
   const localPoint = (event: React.PointerEvent<HTMLCanvasElement>) => {

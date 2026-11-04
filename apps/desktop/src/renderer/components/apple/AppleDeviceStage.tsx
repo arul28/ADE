@@ -92,6 +92,11 @@ export type AppleDeviceStageProps = {
   renderScreenOverlay?: (
     deviceToView: ((point: { x: number; y: number }) => { x: number; y: number }) | null,
   ) => ReactNode;
+  /**
+   * CSS pixels at the stage's right edge the device must stay out of: the
+   * floating rail, while it shows. 0 (the default) when nothing floats there.
+   */
+  railInset?: number;
   /** Blockers, ribbons and the toolbar rail, drawn over the whole stage. */
   children?: ReactNode;
   className?: string;
@@ -144,6 +149,7 @@ export function AppleDeviceStage({
   onThreeUnavailable,
   onThreeReady,
   renderScreenOverlay,
+  railInset = 0,
   children,
   className,
 }: AppleDeviceStageProps) {
@@ -221,6 +227,7 @@ export function AppleDeviceStage({
           onDeviceKey={onDeviceKey}
           onGeometryChange={setGeometry}
           screenOverlay={renderScreenOverlay?.(flatDeviceToView(geometry))}
+          railInset={railInset}
         />
       ) : (
         <AppleDevice3DView
@@ -242,6 +249,7 @@ export function AppleDeviceStage({
           onReady={onThreeReady}
           onUnavailable={onThreeUnavailable}
           renderScreenOverlay={renderScreenOverlay}
+          railInset={railInset}
         />
       )}
 

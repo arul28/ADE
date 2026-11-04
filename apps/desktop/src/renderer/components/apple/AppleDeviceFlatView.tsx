@@ -87,6 +87,8 @@ export type AppleDeviceFlatViewProps = {
   screenOverlay?: ReactNode;
   /** What a screen reader calls the screen. Defaults to "iOS Simulator screen". */
   ariaLabel?: string;
+  /** CSS pixels at the right edge the screen must stay out of: the rail, while it shows. */
+  railInset?: number;
   className?: string;
 };
 
@@ -138,6 +140,11 @@ export function appleScreenMaxScale(
  *
  * Grows to fill the pane, capped by `appleScreenMaxScale` so the picture is
  * never blown up past the resolution the stream actually carries.
+ *
+ * `clearRight` is a strip on the right the box must stay out of (the floating
+ * rail). The box is centred in the whole width when it already clears the
+ * strip, so a wide pane looks the same; only a box that would run under it is
+ * fitted and centred in the width left of it.
  */
 export function measureAppleScreenBox(
   container: { width: number; height: number },
@@ -147,20 +154,22 @@ export function measureAppleScreenBox(
     nativePixelSize?: { width: number; height: number } | null;
     /** CSS pixels per physical pixel. Defaults to 1. */
     pixelRatio?: number;
+    /** CSS pixels at the right edge the box must not cover. Defaults to 0. */
+    clearRight?: number;
   },
 ): { left: number; top: number; width: number; height: number } | null {
   if (container.width <= 0 || container.height <= 0) return null;
   if (content.width <= 0 || content.height <= 0) return null;
-  const fit = Math.min(container.width / content.width, container.height / content.height);
-  const scale = Math.min(fit, appleScreenMaxScale(content, options?.nativePixelSize, options?.pixelRatio ?? 1));
-  const width = content.width * scale;
-  const height = content.height * scale;
-  return {
-    left: (container.width - width) / 2,
-    top: (container.height - height) / 2,
-    width,
-    height,
+  const maxScale = appleScreenMaxScale(content, options?.nativePixelSize, options?.pixelRatio ?? 1);
+  const place = (room: number) => {
+    const scale = Math.min(room / content.width, container.height / content.height, maxScale);
+    const width = content.width * scale;
+    const height = content.height * scale;
+    return { left: (room - width) / 2, top: (container.height - height) / 2, width, height };
   };
+  const box = place(container.width);
+  const clear = Math.min(Math.max(0, options?.clearRight ?? 0), container.width / 2);
+  return clear > 0 && box.left + box.width > container.width - clear ? place(container.width - clear) : box;
 }
 
 /* ── Rotation (round 5 §V1) ───────────────────────────────────────────────── */
@@ -296,6 +305,7 @@ export function AppleDeviceFlatView({
   onGeometryChange,
   screenOverlay,
   ariaLabel = "iOS Simulator screen",
+  railInset = 0,
   className,
 }: AppleDeviceFlatViewProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -358,9 +368,10 @@ export function AppleDeviceFlatView({
       ? measureAppleScreenBox(containerSize, contentSize, {
         nativePixelSize: rotatedPixelSize,
         pixelRatio: typeof window === "undefined" ? 1 : window.devicePixelRatio || 1,
+        clearRight: railInset,
       })
       : null
-  ), [containerSize, contentSize, rotatedPixelSize]);
+  ), [containerSize, contentSize, railInset, rotatedPixelSize]);
 
   const geometry = useMemo<AppleDeviceGeometry | null>(() => {
     if (!box || !contentSize || box.width <= 0) return null;

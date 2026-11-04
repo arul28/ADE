@@ -48,6 +48,9 @@ import {
 /** Below this the rail keeps Home, Tools and More, and nothing else. */
 export const APPLE_RAIL_COMPACT_WIDTH = 360;
 
+/** The rail's width in CSS pixels (`w-14`): what the device screen keeps clear of. */
+export const APPLE_RAIL_WIDTH = 56;
+
 export type AppleDeviceRailProps = {
   /** Container width in px, for the 360px collapse. */
   containerWidth: number;
