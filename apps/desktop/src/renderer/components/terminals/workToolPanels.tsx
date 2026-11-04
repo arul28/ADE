@@ -26,8 +26,7 @@ import { AppleDevicePane } from "../apple/AppleDevicePane";
 import { AndroidDevicePane } from "../android/AndroidDevicePane";
 import { remoteAndroidEmulatorUses, remoteSimulatorUses, remoteWorkUseKey } from "../../../shared/chatRemoteWork";
 import type { AgentChatRemoteWorkUse } from "../../../shared/types/chat";
-import { useRemoteWorkPinResolver } from "../../lib/remoteWorkPins";
-import { MachinePlatformLogo } from "../remoteTargets/MachineIdentity";
+import { RemoteTargetSwitcher, useRemoteTargetChoice } from "./RemoteTargetSwitcher";
 import { Banner } from "../ui/notice/Banner";
 import {
   getAppleMiniPlayerLaneDevice,
@@ -42,7 +41,7 @@ import { FilesTab } from "../files/FilesTab";
 import { LaneGitActionsPane } from "../lanes/LaneGitActionsPane";
 import { cn } from "../ui/cn";
 import { isReadOnlyWorkTool, type WorkToolContext } from "./workTools";
-import { WORK_TOOL_CHROME_CHIP, WORK_TOOL_CHROME_ROW, WorkToolEmptyLine } from "./workToolChrome";
+import { WORK_TOOL_CHROME_CHIP, WorkToolEmptyLine } from "./workToolChrome";
 import { WorkToolReadOnlyView } from "./WorkToolReadOnlyView";
 import { isWebCodecsAvailable } from "../device/h264StreamPlayer";
 import { macDesktopWebApi } from "../chat/macDesktopWebStream";
@@ -352,32 +351,20 @@ function hasDecodedFrame(canvas: HTMLCanvasElement): boolean {
  */
 function WorkIosTool(props: WorkToolPanelProps) {
   const { activeSession, laneId, toolContext } = props;
-  const remoteUses = remoteSimulatorUses(activeSession);
-  const resolvePin = useRemoteWorkPinResolver(remoteUses.length > 0);
-  const laneOption = laneId && toolContext.supportsIosSimulator ? "lane" : null;
-  const options = [
-    ...remoteUses.map((use) => ({ key: remoteWorkUseKey(use), label: use.machineName, use })),
-    ...(laneOption ? [{ key: "lane", label: "This lane", use: null }] : []),
-  ];
-  const [chosenKey, setChosenKey] = useState<string | null>(null);
-  // The newest machine the chat used, unless the user picked another.
-  const chosen = options.find((option) => option.key === chosenKey) ?? options[0] ?? null;
+  const { options, chosen, choose, resolvePin } = useRemoteTargetChoice(
+    remoteSimulatorUses(activeSession),
+    Boolean(laneId && toolContext.supportsIosSimulator),
+  );
   if (!chosen) return <WorkIosDevice {...props} />;
-  const switcher = options.length > 1 ? (
-    <div className={WORK_TOOL_CHROME_ROW} data-testid="ios-target-switcher">
-      {options.map((option) => (
-        <button
-          key={option.key}
-          type="button"
-          onClick={() => setChosenKey(option.key)}
-          className={cn(WORK_TOOL_CHROME_CHIP, option.key === chosen.key ? "bg-fg/[0.08] text-fg" : "")}
-        >
-          {option.use ? <MachinePlatformLogo platform={option.use.machinePlatform} size={12} weight="bold" fallback /> : null}
-          <span>{option.use ? `Simulator · ${option.label}` : option.label}</span>
-        </button>
-      ))}
-    </div>
-  ) : null;
+  const switcher = (
+    <RemoteTargetSwitcher
+      options={options}
+      chosenKey={chosen.key}
+      onChoose={choose}
+      remoteLabel="Simulator"
+      testId="ios-target-switcher"
+    />
+  );
   if (!chosen.use) {
     return (
       <div className="flex h-full min-h-0 flex-col">
@@ -619,36 +606,24 @@ function WorkIosDevice({
  */
 function WorkAndroidTool(props: WorkToolPanelProps) {
   const { activeSession, laneId, runtimePin, toolContext } = props;
-  const remoteUses = remoteAndroidEmulatorUses(activeSession);
-  const resolvePin = useRemoteWorkPinResolver(remoteUses.length > 0);
+  const { options, chosen, choose, resolvePin } = useRemoteTargetChoice(
+    remoteAndroidEmulatorUses(activeSession),
+    Boolean(laneId && toolContext.supportsAndroidEmulator !== false),
+  );
   const mountScope = useWorkToolMountScope(runtimePin);
   // Registered for the pane's own lane whichever target is chosen, so
   // `ade android show` for this chat finds the tool on screen.
   const mountRef = useWorkSurfaceMountRef<HTMLDivElement>(laneId ? workSurfaceKey("android", mountScope, laneId) : null);
-  const laneOption = laneId && toolContext.supportsAndroidEmulator !== false ? "lane" : null;
-  const options = [
-    ...remoteUses.map((use) => ({ key: remoteWorkUseKey(use), label: use.machineName, use })),
-    ...(laneOption ? [{ key: "lane", label: "This lane", use: null }] : []),
-  ];
-  const [chosenKey, setChosenKey] = useState<string | null>(null);
-  // The newest machine the chat used, unless the user picked another.
-  const chosen = options.find((option) => option.key === chosenKey) ?? options[0] ?? null;
   if (!laneId && !chosen) return <NoLaneEmptyLine />;
-  const switcher = options.length > 1 ? (
-    <div className={WORK_TOOL_CHROME_ROW} data-testid="android-target-switcher">
-      {options.map((option) => (
-        <button
-          key={option.key}
-          type="button"
-          onClick={() => setChosenKey(option.key)}
-          className={cn(WORK_TOOL_CHROME_CHIP, option.key === chosen?.key ? "bg-fg/[0.08] text-fg" : "")}
-        >
-          {option.use ? <MachinePlatformLogo platform={option.use.machinePlatform} size={12} weight="bold" fallback /> : null}
-          <span>{option.use ? `Android · ${option.label}` : option.label}</span>
-        </button>
-      ))}
-    </div>
-  ) : null;
+  const switcher = (
+    <RemoteTargetSwitcher
+      options={options}
+      chosenKey={chosen?.key ?? null}
+      onChoose={choose}
+      remoteLabel="Android"
+      testId="android-target-switcher"
+    />
+  );
   const use = chosen?.use ?? null;
   const remotePin = use ? resolvePin(use) : null;
   let body: ReactNode;
