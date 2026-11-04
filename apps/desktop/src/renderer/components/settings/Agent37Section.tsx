@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
-import { ArrowSquareOut, CircleNotch, Cube, LinkBreak, Plus } from "@phosphor-icons/react";
+import { ArrowClockwise, ArrowSquareOut, Check, CircleNotch, LinkBreak, Plus, Warning } from "@phosphor-icons/react";
 import {
   AGENT37_API_KEYS_URL,
   AGENT37_BILLING_URL,
+  describeAgent37TemplateStatus,
   type Agent37Status,
+  type Agent37TemplateStatus,
 } from "../../../shared/agent37";
 import { SettingsTextField } from "./primitives";
 import {
@@ -15,6 +17,8 @@ import {
   type IntegrationFact,
 } from "./integrations/IntegrationChrome";
 import { Banner } from "../ui/notice";
+import { Agent37Mark, AGENT37_NAME } from "../remoteTargets/agent37Brand";
+import { agent37RetryLabel, useAgent37Template } from "../remoteTargets/useAgent37Template";
 import "./IntegrationsSettings.css";
 
 function errorText(error: unknown, fallback: string): string {
@@ -24,8 +28,45 @@ function errorText(error: unknown, fallback: string): string {
   return message || fallback;
 }
 
+/** The template row: setting up (about N min left), ready, or failed with a reason and Retry. */
+function Agent37TemplateCard({ status, onRetry }: { status: Agent37TemplateStatus | null; onRetry: () => void }) {
+  const state = status?.state ?? "checking";
+  const icon = state === "ready"
+    ? <Check size={15} weight="bold" />
+    : state === "failed"
+      ? <Warning size={15} weight="fill" />
+      : <CircleNotch size={15} className="animate-spin" />;
+  const title = state === "ready"
+    ? "Machine template ready"
+    : state === "failed"
+      ? "Machine template failed"
+      : state === "building"
+        ? (status?.usable ? "Updating the machine template" : "Setting up the machine template")
+        : "Checking the machine template";
+  return (
+    <IntegrationCard
+      anchor="agent37-template"
+      icon={icon}
+      title={title}
+      tone={state === "failed" ? "focus" : undefined}
+      hint={`New machines start from ADE's template in your ${AGENT37_NAME} workspace. ADE builds it there when you connect, and again when ADE updates. Building is free.`}
+      actions={state === "failed" ? (
+        <button type="button" className="ade-modern-btn" data-size="sm" onClick={onRetry}>
+          <ArrowClockwise size={12} /> Retry
+        </button>
+      ) : null}
+    >
+      <p className="ade-ig-note" role="status">
+        {status ? describeAgent37TemplateStatus(status) : "Checking ADE's machine template…"}
+        {state === "failed" && status?.nextRetryAt ? ` ${agent37RetryLabel(status.nextRetryAt)}` : ""}
+        {state === "ready" && status?.adeVersion ? ` It installs ADE ${status.adeVersion}.` : ""}
+      </p>
+    </IntegrationCard>
+  );
+}
+
 /**
- * Settings › Connections › Agent37. Account-wide: the workspace key is kept in
+ * Settings › Connections › Agent 37. Account-wide: the workspace key is kept in
  * the account vault, so this page asks this desktop's own main process with no
  * pin, and what it shows is true on every computer on the account.
  */
@@ -36,6 +77,8 @@ export function Agent37Section() {
   const [busy, setBusy] = useState(false);
   const [apiKey, setApiKey] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const connected = status?.connected === true;
+  const template = useAgent37Template(connected && !status?.error);
 
   const load = useCallback(async () => {
     if (!bridge) return;
@@ -43,7 +86,7 @@ export function Agent37Section() {
     try {
       setStatus(await bridge.getStatus());
     } catch (loadError) {
-      setError(errorText(loadError, "Couldn't check Agent37."));
+      setError(errorText(loadError, `Couldn't check ${AGENT37_NAME}.`));
     } finally {
       setLoading(false);
     }
@@ -61,7 +104,7 @@ export function Agent37Section() {
       setStatus(await bridge.saveKey(apiKey));
       setApiKey("");
     } catch (saveError) {
-      setError(errorText(saveError, "Couldn't connect Agent37."));
+      setError(errorText(saveError, `Couldn't connect ${AGENT37_NAME}.`));
     } finally {
       setBusy(false);
     }
@@ -74,7 +117,7 @@ export function Agent37Section() {
     try {
       setStatus(await bridge.removeKey());
     } catch (removeError) {
-      setError(errorText(removeError, "Couldn't disconnect Agent37."));
+      setError(errorText(removeError, `Couldn't disconnect ${AGENT37_NAME}.`));
     } finally {
       setBusy(false);
     }
@@ -83,16 +126,15 @@ export function Agent37Section() {
   if (!bridge) {
     return (
       <IntegrationPage id="agent37">
-        <p className="ade-ig-note">Agent37 is set up from the ADE desktop app.</p>
+        <p className="ade-ig-note">{AGENT37_NAME} is set up from the ADE desktop app.</p>
       </IntegrationPage>
     );
   }
 
-  const connected = status?.connected === true;
   const heroStatus = loading && !status
     ? { tone: "checking" as const, label: "Checking…" }
     : status?.error
-      ? { tone: "warn" as const, label: connected ? "Couldn't reach Agent37" : "Needs attention" }
+      ? { tone: "warn" as const, label: connected ? `Couldn't reach ${AGENT37_NAME}` : "Needs attention" }
       : connected
         ? { tone: "ok" as const, label: "Connected" }
         : { tone: "neutral" as const, label: "Not connected" };
@@ -104,12 +146,12 @@ export function Agent37Section() {
           value: status?.instanceCount != null && status.instanceLimit != null
             ? `${status.instanceCount} of ${status.instanceLimit}`
             : "—",
-          title: "Agent37 counts sleeping and stopped machines toward the limit.",
+          title: `${AGENT37_NAME} counts sleeping and stopped machines toward the limit.`,
         },
         {
           label: "Sizes",
           value: status?.tier === 0 ? "Smallest box only" : "All sizes and VMs",
-          title: status?.tier === 0 ? "Agent37 unlocks VMs and bigger sizes after your first top-up." : undefined,
+          title: status?.tier === 0 ? `${AGENT37_NAME} unlocks VMs and bigger sizes after your first top-up.` : undefined,
         },
         ...[credentialStorageFact(status?.credentialStorage)].filter((fact): fact is IntegrationFact => fact != null),
       ]
@@ -122,8 +164,8 @@ export function Agent37Section() {
         anchor={connected ? "agent37-connection" : undefined}
         status={heroStatus}
         account={connected ? {
-          avatar: <Cube size={16} weight="duotone" />,
-          title: "Agent37 workspace",
+          avatar: <Agent37Mark size={16} />,
+          title: `${AGENT37_NAME} workspace`,
           detail: status?.balanceUsd != null ? `$${status.balanceUsd.toFixed(2)} in the wallet` : undefined,
         } : null}
         actions={connected ? (
@@ -135,34 +177,37 @@ export function Agent37Section() {
       />
 
       {error ? (
-        <Banner layout="inline" model={{ id: "agent37-error", tone: "error", title: "Agent37", detail: error, actions: [{ label: "Check again", onClick: () => { setError(null); void load(); } }] }} />
+        <Banner layout="inline" model={{ id: "agent37-error", tone: "error", title: AGENT37_NAME, detail: error, actions: [{ label: "Check again", onClick: () => { setError(null); void load(); } }] }} />
       ) : null}
       {status?.error && !error ? (
-        <Banner layout="inline" model={{ id: "agent37-saved-key-error", tone: "warning", title: connected ? "Couldn't reach Agent37" : "Agent37 refused the saved key", detail: status.error, actions: [{ label: "Check again", onClick: () => { void load(); } }] }} />
+        <Banner layout="inline" model={{ id: "agent37-saved-key-error", tone: "warning", title: connected ? `Couldn't reach ${AGENT37_NAME}` : `${AGENT37_NAME} refused the saved key`, detail: status.error, actions: [{ label: "Check again", onClick: () => { void load(); } }] }} />
       ) : null}
 
       <IntegrationColumns>
         {connected ? (
-          <IntegrationCard
-            anchor="agent37-machines"
-            icon={<Plus size={15} weight="bold" />}
-            title="Make a machine"
-            hint="Open your computers (the machine list), choose Add computer, then New Agent37 machine. It signs in to your account on its own and shows up ready to connect."
-          >
-            <p className="ade-ig-note">
-              Boxes run lanes, agents and a Linux Desktop screen. VMs add the Android emulator and Docker. Agent37 bills each running minute; asleep, only the disk.
-            </p>
-            <div className="ade-ig-step-actions">
-              <a className="ade-modern-btn" href={AGENT37_BILLING_URL} target="_blank" rel="noreferrer" style={{ textDecoration: "none" }}>
-                <ArrowSquareOut size={12} /> Agent37 wallet
-              </a>
-            </div>
-          </IntegrationCard>
+          <>
+            {!status?.error ? <Agent37TemplateCard status={template.status} onRetry={template.retry} /> : null}
+            <IntegrationCard
+              anchor="agent37-machines"
+              icon={<Plus size={15} weight="bold" />}
+              title="Make a machine"
+              hint={`Open your computers (the machine list), choose Add computer, then New ${AGENT37_NAME} machine. It signs in to your account on its own and shows up ready to connect.`}
+            >
+              <p className="ade-ig-note">
+                Boxes run lanes, agents and a Linux Desktop screen. VMs add the Android emulator and Docker. {AGENT37_NAME} bills each running minute; asleep, only the disk.
+              </p>
+              <div className="ade-ig-step-actions">
+                <a className="ade-modern-btn" href={AGENT37_BILLING_URL} target="_blank" rel="noreferrer" style={{ textDecoration: "none" }}>
+                  <ArrowSquareOut size={12} /> {AGENT37_NAME} wallet
+                </a>
+              </div>
+            </IntegrationCard>
+          </>
         ) : (
           <IntegrationCard
             anchor="agent37-connection"
-            icon={<Cube size={15} weight="duotone" />}
-            title="Connect Agent37"
+            icon={<Agent37Mark size={15} />}
+            title={`Connect ${AGENT37_NAME}`}
             hint="Paste a workspace API key. ADE keeps it in your account, so every computer you sign in to can make machines with it."
             actions={loading ? <CircleNotch size={14} className="animate-spin" /> : null}
           >
@@ -171,10 +216,10 @@ export function Agent37Section() {
                 <span className="ade-ig-step-num" aria-hidden>1</span>
                 <div className="ade-ig-step-main">
                   <div className="ade-ig-step-head"><b>Create an API key</b></div>
-                  <p className="ade-ig-note">In your Agent37 dashboard, under API keys. It starts with sk_live_.</p>
+                  <p className="ade-ig-note">In your {AGENT37_NAME} dashboard, under API keys. It starts with sk_live_.</p>
                   <div className="ade-ig-step-actions">
                     <a className="ade-modern-btn" href={AGENT37_API_KEYS_URL} target="_blank" rel="noreferrer" style={{ textDecoration: "none" }}>
-                      <ArrowSquareOut size={12} /> Open Agent37
+                      <ArrowSquareOut size={12} /> Open {AGENT37_NAME}
                     </a>
                   </div>
                 </div>
@@ -190,7 +235,7 @@ export function Agent37Section() {
                         onChange={setApiKey}
                         type="password"
                         placeholder="sk_live_…"
-                        ariaLabel="Agent37 API key"
+                        ariaLabel={`${AGENT37_NAME} API key`}
                         autoComplete="new-password"
                         mono
                         onKeyDown={(event) => { if (event.key === "Enter") void connect(); }}

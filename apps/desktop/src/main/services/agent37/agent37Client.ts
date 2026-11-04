@@ -23,6 +23,8 @@ export type Agent37Instance = {
   url: string | null;
   pastDue: boolean;
   created: number | null;
+  /** What ADE (or anyone) set at create; ADE tags its creates with `ade_request_id`. */
+  metadata: Record<string, string>;
 };
 
 export type Agent37Billing = {
@@ -47,6 +49,24 @@ export type Agent37CreateInstanceInput = {
   metadata?: Record<string, string>;
 };
 
+export type Agent37Template = {
+  name: string;
+  revision: number | null;
+  description: string | null;
+  updated: number | null;
+};
+
+/** `created` → `building` → `ingesting` → `succeeded` | `failed`. Times are epoch seconds. */
+export type Agent37TemplateBuild = {
+  id: string;
+  status: string;
+  errorCode: string | null;
+  errorMessage: string | null;
+  created: number | null;
+  started: number | null;
+  finished: number | null;
+};
+
 export class Agent37Error extends Error {
   constructor(
     message: string,
@@ -62,41 +82,43 @@ export class Agent37Error extends Error {
 const REQUEST_TIMEOUT_MS = 20_000;
 /** A create returns once the box is running, which takes tens of seconds. */
 const CREATE_TIMEOUT_MS = 5 * 60_000;
+/** The template context is a few kilobytes; this only bounds a stalled upload. */
+const UPLOAD_TIMEOUT_MS = 2 * 60_000;
 
 /** The sentence for an Agent37 error code. Agent37's own message is the fallback. */
 export function agent37ErrorMessage(code: string, status: number, upstream: string | null): string {
   switch (code) {
     case "invalid_api_key":
-      return "Agent37 did not accept this API key. Check that you copied all of it, or make a new one.";
+      return "Agent 37 did not accept this API key. Check that you copied all of it, or make a new one.";
     case "ip_not_allowed":
-      return "This Agent37 key only works from certain addresses, and this computer's isn't one of them.";
+      return "This Agent 37 key only works from certain addresses, and this computer's isn't one of them.";
     case "insufficient_balance":
-      return "Your Agent37 wallet is too low to make this machine (it needs a day of its price). Top it up and try again.";
+      return "Your Agent 37 wallet is too low to make this machine (it needs a day of its price). Top it up and try again.";
     case "instance_suspended":
-      return "Your Agent37 wallet is past due, so its machines are suspended. Top it up to use them again.";
+      return "Your Agent 37 wallet is past due, so its machines are suspended. Top it up to use them again.";
     case "instance_limit_reached":
-      return "Your Agent37 workspace is at its machine limit, sleeping ones included. Delete one, or top up to raise the limit.";
+      return "Your Agent 37 workspace is at its machine limit, sleeping ones included. Delete one, or top up to raise the limit.";
     case "tier_limit":
-      return "Agent37 unlocks VMs and bigger sizes after your first top-up.";
+      return "Agent 37 unlocks VMs and bigger sizes after your first top-up.";
     case "no_capacity":
     case "capacity_unavailable":
-      return "Agent37 has no room for this size right now. Try again in a few minutes or pick another size.";
+      return "Agent 37 has no room for this size right now. Try again in a few minutes or pick another size.";
     case "not_found":
-      return "Agent37 has no such machine or template in this workspace.";
+      return "Agent 37 has no such machine or template in this workspace.";
     case "rate_limited":
-      return "Agent37 is limiting requests right now. Try again in a minute.";
+      return "Agent 37 is limiting requests right now. Try again in a minute.";
     case "try_again":
     case "wake_failed":
     case "wake_timeout":
     case "container_unreachable":
     case "upstream_unreachable":
     case "host_mesh_not_ready":
-      return "The Agent37 machine is busy changing state. Try again in a moment.";
+      return "The Agent 37 machine is busy changing state. Try again in a moment.";
     case "provisioning_failed":
-      return `Agent37 could not start the machine${upstream ? `: ${upstream}` : "."}`;
+      return `Agent 37 could not start the machine${upstream ? `: ${upstream}` : "."}`;
     default:
-      if (status >= 500) return "Agent37 is having trouble right now. Try again in a moment.";
-      return upstream ? `Agent37: ${upstream}` : `Agent37 answered with an error (${status}).`;
+      if (status >= 500) return "Agent 37 is having trouble right now. Try again in a moment.";
+      return upstream ? `Agent 37: ${upstream}` : `Agent 37 answered with an error (${status}).`;
   }
 }
 
@@ -125,6 +147,15 @@ function str(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value : null;
 }
 
+function readMetadata(value: unknown): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!value || typeof value !== "object" || Array.isArray(value)) return out;
+  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof entry === "string") out[key] = entry;
+  }
+  return out;
+}
+
 function toInstance(raw: unknown): Agent37Instance | null {
   const record = raw && typeof raw === "object" ? raw as Record<string, unknown> : null;
   const id = str(record?.id);
@@ -145,6 +176,7 @@ function toInstance(raw: unknown): Agent37Instance | null {
     url: str(record.url),
     pastDue: record.past_due === true,
     created: num(record.created),
+    metadata: readMetadata(record.metadata),
   };
 }
 
@@ -172,9 +204,9 @@ export function createAgent37Client(args: { apiKey: string; fetch?: FetchLike })
         redirect: "error",
       });
     } catch (error) {
-      if (controller.signal.aborted) throw new Agent37Error("Agent37 did not answer in time. Try again.", "timeout", 0);
+      if (controller.signal.aborted) throw new Agent37Error("Agent 37 did not answer in time. Try again.", "timeout", 0);
       throw new Agent37Error(
-        `Could not reach Agent37: ${error instanceof Error ? error.message : String(error)}`,
+        `Could not reach Agent 37: ${error instanceof Error ? error.message : String(error)}`,
         "network",
         0,
       );
@@ -217,7 +249,7 @@ export function createAgent37Client(args: { apiKey: string; fetch?: FetchLike })
 
     async getInstance(id: string): Promise<Agent37Instance> {
       const instance = toInstance(await api("GET", `/instances/${encodeURIComponent(id)}`));
-      if (!instance) throw new Agent37Error("Agent37 answered with a machine ADE could not read.", "bad_response", 200);
+      if (!instance) throw new Agent37Error("Agent 37 answered with a machine ADE could not read.", "bad_response", 200);
       return instance;
     },
 
@@ -234,7 +266,7 @@ export function createAgent37Client(args: { apiKey: string; fetch?: FetchLike })
         ...(input.env ? { env: input.env } : {}),
         ...(input.metadata ? { metadata: input.metadata } : {}),
       }, CREATE_TIMEOUT_MS));
-      if (!instance) throw new Agent37Error("Agent37 answered with a machine ADE could not read.", "bad_response", 201);
+      if (!instance) throw new Agent37Error("Agent 37 answered with a machine ADE could not read.", "bad_response", 201);
       return instance;
     },
 
@@ -249,6 +281,96 @@ export function createAgent37Client(args: { apiKey: string; fetch?: FetchLike })
         return true;
       } catch (error) {
         if (error instanceof Agent37Error && error.status === 404) return false;
+        throw error;
+      }
+    },
+
+    /** The workspace or system template, or null on 404. */
+    async getTemplate(name: string): Promise<Agent37Template | null> {
+      try {
+        const body = await api("GET", `/templates/${encodeURIComponent(name)}`) as Record<string, unknown> | null;
+        return {
+          name: str(body?.name) ?? name,
+          revision: num(body?.revision),
+          description: typeof body?.description === "string" ? body.description : null,
+          updated: num(body?.updated),
+        };
+      } catch (error) {
+        if (error instanceof Agent37Error && error.status === 404) return null;
+        throw error;
+      }
+    },
+
+    /** Metadata only; the image and revision stay as they are. */
+    async setTemplateDescription(name: string, description: string): Promise<void> {
+      await api("PATCH", `/templates/${encodeURIComponent(name)}`, { description });
+    },
+
+    /**
+     * Step one of a cloud build: Agent37 answers with the build id and a
+     * presigned upload URL for the gzipped context. The URL is a bearer
+     * credential; it is never logged.
+     */
+    async createTemplateBuild(input: { name: string; sizeBytes: number; description: string }): Promise<{ id: string; uploadUrl: string }> {
+      const body = await api("POST", "/template-builds", {
+        name: input.name,
+        size_bytes: input.sizeBytes,
+        description: input.description,
+      }) as Record<string, unknown> | null;
+      const id = str(body?.id);
+      const uploadUrl = str(body?.upload_url);
+      if (!id || !uploadUrl || !/^https:\/\//.test(uploadUrl)) {
+        throw new Agent37Error("Agent 37 answered with a template build ADE could not read.", "bad_response", 201);
+      }
+      return { id, uploadUrl };
+    },
+
+    /** PUTs the context to the presigned URL. No Agent37 key goes with it. */
+    async uploadTemplateContext(uploadUrl: string, context: Uint8Array): Promise<void> {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), UPLOAD_TIMEOUT_MS);
+      try {
+        const response = await fetcher(uploadUrl, {
+          method: "PUT",
+          body: context as unknown as BodyInit,
+          signal: controller.signal,
+          redirect: "error",
+        });
+        if (!response.ok) {
+          throw new Agent37Error(`Agent 37 refused the template upload (${response.status}).`, `upload_${response.status}`, response.status);
+        }
+      } catch (error) {
+        if (error instanceof Agent37Error) throw error;
+        throw new Agent37Error(
+          controller.signal.aborted ? "The template upload to Agent 37 timed out." : "Could not upload the template to Agent 37.",
+          "network",
+          0,
+        );
+      } finally {
+        clearTimeout(timer);
+      }
+    },
+
+    async startTemplateBuild(id: string): Promise<void> {
+      await api("POST", `/template-builds/${encodeURIComponent(id)}/start`, {});
+    },
+
+    /** The build, or null when Agent37 no longer knows it (404). */
+    async getTemplateBuild(id: string): Promise<Agent37TemplateBuild | null> {
+      try {
+        const body = await api("GET", `/template-builds/${encodeURIComponent(id)}`) as Record<string, unknown> | null;
+        const error = body?.error && typeof body.error === "object" ? body.error as Record<string, unknown> : null;
+        return {
+          id: str(body?.id) ?? id,
+          status: str(body?.status) ?? "unknown",
+          errorCode: str(error?.code),
+          errorMessage: str(error?.message),
+          created: num(body?.created),
+          started: num(body?.started),
+          finished: num(body?.finished),
+        };
+      } catch (error) {
+        if (error instanceof Agent37Error && error.status === 404) return null;
         throw error;
       }
     },

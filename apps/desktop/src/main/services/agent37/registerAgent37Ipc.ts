@@ -1,9 +1,15 @@
 import { randomUUID } from "node:crypto";
-import { BrowserWindow, ipcMain } from "electron";
-import type {
-  Agent37CreateMachineArgs,
-  Agent37CreateProgress,
-  Agent37Status,
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { app, BrowserWindow, ipcMain } from "electron";
+import {
+  AGENT37_DEFAULT_TEMPLATE,
+  describeAgent37TemplateStatus,
+  type Agent37CreateMachineArgs,
+  type Agent37CreateProgress,
+  type Agent37Status,
+  type Agent37TemplateStatus,
 } from "../../../shared/agent37";
 import { IPC } from "../../../shared/ipc";
 import type { AdeAccountMachinesResult } from "../../../shared/types/account";
@@ -19,6 +25,7 @@ import {
   agent37VaultFromBridge,
   readAgent37Status,
   removeAgent37Key,
+  readAgent37Key,
   requireAgent37Client,
   saveAgent37Key,
   type Agent37CredentialDeps,
@@ -28,6 +35,13 @@ import {
   type Agent37ApprovalMode,
   type Agent37ApprovalWindowResult,
 } from "./agent37MachineCreator";
+import { createAgent37Client } from "./agent37Client";
+import {
+  createAgent37TemplateBuilder,
+  type Agent37TemplateBuildRecord,
+  type Agent37TemplateContextFiles,
+  type Agent37TemplateRecordStore,
+} from "./agent37TemplateBuilder";
 import { BUILT_IN_BROWSER_PARTITION } from "../builtInBrowser/builtInBrowserConstants";
 
 type Logger = {
@@ -166,11 +180,12 @@ export function registerAgent37Ipc(args: {
   const { logger } = args;
   const account = () => getSharedAccountAuthService();
   let machineStore: EncryptedFileCredentialStore | null = null;
+  const getMachineStore = () => (machineStore ??= new EncryptedFileCredentialStore({ secretsDir: resolveMachineAdeLayout().secretsDir }));
   const credentials: Agent37CredentialDeps = {
     vault: () => agent37VaultFromBridge(args.vaultBridge),
     // The shared credential file, so the brain's connect card reads a key
     // saved here while signed out, and the other way round.
-    machineStore: () => (machineStore ??= new EncryptedFileCredentialStore({ secretsDir: resolveMachineAdeLayout().secretsDir })),
+    machineStore: getMachineStore,
     signedIn: () => account().getStatus().signedIn === true,
   };
   const getAccountToken = () => getSignedInAccountAccessToken(account());
@@ -181,6 +196,48 @@ export function registerAgent37Ipc(args: {
       return null;
     }
   };
+  // A trial template (`ade-a1-test`) for development and live checks.
+  const templateName = () => process.env.ADE_AGENT37_TEMPLATE?.trim() || AGENT37_DEFAULT_TEMPLATE;
+
+  const builder = createAgent37TemplateBuilder({
+    client: async () => {
+      const saved = await readAgent37Key(credentials);
+      return saved ? createAgent37Client({ apiKey: saved.key }) : null;
+    },
+    templateName,
+    adeVersion: releasedAdeVersion(),
+    readContext: readAgent37TemplateContext,
+    records: templateBuildRecords(args.vaultBridge, credentials, getMachineStore),
+    machineLabel: os.hostname(),
+    onStatus: (status) => {
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (win.isDestroyed() || win.webContents.isDestroyed()) continue;
+        try {
+          win.webContents.send(IPC.agent37TemplateStatus, status);
+        } catch {
+          // A window closing right now; the next status reaches the rest.
+        }
+      }
+    },
+    logger,
+  });
+
+  const pendingCreates = pendingCreateStore(getMachineStore);
+  // Read now, before any create of this session can add to it.
+  const leftoverCreates = pendingCreates.list();
+  // Off the boot path: re-check the template (resuming a build cut short by a
+  // quit) and delete any box a quit left half-made.
+  const startupTimer = setTimeout(() => {
+    void (async () => {
+      const saved = await readAgent37Key(credentials).catch(() => null);
+      if (!saved) return;
+      void builder.ensure();
+      if (leftoverCreates.length) {
+        await sweepPendingCreates(createAgent37Client({ apiKey: saved.key }), leftoverCreates, pendingCreates, logger);
+      }
+    })().catch((error: unknown) => logger.warn("agent37.startup_check_failed", { error: error instanceof Error ? error.message : String(error) }));
+  }, STARTUP_CHECK_DELAY_MS);
+  startupTimer.unref?.();
 
   ipcMain.handle(IPC.agent37GetStatus, async (event): Promise<Agent37Status | null> => {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.agent37GetStatus)) return null;
@@ -189,12 +246,41 @@ export function registerAgent37Ipc(args: {
 
   ipcMain.handle(IPC.agent37SaveKey, async (event, arg: { apiKey?: unknown }): Promise<Agent37Status | null> => {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.agent37SaveKey)) return null;
-    return await saveAgent37Key(credentials, typeof arg?.apiKey === "string" ? arg.apiKey : "");
+    const status = await saveAgent37Key(credentials, typeof arg?.apiKey === "string" ? arg.apiKey : "");
+    // A new key may be a new workspace: forget what the old one said, then check.
+    builder.reset();
+    void builder.ensure();
+    return status;
   });
 
   ipcMain.handle(IPC.agent37RemoveKey, async (event): Promise<Agent37Status | null> => {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.agent37RemoveKey)) return null;
-    return await removeAgent37Key(credentials);
+    const status = await removeAgent37Key(credentials);
+    builder.reset();
+    return status;
+  });
+
+  ipcMain.handle(IPC.agent37GetTemplateStatus, async (event): Promise<Agent37TemplateStatus | null> => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.agent37GetTemplateStatus)) return null;
+    // Nothing checked yet in this session (or the key was just reconnected elsewhere): check now.
+    if (builder.status().state === "idle") void builder.ensure();
+    return builder.status();
+  });
+
+  ipcMain.handle(IPC.agent37RetryTemplate, async (event): Promise<Agent37TemplateStatus | null> => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.agent37RetryTemplate)) return null;
+    void builder.retry();
+    return builder.status();
+  });
+
+  const creates = new Map<string, AbortController>();
+
+  ipcMain.handle(IPC.agent37CancelCreate, async (event, arg: { requestId?: unknown }): Promise<{ cancelled: boolean }> => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.agent37CancelCreate)) return { cancelled: false };
+    const controller = typeof arg?.requestId === "string" ? creates.get(arg.requestId) : undefined;
+    if (!controller) return { cancelled: false };
+    controller.abort();
+    return { cancelled: true };
   });
 
   ipcMain.handle(
@@ -202,13 +288,20 @@ export function registerAgent37Ipc(args: {
     async (event, arg: { requestId?: unknown; machine?: Agent37CreateMachineArgs }): Promise<{ started: boolean }> => {
       if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.agent37CreateMachine)) return { started: false };
       const requestId = typeof arg?.requestId === "string" && arg.requestId ? arg.requestId : randomUUID();
+      if (creates.has(requestId)) return { started: true };
       const sender = event.sender;
+      const controller = new AbortController();
+      creates.set(requestId, controller);
+      // The window that asked went away (closed, reloaded): nobody is waiting
+      // for this box, so stop and delete it rather than leave it billing.
+      const onSenderGone = () => controller.abort();
+      sender.once("destroyed", onSenderGone);
       const send = (progress: Agent37CreateProgress) => {
         if (sender.isDestroyed()) return;
         try {
           sender.send(IPC.agent37CreateProgress, progress);
         } catch {
-          // The window closed mid-create; the box is still made or cleaned up.
+          // The window closed mid-create; the abort above cleans up.
         }
       };
       void createAgent37Machine(
@@ -219,13 +312,21 @@ export function registerAgent37Ipc(args: {
           listAccountMachines: args.listAccountMachines,
           renameMachine: args.renameMachine,
           approveInWindow: (window) => openAgent37ApprovalWindow(window, logger),
-          // A trial template (`ade-a1-test`) for development and live checks.
-          templateName: () => process.env.ADE_AGENT37_TEMPLATE?.trim() || "",
+          templateName,
+          templateNotReady: () => {
+            const template = builder.status();
+            if (template.template !== templateName() || template.usable) return null;
+            if (template.state === "building" || template.state === "failed") return describeAgent37TemplateStatus(template);
+            return null;
+          },
+          onTemplateMissing: () => void builder.ensure(),
+          pendingCreates,
           logger,
         },
         requestId,
         arg?.machine as Agent37CreateMachineArgs,
         send,
+        controller.signal,
       ).then(
         (result) => send({
           requestId,
@@ -239,8 +340,149 @@ export function registerAgent37Ipc(args: {
           logger.warn("agent37.create_machine_failed", { error: message });
           send({ requestId, stage: "failed", message, error: message });
         },
-      );
+      ).finally(() => {
+        creates.delete(requestId);
+        if (!sender.isDestroyed()) sender.removeListener("destroyed", onSenderGone);
+      });
       return { started: true };
     },
   );
+}
+
+/** Long enough that the boot path, the brain and the vault are settled first. */
+const STARTUP_CHECK_DELAY_MS = 20_000;
+
+/**
+ * The ADE release this app is, for the template to install; null for a build
+ * that is not a published release on the default channel (development, alpha),
+ * which bakes the newest release and never replaces an existing template.
+ */
+function releasedAdeVersion(): string | null {
+  if (!app.isPackaged) return null;
+  if (/\balpha\b/i.test(app.getName()) || process.env.ADE_PACKAGE_CHANNEL?.trim().toLowerCase() === "alpha") return null;
+  const version = app.getVersion().trim();
+  return /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version) ? version : null;
+}
+
+/**
+ * `infra/agent37/template`: shipped as the `agent37-template` resource in a
+ * packaged app (package.json `extraResources`), read from the checkout in
+ * development.
+ */
+async function readAgent37TemplateContext(): Promise<Agent37TemplateContextFiles> {
+  const candidates = [
+    ...(typeof process.resourcesPath === "string" ? [path.join(process.resourcesPath, "agent37-template")] : []),
+    path.resolve(app.getAppPath(), "..", "..", "infra", "agent37", "template"),
+  ];
+  for (const dir of candidates) {
+    try {
+      const [dockerfile, entrypoint] = await Promise.all([
+        fs.promises.readFile(path.join(dir, "Dockerfile"), "utf8"),
+        fs.promises.readFile(path.join(dir, "ade-entrypoint.sh"), "utf8"),
+      ]);
+      return { dockerfile, entrypoint };
+    } catch {
+      // Try the next place.
+    }
+  }
+  throw new Error("this copy of ADE is missing its machine template files. Reinstall ADE.");
+}
+
+const TEMPLATE_BUILD_VAULT_KEY = "agent37-template-build";
+const TEMPLATE_BUILD_MACHINE_KEY = "agent37.templateBuild.v1";
+
+function parseBuildRecord(raw: string | null | undefined): Agent37TemplateBuildRecord | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as Partial<Agent37TemplateBuildRecord>;
+    if (parsed?.v !== 1 || typeof parsed.template !== "string" || typeof parsed.buildId !== "string") return null;
+    if (typeof parsed.startedAt !== "number" || typeof parsed.adeVersion !== "string" || typeof parsed.contextHash !== "string") return null;
+    return { v: 1, template: parsed.template, buildId: parsed.buildId, startedAt: parsed.startedAt, adeVersion: parsed.adeVersion, contextHash: parsed.contextHash, by: typeof parsed.by === "string" ? parsed.by : null };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The build-in-flight record: in the account vault, so every computer on the
+ * account sees it, and on this computer when the vault can't be reached.
+ */
+function templateBuildRecords(
+  bridge: Parameters<typeof agent37VaultFromBridge>[0],
+  credentials: Agent37CredentialDeps,
+  machineStore: () => EncryptedFileCredentialStore,
+): Agent37TemplateRecordStore {
+  const vault = () => (credentials.signedIn() ? agent37VaultFromBridge(bridge, TEMPLATE_BUILD_VAULT_KEY) : null);
+  return {
+    async read() {
+      const got = await vault()?.get().catch(() => ({ ok: false as const }));
+      const shared = got?.ok ? parseBuildRecord(got.value) : null;
+      return shared ?? parseBuildRecord(machineStore().getSync(TEMPLATE_BUILD_MACHINE_KEY));
+    },
+    async write(record) {
+      const raw = JSON.stringify(record);
+      machineStore().setSync(TEMPLATE_BUILD_MACHINE_KEY, raw);
+      await vault()?.set(raw).catch(() => false);
+    },
+    async clear() {
+      machineStore().deleteSync(TEMPLATE_BUILD_MACHINE_KEY);
+      await vault()?.remove().catch(() => false);
+    },
+  };
+}
+
+const PENDING_CREATES_KEY = "agent37.pendingCreates.v1";
+
+/** Boxes made on this computer that had not signed in yet, on disk. */
+function pendingCreateStore(machineStore: () => EncryptedFileCredentialStore) {
+  const read = (): string[] => {
+    try {
+      const parsed = JSON.parse(machineStore().getSync(PENDING_CREATES_KEY) ?? "[]");
+      return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === "string") : [];
+    } catch {
+      return [];
+    }
+  };
+  const write = (ids: string[]) => {
+    try {
+      if (ids.length) machineStore().setSync(PENDING_CREATES_KEY, JSON.stringify(ids));
+      else machineStore().deleteSync(PENDING_CREATES_KEY);
+    } catch {
+      // Best effort: the create itself still cleans up on failure.
+    }
+  };
+  return {
+    list: read,
+    add: (instanceId: string) => write([...new Set([...read(), instanceId])]),
+    remove: (instanceId: string) => write(read().filter((id) => id !== instanceId)),
+  };
+}
+
+/**
+ * A box whose create was cut short (the app quit mid-create) and never signed
+ * in is only a bill: delete it. One that signed in is a real machine; keep it.
+ */
+async function sweepPendingCreates(
+  client: ReturnType<typeof createAgent37Client>,
+  leftover: string[],
+  pending: ReturnType<typeof pendingCreateStore>,
+  logger: Logger,
+): Promise<void> {
+  for (const instanceId of leftover) {
+    const instance = await client.getInstance(instanceId).catch((error: unknown) =>
+      error instanceof Error && "status" in error && (error as { status: number }).status === 404 ? null : undefined);
+    if (instance === undefined) continue; // Couldn't ask; try at the next start.
+    if (instance === null || instance.status === "deleted") {
+      pending.remove(instanceId);
+      continue;
+    }
+    const auth = await client.exec(instanceId, "timeout 20 ade auth status --json 2>/dev/null", { timeoutMs: 40_000 }).catch(() => null);
+    if (auth?.exitCode === 0 && /"signedIn"\s*:\s*true/.test(auth.stdout)) {
+      pending.remove(instanceId);
+      continue;
+    }
+    const deleted = await client.deleteInstance(instanceId).then(() => true, () => false);
+    if (deleted) pending.remove(instanceId);
+    logger.warn("agent37.half_made_box_deleted", { instanceId, deleted });
+  }
 }

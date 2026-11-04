@@ -30,7 +30,7 @@ import {
 } from "../../../shared/agent37";
 import { accountMachineConnectionState } from "../../../shared/accountDirectory";
 import type { AdeAccountMachine, AdeAccountMachinesResult } from "../../../shared/types/account";
-import type { Agent37Client } from "./agent37Client";
+import type { Agent37Client, Agent37Instance } from "./agent37Client";
 
 type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
@@ -71,7 +71,27 @@ export type Agent37MachineCreatorDeps = {
     warn?(event: string, meta?: Record<string, unknown>): void;
   };
   sleep?: (ms: number) => Promise<void>;
+  /**
+   * Why the template can't be used yet (ADE is still building it), or null.
+   * Asked before anything is made, so a create never waits on a build.
+   */
+  templateNotReady?: () => string | null;
+  /** The workspace has no template: start building it. */
+  onTemplateMissing?: () => void;
+  /**
+   * Boxes made but not yet signed in, kept on disk, so a box whose create was
+   * cut short by an app quit is found and deleted at the next start.
+   */
+  pendingCreates?: { add(instanceId: string): void; remove(instanceId: string): void };
 };
+
+/** The person cancelled (closed the dialog or pressed Cancel). */
+export class Agent37CreateCancelled extends Error {
+  constructor() {
+    super("You cancelled making the machine.");
+    this.name = "Agent37CreateCancelled";
+  }
+}
 
 const BRAIN_READY_TIMEOUT_MS = 3 * 60_000;
 const SIGN_IN_FINISH_TIMEOUT_MS = 90_000;
@@ -136,7 +156,7 @@ function approvalErrorMessage(status: number, code: string | null): string {
 
 export function normalizeAgent37MachineName(raw: string): string {
   const cleaned = raw.replace(/[\u0000-\u001f]/g, " ").replace(/\s+/g, " ").trim().slice(0, 60);
-  return cleaned || "Agent37 box";
+  return cleaned || "Agent 37 box";
 }
 
 export async function createAgent37Machine(
@@ -144,6 +164,7 @@ export async function createAgent37Machine(
   requestId: string,
   rawArgs: Agent37CreateMachineArgs,
   onProgress: (progress: Agent37CreateProgress) => void,
+  signal?: AbortSignal,
 ): Promise<Agent37CreateMachineResult> {
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const fetcher: FetchLike = deps.fetch ?? ((input, init) => fetch(input, init));
@@ -154,28 +175,51 @@ export async function createAgent37Machine(
   const template = deps.templateName?.() || AGENT37_DEFAULT_TEMPLATE;
   const progress = (stage: Agent37CreateProgress["stage"], message: string, instanceId?: string) =>
     onProgress({ requestId, stage, message, ...(instanceId ? { instanceId } : {}) });
+  const checkCancelled = () => {
+    if (signal?.aborted) throw new Agent37CreateCancelled();
+  };
 
   // Everything that can fail before money is spent is checked first.
+  const notReady = deps.templateNotReady?.() ?? null;
+  if (notReady) throw new Error(notReady);
   const client = await deps.client();
   const directory = deps.directoryBaseUrl();
   if (!directory) throw new Error("ADE's account service isn't configured on this computer, so it can't sign the new machine in.");
   if (!(await deps.getAccountToken())) throw new Error("Sign in to ADE on this computer first. The new machine joins your account.");
   if (!(await client.hasTemplate(template))) {
-    throw new Error(`ADE's machine template ("${template}") isn't in your Agent37 workspace yet, so ADE can't make a machine from it.`);
+    deps.onTemplateMissing?.();
+    throw new Error(`ADE's machine template ("${template}") isn't in your Agent 37 workspace yet. ADE is setting it up now (about five minutes); try again then.`);
   }
+  checkCancelled();
 
-  progress("creating", `Making ${name} on Agent37…`);
-  const instance = await client.createInstance({
-    template,
-    name,
-    type: agent37InstanceType(rawArgs.kind),
-    resources: { cpu: shape.cpu, memory: shape.memoryGb, disk: shape.diskGb },
-    metadata: { created_by: "ade" },
-  });
+  progress("creating", `Making ${name} on Agent 37…`);
+  let instance: Agent37Instance;
+  try {
+    instance = await client.createInstance({
+      template,
+      name,
+      type: agent37InstanceType(rawArgs.kind),
+      resources: { cpu: shape.cpu, memory: shape.memoryGb, disk: shape.diskGb },
+      metadata: { created_by: "ade", ade_request_id: requestId },
+    });
+  } catch (error) {
+    // A create that timed out or broke mid-way may still have made a box.
+    // Find it by the tag ADE put on it and take it back off Agent 37.
+    const orphans = await client.listInstances()
+      .then((all) => all.filter((candidate) => candidate.metadata.ade_request_id === requestId && candidate.status !== "deleted"))
+      .catch(() => [] as Agent37Instance[]);
+    for (const orphan of orphans) {
+      await client.deleteInstance(orphan.id).catch(() => undefined);
+      deps.logger?.warn?.("agent37.machine_create_orphan_deleted", { instanceId: orphan.id });
+    }
+    throw error;
+  }
+  deps.pendingCreates?.add(instance.id);
   deps.logger?.info?.("agent37.machine_created", { instanceId: instance.id, kind: rawArgs.kind, shape: shape.id });
 
   let signedIn = false;
   try {
+    checkCancelled();
     progress("waiting_for_brain", "Starting ADE on the new machine…", instance.id);
     const readAuth = async (): Promise<Record<string, unknown> | null> => {
       const result = await client.exec(instance.id, AUTH_STATUS_COMMAND, { timeoutMs: 40_000 }).catch(() => null);
@@ -184,10 +228,17 @@ export async function createAgent37Machine(
     const brainDeadline = Date.now() + BRAIN_READY_TIMEOUT_MS;
     let auth = await readAuth();
     while (!auth) {
+      checkCancelled();
       if (Date.now() > brainDeadline) throw new Error("ADE did not start on the new machine in time.");
+      // A box that Agent 37 itself gave up on will never answer.
+      const state = (await client.getInstance(instance.id).catch(() => null))?.status ?? null;
+      if (state === "failed" || state === "deleted") {
+        throw new Error(state === "failed" ? "Agent 37 couldn't start the new machine." : "The new machine was deleted on Agent 37.");
+      }
       await sleep(POLL_MS);
       auth = await readAuth();
     }
+    checkCancelled();
 
     if (auth.signedIn !== true) {
       progress("signing_in", "Signing the new machine in to your account…", instance.id);
@@ -197,6 +248,7 @@ export async function createAgent37Machine(
         deps.logger?.warn?.("agent37.sign_in_no_code", { instanceId: instance.id, exitCode: started.exitCode });
         throw new Error("The new machine didn't start its sign-in.");
       }
+      checkCancelled();
 
       const approve = async (token: string) => await fetcher(`${directory.replace(/\/+$/, "")}/device/approve`, {
         method: "POST",
@@ -226,6 +278,8 @@ export async function createAgent37Machine(
       // The box itself is the authority: an approval from anywhere (this
       // window, a phone, another browser) ends the wait, and closes the window.
       const stopWatching = new AbortController();
+      // Cancelling the create closes the window too.
+      signal?.addEventListener("abort", () => stopWatching.abort(), { once: true });
       const boxSignedIn = (async () => {
         while (!stopWatching.signal.aborted) {
           if ((await readAuth())?.signedIn === true) return true;
@@ -244,12 +298,14 @@ export async function createAgent37Machine(
         windowOutcome.then((outcome) => ({ kind: "window" as const, outcome })),
       ]);
       stopWatching.abort();
+      checkCancelled();
 
       if (first.kind === "window" && first.outcome !== "cancelled") {
         if (first.outcome === "signed_in") {
           // The approval landed; give the box a moment to collect its session.
           const finishDeadline = Date.now() + SIGN_IN_FINISH_TIMEOUT_MS;
           for (;;) {
+            checkCancelled();
             if ((await readAuth())?.signedIn === true) break;
             if (Date.now() > finishDeadline) throw new Error("The new machine was approved but didn't finish signing in.");
             await sleep(POLL_MS);
@@ -262,20 +318,29 @@ export async function createAgent37Machine(
       }
     }
     signedIn = true;
+    deps.pendingCreates?.remove(instance.id);
   } catch (error) {
-    // A box that never joined is only a bill: take it back off Agent37.
+    // A box that never joined is only a bill: take it back off Agent 37.
     deps.logger?.warn?.("agent37.machine_setup_failed", {
       instanceId: instance.id,
       error: error instanceof Error ? error.message : String(error),
     });
-    await client.deleteInstance(instance.id).catch((deleteError: unknown) => {
-      deps.logger?.warn?.("agent37.machine_cleanup_failed", {
-        instanceId: instance.id,
-        error: deleteError instanceof Error ? deleteError.message : String(deleteError),
-      });
-    });
+    const deleted = await client.deleteInstance(instance.id).then(
+      () => true,
+      (deleteError: unknown) => {
+        deps.logger?.warn?.("agent37.machine_cleanup_failed", {
+          instanceId: instance.id,
+          error: deleteError instanceof Error ? deleteError.message : String(deleteError),
+        });
+        return false;
+      },
+    );
+    // Kept on the pending list when the delete failed: the next app start tries again.
+    if (deleted) deps.pendingCreates?.remove(instance.id);
     const reason = error instanceof Error ? error.message : String(error);
-    throw new Error(`${reason} ADE deleted the box it made, so it isn't billing.`);
+    throw new Error(deleted
+      ? `${reason} ADE deleted the box it made, so it isn't billing.`
+      : `${reason} ADE couldn't delete the box it made ("${name}", ${instance.id}). Delete it in your Agent 37 dashboard so it stops billing; ADE also tries again when it next starts.`);
   }
 
   progress("joining", `${name} is signed in. Adding it to your computers…`, instance.id);
