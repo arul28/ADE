@@ -47,7 +47,7 @@ function containAndroidOutPath(outPath: string, root: string, platform: NodeJS.P
   return target;
 }
 
-export type TakeAndroidScreenshotInput = {
+type TakeAndroidScreenshotInput = {
   laneId: string;
   /** The path the caller named, or null for a file under `dataDir`. */
   outPath: string | null;

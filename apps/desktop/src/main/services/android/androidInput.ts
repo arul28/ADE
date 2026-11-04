@@ -22,7 +22,7 @@ const ROTATE_SETTLE_MS = 2_000;
 /** A window manager still at the old rotation this long after the lock means the app keeps its orientation. */
 const ROTATE_REFUSED_AFTER_MS = 400;
 
-export type AndroidInputDeps = {
+type AndroidInputDeps = {
   streams: AndroidStreamHub;
   /** The lane's booted emulator, or `ANDROID_NOT_RUNNING`. */
   requireBooted: (laneId: string) => Promise<{ serial: string; adbPath: string }>;
@@ -32,7 +32,7 @@ export type AndroidInputDeps = {
   signal: AbortSignal;
 };
 
-export type AndroidInputApi = Pick<AndroidEmulatorServiceApi, "sendTouch" | "tap" | "swipe" | "sendKey" | "sendText" | "rotate">;
+type AndroidInputApi = Pick<AndroidEmulatorServiceApi, "sendTouch" | "tap" | "swipe" | "sendKey" | "sendText" | "rotate">;
 
 function finiteNumber(value: unknown, name: string): number {
   if (typeof value !== "number" || !Number.isFinite(value)) throw new Error(`${name} must be a number.`);
