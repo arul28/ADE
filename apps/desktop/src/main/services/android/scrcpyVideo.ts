@@ -25,7 +25,7 @@
  */
 
 import { encodeVideoRecord, MAX_VIDEO_RECORD_BYTES } from "../media/videoRecords";
-import { createH264AnnexBParser } from "../ios/h264AnnexB";
+import { createH264AnnexBParser } from "../media/h264AnnexB";
 import {
   IOS_VIDEO_RECORD_TYPE_ACCESS_UNIT,
   IOS_VIDEO_RECORD_TYPE_CONFIG,
