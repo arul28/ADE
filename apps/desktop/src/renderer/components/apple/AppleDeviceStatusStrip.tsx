@@ -1,6 +1,6 @@
-import { useState } from "react";
 import { AppleLogo } from "../ui/appleIcons";
-import { Banner, type NoticeAction } from "../ui/notice";
+import type { NoticeAction } from "../ui/notice";
+import { DeviceErrorStrip, DeviceNoticeStrip } from "../device/DeviceStatusStrip";
 import {
   describeAppleError,
   type AppleErrorAction,
@@ -16,15 +16,7 @@ const ACTION_LABEL = {
   reinstall: "How to fix",
 } as const;
 
-/**
- * One line at the top of the pane, and the raw text folded behind `Details`.
- *
- * §6: no toasts, no `String(error)` in JSX, and no sentence longer than twelve
- * words. The mapping owns the words; this owns where they sit. `Details` is a
- * disclosure rather than a second line because the wire text is for the one
- * person in a hundred who is going to paste it into an issue, and it is always
- * the longest thing on screen.
- */
+/** One line at the top of the pane, and the raw text folded behind `Details`. */
 export function AppleDeviceStatusStrip({
   error,
   onAction,
@@ -35,50 +27,20 @@ export function AppleDeviceStatusStrip({
   onAction?: ((action: AppleErrorAction) => void) | undefined;
   onDismiss: () => void;
 }) {
-  const [open, setOpen] = useState(false);
   const described = describeAppleError(error);
   const action = described.action;
   const actions: NoticeAction[] = [];
   if (action && onAction) {
     actions.push({ label: ACTION_LABEL[action], onClick: () => onAction(action) });
   }
-  if (described.detail) {
-    actions.push({
-      label: "Details",
-      variant: "link",
-      expanded: open,
-      onClick: () => setOpen((value) => !value),
-    });
-  }
   return (
-    <div data-apple-status-strip="error" style={{ display: "contents" }}>
-      <Banner
-        layout="inline"
-        style={{ margin: "6px 8px", flexShrink: 0 }}
-        model={{
-          id: "apple-device-status",
-          tone: "error",
-          title: described.sentence,
-          actions,
-          dismiss: { onDismiss, title: "Dismiss this message", label: "Dismiss this message" },
-          extra: open && described.detail ? (
-            <div
-              style={{
-                maxHeight: 96,
-                overflow: "auto",
-                whiteSpace: "pre-wrap",
-                overflowWrap: "anywhere",
-                fontSize: 11,
-                lineHeight: 1.45,
-                color: "var(--color-muted-fg)",
-              }}
-            >
-              {described.detail}
-            </div>
-          ) : undefined,
-        }}
-      />
-    </div>
+    <DeviceErrorStrip
+      tool="apple"
+      sentence={described.sentence}
+      detail={described.detail}
+      actions={actions}
+      onDismiss={onDismiss}
+    />
   );
 }
 
@@ -115,20 +77,13 @@ export function AppleDeviceNoticeStrip({
     });
   }
   return (
-    <div data-apple-status-strip="notice" style={{ display: "contents" }}>
-      <Banner
-        layout="inline"
-        style={{ margin: "6px 8px", flexShrink: 0 }}
-        model={{
-          id: "apple-device-notice",
-          tone: "neutral",
-          icon: <AppleLogo size={13} />,
-          title: sentence,
-          actions: busy ? [] : actions,
-          busy: busy ?? false,
-          dismiss: onDismiss ? { onDismiss, title: "Dismiss this message", label: "Dismiss this message" } : undefined,
-        }}
-      />
-    </div>
+    <DeviceNoticeStrip
+      tool="apple"
+      icon={<AppleLogo size={13} />}
+      sentence={sentence}
+      actions={actions}
+      onDismiss={onDismiss}
+      busy={busy}
+    />
   );
 }

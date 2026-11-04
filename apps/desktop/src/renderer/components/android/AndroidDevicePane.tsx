@@ -547,7 +547,6 @@ export function AndroidDevicePane({
             <AndroidDeviceLoadingCard
               name={pending?.kind === "create" ? "new device" : deviceName}
               spec={deviceSpec}
-              tablet={false}
               stage="booting"
             />
           );
@@ -572,7 +571,7 @@ export function AndroidDevicePane({
           >
             {paneState === "starting" ? (
               <div className="absolute inset-0 z-[1]">
-                <AndroidDeviceLoadingCard name={deviceName} spec={deviceSpec} tablet={false} stage="streaming" />
+                <AndroidDeviceLoadingCard name={deviceName} spec={deviceSpec} stage="streaming" />
               </div>
             ) : null}
           </AndroidDeviceStage>
