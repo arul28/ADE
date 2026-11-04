@@ -184,7 +184,7 @@ npm run dev:machine -- project --clone  # a --shared clone of this repo, on this
 ade lanes list --machine "<Mac> (dev)"
 ade apple start --machine "<Mac> (dev)"
 npm run dev:machine -- stop             # keeps its home and sign-in
-npm run dev:machine -- remove           # signs out (its account row goes) and stops
+npm run dev:machine -- remove           # signs out (its account row goes) and stops; starts a stopped one to sign it out
 ```
 
 `--name <n>` runs more than one. What keeps it apart from the installed ADE

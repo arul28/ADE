@@ -123,10 +123,7 @@ import {
 } from "./syncHelloProtocol";
 import {
   ACCOUNT_AUTH_TRANSIENT_IDENTITY_GRACE_MS,
-  ALLOW_LEGACY_UNBOUND_ADOPTION_AEAD,
   buildSyncHostHelloOkPayload,
-  parseAccountChallengePayload,
-  parseUnsealedAccountAuth,
   buildSyncProjectCatalogMessages,
   isRuntimeHostPairingRecord,
   isSyncHostRecoveryPairingRecord,
@@ -134,20 +131,15 @@ import {
   type SyncProjectCatalogProvider,
 } from "./syncHostService";
 import { resolveDeviceDisplayName } from "./deviceRegistryService";
+import { supportedAdoptChannelAeads } from "../../../../desktop/src/shared/sync/adoptChannelCrypto";
 import {
-  ADOPT_CHANNEL_CHALLENGE_TTL_MS,
-  buildAdoptChallengeSignatureInput,
-  buildAdoptHelloAad,
-  buildAdoptHelloOkAad,
-  deriveAdoptSessionKey,
-  generateX25519EphemeralKeyPair,
-  negotiateAdoptChannelAead,
-  seal,
-  signEd25519,
-  supportedAdoptChannelAeads,
-  unseal,
-  type AdoptChannelAead,
-} from "../../../../desktop/src/shared/sync/adoptChannelCrypto";
+  issueAdoptChallenge,
+  openSealedAccountHello,
+  sealAdoptHelloOk,
+  validateAccountChallenge,
+  type AdoptChallengeState,
+  type SealedAdoption,
+} from "./adoptChannelHandshake";
 import {
   createMachineIdentitySigningStore,
   MACHINE_IDENTITY_SIGNING_FILE_NAME,
@@ -244,12 +236,7 @@ type BrainPeerState = SyncRosterPeerState & {
   commandChain: Promise<void>;
   envelopeChunks: ReturnType<typeof createSyncEnvelopeChunkAssembler>;
   /** The sealed-adoption challenge this socket was issued, single use. */
-  adoptChallenge: {
-    sessionKey: Buffer;
-    hostDeviceId: string;
-    expiresAtMs: number;
-    aead: AdoptChannelAead;
-  } | null;
+  adoptChallenge: AdoptChallengeState | null;
 };
 
 const WS_OPEN = 1;
@@ -1483,60 +1470,30 @@ export function createBrainProjectActionsSyncHandler(
               }, envelope.requestId);
               return;
             }
-            const challenge = envelope.requestId ? parseAccountChallengePayload(envelope.payload) : null;
-            if (!challenge) {
-              adoptChallengeFailures.registerFailure({ ip: remoteAddress ?? null });
+            const validated = validateAccountChallenge({
+              requestId: envelope.requestId,
+              payload: envelope.payload,
+              hostSupportedAeads: supportedAdoptChannelAeads(),
+            });
+            if (!validated.ok) {
+              if (validated.refusal.kind === "invalid") {
+                adoptChallengeFailures.registerFailure({ ip: remoteAddress ?? null });
+              }
               send(ws, "account_challenge_error", {
-                message: "Invalid account adoption challenge.",
-              }, envelope.requestId);
-              return;
-            }
-            if (challenge.supportedAeads === null && !ALLOW_LEGACY_UNBOUND_ADOPTION_AEAD) {
-              send(ws, "account_challenge_error", {
-                message: "This ADE version must advertise account adoption ciphers. Update ADE on this device.",
-              }, envelope.requestId);
-              return;
-            }
-            const adoptAead = negotiateAdoptChannelAead(challenge.supportedAeads, supportedAdoptChannelAeads());
-            if (!adoptAead) {
-              send(ws, "account_challenge_error", {
-                message: "No compatible account adoption cipher is available. Update ADE on both devices.",
+                message: validated.refusal.message,
               }, envelope.requestId);
               return;
             }
             try {
-              const identity = machineIdentitySigningStore.getOrCreate();
-              const hostDeviceId = brainMetadata().deviceId;
-              const hostEphemeral = generateX25519EphemeralKeyPair();
-              const hostEphemeralPublicKey = hostEphemeral.publicKeyRaw.toString("base64");
-              const ts = Date.now();
-              const aeadBound = challenge.supportedAeads !== null;
-              const canonical = buildAdoptChallengeSignatureInput({
-                hostDeviceId,
-                nonce: challenge.nonce,
-                clientEphemeralPublicKey: challenge.clientEphemeralPublicKey,
-                hostEphemeralPublicKey,
-                ts,
-                ...(aeadBound ? { aead: adoptAead } : {}),
+              const issued = issueAdoptChallenge({
+                challenge: validated.challenge,
+                aead: validated.aead,
+                signingPrivateKey: () => machineIdentitySigningStore.getOrCreate().privateKey,
+                hostDeviceId: () => brainMetadata().deviceId,
+                now: Date.now,
               });
-              peer.adoptChallenge = {
-                sessionKey: deriveAdoptSessionKey({
-                  privateKey: hostEphemeral.privateKey,
-                  peerPublicKeyRaw: challenge.clientEphemeralPublicKeyBytes,
-                  nonce: challenge.nonceBytes,
-                }),
-                hostDeviceId,
-                expiresAtMs: ts + ADOPT_CHANNEL_CHALLENGE_TTL_MS,
-                aead: adoptAead,
-              };
-              send(ws, "account_challenge_ok", {
-                v: 1,
-                hostDeviceId,
-                ts,
-                hostEphemeralPublicKey,
-                signature: signEd25519(identity.privateKey, canonical).toString("base64"),
-                ...(aeadBound ? { aead: adoptAead } : {}),
-              }, envelope.requestId);
+              peer.adoptChallenge = issued.state;
+              send(ws, "account_challenge_ok", issued.reply, envelope.requestId);
             } catch (error) {
               peer.adoptChallenge = null;
               adoptChallengeFailures.registerFailure({ ip: remoteAddress ?? null });
@@ -1592,59 +1549,35 @@ export function createBrainProjectActionsSyncHandler(
           // A sealed hello carries the account credentials encrypted to the
           // challenge this socket was issued. Opened here, it continues as the
           // plain account hello it wraps, and its reply is sealed the same way.
-          let sealedAdoption: { sessionKey: Buffer; hostDeviceId: string; clientDeviceId: string; aead: AdoptChannelAead } | null = null;
+          let sealedAdoption: SealedAdoption | null = null;
           let unsealedAuth: SyncAccountHelloAuth | null = null;
           if (hello.auth?.kind === "account_sealed") {
-            const sealedAuth = hello.auth;
             const challenge = peer.adoptChallenge;
             peer.adoptChallenge = null;
-            const rejectSealedHello = (message: string): void => {
-              send(ws, "hello_error", { code: "invalid_hello", message }, envelope.requestId);
+            const opened = openSealedAccountHello({
+              challenge,
+              now: Date.now(),
+              helloPeerDeviceId: hello.peer.deviceId,
+              sealedAuth: hello.auth,
+            });
+            if (!opened.ok) {
+              if (opened.openError !== undefined) {
+                args.logger.warn("sync_ingress.account_sealed_open_failed", {
+                  remoteAddress: remoteAddress ?? null,
+                  transportOrigin: transportOrigin ?? null,
+                  errorName: opened.openError instanceof Error ? opened.openError.name : "UnknownError",
+                });
+              }
+              send(ws, "hello_error", { code: "invalid_hello", message: opened.message }, envelope.requestId);
               try {
                 ws.close(4003, "Invalid sealed account hello");
               } catch {
                 // ignore close failures
               }
-            };
-            if (!challenge) {
-              rejectSealedHello("A completed account challenge is required.");
               return;
             }
-            if (challenge.expiresAtMs < Date.now()) {
-              rejectSealedHello("The account challenge expired.");
-              return;
-            }
-            if (sealedAuth.deviceId !== hello.peer.deviceId || !sealedAuth.sealed) {
-              rejectSealedHello("The sealed account hello is invalid.");
-              return;
-            }
-            try {
-              const opened = parseUnsealedAccountAuth(JSON.parse(unseal(
-                challenge.sessionKey,
-                buildAdoptHelloAad(challenge.hostDeviceId, sealedAuth.deviceId),
-                sealedAuth.sealed,
-                challenge.aead,
-              ).toString("utf8")));
-              if (!opened || opened.deviceId !== sealedAuth.deviceId) {
-                rejectSealedHello("The sealed account credentials are invalid.");
-                return;
-              }
-              unsealedAuth = opened;
-              sealedAdoption = {
-                sessionKey: challenge.sessionKey,
-                hostDeviceId: challenge.hostDeviceId,
-                clientDeviceId: sealedAuth.deviceId,
-                aead: challenge.aead,
-              };
-            } catch (error) {
-              args.logger.warn("sync_ingress.account_sealed_open_failed", {
-                remoteAddress: remoteAddress ?? null,
-                transportOrigin: transportOrigin ?? null,
-                errorName: error instanceof Error ? error.name : "UnknownError",
-              });
-              rejectSealedHello("The sealed account credentials could not be opened.");
-              return;
-            }
+            unsealedAuth = opened.auth;
+            sealedAdoption = opened.adoption;
           }
           const auth = unsealedAuth ?? hello.auth;
           let authenticatedPairingRecord: SyncPairingRecord | null = null;
@@ -1924,16 +1857,7 @@ export function createBrainProjectActionsSyncHandler(
           // The selection frame itself must retain the legacy wire encoding.
           // Apply the selected codec only after it has been queued successfully.
           const helloOkSent = sealedAdoption
-            ? send(ws, "hello_ok", {
-                v: 1,
-                sealed: seal(
-                  sealedAdoption.sessionKey,
-                  buildAdoptHelloOkAad(sealedAdoption.hostDeviceId, sealedAdoption.clientDeviceId),
-                  Buffer.from(JSON.stringify(helloOkPayload), "utf8"),
-                  undefined,
-                  sealedAdoption.aead,
-                ),
-              }, envelope.requestId)
+            ? send(ws, "hello_ok", sealAdoptHelloOk(sealedAdoption, helloOkPayload), envelope.requestId)
             : send(ws, "hello_ok", helloOkPayload, envelope.requestId);
           if (helloOkSent) {
             if (negotiatedCompression) {

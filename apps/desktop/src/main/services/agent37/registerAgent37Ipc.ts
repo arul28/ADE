@@ -5,6 +5,7 @@ import path from "node:path";
 import { app, BrowserWindow, ipcMain } from "electron";
 import {
   AGENT37_DEFAULT_TEMPLATE,
+  agent37StillStartingMessage,
   describeAgent37TemplateStatus,
   type Agent37CreateMachineArgs,
   type Agent37CreateProgress,
@@ -36,6 +37,12 @@ import {
   type Agent37ApprovalWindowResult,
 } from "./agent37MachineCreator";
 import { createAgent37Client } from "./agent37Client";
+import {
+  createAgent37PendingCreateStore,
+  reconcileAgent37PendingCreate,
+  type Agent37PendingCreate,
+  type Agent37PendingCreateStore,
+} from "./agent37PendingCreates";
 import {
   createAgent37TemplateBuilder,
   type Agent37TemplateBuildRecord,
@@ -207,7 +214,7 @@ export function registerAgent37Ipc(args: {
     templateName,
     adeVersion: releasedAdeVersion(),
     readContext: readAgent37TemplateContext,
-    records: templateBuildRecords(args.vaultBridge, credentials, getMachineStore),
+    records: templateBuildRecords(args.vaultBridge, credentials, getMachineStore, logger),
     machineLabel: os.hostname(),
     onStatus: (status) => {
       for (const win of BrowserWindow.getAllWindows()) {
@@ -222,14 +229,17 @@ export function registerAgent37Ipc(args: {
     logger,
   });
 
-  const pendingCreates = pendingCreateStore(getMachineStore);
+  const pendingCreates = createAgent37PendingCreateStore(getMachineStore, logger);
   // Read now, before any create of this session can add to it.
   const leftoverCreates = pendingCreates.list();
   // Off the boot path: re-check the template (resuming a build cut short by a
   // quit) and delete any box a quit left half-made.
   const startupTimer = setTimeout(() => {
     void (async () => {
-      const saved = await readAgent37Key(credentials).catch(() => null);
+      const saved = await readAgent37Key(credentials).catch((error: unknown) => {
+        logger.warn("agent37.startup_key_read_failed", { error: error instanceof Error ? error.message : String(error) });
+        return null;
+      });
       if (!saved) return;
       void builder.ensure();
       if (leftoverCreates.length) {
@@ -255,7 +265,14 @@ export function registerAgent37Ipc(args: {
 
   ipcMain.handle(IPC.agent37RemoveKey, async (event): Promise<Agent37Status | null> => {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.agent37RemoveKey)) return null;
-    const status = await removeAgent37Key(credentials);
+    let status: Agent37Status;
+    try {
+      status = await removeAgent37Key(credentials, logger);
+    } catch (error) {
+      // Still connected; the renderer shows why and offers to try again.
+      logger.warn("agent37.disconnect_failed", { error: error instanceof Error ? error.message : String(error) });
+      throw error;
+    }
     builder.reset();
     return status;
   });
@@ -331,7 +348,11 @@ export function registerAgent37Ipc(args: {
         (result) => send({
           requestId,
           stage: "done",
-          message: result.machineKey ? `${result.name} is ready.` : `${result.name} is signed in. It shows up in your computers in a moment.`,
+          message: result.joined
+            ? `${result.name} is ready.`
+            : result.machineKey
+              ? agent37StillStartingMessage(result.name)
+              : `${result.name} is signed in but still starting. It will appear under Your computers; connect it from there when it's ready.`,
           instanceId: result.instanceId,
           result,
         }),
@@ -411,78 +432,85 @@ function templateBuildRecords(
   bridge: Parameters<typeof agent37VaultFromBridge>[0],
   credentials: Agent37CredentialDeps,
   machineStore: () => EncryptedFileCredentialStore,
+  logger: Logger,
 ): Agent37TemplateRecordStore {
   const vault = () => (credentials.signedIn() ? agent37VaultFromBridge(bridge, TEMPLATE_BUILD_VAULT_KEY) : null);
+  const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
+  const local = <T>(what: string, run: () => T, fallback: T): T => {
+    try {
+      return run();
+    } catch (error) {
+      logger.warn("agent37.template_record_local_failed", { what, error: errorText(error) });
+      return fallback;
+    }
+  };
+  /** Runs a vault write; logs and answers false on a refusal or a throw. */
+  const shared = async (what: string, run: () => Promise<boolean>): Promise<void> => {
+    const ok = await run().catch((error: unknown) => {
+      logger.warn("agent37.template_record_vault_failed", { what, error: errorText(error) });
+      return null;
+    });
+    if (ok === false) logger.warn("agent37.template_record_vault_failed", { what, error: "refused" });
+  };
   return {
     async read() {
-      const got = await vault()?.get().catch(() => ({ ok: false as const }));
-      const shared = got?.ok ? parseBuildRecord(got.value) : null;
-      return shared ?? parseBuildRecord(machineStore().getSync(TEMPLATE_BUILD_MACHINE_KEY));
+      const store = vault();
+      if (store) {
+        // Signed in, the account is the authority. Unreachable is unknown:
+        // the caller must not take this computer's copy as the whole answer.
+        const got = await store.get().catch((error: unknown) => {
+          logger.warn("agent37.template_record_vault_failed", { what: "read", error: errorText(error) });
+          return { ok: false as const };
+        });
+        if (!got.ok) throw new Error("the account vault couldn't be read");
+        const record = parseBuildRecord(got.value);
+        if (record) return record;
+      }
+      return parseBuildRecord(local("read", () => machineStore().getSync(TEMPLATE_BUILD_MACHINE_KEY), null));
     },
     async write(record) {
       const raw = JSON.stringify(record);
-      machineStore().setSync(TEMPLATE_BUILD_MACHINE_KEY, raw);
-      await vault()?.set(raw).catch(() => false);
+      local("write", () => machineStore().setSync(TEMPLATE_BUILD_MACHINE_KEY, raw), undefined);
+      const store = vault();
+      if (store) await shared("write", () => store.set(raw));
     },
     async clear() {
-      machineStore().deleteSync(TEMPLATE_BUILD_MACHINE_KEY);
-      await vault()?.remove().catch(() => false);
+      local("clear", () => machineStore().deleteSync(TEMPLATE_BUILD_MACHINE_KEY), undefined);
+      const store = vault();
+      if (store) await shared("clear", () => store.remove());
     },
-  };
-}
-
-const PENDING_CREATES_KEY = "agent37.pendingCreates.v1";
-
-/** Boxes made on this computer that had not signed in yet, on disk. */
-function pendingCreateStore(machineStore: () => EncryptedFileCredentialStore) {
-  const read = (): string[] => {
-    try {
-      const parsed = JSON.parse(machineStore().getSync(PENDING_CREATES_KEY) ?? "[]");
-      return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === "string") : [];
-    } catch {
-      return [];
-    }
-  };
-  const write = (ids: string[]) => {
-    try {
-      if (ids.length) machineStore().setSync(PENDING_CREATES_KEY, JSON.stringify(ids));
-      else machineStore().deleteSync(PENDING_CREATES_KEY);
-    } catch {
-      // Best effort: the create itself still cleans up on failure.
-    }
-  };
-  return {
-    list: read,
-    add: (instanceId: string) => write([...new Set([...read(), instanceId])]),
-    remove: (instanceId: string) => write(read().filter((id) => id !== instanceId)),
   };
 }
 
 /**
- * A box whose create was cut short (the app quit mid-create) and never signed
- * in is only a bill: delete it. One that signed in is a real machine; keep it.
+ * Creates a quit (or a lost answer) left unresolved: a box that never signed
+ * in is only a bill, so it is deleted; one that signed in is a real machine
+ * and is kept. Records stay until Agent37 confirms, so a failure here is
+ * retried at the next start.
  */
 async function sweepPendingCreates(
   client: ReturnType<typeof createAgent37Client>,
-  leftover: string[],
-  pending: ReturnType<typeof pendingCreateStore>,
+  leftover: Agent37PendingCreate[],
+  pending: Agent37PendingCreateStore,
   logger: Logger,
 ): Promise<void> {
-  for (const instanceId of leftover) {
-    const instance = await client.getInstance(instanceId).catch((error: unknown) =>
-      error instanceof Error && "status" in error && (error as { status: number }).status === 404 ? null : undefined);
-    if (instance === undefined) continue; // Couldn't ask; try at the next start.
-    if (instance === null || instance.status === "deleted") {
-      pending.remove(instanceId);
-      continue;
-    }
-    const auth = await client.exec(instanceId, "timeout 20 ade auth status --json 2>/dev/null", { timeoutMs: 40_000 }).catch(() => null);
-    if (auth?.exitCode === 0 && /"signedIn"\s*:\s*true/.test(auth.stdout)) {
-      pending.remove(instanceId);
-      continue;
-    }
-    const deleted = await client.deleteInstance(instanceId).then(() => true, () => false);
-    if (deleted) pending.remove(instanceId);
-    logger.warn("agent37.half_made_box_deleted", { instanceId, deleted });
+  const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+  const isSignedIn = async (instanceId: string): Promise<boolean> => {
+    const auth = await client.exec(instanceId, "timeout 20 ade auth status --json 2>/dev/null", { timeoutMs: 40_000 }).catch((error: unknown) => {
+      logger.warn("agent37.half_made_box_auth_read_failed", { instanceId, error: error instanceof Error ? error.message : String(error) });
+      return null;
+    });
+    return auth?.exitCode === 0 && /"signedIn"\s*:\s*true/.test(auth.stdout);
+  };
+  for (const record of leftover) {
+    const result = await reconcileAgent37PendingCreate(client, record, { store: pending, logger, sleep, isSignedIn });
+    logger.info("agent37.pending_create_reconciled", {
+      requestId: record.requestId,
+      resolved: result.resolved,
+      deleted: result.deleted,
+      kept: result.kept,
+      gone: result.gone,
+      unresolved: result.unresolved,
+    });
   }
 }

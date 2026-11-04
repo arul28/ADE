@@ -27332,6 +27332,18 @@ async function runServe(
   if (!embedded) {
     const { guardAgainstCopiedAdeHome } = await import("./services/sync/hostInstanceGuard");
     const hostGuard = guardAgainstCopiedAdeHome({ adeDir: resolveMachineAdeLayout().adeDir });
+    if (hostGuard.action === "blocked") {
+      // Serving now would let a project write under the original machine's
+      // site id. Refuse; the next start runs the rest of the reset.
+      const lines = hostGuard.failures.map((failure) => `  ${failure.path}: ${failure.error}`);
+      throw new CliToolError(
+        `This ADE home was copied from ${hostGuard.previousInstanceId}, and ADE couldn't give every project its own sync identity, `
+          + "so the brain won't start (it would write as the machine it was copied from):\n"
+          + `${lines.join("\n")}\n`
+          + "Fix the problem above (usually file permissions), then start ADE again; it picks up where it stopped.",
+        undefined,
+      );
+    }
     if (hostGuard.action === "reset") {
       process.stderr.write(
         `ADE: this ADE home was copied from ${hostGuard.previousInstanceId}, so this box starts as a new machine `

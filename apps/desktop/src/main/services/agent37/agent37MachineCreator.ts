@@ -31,6 +31,11 @@ import {
 import { accountMachineConnectionState } from "../../../shared/accountDirectory";
 import type { AdeAccountMachine, AdeAccountMachinesResult } from "../../../shared/types/account";
 import type { Agent37Client, Agent37Instance } from "./agent37Client";
+import {
+  deleteAgent37InstanceConfirmed,
+  reconcileAgent37PendingCreate,
+  type Agent37PendingCreateStore,
+} from "./agent37PendingCreates";
 
 type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
 
@@ -79,10 +84,11 @@ export type Agent37MachineCreatorDeps = {
   /** The workspace has no template: start building it. */
   onTemplateMissing?: () => void;
   /**
-   * Boxes made but not yet signed in, kept on disk, so a box whose create was
-   * cut short by an app quit is found and deleted at the next start.
+   * Creates not yet resolved, kept on disk from before the create request goes
+   * out, so a box whose create was cut short (a lost answer, an app quit) is
+   * found by its request id and deleted at the next start.
    */
-  pendingCreates?: { add(instanceId: string): void; remove(instanceId: string): void };
+  pendingCreates?: Agent37PendingCreateStore;
 };
 
 /** The person cancelled (closed the dialog or pressed Cancel). */
@@ -97,6 +103,10 @@ const BRAIN_READY_TIMEOUT_MS = 3 * 60_000;
 const SIGN_IN_FINISH_TIMEOUT_MS = 90_000;
 const JOIN_TIMEOUT_MS = 2 * 60_000;
 const POLL_MS = 2_000;
+/** `/device/approve` answers in a second; this bounds a stalled account service. */
+const APPROVE_TIMEOUT_MS = 20_000;
+/** Rename tries once the row is ready to connect, before ADE stops waiting on it. */
+const RENAME_ATTEMPTS_AFTER_JOIN = 3;
 
 /** `ade auth status` on the box, as JSON: whether its brain answers and is signed in. */
 const AUTH_STATUS_COMMAND = "timeout 20 ade auth status --json 2>/dev/null";
@@ -191,7 +201,12 @@ export async function createAgent37Machine(
     throw new Error(`ADE's machine template ("${template}") isn't in your Agent 37 workspace yet. ADE is setting it up now (about five minutes); try again then.`);
   }
   checkCancelled();
+  const logger = deps.logger ?? {};
+  const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
+  // On disk before the request goes out: whatever happens to the answer, the
+  // box carries this request id and the next start can find it.
+  deps.pendingCreates?.begin(requestId, Date.now());
   progress("creating", `Making ${name} on Agent 37…`);
   let instance: Agent37Instance;
   try {
@@ -204,25 +219,32 @@ export async function createAgent37Machine(
     });
   } catch (error) {
     // A create that timed out or broke mid-way may still have made a box.
-    // Find it by the tag ADE put on it and take it back off Agent 37.
-    const orphans = await client.listInstances()
-      .then((all) => all.filter((candidate) => candidate.metadata.ade_request_id === requestId && candidate.status !== "deleted"))
-      .catch(() => [] as Agent37Instance[]);
-    for (const orphan of orphans) {
-      await client.deleteInstance(orphan.id).catch(() => undefined);
-      deps.logger?.warn?.("agent37.machine_create_orphan_deleted", { instanceId: orphan.id });
+    // Find it by the tag ADE put on it and take it back off Agent 37; what
+    // can't be confirmed stays recorded for the next start.
+    const cleanup = deps.pendingCreates
+      ? await reconcileAgent37PendingCreate(
+        client,
+        deps.pendingCreates.list().find((record) => record.requestId === requestId)
+          ?? { requestId, startedAt: Date.now(), instanceIds: [] },
+        { store: deps.pendingCreates, logger, sleep },
+      ).catch((reconcileError: unknown) => {
+        logger.warn?.("agent37.machine_create_reconcile_failed", { requestId, error: errorText(reconcileError) });
+        return null;
+      })
+      : null;
+    if (cleanup && cleanup.unresolved.length) {
+      throw new Error(`${errorText(error).replace(/\.$/, "")}. Agent 37 may have made the box anyway and ADE couldn't delete it yet; it tries again when ADE next starts.`);
     }
     throw error;
   }
-  deps.pendingCreates?.add(instance.id);
-  deps.logger?.info?.("agent37.machine_created", { instanceId: instance.id, kind: rawArgs.kind, shape: shape.id });
+  deps.pendingCreates?.attach(requestId, instance.id);
+  logger.info?.("agent37.machine_created", { instanceId: instance.id, kind: rawArgs.kind, shape: shape.id });
 
-  let signedIn = false;
   try {
     checkCancelled();
     progress("waiting_for_brain", "Starting ADE on the new machine…", instance.id);
     const readAuth = async (): Promise<Record<string, unknown> | null> => {
-      const result = await client.exec(instance.id, AUTH_STATUS_COMMAND, { timeoutMs: 40_000 }).catch(() => null);
+      const result = await client.exec(instance.id, AUTH_STATUS_COMMAND, { timeoutMs: 40_000, signal }).catch(() => null);
       return result && result.exitCode === 0 ? parseJsonObject(result.stdout) : null;
     };
     const brainDeadline = Date.now() + BRAIN_READY_TIMEOUT_MS;
@@ -242,24 +264,46 @@ export async function createAgent37Machine(
 
     if (auth.signedIn !== true) {
       progress("signing_in", "Signing the new machine in to your account…", instance.id);
-      const started = await client.exec(instance.id, START_SIGN_IN_COMMAND, { timeoutMs: 120_000 });
+      const started = await client.exec(instance.id, START_SIGN_IN_COMMAND, { timeoutMs: 120_000, signal });
+      checkCancelled();
       const userCode = /ADE_USER_CODE=([A-Za-z0-9-]+)/.exec(started.stdout)?.[1] ?? null;
       if (!userCode) {
-        deps.logger?.warn?.("agent37.sign_in_no_code", { instanceId: instance.id, exitCode: started.exitCode });
+        logger.warn?.("agent37.sign_in_no_code", { instanceId: instance.id, exitCode: started.exitCode });
         throw new Error("The new machine didn't start its sign-in.");
       }
-      checkCancelled();
 
-      const approve = async (token: string) => await fetcher(`${directory.replace(/\/+$/, "")}/device/approve`, {
-        method: "POST",
-        headers: { accept: "application/json", "content-type": "application/json", authorization: `Bearer ${token}` },
-        body: JSON.stringify({ user_code: userCode }),
-        redirect: "error",
-      });
       const token = await deps.getAccountToken();
       if (!token) throw new Error("Sign in to ADE on this computer first. The new machine joins your account.");
-      const response = await approve(token);
-      const body = await response.json().catch(() => null) as Record<string, unknown> | null;
+      // Bounded, and cancelled with the create: a stalled account service must
+      // not hold a cancel (and the box's deletion) for as long as it likes.
+      const approveController = new AbortController();
+      const approveTimer = setTimeout(() => approveController.abort(), APPROVE_TIMEOUT_MS);
+      const onCancelApprove = () => approveController.abort();
+      if (signal?.aborted) approveController.abort();
+      else signal?.addEventListener("abort", onCancelApprove, { once: true });
+      let response: Response;
+      let body: Record<string, unknown> | null;
+      try {
+        response = await fetcher(`${directory.replace(/\/+$/, "")}/device/approve`, {
+          method: "POST",
+          headers: { accept: "application/json", "content-type": "application/json", authorization: `Bearer ${token}` },
+          body: JSON.stringify({ user_code: userCode }),
+          redirect: "error",
+          signal: approveController.signal,
+        });
+        body = await response.json().catch(() => {
+          if (approveController.signal.aborted) throw new Error("aborted");
+          return null;
+        }) as Record<string, unknown> | null;
+      } catch (approveError) {
+        checkCancelled();
+        if (approveController.signal.aborted) throw new Error("ADE's account service didn't answer in time to approve the new machine's sign-in. Try again.");
+        throw new Error(`ADE couldn't reach its account service to approve the new machine's sign-in: ${errorText(approveError)}`);
+      } finally {
+        clearTimeout(approveTimer);
+        signal?.removeEventListener("abort", onCancelApprove);
+      }
+      checkCancelled();
       const ticketUrl = typeof body?.url === "string" && /^https:\/\//.test(body.url) ? body.url : null;
       const refusal = typeof body?.error === "string" ? body.error : null;
       let window: { url: string; mode: Agent37ApprovalMode };
@@ -269,7 +313,7 @@ export async function createAgent37Machine(
         // The account service can't mint a one-time ticket (no Clerk backend
         // key). The code is still pending, so its own approval page works:
         // the person confirms once, in ADE's browser session.
-        deps.logger?.warn?.("agent37.approve_ticket_unavailable", { instanceId: instance.id });
+        logger.warn?.("agent37.approve_ticket_unavailable", { instanceId: instance.id });
         window = { url: `${directory.replace(/\/+$/, "")}/device?user_code=${encodeURIComponent(userCode)}`, mode: "browser" };
       } else {
         throw new Error(approvalErrorMessage(response.status, refusal));
@@ -278,91 +322,118 @@ export async function createAgent37Machine(
       // The box itself is the authority: an approval from anywhere (this
       // window, a phone, another browser) ends the wait, and closes the window.
       const stopWatching = new AbortController();
-      // Cancelling the create closes the window too.
-      signal?.addEventListener("abort", () => stopWatching.abort(), { once: true });
-      const boxSignedIn = (async () => {
-        while (!stopWatching.signal.aborted) {
-          if ((await readAuth())?.signedIn === true) return true;
-          await sleep(POLL_MS);
-        }
-        return false;
-      })();
-      const windowOutcome = deps.approveInWindow({
-        ...window,
-        title: `Sign in ${name}`,
-        signal: stopWatching.signal,
-        onNeedsPerson: () => progress("confirm_in_window", `Confirm in the window that opened to let ${name} use your account.`, instance.id),
-      });
-      const first = await Promise.race([
-        boxSignedIn.then((ok) => ({ kind: "box" as const, ok })),
-        windowOutcome.then((outcome) => ({ kind: "window" as const, outcome })),
-      ]);
-      stopWatching.abort();
-      checkCancelled();
-
-      if (first.kind === "window" && first.outcome !== "cancelled") {
-        if (first.outcome === "signed_in") {
-          // The approval landed; give the box a moment to collect its session.
-          const finishDeadline = Date.now() + SIGN_IN_FINISH_TIMEOUT_MS;
-          for (;;) {
-            checkCancelled();
-            if ((await readAuth())?.signedIn === true) break;
-            if (Date.now() > finishDeadline) throw new Error("The new machine was approved but didn't finish signing in.");
+      // Cancelling the create closes the window too, including a cancel that
+      // came before this point.
+      const onCancelWatch = () => stopWatching.abort();
+      signal?.addEventListener("abort", onCancelWatch, { once: true });
+      if (signal?.aborted) stopWatching.abort();
+      try {
+        const boxSignedIn = (async () => {
+          while (!stopWatching.signal.aborted) {
+            if ((await readAuth())?.signedIn === true) return true;
             await sleep(POLL_MS);
           }
-        } else if ((await readAuth())?.signedIn !== true) {
-          throw new Error(first.outcome === "closed"
-            ? "The sign-in window was closed before the new machine was approved."
-            : "The new machine's sign-in didn't finish in time.");
+          return false;
+        })();
+        const windowOutcome = deps.approveInWindow({
+          ...window,
+          title: `Sign in ${name}`,
+          signal: stopWatching.signal,
+          onNeedsPerson: () => progress("confirm_in_window", `Confirm in the window that opened to let ${name} use your account.`, instance.id),
+        });
+        const first = await Promise.race([
+          boxSignedIn.then((ok) => ({ kind: "box" as const, ok })),
+          windowOutcome.then((outcome) => ({ kind: "window" as const, outcome })),
+        ]);
+        stopWatching.abort();
+        checkCancelled();
+
+        if (first.kind === "window" && first.outcome !== "cancelled") {
+          if (first.outcome === "signed_in") {
+            // The approval landed; give the box a moment to collect its session.
+            const finishDeadline = Date.now() + SIGN_IN_FINISH_TIMEOUT_MS;
+            for (;;) {
+              checkCancelled();
+              if ((await readAuth())?.signedIn === true) break;
+              if (Date.now() > finishDeadline) throw new Error("The new machine was approved but didn't finish signing in.");
+              await sleep(POLL_MS);
+            }
+          } else if ((await readAuth())?.signedIn !== true) {
+            throw new Error(first.outcome === "closed"
+              ? "The sign-in window was closed before the new machine was approved."
+              : "The new machine's sign-in didn't finish in time.");
+          }
         }
+      } finally {
+        stopWatching.abort();
+        signal?.removeEventListener("abort", onCancelWatch);
       }
     }
-    signedIn = true;
-    deps.pendingCreates?.remove(instance.id);
+    // Signed in: a real machine, kept from here on.
+    deps.pendingCreates?.finish(requestId);
   } catch (error) {
     // A box that never joined is only a bill: take it back off Agent 37.
-    deps.logger?.warn?.("agent37.machine_setup_failed", {
-      instanceId: instance.id,
-      error: error instanceof Error ? error.message : String(error),
-    });
-    const deleted = await client.deleteInstance(instance.id).then(
-      () => true,
-      (deleteError: unknown) => {
-        deps.logger?.warn?.("agent37.machine_cleanup_failed", {
-          instanceId: instance.id,
-          error: deleteError instanceof Error ? deleteError.message : String(deleteError),
-        });
-        return false;
-      },
-    );
-    // Kept on the pending list when the delete failed: the next app start tries again.
-    if (deleted) deps.pendingCreates?.remove(instance.id);
-    const reason = error instanceof Error ? error.message : String(error);
+    logger.warn?.("agent37.machine_setup_failed", { instanceId: instance.id, error: errorText(error) });
+    const deleted = await deleteAgent37InstanceConfirmed(client, instance.id, { logger, sleep });
+    // Kept on the pending list until Agent 37 confirms: the next app start tries again.
+    if (deleted) {
+      logger.warn?.("agent37.half_made_box_deleted", { instanceId: instance.id, requestId });
+      deps.pendingCreates?.finish(requestId);
+    }
+    // A request the cancel cut short reads as the cancel, not as its own error.
+    const reason = signal?.aborted ? new Agent37CreateCancelled().message : errorText(error);
     throw new Error(deleted
       ? `${reason} ADE deleted the box it made, so it isn't billing.`
-      : `${reason} ADE couldn't delete the box it made ("${name}", ${instance.id}). Delete it in your Agent 37 dashboard so it stops billing; ADE also tries again when it next starts.`);
+      : `${reason} ADE couldn't confirm it deleted the box it made ("${name}", ${instance.id}). Delete it in your Agent 37 dashboard so it stops billing; ADE also tries again when it next starts.`);
   }
 
   progress("joining", `${name} is signed in. Adding it to your computers…`, instance.id);
-  const machineKey = signedIn
-    ? (await client.exec(instance.id, MACHINE_KEY_COMMAND).catch(() => null))?.stdout.trim() || null
-    : null;
-  let joined: AdeAccountMachine | null = null;
-  if (machineKey) {
-    // The row appears with the box's first publish, a moment before its relay
-    // route does; connecting in that moment fails, so wait for a route.
-    const joinDeadline = Date.now() + JOIN_TIMEOUT_MS;
-    let renamed = false;
-    while (!joined && Date.now() < joinDeadline) {
-      const listed = await deps.listAccountMachines().catch(() => null);
+  // The row appears with the box's first publish, a moment before its relay
+  // route does; connecting in that moment fails, so wait for a route. A box
+  // that isn't ready by the deadline is still a signed-in machine: the caller
+  // keeps watching the account list for it.
+  const joinDeadline = Date.now() + JOIN_TIMEOUT_MS;
+  let machineKey: string | null = null;
+  let joined = false;
+  let renamed = false;
+  let renameAttemptsAfterJoin = 0;
+  const warnedOnce = new Set<string>();
+  const warnOnce = (event: string, meta: Record<string, unknown>) => {
+    if (warnedOnce.has(event)) return;
+    warnedOnce.add(event);
+    logger.warn?.(event, meta);
+  };
+  while (Date.now() < joinDeadline) {
+    if (!machineKey) {
+      const read = await client.exec(instance.id, MACHINE_KEY_COMMAND).catch((error: unknown) => {
+        warnOnce("agent37.machine_key_read_failed", { instanceId: instance.id, error: errorText(error) });
+        return null;
+      });
+      machineKey = read?.stdout.trim() || null;
+    }
+    if (machineKey) {
+      const listed = await deps.listAccountMachines().catch((error: unknown) => {
+        warnOnce("agent37.account_machines_read_failed", { instanceId: instance.id, error: errorText(error) });
+        return null;
+      });
       const row = listed?.machines.find((machine) => machine.machineKey === machineKey) ?? null;
       if (row && !renamed) {
-        renamed = true;
-        await deps.renameMachine(machineKey, name).catch(() => undefined);
+        try {
+          await deps.renameMachine(machineKey, name);
+          renamed = true;
+        } catch (error) {
+          logger.warn?.("agent37.machine_rename_failed", { instanceId: instance.id, error: errorText(error) });
+        }
       }
-      if (row && accountMachineConnectionState(row) === "available") joined = row;
-      else await sleep(POLL_MS);
+      if (row && accountMachineConnectionState(row) === "available") joined = true;
+      if (joined) {
+        if (renamed || renameAttemptsAfterJoin >= RENAME_ATTEMPTS_AFTER_JOIN) break;
+        renameAttemptsAfterJoin += 1;
+      }
     }
+    await sleep(POLL_MS);
   }
-  return { instanceId: instance.id, machineKey: joined ? machineKey : null, name };
+  if (!renamed) logger.warn?.("agent37.machine_rename_gave_up", { instanceId: instance.id, joined, hasMachineKey: machineKey != null });
+  if (!joined) logger.warn?.("agent37.machine_join_pending", { instanceId: instance.id, hasMachineKey: machineKey != null });
+  return { instanceId: instance.id, machineKey, name, joined, renamed };
 }

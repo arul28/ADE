@@ -142,7 +142,23 @@ export type Agent37CreateMachineResult = {
   /** The box's ADE machine key, once it signed in; the picker connects to it. */
   machineKey: string | null;
   name: string;
+  /**
+   * Whether its account row was ready to connect before ADE stopped waiting.
+   * False: the box is signed in but still starting; the picker keeps watching
+   * the account list for it and connects when its row is ready.
+   */
+  joined: boolean;
+  /** Whether the account row took the chosen name. */
+  renamed: boolean;
 };
+
+/** How long the picker keeps watching for a box that signed in but wasn't ready to connect yet. */
+export const AGENT37_JOIN_WATCH_MS = 5 * 60_000;
+
+/** The line for a box that signed in but whose row wasn't ready to connect yet. */
+export function agent37StillStartingMessage(name: string): string {
+  return `${name} is still starting. It will appear under Your computers; ADE will connect when it's ready.`;
+}
 
 /**
  * A create runs for minutes, longer than any IPC call may wait, so starting
