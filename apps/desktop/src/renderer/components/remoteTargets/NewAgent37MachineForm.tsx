@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowClockwise, Check, CircleNotch, Minus, Warning } from "@phosphor-icons/react";
+import { ArrowClockwise, Check, CircleNotch, Minus } from "@phosphor-icons/react";
 import {
   AGENT37_KINDS,
   AGENT37_SHAPES,
@@ -15,6 +15,8 @@ import {
   type Agent37Status,
 } from "../../../shared/agent37";
 import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
+import { Banner } from "../ui/notice";
+import { captureError } from "../../../shared/sentry/capture";
 import { Agent37Mark, AGENT37_NAME } from "./agent37Brand";
 import { agent37RetryLabel, useAgent37Template } from "./useAgent37Template";
 
@@ -46,6 +48,8 @@ export function NewAgent37MachineForm({
   const [progress, setProgress] = useState<Agent37CreateProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
   const requestRef = useRef<string | null>(null);
+  /** The person pressed Cancel: the failure that follows is their choice, not an error. */
+  const cancelledRef = useRef(false);
   const runningRef = useRef(false);
   const onCreatedRef = useRef(onCreated);
   onCreatedRef.current = onCreated;
@@ -68,7 +72,12 @@ export function NewAgent37MachineForm({
   // made, so nothing is left billing. A box that already signed in is kept.
   useEffect(() => () => {
     const requestId = requestRef.current;
-    if (requestId && runningRef.current) void window.ade.agent37?.cancelCreate(requestId).catch(() => undefined);
+    if (requestId && runningRef.current) {
+      // Main also cancels when this window goes away; a failure here is still worth knowing.
+      void window.ade.agent37?.cancelCreate(requestId).catch((error: unknown) => {
+        captureError(error, { fingerprint: ["agent37", "cancel_on_close"], handled: true });
+      });
+    }
   }, []);
 
   useEffect(() => {
@@ -97,6 +106,7 @@ export function NewAgent37MachineForm({
     if (!bridge || running || blocker || !templateReady) return;
     const requestId = newRequestId();
     requestRef.current = requestId;
+    cancelledRef.current = false;
     setError(null);
     setProgress({ requestId, stage: "creating", message: `Asking ${AGENT37_NAME} for the machine…` });
     try {
@@ -114,8 +124,12 @@ export function NewAgent37MachineForm({
   const cancel = () => {
     const requestId = requestRef.current;
     if (!requestId || !running) return;
+    cancelledRef.current = true;
     setProgress((current) => current ? { ...current, message: "Cancelling and deleting the box…" } : current);
-    void window.ade.agent37?.cancelCreate(requestId).catch(() => undefined);
+    void window.ade.agent37?.cancelCreate(requestId).catch((cancelError: unknown) => {
+      cancelledRef.current = false;
+      setError(`ADE couldn't cancel: ${cancelError instanceof Error ? cancelError.message : String(cancelError)}`);
+    });
   };
 
   return (
@@ -220,14 +234,12 @@ export function NewAgent37MachineForm({
       </div>
 
       {blocker ? (
-        <div style={{ display: "flex", gap: 8, alignItems: "flex-start", fontSize: 12, color: "var(--color-warning, #D29922)" }}>
-          <Warning size={14} weight="fill" style={{ flexShrink: 0, marginTop: 1 }} /> {blocker}
-        </div>
+        <Banner layout="inline" model={{ id: "agent37-blocker", tone: "warning", icon: <Agent37Mark size={16} />, title: blocker }} />
       ) : null}
 
       {progress && progress.stage !== "failed" ? (
         <div role="status" style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 12 }}>
-          {progress.stage === "done"
+          {progress.stage === "done" && progress.result?.joined !== false
             ? <Check size={14} weight="bold" color="var(--color-success, #3FB950)" />
             : <CircleNotch size={14} className="animate-spin" />}
           {progress.message}
@@ -235,26 +247,53 @@ export function NewAgent37MachineForm({
       ) : null}
 
       {error ? (
-        <div role="alert" style={{ display: "flex", gap: 8, alignItems: "flex-start", fontSize: 12, color: "var(--color-error, #F85149)" }}>
-          <Warning size={14} weight="fill" style={{ flexShrink: 0, marginTop: 1 }} /> {error}
-        </div>
+        <Banner
+          layout="inline"
+          model={cancelledRef.current
+            ? { id: "agent37-create-cancelled", tone: "info", icon: <Agent37Mark size={16} />, title: error }
+            : {
+                id: "agent37-create-failed",
+                tone: "error",
+                icon: <Agent37Mark size={16} />,
+                title: "ADE couldn't make the machine",
+                detail: error,
+                report: { surface: "agent37_create_machine", code: "agent37_create_failed", technicalDetail: error },
+              }}
+        />
       ) : null}
 
-      {templateNote && !running && progress?.stage !== "done" ? (
+      {template.loadError && !template.status && !running && progress?.stage !== "done" ? (
+        <Banner
+          layout="inline"
+          model={{
+            id: "agent37-template-unreadable",
+            tone: "error",
+            icon: <Agent37Mark size={16} />,
+            title: "ADE couldn't check its machine template",
+            detail: template.loadError,
+            actions: [{ label: "Retry", icon: <ArrowClockwise size={12} />, onClick: template.retry }],
+            report: { surface: "agent37_create_machine", code: "agent37_template_status_failed", technicalDetail: template.loadError },
+          }}
+        />
+      ) : template.status?.state === "failed" && !running && progress?.stage !== "done" ? (
+        <Banner
+          layout="inline"
+          model={{
+            id: "agent37-template-failed",
+            tone: "warning",
+            icon: <Agent37Mark size={16} />,
+            title: templateNote ?? describeAgent37TemplateStatus(template.status),
+            detail: template.status.nextRetryAt ? agent37RetryLabel(template.status.nextRetryAt) : undefined,
+            actions: [{ label: "Retry", icon: <ArrowClockwise size={12} />, onClick: template.retry }],
+          }}
+        />
+      ) : templateNote && !running && progress?.stage !== "done" ? (
         <div role="status" style={{ display: "flex", gap: 8, alignItems: "flex-start", fontSize: 12 }}>
-          {template.status?.state === "failed"
-            ? <Warning size={14} weight="fill" style={{ flexShrink: 0, marginTop: 1, color: "var(--color-warning, #D29922)" }} />
-            : <CircleNotch size={14} className="animate-spin" style={{ flexShrink: 0, marginTop: 1 }} />}
+          <CircleNotch size={14} className="animate-spin" style={{ flexShrink: 0, marginTop: 1 }} />
           <span>
             {templateNote}
-            {template.status?.state === "failed" && template.status.nextRetryAt ? ` ${agent37RetryLabel(template.status.nextRetryAt)}` : ""}
-            {!templateReady && template.status?.state !== "failed" ? " You can wait here; Make box turns on when it's ready." : ""}
+            {!templateReady ? " You can wait here; Make box turns on when it's ready." : ""}
           </span>
-          {template.status?.state === "failed" ? (
-            <button type="button" className="ade-modern-btn" data-size="sm" style={{ marginLeft: "auto", flexShrink: 0 }} onClick={template.retry}>
-              <ArrowClockwise size={12} /> Retry
-            </button>
-          ) : null}
         </div>
       ) : null}
 

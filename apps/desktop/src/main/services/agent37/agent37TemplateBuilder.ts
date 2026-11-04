@@ -46,8 +46,14 @@ export type Agent37TemplateBuildRecord = {
 };
 
 export type Agent37TemplateRecordStore = {
+  /**
+   * The record, or null when there is none. Throws when the account's shared
+   * record can't be read: that is "unknown", never "nobody is building".
+   */
   read(): Promise<Agent37TemplateBuildRecord | null>;
+  /** Logs its own failures; never throws. */
   write(record: Agent37TemplateBuildRecord): Promise<void>;
+  /** Logs its own failures; never throws. */
   clear(): Promise<void>;
 };
 
@@ -82,6 +88,14 @@ const BUILD_RECORD_TTL_MS = 50 * 60_000;
 const UNSTARTED_BUILD_MS = 3 * 60_000;
 /** Automatic retries after a failed build, then it waits for Retry. */
 const RETRY_DELAYS_MS = [60_000, 5 * 60_000, 15 * 60_000];
+/**
+ * After claiming a build, how long to wait before reading the shared record
+ * back: long enough for another computer's claim, written at the same moment,
+ * to reach this one through the account vault.
+ */
+const CLAIM_SETTLE_MS = 5_000;
+/** Waits between reads that confirm a finished build published the template and its marker. */
+const CONFIRM_DELAYS_MS = [5_000, 15_000, 30_000, 60_000];
 
 const MARKER = /ADE (\S+) · template ([0-9a-f]{6,})/;
 
@@ -291,15 +305,23 @@ export function createAgent37TemplateBuilder(deps: Agent37TemplateBuilderDeps) {
     const usable = existing != null;
     if (signal.aborted) return;
 
-    // Someone on the account may already be building this exact template.
-    const record = await deps.records.read().catch(() => null);
-    if (
-      record
-      && record.template === template
-      && record.contextHash === contextHash
-      && record.adeVersion === bakedVersion
-      && now() - record.startedAt < BUILD_RECORD_TTL_MS
-    ) {
+    // Someone on the account may already be building this exact template. A
+    // record that can't be read is unknown, not absent: starting a build then
+    // could run a second one beside theirs, so this pass fails and retries.
+    let record: Agent37TemplateBuildRecord | null;
+    try {
+      record = await deps.records.read();
+    } catch (error) {
+      deps.logger?.warn?.("agent37.template_record_read_failed", { template, error: plainReason(error) });
+      throw new Error("ADE couldn't check your account for a template build already running on another computer");
+    }
+    const sameBuild = (candidate: Agent37TemplateBuildRecord | null): candidate is Agent37TemplateBuildRecord =>
+      candidate != null
+      && candidate.template === template
+      && candidate.contextHash === contextHash
+      && candidate.adeVersion === bakedVersion
+      && now() - candidate.startedAt < BUILD_RECORD_TTL_MS;
+    if (sameBuild(record)) {
       const build = await client.getTemplateBuild(record.buildId);
       if (build && build.status !== "failed") {
         deps.logger?.info?.("agent37.template_build_resumed", { template, buildId: record.buildId, by: record.by });
@@ -315,8 +337,7 @@ export function createAgent37TemplateBuilder(deps: Agent37TemplateBuilderDeps) {
     const context = packAgent37TemplateContext({ ...files, dockerfile: pinAgent37Dockerfile(files.dockerfile, deps.adeVersion) });
     const build = await client.createTemplateBuild({ name: template, sizeBytes: context.length, description });
     const startedAt = now();
-    // Claim it before the slow part, so another computer that checks now waits on this one.
-    await deps.records.write({
+    const ours: Agent37TemplateBuildRecord = {
       v: 1,
       template,
       buildId: build.id,
@@ -324,9 +345,50 @@ export function createAgent37TemplateBuilder(deps: Agent37TemplateBuilderDeps) {
       adeVersion: bakedVersion,
       contextHash,
       by: deps.machineLabel ?? null,
-    }).catch(() => undefined);
+    };
+    // Claim it before the slow part, so another computer that checks now waits on this one.
+    await deps.records.write(ours);
     deps.logger?.info?.("agent37.template_build_started", { template, buildId: build.id, adeVersion: bakedVersion, contextHash, usable });
     set(signal, { state: "building", usable, startedAt, minutesLeft: minutesLeft(startedAt), error: null, nextRetryAt: null });
+
+    // The vault has no compare-and-set, so two computers can claim at once.
+    // Read the record back after a moment: when another computer's claim for
+    // the same template is there and its build was made first, follow that
+    // one. Ours is never uploaded or started, so it never runs (Agent37 has no
+    // way to cancel a build; an unstarted one is simply left behind).
+    await sleep(CLAIM_SETTLE_MS, signal);
+    if (signal.aborted) return;
+    let claimed: Agent37TemplateBuildRecord | null = null;
+    try {
+      claimed = await deps.records.read();
+    } catch (error) {
+      // Unknown: nothing says another build exists, so carry on with ours.
+      deps.logger?.warn?.("agent37.template_claim_check_failed", { template, buildId: build.id, error: plainReason(error) });
+    }
+    if (sameBuild(claimed) && claimed.buildId !== build.id) {
+      const [theirs, mine] = await Promise.all([
+        client.getTemplateBuild(claimed.buildId).catch((error: unknown) => {
+          deps.logger?.warn?.("agent37.template_claim_build_read_failed", { template, buildId: claimed.buildId, error: plainReason(error) });
+          return null;
+        }),
+        client.getTemplateBuild(build.id).catch(() => null),
+      ]);
+      const theirsFirst = theirs != null && theirs.status !== "failed" && (
+        theirs.created != null && mine?.created != null
+          ? theirs.created < mine.created || (theirs.created === mine.created && claimed.buildId < build.id)
+          : claimed.startedAt < startedAt
+      );
+      if (theirsFirst) {
+        deps.logger?.info?.("agent37.template_build_yielded", { template, buildId: build.id, followed: claimed.buildId, by: claimed.by });
+        await follow(client, claimed.buildId, claimed.startedAt, usable, signal);
+        if (signal.aborted) return;
+        await finish(client, template, bakedVersion, contextHash, signal);
+        return;
+      }
+      // Ours came first: put it back in the record so the other computer follows it.
+      deps.logger?.info?.("agent37.template_build_claim_kept", { template, buildId: build.id, other: claimed.buildId, by: claimed.by });
+      await deps.records.write(ours);
+    }
     await client.uploadTemplateContext(build.uploadUrl, context);
     try {
       await client.startTemplateBuild(build.id);
@@ -341,17 +403,39 @@ export function createAgent37TemplateBuilder(deps: Agent37TemplateBuilderDeps) {
     await finish(client, template, bakedVersion, contextHash, signal);
   }
 
+  /**
+   * A finished build is ready only once Agent37 shows the template with this
+   * build's marker, since that is what every computer reads. Until then the
+   * build record stays, so a later pass (here or elsewhere) resumes here.
+   */
   async function finish(client: Agent37Client, template: string, bakedVersion: string, contextHash: string, signal: AbortSignal) {
-    // The build sets the description; make sure it carries the marker, since
-    // that is what every computer reads.
-    const published = await client.getTemplate(template).catch(() => null);
     const description = agent37TemplateDescription(bakedVersion, contextHash);
-    if (published && published.description !== description) {
-      await client.setTemplateDescription(template, description).catch((error: unknown) => {
-        deps.logger?.warn?.("agent37.template_describe_failed", { template, error: plainReason(error) });
-      });
+    let published: Agent37Template | null = null;
+    let lastReason = "it isn't published yet";
+    for (let attempt = 0; ; attempt += 1) {
+      if (signal.aborted) return;
+      try {
+        published = await client.getTemplate(template);
+        const marker = readAgent37TemplateMarker(published?.description ?? null);
+        if (published && marker?.adeVersion === bakedVersion && marker.contextHash === contextHash) break;
+        if (published) {
+          // Published without the marker: set it, then read it back on the next turn.
+          await client.setTemplateDescription(template, description);
+          lastReason = "its description didn't update yet";
+        } else {
+          lastReason = "it isn't published yet";
+        }
+      } catch (error) {
+        lastReason = plainReason(error).replace(/\.$/, "");
+        deps.logger?.warn?.("agent37.template_confirm_failed", { template, attempt, error: lastReason });
+      }
+      const delay = CONFIRM_DELAYS_MS[attempt];
+      if (delay == null) {
+        throw new Error(`Agent 37 finished the template build, but ADE couldn't confirm the template: ${lastReason}`);
+      }
+      await sleep(delay, signal);
     }
-    await deps.records.clear().catch(() => undefined);
+    await deps.records.clear();
     deps.logger?.info?.("agent37.template_build_succeeded", { template, revision: published?.revision ?? null });
     set(signal, { state: "ready", usable: true, adeVersion: bakedVersion, startedAt: null, minutesLeft: null, error: null, nextRetryAt: null });
   }
@@ -367,7 +451,7 @@ export function createAgent37TemplateBuilder(deps: Agent37TemplateBuilderDeps) {
         deps.logger?.warn?.("agent37.template_build_failed", { template: deps.templateName(), attempt, error: reason });
         const delay = isFatal(error) ? null : RETRY_DELAYS_MS[attempt] ?? null;
         // A build that failed is over; drop the claim so the next try starts fresh.
-        if (error instanceof BuildFailed) await deps.records.clear().catch(() => undefined);
+        if (error instanceof BuildFailed) await deps.records.clear();
         set(signal, {
           state: "failed",
           error: reason,

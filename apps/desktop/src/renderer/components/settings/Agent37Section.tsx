@@ -29,8 +29,9 @@ function errorText(error: unknown, fallback: string): string {
 }
 
 /** The template row: setting up (about N min left), ready, or failed with a reason and Retry. */
-function Agent37TemplateCard({ status, onRetry }: { status: Agent37TemplateStatus | null; onRetry: () => void }) {
-  const state = status?.state ?? "checking";
+function Agent37TemplateCard({ status, loadError, onRetry }: { status: Agent37TemplateStatus | null; loadError: string | null; onRetry: () => void }) {
+  // ADE couldn't ask at all: say so, with Retry, rather than "Checking…" forever.
+  const state = loadError && !status ? "failed" : status?.state ?? "checking";
   const icon = state === "ready"
     ? <Check size={15} weight="bold" />
     : state === "failed"
@@ -57,7 +58,11 @@ function Agent37TemplateCard({ status, onRetry }: { status: Agent37TemplateStatu
       ) : null}
     >
       <p className="ade-ig-note" role="status">
-        {status ? describeAgent37TemplateStatus(status) : "Checking ADE's machine template…"}
+        {status
+          ? describeAgent37TemplateStatus(status)
+          : loadError
+            ? `ADE couldn't check its machine template: ${loadError}`
+            : "Checking ADE's machine template…"}
         {state === "failed" && status?.nextRetryAt ? ` ${agent37RetryLabel(status.nextRetryAt)}` : ""}
         {state === "ready" && status?.adeVersion ? ` It installs ADE ${status.adeVersion}.` : ""}
       </p>
@@ -77,6 +82,8 @@ export function Agent37Section() {
   const [busy, setBusy] = useState(false);
   const [apiKey, setApiKey] = useState("");
   const [error, setError] = useState<string | null>(null);
+  /** What the error banner's button does: check again, or retry the disconnect that failed. */
+  const [errorRetry, setErrorRetry] = useState<"load" | "disconnect">("load");
   const connected = status?.connected === true;
   const template = useAgent37Template(connected && !status?.error);
 
@@ -86,6 +93,7 @@ export function Agent37Section() {
     try {
       setStatus(await bridge.getStatus());
     } catch (loadError) {
+      setErrorRetry("load");
       setError(errorText(loadError, `Couldn't check ${AGENT37_NAME}.`));
     } finally {
       setLoading(false);
@@ -104,6 +112,7 @@ export function Agent37Section() {
       setStatus(await bridge.saveKey(apiKey));
       setApiKey("");
     } catch (saveError) {
+      setErrorRetry("load");
       setError(errorText(saveError, `Couldn't connect ${AGENT37_NAME}.`));
     } finally {
       setBusy(false);
@@ -117,6 +126,7 @@ export function Agent37Section() {
     try {
       setStatus(await bridge.removeKey());
     } catch (removeError) {
+      setErrorRetry("disconnect");
       setError(errorText(removeError, `Couldn't disconnect ${AGENT37_NAME}.`));
     } finally {
       setBusy(false);
@@ -177,7 +187,18 @@ export function Agent37Section() {
       />
 
       {error ? (
-        <Banner layout="inline" model={{ id: "agent37-error", tone: "error", title: AGENT37_NAME, detail: error, actions: [{ label: "Check again", onClick: () => { setError(null); void load(); } }] }} />
+        <Banner
+          layout="inline"
+          model={{
+            id: "agent37-error",
+            tone: "error",
+            title: AGENT37_NAME,
+            detail: error,
+            actions: [errorRetry === "disconnect"
+              ? { label: "Try again", onClick: () => { void disconnect(); } }
+              : { label: "Check again", onClick: () => { setError(null); void load(); } }],
+          }}
+        />
       ) : null}
       {status?.error && !error ? (
         <Banner layout="inline" model={{ id: "agent37-saved-key-error", tone: "warning", title: connected ? `Couldn't reach ${AGENT37_NAME}` : `${AGENT37_NAME} refused the saved key`, detail: status.error, actions: [{ label: "Check again", onClick: () => { void load(); } }] }} />
@@ -186,7 +207,7 @@ export function Agent37Section() {
       <IntegrationColumns>
         {connected ? (
           <>
-            {!status?.error ? <Agent37TemplateCard status={template.status} onRetry={template.retry} /> : null}
+            {!status?.error ? <Agent37TemplateCard status={template.status} loadError={template.loadError} onRetry={template.retry} /> : null}
             <IntegrationCard
               anchor="agent37-machines"
               icon={<Plus size={15} weight="bold" />}

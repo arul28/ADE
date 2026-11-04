@@ -54,7 +54,7 @@ function usage() {
     "  project <path>   Register a folder (never one the installed ADE uses).",
     "  status           Socket, sign-in and log.",
     "  stop             Stop its brain. Its home and sign-in stay.",
-    "  remove           Sign it out (its account row goes) and stop it.",
+    "  remove           Sign it out (its account row goes) and stop it. Starts it first if it is stopped.",
     "",
     "Options:",
     "  --name <n>       Which test machine (default: dev). Each has its own home.",
@@ -103,10 +103,26 @@ function parseArgs(argv) {
   return options;
 }
 
+/**
+ * Windows named pipes share one namespace for every user on the computer,
+ * while each user's home is their own, so the pipe carries the user too.
+ */
+function windowsUserTag() {
+  let user = "";
+  try {
+    user = os.userInfo().username.trim();
+  } catch (error) {
+    process.stderr.write(`[ade] couldn't read this user's name (${error instanceof Error ? error.message : String(error)}); using USERNAME.\n`);
+  }
+  if (!user) user = process.env.USERNAME?.trim() ?? "";
+  const tag = user.toLowerCase().replace(/[^a-z0-9_-]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 32);
+  return tag || "user";
+}
+
 function machinePaths(name) {
   const home = path.join(os.homedir(), `.ade-dev-machine-${name}`);
   const socketPath = process.platform === "win32"
-    ? `\\\\.\\pipe\\ade-runtime-machine-${name}`
+    ? `\\\\.\\pipe\\ade-runtime-machine-${windowsUserTag()}-${name}`
     : path.join(os.tmpdir(), `ade-runtime-machine-${name}.sock`);
   return { home, socketPath, logPath: path.join(home, "logs", "dev-machine.out.log") };
 }
@@ -137,6 +153,7 @@ function ade(paths, args, { inherit = false } = {}) {
     cwd: paths.home,
     encoding: "utf8",
     stdio: inherit ? "inherit" : "pipe",
+    windowsHide: true,
   });
   return { status: result.status ?? 1, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
 }
@@ -155,6 +172,12 @@ async function start(paths, options) {
     process.stdout.write(`[ade] test machine "${options.name}" is already running at ${paths.socketPath}\n`);
     return report(paths, options);
   }
+  await startBrain(paths, options);
+  report(paths, options);
+}
+
+/** Starts the test machine's brain and waits for its socket. */
+async function startBrain(paths, options) {
   if (!options.skipBuild && !isRuntimeCliBuildFresh()) await buildRuntimeCli(false);
   fs.mkdirSync(path.dirname(paths.logPath), { recursive: true });
   // Marks the home before anything else touches it: every `ade` command on it,
@@ -177,7 +200,6 @@ async function start(paths, options) {
   } catch {
     throw new Error(`The test machine's brain did not open ${paths.socketPath}. See ${paths.logPath}.`);
   }
-  report(paths, options);
 }
 
 function report(paths, options) {
@@ -198,7 +220,7 @@ function report(paths, options) {
 /** The name people know this computer by: the Mac's Computer Name, else the hostname. */
 function computerName() {
   if (process.platform === "darwin") {
-    const name = spawnSync("scutil", ["--get", "ComputerName"], { encoding: "utf8" }).stdout?.trim();
+    const name = spawnSync("scutil", ["--get", "ComputerName"], { encoding: "utf8", windowsHide: true }).stdout?.trim();
     if (name) return name;
   }
   return os.hostname().replace(/\.(local|lan)$/i, "");
@@ -240,18 +262,18 @@ function project(paths, options) {
   let target = options.projectPath;
   if (options.clone) {
     const source = resolvePrimaryProjectRoot(repoRoot);
-    const branch = spawnSync("git", ["-C", repoRoot, "branch", "--show-current"], { encoding: "utf8" }).stdout.trim();
+    const branch = spawnSync("git", ["-C", repoRoot, "branch", "--show-current"], { encoding: "utf8", windowsHide: true }).stdout.trim();
     target = path.join(paths.home, "projects", path.basename(source));
     if (!fs.existsSync(target)) {
       fs.mkdirSync(path.dirname(target), { recursive: true });
       // --shared borrows the source's objects: seconds, not a full copy.
-      const cloned = spawnSync("git", ["clone", "--shared", ...(branch ? ["--branch", branch] : []), source, target], { stdio: "inherit" });
+      const cloned = spawnSync("git", ["clone", "--shared", ...(branch ? ["--branch", branch] : []), source, target], { stdio: "inherit", windowsHide: true });
       if (cloned.status !== 0) throw new Error("git clone failed.");
     }
     // Machines match a repository by its origin. A clone's origin is the local
     // folder it came from; give it the real one, so `--machine` finds it.
-    const origin = spawnSync("git", ["-C", source, "remote", "get-url", "origin"], { encoding: "utf8" }).stdout.trim();
-    if (origin) spawnSync("git", ["-C", target, "remote", "set-url", "origin", origin], { stdio: "inherit" });
+    const origin = spawnSync("git", ["-C", source, "remote", "get-url", "origin"], { encoding: "utf8", windowsHide: true }).stdout.trim();
+    if (origin) spawnSync("git", ["-C", target, "remote", "set-url", "origin", origin], { stdio: "inherit", windowsHide: true });
   }
   if (!target) throw new Error("project takes --clone or a folder path.");
   // The brain refuses a project the installed ADE uses; this says so first.
@@ -268,12 +290,45 @@ async function stop(paths, { quiet = false } = {}) {
   if (!quiet) process.stdout.write("[ade] stopped. Its home and sign-in are kept.\n");
 }
 
-async function remove(paths) {
-  if (await canConnectToSocket(paths.socketPath) && authState(paths) === "active") {
-    // Sign-out drops the machine's account row.
-    ade(paths, ["logout"], { inherit: true });
+/**
+ * Signs the test machine out (which drops its account row) and stops it. Sign-out
+ * goes through its brain, so a stopped one is started for it. Success is
+ * reported only once `auth status` says signed_out.
+ */
+async function remove(paths, options) {
+  const nameFlag = options.name === "dev" ? "" : ` --name ${options.name}`;
+  if (!fs.existsSync(paths.home)) {
+    process.stdout.write(`[ade] there is no test machine "${options.name}" on this computer (${paths.home}); nothing to remove.\n`);
+    return;
+  }
+  const wasRunning = await canConnectToSocket(paths.socketPath);
+  if (!wasRunning) {
+    process.stdout.write(`[ade] starting test machine "${options.name}" to sign it out…\n`);
+    await startBrain(paths, options);
+  }
+  const before = authState(paths);
+  let after = before;
+  let logoutStatus = 0;
+  if (before !== "signed_out") {
+    logoutStatus = ade(paths, ["logout"], { inherit: true }).status;
+    after = authState(paths);
+  }
+  if (after !== "signed_out") {
+    // Leave it as it was found, so a retry starts from the same place.
+    if (!wasRunning) await stop(paths, { quiet: true });
+    throw new Error(
+      `the test machine is still ${after === "unknown" ? "in a sign-in state ADE couldn't read" : after} after sign-out`
+        + `${logoutStatus !== 0 ? ` (ade logout exited ${logoutStatus})` : ""}, so its account row may still be on your account. `
+        + `Run npm run dev:machine -- remove${nameFlag} again; if it keeps failing, remove it from Your computers in ADE. `
+        + `Its log: ${paths.logPath}`,
+    );
   }
   await stop(paths, { quiet: true });
+  if (before === "expired") {
+    // An expired session can't tell the account to drop the row.
+    process.stdout.write(`[ade] signed out and stopped. Its sign-in had expired, so its row may still be on your account: remove it from Your computers in ADE. Delete ${paths.home} too if you no longer need its files.\n`);
+    return;
+  }
   process.stdout.write(`[ade] signed out and stopped; its account row is gone. Delete ${paths.home} too if you no longer need its files.\n`);
 }
 
@@ -285,7 +340,7 @@ async function main() {
   if (options.command === "project") return project(paths, options);
   if (options.command === "status") return report(paths, options);
   if (options.command === "stop") return stop(paths);
-  return remove(paths);
+  return remove(paths, options);
 }
 
 main().catch((error) => {

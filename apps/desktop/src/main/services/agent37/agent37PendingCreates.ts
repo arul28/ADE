@@ -1,0 +1,247 @@
+/**
+ * Creates of Agent37 boxes that have not been resolved yet, kept on disk.
+ *
+ * A create is recorded BEFORE ADE asks Agent37 for the box, by the request id
+ * ADE puts in the box's metadata (`ade_request_id`). That covers every way a
+ * create can end without ADE knowing the box's id: a create that timed out or
+ * lost its answer, an app quit mid-request, a failed list or delete. Whoever
+ * finds the record (the create's own failure path, or the next app start)
+ * reconciles it against Agent37: boxes made for that request that never
+ * signed in are deleted, and the record goes only once Agent37 confirms each
+ * deletion. A box that signed in is a real machine and is kept.
+ *
+ * A record that matches no box is kept for a day, in case Agent37 had the
+ * create in flight, and then dropped.
+ */
+
+import type { SyncCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
+import { Agent37Error, type Agent37Client, type Agent37Instance } from "./agent37Client";
+
+export type Agent37PendingCreate = {
+  requestId: string;
+  /** Epoch ms when ADE recorded the intent, before asking Agent37. */
+  startedAt: number;
+  /** Boxes known to belong to this request (from the create answer or a list). */
+  instanceIds: string[];
+};
+
+export type Agent37PendingCreateStore = {
+  list(): Agent37PendingCreate[];
+  /** Before the create request goes out. */
+  begin(requestId: string, startedAt: number): void;
+  /** The box this request made, once ADE knows its id. */
+  attach(requestId: string, instanceId: string): void;
+  /** Every box the request made is resolved (deleted, or signed in and kept). */
+  finish(requestId: string): void;
+};
+
+type Logger = {
+  info?(event: string, meta?: Record<string, unknown>): void;
+  warn?(event: string, meta?: Record<string, unknown>): void;
+};
+
+const PENDING_CREATES_KEY = "agent37.pendingCreates.v2";
+/** The first format: a bare list of instance ids, written after the create answered. */
+const LEGACY_PENDING_CREATES_KEY = "agent37.pendingCreates.v1";
+/** A record that matched no box for this long is dropped. */
+export const AGENT37_PENDING_CREATE_TTL_MS = 24 * 60 * 60_000;
+const DELETE_CONFIRM_ATTEMPTS = 15;
+const DELETE_CONFIRM_POLL_MS = 2_000;
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function parseRecords(raw: string | null | undefined): Agent37PendingCreate[] {
+  if (!raw) return [];
+  const parsed = JSON.parse(raw) as unknown;
+  if (!Array.isArray(parsed)) return [];
+  const out: Agent37PendingCreate[] = [];
+  for (const entry of parsed) {
+    const record = entry && typeof entry === "object" ? entry as Record<string, unknown> : null;
+    if (!record || typeof record.requestId !== "string" || !record.requestId) continue;
+    out.push({
+      requestId: record.requestId,
+      startedAt: typeof record.startedAt === "number" && Number.isFinite(record.startedAt) ? record.startedAt : 0,
+      instanceIds: Array.isArray(record.instanceIds)
+        ? record.instanceIds.filter((id): id is string => typeof id === "string" && id.length > 0)
+        : [],
+    });
+  }
+  return out;
+}
+
+/** The pending creates in this computer's shared credential file. Every read and write failure is logged. */
+export function createAgent37PendingCreateStore(
+  machineStore: () => SyncCredentialStore,
+  logger: Logger,
+  now: () => number = () => Date.now(),
+): Agent37PendingCreateStore {
+  const read = (): Agent37PendingCreate[] => {
+    let records: Agent37PendingCreate[] = [];
+    try {
+      records = parseRecords(machineStore().getSync(PENDING_CREATES_KEY));
+    } catch (error) {
+      logger.warn?.("agent37.pending_creates_read_failed", { error: errorText(error) });
+    }
+    // Ids an older build recorded: reconciled by id, with no request to list by.
+    try {
+      const legacy = machineStore().getSync(LEGACY_PENDING_CREATES_KEY);
+      if (legacy) {
+        const ids = JSON.parse(legacy) as unknown;
+        if (Array.isArray(ids)) {
+          for (const id of ids) {
+            if (typeof id === "string" && id) records.push({ requestId: `legacy:${id}`, startedAt: now(), instanceIds: [id] });
+          }
+        }
+      }
+    } catch (error) {
+      logger.warn?.("agent37.pending_creates_read_failed", { error: errorText(error), legacy: true });
+    }
+    return records;
+  };
+  const write = (records: Agent37PendingCreate[]): void => {
+    try {
+      if (records.length) machineStore().setSync(PENDING_CREATES_KEY, JSON.stringify(records));
+      else machineStore().deleteSync(PENDING_CREATES_KEY);
+      machineStore().deleteSync(LEGACY_PENDING_CREATES_KEY);
+    } catch (error) {
+      // The create still cleans up after itself in this session; only a quit
+      // in the middle of it would go unrecovered.
+      logger.warn?.("agent37.pending_creates_write_failed", { error: errorText(error), count: records.length });
+    }
+  };
+  const update = (requestId: string, change: (record: Agent37PendingCreate | null) => Agent37PendingCreate | null) => {
+    const records = read();
+    const index = records.findIndex((record) => record.requestId === requestId);
+    const next = change(index >= 0 ? records[index]! : null);
+    if (index >= 0) {
+      if (next) records[index] = next;
+      else records.splice(index, 1);
+    } else if (next) {
+      records.push(next);
+    }
+    write(records);
+  };
+  return {
+    list: read,
+    begin: (requestId, startedAt) => update(requestId, (record) => record ?? { requestId, startedAt, instanceIds: [] }),
+    attach: (requestId, instanceId) => update(requestId, (record) => {
+      const base = record ?? { requestId, startedAt: now(), instanceIds: [] };
+      return base.instanceIds.includes(instanceId) ? base : { ...base, instanceIds: [...base.instanceIds, instanceId] };
+    }),
+    finish: (requestId) => update(requestId, () => null),
+  };
+}
+
+function isNotFound(error: unknown): boolean {
+  return error instanceof Agent37Error && error.status === 404;
+}
+
+/** The instance, null when Agent37 no longer has it (404), undefined when ADE couldn't ask. */
+async function lookUp(client: Agent37Client, instanceId: string, logger: Logger): Promise<Agent37Instance | null | undefined> {
+  try {
+    return await client.getInstance(instanceId);
+  } catch (error) {
+    if (isNotFound(error)) return null;
+    logger.warn?.("agent37.instance_lookup_failed", { instanceId, error: errorText(error) });
+    return undefined;
+  }
+}
+
+/**
+ * Deletes a box and waits until Agent37 confirms it is gone (a 404 or
+ * `deleted`). True only on that confirmation.
+ */
+export async function deleteAgent37InstanceConfirmed(
+  client: Agent37Client,
+  instanceId: string,
+  deps: { logger: Logger; sleep: (ms: number) => Promise<void> },
+): Promise<boolean> {
+  try {
+    await client.deleteInstance(instanceId);
+  } catch (error) {
+    // A repeat delete answers 404; the read below says whether it is gone.
+    if (!isNotFound(error)) {
+      deps.logger.warn?.("agent37.instance_delete_failed", { instanceId, error: errorText(error) });
+      return false;
+    }
+  }
+  for (let attempt = 0; attempt < DELETE_CONFIRM_ATTEMPTS; attempt += 1) {
+    const instance = await lookUp(client, instanceId, deps.logger);
+    if (instance === null || instance?.status === "deleted") return true;
+    await deps.sleep(DELETE_CONFIRM_POLL_MS);
+  }
+  deps.logger.warn?.("agent37.instance_delete_unconfirmed", { instanceId });
+  return false;
+}
+
+export type Agent37ReconcileResult = {
+  /** Every box the request made is resolved and the record is gone. */
+  resolved: boolean;
+  deleted: string[];
+  kept: string[];
+  /** Boxes ADE could not delete or confirm; the record stays for the next start. */
+  unresolved: string[];
+};
+
+/**
+ * Brings one pending create to rest. `isSignedIn` decides which boxes are real
+ * machines to keep; leave it out where no box can have signed in yet.
+ */
+export async function reconcileAgent37PendingCreate(
+  client: Agent37Client,
+  record: Agent37PendingCreate,
+  deps: {
+    store: Agent37PendingCreateStore;
+    logger: Logger;
+    sleep: (ms: number) => Promise<void>;
+    now?: () => number;
+    isSignedIn?: (instanceId: string) => Promise<boolean>;
+  },
+): Promise<Agent37ReconcileResult> {
+  const now = deps.now ?? (() => Date.now());
+  const result: Agent37ReconcileResult = { resolved: false, deleted: [], kept: [], unresolved: [] };
+  const legacy = record.requestId.startsWith("legacy:");
+  let listed: Agent37Instance[] | null = null;
+  if (!legacy) {
+    try {
+      listed = await client.listInstances();
+    } catch (error) {
+      // Can't tell whether a box exists: keep the record and ask again later.
+      deps.logger.warn?.("agent37.pending_create_list_failed", { requestId: record.requestId, error: errorText(error) });
+      return result;
+    }
+  }
+  const candidates = new Map<string, Agent37Instance | null | undefined>();
+  for (const instance of listed ?? []) {
+    if (instance.metadata.ade_request_id === record.requestId) candidates.set(instance.id, instance);
+  }
+  for (const id of record.instanceIds) {
+    if (!candidates.has(id)) candidates.set(id, await lookUp(client, id, deps.logger));
+  }
+  for (const [id, known] of candidates) {
+    if (!record.instanceIds.includes(id)) deps.store.attach(record.requestId, id);
+    if (known === undefined) {
+      result.unresolved.push(id);
+      continue;
+    }
+    if (known === null || known.status === "deleted") continue;
+    if (deps.isSignedIn && await deps.isSignedIn(id)) {
+      result.kept.push(id);
+      continue;
+    }
+    if (await deleteAgent37InstanceConfirmed(client, id, deps)) {
+      result.deleted.push(id);
+      deps.logger.warn?.("agent37.half_made_box_deleted", { instanceId: id, requestId: record.requestId });
+    } else {
+      result.unresolved.push(id);
+    }
+  }
+  if (result.unresolved.length) return result;
+  // No box at all for a fresh request: Agent37 may still be making it.
+  if (candidates.size === 0 && now() - record.startedAt < AGENT37_PENDING_CREATE_TTL_MS) return result;
+  deps.store.finish(record.requestId);
+  result.resolved = true;
+  return result;
+}

@@ -70,18 +70,42 @@ function isSameOrInside(candidate: string, root: string): boolean {
   return child === parent || child.startsWith(parent.endsWith(path.sep) ? parent : `${parent}${path.sep}`);
 }
 
-/** Project roots registered in an ADE home's `projects.json`. */
+/**
+ * Project roots registered in an ADE home's `projects.json`. Only a missing
+ * file means "none"; a file that can't be read or parsed is unknown, and
+ * treating it as empty would let a test machine open a project the installed
+ * ADE serves, so that throws with a repair step.
+ */
 function registeredRoots(adeHome: string): string[] {
+  const registryPath = path.join(adeHome, "projects.json");
+  let raw: string;
   try {
-    const parsed = JSON.parse(fs.readFileSync(path.join(adeHome, "projects.json"), "utf8")) as {
-      projects?: Array<{ rootPath?: unknown }>;
-    };
-    return (parsed.projects ?? [])
-      .map((project) => (typeof project.rootPath === "string" ? project.rootPath : ""))
-      .filter((rootPath) => rootPath.length > 0);
-  } catch {
-    return [];
+    raw = fs.readFileSync(registryPath, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException | null)?.code === "ENOENT") return [];
+    throw unreadableRegistry(registryPath, error);
   }
+  let parsed: { projects?: unknown };
+  try {
+    parsed = JSON.parse(raw) as { projects?: unknown };
+  } catch (error) {
+    throw unreadableRegistry(registryPath, error);
+  }
+  const projects = parsed && typeof parsed === "object" ? parsed.projects : undefined;
+  if (projects !== undefined && !Array.isArray(projects)) {
+    throw unreadableRegistry(registryPath, new Error("its project list is not a list"));
+  }
+  return ((projects ?? []) as Array<{ rootPath?: unknown } | null>)
+    .map((project) => (typeof project?.rootPath === "string" ? project.rootPath : ""))
+    .filter((rootPath) => rootPath.length > 0);
+}
+
+function unreadableRegistry(registryPath: string, cause: unknown): Error {
+  const detail = cause instanceof Error ? cause.message : String(cause);
+  return new Error(
+    `This dev test machine cannot check which projects the installed ADE uses: ${registryPath} could not be read (${detail}). `
+      + "Make that file readable (fix its permissions, or restore it if it is damaged), then try again.",
+  );
 }
 
 /**
@@ -92,7 +116,10 @@ export function installedAdeHomes(): string[] {
   return [path.join(os.homedir(), ".ade"), path.join(os.homedir(), ".ade-alpha")];
 }
 
-/** Throws when a dev test machine would open a project the installed ADE also serves. */
+/**
+ * Throws when a dev test machine would open a project the installed ADE also
+ * serves, or when it can't tell because an installed project list is unreadable.
+ */
 export function assertDevTestMachineMayOpenProject(
   rootPath: string,
   adeDir: string,

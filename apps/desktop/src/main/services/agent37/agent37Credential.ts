@@ -177,10 +177,33 @@ export async function saveAgent37Key(deps: Agent37CredentialDeps, rawKey: string
   return await readAgent37Status(deps);
 }
 
-/** Forgets the key everywhere this computer can reach. Boxes on Agent37 keep running. */
+/** The account vault refused to forget the key: nothing was disconnected. */
+export class Agent37DisconnectFailed extends Error {
+  constructor(detail: string | null) {
+    super(`ADE couldn't remove the Agent 37 key from your account${detail ? ` (${detail})` : ""}, so it is still connected. Try again in a moment.`);
+    this.name = "Agent37DisconnectFailed";
+  }
+}
+
+/**
+ * Forgets the key everywhere this computer can reach. Boxes on Agent37 keep
+ * running. When the account vault won't let go of it, nothing is removed
+ * (this computer's copy included) and this throws, so a retry starts from
+ * the same place.
+ */
 export async function removeAgent37Key(deps: Agent37CredentialDeps): Promise<Agent37Status> {
   const vault = resolveVault(deps);
-  if (vault) await vault.remove().catch(() => false);
+  if (vault) {
+    let removed: boolean;
+    let detail: string | null = null;
+    try {
+      removed = await vault.remove();
+    } catch (error) {
+      removed = false;
+      detail = error instanceof Error ? error.message : String(error);
+    }
+    if (!removed) throw new Agent37DisconnectFailed(detail);
+  }
   deps.machineStore()?.deleteSync(AGENT37_MACHINE_CREDENTIAL_KEY);
   return await readAgent37Status(deps);
 }

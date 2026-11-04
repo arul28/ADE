@@ -186,34 +186,53 @@ export function createAgent37Client(args: { apiKey: string; fetch?: FetchLike })
 
   async function request(
     url: string,
-    init: { method: string; body?: unknown; headers: Record<string, string>; timeoutMs?: number },
+    init: { method: string; body?: unknown; headers: Record<string, string>; timeoutMs?: number; signal?: AbortSignal },
   ): Promise<unknown> {
     const controller = new AbortController();
+    const timedOut = () => init.signal?.aborted
+      ? new Agent37Error("Cancelled.", "cancelled", 0)
+      : new Agent37Error("Agent 37 did not answer in time. Try again.", "timeout", 0);
+    // The caller's signal (a cancelled create) stops the request too.
+    const onCallerAbort = () => controller.abort();
+    if (init.signal?.aborted) controller.abort();
+    else init.signal?.addEventListener("abort", onCallerAbort, { once: true });
+    // The timer covers the body too: a server that sends headers and then
+    // stalls would otherwise hang the read with no timeout at all.
     const timer = setTimeout(() => controller.abort(), init.timeoutMs ?? REQUEST_TIMEOUT_MS);
     let response: Response;
+    let body: unknown;
     try {
-      response = await fetcher(url, {
-        method: init.method,
-        headers: {
-          accept: "application/json",
-          ...(init.body !== undefined ? { "content-type": "application/json" } : {}),
-          ...init.headers,
-        },
-        ...(init.body !== undefined ? { body: JSON.stringify(init.body) } : {}),
-        signal: controller.signal,
-        redirect: "error",
-      });
-    } catch (error) {
-      if (controller.signal.aborted) throw new Agent37Error("Agent 37 did not answer in time. Try again.", "timeout", 0);
-      throw new Agent37Error(
-        `Could not reach Agent 37: ${error instanceof Error ? error.message : String(error)}`,
-        "network",
-        0,
-      );
+      try {
+        response = await fetcher(url, {
+          method: init.method,
+          headers: {
+            accept: "application/json",
+            ...(init.body !== undefined ? { "content-type": "application/json" } : {}),
+            ...init.headers,
+          },
+          ...(init.body !== undefined ? { body: JSON.stringify(init.body) } : {}),
+          signal: controller.signal,
+          redirect: "error",
+        });
+      } catch (error) {
+        if (controller.signal.aborted) throw timedOut();
+        throw new Agent37Error(
+          `Could not reach Agent 37: ${error instanceof Error ? error.message : String(error)}`,
+          "network",
+          0,
+        );
+      }
+      body = response.status === 204
+        ? null
+        : await response.json().catch(() => {
+          // A body cut off by the timer is a timeout; one that isn't JSON is no body.
+          if (controller.signal.aborted) throw timedOut();
+          return null;
+        });
     } finally {
       clearTimeout(timer);
+      init.signal?.removeEventListener("abort", onCallerAbort);
     }
-    const body = response.status === 204 ? null : await response.json().catch(() => null);
     if (!response.ok) {
       const { code, message } = readErrorBody(body);
       const resolvedCode = code ?? (response.status === 401 ? "invalid_api_key" : `http_${response.status}`);
@@ -376,11 +395,12 @@ export function createAgent37Client(args: { apiKey: string; fetch?: FetchLike })
     },
 
     /** Runs `sh -c command` on the box as its default user. A non-zero exit is a result, not an error. */
-    async exec(id: string, command: string, options?: { timeoutMs?: number }): Promise<Agent37ExecResult> {
+    async exec(id: string, command: string, options?: { timeoutMs?: number; signal?: AbortSignal }): Promise<Agent37ExecResult> {
       const body = await request(`${AGENT37_SANDBOX_BASE_URL}/instances/${encodeURIComponent(id)}/exec`, {
         method: "POST",
         body: { command },
         timeoutMs: options?.timeoutMs,
+        signal: options?.signal,
         headers: { "x-agent37-key": apiKey },
       }) as Record<string, unknown> | null;
       return {

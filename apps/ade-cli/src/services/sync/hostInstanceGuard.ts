@@ -37,6 +37,20 @@ export type HostInstanceGuardResult =
       previousInstanceId: string;
       movedTo: string;
       retiredProjectSiteIds: string[];
+    }
+  | {
+      /**
+       * The home was copied, but some project's site id could not be retired
+       * (or the project list could not be read). The new record is NOT
+       * written, so the brain must not start: the next start runs the reset
+       * again, and only what is left gets done.
+       */
+      action: "blocked";
+      instanceId: string;
+      previousInstanceId: string;
+      movedTo: string;
+      retiredProjectSiteIds: string[];
+      failures: Array<{ path: string; error: string }>;
     };
 
 function readRecord(filePath: string): HostInstanceRecord | null {
@@ -56,17 +70,38 @@ function writeRecord(filePath: string, instanceId: string, now: Date): void {
   fs.writeFileSync(filePath, `${JSON.stringify(record, null, 2)}\n`, { mode: 0o600 });
 }
 
-function registeredProjectRoots(adeDir: string): string[] {
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/** The registered roots; a missing list is empty, any other read or parse failure throws. */
+function registeredProjectRoots(registryPath: string): string[] {
+  let raw: string;
   try {
-    const parsed = JSON.parse(fs.readFileSync(path.join(adeDir, "projects.json"), "utf8")) as {
-      projects?: Array<{ rootPath?: unknown }>;
-    };
-    return (parsed.projects ?? [])
-      .map((project) => (typeof project.rootPath === "string" ? project.rootPath : ""))
-      .filter((rootPath) => rootPath.length > 0);
-  } catch {
-    return [];
+    raw = fs.readFileSync(registryPath, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException | null)?.code === "ENOENT") return [];
+    throw error;
   }
+  const parsed = JSON.parse(raw) as { projects?: Array<{ rootPath?: unknown }> };
+  return (parsed.projects ?? [])
+    .map((project) => (typeof project.rootPath === "string" ? project.rootPath : ""))
+    .filter((rootPath) => rootPath.length > 0);
+}
+
+/** A folder an earlier, interrupted reset of this same copy already moved the identity into. */
+function earlierMove(copiedDir: string, previousInstanceId: string): string | null {
+  const suffix = `-from-${folderSafe(previousInstanceId)}`;
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(copiedDir);
+  } catch (error) {
+    // No folder yet is the first pass; anything else stops the start, to be retried.
+    if ((error as NodeJS.ErrnoException | null)?.code === "ENOENT") return null;
+    throw error;
+  }
+  const match = entries.filter((entry) => entry.endsWith(suffix)).sort().pop();
+  return match ? path.join(copiedDir, match) : null;
 }
 
 /** A filesystem-safe stamp for the folder the old identity moves into. */
@@ -96,33 +131,61 @@ export function guardAgainstCopiedAdeHome(args: {
   }
   if (record.instanceId === instanceId) return { action: "unchanged", instanceId };
 
-  const stamp = now().toISOString().replace(/[:.]/g, "-");
-  const movedTo = path.join(args.adeDir, "copied-identities", `${stamp}-from-${folderSafe(record.instanceId)}`);
-  fs.mkdirSync(path.dirname(movedTo), { recursive: true });
-  // The whole secrets folder, not a list of files: everything in it is this
-  // machine's identity, its trust in other devices, or ciphertext under its
-  // `.machine-key`, and a list would silently miss the next file anyone adds.
-  // API keys and the account vault come back from the account after sign-in.
-  if (fs.existsSync(secretsDir)) fs.renameSync(secretsDir, movedTo);
-  else fs.mkdirSync(movedTo, { recursive: true });
+  // Safe to run again: a start that was blocked below left the old record in
+  // place, so the next start comes back here. The identity it already moved
+  // is found by its folder name and not moved twice (whatever is in secrets/
+  // now was made on this box), and only projects not retired yet are retired.
+  const copiedDir = path.join(args.adeDir, "copied-identities");
+  let movedTo = earlierMove(copiedDir, record.instanceId);
+  if (movedTo) {
+    args.logger?.info?.("host_instance.copied_home_reset_resumed", { instanceId, previousInstanceId: record.instanceId, movedTo });
+  } else {
+    const stamp = now().toISOString().replace(/[:.]/g, "-");
+    movedTo = path.join(copiedDir, `${stamp}-from-${folderSafe(record.instanceId)}`);
+    fs.mkdirSync(copiedDir, { recursive: true });
+    // The whole secrets folder, not a list of files: everything in it is this
+    // machine's identity, its trust in other devices, or ciphertext under its
+    // `.machine-key`, and a list would silently miss the next file anyone adds.
+    // API keys and the account vault come back from the account after sign-in.
+    if (fs.existsSync(secretsDir)) fs.renameSync(secretsDir, movedTo);
+    else fs.mkdirSync(movedTo, { recursive: true });
+  }
 
   // Each project database takes its cr-sqlite site id from the project's own
   // `.ade/secrets/sync-site-id` (kvDb mints one when it is missing, and applies
   // it before the extension loads), so retiring the file gives the copy a site
-  // id of its own on the next open.
+  // id of its own on the next open. Every one must go before this box may
+  // serve: a project left on the copied site id would write as the original.
   const retiredProjectSiteIds: string[] = [];
-  for (const rootPath of registeredProjectRoots(args.adeDir)) {
+  const failures: Array<{ path: string; error: string }> = [];
+  const registryPath = path.join(args.adeDir, "projects.json");
+  let roots: string[] = [];
+  try {
+    roots = registeredProjectRoots(registryPath);
+  } catch (error) {
+    failures.push({ path: registryPath, error: errorText(error) });
+  }
+  for (const rootPath of roots) {
     const siteIdPath = path.join(rootPath, ".ade", "secrets", "sync-site-id");
+    const retiredPath = `${siteIdPath}.copied-from-${folderSafe(record.instanceId)}`;
+    // Retired by an earlier pass: a site id there now was minted on this box.
+    if (fs.existsSync(retiredPath)) continue;
     try {
       if (!fs.existsSync(siteIdPath)) continue;
-      fs.renameSync(siteIdPath, `${siteIdPath}.copied-from-${folderSafe(record.instanceId)}`);
+      fs.renameSync(siteIdPath, retiredPath);
       retiredProjectSiteIds.push(rootPath);
     } catch (error) {
-      args.logger?.warn?.("host_instance.project_site_id_retire_failed", {
-        rootPath,
-        error: error instanceof Error ? error.message : String(error),
-      });
+      failures.push({ path: rootPath, error: errorText(error) });
     }
+  }
+  if (failures.length) {
+    args.logger?.warn?.("host_instance.copied_home_reset_blocked", {
+      instanceId,
+      previousInstanceId: record.instanceId,
+      movedTo,
+      failures,
+    });
+    return { action: "blocked", instanceId, previousInstanceId: record.instanceId, movedTo, retiredProjectSiteIds, failures };
   }
 
   writeRecord(recordPath, instanceId, now());
