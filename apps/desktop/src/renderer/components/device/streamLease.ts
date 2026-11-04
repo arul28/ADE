@@ -13,7 +13,7 @@
  * of the page.
  */
 
-export type StreamLeaseEntry<Meta> = {
+type StreamLeaseEntry<Meta> = {
   count: number;
   /**
    * Which run of the stream the holders belong to.

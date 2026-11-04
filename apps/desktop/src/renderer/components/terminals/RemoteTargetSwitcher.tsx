@@ -6,9 +6,9 @@ import { MachinePlatformLogo } from "../remoteTargets/MachineIdentity";
 import { cn } from "../ui/cn";
 import { WORK_TOOL_CHROME_CHIP, WORK_TOOL_CHROME_ROW } from "./workToolChrome";
 
-export type RemoteWorkTargetUse = AgentChatRemoteWorkUse & { workCopyLaneId: string };
+type RemoteWorkTargetUse = AgentChatRemoteWorkUse & { workCopyLaneId: string };
 
-export type RemoteTargetOption = {
+type RemoteTargetOption = {
   key: string;
   label: string;
   /** The other machine's work copy, or null for this lane. */

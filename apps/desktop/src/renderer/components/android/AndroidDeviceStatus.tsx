@@ -2,18 +2,13 @@ import type { ComponentProps } from "react";
 import { AndroidLogo, DeviceMobile } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
 import { DeviceLoadingCard } from "../device/DeviceLoadingCard";
-import { DeviceErrorStrip, DeviceNoticeStrip } from "../device/DeviceStatusStrip";
+import { DeviceNoticeStrip } from "../device/DeviceStatusStrip";
 
 /**
  * The Android pane's strips and cards: the shared top strip (one line, one
  * action) and loading card, the one-card messages, and the live line at the
  * foot of the picture (plan §5 "Status strip").
  */
-
-/** One error at the top of the pane, with the raw text behind `Details`. */
-export function AndroidDeviceErrorStrip(props: Omit<ComponentProps<typeof DeviceErrorStrip>, "tool">) {
-  return <DeviceErrorStrip tool="android" {...props} />;
-}
 
 /** A fact about the device, not a failure: "Pixel is off." with one action. */
 export function AndroidDeviceNoticeStrip(props: Omit<ComponentProps<typeof DeviceNoticeStrip>, "tool" | "icon" | "busy">) {

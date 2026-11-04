@@ -4,6 +4,7 @@ import { cn } from "../ui/cn";
 import { Button } from "../ui/Button";
 import { PaneTooltip } from "../ui/PaneTooltip";
 import { WorkToolPickerBackdrop } from "../terminals/WorkToolPickerBackdrop";
+import type { DeviceToolId } from "./deviceTool";
 
 /** The column the page is built around — the tools grid's 512 plus one card. */
 const COLUMN_MAX_PX = 560;
@@ -28,7 +29,7 @@ export function DevicePickerPage({
   playing,
   children,
 }: {
-  tool: "apple" | "android";
+  tool: DeviceToolId;
   theme: Parameters<typeof WorkToolPickerBackdrop>[0]["theme"];
   playing: boolean;
   children: ReactNode;
@@ -57,7 +58,7 @@ export function DevicePickerRefreshButton({
   onRefresh,
 }: {
   /** Names the button's `data-{tool}-picker-refresh` marker. */
-  tool: "apple" | "android";
+  tool: DeviceToolId;
   tooltip: string;
   label: string;
   refreshing: boolean;

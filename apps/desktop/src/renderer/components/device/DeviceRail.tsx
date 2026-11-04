@@ -4,6 +4,7 @@ import { cn } from "../ui/cn";
 import { Button } from "../ui/Button";
 import { PaneTooltip } from "../ui/PaneTooltip";
 import { MENU_CONTENT_CLASS } from "../ui/paneMenuTokens";
+import type { DeviceToolId } from "./deviceTool";
 
 /** Below this a device rail keeps only its first controls and More. */
 export const DEVICE_RAIL_COMPACT_WIDTH = 360;
@@ -14,21 +15,21 @@ export const DEVICE_RAIL_WIDTH = 56;
 /**
  * The pill on the right edge of a device picture. The Apple and Android
  * rails share its place, size and classes, so moving between the two tools
- * is easy. `railAttribute` names the tool's own `data-*-rail` marker.
+ * is easy. `tool` names the rail's own `data-{tool}-rail` marker.
  */
 export function DeviceRail({
-  railAttribute,
+  tool,
   compact,
   children,
 }: {
-  railAttribute: "data-apple-rail" | "data-android-rail";
+  tool: DeviceToolId;
   compact: boolean;
   children: ReactNode;
 }) {
   return (
     <aside
       aria-label="Device controls"
-      {...{ [railAttribute]: compact ? "compact" : "full" }}
+      {...{ [`data-${tool}-rail`]: compact ? "compact" : "full" }}
       className="pointer-events-none absolute inset-y-0 right-0 z-10 flex w-14 flex-col items-center justify-center py-3 pr-2"
     >
       <div

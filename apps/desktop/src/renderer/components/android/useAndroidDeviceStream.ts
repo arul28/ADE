@@ -91,15 +91,13 @@ export function useAndroidDeviceStream({
   onErrorRef.current = onError;
 
   // The stop names the lane the lease was taken for, so it needs no scope.
-  const noScopeRef = useRef(null);
-  const { leaseRef, releaseLease } = useGracefulStreamLease<AndroidHeldLease, null>({
+  const { leaseRef, releaseLease } = useGracefulStreamLease<AndroidHeldLease, void>({
     release: (lease) => androidStreamLeases.release(lease.key, lease.epoch),
     // A remount took the lane's stream up again in the meantime: theirs now.
     heldAgain: (lease) => androidStreamLeases.count(lease.key) > 0,
     stop: (lease) => {
       void window.ade?.androidEmulator?.stopStream({ laneId: lease.laneId }, lease.pin).catch(() => {});
     },
-    scopeRef: noScopeRef,
   });
 
   const reconnect = useCallback(() => {
@@ -143,13 +141,13 @@ export function useAndroidDeviceStream({
       setUrl(null);
       setToken(null);
       setFps(null);
-      releaseLease(null);
+      releaseLease();
       return;
     }
     const pin = runtimePinRef.current;
     const bound = useAppStore.getState().projectBinding;
     const leaseKey = androidStreamLeaseKey({ pin, bound, laneId });
-    if (leaseRef.current && leaseRef.current.key !== leaseKey) releaseLease(null);
+    if (leaseRef.current && leaseRef.current.key !== leaseKey) releaseLease();
     if (!leaseRef.current) {
       const { epoch } = androidStreamLeases.acquire(leaseKey, () => null);
       leaseRef.current = { key: leaseKey, epoch, pin, laneId };
@@ -179,7 +177,7 @@ export function useAndroidDeviceStream({
 
     void run().catch((caught: unknown) => {
       if (cancelled) return;
-      releaseLease(null);
+      releaseLease();
       setState("error");
       onErrorRef.current(caught instanceof Error ? caught.message : String(caught));
     });

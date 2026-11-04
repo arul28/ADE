@@ -10,9 +10,9 @@ export const STREAM_RECOVER_DELAY_MS = 750;
  * Automatic reconnects in a row before the viewer stops and shows Reconnect.
  * Reset by the first frame, so a stream that recovers can recover again.
  */
-export const STREAM_RECOVER_MAX_TRIES = 3;
+const STREAM_RECOVER_MAX_TRIES = 3;
 
-export type UseStreamRecoveryArgs = {
+type UseStreamRecoveryArgs = {
   /** Read when a retry fires: a viewer that stopped asking does not reconnect. */
   wantedRef: MutableRefObject<boolean>;
   /** Asks the service for the stream again. */
@@ -23,7 +23,7 @@ export type UseStreamRecoveryArgs = {
   resetKey: string | null;
 };
 
-export type StreamRecovery = {
+type StreamRecovery = {
   /** The automatic reconnects ran out with no frame in between. */
   gaveUp: boolean;
   /** Ask again after a pause that grows with each try, or give up. */

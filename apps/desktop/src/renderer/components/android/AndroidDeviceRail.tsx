@@ -65,7 +65,7 @@ export function AndroidDeviceRail({
   const compact = containerWidth < DEVICE_RAIL_COMPACT_WIDTH;
   const keysDisabled = !inputConnected;
   return (
-    <DeviceRail railAttribute="data-android-rail" compact={compact}>
+    <DeviceRail tool="android" compact={compact}>
       <RailButton label="Back" description="Back (Esc)" disabled={keysDisabled} onClick={() => onKey("back")}>
         <ArrowArcLeft size={16} />
       </RailButton>

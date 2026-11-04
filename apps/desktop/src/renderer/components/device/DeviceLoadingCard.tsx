@@ -3,8 +3,9 @@ import type { Icon } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
 import { Button } from "../ui/Button";
 import { Spinner } from "../ui/Spinner";
+import type { DeviceToolId } from "./deviceTool";
 
-export type DeviceLoadingStep = "booting" | "streaming";
+type DeviceLoadingStep = "booting" | "streaming";
 
 const STEP_MESSAGE: Record<DeviceLoadingStep, string> = {
   booting: "Booting device",
@@ -52,7 +53,7 @@ export function DeviceLoadingCard({
   failure,
 }: {
   /** Names the card's `data-{tool}-loading-*` markers. */
-  tool: "apple" | "android";
+  tool: DeviceToolId;
   glyph: Icon;
   name: string;
   subtitle: string | null;

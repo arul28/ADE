@@ -11,7 +11,7 @@ import { useCallback, useEffect, useRef, type MutableRefObject } from "react";
  */
 export const STREAM_STOP_GRACE_MS = 1_000;
 
-export type UseGracefulStreamLeaseArgs<Lease, Scope> = {
+type UseGracefulStreamLeaseArgs<Lease, Scope> = {
   /** Gives the lease back to its table. `last` is true when this viewer was the last one. */
   release: (lease: Lease) => { last: boolean };
   /** True when another viewer took the stream up during the grace: theirs now. */
@@ -21,11 +21,12 @@ export type UseGracefulStreamLeaseArgs<Lease, Scope> = {
   /**
    * The scope an unmount and a page hide stop with. A ref because the cleanup
    * runs after the props are gone, and a stop aimed at a stale lane misses.
+   * Left out when the stop needs no scope (`Scope` is `void`).
    */
-  scopeRef: { readonly current: Scope };
+  scopeRef?: { readonly current: Scope };
 };
 
-export type GracefulStreamLease<Lease, Scope> = {
+type GracefulStreamLease<Lease, Scope> = {
   /** The lease this viewer holds, or null. Set it when the viewer acquires one. */
   leaseRef: MutableRefObject<Lease | null>;
   /** Give the lease back; stop the stream only when this was the last viewer. */
@@ -62,11 +63,11 @@ export function useGracefulStreamLease<Lease, Scope>(
   }, []);
 
   useEffect(() => () => {
-    releaseLease(argsRef.current.scopeRef.current);
+    releaseLease(argsRef.current.scopeRef?.current as Scope);
   }, [releaseLease]);
 
   useEffect(() => {
-    const onPageHide = () => releaseLease(argsRef.current.scopeRef.current, true);
+    const onPageHide = () => releaseLease(argsRef.current.scopeRef?.current as Scope, true);
     window.addEventListener("pagehide", onPageHide);
     return () => window.removeEventListener("pagehide", onPageHide);
   }, [releaseLease]);

@@ -31,10 +31,10 @@ import { androidStreamLeaseKey, androidStreamLeases } from "./androidStreamLease
 import { AndroidDevicePicker } from "./AndroidDevicePicker";
 import { AndroidDeviceRail } from "./AndroidDeviceRail";
 import { DEVICE_RAIL_WIDTH } from "../device/DeviceRail";
+import { DeviceErrorStrip } from "../device/DeviceStatusStrip";
 import { AndroidDeviceStage } from "./AndroidDeviceStage";
 import { AndroidSetupCard } from "./AndroidSetupCard";
 import {
-  AndroidDeviceErrorStrip,
   AndroidDeviceLoadingCard,
   AndroidDeviceNoticeStrip,
   AndroidLiveLine,
@@ -423,7 +423,7 @@ export function AndroidDevicePane({
 
   const strip = (() => {
     if (error) {
-      return <AndroidDeviceErrorStrip sentence={error.sentence} detail={error.detail} onDismiss={() => setError(null)} />;
+      return <DeviceErrorStrip tool="android" sentence={error.sentence} detail={error.detail} onDismiss={() => setError(null)} />;
     }
     if (paneState === "crashed") {
       const crash = lane?.error ?? null;
@@ -434,7 +434,8 @@ export function AndroidDevicePane({
       }
       if (!noPicker) actions.push({ label: "Choose another device", variant: "secondary", onClick: () => setPickerRequested(true) });
       return (
-        <AndroidDeviceErrorStrip
+        <DeviceErrorStrip
+          tool="android"
           sentence={crash ? describeAndroidError(crash).sentence : `${deviceName} stopped.`}
           actions={actions}
         />

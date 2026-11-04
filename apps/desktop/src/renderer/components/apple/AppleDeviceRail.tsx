@@ -182,7 +182,7 @@ export function AppleDeviceRail({
       : "Switch to 3D view";
 
   return (
-    <DeviceRail railAttribute="data-apple-rail" compact={compact}>
+    <DeviceRail tool="apple" compact={compact}>
       <RailButton label="Home" disabled={hardwareDisabled} onClick={onHome}>
         <House size={16} />
       </RailButton>

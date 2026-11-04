@@ -1,5 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { Banner, type NoticeAction } from "../ui/notice";
+import type { DeviceToolId } from "./deviceTool";
 
 /**
  * The strips at the top of a device pane: one line, one action, and the raw
@@ -20,7 +21,7 @@ export function DeviceErrorStrip({
   actions,
   onDismiss,
 }: {
-  tool: "apple" | "android";
+  tool: DeviceToolId;
   sentence: string;
   detail?: string | null | undefined;
   actions?: NoticeAction[] | undefined;
@@ -77,7 +78,7 @@ export function DeviceNoticeStrip({
   onDismiss,
   busy,
 }: {
-  tool: "apple" | "android";
+  tool: DeviceToolId;
   icon: ReactNode;
   sentence: string;
   tone?: "neutral" | "warning";
