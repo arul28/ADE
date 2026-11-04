@@ -45,6 +45,10 @@ Close the app before you edit its main-process, preload or shared code, and
 reopen it when you need to look again: each such save rebuilds main and
 relaunches the window, which jumps to the front over whatever the user is
 doing. Renderer-only edits hot-reload in place.
+A dev app's brain runs `--no-sync`, so other machines cannot reach it. To test
+a change another machine calls into (a cloud box, the phone, another desktop),
+run this checkout's brain as its own machine with `npm run dev:machine`
+(`docs/development/local-development.md`); never replace the installed brain.
 When you finish, stop the app's process group and confirm its brain exited.
 Memory: run one dev app per agent, only while you use it. Before you start a
 dev app, brain, simulator or build, check `memory_pressure | tail -1` and wait

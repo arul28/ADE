@@ -43,7 +43,13 @@ export type Agent37CredentialDeps = {
   machineStore: () => SyncCredentialStore | null;
   signedIn: () => boolean;
   fetch?: FetchLike;
+  /** Where a vault or credential-file failure that falls back to "no key" is written down. */
+  logger?: { warn(event: string, meta?: Record<string, unknown>): void };
 };
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
 
 type Agent37VaultBridge = {
   get(scope: string, kind: string, key: string): Promise<AccountVaultResult<string | null>>;
@@ -90,12 +96,14 @@ function encode(key: string): string {
   return JSON.stringify({ v: 1, key });
 }
 
-function decode(raw: string | null | undefined): string | null {
+function decode(raw: string | null | undefined, logger?: Agent37CredentialDeps["logger"]): string | null {
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw) as Record<string, unknown>;
     return parsed?.v === 1 && typeof parsed.key === "string" && parsed.key.trim() ? parsed.key.trim() : null;
-  } catch {
+  } catch (error) {
+    // A damaged item reads as "no key saved"; say so, never with the value.
+    logger?.warn("agent37.key_item_unreadable", { error: errorText(error) });
     return null;
   }
 }
@@ -104,15 +112,17 @@ function resolveVault(deps: Agent37CredentialDeps): Agent37Vault | null {
   if (!deps.signedIn()) return null;
   try {
     return deps.vault();
-  } catch {
+  } catch (error) {
+    deps.logger?.warn("agent37.vault_unavailable", { error: errorText(error) });
     return null;
   }
 }
 
 function readMachine(deps: Agent37CredentialDeps): string | null {
   try {
-    return decode(deps.machineStore()?.getSync(AGENT37_MACHINE_CREDENTIAL_KEY));
-  } catch {
+    return decode(deps.machineStore()?.getSync(AGENT37_MACHINE_CREDENTIAL_KEY), deps.logger);
+  } catch (error) {
+    deps.logger?.warn("agent37.machine_key_read_failed", { error: errorText(error) });
     return null;
   }
 }
@@ -133,8 +143,11 @@ export async function readAgent37Key(
 ): Promise<{ key: string; storage: IntegrationCredentialStorage } | null> {
   const vault = resolveVault(deps);
   if (vault) {
-    const got = await vault.get().catch(() => ({ ok: false as const }));
-    const key = got.ok ? decode(got.value) : null;
+    const got = await vault.get().catch((error: unknown) => {
+      deps.logger?.warn("agent37.vault_read_failed", { error: errorText(error) });
+      return { ok: false as const };
+    });
+    const key = got.ok ? decode(got.value, deps.logger) : null;
     if (key) return { key, storage: { storage: "account", reason: null, message: null } };
   }
   const local = readMachine(deps);
@@ -152,7 +165,7 @@ export async function readAgent37Key(
 /** A client for the saved key; throws a plain sentence when there is none. */
 export async function requireAgent37Client(deps: Agent37CredentialDeps): Promise<Agent37Client> {
   const saved = await readAgent37Key(deps);
-  if (!saved) throw new Error("Connect Agent 37 first: Settings › Connections › Agent 37.");
+  if (!saved) throw new Error("Connect Agent 37 first: Settings › Integrations › Agent 37.");
   return createAgent37Client({ apiKey: saved.key, fetch: deps.fetch });
 }
 
@@ -168,7 +181,14 @@ export async function saveAgent37Key(deps: Agent37CredentialDeps, rawKey: string
   await createAgent37Client({ apiKey: key, fetch: deps.fetch }).billing();
   const vault = resolveVault(deps);
   const store = deps.machineStore();
-  if (vault && await vault.set(encode(key)).catch(() => false)) {
+  const savedInAccount = vault
+    ? await vault.set(encode(key)).catch((error: unknown) => {
+      deps.logger?.warn("agent37.vault_write_failed", { error: errorText(error) });
+      return false;
+    })
+    : false;
+  if (vault && !savedInAccount) deps.logger?.warn("agent37.key_saved_on_device_only", { reason: "vault_refused" });
+  if (savedInAccount) {
     store?.deleteSync(AGENT37_MACHINE_CREDENTIAL_KEY);
   } else {
     if (!store) throw new Error("ADE could not save the key on this computer.");
@@ -207,7 +227,7 @@ export async function removeAgent37Key(
       logger?.warn("agent37.disconnect_vault_read_failed", { error: error instanceof Error ? error.message : String(error) });
       return { ok: false as const };
     });
-    const inAccount = got.ok ? decode(got.value) != null : null;
+    const inAccount = got.ok ? decode(got.value, deps.logger) != null : null;
     let accountUnverified = false;
     if (inAccount !== false) {
       let removed: boolean;

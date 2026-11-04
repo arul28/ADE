@@ -53,13 +53,21 @@ export type HostInstanceGuardResult =
       failures: Array<{ path: string; error: string }>;
     };
 
-function readRecord(filePath: string): HostInstanceRecord | null {
+function readRecord(
+  filePath: string,
+  logger?: { warn?: (event: string, meta: Record<string, unknown>) => void },
+): HostInstanceRecord | null {
   try {
     const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as Partial<HostInstanceRecord>;
     return typeof parsed.instanceId === "string" && parsed.instanceId.trim()
       ? { instanceId: parsed.instanceId.trim(), recordedAt: String(parsed.recordedAt ?? "") }
       : null;
-  } catch {
+  } catch (error) {
+    // Missing is the first start. Damaged is read the same way (it is rewritten
+    // for this host), and logged, since a copy with a damaged record is not reset.
+    if ((error as NodeJS.ErrnoException | null)?.code !== "ENOENT") {
+      logger?.warn?.("host_instance.record_unreadable", { path: filePath, error: errorText(error) });
+    }
     return null;
   }
 }
@@ -134,7 +142,7 @@ export function guardAgainstCopiedAdeHome(args: {
   // The record sits OUTSIDE secrets/, which is what moves aside: a reset must
   // leave the new box's record behind, not the old one's.
   const recordPath = path.join(args.adeDir, HOST_INSTANCE_RECORD_FILE);
-  const record = readRecord(recordPath);
+  const record = readRecord(recordPath, args.logger);
 
   if (!record) {
     writeRecord(recordPath, instanceId, now());

@@ -39,6 +39,7 @@ import {
 import { createAgent37Client } from "./agent37Client";
 import {
   createAgent37PendingCreateStore,
+  readAgent37BoxSignedIn,
   reconcileAgent37PendingCreate,
   type Agent37PendingCreate,
   type Agent37PendingCreateStore,
@@ -149,7 +150,11 @@ export function openAgent37ApprovalWindow(
             }
           }
         })
-        .catch(() => undefined);
+        .catch((error: unknown) => {
+          // The window closed under the read, or the page would not answer.
+          // The window's close or timeout still settles the flow.
+          logger.warn("agent37.approval_window_read_failed", { error: error instanceof Error ? error.name : "unknown" });
+        });
     });
     win.on("closed", () => finish("closed"));
     if (args.signal.aborted) {
@@ -157,7 +162,11 @@ export function openAgent37ApprovalWindow(
       return;
     }
     args.signal.addEventListener("abort", () => finish("cancelled"), { once: true });
-    void win.loadURL(args.url).catch(() => undefined);
+    // Never the message: Electron puts the URL, a one-time sign-in ticket, in it.
+    void win.loadURL(args.url).catch((error: unknown) => {
+      const code = (error as { code?: unknown } | null)?.code;
+      logger.warn("agent37.approval_window_load_failed", { code: typeof code === "string" ? code : null });
+    });
     if (args.mode === "browser") {
       // The approval page always needs the person: show it at once.
       shown = true;
@@ -182,6 +191,8 @@ export function registerAgent37Ipc(args: {
   vaultBridge: Parameters<typeof agent37VaultFromBridge>[0];
   listAccountMachines: () => Promise<AdeAccountMachinesResult>;
   renameMachine: (machineKey: string, name: string) => Promise<unknown>;
+  /** One coarse product fact per finished create (analytics; never the box or the error). */
+  recordMachineCreate?: (outcome: "completed" | "partial" | "cancelled" | "failed") => void;
   logger: Logger;
 }): void {
   const { logger } = args;
@@ -194,12 +205,14 @@ export function registerAgent37Ipc(args: {
     // saved here while signed out, and the other way round.
     machineStore: getMachineStore,
     signedIn: () => account().getStatus().signedIn === true,
+    logger,
   };
   const getAccountToken = () => getSignedInAccountAccessToken(account());
   const directoryBaseUrl = () => {
     try {
       return getSharedAccountDirectoryBaseUrl() || null;
-    } catch {
+    } catch (error) {
+      logger.warn("agent37.account_directory_unavailable", { error: error instanceof Error ? error.message : String(error) });
       return null;
     }
   };
@@ -345,7 +358,9 @@ export function registerAgent37Ipc(args: {
         send,
         controller.signal,
       ).then(
-        (result) => send({
+        (result) => {
+          args.recordMachineCreate?.(result.joined ? "completed" : "partial");
+          send({
           requestId,
           stage: "done",
           message: result.joined
@@ -357,9 +372,11 @@ export function registerAgent37Ipc(args: {
               : `${result.name} is signed in but still starting. It will appear under Your computers; connect it from there when it's ready.`,
           instanceId: result.instanceId,
           result,
-        }),
+          });
+        },
         (error: unknown) => {
           const message = error instanceof Error ? error.message : String(error);
+          args.recordMachineCreate?.(controller.signal.aborted ? "cancelled" : "failed");
           logger.warn("agent37.create_machine_failed", { error: message });
           send({ requestId, stage: "failed", message, error: message });
         },
@@ -414,14 +431,16 @@ async function readAgent37TemplateContext(): Promise<Agent37TemplateContextFiles
 const TEMPLATE_BUILD_VAULT_KEY = "agent37-template-build";
 const TEMPLATE_BUILD_MACHINE_KEY = "agent37.templateBuild.v1";
 
-function parseBuildRecord(raw: string | null | undefined): Agent37TemplateBuildRecord | null {
+/** A damaged record reads as none (logged), so it can never stop builds for good. */
+function parseBuildRecord(raw: string | null | undefined, logger: Logger): Agent37TemplateBuildRecord | null {
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw) as Partial<Agent37TemplateBuildRecord>;
     if (parsed?.v !== 1 || typeof parsed.template !== "string" || typeof parsed.buildId !== "string") return null;
     if (typeof parsed.startedAt !== "number" || typeof parsed.adeVersion !== "string" || typeof parsed.contextHash !== "string") return null;
     return { v: 1, template: parsed.template, buildId: parsed.buildId, startedAt: parsed.startedAt, adeVersion: parsed.adeVersion, contextHash: parsed.contextHash, by: typeof parsed.by === "string" ? parsed.by : null };
-  } catch {
+  } catch (error) {
+    logger.warn("agent37.template_record_unreadable", { error: error instanceof Error ? error.message : String(error) });
     return null;
   }
 }
@@ -465,10 +484,10 @@ function templateBuildRecords(
           return { ok: false as const };
         });
         if (!got.ok) throw new Error("the account vault couldn't be read");
-        const record = parseBuildRecord(got.value);
+        const record = parseBuildRecord(got.value, logger);
         if (record) return record;
       }
-      return parseBuildRecord(local("read", () => machineStore().getSync(TEMPLATE_BUILD_MACHINE_KEY), null));
+      return parseBuildRecord(local("read", () => machineStore().getSync(TEMPLATE_BUILD_MACHINE_KEY), null), logger);
     },
     async write(record) {
       const raw = JSON.stringify(record);
@@ -497,23 +516,7 @@ async function sweepPendingCreates(
   logger: Logger,
 ): Promise<void> {
   const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
-  // Tri-state on purpose: only a clear "signed out" answer lets the sweep
-  // delete a box. Asleep, unreachable or unreadable is "unknown", and a box
-  // that may be someone's real machine is never deleted on a guess.
-  const isSignedIn = async (instanceId: string): Promise<boolean | "unknown"> => {
-    const auth = await client.exec(instanceId, "timeout 20 ade auth status --json 2>/dev/null", { timeoutMs: 40_000 }).catch((error: unknown) => {
-      logger.warn("agent37.half_made_box_auth_read_failed", { instanceId, error: error instanceof Error ? error.message : String(error) });
-      return null;
-    });
-    if (!auth) return "unknown";
-    // The box answered but has no ADE to ask (127, command not found): it never signed in.
-    if (auth.exitCode === 127) return false;
-    if (auth.exitCode !== 0) return "unknown";
-    if (/"signedIn"\s*:\s*true/.test(auth.stdout)) return true;
-    if (/"signedIn"\s*:\s*false/.test(auth.stdout)) return false;
-    logger.warn("agent37.half_made_box_auth_unreadable", { instanceId });
-    return "unknown";
-  };
+  const isSignedIn = (instanceId: string) => readAgent37BoxSignedIn(client, instanceId, logger);
   for (const record of leftover) {
     const result = await reconcileAgent37PendingCreate(client, record, { store: pending, logger, sleep, isSignedIn });
     logger.info("agent37.pending_create_reconciled", {

@@ -4019,6 +4019,7 @@ function integrationConnectAdapters(runtime: AdeRuntime) {
       vault: () => (runtime.accountVaultStore ? agent37VaultFromStore(runtime.accountVaultStore) : null),
       machineStore: () => agent37MachineStore(),
       signedIn: () => runtime.accountAuthService?.getStatus().signedIn === true,
+      logger: runtime.logger,
     }),
   });
 }

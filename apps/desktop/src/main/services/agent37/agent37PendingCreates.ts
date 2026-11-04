@@ -183,6 +183,33 @@ export async function deleteAgent37InstanceConfirmed(
   return false;
 }
 
+/**
+ * Whether a box signed in to ADE, asked on the box itself. Tri-state on
+ * purpose: only a clear "signed out" lets a sweep delete a box. Asleep,
+ * unreachable or an unreadable answer is "unknown", and a box that may be
+ * someone's real machine is never deleted on a guess.
+ */
+export async function readAgent37BoxSignedIn(
+  client: Agent37Client,
+  instanceId: string,
+  logger: Logger,
+): Promise<boolean | "unknown"> {
+  let auth: Awaited<ReturnType<Agent37Client["exec"]>>;
+  try {
+    auth = await client.exec(instanceId, "timeout 20 ade auth status --json 2>/dev/null", { timeoutMs: 40_000 });
+  } catch (error) {
+    logger.warn?.("agent37.half_made_box_auth_read_failed", { instanceId, error: errorText(error) });
+    return "unknown";
+  }
+  // The box answered but has no ADE to ask (127, command not found): it never signed in.
+  if (auth.exitCode === 127) return false;
+  if (auth.exitCode !== 0) return "unknown";
+  if (/"signedIn"\s*:\s*true/.test(auth.stdout)) return true;
+  if (/"signedIn"\s*:\s*false/.test(auth.stdout)) return false;
+  logger.warn?.("agent37.half_made_box_auth_unreadable", { instanceId });
+  return "unknown";
+}
+
 export type Agent37ReconcileResult = {
   /** Every box the request made is resolved and the record is gone. */
   resolved: boolean;

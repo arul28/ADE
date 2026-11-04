@@ -378,7 +378,11 @@ export function createAgent37TemplateBuilder(deps: Agent37TemplateBuilderDeps) {
           deps.logger?.warn?.("agent37.template_claim_build_read_failed", { template, buildId: claimed.buildId, error: plainReason(error) });
           return null;
         }),
-        client.getTemplateBuild(build.id).catch(() => null),
+        client.getTemplateBuild(build.id).catch((error: unknown) => {
+          // Without our own build's time the tie falls back to the claims' start times.
+          deps.logger?.warn?.("agent37.template_claim_build_read_failed", { template, buildId: build.id, error: plainReason(error) });
+          return null;
+        }),
       ]);
       const theirsFirst = theirs != null && theirs.status !== "failed" && (
         theirs.created != null && mine?.created != null

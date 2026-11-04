@@ -124,10 +124,9 @@ export function assertDevTestMachineMayOpenProject(
   rootPath: string,
   adeDir: string,
   env: NodeJS.ProcessEnv = process.env,
-  homes: string[] = installedAdeHomes(),
 ): void {
   if (!isDevTestMachineProcess(env) && !isDevTestMachineHome(adeDir)) return;
-  for (const home of homes) {
+  for (const home of installedAdeHomes()) {
     const shared = registeredRoots(home).find((root) => isSameOrInside(rootPath, root));
     if (shared) {
       throw new Error(

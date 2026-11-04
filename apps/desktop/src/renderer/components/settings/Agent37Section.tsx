@@ -71,7 +71,7 @@ function Agent37TemplateCard({ status, loadError, onRetry }: { status: Agent37Te
 }
 
 /**
- * Settings › Connections › Agent 37. Account-wide: the workspace key is kept in
+ * Settings › Integrations › Agent 37. Account-wide: the workspace key is kept in
  * the account vault, so this page asks this desktop's own main process with no
  * pin, and what it shows is true on every computer on the account.
  */

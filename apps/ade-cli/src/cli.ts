@@ -1442,7 +1442,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade proxy status | start | stop | login | logout
                                                     Manage local subscription sign-ins
     $ ade secrets list | get | set | request | delete  Manage encrypted ADE project secrets (account or device)
-    $ ade integrations status | connect <provider>    See and connect GitHub, Linear, and Jira
+    $ ade integrations status | connect <provider>    See and connect GitHub, Linear, Jira and Agent 37
     $ ade mcp servers | servers add <name>          Read the MCP servers your agents get; ask to add one
     $ ade settings find <words>                     Where an ADE setting or page is, as a link the chat shows as a chip
     $ ade update status | check | install | dismiss Read auto-update state and drive install
@@ -4213,7 +4213,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   integrations: `${ADE_BANNER}
   ADE integrations
 
-  GitHub, Linear, and Jira. Status never shows a key or token.
+  GitHub, Linear, Jira and Agent 37 (cloud machines). Status never shows a key or token.
 
     $ ade integrations status --text                 Which are connected here, and as whom
 
