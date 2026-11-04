@@ -219,28 +219,23 @@ export class AdeStartedEmulators {
    * ADE started this running emulator: same AVD, same console port, and one of
    * its pids. A start whose qemu pid is not known yet (it is still booting, or
    * the brain that started it handed it off mid-boot) matches on the AVD and
-   * console port alone; that port came from ADE's own reservation.
+   * console port alone, but only while its launcher lives: ADE's console
+   * ports are the emulator's defaults, so a stale record must never claim an
+   * emulator the user started later on the same port.
    */
   owns(emulator: Pick<AndroidRunningEmulator, "avdName" | "consolePort" | "pid">): boolean {
-    return this.read().some((record) =>
+    return this.liveRecords().some((record) =>
       sameAvdName(record.avdName, emulator.avdName)
       && record.consolePort === emulator.consolePort
       && (record.pid === null || record.pid === emulator.pid || record.launcherPid === emulator.pid));
   }
 
-  /**
-   * Drops records whose processes are all gone (a crash, a reboot). A record
-   * with no qemu pid yet stays while a discovery file still names its AVD and
-   * console port, so a launcher that exits before qemu does not drop it.
-   */
-  prune(discovered: readonly Pick<AndroidRunningEmulator, "avdName" | "consolePort">[] = []): void {
+  /** The records whose qemu or launcher still runs; the rest (a crash, a reboot) are dropped from the file. */
+  private liveRecords(): AdeStartRecord[] {
     const before = this.read();
-    const records = before.filter((record) =>
-      isProcessAlive(record.pid ?? record.launcherPid)
-      || isProcessAlive(record.launcherPid)
-      || (record.pid === null
-        && discovered.some((emulator) => sameAvdName(emulator.avdName, record.avdName) && emulator.consolePort === record.consolePort)));
-    if (records.length !== before.length) this.save(records);
+    const live = before.filter((record) => isProcessAlive(record.pid ?? record.launcherPid) || isProcessAlive(record.launcherPid));
+    if (live.length !== before.length) this.save(live);
+    return live;
   }
 }
 
