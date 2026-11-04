@@ -353,7 +353,7 @@ export function createAgent37TemplateBuilder(deps: Agent37TemplateBuilderDeps) {
 
     // The vault has no compare-and-set, so two computers can claim at once.
     // Read the record back after a moment: when another computer's claim for
-    // the same template is there and its build was made first, follow that
+    // the same template is there and its build has not failed, follow that
     // one. Ours is never uploaded or started, so it never runs (Agent37 has no
     // way to cancel a build; an unstarted one is simply left behind).
     await sleep(CLAIM_SETTLE_MS, signal);
@@ -373,31 +373,28 @@ export function createAgent37TemplateBuilder(deps: Agent37TemplateBuilderDeps) {
       throw new Error("ADE couldn't save that it's setting up the template. It will try again.");
     }
     if (sameBuild(claimed) && claimed.buildId !== build.id) {
-      const [theirs, mine] = await Promise.all([
-        client.getTemplateBuild(claimed.buildId).catch((error: unknown) => {
-          deps.logger?.warn?.("agent37.template_claim_build_read_failed", { template, buildId: claimed.buildId, error: plainReason(error) });
-          return null;
-        }),
-        client.getTemplateBuild(build.id).catch((error: unknown) => {
-          // Without our own build's time the tie falls back to the claims' start times.
-          deps.logger?.warn?.("agent37.template_claim_build_read_failed", { template, buildId: build.id, error: plainReason(error) });
-          return null;
-        }),
-      ]);
-      const theirsFirst = theirs != null && theirs.status !== "failed" && (
-        theirs.created != null && mine?.created != null
-          ? theirs.created < mine.created || (theirs.created === mine.created && claimed.buildId < build.id)
-          : claimed.startedAt < startedAt
-      );
-      if (theirsFirst) {
+      // The record's last write is the one answer every computer reads back,
+      // so it decides: follow the build it names. Never overwrite it with ours,
+      // since the computer that wrote it has already read it and started its
+      // build; a rewrite here could only make two builds, or none.
+      let theirs: Awaited<ReturnType<Agent37Client["getTemplateBuild"]>>;
+      try {
+        theirs = await client.getTemplateBuild(claimed.buildId);
+      } catch (error) {
+        // Unknown is not "failed": leave ours unstarted and retry the pass.
+        deps.logger?.warn?.("agent37.template_claim_build_read_failed", { template, buildId: claimed.buildId, error: plainReason(error) });
+        throw new Error("ADE couldn't check the template build another computer started. It will try again.");
+      }
+      if (theirs != null && theirs.status !== "failed") {
         deps.logger?.info?.("agent37.template_build_yielded", { template, buildId: build.id, followed: claimed.buildId, by: claimed.by });
         await follow(client, claimed.buildId, claimed.startedAt, usable, signal);
         if (signal.aborted) return;
         await finish(client, template, bakedVersion, contextHash, signal);
         return;
       }
-      // Ours came first: put it back in the record so the other computer follows it.
-      deps.logger?.info?.("agent37.template_build_claim_kept", { template, buildId: build.id, other: claimed.buildId, by: claimed.by });
+      // Theirs failed or is gone (Agent 37 no longer has it): nobody is
+      // building, so ours takes the record and runs.
+      deps.logger?.info?.("agent37.template_build_claim_taken", { template, buildId: build.id, other: claimed.buildId, otherStatus: theirs?.status ?? "missing", by: claimed.by });
       await deps.records.write(ours);
     }
     await client.uploadTemplateContext(build.uploadUrl, context);

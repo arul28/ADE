@@ -12,10 +12,10 @@ import { createAgent37TemplateBuilder, type Agent37TemplateBuildRecord, type Age
  * stand-ins.
  */
 
-function fakeAgent37Builds() {
+function fakeAgent37Builds(theirsCreated = 100) {
   const calls: string[] = [];
   const builds = new Map<string, { status: string; created: number }>([
-    ["b-theirs", { status: "succeeded", created: 100 }],
+    ["b-theirs", { status: "succeeded", created: theirsCreated }],
   ]);
   let template: { description: string | null } | null = null;
   let made = 0;
@@ -80,12 +80,17 @@ function sharedRecord(behavior: "unreadable" | "write_refused" | "other_computer
 }
 
 describe("Agent 37 template build claims", () => {
+  // `theirsCreated`: when the other computer's build was made. Ours is made at
+  // 201, so 999 is a claim that landed last for a build made after ours: that
+  // computer already read its own claim back and runs its build, so this one
+  // must follow it, not take the record back.
   it.each([
-    { record: "unreadable", creates: false, finalState: "failed" },
-    { record: "write_refused", creates: true, finalState: "failed" },
-    { record: "other_computer_claims_first", creates: true, finalState: "ready" },
-  ] as const)("a shared record that is $record never lets this computer upload or start a second build", async ({ record, creates, finalState }) => {
-    const fake = fakeAgent37Builds();
+    { record: "unreadable", creates: false, finalState: "failed", theirsCreated: 100 },
+    { record: "write_refused", creates: true, finalState: "failed", theirsCreated: 100 },
+    { record: "other_computer_claims_first", creates: true, finalState: "ready", theirsCreated: 100 },
+    { record: "other_computer_claims_first", creates: true, finalState: "ready", theirsCreated: 999 },
+  ] as const)("a shared record that is $record (their build made at $theirsCreated) never lets this computer upload or start a second build", async ({ record, creates, finalState, theirsCreated }) => {
+    const fake = fakeAgent37Builds(theirsCreated);
     const shared = sharedRecord(record);
     const statuses: Agent37TemplateStatus[] = [];
     const builder = createAgent37TemplateBuilder({

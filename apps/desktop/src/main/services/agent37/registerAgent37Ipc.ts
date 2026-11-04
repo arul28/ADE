@@ -455,7 +455,8 @@ function parseBuildRecord(raw: string | null | undefined, logger: Logger): Agent
 
 /**
  * The build-in-flight record: in the account vault, so every computer on the
- * account sees it, and on this computer when the vault can't be reached.
+ * account sees it. Reads use this computer's copy only when there is no
+ * account vault (signed out); an unreachable vault is an error, not "none".
  */
 function templateBuildRecords(
   bridge: Parameters<typeof agent37VaultFromBridge>[0],
@@ -492,8 +493,11 @@ function templateBuildRecords(
           return { ok: false as const };
         });
         if (!got.ok) throw new Error("the account vault couldn't be read");
-        const record = parseBuildRecord(got.value, logger);
-        if (record) return record;
+        // The account answered: its record, or its lack of one, is the whole
+        // answer. This computer's copy holds our own last write even when the
+        // vault refused it, and the builder reads "none" as "our claim did not
+        // land"; the copy would hide exactly that.
+        return parseBuildRecord(got.value, logger);
       }
       return parseBuildRecord(local("read", () => machineStore().getSync(TEMPLATE_BUILD_MACHINE_KEY), null), logger);
     },

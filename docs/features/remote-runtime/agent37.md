@@ -74,11 +74,13 @@ Docker.
 - Two computers can check at once, and the account vault has no
   compare-and-set. A build only runs once it is uploaded and started, so the
   builder claims before that: it writes the build-in-flight record, waits five
-  seconds, and reads it back. Another computer's claim for the same template
-  whose build was made first wins, and this computer follows that build; its
-  own is never uploaded or started (Agent 37 cannot cancel a build, so an
-  unstarted one is left behind). A record that can't be read, or a claim that
-  didn't land, stops the pass and retries: unknown is never "nobody is
+  seconds, and reads it back. The record's last write is the one answer every
+  computer reads, so it decides: when it holds another computer's claim for
+  the same template whose build has not failed, this computer follows that
+  build and never rewrites the record; its own is never uploaded or started
+  (Agent 37 cannot cancel a build, so an unstarted one is left behind). A
+  record that can't be read, a claimed build that can't be checked, or a claim
+  that didn't land stops the pass and retries: unknown is never "nobody is
   building".
 - A finished build is ready only once Agent 37 shows the template with this
   build's marker (ADE sets it when the build published without one). Until
