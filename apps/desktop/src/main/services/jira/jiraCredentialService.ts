@@ -136,7 +136,8 @@ export function createJiraCredentialService(args: {
     let legacy: JiraConnectArgs | null = null;
     try {
       legacy = readFrom(legacyStore);
-    } catch {
+    } catch (error) {
+      args.logger?.warn?.("jira.legacy_machine_credential_read_failed", { error: describeVaultFailure(error) });
       return null;
     }
     try {

@@ -50,7 +50,7 @@ const FULL_ACCESS_COMMANDS: ReadonlySet<string> = new Set([
   "artifacts", "auth", "auto-update", "automation", "automations", "browser", "built-in-browser",
   "builtin-browser", "chat", "chats", "computer", "computer-use", "config", "cursor", "desk", "diff", "diffs",
   "disk", "doctor", "drafts", "electron", "file", "files", "gh", "git", "github", "harness", "harnesses",
-  "health", "help", "history", "init", "ios", "ios-sim", "issue", "jira", "lane", "lanes", "linear", "link",
+  "health", "help", "history", "init", "integration", "integrations", "ios", "ios-sim", "issue", "jira", "lane", "lanes", "linear", "link",
   "mac-desk", "mac-desktop", "machine", "machines", "models", "new", "notify", "open", "operation",
   "operations", "pr", "project", "projects", "proof", "provider", "providers", "proxy", "prs", "pty", "quota",
   "quotas", "report-issue", "router", "scene", "scenes", "screen", "search", "secret", "secrets", "session",
@@ -73,6 +73,9 @@ const READ_ONLY_COMMANDS: ReadonlyMap<string, ReadonlySet<string> | true> = new 
   ["setting", new Set(["find", "search", "where"])],
   ["config", new Set(["find", "search", "where"])],
   ["auth", new Set(["status"])],
+  // Connected or not, and as whom; never a credential.
+  ["integrations", new Set(["status"])],
+  ["integration", new Set(["status"])],
   ["machines", new Set(["list", "show"])],
   ["projects", new Set(["list"])],
   // `defaults` reads the new-lane defaults; `defaults set` is refused below.
@@ -240,6 +243,9 @@ const SERVICE_SIGN_IN_ACTIONS: ReadonlyMap<string, ReadonlySet<string> | true> =
   ["linear_credentials", true],
   ["linear_oauth", true],
   ["jira", new Set(["connect", "disconnect"])],
+  // The connect card and the MCP server card store what the person gives in the account.
+  ["integration_connect", new Set(["request"])],
+  ["mcp_registry", new Set(["request"])],
   // Installing the ADE agent in Linear runs an OAuth consent and stores its token.
   ["linear_agent", new Set(["startInstall", "uninstall"])],
   ["ai", new Set([
@@ -263,6 +269,7 @@ const OPENCODE_ACCOUNT_REMOVALS: ReadonlySet<string> = new Set(["remove", "rm", 
 function isServiceSignInCommand(command: string, words: readonly string[]): boolean {
   if (command === "github") return GITHUB_AUTH_GROUPS.has(words[0] ?? "") && GITHUB_AUTH_CHANGES.has(words[1] ?? "");
   if (command === "jira") return words[0] === "connect" || words[0] === "disconnect";
+  if (command === "integrations" || command === "integration") return words[0] === "connect";
   if (command === "providers") {
     return words[0] === "opencode" && (words[1] === "accounts" || words[1] === "account")
       && OPENCODE_ACCOUNT_REMOVALS.has(words[2] ?? "");

@@ -909,7 +909,9 @@ Renderer — settings:
   (the same dialog as the MCP servers page) and, when other tools have
   servers, **Import**. Below it, the catalogue's quick setups as logo tiles
   (`McpCatalogueAddDialog.tsx` adds one, and signs it in when it uses a
-  browser sign-in), and a last **Not listed?** tile.
+  browser sign-in), and a last **Not listed?** tile. `mcpCatalogueBrand.tsx`
+  gives each quick setup its logo and accent, and `McpRunsLine.tsx` shows the
+  command a server runs, or the URL it reaches, on one line.
   `?integration=<github|linear|jira|mcp>` opens one page, and a `#hash`
   naming any of its settings (`#github-connection`, `#jira-projects`,
   `#mcp-servers`) opens it too; the hash wins over the param, because a search
