@@ -386,28 +386,46 @@ export function spawnOffThread(
   return spawner.spawn(command, args, options);
 }
 
-export type OffThreadExecResult = {
+export type OffThreadExecResult<Output = string> = {
   /** The exit code, or null when the process never ran, was killed, or timed out. */
   exitCode: number | null;
-  stdout: string;
+  stdout: Output;
   stderr: string;
-  /** Set when the process could not start, timed out, or overran maxBuffer. */
+  /** Set when the process could not start, timed out, was cancelled, or overran maxBuffer. */
   error: Error | null;
   /** True when the timeout ended it. */
   timedOut?: boolean;
 };
 
+type ExecFileOffThreadOptions = OffThreadSpawnOptions & {
+  timeoutMs: number;
+  maxBuffer?: number;
+  /** Ends the process tree early, as `execFile`'s `signal` does. */
+  signal?: AbortSignal;
+};
+
 /**
  * `execFile` for short capture-style commands, spawned off the event loop.
- * Like `execFile`, a timeout or an overrun of `maxBuffer` kills the process
- * tree and reports an error.
+ * Like `execFile`, a timeout, a cancel or an overrun of `maxBuffer` kills the
+ * process tree and reports an error. `encoding: "buffer"` keeps stdout binary.
  */
 export function execFileOffThread(
   command: string,
   args: readonly string[],
-  options: OffThreadSpawnOptions & { timeoutMs: number; maxBuffer?: number },
-): Promise<OffThreadExecResult> {
+  options: ExecFileOffThreadOptions & { encoding: "buffer" },
+): Promise<OffThreadExecResult<Buffer>>;
+export function execFileOffThread(
+  command: string,
+  args: readonly string[],
+  options: ExecFileOffThreadOptions & { encoding?: "utf8" },
+): Promise<OffThreadExecResult>;
+export function execFileOffThread(
+  command: string,
+  args: readonly string[],
+  options: ExecFileOffThreadOptions & { encoding?: "utf8" | "buffer" },
+): Promise<OffThreadExecResult<string | Buffer>> {
   const maxBuffer = options.maxBuffer ?? 1024 * 1024;
+  const { signal } = options;
   return new Promise((resolve) => {
     const child = spawnOffThread(command, args, { cwd: options.cwd, env: options.env, envPatch: options.envPatch });
     const stdout: Buffer[] = [];
@@ -419,9 +437,11 @@ export function execFileOffThread(
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      const out = Buffer.concat(stdout);
       resolve({
         exitCode,
-        stdout: Buffer.concat(stdout).toString("utf8"),
+        stdout: options.encoding === "buffer" ? out : out.toString("utf8"),
         stderr: Buffer.concat(stderr).toString("utf8"),
         error,
         timedOut,
@@ -431,6 +451,7 @@ export function execFileOffThread(
       failure ??= error;
       child.killTree("SIGTERM");
     };
+    const onAbort = () => kill(new Error(`${command} was cancelled`));
     const timer = setTimeout(() => {
       timedOut = failure === null;
       kill(new Error(`${command} timed out after ${options.timeoutMs} ms`));
@@ -449,6 +470,8 @@ export function execFileOffThread(
         sink.push(data);
       };
     };
+    if (signal?.aborted) onAbort();
+    else signal?.addEventListener("abort", onAbort, { once: true });
     child.stdout.on("data", collect(stdout));
     child.stderr.on("data", collect(stderr));
     child.on("error", (error: Error) => finish(null, error));

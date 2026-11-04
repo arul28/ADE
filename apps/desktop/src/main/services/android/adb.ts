@@ -1,5 +1,5 @@
 import { execFile, spawn, type ChildProcess } from "node:child_process";
-import { offThreadSpawnEnabled, spawnOffThread } from "../shared/offThreadSpawn";
+import { execFileOffThread, offThreadSpawnEnabled } from "../shared/offThreadSpawn";
 
 /*
  * The one way the Android services run `adb`.
@@ -82,49 +82,22 @@ function captureWithExecFile(adbPath: string, args: string[], options: AdbRunOpt
 }
 
 /** The same capture with `CreateProcess` on a worker thread; stdout stays binary. */
-function captureOffThread(adbPath: string, args: string[], options: AdbRunOptions): Promise<AdbCapture> {
-  return new Promise((resolve) => {
-    const child = spawnOffThread(adbPath, args);
-    const stdout: Buffer[] = [];
-    const stderr: Buffer[] = [];
-    let bytes = 0;
-    let failure: Error | null = null;
-    let timedOut = false;
-    let settled = false;
-    const end = (error: Error) => {
-      failure ??= error;
-      child.killTree("SIGTERM");
-    };
-    const onAbort = () => end(new Error("cancelled"));
-    const timer = setTimeout(() => {
-      timedOut = failure === null;
-      end(new Error(`timed out after ${options.timeoutMs ?? DEFAULT_TIMEOUT_MS} ms`));
-    }, options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
-    const finish = (exitCode: number | null, error: Error | null) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      options.signal?.removeEventListener("abort", onAbort);
-      const failed = error ?? (exitCode !== 0 ? new Error(`exit code ${exitCode ?? "none"}`) : null);
-      resolve({ stdout: Buffer.concat(stdout), stderr: Buffer.concat(stderr).toString("utf8"), exitCode, error: failed, timedOut });
-    };
-    const collect = (sink: Buffer[]) => (data: Buffer) => {
-      if (failure) return;
-      bytes += data.length;
-      if (bytes > MAX_BUFFER_BYTES) {
-        end(new Error(`output exceeded ${MAX_BUFFER_BYTES} bytes`));
-        return;
-      }
-      sink.push(data);
-    };
-    if (options.signal?.aborted) onAbort();
-    else options.signal?.addEventListener("abort", onAbort, { once: true });
-    child.stdout.on("data", collect(stdout));
-    child.stderr.on("data", collect(stderr));
-    child.on("error", (error: Error) => finish(null, error));
-    child.on("close", (code: number | null) => finish(failure ? null : code, failure));
-    child.stdin.end("");
+async function captureOffThread(adbPath: string, args: string[], options: AdbRunOptions): Promise<AdbCapture> {
+  const result = await execFileOffThread(adbPath, args, {
+    encoding: "buffer",
+    timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+    maxBuffer: MAX_BUFFER_BYTES,
+    ...(options.signal ? { signal: options.signal } : {}),
   });
+  const { exitCode } = result;
+  return {
+    stdout: result.stdout,
+    stderr: result.stderr,
+    exitCode,
+    // execFile reports a non-zero exit as an error; so does this capture.
+    error: result.error ?? (exitCode !== 0 ? new Error(`exit code ${exitCode ?? "none"}`) : null),
+    timedOut: Boolean(result.timedOut),
+  };
 }
 
 /** Runs one adb command to completion. stdout stays binary (`exec-out screencap`). */
