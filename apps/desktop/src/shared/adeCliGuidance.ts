@@ -62,7 +62,7 @@ export const ADE_SESSION_STATUS_PROTOCOL_GUIDANCE = [
   "- The next accepted user message clears the prior hand-raise; re-ask if still blocked.",
   '- Done: report it and leave `ade chat note "<delivered result>"`.',
   "- You cannot settle or unsettle a session; that is the user's call, or the automatic result of its PR merging.",
-  "- Lane and chat names are yours to keep accurate. When the work changes direction or moves to a new branch, rename without asking: `ade lanes rename`, `ade chat update --title`, or `ade chat generate-names`. A lane keeps its name when its branch changes.",
+  "- Keep lane and chat names accurate. When the work changes direction or moves to a new branch, rename without asking: `ade lanes rename`, `ade chat update --title`, or `ade chat generate-names`. A lane keeps its name when its branch changes.",
 ].join("\n");
 
 /**
@@ -315,8 +315,8 @@ export function buildAdeBootstrapGuidance(
     // text of the rest with `gh pr edit`, which drops ADE's footer and leaves
     // cited proof as links GitHub cannot show.
     "PRs: open with `ade prs create`, rewrite text with `ade prs body`; `gh` skips proof upload and the lane link.",
-    "For computer use, read `ade-computer-use` first. `mcp__computer_use` drives the user's real screen: use it only on request; never substitute `@oai/sky` via `node_repl`.",
-    "CLI ground truth: `ade help <command>` and `ade actions list --text`; prefer typed commands with `--text`. Settings questions: `ade settings find <words>`. Clean up started processes.",
+    "`mcp__computer_use` drives the user's real screen: use it only on request, after `ade-computer-use`; never substitute `@oai/sky` via `node_repl`.",
+    "CLI ground truth: `ade help <command>` and `ade actions list --text`; prefer typed commands with `--text`. Settings questions: `ade settings find <words>`; clean up started processes.",
     // Without this line an agent that needed Linear asked for the API key in
     // chat, where it stays in the transcript. Each command shows a card only
     // the user can answer, and the value never reaches the agent.
