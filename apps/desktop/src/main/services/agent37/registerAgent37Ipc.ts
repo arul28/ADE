@@ -51,6 +51,7 @@ import {
   type Agent37TemplateRecordStore,
 } from "./agent37TemplateBuilder";
 import { BUILT_IN_BROWSER_PARTITION } from "../builtInBrowser/builtInBrowserConstants";
+import { normalizeAppPackageChannel } from "../../../shared/packageChannel";
 
 type Logger = {
   info(event: string, meta?: Record<string, unknown>): void;
@@ -404,7 +405,9 @@ const STARTUP_CHECK_DELAY_MS = 20_000;
  */
 function releasedAdeVersion(): string | null {
   if (!app.isPackaged) return null;
-  if (/\balpha\b/i.test(app.getName()) || process.env.ADE_PACKAGE_CHANNEL?.trim().toLowerCase() === "alpha") return null;
+  // The channel main.ts settles at startup (applyPackagedChannelDefaults), read
+  // the same way every other main-process surface reads it.
+  if (normalizeAppPackageChannel(process.env.ADE_PACKAGE_CHANNEL) === "alpha") return null;
   const version = app.getVersion().trim();
   return /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version) ? version : null;
 }
