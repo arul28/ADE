@@ -1,5 +1,5 @@
 import { useCallback, useState, type KeyboardEvent } from "react";
-import { ArrowSquareOut, CheckCircle, Copy, Eye, EyeSlash, GearSix, LockKey, Plugs, Prohibit, SealCheck, SpinnerGap, Warning, X } from "@phosphor-icons/react";
+import { ArrowSquareOut, CheckCircle, Copy, Eye, EyeSlash, GearSix, LockKey, Plugs, Prohibit, SpinnerGap, Warning, X } from "@phosphor-icons/react";
 import type { PendingInputRequest } from "../../../shared/types";
 import { MCP_TRANSPORT_LABEL } from "../../../shared/mcpRegistry";
 import { matchMcpCatalogue, mcpCatalogueEntry, type McpCatalogueEntry } from "../../../shared/mcpCatalogue";
@@ -7,6 +7,7 @@ import {
   MCP_SERVER_APPROVE_QUESTION_ID,
   MCP_SERVER_APPROVE_VALUE,
   mcpServerRequestAnswers,
+  mcpServerRunsLabel,
   type McpServerRequestCard,
   type McpServerRequestSecret,
 } from "../../../shared/mcpServerRequest";
@@ -34,10 +35,10 @@ function openUrl(url: string): void {
  *
  * An agent runs `ade mcp servers add <name> --reason …`. The card takes the
  * composer's place, the way the connect card does: the server's name, how it
- * connects, and a **Runs** line with exactly what will execute (the command
- * line) or be dialed (the URL), so the person approves what they can read.
- * A server in ADE's catalogue wears its brand and a Verified chip; any other
- * server says Not verified.
+ * connects, and one line with exactly what will execute (the command line,
+ * "Runs") or be reached (the URL, "Connects to"), so the person approves what
+ * they can read. A server in ADE's catalogue wears its brand and names its
+ * publisher; any other server is marked Custom.
  * Values go back only as answers to `isSecret` questions; the host on the
  * chat's machine saves the server to the account and the values to the
  * account vault before the card closes. A save that fails keeps the card open
@@ -195,7 +196,7 @@ export function McpServerRequestComposer({
   const inlineRuns = !asked.length && !copied.length;
   const runs = (
     <div className="ade-mcpc-runs" data-inline={inlineRuns || undefined} data-testid="mcp-server-runs">
-      <span className="ade-mcpc-runs-label">Runs</span>
+      <span className="ade-mcpc-runs-label">{mcpServerRunsLabel(server)}</span>
       <code className="ade-mcpc-runs-line">{card.runs}</code>
       {card.source === "imported" && card.providers.length ? (
         <span className="ade-mcpc-from" title={`In ${toolList(card.providers)}'s settings on this computer`}>
@@ -234,12 +235,12 @@ export function McpServerRequestComposer({
         </span>
         <span className="ade-icc-banner-tools">
           {entry ? (
-            <span className="ade-icc-chip" data-tone="ok" title={`ADE's catalogue: ${entry.publisher}'s own server.`} data-testid="mcp-server-verified">
-              <SealCheck size={11} weight="fill" /> Verified
+            <span className="ade-icc-chip" title={`${entry.publisher}'s own server, set up by ADE.`} data-testid="mcp-server-publisher">
+              By {entry.publisher}
             </span>
           ) : (
-            <span className="ade-icc-chip" data-tone="warn" title="ADE does not know this server. Check what it runs before you add it." data-testid="mcp-server-unverified">
-              Not verified
+            <span className="ade-icc-chip" title="A server ADE has no setup for. Check what it runs before you add it." data-testid="mcp-server-custom">
+              Custom
             </span>
           )}
           <span className="ade-icc-chip" data-testid="mcp-server-transport">{MCP_TRANSPORT_LABEL[server.transport]}</span>

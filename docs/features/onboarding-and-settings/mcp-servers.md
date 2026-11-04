@@ -1,6 +1,6 @@
 # MCP servers
 
-Settings › Connections › MCP servers is where a user defines an MCP server one time and
+Settings › Integrations › MCP servers is where a user defines an MCP server one time and
 every ADE agent gets it, on every computer they sign in on. Each provider CLI
 keeps its own MCP list, so without this a server added to Claude never reaches
 Codex and a second computer starts with none.
@@ -22,10 +22,13 @@ npm/PyPI publisher, and every `oauth` server offers the dynamic client
 registration that ADE's sign-in needs. Vendors that need an approved client
 (Slack, Canva, Asana, hosted Figma, Vercel) are left out.
 
-`matchMcpCatalogue` finds the entry a server is, by its exact URL or package
-name. Only a match makes a server "verified": the MCP server card and the
-Connections tiles then show the brand and a **Verified** chip. Any other
-server's card says **Not verified**.
+The catalogue is a set of quick setups, not the list of servers ADE supports:
+any MCP server can be added by its command or URL, and Settings says so above
+the grid. `matchMcpCatalogue` finds the entry a server is, by its exact URL or
+package name. A match gives the MCP server card and the Integrations tiles the
+entry's brand and a **By <publisher>** chip. Any other server's card says
+**Custom**. A remote server's card reads **Connects to** <URL>; a local one
+reads **Runs** <command line>.
 
 Three entries are ADE integrations (`native`: GitHub, Linear, Atlassian).
 Asking for one (`ade mcp servers add linear`, or a URL that matches one) runs
@@ -39,7 +42,8 @@ Where the catalogue is used:
   server. The card asks only for the entry's key, adds `Bearer ` when the
   entry's header wants it, and runs the browser sign-in before it adds an
   `oauth` server.
-- Settings › Connections: the logo grid under **Add a connection**.
+- Settings › Integrations: the grid under **MCP servers**, after the
+  **Add any MCP server** button and a last **Not listed?** tile.
 
 ## The data
 

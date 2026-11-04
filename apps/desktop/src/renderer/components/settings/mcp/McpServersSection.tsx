@@ -26,7 +26,7 @@ import "./mcpServers.css";
 import { isImeComposing } from "../../../lib/imeComposition";
 
 /**
- * Settings › Connections › MCP servers.
+ * Settings › Integrations › MCP servers.
  *
  * Three views of one list:
  *

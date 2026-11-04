@@ -19,7 +19,7 @@ import {
  * question can answer it. A secret value travels only as the answer to an
  * `isSecret` question, which the transcript writer drops. The host on the
  * chat's machine saves the server into the account registry and its values
- * into the account vault, the way Settings › Connections › MCP servers does, and hands the
+ * into the account vault, the way Settings › Integrations › MCP servers does, and hands the
  * agent only the outcome.
  *
  * Approval is always the person's: the metadata key below makes the card
@@ -117,6 +117,11 @@ export function mcpServerSecretQuestionId(field: McpSecretField, name: string): 
 function shellWord(word: string): string {
   if (word.length && /^[A-Za-z0-9_@%+=:,./~-]+$/.test(word)) return word;
   return `'${word.replace(/'/g, `'\\''`)}'`;
+}
+
+/** What the runs line is: a local server runs a command; a remote one is only reached at its URL. */
+export function mcpServerRunsLabel(server: Pick<McpRegistryServer, "transport">): string {
+  return server.transport === "stdio" ? "Runs" : "Connects to";
 }
 
 /** The exact command line a `stdio` server runs, or the URL a remote one answers at. */
