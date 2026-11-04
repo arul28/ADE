@@ -3098,6 +3098,10 @@ finished says the integration is signed in.
 `ade integrations status` (`integration_connect.status`) lists each
 integration with connected or not and the account, never a credential.
 
+The action records how the card ended as `chat/connect_requested`, and
+`mcp_registry.request` records `chat/mcp_server_requested` (see
+[Logging](../../logging.md)).
+
 ### Approval vs question
 
 `approval_request.kind` describes the *shape* of the thing being confirmed

@@ -231,7 +231,7 @@ function IntegrationsTabContent({ machine }: { machine: SettingsMachinePage | nu
   if (!section) {
     return (
       <SettingsColumn wide>
-        <IntegrationsHome pin={pin} onOpen={open} />
+        <IntegrationsHome pin={pin} machineOnline={!machine || machine.online} onOpen={open} />
       </SettingsColumn>
     );
   }
@@ -581,12 +581,14 @@ export function TabContent({
   // A machine's own page lists every machine, offline ones included, and says
   // so itself.
   if (tab === "machines") return <SettingsColumn wide><MachinesPage machine={machine} /></SettingsColumn>;
+  // Integrations routes between its home and one integration's page off
+  // `?integration=`; its sections are the pages. It stays open with the
+  // machine offline: the MCP servers are the account's, and the machine's
+  // own integrations say they wait for it.
+  if (tab === "integrations") return <IntegrationsTabContent machine={machine} />;
   if (machine && !machine.online) {
     return <MachineUnavailableNotice machine={machine} />;
   }
-  // Integrations routes between its home and one integration's page off
-  // `?integration=`; its sections are the pages.
-  if (tab === "integrations") return <IntegrationsTabContent machine={machine} />;
   // Providers is the one tab that is not a list of sections: it routes between
   // the grid and one provider's page off `?provider=`.
   if (tab === "agents") {

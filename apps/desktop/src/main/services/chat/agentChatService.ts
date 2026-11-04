@@ -69727,8 +69727,10 @@ export function createAgentChatService(args: {
 
     const localPending = managed.localPendingInputs.get(itemId);
     if (localPending) {
+      // A decline from another window while an answer saves would close the
+      // card over a key that is then saved; the save decides first.
+      if (localPending.accepting) throw new Error("This answer is already being saved.");
       if (localPending.beforeAccept && resolvedDecision !== "decline" && resolvedDecision !== "cancel") {
-        if (localPending.accepting) throw new Error("This answer is already being saved.");
         localPending.accepting = true;
         try {
           await localPending.beforeAccept(normalizePendingInputAnswers(localPending.request, answers, responseText));
