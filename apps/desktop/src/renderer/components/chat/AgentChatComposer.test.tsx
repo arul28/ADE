@@ -26,6 +26,7 @@ import {
   replaceDynamicOpenCodeModelDescriptors,
 } from "../../../shared/modelRegistry";
 import { useAppStore } from "../../state/appStore";
+import { ChatRuntimeScopeProvider } from "./ChatRuntimeScope";
 import { AgentChatApiProvider } from "./agentChatApi";
 import { formatChatOutputContextBlock } from "../../../shared/chatOutputContext";
 
@@ -2712,7 +2713,6 @@ describe("AgentChatComposer", () => {
     { phase: "stage", nextRemote: false },
     { phase: "stage", nextRemote: true },
   ])("keeps a dropped batch on its original project during a switch: $phase / remote=$nextRemote", async ({ phase, nextRemote }) => {
-    const previousBinding = useAppStore.getState().projectBinding;
     const original: OpenProjectBinding = { kind: "local", key: "local:C:/source", rootPath: "C:/source", displayName: "Source" };
     const next: OpenProjectBinding = nextRemote
       ? { kind: "remote", key: "remote:studio:next", targetId: "studio", projectId: "next", runtimeName: "Studio", rootPath: "/next", displayName: "Next" }
@@ -2727,27 +2727,28 @@ describe("AgentChatComposer", () => {
       project: { getDroppedPath: (file: File) => `C:/Pictures/${file.name}` },
       agentChat: { getAttachmentStagingMode, stageFileAttachment },
     };
-    useAppStore.setState({ projectBinding: original });
-    try {
-      const props = renderComposer({ draft: "", turnActive: false, composerMachineBinding: null });
-      fireEvent.drop(screen.getByPlaceholderText("Type to vibecode..."), {
-        dataTransfer: { files: [new File(["a"], "first.png"), new File(["b"], "second.png")], types: ["Files"], getData: () => "" },
-      });
-      await waitFor(() => expect(phase === "probe" ? getAttachmentStagingMode : stageFileAttachment).toHaveBeenCalledTimes(1));
-      act(() => { useAppStore.setState({ projectBinding: next }); });
-      await act(async () => {
-        if (phase === "probe") finishProbe({ mode: "copy", maxBytes: 50 * 1024 * 1024 });
-        else finishStage({ path: "C:/source/.ade/attachments/first.png" });
-      });
-      await screen.findByRole("alert");
-      expect(props.onAddAttachment).not.toHaveBeenCalled();
-      if (phase === "probe") expect(stageFileAttachment).not.toHaveBeenCalled();
-      else {
-        expect(stageFileAttachment).toHaveBeenCalledTimes(1);
-        expect(stageFileAttachment.mock.calls[0][1]).toEqual(original);
-      }
-    } finally {
-      act(() => { useAppStore.setState({ projectBinding: previousBinding }); });
+    const props = buildComposerProps({ draft: "", turnActive: false, composerMachineBinding: null });
+    const composer = (binding: OpenProjectBinding) => (
+      <ChatRuntimeScopeProvider pin={null} binding={binding} laneId={null} sessionId={null}>
+        <AgentChatComposer {...props} />
+      </ChatRuntimeScopeProvider>
+    );
+    const view = render(composer(original));
+    fireEvent.drop(screen.getByPlaceholderText("Type to vibecode..."), {
+      dataTransfer: { files: [new File(["a"], "first.png"), new File(["b"], "second.png")], types: ["Files"], getData: () => "" },
+    });
+    await waitFor(() => expect(phase === "probe" ? getAttachmentStagingMode : stageFileAttachment).toHaveBeenCalledTimes(1));
+    view.rerender(composer(next));
+    await act(async () => {
+      if (phase === "probe") finishProbe({ mode: "copy", maxBytes: 50 * 1024 * 1024 });
+      else finishStage({ path: "C:/source/.ade/attachments/first.png" });
+    });
+    await screen.findByRole("alert");
+    expect(props.onAddAttachment).not.toHaveBeenCalled();
+    if (phase === "probe") expect(stageFileAttachment).not.toHaveBeenCalled();
+    else {
+      expect(stageFileAttachment).toHaveBeenCalledTimes(1);
+      expect(stageFileAttachment.mock.calls[0][1]).toEqual(original);
     }
   });
 

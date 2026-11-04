@@ -3118,8 +3118,8 @@ function AgentChatComposerImpl({
   const pendingDraftEditIntentRef = useRef<ComposerDraftEditIntent | null>(null);
   const fileAddInProgressRef = useRef(false);
   const addFileAttachmentsRef = useRef<(files: FileList | File[] | null | undefined) => void>(() => {});
-  const boundProjectBinding = useAppStore((state) => projectChatPane ? state.projectBinding : null);
-  const attachmentMachineBinding = composerMachineBinding ?? boundProjectBinding;
+  const chatRuntimeScope = useChatRuntimeScope();
+  const attachmentMachineBinding = composerMachineBinding ?? (projectChatPane ? chatRuntimeScope.binding : null);
   const latestComposerMachineBindingRef = useRef(attachmentMachineBinding);
   latestComposerMachineBindingRef.current = attachmentMachineBinding;
   // Catalog bucket for every model-derived control in this composer (picker
@@ -3415,7 +3415,7 @@ function AgentChatComposerImpl({
   // Voice runs on the chat machine's brain and Codex sign-in, not this window's.
   // The chat-scope pin is null when the chat is on the tab's machine, which
   // keeps the unpinned route (transition guard + local fallback) there.
-  const chatRuntimePin = useChatRuntimeScope().pin;
+  const chatRuntimePin = chatRuntimeScope.pin;
   // Bumped per effort picked by hand; the hint chip stands down for that prompt.
   const [effortPickedByHand, setEffortPickedByHand] = useState(0);
   const handleReasoningEffortPickerChange = useCallback((effort: string | null) => {
