@@ -358,6 +358,12 @@ export function pinnedLoginCliState(provider: PinnedCliProvider): PinnedLoginCli
   return {
     kind: "downloading",
     line: pinnedCliDownloadingLine(state.label),
-    done: state.done.then(() => requirePinnedProviderCli(provider)),
+    // Once that download ends, the copy is there or it is not; reading it
+    // again must not start another download (Muse's is hundreds of MB).
+    done: state.done.then(() => {
+      const cli = resolvePinnedProviderCli(provider);
+      if (!cli) throw new Error(blockerSentence(provider));
+      return cli;
+    }),
   };
 }
