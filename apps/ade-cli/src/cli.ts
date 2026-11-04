@@ -2160,7 +2160,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     --port <n>              Also listen for local TCP JSON-RPC on 127.0.0.1:n.
     --no-sync               Disable machine sync discovery for this foreground brain process.
     --dev-test-machine      Dev only: run as its own machine on the account, beside the
-                            installed ADE (own home required). Use npm run dev:machine.
+                            installed ADE (own home required). Use npm run dev:machine -- start.
     --install-service       Register the per-user login service and exit.
     --uninstall-service     Remove the per-user login service and exit.
     --service-status        Print per-user login service status and exit.
@@ -27319,7 +27319,7 @@ async function runServe(
     const adeDir = resolveMachineAdeLayout().adeDir;
     if (!isSyncCapableAdeHome(adeDir, { ...process.env, [DEV_TEST_MACHINE_ENV]: "1" })) {
       throw new CliUsageError(
-        `A dev test machine needs its own ADE home; ${adeDir} belongs to an installed ADE. Start it with npm run dev:machine.`,
+        `A dev test machine needs its own ADE home; ${adeDir} belongs to an installed ADE. Start it with npm run dev:machine -- start.`,
       );
     }
     markDevTestMachineHome(adeDir);

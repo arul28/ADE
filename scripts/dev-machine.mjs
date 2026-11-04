@@ -180,14 +180,22 @@ async function start(paths, options) {
   report(paths, options);
 }
 
+/**
+ * Marks the home as a dev test machine's (apps/ade-cli/src/services/sync/devTestMachine.ts).
+ * Before anything else touches it: every `ade` command on it, not only the
+ * brain, then refuses the installed ADE's projects.
+ */
+function markHome(paths) {
+  fs.mkdirSync(paths.home, { recursive: true });
+  const marker = path.join(paths.home, "dev-test-machine.json");
+  if (!fs.existsSync(marker)) fs.writeFileSync(marker, `${JSON.stringify({ markedAt: new Date().toISOString() }, null, 2)}\n`);
+}
+
 /** Starts the test machine's brain and waits for its socket. */
 async function startBrain(paths, options) {
   if (!options.skipBuild && !isRuntimeCliBuildFresh()) await buildRuntimeCli(false);
   fs.mkdirSync(path.dirname(paths.logPath), { recursive: true });
-  // Marks the home before anything else touches it: every `ade` command on it,
-  // not only the brain, then refuses the installed ADE's projects.
-  const marker = path.join(paths.home, "dev-test-machine.json");
-  if (!fs.existsSync(marker)) fs.writeFileSync(marker, `${JSON.stringify({ markedAt: new Date().toISOString() }, null, 2)}\n`);
+  markHome(paths);
   const args = [cliPath(), "--role", "cto", "serve", "--dev-test-machine", "--socket", paths.socketPath];
   const env = machineEnv(paths);
   let child;
@@ -263,6 +271,9 @@ async function login(paths, options) {
 }
 
 function project(paths, options) {
+  // Before `ade init` below: without the marker that command would register an
+  // installed ADE's project here, and the dev brain would then open it.
+  markHome(paths);
   let target = options.projectPath;
   if (options.clone) {
     const source = resolvePrimaryProjectRoot(repoRoot);

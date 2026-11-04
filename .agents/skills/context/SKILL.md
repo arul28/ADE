@@ -71,7 +71,8 @@ resolve docs + the matching `ade-perf-*` skill via `references/doc-map.md`.
   installed ADE. When you are done, stop the app's process group and confirm
   its brain exited (`pgrep -fl "<your socket>"`). To test what another machine
   calls into (a cloud box, the phone, another desktop), run the branch's brain
-  as its own machine: `npm run dev:machine` (see local-development.md).
+  as its own machine: `npm run dev:machine -- start` (see local-development.md
+  for the login and project steps).
 - **Mind memory.** One dev app per agent, only while you use it. Check
   `memory_pressure | tail -1` before a dev app, brain, simulator or build, and
   wait while free memory is under ~30%. Agent-started dev apps open no DevTools
