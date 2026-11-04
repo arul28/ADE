@@ -73,6 +73,8 @@ const MCP_SERVER_ADDED_NEXT = "Added. Ask the person to press Refresh chat to lo
 export type McpRegistrySettingsStore = {
   get(scope: string, key: string): unknown;
   set(scope: string, key: string, value: unknown): boolean;
+  /** Pull the account's rows into the local cache. */
+  sync?(): Promise<"ready" | "unavailable" | "failed">;
 };
 
 /** The account vault calls this module makes. A runtime's `accountVaultStore` satisfies it. */
@@ -492,6 +494,13 @@ async function askToAdd(
     if (firstAnswer(answers, MCP_SERVER_APPROVE_QUESTION_ID) !== MCP_SERVER_APPROVE_VALUE) {
       outcome = { name: server.name, added: false, declined: true };
       return;
+    }
+    // The local cache can lag behind the account (a runtime that just
+    // started): pull first, so the write keeps servers other machines added.
+    // With no copy of the list at all, a failed pull must not write one.
+    const synced = await deps.settings?.sync?.().catch(() => "failed" as const);
+    if (synced === "failed" && deps.settings?.get(ACCOUNT_SCOPE_ALL, MCP_SERVERS_SETTING_KEY) === undefined) {
+      throw new Error("ADE could not load your MCP servers from your account. Try again in a moment, or add the server in Settings › Integrations › MCP servers.");
     }
     const current = readRegistry(deps);
     if (!current.live || !deps.settings) throw new Error("This machine lost its ADE account connection. Try again, or add the server in Settings › Integrations › MCP servers.");

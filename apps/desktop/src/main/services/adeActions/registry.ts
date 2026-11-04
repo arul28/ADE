@@ -10,6 +10,7 @@ import os from "node:os";
 import path from "node:path";
 import { parseGitHubIssueCreateInput, parseGitHubIssueUpdate } from "../../../shared/laneGitHubIssue";
 import { parseGitHubIssueListState } from "../../../shared/githubIssueList";
+import type { IntegrationConnectRequestResult } from "../../../shared/integrationConnect";
 import { readImageFileAsDataUrl } from "../chat/imageAttachmentConverter";
 import { createHash } from "node:crypto";
 import type { AdeRuntime } from "../../../../../ade-cli/src/bootstrap";
@@ -256,6 +257,7 @@ import { createAccountActionDomainService } from "../../../../../ade-cli/src/ser
 import { createProxyActionDomainService } from "../../../../../ade-cli/src/services/proxy/proxyService";
 import {
   captureSecretRequestedAnalytics,
+  captureAgentCardAnalytics,
   captureNotificationSentAnalytics,
   captureWebhookUrlCreatedAnalytics,
   captureAutomationTestAnalytics,
@@ -3959,18 +3961,37 @@ function integrationConnectAdapters(runtime: AdeRuntime) {
   });
 }
 
+/**
+ * Raise the connect card in a chat and record how it ended, once, here at the
+ * brain action: `integration_connect.request`, and the MCP server card when the
+ * name is a built-in integration.
+ */
+async function requestIntegrationConnectWithAnalytics(
+  runtime: AdeRuntime,
+  agentChatService: NonNullable<AdeRuntime["agentChatService"]>,
+  args: unknown,
+): Promise<IntegrationConnectRequestResult> {
+  const capture = (outcome: "completed" | "kept" | "cancelled" | "failed") =>
+    captureAgentCardAnalytics({ analytics: runtime.productAnalyticsService, surface: "api", card: "connect", outcome });
+  try {
+    const result = await requestIntegrationConnect({
+      requestChatInput: (input) => agentChatService.requestChatInput(input),
+      adapters: integrationConnectAdapters(runtime),
+    }, args);
+    capture(!result.connected ? "cancelled" : result.method === "already" ? "kept" : "completed");
+    return result;
+  } catch (error) {
+    capture("failed");
+    throw error;
+  }
+}
+
 function buildIntegrationConnectDomainService(runtime: AdeRuntime): OpaqueService {
-  const adapters = () => integrationConnectAdapters(runtime);
   const agentChatService = runtime.agentChatService;
   return {
-    status: () => listIntegrationConnections({ adapters: adapters() }),
+    status: () => listIntegrationConnections({ adapters: integrationConnectAdapters(runtime) }),
     ...(agentChatService
-      ? {
-          request: (args?: unknown) => requestIntegrationConnect({
-            requestChatInput: (input) => agentChatService.requestChatInput(input),
-            adapters: adapters(),
-          }, args),
-        }
+      ? { request: (args?: unknown) => requestIntegrationConnectWithAnalytics(runtime, agentChatService, args) }
       : {}),
   };
 }
@@ -4011,14 +4032,25 @@ function buildMcpRegistryDomainService(runtime: AdeRuntime): OpaqueService {
     list: () => listMcpRegistry(mcpRegistryDeps(runtime)),
     ...(agentChatService
       ? {
-          request: (args?: unknown) => requestMcpServer({
-            ...mcpRegistryDeps(runtime),
-            requestChatInput: (input) => agentChatService.requestChatInput(input),
-            connectIntegration: (connectArgs) => requestIntegrationConnect({
-              requestChatInput: (input) => agentChatService.requestChatInput(input),
-              adapters: integrationConnectAdapters(runtime),
-            }, connectArgs),
-          }, args),
+          request: async (args?: unknown) => {
+            // A built-in integration's name runs the connect card, which records itself.
+            const capture = (outcome: "completed" | "kept" | "cancelled" | "failed") =>
+              captureAgentCardAnalytics({ analytics: runtime.productAnalyticsService, surface: "api", card: "mcp_server", outcome });
+            try {
+              const result = await requestMcpServer({
+                ...mcpRegistryDeps(runtime),
+                requestChatInput: (input) => agentChatService.requestChatInput(input),
+                connectIntegration: (connectArgs) => requestIntegrationConnectWithAnalytics(runtime, agentChatService, connectArgs),
+              }, args);
+              if (result.added) capture("completed");
+              else if ("already" in result) capture("kept");
+              else if ("declined" in result) capture("cancelled");
+              return result;
+            } catch (error) {
+              capture("failed");
+              throw error;
+            }
+          },
           chatStatus: (args?: { chatSessionId?: unknown; sessionId?: unknown }) => {
             const raw = args?.chatSessionId ?? args?.sessionId;
             const sessionId = typeof raw === "string" ? raw.trim() : "";

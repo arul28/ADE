@@ -329,6 +329,13 @@ export function SettingsPage({
     if (!tabParam || !resolvedTab || tabParam === resolvedTab) return;
     const nextParams = new URLSearchParams(searchParams);
     nextParams.set("tab", resolvedTab);
+    // A legacy tab that was one integration's page (`?tab=github`,
+    // `?tab=mcp`) opens that page, unless the link already names one.
+    const legacyIntegration = tabParam.trim().toLowerCase().replace(/^mcp-servers$/, "mcp");
+    if (resolvedTab === "integrations" && !location.hash && !nextParams.has("integration")
+      && (legacyIntegration === "mcp" || isIntegrationId(legacyIntegration))) {
+      nextParams.set("integration", legacyIntegration);
+    }
     // A legacy tab that was one card's page (`?tab=archive`) lands on that
     // card on its new page, unless the link already names a card.
     const legacyAnchor = location.hash ? null : legacyTabAnchor(tabParam);

@@ -307,6 +307,19 @@ export function IntegrationConnectComposer({
     device.cancel();
   }, [device, oauth]);
 
+  // A sign-in the host then refused ("still not connected") ends here: the
+  // card is usable again, with the host's reason under it.
+  const { cancel: cancelOAuth } = oauth;
+  const { cancel: cancelDevice } = device;
+  const wasResponding = useRef(responding);
+  useEffect(() => {
+    if (wasResponding.current && !responding) {
+      cancelOAuth();
+      cancelDevice();
+    }
+    wasResponding.current = responding;
+  }, [cancelDevice, cancelOAuth, responding]);
+
   const openSettings = useCallback(() => {
     navigateToAppTarget({ kind: "settings", entryId: spec.settingsSection, machineId: chatSettingsMachineId(scope) });
   }, [scope, spec.settingsSection]);
