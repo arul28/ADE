@@ -73,3 +73,6 @@ b5af93bc65f924f6a6bc4a563577335bb19cba7d:apps/desktop/src/main/services/shared/u
 # Fake ADE MCP account secrets in the relay account test (PR #1945); later built at runtime.
 6962c5f0d290369ee26f14c0678a55d92758afef:apps/tunnel-relay/test/relay.workerd.test.ts:generic-api-key:536
 6962c5f0d290369ee26f14c0678a55d92758afef:apps/tunnel-relay/test/relay.workerd.test.ts:generic-api-key:537
+
+# A Jira store key name ("jira.legacyAdopted.v1"), not a secret. The line now carries gitleaks:allow.
+2ca3ff5df6eb718e1323c5090044dcc7f0504964:apps/desktop/src/main/services/jira/jiraCredentialService.ts:generic-api-key:33

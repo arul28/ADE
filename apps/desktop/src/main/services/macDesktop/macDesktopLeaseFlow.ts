@@ -67,7 +67,7 @@ export const WINDOWS_DESKTOP_SHARED_CONSENT_WAIT_MS = 170_000;
 
 /**
  * How long the real-input lease card waits for the user, for the same reason:
- * the caller (`ade mac-desktop lease`) waits 180 s for `requestInputLease`.
+ * the caller (`ade screen lease`) waits 180 s for `requestInputLease`.
  * With no limit the card outlived its caller, and an open card refuses every
  * later message and scheduled wake of the chat, so one unanswered card left a
  * chat blocked for hours after the agent had moved on.

@@ -725,9 +725,8 @@ const ProjectSurface = React.memo(function ProjectSurface({
     // A surface seeded from the lane cache shows whatever status that cache
     // held, from any age. Measure it on this machine before anyone reads it.
     state.requestLaneStatusRead();
-    if (!state.keybindings) {
-      void state.refreshKeybindings().catch(() => {});
-    }
+    // Cheap (a local read); keeps a surface created before a save in step.
+    void state.refreshKeybindings().catch(() => {});
     void state.refreshProviderMode().catch(() => {});
   }, [active, projectBinding.kind, store]);
 

@@ -466,8 +466,8 @@ default, newest first, with `state` and `limit`.
 
 `spawnChat` sets `orchestrationParentSessionId` to the calling CTO session
 unconditionally, and `spawnKind` defaults to `"subagent"` — twice, once in the
-zod schema and once in the tool body, because the host rejects a parented chat
-with no spawn kind and `execute` is reachable without schema parsing. A
+zod schema and once in the tool body, so the kind it echoes back is explicit
+(the host also defaults a parented chat with no kind to `subagent`). A
 `subagent` wakes the CTO when it finishes; a `peer` is fire-and-forget and
 leaves a quiet note. The tool result echoes the resolved `spawnKind` back.
 

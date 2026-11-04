@@ -172,16 +172,23 @@ const REDACTED = "<hidden>";
 const SECRET_FLAG = /^--?[\w-]*(key|token|secret|password|passwd|credential|auth)[\w-]*$/i;
 /** A value shaped like a credential: a known key prefix, a JWT, or a long random run of letters and digits. */
 const SECRET_VALUE = /^(sk-|sk_|pk_|rk_|ghp_|gho_|ghs_|github_pat_|glpat-|xox[abpr]-|AKIA|eyJ)[\w.-]{8,}$|^(?=[\w-]*\d)(?=[\w-]*[A-Za-z])[\w-]{32,}$/;
+/** A name that holds a credential: `API_KEY=…` (`docker run -e`), `Authorization: …`, `X-Api-Token: …`. */
+const SECRET_NAME = /(key|token|secret|password|passwd|credential|auth|cookie)/i;
+/** `Name: value`, as `--header` takes it. */
+const HEADER_ARG = /^([\w-]+)\s*:\s*\S/;
 
 /**
  * A server's arguments for an agent to read: values after a credential flag,
- * or shaped like a key, are hidden. People often put a key on the command
- * line; the person's own card still shows the whole line before they approve.
+ * assigned to a credential name, in a credential header, or shaped like a key,
+ * are hidden. People often put a key on the command line; the person's own
+ * card still shows the whole line before they approve.
  */
 function argsForAgent(args: readonly string[]): string[] {
   return args.map((arg, index) => {
     const eq = arg.indexOf("=");
-    if (arg.startsWith("-") && eq > 0 && SECRET_FLAG.test(arg.slice(0, eq))) return `${arg.slice(0, eq)}=${REDACTED}`;
+    if (eq > 0 && SECRET_NAME.test(arg.slice(0, eq))) return `${arg.slice(0, eq)}=${REDACTED}`;
+    const header = HEADER_ARG.exec(arg);
+    if (header && SECRET_NAME.test(header[1]!)) return `${header[1]}: ${REDACTED}`;
     const previous = index > 0 ? args[index - 1]! : "";
     if (!arg.startsWith("-") && SECRET_FLAG.test(previous) && !previous.includes("=")) return REDACTED;
     return SECRET_VALUE.test(arg) ? REDACTED : arg;
@@ -197,6 +204,7 @@ function urlForAgent(raw: string): string {
       url.password = "";
     }
     for (const name of [...new Set(url.searchParams.keys())]) url.searchParams.set(name, REDACTED);
+    url.hash = "";
     url.pathname = url.pathname.split("/").map((part) => (SECRET_VALUE.test(part) ? REDACTED : part)).join("/");
     return url.toString().replaceAll(encodeURIComponent(REDACTED), REDACTED);
   } catch {
@@ -497,9 +505,10 @@ async function askToAdd(
     }
     // The local cache can lag behind the account (a runtime that just
     // started): pull first, so the write keeps servers other machines added.
-    // With no copy of the list at all, a failed pull must not write one.
+    // With no copy of the list at all, a pull that failed or could not reach
+    // the account must not write one.
     const synced = await deps.settings?.sync?.().catch(() => "failed" as const);
-    if (synced === "failed" && deps.settings?.get(ACCOUNT_SCOPE_ALL, MCP_SERVERS_SETTING_KEY) === undefined) {
+    if ((synced === "failed" || synced === "unavailable") && deps.settings?.get(ACCOUNT_SCOPE_ALL, MCP_SERVERS_SETTING_KEY) === undefined) {
       throw new Error("ADE could not load your MCP servers from your account. Try again in a moment, or add the server in Settings › Integrations › MCP servers.");
     }
     const current = readRegistry(deps);

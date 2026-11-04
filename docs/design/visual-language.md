@@ -63,6 +63,8 @@ wall of utilities.
 | `.kit-dot` | A 6px status dot. `data-state="ok"`, `"warn"`, `"crit"`, `"accent"`. |
 | `.kit-tag` | A small tinted pill. `data-tone="ok"`, `"warn"`, `"crit"`. |
 | `.kit-seg` | A segmented control. Buttons use `aria-pressed`, `aria-selected` or `aria-checked`. `data-case="sentence"` for non-mono labels. |
+| `.kit-kbd` | A key or chord as the OS prints it (`⌘K`, `Ctrl+Shift+E`): one chip per chord. `data-size="sm"` inside a line of text, such as the Quick slots panel. |
+| `.kit-keys` | A chord as separate keycaps, one `<kbd>` per key, for a page about keys (Settings › Keyboard). `data-size="lg"` for a hero. |
 | `.kit-legend` | A chart legend item: swatch `<i>`, label, value `<b>`. |
 | `.kit-icon-btn` | A borderless square icon button. |
 | `.kit-find-bar` | On a `.kit-card`: the floating ⌘F bar, one 36px row with 24px icon buttons (`shared/FindBar.tsx`). |

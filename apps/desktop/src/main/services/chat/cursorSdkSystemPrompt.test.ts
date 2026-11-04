@@ -49,7 +49,9 @@ describe("buildCursorSdkSystemPrompt", () => {
     const out = buildCursorSdkSystemPrompt({ runtime: "local" });
 
     expect(out.text).toContain("prefer Cursor's native task tool");
-    expect(out.text).toContain("independent durable transcript");
+    expect(out.text).toContain("`ade new chat --mode chat --provider <p> --model <m>");
+    // The routing contract must survive the prompt's 3 KB cut whole.
+    expect(out.sections.find((section) => section.name === "subagent-routing")?.truncated).toBe(false);
   });
 
   it("places subagent routing after the control-protocol section", () => {

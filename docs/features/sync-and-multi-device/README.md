@@ -1211,6 +1211,15 @@ Runtime support files outside `services/sync/`:
   successful encrypted write. Mutations capture the signed-in owner and cache
   generation, so a sign-out or account switch drops a delayed write instead of
   resurrecting another account's credential.
+- `apps/desktop/src/main/services/account/accountVaultRead.ts`,
+  `rotatingCredentialOwner.ts`, `credentialRenewalLock.ts` and
+  `integrationCredentialStorage.ts` — the parts the integration credential
+  syncs share. `readAccountVaultItem` finds one vault item and decodes it; each
+  sync (`github/githubPatAccountSync.ts`, `cto/linearAccountSync.ts`,
+  `jira/jiraCredentialService.ts`) then compares it with its own machine copy.
+  `credentialRenewalLock.ts` lets one process on a computer renew a rotating
+  credential at a time: an exclusive-create lock file with a heartbeat, which
+  its holder removes only while the file still names it.
 - `apps/push-relay/src/accountVault.ts` and
   `apps/push-relay/migrations/0009_account_vault.sql` — the authenticated
   account-vault Worker routes and per-item D1 table. Values are encrypted before

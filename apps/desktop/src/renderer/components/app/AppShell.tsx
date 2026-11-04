@@ -5,6 +5,7 @@ import { IssueSheetHost } from "../issues/IssueSheetHost";
 import { IssueCreateHost } from "../issues/IssueCreateHost";
 import { IssueLaunchHost } from "./IssueLaunchHost";
 import { CommandPalette, type CommandPaletteIntent } from "./CommandPalette";
+import { QuickSlotsHost } from "../../quickSlots/QuickSlotsHost";
 import { IntegrationBanners } from "./IntegrationBanners";
 import { isCssZoomedBrowserSurface } from "../../lib/webClientMode";
 import { TopBar } from "./TopBar";
@@ -1155,6 +1156,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
       <ActivityPane open={activityPaneOpen} onClose={() => setActivityPaneOpen(false)} />
 
+      <QuickSlotsHost />
       <CommandPalette
         open={commandOpen}
         intent={commandIntent}

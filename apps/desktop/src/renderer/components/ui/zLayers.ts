@@ -47,6 +47,12 @@ export const Z_LAYERS = {
   /** The command palette's backdrop; it shares the sheets' level. */
   commandPalette: 120,
   /**
+   * The Quick slots HUD. Above the sheets and the palette so the nine cells are
+   * readable over Work chrome, below every dialog: a confirm raised by a slot
+   * must cover it.
+   */
+  quickSlots: 130,
+  /**
    * A full-viewport app surface (the Mac Desktop fullscreen view). Below
    * dialogs and toasts so a confirm or picker raised from inside it works.
    */

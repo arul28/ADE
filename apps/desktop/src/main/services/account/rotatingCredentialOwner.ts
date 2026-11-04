@@ -135,8 +135,10 @@ async function readItem(vault: RotatingCredentialVault, ref: RotatingCredentialR
  *
  * `currentValue` is what a claim re-publishes: the vault needs a value to carry
  * the new owner, and it must be the value the vault already holds.
- * `shared: false` on a "renew" verdict means the vault holds no such item, so
- * the grant only exists here.
+ * `shared: false` on a "renew" verdict means this machine cannot coordinate
+ * with the others: no vault, no sync identity, a vault that did not answer, or
+ * no such item. A caller that already knows the grant is shared still
+ * publishes what it renews, so the other machines do not keep a spent token.
  */
 export async function decideRotatingRenewal(args: {
   vault: RotatingCredentialVault | null | undefined;

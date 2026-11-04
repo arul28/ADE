@@ -7,11 +7,12 @@ description: Use this skill when creating, inspecting, syncing, committing, push
 
 ## Lanes
 
-Lanes are ADE-managed git worktrees and branches.
+Lanes are ADE-managed git worktrees and branches. Work in your current lane.
+Create a lane only when the user asks for one. When they do:
 
 | Situation | Command |
 |---|---|
-| New work off the project default (usually what you want) | `ade lanes create --name <n>` |
+| New work off the project default | `ade lanes create --name <n>` |
 | Continue work that is in another lane / branch | `ade lanes create --name <n> --from <branch> --on local` |
 | ...and bring its uncommitted changes too (copied) | `ade lanes create --name <n> --from <branch> --on uncommitted` |
 | Work directly on an existing branch | `ade lanes create --name <n> --existing-branch <branch>` |
@@ -68,7 +69,10 @@ the main checkout's packages. Remove the link itself with `rm node_modules`.
 
 ## ADE-aware Git
 
-Use ADE git commands when the operation should update ADE operation state and refresh lane status:
+Use plain `git` for local work (status, diff, add, commit). Use `ade git` for
+anything that talks to the remote (push, pull, fetch, sync), because it signs
+in with ADE's GitHub credential when git cannot (below). The `ade git` forms
+of the local commands also exist and refresh the lane's status in ADE:
 
 ```bash
 ade git status --lane <lane> --text

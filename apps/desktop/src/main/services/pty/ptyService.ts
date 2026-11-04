@@ -232,6 +232,7 @@ export function materializeRuntimeCliLaunch(
   options: {
     sessionActivityReportingEnabled?: boolean;
     userMcp?: TrackedCliUserMcp | null;
+    spawnLineage?: PtyCreateArgs["spawnLineage"];
   } = {},
 ): TrackedCliLaunchCommand {
   const provider = String(runtimeCliLaunch.provider);
@@ -264,6 +265,7 @@ export function materializeRuntimeCliLaunch(
       : {}),
     sessionActivityReportingEnabled: options.sessionActivityReportingEnabled,
     ...(options.userMcp ? { userMcp: options.userMcp } : {}),
+    ...(options.spawnLineage ? { spawnLineage: options.spawnLineage } : {}),
   });
 }
 
@@ -6473,6 +6475,7 @@ export function createPtyService({
             sessionActivityReportingEnabled:
               sessionActivityReportingEnabled !== false && Boolean(runtimeSocketPath?.trim()),
             userMcp: runtimeUserMcp,
+            spawnLineage: args.spawnLineage,
           })
         : null;
       let effectiveArgs: PtyCreateArgs = materializedRuntimeLaunch

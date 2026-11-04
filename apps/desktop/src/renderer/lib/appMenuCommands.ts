@@ -1,6 +1,7 @@
 import type { AppMenuCommand } from "../../shared/types/core";
 import { createCommandClaims } from "./appCommandClaims";
 import { eventMatchesBinding } from "./keybindings";
+import { keyCaptureActive } from "./keyboardClaims";
 
 /**
  * Who gets ⌘/Ctrl F and ⌘/Ctrl W.
@@ -27,7 +28,7 @@ export const resetAppMenuCommandsForTests = menuClaims.resetForTests;
  */
 export function installFindKeyBridge(): () => void {
   const onKeyDown = (event: KeyboardEvent) => {
-    if (event.defaultPrevented || !event.isTrusted) return;
+    if (event.defaultPrevented || !event.isTrusted || keyCaptureActive()) return;
     if (!eventMatchesBinding(event, "Mod+F")) return;
     if (!menuClaims.consume("find")) return;
     event.preventDefault();

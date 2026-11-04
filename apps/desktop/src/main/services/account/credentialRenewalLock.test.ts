@@ -52,8 +52,8 @@ describe("withCredentialRenewalLock", () => {
     const laterHolder = { pid: 4242, nonce: "later-holder" };
 
     const result = await withCredentialRenewalLock(dir, "renew.lock", async () => {
-      // Another process took the lock over while this renewal ran.
-      fs.unlinkSync(lockPath);
+      // Another process took the lock over while this renewal ran. (Written in
+      // place: Windows refuses a new file over a deleted one that is still open.)
       fs.writeFileSync(lockPath, JSON.stringify(laterHolder));
       return "renewed";
     });
