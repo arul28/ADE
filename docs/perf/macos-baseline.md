@@ -2396,3 +2396,25 @@ Android live now costs about the same as Apple's flat view, and about a
 third of its 3D view. What the 3D view still costs is three.js drawing the
 body each frame (`getParameters`, `getProgram`, the texture upload) and the
 mock encoder.
+
+**Re-measured at `58f16b03b`,** after the Apple and Android panes moved to
+one shared device layer (the stream lease, the reconnect and stop-grace
+hooks, the rail, the loading card, the strips and the picker page). The
+same machine, script and method: one warm-up run, then 3 runs of 20 s after
+a 6 s settle. The load average was 3.5–9 (other agents). Each cell is the
+median, then the range of the 3 runs.
+
+| Metric | Git, Android never opened | Git, Android opened then closed | Android live (flat) | Apple live, 3D (default) | Apple live, flat | Ceiling |
+|---|---:|---:|---:|---:|---:|---:|
+| Main-thread work | 3.7 (3.5–3.7) ms/s | 3.5 (3.3–3.6) ms/s | 25.9 (24.5–26.3) ms/s | 58.8 (57.6–65.9) ms/s | 25.7 (23.4–27.8) ms/s | 30 ms/s idle (Idle table); none set for a live device |
+| Frames drawn | 2.2 (2.1–2.2)/s | 1.5 (1.5–1.6)/s | 31.4 (31.3–31.8)/s | 32.2 (31.9–32.2)/s | 31.3 (31.2–31.3)/s | not set |
+| Renderer JS heap | 100 MB | 101 MB | 101 MB | 107 MB | 102 MB | 220 MB |
+| Page elements | 722 | 722 | 714 | 748 | 748 | 3k |
+| `androidEmulator` calls | 0 | 0 after closing (the pane unmounts) | `getStreamStatus` every 3 s | — | — | no call after the tool closes |
+| React (`render-hook.js`, 5 s) | — | — | — | 1.0 commits/s, 22 component renders/s | 1.2 commits/s, 22 component renders/s | no pane re-render per frame |
+
+No row is worse than its earlier number. Git and Android live are 10–20%
+lower than on 2026-11-03, and Apple flat is in the same range as after
+`734bf16ba`. The Apple 3D view dropped from 79.7–85.1 to 57.6–65.9 ms/s.
+No change in the move targets the 3D draw, so treat that drop as run-to-run
+spread until a later run confirms it.
