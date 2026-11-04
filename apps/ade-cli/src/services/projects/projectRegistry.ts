@@ -24,6 +24,7 @@ import {
   type ChangedProjectId,
   type DroppedProjectRecord,
 } from "./projectRegistryJournal";
+import { assertDevTestMachineMayOpenProject } from "../sync/devTestMachine";
 
 export type ProjectId = string;
 
@@ -259,6 +260,7 @@ export class ProjectRegistry {
         "Refusing to register the user home directory or filesystem root as an ADE project. Choose a project folder.",
       );
     }
+    assertDevTestMachineMayOpenProject(normalized, this.layout.adeDir);
     let stat: fs.Stats;
     try {
       stat = fs.statSync(normalized);

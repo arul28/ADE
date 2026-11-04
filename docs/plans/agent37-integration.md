@@ -206,10 +206,11 @@ does nothing, so a renamed laptop is never mistaken for a copy.
 
 ## 9. Still to test
 
-1. Live simulator video from a cloud chat. The desktop side runs from the
-   lane with `npm run dev:desktop`; the simulator's host must be a brain
-   running this branch that other machines can reach. A dev brain runs
-   `--no-sync`, so this needs a branch brain on another machine.
+1. Live simulator video in a desktop pane from a remote chat. Testable now
+   without a merge: `npm run dev:machine` runs this branch's brain as its own
+   machine on the Mac (verified 2026-11-04: `ade apple start/screenshot
+   --machine "<Mac> (dev)"` booted a simulator through it and filed the proof
+   in the calling chat), and a dev desktop connects to it.
 2. Relay reconnect after a long sleep (minutes to hours).
 3. Wallet empty / suspended behaviour.
 4. EU and India regions over the relay.

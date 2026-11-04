@@ -372,6 +372,7 @@ import { PROJECT_SECRET_REQUEST_DEFAULT_TIMEOUT_MS } from "../../desktop/src/mai
 import { INTEGRATION_CONNECT_DEFAULT_TIMEOUT_MS } from "../../desktop/src/main/services/integrations/integrationConnectRequest";
 import { MCP_SERVER_REQUEST_DEFAULT_TIMEOUT_MS } from "../../desktop/src/main/services/mcp/mcpServerRequest";
 import { CONNECT_PROVIDER_IDS, connectProviderSpec, isConnectProviderId } from "../../desktop/src/shared/integrationConnect";
+import { MCP_CATALOGUE } from "../../desktop/src/shared/mcpCatalogue";
 import { browseProjectDirectories } from "../../desktop/src/main/services/projects/projectBrowserService";
 import { createProjectScaffoldService } from "../../desktop/src/main/services/projects/projectScaffoldService";
 import { resolveRepoRoot } from "../../desktop/src/main/services/projects/projectService";
@@ -2141,6 +2142,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     --socket <path>         Local RPC endpoint to listen on.
     --port <n>              Also listen for local TCP JSON-RPC on 127.0.0.1:n.
     --no-sync               Disable machine sync discovery for this foreground brain process.
+    --dev-test-machine      Dev only: run as its own machine on the account, beside the
+                            installed ADE (own home required). Use npm run dev:machine.
     --install-service       Register the per-user login service and exit.
     --uninstall-service     Remove the per-user login service and exit.
     --service-status        Print per-user login service status and exit.
@@ -4214,6 +4217,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
 
     $ ade integrations connect linear --reason "To read and update the issues you mentioned"
       --timeout 30m (default, 2h at most). Returns at once if it is already connected.
+      GitHub counts as connected only with a token that can push and open PRs;
+      ADE's GitHub app alone only reads.
       Prints {provider, connected: true, method, account} | {provider, connected: false, declined: true}
 
   When to ask: if the person named the integration ("use Linear"), raise the
@@ -4235,7 +4240,11 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   the person approves it, in every permission mode, and types any values.
   ADE saves the server to their account, on all their machines:
 
-    $ ade mcp servers add github --import --reason "To read your PRs"
+    $ ade mcp servers add notion --reason "To read the spec page"
+      A server in ADE's catalogue: the vendor's own address, checked by ADE. Names:
+      ${MCP_CATALOGUE.filter((entry) => !entry.native).map((entry) => entry.id).join(", ")}.
+      github, linear and atlassian open ADE's own connect card instead (one connection for ADE and agents).
+    $ ade mcp servers add sentry --import --reason "To read the crash"
       A server another tool here already has (see the list); its values are copied.
     $ ade mcp servers add github --reason "To read your PRs" --env GITHUB_PERSONAL_ACCESS_TOKEN -- npx -y @modelcontextprotocol/server-github
       A local server: the command line after --. --env NAME for each value it reads.
@@ -4243,6 +4252,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
       A remote server.
       --timeout 30m (default, 2h at most). Returns at once if ADE already has that name, URL, or command line.
       Prints {name, added: true, missing, next} | {name, already: true, existing, next} | {name, declined: true}
+        | {name, integration, connected, next} (github, linear, atlassian)
 
   When to ask: if the person named the server ("add the GitHub MCP"), raise
   the card at once. If it was your own idea, ask in words first and raise the
@@ -19830,7 +19840,9 @@ function buildMcpServersPlan(args: string[]): CliPlan {
       steps: [actionStep("result", "mcp_registry", "request", {
         name,
         reason: reason.trim(),
-        source: describes ? "agent" : "imported",
+        // A bare name: ADE's catalogue entry when there is one, else another
+        // tool's server. The host decides; --import forces the other tool's.
+        ...(describes ? { source: "agent" } : imported ? { source: "imported" } : {}),
         ...(command ? { command, args: commandArgs } : {}),
         ...(url?.trim() ? { url: url.trim(), transport: sse ? "sse" : (transport?.trim() || "http") } : {}),
         ...(envNames.length ? { envNames } : {}),
@@ -27273,6 +27285,25 @@ async function runServe(
     roleCeilingNote,
   ].filter((note): note is string => note !== null);
   for (const note of brainIdentityNotes) process.stderr.write(`ADE: ${note}\n`);
+  // A dev test machine (`npm run dev:machine`): this checkout's brain as its
+  // own machine on the account, beside the installed one. Set before anything
+  // reads the home, the sync lease or Tailscale; see devTestMachine.ts.
+  if (readFlag(args, ["--dev-test-machine"])) {
+    const [{ DEV_TEST_MACHINE_ENV, markDevTestMachineHome }, { isSyncCapableAdeHome }] = await Promise.all([
+      import("./services/sync/devTestMachine"),
+      import("./services/projects/machineLayout"),
+    ]);
+    const adeDir = resolveMachineAdeLayout().adeDir;
+    if (!isSyncCapableAdeHome(adeDir, { ...process.env, [DEV_TEST_MACHINE_ENV]: "1" })) {
+      throw new CliUsageError(
+        `A dev test machine needs its own ADE home; ${adeDir} belongs to an installed ADE. Start it with npm run dev:machine.`,
+      );
+    }
+    markDevTestMachineHome(adeDir);
+    process.env[DEV_TEST_MACHINE_ENV] = "1";
+    process.env.ADE_TAILSCALE_SERVE = "0";
+    process.env.ADE_SYNC_HOST_LOCK_PATH ||= path.join(adeDir, "sync-host-lock.json");
+  }
   // Before anything reads this machine's identity: a home copied onto another
   // box (a cloud fork) must come up as a new machine, not as this one.
   if (!embedded) {
@@ -35013,6 +35044,7 @@ function formatMcpServers(value: unknown): string {
     return `${next}${missing}`;
   }
   if (record.already === true) return typeof record.next === "string" ? record.next : `${cell(record.name)} is already in ADE.`;
+  if (typeof record.integration === "string" && typeof record.next === "string") return record.next;
   if (record.declined === true) return `The user declined to add the MCP server ${cell(record.name)}.`;
   return JSON.stringify(value, null, 2);
 }

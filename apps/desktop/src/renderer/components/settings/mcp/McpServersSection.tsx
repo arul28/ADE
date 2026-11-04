@@ -160,7 +160,7 @@ export function McpServersSection() {
   }, [registry, run]);
 
   return (
-    <SettingsColumn wide>
+    <>
       <ModernPage>
         {registry.phase === "unavailable" ? (
           <Banner
@@ -298,7 +298,7 @@ export function McpServersSection() {
           }}
         />
       ) : null}
-    </SettingsColumn>
+    </>
   );
 }
 

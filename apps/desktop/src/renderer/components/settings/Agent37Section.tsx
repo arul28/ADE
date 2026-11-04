@@ -25,7 +25,7 @@ function errorText(error: unknown, fallback: string): string {
 }
 
 /**
- * Settings › Integrations › Agent37. Account-wide: the workspace key is kept in
+ * Settings › Connections › Agent37. Account-wide: the workspace key is kept in
  * the account vault, so this page asks this desktop's own main process with no
  * pin, and what it shows is true on every computer on the account.
  */

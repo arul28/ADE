@@ -150,7 +150,7 @@ export async function readAgent37Key(
 /** A client for the saved key; throws a plain sentence when there is none. */
 export async function requireAgent37Client(deps: Agent37CredentialDeps): Promise<Agent37Client> {
   const saved = await readAgent37Key(deps);
-  if (!saved) throw new Error("Connect Agent37 first: Settings › Integrations › Agent37.");
+  if (!saved) throw new Error("Connect Agent37 first: Settings › Connections › Agent37.");
   return createAgent37Client({ apiKey: saved.key, fetch: deps.fetch });
 }
 

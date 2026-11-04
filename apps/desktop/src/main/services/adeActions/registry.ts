@@ -3967,8 +3967,8 @@ function agent37MachineStore(): EncryptedFileCredentialStore {
  * chat to connect one, and saves what they give into the integration here, on
  * the machine that runs the chat.
  */
-function buildIntegrationConnectDomainService(runtime: AdeRuntime): OpaqueService {
-  const adapters = () => buildIntegrationConnectAdapters({
+function integrationConnectAdapters(runtime: AdeRuntime) {
+  return buildIntegrationConnectAdapters({
     githubService: runtime.githubService ?? null,
     linearCredentialService: runtime.linearCredentialService ?? null,
     linearStatus: runtime.linearCredentialService ? () => buildRuntimeLinearConnectionStatus(runtime) : null,
@@ -3979,6 +3979,10 @@ function buildIntegrationConnectDomainService(runtime: AdeRuntime): OpaqueServic
       signedIn: () => runtime.accountAuthService?.getStatus().signedIn === true,
     }),
   });
+}
+
+function buildIntegrationConnectDomainService(runtime: AdeRuntime): OpaqueService {
+  const adapters = () => integrationConnectAdapters(runtime);
   const agentChatService = runtime.agentChatService;
   return {
     status: () => listIntegrationConnections({ adapters: adapters() }),
@@ -4032,6 +4036,10 @@ function buildMcpRegistryDomainService(runtime: AdeRuntime): OpaqueService {
           request: (args?: unknown) => requestMcpServer({
             ...mcpRegistryDeps(runtime),
             requestChatInput: (input) => agentChatService.requestChatInput(input),
+            connectIntegration: (connectArgs) => requestIntegrationConnect({
+              requestChatInput: (input) => agentChatService.requestChatInput(input),
+              adapters: integrationConnectAdapters(runtime),
+            }, connectArgs),
           }, args),
           chatStatus: (args?: { chatSessionId?: unknown; sessionId?: unknown }) => {
             const raw = args?.chatSessionId ?? args?.sessionId;

@@ -31,7 +31,9 @@ export const SETTINGS_TAB_IDS = [
   "stats",
   "chat",
   "agents",
-  "mcp",
+  // GitHub, Linear, Jira and the MCP servers, on one page. It replaced the
+  // Integrations and MCP servers tabs; both ids alias here.
+  "connections",
   "ade-mcp",
   "notifications",
   "appearance",
@@ -46,7 +48,6 @@ export const SETTINGS_TAB_IDS = [
   "storage",
   "location",
   "secrets",
-  "integrations",
   // Every machine on one page; a machine opens the sections that work for it.
   "machines",
   // The background service, the ade command, reports and reset.
@@ -130,7 +131,7 @@ export function isMachineSettingsTab(tab: SettingsTabId): boolean {
  * The open project's pages. They always act on the machine that owns the
  * project (the tab's binding), never on a picked machine.
  */
-export const PROJECT_SETTINGS_TAB_IDS: readonly SettingsTabId[] = ["lanes-git", "project-agents", "storage", "location", "secrets", "integrations"];
+export const PROJECT_SETTINGS_TAB_IDS: readonly SettingsTabId[] = ["lanes-git", "project-agents", "storage", "location", "secrets", "connections"];
 
 export function isProjectSettingsTab(tab: SettingsTabId): boolean {
   return PROJECT_SETTINGS_TAB_IDS.includes(tab);
@@ -177,9 +178,10 @@ export const SETTINGS_TABS: readonly SettingsTab[] = [
   // No description. The page is a list of named providers with their status,
   // under one picker for the machine they run on.
   { id: "agents", label: "Providers", group: "app" },
-  // The list follows the account. The page also shows what this computer and
-  // this project do with it, because that is where a server is switched off.
-  { id: "mcp", label: "MCP servers", description: "Tools you add once. Every ADE agent gets them, on every computer.", group: "app" },
+  // GitHub, Linear and Jira (saved for this project or your account) and the
+  // MCP servers (your account), as one grid of what ADE connects to. Each
+  // tile says where it is saved; a tile opens its own page.
+  { id: "connections", label: "Connections", description: "GitHub, Linear, Jira and MCP servers: the services ADE and your agents use.", group: "app" },
   // One MCP server for the account: one URL reaches every computer you
   // include. The id stays `ade-mcp`, so links from when it was a Computer page
   // still land here.
@@ -200,7 +202,6 @@ export const SETTINGS_TABS: readonly SettingsTab[] = [
   { id: "storage", label: "Storage & cleanup", description: "The space this project takes, the archive, and what ADE cleans up.", group: "project" },
   { id: "location", label: "Location", description: "Where this project lives, and anything that needs fixing there.", group: "project" },
   { id: "secrets", label: "Secrets", description: "This project, on every computer.", group: "project" },
-  { id: "integrations", label: "Integrations", description: "GitHub, Linear and Jira for this project.", group: "project" },
 
   // ── System ──────────────────────────────────────────────────────────────
   // No description: the page is the machines themselves.
@@ -309,7 +310,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     id: "mcp.servers",
     label: "MCP servers",
     keywords: ["mcp", "model context protocol", "tools", "server", "stdio", "http", "sse", "context7", "registry", "header", "env", "secret", "token"],
-    tab: "mcp",
+    tab: "connections",
     anchor: "mcp-servers",
     scope: "account",
     web: "hidden",
@@ -319,7 +320,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     id: "mcp.found",
     label: "Import MCP servers from this computer",
     keywords: ["mcp", "import", "claude", "codex", "cursor", "opencode", "droid", "found", "config", "mcp.json", "config.toml"],
-    tab: "mcp",
+    tab: "connections",
     anchor: "mcp-found",
     scope: "account",
     web: "hidden",
@@ -1337,7 +1338,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     id: "integrations.github",
     label: "GitHub",
     keywords: ["git", "pr", "pull request", "token", "pat", "app", "auth", "webhook"],
-    tab: "integrations",
+    tab: "connections",
     anchor: "github-connection",
     scope: "machine",
     web: "hidden",
@@ -1347,7 +1348,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     id: "integrations.linear",
     label: "Linear",
     keywords: ["issue", "ticket", "oauth", "sync", "workflow"],
-    tab: "integrations",
+    tab: "connections",
     anchor: "linear-connection",
     scope: "machine",
     web: "hidden",
@@ -1357,7 +1358,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     id: "integrations.jira",
     label: "Jira",
     keywords: ["issue", "ticket", "atlassian", "api token", "jira cloud"],
-    tab: "integrations",
+    tab: "connections",
     anchor: "jira-connection",
     scope: "machine",
     web: "hidden",
@@ -1367,7 +1368,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     id: "integrations.agent37",
     label: "Agent37",
     keywords: ["cloud", "machine", "box", "vm", "linux", "sandbox", "api key", "agent37"],
-    tab: "integrations",
+    tab: "connections",
     anchor: "agent37-connection",
     // One workspace key for the account, kept in the account vault.
     scope: "account",
@@ -1378,7 +1379,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     id: "integrations.jira-projects",
     label: "Jira projects for this project",
     keywords: ["jira", "project", "issue tracker", "binding", "default"],
-    tab: "integrations",
+    tab: "connections",
     anchor: "jira-projects",
     scope: "account-repo",
     web: "hidden",
@@ -1388,7 +1389,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     id: "integrations.jira-top-bar",
     label: "Show Jira in the top bar",
     keywords: ["jira", "issues", "top bar", "header", "hide", "button"],
-    tab: "integrations",
+    tab: "connections",
     anchor: "jira-top-bar",
     scope: "machine",
     web: "hidden",
@@ -1398,7 +1399,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     id: "integrations.linear-top-bar",
     label: "Show Linear in the top bar",
     keywords: ["linear", "issues", "top bar", "header", "hide", "button"],
-    tab: "integrations",
+    tab: "connections",
     anchor: "linear-top-bar",
     scope: "machine",
     web: "hidden",
@@ -1408,7 +1409,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     id: "integrations.github-issues-top-bar",
     label: "Show GitHub issues in the top bar",
     keywords: ["github", "issues", "top bar", "header", "hide", "button", "count"],
-    tab: "integrations",
+    tab: "connections",
     anchor: "github-issues-top-bar",
     scope: "machine",
     web: "hidden",
@@ -1637,12 +1638,16 @@ export const LEGACY_TAB_ALIASES: Readonly<Record<string, SettingsTabId>> = {
   project: "location",
   "project-location": "location",
   context: "advanced",
-  integrations: "integrations",
+  // Integrations and MCP servers became Connections.
+  integrations: "connections",
+  mcp: "connections",
+  "mcp-servers": "connections",
   sync: "account",
   devices: "account",
   "multi-device": "account",
-  github: "integrations",
-  linear: "integrations",
+  github: "connections",
+  linear: "connections",
+  jira: "connections",
   "computer-use": "behaviour",
   behavior: "behaviour",
   onboarding: "general",

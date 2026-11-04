@@ -1409,9 +1409,23 @@ export async function createAdeRuntime(args: {
     const getAccountAccessToken = (
       options?: Parameters<typeof getSignedInAccountAccessToken>[1],
     ) => getSignedInAccountAccessToken(accountAuthService, options);
+    // A dev brain runs with sync off, so it has no account stores and cannot
+    // test anything saved to the account (MCP servers, the vault).
+    // ADE_DEV_ACCOUNT_STORES=1 opens the two stores alone, in a folder of
+    // their own: they sync with the account through the relay but never write
+    // the installed brain's files, and no migration or credential pull runs.
+    const devAccountStoresDir = syncRuntimeOptions?.enabled !== true && process.env.ADE_DEV_ACCOUNT_STORES === "1"
+      ? path.join(accountStoreAdeDir, "dev-account-stores", String(process.pid))
+      : null;
+    if (devAccountStoresDir) {
+      logger.warn("account.dev_account_stores_open", { dir: devAccountStoresDir });
+      // The folder holds a copy of the vault: it goes when the brain stops.
+      teardown.push(() => fs.rmSync(devAccountStoresDir, { recursive: true, force: true }));
+    }
     const accountRuntimeLifecycle = createAccountRuntimeLifecycle({
       enabled: syncRuntimeOptions?.enabled === true,
-      accountStoreAdeDir,
+      storesOnly: devAccountStoresDir != null,
+      accountStoreAdeDir: devAccountStoresDir ?? accountStoreAdeDir,
       pushRelayFilePath,
       syncDeviceIdPath,
       receiptDir: accountStoreAdeDir,
