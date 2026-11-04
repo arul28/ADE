@@ -18,7 +18,7 @@
  */
 
 import type { AccountVaultBridge } from "../account/accountVaultBridge";
-import type { AccountVaultItem } from "../../../shared/types/accountVault";
+import { readAccountVaultItem, safeVault } from "../account/accountVaultRead";
 import { describeVaultFailure, fireAndForgetVaultWrite } from "../account/vaultWrite";
 import { decideRotatingRenewal } from "../account/rotatingCredentialOwner";
 import {
@@ -27,8 +27,8 @@ import {
   type IntegrationCredentialStorage,
 } from "../account/integrationCredentialStorage";
 
-export const LINEAR_ACCOUNT_VAULT_KIND = "integration";
-export const LINEAR_ACCOUNT_VAULT_KEY = "linear";
+const LINEAR_ACCOUNT_VAULT_KIND = "integration";
+const LINEAR_ACCOUNT_VAULT_KEY = "linear";
 /** The account-wide row ADE wrote before connections were per project. */
 const LEGACY_SCOPE = "all";
 const LEGACY_KIND = "linear_refresh_token";
@@ -64,7 +64,7 @@ export type LinearAccountSyncArgs = {
   clearFromAccount: () => void;
 };
 
-export function encodeLinearAccountCredential(record: LinearAccountCredential): string {
+function encodeLinearAccountCredential(record: LinearAccountCredential): string {
   return JSON.stringify({
     v: 1,
     authMode: record.authMode,
@@ -74,7 +74,7 @@ export function encodeLinearAccountCredential(record: LinearAccountCredential): 
   });
 }
 
-export function decodeLinearAccountCredential(raw: string | null | undefined): LinearAccountCredential | null {
+function decodeLinearAccountCredential(raw: string | null | undefined): LinearAccountCredential | null {
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw) as Record<string, unknown>;
@@ -126,43 +126,19 @@ export function createLinearAccountSync(args: LinearAccountSyncArgs) {
   const deviceId = (): string | null => args.getDeviceId?.()?.trim() || null;
   const accountUserId = (): string | null => args.getAccountUserId?.()?.trim() || null;
   const scope = (): string | null => projectCredentialAccountScope(args.projectRoot);
-  const resolveVault = (): AccountVaultBridge | null => {
-    try {
-      return args.getAccountVault?.() ?? null;
-    } catch {
-      return null;
-    }
-  };
-
   const logFailure = (operation: string, detail: unknown): void => {
     args.logger?.warn?.("linear_sync.account_vault_sync_failed", { operation, error: describeVaultFailure(detail) });
   };
+  const resolveVault = (): AccountVaultBridge | null =>
+    safeVault(args.getAccountVault, (error) => logFailure("resolve_vault", error));
 
   /** The vault item and its decoded value for this project, or null when the vault cannot say. */
-  const readRemote = async (
-    vault: AccountVaultBridge,
-    accountScope: string,
-  ): Promise<{ item: AccountVaultItem | null; raw: string | null; record: LinearAccountCredential | null } | null> => {
-    try {
-      const listed = await vault.list(accountScope);
-      if (!listed.ok) {
-        logFailure("list", listed);
-        return null;
-      }
-      const item = listed.value.find((entry) =>
-        entry.scope === accountScope && entry.kind === LINEAR_ACCOUNT_VAULT_KIND && entry.key === LINEAR_ACCOUNT_VAULT_KEY) ?? null;
-      if (!item || item.deleted === true) return { item, raw: null, record: null };
-      const got = await vault.get(accountScope, LINEAR_ACCOUNT_VAULT_KIND, LINEAR_ACCOUNT_VAULT_KEY);
-      if (!got.ok) {
-        logFailure("get", got);
-        return null;
-      }
-      return { item, raw: got.value, record: decodeLinearAccountCredential(got.value) };
-    } catch (error) {
-      logFailure("read", error);
-      return null;
-    }
-  };
+  const readRemote = (vault: AccountVaultBridge, accountScope: string) => readAccountVaultItem(
+    vault,
+    { scope: accountScope, kind: LINEAR_ACCOUNT_VAULT_KIND, key: LINEAR_ACCOUNT_VAULT_KEY },
+    decodeLinearAccountCredential,
+    logFailure,
+  );
 
   /**
    * Put this machine's connection in the vault (or remove it). An OAuth
@@ -251,7 +227,7 @@ export function createLinearAccountSync(args: LinearAccountSyncArgs) {
         }
         return;
       }
-      if (!remote.record) {
+      if (!remote.value) {
         if (remote.item && remote.raw !== null) {
           // An item ADE cannot read is never overwritten: it may be a newer format.
           args.logger?.warn?.("linear_sync.account_vault_unreadable", {});
@@ -265,28 +241,28 @@ export function createLinearAccountSync(args: LinearAccountSyncArgs) {
       }
       if (!local) {
         if (args.hasEnvToken()) return;
-        args.writeFromAccount(remote.record, userId);
-        args.logger?.info?.("linear_sync.account_vault_adopted", { authMode: remote.record.authMode });
+        args.writeFromAccount(remote.value, userId);
+        args.logger?.info?.("linear_sync.account_vault_adopted", { authMode: remote.value.authMode });
         return;
       }
-      if (sameCredential(local, remote.record)) return;
+      if (sameCredential(local, remote.value)) return;
       const me = deviceId();
       const owner = remote.item?.refreshOwner?.trim() || "";
       if (fromAccount) {
-        if (remote.record.authMode === "manual" || local.authMode === "manual" || vaultIsNewerOAuth(local, remote.record)) {
-          args.writeFromAccount(remote.record, userId);
-          args.logger?.info?.("linear_sync.account_vault_adopted", { authMode: remote.record.authMode });
+        if (remote.value.authMode === "manual" || local.authMode === "manual" || vaultIsNewerOAuth(local, remote.value)) {
+          args.writeFromAccount(remote.value, userId);
+          args.logger?.info?.("linear_sync.account_vault_adopted", { authMode: remote.value.authMode });
         }
         return;
       }
       if (me && owner === me && local.authMode === "oauth") {
         // This machine renews this connection; its copy is the newest turn.
-        if (!vaultIsNewerOAuth(local, remote.record)) publish(local);
+        if (!vaultIsNewerOAuth(local, remote.value)) publish(local);
         return;
       }
       args.logger?.warn?.("linear_sync.account_vault_collision", {
         localAuthMode: local.authMode,
-        accountAuthMode: remote.record.authMode,
+        accountAuthMode: remote.value.authMode,
       });
     } catch (error) {
       logFailure("hydrate", error);
@@ -311,23 +287,23 @@ export function createLinearAccountSync(args: LinearAccountSyncArgs) {
     const vault = resolveVault();
     if (!accountScope || !userId || !vault) return { renew: true, publish: false };
     const remote = await readRemote(vault, accountScope);
-    if (!remote || remote.item?.deleted === true || !remote.record || !remote.raw) {
+    if (!remote || remote.item?.deleted === true || !remote.value || !remote.raw) {
       // Nothing shared: renew here; publishing would also start sharing a
       // connection this machine has, which hydrate does on its own schedule.
       return { renew: true, publish: false };
     }
-    if (!isShared(local, remote.record)) return { renew: true, publish: false };
+    if (!isShared(local, remote.value)) return { renew: true, publish: false };
 
-    if (vaultIsNewerOAuth(local, remote.record)) {
+    if (vaultIsNewerOAuth(local, remote.value)) {
       // The owner already renewed; take its turn rather than exchanging an old token.
-      args.writeFromAccount(remote.record, userId);
+      args.writeFromAccount(remote.value, userId);
       return { renew: false, publish: false };
     }
     const verdict = await decideRotatingRenewal({
       vault,
       deviceId: deviceId(),
       ref: { scope: accountScope, kind: LINEAR_ACCOUNT_VAULT_KIND, key: LINEAR_ACCOUNT_VAULT_KEY },
-      expiresAtMs: expiryMs(remote.record),
+      expiresAtMs: expiryMs(remote.value),
       currentValue: remote.raw,
       logger: args.logger,
       logContext: { source: "linear_oauth" },
@@ -335,7 +311,7 @@ export function createLinearAccountSync(args: LinearAccountSyncArgs) {
     if (verdict.renew) return { renew: true, publish: true };
     // The vault may have moved while deciding; pick up the owner's turn.
     const after = await readRemote(vault, accountScope);
-    if (after?.record && vaultIsNewerOAuth(local, after.record)) args.writeFromAccount(after.record, userId);
+    if (after?.value && vaultIsNewerOAuth(local, after.value)) args.writeFromAccount(after.value, userId);
     return { renew: false, publish: false };
   };
 
@@ -351,8 +327,8 @@ export function createLinearAccountSync(args: LinearAccountSyncArgs) {
     const vault = resolveVault();
     if (!accountScope || !userId || !vault) return false;
     const remote = await readRemote(vault, accountScope);
-    if (!remote?.record || !isShared(local, remote.record) || !vaultIsNewerOAuth(local, remote.record)) return false;
-    args.writeFromAccount(remote.record, userId);
+    if (!remote?.value || !isShared(local, remote.value) || !vaultIsNewerOAuth(local, remote.value)) return false;
+    args.writeFromAccount(remote.value, userId);
     return true;
   };
 

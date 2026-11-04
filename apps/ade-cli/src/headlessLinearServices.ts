@@ -2424,11 +2424,13 @@ export function createHeadlessGitHubService(
       if (clean) {
         credentialStore.setSync(tokenKey, clean);
         patAccountSync.markLocal();
+        // A token pasted here follows the account to its other machines.
+        patAccountSync.publish(clean);
       } else {
+        // Read before the local copy goes: the account's copy goes only if it is this token.
+        patAccountSync.unpublish();
         credentialStore.deleteSync(tokenKey);
       }
-      // A token pasted here follows the account to its other machines.
-      patAccountSync.publish(clean || null);
       tokenDecryptionFailed = false;
       // A write that landed re-sealed the store with a key this process holds,
       // so whatever made the previous read unreadable no longer applies. Without
@@ -2444,8 +2446,9 @@ export function createHeadlessGitHubService(
     clearToken() {
       const previousToken = readStoredPatToken();
       tokenOverride = null;
+      // Read before the local copy goes: the account's copy goes only if it is this token.
+      patAccountSync.unpublish();
       credentialStore.deleteSync(tokenKey);
-      patAccountSync.publish(null);
       tokenDecryptionFailed = false;
       // Same reasoning as `setToken`: the delete rewrote the store with a key
       // this process holds, so the previous unreadable verdict is stale.

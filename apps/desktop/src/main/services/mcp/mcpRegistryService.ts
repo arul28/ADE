@@ -53,6 +53,8 @@ import {
   withCredentialRenewalLock,
 } from "../account/credentialRenewalLock";
 import { decideRotatingRenewal, type RotatingCredentialVault } from "../account/rotatingCredentialOwner";
+import { safeVault } from "../account/accountVaultRead";
+import { describeVaultFailure } from "../account/vaultWrite";
 import { scanProviderMcpConfigs, toFoundServers, type ProviderMcpScan } from "./mcpProviderConfigScan";
 import { createMcpOAuthSignIns, probeMcpAuth, refreshMcpOAuthToken, type McpFetch } from "./mcpOAuth";
 
@@ -203,13 +205,9 @@ export function createMcpRegistryAuthTokenResolver(args: {
   fetch?: McpFetch;
 }): (serverUrl: string) => Promise<McpRegistryAuthLookup> {
   const fetchImpl = args.fetch ?? fetch;
-  const resolveVault = (): RotatingCredentialVault | null => {
-    try {
-      return args.getVault?.() ?? null;
-    } catch {
-      return null;
-    }
-  };
+  const resolveVault = (): RotatingCredentialVault | null => safeVault(args.getVault, (error) => {
+    args.logger?.warn("mcp_registry.account_vault_unavailable", { error: describeVaultFailure(error) });
+  });
   return async (serverUrl) => {
     const url = serverUrl.trim();
     if (!url) return { registryConfigured: false };

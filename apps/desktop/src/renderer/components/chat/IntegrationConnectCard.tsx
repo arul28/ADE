@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
-import { ArrowSquareOut, Check, CheckCircle, Copy, Eye, EyeSlash, GearSix, LockKey, Prohibit, SpinnerGap, Warning, X } from "@phosphor-icons/react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ArrowSquareOut, Check, Copy, LockKey, SpinnerGap } from "@phosphor-icons/react";
 import type { PendingInputRequest } from "../../../shared/types";
 import {
   CONNECT_METHOD_QUESTION_ID,
@@ -7,7 +7,6 @@ import {
   connectProviderSpec,
   integrationConnectAnswers,
   isSelfRunConnectMethod,
-  type ConnectField,
   type ConnectMethod,
   type ConnectMethodId,
   type IntegrationConnectRequestCard,
@@ -15,17 +14,12 @@ import {
 import { ownQuestionValue } from "../../../shared/pendingInputAnswers";
 import { cardAskerFamily, providerDisplayName } from "../../../shared/pendingInputLabels";
 import { deviceAuthErrorCopy, deviceAuthMessageCopy } from "../../lib/githubIntegrationStatus";
-import { navigateToAppTarget } from "../../lib/openExternal";
-import { isImeComposing } from "../../lib/imeComposition";
-import { useAppStore } from "../../state/appStore";
+import { navigateToAppTarget, openExternalUrl } from "../../lib/openExternal";
 import { integrationBrand, integrationThemeVars } from "../settings/integrations/integrationBrand";
 import { SolidLogo } from "../settings/providers/ProviderHero";
-import { ProviderLogo } from "../shared/ProviderLogos";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
 import { chatSettingsMachineId } from "./chatDeeplinks";
-import { ChatCard, ChatCardRow, ChatCardTitle } from "./chatCardPrimitives";
-import "../settings/providers/providerPage.css";
-import "./integrationConnectCard.css";
+import { CardBannerButtons, CardError, CardFieldInput, CardHeading, CardReceipt, cardEscapeHandler } from "./composerCardParts";
 
 /**
  * The connect card.
@@ -46,19 +40,13 @@ import "./integrationConnectCard.css";
 const LINEAR_OAUTH_POLL_MS = 1_500;
 const LINEAR_OAUTH_TIMEOUT_MS = 5 * 60_000;
 
-function openUrl(url: string): void {
-  void window.ade?.app?.openExternal?.(url);
-}
-
 /**
  * Whether a browser sign-in can finish where this chat runs. The sign-in
  * comes back to a port on the chat's machine, so it works only when that is
  * the computer in front of the person.
  */
 function useChatRunsHere(): boolean {
-  const pin = useChatRuntimeScope().pin;
-  const tabRemote = useAppStore((state) => state.projectBinding?.kind === "remote");
-  return pin ? pin.kind !== "remote" : !tabRemote;
+  return !useChatRuntimeScope().isRemote;
 }
 
 type OAuthState =
@@ -186,7 +174,7 @@ function useGithubDeviceSignIn(onSignedIn: () => void): {
       try {
         const session = await github.startAppUserDeviceAuth(pin);
         const url = session.verificationUriComplete ?? session.verificationUri;
-        openUrl(url);
+        openExternalUrl(url);
         setState({ phase: "waiting", sessionId: session.sessionId, code: session.userCode, url, intervalMs: Math.max(1, session.intervalSec) * 1000 });
       } catch (startError) {
         setState({ phase: "idle" });
@@ -247,60 +235,6 @@ function useGithubDeviceSignIn(onSignedIn: () => void): {
   return { state, error, start, cancel };
 }
 
-function ConnectFieldInput({
-  field,
-  value,
-  onChange,
-  onSubmit,
-  disabled,
-  autoFocus,
-}: {
-  field: ConnectField;
-  value: string;
-  onChange: (next: string) => void;
-  onSubmit: () => void;
-  disabled: boolean;
-  autoFocus: boolean;
-}) {
-  const [revealed, setRevealed] = useState(false);
-  const secret = field.kind === "secret";
-  return (
-    <span className="ade-icc-input" data-secret={secret ? "true" : undefined}>
-      <input
-        type={secret && !revealed ? "password" : field.kind === "email" ? "email" : "text"}
-        aria-label={field.label}
-        value={value}
-        disabled={disabled}
-        autoFocus={autoFocus}
-        autoComplete={secret ? "new-password" : field.kind === "email" ? "email" : "off"}
-        spellCheck={false}
-        autoCapitalize="off"
-        autoCorrect="off"
-        placeholder={field.placeholder}
-        data-testid={`integration-connect-field-${field.id}`}
-        onChange={(event) => onChange(event.target.value)}
-        onKeyDown={(event) => {
-          if (event.key !== "Enter" || event.shiftKey || isImeComposing(event)) return;
-          event.preventDefault();
-          onSubmit();
-        }}
-      />
-      {secret ? (
-        <button
-          type="button"
-          className="ade-icc-icon-button"
-          disabled={disabled}
-          aria-label={revealed ? "Hide" : "Show"}
-          title={revealed ? "Hide" : "Show"}
-          onClick={() => setRevealed((prev) => !prev)}
-        >
-          {revealed ? <EyeSlash size={13} /> : <Eye size={13} />}
-        </button>
-      ) : null}
-    </span>
-  );
-}
-
 /**
  * The agent-raised card, in the composer's place. Enter connects, Esc says
  * not now.
@@ -333,7 +267,7 @@ export function IntegrationConnectComposer({
   // it is left out there; the key methods stay.
   const methods = useMemo(
     () => spec.methods.filter((method) =>
-      (!card.methods || card.methods.includes(method.id)) && (!method.browser || runsHere)),
+      (!card.methods || card.methods.includes(method.id)) && (method.signIn !== "browser" || runsHere)),
     [card.methods, runsHere, spec.methods],
   );
   const [methodId, setMethodId] = useState<ConnectMethodId>(methods[0]!.id);
@@ -355,11 +289,11 @@ export function IntegrationConnectComposer({
 
   const connect = useCallback(() => {
     if (!canConnect) return;
-    if (method.browser) {
+    if (method.signIn === "browser") {
       oauth.start();
       return;
     }
-    if (method.device) {
+    if (method.signIn === "device") {
       device.start();
       return;
     }
@@ -373,19 +307,24 @@ export function IntegrationConnectComposer({
     device.cancel();
   }, [device, oauth]);
 
+  // A sign-in the host then refused ("still not connected") ends here: the
+  // card is usable again, with the host's reason under it.
+  const { cancel: cancelOAuth } = oauth;
+  const { cancel: cancelDevice } = device;
+  const wasResponding = useRef(responding);
+  useEffect(() => {
+    if (wasResponding.current && !responding) {
+      cancelOAuth();
+      cancelDevice();
+    }
+    wasResponding.current = responding;
+  }, [cancelDevice, cancelOAuth, responding]);
+
   const openSettings = useCallback(() => {
     navigateToAppTarget({ kind: "settings", entryId: spec.settingsSection, machineId: chatSettingsMachineId(scope) });
   }, [scope, spec.settingsSection]);
 
-  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (isImeComposing(event)) return;
-    if (event.key === "Escape") {
-      event.preventDefault();
-      event.stopPropagation();
-      if (signingIn) cancelSignIn();
-      else if (!responding) onDecline();
-    }
-  };
+  const onKeyDown = cardEscapeHandler({ signingIn, cancelSignIn, responding, onDecline });
 
   const [codeCopied, setCodeCopied] = useState(false);
   const copyCode = useCallback((code: string) => {
@@ -414,39 +353,13 @@ export function IntegrationConnectComposer({
         <img className="ade-icc-banner-art" src={brand.art} alt="" draggable={false} />
         <div className="ade-icc-banner-shade" aria-hidden />
         <span className="ade-icc-logo"><SolidLogo spec={{ ...brand.logo, size: 25 }} straight /></span>
-        <span className="ade-icc-heading">
-          <span className="ade-icc-asker" title={asker}><ProviderLogo family={askerFamily} size={11} /></span>
-          <span className="ade-icc-heading-text">
-            <span className="ade-icc-heading-dim">{asker} asks to connect </span>
-            <span className="ade-icc-title">{spec.label}</span>
-          </span>
-        </span>
+        <CardHeading askerFamily={askerFamily} asker={asker} verb="asks to connect" title={spec.label} />
         <span className="ade-icc-banner-tools">
           {card.current ? <span className="ade-icc-chip" data-testid="integration-connect-current">{card.current}</span> : null}
           {card.savedNote ? (
             <span className="ade-icc-chip" data-tone="warn" title={card.savedNote}>This computer only</span>
           ) : null}
-          <button
-            type="button"
-            className="ade-icc-close"
-            title="Open in Settings"
-            aria-label="Open in Settings"
-            data-testid="integration-connect-settings"
-            onClick={openSettings}
-          >
-            <GearSix size={13} weight="bold" />
-          </button>
-          <button
-            type="button"
-            className="ade-icc-close"
-            disabled={responding}
-            title="Not now (Esc)"
-            aria-label="Not now"
-            data-testid="integration-connect-decline"
-            onClick={onDecline}
-          >
-            <X size={13} weight="bold" />
-          </button>
+          <CardBannerButtons onOpenSettings={openSettings} onDecline={onDecline} responding={responding} testIdPrefix="integration-connect" />
         </span>
       </div>
 
@@ -486,7 +399,7 @@ export function IntegrationConnectComposer({
                   {waitingCode.code}
                   {codeCopied ? <Check size={12} weight="bold" /> : <Copy size={12} />}
                 </button>
-                <button type="button" className="ade-icc-link" onClick={() => openUrl(waitingCode.url)}>
+                <button type="button" className="ade-icc-link" onClick={() => openExternalUrl(waitingCode.url)}>
                   Enter it on GitHub
                   <ArrowSquareOut size={10} weight="bold" />
                 </button>
@@ -500,7 +413,7 @@ export function IntegrationConnectComposer({
                   className="ade-icc-primary ade-icc-primary-brand"
                   disabled={!canConnect}
                   autoFocus
-                  data-testid={method.browser ? "integration-connect-oauth" : "integration-connect-device"}
+                  data-testid={method.signIn === "browser" ? "integration-connect-oauth" : "integration-connect-device"}
                   onClick={connect}
                 >
                   {busy ? (
@@ -523,19 +436,22 @@ export function IntegrationConnectComposer({
             <>
               <span className="ade-icc-fields" title={savedTitle}>
                 {method.fields.map((field, index) => (
-                  <ConnectFieldInput
+                  <CardFieldInput
                     key={field.id}
-                    field={field}
+                    kind={field.kind}
+                    label={field.label}
+                    placeholder={field.placeholder}
                     value={values[field.id] ?? ""}
                     onChange={(next) => setValues((prev) => ({ ...prev, [field.id]: next }))}
                     onSubmit={connect}
                     disabled={busy}
                     autoFocus={index === 0}
+                    testId={`integration-connect-field-${field.id}`}
                   />
                 ))}
               </span>
               {method.help ? (
-                <button type="button" className="ade-icc-link" onClick={() => openUrl(method.help!.url)}>
+                <button type="button" className="ade-icc-link" onClick={() => openExternalUrl(method.help?.url)}>
                   {method.help.label}
                   <ArrowSquareOut size={10} weight="bold" />
                 </button>
@@ -555,12 +471,7 @@ export function IntegrationConnectComposer({
           )}
         </div>
 
-        {shownError ? (
-          <div className="ade-icc-error" role="alert" data-testid="integration-connect-error">
-            <Warning size={13} weight="fill" />
-            <span>{shownError}</span>
-          </div>
-        ) : null}
+        {shownError ? <CardError id="integration-connect-error" message={shownError} /> : null}
       </div>
     </div>
   );
@@ -595,18 +506,7 @@ export function IntegrationConnectReceipt({
     </span>
   );
   if (resolution === null) {
-    return (
-      <ChatCard skin="line" data-testid="integration-connect-receipt-open">
-        <ChatCardRow tone="running" meta="awaiting you">
-          <ChatCardTitle>
-            <span className="inline-flex items-center gap-1.5 align-middle">
-              {logo}
-              <span><span className="font-normal text-fg/55">Connect </span>{spec.label}</span>
-            </span>
-          </ChatCardTitle>
-        </ChatCardRow>
-      </ChatCard>
-    );
+    return <CardReceipt testId="integration-connect-receipt-open" logo={logo} state="open" before="Connect " name={spec.label} />;
   }
   const raw = ownQuestionValue(answers, CONNECT_METHOD_QUESTION_ID);
   const methodAnswer = Array.isArray(raw) ? raw[0] : raw;
@@ -616,16 +516,6 @@ export function IntegrationConnectReceipt({
     ? `connected${method ? ` ${METHOD_RECEIPT[method.id]}` : ""} · never shown to the agent`
     : resolution === "declined" ? "· not now" : "· closed before it was answered";
   return (
-    <ChatCard skin="line" data-testid="integration-connect-receipt">
-      <ChatCardRow tone={accepted ? "ok" : "idle"} icon={accepted ? CheckCircle : Prohibit}>
-        <ChatCardTitle>
-          <span className="inline-flex items-center gap-1.5 align-middle">
-            {logo}
-            <span>{spec.label}<span className="font-normal text-fg/55"> {text}</span></span>
-          </span>
-        </ChatCardTitle>
-      </ChatCardRow>
-    </ChatCard>
+    <CardReceipt testId="integration-connect-receipt" logo={logo} state={accepted ? "done" : "not-done"} name={spec.label} after={text} />
   );
 }
-

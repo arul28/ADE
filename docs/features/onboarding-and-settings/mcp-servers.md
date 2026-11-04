@@ -5,7 +5,7 @@ every ADE agent gets it, on every computer they sign in on. Each provider CLI
 keeps its own MCP list, so without this a server added to Claude never reaches
 Codex and a second computer starts with none.
 
-The page is one of the pages of **Connections** (under **App** in the settings
+The page is one of the pages of **Integrations** (under **App** in the settings
 sidebar), next to GitHub, Linear and Jira. It is desktop only: the
 hosted web client hides it (`web: "hidden"` in `settingsManifest.ts`), because
 a browser has no account-settings or vault bridge and the page's checks read
@@ -43,7 +43,9 @@ Where the catalogue is used:
   entry's header wants it, and runs the browser sign-in before it adds an
   `oauth` server.
 - Settings › Integrations: the grid under **MCP servers**, after the
-  **Add any MCP server** button and a last **Not listed?** tile.
+  **Add any MCP server** button and a last **Not listed?** tile. A tile's
+  dialog works the same way as the card: an `oauth` server signs in first, and
+  a sign-in that fails or is cancelled adds nothing.
 
 ## The data
 

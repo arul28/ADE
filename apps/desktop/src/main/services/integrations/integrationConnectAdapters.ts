@@ -32,13 +32,17 @@ export type IntegrationConnectServices = {
 
 const VALIDATE_TIMEOUT_MS = 15_000;
 
-async function fetchJson(fetcher: FetchLike, url: string, init: RequestInit): Promise<{ status: number; body: unknown }> {
+async function fetchJson(
+  fetcher: FetchLike,
+  url: string,
+  init: RequestInit,
+): Promise<{ status: number; body: unknown; headers: Headers | null }> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), VALIDATE_TIMEOUT_MS);
   try {
     const response = await fetcher(url, { ...init, signal: controller.signal });
     const body = await response.json().catch(() => null);
-    return { status: response.status, body };
+    return { status: response.status, body, headers: response.headers ?? null };
   } catch (error) {
     if (controller.signal.aborted) throw new Error("The provider did not answer in time. Try again.");
     throw new Error(`Could not reach the provider: ${error instanceof Error ? error.message : String(error)}`);
@@ -105,7 +109,7 @@ function githubAdapter(services: IntegrationConnectServices, fetcher: FetchLike)
     },
     async save(_method, values) {
       const token = values[CONNECT_FIELD_IDS.githubToken] ?? "";
-      const { status, body } = await fetchJson(fetcher, "https://api.github.com/user", {
+      const { status, body, headers } = await fetchJson(fetcher, "https://api.github.com/user", {
         headers: {
           Accept: "application/vnd.github+json",
           Authorization: `Bearer ${token}`,
@@ -116,6 +120,12 @@ function githubAdapter(services: IntegrationConnectServices, fetcher: FetchLike)
       if (status === 401) throw new Error("GitHub did not accept this token. Check that you copied all of it.");
       if (status === 403) throw new Error("GitHub refused this token. It may be expired or blocked by your organization.");
       if (status < 200 || status >= 300) throw new Error(`GitHub answered with an error (${status}). Try again.`);
+      // A classic token names its scopes; without `repo` or `public_repo` it
+      // reads but cannot push or open PRs. A fine-grained token names none.
+      const scopes = headers?.get("x-oauth-scopes");
+      if (scopes != null && !scopes.split(",").some((scope) => ["repo", "public_repo"].includes(scope.trim()))) {
+        throw new Error("This token can read but cannot push or open PRs. Make a classic token with the repo scope, or a fine-grained one with Contents and Pull requests write access.");
+      }
       github.setToken(token);
       return { account: readString(readRecord(body)?.login) };
     },

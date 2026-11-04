@@ -43,6 +43,7 @@ import {
   MCP_SERVER_DECLINE_VALUE,
   MCP_SERVER_REQUEST_METADATA_KEY,
   MCP_SERVER_REQUEST_REASON_MAX_CHARS,
+  mcpServerRunsLabel,
   mcpServerRunsLine,
   mcpServerSecretQuestionId,
   type McpRegistryListing,
@@ -52,40 +53,28 @@ import {
   type McpServerRequestSource,
 } from "../../../shared/mcpServerRequest";
 import type { AccountVaultItem, AccountVaultWriteOptions } from "../../../shared/types/accountVault";
+import { captureError } from "../../../shared/sentry/capture";
+import {
+  cardTimeoutMs,
+  cardWasDeclined,
+  firstAnswer,
+  joinInFlight,
+  readCardArgs,
+  type CardRequestChatInput,
+} from "../chat/chatCardRequest";
 import type { McpConfigProvider } from "../../../shared/types/mcpRegistry";
 import type { createMcpRegistryService, McpRegistryVault } from "./mcpRegistryService";
 import type { ProviderMcpScan } from "./mcpProviderConfigScan";
 
-/** Long enough to go make a token in another tab, not forever. */
-export const MCP_SERVER_REQUEST_DEFAULT_TIMEOUT_MS = 30 * 60_000;
-export const MCP_SERVER_REQUEST_MAX_TIMEOUT_MS = 2 * 60 * 60_000;
-
 /** What the agent is told once the server is in. */
-export const MCP_SERVER_ADDED_NEXT = "Added. Ask the person to press Refresh chat to load its tools.";
-
-type RequestChatInput = (args: {
-  chatSessionId: string;
-  title: string;
-  body: string;
-  timeoutMs?: number;
-  allowsFreeform?: boolean;
-  providerMetadata?: Record<string, unknown>;
-  eventDescription?: string;
-  questions?: Array<{
-    id?: string;
-    header?: string;
-    question: string;
-    options?: Array<{ label: string; value?: string; description?: string; recommended?: boolean }>;
-    allowsFreeform?: boolean;
-    isSecret?: boolean;
-  }>;
-  beforeAccept?: (answers: Record<string, string[]>) => void | Promise<void>;
-}) => Promise<{ decision: string; answers: Record<string, string[]>; responseText: string | null; timedOut?: boolean }>;
+const MCP_SERVER_ADDED_NEXT = "Added. Ask the person to press Refresh chat to load its tools.";
 
 /** The account settings calls this module makes. A runtime's `accountSettingsStore` satisfies it. */
 export type McpRegistrySettingsStore = {
   get(scope: string, key: string): unknown;
   set(scope: string, key: string, value: unknown): boolean;
+  /** Pull the account's rows into the local cache. */
+  sync?(): Promise<"ready" | "unavailable" | "failed">;
 };
 
 /** The account vault calls this module makes. A runtime's `accountVaultStore` satisfies it. */
@@ -149,14 +138,6 @@ export type McpServerRequestDeps = {
   projectRoot: string | null;
 };
 
-function readArgs(raw: unknown): Record<string, unknown> {
-  return raw && typeof raw === "object" && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
-}
-
-function firstAnswer(answers: Record<string, string[]>, id: string): string {
-  return answers[id]?.[0] ?? "";
-}
-
 /** The registry list and both off lists, as this machine's account store holds them now. */
 function readRegistry(deps: McpServerRequestDeps): {
   servers: McpRegistryServer[];
@@ -186,17 +167,65 @@ function secretIsSet(deps: McpServerRequestDeps, server: string, field: McpSecre
   return typeof value === "string" && value.length > 0;
 }
 
+const REDACTED = "<hidden>";
+/** A flag that names a credential: `--api-key`, `--token`, `--client-secret`, `--password`. */
+const SECRET_FLAG = /^--?[\w-]*(key|token|secret|password|passwd|credential|auth)[\w-]*$/i;
+/** A value shaped like a credential: a known key prefix, a JWT, or a long random run of letters and digits. */
+const SECRET_VALUE = /^(sk-|sk_|pk_|rk_|ghp_|gho_|ghs_|github_pat_|glpat-|xox[abpr]-|AKIA|eyJ)[\w.-]{8,}$|^(?=[\w-]*\d)(?=[\w-]*[A-Za-z])[\w-]{32,}$/;
+
+/**
+ * A server's arguments for an agent to read: values after a credential flag,
+ * or shaped like a key, are hidden. People often put a key on the command
+ * line; the person's own card still shows the whole line before they approve.
+ */
+function argsForAgent(args: readonly string[]): string[] {
+  return args.map((arg, index) => {
+    const eq = arg.indexOf("=");
+    if (arg.startsWith("-") && eq > 0 && SECRET_FLAG.test(arg.slice(0, eq))) return `${arg.slice(0, eq)}=${REDACTED}`;
+    const previous = index > 0 ? args[index - 1]! : "";
+    if (!arg.startsWith("-") && SECRET_FLAG.test(previous) && !previous.includes("=")) return REDACTED;
+    return SECRET_VALUE.test(arg) ? REDACTED : arg;
+  });
+}
+
+/** A server's URL for an agent to read: sign-in parts, query values, and key-shaped path parts hidden. */
+function urlForAgent(raw: string): string {
+  try {
+    const url = new URL(raw);
+    if (url.username || url.password) {
+      url.username = REDACTED;
+      url.password = "";
+    }
+    for (const name of [...new Set(url.searchParams.keys())]) url.searchParams.set(name, REDACTED);
+    url.pathname = url.pathname.split("/").map((part) => (SECRET_VALUE.test(part) ? REDACTED : part)).join("/");
+    return url.toString().replaceAll(encodeURIComponent(REDACTED), REDACTED);
+  } catch {
+    // Not a URL ADE can parse: drop the query and any sign-in part.
+    return raw.split(/[?#]/)[0]!.replace(/\/\/[^/]*@/, `//${REDACTED}@`);
+  }
+}
+
+function serverForAgent<T extends Pick<McpRegistryServer, "transport" | "command" | "args" | "url">>(server: T): T {
+  return {
+    ...server,
+    ...(server.args?.length ? { args: argsForAgent(server.args) } : {}),
+    ...(server.url ? { url: urlForAgent(server.url) } : {}),
+  };
+}
+
 /**
  * `mcp_registry.list`: every registry server with where it is on, and
  * whether each of its values is set here; plus the servers other tools'
- * configs on this machine have that the registry does not. Never a value.
+ * configs on this machine have that the registry does not. Never a value:
+ * env and header values are not read, and a key written into the arguments
+ * or the URL is hidden.
  */
 export function listMcpRegistry(deps: McpServerRequestDeps): McpRegistryListing {
   const { servers, off, live } = readRegistry(deps);
   const scan = deps.scanConfigs(deps.projectRoot);
   const known = new Set(servers.map((server) => server.name));
   return {
-    servers: servers.map((server) => ({
+    servers: servers.map(serverForAgent).map((server) => ({
       name: server.name,
       transport: server.transport,
       ...(server.command ? { command: server.command } : {}),
@@ -214,6 +243,7 @@ export function listMcpRegistry(deps: McpServerRequestDeps): McpRegistryListing 
     })),
     found: scan.servers
       .filter((server) => !known.has(server.name))
+      .map(serverForAgent)
       .map((server) => ({
         name: server.name,
         transport: server.transport,
@@ -364,16 +394,13 @@ const inFlight = new Map<string, Promise<McpServerRequestResult>>();
  * declines, or the wait runs out.
  */
 export async function requestMcpServer(
-  deps: McpServerRequestDeps & { requestChatInput: RequestChatInput; connectIntegration?: ConnectIntegration },
+  deps: McpServerRequestDeps & { requestChatInput: CardRequestChatInput; connectIntegration?: ConnectIntegration },
   rawArgs: unknown,
 ): Promise<McpServerRequestResult> {
-  const args = readArgs(rawArgs);
+  const args = readCardArgs(rawArgs);
   const chatSessionId = typeof args.chatSessionId === "string" ? args.chatSessionId.trim() : "";
   if (!chatSessionId) {
     throw new Error("Adding an MCP server needs a chat to ask in. Run `ade mcp servers add` from inside an ADE chat.");
-  }
-  if (!deps.settings || !deps.vault) {
-    throw new Error("This machine is not signed in to an ADE account, or its sync is off, so it cannot add MCP servers. The person can add one in Settings › Integrations › MCP servers.");
   }
   const name = typeof args.name === "string" ? args.name.trim() : "";
   if (!isValidMcpRegistryName(name)) {
@@ -404,33 +431,25 @@ export async function requestMcpServer(
   // runs instead of adding a second connection as an MCP server.
   const native = (source === "catalog" ? entry : matchMcpCatalogue(proposal.server))?.native;
   if (native) return await connectNative(deps, args, name, native);
+  // The connect card above stores on the device; an MCP server lives in the account.
+  if (!deps.settings || !deps.vault) {
+    throw new Error("This machine is not signed in to an ADE account, or its sync is off, so it cannot add MCP servers. The person can add one in Settings › Integrations › MCP servers.");
+  }
   const match = findSameMcpServer(readRegistry(deps).servers, proposal.server);
   if (match) return already(match, name);
 
-  const key = `${chatSessionId}\u0000${name}`;
-  const pending = inFlight.get(key);
-  if (pending) return await pending;
-  const ask = askToAdd(deps, args, chatSessionId, reason, proposal);
-  inFlight.set(key, ask);
-  try {
-    return await ask;
-  } finally {
-    if (inFlight.get(key) === ask) inFlight.delete(key);
-  }
+  return await joinInFlight(inFlight, `${chatSessionId}\u0000${name}`, () => askToAdd(deps, args, chatSessionId, reason, proposal));
 }
 
 async function askToAdd(
-  deps: McpServerRequestDeps & { requestChatInput: RequestChatInput },
+  deps: McpServerRequestDeps & { requestChatInput: CardRequestChatInput },
   args: Record<string, unknown>,
   chatSessionId: string,
   reason: string,
   proposal: Proposal,
 ): Promise<McpServerRequestResult> {
   const { server } = proposal;
-  const requestedTimeout = typeof args.timeoutMs === "number" && Number.isFinite(args.timeoutMs)
-    ? Math.floor(args.timeoutMs)
-    : MCP_SERVER_REQUEST_DEFAULT_TIMEOUT_MS;
-  const timeoutMs = Math.min(Math.max(requestedTimeout, 10_000), MCP_SERVER_REQUEST_MAX_TIMEOUT_MS);
+  const timeoutMs = cardTimeoutMs(args);
   const runs = mcpServerRunsLine(server);
   const card: McpServerRequestCard = {
     source: proposal.source,
@@ -451,7 +470,7 @@ async function askToAdd(
     {
       id: MCP_SERVER_APPROVE_QUESTION_ID,
       header: server.name,
-      question: `Add the MCP server ${server.name}? Runs: ${runs}`,
+      question: `Add the MCP server ${server.name}? ${mcpServerRunsLabel(server)}: ${runs}`,
       allowsFreeform: false,
       options: [
         { label: "Add server", value: MCP_SERVER_APPROVE_VALUE, description: "Saved to your account, on all your machines.", recommended: true },
@@ -475,6 +494,13 @@ async function askToAdd(
     if (firstAnswer(answers, MCP_SERVER_APPROVE_QUESTION_ID) !== MCP_SERVER_APPROVE_VALUE) {
       outcome = { name: server.name, added: false, declined: true };
       return;
+    }
+    // The local cache can lag behind the account (a runtime that just
+    // started): pull first, so the write keeps servers other machines added.
+    // With no copy of the list at all, a failed pull must not write one.
+    const synced = await deps.settings?.sync?.().catch(() => "failed" as const);
+    if (synced === "failed" && deps.settings?.get(ACCOUNT_SCOPE_ALL, MCP_SERVERS_SETTING_KEY) === undefined) {
+      throw new Error("ADE could not load your MCP servers from your account. Try again in a moment, or add the server in Settings › Integrations › MCP servers.");
     }
     const current = readRegistry(deps);
     if (!current.live || !deps.settings) throw new Error("This machine lost its ADE account connection. Try again, or add the server in Settings › Integrations › MCP servers.");
@@ -510,7 +536,9 @@ async function askToAdd(
       throw new Error("Your ADE account did not take the change. Try again, or add the server in Settings › Integrations › MCP servers.");
     }
     // Values the server does not name. A failure leaves an unused value, not a broken server.
-    await deps.registry.pruneSecrets(saved.name, saved).catch(() => undefined);
+    await deps.registry.pruneSecrets(saved.name, saved).catch((error: unknown) => {
+      captureError(error, { fingerprint: ["mcp_registry", "request_prune_secrets"] });
+    });
     outcome = {
       name: saved.name,
       added: true,
@@ -533,12 +561,13 @@ async function askToAdd(
     questions,
   });
 
+  const settled = outcome as McpServerRequestResult | null;
+  // The save may finish while the card is being closed (a timeout, the turn
+  // ending): a server that went in is added whatever the card says.
+  if (settled && "added" in settled && settled.added) return settled;
   if (response.timedOut) {
     throw new Error(`Nobody answered the request to add ${server.name} in time. Ask again when the person is around.`);
   }
-  const settled = outcome as McpServerRequestResult | null;
-  if (response.decision === "decline" || response.decision === "cancel" || response.decision === "none" || !settled) {
-    return { name: server.name, added: false, declined: true };
-  }
+  if (cardWasDeclined(response) || !settled) return { name: server.name, added: false, declined: true };
   return settled;
 }

@@ -6255,13 +6255,17 @@ async function runTool(args: {
       const { sessionId: requestedSessionAlias, chatSessionId: requestedChatSessionId, ...secretArgs } = rawObjectArgs;
       const requestedSessionId = asOptionalTrimmedString(requestedChatSessionId)
         ?? asOptionalTrimmedString(requestedSessionAlias);
-      if (boundChatSessionId && requestedSessionId && requestedSessionId !== boundChatSessionId && !callerIsCto) {
+      // A role a client states is not proof: only a user client or the CTO
+      // thread itself may put a card in another chat.
+      const mayNameChat = requestedSessionId != null
+        && (isUserClient || (callerIsCto && await callerIsTrustedCto(runtime, session)));
+      if (boundChatSessionId && requestedSessionId && requestedSessionId !== boundChatSessionId && !mayNameChat) {
         throw new JsonRpcError(
           JsonRpcErrorCode.policyDenied,
           `${domain}.request asks in your own chat only.`,
         );
       }
-      const targetChatSessionId = requestedSessionId && (isUserClient || callerIsCto)
+      const targetChatSessionId = requestedSessionId && mayNameChat
         ? requestedSessionId
         : boundChatSessionId;
       if (!targetChatSessionId) {

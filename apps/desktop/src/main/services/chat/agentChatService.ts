@@ -233,7 +233,7 @@ import {
   type CrossMachineMoveLock,
 } from "../../../shared/crossMachineMoveLock";
 import { isUserOnlyConsentCard, USER_ONLY_CONSENT_CARD_REFUSAL } from "../../../shared/types/macDesktop";
-import { CONNECT_METHOD_QUESTION_ID, connectProviderSpec, readIntegrationConnectRequestCard } from "../../../shared/integrationConnect";
+import { CONNECT_METHOD_QUESTION_ID, connectMethod, connectProviderSpec, isSelfRunConnectMethod, readIntegrationConnectRequestCard } from "../../../shared/integrationConnect";
 import { readMcpServerRequestCard } from "../../../shared/mcpServerRequest";
 import { personalHostPathContext, validatePersonalAttachmentRoots } from "./personalHostPaths";
 import { MAX_PERSONAL_CHAT_ATTACHMENT_ROOTS } from "../../../shared/types/personalChats";
@@ -12068,7 +12068,12 @@ export function createAgentChatService(args: {
    * In memory only: a chat with no live runtime gets every server on its next
    * launch anyway. Read by `mcpRegistryChatStatus` (the "Refresh chat" chip).
    */
-  const mcpRegistryLaunchedBySession = new WeakMap<ManagedChatSession, { epoch: number; names: ReadonlySet<string> }>();
+  const mcpRegistryLaunchedBySession = new WeakMap<ManagedChatSession, { epoch: number; targets: ReadonlyMap<string, string> }>();
+
+  /** What a registry server reaches (its URL, or its command line), never its env or header values. */
+  const mcpRegistryTarget = (server: CallerMcpServers[string]): string => JSON.stringify(
+    server.type === "stdio" ? [server.type, server.command, server.args ?? []] : [server.type, server.url],
+  );
 
   /**
    * The servers the user defined once in Settings (the MCP registry), for an
@@ -12093,7 +12098,10 @@ export function createAgentChatService(args: {
     // same epoch (redaction, status lookups) see what it already runs.
     const epoch = runtimeTeardownEpoch(managed);
     if (mcpRegistryLaunchedBySession.get(managed)?.epoch !== epoch) {
-      mcpRegistryLaunchedBySession.set(managed, { epoch, names: new Set(Object.keys(registry.servers ?? {})) });
+      mcpRegistryLaunchedBySession.set(managed, {
+        epoch,
+        targets: new Map(Object.entries(registry.servers ?? {}).map(([name, server]) => [name, mcpRegistryTarget(server)])),
+      });
     }
     const gaps = mcpRegistryLaunchNotices(registry);
     const key = gaps.join("\n");
@@ -12110,7 +12118,8 @@ export function createAgentChatService(args: {
 
   /**
    * Registry servers on for this chat now that its running agent did not
-   * start with, minus the ones the provider's own config already runs. Empty
+   * start with (new, or edited to reach another URL or command), minus the
+   * ones the provider's own config already runs. Empty
    * when the chat has no live agent (its next launch gets everything) or is a
    * chat the registry does not reach. Reads files only; never restarts.
    */
@@ -12128,7 +12137,7 @@ export function createAgentChatService(args: {
     }).servers ?? {};
     const added: CallerMcpServers = {};
     for (const [name, server] of Object.entries(current)) {
-      if (!launched.names.has(name)) added[name] = server;
+      if (launched.targets.get(name) !== mcpRegistryTarget(server)) added[name] = server;
     }
     if (!Object.keys(added).length) return { missing: [] };
     const leftOut = chatUserMcp.registryServersLeftToProvider(chatMcpTarget(managed), added);
@@ -69564,11 +69573,12 @@ export function createAgentChatService(args: {
     const connectCard = readIntegrationConnectRequestCard(request);
     const mcpServerCard = readMcpServerRequestCard(request);
     const connectLabel = connectCard ? connectProviderSpec(connectCard.provider).label : null;
-    // A browser sign-in finished on its own before the answer; a typed key
-    // was never saved, because only the asker's host saves it.
+    // A browser or device sign-in finished on its own before the answer; a
+    // typed key was never saved, because only the asker's host saves it.
     const connectMethodAnswer = answer?.answers?.[CONNECT_METHOD_QUESTION_ID];
-    const connectSignedIn = connectCard != null
-      && (Array.isArray(connectMethodAnswer) ? connectMethodAnswer.includes("oauth") : connectMethodAnswer === "oauth");
+    const connectMethodId = Array.isArray(connectMethodAnswer) ? connectMethodAnswer[0] : connectMethodAnswer;
+    const connectAnswered = connectCard ? connectMethod(connectCard.provider, typeof connectMethodId === "string" ? connectMethodId : null) : null;
+    const connectSignedIn = connectAnswered != null && isSelfRunConnectMethod(connectAnswered);
     settleDeadPendingInput(
       managed,
       itemId,
@@ -69658,8 +69668,10 @@ export function createAgentChatService(args: {
 
     const localPending = managed.localPendingInputs.get(itemId);
     if (localPending) {
+      // A decline from another window while an answer saves would close the
+      // card over a key that is then saved; the save decides first.
+      if (localPending.accepting) throw new Error("This answer is already being saved.");
       if (localPending.beforeAccept && resolvedDecision !== "decline" && resolvedDecision !== "cancel") {
-        if (localPending.accepting) throw new Error("This answer is already being saved.");
         localPending.accepting = true;
         try {
           await localPending.beforeAccept(normalizePendingInputAnswers(localPending.request, answers, responseText));
@@ -75718,13 +75730,21 @@ export function createAgentChatService(args: {
       });
       args.signal?.addEventListener("abort", () => cancelLocalPendingInput(managed, itemId), { once: true });
       if (args.timeoutMs && args.timeoutMs > 0) {
-        expiry = setTimeout(() => {
+        const expire = () => {
+          const pending = managed.localPendingInputs.get(itemId);
           // Answered, or cancelled by a turn ending, in the meantime.
-          if (managed.localPendingInputs.get(itemId)?.resolve !== resolve) return;
+          if (pending?.resolve !== resolve) return;
+          // An answer still saving (`beforeAccept`) finishes first, so a key
+          // that was saved is never reported as timed out.
+          if (pending.accepting) {
+            expiry = setTimeout(expire, 1_000);
+            return;
+          }
           timedOut = true;
           cancelLocalPendingInput(managed, itemId);
           persistChatState(managed);
-        }, args.timeoutMs);
+        };
+        expiry = setTimeout(expire, args.timeoutMs);
       }
     }).finally(() => {
       if (expiry) clearTimeout(expiry);

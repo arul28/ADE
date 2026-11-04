@@ -1174,11 +1174,16 @@ export function createGithubService({
   });
 
   const persistToken = (token: string | null): void => {
+    const clean = (token ?? "").trim();
+    // Read before the local copy goes: the account's copy goes only if it is this token.
+    if (!clean) patAccountSync.unpublish();
     persistEncryptedToken(tokenPath, token);
     persistMachineToken(token);
-    if ((token ?? "").trim()) patAccountSync.markLocal();
-    // A token pasted here follows the account to its other machines.
-    patAccountSync.publish(token);
+    if (clean) {
+      patAccountSync.markLocal();
+      // A token pasted here follows the account to its other machines.
+      patAccountSync.publish(clean);
+    }
     if (!(token ?? "").trim()) {
       removeTokenFile(legacyTokenPath);
     } else if (fs.existsSync(legacyTokenPath)) {

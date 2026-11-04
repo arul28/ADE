@@ -329,6 +329,13 @@ export function SettingsPage({
     if (!tabParam || !resolvedTab || tabParam === resolvedTab) return;
     const nextParams = new URLSearchParams(searchParams);
     nextParams.set("tab", resolvedTab);
+    // A legacy tab that was one integration's page (`?tab=github`,
+    // `?tab=mcp`) opens that page, unless the link already names one.
+    const legacyIntegration = tabParam.trim().toLowerCase().replace(/^mcp-servers$/, "mcp");
+    if (resolvedTab === "integrations" && !location.hash && !nextParams.has("integration")
+      && (legacyIntegration === "mcp" || isIntegrationId(legacyIntegration))) {
+      nextParams.set("integration", legacyIntegration);
+    }
     // A legacy tab that was one card's page (`?tab=archive`) lands on that
     // card on its new page, unless the link already names a card.
     const legacyAnchor = location.hash ? null : legacyTabAnchor(tabParam);
@@ -342,7 +349,7 @@ export function SettingsPage({
   }, [active, location.hash, location.pathname, navigate, resolvedTab, searchParams, tabParam]);
 
   // `?integration=github|linear|jira|cli` with no tab predates the manifest.
-  // GitHub, Linear and Jira are the Connections tab's own sub-pages now, so
+  // GitHub, Linear and Jira are the Integrations tab's own sub-pages now, so
   // their links only gain the tab; the CLI moved to its own setting.
   useEffect(() => {
     if (!active || tabParam) return;
@@ -375,7 +382,7 @@ export function SettingsPage({
     setSection(next);
     const nextParams = new URLSearchParams(searchParams);
     nextParams.set("tab", next);
-    // One connection's page belongs to the Connections tab only.
+    // One integration's page belongs to the Integrations tab only.
     if (next !== "integrations") {
       nextParams.delete("integration");
       nextParams.delete("mcpServer");
@@ -431,12 +438,12 @@ export function SettingsPage({
       return { matchesThisTab: null as SettingEntry[] | null, matchesOtherTabs: [] as SettingEntry[] };
     }
     const all = searchSettingsEntries(trimmedQuery);
-    // Connections mounts one connection's page at a time (or the home), so a
-    // match on another connection's page is a link, like another tab's.
-    const openConnection = section === "integrations" ? openIntegrationFromUrl(searchParams, location.hash) : null;
+    // Integrations mounts one integration's page at a time (or the home), so a
+    // match on another integration's page is a link, like another tab's.
+    const openIntegration = section === "integrations" ? openIntegrationFromUrl(searchParams, location.hash) : null;
     const elsewhere = (entry: SettingEntry) =>
       entry.tab !== section
-      || (section === "integrations" && integrationPageForAnchor(entry.anchor) !== openConnection);
+      || (section === "integrations" && integrationPageForAnchor(entry.anchor) !== openIntegration);
     return {
       matchesThisTab: all.filter((entry) => !elsewhere(entry)),
       matchesOtherTabs: all.filter(elsewhere),

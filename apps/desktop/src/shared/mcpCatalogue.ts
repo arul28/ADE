@@ -46,8 +46,6 @@ export type McpCatalogueEntry = {
   id: string;
   name: string;
   publisher: string;
-  /** Published by the brand itself (false for MCP's reference servers). */
-  official: boolean;
   /** What it does, in a few plain words. */
   description: string;
   category: McpCatalogueCategory;
@@ -111,12 +109,24 @@ function normalizedUrl(raw: string | undefined): string | null {
 }
 
 const PACKAGE_RUNNERS = new Set(["npx", "bunx", "uvx", "pnpx"]);
+/** The only runner options a match allows before the package; any other (`--registry`, `-p`, `--from`) can run something else. */
+const PLAIN_RUNNER_OPTIONS = new Set(["-y", "--yes"]);
 
-/** `npx -y @scope/pkg@latest` → `@scope/pkg`; null when the command is not a package runner. */
+/**
+ * `npx -y @scope/pkg@latest` → `@scope/pkg`; null when the command is not a
+ * package runner, or a runner option before the package could change what runs.
+ */
 function runnerPackage(command: string | undefined, args: readonly string[] | undefined): string | null {
   const runner = (command ?? "").trim().split(/[\\/]/).pop()?.replace(/\.(cmd|exe)$/i, "").toLowerCase() ?? "";
   if (!PACKAGE_RUNNERS.has(runner)) return null;
-  const spec = (args ?? []).find((arg) => !arg.startsWith("-"));
+  let spec: string | undefined;
+  for (const arg of args ?? []) {
+    if (!arg.startsWith("-")) {
+      spec = arg;
+      break;
+    }
+    if (!PLAIN_RUNNER_OPTIONS.has(arg)) return null;
+  }
   if (!spec) return null;
   const at = spec.lastIndexOf("@");
   return (at > 0 ? spec.slice(0, at) : spec).toLowerCase();
