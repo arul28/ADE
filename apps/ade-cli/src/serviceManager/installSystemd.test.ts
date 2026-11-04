@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -5,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   ADE_RUNTIME_SERVICE_NAME,
   type AdeServiceCommand,
+  isPidAlive,
   type ServiceManagerProcessResult,
   type ServiceManagerSpawnSync,
 } from "./common";
@@ -16,6 +18,7 @@ import {
   renderSystemdUnit,
   servicePath as systemdServicePath,
 } from "./installSystemd";
+import { renderDetachedSupervisorScript } from "./detachedSupervisor";
 
 const tempDirs: string[] = [];
 
@@ -217,6 +220,44 @@ describe("systemd service install", () => {
     expect(result.restarted).toBeUndefined();
     // The whole point: nothing was restarted out from under the booting brain.
     expect(systemdCallArgs(calls)).toEqual([]);
+  });
+
+  // No systemd (a cloud box under tini): ADE's own supervisor runs the brain,
+  // and a second `ade brain start` must not kill the brain it is still booting.
+  it.skipIf(process.platform === "win32")("waits for a young unresponsive brain under ADE's own supervisor too", async () => {
+    const homeDir = makeTempHome("ade-detached-young-");
+    const runtimeDir = path.join(homeDir, ".ade", "runtime");
+    const scriptPath = path.join(runtimeDir, "brain-supervisor.sh");
+    const brainPidPath = path.join(runtimeDir, "brain-supervisor.brain.pid");
+    fs.mkdirSync(runtimeDir, { recursive: true });
+    fs.writeFileSync(scriptPath, renderDetachedSupervisorScript(serviceCommand, { runtimeDir, brainPidPath }), "utf8");
+    // Real processes: the supervisor's command line names its script, as the real one's does.
+    const supervisor = spawn("/bin/sh", ["-c", "sleep 30; :", scriptPath], { stdio: "ignore" });
+    const brain = spawn("/bin/sh", ["-c", "sleep 30; :"], { stdio: "ignore" });
+    try {
+      fs.writeFileSync(path.join(runtimeDir, "brain-supervisor.json"), JSON.stringify({ supervisorPid: supervisor.pid, scriptPath, startedAt: new Date().toISOString() }));
+      fs.writeFileSync(brainPidPath, `${brain.pid}\n`);
+      // No systemd user manager at all.
+      const noSystemd: ServiceManagerSpawnSync = (command) =>
+        command === "systemctl" ? { status: 1, stdout: "", stderr: "Failed to connect to bus" } : { status: 0, stdout: "", stderr: "" };
+
+      const result = await installSystemdService(installDeps(homeDir, noSystemd, {
+        responsivenessProbe: () => false,
+        pidElapsedMs: () => 5_000,
+      }));
+
+      expect(result).toMatchObject({ ok: true, starting: true });
+      expect(result.restarted).toBeUndefined();
+      expect([supervisor.exitCode, supervisor.signalCode, brain.exitCode, brain.signalCode]).toEqual([null, null, null, null]);
+      expect(isPidAlive(supervisor.pid!) && isPidAlive(brain.pid!)).toBe(true);
+    } finally {
+      supervisor.kill("SIGKILL");
+      brain.kill("SIGKILL");
+      const record = JSON.parse(fs.readFileSync(path.join(runtimeDir, "brain-supervisor.json"), "utf8")) as { supervisorPid?: number };
+      if (record.supervisorPid && record.supervisorPid !== supervisor.pid) {
+        try { process.kill(-record.supervisorPid, "SIGKILL"); } catch { /* already gone */ }
+      }
+    }
   });
 
   it("restarts a young brain when a fresh crash-loop record vetoes the wait", async () => {

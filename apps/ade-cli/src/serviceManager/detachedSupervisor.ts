@@ -8,6 +8,7 @@ import {
   isCurrentProcessDescendantOfPid,
   isPidAlive,
   isStaleChannelServeCommandLine,
+  readPidElapsedMs,
   resolveAdeServeCliScriptPath,
   resolveAdeServeCommand,
   RUNTIME_SERVICE_HANDOVER_TIMEOUT_MS,
@@ -19,7 +20,9 @@ import {
 } from "./common";
 import {
   awaitServiceHandover,
+  awaitYoungBrainStart,
   defaultResponsivenessProbe,
+  type PidElapsedMsLookup,
   type ResponsivenessProbe,
   serviceHandoverSleep,
 } from "./serviceHandover";
@@ -57,6 +60,8 @@ export type DetachedSupervisorDeps = {
   handoverTimeoutMs?: number;
   handoverPollMs?: number;
   sleep?: (ms: number) => Promise<void>;
+  pidElapsedMs?: PidElapsedMsLookup;
+  recentCrashLoop?: () => boolean;
 };
 
 /** The note every fallback message carries, so a person knows what they are running. */
@@ -372,6 +377,54 @@ export async function installDetachedRuntimeService(
       path: paths.scriptPath,
       message: `ADE brain is already running (pid ${existingBrain ?? "unknown"}). ${NO_SERVICE_MANAGER_NOTE}`,
     };
+  }
+
+  // A current supervisor whose brain has not answered yet, and is young, is
+  // still starting (a big project database, a slow disk). Restarting it only
+  // resets its clock, so a second `ade brain start` would kill the brain that
+  // was seconds from ready. Same rule as the systemd and launchd installs,
+  // crash-loop veto included.
+  if (existingSupervisor != null) {
+    const supervisorPid = existingSupervisor;
+    const young = await awaitYoungBrainStart({
+      definitionUnchanged: scriptUnchanged,
+      supervisedPid: existingBrain,
+      running: existingBrain != null,
+      adeHome: paths.adeHome,
+      recentCrashLoop: deps.recentCrashLoop,
+      run,
+      pidElapsedMs: deps.pidElapsedMs ?? readPidElapsedMs,
+      timeoutMs,
+      wait: {
+        readSupervisedPid: () => (isPidAlive(supervisorPid) ? readBrainPid(paths.brainPidPath) : null),
+        isAlive: isPidAlive,
+        probeResponsiveness: probe,
+        socketPath: paths.socketPath,
+        command,
+        sleep,
+        pollMs,
+      },
+    });
+    if (young.kind === "responsive") {
+      return {
+        ok: true,
+        serviceName: ADE_RUNTIME_SERVICE_NAME,
+        action: "install",
+        path: paths.scriptPath,
+        message: `ADE brain finished starting (pid ${readBrainPid(paths.brainPidPath) ?? existingBrain ?? "unknown"}). ${NO_SERVICE_MANAGER_NOTE}`,
+      };
+    }
+    if (young.kind === "starting") {
+      return {
+        ok: true,
+        starting: true,
+        serviceName: ADE_RUNTIME_SERVICE_NAME,
+        action: "install",
+        path: paths.scriptPath,
+        message: `ADE brain is still starting (pid ${young.pid}); it had not answered on ${paths.socketPath} after ${timeoutMs}ms. ${NO_SERVICE_MANAGER_NOTE}`,
+      };
+    }
+    // "died" or "skipped": fall through and restart it.
   }
 
   const strays = listUnsupervisedServePids(command, paths.socketPath, [existingSupervisor, existingBrain].filter((pid): pid is number => pid != null));

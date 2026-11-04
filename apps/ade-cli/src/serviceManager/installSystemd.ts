@@ -227,6 +227,8 @@ export async function installSystemdService(
       handoverTimeoutMs: deps.handoverTimeoutMs,
       handoverPollMs: deps.handoverPollMs,
       sleep: deps.sleep,
+      pidElapsedMs: deps.pidElapsedMs,
+      recentCrashLoop: deps.recentCrashLoop,
     });
   }
 
