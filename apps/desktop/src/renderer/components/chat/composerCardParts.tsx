@@ -102,16 +102,24 @@ export function CardHeading({
   );
 }
 
-/** The banner's last two buttons: the Settings page, and Not now. */
+/**
+ * The banner's last two buttons: the Settings page, and Not now. Not now
+ * stops a running browser sign-in first, so a sign-in that finishes later
+ * saves nothing for a card the person declined.
+ */
 export function CardBannerButtons({
   onOpenSettings,
   onDecline,
   responding,
+  signingIn,
+  cancelSignIn,
   testIdPrefix,
 }: {
   onOpenSettings: () => void;
   onDecline: () => void;
   responding: boolean;
+  signingIn: boolean;
+  cancelSignIn: () => void;
   testIdPrefix: string;
 }) {
   return (
@@ -133,7 +141,10 @@ export function CardBannerButtons({
         title="Not now (Esc)"
         aria-label="Not now"
         data-testid={`${testIdPrefix}-decline`}
-        onClick={onDecline}
+        onClick={() => {
+          if (signingIn) cancelSignIn();
+          onDecline();
+        }}
       >
         <X size={13} weight="bold" />
       </button>

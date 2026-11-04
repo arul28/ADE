@@ -95,7 +95,7 @@ describe("mcp_registry for agents", () => {
       {
         name: "remote",
         transport: "http",
-        url: "https://bob:hunter2@mcp.example.com/v1/sk-live1234567890abcd/tools?api_key=s3cr3tvalue&team=core",
+        url: "https://bob:hunter2@mcp.example.com/v1/sk-live1234567890abcd/tools?api_key=s3cr3tvalue&team=core#token=fragsecret",
         envNames: [],
         headerNames: [],
         enabled: true,
@@ -104,7 +104,7 @@ describe("mcp_registry for agents", () => {
         name: "local",
         transport: "stdio",
         command: "npx",
-        args: ["-y", "some-mcp", "--api-key", "plainkey123", "--token=tok456", "ghp_abcdefghijklmnop1234"],
+        args: ["-y", "some-mcp", "--api-key", "plainkey123", "--token=tok456", "ghp_abcdefghijklmnop1234", "-e", "API_KEY=envkey789", "--header", "Authorization: Bearer hdrtoken99"],
         envNames: [],
         headerNames: [],
         enabled: true,
@@ -113,7 +113,7 @@ describe("mcp_registry for agents", () => {
 
     const listing = JSON.stringify(listMcpRegistry(deps(store)));
 
-    for (const secret of ["hunter2", "bob", "sk-live1234567890abcd", "s3cr3tvalue", "plainkey123", "tok456", "ghp_abcdefghijklmnop1234"]) {
+    for (const secret of ["hunter2", "bob", "sk-live1234567890abcd", "s3cr3tvalue", "fragsecret", "plainkey123", "tok456", "ghp_abcdefghijklmnop1234", "envkey789", "hdrtoken99"]) {
       expect(listing, secret).not.toContain(secret);
     }
     // What the agent needs to recognise each server stays.
@@ -140,13 +140,13 @@ describe("mcp_registry for agents", () => {
     expect(normalizeMcpRegistry(rows.get(LIST_KEY)).map((server) => server.name).sort()).toEqual(["newsrv", "other"]);
   });
 
-  it("writes no list when it cannot load the account's list and has no copy of it", async () => {
-    const { rows, store } = accountSettings(async () => "failed");
+  it.each(["failed", "unavailable"] as const)("writes no list when the pull %s and there is no copy of it", async (pulled) => {
+    const { rows, store } = accountSettings(async () => pulled);
     const refusals: unknown[] = [];
 
     await expect(requestMcpServer(
       { ...deps(store), requestChatInput: personApproves(refusals) },
-      { chatSessionId: "chat-offline", name: "newsrv", reason: "To read the docs", url: "https://mcp.newsrv.dev/mcp" },
+      { chatSessionId: `chat-${pulled}`, name: "newsrv", reason: "To read the docs", url: "https://mcp.newsrv.dev/mcp" },
     )).rejects.toThrow(/in time/);
 
     expect(refusals).toHaveLength(1);

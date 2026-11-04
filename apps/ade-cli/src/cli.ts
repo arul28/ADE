@@ -369,6 +369,7 @@ import { longRunningLocalRuntimeActionTimeoutMs } from "../../desktop/src/main/s
 import { CARD_REQUEST_DEFAULT_TIMEOUT_MS } from "../../desktop/src/main/services/chat/chatCardRequest";
 import { CONNECT_PROVIDER_IDS, connectProviderSpec, isConnectProviderId } from "../../desktop/src/shared/integrationConnect";
 import { MCP_CATALOGUE } from "../../desktop/src/shared/mcpCatalogue";
+import { isValidMcpFieldName } from "../../desktop/src/shared/mcpRegistry";
 import { browseProjectDirectories } from "../../desktop/src/main/services/projects/projectBrowserService";
 import { createProjectScaffoldService } from "../../desktop/src/main/services/projects/projectScaffoldService";
 import { resolveRepoRoot } from "../../desktop/src/main/services/projects/projectService";
@@ -19826,8 +19827,15 @@ function buildMcpServersPlan(args: string[]): CliPlan {
     const sse = readFlag(args, ["--sse"]);
     const imported = readFlag(args, ["--import", "--imported"]);
     const extraArgs = readRepeatedValues(args, ["--arg"]);
-    const envNames = readRepeatedValues(args, ["--env"]).flatMap((value) => value.split(",")).map((value) => value.trim()).filter(Boolean);
-    const headerNames = readRepeatedValues(args, ["--header"]).flatMap((value) => value.split(",")).map((value) => value.trim()).filter(Boolean);
+    // Names only: a value given here would travel in the request. The person types it in the card.
+    const fieldNames = (flag: string): string[] => {
+      const names = readRepeatedValues(args, [flag]).flatMap((value) => value.split(",")).map((value) => value.trim()).filter(Boolean);
+      const bad = names.find((entry) => !isValidMcpFieldName(entry));
+      if (bad != null) throw new CliUsageError(`${flag} takes a name only (like ${flag === "--env" ? "API_KEY" : "Authorization"}), never its value. The person types the value in the card.`);
+      return names;
+    };
+    const envNames = fieldNames("--env");
+    const headerNames = fieldNames("--header");
     const name = (readValue(args, ["--name"]) ?? firstPositional(args) ?? "").trim();
     if (!name) throw new CliUsageError("Name the server: ade mcp servers add <name> --reason \"…\" …");
     if (!reason?.trim()) {
