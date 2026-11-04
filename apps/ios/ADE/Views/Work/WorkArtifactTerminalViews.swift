@@ -77,6 +77,7 @@ struct WorkArtifactVideoPlayerView: View {
 
   var body: some View {
     VideoPlayer(player: model.player)
+      .adeReplayMasked()
       .followsVideo(url: url, seek: seek, model: model)
   }
 }
@@ -103,6 +104,7 @@ struct WorkArtifactInlineVideoView: View {
 
   var body: some View {
     WorkPlayerLayerView(player: model.player)
+      .adeReplayMasked()
       .background(Color.black)
       .overlay {
         if !model.isPlaying {
@@ -295,6 +297,7 @@ struct WorkTerminalSessionView: View {
           revision: syncService.terminalBufferRevision,
           onViewportChange: handleTerminalViewportChange
         )
+        .adeReplayMasked()
         .frame(width: proxy.size.width, height: proxy.size.height)
         .background(Color.black)
       }

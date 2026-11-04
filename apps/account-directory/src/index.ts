@@ -2,6 +2,7 @@ import * as Sentry from "@sentry/cloudflare";
 import { handleRequest } from "./directory";
 import { logScheduledCleanupFailure } from "./logging";
 import { cloudflareTransientKind, logCloudflareTransient, retryD1Reads, transientUnavailableResponse } from "./cloudflareTransient";
+import { reportJobFailure, reportRequest, type PostHogLogsEnv } from "./posthogLogs";
 import { sentryOptions, type SentryEnv } from "./sentry";
 import { scrubString } from "./sentryScrub";
 import { cleanupExpiredPairingGrants } from "./pairingGrants";
@@ -33,7 +34,9 @@ import {
 } from "./usageResearch";
 
 type WorkerEnv = DiagnosticsEnv & UsageResearchEnv & ModelRegistryEnv & MusicDeveloperTokenEnv & JevBonusEnv
-  & SignupAnalyticsEnv & SentryEnv;
+  & SignupAnalyticsEnv & SentryEnv & PostHogLogsEnv;
+
+const WORKER_NAME = "ade-account-directory";
 
 const CLEANUP_MONITOR_SLUG = "account-directory-cleanup";
 const CLEANUP_MONITOR_CONFIG = {
@@ -74,22 +77,30 @@ function route(request: Request, env: WorkerEnv): Promise<Response> {
 }
 
 export default Sentry.withSentry(sentryOptions, {
-  async fetch(request: Request, workerEnv: WorkerEnv): Promise<Response> {
+  async fetch(request: Request, workerEnv: WorkerEnv, ctx?: ExecutionContext): Promise<Response> {
     // Reads ride through D1's short Cloudflare-side outages.
     const env = { ...workerEnv, DB: retryD1Reads(workerEnv.DB) };
+    const startedAt = Date.now();
     try {
-      return await route(request, env);
+      const response = await route(request, env);
+      reportRequest(workerEnv, ctx, WORKER_NAME, request, response.status, startedAt);
+      return response;
     } catch (error) {
       // A route outside the directory hit D1 restarting under Cloudflare: the
       // caller retries a 503, so answer that and keep it out of Sentry.
       const transient = cloudflareTransientKind(error);
-      if (!transient) throw error;
+      if (!transient) {
+        reportRequest(workerEnv, ctx, WORKER_NAME, request, 500, startedAt, error);
+        throw error;
+      }
       logCloudflareTransient("ade-account-directory", transient, scrubString(new URL(request.url).pathname), error);
-      return transientUnavailableResponse();
+      const response = transientUnavailableResponse();
+      reportRequest(workerEnv, ctx, WORKER_NAME, request, response.status, startedAt, error);
+      return response;
     }
   },
 
-  async scheduled(_event: ScheduledEvent, env: WorkerEnv, _ctx: ExecutionContext): Promise<void> {
+  async scheduled(_event: ScheduledEvent, env: WorkerEnv, ctx: ExecutionContext): Promise<void> {
     // Each cleanup settles on its own: one table that throws logs a line and
     // leaves the other sweeps to finish, instead of failing the whole tick.
     const settle = (task: string, run: () => Promise<unknown>): Promise<void> =>
@@ -97,7 +108,10 @@ export default Sentry.withSentry(sentryOptions, {
         .then(run)
         .then(
           () => {},
-          (error: unknown) => logScheduledCleanupFailure({ task, error }),
+          (error: unknown) => {
+            logScheduledCleanupFailure({ task, error });
+            reportJobFailure(env, ctx, WORKER_NAME, task, error);
+          },
         );
     // One Sentry cron monitor (the Team plan includes one; never add
     // `cronTriggersIntegration`, which makes a billed monitor per trigger).

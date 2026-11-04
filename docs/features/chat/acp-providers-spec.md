@@ -215,7 +215,9 @@ repo MoonshotAI/kimi-code — NOT the deprecated Python kimi-cli)
 - Vendor references: [Kimi ACP reference](https://moonshotai.github.io/kimi-code/en/reference/kimi-acp) and
   [Kimi Code 2.0.0 release](https://github.com/MoonshotAI/kimi-code/releases/tag/%40moonshot-ai%2Fkimi-code%402.0.0).
 - Auth: `kimi login` / `kimi acp --login` device-code; region
-  `mainland-cn` (kimi.com) or `global` (kimi.ai). ADE does **not** write
+  `mainland-cn` (kimi.com) or `global` (kimi.ai). Settings and first-run
+  setup run `kimi login --region <region>` in-app (`agentCliLoginRunner.ts`);
+  the device code is read from the link's `user_code`. ADE does **not** write
   `~/.kimi-code/config.toml`. `authenticate` method id
   `login`, type `terminal`. Unauthenticated `session/new` is `-32000
   Authentication required` on both 0.39.1 and 2.1.1.
@@ -459,7 +461,9 @@ Rust, Apache-2.0)
   bypassPermissions,plan}`, `--reasoning-effort`, `--rules` (append guidance),
   `--no-alt-screen`. NEVER pass `-w/--worktree` (collides with lanes).
 - Auth: reuse `grok login` (`~/.grok/auth.json`) or `XAI_API_KEY`; stored
-  session token outranks env key. No free tier.
+  session token outranks env key. No free tier. Settings and first-run setup
+  run `grok login` (its device flow, not `--oauth`, which needs a loopback
+  callback) in-app (`agentCliLoginRunner.ts`).
 - Version churn ~daily; record the binary version in diagnostics; compatibility
   baseline remains ≥1.0.13. Verified live on 2026-10-05 against 1.0.41
   (installed) and 1.0.46 (throwaway prefix): `initialize`, `session/new` config
@@ -508,7 +512,9 @@ the terminal CLI and for usage history stay in `terminals-and-sessions/` and
   `modelSelection` and ADE sends `session/set_config_option` (as for Grok,
   Qwen, and Kimi).
 - Auth: `devin auth login` browser OAuth; the handshake advertises only the
-  `devin-browser` method. `devin acp` exports `WINDSURF_API_KEY` when a user
+  `devin-browser` method. Settings and first-run setup run
+  `devin auth login --force-manual-token-flow` in-app
+  (`agentCliLoginRunner.ts`): a link, then a code pasted back into the sheet. `devin acp` exports `WINDSURF_API_KEY` when a user
   saved one, but that path is unverified here. An unauthenticated
   `session/prompt` is `-32000 "Please log in to use Devin. Use \`/login\` to
   authenticate again."`, which `isAcpAuthError` reads as auth; the CLI

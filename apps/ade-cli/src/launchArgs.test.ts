@@ -51,15 +51,27 @@ describe("assertMergedLaunchArgs", () => {
   });
 
   // The pairing the flag reader enforces, on the merged bag: `--arg` writes
-  // the same two wire fields, so a parent with no spawn kind (or a kind with
-  // no parent) has to be refused here too, and read identically.
-  it("rejects a merged parent with no spawn kind", () => {
-    expect(() =>
-      assertMergedLaunchArgs(
+  // the same two wire fields, so a parent with no spawn kind defaults the same
+  // way, and a kind with no parent is refused here too, and reads identically.
+  it("makes a merged parent with no spawn kind a subagent, and still refuses one on a shell", () => {
+    expect(
+      normalizeLaunchArgs(
         { provider: "codex", orchestrationParentSessionId: "parent-session-1" },
         { allowShell: false },
       ),
-    ).toThrow(/--type is required for a parented agent spawn/);
+    ).toMatchObject({ orchestrationParentSessionId: "parent-session-1", spawnKind: "subagent" });
+    expect(
+      normalizeLaunchArgs(
+        { provider: "codex", orchestrationParentSessionId: "parent-session-1", spawnKind: "peer" },
+        { allowShell: false },
+      ).spawnKind,
+    ).toBe("peer");
+    expect(() =>
+      normalizeLaunchArgs(
+        { provider: "shell", orchestrationParentSessionId: "parent-session-1" },
+        { allowShell: true },
+      ),
+    ).toThrow(/--parent applies only to agent providers/);
   });
 
   it("rejects a merged spawn kind with no parent", () => {

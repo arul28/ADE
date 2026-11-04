@@ -8,7 +8,9 @@ import {
   IOS_VIDEO_RECORD_MAGIC,
   IOS_VIDEO_RECORD_TYPE_ACCESS_UNIT,
   IOS_VIDEO_RECORD_TYPE_CONFIG,
+  type AppleDevicePosture,
 } from "../../../shared/types/iosSimulator";
+import { appleDuoScreenName } from "../../../shared/appleOrientation";
 import {
   createAppleStreamBitrateAdapter,
   createAppleStreamViewerPacer,
@@ -63,8 +65,27 @@ export const APPLE_STREAM_NOT_RUNNING_CODE = "APPLE_STREAM_NOT_RUNNING" as const
 
 /** Keyframe probes per lane, at most one this often. */
 const KEYFRAME_REQUEST_MIN_INTERVAL_MS = 1_000;
+/** How long a new capture waits for the device's pose before its first frame. */
+const FIRST_POSTURE_WAIT_MS = 400;
+
 /** A keyframe probe that never sees a byte is abandoned after this. */
 const KEYFRAME_PROBE_TIMEOUT_MS = 3_000;
+
+/**
+ * The relay's `{t:"posture"}` note: a foldable's hinge, the panel that is on,
+ * and how its picture sits on the framebuffer. Text, like `{t:"stats"}`, so a
+ * viewer that does not know it skips it.
+ */
+function appleStreamPostureNote(posture: AppleDevicePosture): string | null {
+  if (!posture.supported) return null;
+  return JSON.stringify({
+    t: "posture",
+    angle: posture.angle,
+    screen: appleDuoScreenName(posture.activeScreenId),
+    displayOrientation: posture.displayOrientation,
+    tableMode: posture.tableMode,
+  });
+}
 
 /** A ticket, as the requester receives it over the JSON sync channel. */
 export type AppleStreamTicket = {
@@ -121,6 +142,13 @@ export type AppleStreamRelayDeps = {
    * this Mac is still watching, so the implementation can leave capture up.
    */
   closeSource(args: { laneId: string; localViewers: boolean }): Promise<void>;
+  /**
+   * Read the device's pose for a capture just opened (`notePosture` it). The
+   * relay waits up to `FIRST_POSTURE_WAIT_MS` before it reads frames, so the
+   * first viewer is primed with the pose and draws its first frame the right
+   * way up; a slower read still lands as a note.
+   */
+  readPosture?: (args: { laneId: string }) => Promise<void>;
   /** Whether a viewer on the owning machine is watching right now. */
   hasLocalViewer?: (laneId: string) => boolean;
   /** Absolute `ws://host:port` prefix for the ticket URL, when known. */
@@ -160,6 +188,13 @@ export type AppleStreamRelay = {
    * has already closed the socket in that case.
    */
   attach(socket: AppleStreamViewerSocket, args: { ticket: string; token: string | null }): Promise<boolean>;
+  /**
+   * A foldable's pose changed (or was read): every viewer of the lane hears
+   * it as a `{t:"posture"}` note, and a viewer that joins later gets the last
+   * one before its first frame. A phone draws the live panel the way the
+   * guest says it sits, as the desktop does.
+   */
+  notePosture(laneId: string | null | undefined, posture: AppleDevicePosture): void;
   /** Remote viewers currently attached (visible or hidden). */
   viewerCount(laneId?: string): number;
   /** Remote viewers currently asking for frames. */
@@ -325,6 +360,8 @@ export function createAppleStreamRelay(deps: AppleStreamRelayDeps): AppleStreamR
   const connect = deps.connect ?? defaultConnect;
   const tickets = new Map<string, PendingTicket>();
   const lanes = new Map<string, LaneStream>();
+  /** The last posture note per lane, for viewers that join after it. */
+  const postureNotes = new Map<string, string>();
   let disposed = false;
 
   const debug = (event: string, data?: Record<string, unknown>): void => {
@@ -544,6 +581,27 @@ export function createAppleStreamRelay(deps: AppleStreamRelayDeps): AppleStreamR
     }
   };
 
+  /** The pose read for a new capture, but never longer than the cap. */
+  const waitForFirstPosture = async (laneId: string): Promise<void> => {
+    const read = deps.readPosture?.({ laneId }).catch((error: unknown) => {
+      // The watcher's next change still reaches the viewers; only the first
+      // frame may be drawn the old way up.
+      warn("apple.stream_relay.posture_read_failed", {
+        laneId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+    if (!read) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      read,
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, FIRST_POSTURE_WAIT_MS);
+      }),
+    ]);
+    clearTimeout(timer);
+  };
+
   /**
    * Bring the upstream up for the first viewer that wants frames.
    *
@@ -559,6 +617,7 @@ export function createAppleStreamRelay(deps: AppleStreamRelayDeps): AppleStreamR
     }
     const open = (async () => {
       const source = await deps.openSource({ laneId: stream.laneId });
+      await waitForFirstPosture(stream.laneId);
       if (disposed || stream.viewers.size === 0) return;
       stream.source = source;
       const upstream = connect(source);
@@ -626,6 +685,15 @@ export function createAppleStreamRelay(deps: AppleStreamRelayDeps): AppleStreamR
    * the lane finds nothing cached and reads the upstream from its start.
    */
   const primeViewer = (stream: LaneStream, viewer: Viewer): void => {
+    // The pose first, so the first frame is drawn the right way up.
+    const posture = postureNotes.get(stream.laneId);
+    if (posture && !viewer.closed) {
+      try {
+        viewer.socket.send(posture);
+      } catch {
+        // The close handler drops it.
+      }
+    }
     if (!stream.configRecord && !stream.keyframeRecord) return;
     if (stream.configRecord) sendTo(stream, viewer, stream.configRecord);
     if (stream.keyframeRecord) sendTo(stream, viewer, stream.keyframeRecord);
@@ -751,6 +819,30 @@ export function createAppleStreamRelay(deps: AppleStreamRelayDeps): AppleStreamR
       return true;
     },
 
+    notePosture(laneId, posture) {
+      const key = laneId?.trim();
+      if (!key || disposed) return;
+      const note = appleStreamPostureNote(posture);
+      // Not a foldable (another device now, or a rigid one): no pose to
+      // replay, or a later viewer would draw it a Duo's way up.
+      if (!note) {
+        postureNotes.delete(key);
+        return;
+      }
+      if (postureNotes.get(key) === note) return;
+      postureNotes.set(key, note);
+      const stream = lanes.get(key);
+      if (!stream) return;
+      for (const viewer of stream.viewers) {
+        if (viewer.closed) continue;
+        try {
+          viewer.socket.send(note);
+        } catch {
+          // The close handler drops it.
+        }
+      }
+    },
+
     viewerCount(laneId) {
       if (laneId) return lanes.get(laneId)?.viewers.size ?? 0;
       let total = 0;
@@ -778,6 +870,7 @@ export function createAppleStreamRelay(deps: AppleStreamRelayDeps): AppleStreamR
     dispose() {
       disposed = true;
       tickets.clear();
+      postureNotes.clear();
       for (const stream of [...lanes.values()]) {
         closeUpstream(stream);
         for (const viewer of [...stream.viewers]) {
@@ -791,150 +884,6 @@ export function createAppleStreamRelay(deps: AppleStreamRelayDeps): AppleStreamR
         stream.viewers.clear();
       }
       lanes.clear();
-    },
-  };
-}
-
-/** What the service may ask the relay before a local viewer's stop. */
-export type AppleRemoteViewerProbe = {
-  /** A remote viewer is reading this lane's capture right now. */
-  watching(laneId: string): boolean;
-  /** The relay now owns stopping this lane's capture. */
-  adopt(laneId: string): void;
-};
-
-/** The slice of the simulator service the relay drives. */
-export type AppleStreamOwningService = {
-  getStreamStatus(args: { laneId?: string | null }): { running: boolean };
-  startStream(args: { laneId?: string | null; bitrateKbps?: number | null }): Promise<{
-    transport?: {
-      url?: string | null;
-      token?: string | null;
-      codec?: string | null;
-      width?: number | null;
-      height?: number | null;
-    } | null;
-  }>;
-  stopStream(args: { laneId?: string | null }): Promise<unknown>;
-  /**
-   * Is a renderer on this machine still watching this lane's stream? The
-   * service tracks it, so the answer is the same whether the renderer reached
-   * the service through IPC or a runtime action.
-   */
-  hasLocalViewer?: (laneId: string) => boolean;
-  /**
-   * Lets the service ask, before a LOCAL viewer's stop, whether a remote
-   * viewer still reads the capture, and hand the stop to the relay if so.
-   */
-  setRemoteViewerProbe?: (probe: AppleRemoteViewerProbe | null) => void;
-  /**
-   * The last remote viewer left while a viewer on this machine still watches:
-   * drop the remote bitrate cap so the local view is back at full quality.
-   */
-  liftStreamBitrateCap?: (args: { laneId: string }) => Promise<unknown>;
-  /** Re-cap the capture that is running now, and never start one. Pacing uses it. */
-  capLiveStream?: (args: { laneId: string; bitrateKbps: number }) => Promise<unknown>;
-};
-
-/**
- * Build a relay over a simulator service.
- *
- * The one rule worth naming: **the relay stops only what the relay started.**
- * The desktop reads the helper's loopback body itself, so the brain cannot see
- * its viewers; without this rule, closing a phone's viewer would black out the
- * Mac's own live view. Tracking which lanes this relay brought up is a cheaper
- * and more honest answer than inventing a local-viewer registry the desktop
- * would have to remember to update.
- */
-export function createAppleStreamRelayForService(deps: {
-  service: AppleStreamOwningService;
-  /** `apple.remoteBitrateKbpsCap`, read per start so a settings change lands. */
-  remoteBitrateKbpsCap: () => number | null;
-  /**
-   * Is a viewer on this machine's own renderer still watching this lane?
-   *
-   * `startedLanes` below answers "did the relay bring this up", which is not
-   * the same question: a web tab can start a capture that the desktop column
-   * then joins, and closing the tab would stop a device somebody is still
-   * looking at. The headless brain has no renderer, so it passes nothing and
-   * the answer is a constant false.
-   */
-  hasLocalViewer?: (laneId: string) => boolean;
-  logger?: AppleStreamRelayDeps["logger"];
-  connect?: AppleStreamRelayDeps["connect"];
-  publicOrigin?: AppleStreamRelayDeps["publicOrigin"];
-}): AppleStreamRelay {
-  const startedLanes = new Set<string>();
-  const capLiveStream = deps.service.capLiveStream;
-  const relay = createAppleStreamRelay({
-    logger: deps.logger,
-    connect: deps.connect,
-    publicOrigin: deps.publicOrigin,
-    bitrateCapKbps: deps.remoteBitrateKbpsCap,
-    // Not `startStream`: that resolves the device again and starts a capture
-    // when none is running, which a cap change must never do.
-    applyBitrateCap: capLiveStream ? (args) => capLiveStream(args) : undefined,
-    // Fall back to the service's own tracker, so the brain (which passes no
-    // registry) still sees a desktop renderer that joined a remote-started
-    // capture.
-    hasLocalViewer: deps.hasLocalViewer
-      ?? (deps.service.hasLocalViewer
-        ? (laneId: string) => deps.service.hasLocalViewer?.(laneId) ?? false
-        : undefined),
-    openSource: async ({ laneId }) => {
-      const alreadyRunning = deps.service.getStreamStatus({ laneId }).running;
-      const status = await deps.service.startStream({
-        laneId,
-        bitrateKbps: deps.remoteBitrateKbpsCap(),
-      });
-      if (!alreadyRunning) startedLanes.add(laneId);
-      const transport = status.transport;
-      if (!transport?.url || !transport.token) {
-        throw new Error(
-          `${APPLE_STREAM_NOT_RUNNING_CODE}: the Apple device helper reported no stream address for lane ${laneId}.`,
-        );
-      }
-      return {
-        url: transport.url,
-        token: transport.token,
-        codec: transport.codec ?? null,
-        width: transport.width ?? null,
-        height: transport.height ?? null,
-      };
-    },
-    closeSource: async ({ laneId, localViewers }) => {
-      if (localViewers) {
-        // Somebody on this machine is still watching. Forget that the relay
-        // started it: the local viewer owns the stop now, and a later remote
-        // viewer must not inherit the right to end it. The cap was for the
-        // remote viewers, so it goes with them.
-        startedLanes.delete(laneId);
-        await deps.service.liftStreamBitrateCap?.({ laneId });
-        return;
-      }
-      // Not the relay's capture to stop, so it keeps running for whoever
-      // started it, without the remote cap.
-      if (!startedLanes.delete(laneId)) {
-        await deps.service.liftStreamBitrateCap?.({ laneId });
-        return;
-      }
-      await Promise.resolve(deps.service.stopStream({ laneId })).catch(() => null);
-    },
-  });
-  // A desktop viewer leaving must not cut off a phone still reading the same
-  // capture: the service asks here first, and the relay takes the stop over.
-  deps.service.setRemoteViewerProbe?.({
-    watching: (laneId) => relay.visibleViewerCount(laneId) > 0,
-    adopt: (laneId) => {
-      startedLanes.add(laneId);
-    },
-  });
-  const disposeRelay = relay.dispose.bind(relay);
-  return {
-    ...relay,
-    dispose: () => {
-      deps.service.setRemoteViewerProbe?.(null);
-      disposeRelay();
     },
   };
 }

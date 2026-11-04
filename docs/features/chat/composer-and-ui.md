@@ -130,6 +130,12 @@ does not remove or transfer attachments as though the user changed machines.
 Browser, App Control, and iOS panels also fail closed when their local-only
 service cannot safely operate on the chat's owning runtime.
 
+Quick slots — nine user-assigned actions on a leader chord plus a digit — are
+documented in [Quick slots](quick-slots.md). `QuickSlotsHost` is mounted once in
+`AppShell`; the active composer publishes the insert/model/thinking surface
+through `renderer/quickSlots/useQuickSlotComposerTarget.ts`, and slots reach
+only a composer that is on screen.
+
 ## Pane layout
 
 `AgentChatPane` is the mount point. It:
@@ -1738,7 +1744,7 @@ allowing a cross-provider fork.
   a retry needs a fresh one. Hosts predating the feature, relay-routed
   sockets (the relay brokers WebSocket frames, not HTTP), and SSH targets
   all fall back to `chat.saveTempAttachment` with the legacy 10 MB
-  image-only contract. The capability is purely additive; **iOS stays on
+  attachment contract. The capability is purely additive; **iOS stays on
   the legacy path for images** and is not offered the upload route.
   Pasted bytes take the same route. Preload `agentChat.saveTempAttachment`
   checks the machine first: for a paired machine (an explicit remote pin,
@@ -1749,13 +1755,25 @@ allowing a cross-provider fork.
   smaller of `maxBytes` and `MAX_CHAT_ATTACHMENT_BYTES`, checks the encoded
   length before it decodes (`maxBase64EncodedLength`), writes the bytes to a
   private temp file (`withTempAttachmentFile`), runs the same two-leg upload,
-  and removes the file. A failed upload logs an `[ade-attachments]` warning
-  and falls back to the runtime command, but only when the payload fits the
-  command's 10 MB cap. A larger payload would only be refused again with a
+  and removes the file. The connection service reports a failed upload to
+  Sentry under `chat/attachment_upload_failed` and falls back directly to the
+  runtime command, but only when the payload fits the command's 10 MB cap
+  and the host's smaller advertised or ticket limit. It bounds the file read
+  even if the source grows during recovery. A larger payload would only be refused again with a
   misleading 10 MB reason, or overflow the host's RPC buffer, so the upload's
   own error reaches the caller. The composer's clipboard paste and the
   terminal's image paste both go through this call, so neither sends a
   screenshot inside one runtime command when the machine can take a stream.
+  File staging resolves the same explicit pin or bound window machine before
+  choosing a local copy or remote upload. The composer captures the effective
+  project binding, including local project identity, and its chat API before
+  probing a batch. Every file uses that captured owner. A project or machine
+  switch stops the remaining files and rejects an in-flight result.
+  Dropped files and pasted bytes share
+  recovery in the connection service, using the original target and project
+  without repeating the failed HTTP upload. Larger files retain the upload
+  failure. Attachment errors include the underlying reason in the
+  inline notice and its diagnostic report.
 - **Attachment images.** Every surface that shows or copies an attachment
   image (the tray thumbnail, the drafts list, draft transfer between
   machines) reads it through `readAttachmentImageDataUrl(path, pin)` in

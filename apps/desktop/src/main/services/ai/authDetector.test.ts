@@ -98,6 +98,7 @@ vi.mock("./providerRuntimeHealth", () => ({
 let detectAllAuth: typeof import("./authDetector").detectAllAuth;
 let detectCliAuthStatuses: typeof import("./authDetector").detectCliAuthStatuses;
 let verifyProviderApiKey: typeof import("./authDetector").verifyProviderApiKey;
+let parseCopilotLoggedInUsers: typeof import("./authDetector").parseCopilotLoggedInUsers;
 const originalPlatform = process.platform;
 
 function setPlatform(value: NodeJS.Platform): void {
@@ -116,6 +117,7 @@ beforeEach(async () => {
   reportProviderRuntimeFailureMock.mockReset();
   reportProviderRuntimeReadyMock.mockReset();
   const mod = await import("./authDetector");
+  parseCopilotLoggedInUsers = mod.parseCopilotLoggedInUsers;
   detectAllAuth = mod.detectAllAuth;
   detectCliAuthStatuses = mod.detectCliAuthStatuses;
   verifyProviderApiKey = mod.verifyProviderApiKey;
@@ -548,5 +550,17 @@ describe("authDetector", () => {
     expect(result.ok).toBe(false);
     expect(result.statusCode).toBe(401);
     expect(result.message).toContain("Authentication failed");
+  });
+
+  // Copilot 1.0.x writes `//` comment lines and `loggedInUsers`; older builds
+  // wrote plain JSON with `logged_in_users`. Reading neither made ADE miss
+  // every `copilot login` (found with a real sign-in).
+  it.each([
+    ["1.0.x, commented", `// User settings belong in settings.json.\n// This file is managed automatically.\n{\n  "loggedInUsers": [{ "host": "https://github.com", "login": "octo", "kind": "user" }]\n}\n`, ["octo"]],
+    ["older, plain", `{"logged_in_users":[{"host":"https://github.com","login":"octo"}]}`, ["octo"]],
+    ["no users", `// managed\n{ "loggedInUsers": [] }`, []],
+    ["not JSON", "garbage", []],
+  ])("reads Copilot's recorded users: %s", (_name, raw, expected) => {
+    expect(parseCopilotLoggedInUsers(raw)).toEqual(expected);
   });
 });

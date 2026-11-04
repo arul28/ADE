@@ -418,10 +418,56 @@
       ],
       "owner": "apps/desktop/src/main/services/ipc/registerIpc.ts",
       "source": "desktop_policy",
-      "purpose": "A brain action failed: which domain and the structured error code.",
+      "purpose": "A brain action failed: which domain and action, the structured error code, and whether the failure was expected (user, environment, network) or a bug.",
       "properties": [
         "action_domain",
-        "error_code"
+        "brain_action",
+        "error_code",
+        "expected_kind"
+      ]
+    },
+    {
+      "name": "$exception",
+      "platforms": [
+        "desktop",
+        "runtime",
+        "ios"
+      ],
+      "owner": "apps/desktop/src/main/services/analytics/exceptionProductAnalytics.ts",
+      "source": "desktop_policy",
+      "purpose": "PostHog error tracking: a mirror of each error Sentry admitted in desktop main (incl. renderer) and the brain, after Sentry's scrub, with emails and absolute paths removed and frames reduced to in-app file, function and position. Own 100/day allowance outside the shared ceiling.",
+      "properties": [
+        "$exception_list",
+        "$exception_level",
+        "$exception_fingerprint",
+        "process",
+        "error_app_version"
+      ]
+    },
+    {
+      "name": "$ai_generation",
+      "platforms": [
+        "desktop",
+        "runtime"
+      ],
+      "owner": "apps/desktop/src/main/services/analytics/agentTurnProductAnalytics.ts",
+      "source": "desktop_policy",
+      "purpose": "PostHog LLM analytics: one settled agent turn's provider, catalog model, token counts, cost and latency. Content-free; local and custom models report as other. Own 400/day allowance outside the shared ceiling.",
+      "properties": [
+        "$ai_provider",
+        "$ai_model",
+        "$ai_span_name",
+        "$ai_is_error",
+        "$ai_input_tokens",
+        "$ai_output_tokens",
+        "$ai_cache_read_input_tokens",
+        "$ai_cache_creation_input_tokens",
+        "$ai_reasoning_tokens",
+        "$ai_total_cost_usd",
+        "$ai_latency",
+        "$ai_trace_id",
+        "feature",
+        "outcome"
       ]
     },
     {

@@ -167,15 +167,18 @@ describe("buildCodingAgentSystemPrompt", () => {
 
       expect(result).toContain("prefer Claude's native `Agent`/`Task` tool");
       expect(result).toContain("another Anthropic-family model");
-      expect(result).toContain("Do not create an ADE `--type subagent` chat in the same lane merely to switch Claude models");
-      expect(result).toContain("independent durable transcript");
+      expect(result).toMatch(/Do not start an ADE chat just to switch Claude models/);
+      // Another provider's model is a subagent the agent starts and can stop.
+      expect(result).toContain("`ade new chat --mode chat --provider <p> --model <m>");
+      expect(result).toMatch(/is your subagent and reports back/);
+      expect(result).toContain("`ade chat interrupt <id>`");
     });
 
     it("does not claim native subagents for the Pi SDK path", () => {
       const result = buildCodingAgentSystemPrompt({ cwd: "/x", runtime: "pi-sdk" });
 
-      expect(result).toContain("Pi's SDK path has no ADE-supported native subagent lifecycle");
-      expect(result).toContain("Use an ADE `--type subagent` chat");
+      expect(result).toMatch(/Pi has no native subagent tool here/);
+      expect(result).toContain("`ade new chat --mode chat --prompt");
       expect(result).not.toContain("prefer Pi's native");
     });
 
@@ -217,7 +220,9 @@ describe("buildCodingAgentSystemPrompt", () => {
       });
       expect(result).toContain("## Workflow Tools");
       expect(result).toContain("createLane");
-      expect(result).toContain("Recommended workflow");
+      // The workflow names a proof command that works off the lane screen.
+      expect(result).toMatch(/\*\*Workflow:\*\*[^\n]*`ade browser proof`/);
+      expect(result).not.toContain("ade proof capture");
     });
 
     it("includes createPrFromLane guidance when present", () => {
@@ -294,8 +299,10 @@ describe("buildCodingAgentSystemPrompt", () => {
 
   it("always includes operating loop, editing rules, and verification rules", () => {
     const result = buildCodingAgentSystemPrompt({ cwd: "/x" });
-    expect(result).toContain("status checks, interruptions, and tool/subagent timeouts as checkpoints");
-    expect(result).toContain("unless the user explicitly says stop, pause, or only report status");
+    // A status question is a checkpoint; new instructions (from the user or
+    // another agent) replace the old ones.
+    expect(result).toMatch(/status question[^.]*is a checkpoint: answer it, then continue/);
+    expect(result).toMatch(/new instructions, from the user or from another agent, replaces the old ones/);
     expect(result).toContain("## ADE");
     expect(result).toContain("read the matching `ade-*` skill");
     expect(result).toContain("ade-apple");

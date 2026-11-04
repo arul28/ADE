@@ -169,7 +169,7 @@ export function McpServerRequestComposer({
             </span>
           )}
           <span className="ade-icc-chip" data-testid="mcp-server-transport">{MCP_TRANSPORT_LABEL[server.transport]}</span>
-          <CardBannerButtons onOpenSettings={openSettings} onDecline={onDecline} responding={responding} testIdPrefix="mcp-server" />
+          <CardBannerButtons onOpenSettings={openSettings} onDecline={onDecline} responding={responding} signingIn={signingIn} cancelSignIn={cancelSignIn} testIdPrefix="mcp-server" />
         </span>
       </div>
 
@@ -269,8 +269,9 @@ export function McpServerRequestReceipt({
   }
   const raw = ownQuestionValue(answers, MCP_SERVER_APPROVE_QUESTION_ID);
   const approval = Array.isArray(raw) ? raw[0] : raw;
-  // A client that answers the questions can pick "Not now" and still accept.
-  const added = resolution === "accepted" && (approval == null || approval === MCP_SERVER_APPROVE_VALUE);
+  // The host adds the server only on the approve answer; a client can pick
+  // "Not now", or answer nothing, and still accept.
+  const added = resolution === "accepted" && approval === MCP_SERVER_APPROVE_VALUE;
   const text = added
     ? "added to your MCP servers · on all your machines"
     : resolution === "cancelled" ? "· closed before it was answered" : "· not now";

@@ -18261,10 +18261,10 @@ export function AgentChatPane({
           || Boolean(resolveScopedModelDescriptor(nextModelId, modelCatalogScopeKey))
         );
     if (!modelAllowed) {
-      return;
+      return false;
     }
     if (isPersistentIdentitySurface && sessionMutationKind) {
-      return;
+      return false;
     }
     const previousFastMode = fastModeRef.current;
     draftLaunchBrainRef.current = options?.presetId
@@ -18333,7 +18333,7 @@ export function AgentChatPane({
     }
     if (!selectedSessionId || turnActive) {
       applyModelSelectionSnapshot(snapshot);
-      return;
+      return true;
     }
 
     // Keep the selection local until submit(). Submit applies the
@@ -18342,6 +18342,7 @@ export function AgentChatPane({
     // still choosing a model or typing.
     deferredComposerSessionIdRef.current = selectedSessionId;
     applyModelSelectionSnapshot(snapshot);
+    return true;
   };
   composerModelChangeRef.current = handleComposerModelChange;
   applyWorkDraftModelRequestRef.current = (request) => {
@@ -18535,6 +18536,8 @@ export function AgentChatPane({
             launchPromptClipboardNoticeEnabled={launchPromptClipboardNoticeEnabled}
             onOpenLaunchPromptClipboardSettings={openLaunchPromptClipboardSettings}
             onModelChange={handleComposerModelChange}
+            onOpenModelPickerRequest={handleListChooseProviderFailureModel}
+            sessionLaneId={laneId}
             onReasoningEffortChange={handleReasoningEffortChange}
             onFastModeChange={handleFastModeChange}
             onDraftChange={updateComposerDraft}

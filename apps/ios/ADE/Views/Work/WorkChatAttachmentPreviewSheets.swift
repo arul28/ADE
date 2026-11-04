@@ -229,6 +229,7 @@ struct WorkChatAttachmentPreviewSheet: View {
           if request.kind == .video {
             if let player {
               VideoPlayer(player: player)
+                .adeReplayMasked()
                 .ignoresSafeArea(edges: .bottom)
             } else {
               ProgressView()
@@ -236,6 +237,7 @@ struct WorkChatAttachmentPreviewSheet: View {
             }
           } else {
             WorkQuickLookPreview(url: fileURL)
+              .adeReplayMasked()
               .ignoresSafeArea(edges: .bottom)
           }
         } else if let failure {

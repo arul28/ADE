@@ -16,7 +16,7 @@ import {
   shouldOpenSimulatorAppForLaunch,
 } from "./iosSimulatorService";
 import type { SimHelperClient } from "./simHelperClient";
-import { createAppleStreamRelayForService } from "./appleStreamRelay";
+import { createAppleStreamRelayForService } from "./appleStreamRelayForService";
 import {
   IOS_SIMULATOR_LANE_NOT_RESOLVED_CODE,
   IOS_SIMULATOR_OUT_PATH_OUTSIDE_ROOT_CODE,

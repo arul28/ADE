@@ -32,6 +32,7 @@ import { isWebClientMode } from "../lib/webClientMode";
 import { getAiStatusCached, invalidateAiDiscoveryCache } from "../lib/aiDiscoveryCache";
 import { hasConfiguredAiProvider } from "../lib/aiProviderStatus";
 import { getKeybindingsCoalesced, listLaneSnapshotsCoalesced, listLanesCoalesced } from "../lib/laneReadCache";
+import { migrateProjectKeybindingsOnce, readKeybindingsSnapshot, subscribeKeybindings } from "../lib/keybindingStore";
 import { getProjectConfigCached, invalidateProjectConfigCache } from "../lib/projectConfigCache";
 import type { DraftLaunchJob } from "../lib/draftLaunchJobs";
 import type { HandoffLaunchJob } from "../lib/handoffLaunchJobs";
@@ -394,12 +395,6 @@ const LANE_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const LANE_STATUS_MAX_AGE_MS = 30_000;
 /** Delay before a scheduled status read, so a burst of identity reads collapses into one. */
 const LANE_STATUS_READ_DELAY_MS = 1_200;
-/**
- * The keybindings each project last answered with, so a switch back shows
- * them at once (and keybinding readers do not render the defaults for a
- * moment) while the read that follows the switch refreshes them.
- */
-const keybindingsByProjectRoot = new Map<string, KeybindingsSnapshot>();
 
 export function createDefaultWorkProjectViewState(): WorkProjectViewState {
   return {
@@ -2108,7 +2103,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         selectedLaneId: restoredSelection.laneId,
         focusedSessionId: restoredSelection.sessionId,
         laneInspectorTabs: {},
-        keybindings: null,
+        keybindings: readKeybindingsSnapshot(),
         terminalAttention: EMPTY_TERMINAL_ATTENTION,
         ctoAttention: EMPTY_CTO_ATTENTION,
         dismissedMissingAiBannerRoots: pickDismissMapForRoots(prev.dismissedMissingAiBannerRoots, [project.rootPath]),
@@ -2197,7 +2192,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   providerMode: "guest",
   availableModels: [...MODEL_REGISTRY].filter((m) => !m.deprecated),
   laneInspectorTabs: {},
-  keybindings: null,
+  keybindings: readKeybindingsSnapshot(),
   terminalAttention: EMPTY_TERMINAL_ATTENTION,
   ctoAttention: EMPTY_CTO_ATTENTION,
   smartTooltipsEnabled: initialUserPreferences.smartTooltipsEnabled,
@@ -3211,12 +3206,13 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   },
 
   refreshKeybindings: async () => {
+    // Shortcuts are this computer's (`lib/keybindingStore.ts`), the same for
+    // every project. The project read only runs once, to carry over overrides
+    // saved in a project's database before shortcuts moved here.
+    set({ keybindings: readKeybindingsSnapshot() });
     const projectRoot = selectActiveProjectRoot(get());
-    const keybindings = await getKeybindingsCoalesced({ projectRoot });
-    if (projectRoot) keybindingsByProjectRoot.set(projectRoot, keybindings);
-    // A switch made while this read was out: the answer is the other project's.
-    if (selectActiveProjectRoot(get()) !== projectRoot) return;
-    set({ keybindings });
+    await migrateProjectKeybindingsOnce(() => getKeybindingsCoalesced({ projectRoot }));
+    set({ keybindings: readKeybindingsSnapshot() });
   },
 
   dismissMissingAiBanner: (projectRoot) => {
@@ -3369,7 +3365,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
             selectedLaneId: restoredWarmSelection.laneId,
             focusedSessionId: restoredWarmSelection.sessionId,
             laneInspectorTabs: {},
-            keybindings: keybindingsByProjectRoot.get(cachedProject.rootPath) ?? null,
+            keybindings: readKeybindingsSnapshot(),
             terminalAttention: EMPTY_TERMINAL_ATTENTION,
             ctoAttention: EMPTY_CTO_ATTENTION,
           }
@@ -3420,7 +3416,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
             selectedLaneId: restoredSelection.laneId,
             focusedSessionId: restoredSelection.sessionId,
             laneInspectorTabs: {},
-            keybindings: null,
+            keybindings: readKeybindingsSnapshot(),
             terminalAttention: EMPTY_TERMINAL_ATTENTION,
             ctoAttention: EMPTY_CTO_ATTENTION,
           });
@@ -3612,7 +3608,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
           selectedLaneId: restoredSelection.laneId,
           focusedSessionId: restoredSelection.sessionId,
           laneInspectorTabs: {},
-          keybindings: null,
+          keybindings: readKeybindingsSnapshot(),
           terminalAttention: EMPTY_TERMINAL_ATTENTION,
           ctoAttention: EMPTY_CTO_ATTENTION,
           laneCacheByProject,
@@ -3677,7 +3673,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         selectedLaneId: null,
         focusedSessionId: null,
         laneInspectorTabs: {},
-        keybindings: null,
+        keybindings: readKeybindingsSnapshot(),
         terminalAttention: EMPTY_TERMINAL_ATTENTION,
         ctoAttention: EMPTY_CTO_ATTENTION,
         openProjectTabRoots: [],
@@ -3847,6 +3843,13 @@ export function createProjectAppStore(
  * that actually owns the project.
  */
 const _projectSurfaceStores = new Map<string, AppStoreApi>();
+
+// A save in Settings › Keyboard, or in another window, reaches the shell and
+// every open project at once: shortcuts are the same everywhere.
+subscribeKeybindings((keybindings) => {
+  rootAppStore.setState({ keybindings });
+  for (const store of _projectSurfaceStores.values()) store.setState({ keybindings });
+});
 
 export function registerProjectSurfaceStore(projectKey: string, store: AppStoreApi): void {
   const key = normalizeProjectKey(projectKey);

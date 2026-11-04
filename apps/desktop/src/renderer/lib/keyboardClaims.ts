@@ -56,3 +56,27 @@ export function caretChordIsClaimed(target: EventTarget | null): boolean {
   if (element.closest(".xterm")) return true;
   return element.closest(CARET_SELECTOR) != null;
 }
+
+/**
+ * A shortcut recorder is listening (Settings › Keyboard).
+ *
+ * The recorder listens at window capture and stops the key there, but the
+ * few handlers registered at the same stage before it (Quick slots, the find
+ * bridge) run first; they check this and stand aside, so pressing ⌥⌘3 to
+ * record it does not also run Quick slot 3.
+ */
+let keyCaptureDepth = 0;
+
+export function beginKeyCapture(): () => void {
+  keyCaptureDepth += 1;
+  let ended = false;
+  return () => {
+    if (ended) return;
+    ended = true;
+    keyCaptureDepth = Math.max(0, keyCaptureDepth - 1);
+  };
+}
+
+export function keyCaptureActive(): boolean {
+  return keyCaptureDepth > 0;
+}

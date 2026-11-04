@@ -1248,7 +1248,7 @@ struct WorkChatSessionView: View {
   /// never narrows the prompt box.
   @ViewBuilder
   var composerBadgeChipRow: some View {
-    DuoPaneSelectionReader(pane: duoPane) { selected in
+    DuoPaneReader(pane: duoPane, read: { $0.isOpen ? $0.tab : nil }, fallback: nil) { selected in
       let chips = HStack(spacing: 8) {
         // First: the chips that change what the next send carries.
         if showsComposerCompactFirstPill, let offer = composerCompactFirstOffer {
@@ -3171,8 +3171,11 @@ private struct WorkChatComposerDraftInput: View {
   /// its lane, and only that one.
   @State private var isOnScreen = false
 
-  /// Takes an inspect handoff into this draft: the picture becomes a ready
-  /// attachment and the packet is appended to the text. Nothing is sent.
+  /// Answers one Live Inspect request against this draft. Nothing is sent:
+  /// an insert appends its text block and attaches its picture (all or
+  /// nothing), a remove takes back exactly what an insert added, and a
+  /// replace swaps the picture for the marked-up one. The first matching
+  /// composer claims the request and replies; see `LiveInspectComposerHandoff`.
   private func acceptLiveInspectHandoff(_ handoff: LiveInspectComposerHandoff) {
     let chatId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
     let handoffChatId = handoff.sessionId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -3181,27 +3184,60 @@ private struct WorkChatComposerDraftInput: View {
       && isOnScreen
       && !laneId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
       && handoff.laneId == laneId
-    guard matchesChat || matchesVisibleLane else { return }
+    guard matchesChat || matchesVisibleLane, handoff.claim() else { return }
 
-    if attachmentsAvailable,
-       let attachment = workChatInputAttachment(
-         from: handoff.image,
-         filename: "inspect-\(UUID().uuidString.prefix(8)).jpg"
-       ) {
+    switch handoff.request {
+    case .insert(let text, let image, let attachmentId):
       var next = inputAttachments
       next.removeAll { $0.filename == "attachment-limit" }
-      if next.count < workChatInputAttachmentLimit {
+      if let image {
+        guard attachmentsAvailable else { return handoff.reply(.attachmentsUnavailable) }
+        guard next.count < workChatInputAttachmentLimit else { return handoff.reply(.attachmentLimit) }
+        guard let attachment = liveInspectAttachment(image, id: attachmentId ?? UUID()) else {
+          return handoff.reply(.attachmentsUnavailable)
+        }
         next.append(attachment)
         inputAttachments = next
       }
-    }
+      let block = text.trimmingCharacters(in: .whitespacesAndNewlines)
+      if !block.isEmpty {
+        draftState.text = draftState.trimmedText.isEmpty ? block : draftState.text + "\n\n" + block
+      }
+      if composerCollapsed { applyFold(.expand) }
+      handoff.reply(.attached)
 
-    let text = handoff.text.trimmingCharacters(in: .whitespacesAndNewlines)
-    if !text.isEmpty {
-      draftState.text = draftState.trimmedText.isEmpty ? text : draftState.text + "\n\n" + text
+    case .remove(let text, let attachmentId):
+      if let attachmentId {
+        inputAttachments.removeAll { $0.id == attachmentId }
+      }
+      if let block = text?.trimmingCharacters(in: .whitespacesAndNewlines), !block.isEmpty {
+        draftState.text = liveInspectTextRemovingBlock(block, from: draftState.text)
+      }
+      handoff.reply(.removed)
+
+    case .replaceImage(let replacing, let image, let attachmentId):
+      guard attachmentsAvailable else { return handoff.reply(.attachmentsUnavailable) }
+      var next = inputAttachments
+      next.removeAll { $0.filename == "attachment-limit" }
+      let index = next.firstIndex { $0.id == replacing }
+      guard index != nil || next.count < workChatInputAttachmentLimit else {
+        return handoff.reply(.attachmentLimit)
+      }
+      guard let attachment = liveInspectAttachment(image, id: attachmentId) else {
+        return handoff.reply(.attachmentsUnavailable)
+      }
+      if let index {
+        next[index] = attachment
+      } else {
+        next.append(attachment)
+      }
+      inputAttachments = next
+      handoff.reply(.attached)
     }
-    if composerCollapsed { applyFold(.expand) }
-    ADEHaptics.success()
+  }
+
+  private func liveInspectAttachment(_ image: UIImage, id: UUID) -> WorkChatInputAttachment? {
+    workChatInputAttachment(from: image, filename: "inspect-\(id.uuidString.prefix(8)).jpg", id: id)
   }
 
   private var hasSendableDraftOrAttachment: Bool {
@@ -3569,9 +3605,9 @@ private struct WorkChatComposerDraftInput: View {
       guard request.sessionId == sessionId else { return }
       draftState.applySceneReply(request.text)
     }
-    // Inspect's Send hands the annotated picture and its element packet here:
-    // this chat's composer takes them when the handoff names this chat, or when
-    // it names only this lane and this is the chat on screen.
+    // Live Inspect's "Add to chat" (and its Undo, and Done's marked-up
+    // picture) land here: this chat's composer answers when the handoff names
+    // this chat, or when it names only this lane and this is the chat on screen.
     .onReceive(NotificationCenter.default.publisher(for: .liveInspectComposerHandoff)) { notification in
       guard let handoff = notification.object as? LiveInspectComposerHandoff else { return }
       acceptLiveInspectHandoff(handoff)

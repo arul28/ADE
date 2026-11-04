@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { derivedEventId } from "./analyticsEventId";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import { normalizeAdeUsageClientSurface } from "../../../shared/types";
@@ -28,14 +28,6 @@ type UsageProductAnalyticsExporterArgs = {
   batchSize?: number;
   now?: () => number;
 };
-
-function derivedEventId(baseId: string, suffix: string): string {
-  const chars = createHash("sha256").update(`${baseId}:${suffix}`).digest("hex").slice(0, 32).split("");
-  chars[12] = "4";
-  chars[16] = "8";
-  const value = chars.join("");
-  return `${value.slice(0, 8)}-${value.slice(8, 12)}-${value.slice(12, 16)}-${value.slice(16, 20)}-${value.slice(20)}`;
-}
 
 function sessionStart(action: string): {
   event: "ade_work_session_started";

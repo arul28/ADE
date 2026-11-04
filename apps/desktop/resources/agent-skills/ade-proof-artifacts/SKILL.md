@@ -99,11 +99,11 @@ Copy the id from the `cite:` line; do not type it.
 
 ## Put proof on the PR
 
-`ade proof publish --pr <number or URL> <id> <id>` posts the items you pick
-as one PR comment, with each picture and video under its caption, and marks
-them in the drawer. Post the final set once, after the work is done; when you
-must post again, add `--replace` so your earlier ADE proof comments go. See
-the **ade-pr-workflows** skill for the limits.
+Cite proof in the PR body, under the claim it proves, the same way as in a
+chat answer: `ade prs create` and `ade prs body` upload it. Only proof made
+after the body is final goes up as a comment, with
+`ade proof publish --pr <number or URL> <id> <id>` (`--replace` when you post
+again). See the **ade-pr-workflows** skill for both.
 
 ## Commands
 
@@ -125,19 +125,19 @@ Each surface files its own proof. Use the one you worked on:
 ade apple proof --caption "Onboarding shows the new step" --text
 ade apple record-start --text
 ade apple record-stop --keep --text
-# Mac Desktop (ade mac-desktop) — the lane's own screen
-ade mac-desktop proof --caption "Preferences shows the new key" --text
-ade mac-desktop record start --caption "Note saved in TextEdit" --text
-ade mac-desktop record stop --text
+# The lane's own screen (ade screen)
+ade screen proof --caption "Preferences shows the new key" --text
+ade screen record start --caption "Note saved in TextEdit" --text
+ade screen record stop --text
 # App Control (ade app-control) — the controlled app's own window
 ade app-control proof --caption "Settings saved" --text
 ade app-control record start --caption "Settings save the API key" --text
 ade app-control record stop --text
 # ADE browser (ade browser)
-ade --socket browser proof --tab <tab-id> --caption "Verified" --text
-ade --socket browser proof --browser-session <session-id> --caption "Verified" --text
-ade --socket browser record start --tab <tab-id> --caption "Checkout flow" --text
-ade --socket browser record stop --tab <tab-id> --text
+ade browser proof --tab <tab-id> --caption "Verified" --text
+ade browser proof --browser-session <session-id> --caption "Verified" --text
+ade browser record start --tab <tab-id> --caption "Checkout flow" --text
+ade browser record stop --tab <tab-id> --text
 ```
 
 Every recording becomes a **demo** when it stops: still time cut, waits sped
@@ -196,7 +196,7 @@ so you can see whether you are looking at your own lane and chat.
 
 Only a proof-named command files a drawer entry. Taking a screenshot is not the same as filing proof:
 
-- `ade proof capture --caption "…"`, `ade proof record`, `ade proof attach <path> --caption "…"`, `ade apple proof`, `ade app-control proof`, `ade browser proof`, `ade mac-desktop proof --caption "…"`, a captioned `ade mac-desktop record` and a captioned `ade app-control record` **do** file.
+- `ade proof capture --caption "…"`, `ade proof record`, `ade proof attach <path> --caption "…"`, `ade apple proof`, `ade app-control proof`, `ade browser proof`, `ade screen proof --caption "…"`, a captioned `ade screen record` and a captioned `ade app-control record` **do** file.
 - `ade proof capture` and `ade proof record` never take the user's real screen unless you pass `--real-screen`. For desktop app work on a Mac host, work on the lane's own screen (see the **ade-computer-use** skill) and record there.
 - A bare `screenshot_environment` / `record_environment` call **does not** — it hands you a scratch file path for your own look at the screen. Promote one with `ade proof attach <that path> --caption "…"` when a reviewer should see it. (There is no `captureScreenshot` tool; if you have seen it named somewhere, it does not exist and calling it fails.)
 
@@ -242,5 +242,5 @@ delete what is stale; cite only what stays.
 
 - Do not leave proof as an unregistered local file when the user expects ADE to show it.
 - Do not report "proof attached" from a command whose output you did not read. Six attaches in a row once failed silently in a loop; the confirmation line and `ade proof list --text` are the check that catches it.
-- Browser observations are scratch state, not proof; promote only reviewer-facing checkpoints with `ade --socket browser proof ...` or `ade proof attach`. The **ade-browser** skill documents where those scratch files live and how aggressively they prune.
+- Browser observations are scratch state, not proof; promote only reviewer-facing checkpoints with `ade browser proof ...` or `ade proof attach`. The **ade-browser** skill documents where those scratch files live and how aggressively they prune.
 - Include enough context in the artifact name/description to understand what was verified.

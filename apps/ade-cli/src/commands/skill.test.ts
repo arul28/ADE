@@ -4,7 +4,13 @@ import path from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { isRemoteMcpInvocation, listAgentSkills, readAgentSkill } from "../services/skills/agentSkillCatalogService";
+import {
+  AgentSkillFileError,
+  isRemoteMcpInvocation,
+  listAgentSkills,
+  readAgentSkill,
+  readAgentSkillFile,
+} from "../services/skills/agentSkillCatalogService";
 import { CliSkillUsageError, runSkillCommand, runSkillList, runSkillShow } from "./skill";
 
 describe("ade skill (bundled agent skills)", () => {
@@ -55,6 +61,42 @@ describe("ade skill (bundled agent skills)", () => {
       expect(remote.find((entry) => entry.name === "project-guide")?.source).toBe("project");
       expect(remote.map((entry) => entry.name)).not.toContain("secret-notes");
       expect(readAgentSkill("secret-notes", { cwd: project, includeUser: false, env: remoteEnv })).toBeNull();
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // `skill show <name> <file>` is read-only over ADE MCP, so a skill folder a
+  // repo controls must not become a way to read, or probe for, other files.
+  it("reads a skill's own Markdown files and nothing outside its folder", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-skill-file-"));
+    const project = path.join(root, "project");
+    const skillDir = path.join(project, ".claude", "skills", "guide");
+    try {
+      fs.mkdirSync(path.join(skillDir, "references"), { recursive: true });
+      fs.writeFileSync(path.join(skillDir, "SKILL.md"), "---\nname: guide\ndescription: guide skill\n---\nBody.\n");
+      fs.writeFileSync(path.join(skillDir, "references", "detail.md"), "# Detail\n");
+      fs.writeFileSync(path.join(root, "outside.md"), "secret\n");
+      fs.symlinkSync(path.join(root, "outside.md"), path.join(skillDir, "references", "leak.md"));
+      const skill = readAgentSkill("guide", { cwd: project, includeUser: false, env: process.env });
+      expect(skill, "setup precondition: the project skill is found").not.toBeNull();
+
+      expect(readAgentSkillFile(skill!.entry, "references/detail.md").content).toBe("# Detail\n");
+      const refusal = (file: string): string => {
+        try {
+          readAgentSkillFile(skill!.entry, file);
+        } catch (error) {
+          expect(error).toBeInstanceOf(AgentSkillFileError);
+          return (error as Error).message;
+        }
+        throw new Error(`${file} was read`);
+      };
+      // An escaping path reads the same whether or not the file exists.
+      const outside = "is not a Markdown file inside the guide skill";
+      for (const file of ["../../../../outside.md", "../../../../missing.md", "references/leak.md", path.join(root, "outside.md"), "SKILL"]) {
+        expect(refusal(file), file).toContain(outside);
+      }
+      expect(refusal("references/missing.md")).toContain("has no file");
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

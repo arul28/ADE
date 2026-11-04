@@ -1,6 +1,6 @@
 import { MAX_STATUS_NOTE_CHARACTERS, STATUS_NOTE_GUIDELINE_WORDS } from "./sessionStatusNote";
 import { formatAdeAgentSkillRootsForPrompt, getAdeAgentSkillRootsForPrompt } from "./agentSkillRoots";
-import { SESSION_ACTIVITY_VALUES } from "./types/sessions";
+import { SESSION_ACTIVITY_VALUES, type AgentSpawnLineage } from "./types/sessions";
 
 /**
  * The bundled skill index every provider's prompt advertises.
@@ -58,11 +58,10 @@ export const adeDeprecatedAgentSkillAliases: ReadonlySet<string> = new Set(["ade
 export const ADE_SESSION_STATUS_PROTOCOL_GUIDANCE = [
   "ADE control protocol for truthful Work status:",
   `- Use \`ade chat note "testing desktop auth fallback"\` for a durable one-line summary (aim for ${STATUS_NOTE_GUIDELINE_WORDS} words or fewer; notes truncate past ${MAX_STATUS_NOTE_CHARACTERS} characters).`,
-  '- Asking the user anything, even while background work runs: `ade chat ask "<the exact question>"`; a note alone can leave an idle row looking Done. Not for progress updates.',
+  '- Asking the user anything, even while background work runs: `ade chat ask "<the exact question>"`; a note alone can leave an idle row looking Done. Not for progress updates. A subagent puts its question in its report instead.',
   "- The next accepted user message clears the prior hand-raise; re-ask if still blocked.",
   '- Done: report it and leave `ade chat note "<delivered result>"`.',
   "- You cannot settle or unsettle a session; that is the user's call, or the automatic result of its PR merging.",
-  "- Waiting a while? `ade session snooze <id> --for <duration>` hides the row without claiming done; a hand-raise wakes it.",
   "- Keep lane and chat names accurate. When the work changes direction or moves to a new branch, rename without asking: `ade lanes rename`, `ade chat update --title`, or `ade chat generate-names`. A lane keeps its name when its branch changes.",
 ].join("\n");
 
@@ -231,19 +230,55 @@ export const ADE_CLI_AGENT_GUIDANCE = buildAdeCliAgentGuidance();
 export const ADE_CLI_SESSION_SCREEN_RULES = [
   "Screens and proof: every `ade` command works from this terminal.",
   "- The user's own screen, apps and windows are not yours to change. Never close, quit, hide or reset an app or window you did not open. Act on their real screen only when they ask.",
-  "- Pick the surface: check with a CLI, test or file first; a web page or localhost is `ade browser`; an Electron app's DOM is `ade app-control`; an iOS app is `ade apple`; only a desktop app none of those reach goes on this lane's own screen, `ade mac-desktop` (`ade screen` on Windows), and you stop it when you finish.",
+  "- Pick the surface: check with a CLI, test or file first; a web page or localhost is `ade browser`; an Electron app's DOM is `ade app-control`; an iOS app is `ade apple`; only a desktop app none of those reach goes on this lane's own screen, `ade screen`, and you stop it when you finish.",
   "- Do not click, type or capture with anything else (osascript, cliclick, screencapture, a browser you start yourself): those drive the user's real screen.",
   "- An ok result only means the input was sent. Observe before you report, and file proof with the surface's own `proof` or `record` command.",
 ].join("\n");
 
+/**
+ * How a child chat or CLI sends a report to the chat that started it. One text
+ * for both, so a chat subagent and a terminal subagent are told the same thing.
+ */
+export const ADE_PARENT_REPORT_COMMAND_GUIDANCE = [
+  "Send reports with the typed `ade chat message` command, which passes a JSON object to `chat.messageSession`. Pass the report through stdin or a file with `--text-file`, never as an argument: on Windows `ade.cmd` cuts an argument at its first line break.",
+  "In Bash/zsh or Git Bash, use a quoted here-doc with an end marker absent from the report: `ade chat message \"$ADE_PARENT_CHAT_SESSION_ID\" --text-file - <<'REPORT_END'`, the report, then `REPORT_END`.",
+  "In PowerShell, put it in a single-quoted here-string (`$report = @'` ... `'@`; nothing inside is expanded), run `$f = New-TemporaryFile; Set-Content -LiteralPath $f -Value $report -Encoding utf8`, then `ade chat message $env:ADE_PARENT_CHAT_SESSION_ID --text-file $f`.",
+].join(" ");
+
+/**
+ * What a provider CLI started by another chat is told about that chat. A
+ * terminal has no reliable turn end ADE can read, so unlike a chat subagent
+ * nothing reports for it: the CLI reports itself, by message, when it is done.
+ */
+export function buildCliSpawnReportGuidance(
+  lineage: AgentSpawnLineage | null | undefined,
+): string | null {
+  const parent = lineage?.parentChatSessionId?.trim();
+  if (!parent) return null;
+  // `$ADE_PARENT_CHAT_SESSION_ID` is exported to this process and holds the
+  // same id; it is named here too in case a shell loses the variable.
+  if (lineage?.spawnKind === "peer") {
+    return `ADE chat ${parent} started you as a peer: nobody waits on your result. If that chat needs it, report it. ${ADE_PARENT_REPORT_COMMAND_GUIDANCE}`;
+  }
+  return [
+    `You are a subagent of ADE chat ${parent} ($ADE_PARENT_CHAT_SESSION_ID). That chat cannot see this terminal, so report to it yourself:`,
+    "- When you finish a task, send a report: what you did, what you checked, and anything left open. Send one for each task you finish, not only when you exit.",
+    "- When you need a decision, put the question and your recommendation in a report and wait; do not ask the user. That chat asks them when it cannot decide.",
+    `- ${ADE_PARENT_REPORT_COMMAND_GUIDANCE}`,
+  ].join("\n");
+}
+
 /** What a tracked provider CLI session is told: the bootstrap, then the screen rules. */
 export function buildAdeCliSessionGuidance(
   skillRoots: readonly string[] = getAdeAgentSkillRootsForPrompt(),
+  spawnLineage?: AgentSpawnLineage | null,
 ): string {
+  const report = buildCliSpawnReportGuidance(spawnLineage);
   return [
     buildAdeCliAgentGuidance(skillRoots),
     "",
     ADE_CLI_SESSION_SCREEN_RULES,
+    ...(report ? ["", report] : []),
   ].join("\n");
 }
 
@@ -281,15 +316,14 @@ export function buildAdeBootstrapGuidance(
     // cited proof as links GitHub cannot show.
     "PRs: open with `ade prs create`, rewrite text with `ade prs body`; `gh` skips proof upload and the lane link.",
     "`mcp__computer_use` drives the user's real screen: use it only on request, after `ade-computer-use`; never substitute `@oai/sky` via `node_repl`.",
-    "CLI ground truth: `ade help <command>` and `ade actions list --text`; prefer typed commands with `--text`. Settings questions: `ade settings find <words>`. Clean up started processes.",
+    "CLI ground truth: `ade help <command>` and `ade actions list --text`; prefer typed commands with `--text`. Settings questions: `ade settings find <words>`; clean up started processes.",
     // Without this line an agent that needed Linear asked for the API key in
     // chat, where it stays in the transcript. Each command shows a card only
     // the user can answer, and the value never reaches the agent.
     "Credentials: never ask in chat. `ade secrets request` (a key), `ade integrations connect` (GitHub/Linear/Jira) and `ade mcp servers add` (MCP) show the user a card. Read only requested `ade secrets`; never print them.",
-    // The distinction agents get wrong: a wake is you doing work later, a
-    // draft send is the user's message arriving later. Naming both here keeps
-    // an agent from reaching for its own cron when the user asked for a send.
-    "`ade chat scheduled-work create` wakes *you* later to work (durably resumes bound chats and tracked provider CLIs); `ade drafts` sends a message later as a real user turn, shown in the user's Drafts.",
+    // One default per scenario: same chat and lane, subagents for other
+    // models, and one wake per thing waited on, so an agent never polls.
+    "Stay in this chat and lane unless asked. Another model works as your subagent (`ade new chat --mode chat`). Later: subagents report back; a PR you watch → `ade prs watch`; terminal → `ade terminal watch`; else `ade chat scheduled-work create`. `ade drafts` sends as the user.",
     ADE_SESSION_STATUS_PROTOCOL_GUIDANCE,
   ].join("\n");
 }

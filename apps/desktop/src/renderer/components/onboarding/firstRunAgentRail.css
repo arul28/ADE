@@ -1,0 +1,498 @@
+/* The agent rail on "Connect your agents" (`FirstRunAgentRail.tsx`). */
+
+.ade-fr-rail {
+  padding: 4px 0 12px;
+}
+
+.ade-fr-rail-stage {
+  position: relative;
+  width: 100%;
+  overflow: hidden;
+  user-select: none;
+  background-image: radial-gradient(circle, color-mix(in srgb, var(--color-fg) 7%, transparent) 0 1px, transparent 1.6px);
+  background-size: 18px 18px;
+  background-position: 9px 4px;
+  -webkit-mask-image: linear-gradient(to bottom, #000 78%, transparent);
+  mask-image: linear-gradient(to bottom, #000 78%, transparent);
+}
+
+/* The rail: a brushed metal bar on two brackets. */
+.ade-fr-rail-bar {
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  height: 7px;
+  border-radius: 999px;
+  background: linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--color-fg) 62%, transparent) 0%,
+    color-mix(in srgb, var(--color-fg) 40%, transparent) 40%,
+    color-mix(in srgb, var(--color-fg) 22%, transparent) 100%
+  );
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, white 45%, transparent),
+    0 5px 8px -2px rgba(0, 0, 0, 0.35);
+}
+
+.ade-fr-rail-bar i {
+  position: absolute;
+  top: -6px;
+  width: 9px;
+  height: 19px;
+  border-radius: 3px;
+  background: linear-gradient(to right, color-mix(in srgb, var(--color-fg) 50%, transparent), color-mix(in srgb, var(--color-fg) 28%, transparent));
+  box-shadow: 0 3px 6px rgba(0, 0, 0, 0.3);
+}
+
+.ade-fr-rail-bar i[data-side="left"] { left: 2px; }
+.ade-fr-rail-bar i[data-side="right"] { right: 2px; }
+
+/* Splits "connect here" from "in Settings, later". */
+.ade-fr-rail-divider {
+  position: absolute;
+  width: 3px;
+  height: 17px;
+  margin-left: -1.5px;
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--color-fg) 38%, transparent);
+}
+
+
+/* One hanging agent. The button spans its slot so the whole column is the target. */
+.ade-fr-rail-item {
+  all: unset;
+  position: absolute;
+  bottom: 0;
+  display: block;
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+}
+
+.ade-fr-rail-item:focus-visible .ade-fr-rail-turn {
+  outline: 2px solid color-mix(in srgb, var(--color-accent) 80%, transparent);
+  outline-offset: 5px;
+  border-radius: 10px;
+}
+
+.ade-fr-rail-hook {
+  position: absolute;
+  left: 50%;
+  top: -8px;
+  width: 10px;
+  height: 13px;
+  margin-left: -2px;
+  border: 1.6px solid color-mix(in srgb, var(--color-fg) 62%, transparent);
+  border-bottom: none;
+  border-right-color: transparent;
+  border-radius: 7px 7px 0 0;
+}
+
+.ade-fr-rail-hook::after {
+  content: "";
+  position: absolute;
+  left: -1.6px;
+  top: 5px;
+  height: 8px;
+  border-left: 1.6px solid color-mix(in srgb, var(--color-fg) 62%, transparent);
+}
+
+/* The cord the charm hangs on, swinging with it; its eyelet shows where the agent stands. */
+.ade-fr-rail-cord {
+  position: relative;
+  flex: none;
+  width: 1.4px;
+  background: linear-gradient(to bottom, color-mix(in srgb, var(--color-fg) 55%, transparent), color-mix(in srgb, var(--color-fg) 32%, transparent));
+}
+
+.ade-fr-rail-eyelet {
+  position: absolute;
+  left: 50%;
+  bottom: -3px;
+  width: 7px;
+  height: 7px;
+  margin-left: -3.5px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-fg) 40%, transparent);
+  box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--color-bg) 70%, transparent);
+  z-index: 2;
+}
+
+.ade-fr-rail-item[data-state="connected"] .ade-fr-rail-eyelet {
+  background: #34d399;
+  box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--color-bg) 70%, transparent), 0 0 8px 1px color-mix(in srgb, #34d399 55%, transparent);
+}
+
+.ade-fr-rail-item[data-state="sign-in"] .ade-fr-rail-eyelet,
+.ade-fr-rail-item[data-state="busy"] .ade-fr-rail-eyelet {
+  background: #f5b84b;
+}
+
+.ade-fr-rail-item[data-state="busy"] .ade-fr-rail-eyelet {
+  animation: ade-fr-rail-pulse 1s ease-in-out infinite;
+}
+
+@keyframes ade-fr-rail-pulse {
+  50% { box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--color-bg) 70%, transparent), 0 0 10px 3px color-mix(in srgb, #f5b84b 60%, transparent); }
+}
+
+/* Swings from the hook (JS writes the rotation). */
+.ade-fr-rail-swing {
+  position: absolute;
+  inset: 0 0 auto 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  transform-origin: 50% -2px;
+  will-change: transform;
+}
+
+/* Turned away at rest; faces you, lifted, when brushed or focused. */
+.ade-fr-rail-turn {
+  position: relative;
+  display: grid;
+  place-items: center;
+  transform: perspective(460px) rotateX(10deg) rotateY(-24deg);
+  transform-origin: 50% 0;
+  transition: transform 460ms cubic-bezier(0.2, 0.9, 0.3, 1.25), opacity 260ms ease, filter 260ms ease;
+}
+
+.ade-fr-rail-item[data-front="true"] .ade-fr-rail-turn {
+  transform: perspective(460px) rotateX(2deg) rotateY(-4deg) translateZ(16px) scale(1.12);
+}
+
+.ade-fr-rail-item:not([data-primary]) .ade-fr-rail-turn {
+  opacity: 0.55;
+  filter: saturate(0.6);
+}
+
+.ade-fr-rail-item:not([data-primary])[data-front="true"] .ade-fr-rail-turn {
+  opacity: 1;
+  filter: none;
+}
+
+/* The stacked mark (same build as the provider pages' SolidLogo). */
+.ade-fr-rail-mark {
+  position: relative;
+  display: grid;
+  place-items: center;
+  filter: drop-shadow(5px 9px 7px rgba(0, 0, 0, 0.4));
+}
+
+.ade-fr-rail-layer {
+  grid-area: 1 / 1;
+  display: inline-flex;
+  line-height: 0;
+}
+
+.ade-fr-rail-layer[data-face="true"] {
+  filter: drop-shadow(0 0 0.6px rgba(0, 0, 0, 0.35));
+}
+
+.ade-fr-rail-layer[data-gloss="true"] {
+  filter: brightness(0) invert(1);
+  opacity: 0.38;
+  mix-blend-mode: soft-light;
+  clip-path: polygon(0 0, 100% 0, 0 78%);
+}
+
+/* A square logo keeps its tile, drawn as a solid block. */
+.ade-fr-rail-tile {
+  width: 100%;
+  height: 100%;
+  display: grid;
+  place-items: center;
+  box-shadow:
+    inset 0 1.5px 0 rgba(255, 255, 255, 0.35),
+    1px 1px 0 color-mix(in srgb, var(--brand) 40%, #000),
+    2px 2px 0 color-mix(in srgb, var(--brand) 34%, #000),
+    3px 3px 0 color-mix(in srgb, var(--brand) 28%, #000),
+    4px 4px 0 color-mix(in srgb, var(--brand) 22%, #000),
+    6px 10px 12px rgba(0, 0, 0, 0.42);
+}
+
+/* Under the rail: the faced agent on its provider-page banner. */
+.ade-fr-rail-caption {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-height: 76px;
+  margin: 4px 10px 0;
+  padding: 10px 14px 10px 16px;
+  border-radius: 14px;
+  overflow: hidden;
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-sizing: border-box;
+  animation: ade-fr-rail-caption-in 260ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.ade-fr-rail-caption[data-empty="true"] {
+  justify-content: center;
+  border-color: var(--gate-rule);
+  background: color-mix(in srgb, var(--color-bg) 16%, transparent);
+  color: var(--gate-text-3);
+  font-size: 12.5px;
+  animation: none;
+}
+
+.ade-fr-rail-caption[data-empty="true"] span {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ade-fr-rail-caption[data-light="true"] { color: #141414; }
+
+.ade-fr-rail-caption-shade {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(90deg, rgba(0, 0, 0, 0.55), rgba(0, 0, 0, 0.18) 60%, rgba(0, 0, 0, 0.3));
+}
+
+.ade-fr-rail-caption[data-shade="soft"] .ade-fr-rail-caption-shade {
+  background: linear-gradient(90deg, rgba(0, 0, 0, 0.2), transparent 60%);
+}
+
+.ade-fr-rail-caption[data-light="true"] .ade-fr-rail-caption-shade {
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0.82), rgba(255, 255, 255, 0.45) 55%, rgba(255, 255, 255, 0.2));
+}
+
+/* The banner's art, whole: scaled to fit the strip, never cropped by it. */
+.ade-fr-rail-caption-art {
+  position: absolute;
+  right: 28px;
+  top: 50%;
+  max-height: 84%;
+  max-width: 40%;
+  object-fit: contain;
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+
+.ade-fr-rail-caption[data-action="true"] .ade-fr-rail-caption-art {
+  right: 230px;
+}
+
+.ade-fr-rail-caption-mark {
+  position: relative;
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 46px;
+  height: 46px;
+}
+
+.ade-fr-rail-caption-mark .ade-fr-rail-mark {
+  filter: drop-shadow(3px 6px 5px rgba(0, 0, 0, 0.35));
+}
+
+.ade-fr-rail-caption-mark .ade-fr-rail-tile {
+  width: 38px;
+  height: 38px;
+}
+
+.ade-fr-rail-caption-text {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.ade-fr-rail-caption-text b {
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+}
+
+.ade-fr-rail-caption[data-light="true"] .ade-fr-rail-caption-text b { text-shadow: none; }
+
+.ade-fr-rail-caption-text span {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  opacity: 0.9;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ade-fr-rail-caption i {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: color-mix(in srgb, currentColor 45%, transparent);
+}
+
+.ade-fr-rail-caption i[data-state="connected"] {
+  background: #34d399;
+  box-shadow: 0 0 0 3px color-mix(in srgb, #34d399 25%, transparent);
+}
+
+.ade-fr-rail-caption i[data-state="sign-in"] {
+  background: #f5b84b;
+  box-shadow: 0 0 0 3px color-mix(in srgb, #f5b84b 25%, transparent);
+}
+
+.ade-fr-rail-action {
+  position: relative;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 13px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  background: rgba(255, 255, 255, 0.92);
+  color: #111;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+  transition: transform 140ms ease;
+}
+
+.ade-fr-rail-action:hover:not(:disabled) { transform: translateY(-1px); }
+.ade-fr-rail-action:disabled { opacity: 0.75; cursor: default; }
+.ade-fr-rail-caption[data-light="true"] .ade-fr-rail-action { background: #141414; color: #fff; border-color: transparent; }
+
+@keyframes ade-fr-rail-caption-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ade-fr-rail-turn { transition: none; }
+  .ade-fr-rail-caption { animation: none; }
+}
+
+html[data-motion="reduced"] .ade-fr-rail-turn { transition: none; }
+html[data-motion="reduced"] .ade-fr-rail-caption { animation: none; }
+html[data-motion="reduced"] .ade-fr-rail-eyelet { animation: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  .ade-fr-rail-eyelet { animation: none; }
+}
+
+/* Light glass: a white face needs an edge to read, and Kimi's white "K"
+   takes the theme's text colour, as on the welcome card. */
+[data-theme="light"] .ade-fr-rail-stage .ade-fr-rail-layer[data-face="true"] {
+  filter: drop-shadow(0 0 0.8px rgba(0, 0, 0, 0.55));
+}
+
+[data-theme="light"] .ade-fr-rail-item[data-logo="kimi"] .ade-fr-rail-layer[data-face="true"] {
+  color: var(--color-fg) !important;
+}
+
+/* ── Polish ── */
+
+/* No box on this step: the rail hangs straight on the glass. */
+.ade-fr-agents .ade-fr-list {
+  border: none;
+  background: transparent;
+  overflow: visible;
+}
+
+/* The faced agent's color spills softly onto the glass behind the rail. The
+   color is a registered property, so changing agents fades between them. */
+@property --rail-glow {
+  syntax: "<color>";
+  inherits: true;
+  initial-value: transparent;
+}
+
+.ade-fr-rail {
+  position: relative;
+  --rail-glow: transparent;
+  transition: --rail-glow 420ms ease;
+}
+
+.ade-fr-rail::before {
+  content: "";
+  position: absolute;
+  inset: -40px -60px 10px;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(55% 60% at 50% 42%, color-mix(in srgb, var(--rail-glow) 22%, transparent), transparent 70%),
+    radial-gradient(40% 50% at 50% 92%, color-mix(in srgb, var(--rail-glow) 16%, transparent), transparent 75%);
+  opacity: 0;
+  transition: opacity 360ms ease;
+}
+
+.ade-fr-rail[data-faced="true"]::before {
+  opacity: 1;
+}
+
+/* The stage keeps its dot grid but no longer reads as a panel. */
+.ade-fr-rail-stage {
+  background-image: radial-gradient(circle, color-mix(in srgb, var(--color-fg) 5%, transparent) 0 1px, transparent 1.6px);
+}
+
+/* Light on the metal rail, sitting over the hand. */
+.ade-fr-rail-bar::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background: radial-gradient(90px 10px at var(--rail-light, 50%) 30%, rgba(255, 255, 255, 0.75), transparent 70%);
+  opacity: 0;
+  transition: opacity 300ms ease;
+}
+
+.ade-fr-rail:hover .ade-fr-rail-bar::after {
+  opacity: 1;
+}
+
+/* The faced charm is lit from below in its own color. */
+.ade-fr-rail-item[data-front="true"] .ade-fr-rail-mark,
+.ade-fr-rail-item[data-front="true"] .ade-fr-rail-tile {
+  filter:
+    drop-shadow(0 10px 14px color-mix(in srgb, var(--brand) 55%, transparent))
+    drop-shadow(5px 9px 7px rgba(0, 0, 0, 0.4));
+}
+
+/* A sign-in that lands: the charm turns once on its cord, its eyelet rings. */
+.ade-fr-rail-item[data-celebrate="true"] .ade-fr-rail-turn {
+  animation: ade-fr-rail-turn-once 1100ms cubic-bezier(0.25, 0.9, 0.3, 1.1);
+}
+
+.ade-fr-rail-item[data-celebrate="true"] .ade-fr-rail-eyelet::after {
+  content: "";
+  position: absolute;
+  inset: -2px;
+  border-radius: 999px;
+  border: 2px solid #34d399;
+  animation: ade-fr-rail-ring 1100ms ease-out;
+}
+
+@keyframes ade-fr-rail-turn-once {
+  from { transform: perspective(460px) rotateX(10deg) rotateY(-24deg); }
+  to { transform: perspective(460px) rotateX(10deg) rotateY(336deg); }
+}
+
+@keyframes ade-fr-rail-ring {
+  from { opacity: 0.9; transform: scale(1); }
+  to { opacity: 0; transform: scale(4.5); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ade-fr-rail-item[data-celebrate="true"] .ade-fr-rail-turn,
+  .ade-fr-rail-item[data-celebrate="true"] .ade-fr-rail-eyelet::after { animation: none; }
+  .ade-fr-rail, .ade-fr-rail::before { transition: none; }
+}
+
+html[data-motion="reduced"] .ade-fr-rail-item[data-celebrate="true"] .ade-fr-rail-turn,
+html[data-motion="reduced"] .ade-fr-rail-item[data-celebrate="true"] .ade-fr-rail-eyelet::after { animation: none; }

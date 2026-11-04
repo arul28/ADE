@@ -158,6 +158,8 @@ const APPLE_INVOKE_INPUT_METHODS: ReadonlySet<string> = new Set([
   "scroll",
   "pressButton",
   "rotate",
+  // A phone mirroring its own hinge folds the lane's device, never another.
+  "setPosture",
   "selectPoint",
   "tapElement",
   "fillElement",

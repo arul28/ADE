@@ -2035,16 +2035,25 @@ describe("uploadChatAttachment", () => {
   });
 
   /** A real upload route plus a service whose ticket leg runs the real registry. */
-  async function startPasteUploadHost(): Promise<{
+  async function startPasteUploadHost(options: { failHttp?: boolean; maxBytes?: number } = {}): Promise<{
     projectRoot: string;
     service: RemoteConnectionService;
     remote: RemoteRuntimeTarget;
     callActionForTarget: ReturnType<typeof vi.fn>;
+    httpRequests: { count: number };
   }> {
     const projectRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "ade-upload-paste-project-"));
     tempDirs.push(projectRoot);
-    const uploads = createAttachmentUploadRegistry();
+    const uploads = createAttachmentUploadRegistry({ maxBytes: options.maxBytes });
+    const httpRequests = { count: 0 };
     const server = http.createServer((request, response) => {
+      httpRequests.count += 1;
+      if (options.failHttp) {
+        request.resume();
+        response.writeHead(502);
+        response.end();
+        return;
+      }
       if (uploads.handleRequest(request, response)) return;
       response.writeHead(426);
       response.end();
@@ -2067,7 +2076,10 @@ describe("uploadChatAttachment", () => {
         _target: RemoteRuntimeTarget,
         _projectId: string,
         request: { domain: string; action: string; args?: Record<string, unknown> },
-      ) => dispatchRunAdeAction(runtime, request),
+      ) => {
+        if (_target.id !== remote.id || _projectId !== "project-1") throw new Error("Wrong attachment owner");
+        return dispatchRunAdeAction(runtime, request);
+      },
     );
     const service = new RemoteConnectionService({
       list: vi.fn(() => [remote]),
@@ -2079,32 +2091,46 @@ describe("uploadChatAttachment", () => {
       onEntryEvicted: vi.fn(() => () => {}),
       getAttachmentUploadRoute: vi.fn(async () => ({
         url: `http://127.0.0.1:${port}/ade-attachments/upload`,
-        maxBytes: MAX_CHAT_ATTACHMENT_BYTES,
+        maxBytes: options.maxBytes ?? MAX_CHAT_ATTACHMENT_BYTES,
       })),
       callActionForTarget,
       ...poolConnectStateStubs(),
     } as unknown as RemoteConnectionPool);
-    return { projectRoot, service, remote, callActionForTarget };
+    return { projectRoot, service, remote, callActionForTarget, httpRequests };
   }
 
-  it("streams pasted bytes, which have no file, through a temp file on the same route", async () => {
+  it.each([
+    { filename: "clipboard.png", fromBytes: true, failHttp: false, size: 3, limit: MAX_CHAT_ATTACHMENT_BYTES, succeeds: true },
+    { filename: "shot.png", fromBytes: false, failHttp: true, size: 3, limit: MAX_CHAT_ATTACHMENT_BYTES, succeeds: true },
+    { filename: "pasted-1793742301439.txt", fromBytes: true, failHttp: true, size: 3, limit: MAX_CHAT_ATTACHMENT_BYTES, succeeds: true },
+    { filename: "shot.png", fromBytes: false, failHttp: true, size: 3, limit: 3, succeeds: true },
+    { filename: "shot.png", fromBytes: false, failHttp: true, size: 3, limit: 2, succeeds: false },
+    { filename: "shot.png", fromBytes: false, failHttp: true, size: 10 * 1024 * 1024 + 1, limit: MAX_CHAT_ATTACHMENT_BYTES, succeeds: false },
+  ])("stores original attachment bytes with at most one HTTP attempt: $filename / $fromBytes / $limit / $size", async ({ filename, fromBytes, failHttp, size, limit, succeeds }) => {
     // A terminal or composer paste holds bytes in memory. They go to a temp
     // file and through the same two-leg upload a picked file takes, so a paste
     // to a paired machine never rides one runtime command.
-    const { projectRoot, service, remote } = await startPasteUploadHost();
-    const png = Buffer.from("89504e470d0a1a0a0000000d4948445200000001000000010806000000", "hex");
-
-    const staged = await service.uploadChatAttachmentBytes({
-      targetId: remote.id,
-      projectId: "project-1",
-      data: png.toString("base64"),
-      filename: "clipboard-image.png",
-      maxBytes: MAX_CHAT_ATTACHMENT_BYTES,
-    });
+    const { projectRoot, service, remote, httpRequests } = await startPasteUploadHost({ failHttp, maxBytes: limit });
+    const content = Buffer.alloc(size, 7);
+    const sourcePath = path.join(projectRoot, filename);
+    await fs.promises.writeFile(sourcePath, content);
+    const owner = { targetId: remote.id, projectId: "project-1", filename };
+    const pending = fromBytes
+      ? service.uploadChatAttachmentBytes({ ...owner, data: content.toString("base64"), maxBytes: limit })
+      : service.uploadChatAttachment({ ...owner, sourcePath });
+    if (!succeeds) {
+      await expect(pending).rejects.toThrow(size > limit ? /larger than the machine accepts/ : /HTTP 502/);
+      await expect(fs.promises.readdir(projectAttachmentsDir(projectRoot))).rejects.toThrow();
+      expect(httpRequests.count).toBe(size > limit ? 0 : 1);
+      return;
+    }
+    const staged = await pending;
 
     expect(path.dirname(staged.path)).toBe(projectAttachmentsDir(projectRoot));
-    expect(path.extname(staged.path)).toBe(".png");
-    await expect(fs.promises.readFile(staged.path)).resolves.toEqual(png);
+    expect(path.extname(staged.path)).toBe(path.extname(filename));
+    await expect(fs.promises.readFile(staged.path)).resolves.toEqual(content);
+    await expect(fs.promises.readdir(projectAttachmentsDir(projectRoot))).resolves.toHaveLength(1);
+    expect(httpRequests.count).toBe(1);
   });
 
   it("refuses pasted bytes over the machine's advertised limit before minting a ticket", async () => {

@@ -123,6 +123,7 @@ import {
 import { ModelChipSegmentMenu } from "./ModelChipSegmentMenu";
 import { ComposerModelHintChip } from "./ComposerModelHintChip";
 import { useComposerModelHint } from "./useComposerModelHint";
+import { useQuickSlotComposerTarget } from "../../quickSlots/useQuickSlotComposerTarget";
 import { formatModelMentionToken, parseModelMentionToken, parseModelMentions } from "../../../shared/modelMentions";
 import {
   activeTurnDispatchModes,
@@ -411,7 +412,9 @@ function attachmentErrorMessage(error: unknown, filename: string): string {
   if (error instanceof AttachmentConversionError) {
     return HEIC_CONVERSION_MESSAGES[error.code];
   }
-  return `Unable to attach "${filename || "file"}".`;
+  const raw = error instanceof Error ? error.message : error;
+  const reason = typeof raw === "string" ? stripElectronErrorWrapper(raw) : "";
+  return `Unable to attach "${filename || "file"}".${reason ? ` ${reason}` : ""}`;
 }
 
 // Every rich-composer chip carries `data-composer-chip`. Chips are
@@ -2348,6 +2351,7 @@ function AgentChatComposerImpl({
   effortSelectionLocked,
   modelPickerOpenRequestKey,
   onModelPickerOpenRequestHandled,
+  onOpenModelPickerRequest,
   permissionModeLocked = false,
   hideNativeControls = false,
   hideModelControls = false,
@@ -2409,6 +2413,7 @@ function AgentChatComposerImpl({
   launchPromptClipboardNoticeEnabled = true,
   onOpenLaunchPromptClipboardSettings,
   sessionId,
+  sessionLaneId = null,
   parallelChatMode = false,
   onParallelChatModeChange,
   parallelModelSlots = [],
@@ -2610,18 +2615,22 @@ function AgentChatComposerImpl({
   effortSelectionLocked?: boolean;
   modelPickerOpenRequestKey?: number;
   onModelPickerOpenRequestHandled?: () => void;
+  /** Open the model picker from outside the control (a quick slot). */
+  onOpenModelPickerRequest?: () => void;
   permissionModeLocked?: boolean;
   hideNativeControls?: boolean;
   /** Hide model, reasoning, and fast-mode controls when the host surface owns them. */
   hideModelControls?: boolean;
   messagePlaceholder?: string;
   inputLockMessage?: string | null;
+  /** The lane this chat runs in. Lane quick slots follow it, not the sidebar. */
+  sessionLaneId?: string | null;
   /**
    * `options` is the picker's own selection shape: fast mode, a Cursor Cloud
    * service tier, and — when the row came from the harnesses tab or from a
    * stored key's declared models — the brain that row names.
    */
-  onModelChange: (modelId: string, options?: ModelPickerSelection) => void;
+  onModelChange: (modelId: string, options?: ModelPickerSelection) => boolean | void;
   onReasoningEffortChange: (reasoningEffort: string | null) => void;
   onFastModeChange?: (enabled: boolean, tier?: FastTier) => void;
   /** Codex Daybreak for this chat (or draft): see `shared/codexDaybreak.ts`. */
@@ -3124,8 +3133,10 @@ function AgentChatComposerImpl({
   const pendingDraftEditIntentRef = useRef<ComposerDraftEditIntent | null>(null);
   const fileAddInProgressRef = useRef(false);
   const addFileAttachmentsRef = useRef<(files: FileList | File[] | null | undefined) => void>(() => {});
-  const latestComposerMachineBindingRef = useRef(composerMachineBinding);
-  latestComposerMachineBindingRef.current = composerMachineBinding;
+  const chatRuntimeScope = useChatRuntimeScope();
+  const attachmentMachineBinding = composerMachineBinding ?? (projectChatPane ? chatRuntimeScope.binding : null);
+  const latestComposerMachineBindingRef = useRef(attachmentMachineBinding);
+  latestComposerMachineBindingRef.current = attachmentMachineBinding;
   // Catalog bucket for every model-derived control in this composer (picker
   // rows, availability, thinking levels). Empty only when no machine is known.
   const modelCatalogScopeKey = catalogScopeKey ?? modelRuntimePin?.key ?? DEFAULT_RUNTIME_CATALOG_SCOPE;
@@ -3419,7 +3430,7 @@ function AgentChatComposerImpl({
   // Voice runs on the chat machine's brain and Codex sign-in, not this window's.
   // The chat-scope pin is null when the chat is on the tab's machine, which
   // keeps the unpinned route (transition guard + local fallback) there.
-  const chatRuntimePin = useChatRuntimeScope().pin;
+  const chatRuntimePin = chatRuntimeScope.pin;
   // Bumped per effort picked by hand; the hint chip stands down for that prompt.
   const [effortPickedByHand, setEffortPickedByHand] = useState(0);
   const handleReasoningEffortPickerChange = useCallback((effort: string | null) => {
@@ -3900,14 +3911,20 @@ function AgentChatComposerImpl({
     setAttachRetryFiles(null);
     const retryable: File[] = [];
     let chipPlacement: AttachmentChipPlacement = options.chipPlacement ?? { kind: "end" };
+    const attachmentOwnerBinding = attachmentMachineBinding;
+    const attachmentApi = agentChatApiRef.current;
     try {
       let addedInBatch = 0;
       const initialSlotCount = attachmentSlotsUsed;
       // One probe per batch, not per file: the answer is a property of the
       // machine, and asking again mid-batch would only widen the window in
       // which half the files were staged under a different contract.
-      const stagingMode = await readAttachmentStagingMode(composerMachineBinding, agentChatApiRef.current);
+      const stagingMode = await readAttachmentStagingMode(attachmentOwnerBinding, attachmentApi);
       for (const file of Array.from(files)) {
+        if (latestComposerMachineBindingRef.current?.key !== attachmentOwnerBinding?.key) {
+          setAttachError("Files were not attached because the selected project or machine changed. Attach them again.");
+          break;
+        }
         if (parallelChatMode && initialSlotCount + addedInBatch >= PARALLEL_CHAT_MAX_ATTACHMENTS) {
           setAttachError(`You can attach up to ${PARALLEL_CHAT_MAX_ATTACHMENTS} files for parallel launch.`);
           break;
@@ -3934,7 +3951,6 @@ function AgentChatComposerImpl({
         const pendingImage = isImageAttachment
           ? addPendingImageAttachment(sourceAttachmentName, isHeicUpload ? null : createObjectPreviewUrl(file))
           : null;
-        const attachmentOwnerBinding = composerMachineBinding;
         try {
           // The two transports differ only in HOW the bytes reach the host.
           // Each yields the same three facts, and everything after — the
@@ -3943,7 +3959,7 @@ function AgentChatComposerImpl({
           // is written once below. Duplicating it is how the two branches drift.
           let staged: StagedAttachment;
           if (plan.transport === "path") {
-            const { path: stagedPath } = await agentChatApiRef.current.stageFileAttachment(
+            const { path: stagedPath } = await attachmentApi.stageFileAttachment(
               {
                 sourcePath: plan.sourcePath,
                 filename: normalizeImageAttachmentFilename(sourceAttachmentName, file.type),
@@ -3960,7 +3976,7 @@ function AgentChatComposerImpl({
             });
           } else {
             staged = await stageAttachmentBytesFromFile({
-              api: agentChatApiRef.current,
+              api: attachmentApi,
               file,
               filename: sourceAttachmentName,
               requiresHeicConversion: isHeicUpload,
@@ -3971,7 +3987,7 @@ function AgentChatComposerImpl({
           if (latestComposerMachineBindingRef.current?.key !== attachmentOwnerBinding?.key) {
             if (pendingImage) dropPendingImageAttachment(pendingImage.id);
             setAttachError(`"${sourceAttachmentName}" was not attached because the selected machine changed. Attach it again.`);
-            continue;
+            break;
           }
           if (pendingImage && cancelledPendingImageAttachmentsRef.current.has(pendingImage.id)) {
             cancelledPendingImageAttachmentsRef.current.delete(pendingImage.id);
@@ -4043,7 +4059,8 @@ function AgentChatComposerImpl({
     fileAddInProgressRef.current = true;
     setAttachError(null);
     const pendingImage = addPendingImageAttachment("clipboard.png", null);
-    const attachmentOwnerBinding = composerMachineBinding;
+    const attachmentOwnerBinding = attachmentMachineBinding;
+    const attachmentApi = agentChatApiRef.current;
     let clipboardWasEmpty = false;
     try {
       const image = await window.ade.app.readClipboardImage();
@@ -4052,7 +4069,12 @@ function AgentChatComposerImpl({
         clipboardWasEmpty = true;
         return;
       }
-      const { path: tempPath } = await agentChatApiRef.current.saveTempAttachment({
+      if (latestComposerMachineBindingRef.current?.key !== attachmentOwnerBinding?.key) {
+        dropPendingImageAttachment(pendingImage.id);
+        setAttachError("Clipboard image was not attached because the selected project or machine changed. Paste it again.");
+        return;
+      }
+      const { path: tempPath } = await attachmentApi.saveTempAttachment({
         data: image.data,
         filename: image.filename || "clipboard.png",
       }, attachmentOwnerBinding);
@@ -6023,6 +6045,60 @@ function AgentChatComposerImpl({
     }[csUse ?? "workspace-write"];
     return `Custom Codex mode: ${ccsUse === "flags" ? "ADE flags" : "config.toml"} - ${approvalLabel} - ${sandboxLabel}`;
   }, [capUse, ccsUse, codexPreset, csUse, sp]);
+  /**
+   * How each harness's permission picker applies a choice: to the parallel
+   * slot being configured when there is one, else to this chat. The pickers
+   * and the Quick slot permission cycle both go through these, so a slot can
+   * never show a mode the picker would not have set.
+   */
+  const permissionAppliers = useMemo(() => ({
+    claude: (mode: AgentChatClaudePermissionMode) => {
+      if (parallelControlSlot) {
+        parallelControlSlot.onInteractionModeChange(mode === "plan" ? "plan" : "default");
+        parallelControlSlot.onClaudePermissionModeChange(mode);
+        return;
+      }
+      if (onClaudeModeChange) {
+        onClaudeModeChange(mode);
+        return;
+      }
+      onInteractionModeChange?.(mode === "plan" ? "plan" : "default");
+      onClaudePermissionModeChange?.(mode);
+    },
+    muse: (value: MusePermissionPickerValue) => {
+      const interaction: AgentChatInteractionMode = value === "plan" ? "plan" : "default";
+      const mode: AgentChatMusePermissionMode = value === "plan" ? "denyUnmatched" : value;
+      if (parallelControlSlot) {
+        parallelControlSlot.onInteractionModeChange(interaction);
+        parallelControlSlot.onMusePermissionModeChange(mode);
+        return;
+      }
+      onMusePermissionModeChange?.(mode, interaction);
+    },
+    droid: (value: AgentChatDroidPermissionMode) => {
+      if (parallelControlSlot) parallelControlSlot.onDroidPermissionModeChange(value);
+      else onDroidPermissionModeChange?.(value);
+    },
+    opencode: (value: AgentChatOpenCodePermissionMode) => {
+      if (parallelControlSlot) parallelControlSlot.onOpenCodePermissionModeChange(value);
+      else onOpenCodePermissionModeChange?.(value);
+    },
+    cursor: (value: string) => {
+      if (parallelControlSlot) parallelControlSlot.onCursorModeChange(value);
+      else onCursorModeChange?.(value);
+    },
+    copilot: (mode: NonNullable<typeof copilotPermissionMode>) => onCopilotPermissionModeChange?.(mode),
+  }), [
+    parallelControlSlot,
+    onClaudeModeChange,
+    onClaudePermissionModeChange,
+    onInteractionModeChange,
+    onMusePermissionModeChange,
+    onDroidPermissionModeChange,
+    onOpenCodePermissionModeChange,
+    onCursorModeChange,
+    onCopilotPermissionModeChange,
+  ]);
   const nativeControlPanel = useMemo(() => {
     if (hideNativeControls) {
       return null;
@@ -6039,29 +6115,6 @@ function AgentChatComposerImpl({
     if (sp === "claude") {
       const selectedOption =
         CLAUDE_MODE_OPTIONS.find((option) => option.value === claudeSelectionMode) ?? CLAUDE_MODE_OPTIONS[0];
-      const applyClaudeMode = (mode: AgentChatClaudePermissionMode) => {
-        if (parallelControlSlot) {
-          if (mode === "plan") {
-            parallelControlSlot.onInteractionModeChange("plan");
-            parallelControlSlot.onClaudePermissionModeChange("plan");
-            return;
-          }
-          parallelControlSlot.onInteractionModeChange("default");
-          parallelControlSlot.onClaudePermissionModeChange(mode);
-          return;
-        }
-        if (onClaudeModeChange) {
-          onClaudeModeChange(mode);
-          return;
-        }
-        if (mode === "plan") {
-          onInteractionModeChange?.("plan");
-          onClaudePermissionModeChange?.("plan");
-          return;
-        }
-        onInteractionModeChange?.("default");
-        onClaudePermissionModeChange?.(mode);
-      };
       return (
         <div className={cn("flex flex-wrap gap-2", plainComposerToolbarChrome ? "items-center" : "items-start")}>
           <PermissionModePicker
@@ -6069,7 +6122,7 @@ function AgentChatComposerImpl({
             selectedValue={selectedOption.value}
             options={withoutPlanning(CLAUDE_MODE_OPTIONS)}
             disabled={nativeControlsDisabled}
-            onSelect={applyClaudeMode}
+            onSelect={permissionAppliers.claude}
           />
         </div>
       );
@@ -6109,36 +6162,23 @@ function AgentChatComposerImpl({
           selectedValue={dpmUse}
           options={withoutPlanning(DROID_PERMISSION_OPTIONS)}
           disabled={nativeControlsDisabled || (!onDroidPermissionModeChange && !parallelControlSlot)}
-          onSelect={(value) => {
-            if (parallelControlSlot) parallelControlSlot.onDroidPermissionModeChange(value);
-            else onDroidPermissionModeChange?.(value);
-          }}
+          onSelect={permissionAppliers.droid}
         />
       );
     }
 
     if (sp === "copilot") {
-      return <PermissionModePicker ariaLabel="Copilot permission mode" selectedValue={copilotPermissionMode} options={COPILOT_PERMISSION_OPTIONS} disabled={nativeControlsDisabled || !onCopilotPermissionModeChange} onSelect={(mode) => onCopilotPermissionModeChange?.(mode)} />;
+      return <PermissionModePicker ariaLabel="Copilot permission mode" selectedValue={copilotPermissionMode} options={COPILOT_PERMISSION_OPTIONS} disabled={nativeControlsDisabled || !onCopilotPermissionModeChange} onSelect={permissionAppliers.copilot} />;
     }
 
     if (sp === "muse") {
-      const applyMuseMode = (value: MusePermissionPickerValue) => {
-        const interaction: AgentChatInteractionMode = value === "plan" ? "plan" : "default";
-        const mode: AgentChatMusePermissionMode = value === "plan" ? "denyUnmatched" : value;
-        if (parallelControlSlot) {
-          parallelControlSlot.onInteractionModeChange(interaction);
-          parallelControlSlot.onMusePermissionModeChange(mode);
-          return;
-        }
-        onMusePermissionModeChange?.(mode, interaction);
-      };
       return (
         <PermissionModePicker
           ariaLabel="Muse approval mode"
           selectedValue={im === "plan" ? "plan" : mpmUse}
           options={withoutPlanning(MUSE_PERMISSION_OPTIONS)}
           disabled={nativeControlsDisabled || (!onMusePermissionModeChange && !parallelControlSlot)}
-          onSelect={applyMuseMode}
+          onSelect={permissionAppliers.muse}
         />
       );
     }
@@ -6164,10 +6204,7 @@ function AgentChatComposerImpl({
           selectedValue={modeValue || cursorModeOptions[0]?.value || ""}
           options={withoutPlanning(cursorModeOptions)}
           disabled={nativeControlsDisabled || (!onCursorModeChange && !parallelControlSlot)}
-          onSelect={(value) => {
-            if (parallelControlSlot) parallelControlSlot.onCursorModeChange(value);
-            else onCursorModeChange?.(value);
-          }}
+          onSelect={permissionAppliers.cursor}
         />
       );
     }
@@ -6178,10 +6215,7 @@ function AgentChatComposerImpl({
         selectedValue={opmUse ?? "edit"}
         options={withoutPlanning(OPENCODE_PERMISSION_OPTIONS)}
         disabled={nativeControlsDisabled || (!onOpenCodePermissionModeChange && !parallelControlSlot)}
-        onSelect={(value) => {
-          if (parallelControlSlot) parallelControlSlot.onOpenCodePermissionModeChange(value);
-          else onOpenCodePermissionModeChange?.(value);
-        }}
+        onSelect={permissionAppliers.opencode}
       />
     );
   }, [
@@ -6192,15 +6226,13 @@ function AgentChatComposerImpl({
     codexCustomSummary,
     nativeControlsDisabled,
     hideNativeControls,
-    onClaudeModeChange,
-    onClaudePermissionModeChange,
-    onInteractionModeChange,
     onCursorModeChange,
     onDroidPermissionModeChange,
     copilotPermissionMode,
     onCopilotPermissionModeChange,
     onMusePermissionModeChange,
     onOpenCodePermissionModeChange,
+    permissionAppliers,
     cmsUse,
     dpmUse,
     mpmUse,
@@ -6214,6 +6246,60 @@ function AgentChatComposerImpl({
     parallelModelSlots,
     withoutPlanning,
   ]);
+
+  // The composer Quick slots act on while this tile is on screen.
+  useQuickSlotComposerTarget(Boolean(isActive), {
+    sessionId: sessionId ?? null,
+    laneId: sessionLaneId,
+    provider: sp,
+    modelId,
+    reasoningEffort,
+    fastMode: Boolean(fastMode),
+    fastModeSupported,
+    turnActive,
+    modelSelectionLocked: Boolean(modelSelectionLocked),
+    permissionModeLocked,
+    catalogScopeKey: modelCatalogScopeKey,
+    // What the pickers show (the parallel slot being configured, else this
+    // chat), and the same appliers they use.
+    interactionMode: im,
+    claudePermissionMode: cpmUse,
+    opencodePermissionMode: opmUse,
+    droidPermissionMode: dpmUse,
+    copilotPermissionMode,
+    musePermissionMode: mpmUse,
+    cursorModeSnapshot: cmsUse,
+    cursorModeOption: resolveCursorModeOption(cmsUse),
+    codexPreset,
+    onModelChange,
+    onReasoningEffortChange,
+    onFastModeChange,
+    onOpenModelPickerRequest,
+    onInterrupt,
+    applyClaudeMode: permissionAppliers.claude,
+    applyOpenCodeMode: permissionAppliers.opencode,
+    applyDroidMode: permissionAppliers.droid,
+    applyCopilotMode: permissionAppliers.copilot,
+    applyMuseMode: permissionAppliers.muse,
+    applyCursorMode: permissionAppliers.cursor,
+    applyCodexPreset,
+  }, {
+    anchorElement: () => {
+      const editor = richEditorRef.current;
+      const textarea = textareaRef.current;
+      return editor?.closest<HTMLElement>("[data-chat-composer-dock]")
+        ?? textarea?.closest<HTMLElement>("[data-chat-composer-dock]")
+        ?? editor?.closest<HTMLElement>("[data-chat-composer-wrapper]")
+        ?? textarea?.closest<HTMLElement>("[data-chat-composer-wrapper]")
+        ?? null;
+    },
+    hasCaret: () => {
+      const active = document.activeElement;
+      return Boolean(active && (richEditorRef.current?.contains(active) || active === textareaRef.current));
+    },
+    focus: () => focusComposerInputRef.current(),
+    insertText: (text) => insertDictatedTextRef.current(text),
+  });
 
   // Clean composer: no provider-tinted glow border (that produced the bright
   // "highlighted" outline).

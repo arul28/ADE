@@ -51,7 +51,7 @@ enum DuoWorkMetrics {
   /// Either side of the chat | pane split is at least this wide.
   static let minPaneWidth: CGFloat = 240
 
-  /// Pane over chat: exactly the top half on a laptop or tent fold, a little
+  /// Pane over chat: exactly the top half on a laptop fold, a little
   /// under half flat, so the composer's half keeps the larger share.
   static func tallSplit(height: CGFloat, fold: DuoFold) -> (top: CGFloat, fold: CGRect?) {
     if case .stacked(let rect) = fold,
@@ -532,7 +532,7 @@ enum DuoWorkPreviewState {
   static var plain = false
   /// The phone layout pushed the fixture chat already.
   static var pushedCompact = false
-  /// Lays the Work area out stacked (laptop/tent) whatever the posture, for a
+  /// Lays the Work area out stacked (laptop) whatever the posture, for a
   /// simulator that cannot be folded that way.
   static var forceStacked = false
 }
@@ -549,7 +549,9 @@ struct DuoWorkPrPreview {
 /// `duo-work` (sessions | chat), `duo-work-empty`, `duo-work-new` (new chat in
 /// the column), `duo-work-board`, `duo-work-tools` (Simulator in the pane),
 /// `duo-work-info` (Chat Info page in the pane), `duo-work-pr` (Pull Request
-/// page), `duo-work-collapsed` (sessions collapsed, chat full width).
+/// page), `duo-work-collapsed` (sessions collapsed, chat full width),
+/// `duo-work-desktop` / `duo-work-app` (the lane's screen / App Control on the
+/// live stage over the pane).
 enum DuoWorkPreviews {
   @MainActor
   static func view(_ name: String) -> AnyView? {
@@ -566,6 +568,8 @@ enum DuoWorkPreviews {
     case "duo-work-plain": preset = .plain
     case "duo-work-stacked": preset = .stacked
     case "duo-work-stacked-tools": preset = .stackedTools
+    case "duo-work-desktop": preset = .desktop
+    case "duo-work-app": preset = .app
     default: return nil
     }
     return AnyView(DuoWorkPreviewHost(preset: preset))
@@ -584,6 +588,10 @@ private enum DuoWorkPreviewPreset {
   case plain
   case stacked
   case stackedTools
+  /// The lane's screen on the stage over the pane.
+  case desktop
+  /// App Control frames on the stage over the pane.
+  case app
 }
 
 /// Mounts the real Work root over the Work list fixtures (about three dozen
@@ -670,6 +678,16 @@ private struct DuoWorkPreviewHost: View {
     case .stackedTools:
       DuoWorkPreviewState.forceStacked = true
       DuoWorkPreviewState.tab = .simulator
+    case .desktop:
+      DuoWorkPreviewState.tab = .macDesktop
+      var state = WorkProofPreviewData.toolChipsState
+      state.macDesktop = MacDesktopViewerPreview.watching.desktop
+      DuoWorkPreviewState.laneTools = WorkLaneToolsPreview(
+        state: state,
+        appleStatus: WorkProofPreviewData.toolChipsAppleStatus
+      )
+    case .app:
+      DuoWorkPreviewState.tab = .appControl
     case .plain:
       DuoWorkPreviewState.plain = true
       DuoWorkPreviewState.laneTools = nil

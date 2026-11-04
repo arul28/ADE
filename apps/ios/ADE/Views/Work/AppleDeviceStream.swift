@@ -125,6 +125,39 @@ struct AppleStreamTicket: Codable, Equatable {
   }
 }
 
+/// A foldable simulator's pose, as the relay's `{t:"posture"}` note says it:
+/// the hinge, the panel that is on, and how its picture sits on the
+/// framebuffer. Only a Duo's stream sends it; older hosts send none.
+struct AppleStreamPosture: Equatable {
+  var angle: Double?
+  /// `cover` or `inner`.
+  var screen: String?
+  /// How the guest says the live panel's picture sits (`landscape-left`…).
+  var displayOrientation: String?
+  var tableMode: Bool?
+
+  init(angle: Double? = nil, screen: String? = nil, displayOrientation: String? = nil, tableMode: Bool? = nil) {
+    self.angle = angle
+    self.screen = screen
+    self.displayOrientation = displayOrientation
+    self.tableMode = tableMode
+  }
+
+  init?(control object: [String: Any]) {
+    guard object["t"] as? String == "posture" else { return nil }
+    angle = (object["angle"] as? NSNumber)?.doubleValue
+    screen = object["screen"] as? String
+    displayOrientation = object["displayOrientation"] as? String
+    tableMode = (object["tableMode"] as? NSNumber)?.boolValue
+  }
+
+  /// The live panel's picture runs wider than tall.
+  var pictureIsWide: Bool? {
+    guard let displayOrientation else { return nil }
+    return displayOrientation.hasPrefix("landscape")
+  }
+}
+
 /// What the relay says about this viewer's link, about once a second.
 ///
 /// Only sent to a viewer that acks (see `AppleStreamSocket`). Every field is
@@ -805,6 +838,7 @@ final class AppleStreamSocket: NSObject {
   var onRecord: ((AppleStreamRecord) -> Void)?
   var onError: ((AppleStreamSocketFailure) -> Void)?
   var onStats: ((AppleStreamNetworkStats) -> Void)?
+  var onPosture: ((AppleStreamPosture) -> Void)?
 
   func connect(url: URL, token: String?) {
     close()
@@ -931,6 +965,10 @@ final class AppleStreamSocket: NSObject {
     else { return }
     if let stats = AppleStreamNetworkStats(control: object) {
       onStats?(stats)
+      return
+    }
+    if let posture = AppleStreamPosture(control: object) {
+      onPosture?(posture)
       return
     }
     // The host explaining itself: its own sentence, never redialed.

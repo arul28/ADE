@@ -61,7 +61,7 @@ export function SettingsSectionShell({
         >
           {iconNode ?? (Icon ? <Icon size={17} weight={iconWeight} style={{ color: brandColor }} /> : null)}
         </div>
-        <div style={{ minWidth: 0, flex: 1 }}>
+        <div data-ph-unmask="" style={{ minWidth: 0, flex: 1 }}>
           <h2
             style={{
               margin: 0,

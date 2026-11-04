@@ -134,16 +134,19 @@ After `ade prs create` makes the PR, it prints a short list under "For the
 reader": the parts your text lacks. The PR is made in each case. Fix the text
 with `ade prs body`.
 
-## Get woken when your PR changes — don't poll
+## After you open a PR
 
-After you open a PR, have ADE wake you instead of sleeping and re-checking:
+Report both links (below) and stop. Do not merge it, and do not start watching
+it, unless the user asks:
 
-```bash
-ade prs watch <pr>     # wake me on a failed check, checks passing, new comments, a conflict, merge/close
-ade prs ship <pr>      # watch + standing orders to take it to merged; waits for CI and review bots
-ade prs unwatch <pr>   # stop
-ade prs watch-status   # what this chat is watching
-```
+| The user says | Run |
+| --- | --- |
+| Nothing more | Nothing. Stop. |
+| "Keep an eye on it", "fix CI when it fails" | `ade prs watch <pr>`: ADE wakes you on a failed check, checks passing, new comments, a conflict, or merge/close |
+| "Land it", "ship it", "get it merged" | `ade prs ship <pr>`: a watch plus standing orders to fix what comes up and merge once CI and review bots pass |
+
+`ade prs unwatch <pr>` stops either; `ade prs watch-status` lists this chat's
+watches. Never sleep and re-check a PR.
 
 `<pr>` is a PR number, URL, or ADE PR id; the watch is for your own chat. Each
 wake lists exactly what changed; act on it and end your turn — ADE wakes you
@@ -191,10 +194,9 @@ ade prs stacks unstack --stack 8 --text
 Mechanics specific to ADE stacks:
 
 1. Order the layers bottom to top and keep foundations below their consumers.
-2. Create one deliberate branch and PR per layer. Each layer can own a child
-   ADE lane and its own agent, so every layer gets an
-   isolated worktree and ship loop; alternatively one lead keeps the whole
-   branch chain and delegates only non-overlapping work.
+2. Create one deliberate branch and PR per layer. By default one agent keeps
+   the whole branch chain in its lane. Give each layer its own lane and agent
+   only when the user asks.
 3. `ade prs stacks create` expects every PR base to already match the previous
    PR's head branch — create the stack only after the bases line up.
 4. Fix a root-layer failure once, then rebase and repoll every layer above it

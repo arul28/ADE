@@ -12,7 +12,7 @@ import { isImeComposing } from "../../lib/imeComposition";
  *
  * | Keys | Does |
  * |---|---|
- * | `⌘↑` / `⌘↓` | previous / next chat in the visible list |
+ * | `⌘↑` / `⌘↓` | previous / next chat in the visible list, wrapping at the ends |
  * | `⌘I` | jump into the prompt box — press it again to leave |
  * | `⌘⇧A` | the chat's actions and progress drawer |
  * | `⌘⇧N` | new chat |
@@ -199,9 +199,11 @@ export function useWorkShortcuts(args: WorkShortcutArgs): WorkShortcuts {
     if (rows.length === 0) return;
     const currentId = selectedSessionId();
     const currentIndex = rows.findIndex((row) => row.getAttribute("data-session-id") === currentId);
+    // Wraps at both ends, like switching browser tabs: past the last chat is
+    // the first, before the first is the last.
     const nextIndex = currentIndex < 0
       ? (direction > 0 ? 0 : rows.length - 1)
-      : Math.min(rows.length - 1, Math.max(0, currentIndex + direction));
+      : (currentIndex + direction + rows.length) % rows.length;
     const nextRow = rows[nextIndex];
     if (nextRow) pressSessionRow(nextRow);
   }, [selectedSessionId]);

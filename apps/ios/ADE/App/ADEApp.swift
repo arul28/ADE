@@ -31,7 +31,10 @@ struct ADEApp: App {
 
   @MainActor
   init() {
-    // First, so a crash later in launch is still captured.
+    // Analytics first: the crash reporter mirrors errors into it, and Sentry
+    // can send the previous launch's crash as soon as it starts.
+    ProductAnalytics.shared.configure()
+    // Then crash reporting, so a crash later in launch is still captured.
     CrashReporting.start()
     // Before `SyncService` creates a device id, which marks an install as one that ran before.
     ADEColorSchemeChoice.seedDefaultIfNeeded()
@@ -52,6 +55,7 @@ struct ADEApp: App {
       // branch is compiled out of release.
       if let duoPreview = DuoPreviewRouter.requestedName {
         DuoPreviewHost(name: duoPreview)
+          .liveStageHost()
           .duoLayoutRoot()
           .environmentObject(syncService)
           .environmentObject(machineFleet)
@@ -59,6 +63,7 @@ struct ADEApp: App {
           .environmentObject(accountService)
       } else if let previewScreen = ADEPreviewScreen.requested {
         ADEPreviewScreenHost(screen: previewScreen)
+          .liveStageHost()
           .environmentObject(syncService)
           .environmentObject(machineFleet)
           .environmentObject(dictationController)
@@ -205,6 +210,8 @@ struct ADEApp: App {
         // whole app, the same way the Duo fixture branch above does. Without it
         // every Duo-aware view would read the default (compact, no fold) and the
         // app would never show its wide layouts.
+        // The live stage (a device stream) draws over everything, inside it.
+        .liveStageHost()
         .duoLayoutRoot()
   }
 }

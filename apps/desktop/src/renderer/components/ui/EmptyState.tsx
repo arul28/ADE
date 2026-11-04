@@ -23,6 +23,7 @@ export function EmptyState({
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.3, ease: "easeOut" }}
       className={cn("flex flex-col items-center justify-center p-10 text-center", className)}
+      data-ph-unmask=""
       style={{ background: "var(--color-surface)", border: "1px solid var(--color-border)" }}
     >
       {Icon ? (
@@ -41,7 +42,7 @@ export function EmptyState({
           {description}
         </div>
       ) : null}
-      {children}
+      {children ? <div data-ph-mask="" style={{ display: "contents" }}>{children}</div> : null}
     </motion.div>
   );
 }

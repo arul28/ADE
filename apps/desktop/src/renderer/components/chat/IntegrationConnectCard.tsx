@@ -359,7 +359,7 @@ export function IntegrationConnectComposer({
           {card.savedNote ? (
             <span className="ade-icc-chip" data-tone="warn" title={card.savedNote}>This computer only</span>
           ) : null}
-          <CardBannerButtons onOpenSettings={openSettings} onDecline={onDecline} responding={responding} testIdPrefix="integration-connect" />
+          <CardBannerButtons onOpenSettings={openSettings} onDecline={onDecline} responding={responding} signingIn={signingIn} cancelSignIn={cancelSignIn} testIdPrefix="integration-connect" />
         </span>
       </div>
 

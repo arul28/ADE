@@ -1,5 +1,5 @@
 import type { KeybindingDefinition, KeybindingsSnapshot } from "../../shared/types";
-import { WEB_KEYBINDING_DEFAULTS } from "../../shared/keybindings";
+import { clientKeybindingDefault, KEYBINDING_UNASSIGNED } from "../../shared/keybindings";
 import { isMacPlatform, modifierKeyLabel } from "./platform";
 import { isWebClientMode } from "./webClientMode";
 
@@ -80,6 +80,7 @@ function isNonLatinLetterKey(key: string): boolean {
 
 export type LayoutKeyEvent = Pick<KeyboardEvent, "key"> & {
   code?: string;
+  altKey?: boolean;
   getModifierState?: (key: "AltGraph") => boolean;
 };
 
@@ -88,11 +89,22 @@ export type LayoutKeyEvent = Pick<KeyboardEvent, "key"> & {
  * types `л`, `ל` or `κ`, so a letter shortcut also accepts the physical key
  * (`code` `KeyK`). A Latin layout matches only what it types, so Dvorak and
  * AZERTY keep their own letters, and AltGr typing a character is text.
+ *
+ * On macOS, Option changes what a key types (⌥K types `˚`, ⌥1 types `¡`), so
+ * with Option held a letter or digit shortcut is read by its physical key.
+ * Settings › Keyboard records Option chords the same way
+ * (`captureBinding` in `shared/keybindingEditor.ts`).
  */
 export function eventKeyCandidates(event: LayoutKeyEvent): string[] {
   const key = normalizeKey(event.key);
   if (!key) return [];
-  const physical = /^Key([A-Z])$/.exec(event.code ?? "")?.[1]?.toLowerCase();
+  const code = event.code ?? "";
+  if (event.altKey && isMacPlatform()) {
+    const optionPhysical = /^(?:Key([A-Z])|Digit([0-9]))$/.exec(code);
+    const physicalKey = (optionPhysical?.[1] ?? optionPhysical?.[2])?.toLowerCase();
+    if (physicalKey && physicalKey !== key) return [key, physicalKey];
+  }
+  const physical = /^Key([A-Z])$/.exec(code)?.[1]?.toLowerCase();
   if (!physical || physical === key || !isNonLatinLetterKey(key)) return [key];
   if (event.getModifierState?.("AltGraph")) return [key];
   return [key, physical];
@@ -121,20 +133,26 @@ export function eventMatchesBinding(event: KeyboardEvent, binding: string): bool
   return false;
 }
 
+/**
+ * The binding an action answers to. An override of `KEYBINDING_UNASSIGNED`
+ * returns "", which matches no event and draws no chip.
+ */
 export function getEffectiveBinding(
   snapshot: KeybindingsSnapshot | null,
   actionId: string,
   desktopFallback: string
 ): string {
   // In the hosted web client a browser-reserved desktop default (⌘T, Ctrl+Tab)
-  // never reaches the page, so the web default replaces it — including over a
-  // snapshot that still carries the desktop table. An override still wins.
-  const webDefault = isWebClientMode() ? WEB_KEYBINDING_DEFAULTS[actionId] : undefined;
-  const fallback = webDefault ?? desktopFallback;
+  // never reaches the page, and off macOS a few defaults change (terminal
+  // switching), so this client's default replaces the table's — including over
+  // a snapshot that still carries the desktop table. An override still wins.
+  const clientDefault = clientKeybindingDefault(actionId, { web: isWebClientMode(), mac: isMacPlatform() });
+  const fallback = clientDefault ?? desktopFallback;
   if (!snapshot) return fallback;
   const def = snapshot.definitions.find((d) => d.id === actionId) as KeybindingDefinition | undefined;
-  const defaultBinding = webDefault ?? def?.defaultBinding;
+  const defaultBinding = clientDefault ?? def?.defaultBinding;
   const override = snapshot.overrides.find((o) => o.id === actionId);
+  if (override?.binding.trim().toLowerCase() === KEYBINDING_UNASSIGNED) return "";
   const candidate = (override?.binding ?? defaultBinding ?? fallback).trim();
   if (parseBinding(candidate).length > 0) return candidate;
   // Invalid/empty binding: fall back to default.
@@ -207,6 +225,8 @@ const WINDOWS_KEY_GLYPHS: Record<string, string> = {
   return: "Enter",
   backspace: "Backspace",
   delete: "Del",
+  pageup: "PgUp",
+  pagedown: "PgDn",
 };
 
 function keyLabel(key: string, mac: boolean): string {
@@ -222,6 +242,13 @@ function keyLabel(key: string, mac: boolean): string {
  * read rather than as a spelled-out token.
  */
 export function bindingChipLabel(binding: string): string | null {
+  const keys = bindingKeyCaps(binding);
+  if (!keys) return null;
+  return isMacPlatform() ? keys.join("") : keys.join("+");
+}
+
+/** The keys of a binding's first chord, one label per key ("⌘", "K"), in the OS's order. */
+export function bindingKeyCaps(binding: string): string[] | null {
   const combo = parsePrimaryCombo(binding);
   if (!combo) return null;
   const mac = isMacPlatform();
@@ -237,7 +264,7 @@ export function bindingChipLabel(binding: string): string | null {
     parts.push(mac ? "⌘" : modifierKeyLabel);
   }
   parts.push(keyLabel(combo.key, mac));
-  return mac ? parts.join("") : parts.join("+");
+  return parts;
 }
 
 /**

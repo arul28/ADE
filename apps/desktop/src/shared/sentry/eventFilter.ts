@@ -19,7 +19,7 @@ import {
   type ScrubbableSpan,
 } from "./scrub";
 
-type FilterableEvent = ScrubbableEvent & Parameters<typeof eventBudgetKey>[0] & DiagnosticEvent & { type?: string; level?: string };
+type FilterableEvent = ScrubbableEvent & Parameters<typeof eventBudgetKey>[0] & DiagnosticEvent & SentryMirrorEvent & { type?: string; level?: string };
 
 let resolveUserId: (() => string | null | undefined) | null = null;
 
@@ -32,6 +32,48 @@ let resolveUserId: (() => string | null | undefined) | null = null;
  */
 export function setSentryUserResolver(resolver: (() => string | null | undefined) | null): void {
   resolveUserId = resolver;
+}
+
+/**
+ * Receives each error event `beforeSend` admitted, after the budget and the
+ * scrub. Main and the brain mirror it to
+ * PostHog error tracking, so PostHog sees exactly what Sentry was allowed to
+ * see and never more. Must not throw or keep the event.
+ */
+export type SentryEventMirror = (event: Readonly<SentryMirrorEvent>) => void;
+
+export type SentryMirrorEvent = {
+  level?: string;
+  /** `ade@<version>` of the build that raised it; a crash from the previous launch keeps its own. */
+  release?: string;
+  /** Set only where ADE named the failure (`captureError(..., { fingerprint })`). */
+  fingerprint?: string[];
+  message?: string;
+  tags?: Record<string, unknown>;
+  exception?: {
+    values?: Array<{
+      type?: string;
+      value?: string;
+      mechanism?: { handled?: boolean; type?: string };
+      stacktrace?: {
+        frames?: Array<{ filename?: string; abs_path?: string; function?: string; lineno?: number; colno?: number; in_app?: boolean }>;
+      };
+    }>;
+  };
+  /**
+   * The SDK moves each frame's debug id here before `beforeSend` (one image
+   * per bundle, `code_file` = the frame's `abs_path` or `filename`). The ids
+   * are the ones `sentry-cli sourcemaps inject` stamped into the bundles.
+   */
+  debug_meta?: {
+    images?: Array<{ type?: string; code_file?: string; debug_id?: string }>;
+  };
+};
+
+let mirrorEvent: SentryEventMirror | null = null;
+
+export function setSentryEventMirror(mirror: SentryEventMirror | null): void {
+  mirrorEvent = mirror;
 }
 
 /** The user `beforeSend` puts on an event; for events that skip it (User Feedback). */
@@ -95,7 +137,15 @@ export function createSentryEventHooks(budget?: SentryBudget) {
       if (userId) candidate.user = { ...(candidate.user ?? {}), id: userId };
       // A no-op outside main and the brain (`enableSentryDiagnostics`).
       applySentryDiagnostics(candidate, hint, budgetKey);
-      return scrubEvent(candidate) as unknown as T;
+      const scrubbed = scrubEvent(candidate);
+      if (mirrorEvent && (scrubbed.exception?.values?.length || scrubbed.level === "error" || scrubbed.level === "fatal")) {
+        try {
+          mirrorEvent(scrubbed);
+        } catch {
+          // The mirror is a second copy; it never costs Sentry the event.
+        }
+      }
+      return scrubbed as unknown as T;
     },
     beforeBreadcrumb<T>(breadcrumb: T): T | null {
       const crumb = breadcrumb as unknown as ScrubbableBreadcrumb & { category?: string; message?: string };

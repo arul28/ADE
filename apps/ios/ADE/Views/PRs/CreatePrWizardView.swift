@@ -931,6 +931,7 @@ struct PrDescriptionMediaView: View {
           fallbackLink
         } else if let player {
           VideoPlayer(player: player)
+            .adeReplayMasked()
             .aspectRatio(16.0 / 9.0, contentMode: .fit)
             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
             .onReceive(player.publisher(for: \.currentItem?.status).receive(on: DispatchQueue.main)) { status in

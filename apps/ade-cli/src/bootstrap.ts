@@ -5,7 +5,8 @@ import {
   unwatchProjectRoot,
   watchProjectRoot,
 } from "./services/projects/projectRootAccessMonitor";
-import { setSentryUserResolver } from "../../desktop/src/shared/sentry/eventFilter";
+import { setSentryEventMirror, setSentryUserResolver } from "../../desktop/src/shared/sentry/eventFilter";
+import { createExceptionAnalyticsMirror } from "../../desktop/src/main/services/analytics/exceptionProductAnalytics";
 import type { CrossMachineHandoffTransport } from "../../desktop/src/main/services/chat/crossMachineHandoffOrchestrator";
 import fs from "node:fs";
 import os from "node:os";
@@ -285,7 +286,7 @@ import { createPushRegistrationStore } from "./services/push/pushRegistrationSto
 import { createPushRelayClient } from "./services/push/pushRelayClient";
 import { createAccountRuntimeLifecycle } from "./services/account/accountRuntimeLifecycle";
 import type { AccountSettingsStore } from "./services/account/accountSettingsStore";
-import { createAppleStreamRelayForService } from "../../desktop/src/main/services/ios/appleStreamRelay";
+import { createAppleStreamRelayForService } from "../../desktop/src/main/services/ios/appleStreamRelayForService";
 import { setActiveAppleStreamRouter } from "./services/sync/appleStreamListenerRoute";
 import { ACCOUNT_SCOPE_ALL, accountDeviceSettingKey } from "../../desktop/src/shared/accountSettingsScope";
 import {
@@ -1177,6 +1178,7 @@ export async function createAdeRuntime(args: {
         }),
       }));
     setSentryUserResolver(() => productAnalyticsService.getDistinctId());
+    setSentryEventMirror(createExceptionAnalyticsMirror({ analytics: productAnalyticsService, surface: "api" }));
     productAnalyticsForProxy = productAnalyticsService;
     const usageProductAnalyticsExporter = createUsageProductAnalyticsExporter({
       db,

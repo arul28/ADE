@@ -9,7 +9,9 @@ enum DuoFold: Equatable {
   case none
   /// Book: the fold is a vertical line, with a page on each side.
   case sideBySide(CGRect)
-  /// Laptop or tent: the fold is a horizontal line, with a top and a bottom half.
+  /// Laptop: the fold is a horizontal line, with a top and a bottom half.
+  /// (Tent is not here: it stands the phone on its front screen, held
+  /// sideways, and the inner display is off.)
   case stacked(CGRect)
 
   var frame: CGRect? {
@@ -240,7 +242,7 @@ enum DuoFamily: Equatable {
   case compact
   /// The inner display held landscape (open wide, or book-folded).
   case wide
-  /// The inner display held portrait (open tall, laptop, or tent).
+  /// The inner display held portrait (open tall, or laptop).
   case tall
 }
 

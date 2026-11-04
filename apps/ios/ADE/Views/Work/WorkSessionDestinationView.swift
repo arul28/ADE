@@ -867,26 +867,16 @@ struct WorkSessionDestinationView: View {
   private func duoToolContent(_ tab: DuoToolTab, seed: DuoToolSeed) -> some View {
     switch tab {
     case .simulator:
-      duoSimulatorContent(seed)
+      duoLiveStageSlot(.simulator(seed.appleStatus))
     case .macDesktop:
       if seed.macDesktopStream {
-        MacDesktopViewer(
-          laneId: duoToolLaneId,
-          initialState: seed.macDesktop,
-          chatSessionId: sessionId,
-          embedded: true
-        )
+        duoLiveStageSlot(.macDesktop(seed.macDesktop))
       } else {
         duoLaneToolSheet(.macDesktop)
       }
     case .appControl:
       if seed.appControlStream {
-        AppControlViewer(
-          laneId: duoToolLaneId,
-          initialState: seed.appControl,
-          chatSessionId: sessionId,
-          embedded: true
-        )
+        duoLiveStageSlot(.appControl(seed.appControl))
       } else {
         duoLaneToolSheet(.appControl)
       }
@@ -913,42 +903,43 @@ struct WorkSessionDestinationView: View {
     WorkToolsSheet(laneId: duoToolLaneId, tool: tool, embedded: true)
   }
 
-  /// The same viewer the chip opened before, seeded with the status the chip
-  /// was already showing. Watching stays the default; the 0.6 s press-and-hold
-  /// before Control is the viewer's own and is untouched by living in a pane.
-  @ViewBuilder
-  private func duoSimulatorContent(_ seed: DuoToolSeed) -> some View {
-    Group {
-      #if DEBUG
-      if WorkRootPreviewFixture.active != nil {
-        AppleDeviceViewer(
-          laneId: duoToolLaneId,
-          chatSessionId: sessionId,
-          initialStatus: seed.appleStatus,
-          embedded: true,
-          preview: AppleDeviceViewerPreview(
-            status: WorkProofPreviewData.toolChipsAppleStatus,
-            mode: .watching
-          )
-        )
-      } else {
-        AppleDeviceViewer(
-          laneId: duoToolLaneId,
-          chatSessionId: sessionId,
-          initialStatus: seed.appleStatus,
-          embedded: true
-        )
-      }
-      #else
-      AppleDeviceViewer(
-        laneId: duoToolLaneId,
-        chatSessionId: sessionId,
-        initialStatus: seed.appleStatus,
-        embedded: true
-      )
-      #endif
+  /// A live stream (the simulator, the lane's screen, App Control frames)
+  /// puts itself on stage over the pane, seeded with the state the chip was
+  /// already showing; the pane only holds its place. Watching stays the
+  /// default, and Control is the viewer's own deliberate act.
+  private func duoLiveStageSlot(_ seed: LiveStage.Seed) -> some View {
+    LiveStagePaneSlot(
+      laneId: duoToolLaneId,
+      chatSessionId: sessionId,
+      seed: seed,
+      onClose: { [weak pane = duoPane] in pane?.close() },
+      preview: Self.fixtureStagePreview(seed.kind)
+    )
+  }
+
+  /// A fixture chat's stand-in stream; nil outside a fixture (and always in
+  /// a release build).
+  static func fixtureStagePreview(_ kind: LiveStage.Kind) -> LiveStagePreview? {
+    #if DEBUG
+    WorkRootPreviewFixture.active != nil ? liveStagePreview(kind) : nil
+    #else
+    nil
+    #endif
+  }
+
+  #if DEBUG
+  /// A fixture chat's stream: each viewer's drawn stand-in, no sync.
+  static func liveStagePreview(_ kind: LiveStage.Kind) -> LiveStagePreview {
+    switch kind {
+    case .simulator:
+      return .simulator(AppleDeviceViewerPreview(status: WorkProofPreviewData.toolChipsAppleStatus, mode: .watching))
+    case .macDesktop:
+      return .macDesktop(.watching)
+    case .appControl:
+      return .appControl(AppControlViewerPreview())
     }
   }
+  #endif
 
   private var duoProofContent: some View {
     WorkProofSheet(
@@ -1405,7 +1396,19 @@ struct WorkSessionDestinationView: View {
     else { return }
     if tab == .chatInfo { refreshChatInfoSnapshots() }
     if duoPane != nil {
-      duoPane?.open(tab)
+      // The lane's screen and App Control stream from drawn stand-ins in a
+      // fixture; seeded here because the tab can open before the chips' poll.
+      if tab == .macDesktop || tab == .appControl {
+        let state = DuoWorkPreviewState.laneTools?.state
+        duoPane?.open(tab, seed: DuoToolSeed(
+          macDesktop: state?.macDesktop,
+          appControl: state?.appControl,
+          appControlStream: true,
+          macDesktopStream: true
+        ))
+      } else {
+        duoPane?.open(tab)
+      }
     } else {
       // The phone layout: the sheet the pill opens, once the push has landed.
       Task { @MainActor in
@@ -1625,6 +1628,7 @@ struct WorkSessionDestinationView: View {
             isOpen: duoPaneOpen,
             origin: duoPane.origin,
             showsIdle: duoCtoSettings == nil,
+            stagePane: duoPane,
             chat: { chatColumnBody },
             tools: { duoToolsPane },
             idle: { duoToolTiles }

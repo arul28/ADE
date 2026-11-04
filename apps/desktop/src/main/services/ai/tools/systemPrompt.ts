@@ -44,7 +44,7 @@ const openCodeBackgroundWorkGuidance = "**Background work:** `shell` with `backg
  */
 const adeMcpServersGuidance = "**MCP servers:** this chat keeps the MCP servers it started with. To get one the user asks for, run `ade mcp servers add <name> --reason \"…\"` (a catalogue name, `--url`, or the command after `--`): the user approves it in a card, then presses **Refresh chat** above the composer to load it (the conversation is kept). If a server asks to sign in, tell the user to press **Sign in** on its row in Settings › Integrations › MCP servers. Details: **ade-cli-control-plane**.";
 
-const adeIndependentChildChatGuidance = "Use an ADE `--type subagent` chat for an independent durable transcript, scheduling, another provider, or tracked lifecycle; it stays in this lane unless the user wants a new one.";
+const adeProviderSubagentGuidance = "Another provider's model: `ade new chat --mode chat --provider <p> --model <m> --prompt \"<task>\"` is your subagent and reports back. When the user asks, `ade chat interrupt <id>` stops any chat.";
 
 type NativeSubagentFamily = "claude" | "codex" | "cursor" | "droid" | "copilot" | "opencode" | "pi";
 
@@ -61,19 +61,19 @@ const nativeSubagentFamilyByRuntime: Record<AdeRuntimeKind, NativeSubagentFamily
 };
 
 const nativeSubagentGuidanceByFamily: Record<NativeSubagentFamily, string> = {
-  claude: "For short-lived delegation whose result belongs in this Claude thread, prefer Claude's native `Agent`/`Task` tool, using its `model` override when you need another Anthropic-family model. Do not create an ADE `--type subagent` chat in the same lane merely to switch Claude models.",
+  claude: "For short-lived delegation whose result belongs in this Claude thread, prefer Claude's native `Agent`/`Task` tool, using its `model` override when you need another Anthropic-family model. Do not start an ADE chat just to switch Claude models.",
   codex: "For short-lived delegation whose result belongs in this Codex thread, prefer Codex's native subagent/collaboration tool.",
   cursor: "For short-lived delegation whose result belongs in this Cursor thread, prefer Cursor's native task tool.",
   droid: "For short-lived delegation whose result belongs in this Droid thread, prefer Droid's native worker/subagent capability.",
-  copilot: "Copilot's SDK path has no ADE-supported native child-session lifecycle. Use an ADE `--type subagent` chat when you need independent delegation.",
+  copilot: "Copilot has no native subagent tool here. Delegate with an ADE subagent chat.",
   opencode: "For short-lived delegation whose result belongs in this OpenCode thread, prefer OpenCode's native `task` tool.",
-  pi: "Pi's SDK path has no ADE-supported native subagent lifecycle. Use an ADE `--type subagent` chat when you need independent delegation, and keep the child brief self-contained.",
+  pi: "Pi has no native subagent tool here. Delegate with `ade new chat --mode chat --prompt \"<task>\"`: it is your subagent and reports back. Keep the brief self-contained.",
 };
 
 export function buildNativeSubagentRoutingGuidance(runtime: AdeRuntimeKind): string {
   const family = nativeSubagentFamilyByRuntime[runtime];
   const nativeGuidance = nativeSubagentGuidanceByFamily[family];
-  return `**Subagent routing:** ${nativeGuidance}${family === "pi" ? "" : ` ${adeIndependentChildChatGuidance}`}`;
+  return `**Subagent routing:** ${nativeGuidance}${family === "pi" ? "" : ` ${adeProviderSubagentGuidance}`}`;
 }
 
 function describeSubagentRouting(runtime: AdeRuntimeKind): string {
@@ -238,7 +238,7 @@ export function buildCodingAgentSystemPrompt(args: {
     // narrate briefly): every harness ADE hosts already gives its own, and a
     // second copy only dilutes the lines below, which are ADE's own.
     "## Working in ADE",
-    "Treat status checks, interruptions, and tool/subagent timeouts as checkpoints. Give the requested status, then continue the active directive unless the user explicitly says stop, pause, or only report status.",
+    "A status question or a tool/subagent timeout is a checkpoint: answer it, then continue the current work. A message with new instructions, from the user or from another agent, replaces the old ones; do what it says. Stop or pause only when told to.",
     "Your thinking is not your reply: the user sees it only as a collapsed thought, if at all. Anything they need to read or act on (answers to their questions, requests for them, and your final summary) must go in your visible reply text, written in full, never only in your thinking.",
     "",
     "## Tool Use Rules",
@@ -275,13 +275,13 @@ export function buildCodingAgentSystemPrompt(args: {
           "## Workflow Tools",
           "You have workflow tools for managing development lifecycle:",
           ...(hasCreateLane
-            ? ["- **createLane**: Create an isolated development lane (git worktree + branch) before starting work. Use this to keep changes separate from the main branch."]
+            ? ["- **createLane**: Create a lane (git worktree + branch) when the user asks for one or the work is unrelated to the current lane."]
             : []),
           ...(hasCreatePr
-            ? ["- **createPrFromLane**: Open a GitHub pull request from a lane. Use this when your changes are committed and pushed. Prefer draft PRs for work-in-progress."]
+            ? ["- **createPrFromLane**: Open a GitHub pull request from a lane once its changes are committed and pushed. Open it as a draft only when the user asks or the work is unfinished."]
             : []),
           "",
-          "**Recommended workflow:** Create a lane, make changes, verify with tests and `ade proof capture --caption \"…\"`, then create a PR.",
+          "**Workflow:** make the changes, verify with tests and the surface's own `proof` command (`ade browser proof`, `ade app-control proof`, `ade apple proof`), then create the PR and stop. Merge it only when the user says to land it.",
           "**Do not** create infrastructure (CI configs, deployment scripts) or modify settings outside your lane without explicit user approval.",
         ]
       : []),

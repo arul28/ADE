@@ -261,10 +261,12 @@ struct MacDesktopLivePicture: View {
   /// False when the host view draws its own status over the picture (the
   /// full-screen viewer), so the same sentence is not shown twice.
   var showsWaitingStatus: Bool = true
+  var cornerRadius: CGFloat = 12
 
   var body: some View {
     ZStack {
       MacDesktopLiveView(session: session)
+        .adeReplayMasked()
       if !session.hasFrame {
         if let placeholder {
           Image(uiImage: placeholder)
@@ -277,11 +279,12 @@ struct MacDesktopLivePicture: View {
     }
     .frame(maxWidth: .infinity)
     .aspectRatio(session.aspectRatio, contentMode: .fit)
+    .liveStageReportsAspect(session.aspectRatio)
     .background(
       Color.black.opacity(0.12),
-      in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+      in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
     )
-    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+    .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
     .accessibilityElement(children: .combine)
     .accessibilityLabel("This lane's macOS desktop")
   }
@@ -413,6 +416,80 @@ final class MacDesktopPointerPump {
   }
 }
 
+/// The lease on the lane's screen this phone holds, if any.
+///
+/// Owned by whoever offers Take control: the tools sheet's picture keeps its
+/// own, the full-screen viewer hands one in so its menu can take and return
+/// control while the picture carries the finger. Every call names the lane,
+/// so it goes to the machine that owns it.
+@MainActor
+final class MacDesktopControlHolder: ObservableObject {
+  /// This phone's controller id for the lease, stable for the picture's life.
+  let token = UUID().uuidString
+  @Published private(set) var holderId: String?
+  @Published private(set) var busy = false
+  @Published var errorText: String?
+  @Published var notice: String?
+  /// A press went down on the Mac and has not come up yet.
+  var pressOutstanding = false
+  var dragStart: MacDesktopPoint?
+
+  var controlling: Bool { holderId != nil }
+
+  func take(laneId: String, using service: SyncService) async {
+    guard !busy, holderId == nil else { return }
+    busy = true
+    errorText = nil
+    notice = nil
+    defer { busy = false }
+    do {
+      let lease = try await service.macDesktopTakeControl(
+        laneId: laneId,
+        controllerId: token,
+        controllerLabel: MacDesktopLiveSession.defaultViewerLabel()
+      )
+      holderId = lease.holderId
+    } catch {
+      errorText = (error as NSError).localizedDescription
+    }
+  }
+
+  /// Renews every 20 s while held. A refused renew means the lease is gone.
+  func heartbeat(laneId: String, using service: SyncService) async {
+    guard holderId != nil else { return }
+    while !Task.isCancelled {
+      try? await Task.sleep(for: .seconds(20))
+      if Task.isCancelled || holderId == nil { return }
+      let lease = try? await service.macDesktopRenewLease(laneId: laneId, controllerId: token)
+      if lease == nil {
+        holderId = nil
+        notice = "Control ended."
+        return
+      }
+    }
+  }
+
+  /// Local first. The socket call is not awaited by the key or the button:
+  /// a wedged connection is the usual reason someone is trying to get out.
+  func release(laneId: String, using service: SyncService) {
+    guard holderId != nil else { return }
+    let id = token
+    let button = pressOutstanding ? "left" : nil
+    holderId = nil
+    pressOutstanding = false
+    dragStart = nil
+    Task {
+      let call = MacDesktopControlWire.call(
+        laneId: laneId,
+        controllerId: id,
+        event: .release(button: button)
+      )
+      try? await service.macDesktopInput(laneId: laneId, call: call)
+      _ = try? await service.macDesktopReturnControl(laneId: laneId, controllerId: id)
+    }
+  }
+}
+
 /// The lane's picture plus, when the host allows it, the finger that drives it.
 struct MacDesktopControlPicture: View {
   let laneId: String
@@ -425,37 +502,59 @@ struct MacDesktopControlPicture: View {
   /// turns it on. It is off while this picture holds control, because a finger
   /// then belongs to the Mac and the input mapping assumes an unzoomed picture.
   var zoomable: Bool = false
-  /// Told whenever this picture takes or gives back control, so a host view
-  /// can say "you have control" without owning the lease itself.
-  var onControlChange: ((Bool) -> Void)?
+  /// The lease, when the host view offers Take control itself (the viewer's
+  /// menu). Nil: the picture keeps its own and draws its own controls.
+  var lease: MacDesktopControlHolder?
+  /// The picture's corners. The tools sheet's card rounds them; full screen
+  /// the picture runs edge to edge.
+  var cornerRadius: CGFloat = 12
+  /// A single tap on the picture while watching (the viewer's menu).
+  var onTap: (() -> Void)?
+
+  @StateObject private var ownLease = MacDesktopControlHolder()
+
+  var body: some View {
+    MacDesktopControlPictureBody(
+      laneId: laneId,
+      display: display,
+      session: session,
+      placeholder: placeholder,
+      showsPictureStatus: showsPictureStatus,
+      zoomable: zoomable,
+      showsControls: lease == nil,
+      cornerRadius: cornerRadius,
+      onTap: onTap,
+      lease: lease ?? ownLease
+    )
+  }
+}
+
+private struct MacDesktopControlPictureBody: View {
+  let laneId: String
+  let display: WorkToolsMacDesktopDisplay
+  let session: MacDesktopLiveSession?
+  let placeholder: UIImage?
+  let showsPictureStatus: Bool
+  let zoomable: Bool
+  let showsControls: Bool
+  let cornerRadius: CGFloat
+  let onTap: (() -> Void)?
+  @ObservedObject var lease: MacDesktopControlHolder
 
   @ObservedObject private var syncPublishes = SyncMenuSafePublisher.shared
   private var syncService: SyncService { syncPublishes.service }
   @Environment(\.scenePhase) private var scenePhase
   @FocusState private var focused: Bool
 
-  @State private var token = UUID().uuidString
-  @State private var holderId: String?
-  @State private var busy = false
-  @State private var errorText: String?
-  @State private var notice: String?
-  @State private var dragStart: MacDesktopPoint?
-  @State private var pressOutstanding = false
   @State private var pictureSize: CGSize = .zero
   @State private var pump = MacDesktopPointerPump()
 
-  private var controlling: Bool { holderId != nil }
+  private var controlling: Bool { lease.controlling }
 
   private var zoomActive: Bool { zoomable && !controlling }
 
   private var geometry: MacDesktopDisplayGeometry? {
-    guard let origin = display.origin, display.width > 0, display.height > 0 else { return nil }
-    return MacDesktopDisplayGeometry(
-      width: Double(display.width),
-      height: Double(display.height),
-      originX: origin.x,
-      originY: origin.y
-    )
+    macDesktopDisplayGeometry(display)
   }
 
   var body: some View {
@@ -470,11 +569,12 @@ struct MacDesktopControlPicture: View {
         }
         .onChange(of: controlling) { _, next in
           focused = next
-          onControlChange?(next)
         }
-      controls
+      if showsControls {
+        controls
+      }
     }
-    .task(id: holderId) { await heartbeat() }
+    .task(id: lease.holderId) { await lease.heartbeat(laneId: laneId, using: syncService) }
     .onDisappear { releaseNow() }
     .onChange(of: scenePhase) { _, phase in
       if phase != .active { releaseNow() }
@@ -490,7 +590,7 @@ struct MacDesktopControlPicture: View {
   private var gesturedPicture: some View {
     measuredPicture
       .highPriorityGesture(drag, including: controlling ? .all : .subviews)
-      .livePictureZoom(enabled: zoomActive)
+      .livePictureZoom(enabled: zoomActive, onTap: onTap)
   }
 
   private var measuredPicture: some View {
@@ -506,7 +606,12 @@ struct MacDesktopControlPicture: View {
   @ViewBuilder
   private var pictureBody: some View {
     if let session {
-      MacDesktopLivePicture(session: session, placeholder: placeholder, showsWaitingStatus: showsPictureStatus)
+      MacDesktopLivePicture(
+        session: session,
+        placeholder: placeholder,
+        showsWaitingStatus: showsPictureStatus,
+        cornerRadius: cornerRadius
+      )
     } else if let placeholder {
       Image(uiImage: placeholder)
         .resizable()
@@ -514,9 +619,9 @@ struct MacDesktopControlPicture: View {
         .frame(maxWidth: .infinity)
         .background(
           Color.black.opacity(0.12),
-          in: RoundedRectangle(cornerRadius: 12, style: .continuous)
+          in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
         )
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         .accessibilityLabel("The last captured frame of this lane's macOS desktop")
     }
   }
@@ -531,20 +636,20 @@ struct MacDesktopControlPicture: View {
           view: MacDesktopViewRect(width: pictureSize.width, height: pictureSize.height),
           display: geometry
         ) else { return }
-        if dragStart == nil { dragStart = point }
-        pressOutstanding = true
+        if lease.dragStart == nil { lease.dragStart = point }
+        lease.pressOutstanding = true
         let service = syncService
         let lane = laneId
-        let id = token
+        let id = lease.token
         pump.push(point) { point in
           let call = MacDesktopControlWire.call(laneId: lane, controllerId: id, event: .move(point))
           try? await service.macDesktopInput(laneId: lane, call: call)
         }
       }
       .onEnded { value in
-        let start = dragStart
-        dragStart = nil
-        pressOutstanding = false
+        let start = lease.dragStart
+        lease.dragStart = nil
+        lease.pressOutstanding = false
         guard controlling, let geometry else { return }
         guard let point = MacDesktopGeometry.displayPoint(
           localX: Double(value.location.x),
@@ -555,7 +660,7 @@ struct MacDesktopControlPicture: View {
         let event = MacDesktopControlGesture.ended(from: start, to: point)
         let service = syncService
         let lane = laneId
-        let id = token
+        let id = lease.token
         Task {
           let call = MacDesktopControlWire.call(laneId: lane, controllerId: id, event: event)
           try? await service.macDesktopInput(laneId: lane, call: call)
@@ -567,7 +672,7 @@ struct MacDesktopControlPicture: View {
   private var controls: some View {
     if syncService.supportsMacDesktopControl {
       if geometry == nil {
-        Text("This machine's ADE doesn't say where the screen sits, so clicks stay off.")
+        Text(macDesktopNoGeometryMessage)
           .font(.caption)
           .foregroundStyle(ADEColor.textMuted)
       } else if controlling {
@@ -582,18 +687,18 @@ struct MacDesktopControlPicture: View {
             .foregroundStyle(ADEColor.textMuted)
         }
       } else {
-        Button(busy ? "Taking control…" : "Take control") {
-          Task { await take() }
+        Button(lease.busy ? "Taking control…" : "Take control") {
+          Task { await lease.take(laneId: laneId, using: syncService) }
         }
         .font(.footnote)
-        .disabled(busy)
+        .disabled(lease.busy)
       }
-      if let notice {
+      if let notice = lease.notice {
         Text(notice)
           .font(.caption)
           .foregroundStyle(ADEColor.warning)
       }
-      if let errorText {
+      if let errorText = lease.errorText {
         Text(errorText)
           .font(.caption)
           .foregroundStyle(ADEColor.warning)
@@ -601,60 +706,24 @@ struct MacDesktopControlPicture: View {
     }
   }
 
-  private func take() async {
-    guard geometry != nil else { return }
-    busy = true
-    errorText = nil
-    notice = nil
-    defer { busy = false }
-    do {
-      let lease = try await syncService.macDesktopTakeControl(
-        laneId: laneId,
-        controllerId: token,
-        controllerLabel: MacDesktopLiveSession.defaultViewerLabel()
-      )
-      holderId = lease.holderId
-    } catch {
-      errorText = (error as NSError).localizedDescription
-    }
-  }
-
-  private func heartbeat() async {
-    guard holderId != nil else { return }
-    while !Task.isCancelled {
-      try? await Task.sleep(for: .seconds(20))
-      if Task.isCancelled || holderId == nil { return }
-      let lease = try? await syncService.macDesktopRenewLease(laneId: laneId, controllerId: token)
-      if lease == nil {
-        holderId = nil
-        notice = "Control ended."
-        return
-      }
-    }
-  }
-
-  /// Local first. The socket call is not awaited by the key or the button:
-  /// a wedged connection is the usual reason someone is trying to get out.
   private func releaseNow() {
-    guard holderId != nil else { return }
-    let service = syncService
-    let lane = laneId
-    let id = token
-    let button = pressOutstanding ? "left" : nil
-    holderId = nil
-    pressOutstanding = false
-    dragStart = nil
-    Task {
-      let call = MacDesktopControlWire.call(
-        laneId: lane,
-        controllerId: id,
-        event: .release(button: button)
-      )
-      try? await service.macDesktopInput(laneId: lane, call: call)
-      _ = try? await service.macDesktopReturnControl(laneId: lane, controllerId: id)
-    }
+    lease.release(laneId: laneId, using: syncService)
   }
 }
+
+/// Where the lane's display sits on the host's plane, or nil when the host
+/// does not say (control stays off: a click would land on the real screen).
+func macDesktopDisplayGeometry(_ display: WorkToolsMacDesktopDisplay?) -> MacDesktopDisplayGeometry? {
+  guard let display, let origin = display.origin, display.width > 0, display.height > 0 else { return nil }
+  return MacDesktopDisplayGeometry(
+    width: Double(display.width),
+    height: Double(display.height),
+    originX: origin.x,
+    originY: origin.y
+  )
+}
+
+let macDesktopNoGeometryMessage = "This machine's ADE doesn't say where the screen sits, so clicks stay off."
 
 // MARK: - Zoom
 
@@ -673,6 +742,9 @@ struct MacDesktopControlPicture: View {
 /// inside the new limits.
 struct LivePictureZoom: ViewModifier {
   var enabled: Bool
+  /// A single tap, told apart from the double-tap zoom (it waits for the
+  /// second tap not to come). The viewer's menu.
+  var onTap: (() -> Void)?
 
   @Environment(\.livePictureViewport) private var viewport
   @State private var zoom = MacDesktopZoom.identity
@@ -714,7 +786,15 @@ struct LivePictureZoom: ViewModifier {
   private var zoomGesture: some Gesture {
     magnify
       .simultaneously(with: pan)
-      .simultaneously(with: doubleTap)
+      .simultaneously(with: doubleTap.exclusively(before: singleTap))
+  }
+
+  private var singleTap: some Gesture {
+    TapGesture(count: 1)
+      .onEnded {
+        guard enabled, let onTap else { return }
+        onTap()
+      }
   }
 
   private var magnify: some Gesture {
@@ -806,8 +886,8 @@ private struct LivePictureViewportModifier: ViewModifier {
 
 extension View {
   /// See `LivePictureZoom`.
-  func livePictureZoom(enabled: Bool) -> some View {
-    modifier(LivePictureZoom(enabled: enabled))
+  func livePictureZoom(enabled: Bool, onTap: (() -> Void)? = nil) -> some View {
+    modifier(LivePictureZoom(enabled: enabled, onTap: onTap))
   }
 
   /// Marks a viewer's stage as the area a zoomed live picture may fill.

@@ -31,7 +31,7 @@ export const JIRA_API_TOKEN_KEY = "jira.apiToken";
 /** Where the project's connection came from: "device", "account" (the vault) or "legacy" (the machine copy). */
 const JIRA_SOURCE_KEY = "jira.credentialSource.v1";
 /** Set once a project has looked at the machine copy, so a disconnect is not undone by re-adopting it. */
-const JIRA_LEGACY_ADOPTED_KEY = "jira.legacyAdopted.v1";
+const JIRA_LEGACY_ADOPTED_KEY = "jira.legacyAdopted.v1"; // gitleaks:allow — a store key name, not a secret
 export const JIRA_ACCOUNT_VAULT_KIND = "integration";
 export const JIRA_ACCOUNT_VAULT_KEY = "jira";
 
