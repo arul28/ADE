@@ -54,6 +54,7 @@ import {
 import type { ClaudeBuiltinAgentOverride } from "../../../shared/claudeBuiltinAgentPrompts";
 import {
   claudeSubagentLaunchExtras,
+  presetModelsSpelled,
   resolveAgentPins,
   resolveSubagentLaunch,
   resolveSubagentModel,
@@ -98,6 +99,7 @@ import { buildKeySourceLaunch, guardedPrivateHomeWrite } from "./harnessKeySourc
 import {
   buildRouteLaunch,
   buildSubscriptionRouteLaunch,
+  routeModelSpelling,
   type RouteLaunchResult,
   type RouteReasonCode,
 } from "./harnessRouteLaunch";
@@ -431,10 +433,26 @@ export function resolveHarnessPresetPlan(
     ...(subagentLaunch ? { subagent: subagentLaunch } : {}),
   };
 
+  // The subagent model and every pin, spelled for the source the way the main
+  // model is (`sourceModel`): a first-party route (an account, a subscription)
+  // drops ADE's vendor namespace from each, as its own API never sees it.
+  const sourcePreset = presetModelsSpelled(preset, (model) => sourceModelIdFor(preset.source, model));
+  const sourceSubagentModel = resolveSubagentModel(sourcePreset);
+  const sourceSubagentLaunch = resolveSubagentLaunch(sourcePreset, harness);
+  /** `base`'s subagent fields as a first-party route passes them. */
+  const sourceSubagentFields: Pick<HarnessPresetLaunchPlan, "subagentModel" | "subagent"> = {
+    ...(sourceSubagentModel && SUBAGENT_MODEL_SUPPORTED.has(harness) ? { subagentModel: sourceSubagentModel } : {}),
+    ...(sourceSubagentLaunch ? { subagent: sourceSubagentLaunch } : {}),
+  };
+
   // `modelPrefix` is set on a route translated through ADE's proxy, which only
   // routes model ids that carry it — the subagent model and every pin too.
-  const claudeExtras = (modelPrefix = ""): Pick<HarnessPresetLaunchPlan, "claudeAgents"> & { env: Record<string, string> } =>
-    harness !== "claude" ? { env: {} } : claudeSubagentLaunchExtras(preset, subagentModel, modelPrefix);
+  // `spelled` is the preset with its models already spelled for the route.
+  const claudeExtras = (
+    modelPrefix = "",
+    spelled: HarnessPreset = sourcePreset,
+  ): Pick<HarnessPresetLaunchPlan, "claudeAgents"> & { env: Record<string, string> } =>
+    harness !== "claude" ? { env: {} } : claudeSubagentLaunchExtras(spelled, resolveSubagentModel(spelled), modelPrefix);
 
   const accountInstance = preset.source.kind === "account"
     ? (deps.resolveInstance ?? resolveProviderInstanceForLaunch)(preset.source.provider, preset.source.instanceId)
@@ -468,7 +486,7 @@ export function resolveHarnessPresetPlan(
       );
     }
     return {
-      ...(codexAccountSubagents ? withoutSubagentSettings(base) : base),
+      ...(codexAccountSubagents ? withoutSubagentSettings(base) : { ...base, ...sourceSubagentFields }),
       model: sourceModel,
       instanceId: accountInstance.id,
       env: {
@@ -543,7 +561,7 @@ export function resolveHarnessPresetPlan(
         model: sourceModel,
         configHome: configHomeFor(adeHome, preset),
         prefix: connection.prefix,
-        ...(subagentLaunch ? { subagent: subagentLaunch } : {}),
+        ...(sourceSubagentLaunch ? { subagent: sourceSubagentLaunch } : {}),
         deps: { adeHome, writeConfig, security },
       }));
       if (built.status === "unsupported") {
@@ -558,6 +576,7 @@ export function resolveHarnessPresetPlan(
       touchConfigHome(configHomeFor(adeHome, preset), writeConfig);
       return {
         ...base,
+        ...sourceSubagentFields,
         model: built.model,
         env: built.env,
         route: built.route,
@@ -600,7 +619,7 @@ export function resolveHarnessPresetPlan(
           ensurePrivateDirectory(codexConfigHome, security);
           writePrivateFile(
             path.join(codexConfigHome, "config.toml"),
-            buildCodexProxyConfigToml(proxy.codexConfigToml, subagentLaunch),
+            buildCodexProxyConfigToml(proxy.codexConfigToml, sourceSubagentLaunch),
             security,
           );
         }
@@ -619,7 +638,7 @@ export function resolveHarnessPresetPlan(
             // A model an agent config names must exist on the provider block,
             // so the subagent pins are registered beside the main model.
             models: Object.fromEntries(
-              [proxy.opencodeProvider.model, ...subagentLaunchModelIds(subagentLaunch)]
+              [proxy.opencodeProvider.model, ...subagentLaunchModelIds(sourceSubagentLaunch)]
                 .map((model) => [model, {} as Record<string, never>]),
             ),
           },
@@ -629,7 +648,7 @@ export function resolveHarnessPresetPlan(
             presetConfigHome(adeHome, preset.id),
             openCodeProvider,
             security,
-            openCodeSubagentAgentBlock(harness, subagentLaunch, (model) => `${PROXY_OPENCODE_PROVIDER_ID}/${model}`),
+            openCodeSubagentAgentBlock(harness, sourceSubagentLaunch, (model) => `${PROXY_OPENCODE_PROVIDER_ID}/${model}`),
           )
           : path.join(presetConfigHome(adeHome, preset.id), "opencode.json");
         env.OPENCODE_CONFIG = openCodeConfigPath;
@@ -650,6 +669,7 @@ export function resolveHarnessPresetPlan(
     const { codexConfigHome, openCodeProvider, openCodeConfigPath } = guardedConfig.value;
     return {
       ...base,
+      ...sourceSubagentFields,
       // The proxy routes by a prefixed model id (`<prefix>/<model>`), so the
       // launch must use the proxy's spelling, not the preset's raw one.
       model: proxy.model,
@@ -688,21 +708,26 @@ export function resolveHarnessPresetPlan(
   const vendorOnlyKey = preset.source.kind === "key" && NON_ROUTABLE_KEY_PROVIDERS.has(preset.source.provider.trim().toLowerCase());
   if (preset.source.kind === "opencode" || (preset.source.kind === "key" && routable && !vendorOnlyKey)) {
     const routeSource = preset.source;
+    // The subagent model and pins spelled as the route spells the main model:
+    // a gateway key (its own base URL) keeps every id exactly as typed.
+    const routePreset = presetModelsSpelled(preset, routeModelSpelling(routeSource, deps));
+    const routeSubagentModel = resolveSubagentModel(routePreset);
+    const routeSubagentLaunch = resolveSubagentLaunch(routePreset, harness);
     const routed = runRouteBuild(writeConfig, () => buildRouteLaunch({
       harness,
       source: routeSource,
       // Spelled for the source inside, where a key's own endpoint is known.
       model: preset.model,
       configHome: configHomeFor(adeHome, preset),
-      ...(subagentModel ? { subagentModel } : {}),
-      ...(subagentLaunch ? { subagent: subagentLaunch } : {}),
+      ...(routeSubagentModel ? { subagentModel: routeSubagentModel } : {}),
+      ...(routeSubagentLaunch ? { subagent: routeSubagentLaunch } : {}),
       // Every model this preset names outside the main one has to exist on the
       // proxy upstream, or a proxied launch configures a harness to ask for an
       // id the proxy has never heard of. Claude spells its pins as SDK agent
       // entries and the rest as config-file tables, so both halves are named.
       pinnedModels: harness === "claude"
-        ? Object.values(resolveAgentPins(preset))
-        : Object.values(subagentLaunch?.agents ?? {})
+        ? Object.values(resolveAgentPins(routePreset))
+        : Object.values(routeSubagentLaunch?.agents ?? {})
           .map((pin) => pin.model)
           .filter((model): model is string => Boolean(model)),
       deps: {
@@ -722,10 +747,12 @@ export function resolveHarnessPresetPlan(
         ...(routed.reasonCode ? { reasonCode: routed.reasonCode } : {}),
       };
     }
-    const extras = claudeExtras(routed.modelPrefix);
+    const extras = claudeExtras(routed.modelPrefix, routePreset);
     touchConfigHome(configHomeFor(adeHome, preset), writeConfig);
     return {
       ...base,
+      ...(routeSubagentModel && SUBAGENT_MODEL_SUPPORTED.has(harness) ? { subagentModel: routeSubagentModel } : {}),
+      ...(routeSubagentLaunch ? { subagent: routeSubagentLaunch } : {}),
       model: routed.model,
       env: { ...routed.env, ...extras.env },
       route: routed.route,
@@ -796,7 +823,8 @@ export function resolveHarnessPresetPlan(
       unsupported: keySource.unsupported,
     };
   }
-  const extras = claudeExtras();
+  // The main model goes as typed here (`base.model`), so its subagents do too.
+  const extras = claudeExtras("", preset);
   return {
     ...base,
     env: { ...keySource.env, ...extras.env },

@@ -41,6 +41,31 @@ import {
   type HarnessSubagentPin,
 } from "../../../shared/harnessSubagentLaunch";
 
+/**
+ * The preset with every model it names (main, subagent, role pins) spelled by
+ * `spell`, the source's own spelling. `inherit` and `follows` stay as they are,
+ * so they still resolve to the spelled main and subagent models.
+ *
+ * A launch spells its main model for the source (`sourceModelIdFor`); the
+ * subagents and pins must be spelled the same way, or the main chat starts
+ * while a subagent asks the vendor for an id only ADE's catalog knows.
+ */
+export function presetModelsSpelled(preset: HarnessPreset, spell: (model: string) => string): HarnessPreset {
+  const subagentModel = preset.subagentModel?.trim();
+  const agentOverrides = Object.fromEntries(
+    Object.entries(preset.agentOverrides ?? {}).map(([key, value]) => {
+      const raw = typeof value === "string" ? value.trim() : "";
+      return [key, raw && raw !== HARNESS_PRESET_AGENT_FOLLOWS ? spell(raw) : value];
+    }),
+  ) as HarnessPreset["agentOverrides"];
+  return {
+    ...preset,
+    model: spell(preset.model),
+    ...(subagentModel && subagentModel !== HARNESS_PRESET_SUBAGENT_INHERIT ? { subagentModel: spell(subagentModel) } : {}),
+    ...(preset.agentOverrides ? { agentOverrides } : {}),
+  };
+}
+
 /** The preset's subagent model, or undefined when it says "same as main". */
 export function resolveSubagentModel(preset: HarnessPreset): string | undefined {
   const value = preset.subagentModel?.trim();

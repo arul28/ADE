@@ -176,6 +176,24 @@ export function routeSourceKey(source: Extract<HarnessPresetSource, { kind: "key
     : source.providerId.trim();
 }
 
+/**
+ * How a key or OpenCode route spells a model for its source: exactly as typed
+ * on a key with its own base URL (a gateway), else the source's own id
+ * (`sourceModelIdFor`). The same rule `buildRouteLaunch` applies to the main
+ * model, without reading a secret, so a caller can spell the rest of a preset's
+ * models (its subagents and pins) to match.
+ */
+export function routeModelSpelling(
+  source: Extract<HarnessPresetSource, { kind: "key" } | { kind: "opencode" }>,
+  deps: Pick<RouteLaunchDeps, "getCredentialSummary">,
+): (model: string) => string {
+  const customEndpoint = source.kind === "key"
+    && isSafeIdentifier(source.provider.trim())
+    && isSafeIdentifier(source.credentialId.trim())
+    && Boolean((deps.getCredentialSummary ?? getApiCredentialSummary)(source.provider.trim(), source.credentialId.trim())?.baseUrl?.trim());
+  return (model) => (customEndpoint ? model.trim() : sourceModelIdFor(source, model));
+}
+
 /** The secret and endpoints behind a key or OpenCode source, on this machine. */
 export function resolveRouteSource(
   source: Extract<HarnessPresetSource, { kind: "key" } | { kind: "opencode" }>,
