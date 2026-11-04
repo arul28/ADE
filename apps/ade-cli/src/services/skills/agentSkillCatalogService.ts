@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 
 import { parse as parseYaml } from "yaml";
+import { isPathEscapeError, readFileWithinRootSecure } from "../../../../desktop/src/main/services/shared/utils";
 
 import {
   getAgentSkillRootsWithSource,
@@ -233,6 +234,37 @@ export function readAgentSkill(
   if (!skill) return null;
   return { entry: { ...skill.entry }, body: skill.body, content: skill.content };
 }
+
+/**
+ * One more Markdown file from a skill's own folder (its `references/` detail).
+ * The path must stay inside the folder after symlinks are resolved, so a link
+ * a repo plants in a skill cannot read files outside it.
+ */
+export function readAgentSkillFile(
+  entry: AgentSkillEntry,
+  file: string,
+): { relative: string; path: string; content: string } {
+  const skillDir = path.dirname(entry.path);
+  const lexical = path.relative(skillDir, path.resolve(skillDir, file));
+  if (!lexical || path.isAbsolute(lexical) || !lexical.toLowerCase().endsWith(".md")) {
+    throw new AgentSkillFileError(`${file} is not a Markdown file inside the ${entry.name} skill.`);
+  }
+  try {
+    const content = readFileWithinRootSecure(skillDir, lexical).toString("utf8");
+    return { relative: lexical, path: path.join(skillDir, lexical), content };
+  } catch (error) {
+    if (isPathEscapeError(error)) {
+      throw new AgentSkillFileError(`${file} is not a Markdown file inside the ${entry.name} skill.`);
+    }
+    if ((error as NodeJS.ErrnoException | null)?.code === "ENOENT") {
+      throw new AgentSkillFileError(`The ${entry.name} skill has no file ${lexical}.`);
+    }
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new AgentSkillFileError(`Could not read ${lexical} in the ${entry.name} skill: ${reason}`);
+  }
+}
+
+export class AgentSkillFileError extends Error {}
 
 export function isRemoteMcpInvocation(env: NodeJS.ProcessEnv = process.env): boolean {
   return typeof env.ADE_REMOTE_MCP_CONNECTION_ID === "string"

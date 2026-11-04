@@ -44,7 +44,7 @@ const openCodeBackgroundWorkGuidance = "**Background work:** `shell` with `backg
  */
 const adeMcpServersGuidance = "**MCP servers:** this chat keeps the MCP servers it started with, and you cannot add or sign in to one. Tell the user: **Sign in** on its row in Settings › MCP servers if it asks, then right-click this chat in Work and choose **Restart agent session** (the conversation is kept).";
 
-const adeIndependentChildChatGuidance = "Another provider's model: `ade new chat --mode chat --provider <p> --model <m> --prompt \"<task>\"` is your subagent and reports back. `ade chat interrupt <id>` stops any chat.";
+const adeProviderSubagentGuidance = "Another provider's model: `ade new chat --mode chat --provider <p> --model <m> --prompt \"<task>\"` is your subagent and reports back. When the user asks, `ade chat interrupt <id>` stops any chat.";
 
 type NativeSubagentFamily = "claude" | "codex" | "cursor" | "droid" | "copilot" | "opencode" | "pi";
 
@@ -73,7 +73,7 @@ const nativeSubagentGuidanceByFamily: Record<NativeSubagentFamily, string> = {
 export function buildNativeSubagentRoutingGuidance(runtime: AdeRuntimeKind): string {
   const family = nativeSubagentFamilyByRuntime[runtime];
   const nativeGuidance = nativeSubagentGuidanceByFamily[family];
-  return `**Subagent routing:** ${nativeGuidance}${family === "pi" ? "" : ` ${adeIndependentChildChatGuidance}`}`;
+  return `**Subagent routing:** ${nativeGuidance}${family === "pi" ? "" : ` ${adeProviderSubagentGuidance}`}`;
 }
 
 function describeSubagentRouting(runtime: AdeRuntimeKind): string {

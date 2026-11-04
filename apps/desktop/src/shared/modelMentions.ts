@@ -227,7 +227,7 @@ export function buildModelMentionDetail(
     ],
     hint: [
       "The user picked this model, thinking level, and permission mode. Use these exact values.",
-      `- To have this model do work (the default): \`ade chat create --lane <lane> ${flags} --prompt "<task>"\`. It runs as your subagent in this lane and reports back to you when it finishes.`,
+      `- To have this model do work (the default): \`ade new chat --mode chat ${flags} --prompt "<task>"\`. It runs as your subagent in this lane and reports back to you when it finishes.`,
       info.provider === "claude"
         ? "- If you are a Claude chat, use your native Agent tool with this model instead; it is a subagent in the same thread."
         : null,

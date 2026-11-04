@@ -8,12 +8,12 @@
 // personal skills so a remote app sees only project and ADE-provided skills.
 // ---------------------------------------------------------------------------
 
-import fs from "node:fs";
-import path from "node:path";
 import {
+  AgentSkillFileError,
   isRemoteMcpInvocation,
   listAgentSkills,
   readAgentSkill,
+  readAgentSkillFile,
 } from "../services/skills/agentSkillCatalogService";
 
 export class CliSkillUsageError extends Error {}
@@ -111,7 +111,7 @@ export function runSkillShow(args: string[]): SkillCliResult {
   const { format, rest } = extractFormat(args);
   const name = rest[0];
   if (!name) {
-    throw new CliSkillUsageError("ade skill show <name> [--text|--json]");
+    throw new CliSkillUsageError("ade skill show <name> [<file>] [--text|--json]");
   }
   const includeUser = !isRemoteMcpInvocation(process.env);
   const skill = readAgentSkill(name, { cwd: process.cwd(), includeUser, env: process.env, onError: warnUnreadable });
@@ -132,23 +132,16 @@ export function runSkillShow(args: string[]): SkillCliResult {
   }
   const file = rest[1];
   if (file) {
-    // A skill keeps rarely needed detail in files next to SKILL.md. Only
-    // Markdown inside the skill's own folder is readable here.
-    const skillDir = path.dirname(skill.entry.path);
-    const target = path.resolve(skillDir, file);
-    const relative = path.relative(skillDir, target);
-    if (!relative || relative.startsWith("..") || path.isAbsolute(relative) || !relative.endsWith(".md")) {
-      throw new CliSkillUsageError(`${file} is not a Markdown file inside the ${skill.entry.name} skill.`);
-    }
-    let text: string;
+    let read: ReturnType<typeof readAgentSkillFile>;
     try {
-      text = fs.readFileSync(target, "utf8");
-    } catch {
-      throw new CliSkillUsageError(`The ${skill.entry.name} skill has no file ${relative}.`);
+      read = readAgentSkillFile(skill.entry, file);
+    } catch (error) {
+      if (error instanceof AgentSkillFileError) throw new CliSkillUsageError(error.message);
+      throw error;
     }
-    if (format === "text") return { output: `${text.replace(/\r?\n$/, "")}\n`, exitCode: 0 };
+    if (format === "text") return { output: `${read.content.replace(/\r?\n$/, "")}\n`, exitCode: 0 };
     return {
-      output: `${JSON.stringify({ name: skill.entry.name, file: relative, content: text, path: target }, null, 2)}\n`,
+      output: `${JSON.stringify({ name: skill.entry.name, file: read.relative, content: read.content, path: read.path }, null, 2)}\n`,
       exitCode: 0,
     };
   }

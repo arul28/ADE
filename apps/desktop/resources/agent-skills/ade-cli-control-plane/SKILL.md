@@ -137,17 +137,6 @@ Create a new lane for it (`--auto-create-lane`, `ade lanes create`) only when th
 asks. Agents in one lane share its Apple device: let one agent drive it and
 hand that agent the device work (see ade-apple).
 
-To wait on a terminal (a dev server, a long build, a log), watch it instead of
-polling `ade terminal read`: `ade terminal watch <terminal-id> [--match error |
---match "ready|listening"] [--lifetime 30m]`, then end your turn. ADE wakes
-you with the new output (last ~4 KB, colors and redraws removed) once it goes
-quiet, and once more when the terminal exits (with the exit code). Output
-already on screen never wakes you. `ade terminal watch --command "npm run dev"`
-starts the command in a new shell in your lane and watches it from the first
-byte. `ade terminal watches` lists yours; `ade terminal unwatch <watch-id>`
-stops one. A watch ends after 2h by default (max 24h), after 20 wakes in an
-hour, or if ADE restarts; re-arm it then.
-
 When the new work must carry the current lane's unmerged commits, use
 `ade lanes create --name <n> --from <your branch> --on local` to continue unmerged work. Use `--on uncommitted` to copy uncommitted changes too.
 
@@ -167,6 +156,17 @@ dump an entire long transcript into the model context. `--max-chars` is a hard
 response ceiling; a single oversized entry is visibly clipped and the response
 sets `truncated`. This machine-wide route is read-only; it does not broaden
 cross-project message or mutation routing.
+
+#### Claude models in a Claude chat
+
+In a Claude chat, run another Claude model (Opus, Sonnet, Haiku) with the
+native `Agent` tool and its `model` override. It is a subagent in the same
+thread. Use an ADE subagent chat for a model from another provider.
+
+A raw background CLI (`codex exec` in a shell) is not tracked by ADE. Prefer
+an ADE subagent chat. If you must, close its stdin (`</dev/null`), capture the
+PID, and `wait "$PID"` for its exit status; never use a bare `pgrep`, which
+matches your own shell.
 
 ### Messaging and stopping other chats
 
@@ -210,24 +210,24 @@ Never poll and never block on a long wait. Match the thing you wait on:
 | Waiting on | Do this, then end your turn or keep working |
 | --- | --- |
 | A subagent chat | Nothing. Its report wakes you. |
-| A PR (CI, reviews) | `ade prs watch <pr>` |
+| A PR the user asked you to watch or land | `ade prs watch <pr>` (or `ade prs ship <pr>` to land it) |
 | A dev server, build or log | `ade terminal watch <terminal-id> [--match "ready"]` |
-| A `--mode cli` child or a peer | `ade chat wait <id> --async [--for idle]` |
+| A peer (it does not report back) | `ade chat wait <id> --async [--for idle]` |
 | Anything else, later | `ade chat scheduled-work create --in 20m --prompt "<what to check>"` (see Scheduled work) |
 
 Claude's own `ScheduleWakeup`, `CronCreate` and `/loop` are mirrored into the
 same scheduler, so in a Claude chat they are equivalent.
 
-#### Claude models in a Claude chat
-
-In a Claude chat, run another Claude model (Opus, Sonnet, Haiku) with the
-native `Agent` tool and its `model` override. It is a subagent in the same
-thread. Use an ADE subagent chat for a model from another provider.
-
-A raw background CLI (`codex exec` in a shell) is not tracked by ADE. Prefer
-an ADE subagent chat. If you must, close its stdin (`</dev/null`), capture the
-PID, and `wait "$PID"` for its exit status; never use a bare `pgrep`, which
-matches your own shell.
+**Terminals.** Watch one instead of polling `ade terminal read`:
+`ade terminal watch <terminal-id> [--match error |
+--match "ready|listening"] [--lifetime 30m]`, then end your turn. ADE wakes
+you with the new output (last ~4 KB, colors and redraws removed) once it goes
+quiet, and once more when the terminal exits (with the exit code). Output
+already on screen never wakes you. `ade terminal watch --command "npm run dev"`
+starts the command in a new shell in your lane and watches it from the first
+byte. `ade terminal watches` lists yours; `ade terminal unwatch <watch-id>`
+stops one. A watch ends after 2h by default (max 24h), after 20 wakes in an
+hour, or if ADE restarts; re-arm it then.
 
 ### Finishing: settling is not yours
 

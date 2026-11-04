@@ -94,11 +94,10 @@ Use these directly; you do not need `--help` for them. `A="$ADE_CLI_PATH"`.
   Arguments after `--` reach the app, for `launch` and `relaunch`.
 - One agent should drive the device. Let it do the taps, screenshots and
   recordings; other agents hand it work, or wait for its results. That is
-  simpler and faster than several agents taking turns. Use leases only when
-  agents truly must drive the same device in parallel.
-- Several agents on one lane share one device. Before a run of builds,
-  rotates and shots, take a `lease` (it queues behind whoever has it) and
-  release it after. It is advisory, so it only works if every agent uses it.
+  simpler and faster than several agents taking turns. When agents truly
+  must drive the same device in parallel, take a `lease` before a run of
+  builds, rotates and shots (it queues behind whoever has it) and release it
+  after. It is advisory, so it only works if every agent uses it.
   Device commands do not renew it: renew with the token before `--ttl` ends.
   It also ends when its chat is archived or deleted.
   Each device has its own lease. Tokens, renewing, and `--holder` for
@@ -170,6 +169,11 @@ another lane, an `xcodebuild test` run, or the user.
 **A busy device is not a blocker, and it is not a reason to ask a human.**
 Make the lane's own with `start`. It takes seconds (see "The lane's device").
 
+This is worth saying plainly because the failure looks reasonable from the
+inside: you find a booted simulator, the guard tells you another chat owns it,
+and stopping to ask seems polite. It is not. It blocks the work for no reason
+and hands the human a decision they should never have been given.
+
 ## Tests run on the lane's device
 
 ```bash
@@ -185,11 +189,6 @@ it is not an error. Output, `--only` names and DerivedData:
 Do not run `xcodebuild test` by hand against a simulator you made. If you must
 run `xcodebuild` yourself, pass `-derivedDataPath .ade/cache/ios-simulator/DerivedData`
 from the lane worktree, never `/tmp` or `~/Library/Developer/Xcode/DerivedData`.
-
-This is worth saying plainly because the failure looks reasonable from the
-inside: you find a booted simulator, the guard tells you another chat owns it,
-and stopping to ask seems polite. It is not. It blocks the work for no reason
-and hands the human a decision they should never have been given.
 
 **And when the request was for simulator proof, simulator proof is what you
 owe.** A passing unit test is not a substitute for a screen. If you cannot

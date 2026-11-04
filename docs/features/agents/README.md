@@ -222,7 +222,7 @@ contract: `subagent` (the default when `--type` is left out) reports back to
 the parent after every turn; `peer` is fire-and-forget and leaves quiet
 turn-completion notes. The legacy `none` value is rejected. Lineage decides
 only who gets reports: any agent may read, message, interrupt, or stop any
-chat (see `MESH_CHAT_ACTIONS` in `adeRpcServer.ts`). A `--no-parent`
+chat (see `CHAT_ACTION_SCOPE` in `adeRpcServer.ts`). A `--no-parent`
 session an agent starts records the agent as `launchedBySessionId`: no
 nesting, wake or permission ceiling, only the Focus rule that keeps a finished
 helper from holding its busy launcher's lane open.

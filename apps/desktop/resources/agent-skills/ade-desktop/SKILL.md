@@ -11,5 +11,5 @@ computer use in ADE. Read
 `apps/desktop/resources/agent-skills/ade-computer-use/SKILL.md` (or
 `ade skill show ade-computer-use --text`).
 
-The CLI group is unchanged: `ade screen`. Note that `ade desktop` is a
+The CLI group is now `ade screen` (`ade mac-desktop` still works). Note that `ade desktop` is a
 different command — it launches the ADE desktop app.

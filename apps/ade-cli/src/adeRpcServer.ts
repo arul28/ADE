@@ -158,7 +158,7 @@ import {
   type LaunchProfile,
   type TrackedCliLaunchCommand,
 } from "../../desktop/src/shared/cliLaunch";
-import type { AgentChatDroidPermissionMode, AgentChatMusePermissionMode, AgentChatPermissionMode, AgentChatRuntimeActor, AgentChatSpawnKind, TerminalResumeMetadata, TerminalSessionSummary } from "../../desktop/src/shared/types";
+import type { AgentChatDroidPermissionMode, AgentChatMusePermissionMode, AgentChatPermissionMode, AgentChatRuntimeActor, AgentChatSpawnKind, AgentSpawnLineage, TerminalResumeMetadata, TerminalSessionSummary } from "../../desktop/src/shared/types";
 import type { AdeRuntime } from "./bootstrap";
 import {
   recordUsageInteraction,
@@ -3765,72 +3765,62 @@ const CROSS_MACHINE_MOVE_ACTIONS = new Set([
 ]);
 
 /**
- * ADE is a mesh: any agent may read, stop, or steer any chat, whoever started
- * it. Lineage only decides who gets a chat's completion report, never who may
- * act on it. These stay in SCOPED_CHAT_ACTIONS so an unbound external caller
- * is still refused and an omitted target still means the caller's own chat.
+ * Chat actions that name a target chat, by who a session-bound agent may aim
+ * them at. Both kinds refuse an unbound external caller, and an omitted target
+ * means the caller's own chat.
+ *
+ * - `mesh`: any chat. ADE is a mesh: any agent may read, stop, steer or
+ *   restart any chat, whoever started it; lineage only decides who gets a
+ *   chat's completion report, never who may act on it. Agents are told to act
+ *   on another chat only when the user asks.
+ * - `self`: the caller's own chat only. These report the caller's own state
+ *   (note, ask, activity), spend money on a chat (usage-limit resume, account
+ *   switch), queue or cancel prompts that arrive as if the user acted
+ *   (`sendMessage`, scheduled work), or rewrite lineage.
+ *
+ * `settleSelfSession` / `unsettleSelfSession` used to be `self` here. Both were
+ * removed in 2026-07: "is this work finished" is a judgment agents are
+ * unreliable at, so the surviving settle writers are all CTO-only and refuse a
+ * session-bound agent outright.
  */
-const MESH_CHAT_ACTIONS = new Set([
-  "getChatEventHistory",
-  "getChatEventHistoryPage",
-  "listScheduledWork",
-  "getScheduledWorkState",
-  "cancelScheduledWork",
-  "setScheduledWorkPaused",
-  "interrupt",
-  "interruptWithQueueMode",
-  "stopTask",
-  "messageSubagent",
-  "controlSubagent",
-  "restartSession",
-  "holdBackgroundWork",
-  "restoreCancelledQueue",
+const CHAT_ACTION_SCOPE = new Map<string, "mesh" | "self">([
+  ["getChatEventHistory", "mesh"],
+  ["getChatEventHistoryPage", "mesh"],
+  ["listScheduledWork", "mesh"],
+  ["getScheduledWorkState", "mesh"],
+
+  ["interrupt", "mesh"],
+  ["interruptWithQueueMode", "mesh"],
+  ["stopTask", "mesh"],
+  ["messageSubagent", "mesh"],
+  ["controlSubagent", "mesh"],
+  // Tears down the target's runtime after its turn (or at once with stopFirst).
+  ["restartSession", "mesh"],
+  ["holdBackgroundWork", "mesh"],
+  ["restoreCancelledQueue", "mesh"],
+  ["sendMessage", "self"],
+  ["createScheduledWork", "self"],
+  // Cancelling or pausing another chat's schedule could dismiss its
+  // usage-limit auto-resume (parking it until a person acts), and the target's
+  // transcript records the cancel as the user's.
+  ["cancelScheduledWork", "self"],
+  ["setScheduledWorkPaused", "self"],
+  // Spends a real turn on the target; a bound agent could otherwise force any
+  // usage-limited chat on the machine to burn its retry.
+  ["resumeUsageLimitNow", "self"],
+  // Spends a turn on a different login.
+  ["continueUsageLimitOnAlternate", "self"],
+  // Changes which login pays for a chat's next turn.
+  ["switchAccount", "self"],
+  ["requestSessionAttention", "self"],
+  ["clearAsk", "self"],
+  ["setSessionActivity", "self"],
+  ["setSessionStatusNote", "self"],
+  ["setSpawnKind", "self"],
+  ["dismissSubagentTakeoverPrompt", "self"],
 ]);
 
-const SCOPED_CHAT_ACTIONS = new Set([
-  "getChatEventHistory",
-  "getChatEventHistoryPage",
-  "sendMessage",
-  "createScheduledWork",
-  "listScheduledWork",
-  "getScheduledWorkState",
-  "cancelScheduledWork",
-  "setScheduledWorkPaused",
-  // Resume now spends a real turn on the target chat, exactly like `interrupt`
-  // or `stopTask` spend a control action on it. A session-bound agent may only
-  // aim it at its OWN row; without this entry a bound agent could force any
-  // usage-limited chat on the machine to burn its retry.
-  "resumeUsageLimitNow",
-  // Continuing on another account spends a turn on a different login. A
-  // session-bound agent may only aim it at its own row.
-  "continueUsageLimitOnAlternate",
-  // Switching accounts changes which login pays for a chat's next turn.
-  "switchAccount",
-  "requestSessionAttention",
-  "clearAsk",
-  "setSessionActivity",
-  "setSessionStatusNote",
-  // `settleSelfSession` / `unsettleSelfSession` used to be scoped here so a
-  // bound agent could only settle its OWN row. Both actions were removed in
-  // 2026-07: "is this work finished" is a subjective judgment agents are
-  // unreliable at, so the surviving settle writers (`session.settleSession`,
-  // `session.unsettleSession`, the bulk pair, `session.setSettleOverride`) are
-  // all CTO-only and refuse a session-bound agent outright — no scoping needed.
-  "interrupt",
-  "interruptWithQueueMode",
-  "stopTask",
-  // Messaging or controlling one subagent acts on the chat that owns it.
-  "messageSubagent",
-  "controlSubagent",
-  // Restarting tears down the target's runtime (and stops its turn with
-  // stopFirst); holding background work arms wakes on its terminals. Both act
-  // on a chat the way `interrupt` does, so a bound agent aims them at itself.
-  "restartSession",
-  "holdBackgroundWork",
-  "restoreCancelledQueue",
-  "setSpawnKind",
-  "dismissSubagentTakeoverPrompt",
-]);
+const SCOPED_CHAT_ACTIONS: ReadonlySet<string> = new Set(CHAT_ACTION_SCOPE.keys());
 
 /**
  * Chat actions whose caller the runtime stamps as `runtimeActor`: everything
@@ -3969,7 +3959,7 @@ function scopeChatAdeActionArgs(
     chatAccessDenied(method, { callerChatSessionId, requestedSessionId });
   }
 
-  if (MESH_CHAT_ACTIONS.has(action)) {
+  if (CHAT_ACTION_SCOPE.get(action) === "mesh") {
     if (!requestedSessionId) {
       if (!callerChatSessionId) chatAccessDenied(method, { callerChatSessionId, requestedSessionId });
       scopedArgs.sessionId = callerChatSessionId;
@@ -6945,7 +6935,10 @@ async function runTool(args: {
     const callerActor = await callerRuntimeActor(runtime, session, isUserClientSession(session));
     // An agent's CLI child never runs above the agent, or above its parent.
     const cliCeiling = await agentCliPermissionCeiling(runtime, session, orchestrationParentSessionId);
-    const spawnKind = parseCliSessionSpawnKind(toolArgs.spawnKind);
+    // A parented agent CLI with no kind is a subagent, as on every other launch
+    // surface. A shell keeps no lineage; the shell check below refuses it.
+    const spawnKind = parseCliSessionSpawnKind(toolArgs.spawnKind)
+      ?? (orchestrationParentSessionId && isCliProvider(provider) ? "subagent" : null);
     const parentLevel = orchestrationParentSessionId
       ? runtime.agentChatService?.getPermissionCeiling?.({ parentSessionId: orchestrationParentSessionId })
       : null;
@@ -6997,12 +6990,7 @@ async function runTool(args: {
         "Plain shell terminals do not record agent spawn lineage.",
       );
     }
-    if (isCliProvider(provider) && orchestrationParentSessionId && !spawnKind) {
-      throw new JsonRpcError(
-        JsonRpcErrorCode.invalidParams,
-        "spawnKind is required for a parented agent session: use subagent when the parent will need the result, or peer only for fire-and-forget work",
-      );
-    }
+
     if (!orchestrationParentSessionId && spawnKind) {
       throw new JsonRpcError(
         JsonRpcErrorCode.invalidParams,
@@ -7049,6 +7037,11 @@ async function runTool(args: {
         reason: trackedPreset.gateReason,
       });
     }
+    // Exported to the CLI process and named in its guidance, so it knows to
+    // report back to the chat that started it.
+    const spawnLineage: AgentSpawnLineage | null = isCliProvider(provider) && orchestrationParentSessionId
+      ? { parentChatSessionId: orchestrationParentSessionId, spawnKind }
+      : null;
     const launchFields: Partial<TrackedCliLaunchCommand> = (() => {
       if (provider === "shell") {
         return resolveCleanShellLaunchFields({
@@ -7062,9 +7055,7 @@ async function runTool(args: {
         provider,
         permissionMode,
         sessionActivityReportingEnabled: runtime.sessionActivityReportingEnabled,
-        ...(orchestrationParentSessionId
-          ? { spawnLineage: { parentChatSessionId: orchestrationParentSessionId, spawnKind: spawnKind ?? null } }
-          : {}),
+        ...(spawnLineage ? { spawnLineage } : {}),
         ...(droidPermissionMode ? { droidPermissionMode } : {}),
         ...(musePermissionMode ? { musePermissionMode } : {}),
         sessionId: preassignedSessionId,
@@ -7123,9 +7114,7 @@ async function runTool(args: {
       tracked: toolArgs.tracked !== false,
       toolType,
       ...(resumeMetadata ? { resumeMetadata } : {}),
-      ...(isCliProvider(provider) && orchestrationParentSessionId
-        ? { spawnLineage: { parentChatSessionId: orchestrationParentSessionId, spawnKind } }
-        : {}),
+      ...(spawnLineage ? { spawnLineage } : {}),
       ...(asOptionalTrimmedString(toolArgs.cwd) ? { cwd: asOptionalTrimmedString(toolArgs.cwd)! } : {}),
       ...(requestedChatSessionId ? { chatSessionId: requestedChatSessionId } : {}),
       ...launchFields,

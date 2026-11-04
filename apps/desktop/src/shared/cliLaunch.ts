@@ -5,6 +5,7 @@ import type {
   AgentChatDroidPermissionMode,
   AgentChatMusePermissionMode,
   AgentChatPermissionMode,
+  AgentSpawnLineage,
   PtySendToSessionArgs,
   TerminalResumeLaunchConfig,
   TerminalResumeMetadata,
@@ -1211,7 +1212,7 @@ export function buildTrackedCliLaunchCommand(args: {
   /** False when this runtime has no RPC endpoint that can accept agent reports. */
   sessionActivityReportingEnabled?: boolean;
   /** The chat that started this CLI, so the CLI knows to report back to it. */
-  spawnLineage?: { parentChatSessionId: string; spawnKind?: string | null } | null;
+  spawnLineage?: AgentSpawnLineage | null;
 }): TrackedCliLaunchCommand {
   const permissionMode = args.permissionMode ?? "default";
   validateLaunchProfilePermissionMode(args.provider, permissionMode);

@@ -58,7 +58,7 @@ stop it when you are done (see **Rules that will bite you**).
 | A tab in the user's own browser — only when the user asks ("the tab I have open", "use my Chrome") | `ade browser attach`, then the usual `ade browser` commands; `ade browser detach` when done | **ade-browser** |
 | Step 3 above, on a Mac | `ade screen` (the lane's private display) | this skill, below |
 | A Windows app with no other route (on a Windows host) | `ade screen` (Windows Desktop) | this skill, **Windows Desktop** below |
-| Any GUI app on a Linux host — Chrome, Firefox, an Electron or GTK/Qt app — with no other route | `ade screen` (Linux Desktop: the lane's own X display) | this skill, **Linux specifics** below |
+| Any GUI app on a Linux host — Chrome, Firefox, an Electron or GTK/Qt app — with no other route | `ade screen` (Linux Desktop: the lane's own X display) | this skill, **Linux Desktop** below |
 
 App Control acts through an Electron app's DOM, so labels, selectors, test ids
 and hover work, and it records and proves the app's own window without a lane
@@ -73,7 +73,7 @@ tab you attached to.
 
 Lane screens (`ade screen`) exist on macOS, Windows and Linux hosts. On Linux
 each lane gets its own X display, so nothing you do there touches anyone's
-screen; see **Linux specifics** below.
+screen; see **Linux Desktop** below.
 
 **Only ADE's surfaces stay off the user's screen.** Anything else that clicks,
 types or captures — an MCP server, `osascript` or System Events,
@@ -146,7 +146,9 @@ ade screen show --floating --text
 ade app-control show --floating --text
 ```
 
-# Mac Desktop
+# The lane's own screen
+
+## Mac Desktop
 
 Each lane owns a private macOS screen. `ade screen ...` creates it, parks
 apps on it, and drives them through the Accessibility API. ADE captures the
@@ -159,13 +161,12 @@ session.
 For web tasks, use `ade browser` (step 2 above). Open Safari or another browser
 here only when the user names that app or asks for the Mac Desktop.
 
-This section is the Mac. On Windows and Linux the same `ade screen` verbs drive
-that host's screen; read `references/windows-desktop.md` or
-`references/linux-desktop.md` first.
+On Windows and Linux the same `ade screen` verbs drive that host's screen;
+read the short section for your host below first.
 `--lane` defaults to `ADE_LANE_ID`. In a chat, the command is pinned to that
 chat's lane: `--lane` naming a different lane is refused, not silently swapped.
 
-# Windows Desktop
+## Windows Desktop
 
 On a Windows host, `ade screen` is Windows Desktop, with the Mac verbs below.
 Start every task with `ade screen status --text` and follow its `next` line.
@@ -179,7 +180,7 @@ Notepad reopen the user's files, which can hold secrets: open a blank file
 for the task. Seats, the ask-the-user table, Windows specifics and proof:
 `references/windows-desktop.md`.
 
-## Linux specifics
+## Linux Desktop
 
 On a Linux host the lane screen is the lane's own X display, so point clicks,
 drags, keys and `--real` need no lease. Missing packages (Xvfb, AT-SPI,

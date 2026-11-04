@@ -1449,7 +1449,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade apple apps --text
     $ ade apple launch --target <id> --text
     $ ade app-control launch --command "pnpm dev" --text
-    $ ade --socket browser open http://localhost:5173 --new-tab --text
+    $ ade browser open http://localhost:5173 --new-tab --text
     $ ade terminal read --chat-session <owner-session-id> --text
     $ ade terminal read --pty <pty-id> --text
     $ ade new chat --mode chat --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
@@ -3079,8 +3079,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   Apple device commands build, launch, stream, inspect, and control a per-lane
   iOS simulator through ADE's vendored helper. \`ade ios-sim\` is a deprecated
   alias for one minor release (\`ade ios\` and \`ade simulator\` still route here).
-  For shared session state, prefer attached runtime mode (--socket) so
-  launch/select/tap operate on the same long-lived ADE service. Launch keeps
+  Commands reach the running ADE brain, so launch/select/tap operate on the
+  same long-lived service (--socket only turns a missing brain into an error). Launch keeps
   the device in the background; pass --open-drawer when the user should see the
   Apple column, or run "apple show" at any time to put the device on screen.
   Tap, drag, type, and inspect go through the helper — no idb, no Screen
@@ -3103,15 +3103,15 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade apple show --floating                  Show it as the floating player instead
     $ ade apple devices --text                   List available simulators
     $ ade apple apps --device <udid> --text      List launchable apps
-    $ ade --socket apple launch --target <id>    Build, install, and launch an app
-    $ ade --socket apple launch --follow         Same, announcing the wait before the summary
-    $ ade --socket apple claim --lane <lane-id>  Attribute the drawer session to a lane
-    $ ade --socket apple launch --bundle-id com.example Launch installed app
-    $ ade --socket apple launch --configuration Release Build Release instead of Debug
-    $ ade --socket apple launch --bundle-id <id> --no-build --text -- -flag value  Pass launch arguments
-    $ ade --socket apple shutdown                End this chat's simulator session (the device stays on)
-    $ ade --socket apple shutdown --force        Force-release a session owned by another chat
-    $ ade --socket apple launch --force          Take the simulator over in one step
+    $ ade apple launch --target <id>    Build, install, and launch an app
+    $ ade apple launch --follow         Same, announcing the wait before the summary
+    $ ade apple claim --lane <lane-id>  Attribute the drawer session to a lane
+    $ ade apple launch --bundle-id com.example Launch installed app
+    $ ade apple launch --configuration Release Build Release instead of Debug
+    $ ade apple launch --bundle-id <id> --no-build --text -- -flag value  Pass launch arguments
+    $ ade apple shutdown                End this chat's simulator session (the device stays on)
+    $ ade apple shutdown --force        Force-release a session owned by another chat
+    $ ade apple launch --force          Take the simulator over in one step
     $ ade apple actions --text                   List every callable ios_simulator action
 
   ADE discovers Xcode projects from the project root and apps/* folders.
@@ -3131,11 +3131,11 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade apple preview-render --source <file>   Render a SwiftUI preview through Xcode MCP
 
   Device sessions:
-    $ ade --socket apple open-device --text      Boot a simulator with no app
-    $ ade --socket apple open-device --no-window Keep the device headless
-    $ ade --socket apple device-session --text   Report the tracked device session
-    $ ade --socket apple settings --text         Read appearance, text size, a11y
-    $ ade --socket apple close-device --text     Release the device session
+    $ ade apple open-device --text      Boot a simulator with no app
+    $ ade apple open-device --no-window Keep the device headless
+    $ ade apple device-session --text   Report the tracked device session
+    $ ade apple settings --text         Read appearance, text size, a11y
+    $ ade apple close-device --text     Release the device session
 
   An app session names a bundle id, a build root, and a lane. A device session
   is a booted simulator with no app. ADE never shuts down a device it did not
@@ -3224,7 +3224,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade apple proof-bundle --caption "<what>"  Screenshot plus proof metadata
 
   Input and selection:
-    $ ade --socket apple select --x 120 --y 420  Add simulator UI context to chat
+    $ ade apple select --x 120 --y 420  Add simulator UI context to chat
     $ ade apple tap 120 420                      Tap in the simulator
     $ ade apple long-press 120 420 --duration-ms 1000   Hold a press (context menus)
     $ ade apple drag 120 700 120 250             Drag in the simulator
@@ -3580,12 +3580,12 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   machine. Every error names the machine whose browser refused.
 
   The user's own browser (only when the user asks for it):
-    $ ade --socket browser attach --text           The tab the user is looking at
-    $ ade --socket browser attach --tab "Stripe" --text
+    $ ade browser attach --text           The tab the user is looking at
+    $ ade browser attach --tab "Stripe" --text
                                                    The tab whose title or URL contains "Stripe"
-    $ ade --socket browser attach --browser edge --text
+    $ ade browser attach --browser edge --text
                                                    chrome, edge, brave, arc, helium or chromium
-    $ ade --socket browser detach --text           Back to ADE's browser
+    $ ade browser detach --text           Back to ADE's browser
   ADE's browser is the default for all web work. Attach only when the user asks
   you to look at or use their own browser ("the tab I have open", "use my
   Chrome"), never on your own. Attach runs on the machine this chat runs on and
@@ -3602,23 +3602,23 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   --user-data-dir <dir> checks a browser started with that profile directory.
 
   Tabs and navigation:
-    $ ade --socket browser status --text           Every tab on every machine, owners, and the route
-    $ ade --socket browser authorize --tab <id>    Ask the user to let this chat use the ADE browser
-    $ ade --socket browser claim --lane <lane-id>  Attribute the active browser tab to a lane
-    $ ade --socket browser panel --text            Open the Work sidebar Browser panel
-    $ ade --socket browser open https://example.com --text
-    $ ade --socket browser open https://example.com --panel --text
-    $ ade --socket browser open localhost:5173 --new-tab --text
-    $ ade --socket browser open localhost:5173 --active-tab --text
-    $ ade --socket browser open localhost:3000/login --isolated --text
-    $ ade --socket browser open localhost:3000/login --profile viewer --text
-    $ ade --socket browser open https://example.com --no-panel
-    $ ade --socket browser new-tab --url https://example.com
-    $ ade --socket browser switch --tab <tab-id>
-    $ ade --socket browser close --tab <tab-id>
-    $ ade --socket browser dev-servers --text      Dev servers running in this lane
-    $ ade --socket browser dev-servers stop 5173   Stop a server this chat started
-    $ ade --socket browser actions --text          List built_in_browser actions
+    $ ade browser status --text           Every tab on every machine, owners, and the route
+    $ ade browser authorize --tab <id>    Ask the user to let this chat use the ADE browser
+    $ ade browser claim --lane <lane-id>  Attribute the active browser tab to a lane
+    $ ade browser panel --text            Open the Work sidebar Browser panel
+    $ ade browser open https://example.com --text
+    $ ade browser open https://example.com --panel --text
+    $ ade browser open localhost:5173 --new-tab --text
+    $ ade browser open localhost:5173 --active-tab --text
+    $ ade browser open localhost:3000/login --isolated --text
+    $ ade browser open localhost:3000/login --profile viewer --text
+    $ ade browser open https://example.com --no-panel
+    $ ade browser new-tab --url https://example.com
+    $ ade browser switch --tab <tab-id>
+    $ ade browser close --tab <tab-id>
+    $ ade browser dev-servers --text      Dev servers running in this lane
+    $ ade browser dev-servers stop 5173   Stop a server this chat started
+    $ ade browser actions --text          List built_in_browser actions
 
   "dev-servers" lists the dev servers this machine's runtime knows for the
   calling chat's lane: ready lines ("Local: http://localhost:5173") printed in
@@ -3643,9 +3643,9 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   (observe/click/fill/screenshot) are not forwarded and still fail here.
 
   Login handoff (you cannot sign in; a person must):
-    $ ade --socket browser handoff --tab <id> --reason "sign in to staging" --text
-    $ ade --socket browser handoff --browser-session <id> --reason "solve the CAPTCHA" --timeout 5m --text
-    $ ade --socket browser handoff --tab <id> --reason "corp SSO" --no-wait
+    $ ade browser handoff --tab <id> --reason "sign in to staging" --text
+    $ ade browser handoff --browser-session <id> --reason "solve the CAPTCHA" --timeout 5m --text
+    $ ade browser handoff --tab <id> --reason "corp SSO" --no-wait
   Trailing words are the reason without --reason. A dashed word is read as a
   flag, so fence the sentence: handoff -- fix the -2fa prompt
   Blocks until the person presses Hand back (default 15m), so your next step
@@ -3654,78 +3654,78 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   handoff_active — do not retry, wait. You never hand the tab back yourself.
 
   Agent sessions:
-    $ ade --socket browser session start --tab <tab-id> --text
-    $ ade --socket browser sessions --text
-    $ ade --socket browser observe --browser-session <session-id> --map --text
-    $ ade --socket browser click --browser-session <session-id> --handle obs-...:e:1
-    $ ade --socket browser session click <session-id> --handle obs-...:e:1
-    $ ade --socket browser session wait <session-id> --network-idle
-    $ ade --socket browser session trace <session-id> --text
-    $ ade --socket browser session proof <session-id> --caption "Verified"
-    $ ade --socket browser session end <session-id>
+    $ ade browser session start --tab <tab-id> --text
+    $ ade browser sessions --text
+    $ ade browser observe --browser-session <session-id> --map --text
+    $ ade browser click --browser-session <session-id> --handle obs-...:e:1
+    $ ade browser session click <session-id> --handle obs-...:e:1
+    $ ade browser session wait <session-id> --network-idle
+    $ ade browser session trace <session-id> --text
+    $ ade browser session proof <session-id> --caption "Verified"
+    $ ade browser session end <session-id>
 
   Page controls:
-    $ ade --socket browser observe --tab <tab-id>  Save scratch screenshot + DOM observation
-    $ ade --socket browser observe --tab <tab-id> --map
-    $ ade --socket browser trace --tab <tab-id> --text
-    $ ade --socket browser click --tab <tab-id> --x 120 --y 420
-    $ ade --socket browser click --tab <tab-id> --selector "button[type=submit]"
-    $ ade --socket browser click --tab <tab-id> --text-match "Sign in"
-    $ ade --socket browser click --tab <tab-id> --handle obs-...:e:1
-    $ ade --socket browser wait --tab <tab-id> --selector ".ready"
-    $ ade --socket browser wait --tab <tab-id> --load-state network-idle --network-idle-ms 750
-    $ ade --socket browser fill --tab <tab-id> --selector "input[name=email]" "me@example.com"
-    $ ade --socket browser fill --tab <tab-id> --handle obs-...:e:2 --value ""
-    $ ade --socket browser clear-field --tab <tab-id> --selector "input[name=q]"
-    $ ade --socket browser press --tab <tab-id> --selector "input[name=q]" Enter
-    $ ade --socket browser type --tab <tab-id> "hello"
-    $ ade --socket browser key --tab <tab-id> Enter
-    $ ade --socket browser scroll --tab <tab-id> --dy 700
-    $ ade --socket browser hover --tab <tab-id> --selector ".menu"
-    $ ade --socket browser drag --tab <tab-id> --handle obs-...:e:1 --to-selector ".dropzone"
-    $ ade --socket browser select-option --tab <tab-id> --selector "select#plan" --value pro
-    $ ade --socket browser upload --tab <tab-id> --selector "input[type=file]" ./shot.png
-    $ ade --socket browser upload --tab <tab-id> --trigger "button[aria-label='Add photos or video']" ./clip.mp4
-    $ ade --socket browser drop --tab <tab-id> --selector "#dropzone" ./clip.mp4
-    $ ade --socket browser downloads --tab <tab-id> --text
-    $ ade --socket browser downloads wait --tab <tab-id> --timeout-ms 30000 --text
-    $ ade --socket browser clipboard --text
-    $ ade --socket browser clipboard write --value "hello" --text
-    $ ade --socket browser paste --selector "#editor" --text
-    $ ade --socket browser emulate --tab <tab-id> --device iphone-17-pro
-    $ ade --socket browser emulate --tab <tab-id> --width 1024 --height 768 --scale 2
-    $ ade --socket browser emulate --tab <tab-id> --off
-    $ ade --socket browser open localhost:5173 --device ipad
-    $ ade --socket browser zoom --tab <tab-id> --factor 1.25
-    $ ade --socket browser zoom --tab <tab-id> --reset
-    $ ade --socket browser text --tab <tab-id> --text           Read the page's text (main content)
-    $ ade --socket browser text --tab <tab-id> --offset 20000 --text
-    $ ade --socket browser text --tab <tab-id> --selector "#content" --max-chars 5000
-    $ ade --socket browser find --tab <tab-id> "checkout"
-    $ ade --socket browser find-stop --tab <tab-id>
-    $ ade --socket browser devtools --tab <tab-id> --mode bottom
-    $ ade --socket browser devtools --tab <tab-id> --close
-    $ ade --socket browser network on --tab <tab-id>
-    $ ade --socket browser network --tab <tab-id> --failed --limit 20 --text
-    $ ade --socket browser network off --tab <tab-id>
-    $ ade --socket browser har --tab <tab-id>
-    $ ade --socket browser record start --tab <tab-id> --fps 60 --caption "Checkout flow"
-    $ ade --socket browser record stop --tab <tab-id>
-    $ ade --socket browser proof --tab <tab-id> --caption "Verified"
-    $ ade --socket browser proof --tab <tab-id> --har --caption "Checkout 500s"
-    $ ade --socket browser reload --tab <tab-id>
-    $ ade --socket browser back --tab <tab-id>
-    $ ade --socket browser forward --tab <tab-id>
-    $ ade --socket browser stop --tab <tab-id>
+    $ ade browser observe --tab <tab-id>  Save scratch screenshot + DOM observation
+    $ ade browser observe --tab <tab-id> --map
+    $ ade browser trace --tab <tab-id> --text
+    $ ade browser click --tab <tab-id> --x 120 --y 420
+    $ ade browser click --tab <tab-id> --selector "button[type=submit]"
+    $ ade browser click --tab <tab-id> --text-match "Sign in"
+    $ ade browser click --tab <tab-id> --handle obs-...:e:1
+    $ ade browser wait --tab <tab-id> --selector ".ready"
+    $ ade browser wait --tab <tab-id> --load-state network-idle --network-idle-ms 750
+    $ ade browser fill --tab <tab-id> --selector "input[name=email]" "me@example.com"
+    $ ade browser fill --tab <tab-id> --handle obs-...:e:2 --value ""
+    $ ade browser clear-field --tab <tab-id> --selector "input[name=q]"
+    $ ade browser press --tab <tab-id> --selector "input[name=q]" Enter
+    $ ade browser type --tab <tab-id> "hello"
+    $ ade browser key --tab <tab-id> Enter
+    $ ade browser scroll --tab <tab-id> --dy 700
+    $ ade browser hover --tab <tab-id> --selector ".menu"
+    $ ade browser drag --tab <tab-id> --handle obs-...:e:1 --to-selector ".dropzone"
+    $ ade browser select-option --tab <tab-id> --selector "select#plan" --value pro
+    $ ade browser upload --tab <tab-id> --selector "input[type=file]" ./shot.png
+    $ ade browser upload --tab <tab-id> --trigger "button[aria-label='Add photos or video']" ./clip.mp4
+    $ ade browser drop --tab <tab-id> --selector "#dropzone" ./clip.mp4
+    $ ade browser downloads --tab <tab-id> --text
+    $ ade browser downloads wait --tab <tab-id> --timeout-ms 30000 --text
+    $ ade browser clipboard --text
+    $ ade browser clipboard write --value "hello" --text
+    $ ade browser paste --selector "#editor" --text
+    $ ade browser emulate --tab <tab-id> --device iphone-17-pro
+    $ ade browser emulate --tab <tab-id> --width 1024 --height 768 --scale 2
+    $ ade browser emulate --tab <tab-id> --off
+    $ ade browser open localhost:5173 --device ipad
+    $ ade browser zoom --tab <tab-id> --factor 1.25
+    $ ade browser zoom --tab <tab-id> --reset
+    $ ade browser text --tab <tab-id> --text           Read the page's text (main content)
+    $ ade browser text --tab <tab-id> --offset 20000 --text
+    $ ade browser text --tab <tab-id> --selector "#content" --max-chars 5000
+    $ ade browser find --tab <tab-id> "checkout"
+    $ ade browser find-stop --tab <tab-id>
+    $ ade browser devtools --tab <tab-id> --mode bottom
+    $ ade browser devtools --tab <tab-id> --close
+    $ ade browser network on --tab <tab-id>
+    $ ade browser network --tab <tab-id> --failed --limit 20 --text
+    $ ade browser network off --tab <tab-id>
+    $ ade browser har --tab <tab-id>
+    $ ade browser record start --tab <tab-id> --fps 60 --caption "Checkout flow"
+    $ ade browser record stop --tab <tab-id>
+    $ ade browser proof --tab <tab-id> --caption "Verified"
+    $ ade browser proof --tab <tab-id> --har --caption "Checkout 500s"
+    $ ade browser reload --tab <tab-id>
+    $ ade browser back --tab <tab-id>
+    $ ade browser forward --tab <tab-id>
+    $ ade browser stop --tab <tab-id>
 
   Capture and context:
-    $ ade --socket browser screenshot --tab <tab-id> --text
-    $ ade --socket browser screenshot --out shot.png  Save the image as a PNG (text mode saves a temp file kept for a day)
-    $ ade --socket browser select --x 120 --y 420  Attach DOM context at a viewport point
-    $ ade --socket browser inspect-start           Start DOM inspect mode
-    $ ade --socket browser inspect-stop            Stop DOM inspect mode
-    $ ade --socket browser select-current --text   Return the selected DOM item
-    $ ade --socket browser clear-selection
+    $ ade browser screenshot --tab <tab-id> --text
+    $ ade browser screenshot --out shot.png  Save the image as a PNG (text mode saves a temp file kept for a day)
+    $ ade browser select --x 120 --y 420  Attach DOM context at a viewport point
+    $ ade browser inspect-start           Start DOM inspect mode
+    $ ade browser inspect-stop            Stop DOM inspect mode
+    $ ade browser select-current --text   Return the selected DOM item
+    $ ade browser clear-selection
 
   Flags:
     --                   Everything after it is a literal value, never a flag —

@@ -1198,6 +1198,7 @@ import {
 import { createChatAutoResumeCoordinator } from "./chatAutoResumeCoordinator";
 import type { ChatAutoResumeAnalyticsProperties } from "./chatAutoResumeCoordinator";
 import {
+  ADE_PARENT_REPORT_COMMAND_GUIDANCE,
   buildAdeCliAgentGuidance,
   buildAdeSessionActivityGuidance,
   buildAdeRuntimeSocketEnv,
@@ -10567,11 +10568,7 @@ function buildSpawnSelfReportGuidance(
   if (opts?.parentReachable === false) {
     return "Your parent chat is gone. Do not try to report back to it. Keep working in this chat.";
   }
-  const selfReportCommandGuidance = [
-    "Send reports with the typed `ade chat message` command, which passes a JSON object to `chat.messageSession`. Pass the report through stdin or a file with `--text-file`, never as an argument: on Windows `ade.cmd` cuts an argument at its first line break.",
-    "In Bash/zsh or Git Bash, use a quoted here-doc with an end marker absent from the report: `ade chat message \"$ADE_PARENT_CHAT_SESSION_ID\" --text-file - <<'REPORT_END'`, the report, then `REPORT_END`.",
-    "In PowerShell, put it in a single-quoted here-string (`$report = @'` ... `'@`; nothing inside is expanded), run `$f = New-TemporaryFile; Set-Content -LiteralPath $f -Value $report -Encoding utf8`, then `ade chat message $env:ADE_PARENT_CHAT_SESSION_ID --text-file $f`.",
-  ].join(" ");
+  const selfReportCommandGuidance = ADE_PARENT_REPORT_COMMAND_GUIDANCE;
   if (session.spawnKind === "subagent") {
     return `You are a subagent of another chat. Your final reply each turn is sent to that parent chat automatically, so end each turn with a clear report. If you need a decision, put the question and your recommendation in that report instead of asking the user; the parent asks the user when it cannot decide. Only an approval or consent that the user alone can give goes to the user. To send something mid-turn, or if a report failed to arrive: ${selfReportCommandGuidance} Do not read the parent's transcript to coordinate.`;
   }
@@ -50071,7 +50068,7 @@ export function createAgentChatService(args: {
     recoveredFromSessionId,
     sessionId: requestedSessionId,
     orchestrationParentSessionId: requestedOrchestrationParentSessionId,
-    spawnKind: requestedSpawnKind,
+    spawnKind: rawSpawnKind,
     idempotencyKey,
     runtimeActor,
     rememberLaunchDefaults: rememberAsLaunchDefaults,
@@ -50103,11 +50100,12 @@ export function createAgentChatService(args: {
     // Passive lineage: the launching agent chat, recorded only when there is no
     // orchestration parent to carry the relation (the parent already does).
     const launchedBySessionId = normalizedParentSessionId ? null : requestedLaunchedBySessionId?.trim() || null;
-    if (normalizedParentSessionId && requestedSpawnKind !== "subagent" && requestedSpawnKind !== "peer") {
-      throw new Error(
-        "A parented agent chat requires spawnKind 'subagent' or 'peer'. Use subagent whenever the parent will need, join, or review the result; use peer only for fire-and-forget work.",
-      );
+    if (rawSpawnKind != null && rawSpawnKind !== "subagent" && rawSpawnKind !== "peer") {
+      throw new Error("spawnKind must be 'subagent' or 'peer'.");
     }
+    // A parented chat with no kind is a subagent: it reports back to the chat
+    // that started it. Every launch surface (CLI, RPC, service) defaults alike.
+    const requestedSpawnKind = rawSpawnKind ?? (normalizedParentSessionId ? "subagent" : undefined);
     if (!normalizedParentSessionId && requestedSpawnKind) {
       throw new Error("spawnKind requires orchestrationParentSessionId.");
     }

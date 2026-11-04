@@ -43,10 +43,6 @@ ade chat scheduled-work cancel <session> <id> --text   # session first; inside y
 ade chat scheduled-work pause "$ADE_CHAT_SESSION_ID" --text
 ```
 
-Common reasoning tiers include
-`minimal`, `low`, `medium`, `high`, `xhigh`, `max`, and `ultracode`; confirm
-model-specific support with `ade actions run chat.modelCatalog --json`.
-
 Composer drafts and their scheduled sends are a separate surface: `ade drafts
 list | create | schedule | update | delete | now | show` (actions `chat.*Draft`)
 saves unsent text, arms a send for a fire time, or manages an armed one.
