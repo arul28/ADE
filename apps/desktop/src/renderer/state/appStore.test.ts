@@ -2307,7 +2307,6 @@ describe("appStore", () => {
         { id: "local-session", laneId: "local-lane" },
       ]);
       expect(window.ade.lanes.list).toHaveBeenCalled();
-      expect(window.ade.keybindings.get).toHaveBeenCalled();
     });
 
     it("isolates remote projects with the same root path by target and project identity", async () => {

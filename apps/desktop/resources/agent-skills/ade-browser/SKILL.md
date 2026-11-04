@@ -8,7 +8,7 @@ description: Use this skill for any browser behavior at all — opening a URL, c
 This skill is for web pages and localhost URLs. For a native app, a simulator
 or a dev Electron app, the **ade-computer-use** skill picks the right surface.
 
-Use `ade --socket browser ...` for every browser task. Keep the work inside
+Use `ade browser ...` for every browser task. Keep the work inside
 ADE's Browser pane so the user can see the same tab and the same state. ADE
 shares one persistent authentication profile across projects, while visible
 tabs stay scoped to their ADE project window (personal chats have a separate
@@ -20,7 +20,7 @@ your chat's calls are tagged with your chat and lane so the tabs you open are
 yours. Never use `--force`, copy a credential, or import a login. Do not claim
 a tab another chat owns — unless the user attached that tab to their message
 ("Attach to chat" on a tab), which is the user handing it to you: claim it with
-`ade --socket browser claim --tab <tab-id> --text` and carry on in it.
+`ade browser claim --tab <tab-id> --text` and carry on in it.
 
 ADE's browser is the default for all web work. Use the user's own browser only
 when the user asks for it; see step 10.
@@ -71,9 +71,9 @@ tabs and free agent tabs: close one of those. When it lists none, ask the user
 to close a tab or raise "Tabs per project" in Settings › Browser.
 
 ```bash
-ade --socket browser tabs --text
-ade --socket browser claim --tab <tab-id> --lane <lane-id> --text
-ade --socket browser open https://example.com --text
+ade browser tabs --text
+ade browser claim --tab <tab-id> --lane <lane-id> --text
+ade browser open https://example.com --text
 ```
 
 By default every agent may use the ADE browser without asking. If the user
@@ -86,7 +86,7 @@ waiting` means the user must allow this chat again; observe after they answer.
 
 Use `--panel` only when the user should see the Browser tool opened. Use
 `--no-panel` when preparing a tab without taking the user's focus. Close your
-tab when finished with `ade --socket browser close --tab <tab-id> --text`; the
+tab when finished with `ade browser close --tab <tab-id> --text`; the
 internal release and handoff paths also clear the claim.
 
 ### 2. Observe before acting
@@ -108,13 +108,13 @@ and later results may refine it. Turn on the per-tab network log with
 with `network off` when finished.
 
 ```bash
-ade --socket browser session start --tab <tab-id> --text
-ade --socket browser observe --browser-session <session-id> --map --text
-ade --socket browser session wait <session-id> --network-idle --text
-ade --socket browser text --browser-session <session-id> --text
-ade --socket browser find --browser-session <session-id> "checkout" --text
-ade --socket browser network on --browser-session <session-id> --text
-ade --socket browser network --browser-session <session-id> --failed --limit 20 --text
+ade browser session start --tab <tab-id> --text
+ade browser observe --browser-session <session-id> --map --text
+ade browser session wait <session-id> --network-idle --text
+ade browser text --browser-session <session-id> --text
+ade browser find --browser-session <session-id> "checkout" --text
+ade browser network on --browser-session <session-id> --text
+ade browser network --browser-session <session-id> --failed --limit 20 --text
 ```
 
 ### 3. Act from the current observation
@@ -135,16 +135,16 @@ dragenter/dragover/drop with the file in the `DataTransfer`. Use
 the page does not need the default settle and post-action observation.
 
 ```bash
-ade --socket browser click --browser-session <session-id> --handle obs-...:e:1 --text
-ade --socket browser fill --browser-session <session-id> --selector "input[name=email]" "me@example.com" --text
-ade --socket browser drag --browser-session <session-id> --handle obs-...:e:1 --to-selector ".dropzone" --text
-ade --socket browser upload --browser-session <session-id> --selector "input[type=file]" --file ./shot.png --text
-ade --socket browser upload --browser-session <session-id> --trigger "button[aria-label='Add photos or video']" --file ./clip.mp4 --text
-ade --socket browser drop --browser-session <session-id> --selector "#dropzone" --file ./report.pdf --text
-ade --socket browser downloads wait --browser-session <session-id> --timeout-ms 30000 --text
-ade --socket browser clipboard --text
-ade --socket browser paste --selector "#editor" --text
-ade --socket browser key --browser-session <session-id> Enter --text
+ade browser click --browser-session <session-id> --handle obs-...:e:1 --text
+ade browser fill --browser-session <session-id> --selector "input[name=email]" "me@example.com" --text
+ade browser drag --browser-session <session-id> --handle obs-...:e:1 --to-selector ".dropzone" --text
+ade browser upload --browser-session <session-id> --selector "input[type=file]" --file ./shot.png --text
+ade browser upload --browser-session <session-id> --trigger "button[aria-label='Add photos or video']" --file ./clip.mp4 --text
+ade browser drop --browser-session <session-id> --selector "#dropzone" --file ./report.pdf --text
+ade browser downloads wait --browser-session <session-id> --timeout-ms 30000 --text
+ade browser clipboard --text
+ade browser paste --selector "#editor" --text
+ade browser key --browser-session <session-id> Enter --text
 ```
 
 `clipboard` reads the machine's clipboard (`--text` output; HTML flavor when
@@ -178,8 +178,8 @@ screenshot and otherwise fails instead of filing half the proof. Use `trace`
 when an action is stuck.
 
 ```bash
-ade --socket browser screenshot --browser-session <session-id> --text
-ade --socket browser proof --browser-session <session-id> --caption "Checkout confirmation is visible" --text
+ade browser screenshot --browser-session <session-id> --text
+ade browser proof --browser-session <session-id> --caption "Checkout confirmation is visible" --text
 ```
 
 Use `inspect-start`, `select`, `select-current`, and `clear-selection` when a
@@ -192,7 +192,7 @@ client-certificate choice. Hand off the exact tab with an actionable
 `--reason`.
 
 ```bash
-ade --socket browser handoff --browser-session <session-id> --reason "Sign in to staging" --timeout 5m --text
+ade browser handoff --browser-session <session-id> --reason "Sign in to staging" --timeout 5m --text
 ```
 
 The handoff makes the tab human-owned, raises the Work row, sends a phone push,
@@ -221,8 +221,8 @@ ADE is too old to keep an isolated sign-in for a `localhost` page, the tab
 opens on your machine instead and the first output line says so.)
 
 ```bash
-ade --socket browser open localhost:3000/login --profile owner --text
-ade --socket browser open localhost:3000/login --profile viewer --text
+ade browser open localhost:3000/login --profile owner --text
+ade browser open localhost:3000/login --profile viewer --text
 ```
 
 `--profile <name>` picks the sign-in; each chat gets its own set of names,
@@ -274,13 +274,13 @@ and are refused while your browser is on the user's computer. `--here` needs
 ADE Desktop open on your machine; without it the command fails and tells you
 so.
 
-To show them a page, use `ade --socket browser open <url> --panel`. Writing
+To show them a page, use `ade browser open <url> --panel`. Writing
 `http://localhost:<port>` in a reply is fine too: their click opens this
 machine's port in their ADE browser. A `localhost` page you open reaches their
 browser through a tunnel, and the first use of a port asks them to allow it.
 Dev servers you start are found on their own, even in the background:
-`ade --socket browser dev-servers --text` lists them, and
-`ade --socket browser dev-servers stop <port>` stops one this chat started
+`ade browser dev-servers --text` lists them, and
+`ade browser dev-servers stop <port>` stops one this chat started
 (it refuses anything else on the port).
 
 On a machine without ADE Desktop, and with no desktop connected to this chat,
@@ -289,7 +289,7 @@ pinned; page actions such as `observe`, `click`, `fill`, and `screenshot` have
 no browser to run in. Do not retry a page action after that failure.
 
 ```bash
-ade --socket browser open localhost:5173 --new-tab --text
+ade browser open localhost:5173 --new-tab --text
 ```
 
 For a forwarded response, recognize `status: "forwarded_to_desktop"`. When
@@ -301,8 +301,8 @@ machine; open ADE Desktop with this lane pinned`; that also exits 0.
 
 ### 8. Record only when a video helps
 
-Run `ade --socket browser record start --tab <tab-id> --fps 60 --caption "Flow"`
-and stop it with `ade --socket browser record stop --tab <tab-id>`. Use 30 or
+Run `ade browser record start --tab <tab-id> --fps 60 --caption "Flow"`
+and stop it with `ade browser record stop --tab <tab-id>`. Use 30 or
 60 fps. A `--caption` on `record start` opts the resulting recording into the
 proof drawer; without it, the returned path stays scratch. Recordings capture
 the tab, cap at five minutes, and end automatically at the cap or when a login
@@ -331,9 +331,9 @@ never attach on your own initiative, and never to get around a sign-in in ADE's
 browser.
 
 ```bash
-ade --socket browser attach --text                   # the tab they are looking at
-ade --socket browser attach --tab "Stripe" --text    # a tab by title or URL text
-ade --socket browser detach --text
+ade browser attach --text                   # the tab they are looking at
+ade browser attach --tab "Stripe" --text    # a tab by title or URL text
+ade browser detach --text
 ```
 
 Attach runs on the machine this chat runs on. It prints `attached: <browser>

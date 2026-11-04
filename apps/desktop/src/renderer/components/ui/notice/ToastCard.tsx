@@ -64,6 +64,12 @@ export type ToastCardModel = {
   /** Accessible name for the close button, defaults to `Dismiss: <title>`. */
   closeLabel?: string;
   closeTitle?: string;
+  /**
+   * Session replay shows a toast's words (ADE's copy, scrubbed). Mark the
+   * parts that are the person's content instead: a lane name or PR title as
+   * the title, a PR title as the message or badge. Chips and `content` are always masked.
+   */
+  replayMask?: { title?: boolean; message?: boolean; badge?: boolean };
 };
 
 export function ToastCard({
@@ -105,6 +111,7 @@ export function ToastCard({
       role={model.tone === "error" ? "alert" : "status"}
       data-notice-tone={model.tone}
       data-testid={testId}
+      data-ph-unmask=""
       {...FLOATS_OVER_BROWSER_PROPS}
       className={className}
       onMouseEnter={onMouseEnter}
@@ -127,7 +134,11 @@ export function ToastCard({
             <div style={{ minWidth: 0, flex: 1, display: "flex", flexDirection: "column", gap: 5 }}>
               {hasHead ? (
                 <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-                  {model.badge ? <NoticeBadge tone={model.tone}>{model.badge}</NoticeBadge> : null}
+                  {model.badge ? (
+                    <span data-ph-mask={model.replayMask?.badge ? "" : undefined} style={{ display: "contents" }}>
+                      <NoticeBadge tone={model.tone}>{model.badge}</NoticeBadge>
+                    </span>
+                  ) : null}
                   {model.eyebrow ? (
                     <span style={{ fontSize: 11, fontWeight: 500, color: "var(--color-muted-fg)" }}>
                       {model.eyebrow}
@@ -156,6 +167,7 @@ export function ToastCard({
                   />
                 ) : null}
                 <span
+                  data-ph-mask={model.replayMask?.title ? "" : undefined}
                   style={{
                     fontSize: 13,
                     fontWeight: 600,
@@ -171,15 +183,17 @@ export function ToastCard({
               </div>
             </div>
             {model.dismissible === false || !onClose ? null : (
-              <NoticeCloseButton
-                onClick={onClose}
-                label={model.closeLabel ?? `Dismiss: ${titleText}`}
-                title={model.closeTitle ?? "Dismiss"}
-              />
+              <span data-ph-mask={model.replayMask?.title ? "" : undefined} style={{ display: "contents" }}>
+                <NoticeCloseButton
+                  onClick={onClose}
+                  label={model.closeLabel ?? `Dismiss: ${titleText}`}
+                  title={model.closeTitle ?? "Dismiss"}
+                />
+              </span>
             )}
           </div>
           {model.chips && model.chips.length > 0 ? (
-            <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 4 }}>
+            <div data-ph-mask="" style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 4 }}>
               {model.chips.map((chip, index) => (
                 <NoticeChip key={`${chip.label}-${index}`} icon={chip.icon} color={chip.color} title={chip.title}>
                   {chip.label}
@@ -189,6 +203,7 @@ export function ToastCard({
           ) : null}
           {model.message ? (
             <div
+              data-ph-mask={model.replayMask?.message ? "" : undefined}
               style={{
                 fontSize: 12,
                 lineHeight: 1.5,
@@ -203,7 +218,7 @@ export function ToastCard({
               {model.message}
             </div>
           ) : null}
-          {model.content ? <div style={{ minWidth: 0 }}>{model.content}</div> : null}
+          {model.content ? <div data-ph-mask="" style={{ minWidth: 0 }}>{model.content}</div> : null}
           {model.error ? (
             <div role="alert" style={{ fontSize: 11.5, fontWeight: 500, color: noticeTone("error").text }}>
               {model.error}

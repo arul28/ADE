@@ -1021,11 +1021,11 @@ describe("storageInsightsService", () => {
       event: "ade_feature_used",
       surface: "desktop",
       projectId: "proj-1",
-      dedupeKey: "storage_doctor_run:proj-1",
+      dedupeKey: "storage_doctor_run:manual:proj-1",
       minimumIntervalMs: 20 * 60 * 60_000,
     });
     const properties = captures[0]!.properties as Record<string, unknown>;
-    expect(properties).toMatchObject({ feature: "storage_doctor", action: "maintenance_run", outcome: "completed" });
+    expect(properties).toMatchObject({ feature: "storage_doctor", action: "maintenance_run", outcome: "completed", mode: "manual" });
     expect(typeof properties.bytes_freed).toBe("number");
     expect(typeof properties.files_compressed).toBe("number");
     service.dispose();

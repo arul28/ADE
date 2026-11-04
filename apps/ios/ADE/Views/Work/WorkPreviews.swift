@@ -1444,6 +1444,11 @@ enum ADEPreviewScreen: String, CaseIterable {
   /// picture. See `AppleDeviceViewerPreview`.
   case appleViewer = "apple-viewer"
   case appleViewerControl = "apple-viewer-control"
+  /// The lane's screen and App Control on the live stage, full screen, over
+  /// drawn stand-ins. See `MacDesktopViewerPreview`, `AppControlViewerPreview`.
+  case macDesktopViewer = "mac-desktop-viewer"
+  case macDesktopViewerControl = "mac-desktop-viewer-control"
+  case appControlViewer = "app-control-viewer"
   /// The real chat, idle past its prompt cache, with the Compact first chip
   /// floating above the composer.
   case compactFirst = "compact-first"
@@ -1594,6 +1599,22 @@ struct ADEPreviewScreenHost: View {
           status: WorkProofPreviewData.toolChipsAppleStatus,
           mode: screen == .appleViewerControl ? .controlling : .watching
         )
+      )
+    case .macDesktopViewer, .macDesktopViewerControl:
+      MacDesktopViewer(
+        laneId: WorkProofPreviewData.laneId,
+        initialState: nil,
+        preview: {
+          var preview = MacDesktopViewerPreview.watching
+          preview.controlling = screen == .macDesktopViewerControl
+          return preview
+        }()
+      )
+    case .appControlViewer:
+      AppControlViewer(
+        laneId: WorkProofPreviewData.laneId,
+        initialState: nil,
+        preview: AppControlViewerPreview()
       )
     case .lanesMachines:
       LanesAcrossMachinesPreviewHost()

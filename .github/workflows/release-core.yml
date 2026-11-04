@@ -473,6 +473,20 @@ jobs:
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: node scripts/sentry/sentry-release.mjs upload --version "$RELEASE_TAG" --dist "mac-${{ matrix.arch }}"
 
+      # The same maps for PostHog error tracking. Keyed by the Sentry debug IDs
+      # already in the bundles (nothing is injected), so a beta and the stable
+      # that promotes it both resolve. Skips without POSTHOG_PERSONAL_API_KEY
+      # and never exits non-zero. See scripts/posthog/upload-sourcemaps.mjs.
+      - name: Upload ${{ matrix.arch }} source maps to PostHog
+        if: ${{ !inputs.windows_proof }}
+        continue-on-error: true
+        env:
+          POSTHOG_PERSONAL_API_KEY: ${{ secrets.POSTHOG_PERSONAL_API_KEY }}
+          POSTHOG_PROJECT_ID: ${{ secrets.POSTHOG_PROJECT_ID }}
+          POSTHOG_HOST: ${{ secrets.POSTHOG_HOST }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: node scripts/posthog/upload-sourcemaps.mjs --version "$RELEASE_TAG"
+
   build-win-release:
     # Same shape as build-mac-release: the tagged commit is built, signed and
     # validated in-run, and its output is published by release-publish.yml. The
@@ -709,6 +723,17 @@ jobs:
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: node scripts/sentry/sentry-release.mjs upload --version "$env:RELEASE_TAG" --dist win-x64
+
+      - name: Upload Windows source maps to PostHog
+        if: ${{ !inputs.windows_proof }}
+        continue-on-error: true
+        shell: pwsh
+        env:
+          POSTHOG_PERSONAL_API_KEY: ${{ secrets.POSTHOG_PERSONAL_API_KEY }}
+          POSTHOG_PROJECT_ID: ${{ secrets.POSTHOG_PROJECT_ID }}
+          POSTHOG_HOST: ${{ secrets.POSTHOG_HOST }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: node scripts/posthog/upload-sourcemaps.mjs --version "$env:RELEASE_TAG"
 
       # Everything below is deliberate clean-host evidence collection. It builds
       # the redacted proof bundle and its exact-SHA manifest, and never gates an
@@ -1122,6 +1147,19 @@ jobs:
           target="${{ matrix.target }}"; dist="${target/darwin/mac}"; dist="${dist/win32/win}"
           node scripts/sentry/sentry-release.mjs upload --version "$RELEASE_TAG" --dist "$dist" \
             --dir "apps/ade-cli/dist-static/.sentry/$target"
+
+      - name: Upload runtime source maps to PostHog
+        if: ${{ !inputs.windows_proof }}
+        continue-on-error: true
+        shell: bash
+        env:
+          POSTHOG_PERSONAL_API_KEY: ${{ secrets.POSTHOG_PERSONAL_API_KEY }}
+          POSTHOG_PROJECT_ID: ${{ secrets.POSTHOG_PROJECT_ID }}
+          POSTHOG_HOST: ${{ secrets.POSTHOG_HOST }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          node scripts/posthog/upload-sourcemaps.mjs --version "$RELEASE_TAG" \
+            --dir "apps/ade-cli/dist-static/.sentry/${{ matrix.target }}"
 
   smoke-mac-x64:
     # build-mac-release packages x64 on Apple Silicon, where running the x64 app

@@ -1203,8 +1203,8 @@ foldable) share one design; only folds and the Duo's edge bar are Duo-specific.
 
 `Views/Duo/` holds the adaptive layer. `.duoLayoutRoot()` (in `ADEApp`)
 publishes `\.duoLayout`: `isWide` (regular width: the Duo's inner display or
-an iPad), `hasFold`, `fold` (`sideBySide` = flat or book, `stacked` = laptop or
-tent), `isLandscape`, and `hasEdgeBar`. The Duo's outer display and every other
+an iPad), `hasFold`, `fold` (`sideBySide` = flat or book, `stacked` =
+laptop), `isLandscape`, and `hasEdgeBar`. The Duo's outer display and every other
 iPhone are `compact` and use the same views stacked, never an older design.
 
 - **Edge bar.** On the Duo's inner display held landscape, iOS draws the
@@ -1217,6 +1217,10 @@ iPhone are `compact` and use the same views stacked, never an older design.
 - **Panes at the hinge.** Work's Chat Info, tools and PR pane, and CTO's
   settings, open beside the chat with the hinge as the divider, flat or
   book-folded (`DuoWorkSplit`, `DuoToolsPane`).
+- **Live streams.** A simulator (or another live device stream) is drawn by
+  the live stage over the pane or the whole display, never inside the chat,
+  so it survives folding and placement changes; placement is per posture and
+  remembered. See [Apple device: the phone](../apple-device/README.md#the-phone-watch-and-control).
 - **Lists and details.** Lanes, PRs and Files use `DuoSplitScaffold`: list
   column and detail side by side when wide, the list behind the detail
   (with a Back chevron) on a phone.
@@ -1230,6 +1234,8 @@ iPhone are `compact` and use the same views stacked, never an older design.
   per change.
 - **Fixtures.** `-adePreviewScreen duo-*` opens a fixture screen on any
   simulator (`DuoPreviews.swift`, `DuoSplitPreviews.swift`).
+- **Tent** stands the phone on its front screen, held sideways; the inner
+  display is off, so the app lays out compact. Only laptop stacks.
 - **Hinge angle.** `DuoHingeObserver` keeps `\.duoLayout.hingeAngle` on a 5°
   grid (flat is 180), with hysteresis so a hinge held on a boundary does not
   flip between two steps. The sensor reports every

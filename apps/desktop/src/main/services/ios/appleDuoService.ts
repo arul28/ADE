@@ -192,6 +192,19 @@ export function createAppleDuoService<Runtime extends { key: string | null }>(de
     return posture;
   };
 
+  /** Send a fold to the helper: true when the hinge took it. */
+  const sendFold = async (
+    deviceUdid: string,
+    target: { pose?: AppleDevicePose | null; angle?: number | null },
+  ): Promise<boolean> => {
+    const payload = await deps.helperSend({
+      type: "posture",
+      udid: deviceUdid,
+      ...(target.pose ? { pose: target.pose } : { angle: target.angle }),
+    });
+    return payload.applied === true;
+  };
+
   /**
    * Fold, then read the pose back once it has settled, so the answer is what
    * happened. The hinge sweeps and the guest elects its panel a moment later;
@@ -203,12 +216,7 @@ export function createAppleDuoService<Runtime extends { key: string | null }>(de
     target: { pose?: AppleDevicePose | null; angle?: number | null },
     settleMs = FOLD_SETTLE_MS,
   ): Promise<AppleSetPostureResult> => {
-    const payload = await deps.helperSend({
-      type: "posture",
-      udid: deviceUdid,
-      ...(target.pose ? { pose: target.pose } : { angle: target.angle }),
-    });
-    const applied = payload.applied === true;
+    const applied = await sendFold(deviceUdid, target);
     const expected = expectedScreenFor(target);
     const expectedShape = target.pose ? POSE_INNER_PICTURE_SHAPE[target.pose] ?? null : null;
     /*
@@ -263,6 +271,9 @@ export function createAppleDuoService<Runtime extends { key: string | null }>(de
     }
     const runtime = deps.resolveRuntime(postureArgs);
     const deviceUdid = await deps.resolveControlDeviceUdid(postureArgs.deviceUdid, runtime);
+    if (postureArgs.follow === true) {
+      return deps.enqueueControl("posture", () => foldAndFollow(deviceUdid, { pose, angle }), FOLD_CONTROL_TIMEOUT_MS);
+    }
     const result = await deps.enqueueControl(
       "posture",
       () => foldAndSettle(deviceUdid, { pose, angle }),
@@ -270,6 +281,28 @@ export function createAppleDuoService<Runtime extends { key: string | null }>(de
     );
     if (result.applied) deps.captureAnalytics("duo_folded");
     return result;
+  };
+
+  /**
+   * A fold that does not wait for the guest: the hinge sweep alone (about
+   * 16 ms per 10°), answered with the last pose the watcher reported. A phone
+   * mirroring its own hinge sends these as the hinge moves; settling each one
+   * (600 ms, then reads until two agree) put the simulator seconds behind the
+   * hand. The posture watcher's events say where it landed.
+   */
+  const foldAndFollow = async (
+    deviceUdid: string,
+    target: { pose?: AppleDevicePose | null; angle?: number | null },
+  ): Promise<AppleSetPostureResult> => {
+    const applied = await sendFold(deviceUdid, target);
+    const last = lastPanelPosture.get(deviceUdid);
+    const angle = expectedScreenFor(target)?.angle ?? null;
+    return {
+      applied,
+      posture: last
+        ? { ...last, angle: applied ? angle : last.angle }
+        : { supported: applied, angle, orientation: null, tableMode: null, activeScreenId: null, displayOrientation: null },
+    };
   };
 
   /**

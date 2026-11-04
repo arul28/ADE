@@ -309,19 +309,10 @@ actor FrameCapture {
                 userInfo: [NSLocalizedDescriptionKey: msg])
     }
 
+    /// ADE patch: through `SimServiceContextCache`, which reconnects when
+    /// CoreSimulatorService has restarted under a long-lived helper.
     static func findSimDevice(udid: String) -> NSObject? {
-        guard let contextClass = NSClassFromString("SimServiceContext") as? NSObject.Type else { return nil }
-        let developerDir = Xcode.developerDir()
-        let sharedSel = NSSelectorFromString("sharedServiceContextForDeveloperDir:error:")
-        guard let context = contextClass.perform(sharedSel, with: developerDir, with: nil)?
-                .takeUnretainedValue() as? NSObject else { return nil }
-        let deviceSetSel = NSSelectorFromString("defaultDeviceSetWithError:")
-        guard let deviceSet = context.perform(deviceSetSel, with: nil)?
-                .takeUnretainedValue() as? NSObject else { return nil }
-        guard let devices = deviceSet.value(forKey: "devices") as? [NSObject] else { return nil }
-        return devices.first(where: {
-            ($0.value(forKey: "UDID") as? NSUUID)?.uuidString == udid
-        })
+        SimServiceContextCache.device(udid: udid)
     }
 }
 

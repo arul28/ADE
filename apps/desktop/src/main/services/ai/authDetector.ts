@@ -2,7 +2,7 @@
 // Auth Detector — discovers available authentication methods
 // ---------------------------------------------------------------------------
 
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { homedir } from "node:os";
 import { spawnAsync } from "../shared/utils";
@@ -25,6 +25,8 @@ import { pinnedToolInstallGeneration } from "../../../../../ade-cli/src/services
 import type { PinnedToolState } from "../../../../../ade-cli/src/services/tools/pinnedTool";
 import { loadQwenUserSettings } from "./qwenUserSettings";
 import { COPILOT_TOKEN_ENV_KEYS, copilotConfigHome, devinCredentialFiles, factoryConfigHome, ghHostsFiles, grokConfigHome } from "../shared/providerConfigHomes";
+import { resolveKimiCodeLogin } from "../shared/kimiCodeLogin";
+import type { AgentCliLoginProvider, AgentCliSavedLogin } from "../../../shared/types/agentCliLogin";
 import {
   reportProviderRuntimeAuthFailure,
   reportProviderRuntimeFailure,
@@ -230,19 +232,44 @@ async function inspectCopilotCliCredentials(): Promise<{ authenticated: boolean;
   if (COPILOT_TOKEN_ENV_KEYS.some((key) => env[key]?.trim())) {
     return { authenticated: true, verified: false };
   }
-  try {
-    const raw = await readFile(path.join(copilotConfigHome({ env }), "config.json"), "utf8");
-    const parsed = JSON.parse(raw) as { logged_in_users?: unknown };
-    if (Array.isArray(parsed.logged_in_users) && parsed.logged_in_users.length > 0) {
-      return { authenticated: true, verified: false };
-    }
-  } catch {
-    // No `copilot login` on record; gh is the remaining fallback.
-  }
+  if (await copilotLoginRecorded(env)) return { authenticated: true, verified: false };
+  // No `copilot login` on record; gh is the remaining fallback.
   for (const hostsFile of ghHostsFiles({ env })) {
     if (await fileExists(hostsFile)) return { authenticated: true, verified: false };
   }
   return { authenticated: false, verified: false };
+}
+
+/**
+ * The users a `copilot login` recorded in Copilot's `config.json` (the token
+ * itself is in the keychain or that file). Copilot 1.0.x writes the file with
+ * `//` comment lines on top and `loggedInUsers`; older builds wrote plain
+ * JSON with `logged_in_users`. Both are read. Only `login` names are returned
+ * (one per recorded user, "" when an entry has none).
+ */
+export function parseCopilotLoggedInUsers(raw: string): string[] {
+  try {
+    const json = raw.split(/\r?\n/).filter((line) => !line.trimStart().startsWith("//")).join("\n");
+    const parsed = JSON.parse(json) as { logged_in_users?: unknown; loggedInUsers?: unknown };
+    const users = Array.isArray(parsed.loggedInUsers) ? parsed.loggedInUsers : parsed.logged_in_users;
+    if (!Array.isArray(users)) return [];
+    // One entry per recorded user; "" when an entry names no login.
+    return users.map((user) => {
+      const login = (user as { login?: unknown } | null)?.login;
+      return typeof login === "string" ? login.trim() : "";
+    });
+  } catch {
+    return [];
+  }
+}
+
+async function copilotLoginRecorded(env: NodeJS.ProcessEnv): Promise<boolean> {
+  try {
+    const raw = await readFile(path.join(copilotConfigHome({ env }), "config.json"), "utf8");
+    return parseCopilotLoggedInUsers(raw).length > 0;
+  } catch {
+    return false;
+  }
 }
 
 async function fileExists(target: string): Promise<boolean> {
@@ -540,10 +567,13 @@ async function inspectCursorCliAuthentication(pinned: PinnedCliCommand): Promise
  * Best-effort check for a Factory credential ADE can see without launching droid,
  * and which kind: an API key ADE can read, or the CLI's encrypted sign-in.
  *
- * `droid` login keeps its credential encrypted in `<factory home>/auth.v2.file`,
- * next to the key in `auth.v2.key` (seen on a signed-in machine, 2026-10-20,
- * CLI v0.70.0 and the pinned v0.244.0: `droid` rewrote auth.v2.file on sign-in,
- * and an SDK session ran on it with no API key). ADE cannot decrypt it, so a
+ * `droid` login keeps its credential encrypted in one of DROID_SIGN_IN_FILES
+ * under `<factory home>`: `auth.v2.keyring` (key in the OS keyring, the
+ * default off macOS when keytar loads), `auth.v2.loginkeychain`, or
+ * `auth.v2.file` next to its key in `auth.v2.key` (seen on a signed-in Mac,
+ * 2026-10-20, CLI v0.70.0 and v0.244.0: `droid` rewrote auth.v2.file on
+ * sign-in, and an SDK session ran on it with no API key). The pinned v1.0.0
+ * calls any of the three a login. ADE cannot decrypt them, so a
  * present file means "a sign-in ADE can see", not a verified one; the only
  * authoritative check is a real `droid exec` round trip (see
  * inspectDroidCliPresence). `~/.factory/settings.json` holds UI preferences
@@ -551,6 +581,14 @@ async function inspectCursorCliAuthentication(pinned: PinnedCliCommand): Promise
  * ever writes one. `null` means "no credential ADE can see", never "signed
  * out"; callers must not turn it, or a `sign_in`, into `verified: true`.
  */
+const DROID_SIGN_IN_FILES = ["auth.v2.keyring", "auth.v2.loginkeychain", "auth.v2.file"] as const;
+
+/** Droid's own "has a login" test: any one of its sign-in stores under `home`. */
+async function droidSignInPresent(home: string): Promise<boolean> {
+  const present = await Promise.all(DROID_SIGN_IN_FILES.map((name) => nonEmptyFile(path.join(home, name))));
+  return present.some(Boolean);
+}
+
 async function droidCredentialSeen(): Promise<"key" | "sign_in" | null> {
   if (process.env.FACTORY_API_KEY?.trim()) {
     return "key";
@@ -571,13 +609,7 @@ async function droidCredentialSeen(): Promise<"key" | "sign_in" | null> {
     // No readable settings token; the sign-in file below is the usual case.
   }
 
-  try {
-    const signIn = await readFile(path.join(factoryConfigHome(), "auth.v2.file"));
-    if (signIn.length > 0) return "sign_in";
-  } catch {
-    // No CLI sign-in on disk.
-  }
-  return null;
+  return (await droidSignInPresent(factoryConfigHome())) ? "sign_in" : null;
 }
 
 async function inspectDroidCliPresence(pinned: PinnedCliCommand, options?: { deep?: boolean }): Promise<{
@@ -1244,6 +1276,11 @@ let cachedCliAuth: {
   toolInstallGeneration: number;
 } | null = null;
 
+/** Drop the CLI sign-in cache, so the next status read sees a sign-in that just landed. */
+export function invalidateCliAuthStatusCache(): void {
+  cachedCliAuth = null;
+}
+
 /** Synchronous read from cache — returns empty array if not yet populated. */
 export function getCachedCliAuthStatuses(): CliAuthStatus[] {
   return cachedCliAuth?.statuses ?? [];
@@ -1301,6 +1338,12 @@ export async function detectCliAuthStatuses(options?: { force?: boolean; skipAut
         // Disk-only, so there is nothing for `skipAuthProbe` to skip.
         const auth = await inspectAcpCliCredentials(cli);
         return { ...base, authenticated: auth.authenticated, verified: auth.verified };
+      }
+      // Droid's sign-in is on disk too: signed in before ADE's copy lands, it
+      // reads "downloading", and its Sign in would only open a normal session.
+      if (!pinned && cli === "droid") {
+        const seen = await droidCredentialSeen();
+        return { ...base, authenticated: seen !== null, verified: seen === "key" };
       }
       // Every other probe runs ADE's copy, so it waits for that copy.
       if (!pinned) {
@@ -1459,4 +1502,80 @@ export async function detectAllAuth(
 export function resetLocalProviderDetectionCache(): void {
   cachedLocalProviders = null;
   clearLocalProviderInspectionCache();
+}
+
+// ---------------------------------------------------------------------------
+// One agent CLI's saved sign-in, for a sign-in ADE just ran
+// ---------------------------------------------------------------------------
+
+async function fileFingerprint(target: string): Promise<string> {
+  try {
+    const info = await stat(target);
+    return `${target}:${info.mtimeMs}:${info.size}`;
+  } catch {
+    return `${target}:none`;
+  }
+}
+
+async function nonEmptyFile(target: string): Promise<boolean> {
+  try {
+    const info = await stat(target);
+    return info.isFile() && info.size > 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The login `provider`'s own sign-in command saves on this machine: the same
+ * files detection reads, without what a sign-in cannot have made (an API key
+ * in the environment or saved in ADE, `gh auth login` for Copilot). `env` is
+ * the one the CLI ran with, so its config-home overrides are honoured. Reads
+ * presence and shape only; nothing returned carries a credential.
+ */
+export async function readAgentCliSavedLogin(
+  provider: AgentCliLoginProvider,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<AgentCliSavedLogin> {
+  const fingerprintOf = async (files: string[]) => (await Promise.all(files.map(fileFingerprint))).join("|");
+  switch (provider) {
+    case "grok": {
+      const file = path.join(grokConfigHome({ env }), "auth.json");
+      return { signedIn: await nonEmptyFile(file), fingerprint: await fingerprintOf([file]) };
+    }
+    case "devin": {
+      const files = devinCredentialFiles({ env });
+      const present = await Promise.all(files.map(nonEmptyFile));
+      return { signedIn: present.some(Boolean), fingerprint: await fingerprintOf(files) };
+    }
+    case "muse": {
+      // On macOS `auth.json` can be a reference to the Keychain entry; Muse
+      // writes it on every sign-in either way, so it is the fresh-login mark.
+      const { museAuthFilePath, readMuseAuthFileProviders } = await import("./museAuth");
+      const file = museAuthFilePath(env);
+      const raw = await readFile(file, "utf8").catch(() => null);
+      const providers = readMuseAuthFileProviders(raw);
+      return { signedIn: Boolean(providers && providers.length > 0), fingerprint: await fingerprintOf([file]) };
+    }
+    case "copilot": {
+      const file = path.join(copilotConfigHome({ env }), "config.json");
+      const users = parseCopilotLoggedInUsers(await readFile(file, "utf8").catch(() => ""));
+      // Several logins: which one is current is not recorded here, so none is named.
+      const account = users.length === 1 ? users[0] : undefined;
+      return { signedIn: users.length > 0, fingerprint: await fingerprintOf([file]), ...(account ? { account } : {}) };
+    }
+    case "droid": {
+      // Encrypted, in whichever store this machine uses (see droidCredentialSeen).
+      const home = factoryConfigHome({ env });
+      const files = [...DROID_SIGN_IN_FILES, "auth.v2.key"].map((name) => path.join(home, name));
+      return { signedIn: await droidSignInPresent(home), fingerprint: await fingerprintOf(files) };
+    }
+    case "kimi": {
+      // The token file Kimi reads for this environment, not `config.toml`:
+      // config can outlive a login, the token file is the login.
+      const login = resolveKimiCodeLogin({ env });
+      if (!login) return { signedIn: false, fingerprint: "none" };
+      return { signedIn: await nonEmptyFile(login.credentialPath), fingerprint: await fingerprintOf([login.credentialPath]) };
+    }
+  }
 }

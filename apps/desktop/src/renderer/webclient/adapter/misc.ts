@@ -104,6 +104,10 @@ import type {
   AntigravitySignInCompleteArgs,
   AntigravitySignInStartArgs,
   AntigravitySignInState,
+  AgentCliLoginRefArgs,
+  AgentCliLoginStartArgs,
+  AgentCliLoginStatus,
+  AgentCliLoginSubmitCodeArgs,
 } from "../../../shared/types";
 
 /** The web client's answer for the Muse binary actions: nothing known, nothing fetched. */
@@ -699,6 +703,33 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     antigravitySignInCancel: async (args: AntigravitySignInCancelArgs, pin?: RuntimePinArg) => {
       assertWebRuntimePinRoutable("ai.antigravitySignInCancel", pin, infra);
       return await call<AntigravitySignInState | null>("ai.antigravitySignInCancel", args, null, false);
+    },
+    // An agent CLI's sign-in runs on the connected brain's machine; the web
+    // client shows its link, code and paste field. A status read has no
+    // offline shape: a sign-in the brain cannot report is an error.
+    cliLoginStart: async (args: AgentCliLoginStartArgs, pin?: RuntimePinArg) => {
+      assertWebRuntimePinRoutable("ai.cliLoginStart", pin, infra);
+      return await call<AgentCliLoginStatus>("ai.cliLoginStart", args, () => {
+        throw new Error("The sign-in could not be started on that machine.");
+      }, false);
+    },
+    cliLoginStatus: async (args: AgentCliLoginRefArgs, pin?: RuntimePinArg) => {
+      assertWebRuntimePinRoutable("ai.cliLoginStatus", pin, infra);
+      return await call<AgentCliLoginStatus>("ai.cliLoginStatus", args, () => {
+        throw new Error("The sign-in's status could not be read from that machine.");
+      });
+    },
+    cliLoginSubmitCode: async (args: AgentCliLoginSubmitCodeArgs, pin?: RuntimePinArg) => {
+      assertWebRuntimePinRoutable("ai.cliLoginSubmitCode", pin, infra);
+      return await call<AgentCliLoginStatus>("ai.cliLoginSubmitCode", args, () => {
+        throw new Error("The code could not be sent to that machine.");
+      }, false);
+    },
+    cliLoginCancel: async (args: AgentCliLoginRefArgs, pin?: RuntimePinArg) => {
+      assertWebRuntimePinRoutable("ai.cliLoginCancel", pin, infra);
+      return await call<AgentCliLoginStatus>("ai.cliLoginCancel", args, () => {
+        throw new Error("The sign-in could not be cancelled on that machine.");
+      }, false);
     },
     // The Muse provider page (and its Settings host) is desktop-only, like the
     // binary download above.

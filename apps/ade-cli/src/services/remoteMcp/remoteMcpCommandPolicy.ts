@@ -252,7 +252,7 @@ const SERVICE_SIGN_IN_ACTIONS: ReadonlyMap<string, ReadonlySet<string> | true> =
     "storeApiCredential", "removeApiCredential", "storeApiKey", "deleteApiKey",
     "setOpencodeProviderKey", "clearOpencodeProviderKey", "opencodeOAuthStart", "opencodeCloudConnect",
     "opencodeAccountRemove", "piLoginStart", "piLoginSubmit", "cursorAuthLogin", "cursorAuthLogout",
-    "antigravitySignInStart", "antigravitySignInComplete",
+    "antigravitySignInStart", "antigravitySignInComplete", "cliLoginStart", "cliLoginSubmitCode",
   ])],
 ]);
 

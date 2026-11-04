@@ -76,7 +76,7 @@ export function SettingsGroup({
     // were all filtered out by search, instead of leaving it stranded. Layout
     // lives in the class because that page clears the inline `display`.
     <div data-settings-group={title} className="ade-settings-section">
-      <div className="ade-settings-head" style={{ padding: "0 2px" }}>
+      <div className="ade-settings-head" style={{ padding: "0 2px" }} data-ph-unmask="">
         <h2
           style={{
             margin: 0,

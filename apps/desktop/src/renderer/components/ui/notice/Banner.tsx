@@ -197,7 +197,7 @@ function NoticeBanner({
           {model.detail}
         </span>
       ) : null}
-      {model.extra ? <div style={{ marginTop: 4 }}>{model.extra}</div> : null}
+      {model.extra ? <div data-ph-mask="" style={{ marginTop: 4 }}>{model.extra}</div> : null}
       {model.error ? (
         <span style={{ fontSize: 11.5, fontWeight: 500, lineHeight: 1.45, color: noticeTone("error").text, overflowWrap: "anywhere" }}>
           {model.error}
@@ -215,6 +215,7 @@ function NoticeBanner({
       data-notice-tone={model.tone}
       data-banner-id={model.id}
       data-banner-layout={layout}
+      data-ph-unmask=""
       className={floating ? "ade-notice-float-enter" : layout === "docked" ? "ade-notice-dock-enter" : undefined}
       style={{
         display: "flex",
@@ -295,6 +296,7 @@ function SuggestionCard({
       data-notice-tone={model.tone}
       data-banner-id={model.id}
       data-banner-layout="suggestion"
+      data-ph-unmask=""
       data-has-art={model.art ? "true" : undefined}
       className="ade-suggest-card"
       style={{ ...(model.hue ? ({ "--suggest-hue": model.hue } as CSSProperties) : null), ...style }}
@@ -308,7 +310,7 @@ function SuggestionCard({
       <div className="ade-suggest-text">
         <span className="ade-suggest-title">{model.title}</span>
         {model.detail ? <span className="ade-suggest-detail">{model.detail}</span> : null}
-        {model.extra ? <div style={{ marginTop: 4 }}>{model.extra}</div> : null}
+        {model.extra ? <div data-ph-mask="" style={{ marginTop: 4 }}>{model.extra}</div> : null}
         {model.error ? (
           <span style={{ fontSize: 11.5, fontWeight: 500, lineHeight: 1.45, color: noticeTone("error").text, overflowWrap: "anywhere" }}>
             {model.error}

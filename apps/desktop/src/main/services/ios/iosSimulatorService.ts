@@ -8,6 +8,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import type {
+  AppleDevicePosture,
   AppleRuntimeDeleteArgs,
   AppleDeviceAnalyticsOutcome,
   AppleRuntimeInstallArgs,
@@ -209,7 +210,7 @@ import { createAppleDeviceLeases } from "./appleDeviceLease";
 import { normalizeBuildConfiguration, normalizeLaunchArguments } from "./iosLaunchArgs";
 import { appleDeviceTypeSupportsDuo, appleOrientationFamily, isAppleDeviceOrientation } from "../../../shared/appleOrientation";
 import { createSimulatorPower } from "./simulatorPower";
-import type { AppleRemoteViewerProbe } from "./appleStreamRelay";
+import type { AppleRemoteViewerProbe } from "./appleStreamRelayForService";
 import { SIMCTL_MISSING } from "../../../shared/xcodeToolchain";
 import { AdeExpectedError } from "../../../shared/expectedError";
 
@@ -2717,6 +2718,9 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     args.onEvent?.(payload);
   };
 
+  /** The stream relay's ear for pose changes (`onPostureChanged`). */
+  const postureListeners = new Set<(laneId: string | null, posture: AppleDevicePosture) => void>();
+
   /**
    * The device half of the surface, one per lane: device sessions, device
    * settings, the event log, semantic actions and proof bundles.
@@ -2926,7 +2930,18 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         emit({ type: "stream-status", status: runtime.streamStatus });
       }
     }
-    emit({ type: "apple.device.posture", laneId: runtime?.key ?? laneIdHoldingUdid(udid), udid, posture });
+    const laneId = runtime?.key ?? laneIdHoldingUdid(udid);
+    emit({ type: "apple.device.posture", laneId, udid, posture });
+    for (const listener of postureListeners) {
+      try {
+        listener(laneId, posture);
+      } catch (error) {
+        args.logger.warn("apple.posture_listener_failed", {
+          laneId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
   };
 
   /**
@@ -8010,6 +8025,12 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     /* Foldables (the iPhone Duo): fold to a pose or angle, read the pose. */
     setPosture: duo.setPosture,
     getPosture: duo.getPosture,
+    onPostureChanged: (listener: (laneId: string | null, posture: AppleDevicePosture) => void) => {
+      postureListeners.add(listener);
+      return () => {
+        postureListeners.delete(listener);
+      };
+    },
     getDuoModel: duo.getDuoModel,
     duoAppStoreScreenshots: duo.duoAppStoreScreenshots,
     addDuoSkill: duo.addDuoSkill,
@@ -8321,6 +8342,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       runtimes.clear();
       recordings.dispose();
       helperEventListeners.clear();
+      postureListeners.clear();
       helperClient?.dispose();
       helperClient = null;
       launchOwners.clear();

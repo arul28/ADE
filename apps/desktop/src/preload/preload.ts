@@ -105,7 +105,6 @@ import type {
 import {
   LEGACY_MAX_CHAT_ATTACHMENT_BYTES,
   MAX_CHAT_ATTACHMENT_BYTES,
-  maxBase64EncodedLength,
 } from "../shared/chatAttachmentLimits";
 import {
   type AttentionAcknowledgmentOutcome,
@@ -167,6 +166,7 @@ import type {
 import type {
   ProductAnalyticsCapture,
   ProductAnalyticsCaptureResult,
+  ProductAnalyticsReplayConfig,
   ProductAnalyticsStatus,
 } from "../shared/types/productAnalytics";
 import type { DiskPressureSnapshot } from "../main/services/storage/diskPressure";
@@ -336,6 +336,10 @@ import type {
   AntigravitySignInCompleteArgs,
   AntigravitySignInStartArgs,
   AntigravitySignInState,
+  AgentCliLoginRefArgs,
+  AgentCliLoginStartArgs,
+  AgentCliLoginStatus,
+  AgentCliLoginSubmitCodeArgs,
   AiApiKeyVerificationResult,
   AiConfig,
   AiSettingsStatus,
@@ -2454,11 +2458,9 @@ async function resolveRemoteBindingForPin(
  * pasted bytes (a terminal's clipboard image, a composer screenshot) on the
  * same route.
  *
- * Returns null when the machine only takes the command, so the caller uses the
- * command. A failed upload also returns null, but only for a payload the
- * command can carry. A larger one would only be refused again with the
- * command's 10 MB reason, or overflow the host's RPC buffer, so the upload's
- * own error is thrown instead.
+ * Returns null when the machine only takes the command. Upload failures and
+ * bounded attachment recovery are owned by RemoteConnectionService, which can
+ * send directly through the command without repeating the failed HTTP leg.
  */
 async function uploadAttachmentBytesToRemote(
   pin: OpenProjectBinding | null | undefined,
@@ -2473,22 +2475,13 @@ async function uploadAttachmentBytesToRemote(
     return null;
   }
   if (mode.mode !== "upload") return null;
-  try {
-    return (await ipcRenderer.invoke(IPC.remoteRuntimeUploadChatAttachment, {
-      id: binding.targetId,
-      projectId: binding.projectId,
-      data: args.data,
-      filename: args.filename,
-      maxBytes: mode.maxBytes,
-    })) as { path: string };
-  } catch (error) {
-    if (args.data.length > maxBase64EncodedLength(LEGACY_MAX_CHAT_ATTACHMENT_BYTES)) throw error;
-    console.warn("[ade-attachments] Streamed upload failed; sending the bytes in the runtime command instead.", {
-      targetId: binding.targetId,
-      error: error instanceof Error ? error.message : String(error),
-    });
-    return null;
-  }
+  return (await ipcRenderer.invoke(IPC.remoteRuntimeUploadChatAttachment, {
+    id: binding.targetId,
+    projectId: binding.projectId,
+    data: args.data,
+    filename: args.filename,
+    maxBytes: mode.maxBytes,
+  })) as { path: string };
 }
 
 // Chat launches exist only on a runtime (local daemon or remote machine); an
@@ -4618,6 +4611,9 @@ const adeBridge = {
       ipcRenderer.invoke(IPC.analyticsGetStatus),
     setEnabled: async (enabled: boolean): Promise<ProductAnalyticsStatus> =>
       ipcRenderer.invoke(IPC.analyticsSetEnabled, enabled),
+    // This desktop window's own replay settings; no pin (see registerSessionReplayIpc).
+    getReplayConfig: async (): Promise<ProductAnalyticsReplayConfig | null> =>
+      ipcRenderer.invoke(IPC.analyticsGetReplayConfig),
     // This desktop app's own in-app survey; no pin (see registerSurveyIpc).
     surveys: {
       getEligible: () => ipcRenderer.invoke(IPC.analyticsGetEligibleSurvey),
@@ -5639,6 +5635,25 @@ const adeBridge = {
     antigravitySignInCancel: async (args: AntigravitySignInCancelArgs, pin?: OpenProjectBinding | null): Promise<AntigravitySignInState> =>
       callPinnedOrBoundRuntimeActionOr(pin, "ai", "antigravitySignInCancel", { args }, () =>
         ipcRenderer.invoke(IPC.aiAntigravitySignInCancel, args),
+      ),
+    // An agent CLI's sign-in (Grok, Devin, Muse, Copilot, Droid, Kimi) on the
+    // machine that owns it: a pin goes there, else the tab's runtime, else this
+    // computer. Keep one pin for a sign-in's start, polls, code and cancel.
+    cliLoginStart: async (args: AgentCliLoginStartArgs, pin?: OpenProjectBinding | null): Promise<AgentCliLoginStatus> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "ai", "cliLoginStart", { args }, () =>
+        ipcRenderer.invoke(IPC.aiCliLoginStart, args),
+      ),
+    cliLoginStatus: async (args: AgentCliLoginRefArgs, pin?: OpenProjectBinding | null): Promise<AgentCliLoginStatus> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "ai", "cliLoginStatus", { args }, () =>
+        ipcRenderer.invoke(IPC.aiCliLoginStatus, args),
+      ),
+    cliLoginSubmitCode: async (args: AgentCliLoginSubmitCodeArgs, pin?: OpenProjectBinding | null): Promise<AgentCliLoginStatus> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "ai", "cliLoginSubmitCode", { args }, () =>
+        ipcRenderer.invoke(IPC.aiCliLoginSubmitCode, args),
+      ),
+    cliLoginCancel: async (args: AgentCliLoginRefArgs, pin?: OpenProjectBinding | null): Promise<AgentCliLoginStatus> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "ai", "cliLoginCancel", { args }, () =>
+        ipcRenderer.invoke(IPC.aiCliLoginCancel, args),
       ),
     // Settings > Muse Code: one Settings-owned `muse serve` host per page visit
     // on the machine the page is showing (never a chat's host). The page
@@ -9022,14 +9037,15 @@ const adeBridge = {
     getAttachmentStagingMode: async (
       pin?: OpenProjectBinding | null,
     ): Promise<ChatAttachmentStagingMode> => {
-      if (pin?.kind !== "remote") {
+      const binding = await resolveRemoteBindingForPin(pin);
+      if (!binding) {
         // Same machine as the main process: the bytes never move, only the
         // path. `copy` is the one mode the main process cannot answer with,
         // because it is a property of the caller, not of the target — so it is
         // decided here and every other mode comes back ready to use.
         return { mode: "copy", maxBytes: MAX_CHAT_ATTACHMENT_BYTES };
       }
-      return await readRemoteAttachmentStagingMode(pin.targetId);
+      return await readRemoteAttachmentStagingMode(binding.targetId);
     },
     /**
      * Stage a file that exists on this machine's disk without reading it into
@@ -9042,10 +9058,11 @@ const adeBridge = {
       args: AgentChatCopyTempAttachmentArgs,
       pin?: OpenProjectBinding | null,
     ): Promise<{ path: string }> => {
-      if (pin?.kind === "remote") {
+      const binding = await resolveRemoteBindingForPin(pin);
+      if (binding) {
         return (await ipcRenderer.invoke(IPC.remoteRuntimeUploadChatAttachment, {
-          id: pin.targetId,
-          projectId: pin.projectId,
+          id: binding.targetId,
+          projectId: binding.projectId,
           sourcePath: args.sourcePath,
           filename: args.filename,
         })) as { path: string };

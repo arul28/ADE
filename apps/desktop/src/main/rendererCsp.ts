@@ -107,7 +107,17 @@ export const GITHUB_ATTACHMENT_MEDIA_SOURCES = [
   "https://private-user-images.githubusercontent.com",
 ] as const;
 
-export function buildRendererCspPolicy(isDevMode: boolean): string {
+export function buildRendererCspPolicy(
+  isDevMode: boolean,
+  options: {
+    /**
+     * Origins the session replay sends to (`sessionReplayConnectSources`):
+     * the PostHog capture host and its assets host, and nothing else. The
+     * recorder is bundled, so script-src gains nothing.
+     */
+    replayConnectSources?: readonly string[];
+  } = {},
+): string {
   const cspSources = isDevMode
     ? "'self' http://localhost:* http://127.0.0.1:*"
     : "'self' file: app:";
@@ -155,6 +165,10 @@ export function buildRendererCspPolicy(isDevMode: boolean): string {
   // is why SceneFrame.test.tsx asserts the pair can never appear together.
   const cspFrameSources = `${cspSources}${cspLocalSources} ${FRAME_SRC_EXTRA_SCHEMES.join(" ")}`;
   const cspScriptSources = isDevMode ? `${cspSources} 'unsafe-inline'` : cspSources;
+  const cspReplaySources = (options.replayConnectSources ?? [])
+    .filter((source) => /^https?:\/\/[a-z0-9.-]+(:\d+)?$/i.test(source))
+    .map((source) => ` ${source}`)
+    .join("");
   return [
     `default-src ${cspSources}`,
     `base-uri 'self'`,
@@ -166,7 +180,7 @@ export function buildRendererCspPolicy(isDevMode: boolean): string {
     `img-src ${cspImageSources} ade-artifact: data: blob:`,
     `media-src ${cspSources}${cspLocalSources} ${GITHUB_ATTACHMENT_MEDIA_SOURCES.join(" ")} ade-artifact: blob: data:`,
     `font-src ${cspSources} data:`,
-    `connect-src ${cspSources}${cspConnectLocalSources}${cspWsSources}`,
+    `connect-src ${cspSources}${cspConnectLocalSources}${cspWsSources}${cspReplaySources}`,
     `worker-src 'self' blob:`,
   ].join("; ");
 }

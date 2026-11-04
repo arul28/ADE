@@ -3,65 +3,150 @@ import UIKit
 
 // MARK: - Stage
 
-/// The frozen inspector: the picture on a quiet stage with a floating markup
-/// toolbar, and an inspector list beside it (wide) or under it (compact).
-/// Wide splits around the fold: the picture on one page, the inspector on the
-/// other.
+/// The frozen inspector. The picture is the screen: aspect-fit at the full
+/// height of the display on a black backdrop, with nothing permanent over it
+/// on a large display.
+///
+/// - Wide (the Duo's inner display, an iPad): the picture stands at the
+///   leading side. Beside it a vertical strip carries the markup tools, and
+///   the space past the strip carries the first-run hint, the element card
+///   (level with the selected element) and the toast. Book-folded, the picture
+///   has one page and all of that the other.
+/// - Close and Done are the rail's while the Duo's edge bar shows (they are
+///   the stage's toolbar). Elsewhere the bar is hidden so it takes no height,
+///   and the two sit at the top and bottom of the strip (wide) or float in the
+///   top corners (compact).
+/// - Compact (an iPhone, the Duo's cover): the picture fills the screen; the
+///   buttons, the tools capsule and the card float over it, kept small.
+///
+/// Tapping an element outlines it and shows its card with one action, "Add to
+/// chat", which goes straight into the chat's draft and confirms with a toast
+/// that can undo it. Nothing here sends.
 struct LiveInspectStage: View {
   @ObservedObject var model: LiveInspectMarkupModel
   var onClose: () -> Void
 
   @Environment(\.duoLayout) private var duo
+  @State private var finishing = false
+  @State private var cardSize = CGSize(width: 300, height: 150)
 
   var body: some View {
     NavigationStack {
-      DuoLocalFoldReader { fold, size, _ in
-        if duo.isWide {
-          wideLayout(fold: fold, size: size)
-        } else {
-          compactLayout(size: size)
+      // The reader keeps the safe area so it can report it; the stage itself
+      // is laid out over the whole window, in window coordinates.
+      GeometryReader { proxy in
+        let insets = proxy.safeAreaInsets
+        let window = CGSize(
+          width: proxy.size.width + insets.leading + insets.trailing,
+          height: proxy.size.height + insets.top + insets.bottom
+        )
+        let plan = LiveInspectStagePlan(
+          size: window,
+          insets: stageInsets(insets),
+          fold: DuoFoldReading.fold(in: proxy).offsetBy(dx: insets.leading, dy: insets.top),
+          pixelSize: model.pixelSize,
+          surface: model.surface,
+          // A phone (or the Duo's front screen) on its side has the room
+          // beside a full-height picture that a wide display has.
+          isWide: duo.isWide || window.width > window.height * 1.2,
+          bentLikeLaptop: LiveStageContext(layout: duo) == .laptop
+        )
+        ZStack(alignment: .topLeading) {
+          pictureLayer(plan)
+          if plan.isWide {
+            wideChrome(plan)
+          } else {
+            compactChrome(plan)
+          }
+          if !model.tool.draws, let anchor = cardAnchor(in: plan.picture) {
+            card(anchor: anchor, plan: plan)
+          }
         }
+        .frame(width: window.width, height: window.height, alignment: .topLeading)
+        .offset(x: -insets.leading, y: -insets.top)
+        .animation(.snappy(duration: 0.2), value: model.selected?.id)
+        .animation(.snappy(duration: 0.2), value: model.pendingTapPoint == nil)
       }
-      .ignoresSafeArea(.container, edges: .bottom)
+      .background(Color.black.ignoresSafeArea())
       .navigationTitle("Inspect")
-      .navigationSubtitle(Text(subtitle))
-      .toolbarTitleDisplayMode(.inline)
-      .toolbar { toolbarContent }
-      // One quiet surface for the whole stage: the picture floats on the same
-      // grouped background the inspector's sections sit on, so the fold (or
-      // the column edge) reads as space, not as a slab.
-      .background(Color(uiColor: .systemGroupedBackground).ignoresSafeArea())
+      .navigationBarTitleDisplayMode(.inline)
+      .toolbar(removing: .title)
+      .toolbar { railItems }
+      // The bar is the Duo's edge bar or nothing: a top bar would take its
+      // height from the picture.
+      .toolbar(duo.hasEdgeBar ? .visible : .hidden, for: .navigationBar)
     }
+    .animation(.snappy(duration: 0.22), value: model.toast)
+    .animation(.easeOut(duration: 0.2), value: model.hasInteracted)
+    .animation(.easeOut(duration: 0.2), value: model.note)
+    .animation(.easeOut(duration: 0.2), value: model.errorText)
+    // A black stage reads as dark chrome whatever the app's appearance.
+    .environment(\.colorScheme, .dark)
     .tint(ADEColor.accent)
+    // The picture runs to the top edge: no clock over it (the Duo's rail
+    // keeps its own).
+    .statusBarHidden(!duo.hasEdgeBar)
     .accessibilityIdentifier("LiveInspect.Stage")
   }
 
-  // MARK: Chrome
+  /// The safe area, widened on the trailing side by the edge bar while it
+  /// shows: the bar stands over the screen's content, not beside it.
+  private func stageInsets(_ insets: EdgeInsets) -> EdgeInsets {
+    guard duo.hasEdgeBar else { return insets }
+    var next = insets
+    next.trailing = max(insets.trailing, LiveInspectLayout.edgeBarReserve)
+    return next
+  }
 
+  /// Close and Done sit in the screen itself wherever the edge bar does not
+  /// carry them.
+  private var inlineButtons: Bool { !duo.hasEdgeBar }
+
+  // MARK: Rail
+
+  /// The edge bar's items. Declared in every state (the bar does not take
+  /// back an item that was removed and declared again), plain buttons so the
+  /// bar draws them as its own.
   @ToolbarContentBuilder
-  private var toolbarContent: some ToolbarContent {
-    ToolbarItem(placement: .cancellationAction) {
-      Button(role: .close) {
+  private var railItems: some ToolbarContent {
+    ToolbarItem(placement: .topBarTrailing) {
+      Button(action: close) {
+        Label("Close Inspect", systemImage: "xmark")
+      }
+      .accessibilityIdentifier("LiveInspect.Rail.Close")
+    }
+    ToolbarSpacer(.fixed, placement: .topBarTrailing)
+    ToolbarItem(placement: .topBarTrailing) {
+      Button(action: done) {
+        Label("Done", systemImage: "checkmark")
+      }
+      .disabled(finishing || model.handingOff)
+      .accessibilityIdentifier("LiveInspect.Rail.Done")
+    }
+  }
+
+  private func close() {
+    ADEHaptics.light()
+    onClose()
+  }
+
+  private func done() {
+    guard !finishing else { return }
+    finishing = true
+    Task {
+      let outcome = await model.finish()
+      switch outcome {
+      case .unchanged:
         ADEHaptics.light()
         onClose()
+      case .attached:
+        // Long enough to read "Attached to chat" before the stage goes.
+        try? await Task.sleep(for: .milliseconds(700))
+        onClose()
+      case .failed:
+        break
       }
-      .tint(.primary)
-      .accessibilityLabel("Stop inspecting")
-      .accessibilityIdentifier("LiveInspect.Close")
-    }
-    ToolbarItem(placement: .primaryAction) {
-      Button {
-        ADEHaptics.success()
-        if model.sendToComposer() { onClose() }
-      } label: {
-        Label("Send to Chat", systemImage: "paperplane.fill")
-          .labelStyle(.titleAndIcon)
-      }
-      .buttonStyle(.borderedProminent)
-      .tint(ADEColor.accent)
-      .disabled(!model.canSend)
-      .accessibilityHint("Attaches the annotated picture and its element packet to the chat")
-      .accessibilityIdentifier("LiveInspect.Send")
+      finishing = false
     }
   }
 
@@ -78,100 +163,237 @@ struct LiveInspectStage: View {
     }
   }
 
-  // MARK: Layouts
+  // MARK: Chrome
 
-  @ViewBuilder
-  private func compactLayout(size: CGSize) -> some View {
-    VStack(spacing: 0) {
-      canvas
-        .frame(height: max(260, size.height * 0.56))
-      Divider()
-      inspector
-    }
-  }
-
-  @ViewBuilder
-  private func wideLayout(fold: DuoFold, size: CGSize) -> some View {
-    switch fold {
-    case .stacked(let rect) where rect.minY > 200 && size.height - rect.maxY > 220:
-      // Laptop / tent: the picture stands on the far half, the inspector and
-      // its buttons sit on the near half. The fold itself carries nothing.
-      VStack(spacing: 0) {
-        canvas
-          .frame(height: rect.minY)
-        Color.clear
-          .frame(height: rect.height)
-        inspector
-      }
-    case .sideBySide(let rect) where rect.minX > 260 && size.width - rect.maxX > 280:
-      // Book: one page each, the boundary on the hinge.
-      HStack(spacing: 0) {
-        canvas
-          .frame(width: rect.minX)
-        Color.clear
-          .frame(width: rect.width)
-        inspector
-      }
-    default:
-      HStack(spacing: 0) {
-        canvas
-        Divider()
-        inspector
-          .frame(width: min(max(340, size.width * 0.36), 420))
-      }
-    }
-  }
-
-  // MARK: Canvas
-
-  private var canvas: some View {
-    LiveInspectPicture(model: model)
-      .padding(.horizontal, 24)
-      .padding(.top, 16)
-      .padding(.bottom, 76)
-      .frame(maxWidth: .infinity, maxHeight: .infinity)
-      .overlay(alignment: .bottom) {
-        markupToolbar
-          .padding(.bottom, 16)
-      }
-      .accessibilityIdentifier("LiveInspect.Canvas")
-  }
-
-  private var markupToolbar: some View {
-    GlassEffectContainer {
-      HStack(spacing: 2) {
-        ForEach(LiveInspectTool.allCases) { tool in
-          toolButton(tool)
+  /// Beside the picture: the strip (Close, the tools, Done) and, with room,
+  /// the column (hint, toast; the card is placed on its own, level with the
+  /// element). Without the column the hint and toast pass over the picture.
+  private func wideChrome(_ plan: LiveInspectStagePlan) -> some View {
+    let strip = plan.strip
+    let messages = plan.mode == .column ? plan.content : plan.overlayRect.insetBy(dx: 12, dy: 8)
+    // A phone on its side is short: smaller buttons and cells so Close,
+    // the tools and Done all fit the strip's height.
+    let tight = strip.height < 470
+    return ZStack(alignment: .topLeading) {
+      VStack(spacing: tight ? 8 : 12) {
+        if inlineButtons {
+          closeButton(compact: tight)
         }
-        Divider()
-          .frame(height: 20)
-          .padding(.horizontal, 4)
+        Spacer(minLength: 0)
+        markupTools(vertical: true, tight: tight)
+        Spacer(minLength: 0)
+        if inlineButtons {
+          doneButton(compact: false, small: tight)
+        }
+      }
+      .frame(width: strip.width, height: strip.height)
+      .offset(x: strip.minX, y: strip.minY)
+
+      VStack(alignment: plan.mode == .column ? .leading : .center, spacing: 10) {
+        topChip
+          .allowsHitTesting(false)
+        Spacer(minLength: 0)
+        toast
+      }
+      .frame(
+        width: max(0, messages.width),
+        height: max(0, messages.height),
+        alignment: plan.mode == .column ? .leading : .center
+      )
+      .offset(x: messages.minX, y: messages.minY)
+    }
+  }
+
+  /// Over the picture, as small as it goes: Close and Done in the top
+  /// corners, the hint under them, the toast and the tools capsule at the
+  /// bottom.
+  private func compactChrome(_ plan: LiveInspectStagePlan) -> some View {
+    let safe = plan.compactChrome
+    return VStack(spacing: 8) {
+      HStack(alignment: .center) {
+        closeButton(compact: true)
+        Spacer(minLength: 0)
+        doneButton(compact: true)
+      }
+      topChip
+        .allowsHitTesting(false)
+      Spacer(minLength: 0)
+      toast
+      markupTools(vertical: false)
+    }
+    .padding(.horizontal, 12)
+    .padding(.top, 4)
+    .padding(.bottom, 6)
+    .frame(width: safe.width, height: safe.height)
+    .offset(x: safe.minX, y: safe.minY)
+  }
+
+  private func closeButton(compact: Bool) -> some View {
+    Button(action: close) {
+      Image(systemName: "xmark")
+        .font((compact ? Font.subheadline : .body).weight(.semibold))
+        .foregroundStyle(.white)
+        .frame(width: compact ? 18 : 22, height: compact ? 18 : 22)
+    }
+    .buttonStyle(.glass)
+    .buttonBorderShape(.circle)
+    .controlSize(compact ? .regular : .large)
+    .accessibilityLabel("Close Inspect")
+    .accessibilityIdentifier("LiveInspect.Close")
+  }
+
+  /// A small "Done" capsule over a compact picture; a checkmark circle at the
+  /// foot of the wide strip, matching the rail's.
+  /// `small`: the strip's checkmark at regular size (a phone on its side).
+  private func doneButton(compact: Bool, small: Bool = false) -> some View {
+    Button(action: done) {
+      ZStack {
+        Group {
+          if compact {
+            Text("Done")
+              .font(.subheadline.weight(.semibold))
+          } else {
+            Image(systemName: "checkmark")
+              .font(.body.weight(.bold))
+              .frame(width: 22, height: 22)
+          }
+        }
+        .opacity(finishing ? 0 : 1)
+        if finishing {
+          ProgressView()
+            .controlSize(.small)
+        }
+      }
+    }
+    .buttonStyle(.glassProminent)
+    .buttonBorderShape(compact ? .capsule : .circle)
+    .controlSize(compact || small ? .regular : .large)
+    .disabled(finishing || model.handingOff)
+    .accessibilityLabel("Done")
+    .accessibilityHint("Leaves Inspect. Markup you drew goes into the chat's picture first.")
+    .accessibilityIdentifier("LiveInspect.Done")
+  }
+
+  @ViewBuilder
+  private var topChip: some View {
+    if model.phase == .ready {
+      if let errorText = model.errorText {
+        chip(errorText, systemImage: "exclamationmark.triangle.fill", tint: ADEColor.warning)
+      } else if !model.hasInteracted {
+        chip(
+          "Tap an element to add it to the chat, or draw on it",
+          systemImage: "hand.tap",
+          tint: .primary
+        )
+        .accessibilityIdentifier("LiveInspect.Hint")
+      } else if let note = model.note, model.selected == nil, !model.busy {
+        chip(note, systemImage: "info.circle", tint: .secondary)
+      }
+    }
+  }
+
+  private func chip(_ text: String, systemImage: String, tint: Color) -> some View {
+    Label {
+      Text(text)
+        .foregroundStyle(.primary)
+        .multilineTextAlignment(.leading)
+        .fixedSize(horizontal: false, vertical: true)
+    } icon: {
+      Image(systemName: systemImage)
+        .foregroundStyle(tint)
+    }
+    .font(.footnote)
+    .padding(.horizontal, 14)
+    .padding(.vertical, 9)
+    .glassEffect(LiveInspectLayout.overlayGlass, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+    .frame(maxWidth: 520)
+    .transition(.opacity)
+  }
+
+  @ViewBuilder
+  private var toast: some View {
+    if let toast = model.toast {
+      HStack(spacing: 10) {
+        Image(systemName: toast.kind == .attached ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+          .foregroundStyle(toast.kind == .attached ? ADEColor.success : ADEColor.warning)
+        Text(toast.message)
+          .font(.subheadline.weight(.medium))
+          .lineLimit(2)
+          .fixedSize(horizontal: false, vertical: true)
+        if let undo = toast.undoAddId {
+          Button {
+            model.undoAdd(undo)
+          } label: {
+            Text("Undo")
+              .font(.subheadline.weight(.semibold))
+              .foregroundStyle(ADEColor.accentBright)
+              .padding(.horizontal, 8)
+              .frame(minHeight: 36)
+              .contentShape(Rectangle())
+          }
+          .buttonStyle(.plain)
+          .disabled(model.handingOff)
+          .accessibilityHint("Takes this element back out of the chat's draft")
+          .accessibilityIdentifier("LiveInspect.Toast.Undo")
+        }
+      }
+      .padding(.leading, 14)
+      .padding(.trailing, toast.undoAddId == nil ? 16 : 8)
+      .padding(.vertical, toast.undoAddId == nil ? 11 : 2)
+      .glassEffect(LiveInspectLayout.overlayGlass, in: .capsule)
+      .accessibilityElement(children: .contain)
+      .accessibilityIdentifier("LiveInspect.Toast")
+      .transition(.move(edge: .bottom).combined(with: .opacity))
+      .id(toast.id)
+    }
+  }
+
+  // MARK: Markup tools
+
+  /// Select, Pen, Arrow, Circle | Undo, Clear: a vertical column beside a
+  /// wide picture, a capsule under a compact one.
+  private func markupTools(vertical: Bool, tight: Bool = false) -> some View {
+    let stack = vertical ? AnyLayout(VStackLayout(spacing: 2)) : AnyLayout(HStackLayout(spacing: 2))
+    let cell = vertical ? CGSize(width: 42, height: tight ? 32 : 40) : CGSize(width: 40, height: 34)
+    return GlassEffectContainer {
+      stack {
+        ForEach(LiveInspectTool.allCases) { tool in
+          toolButton(tool, cell: cell)
+        }
+        Rectangle()
+          .fill(.white.opacity(0.18))
+          .frame(width: vertical ? 22 : 1, height: vertical ? 1 : 22)
+          .padding(vertical ? .vertical : .horizontal, 6)
         Button {
           model.undo()
         } label: {
           Image(systemName: "arrow.uturn.backward")
-            .frame(width: 40, height: 36)
+            .frame(width: cell.width, height: cell.height)
         }
         .disabled(!model.canUndo)
-        .accessibilityLabel("Undo")
-        Button(role: .destructive) {
+        .accessibilityLabel("Undo last mark")
+        .accessibilityIdentifier("LiveInspect.Markup.Undo")
+        Button {
           model.clearMarkup()
         } label: {
           Image(systemName: "trash")
-            .frame(width: 40, height: 36)
+            .frame(width: cell.width, height: cell.height)
         }
         .disabled(!model.canUndo)
         .accessibilityLabel("Clear markup")
+        .accessibilityIdentifier("LiveInspect.Markup.Clear")
       }
       .font(.body)
       .buttonStyle(.plain)
-      .padding(.horizontal, 6)
-      .padding(.vertical, 4)
-      .glassEffect(.regular, in: .capsule)
+      .padding(.horizontal, vertical ? 4 : 5)
+      .padding(.vertical, vertical ? 6 : 4)
+      // Over a compact picture the tools need the dark tint to read.
+      .glassEffect(vertical ? .regular : LiveInspectLayout.overlayGlass, in: .capsule)
     }
+    .disabled(model.phase != .ready)
   }
 
-  private func toolButton(_ tool: LiveInspectTool) -> some View {
+  private func toolButton(_ tool: LiveInspectTool, cell: CGSize) -> some View {
     let selected = model.tool == tool
     return Button {
       ADEHaptics.light()
@@ -179,8 +401,8 @@ struct LiveInspectStage: View {
     } label: {
       Image(systemName: tool.symbolName)
         .symbolVariant(selected ? .fill : .none)
-        .foregroundStyle(selected ? Color.white : Color.primary)
-        .frame(width: 40, height: 36)
+        .foregroundStyle(selected ? Color.black : Color.primary)
+        .frame(width: cell.width, height: cell.height)
         .background {
           if selected {
             Capsule(style: .continuous).fill(ADEColor.accent)
@@ -192,228 +414,85 @@ struct LiveInspectStage: View {
     .accessibilityIdentifier("LiveInspect.Tool.\(tool.rawValue)")
   }
 
-  // MARK: Inspector
+  // MARK: Picture
 
-  private var inspector: some View {
-    List {
-      if let errorText = model.errorText {
-        Section {
-          Label(errorText, systemImage: "exclamationmark.triangle.fill")
+  /// The frozen still, the selection outline, the markup, and the one gesture
+  /// that selects or draws. The gesture covers the whole stage: a tap off the
+  /// picture puts the card away.
+  private func pictureLayer(_ plan: LiveInspectStagePlan) -> some View {
+    let rect = plan.picture
+    return ZStack(alignment: .topLeading) {
+      if let image = model.image {
+        Image(uiImage: image)
+          .resizable()
+          .interpolation(.high)
+          .frame(width: rect.width, height: rect.height)
+          .clipShape(RoundedRectangle(cornerRadius: cornerRadius(for: rect), style: .continuous))
+          .overlay {
+            RoundedRectangle(cornerRadius: cornerRadius(for: rect), style: .continuous)
+              .strokeBorder(.white.opacity(0.12), lineWidth: 1)
+          }
+          .position(x: rect.midX, y: rect.midY)
+        if !model.tool.draws, let selected = model.selected {
+          selectionBox(LiveInspectLayout.viewRect(selected.imageFrame, picture: rect, pixelSize: model.pixelSize))
+        }
+        LiveInspectMarkupLayer(model: model, imageRect: rect)
+      } else if case .failed(let message) = model.phase {
+        VStack(spacing: 12) {
+          Image(systemName: "exclamationmark.triangle")
+            .font(.title2)
             .foregroundStyle(ADEColor.warning)
-            .font(.subheadline)
+          Text("Couldn't freeze the picture")
+            .font(.headline)
+          Text(message)
+            .font(.footnote)
+            .foregroundStyle(.secondary)
+            .multilineTextAlignment(.center)
+          Button("Try Again") { model.reload() }
+            .buttonStyle(.glass)
+            .padding(.top, 4)
         }
-      }
-      if let selected = model.selected {
-        elementSections(selected)
+        .padding(24)
+        .frame(width: rect.width, height: rect.height)
+        .offset(x: rect.minX, y: rect.minY)
       } else {
-        Section {
-          emptySelection
-        }
-      }
-      if !model.staged.isEmpty || !model.strokes.isEmpty {
-        Section("In This Message") {
-          ForEach(model.staged) { element in
-            Label(element.displayTitle, systemImage: "scope")
-              .lineLimit(1)
-          }
-          if !model.strokes.isEmpty {
-            Label(
-              model.strokes.count == 1 ? "1 mark on the picture" : "\(model.strokes.count) marks on the picture",
-              systemImage: "pencil.tip.crop.circle"
-            )
-          }
-        }
-      }
-      if let note = model.note {
-        Section {
-          EmptyView()
-        } footer: {
-          Text(note)
-        }
-      }
-    }
-    .listStyle(.insetGrouped)
-    .scrollContentBackground(.hidden)
-  }
-
-  @ViewBuilder
-  private func elementSections(_ element: LiveInspectElement) -> some View {
-    let staged = model.isStaged(element)
-    Section {
-      VStack(alignment: .leading, spacing: 3) {
-        Text(element.displayTitle)
-          .font(.headline)
-          .lineLimit(2)
-        if !element.displaySubtitle.isEmpty {
-          Text(element.displaySubtitle)
-            .font(.subheadline)
+        VStack(spacing: 12) {
+          ProgressView()
+          Text("Freezing \(model.surface.title)…")
+            .font(.footnote)
             .foregroundStyle(.secondary)
         }
-      }
-      .padding(.vertical, 2)
-      let ancestors = LiveInspectGeometry.ancestors(of: element, in: model.elements)
-      if !ancestors.isEmpty {
-        LabeledContent("Path") {
-          Text(ancestors.prefix(3).map(\.displayTitle).reversed().joined(separator: " › "))
-            .lineLimit(1)
-            .truncationMode(.head)
-        }
-      }
-      if let enabled = element.enabled, enabled == false {
-        LabeledContent("State", value: "Disabled")
-      }
-      Button {
-        model.stageSelection()
-      } label: {
-        Label(
-          staged ? "Added to Message" : "Add to Message",
-          systemImage: staged ? "checkmark.circle.fill" : "plus.circle"
-        )
-      }
-      .accessibilityIdentifier("LiveInspect.AddToMessage")
-    } header: {
-      Text("Element")
-    }
-
-    Section("Frame") {
-      let frame = element.pointFrame ?? element.frame
-      frameRow("X", frame.x)
-      frameRow("Y", frame.y)
-      frameRow("Width", frame.width)
-      frameRow("Height", frame.height)
-    }
-
-    if let source = element.sourceLabel {
-      Section {
-        Label {
-          Text(source)
-            .font(.subheadline.monospaced())
-            .lineLimit(1)
-            .truncationMode(.middle)
-        } icon: {
-          Image(systemName: "doc.text")
-        }
-      } header: {
-        Text("Source")
-      } footer: {
-        if let confidence = element.sourceConfidence, confidence != "exact" {
-          Text("Best match (\(confidence)).")
-        }
+        .frame(width: rect.width, height: rect.height)
+        .offset(x: rect.minX, y: rect.minY)
       }
     }
-  }
-
-  private func frameRow(_ title: String, _ value: Double) -> some View {
-    LabeledContent(title) {
-      Text(value.formatted(.number.precision(.fractionLength(0...1))))
-        .monospacedDigit()
-    }
-  }
-
-  @ViewBuilder
-  private var emptySelection: some View {
-    if case .failed = model.phase {
-      ContentUnavailableView {
-        Label("Couldn't Freeze the Picture", systemImage: "exclamationmark.triangle")
-      } actions: {
-        Button("Try Again") { model.reload() }
-      }
-    } else if model.phase == .loading || model.busy {
-      HStack(spacing: 10) {
-        ProgressView()
-        Text(model.phase == .loading ? "Freezing the picture…" : "Looking up the element…")
-          .foregroundStyle(.secondary)
-      }
-      .frame(maxWidth: .infinity, alignment: .center)
-      .padding(.vertical, 18)
-    } else {
-      ContentUnavailableView(
-        "Select an Element",
-        systemImage: "cursorarrow.rays",
-        description: Text("Tap the picture to inspect it, or draw on it with the markup tools.")
-      )
-    }
-  }
-}
-
-// MARK: - Picture
-
-/// The frozen picture with its element highlight, its markup, and the one
-/// gesture that draws or selects.
-struct LiveInspectPicture: View {
-  @ObservedObject var model: LiveInspectMarkupModel
-
-  var body: some View {
-    GeometryReader { proxy in
-      let rect = LiveInspectGeometry.fit(pixelSize: model.pixelSize, in: proxy.size)
-      ZStack(alignment: .topLeading) {
-        if let image = model.image {
-          Image(uiImage: image)
-            .resizable()
-            .interpolation(.high)
-            .frame(width: rect.width, height: rect.height)
-            .clipShape(RoundedRectangle(cornerRadius: cornerRadius(for: rect), style: .continuous))
-            .shadow(color: .black.opacity(0.18), radius: 18, y: 8)
-            .position(x: rect.midX, y: rect.midY)
-          if let selected = model.selected {
-            selectionBox(selected, in: rect)
-          }
-          LiveInspectMarkupLayer(model: model, imageRect: rect)
-        } else if case .failed = model.phase {
-          VStack(spacing: 10) {
-            Image(systemName: "exclamationmark.triangle")
-              .font(.title3)
-              .foregroundStyle(ADEColor.warning)
-            Text("The picture couldn't be frozen.")
-              .font(.footnote)
-              .foregroundStyle(.secondary)
-          }
-          .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else {
-          ProgressView()
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
-      }
-      .frame(width: proxy.size.width, height: proxy.size.height)
-      .contentShape(Rectangle())
-      .gesture(gesture(rect: rect))
-      .accessibilityElement(children: .ignore)
-      .accessibilityLabel("The frozen \(model.surface.title) screen")
-      .accessibilityHint("Tap to inspect an element, or draw with a markup tool.")
-      .accessibilityIdentifier("LiveInspect.Picture")
-    }
+    .frame(width: plan.size.width, height: plan.size.height, alignment: .topLeading)
+    .contentShape(Rectangle())
+    .gesture(gesture(rect: rect))
+    .accessibilityElement(children: model.image == nil ? .contain : .ignore)
+    .accessibilityLabel(model.image == nil ? "" : "The frozen \(model.surface.title) screen, \(subtitle)")
+    .accessibilityHint(model.tool.draws ? "Draw to mark up the picture." : "Tap an element to inspect it.")
+    .accessibilityIdentifier("LiveInspect.Picture")
   }
 
   /// A phone's screen gets a phone's corners; a window or a desktop keeps a
   /// small radius.
   private func cornerRadius(for rect: CGRect) -> CGFloat {
-    model.surface == .simulator ? rect.width * 0.1 : 8
+    model.surface == .simulator ? min(rect.width, rect.height) * 0.09 : 8
   }
 
-  private func selectionBox(_ element: LiveInspectElement, in rect: CGRect) -> some View {
-    let scale = CGSize(
-      width: rect.width / max(1, model.pixelSize.width),
-      height: rect.height / max(1, model.pixelSize.height)
-    )
-    let frame = CGRect(
-      x: rect.minX + element.imageFrame.minX * scale.width,
-      y: rect.minY + element.imageFrame.minY * scale.height,
-      width: element.imageFrame.width * scale.width,
-      height: element.imageFrame.height * scale.height
-    )
-    return ZStack(alignment: .topLeading) {
-      RoundedRectangle(cornerRadius: 4, style: .continuous)
-        .fill(ADEColor.accent.opacity(0.14))
-      RoundedRectangle(cornerRadius: 4, style: .continuous)
-        .strokeBorder(ADEColor.accent, lineWidth: 1.5)
-      Circle()
-        .fill(ADEColor.accent)
-        .frame(width: 7, height: 7)
-        .offset(x: -3.5, y: -3.5)
-    }
-    .frame(width: max(1, frame.width), height: max(1, frame.height))
-    .position(x: frame.midX, y: frame.midY)
-    .allowsHitTesting(false)
+  private func selectionBox(_ frame: CGRect) -> some View {
+    RoundedRectangle(cornerRadius: 5, style: .continuous)
+      .fill(ADEColor.accent.opacity(0.16))
+      .overlay {
+        RoundedRectangle(cornerRadius: 5, style: .continuous)
+          .strokeBorder(ADEColor.accent, lineWidth: 2)
+      }
+      .shadow(color: ADEColor.accent.opacity(0.45), radius: 6)
+      .frame(width: max(2, frame.width), height: max(2, frame.height))
+      .position(x: frame.midX, y: frame.midY)
+      .allowsHitTesting(false)
+      .transition(.opacity)
   }
 
   private func gesture(rect: CGRect) -> some Gesture {
@@ -440,44 +519,61 @@ struct LiveInspectPicture: View {
           value.location,
           in: rect,
           pixelSize: model.pixelSize
-        ) else { return }
+        ) else {
+          // Off the picture: put the card away.
+          model.clearSelection()
+          return
+        }
         model.select(atImagePoint: point)
       }
   }
-}
 
-/// The in-progress and finished marks over the picture.
-struct LiveInspectMarkupLayer: View {
-  @ObservedObject var model: LiveInspectMarkupModel
-  let imageRect: CGRect
+  // MARK: Card
 
-  var body: some View {
-    let scale = imageRect.width / max(1, model.pixelSize.width)
-    Canvas { context, _ in
-      var all = model.strokes
-      if let draft = model.draft { all.append(draft) }
-      guard scale > 0 else { return }
-      for stroke in all {
-        let path = LiveInspectDrawing.path(for: stroke, imageSize: model.pixelSize)
-          .applying(CGAffineTransform(scaleX: scale, y: scale))
-        guard !path.isEmpty else { continue }
-        let width = LiveInspectDrawing.lineWidth(for: model.pixelSize) * scale
-        context.stroke(
-          path,
-          with: .color(.white.opacity(0.9)),
-          style: StrokeStyle(lineWidth: width + max(1.5, width * 0.5), lineCap: .round, lineJoin: .round)
-        )
-        context.stroke(
-          path,
-          with: .color(LiveInspectInk.color),
-          style: StrokeStyle(lineWidth: width, lineCap: .round, lineJoin: .round)
-        )
-      }
+  /// What the card belongs to, in stage coordinates: the selection, or the
+  /// tap point while App Control looks the element up.
+  private func cardAnchor(in rect: CGRect) -> CGRect? {
+    if let selected = model.selected {
+      return LiveInspectLayout.viewRect(selected.imageFrame, picture: rect, pixelSize: model.pixelSize)
     }
-    .frame(width: imageRect.width, height: imageRect.height)
-    .offset(x: imageRect.minX, y: imageRect.minY)
-    .allowsHitTesting(false)
-    .accessibilityHidden(true)
+    if model.busy, let point = model.pendingTapPoint {
+      let view = LiveInspectLayout.viewRect(
+        CGRect(origin: point, size: .zero),
+        picture: rect,
+        pixelSize: model.pixelSize
+      )
+      return view.insetBy(dx: -14, dy: -14)
+    }
+    return nil
+  }
+
+  private func card(anchor: CGRect, plan: LiveInspectStagePlan) -> some View {
+    let frame = plan.cardFrame(anchor: anchor, height: cardSize.height)
+    return cardContent
+      .frame(width: frame.width)
+      .fixedSize(horizontal: false, vertical: true)
+      .onGeometryChange(for: CGSize.self) { $0.size } action: { cardSize = $0 }
+      .offset(x: frame.minX, y: frame.minY)
+      .transition(.opacity.combined(with: .scale(scale: 0.96)))
+  }
+
+  @ViewBuilder
+  private var cardContent: some View {
+    if let element = model.selected {
+      LiveInspectElementCard(model: model, element: element)
+        .id(element.id)
+    } else {
+      HStack(spacing: 10) {
+        ProgressView()
+          .controlSize(.small)
+        Text("Looking up the element…")
+          .font(.subheadline)
+          .foregroundStyle(.secondary)
+        Spacer(minLength: 0)
+      }
+      .padding(16)
+      .glassEffect(LiveInspectLayout.overlayGlass, in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+    }
   }
 }
 
@@ -489,124 +585,3 @@ extension String {
     return trimmed.isEmpty ? nil : trimmed
   }
 }
-
-// MARK: - Fixtures
-
-#if DEBUG
-/// Fixture screens for this area, routed by `DuoPreviewRouter`.
-enum LiveInspectMarkupPreviews {
-  @MainActor
-  static func view(_ name: String) -> AnyView? {
-    switch name {
-    case "duo-inspect-sim":
-      return AnyView(LiveInspectFixtureScreen())
-    default:
-      return nil
-    }
-  }
-}
-
-/// The wide showcase: a frozen simulator still with a selected row and two
-/// marks. The stage itself adapts by width, so folding the device closed shows
-/// the same state in the compact layout.
-@MainActor
-private struct LiveInspectFixtureScreen: View {
-  @StateObject private var model: LiveInspectMarkupModel
-
-  init() {
-    _model = StateObject(wrappedValue: LiveInspectFixtureData.model())
-  }
-
-  var body: some View {
-    LiveInspectStage(model: model, onClose: {})
-  }
-}
-
-@MainActor
-private enum LiveInspectFixtureData {
-  /// The drawn simulator stand-in from the Apple viewer fixture, rendered at
-  /// the iPhone's pixel size so the frames and strokes are in real pixels.
-  static func picture() -> UIImage {
-    let renderer = ImageRenderer(
-      content: AppleViewerPreviewPicture()
-        .frame(width: 402, height: 874)
-    )
-    renderer.scale = 3
-    return renderer.uiImage ?? UIImage()
-  }
-
-  static func model() -> LiveInspectMarkupModel {
-    let model = LiveInspectMarkupModel(surface: .simulator, laneId: "fixture-lane", chatSessionId: nil)
-    let image = picture()
-    let elements = rows()
-    let selected = elements.first { $0.identifier == "settings.accessibility" }
-    model.installPreview(
-      image: image,
-      elements: elements,
-      selected: selected,
-      strokes: [
-        LiveInspectStroke(tool: .pen, points: [
-          CGPoint(x: 150, y: 352),
-          CGPoint(x: 430, y: 342),
-          CGPoint(x: 720, y: 356),
-          CGPoint(x: 1010, y: 344),
-        ]),
-        LiveInspectStroke(tool: .circle, points: [
-          CGPoint(x: 40, y: 520),
-          CGPoint(x: 1166, y: 668),
-        ]),
-      ]
-    )
-    return model
-  }
-
-  /// The six rows `AppleViewerPreviewPicture` draws, in its own point space
-  /// (16 pt inset, 44 pt rows, 10 pt apart from y=121), scaled to pixels.
-  private static func rows() -> [LiveInspectElement] {
-    let labels = ["General", "Accessibility", "Appearance", "Camera", "Control Center", "Display"]
-    let identifiers = [
-      "settings.general",
-      "settings.accessibility",
-      "settings.appearance",
-      "settings.camera",
-      "settings.control-center",
-      "settings.display",
-    ]
-    var elements: [LiveInspectElement] = []
-    for (index, label) in labels.enumerated() {
-      let pointFrame = LiveInspectFrame(x: 16, y: 121 + Double(index) * 54, width: 370, height: 44)
-      elements.append(
-        LiveInspectElement(
-          id: "fixture-\(index)",
-          label: label,
-          value: nil,
-          role: "Button",
-          elementType: "UITableViewCell",
-          subrole: nil,
-          identifier: identifiers[index],
-          componentId: "SettingsRow",
-          sourceFile: "Views/SettingsView.swift",
-          sourceLine: 40 + index * 8,
-          sourceConfidence: "exact",
-          enabled: true,
-          focused: false,
-          frame: LiveInspectFrame(
-            x: pointFrame.x * 3,
-            y: pointFrame.y * 3,
-            width: pointFrame.width * 3,
-            height: pointFrame.height * 3
-          ),
-          pointFrame: pointFrame,
-          imageFrame: CGRect(
-            x: pointFrame.x * 3,
-            y: pointFrame.y * 3,
-            width: pointFrame.width * 3,
-            height: pointFrame.height * 3
-          )
-        )
-      )
-    }
-    return elements
-  }
-}
-#endif

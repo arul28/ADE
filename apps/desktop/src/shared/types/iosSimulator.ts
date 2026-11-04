@@ -1110,6 +1110,12 @@ export type AppleSetPostureArgs = {
   pose?: AppleDevicePose | null;
   /** Degrees, 0–180. */
   angle?: number | null;
+  /**
+   * Send the fold and answer at once, without waiting for the guest to settle
+   * on a panel: a phone mirroring its own hinge sends a stream of these, and
+   * the stream's posture notes say where each one landed.
+   */
+  follow?: boolean | null;
 };
 
 /**

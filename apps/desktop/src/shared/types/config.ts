@@ -1260,6 +1260,11 @@ export type AntigravityAgentPlatformConfig = { project: string | null; location:
 
 export type AntigravitySignInPhase = "idle" | "starting" | "waiting" | "verifying" | "succeeded" | "failed" | "cancelled";
 
+/** A sign-in still running: started, waiting on the browser, or checking the result. */
+export function isAntigravitySignInRunning(state: { phase: AntigravitySignInPhase } | null | undefined): boolean {
+  return state?.phase === "starting" || state?.phase === "waiting" || state?.phase === "verifying";
+}
+
 /**
  * One machine's Antigravity sign-in, as the `ai.antigravitySignIn*` actions
  * report it. The sign-in runs on the machine that owns the provider row; a

@@ -225,7 +225,7 @@ private func duoMachineFleetStateTone(_ state: MachineFleet.MachineState) -> ADE
 ///   rail's capsule the agent list and the composer run to the screen's edge.
 /// - Held upright, or on an iPad, there is no edge bar: the projects page's
 ///   top bar holds the whole header.
-/// - Folded laptop or tent it is one stack: the projects on the top half, the
+/// - Folded laptop it is one stack: the projects on the top half, the
 ///   agents and the composer on the bottom half.
 ///
 /// The Hub is above every project: it never shows the app tabs. Nothing
@@ -364,7 +364,7 @@ struct DuoHomeWide<Title: View, Projects: View, Composer: View, ChatsDestination
     }
   }
 
-  // MARK: Laptop / tent
+  // MARK: Laptop
 
   private var stackedLayout: some View {
     NavigationStack {

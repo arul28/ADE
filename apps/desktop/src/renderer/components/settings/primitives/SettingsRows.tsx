@@ -65,7 +65,7 @@ export function SettingsSection({
           padding: "0 2px",
         }}
       >
-        <div style={{ minWidth: 0 }}>
+        <div data-ph-unmask="" style={{ minWidth: 0 }}>
           <h2
             style={{
               margin: 0,
@@ -143,7 +143,7 @@ export function SettingsRow({
     >
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 20 }}>
         {icon ? <SettingsRowIcon icon={icon} tone={tone} /> : null}
-        <div style={{ minWidth: 0, flex: 1, marginLeft: icon ? -8 : 0 }}>
+        <div data-ph-unmask="" style={{ minWidth: 0, flex: 1, marginLeft: icon ? -8 : 0 }}>
           <div style={{ fontFamily: SANS_FONT, fontSize: 13, fontWeight: 500, color: COLORS.textPrimary }}>
             {title}
           </div>

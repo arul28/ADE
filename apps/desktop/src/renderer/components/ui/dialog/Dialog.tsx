@@ -347,6 +347,9 @@ export function Dialog({
               <RadixDialog.Title className="ade-dialog-sr-only">{title}</RadixDialog.Title>
             ) : (
               <div
+                // Session replay shows the title and description (ADE's words,
+                // scrubbed); custom title content and header extras stay masked.
+                data-ph-unmask=""
                 style={{
                   display: "flex",
                   alignItems: "flex-start",
@@ -360,7 +363,7 @@ export function Dialog({
                   {titleContent != null ? (
                     <>
                       <RadixDialog.Title className="ade-dialog-sr-only">{title}</RadixDialog.Title>
-                      <div style={{ minWidth: 0, flex: 1 }}>{titleContent}</div>
+                      <div data-ph-mask="" style={{ minWidth: 0, flex: 1 }}>{titleContent}</div>
                     </>
                   ) : (
                     <RadixDialog.Title
@@ -376,7 +379,7 @@ export function Dialog({
                       {title}
                     </RadixDialog.Title>
                   )}
-                  {headerExtra ? <div style={{ minWidth: 0, marginTop: 12 }}>{headerExtra}</div> : null}
+                  {headerExtra ? <div data-ph-mask="" style={{ minWidth: 0, marginTop: 12 }}>{headerExtra}</div> : null}
                   {description ? (
                     <RadixDialog.Description
                       style={{
@@ -430,6 +433,8 @@ export function Dialog({
             {hasFooter ? (
               <div
                 ref={footerRef}
+                // The built-in action buttons are ADE's labels; a custom footer stays masked.
+                data-ph-unmask={footer ? undefined : ""}
                 style={{
                   display: "flex",
                   alignItems: "center",
@@ -440,7 +445,7 @@ export function Dialog({
                   flexShrink: 0,
                 }}
               >
-                {footerStart ? <div style={{ marginRight: "auto", minWidth: 0 }}>{footerStart}</div> : null}
+                {footerStart ? <div data-ph-mask="" style={{ marginRight: "auto", minWidth: 0 }}>{footerStart}</div> : null}
                 {footer ??
                   actions?.map((action, index) => (
                     <NoticeButton

@@ -2,16 +2,18 @@
 // Local (non-RPC) CLI command for available agent skills.
 //
 //   ade skill list [--text|--json]
-//   ade skill show <name> [--text|--json]
+//   ade skill show <name> [<file>] [--text|--json]
 //
 // This catalog works headless without the runtime daemon. ADE MCP calls hide
 // personal skills so a remote app sees only project and ADE-provided skills.
 // ---------------------------------------------------------------------------
 
 import {
+  AgentSkillFileError,
   isRemoteMcpInvocation,
   listAgentSkills,
   readAgentSkill,
+  readAgentSkillFile,
 } from "../services/skills/agentSkillCatalogService";
 
 export class CliSkillUsageError extends Error {}
@@ -25,6 +27,7 @@ const HELP_SKILL = [
   "Usage:",
   "  ade skill list [--text|--json]        List available agent skills",
   "  ade skill show <name> [--text|--json] Show a skill's SKILL.md",
+  "  ade skill show <name> <file> [--text] Show another file in the skill, e.g. references/usage-limits.md",
   "",
   "  Lists project, user, and ADE skills without a runtime daemon. JSON output",
   "  is the default; pass --text for human-readable output.",
@@ -108,7 +111,7 @@ export function runSkillShow(args: string[]): SkillCliResult {
   const { format, rest } = extractFormat(args);
   const name = rest[0];
   if (!name) {
-    throw new CliSkillUsageError("ade skill show <name> [--text|--json]");
+    throw new CliSkillUsageError("ade skill show <name> [<file>] [--text|--json]");
   }
   const includeUser = !isRemoteMcpInvocation(process.env);
   const skill = readAgentSkill(name, { cwd: process.cwd(), includeUser, env: process.env, onError: warnUnreadable });
@@ -126,6 +129,21 @@ export function runSkillShow(args: string[]): SkillCliResult {
     throw new CliSkillUsageError(
       `Unknown skill: ${name}. Available skills: ${available}.`,
     );
+  }
+  const file = rest[1];
+  if (file) {
+    let read: ReturnType<typeof readAgentSkillFile>;
+    try {
+      read = readAgentSkillFile(skill.entry, file);
+    } catch (error) {
+      if (error instanceof AgentSkillFileError) throw new CliSkillUsageError(error.message);
+      throw error;
+    }
+    if (format === "text") return { output: `${read.content.replace(/\r?\n$/, "")}\n`, exitCode: 0 };
+    return {
+      output: `${JSON.stringify({ name: skill.entry.name, file: read.relative, content: read.content, path: read.path }, null, 2)}\n`,
+      exitCode: 0,
+    };
   }
   if (format === "text") {
     return { output: `${skill.body.replace(/\r?\n$/, "")}\n`, exitCode: 0 };

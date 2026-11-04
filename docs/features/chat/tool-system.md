@@ -361,7 +361,7 @@ when the lane has a display, and `null` otherwise; `composeLaunchDirectives` in
 `agentChatService.ts` drops the null, so a lane without a screen produces a
 byte-identical prompt to one built before the feature existed. The line names
 the screen of the machine that runs the chat (`seatHostPlatform`): a Mac brain
-gets `MAC_DESKTOP_PROMPT_LINE` (`ade mac-desktop`), a Windows brain gets
+gets `MAC_DESKTOP_PROMPT_LINE` (`ade screen`), a Windows brain gets
 `WINDOWS_DESKTOP_PROMPT_LINE` (`ade screen`). It is epoch-scoped like the
 computer-use block (`deliveredDirectiveKeys.laneScreen`): sent when the lane
 gains a screen or the line changes, and again after the provider thread is

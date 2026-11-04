@@ -12,7 +12,7 @@ and file proof from it. It works in the background: no cursor, no focus
 stealing, and it captures the app's own window, not the user's screen.
 
 Not sure App Control is the right surface? The **ade-computer-use** skill picks
-between `ade apple`, `ade mac-desktop`, `ade app-control` and `ade browser`.
+between `ade apple`, `ade screen`, `ade app-control` and `ade browser`.
 
 ## Rules before your first command
 
@@ -214,9 +214,9 @@ App Control never needs the user's screen. On a Mac host you may still move the
 app's window onto the lane's private Mac Desktop:
 
 ```bash
-ade mac-desktop start --text
-ade mac-desktop windows --text
-ade mac-desktop claim --window <id> --text
+ade screen start --text
+ade screen windows --text
+ade screen claim --window <id> --text
 ```
 
 This is optional. Keep driving it with `ade app-control`.

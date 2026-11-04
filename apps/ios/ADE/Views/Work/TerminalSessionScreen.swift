@@ -76,6 +76,7 @@ struct TerminalSessionScreen: View {
     VStack(spacing: 0) {
       topBar
       SwiftTermSessionView(controller: controller)
+        .adeReplayMasked()
         // A little air between the text and the screen's (or the column's)
         // edge; the black runs on behind it.
         .padding(.horizontal, 6)

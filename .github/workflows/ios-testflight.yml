@@ -18,10 +18,12 @@ name: iOS TestFlight
 # comments on) the "iOS TestFlight failed" issue instead of the desktop's
 # "Beta build failed" one.
 #
-# Signing: the App Store Connect API key (APPLE_API_KEY_*) signs through
-# Xcode's -allowProvisioningUpdates. With no IOS_SIGNING_P12_BASE64 secret
-# that is cloud signing, which needs an Admin-role key; the script's header
-# lists what each mode needs.
+# Signing: IOS_SIGNING_P12_BASE64 holds the CI's own Apple Development
+# certificate, and the App Store Connect API key (APPLE_API_KEY_*) does the
+# rest through Xcode's -allowProvisioningUpdates (profiles, and a
+# cloud-managed distribution certificate). Without the .p12 every run leaves a
+# new development certificate on the team until the limit stops all archives;
+# the script's header lists what each mode needs.
 #
 # Xcode: 27.1, the version the iPhone app is built with on the owner's Mac.
 # The Duo layout and the other iOS 27 code compile only with Swift 6.4 or
@@ -190,6 +192,24 @@ jobs:
           args=(--label "$LABEL" --sha "$SHA")
           [ -n "$DRY_RUN" ] && args+=(--dry-run)
           bash scripts/release-tools/ios-testflight-ci.sh "${args[@]}"
+
+      # "iOS Beta 1.4 (212) · TestFlight" on PostHog's charts. Skips without
+      # POSTHOG_PERSONAL_API_KEY (or Node on the runner) and never fails the job.
+      - name: Mark the TestFlight build on PostHog
+        if: ${{ steps.build.outcome == 'success' && !inputs.dry_run }}
+        continue-on-error: true
+        env:
+          POSTHOG_PERSONAL_API_KEY: ${{ secrets.POSTHOG_PERSONAL_API_KEY }}
+          POSTHOG_PROJECT_ID: ${{ secrets.POSTHOG_PROJECT_ID }}
+          POSTHOG_HOST: ${{ secrets.POSTHOG_HOST }}
+          MARKETING_VERSION: ${{ steps.build.outputs.marketing_version }}
+          BUILD_NUMBER: ${{ steps.build.outputs.build_number }}
+        run: |
+          if ! command -v node >/dev/null 2>&1; then
+            echo "::notice::Node is not on this runner; skipping the PostHog annotation."
+            exit 0
+          fi
+          node scripts/posthog/annotate-release.mjs --app "iOS Beta" --ios "$MARKETING_VERSION" --build "$BUILD_NUMBER"
 
       - name: Report the result
         if: ${{ always() }}

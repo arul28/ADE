@@ -146,10 +146,14 @@ protocol ProductAnalyticsSink: AnyObject {
   func flush()
   /// The id events are sent under right now, when the sink has one.
   func currentDistinctId() -> String?
+  /// Sends one `$exception` whose properties `ProductAnalytics` already
+  /// reduced (`sanitizedExceptionProperties`).
+  func captureException(properties: [String: Any])
 }
 
 extension ProductAnalyticsSink {
   func currentDistinctId() -> String? { nil }
+  func captureException(properties _: [String: Any]) {}
 }
 
 protocol ProductAnalyticsHTTPTransport: AnyObject {
@@ -215,13 +219,15 @@ final class DirectProductAnalyticsHTTPTransport: ProductAnalyticsHTTPTransport {
   }
 }
 
-/// Minimal PostHog Capture API client. ADE intentionally does not link the
-/// PostHog SDK: that keeps remote config, replay, crash collection, automatic
-/// lifecycle hooks, and an offline event queue out of the mobile binary.
+/// Minimal PostHog Capture API client. Every event goes through here, never
+/// through the PostHog SDK: the SDK is linked for session replay only
+/// (`SessionReplay.swift`), and its own events are dropped before they leave.
 final class DirectPostHogProductAnalyticsSink: ProductAnalyticsSink {
   struct Configuration: Equatable {
     let projectToken: String
     let endpoint: URL
+    /// The ingestion host the endpoint is on, for the replay SDK.
+    let host: URL
   }
 
   static let defaultHost = "https://us.i.posthog.com"
@@ -250,6 +256,11 @@ final class DirectPostHogProductAnalyticsSink: ProductAnalyticsSink {
 
   var canCapture: Bool {
     lock.withLock { requestedEnabled && configuration != nil }
+  }
+
+  /// The validated token and host while capture is on, else nil.
+  var activeConfiguration: Configuration? {
+    lock.withLock { requestedEnabled ? configuration : nil }
   }
 
   func configure(projectToken: String?, host: String?, enabled: Bool) {
@@ -281,43 +292,79 @@ final class DirectPostHogProductAnalyticsSink: ProductAnalyticsSink {
         return
       }
 
-      privateProperties["surface"] = "mobile"
-      privateProperties["platform"] = "ios"
-      privateProperties["client"] = "ios"
-      privateProperties["interactive"] = event != ADEAnalyticsEventName.analyticsBudget.rawValue
-      // Every event says which build sent it. No `is_internal`: a phone has
-      // no team-install marker to read.
-      privateProperties["app_version"] = Self.appVersion()
-      privateProperties["build_number"] = Self.buildNumber()
-      privateProperties["distribution"] = Self.distribution.rawValue
-      privateProperties["release_channel"] = Self.distribution.releaseChannel
-      privateProperties["$process_person_profile"] = false
-      privateProperties["$geoip_disable"] = true
+      privateProperties.merge(
+        Self.commonProperties(interactive: event != ADEAnalyticsEventName.analyticsBudget.rawValue)
+      ) { _, common in common }
 
-      let payload: [String: Any] = [
-        "api_key": configuration.projectToken,
-        "distinct_id": identifiedAccountHash() ?? installationID(),
-        "event": event,
-        "properties": privateProperties,
-        "uuid": UUID().uuidString.lowercased(),
-      ]
-      guard JSONSerialization.isValidJSONObject(payload),
-            let body = try? JSONSerialization.data(withJSONObject: payload) else {
-        return
-      }
-
-      var request = URLRequest(
-        url: configuration.endpoint,
-        cachePolicy: .reloadIgnoringLocalCacheData,
-        timeoutInterval: 5
+      send(
+        event: event,
+        distinctId: identifiedAccountHash() ?? installationID(),
+        properties: privateProperties,
+        configuration: configuration
       )
-      request.httpMethod = "POST"
-      request.httpBody = body
-      request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-      let activeTransport = transport ?? transportFactory()
-      transport = activeTransport
-      activeTransport.send(request)
     }
+  }
+
+  /// Added to every event this sink sends: which surface, app and build sent
+  /// it. No `is_internal`: a phone has no team-install marker to read.
+  private static func commonProperties(interactive: Bool) -> [String: Any] {
+    [
+      "surface": "mobile",
+      "platform": "ios",
+      "client": "ios",
+      "interactive": interactive,
+      "app_version": appVersion(),
+      "build_number": buildNumber(),
+      "distribution": distribution.rawValue,
+      "release_channel": distribution.releaseChannel,
+      "$process_person_profile": false,
+      "$geoip_disable": true,
+    ]
+  }
+
+  func captureException(properties: [String: Any]) {
+    lock.withLock {
+      guard requestedEnabled, let configuration else { return }
+      var exceptionProperties = properties
+      exceptionProperties.merge(Self.commonProperties(interactive: false)) { _, common in common }
+      send(
+        event: ProductAnalytics.exceptionEventName,
+        distinctId: identifiedAccountHash() ?? installationID(),
+        properties: exceptionProperties,
+        configuration: configuration
+      )
+    }
+  }
+
+  /// One POST to the Capture API. Called with `lock` held.
+  private func send(
+    event: String,
+    distinctId: String,
+    properties: [String: Any],
+    configuration: Configuration
+  ) {
+    let payload: [String: Any] = [
+      "api_key": configuration.projectToken,
+      "distinct_id": distinctId,
+      "event": event,
+      "properties": properties,
+      "uuid": UUID().uuidString.lowercased(),
+    ]
+    guard JSONSerialization.isValidJSONObject(payload),
+          let body = try? JSONSerialization.data(withJSONObject: payload) else {
+      return
+    }
+    var request = URLRequest(
+      url: configuration.endpoint,
+      cachePolicy: .reloadIgnoringLocalCacheData,
+      timeoutInterval: 5
+    )
+    request.httpMethod = "POST"
+    request.httpBody = body
+    request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    let activeTransport = transport ?? transportFactory()
+    transport = activeTransport
+    activeTransport.send(request)
   }
 
   func identify(userHash: String, accountId: String) {
@@ -327,11 +374,10 @@ final class DirectPostHogProductAnalyticsSink: ProductAnalyticsSink {
             let configuration else {
         return
       }
-      let payload: [String: Any] = [
-        "api_key": configuration.projectToken,
-        "distinct_id": userHash,
-        "event": "$identify",
-        "properties": [
+      send(
+        event: "$identify",
+        distinctId: userHash,
+        properties: [
           "$anon_distinct_id": installationID(),
           "$set": [
             "plan": "free",
@@ -341,23 +387,8 @@ final class DirectPostHogProductAnalyticsSink: ProductAnalyticsSink {
           ],
           "$geoip_disable": true,
         ],
-        "uuid": UUID().uuidString.lowercased(),
-      ]
-      guard JSONSerialization.isValidJSONObject(payload),
-            let body = try? JSONSerialization.data(withJSONObject: payload) else {
-        return
-      }
-      var request = URLRequest(
-        url: configuration.endpoint,
-        cachePolicy: .reloadIgnoringLocalCacheData,
-        timeoutInterval: 5
+        configuration: configuration
       )
-      request.httpMethod = "POST"
-      request.httpBody = body
-      request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-      let activeTransport = transport ?? transportFactory()
-      transport = activeTransport
-      activeTransport.send(request)
     }
   }
 
@@ -402,7 +433,7 @@ final class DirectPostHogProductAnalyticsSink: ProductAnalyticsSink {
 
     let hostValue = normalizedConfigurationValue(host) ?? defaultHost
     guard var components = URLComponents(string: hostValue),
-          components.scheme?.lowercased() == "https",
+          components.scheme?.lowercased() == "https" || isDebugLoopback(components),
           components.host?.isEmpty == false,
           components.user == nil,
           components.password == nil,
@@ -411,9 +442,23 @@ final class DirectPostHogProductAnalyticsSink: ProductAnalyticsSink {
           components.path.isEmpty || components.path == "/" else {
       return nil
     }
+    components.path = ""
+    guard let hostURL = components.url else { return nil }
     components.path = "/i/v0/e/"
     guard let endpoint = components.url else { return nil }
-    return Configuration(projectToken: projectToken, endpoint: endpoint)
+    return Configuration(projectToken: projectToken, endpoint: endpoint, host: hostURL)
+  }
+
+  /// Plain `http` is accepted only in a Debug build and only for this
+  /// computer, so a developer can point capture and replay at a stand-in
+  /// server (`ADE_POSTHOG_DEV_HOST`). Release builds require `https`.
+  private static func isDebugLoopback(_ components: URLComponents) -> Bool {
+    #if DEBUG
+    return components.scheme?.lowercased() == "http"
+      && ["127.0.0.1", "localhost"].contains(components.host?.lowercased() ?? "")
+    #else
+    return false
+    #endif
   }
 
   private static func sanitizedProperties(
@@ -594,6 +639,11 @@ final class ProductAnalytics {
   static let clerkIdSetForHashDefaultsKey = "ade.analytics.clerk-id-set-for-hash.v1"
   static let allowedEventNames = Set(ADEAnalyticsEventName.allCases.map(\.rawValue))
   static let dailyEventLimit = 20
+  /// PostHog's own name, so error tracking reads it. Not an `ade_mobile_*`
+  /// event: it has its own allowance and its own builder.
+  static let exceptionEventName = "$exception"
+  /// Sentry admits at most 60 an hour first; this caps what PostHog gets.
+  static let exceptionDailyLimit = 10
 
   private static let budgetDefaultsKey = "ade.analytics.daily-budget.v2"
   private static let identifyEventName = "$identify"
@@ -670,11 +720,29 @@ final class ProductAnalytics {
 
   func configure(bundle: Bundle = .main) {
     guard let postHogSink = sink as? DirectPostHogProductAnalyticsSink else { return }
-    postHogSink.configure(
-      projectToken: Self.configurationValue(for: "ADEPostHogProjectToken", in: bundle),
-      host: Self.configurationValue(for: "ADEPostHogHost", in: bundle),
-      enabled: isEnabled
-    )
+    var projectToken = Self.configurationValue(for: "ADEPostHogProjectToken", in: bundle)
+    var host = Self.configurationValue(for: "ADEPostHogHost", in: bundle)
+    #if DEBUG
+    // A developer run can point analytics and replay at a stand-in server.
+    let environment = ProcessInfo.processInfo.environment
+    if let devHost = environment["ADE_POSTHOG_DEV_HOST"], !devHost.isEmpty {
+      host = devHost
+      projectToken = environment["ADE_POSTHOG_DEV_TOKEN"] ?? projectToken
+    }
+    #endif
+    postHogSink.configure(projectToken: projectToken, host: host, enabled: isEnabled)
+  }
+
+  /// The project token and ingestion host session replay may use: present
+  /// only while analytics is on and configured, so replay follows the same
+  /// switch (`DO_NOT_TRACK`) and the same validated configuration.
+  func replayConfiguration() -> (projectToken: String, host: URL)? {
+    guard isEnabled,
+          let postHogSink = sink as? DirectPostHogProductAnalyticsSink,
+          let configuration = postHogSink.activeConfiguration else {
+      return nil
+    }
+    return (configuration.projectToken, configuration.host)
   }
 
   func setEnabled(_ enabled: Bool) {
@@ -808,6 +876,35 @@ final class ProductAnalytics {
     )
   }
 
+  /// Mirrors one error Sentry already admitted (after its budget and scrub) to
+  /// PostHog error tracking. It has an allowance of its own, outside the
+  /// shared ceiling: PostHog bills exceptions separately, and a bad day of
+  /// errors must not spend the product events' budget.
+  func captureException(_ report: ADEAnalyticsExceptionReport) {
+    guard sink.canCapture,
+          var properties = Self.sanitizedExceptionProperties(report) else { return }
+    let (admitted, pendingEvents) = lock.withLock { () -> (Bool, [PendingEvent]) in
+      var pendingEvents: [PendingEvent] = []
+      var currentBudget = currentDailyBudget(pendingEvents: &pendingEvents)
+      let count = currentBudget.counts[Self.exceptionEventName, default: 0]
+      let admitted = count < Self.exceptionDailyLimit
+      if admitted {
+        // Counted by name only: `total` is the shared ceiling's.
+        currentBudget.counts[Self.exceptionEventName] = count + 1
+      }
+      budget = currentBudget
+      persist(currentBudget)
+      return (admitted, pendingEvents)
+    }
+    // The previous day's summary, when this is the day's first event.
+    sendPending(pendingEvents)
+    guard admitted else { return }
+    if let sessionId = report.replaySessionId {
+      properties["$session_id"] = sessionId
+    }
+    sink.captureException(properties: properties)
+  }
+
   func identifyAccount(_ userId: String) {
     let normalizedUserId = userId.trimmingCharacters(in: .whitespacesAndNewlines)
     guard sink.canCapture,
@@ -849,14 +946,7 @@ final class ProductAnalytics {
     // Rollover summarizes the previous UTC day, so emit it before changing the
     // distinct id. Otherwise an account switch on the first event of a new day
     // attributes the prior account's usage summary to the incoming account.
-    for pendingEvent in transition.pendingEvents {
-      var eventProperties = pendingEvent.properties
-      eventProperties["surface"] = "mobile"
-      eventProperties["platform"] = "ios"
-      eventProperties["$process_person_profile"] = false
-      eventProperties["$geoip_disable"] = true
-      sink.capture(event: pendingEvent.name.rawValue, properties: eventProperties)
-    }
+    sendPending(transition.pendingEvents)
     if transition.shouldReset {
       lock.withLock {
         defaults.removeObject(forKey: Self.identifiedAccountHashDefaultsKey)
@@ -927,14 +1017,7 @@ final class ProductAnalytics {
       return pendingEvents
     }
 
-    for pendingEvent in pendingEvents {
-      var eventProperties = pendingEvent.properties
-      eventProperties["surface"] = "mobile"
-      eventProperties["platform"] = "ios"
-      eventProperties["$process_person_profile"] = false
-      eventProperties["$geoip_disable"] = true
-      sink.capture(event: pendingEvent.name.rawValue, properties: eventProperties)
-    }
+    sendPending(pendingEvents)
   }
 
   private func reserve(_ event: ADEAnalyticsEventName, in budget: inout DailyBudget) -> Bool {
@@ -950,6 +1033,18 @@ final class ProductAnalytics {
     budget.total += 1
     budget.counts[name] = eventCount + 1
     return true
+  }
+
+  /// Sends rollups queued while `lock` was held (a day's usage summary).
+  private func sendPending(_ events: [PendingEvent]) {
+    for pendingEvent in events {
+      var eventProperties = pendingEvent.properties
+      eventProperties["surface"] = "mobile"
+      eventProperties["platform"] = "ios"
+      eventProperties["$process_person_profile"] = false
+      eventProperties["$geoip_disable"] = true
+      sink.capture(event: pendingEvent.name.rawValue, properties: eventProperties)
+    }
   }
 
   private func currentDailyBudget(pendingEvents: inout [PendingEvent]) -> DailyBudget {
