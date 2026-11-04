@@ -1424,7 +1424,7 @@ export function RemoteTargetList({
     pair: "Pair with a nearby computer",
     ssh: "Add over SSH",
     code: "This computer's pairing code",
-    agent37: "New Agent37 machine",
+    agent37: `New ${AGENT37_NAME} machine`,
   };
 
   const showEmptyState = !loading

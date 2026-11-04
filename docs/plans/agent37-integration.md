@@ -21,8 +21,10 @@ API key (`sk_live_…`; no OAuth, no event webhooks). Three types:
 | `performance` | dedicated cores, own kernel | like default, never throttled | 4x |
 
 Shapes (all types, max 4 vCPU): 2/4, 4/8, 4/16, 4/32 GB. Published rates
-per running hour: box 0.6¢ / 1.2¢ / 2¢ / 3.5¢; VM 1.5¢ / 3¢ / 5¢ / 9¢.
-Asleep or stopped, only disk bills (~9¢ per GB-month). Workspace tiers cap
+(agent37.com/pricing): $0.80 per vCPU, $0.70 per GB of memory and $0.09 per GB
+of disk, per 730-hour month, metered by the minute; a VM's compute is 2.5x.
+Running, that is about 0.8¢ / 1.5¢ / 2.5¢ / 4.5¢ an hour for a box (12 GB
+disk). Asleep or stopped, only disk bills (~9¢ per GB-month). Workspace tiers cap
 how many machines exist at once (tier 0: 1 and no VMs; first top-up: 10;
 $100: 50; $250: 200; sleeping ones count). The $5 card credit is not a
 top-up. A create needs one day of the machine's rate in the wallet.
