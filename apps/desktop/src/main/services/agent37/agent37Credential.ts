@@ -45,22 +45,24 @@ export type Agent37CredentialDeps = {
   fetch?: FetchLike;
 };
 
-/** Desktop main: the brain's vault over `accountVaultBridge`. */
-export function agent37VaultFromBridge(bridge: {
+type Agent37VaultBridge = {
   get(scope: string, kind: string, key: string): Promise<AccountVaultResult<string | null>>;
   set(scope: string, kind: string, key: string, value: string): Promise<AccountVaultResult<null>>;
   remove(scope: string, kind: string, key: string): Promise<AccountVaultResult<null>>;
-}): Agent37Vault {
+};
+
+/** Desktop main: one account-wide Agent37 item in the brain's vault over `accountVaultBridge`. */
+export function agent37VaultFromBridge(bridge: Agent37VaultBridge, key: string = AGENT37_VAULT_KEY): Agent37Vault {
   return {
     async get() {
-      const result = await bridge.get(ACCOUNT_SCOPE_ALL, AGENT37_VAULT_KIND, AGENT37_VAULT_KEY);
+      const result = await bridge.get(ACCOUNT_SCOPE_ALL, AGENT37_VAULT_KIND, key);
       return result.ok ? { ok: true, value: result.value } : { ok: false };
     },
     async set(value) {
-      return (await bridge.set(ACCOUNT_SCOPE_ALL, AGENT37_VAULT_KIND, AGENT37_VAULT_KEY, value)).ok;
+      return (await bridge.set(ACCOUNT_SCOPE_ALL, AGENT37_VAULT_KIND, key, value)).ok;
     },
     async remove() {
-      return (await bridge.remove(ACCOUNT_SCOPE_ALL, AGENT37_VAULT_KIND, AGENT37_VAULT_KEY)).ok;
+      return (await bridge.remove(ACCOUNT_SCOPE_ALL, AGENT37_VAULT_KIND, key)).ok;
     },
   };
 }

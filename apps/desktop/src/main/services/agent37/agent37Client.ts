@@ -23,6 +23,8 @@ export type Agent37Instance = {
   url: string | null;
   pastDue: boolean;
   created: number | null;
+  /** What ADE (or anyone) set at create; ADE tags its creates with `ade_request_id`. */
+  metadata: Record<string, string>;
 };
 
 export type Agent37Billing = {
@@ -145,6 +147,15 @@ function str(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value : null;
 }
 
+function readMetadata(value: unknown): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!value || typeof value !== "object" || Array.isArray(value)) return out;
+  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof entry === "string") out[key] = entry;
+  }
+  return out;
+}
+
 function toInstance(raw: unknown): Agent37Instance | null {
   const record = raw && typeof raw === "object" ? raw as Record<string, unknown> : null;
   const id = str(record?.id);
@@ -165,6 +176,7 @@ function toInstance(raw: unknown): Agent37Instance | null {
     url: str(record.url),
     pastDue: record.past_due === true,
     created: num(record.created),
+    metadata: readMetadata(record.metadata),
   };
 }
 
