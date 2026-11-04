@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import type { AndroidRunningEmulator } from "../../../shared/types/androidEmulator";
 import type { Logger } from "../logging/logger";
-import { terminateProcessTree } from "../shared/processExecution";
+import { killWindowsProcessTreeAsync, terminateProcessTree } from "../shared/processExecution";
 import { runAdb, runAdbText } from "./adb";
 import { readAndroidAvd, sameAvdName } from "./androidAvds";
 import { AndroidEmulatorFailure } from "./androidEmulatorErrors";
@@ -140,6 +140,9 @@ export function readAndroidDiscoveryFiles(dirs: readonly string[] = androidDisco
 
 /* ---------- what ADE started ---------- */
 
+/** A boot pins its qemu pid within the boot timeout (at most a few minutes), so an older pid-less record is a dead start. */
+const PIDLESS_RECORD_MAX_AGE_MS = 10 * 60_000;
+
 type AdeStartRecord = {
   avdName: string;
   consolePort: number;
@@ -221,19 +224,36 @@ export class AdeStartedEmulators {
    * the brain that started it handed it off mid-boot) matches on the AVD and
    * console port alone, but only while its launcher lives: ADE's console
    * ports are the emulator's defaults, so a stale record must never claim an
-   * emulator the user started later on the same port.
+   * emulator the user started later on the same port. The first match pins
+   * the record to that emulator's qemu pid, so a brain that adopts a start
+   * handed off mid-boot keeps it by its real process from then on.
    */
   owns(emulator: Pick<AndroidRunningEmulator, "avdName" | "consolePort" | "pid">): boolean {
-    return this.liveRecords().some((record) =>
+    const records = this.liveRecords();
+    const match = records.find((record) =>
       sameAvdName(record.avdName, emulator.avdName)
       && record.consolePort === emulator.consolePort
       && (record.pid === null || record.pid === emulator.pid || record.launcherPid === emulator.pid));
+    if (!match) return false;
+    if (match.pid === null) {
+      match.pid = emulator.pid;
+      this.save(records);
+    }
+    return true;
   }
 
-  /** The records whose qemu or launcher still runs; the rest (a crash, a reboot) are dropped from the file. */
+  /**
+   * The records whose qemu or launcher still runs; the rest (a crash, a
+   * reboot) are dropped from the file. A pid-less record older than
+   * `PIDLESS_RECORD_MAX_AGE_MS` is dead too: after a reboot its launcher pid
+   * can belong to an unrelated process.
+   */
   private liveRecords(): AdeStartRecord[] {
     const before = this.read();
-    const live = before.filter((record) => isProcessAlive(record.pid ?? record.launcherPid) || isProcessAlive(record.launcherPid));
+    const live = before.filter((record) => {
+      if (record.pid === null && !(Date.now() - Date.parse(record.startedAt) <= PIDLESS_RECORD_MAX_AGE_MS)) return false;
+      return isProcessAlive(record.pid ?? record.launcherPid) || isProcessAlive(record.launcherPid);
+    });
     if (live.length !== before.length) this.save(live);
     return live;
   }
@@ -713,8 +733,19 @@ export async function stopAndroidLaunch(
   if (!launch.exited()) {
     // No discovery file after 15 s. qemu may still be starting under the
     // launcher (Windows), so end the whole tree, not only the launcher.
-    terminateProcessTree(launch.child, "SIGTERM", (detail) =>
-      logger?.warn("android.emulator_tree_kill_failed", { avdName: launch.avdName, pid: detail.pid, status: detail.status }));
+    const onTreeKillFailure = (detail: { pid: number; status: number | null }) =>
+      logger?.warn("android.emulator_tree_kill_failed", { avdName: launch.avdName, pid: detail.pid, status: detail.status });
+    if (process.platform === "win32") {
+      // `taskkill` without blocking the brain's event loop, then the launcher itself.
+      await killWindowsProcessTreeAsync(launch.launcherPid, onTreeKillFailure);
+      try {
+        launch.child.kill("SIGTERM");
+      } catch {
+        // Already gone.
+      }
+    } else {
+      terminateProcessTree(launch.child, "SIGTERM", onTreeKillFailure);
+    }
     await Promise.race([launch.exit, sleep(5_000)]);
   }
   // A qemu that outlived the kill stays ADE's, so a later stop can still end it.
