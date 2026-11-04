@@ -9,6 +9,7 @@ import type { AppleDeviceOrientation } from "../../../shared/types";
 import { cn } from "../ui/cn";
 import { appleDeviceModel, type AppleDeviceModelSource } from "./appleDeviceModels";
 import { appleEaseFactor, createAppleDeviceOrbit, type AppleDeviceOrbit } from "./appleDeviceOrbit";
+import type { AppleFrameFeed } from "./useAppleDeviceStream";
 import { loadAppleDeviceModelInstance } from "./appleDeviceModelLoader";
 import { appleDuoHingeAfterPinch } from "./appleDuo";
 import { createProceduralDuoBody } from "./appleDuoScene";
@@ -70,8 +71,8 @@ export type AppleDevice3DFailure =
 export type AppleDevice3DViewProps = {
   /** The decoded device screen. The stage draws every frame into this canvas; the view samples it as a texture. */
   screenCanvas: HTMLCanvasElement | null;
-  /** Increments once per drawn frame; the view re-uploads the texture when it changes and otherwise renders only on interaction. */
-  frameVersion: number;
+  /** Each drawn frame; the view re-uploads the texture on each and otherwise renders only on interaction. */
+  frames: AppleFrameFeed | null;
   family: AppleDeviceFamily;
   /** Product hint from the simulator device type, e.g. "iPhone 17 Pro"; the model map picks the closest body. */
   deviceTypeName: string | null;
@@ -215,6 +216,8 @@ export type AppleDeviceRenderer = Pick<Viewer, "renderShots" | "renderTurntable"
 
 type Viewer = {
   sync(props: AppleDevice3DViewProps): void;
+  /** A new frame is in the screen canvas: re-upload the texture and draw. */
+  noteFrame(): void;
   resize(width: number, height: number, pixelRatio: number): void;
   pointerDown(nx: number, ny: number, now: number, forceOrbit: boolean): "input" | "orbit" | "none";
   pointerMove(nx: number, ny: number, dx: number, dy: number, now: number): void;
@@ -318,7 +321,6 @@ function createViewer(
   let lastInputHit: ScreenHit | null = null;
   let loadGen = 0;
   let currentModelKey = "";
-  let lastFrameVersion = Number.NaN;
   let lastCanvas: HTMLCanvasElement | null = null;
   let lastPoseNotice = 0;
   let restoreTimer: ReturnType<typeof setTimeout> | null = null;
@@ -670,11 +672,6 @@ function createViewer(
       lastCanvas = props.screenCanvas;
       attachTexture(props.screenCanvas);
       paintDisplay();
-      lastFrameVersion = props.frameVersion;
-      invalidate();
-    } else if (props.frameVersion !== lastFrameVersion) {
-      lastFrameVersion = props.frameVersion;
-      if (texture) texture.needsUpdate = true;
       invalidate();
     }
     // Apple's Duo model is physical (its inner display is landscape), so the
@@ -875,6 +872,11 @@ function createViewer(
 
   return {
     sync,
+    noteFrame() {
+      if (disposed) return;
+      if (texture) texture.needsUpdate = true;
+      invalidate();
+    },
     renderShots(shots, options) {
       return withRenderSetup(options, () => shots.map((shot) => {
         renderOne(shot, options);
@@ -1257,11 +1259,12 @@ export function AppleDevice3DView(props: AppleDevice3DViewProps) {
     viewerRef.current?.resetView(performance.now());
   }, [props.resetNonce]);
 
+  useEffect(() => props.frames?.subscribe(() => viewerRef.current?.noteFrame()), [props.frames]);
+
   useEffect(() => {
     viewerRef.current?.sync(propsRef.current);
   }, [
     props.screenCanvas,
-    props.frameVersion,
     props.family,
     props.deviceTypeName,
     props.orientation,

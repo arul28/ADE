@@ -63,7 +63,7 @@ vi.mock("./useAppleDeviceStream", () => ({
     height: 2_556,
     error: null,
     chip: null,
-    frameVersion: 1,
+    hasFrame: true,
     streamStatus: null,
     handleReaderStatus: vi.fn(),
     handleDimensions: vi.fn(),

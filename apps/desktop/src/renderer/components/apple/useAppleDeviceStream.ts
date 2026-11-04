@@ -11,6 +11,9 @@ import {
   type AppleStreamLeaseKey,
 } from "./appleStreamLease";
 
+/** Each decoded frame, outside React. `subscribe` returns its unsubscribe. */
+export type AppleFrameFeed = { subscribe: (listener: () => void) => () => void };
+
 /**
  * The Apple column's live view, and the successor to `useIosSimLiveView`.
  *
@@ -125,8 +128,15 @@ export type AppleDeviceStream = {
   devicePointSize: { width: number; height: number } | null;
   error: string | null;
   chip: AppleStreamChip | null;
-  /** Increments once per decoded frame; the 3D presenter re-uploads on change. */
-  frameVersion: number;
+  /** True once any frame has been decoded. Set once, not per frame. */
+  hasFrame: boolean;
+  /**
+   * Tells listeners about each decoded frame without a React render. A state
+   * bumped per frame re-rendered the whole pane (rail, menus, toolbar) at the
+   * stream's frame rate; the 3D presenter is the only thing that needs every
+   * frame, and it only marks its texture dirty.
+   */
+  frames: AppleFrameFeed;
   streamStatus: IosSimulatorStreamStatus | null;
   /** Wire to `H264StreamView`'s `onStatus`. */
   handleReaderStatus: (status: H264StreamStatus, error: string | null) => void;
@@ -171,7 +181,14 @@ export function useAppleDeviceStream({
   const [pointSize, setPointSize] = useState<{ width: number; height: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [reconnectNonce, setReconnectNonce] = useState(0);
-  const [frameVersion, setFrameVersion] = useState(0);
+  const [hasFrame, setHasFrame] = useState(false);
+  const frameListenersRef = useRef(new Set<() => void>());
+  const frames = useMemo<AppleFrameFeed>(() => ({
+    subscribe(listener) {
+      frameListenersRef.current.add(listener);
+      return () => { frameListenersRef.current.delete(listener); };
+    },
+  }), []);
   const [streamStatus, setStreamStatus] = useState<IosSimulatorStreamStatus | null>(null);
   const [gaveUp, setGaveUp] = useState(false);
   /**
@@ -464,7 +481,8 @@ export function useAppleDeviceStream({
     sawFrameRef.current = true;
     recoverTriesRef.current = 0;
     setGaveUp(false);
-    setFrameVersion((version) => version + 1);
+    setHasFrame(true);
+    for (const listener of frameListenersRef.current) listener();
     setState((current) => (current === "live" ? current : "live"));
   }, []);
 
@@ -603,7 +621,8 @@ export function useAppleDeviceStream({
     devicePointSize: pointSize,
     error,
     chip,
-    frameVersion,
+    hasFrame,
+    frames,
     streamStatus,
     handleReaderStatus,
     handleDimensions,

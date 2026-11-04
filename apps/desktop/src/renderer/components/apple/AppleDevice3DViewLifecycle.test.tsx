@@ -58,7 +58,7 @@ function renderView() {
   return render(
     <AppleDevice3DView
       screenCanvas={null}
-      frameVersion={0}
+      frames={null}
       family="iphone"
       deviceTypeName="iPhone 17 Pro"
       orientation="portrait"
@@ -114,7 +114,7 @@ describe("AppleDevice3DView renderer lifecycle", () => {
     const view = render(
       <AppleDevice3DView
         screenCanvas={null}
-        frameVersion={0}
+        frames={null}
         family="iphone"
         deviceTypeName="iPhone 17 Pro"
         orientation="portrait"
@@ -145,7 +145,7 @@ describe("AppleDevice3DView renderer lifecycle", () => {
       view.rerender(
         <AppleDevice3DView
           screenCanvas={null}
-          frameVersion={0}
+          frames={null}
           family="iphone"
           deviceTypeName="iPhone 17 Pro"
           orientation="portrait"

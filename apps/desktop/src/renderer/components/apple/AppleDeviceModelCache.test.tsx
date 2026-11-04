@@ -66,7 +66,7 @@ function renderView(onReady: () => void) {
   return render(
     <AppleDevice3DView
       screenCanvas={null}
-      frameVersion={0}
+      frames={null}
       family="iphone"
       deviceTypeName="iPhone 17 Pro"
       orientation="portrait"
@@ -125,7 +125,7 @@ describe("Apple 3D model cache", () => {
     const one = render(
       <AppleDevice3DView
         screenCanvas={null}
-        frameVersion={0}
+        frames={null}
         family="iphone"
         deviceTypeName="iPhone 17 Pro"
         orientation="portrait"
@@ -146,7 +146,7 @@ describe("Apple 3D model cache", () => {
     const two = render(
       <AppleDevice3DView
         screenCanvas={null}
-        frameVersion={0}
+        frames={null}
         family="iphone"
         deviceTypeName="iPhone 17 Pro"
         orientation="portrait"

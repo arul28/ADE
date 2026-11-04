@@ -1117,7 +1117,7 @@ export function AppleDevicePane({
               onReaderStatus={stream.handleReaderStatus}
               onDimensions={stream.handleDimensions}
               onFrame={stream.noteFrame}
-              frameVersion={stream.frameVersion}
+              frames={stream.frames}
               onThreeUnavailable={handleThreeUnavailable}
               renderScreenOverlay={renderInspectOverlay}
               /* The rail floats over the stage's right edge. A screen that

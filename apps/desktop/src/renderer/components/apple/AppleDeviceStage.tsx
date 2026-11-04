@@ -2,6 +2,7 @@ import { useCallback, useMemo, useState, type ReactNode } from "react";
 import { H264StreamView } from "../device/H264StreamView";
 import { h264SourceForUrl, isWebCodecsAvailable } from "../device/h264StreamPlayer";
 import { cn } from "../ui/cn";
+import type { AppleFrameFeed } from "./useAppleDeviceStream";
 import type { AppleDeviceOrientation } from "../../../shared/types";
 import { APPLE_STREAM_NOT_RUNNING_CODE } from "../../../shared/types/iosSimulator";
 import {
@@ -69,8 +70,8 @@ export type AppleDeviceStageProps = {
   onReaderStatus: (status: "connecting" | "playing" | "error" | "stopped", error: string | null) => void;
   onDimensions: (size: { width: number; height: number }) => void;
   onFrame: () => void;
-  /** Increments per drawn frame; the 3D view re-uploads its texture on change. */
-  frameVersion: number;
+  /** Each drawn frame; the 3D view re-uploads its texture on each. */
+  frames: AppleFrameFeed | null;
   /**
    * The 3D presenter cannot show this device (no WebGL, or the bundled body
    * would not load). Round 4 §A1: there is no procedural slab to fall back
@@ -145,7 +146,7 @@ export function AppleDeviceStage({
   onReaderStatus,
   onDimensions,
   onFrame,
-  frameVersion,
+  frames,
   onThreeUnavailable,
   onThreeReady,
   renderScreenOverlay,
@@ -233,7 +234,7 @@ export function AppleDeviceStage({
         <AppleDevice3DView
           screenCanvas={canvas}
           resetNonce={viewNonce}
-          frameVersion={frameVersion}
+          frames={frames}
           family={family}
           deviceTypeName={deviceTypeName}
           deviceTypeIdentifier={deviceTypeIdentifier ?? null}

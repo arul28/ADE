@@ -116,7 +116,7 @@ export default function AppleRenderHostJob({
     runtimePinRef: pinRef,
     onError: onStreamError,
   });
-  const hasFrames = stream.frameVersion > 0;
+  const hasFrames = stream.hasFrame;
 
   // The pane's Duo wiring: the simulator's posture drives the drawn hinge, so
   // each pose the render folds to shows on the body too.
@@ -198,7 +198,7 @@ export default function AppleRenderHostJob({
       onReaderStatus={stream.handleReaderStatus}
       onDimensions={stream.handleDimensions}
       onFrame={stream.noteFrame}
-      frameVersion={stream.frameVersion}
+      frames={stream.frames}
       onThreeReady={() => setBodyReady(true)}
       onThreeUnavailable={fail}
     />

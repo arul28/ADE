@@ -185,8 +185,8 @@ function AppleMiniPlayerFrameView({
 
   // The poster is a stand-in for frames, so the first real frame retires it.
   useEffect(() => {
-    if (stream.frameVersion > 0) setPoster(null);
-  }, [stream.frameVersion]);
+    if (stream.hasFrame) setPoster(null);
+  }, [stream.hasFrame]);
 
   const source = appleMiniPlayerSourceSize(innerPanelLive && screen ? { width: screen.height, height: screen.width } : screen);
   const { hostRef, frame, startDrag, startResize } = useFloatingPlayerFrame({
@@ -303,11 +303,11 @@ function AppleMiniPlayerFrameView({
    * given, so entering early hands the user a small black landscape window for
    * a portrait phone and does not reshape itself when real frames arrive.
    *
-   * `frameVersion` counts decoded frames, so it is the same "has anything been
+   * `hasFrame` turns true on the first decoded frame, so it is the same "has anything been
    * drawn" question the handover poster asks, answered from the stream rather
    * than by measuring the canvas.
    */
-  const hasPicture = stream.frameVersion > 0;
+  const hasPicture = stream.hasFrame;
 
   return (
     <FloatingPlayerShell
@@ -392,7 +392,7 @@ function AppleMiniPlayerFrameView({
           onReaderStatus={stream.handleReaderStatus}
           onDimensions={handleDimensions}
           onFrame={stream.noteFrame}
-          frameVersion={stream.frameVersion}
+          frames={stream.frames}
         />
       </div>
 
