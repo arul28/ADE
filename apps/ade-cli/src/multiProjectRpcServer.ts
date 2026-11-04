@@ -2611,9 +2611,13 @@ export function createMultiProjectRpcRequestHandler(
       // sign-out still signs out, as it always did, and leaves the row (signing
       // in again re-pairs it).
       const signOutRemovesMachine = action === "signOut" && !callerIdentityIsAgent(callerIdentity());
-      // An `ADE_ACCOUNT_TOKEN` session survives sign-out (sign-out clears only
-      // the stored session), so this machine stays signed in and must keep its row.
-      const statusBeforeSignOut = signOutRemovesMachine ? accountAuthService.getStatus() : null;
+      // An `ADE_ACCOUNT_TOKEN` survives sign-out (sign-out clears only the
+      // stored session), whether it is the session in use or one a device
+      // sign-in was shadowing: either way the machine is still on the account
+      // afterwards and must keep its row. A token set but unusable errs on the
+      // side of keeping the row, as before this branch.
+      const accountTokenSet = Boolean(process.env.ADE_ACCOUNT_TOKEN?.trim());
+      const statusBeforeSignOut = signOutRemovesMachine && !accountTokenSet ? accountAuthService.getStatus() : null;
       if (statusBeforeSignOut?.signedIn && statusBeforeSignOut.source !== "env-token") {
         // Signing this computer out unlinks it from the account, so it leaves
         // the account's machine list too. Clearing the session alone left the
