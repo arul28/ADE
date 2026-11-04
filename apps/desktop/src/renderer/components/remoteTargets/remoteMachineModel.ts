@@ -970,6 +970,11 @@ export function accountMachineRouteIdentities(
 ): Set<string> {
   const identities = new Set<string>();
   for (const endpoint of machine.reachableEndpoints) {
+    // Every machine on the account advertises the same relay host, and a saved
+    // relay-only target stores that host as its hostname, so a relay endpoint
+    // names no machine. Matching on it hid every new relay-only machine (a
+    // cloud box) behind whichever relay target was saved first.
+    if (endpoint.kind === "relay") continue;
     const host = accountMachineEndpointHost(endpoint);
     const identity = routeIdentity(host, null);
     if (identity) identities.add(identity);

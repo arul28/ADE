@@ -197,12 +197,19 @@ does nothing, so a renamed laptop is never mistaken for a copy.
   changed from "could not verify the account" to "could not connect in
   time" (the Mac still runs the released build, without the 3 s LAN cap).
 - Box → VM copy of a 730 MB / 23,307-file lane: 33 s (25 s gzipped).
+- 2026-11-04, this branch's desktop (`npm run dev:desktop`, beside the
+  installed ADE): a fresh relay-only box appeared under Ready to connect only
+  after a fix (a saved relay target's hostname is the shared relay host, which
+  hid every relay-only account machine), then Connect reached it over the
+  relay in seconds (211 ms). The box's sign-in was approved from ADE's
+  browser, with no step for the owner.
 
 ## 9. Still to test
 
-1. With the Mac on this branch: it connects to a fresh box over the relay
-   without timing out; live simulator video from a cloud chat on the
-   MacBook.
+1. Live simulator video from a cloud chat. The desktop side runs from the
+   lane with `npm run dev:desktop`; the simulator's host must be a brain
+   running this branch that other machines can reach. A dev brain runs
+   `--no-sync`, so this needs a branch brain on another machine.
 2. Relay reconnect after a long sleep (minutes to hours).
 3. Wallet empty / suspended behaviour.
 4. EU and India regions over the relay.
