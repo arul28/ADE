@@ -187,22 +187,39 @@ export class Agent37DisconnectFailed extends Error {
 
 /**
  * Forgets the key everywhere this computer can reach. Boxes on Agent37 keep
- * running. When the account vault won't let go of it, nothing is removed
- * (this computer's copy included) and this throws, so a retry starts from
- * the same place.
+ * running.
+ *
+ * - The account holds the key and won't let go of it: nothing is removed
+ *   (this computer's copy included) and this throws, so the person still
+ *   sees it connected and a retry starts from the same place.
+ * - The account has no copy: only this computer's copy is removed.
+ * - The account can't be read at all: the key in use is this computer's
+ *   (that is what the status shows), so that copy is removed; a copy the
+ *   account may hold could not be checked, which is logged.
  */
-export async function removeAgent37Key(deps: Agent37CredentialDeps): Promise<Agent37Status> {
+export async function removeAgent37Key(
+  deps: Agent37CredentialDeps,
+  logger?: { warn(event: string, meta?: Record<string, unknown>): void },
+): Promise<Agent37Status> {
   const vault = resolveVault(deps);
   if (vault) {
-    let removed: boolean;
-    let detail: string | null = null;
-    try {
-      removed = await vault.remove();
-    } catch (error) {
-      removed = false;
-      detail = error instanceof Error ? error.message : String(error);
+    const got = await vault.get().catch((error: unknown) => {
+      logger?.warn("agent37.disconnect_vault_read_failed", { error: error instanceof Error ? error.message : String(error) });
+      return { ok: false as const };
+    });
+    const inAccount = got.ok ? decode(got.value) != null : null;
+    if (inAccount !== false) {
+      let removed: boolean;
+      let detail: string | null = null;
+      try {
+        removed = await vault.remove();
+      } catch (error) {
+        removed = false;
+        detail = error instanceof Error ? error.message : String(error);
+      }
+      if (!removed && inAccount === true) throw new Agent37DisconnectFailed(detail);
+      if (!removed) logger?.warn("agent37.disconnect_account_unverified", { error: detail ?? "the account vault is unreachable" });
     }
-    if (!removed) throw new Agent37DisconnectFailed(detail);
   }
   deps.machineStore()?.deleteSync(AGENT37_MACHINE_CREDENTIAL_KEY);
   return await readAgent37Status(deps);

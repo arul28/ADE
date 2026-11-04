@@ -181,6 +181,8 @@ export type Agent37ReconcileResult = {
   resolved: boolean;
   deleted: string[];
   kept: string[];
+  /** Boxes Agent37 already had no record of (or had marked deleted). */
+  gone: string[];
   /** Boxes ADE could not delete or confirm; the record stays for the next start. */
   unresolved: string[];
 };
@@ -201,7 +203,7 @@ export async function reconcileAgent37PendingCreate(
   },
 ): Promise<Agent37ReconcileResult> {
   const now = deps.now ?? (() => Date.now());
-  const result: Agent37ReconcileResult = { resolved: false, deleted: [], kept: [], unresolved: [] };
+  const result: Agent37ReconcileResult = { resolved: false, deleted: [], kept: [], gone: [], unresolved: [] };
   const legacy = record.requestId.startsWith("legacy:");
   let listed: Agent37Instance[] | null = null;
   if (!legacy) {
@@ -226,7 +228,10 @@ export async function reconcileAgent37PendingCreate(
       result.unresolved.push(id);
       continue;
     }
-    if (known === null || known.status === "deleted") continue;
+    if (known === null || known.status === "deleted") {
+      result.gone.push(id);
+      continue;
+    }
     if (deps.isSignedIn && await deps.isSignedIn(id)) {
       result.kept.push(id);
       continue;

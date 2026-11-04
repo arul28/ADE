@@ -267,7 +267,7 @@ export function registerAgent37Ipc(args: {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.agent37RemoveKey)) return null;
     let status: Agent37Status;
     try {
-      status = await removeAgent37Key(credentials);
+      status = await removeAgent37Key(credentials, logger);
     } catch (error) {
       // Still connected; the renderer shows why and offers to try again.
       logger.warn("agent37.disconnect_failed", { error: error instanceof Error ? error.message : String(error) });
@@ -509,6 +509,7 @@ async function sweepPendingCreates(
       resolved: result.resolved,
       deleted: result.deleted,
       kept: result.kept,
+      gone: result.gone,
       unresolved: result.unresolved,
     });
   }
