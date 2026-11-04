@@ -139,7 +139,7 @@ describe("macDesktopNextStep reads the element's state", () => {
   it("escalates a button with no AXPress action to real input at its centre", () => {
     const next = nextFor({ resolved: element({ actions: ["AXShowMenu"] }) });
     expect(next?.method).toBe("real_input");
-    expect(next?.command).toBe("ade mac-desktop click --x 30 --y 40 --real --text");
+    expect(next?.command).toBe("ade screen click --x 30 --y 40 --real --text");
     expect(next?.reason).toContain("no AXPress action");
   });
 
@@ -190,7 +190,7 @@ describe("macDesktopNextStep follows the caller's lease", () => {
   it("asks for the lease, with the lease command, when nobody holds it", () => {
     const next = nextFor({ resolved: element({ actions: [] }), lease: noLease });
     expect(next?.method).toBe("lease");
-    expect(next?.command).toContain("mac-desktop lease");
+    expect(next?.command).toContain("screen lease");
     expect(next?.command).not.toContain("--real");
   });
 
@@ -208,10 +208,10 @@ describe("macDesktopNextStep follows the caller's lease", () => {
 
 describe("macDesktopNextStep on a seat that delivers background input", () => {
   it.each([
-    ["a left click", { action: "click" }, "ade mac-desktop click --x 30 --y 40 --text"],
-    ["a right click", { action: "click", button: "right" }, "ade mac-desktop click --x 30 --y 40 --right --text"],
-    ["a double click", { action: "click", count: 2 }, "ade mac-desktop click --x 30 --y 40 --double --text"],
-    ["a scroll, with its amount", { action: "scroll", direction: "down", amount: 15 }, "ade mac-desktop scroll down --x 30 --y 40 --amount 15 --text"],
+    ["a left click", { action: "click" }, "ade screen click --x 30 --y 40 --text"],
+    ["a right click", { action: "click", button: "right" }, "ade screen click --x 30 --y 40 --right --text"],
+    ["a double click", { action: "click", count: 2 }, "ade screen click --x 30 --y 40 --double --text"],
+    ["a scroll, with its amount", { action: "scroll", direction: "down", amount: 15 }, "ade screen scroll down --x 30 --y 40 --amount 15 --text"],
   ])("repeats %s at the element's centre before any lease, with no --real", (_label, shape, command) => {
     const next = nextFor({ ...shape, resolved: element({ actions: [] }), lease: noLease, backgroundAvailable: true });
     expect(next?.method).toBe("background_input");
@@ -272,7 +272,7 @@ describe("macDesktopRefusedNextStep", () => {
   it("carries the same lease advice a refused accessibility click would", () => {
     const next = refused();
     expect(next?.method).toBe("lease");
-    expect(next?.command).toContain("mac-desktop lease");
+    expect(next?.command).toContain("screen lease");
   });
 
   it("only fires for an accessibility click whose refusal says no press action", () => {
@@ -336,7 +336,7 @@ describe("macDesktopWindowDragNextStep", () => {
 
   it("tells a background drag on a window's title area that left it in place to claim it", () => {
     const step = macDesktopWindowDragNextStep({ mode: "background", from: { x: 100, y: 10 }, before: at(borrowed, frame), after: at(borrowed, frame) });
-    expect(step?.command).toBe("ade mac-desktop claim --window 5 --text");
+    expect(step?.command).toBe("ade screen claim --window 5 --text");
   });
 
   it("gives no claim command for a window the lane already holds", () => {

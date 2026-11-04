@@ -175,7 +175,13 @@ Each ADE-launched session receives the canonical root through
   That path lists the project's skills (`.agents`, `.claude`, `.ade`,
   `.cursor`, `.codex` from the working folder up), the person's own, and
   ADE's, each labelled `[project]`, `[user]` or `[bundled]`
-  (`agentSkillCatalogService.ts`).
+  (`agentSkillCatalogService.ts`). A large skill keeps its common path in
+  `SKILL.md` and rarely needed detail in `references/<topic>.md` next to it,
+  listed in a "Detail files" table; `ade skill show <name> references/<file>`
+  reads one (`readAgentSkillFile`: Markdown inside the skill's own folder only,
+  after symlinks resolve, and a `..` path is refused before the disk is read).
+  Every delivery path copies or points at the whole skill folder, so native
+  skill readers reach the same files.
 
 Every root ADE advertises is checked against the disk first
 (`adePromptAgentSkillRoots`). The prompt-facing list is capped, so an

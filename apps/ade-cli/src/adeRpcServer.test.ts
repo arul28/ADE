@@ -2050,7 +2050,7 @@ describe("adeRpcServer", () => {
     });
   });
 
-  it("scopes queue-aware chat stop and recovery actions to the caller session", async () => {
+  it("lets a bound agent stop or restart any chat but keeps self-reporting and billing on its own", async () => {
     await withEnv({ ADE_DEFAULT_ROLE: "agent", ADE_CHAT_SESSION_ID: "chat-1" }, async () => {
       const { runtime } = createRuntime();
       const handler = createAdeRpcRequestHandler({ runtime, serverVersion: "test" });
@@ -2060,6 +2060,7 @@ describe("adeRpcServer", () => {
         role: "agent",
         chatSessionId: "chat-1",
       });
+      // An omitted target is still the caller's own chat.
       const interrupted = await callTool(handler, "run_ade_action", {
         domain: "chat",
         action: "interrupt",
@@ -2071,21 +2072,10 @@ describe("adeRpcServer", () => {
         mode: "stop_only",
       });
 
-      const restored = await callTool(handler, "run_ade_action", {
-        domain: "chat",
-        action: "restoreCancelledQueue",
-        args: { recoveryId: "recovery-1" },
-      });
-      expect(restored?.isError).toBeUndefined();
-      expect(runtime.agentChatService.restoreCancelledQueue).toHaveBeenCalledWith({
-        sessionId: "chat-1",
-        recoveryId: "recovery-1",
-      });
-
-      // Restarting tears the target's runtime down, and holding background
-      // work arms wakes on it: both are aimed at the caller's own chat only.
-      for (const action of ["interrupt", "restoreCancelledQueue", "restartSession", "holdBackgroundWork"]) {
-        const denied = await callTool(handler, "run_ade_action", {
+      // ADE is a mesh: stopping, recovering or restarting another chat reaches
+      // that chat, whoever started it.
+      for (const action of ["interrupt", "restoreCancelledQueue", "restartSession", "holdBackgroundWork"] as const) {
+        const result = await callTool(handler, "run_ade_action", {
           domain: "chat",
           action,
           args: {
@@ -2093,16 +2083,30 @@ describe("adeRpcServer", () => {
             ...(action === "restoreCancelledQueue" ? { recoveryId: "recovery-1" } : {}),
           },
         });
-        expect(denied.isError).toBe(true);
+        expect(result?.isError, action).toBeUndefined();
+        expect(runtime.agentChatService[action], action).toHaveBeenCalledWith(
+          expect.objectContaining({ sessionId: "chat-2" }),
+        );
       }
-      expect(runtime.agentChatService.interrupt).not.toHaveBeenCalledWith(
-        expect.objectContaining({ sessionId: "chat-2" }),
-      );
-      expect(runtime.agentChatService.restoreCancelledQueue).not.toHaveBeenCalledWith(
-        expect.objectContaining({ sessionId: "chat-2" }),
-      );
-      expect(runtime.agentChatService.restartSession).not.toHaveBeenCalled();
-      expect(runtime.agentChatService.holdBackgroundWork).not.toHaveBeenCalled();
+
+      // Self-reporting, billing, and prompts or schedules that arrive as the
+      // user's stay on the caller's own chat.
+      for (const [domain, action] of [
+        ["chat", "sendMessage"],
+        ["chat", "createScheduledWork"],
+        ["chat", "cancelScheduledWork"],
+        ["chat", "setScheduledWorkPaused"],
+        ["chat", "resumeUsageLimitNow"],
+        ["session", "setSessionStatusNote"],
+      ] as const) {
+        const denied = await callTool(handler, "run_ade_action", {
+          domain,
+          action,
+          args: { sessionId: "chat-2", text: "x", prompt: "x", scheduleId: "job-1", paused: true, note: "x" },
+        });
+        expect(denied.isError, action).toBe(true);
+        expect(JSON.stringify(denied), action).toContain("chat access is limited to the caller's own chat session");
+      }
 
       // A wake wait wakes its caller: a bound agent may only ask for itself.
       const otherWake = await callTool(handler, "run_ade_action", {
@@ -3485,19 +3489,10 @@ describe("adeRpcServer", () => {
     expect(notifyParentOfCliChildSpawn).not.toHaveBeenCalled();
   });
 
-  it("requires subagent or peer for every parented agent CLI session", async () => {
+  it("starts a parented agent CLI session as a subagent told to report back, and refuses an unknown kind", async () => {
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
     await initialize(handler, { role: "cto" });
-
-    const missingType = await callTool(handler, "start_cli_session", {
-      laneId: "lane-1",
-      provider: "codex",
-      orchestrationParentSessionId: "parent-session-1",
-    });
-    expect(missingType.isError).toBe(true);
-    expect(JSON.stringify(missingType.error ?? missingType.structuredContent ?? {}))
-      .toContain("spawnKind is required for a parented agent session");
 
     const legacyNone = await callTool(handler, "start_cli_session", {
       laneId: "lane-1",
@@ -3506,9 +3501,21 @@ describe("adeRpcServer", () => {
       spawnKind: "none",
     });
     expect(legacyNone.isError).toBe(true);
-    expect(JSON.stringify(legacyNone.error ?? legacyNone.structuredContent ?? {}))
-      .toContain("spawnKind");
+    expect(JSON.stringify(legacyNone.error ?? legacyNone.structuredContent ?? {})).toContain("spawnKind");
     expect(fixture.runtime.ptyService.create).not.toHaveBeenCalled();
+
+    const missingType = await callTool(handler, "start_cli_session", {
+      laneId: "lane-1",
+      provider: "codex",
+      orchestrationParentSessionId: "parent-session-1",
+    });
+    expect(missingType?.isError).toBeUndefined();
+    const created = vi.mocked(fixture.runtime.ptyService.create).mock.calls.at(-1)?.[0] as Record<string, any>;
+    expect(created.spawnLineage).toEqual({ parentChatSessionId: "parent-session-1", spawnKind: "subagent" });
+    expect(created.resumeMetadata).toMatchObject({ orchestrationParentSessionId: "parent-session-1", spawnKind: "subagent" });
+    // A terminal has no turn end ADE can read, so the CLI itself is told to report.
+    expect(JSON.stringify([created.args, created.startupCommand, created.initialInput]))
+      .toContain("You are a subagent of ADE chat parent-session-1");
   });
 
   it("preserves wide start_cli_session terminal dimensions", async () => {
@@ -5519,21 +5526,22 @@ describe("adeRpcServer", () => {
       maxChars: 8_000,
     });
 
-    const deniedChatHistory = await callTool(handler, "run_ade_action", {
+    // Event history is a mesh read, like the transcript above.
+    const crossChatHistory = await callTool(handler, "run_ade_action", {
       domain: "chat",
       action: "getChatEventHistory",
       args: { sessionId: "chat-2", maxBytes: 65_536 },
     });
-    expect(deniedChatHistory.isError).toBe(true);
-    expect(getChatEventHistory).not.toHaveBeenCalled();
+    expect(crossChatHistory?.isError).toBeUndefined();
+    expect(getChatEventHistory).toHaveBeenCalledWith("chat-2", expect.objectContaining({ maxBytes: 65_536 }));
 
-    const deniedChatHistoryPage = await callTool(handler, "run_ade_action", {
+    const crossChatHistoryPage = await callTool(handler, "run_ade_action", {
       domain: "chat",
       action: "getChatEventHistoryPage",
       args: { sessionId: "chat-2", beforeOffset: 4_096, maxBytes: 65_536 },
     });
-    expect(deniedChatHistoryPage.isError).toBe(true);
-    expect(getChatEventHistoryPage).not.toHaveBeenCalled();
+    expect(crossChatHistoryPage?.isError).toBeUndefined();
+    expect(getChatEventHistoryPage).toHaveBeenCalledTimes(1);
 
     const legacyChildKickoff = await callTool(handler, "run_ade_action", {
       domain: "chat",
@@ -5696,13 +5704,14 @@ describe("adeRpcServer", () => {
       sessionId: "chat-1",
     });
 
-    const deniedScheduledWorkState = await callTool(handler, "run_ade_action", {
+    // Reading another chat's schedule is a mesh read; changing it is not.
+    const crossScheduledWorkState = await callTool(handler, "run_ade_action", {
       domain: "chat",
       action: "getScheduledWorkState",
       args: { sessionId: "chat-2" },
     });
-    expect(deniedScheduledWorkState.isError).toBe(true);
-    expect(fixture.runtime.agentChatService.getScheduledWorkState).toHaveBeenCalledTimes(1);
+    expect(crossScheduledWorkState?.isError).toBeUndefined();
+    expect(fixture.runtime.agentChatService.getScheduledWorkState).toHaveBeenLastCalledWith({ sessionId: "chat-2" });
 
     const ownScheduledWorkPause = await callTool(handler, "run_ade_action", {
       domain: "chat",
@@ -5723,13 +5732,15 @@ describe("adeRpcServer", () => {
     expect(deniedScheduledWorkPause.isError).toBe(true);
     expect(fixture.runtime.agentChatService.setScheduledWorkPaused).toHaveBeenCalledTimes(1);
 
-    const deniedScheduledWorkList = await callTool(handler, "run_ade_action", {
+    const crossScheduledWorkList = await callTool(handler, "run_ade_action", {
       domain: "chat",
       action: "listScheduledWork",
       args: { sessionId: "chat-2", includeTerminal: true },
     });
-    expect(deniedScheduledWorkList.isError).toBe(true);
-    expect(fixture.runtime.agentChatService.listScheduledWork).not.toHaveBeenCalled();
+    expect(crossScheduledWorkList?.isError).toBeUndefined();
+    expect(fixture.runtime.agentChatService.listScheduledWork).toHaveBeenLastCalledWith(
+      expect.objectContaining({ sessionId: "chat-2" }),
+    );
 
     const ownScheduledWorkList = await callTool(handler, "run_ade_action", {
       domain: "chat",

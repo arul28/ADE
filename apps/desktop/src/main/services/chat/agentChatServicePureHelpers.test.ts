@@ -90,7 +90,7 @@ describe("buildComputerUseDirective", () => {
   // Screen guidance has a separate epoch-scoped directive. This block keeps
   // proof capture host-specific without repeating the lane-screen announcement.
   it.each([
-    { host: "Mac", options: { macDesktopAvailable: true }, proof: "`ade mac-desktop proof`", wrongHost: /macOS[^\n]*ade screen|Windows/ },
+    { host: "Mac", options: { macDesktopAvailable: true }, proof: "`ade screen proof`", wrongHost: /Windows/ },
     { host: "Windows", options: { windowsDesktopAvailable: true }, proof: "`ade screen proof`", wrongHost: /macOS|mac-desktop|Mac Desktop/ },
   ])("keeps $host proof capture host-specific and fences the real-screen tools", ({ options, proof, wrongHost }) => {
     const result = buildComputerUseDirective(makeBackendStatus({ localFallback: true }), options)!;
