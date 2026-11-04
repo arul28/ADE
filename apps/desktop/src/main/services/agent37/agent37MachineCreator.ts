@@ -108,6 +108,12 @@ const POLL_MS = 2_000;
 const APPROVE_TIMEOUT_MS = 20_000;
 /** How long a cancelled create keeps looking for a box Agent 37 still made. */
 const CANCELLED_CREATE_LOOK_MS = 90_000;
+/**
+ * After that, in the background: longer than Agent 37 holds a create request
+ * (CREATE_TIMEOUT_MS in the client, five minutes), with room for its answer.
+ */
+const CANCELLED_CREATE_FOLLOW_MS = 10 * 60_000;
+const CANCELLED_CREATE_FOLLOW_POLL_MS = 15_000;
 /** Rename tries once the row is ready to connect, before ADE stops waiting on it. */
 const RENAME_ATTEMPTS_AFTER_JOIN = 3;
 
@@ -254,9 +260,25 @@ export async function createAgent37Machine(
       }
     }
     if (signal?.aborted) {
+      if (cleanup && !cleanup.resolved) {
+        // Agent 37 can still be making the box for as long as its create
+        // request runs. Keep looking in the background, past this answer,
+        // until the request resolves; the next app start covers a quit.
+        void (async () => {
+          const followUntil = Date.now() + CANCELLED_CREATE_FOLLOW_MS;
+          let followed = cleanup;
+          while (followed && !followed.resolved && Date.now() < followUntil) {
+            await sleep(CANCELLED_CREATE_FOLLOW_POLL_MS);
+            followed = await reconcileOnce();
+          }
+          logger.info?.("agent37.cancelled_create_followed", { requestId, resolved: followed?.resolved ?? false });
+        })().catch((followError: unknown) => {
+          logger.warn?.("agent37.cancelled_create_follow_failed", { requestId, error: errorText(followError) });
+        });
+      }
       throw new Agent37CreateCancelled(cleanup?.resolved
         ? undefined
-        : "ADE stopped making the machine. If Agent 37 still makes it, ADE deletes it when it next starts.");
+        : "ADE stopped making the machine. If Agent 37 still makes it, ADE deletes it as soon as it appears.");
     }
     if (cleanup && cleanup.unresolved.length) {
       throw new Error(`${errorText(error).replace(/\.$/, "")}. Agent 37 may have made the box anyway and ADE couldn't delete it yet; it tries again when ADE next starts.`);
