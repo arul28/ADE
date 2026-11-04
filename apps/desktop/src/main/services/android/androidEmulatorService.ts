@@ -76,6 +76,10 @@ export const ANDROID_BOOT_TIMEOUT_MS = 180_000;
 const SWIPE_DEFAULT_MS = 300;
 const SWIPE_STEP_MS = 16;
 const SCREENSHOT_TIMEOUT_MS = 20_000;
+/** How long `rotate` waits for the display to turn before it returns anyway. */
+const ROTATE_SETTLE_MS = 2_000;
+/** A window manager still at the old rotation this long after the lock means the app keeps its orientation. */
+const ROTATE_REFUSED_AFTER_MS = 400;
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 /** The profile a chat's work copy gets when no AVD here is free. */
 const WORK_COPY_PROFILE_ID = "medium_phone";
@@ -1233,6 +1237,21 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
         await shell(["settings", "put", "system", "accelerometer_rotation", "0"]);
         const set = await shell(["settings", "put", "system", "user_rotation", rotation]);
         if (set.exitCode !== 0) throw new Error(`The emulator ${serial} did not rotate: ${set.text || locked.text}`);
+      }
+      // The display turns after the lock returns (measured on Windows: the
+      // first screenshot after it still had the old size). Wait until a
+      // capture has the new shape, so a screenshot or tap that follows sees
+      // it. An app that fixes its own orientation never turns: stop once the
+      // window manager has kept the old rotation for a moment.
+      const lockedAt = Date.now();
+      while (Date.now() - lockedAt < ROTATE_SETTLE_MS && !lifetime.signal.aborted) {
+        const header = /(\d+)\s+(\d+)/u.exec((await shell(["screencap | head -c 8 | od -An -tu4"])).text);
+        if (header && (Number(header[1]) > Number(header[2])) === (orientation === "landscape")) return;
+        if (Date.now() - lockedAt >= ROTATE_REFUSED_AFTER_MS) {
+          const current = /mRotation=(\d)/u.exec((await shell(["dumpsys window | grep -m1 -oE 'mRotation=[0-9]'"])).text);
+          if (current && current[1] !== rotation) return;
+        }
+        await sleep(50);
       }
     },
 
