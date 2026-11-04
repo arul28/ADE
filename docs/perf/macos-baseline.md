@@ -2372,10 +2372,27 @@ first frame 7–10 ms, the first decoded video frame 251–259 ms, and no long
 task in the 4 s after the click. The 250 ms is mostly the mock stream's
 start; the real stream start is in the Android Development feature doc.
 
-Android live costs about a third of Apple's flat view and a quarter of its
-3D view. In a 10 s CPU profile, the Android pane's own time is the mock
-encoder (`drawImage`, `drawScreen`, `encode`). The Apple pane's top entries
-are React render work (`jsxDEV`, `diffProperties`, `AppleDeviceRail`) that
-repeats while the picture plays. It is an Apple pane cost, not an Android
-cost. It was not measured on `main`, so this table does not say when it
-started; it is an open item for the Apple pane.
+The Apple columns above are from before `734bf16ba`. In a 10 s CPU profile,
+the Android pane's own time is the mock encoder (`drawImage`, `drawScreen`,
+`encode`). The Apple pane's top entries were React render work (`jsxDEV`,
+`diffProperties`, `AppleDeviceRail`) that repeated while the picture played.
+
+**Fixed in `734bf16ba`.** `useAppleDeviceStream` bumped a `frameVersion`
+state on every decoded frame, so the whole Apple pane (rail, tooltips,
+menus) re-rendered at the stream's frame rate: about 3,900 component renders
+and 32 React commits a second. `main` has the same loop. The stream now
+sets `hasFrame` once and tells the 3D view about each frame outside React.
+Measured on this tree at `734bf16ba`, the same setup, 3 runs (load average
+4–5):
+
+| Metric | Apple live, 3D (default) | Apple live, flat | Ceiling |
+|---|---:|---:|---:|
+| Main-thread work | 79.7–85.1 ms/s | 22.6–31.3 ms/s | none set for a live device |
+| Frames drawn | 31.9–32.1/s (one draw per video frame) | 31.2–31.6/s | not set |
+| Renderer JS heap | 106–107 MB | 102–103 MB | 220 MB |
+| React (`render-hook.js`, 5 s) | 1.4 commits/s, 24 component renders/s | 1.6 commits/s, 23 component renders/s | no pane re-render per frame |
+
+Android live now costs about the same as Apple's flat view, and about a
+third of its 3D view. What the 3D view still costs is three.js drawing the
+body each frame (`getParameters`, `getProgram`, the texture upload) and the
+mock encoder.
