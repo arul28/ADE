@@ -26,7 +26,9 @@ needs:
   an SDK installed while ADE runs is seen on the next call. The order is
   `ANDROID_HOME`, then `ANDROID_SDK_ROOT`, then the platform default:
   `~/Library/Android/sdk` (macOS), `%LOCALAPPDATA%\Android\Sdk` (Windows),
-  `~/Android/Sdk` (Linux).
+  `~/Android/Sdk` (Linux). On Linux it then tries `/opt/android-sdk` and
+  `/usr/lib/android-sdk`, so a system-wide install is found even when the
+  brain's service has no `ANDROID_HOME`.
 - **`platform-tools`** (`adb`) and **`emulator`**. `cmdline-tools` is
   optional, because ADE writes the AVD files itself.
 - **One system image for the host ABI.** Apple Silicon runs only `arm64-v8a`

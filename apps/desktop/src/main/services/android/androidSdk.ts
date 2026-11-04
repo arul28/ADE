@@ -87,6 +87,13 @@ function androidDefaultSdkRoot(
  * A folder that holds at least one SDK part. An env var left pointing at a
  * deleted SDK is not an answer; the next candidate is tried instead.
  */
+/**
+ * Linux's system-wide SDK folders, tried after `~/Android/Sdk`: the usual
+ * place for a shared or VM-template install, and the Debian/Ubuntu
+ * `android-sdk` package.
+ */
+const LINUX_SYSTEM_SDK_ROOTS = ["/opt/android-sdk", "/usr/lib/android-sdk"] as const;
+
 function looksLikeSdkRoot(dir: string): boolean {
   return ["platform-tools", "emulator", "system-images", "cmdline-tools"].some((part) => isDirectory(path.join(dir, part)));
 }
@@ -96,7 +103,9 @@ function looksLikeSdkRoot(dir: string): boolean {
  *
  * The Settings path wins: it is the user's explicit choice in ADE, and a Dock
  * launch on macOS has no shell env at all. Then `ANDROID_HOME`, the deprecated
- * `ANDROID_SDK_ROOT`, then the platform default.
+ * `ANDROID_SDK_ROOT`, then the platform default. On Linux the system-wide
+ * folders come last (`LINUX_SYSTEM_SDK_ROOTS`): a brain that systemd starts
+ * may not get the env vars a shell profile sets.
  */
 export function locateAndroidSdk(options: AndroidSdkLocateOptions = {}): { root: string; source: AndroidSdkSource } | null {
   const env = options.env ?? process.env;
@@ -106,6 +115,7 @@ export function locateAndroidSdk(options: AndroidSdkLocateOptions = {}): { root:
     { dir: env.ANDROID_HOME, source: "ANDROID_HOME" },
     { dir: env.ANDROID_SDK_ROOT, source: "ANDROID_SDK_ROOT" },
     { dir: androidDefaultSdkRoot(platform, env, options.home ?? os.homedir()), source: "default" },
+    ...(platform === "linux" ? LINUX_SYSTEM_SDK_ROOTS.map((dir) => ({ dir, source: "default" as const })) : []),
   ];
   for (const candidate of candidates) {
     const dir = candidate.dir?.trim();
