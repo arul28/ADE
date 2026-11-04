@@ -926,6 +926,7 @@ import {
   createBrainRefreshBroker,
 } from "../account/accountBridge";
 import { createAccountVaultBridge } from "../account/accountVaultBridge";
+import { registerAgent37Ipc } from "../agent37/registerAgent37Ipc";
 import { createMcpRegistryService } from "../mcp/mcpRegistryService";
 import type { McpRegistryServer } from "../../../shared/mcpRegistry";
 import type {
@@ -12324,6 +12325,26 @@ export function registerIpc({
     getPool: () => localRuntimeConnectionPool,
     getRootPath: () => bootedUsageScopeRoot(getResourceUsageContexts?.() ?? []) ?? getCtx().project?.rootPath ?? null,
     logger: { debug: (message, meta) => getCtx().logger.debug(message, meta) },
+  });
+
+  // Agent37: the account-wide key and new machines made on it (no pin; see the module).
+  registerAgent37Ipc({
+    vaultBridge: accountVaultBridge,
+    listAccountMachines: () => accountBridge.listMachines(),
+    renameMachine: (machineKey, name) => accountBridge.renameMachine(machineKey, name),
+    // Where the create's outcome is known. Coarse outcome only; a six-hour
+    // dedupe per outcome bounds it to 16 accepted events a day.
+    recordMachineCreate: (outcome) => {
+      productAnalyticsService?.capture({
+        event: "ade_feature_used",
+        surface: "desktop",
+        properties: { feature: "connections", action: "agent37_machine_create", outcome },
+        projectId: null,
+        dedupeKey: `agent37_machine_create:${outcome}`,
+        minimumIntervalMs: 6 * 60 * 60 * 1_000,
+      });
+    },
+    logger: { info: (event, meta) => getCtx().logger.info(event, meta), warn: (event, meta) => getCtx().logger.warn(event, meta) },
   });
 
   const mcpRegistryService = createMcpRegistryService({

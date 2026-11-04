@@ -298,6 +298,8 @@ import { createSessionBoardMoveActions } from "./sessionBoardMove";
 import { noteSessionInputOrigin } from "../chat/sessionInputOrigins";
 import { requestProjectSecretFromUser } from "../secrets/projectSecretRequest";
 import { buildIntegrationConnectAdapters } from "../integrations/integrationConnectAdapters";
+import { agent37VaultFromStore, buildAgent37ConnectAdapter } from "../agent37/agent37Credential";
+import { EncryptedFileCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
 import { listIntegrationConnections, requestIntegrationConnect } from "../integrations/integrationConnectRequest";
 import { createMcpRegistryService } from "../mcp/mcpRegistryService";
 import { scanProviderMcpConfigs } from "../mcp/mcpProviderConfigScan";
@@ -984,14 +986,22 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
         if (!since) return transcript;
         const sinceMs = Date.parse(since);
         if (!Number.isFinite(sinceMs)) return transcript;
-        const filteredEntries = entries.filter((entry) => {
+        const atOrAfterSince = (entry: unknown): boolean => {
           if (!isRecord(entry) || typeof entry.timestamp !== "string") return true;
           const timestampMs = Date.parse(entry.timestamp);
           return !Number.isFinite(timestampMs) || timestampMs >= sinceMs;
-        });
-        return isRecord(transcript)
-          ? { ...transcript, entries: filteredEntries }
-          : filteredEntries;
+        };
+        const filteredEntries = entries.filter(atOrAfterSince);
+        if (!isRecord(transcript)) return filteredEntries;
+        const turnFailures = Array.isArray(transcript.turnFailures)
+          ? transcript.turnFailures.filter(atOrAfterSince)
+          : [];
+        const { turnFailures: _allTurnFailures, ...rest } = transcript;
+        return {
+          ...rest,
+          entries: filteredEntries,
+          ...(turnFailures.length ? { turnFailures } : {}),
+        };
       }
       if (typeof chatService.readTranscript === "function") {
         const entries = await chatService.readTranscript(sessionId, limit, since);
@@ -3986,6 +3996,13 @@ function buildProjectSecretDomainService(runtime: AdeRuntime): OpaqueService | n
   };
 }
 
+/** The machine's shared credential file, for an Agent37 key saved while signed out. One per process. */
+let agent37MachineCredentialStore: EncryptedFileCredentialStore | null = null;
+function agent37MachineStore(): EncryptedFileCredentialStore {
+  agent37MachineCredentialStore ??= new EncryptedFileCredentialStore({ secretsDir: resolveMachineAdeLayout().secretsDir });
+  return agent37MachineCredentialStore;
+}
+
 /**
  * The connect card. `status` lists every integration this runtime knows and
  * whether it is connected, never a credential. `request` asks the person in a
@@ -3998,6 +4015,12 @@ function integrationConnectAdapters(runtime: AdeRuntime) {
     linearCredentialService: runtime.linearCredentialService ?? null,
     linearStatus: runtime.linearCredentialService ? () => buildRuntimeLinearConnectionStatus(runtime) : null,
     jiraService: runtime.jiraService ?? null,
+    agent37: buildAgent37ConnectAdapter({
+      vault: () => (runtime.accountVaultStore ? agent37VaultFromStore(runtime.accountVaultStore) : null),
+      machineStore: () => agent37MachineStore(),
+      signedIn: () => runtime.accountAuthService?.getStatus().signedIn === true,
+      logger: runtime.logger,
+    }),
   });
 }
 

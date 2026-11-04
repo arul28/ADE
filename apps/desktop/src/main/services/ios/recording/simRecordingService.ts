@@ -178,6 +178,12 @@ export interface SimRecordingService {
     laneId: string;
     keep?: boolean;
     discard?: boolean;
+    /**
+     * `false`: finish the file but do not file it in this machine's proof
+     * drawer. A stop sent from another machine (`--machine`) files the bytes
+     * in the calling chat's drawer instead, on the caller's machine.
+     */
+    proof?: boolean;
     chatSessionId: string | null;
     /**
      * The lane's device. When this service has no recording for the lane but
@@ -763,7 +769,7 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
    */
   const stopActive = async (
     laneId: string,
-    options: { reason: SimRecordingStopReason; discard?: boolean },
+    options: { reason: SimRecordingStopReason; discard?: boolean; fileProof?: boolean },
   ): Promise<SimRecording | null> => {
     const entry = active.get(laneId);
     if (!entry) return stoppingLanes.get(laneId) ?? null;
@@ -854,7 +860,7 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
       // because nothing on screen said the file existed. Filing it here means
       // the drawer is the one place recordings live, and the row below the
       // viewport is a receipt rather than a call to action.
-      const filed = fileAsProof(finished);
+      const filed = options.fileProof === false ? finished : fileAsProof(finished);
       writeSidecar(filed);
       return filed;
     })();
@@ -1249,7 +1255,11 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
         return reclaimed;
       }
       assertOwner(entry, args.chatSessionId);
-      return stopActive(args.laneId, { reason: "requested", discard });
+      return stopActive(args.laneId, {
+        reason: "requested",
+        discard,
+        ...(args.proof === false ? { fileProof: false } : {}),
+      });
     },
 
     async stopDevice(args) {

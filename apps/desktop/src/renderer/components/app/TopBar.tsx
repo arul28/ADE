@@ -1624,7 +1624,9 @@ export function TopBar({
       const message = (() => {
         if (affectedCount === 0) {
           return action === "remove"
-            ? "Removing this machine will delete its saved SSH details."
+            ? target.transport === "paired"
+              ? "This computer will forget the machine and stop connecting to it."
+              : "Removing this machine will delete its saved SSH details."
             : "Disconnecting will stop this remote connection. ADE will not reconnect to this machine until you connect again.";
         }
         const lines: string[] = [];

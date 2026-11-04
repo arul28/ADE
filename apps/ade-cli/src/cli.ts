@@ -1442,7 +1442,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade proxy status | start | stop | login | logout
                                                     Manage local subscription sign-ins
     $ ade secrets list | get | set | request | delete  Manage encrypted ADE project secrets (account or device)
-    $ ade integrations status | connect <provider>    See and connect GitHub, Linear, and Jira
+    $ ade integrations status | connect <provider>    See and connect GitHub, Linear, Jira and Agent 37
     $ ade mcp servers | servers add <name>          Read the MCP servers your agents get; ask to add one
     $ ade settings find <words>                     Where an ADE setting or page is, as a link the chat shows as a chip
     $ ade update status | check | install | dismiss Read auto-update state and drive install
@@ -2159,6 +2159,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     --socket <path>         Local RPC endpoint to listen on.
     --port <n>              Also listen for local TCP JSON-RPC on 127.0.0.1:n.
     --no-sync               Disable machine sync discovery for this foreground brain process.
+    --dev-test-machine      Dev only: run as its own machine on the account, beside the
+                            installed ADE (own home required). Use npm run dev:machine -- start.
     --install-service       Register the per-user login service and exit.
     --uninstall-service     Remove the per-user login service and exit.
     --service-status        Print per-user login service status and exit.
@@ -4211,7 +4213,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   integrations: `${ADE_BANNER}
   ADE integrations
 
-  GitHub, Linear, and Jira. Status never shows a key or token.
+  GitHub, Linear, Jira and Agent 37 (cloud machines). Status never shows a key or token.
 
     $ ade integrations status --text                 Which are connected here, and as whom
 
@@ -15092,11 +15094,16 @@ function buildIosSimulatorPlan(
     const title =
       readValue(args, ["--title", "--name"]) ?? caption ?? "ADE iOS simulator proof";
     const ownerBase = readProofOwnerBase(args);
-    const screenshotArgs = collectGenericObjectArgs(args, {
-      deviceUdid: readIosSimulatorDevice(args),
-      ...rootArgs(),
-      ...readIosSimulatorOutPath(args),
-    });
+    const screenshotArgs = {
+      ...collectGenericObjectArgs(args, {
+        deviceUdid: readIosSimulatorDevice(args),
+        ...rootArgs(),
+        ...readIosSimulatorOutPath(args),
+      }),
+      // The ingest below files this shot; filing it in the capture too would
+      // make two rows (and, through --machine, one on the device's machine).
+      proof: false,
+    };
     return {
       kind: "execute",
       label: "iOS simulator proof",
@@ -25892,11 +25899,19 @@ async function spawnMachineRuntimeDaemon(
   if (isEphemeralRuntimeSocketPath(socketPath) && !args.includes("--no-sync")) {
     args.push("--no-sync");
   }
+  // The machine socket's brain serves the desktop, phone and web (all `cto`),
+  // so it starts at `cto` like the service would, whatever role this command
+  // runs at. It used to take the caller's role, and a plain `ade lanes list`
+  // (role `agent`) left an `agent` brain on the machine socket that refused
+  // every other device. A command run from an agent's shell still gets an
+  // `agent` brain: `serve` lowers the role itself when it sees that shell's
+  // caller identity (#1832), and that stays as it is.
+  const spawnRole: GlobalOptions["role"] = isMachineDefaultRuntimeSocket(socketPath) ? "cto" : options.role;
 
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     ...(serviceCommand.env ?? {}),
-    ADE_DEFAULT_ROLE: options.role,
+    ADE_DEFAULT_ROLE: spawnRole,
     ADE_RPC_SOCKET_PATH: socketPath,
     ADE_RUNTIME_SOCKET_PATH: socketPath,
   };
@@ -27293,6 +27308,25 @@ async function runServe(
     roleCeilingNote,
   ].filter((note): note is string => note !== null);
   for (const note of brainIdentityNotes) process.stderr.write(`ADE: ${note}\n`);
+  // A dev test machine (`npm run dev:machine`): this checkout's brain as its
+  // own machine on the account, beside the installed one. Set before anything
+  // reads the home, the sync lease or Tailscale; see devTestMachine.ts.
+  if (readFlag(args, ["--dev-test-machine"])) {
+    const [{ DEV_TEST_MACHINE_ENV, markDevTestMachineHome }, { isSyncCapableAdeHome }] = await Promise.all([
+      import("./services/sync/devTestMachine"),
+      import("./services/projects/machineLayout"),
+    ]);
+    const adeDir = resolveMachineAdeLayout().adeDir;
+    if (!isSyncCapableAdeHome(adeDir, { ...process.env, [DEV_TEST_MACHINE_ENV]: "1" })) {
+      throw new CliUsageError(
+        `A dev test machine needs its own ADE home; ${adeDir} belongs to an installed ADE. Start it with npm run dev:machine -- start.`,
+      );
+    }
+    markDevTestMachineHome(adeDir);
+    process.env[DEV_TEST_MACHINE_ENV] = "1";
+    process.env.ADE_TAILSCALE_SERVE = "0";
+    process.env.ADE_SYNC_HOST_LOCK_PATH ||= path.join(adeDir, "sync-host-lock.json");
+  }
   if (process.platform === "darwin" || process.platform === "linux") {
     const runtimeDir = path.dirname(lastFailurePathForMachine());
     boundServiceOutputLogs(runtimeDir);
@@ -27351,7 +27385,35 @@ async function runServe(
   // only restart a brain the service manager owns, and whether this one is that
   // brain is not known until the service command has been resolved.
   let brainMemoryRestartGuard: BrainMemoryRestartGuard | null = null;
+  // Read here: the `try` below declares its own `resolveMachineAdeLayout`.
+  const copiedHomeGuardAdeDir = resolveMachineAdeLayout().adeDir;
   try {
+  // Before anything reads this machine's identity: a home copied onto another
+  // box (a cloud fork) must come up as a new machine, not as this one. Inside
+  // the startup `try`, so a blocked or failed reset is recorded as a brain
+  // startup failure like any other, and counts toward the startup backoff.
+  if (!embedded) {
+    const { guardAgainstCopiedAdeHome } = await import("./services/sync/hostInstanceGuard");
+    const hostGuard = guardAgainstCopiedAdeHome({ adeDir: copiedHomeGuardAdeDir });
+    if (hostGuard.action === "blocked") {
+      // Serving now would let a project write under the original machine's
+      // site id. Refuse; the next start runs the rest of the reset.
+      const lines = hostGuard.failures.map((failure) => `  ${failure.path}: ${failure.error}`);
+      throw new CliToolError(
+        `This ADE home was copied from ${hostGuard.previousInstanceId}, and ADE couldn't finish giving this box and every project its own identity, `
+          + "so the brain won't start (it would write as the machine it was copied from):\n"
+          + `${lines.join("\n")}\n`
+          + "Fix the problem above (usually file permissions), then start ADE again; it picks up where it stopped.",
+        undefined,
+      );
+    }
+    if (hostGuard.action === "reset") {
+      process.stderr.write(
+        `ADE: this ADE home was copied from ${hostGuard.previousInstanceId}, so this box starts as a new machine `
+          + `(signed out; the old identity is kept in ${hostGuard.movedTo}).\n`,
+      );
+    }
+  }
   const removeRuntimeProcessErrorBoundary = installRuntimeProcessErrorBoundary("ADE brain");
   const [
     { brainLogPath, resolveMachineAdeLayout, isSyncCapableAdeHome },
@@ -33043,15 +33105,35 @@ function formatChatRead(value: unknown): string {
   const entries = Array.isArray(value)
     ? value.filter(isRecord)
     : firstArray(value, ["entries", "messages", "items"]);
+  // A failed turn often wrote no assistant text, so its error is listed in
+  // time order among the messages; without it the read shows a bare prompt.
+  const failures = firstArray(record, ["turnFailures"]).map((failure) => ({
+    role: "turn failed",
+    timestamp: asString(failure.timestamp),
+    text: [asString(failure.message), asString(failure.detail)].filter(Boolean).join("\n"),
+  }));
+  const messages = entries.map((entry) => ({
+    role: asString(entry.role) ?? "message",
+    timestamp: asString(entry.timestamp),
+    text: asString(entry.displayText) ?? asString(entry.text) ?? "",
+  }));
+  // The transcript keeps its own order. Each failure goes in after the last
+  // message at or before its time (an untimed one goes at the end), so a
+  // message with no timestamp never moves.
+  const rows: typeof messages = [];
+  const timed = failures.filter((failure) => failure.timestamp).sort((a, b) => a.timestamp!.localeCompare(b.timestamp!));
+  let next = 0;
+  for (const message of messages) {
+    while (next < timed.length && message.timestamp && timed[next]!.timestamp! < message.timestamp) rows.push(timed[next++]!);
+    rows.push(message);
+  }
+  rows.push(...timed.slice(next), ...failures.filter((failure) => !failure.timestamp));
   const lines = ["ADE chat transcript"];
   if (!entries.length) lines.push("(no messages in this physical page)");
-  for (const entry of entries) {
-    const role = asString(entry.role) ?? "message";
-    const timestamp = asString(entry.timestamp);
-    const text = asString(entry.displayText) ?? asString(entry.text) ?? "";
+  for (const row of rows) {
     lines.push("");
-    lines.push(timestamp ? `${role} ${timestamp}` : role);
-    lines.push(text.length ? text : "(empty)");
+    lines.push(row.timestamp ? `${row.role} ${row.timestamp}` : row.role);
+    lines.push(row.text.length ? row.text : "(empty)");
   }
   if (record.truncated === true) lines.push("", "(bounded transcript window; more content exists)");
   if (typeof record.nextCursor === "number") {

@@ -130,7 +130,12 @@ on the first command; nothing is installed in advance, and ignored files
   treats it as live while the copy exists. Its first device is one of the
   user's own simulators on that machine that no lane holds (shut-down ones
   first; never an ADE device, which a lane's end would delete), attached so
-  ADE never deletes it; only when none is free does ADE make one. `launch`, `installApp` and `runTests`
+  ADE never deletes it; only when none is free does ADE make one (`start` and
+  `launch` both go through `ensure`). A device ADE made for a copy is held
+  while the copy exists, for this project's cleanup pass and for every other
+  project's on that machine (`appleMarkerProjectHolds` reads the copy list,
+  since a work copy has no `lanes` row); a copy list that cannot be read
+  counts as held. `launch`, `installApp` and `runTests`
   sync the copy first; other verbs use it as it is. When the copy goes, the
   cleanup pass gives the device back.
 - **Where it shows.** The chat's own brain records each shell and each
@@ -289,7 +294,13 @@ the trust boundary, as it is for the person's own desktop.
   checks arbitrate between agents. Paths that name this machine's checkout are
   stripped before sending. A proof command's capture runs there; its bytes are
   read back (`read_remote_caller_capture`: only that caller's own captures, only
-  for 15 minutes) and filed in THIS chat's proof drawer. That machine's Apple
+  for 15 minutes) and filed in THIS chat's proof drawer. The Apple
+  verbs that file proof where they run (`screenshot`, `proof-bundle`,
+  `record-stop`, `app-store-shots`) are sent with `proof: false` and their
+  files are filed here the same way (`fileRemoteAppleProofHere` in
+  `cliMachineTargeting.ts`), so each `cite:` names this machine's proof; a
+  screen unchanged since the last shot cites that earlier proof. A
+  `proof-bundle` sent this way does not pin a recording on that machine. That machine's Apple
   device pane says "An agent on <machine> is driving this device", with
   **Free device** (confirmed first; it ends that agent's session only if the
   same agent still holds the device, and the agent may take it again), and the

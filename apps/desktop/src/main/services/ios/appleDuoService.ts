@@ -537,7 +537,11 @@ export function createAppleDuoService<Runtime extends { key: string | null }>(de
    * as proof. Folds the simulator to take them and puts the hinge back.
    */
   const duoAppStoreScreenshots = async (
-    shotArgs: Pick<AppleSetPostureArgs, "laneId" | "chatSessionId" | "deviceUdid"> & { projectRoot?: string | null } = {},
+    shotArgs: Pick<AppleSetPostureArgs, "laneId" | "chatSessionId" | "deviceUdid"> & {
+      projectRoot?: string | null;
+      /** `false`: file nothing on this machine; a `--machine` caller files the shots on its own. */
+      proof?: boolean | null;
+    } = {},
   ): Promise<AppleDuoAppStoreScreenshotsResult> => {
     deps.assertDarwin();
     const runtime = deps.resolveRuntime(shotArgs);
@@ -566,7 +570,7 @@ export function createAppleDuoService<Runtime extends { key: string | null }>(de
       }
       const size = deps.readPngSize(filePath);
       const shot = { deviceUdid, filePath, capturedAt: deps.nowIso(), width: size?.width ?? 0, height: size?.height ?? 0 };
-      const proofArtifactId = deps.fileScreenshotAsProof(shot, {
+      const proofArtifactId = shotArgs.proof === false ? null : deps.fileScreenshotAsProof(shot, {
         ...shotArgs,
         caption: `App Store · iPhone Duo ${display} display ${shot.width}×${shot.height}`,
       }, runtime);

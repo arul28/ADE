@@ -103,6 +103,32 @@ export function resolveHarnessLaunchTarget(
   };
 }
 
+/** The vendor whose own models a harness runs when nothing routes it elsewhere. */
+const HARNESS_HOME_VENDOR: Partial<Record<HarnessPresetBody, string>> = {
+  claude: "anthropic",
+  codex: "openai",
+};
+
+/**
+ * An ad-hoc route that only bills the harness's own vendor differently: an
+ * OpenAI key in Codex, an Anthropic key (or another Claude account) in Claude
+ * Code. The model is the harness's own, so the chat is an ordinary Codex or
+ * Claude chat and wears that harness's mark; the source's mark is for a route
+ * that runs another vendor's model in the harness. A saved Custom provider
+ * keeps the logo its owner gave it.
+ */
+export function isHomeVendorRoute(target: Pick<HarnessLaunchTarget, "adHoc" | "harness" | "source">): boolean {
+  if (!target.adHoc) return false;
+  const home = HARNESS_HOME_VENDOR[target.harness];
+  if (!home) return false;
+  const source = target.source;
+  if (source.kind === "account" || source.kind === "subscription") {
+    return source.provider === target.harness;
+  }
+  const provider = (source.kind === "key" ? source.provider : source.providerId).trim().toLowerCase();
+  return provider === home;
+}
+
 /**
  * A route's model by its display name. The runtime catalog files OpenCode
  * models under `opencode/<provider>/<model>`, so a raw `deepseek-v4.1-flash`

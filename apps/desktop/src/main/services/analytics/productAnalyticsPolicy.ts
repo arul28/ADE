@@ -237,6 +237,11 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // and the one that produced no telemetry at all last time.
   "machine_removed",
   "machine_register_refused",
+  // "New Agent 37 machine" (feature "connections"): whether installations make
+  // cloud boxes from ADE at all, and how often a create fails. completed (it
+  // joined) | partial (signed in, still starting) | cancelled | failed. Never
+  // the box, its size, name, price, workspace, or the error.
+  "agent37_machine_create",
   // One coarse fact per automatic diagnostic send: whether it went, was refused
   // by the client budget, or failed. Never the failure code that triggered it,
   // never the surface, never the report or its upload reference — those are the

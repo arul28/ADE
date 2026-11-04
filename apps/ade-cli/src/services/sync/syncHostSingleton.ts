@@ -13,6 +13,7 @@ import { readProcessStartTimeMs } from "../../../../desktop/src/main/services/pr
 import { execFileOffThread, offThreadSpawnEnabled } from "../../../../desktop/src/main/services/shared/offThreadSpawn";
 import { DEFAULT_SYNC_HOST_PORT, SYNC_HOST_MAX_PORT } from "./syncProtocol";
 import { adeHomeForChannel, liveChannelFromEnv } from "../projects/machineLayout";
+import { commandLineIsDevTestMachine, isDevTestMachineProcess } from "./devTestMachine";
 const LOCK_VERSION = 1;
 
 export type SyncHostSingletonOwner = {
@@ -552,6 +553,8 @@ function psCommandLines(pids: number[]): Map<number, string> {
 }
 
 function looksLikeAdeSyncHostProcess(commandLine: string): boolean {
+  // A dev test machine is another machine with its own lease; never a conflict.
+  if (commandLineIsDevTestMachine(commandLine)) return false;
   return /ADE(?: Beta| Alpha)?\.app\/Contents\/MacOS\/ADE/i.test(commandLine)
     || /ade-cli\/cli\.cjs\s+serve\b/i.test(commandLine)
     || /\bade(?:-beta|-alpha)?\b.*\bserve\b/i.test(commandLine);
@@ -604,6 +607,7 @@ function legacyOwner(
  * command line matches nothing at all.
  */
 export function looksLikeAdeWindowsSyncHostProcess(commandLine: string): boolean {
+  if (commandLineIsDevTestMachine(commandLine)) return false;
   const normalized = commandLine.replace(/"/g, " ").replace(/\//g, "\\");
   // A bare `serve` verb somewhere in the arguments...
   if (!/(?:^|[\s\\])serve(?:\s|$)/i.test(normalized)) return false;
@@ -752,7 +756,9 @@ export function detectSyncHostSingletonConflict(
     deps.platform,
   );
   if (lockConflict) return lockConflict;
-  if (deps.skipListenerScan) return null;
+  // A dev test machine's lease is the lock file in its own home; the sync
+  // listeners on this computer belong to other machines.
+  if (deps.skipListenerScan || isDevTestMachineProcess()) return null;
   const listener = (deps.scanListeners
     ?? (() => scanNativeSyncHostListeners({
       platform: deps.platform,
@@ -1008,7 +1014,7 @@ export async function acquireSyncHostSingletonAsync(
     checkOwner
       ? execFileText(powershell, windowsOwnerMatchArgs(checkOwner), WINDOWS_OWNER_MATCH_TIMEOUT_MS, 64 * 1024)
       : null,
-    deps.skipListenerScan
+    deps.skipListenerScan || isDevTestMachineProcess()
       ? null
       : execFileText(
         powershell,

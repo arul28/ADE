@@ -19,7 +19,7 @@
  * lists reachable models from it.
  */
 
-import { encodeOpenCodeRegistryId } from "./modelRegistry";
+import { encodeOpenCodeRegistryId, getModelById } from "./modelRegistry";
 import { isOpenCodeHouseProvider } from "./opencodeProviders";
 import {
   HARNESS_PRESET_BODIES,
@@ -614,6 +614,35 @@ export type HarnessRouteTestResult = {
   route: HarnessRoute["kind"] | null;
   error?: string;
 };
+
+/** The vendor whose own API a sign-in reaches, in ADE's model-id namespace. */
+const SIGN_IN_VENDOR: Readonly<Record<string, string>> = { claude: "anthropic", codex: "openai" };
+
+/**
+ * A model id spelled the way the source's own API names it.
+ *
+ * A caller may name a model by ADE's catalog id (`openai/gpt-5.6-luna`), which
+ * carries the vendor as a namespace. The vendor's own API only knows the bare
+ * id (`gpt-5.6-luna`), so the namespace is dropped when it names the source's
+ * own vendor and the id is in ADE's catalog. A gateway's id
+ * (`anthropic/claude-opus-4.5` on an OpenRouter key) names another vendor and
+ * is left exactly as typed, as is anything on OpenCode's own services.
+ */
+export function sourceModelIdFor(source: HarnessPresetSource, model: string): string {
+  const id = model.trim();
+  const slash = id.indexOf("/");
+  if (slash <= 0) return id;
+  const sourceProvider = source.kind === "key"
+    ? source.provider
+    : source.kind === "opencode"
+      ? source.providerId
+      : source.provider;
+  const vendor = canonicalSourceProvider(SIGN_IN_VENDOR[sourceProvider.trim().toLowerCase()] ?? sourceProvider);
+  if (isOpenCodeHouseProvider(vendor)) return id;
+  if (canonicalSourceProvider(id.slice(0, slash)) !== vendor) return id;
+  const providerModelId = getModelById(id)?.providerModelId?.trim();
+  return providerModelId && !providerModelId.includes("/") ? providerModelId : id;
+}
 
 /**
  * The model id a launch passes for a harness + source + model. One rule, used

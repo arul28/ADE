@@ -3100,16 +3100,23 @@ async function rememberCaptureActionResult(
 ): Promise<void> {
   const capture = ADE_CAPTURE_ACTIONS.get(`${domain}.${action}`);
   if (!capture || !isRecord(result)) return;
-  const filePath = asOptionalTrimmedString(result[capture.field]);
-  if (!filePath) return;
+  const filePaths = capture.paths(result)
+    .map((value) => asOptionalTrimmedString(value))
+    .filter((value): value is string => value != null);
+  // Only the caller the action ran for may read these back: its own session.
   const foreignOwner = asOptionalTrimmedString(session?.identity.chatSessionId);
-  if (foreignOwner && parseForeignCallerSessionId(foreignOwner)) {
-    remoteCallerCapturesFor(runtime).remember(filePath, foreignOwner);
-  }
-  try {
-    await captureRegistryFor(runtime).remember(filePath, capture.source);
-  } catch {
-    // A missed entry only means a later ingest files the bytes as an attach.
+  const remoteOwner = foreignOwner && parseForeignCallerSessionId(foreignOwner) ? foreignOwner : null;
+  for (const filePath of filePaths) {
+    if (remoteOwner) remoteCallerCapturesFor(runtime).remember(filePath, remoteOwner);
+    try {
+      await captureRegistryFor(runtime).remember(filePath, capture.source);
+    } catch (error) {
+      // A missed entry only means a later ingest files the bytes as an attach.
+      runtime.logger.warn("computer_use.capture_not_remembered", {
+        action: `${domain}.${action}`,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   }
 }
 

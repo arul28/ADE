@@ -27,6 +27,8 @@ export type IntegrationConnectServices = {
     getConnectionStatus(): Promise<JiraConnectionStatus>;
     connect(input: JiraConnectArgs): Promise<JiraConnectionStatus>;
   } | null;
+  /** Agent37's status/save pair lives with its credential (services/agent37). */
+  agent37?: IntegrationConnectAdapter | null;
   fetch?: FetchLike;
 };
 
@@ -230,5 +232,6 @@ export function buildIntegrationConnectAdapters(
   if (linear) adapters.linear = linear;
   const jira = jiraAdapter(services);
   if (jira) adapters.jira = jira;
+  if (services.agent37) adapters.agent37 = services.agent37;
   return adapters;
 }

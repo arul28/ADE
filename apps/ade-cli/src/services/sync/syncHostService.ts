@@ -63,7 +63,6 @@ import type {
   SyncCommandPayload,
   SyncCommandResultPayload,
   CreateProjectInput,
-  SyncDpopProof,
   SyncEnvelope,
   SyncChatEventPayload,
   SyncChatHistoryRequestPayload,
@@ -247,21 +246,15 @@ import {
 } from "./syncPairedChannelService";
 import type { SyncPinStore } from "./syncPinStore";
 import type { SyncRuntimeNameStore } from "./syncRuntimeNameStore";
+import { supportedAdoptChannelAeads } from "../../../../desktop/src/shared/sync/adoptChannelCrypto";
 import {
-  ADOPT_CHANNEL_CHALLENGE_TTL_MS,
-  buildAdoptChallengeSignatureInput,
-  buildAdoptHelloAad,
-  buildAdoptHelloOkAad,
-  decodeCanonicalBase64,
-  deriveAdoptSessionKey,
-  generateX25519EphemeralKeyPair,
-  negotiateAdoptChannelAead,
-  seal,
-  signEd25519,
-  supportedAdoptChannelAeads,
-  unseal,
-  type AdoptChannelAead,
-} from "../../../../desktop/src/shared/sync/adoptChannelCrypto";
+  issueAdoptChallenge,
+  openSealedAccountHello,
+  sealAdoptHelloOk,
+  validateAccountChallenge,
+  type AdoptChallengeState,
+  type SealedAdoption,
+} from "./adoptChannelHandshake";
 import {
   createMachineIdentitySigningStore,
   type MachineIdentitySigningStore,
@@ -382,14 +375,13 @@ export { compactChatEventEnvelopeForMobileSync, compactChatEventEnvelopeForSync 
 export { SYNC_HOST_MOBILE_REPLICA_RESEED_GAP } from "./mobileReplicaReseed";
 const execFileAsync = promisify(execFile);
 
-/**
- * Sunset this compatibility path once ADE's supported-client floor guarantees
- * every account adopter advertises `supportedAeads`. There is no
- * minSupportedVersion gate in the sync handshake today; removal belongs in the
- * `account_challenge` handler below, where a missing list can then be rejected
- * and the conditional AEAD transcript fields can become unconditional.
- */
-export const ALLOW_LEGACY_UNBOUND_ADOPTION_AEAD = true;
+// The sealed adoption handshake lives in adoptChannelHandshake.ts; these keep
+// their old import path.
+export {
+  ALLOW_LEGACY_UNBOUND_ADOPTION_AEAD,
+  parseAccountChallengePayload,
+  parseUnsealedAccountAuth,
+} from "./adoptChannelHandshake";
 
 // db_version window per pump poll. Large enough to cross sparse version
 // ranges quickly (a few polls per million versions), small enough that the
@@ -954,14 +946,7 @@ type PeerState = {
   transportOrigin: SyncTransportOrigin;
   relayAuthorization: RelayAuthorizationLifecycle | null;
   reportedIncompatibleAdoptCipher: boolean;
-  adoptChallenge: {
-    sessionKey: Buffer;
-    nonce: string;
-    hostDeviceId: string;
-    expiresAtMs: number;
-    aead: AdoptChannelAead;
-    aeadBoundToSignature: boolean;
-  } | null;
+  adoptChallenge: AdoptChallengeState | null;
   subscribedSessionIds: Set<string>;
   pendingTerminalSnapshots: Map<string, PendingTerminalSnapshotBarrier>;
   nextTerminalSnapshotGeneration: number;
@@ -2013,76 +1998,6 @@ export function buildSyncHostHelloOkPayload(args: {
   // the digest is left out so it cannot be mistaken for "unchanged".
   const { projectCatalogDigest: _omitted, projectCatalogUnchanged: _unchanged, ...oversized } = payload;
   return { ...oversized, projects: [] };
-}
-
-type ParsedAccountChallenge = {
-  nonce: string;
-  nonceBytes: Buffer;
-  clientEphemeralPublicKey: string;
-  clientEphemeralPublicKeyBytes: Buffer;
-  supportedAeads: string[] | null;
-};
-
-function parseAccountChallengePayload(payload: unknown): ParsedAccountChallenge | null {
-  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
-  const value = payload as Record<string, unknown>;
-  if (value.v !== 1) return null;
-  const nonceBytes = decodeCanonicalBase64(value.nonce, 32);
-  const clientEphemeralPublicKeyBytes = decodeCanonicalBase64(
-    value.clientEphemeralPublicKey,
-    32,
-  );
-  const supportedAeads = value.supportedAeads === undefined
-    ? null
-    : value.supportedAeads;
-  if (
-    !nonceBytes
-    || !clientEphemeralPublicKeyBytes
-    || typeof value.nonce !== "string"
-    || typeof value.clientEphemeralPublicKey !== "string"
-    || (
-      supportedAeads !== null
-      && (
-        !Array.isArray(supportedAeads)
-        || supportedAeads.some((entry) => typeof entry !== "string")
-      )
-    )
-  ) {
-    return null;
-  }
-  return {
-    nonce: value.nonce,
-    nonceBytes,
-    clientEphemeralPublicKey: value.clientEphemeralPublicKey,
-    clientEphemeralPublicKeyBytes,
-    supportedAeads,
-  };
-}
-
-function parseUnsealedAccountAuth(value: unknown): Extract<
-  SyncHelloPayload["auth"],
-  { kind: "account" }
-> | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const account = value as Record<string, unknown>;
-  const deviceId = toOptionalString(account.deviceId);
-  const accountToken = toOptionalString(account.accountToken);
-  if (!deviceId || !accountToken) return null;
-  if (
-    account.dpop != null
-    && (typeof account.dpop !== "object" || Array.isArray(account.dpop))
-  ) return null;
-  const runtimeHostGrant = account.runtimeHostGrant == null
-    ? null
-    : toOptionalString(account.runtimeHostGrant);
-  if (account.runtimeHostGrant != null && !runtimeHostGrant) return null;
-  return {
-    kind: "account",
-    deviceId,
-    accountToken,
-    dpop: account.dpop as SyncDpopProof | null | undefined,
-    ...(runtimeHostGrant ? { runtimeHostGrant } : {}),
-  };
 }
 
 function safeStringEquals(expected: string, actual: string): boolean {
@@ -7800,46 +7715,29 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           }, envelope.requestId);
           return;
         }
-        const challenge = envelope.requestId
-          ? parseAccountChallengePayload(envelope.payload)
-          : null;
-        if (!challenge) {
-          peer.adoptChallenge = null;
-          registerAdoptChallengeIssuance(peer.remoteAddress);
-          send(peer.ws, "account_challenge_error", {
-            message: "Invalid account adoption challenge.",
-          }, envelope.requestId);
-          return;
-        }
         const hostSupportedAeads = supportedAdoptChannelAeads();
-        if (
-          challenge.supportedAeads === null
-          && !ALLOW_LEGACY_UNBOUND_ADOPTION_AEAD
-        ) {
-          send(peer.ws, "account_challenge_error", {
-            message:
-              "This ADE version must advertise account adoption ciphers. Update ADE on this device.",
-          }, envelope.requestId);
-          return;
-        }
-        const adoptAead = negotiateAdoptChannelAead(
-          challenge.supportedAeads,
+        const validated = validateAccountChallenge({
+          requestId: envelope.requestId,
+          payload: envelope.payload,
           hostSupportedAeads,
-        );
-        if (!adoptAead) {
-          if (!peer.reportedIncompatibleAdoptCipher) {
+        });
+        if (!validated.ok) {
+          const { refusal } = validated;
+          if (refusal.kind === "invalid") {
+            peer.adoptChallenge = null;
+            registerAdoptChallengeIssuance(peer.remoteAddress);
+          } else if (refusal.kind === "incompatible" && !peer.reportedIncompatibleAdoptCipher) {
             peer.reportedIncompatibleAdoptCipher = true;
             args.logger.warn("sync_host.account_challenge_cipher_incompatible", {
               remoteAddress: peer.remoteAddress,
               transportOrigin: peer.transportOrigin,
-              clientAdvertisedAeads: challenge.supportedAeads !== null,
-              clientAeadCount: challenge.supportedAeads?.length ?? 0,
+              clientAdvertisedAeads: refusal.challenge.supportedAeads !== null,
+              clientAeadCount: refusal.challenge.supportedAeads?.length ?? 0,
               hostSupportedAeads,
             });
           }
           send(peer.ws, "account_challenge_error", {
-            message:
-              "No compatible account adoption cipher is available. Update ADE on both devices.",
+            message: refusal.message,
           }, envelope.requestId);
           return;
         }
@@ -7853,41 +7751,15 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         // adoption. Only malformed/anomalous challenges (the branches above and
         // the catch below) count toward the abuse limiter.
         try {
-          const identity = machineIdentitySigningStore.getOrCreate();
-          const hostDeviceId = readBrainMetadata().deviceId;
-          const hostEphemeral = generateX25519EphemeralKeyPair();
-          const hostEphemeralPublicKey =
-            hostEphemeral.publicKeyRaw.toString("base64");
-          const ts = adoptNow();
-          const canonical = buildAdoptChallengeSignatureInput({
-            hostDeviceId,
-            nonce: challenge.nonce,
-            clientEphemeralPublicKey: challenge.clientEphemeralPublicKey,
-            hostEphemeralPublicKey,
-            ts,
-            ...(challenge.supportedAeads !== null ? { aead: adoptAead } : {}),
+          const issued = issueAdoptChallenge({
+            challenge: validated.challenge,
+            aead: validated.aead,
+            signingPrivateKey: () => machineIdentitySigningStore.getOrCreate().privateKey,
+            hostDeviceId: () => readBrainMetadata().deviceId,
+            now: adoptNow,
           });
-          const sessionKey = deriveAdoptSessionKey({
-            privateKey: hostEphemeral.privateKey,
-            peerPublicKeyRaw: challenge.clientEphemeralPublicKeyBytes,
-            nonce: challenge.nonceBytes,
-          });
-          peer.adoptChallenge = {
-            sessionKey,
-            nonce: challenge.nonce,
-            hostDeviceId,
-            expiresAtMs: ts + ADOPT_CHANNEL_CHALLENGE_TTL_MS,
-            aead: adoptAead,
-            aeadBoundToSignature: challenge.supportedAeads !== null,
-          };
-          send(peer.ws, "account_challenge_ok", {
-            v: 1,
-            hostDeviceId,
-            ts,
-            hostEphemeralPublicKey,
-            signature: signEd25519(identity.privateKey, canonical).toString("base64"),
-            ...(challenge.supportedAeads !== null ? { aead: adoptAead } : {}),
-          }, envelope.requestId);
+          peer.adoptChallenge = issued.state;
+          send(peer.ws, "account_challenge_ok", issued.reply, envelope.requestId);
         } catch (error) {
           peer.adoptChallenge = null;
           // A signing/derivation failure here means a rejected peer ephemeral
@@ -8085,90 +7957,48 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         return;
       }
       const negotiatedCompression = negotiateSyncApplicationCompression(hello.compression);
-      let sealedAdoption: {
-        sessionKey: Buffer;
-        hostDeviceId: string;
-        clientDeviceId: string;
-        aead: AdoptChannelAead;
-        aeadBoundToSignature: boolean;
-      } | null = null;
+      let sealedAdoption: SealedAdoption | null = null;
       if (hello.auth?.kind === "account_sealed") {
-        const sealedAuth = hello.auth;
         const challenge = peer.adoptChallenge;
         // A challenge is single-use even when unsealing or validation fails.
         peer.adoptChallenge = null;
-        const rejectSealedHello = (message: string): void => {
+        const opened = openSealedAccountHello({
+          challenge,
+          now: adoptNow(),
+          helloPeerDeviceId: hello.peer.deviceId,
+          sealedAuth: hello.auth,
+        });
+        if (!opened.ok) {
+          if (opened.openError !== undefined) {
+            const error = opened.openError;
+            const errorCode =
+              error !== null
+              && typeof error === "object"
+              && "code" in error
+              && typeof error.code === "string"
+                ? error.code
+                : null;
+            args.logger.warn("sync_host.account_sealed_open_failed", {
+              remoteAddress: peer.remoteAddress,
+              transportOrigin: peer.transportOrigin,
+              aead: challenge?.aead ?? null,
+              errorName: error instanceof Error ? error.name : "UnknownError",
+              errorCode,
+            });
+          }
           send(peer.ws, "hello_error", {
             code: "invalid_hello",
-            message,
+            message: opened.message,
           } satisfies SyncHelloErrorPayload, envelope.requestId);
           try {
             peer.ws.close(4003, "Invalid sealed account hello");
           } catch {
             // ignore close failures
           }
-        };
-        if (!challenge) {
-          rejectSealedHello("A completed account challenge is required.");
           return;
         }
-        if (challenge.expiresAtMs < adoptNow()) {
-          rejectSealedHello("The account challenge expired.");
-          return;
-        }
-        if (
-          sealedAuth.deviceId !== hello.peer.deviceId
-          || !sealedAuth.sealed
-        ) {
-          rejectSealedHello("The sealed account hello is invalid.");
-          return;
-        }
-        try {
-          const plaintext = unseal(
-            challenge.sessionKey,
-            buildAdoptHelloAad(
-              challenge.hostDeviceId,
-              sealedAuth.deviceId,
-            ),
-            sealedAuth.sealed,
-            challenge.aead,
-          );
-          const accountAuth = parseUnsealedAccountAuth(
-            JSON.parse(plaintext.toString("utf8")),
-          );
-          if (
-            !accountAuth
-            || accountAuth.deviceId !== sealedAuth.deviceId
-          ) {
-            rejectSealedHello("The sealed account credentials are invalid.");
-            return;
-          }
-          hello.auth = accountAuth;
-          sealedAdoption = {
-            sessionKey: challenge.sessionKey,
-            hostDeviceId: challenge.hostDeviceId,
-            clientDeviceId: sealedAuth.deviceId,
-            aead: challenge.aead,
-            aeadBoundToSignature: challenge.aeadBoundToSignature,
-          };
-        } catch (error) {
-          const errorCode =
-            error !== null
-            && typeof error === "object"
-            && "code" in error
-            && typeof error.code === "string"
-              ? error.code
-              : null;
-          args.logger.warn("sync_host.account_sealed_open_failed", {
-            remoteAddress: peer.remoteAddress,
-            transportOrigin: peer.transportOrigin,
-            aead: challenge.aead,
-            errorName: error instanceof Error ? error.name : "UnknownError",
-            errorCode,
-          });
-          rejectSealedHello("The sealed account credentials could not be opened.");
-          return;
-        }
+        hello.auth = opened.auth;
+        sealedAdoption = opened.adoption;
       }
       let authenticatedPairingRecord: SyncPairingRecord | null = null;
       let accountPairing: { deviceId: string; secret: string } | null = null;
@@ -8628,19 +8458,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         knownProjectCatalogDigest: hello.projectCatalogDigest ?? null,
       });
       if (sealedAdoption) {
-        send(peer.ws, "hello_ok", {
-          v: 1,
-          sealed: seal(
-            sealedAdoption.sessionKey,
-            buildAdoptHelloOkAad(
-              sealedAdoption.hostDeviceId,
-              sealedAdoption.clientDeviceId,
-            ),
-            Buffer.from(JSON.stringify(helloOkPayload), "utf8"),
-            undefined,
-            sealedAdoption.aead,
-          ),
-        }, envelope.requestId);
+        send(peer.ws, "hello_ok", sealAdoptHelloOk(sealedAdoption, helloOkPayload), envelope.requestId);
         if (!sealedAdoption.aeadBoundToSignature) {
           args.logger.warn("sync_host.legacy_adoption_aead_unbound", {
             deviceId: hello.peer.deviceId,

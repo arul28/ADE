@@ -31,6 +31,7 @@ import { BackgroundServiceSection } from "./BackgroundServiceSection";
 import { CaptureGestureSection } from "./CaptureGestureSection";
 import { LinearIntegrationSection } from "./LinearIntegrationSection";
 import { JiraSection } from "./JiraSection";
+import { Agent37Section } from "./Agent37Section";
 import { NotificationsSection } from "./NotificationsSection";
 import { McpServersSection } from "./mcp/McpServersSection";
 import { BrowserLinksSection } from "./BrowserLinksSection";
@@ -69,6 +70,7 @@ import {
 } from "./settingsManifest";
 import { isWebClientMode } from "../../lib/webClientMode";
 import { decodeSettingsHash } from "./settingsHash";
+import { Agent37Mark, AGENT37_NAME } from "../remoteTargets/agent37Brand";
 
 /**
  * What each Settings tab renders: its sections as data (`TAB_SECTIONS`), the
@@ -355,6 +357,12 @@ const TAB_GROUPS = {
     icon: <JiraMark size={15} />,
     tone: "blue",
   },
+  agent37: {
+    title: AGENT37_NAME,
+    description: "Cloud Linux machines, made and signed in from ADE.",
+    icon: <Agent37Mark size={15} strokeWidth={26} />,
+    tone: "slate",
+  },
   mcp: {
     title: "MCP servers",
     description: "Tools every ADE agent gets, on every computer.",
@@ -520,6 +528,8 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
     { entryIds: ["integrations.github", "integrations.github-issues-top-bar"], render: () => <GitHubIntegrationSection />, machine: "routed", title: "GitHub", group: "github" },
     { entryIds: ["integrations.linear", "integrations.linear-top-bar"], render: () => <LinearIntegrationSection />, machine: "routed", title: "Linear", group: "linear" },
     { entryIds: ["integrations.jira", "integrations.jira-projects", "integrations.jira-top-bar"], render: () => <JiraSection />, machine: "routed", title: "Jira", group: "jira" },
+    // Account-wide: one workspace key in the account vault, so no machine kind and no pin.
+    { entryIds: ["integrations.agent37"], render: () => <Agent37Section />, title: AGENT37_NAME, group: "agent37" },
     { entryIds: ["mcp.servers", "mcp.found"], render: () => <McpServersSection />, title: "MCP servers", group: "mcp" },
   ],
   notifications: [{ entryIds: "tab", render: () => <NotificationsSection /> }],

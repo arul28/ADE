@@ -232,6 +232,37 @@ describe("createAgentChatService", () => {
       expect(transcript.truncated).toBe(true);
     });
 
+    // `ade chat read` is how one agent learns that the chat it handed work to
+    // failed. The failure must survive the bounded read, inside one budget.
+    it.each([
+      { maxChars: 20_000, clipped: false },
+      { maxChars: 200, clipped: true },
+    ])("reports a failed turn with the error that ended it, within maxChars $maxChars", async ({ maxChars, clipped }) => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+      const at = (second: number) => `2026-08-01T00:00:${String(second).padStart(2, "0")}.000Z`;
+      vi.mocked(parseAgentChatTranscript).mockReturnValue([
+        { sessionId: session.id, timestamp: at(1), sequence: 1, event: { type: "user_message", text: "Do the work", turnId: "turn-1" } },
+        { sessionId: session.id, timestamp: at(2), sequence: 2, event: { type: "text", text: "Starting.", turnId: "turn-1" } },
+        { sessionId: session.id, timestamp: at(3), sequence: 3, event: { type: "error", message: "Provider quota exceeded", detail: "x".repeat(1_000), turnId: "turn-1" } },
+        { sessionId: session.id, timestamp: at(4), sequence: 4, event: { type: "done", status: "failed", turnId: "turn-1" } },
+      ] as AgentChatEventEnvelope[]);
+
+      const transcript = await service.getChatTranscript({ sessionId: session.id, maxChars });
+
+      expect(transcript.turnFailures).toHaveLength(1);
+      const failure = transcript.turnFailures![0]!;
+      expect(failure).toMatchObject({ turnId: "turn-1", status: "failed" });
+      expect(failure.message.startsWith("Provider quota")).toBe(true);
+      const entryChars = transcript.entries.reduce((total, entry) => total + entry.text.length + (entry.displayText?.length ?? 0), 0);
+      expect(entryChars + failure.message.length + (failure.detail?.length ?? 0)).toBeLessThanOrEqual(maxChars);
+      expect(transcript.truncated).toBe(clipped);
+    });
+
     it("reads active transcripts from the uncapped dedicated transcript after the legacy cap", async () => {
       const { service } = createService();
       const session = await service.createSession({

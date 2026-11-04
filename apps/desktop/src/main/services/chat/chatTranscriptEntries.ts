@@ -2,6 +2,7 @@ import type {
   AgentChatEvent,
   AgentChatEventEnvelope,
   AgentChatTranscriptEntry,
+  AgentChatTranscriptTurnFailure,
 } from "../../../shared/types/chat";
 import { canonicalSteerRows } from "../../../shared/chatTranscript";
 import { canCoalesceBufferedAssistantText, type BufferedAssistantText } from "./chatTextBatching";
@@ -291,4 +292,79 @@ export function transcriptEntriesFromEnvelopes(
     options?.onEntrySourceOffset?.(sourceOffsetByDraft.get(entry) ?? null);
     return [normalized];
   });
+}
+
+/**
+ * Every turn in the stream that ended failed, oldest first, each with the error
+ * that ended it.
+ *
+ * A turn is failed when its `done` or its `status` says so; one record per turn
+ * however many of those it wrote. The message is the turn's last `error` event
+ * (matched by turn id, or the latest unattributed error since the turn's last
+ * prompt), falling back to the status's own message.
+ */
+export function transcriptTurnFailuresFromEnvelopes(
+  sessionId: string,
+  envelopes: readonly AgentChatEventEnvelope[],
+): AgentChatTranscriptTurnFailure[] {
+  const failures: AgentChatTranscriptTurnFailure[] = [];
+  const failureByTurn = new Map<string, AgentChatTranscriptTurnFailure>();
+  const errorByTurn = new Map<string, { message: string; detail?: string }>();
+  let unattributedError: { message: string; detail?: string } | null = null;
+  /** The failure already recorded since the last prompt: its turn's `status` and `done` are one failure even when only one names the turn. */
+  let failureSincePrompt: AgentChatTranscriptTurnFailure | null = null;
+  for (const envelope of envelopes) {
+    if (envelope.sessionId !== sessionId) continue;
+    const event = envelope.event;
+    if (event.type === "user_message") {
+      unattributedError = null;
+      failureSincePrompt = null;
+      continue;
+    }
+    if (event.type === "error") {
+      const message = event.message?.trim();
+      if (!message) continue;
+      const detail = typeof event.detail === "string" && event.detail.trim() ? event.detail.trim() : undefined;
+      const error = { message, ...(detail ? { detail } : {}) };
+      const turnId = event.turnId?.trim();
+      if (turnId) errorByTurn.set(turnId, error);
+      else unattributedError = error;
+      // A late error for a turn already reported failed names the real cause:
+      // its message and detail together, never one error's message beside
+      // another's detail.
+      const reported = turnId ? failureByTurn.get(turnId) : null;
+      if (reported) {
+        reported.message = error.message;
+        if (error.detail) reported.detail = error.detail;
+        else delete reported.detail;
+      }
+      continue;
+    }
+    const failed = (event.type === "done" && event.status === "failed")
+      || (event.type === "status" && event.turnStatus === "failed");
+    if (!failed) continue;
+    const turnId = event.turnId?.trim() || undefined;
+    if (turnId && failureByTurn.has(turnId)) continue;
+    if (failureSincePrompt && (!turnId || !failureSincePrompt.turnId)) {
+      if (turnId) {
+        failureSincePrompt.turnId = turnId;
+        failureByTurn.set(turnId, failureSincePrompt);
+      }
+      continue;
+    }
+    const statusMessage = event.type === "status" ? event.message?.trim() : undefined;
+    const error = (turnId ? errorByTurn.get(turnId) : undefined)
+      ?? unattributedError
+      ?? (statusMessage ? { message: statusMessage } : { message: "The turn failed." });
+    const failure: AgentChatTranscriptTurnFailure = {
+      ...(turnId ? { turnId } : {}),
+      status: "failed",
+      ...error,
+      timestamp: envelope.timestamp,
+    };
+    if (turnId) failureByTurn.set(turnId, failure);
+    failureSincePrompt = failure;
+    failures.push(failure);
+  }
+  return failures;
 }

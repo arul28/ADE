@@ -1607,6 +1607,20 @@ case the in-process latch cannot see, an app or brain restarting inside the
 refusal. Both events reuse the existing `ade_feature_used` 140-per-day /
 30-per-minute limits and the shared 200-event ceiling; no ceiling was raised.
 
+Making a cloud box with **New Agent 37 machine** records `feature:
+"connections"`, `action: "agent37_machine_create"` once per finished create,
+in the desktop IPC handler that runs it (`registerAgent37Ipc.ts`, where the
+outcome is known): `completed` (the box joined the account), `partial` (signed
+in, still starting), `cancelled`, or `failed`. The product question is whether
+installations make Agent 37 machines from ADE at all and how often a create
+fails. No box id, name, size, price, workspace, or error travels; those stay in
+the local `agent37.*` log lines. A box takes minutes and costs money, so a
+six-hour deduplication key per outcome bounds it to 16 accepted events per
+installation per UTC day, inside the existing `ade_feature_used` ceilings.
+Connecting the key, the template build and the startup cleanup of half-made
+boxes are not analytics: the first is a one-time setting, the other two run
+without a person deciding anything.
+
 `ade_brain_action_failed` is the one new event. Every brain action the desktop
 performs goes through the single `ade.localRuntime.callAction` IPC channel, and
 that channel is not a meaningful usage action, so the existing `ade_error`
