@@ -1176,17 +1176,32 @@ export function AppleDevice3DView(props: AppleDevice3DViewProps) {
       viewerRef.current = viewer;
       if (propsRef.current.rendererRef) propsRef.current.rendererRef.current = viewer;
       trackpadDispose = bindTrackpad(canvas, viewer);
-      const { width, height } = host.getBoundingClientRect();
-      viewer.resize(width, height, window.devicePixelRatio || 1);
+      resize();
     }, () => {
       if (!cancelled) fail("3D view needs WebGL, which this window does not have.");
     });
 
+    /**
+     * The viewport is the host's LAYOUT size, the CSS pixels the inspect
+     * overlay draws in. CSS zoom (the web client's 1.1) scales the bounding
+     * rect but not the layout box, so a rect-sized viewport put the overlay's
+     * boxes 10% off; the zoom goes into the pixel ratio instead, which keeps
+     * the canvas as sharp. Pointer input reads fractions of the rect, which
+     * zoom does not change.
+     */
+    let layoutSize: { width: number; height: number } | null = null;
     const resize = () => {
-      const { width, height } = host.getBoundingClientRect();
-      viewerRef.current?.resize(width, height, window.devicePixelRatio || 1);
+      const rect = host.getBoundingClientRect();
+      const width = layoutSize?.width || rect.width;
+      const height = layoutSize?.height || rect.height;
+      const zoom = width > 0 && rect.width > 0 ? rect.width / width : 1;
+      viewerRef.current?.resize(width, height, (window.devicePixelRatio || 1) * zoom);
     };
-    const observer = new ResizeObserver(resize);
+    const observer = new ResizeObserver((entries) => {
+      const box = entries[entries.length - 1]?.contentRect;
+      if (box) layoutSize = { width: box.width, height: box.height };
+      resize();
+    });
     observer.observe(host);
     const blur = () => viewerRef.current?.cancelGestures(performance.now());
     window.addEventListener("blur", blur);
