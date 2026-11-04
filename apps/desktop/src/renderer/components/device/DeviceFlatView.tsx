@@ -5,7 +5,7 @@
 // and (round 5 §V1) the `rotation`/`sideways` handling that draws the raw
 // PORTRAIT framebuffer inside a transposed landscape box.
 import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type PointerEvent, type ReactNode, type WheelEvent } from "react";
-import type { AppleDeviceOrientation } from "../../../shared/types/iosSimulator";
+import type { DeviceOrientation } from "../../../shared/types/deviceOrientation";
 import { cn } from "../ui/cn";
 
 /**
@@ -61,7 +61,7 @@ export type DeviceFlatViewProps = {
    * appear in this file — so a rotated device drew its landscape picture
    * inside a portrait box, lying on its side.
    */
-  orientation: AppleDeviceOrientation;
+  orientation: DeviceOrientation;
   /** False while watching, or while inspect owns the pointer. */
   interactive: boolean;
   onDeviceInput: (input: DeviceInput) => void;
@@ -86,8 +86,8 @@ export type DeviceFlatViewProps = {
    * reader and black-frame the device — which the spec calls a bug by name.
    */
   screenOverlay?: ReactNode;
-  /** What a screen reader calls the screen. Defaults to "iOS Simulator screen". */
-  ariaLabel?: string;
+  /** What a screen reader calls the screen: each tool names its own. */
+  ariaLabel: string;
   /** CSS pixels at the right edge the screen must stay out of: the rail, while it shows. */
   railInset?: number;
   className?: string;
@@ -194,7 +194,7 @@ export type ScreenRotation = 0 | 90 | 180 | -90;
  * side. This is the `screen.width > screen.height` guard in the port.
  */
 export function screenRotationFor(
-  orientation: AppleDeviceOrientation,
+  orientation: DeviceOrientation,
   framePixelSize?: { width: number; height: number } | null,
 ): ScreenRotation {
   if (framePixelSize && framePixelSize.width > 0 && framePixelSize.width > framePixelSize.height) {
@@ -305,7 +305,7 @@ export function DeviceFlatView({
   onDeviceKey,
   onGeometryChange,
   screenOverlay,
-  ariaLabel = "iOS Simulator screen",
+  ariaLabel,
   railInset = 0,
   className,
 }: DeviceFlatViewProps) {
@@ -488,7 +488,7 @@ export function DeviceFlatView({
   return (
     <div
       ref={containerRef}
-      data-apple-flat-view=""
+      data-device-flat-view=""
       className={cn(
         "relative h-full w-full min-h-0 min-w-0 overflow-hidden outline-none",
         interactive && "focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-accent",
@@ -507,7 +507,7 @@ export function DeviceFlatView({
     >
       {box ? (
         <div
-          data-apple-screen-box=""
+          data-device-screen-box=""
           className="absolute"
           style={{ left: box.left, top: box.top, width: box.width, height: box.height }}
         >

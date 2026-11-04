@@ -43,7 +43,7 @@ export function androidSdkTool(sdk: AndroidSdkStatus, id: AndroidSdkTool["id"]):
 }
 
 /** True when the setup card is the answer: no SDK, or a part a boot needs is missing. */
-export function androidSetupNeeded(sdk: AndroidSdkStatus): boolean {
+function androidSetupNeeded(sdk: AndroidSdkStatus): boolean {
   if (!sdk.found) return true;
   // A part the brain did not report is not called missing.
   return REQUIRED_SDK_TOOLS.some((id) => androidSdkTool(sdk, id)?.available === false);

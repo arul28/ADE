@@ -2,13 +2,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import {
-  APPLE_DRAWER_GROUPS,
   DrawerSegmented,
   DrawerSwitch,
   Group,
   Subhead,
-  isAppleDrawerGroupId,
 } from "./drawerPrimitives";
+import { APPLE_DRAWER_GROUPS, isAppleDrawerGroupId } from "../apple/drawer/appleDrawerGroups";
 
 afterEach(cleanup);
 

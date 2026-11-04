@@ -222,6 +222,7 @@ export function AppleDeviceStage({
           screenPixelSize={screenPixelSize}
           devicePointSize={devicePointSize}
           orientation={orientation}
+          ariaLabel="iOS Simulator screen"
           interactive={interactive}
           onDeviceInput={onDeviceInput}
           onDeviceScroll={onDeviceScroll}

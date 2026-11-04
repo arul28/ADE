@@ -5,12 +5,8 @@ import { cn } from "../../ui/cn";
 import { PaneTooltip } from "../../ui/PaneTooltip";
 import { describeAppleError } from "../appleErrors";
 import { Banner } from "../../ui/notice";
-import {
-  DRAWER_ICON_BUTTON,
-  Group,
-  isAppleDrawerGroupId,
-  type AppleDrawerGroupId,
-} from "../../ui/drawerPrimitives";
+import { DRAWER_ICON_BUTTON, Group } from "../../ui/drawerPrimitives";
+import { isAppleDrawerGroupId, type AppleDrawerGroupId } from "./appleDrawerGroups";
 import { useAppleDrawerActions, type AppleDrawerScope } from "./useAppleDrawerActions";
 import type { AppleDrawerContext } from "./drawerContext";
 import { AppSection } from "./sections/AppSection";

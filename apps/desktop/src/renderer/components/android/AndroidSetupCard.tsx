@@ -37,7 +37,7 @@ function defaultSdkFolder(platform: string | null): string | null {
   return null;
 }
 
-export function androidSetupRows(sdk: AndroidSdkStatus): ChecklistRow[] {
+function androidSetupRows(sdk: AndroidSdkStatus): ChecklistRow[] {
   const platformTools = androidSdkTool(sdk, "platform-tools");
   const emulator = androidSdkTool(sdk, "emulator");
   const image = androidSdkTool(sdk, "system-image");
