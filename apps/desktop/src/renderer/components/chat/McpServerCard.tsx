@@ -191,6 +191,19 @@ export function McpServerRequestComposer({
   const savedTitle = `Saved to your account, on all your machines.${card.secrets.length ? " Values are never shown to the agent." : ""}`;
   const shownError = signInError ?? error;
 
+  // With nothing to type, what runs and the button share one line.
+  const inlineRuns = !asked.length && !copied.length;
+  const runs = (
+    <div className="ade-mcpc-runs" data-inline={inlineRuns || undefined} data-testid="mcp-server-runs">
+      <span className="ade-mcpc-runs-label">Runs</span>
+      <code className="ade-mcpc-runs-line">{card.runs}</code>
+      {card.source === "imported" && card.providers.length ? (
+        <span className="ade-mcpc-from" title={`In ${toolList(card.providers)}'s settings on this computer`}>
+          {card.providers.slice(0, 3).map((provider) => <ProviderLogo key={provider} family={provider} size={11} />)}
+        </span>
+      ) : null}
+    </div>
+  );
   return (
     <div
       role="group"
@@ -257,17 +270,10 @@ export function McpServerRequestComposer({
       <div className="ade-icc-body">
         {card.reason ? <p className="ade-icc-reason">{card.reason}</p> : null}
 
-        <div className="ade-mcpc-runs" data-testid="mcp-server-runs">
-          <span className="ade-mcpc-runs-label">Runs</span>
-          <code className="ade-mcpc-runs-line">{card.runs}</code>
-          {card.source === "imported" && card.providers.length ? (
-            <span className="ade-mcpc-from" title={`In ${toolList(card.providers)}'s settings on this computer`}>
-              {card.providers.slice(0, 3).map((provider) => <ProviderLogo key={provider} family={provider} size={11} />)}
-            </span>
-          ) : null}
-        </div>
+        {inlineRuns ? null : runs}
 
         <div className="ade-icc-row" data-fields={asked.length}>
+          {inlineRuns ? runs : null}
           {asked.length ? (
             <span className="ade-icc-fields" title={savedTitle}>
               {asked.map((secret, index) => (
@@ -295,7 +301,7 @@ export function McpServerRequestComposer({
               <ArrowSquareOut size={10} weight="bold" />
             </button>
           ) : null}
-          {!asked.length ? <span className="ade-mcpc-spacer" /> : null}
+          {!asked.length && !inlineRuns ? <span className="ade-mcpc-spacer" /> : null}
           {signingIn ? (
             <button type="button" className="ade-icc-link ade-icc-link-dim" onClick={cancelSignIn}>Cancel</button>
           ) : null}

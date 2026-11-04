@@ -71,3 +71,4 @@
   background: color-mix(in srgb, #8b7cf6 55%, rgba(14, 15, 19, 0.9));
   box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08);
 }
+.ade-mcpc-runs[data-inline] { flex: 1 1 auto; align-self: stretch; align-items: center; }
