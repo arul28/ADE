@@ -102,8 +102,10 @@ function decode(raw: string | null | undefined, logger?: Agent37CredentialDeps["
     const parsed = JSON.parse(raw) as Record<string, unknown>;
     return parsed?.v === 1 && typeof parsed.key === "string" && parsed.key.trim() ? parsed.key.trim() : null;
   } catch (error) {
-    // A damaged item reads as "no key saved"; say so, never with the value.
-    logger?.warn("agent37.key_item_unreadable", { error: errorText(error) });
+    // A damaged item reads as "no key saved"; say so, never with the value. A
+    // fixed reason only: V8's JSON.parse message quotes the text it read,
+    // which here is the key.
+    logger?.warn("agent37.key_item_unreadable", { reason: error instanceof SyntaxError ? "invalid_json" : "unreadable" });
     return null;
   }
 }
