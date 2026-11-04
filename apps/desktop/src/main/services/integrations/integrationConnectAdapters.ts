@@ -61,18 +61,46 @@ function storageNote(storage: IntegrationCredentialStorage | null | undefined): 
   return storage.message?.trim() || "Saved on this computer only.";
 }
 
+/**
+ * Whether ADE has a GitHub credential that can push and open PRs. ADE's
+ * GitHub app only reads, so it never counts. Mirrors the renderer's
+ * `githubStatusHasWriteCredential`, for runtimes that predate `writeAuthSource`.
+ */
+function githubCanWrite(status: GitHubStatus): boolean {
+  if (status.writeAuthSource != null) return status.writeAuthSource !== "none";
+  return status.connected && status.authSource !== "app" && status.authSource !== "none";
+}
+
 function githubAdapter(services: IntegrationConnectServices, fetcher: FetchLike): IntegrationConnectAdapter | null {
   const github = services.githubService;
   if (!github) return null;
   return {
+    // Connected means reads AND writes: an agent asks because something it
+    // needs failed, and with only ADE's app signed in that is a push or a PR.
     async status() {
       const status = await github.getStatus();
+      const reads = Boolean(status.connected);
+      const writes = githubCanWrite(status);
       return {
-        connected: Boolean(status.connected),
-        account: status.userLogin ?? null,
-        detail: status.connected
+        connected: reads && writes,
+        account: status.writeUserLogin ?? status.userLogin ?? null,
+        detail: reads && writes
           ? null
-          : status.authFailure?.message ?? status.repoAccessError ?? (status.tokenStored ? "The saved token does not work." : "No token saved."),
+          : reads
+            ? "Reads work, but no token can push or open PRs."
+            : status.authFailure?.message ?? status.repoAccessError ?? (status.tokenStored ? "The saved token does not work." : "No token saved."),
+        // The app cannot add what is missing once reads work.
+        offer: reads ? ["token"] : ["token", "app"],
+        current: reads && !writes ? `${status.userLogin ? `${status.userLogin} · ` : ""}reads only` : null,
+      };
+    },
+    async checkSignIn(method) {
+      const status = await github.getStatus();
+      const works = method === "app" ? Boolean(status.connected) : Boolean(status.connected) && githubCanWrite(status);
+      return {
+        connected: works,
+        account: status.userLogin ?? null,
+        detail: works ? null : status.repoAccessError ?? status.authFailure?.message ?? null,
       };
     },
     async save(_method, values) {

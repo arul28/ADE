@@ -42,6 +42,12 @@ const HEADLESS_ACCOUNT_SETTINGS_REJECTED_MESSAGE =
 
 export type AccountRuntimeLifecycleOptions = {
   enabled: boolean;
+  /**
+   * Open the settings and vault stores without the rest: no migration and no
+   * pull into the project credential services. For a dev brain with sync off
+   * (`ADE_DEV_ACCOUNT_STORES=1`), whose stores live in their own folder.
+   */
+  storesOnly?: boolean;
   accountStoreAdeDir: string;
   pushRelayFilePath: string;
   syncDeviceIdPath: string;
@@ -134,7 +140,7 @@ export function createAccountRuntimeLifecycle(options: AccountRuntimeLifecycleOp
   let accountVaultStore: AccountVaultStore | null = null;
   const accountVaultBridge = createHeadlessAccountVaultBridge(() => accountVaultStore);
 
-  if (options.enabled) {
+  if (options.enabled || options.storesOnly) {
     const accountStoreRelay = options.relay ?? createPushRelayClient({
       store: createPushRegistrationStore({
         filePath: options.pushRelayFilePath,
@@ -306,7 +312,7 @@ export function createAccountRuntimeLifecycle(options: AccountRuntimeLifecycleOp
 
   if (accountVaultStore) {
     options.teardown.push(accountVaultStore.startPeriodicSync(undefined, (status) => {
-      if (status !== "ready") return;
+      if (status !== "ready" || !options.enabled) return;
       onVaultReady();
     }));
   }

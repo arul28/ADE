@@ -56,8 +56,8 @@ import {
   type SettingsMachinePage,
 } from "./SettingsMachinesNav";
 import { WebSettingsSection } from "./WebScopePill";
-import { IntegrationsHome } from "./integrations/IntegrationsHome";
-import { isIntegrationId, type IntegrationId } from "./integrations/integrationBrand";
+import { ConnectionsHome, type ConnectionPageId } from "./integrations/ConnectionsHome";
+import { isIntegrationId } from "./integrations/integrationBrand";
 import { useSettingsMachineScope } from "./SettingsMachineScope";
 import {
   SETTINGS_ENTRIES,
@@ -175,62 +175,69 @@ function AgentsTabContent() {
   );
 }
 
+function isConnectionPageId(value: string | null | undefined): value is ConnectionPageId {
+  return value === "mcp" || isIntegrationId(value);
+}
+
 /**
- * The integration a settings anchor or `#hash` deeplink belongs to: every
- * integrations anchor starts with its integration's id (`github-connection`,
- * `jira-projects`, and the legacy bare `#github` / `#linear`).
+ * The Connections page a settings anchor or `#hash` deeplink belongs to:
+ * every integration anchor starts with its integration's id
+ * (`github-connection`, `jira-projects`, the legacy bare `#github`), and
+ * every MCP servers anchor with `mcp`.
  */
-export function integrationIdForAnchor(anchorOrHash: string): IntegrationId | null {
+export function connectionPageForAnchor(anchorOrHash: string): ConnectionPageId | null {
   const head = decodeSettingsHash(anchorOrHash).split("-")[0] ?? "";
-  return isIntegrationId(head) ? head : null;
+  return isConnectionPageId(head) ? head : null;
 }
 
 /**
- * The integration page the URL has open, or null for the grid. A hash wins: a
- * settings search result keeps the query string, so a stale `integration=`
- * from the page open before it must not override its target.
+ * The Connections page the URL has open, or null for the home grid. A hash
+ * wins: a settings search result keeps the query string, so a stale
+ * `integration=` from the page open before it must not override its target.
  */
-export function openIntegrationFromUrl(searchParams: URLSearchParams, hash: string): IntegrationId | null {
+export function openConnectionFromUrl(searchParams: URLSearchParams, hash: string): ConnectionPageId | null {
   const param = searchParams.get("integration")?.trim().toLowerCase();
-  return integrationIdForAnchor(hash) ?? (isIntegrationId(param) ? param : null);
+  return connectionPageForAnchor(hash) ?? (isConnectionPageId(param) ? param : null);
 }
 
 /**
- * Integrations. Like Providers, one integration's page is a sub-view of the
- * tab, `?integration=<id>`; a `#hash` naming one of its settings opens it too.
- * With none open, the tab is a grid of the integrations and their state.
+ * Connections. Like Providers, one connection's page is a sub-view of the
+ * tab, `?integration=<github|linear|jira|mcp>`; a `#hash` naming one of its
+ * settings opens it too. With none open, the tab is the Connections home.
  */
-function IntegrationsTabContent({ machine }: { machine: SettingsMachinePage | null }) {
+function ConnectionsTabContent({ machine }: { machine: SettingsMachinePage | null }) {
   const location = useLocation();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const { pin } = useSettingsMachineScope();
-  const requested = openIntegrationFromUrl(searchParams, location.hash);
-  const sections = (TAB_SECTIONS.integrations ?? []).filter(
+  const requested = openConnectionFromUrl(searchParams, location.hash);
+  const sections = (TAB_SECTIONS.connections ?? []).filter(
     (section) => !machine || !section.machine || machineSectionAvailable(section.machine, machine),
   );
   const section = requested ? sections.find((entry) => entry.group === requested) : undefined;
 
-  const open = useCallback((next: IntegrationId | null) => {
+  const open = useCallback((next: ConnectionPageId | null, server?: string) => {
     const nextParams = new URLSearchParams(searchParams);
     if (next) nextParams.set("integration", next);
     else nextParams.delete("integration");
+    if (server) nextParams.set("mcpServer", server);
+    else nextParams.delete("mcpServer");
     navigate({ pathname: location.pathname, search: `?${nextParams.toString()}`, hash: "" }, { replace: true });
   }, [location.pathname, navigate, searchParams]);
 
   if (!section) {
     return (
       <SettingsColumn wide>
-        <IntegrationsHome pin={pin} onOpen={open} />
+        <ConnectionsHome pin={pin} onOpen={open} />
       </SettingsColumn>
     );
   }
-  const entryIds = section.entryIds === "tab" ? settingsEntryIdsForTab("integrations") : section.entryIds;
+  const entryIds = section.entryIds === "tab" ? settingsEntryIdsForTab("connections") : section.entryIds;
   return (
     <SettingsColumn wide>
       <div className="ade-ig-route">
         <button type="button" className="ade-ig-back" onClick={() => open(null)}>
-          <CaretLeft size={12} weight="bold" /> All integrations
+          <CaretLeft size={12} weight="bold" /> All connections
         </button>
         <WebSettingsSection entryIds={entryIds}>{section.render()}</WebSettingsSection>
       </div>
@@ -491,10 +498,14 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
   // Connections live in the credential store of the machine that owns the
   // project and are read by its runtime. Every call takes that machine's pin.
   // Browser steps (device codes, OAuth pages) still open on This computer.
-  integrations: [
+  //
+  // The MCP servers page is the account's (settings store and vault), read
+  // through this desktop's own brain, so it carries no machine kind.
+  connections: [
     { entryIds: ["integrations.github", "integrations.github-issues-top-bar"], render: () => <GitHubIntegrationSection />, machine: "routed", title: "GitHub", group: "github" },
     { entryIds: ["integrations.linear", "integrations.linear-top-bar"], render: () => <LinearIntegrationSection />, machine: "routed", title: "Linear", group: "linear" },
     { entryIds: ["integrations.jira", "integrations.jira-projects", "integrations.jira-top-bar"], render: () => <JiraSection />, machine: "routed", title: "Jira", group: "jira" },
+    { entryIds: ["mcp.servers", "mcp.found"], render: () => <McpServersSection />, title: "MCP servers", group: "mcp" },
   ],
   notifications: [{ entryIds: "tab", render: () => <NotificationsSection /> }],
   // Account-wide: the on/off switch, the computers and the connections live in
@@ -502,7 +513,6 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
   // brain with no pin and carries no machine kind. Any brain on the account
   // answers for all of them; only the Activity log is this computer's.
   "ade-mcp": [{ entryIds: "tab", render: () => <SettingsColumn wide><AdeMcpPage /></SettingsColumn> }],
-  mcp: [{ entryIds: "tab", render: () => <McpServersSection /> }],
   secrets: [{ entryIds: ["secrets.secrets"], render: () => <SecretsSection /> }],
   stats: [{ entryIds: ["stats.usage"], render: () => <AdeUsageSection /> }],
 };
@@ -557,14 +567,9 @@ export function TabContent({
   if (machine && !machine.online) {
     return <MachineUnavailableNotice machine={machine} />;
   }
-  // Integrations routes between its grid and one integration's page off
+  // Connections routes between its home and one connection's page off
   // `?integration=`; its sections are the pages.
-  if (tab === "integrations") {
-    if (machine && !TAB_SECTIONS.integrations!.some((section) => !section.machine || machineSectionAvailable(section.machine, machine))) {
-      return <MachineUnavailableNotice machine={machine} unavailableTitles={["Integrations"]} />;
-    }
-    return <IntegrationsTabContent machine={machine} />;
-  }
+  if (tab === "connections") return <ConnectionsTabContent machine={machine} />;
   // Providers is the one tab that is not a list of sections: it routes between
   // the grid and one provider's page off `?provider=`.
   if (tab === "agents") {

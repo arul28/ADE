@@ -8,6 +8,7 @@ import {
   connectMethod,
   connectProviderSpec,
   isConnectProviderId,
+  isSelfRunConnectMethod,
   normalizeConnectSiteInput,
   type ConnectMethodId,
   type ConnectProviderId,
@@ -45,6 +46,10 @@ export type IntegrationConnectionState = {
   detail: string | null;
   /** Why a new credential would stay on this machine; null when it reaches every machine. */
   storedOnThisMachine?: string | null;
+  /** The methods worth offering from this state, in order. Absent: all of them. */
+  offer?: ConnectMethodId[];
+  /** What already works, in a few words, for the card. */
+  current?: string | null;
 };
 
 /**
@@ -56,6 +61,12 @@ export type IntegrationConnectionState = {
 export type IntegrationConnectAdapter = {
   status(): Promise<IntegrationConnectionState>;
   save(method: ConnectMethodId, values: Record<string, string>): Promise<{ account: string | null }>;
+  /**
+   * After a sign-in the card ran itself: whether that method's sign-in works.
+   * Absent: `status().connected`. GitHub's app only reads, so its check is
+   * narrower than the full connection.
+   */
+  checkSignIn?(method: ConnectMethodId): Promise<IntegrationConnectionState>;
 };
 
 export type IntegrationConnectDeps = {
@@ -84,8 +95,8 @@ export async function listIntegrationConnections(deps: Pick<IntegrationConnectDe
     const adapter = deps.adapters[provider];
     if (!adapter) return { provider, label, connected: false, account: null, detail: "Not available on this machine." };
     try {
-      const { storedOnThisMachine: _storage, ...state } = await adapter.status();
-      return { provider, label, ...state };
+      const { connected, account, detail } = await adapter.status();
+      return { provider, label, connected, account, detail };
     } catch (error) {
       return { provider, label, connected: false, account: null, detail: error instanceof Error ? error.message : "Could not check." };
     }
@@ -150,8 +161,18 @@ async function askToConnect(
   }
 
   const savedNote = before?.storedOnThisMachine?.trim();
-  const card: IntegrationConnectRequestCard = { provider, reason, ...(savedNote ? { savedNote } : {}) };
-  const keyMethods = spec.methods.filter((method) => !method.browser);
+  const current = before?.current?.trim();
+  const offered = before?.offer?.length
+    ? spec.methods.filter((method) => before.offer!.includes(method.id))
+    : spec.methods;
+  const card: IntegrationConnectRequestCard = {
+    provider,
+    reason,
+    ...(savedNote ? { savedNote } : {}),
+    ...(offered.length < spec.methods.length ? { methods: offered.map((method) => method.id) } : {}),
+    ...(current ? { current } : {}),
+  };
+  const keyMethods = offered.filter((method) => !isSelfRunConnectMethod(method));
 
   // A client that draws the native card reads the metadata; any other client
   // (an older desktop, the phone) still gets working questions: which way,
@@ -187,12 +208,13 @@ async function askToConnect(
     const chosen = connectMethod(provider, firstAnswer(answers, CONNECT_METHOD_QUESTION_ID))
       ?? (keyMethods.length === 1 ? keyMethods[0]! : null);
     if (!chosen) throw new Error(`Pick how to connect ${spec.label}.`);
-    if (chosen.browser) {
+    if (!offered.includes(chosen)) throw new Error(`Pick how to connect ${spec.label}.`);
+    if (isSelfRunConnectMethod(chosen)) {
       // The card ran the sign-in itself; trust only what the integration says.
-      const after = await adapter.status();
+      const after = adapter.checkSignIn ? await adapter.checkSignIn(chosen.id) : await adapter.status();
       if (!after.connected) {
         const detail = after.detail?.trim().replace(/\.+$/, "");
-        throw new Error(`${spec.label} still shows as not connected${detail ? `: ${detail}` : ""}. Finish the sign-in in your browser, or use another way.`);
+        throw new Error(`${spec.label} still shows as not connected${detail ? `: ${detail}` : ""}. Finish the sign-in, or use another way.`);
       }
       account = after.account;
       usedMethod = chosen.id;
