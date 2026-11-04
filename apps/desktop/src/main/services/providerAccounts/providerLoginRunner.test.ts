@@ -40,7 +40,9 @@ function makeFakePty(): FakePty {
   const dataListeners: Array<(data: string) => void> = [];
   const exitListeners: Array<(event: { exitCode: number }) => void> = [];
   const pty: FakePty = {
-    pid: 4242,
+    // 0: the runner then skips the Windows tree kill, which would run a real
+    // taskkill on whatever process holds the pid.
+    pid: 0,
     writes: [],
     killed: false,
     onData: (cb) => {
@@ -193,12 +195,15 @@ describe("providerLoginRunner", () => {
     expect(runner.status(login.loginId).state).toBe("cancelled");
   });
 
-  it("completes a sign-in link that arrives split across two reads", () => {
+  // Windows' ConPTY sends a blank line as a cursor move, not a newline.
+  it.each([
+    ["split across two reads", ["Open https://claude.ai/au", "th?code=abc123\r\n"]],
+    ["followed by a ConPTY cursor move", ["Open https://claude.ai/auth?code=abc123\u001b[5;1H", "Paste code here if prompted > "]],
+  ])("reads the whole sign-in link when it arrives %s", (_shape, chunks) => {
     const { runner, ptys } = makeRunner();
     const login = runner.start("work");
 
-    ptys[0]?.emitData("Open https://claude.ai/au");
-    ptys[0]?.emitData("th?code=abc123\r\n");
+    for (const chunk of chunks) ptys[0]?.emitData(chunk);
 
     expect(runner.status(login.loginId).url).toBe("https://claude.ai/auth?code=abc123");
   });
@@ -224,6 +229,8 @@ describe("providerLoginRunner", () => {
     expect(ptys[0]?.writes.at(-1)).toBe("abc12345\r");
 
     ptys[0]?.emitData("abc12345\r\n");
+    // The answered prompt is still on screen; it does not ask again.
+    expect(runner.status(login.loginId).awaitingCode).toBe(false);
     const output = runner.status(login.loginId).output;
     expect(output).not.toContain("abc12345");
     expect(output).toContain("[code]");

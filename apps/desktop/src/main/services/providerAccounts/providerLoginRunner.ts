@@ -58,6 +58,8 @@ type LoginRecord = {
   rawOutput: string;
   /** Codes pasted into this sign-in, redacted from the output if the CLI echoes them. */
   submittedCodes: string[];
+  /** Output since the last pasted code; null before one. Only it can show the code prompt again. */
+  rawSinceSubmit: string | null;
   timeout: ReturnType<typeof setTimeout> | null;
   cleanup: ReturnType<typeof setTimeout> | null;
 };
@@ -165,8 +167,11 @@ export function createProviderLoginRunner(deps: ProviderLoginRunnerDeps) {
         if (deviceCode) record.status.deviceCode = deviceCode;
       }
       // The prompt can be followed by the CLI's own "Login successful", so
-      // only the latest few lines decide whether it is still waiting.
-      record.status.awaitingCode = CODE_PROMPT_PATTERN.test(text.split("\n").slice(-4).join("\n"));
+      // only the latest few lines decide whether it is still waiting. After a
+      // paste, the prompt it answered is still there; only a new one counts.
+      if (record.rawSinceSubmit !== null) record.rawSinceSubmit = `${record.rawSinceSubmit}${data}`.slice(-LOGIN_OUTPUT_LIMIT);
+      const promptText = record.rawSinceSubmit === null ? text : cleanLoginOutput(record.rawSinceSubmit, record.submittedCodes);
+      record.status.awaitingCode = CODE_PROMPT_PATTERN.test(promptText.split("\n").slice(-4).join("\n"));
     });
     pty.onExit(({ exitCode }) => {
       void onExit(record, exitCode);
@@ -195,6 +200,7 @@ export function createProviderLoginRunner(deps: ProviderLoginRunnerDeps) {
       pty: null,
       rawOutput: "",
       submittedCodes: [],
+      rawSinceSubmit: null,
       timeout: null,
       cleanup: null,
     };
@@ -242,8 +248,9 @@ export function createProviderLoginRunner(deps: ProviderLoginRunnerDeps) {
       if (!record.pty || record.status.state !== "running") {
         throw new Error("This sign-in is not waiting for a code any more.");
       }
-      // A short paste ("y") would blank every match in the output.
-      if (trimmed.length >= 8) record.submittedCodes.push(trimmed);
+      // A paste as short as "y" would blank every match in the output.
+      if (trimmed.length >= 4) record.submittedCodes.push(trimmed);
+      record.rawSinceSubmit = "";
       record.pty.write(`${trimmed}\r`);
       record.status.awaitingCode = false;
       return snapshot(record);

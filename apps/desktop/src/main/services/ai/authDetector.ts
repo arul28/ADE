@@ -567,10 +567,13 @@ async function inspectCursorCliAuthentication(pinned: PinnedCliCommand): Promise
  * Best-effort check for a Factory credential ADE can see without launching droid,
  * and which kind: an API key ADE can read, or the CLI's encrypted sign-in.
  *
- * `droid` login keeps its credential encrypted in `<factory home>/auth.v2.file`,
- * next to the key in `auth.v2.key` (seen on a signed-in machine, 2026-10-20,
- * CLI v0.70.0 and the pinned v0.244.0: `droid` rewrote auth.v2.file on sign-in,
- * and an SDK session ran on it with no API key). ADE cannot decrypt it, so a
+ * `droid` login keeps its credential encrypted in one of DROID_SIGN_IN_FILES
+ * under `<factory home>`: `auth.v2.keyring` (key in the OS keyring, the
+ * default off macOS when keytar loads), `auth.v2.loginkeychain`, or
+ * `auth.v2.file` next to its key in `auth.v2.key` (seen on a signed-in Mac,
+ * 2026-10-20, CLI v0.70.0 and v0.244.0: `droid` rewrote auth.v2.file on
+ * sign-in, and an SDK session ran on it with no API key). The pinned v1.0.0
+ * calls any of the three a login. ADE cannot decrypt them, so a
  * present file means "a sign-in ADE can see", not a verified one; the only
  * authoritative check is a real `droid exec` round trip (see
  * inspectDroidCliPresence). `~/.factory/settings.json` holds UI preferences
@@ -578,6 +581,8 @@ async function inspectCursorCliAuthentication(pinned: PinnedCliCommand): Promise
  * ever writes one. `null` means "no credential ADE can see", never "signed
  * out"; callers must not turn it, or a `sign_in`, into `verified: true`.
  */
+const DROID_SIGN_IN_FILES = ["auth.v2.keyring", "auth.v2.loginkeychain", "auth.v2.file"] as const;
+
 async function droidCredentialSeen(): Promise<"key" | "sign_in" | null> {
   if (process.env.FACTORY_API_KEY?.trim()) {
     return "key";
@@ -598,13 +603,9 @@ async function droidCredentialSeen(): Promise<"key" | "sign_in" | null> {
     // No readable settings token; the sign-in file below is the usual case.
   }
 
-  try {
-    const signIn = await readFile(path.join(factoryConfigHome(), "auth.v2.file"));
-    if (signIn.length > 0) return "sign_in";
-  } catch {
-    // No CLI sign-in on disk.
-  }
-  return null;
+  const home = factoryConfigHome();
+  const present = await Promise.all(DROID_SIGN_IN_FILES.map((name) => nonEmptyFile(path.join(home, name))));
+  return present.some(Boolean) ? "sign_in" : null;
 }
 
 async function inspectDroidCliPresence(pinned: PinnedCliCommand, options?: { deep?: boolean }): Promise<{
@@ -1566,11 +1567,11 @@ export async function readAgentCliSavedLogin(
       return { signedIn: users.length > 0, fingerprint: await fingerprintOf([file]), ...(account ? { account } : {}) };
     }
     case "droid": {
-      // Encrypted: the sign-in file next to its key (see droidCredentialSeen).
+      // Encrypted, in whichever store this machine uses (see droidCredentialSeen).
       const home = factoryConfigHome({ env });
-      const files = [path.join(home, "auth.v2.file"), path.join(home, "auth.v2.key")];
+      const files = DROID_SIGN_IN_FILES.map((name) => path.join(home, name));
       const present = await Promise.all(files.map(nonEmptyFile));
-      return { signedIn: present.every(Boolean), fingerprint: await fingerprintOf(files) };
+      return { signedIn: present.some(Boolean), fingerprint: await fingerprintOf([...files, path.join(home, "auth.v2.key")]) };
     }
     case "kimi": {
       // The token file Kimi reads for this environment, not `config.toml`:

@@ -82,10 +82,11 @@ function CliAuthActions({ ctx, cli }: { ctx: ProvidersViewContext; cli: "codex" 
   if (ctx.isInitialCheckInFlight) return null;
   if (connection?.runtimeAvailable || connection?.authAvailable) {
     // Copilot can sign in again (switch accounts, renew). Droid cannot: signed
-    // in, its CLI opens a normal session instead of a login. Codex has accounts.
-    return cli === "copilot"
-      ? <SettingsAgentCliSignIn ctx={ctx} provider="copilot" providerLabel="GitHub Copilot" fallback={null} again />
-      : null;
+    // in, its CLI opens a normal session instead of a login, so only the host
+    // of a sheet still showing its result stays. Codex has accounts.
+    if (cli === "copilot") return <SettingsAgentCliSignIn ctx={ctx} provider="copilot" providerLabel="GitHub Copilot" fallback={null} again />;
+    if (cli === "droid") return <SettingsAgentCliSignIn ctx={ctx} provider="droid" providerLabel="Droid" fallback={null} offered={false} />;
+    return null;
   }
   if (cli === "codex") return <DefaultAccountSignIn ctx={ctx} provider="codex" providerLabel="Codex" />;
   const commandToRun = (

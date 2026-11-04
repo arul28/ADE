@@ -85,6 +85,33 @@ describe("agentCliLoginRunner verification", () => {
     expect(cli.pty.kill).toHaveBeenCalled();
   });
 
+  // Signing in again: a session using the login refreshes its token in the
+  // same file, and a CLI can exit 0 on an expired code.
+  it("does not count a rewritten login as signing in again while the CLI waits", async () => {
+    const cli = fakePty();
+    const saved = savedLogin({ signedIn: true, fingerprint: "old" });
+    const runner = runnerWith(saved, cli);
+    const loginId = await startAndWait("kimi", runner);
+
+    cli.print("Opening browser for Kimi device login: https://www.kimi.ai/code/authorize_device?user_code=HIM4-52GR\n");
+    saved.set({ signedIn: true, fingerprint: "refreshed-by-a-session" });
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(runner.status(loginId).state).toBe("running");
+    expect(cli.pty.kill).not.toHaveBeenCalled();
+  });
+
+  it("fails signing in again when the CLI exits cleanly without a new login", async () => {
+    const cli = fakePty();
+    const saved = savedLogin({ signedIn: true, fingerprint: "old" });
+    const runner = runnerWith(saved, cli);
+    const loginId = await startAndWait("grok", runner);
+
+    cli.print("To sign in, open this URL in your browser: https://accounts.x.ai/oauth2/device?user_code=6HPS-5JPM\nError: device code expired\n");
+    cli.exit(0);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(runner.status(loginId).state).toBe("failed");
+  });
+
   // Muse keeps its login in the macOS Keychain, which ADE never reads, so a
   // clean exit decides there, unless Muse said the sign-in failed.
   it.each([

@@ -98,8 +98,8 @@ export function AgentCliSignInSheet({ provider, providerLabel, pin, isThisMachin
   /** A pasted code went in: the CLI is checking it, so the sheet says so instead of "open your browser". */
   const [codeSent, setCodeSent] = useState(false);
 
+  /** The machine the current sign-in runs on, fixed when it starts: its polls, code and cancel go there. */
   const pinRef = useRef(pin);
-  pinRef.current = pin;
   const loginRef = useRef<AgentCliLoginStatus | null>(null);
   const startSeqRef = useRef(0);
   const changedRef = useRef(false);
@@ -165,6 +165,7 @@ export function AgentCliSignInSheet({ provider, providerLabel, pin, isThisMachin
     }
     const seq = ++startSeqRef.current;
     cancelOnHost(loginRef.current);
+    pinRef.current = pin;
     setError(null);
     setCode("");
     setCodeSent(false);
@@ -184,7 +185,7 @@ export function AgentCliSignInSheet({ provider, providerLabel, pin, isThisMachin
       setError(startFailureMessage(err));
       setPhase("failed");
     }
-  }, [applyLogin, cancelOnHost, needsRegion, provider, region]);
+  }, [applyLogin, cancelOnHost, needsRegion, pin, provider, region]);
 
   // Everything but Kimi (which asks for its region first) starts on open.
   const startedRef = useRef(false);
@@ -304,6 +305,8 @@ export function AgentCliSignInSheet({ provider, providerLabel, pin, isThisMachin
       }}
       title={<>Sign in to {providerLabel}</>}
       closeLabel={`Close ${providerLabel} sign-in`}
+      // Closing cancels the sign-in: mid-flow, only Cancel, Escape or the close button do it.
+      closeOnScrimClick={phase !== "signing"}
       width={520}
       maxHeight="82vh"
       bodyPadding={false}
@@ -526,6 +529,7 @@ export function SettingsAgentCliSignIn({
   providerLabel,
   fallback,
   again = false,
+  offered = true,
 }: {
   ctx: ProvidersViewContext;
   provider: AgentCliLoginProvider;
@@ -533,6 +537,12 @@ export function SettingsAgentCliSignIn({
   fallback: React.ReactNode;
   /** Already signed in: a quieter "Sign in again", to switch accounts or renew the login. */
   again?: boolean;
+  /**
+   * False: no button, only the sheet's host. Rendered in the button's place
+   * once a status refresh says signed in, so an open sheet is not unmounted
+   * (which cancels its sign-in) before it shows the result.
+   */
+  offered?: boolean;
 }) {
   const { pin, isThisMachine, machineName } = useSettingsMachineScope();
   const refreshStatus = ctx.actions.refreshStatus;
@@ -544,6 +554,7 @@ export function SettingsAgentCliSignIn({
     onChanged: () => void refreshStatus({ force: true, silent: true }),
   });
   if (!agentCliSignInSupported()) return <>{fallback}</>;
+  if (!offered) return <>{sheet.element}</>;
   const where = isThisMachine ? "this computer" : machineName;
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>

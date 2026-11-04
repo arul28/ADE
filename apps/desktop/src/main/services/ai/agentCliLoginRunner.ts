@@ -11,6 +11,9 @@
  * (Droid's TUI never exits after a sign-in) and once when it exits. A login
  * counts only once it differs from the one on disk when the sign-in started,
  * so a machine that was already signed in does not read as done at once.
+ * Signing in again, a rewritten file proves nothing (a running session
+ * refreshes its token in the same file), so only the CLI's clean exit with a
+ * changed login counts.
  *
  *   const runner = getMachineAgentCliLoginRunner();
  *   const login = await runner.start({ provider: "grok" });
@@ -186,6 +189,8 @@ type LoginRecord = {
   rawOutput: string;
   /** Codes pasted into this sign-in, redacted from the output if the CLI echoes them. */
   submittedCodes: string[];
+  /** Output since the last pasted code; null before one. Only it can show the code prompt again. */
+  rawSinceSubmit: string | null;
   keypressSent: boolean;
   polling: boolean;
   timers: Set<ReturnType<typeof setTimeout>>;
@@ -255,6 +260,16 @@ export function createAgentCliLoginRunner(deps: AgentCliLoginRunnerDeps) {
     return saved.signedIn && saved.fingerprint !== record.baseline?.fingerprint;
   }
 
+  /**
+   * A changed login file proves a sign-in while the CLI still runs, and after
+   * an exit that was not clean. Not when the CLI rewrites it before approval
+   * (Copilot), nor when a login was already there: a session using it
+   * refreshes its token in the same file.
+   */
+  function trustsFileChange(record: LoginRecord): boolean {
+    return !SPECS[record.status.provider].verifyOnExitOnly && !record.baseline?.signedIn;
+  }
+
   async function pollSavedLogin(record: LoginRecord): Promise<void> {
     if (record.polling || record.status.state !== "running") return;
     record.polling = true;
@@ -281,9 +296,7 @@ export function createAgentCliLoginRunner(deps: AgentCliLoginRunnerDeps) {
       const saved = await deps.readSavedLogin(record.status.provider, record.env);
       // A cancel, the timeout, or a new start may have ended it meanwhile.
       if (record.status.state !== "verifying") return;
-      // A clean exit with a login on disk counts even when the CLI rewrote
-      // nothing (a sign-in to the account it already had).
-      if (isFresh(record, saved) || (saved.signedIn && exitCode === 0)) {
+      if (isFresh(record, saved) && (exitCode === 0 || trustsFileChange(record))) {
         succeed(record, saved.account);
         return;
       }
@@ -317,7 +330,14 @@ export function createAgentCliLoginRunner(deps: AgentCliLoginRunnerDeps) {
     const tail = text.split("\n").slice(-PROMPT_TAIL_LINES).join("\n");
     // The prompt can be followed by the CLI's own "Signed in", so only the
     // latest lines decide whether it is still waiting.
-    if (spec.pasteCode) record.status.awaitingCode = CODE_PROMPT_PATTERN.test(tail);
+    if (record.rawSinceSubmit !== null) record.rawSinceSubmit = `${record.rawSinceSubmit}${data}`.slice(-LOGIN_OUTPUT_LIMIT);
+    if (spec.pasteCode) {
+      // After a paste, the prompt it answered is still on screen; only a new one counts.
+      const promptTail = record.rawSinceSubmit === null
+        ? tail
+        : cleanLoginOutput(record.rawSinceSubmit, record.submittedCodes).split("\n").slice(-PROMPT_TAIL_LINES).join("\n");
+      record.status.awaitingCode = CODE_PROMPT_PATTERN.test(promptTail);
+    }
     if (spec.keypress && !record.keypressSent && spec.keypress.when.test(tail)) {
       record.keypressSent = true;
       const pty = record.pty;
@@ -354,7 +374,7 @@ export function createAgentCliLoginRunner(deps: AgentCliLoginRunnerDeps) {
     pty.onExit(({ exitCode }) => {
       void onExit(record, exitCode);
     });
-    if (!spec.verifyOnExitOnly) {
+    if (trustsFileChange(record)) {
       record.poll = setInterval(() => {
         void pollSavedLogin(record);
       }, pollMs);
@@ -394,6 +414,7 @@ export function createAgentCliLoginRunner(deps: AgentCliLoginRunnerDeps) {
       pty: null,
       rawOutput: "",
       submittedCodes: [],
+      rawSinceSubmit: null,
       keypressSent: false,
       polling: false,
       timers: new Set(),
@@ -439,8 +460,9 @@ export function createAgentCliLoginRunner(deps: AgentCliLoginRunnerDeps) {
       if (!record.pty || record.status.state !== "running") {
         throw new Error("This sign-in is not waiting for a code any more.");
       }
-      // A short paste ("y") would blank every match in the output.
-      if (trimmed.length >= 8) record.submittedCodes.push(trimmed);
+      // A paste as short as "y" would blank every match in the output.
+      if (trimmed.length >= 4) record.submittedCodes.push(trimmed);
+      record.rawSinceSubmit = "";
       record.pty.write(`${trimmed}\r`);
       record.status.awaitingCode = false;
       return snapshot(record);

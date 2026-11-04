@@ -88,23 +88,21 @@ export function stopLoginPty(pty: Pick<IPty, "pid" | "kill"> | null, options: { 
 
 /**
  * The CLI's raw output as text: no terminal escapes, a lone carriage return
- * read as a line break, and every pasted code blanked. `cursorMovesAsSpace`
- * is for full-screen TUIs that move the cursor instead of writing a space or
- * a newline, so words they draw apart do not run together.
+ * or a cursor move to a new row read as a line break, and every pasted code
+ * blanked. Windows' ConPTY sends a CLI's blank lines as a cursor move, so
+ * without the break a link runs into the next line's first word.
+ * `cursorMovesAsSpace` is for full-screen TUIs that move the cursor forward
+ * instead of writing a space, so words they draw apart do not run together.
  */
 export function cleanLoginOutput(
   raw: string,
   submittedCodes: readonly string[],
   options: { cursorMovesAsSpace?: boolean } = {},
 ): string {
-  let input = raw;
-  if (options.cursorMovesAsSpace) {
-    input = input
-      // Cursor position (row;col H / f) starts a new drawn line.
-      .replace(/\u001b\[\d*(?:;\d*)?[Hf]/g, "\n")
-      // Cursor forward stands in for spaces.
-      .replace(/\u001b\[\d*C/g, " ");
-  }
+  // Cursor position (row;col H / f) starts a new line.
+  let input = raw.replace(/\u001b\[\d*(?:;\d*)?[Hf]/g, "\n");
+  // Cursor forward stands in for spaces.
+  if (options.cursorMovesAsSpace) input = input.replace(/\u001b\[\d*C/g, " ");
   let text = stripAnsi(input).replace(/\r(?!\n)/g, "\n");
   for (const code of submittedCodes) text = text.split(code).join("[code]");
   return text;
