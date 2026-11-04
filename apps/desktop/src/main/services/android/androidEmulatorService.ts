@@ -18,7 +18,7 @@ import type {
   AndroidSystemImage,
 } from "../../../shared/types/androidEmulator";
 import type { Logger } from "../logging/logger";
-import { getErrorMessage, sleep } from "../shared/utils";
+import { getErrorMessage } from "../shared/utils";
 import {
   createAndroidAvd,
   deleteAdeAndroidAvd,

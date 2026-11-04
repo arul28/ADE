@@ -27,7 +27,7 @@ import type {
 } from "../../../shared/types/androidEmulator";
 import { runAdbText } from "./adb";
 import { AndroidEmulatorFailure } from "./androidEmulatorErrors";
-import { createAndroidStreamServer, type AndroidStreamMetrics, type AndroidStreamServer } from "./androidStreamServer";
+import { createAndroidStreamServer, type AndroidStreamServer } from "./androidStreamServer";
 import {
   encodeHardwareKeyPress,
   encodeInjectText,
