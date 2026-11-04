@@ -22381,7 +22381,7 @@ function buildCliPlan(
     primary === "windows-desk"
   )
     return buildMacDesktopPlan(args);
-  if (primary === "android") return buildAndroidPlan(args);
+  if (primary === "android") return buildAndroidPlan(args, { remote: Boolean(options.machine?.trim()) });
   if (
     primary === "app-control" ||
     primary === "app" ||

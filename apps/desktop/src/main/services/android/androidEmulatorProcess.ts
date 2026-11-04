@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import type { AndroidRunningEmulator } from "../../../shared/types/androidEmulator";
 import { runAdb, runAdbText } from "./adb";
-import { readAndroidAvd } from "./androidAvds";
+import { readAndroidAvd, sameAvdName } from "./androidAvds";
 import { AndroidEmulatorFailure } from "./androidEmulatorErrors";
 import { parseAndroidIni, type AndroidEnv } from "./androidSdk";
 
@@ -154,7 +154,11 @@ type AdeStartRecord = {
 export class AdeStartedEmulators {
   private records: AdeStartRecord[];
 
-  constructor(private readonly statePath: string | null = null) {
+  constructor(
+    private readonly statePath: string | null = null,
+    /** A read or write of the file failed. A missing file is not a failure. */
+    private readonly onFileError?: (op: "load" | "save", error: unknown) => void,
+  ) {
     this.records = this.load();
   }
 
@@ -165,7 +169,9 @@ export class AdeStartedEmulators {
       if (!Array.isArray(parsed)) return [];
       return parsed.filter((entry): entry is AdeStartRecord =>
         Boolean(entry) && typeof entry.avdName === "string" && typeof entry.consolePort === "number" && typeof entry.launcherPid === "number");
-    } catch {
+    } catch (error) {
+      // An unreadable list makes every emulator ADE started look foreign.
+      if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") this.onFileError?.("load", error);
       return [];
     }
   }
@@ -177,35 +183,49 @@ export class AdeStartedEmulators {
       const temp = `${this.statePath}.${process.pid}.tmp`;
       fs.writeFileSync(temp, JSON.stringify(this.records, null, 2));
       fs.renameSync(temp, this.statePath);
-    } catch {
-      // Best-effort: the in-memory list still holds this process's starts.
+    } catch (error) {
+      // The in-memory list still holds this process's starts.
+      this.onFileError?.("save", error);
     }
   }
 
   record(entry: Omit<AdeStartRecord, "startedAt"> & { startedAt?: string }): void {
-    this.records = this.records.filter((record) => !(record.avdName === entry.avdName && record.consolePort === entry.consolePort));
+    this.records = this.records.filter((record) => !(sameAvdName(record.avdName, entry.avdName) && record.consolePort === entry.consolePort));
     this.records.push({ ...entry, startedAt: entry.startedAt ?? new Date().toISOString() });
     this.save();
   }
 
   forget(match: { avdName: string; consolePort: number }): void {
     const before = this.records.length;
-    this.records = this.records.filter((record) => !(record.avdName === match.avdName && record.consolePort === match.consolePort));
+    this.records = this.records.filter((record) => !(sameAvdName(record.avdName, match.avdName) && record.consolePort === match.consolePort));
     if (this.records.length !== before) this.save();
   }
 
-  /** ADE started this running emulator: same AVD, same console port, and one of its pids. */
+  /**
+   * ADE started this running emulator: same AVD, same console port, and one of
+   * its pids. A start whose qemu pid is not known yet (it is still booting, or
+   * the brain that started it handed it off mid-boot) matches on the AVD and
+   * console port alone; that port came from ADE's own reservation.
+   */
   owns(emulator: Pick<AndroidRunningEmulator, "avdName" | "consolePort" | "pid">): boolean {
     return this.records.some((record) =>
-      record.avdName === emulator.avdName
+      sameAvdName(record.avdName, emulator.avdName)
       && record.consolePort === emulator.consolePort
-      && (record.pid === emulator.pid || record.launcherPid === emulator.pid));
+      && (record.pid === null || record.pid === emulator.pid || record.launcherPid === emulator.pid));
   }
 
-  /** Drops records whose processes are all gone (a crash, a reboot). */
-  prune(): void {
+  /**
+   * Drops records whose processes are all gone (a crash, a reboot). A record
+   * with no qemu pid yet stays while a discovery file still names its AVD and
+   * console port, so a launcher that exits before qemu does not drop it.
+   */
+  prune(discovered: readonly Pick<AndroidRunningEmulator, "avdName" | "consolePort">[] = []): void {
     const before = this.records.length;
-    this.records = this.records.filter((record) => isProcessAlive(record.pid ?? record.launcherPid) || isProcessAlive(record.launcherPid));
+    this.records = this.records.filter((record) =>
+      isProcessAlive(record.pid ?? record.launcherPid)
+      || isProcessAlive(record.launcherPid)
+      || (record.pid === null
+        && discovered.some((emulator) => sameAvdName(emulator.avdName, record.avdName) && emulator.consolePort === record.consolePort)));
     if (this.records.length !== before) this.save();
   }
 }
@@ -229,8 +249,8 @@ export async function readRunningAndroidEmulators(options: {
   adbPath?: string | null;
   discoveryDirs?: readonly string[];
 } = {}): Promise<AndroidRunningEmulator[]> {
-  options.registry?.prune();
   const discovered = readAndroidDiscoveryFiles(options.discoveryDirs ?? androidDiscoveryDirs());
+  options.registry?.prune(discovered);
   return Promise.all(discovered.map(async (emulator) => ({
     ...emulator,
     startedByAde: options.registry?.owns(emulator) ?? false,
@@ -400,7 +420,7 @@ export async function launchAndroidEmulator(input: LaunchAndroidEmulatorInput): 
     throw new AndroidEmulatorFailure("ANDROID_AVD_NOT_FOUND", `No AVD named ${input.avdName} is on this machine.`);
   }
   const running = readAndroidDiscoveryFiles(input.discoveryDirs ?? androidDiscoveryDirs());
-  const already = running.find((emulator) => emulator.avdName === input.avdName);
+  const already = running.find((emulator) => sameAvdName(emulator.avdName, input.avdName));
   if (already) {
     throw new AndroidEmulatorFailure("ANDROID_AVD_RUNNING", `${input.avdName} is already running as ${already.serial}.`);
   }
@@ -568,7 +588,7 @@ export async function waitForAndroidBoot(
   let pid = launch.launcherPid;
   for (let attempt = 0; attempt < 20; attempt += 1) {
     const found = readAndroidDiscoveryFiles(options.discoveryDirs ?? androidDiscoveryDirs())
-      .find((emulator) => emulator.avdName === launch.avdName && emulator.consolePort === launch.consolePort);
+      .find((emulator) => sameAvdName(emulator.avdName, launch.avdName) && emulator.consolePort === launch.consolePort);
     if (found) {
       pid = found.pid;
       break;
@@ -647,7 +667,7 @@ export async function stopAndroidEmulator(input: StopAndroidEmulatorInput): Prom
   }
 
   const stillThisEmulator = readAndroidDiscoveryFiles(input.discoveryDirs ?? androidDiscoveryDirs())
-    .some((emulator) => emulator.pid === input.pid && emulator.avdName === input.avdName && emulator.consolePort === input.consolePort);
+    .some((emulator) => emulator.pid === input.pid && sameAvdName(emulator.avdName, input.avdName) && emulator.consolePort === input.consolePort);
   if (!stillThisEmulator) {
     throw new Error(`Emulator ${input.serial} did not exit, and pid ${input.pid} no longer matches its discovery file; ADE will not kill it.`);
   }

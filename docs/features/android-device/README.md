@@ -310,11 +310,10 @@ way as `ade apple --machine`:
 **The borrow rule.** The work copy's first device is a free AVD that the
 machine already has, because a new one costs gigabytes and a first boot.
 "Free" means that no lane on that machine holds it and that no other app
-started it. The order:
-
-1. ADE's own AVDs, but only the ones ADE made for a lane of this project.
-2. The user's AVDs.
-3. Within each group, stopped AVDs before running ones.
+started it. ADE borrows only its own AVDs, and only the ones it made for a
+lane of this project. Stopped AVDs come before running ones. ADE never
+borrows the user's own AVDs: a lane of another project can hold one without
+this project knowing, and a run can rewrite the AVD's snapshot.
 
 The borrowed AVD is attached, so ADE never deletes it. ADE makes a new AVD
 (`medium_phone`) only when none is free. When the work copy is deleted, ADE

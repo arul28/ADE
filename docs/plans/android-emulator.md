@@ -185,8 +185,9 @@ Design round (owner, 2026-11-03):
   1. `ade android … --machine <m>` with no `--lane` uses the chat's work copy
      on that machine. The copy stands in for a lane in the Android service
      (its `remote-work-<hash>` lane id). Its first device is a free AVD that
-     machine already has (free ADE AVDs first, then the user's, stopped
-     first), attached so it is never deleted. ADE creates a new AVD only when
+     machine already has (only an ADE AVD made for a lane of this project,
+     stopped first; never the user's own AVDs), attached so it is never
+     deleted. ADE creates a new AVD only when
      none is free. The cleanup gives the device back when the copy goes.
   2. That machine returns the copy's lane id with each Android answer. The
      chat's brain records the use (`usesAndroidEmulator`, `workCopyLaneId` on

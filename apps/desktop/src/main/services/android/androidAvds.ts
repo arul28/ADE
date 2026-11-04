@@ -29,6 +29,9 @@ export const ADE_AVD_CREATED_AT_KEY = "ade.createdAt";
 /** The AVD names the emulator accepts: letters, digits, `.`, `_`, `-`. */
 const AVD_NAME_PATTERN = /^[A-Za-z0-9._-]+$/u;
 
+/** AVD names compare without case: the AVD folders live on case-insensitive disks (Windows, macOS). */
+export const sameAvdName = (a: string, b: string): boolean => a.toLowerCase() === b.toLowerCase();
+
 function avdFolder(avdHome: string, name: string, ini: Map<string, string> | null): string {
   const declared = ini?.get("path");
   if (declared && fs.existsSync(declared)) return path.resolve(declared);
@@ -151,7 +154,11 @@ export function adeAvdName(laneId: string, profileId: string, taken: ReadonlySet
 }
 
 function writeIni(filePath: string, values: Record<string, string>): void {
-  const body = Object.entries(values).map(([key, value]) => `${key}=${value}`).join("\n");
+  // A control character in a value (a shown name from the CLI) would start a
+  // new key line, so each becomes a space.
+  const body = Object.entries(values)
+    .map(([key, value]) => `${key}=${value.replace(/[\u0000-\u001f\u007f]/g, " ")}`)
+    .join("\n");
   fs.writeFileSync(filePath, `${body}\n`, "utf8");
 }
 

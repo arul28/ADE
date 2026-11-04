@@ -7433,7 +7433,9 @@ app.whenReady().then(async () => {
     // one that is left running ADE's, so the next start still stops it.
     if (ctx.androidEmulatorService) {
       await Promise.race([
-        ctx.androidEmulatorService.dispose().catch(() => undefined),
+        ctx.androidEmulatorService.dispose().catch((error: unknown) => {
+          ctx.logger.warn("android.dispose_failed", { error: error instanceof Error ? error.message : String(error) });
+        }),
         new Promise<void>((resolve) => setTimeout(resolve, 15_000).unref?.()),
       ]);
     }

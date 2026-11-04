@@ -151,17 +151,35 @@ function readRegistryAt(projectRoot: string): Registry {
   }
 }
 
-/** The work copy a `remote-work-…` lane id names in this project, or null when it is gone or unreadable. */
-export function findRemoteWorkCopyForLane(projectRoot: string, laneId: string): RemoteWorkCopy | null {
+/**
+ * The work copy a `remote-work-…` lane id names in this project: the copy,
+ * null when it is gone, or "unreadable" when the list cannot be read (logged).
+ */
+function lookUpRemoteWorkCopy(projectRoot: string, laneId: string): RemoteWorkCopy | null | "unreadable" {
   if (!isRemoteWorkLaneId(laneId)) return null;
   try {
     return readRegistryAt(projectRoot).copies
       .find((copy) => remoteWorkLaneIdFor(copy.owner) === laneId && fs.existsSync(copy.path)) ?? null;
   } catch (error) {
-    // Unreadable: say "gone" to the lane lookups, and say so in the log.
     console.warn(`[remote_work] ${error instanceof Error ? error.message : String(error)}`);
-    return null;
+    return "unreadable";
   }
+}
+
+/** The work copy a `remote-work-…` lane id names in this project, or null when it is gone or unreadable. */
+export function findRemoteWorkCopyForLane(projectRoot: string, laneId: string): RemoteWorkCopy | null {
+  const found = lookUpRemoteWorkCopy(projectRoot, laneId);
+  return found === "unreadable" ? null : found;
+}
+
+/**
+ * Whether that work copy is here, or null when the list cannot be read. A
+ * cleanup that would end a device acts only on false: an unreadable list is
+ * not proof that the copy is gone.
+ */
+export function remoteWorkCopyExists(projectRoot: string, laneId: string): boolean | null {
+  const found = lookUpRemoteWorkCopy(projectRoot, laneId);
+  return found === "unreadable" ? null : found !== null;
 }
 
 export type RemoteWorkLogger = {

@@ -22,7 +22,7 @@ import type {
 } from "../../../shared/types/androidEmulator";
 import type { Logger } from "../logging/logger";
 import { runAdb } from "./adb";
-import { createAndroidAvd, deleteAdeAndroidAvd, listAndroidAvds, readAdeAvdLaneId, readAndroidAvd } from "./androidAvds";
+import { createAndroidAvd, deleteAdeAndroidAvd, listAndroidAvds, readAdeAvdLaneId, readAndroidAvd, sameAvdName } from "./androidAvds";
 import { AndroidEmulatorFailure } from "./androidEmulatorErrors";
 import {
   AdeStartedEmulators,
@@ -46,8 +46,14 @@ import {
   type AndroidEnv,
 } from "./androidSdk";
 import * as androidStream from "./androidStream";
+import { terminateProcessTree } from "../shared/processExecution";
 import { ANDROID_HARDWARE_KEYCODES } from "./scrcpyControl";
-import { findRemoteWorkCopyForLane, isRemoteWorkLaneId, onRemoteWorkCopyReleased } from "../remoteWork/remoteWorkCopyService";
+import {
+  findRemoteWorkCopyForLane,
+  isRemoteWorkLaneId,
+  onRemoteWorkCopyReleased,
+  remoteWorkCopyExists,
+} from "../remoteWork/remoteWorkCopyService";
 
 /*
  * The lane's Android emulator: one per brain, composing the phase A modules
@@ -150,12 +156,20 @@ type LaneState = {
  * ADE's. Reading per call keeps both, short of two writes in one instant.
  */
 class FileBackedStartedEmulators extends AdeStartedEmulators {
-  constructor(private readonly file: string) {
+  /** One warning per kind of failure: the file is read on every call. */
+  private readonly warned = new Set<string>();
+
+  constructor(private readonly file: string, private readonly logger: Logger | null | undefined) {
     super(null);
   }
 
   private fresh(): AdeStartedEmulators {
-    return new AdeStartedEmulators(this.file);
+    return new AdeStartedEmulators(this.file, (op, error) => {
+      const code = (error as NodeJS.ErrnoException)?.code ?? "parse";
+      if (this.warned.has(`${op}:${code}`)) return;
+      this.warned.add(`${op}:${code}`);
+      this.logger?.warn("android.started_emulators_file_failed", { op, file: this.file, error: messageOf(error) });
+    });
   }
 
   override record(entry: Parameters<AdeStartedEmulators["record"]>[0]): void {
@@ -170,8 +184,8 @@ class FileBackedStartedEmulators extends AdeStartedEmulators {
     return this.fresh().owns(emulator);
   }
 
-  override prune(): void {
-    this.fresh().prune();
+  override prune(discovered?: Parameters<AdeStartedEmulators["prune"]>[0]): void {
+    this.fresh().prune(discovered);
   }
 }
 
@@ -240,7 +254,6 @@ export function containAndroidOutPath(outPath: string, root: string): string {
 /** The services alive in this process; the last one to go stops the shared stream server. */
 let liveServices = 0;
 
-const sameName = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 function messageOf(error: unknown): string {
@@ -307,7 +320,7 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
   const discoveryDirs = deps.discoveryDirs ?? androidDiscoveryDirs(platform, env, home);
   const bootTimeoutMs = Math.max(deps.bootTimeoutMs ?? ANDROID_BOOT_TIMEOUT_MS, 120_000);
   const now = deps.now ?? (() => new Date());
-  const registry = new FileBackedStartedEmulators(path.join(deps.dataDir, "started-emulators.json"));
+  const registry = new FileBackedStartedEmulators(path.join(deps.dataDir, "started-emulators.json"), logger);
   const listeners = new Set<(event: AndroidEmulatorEvent) => void>();
   const lanes = new Map<string, LaneState>();
   /** `serial:pid` of emulators already seen booted; booted stays booted for one process. */
@@ -382,7 +395,10 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
 
   /** Whether the lane still exists; null when this service cannot tell. */
   const laneLiveness = (laneId: string): "active" | "archived" | "missing" | null => {
-    if (isRemoteWorkLaneId(laneId)) return projectRoot ? (workCopyPath(laneId) ? "active" : "missing") : null;
+    if (isRemoteWorkLaneId(laneId)) {
+      const exists = projectRoot ? remoteWorkCopyExists(projectRoot, laneId) : null;
+      return exists === null ? null : exists ? "active" : "missing";
+    }
     return deps.laneDevices.laneState?.(laneId) ?? null;
   };
 
@@ -392,7 +408,7 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
     throw new AndroidEmulatorFailure(
       "ANDROID_NOT_RUNNING",
       projectRoot
-        ? "This chat's work copy on this machine is gone, so it has no Android device here. Run the command again to make a new copy."
+        ? "This chat has no work copy on this machine, so it has no Android device here. `ade android start --machine` makes the copy and its device."
         : "This ADE cannot find work copies of chats on other machines, so it has no Android device for one.",
     );
   };
@@ -448,7 +464,7 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
     if (registry.owns(emulator)) return true;
     for (const state of lanes.values()) {
       const launch = state.launch;
-      if (launch && launch.consolePort === emulator.consolePort && sameName(launch.avdName, emulator.avdName)) return true;
+      if (launch && launch.consolePort === emulator.consolePort && sameAvdName(launch.avdName, emulator.avdName)) return true;
     }
     return false;
   };
@@ -460,7 +476,7 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
   });
 
   const runningFor = (avdName: string): AndroidDiscoveredEmulator | null =>
-    discovered().find((emulator) => sameName(emulator.avdName, avdName)) ?? null;
+    discovered().find((emulator) => sameAvdName(emulator.avdName, avdName)) ?? null;
 
   /* ---------- lane status ---------- */
 
@@ -517,7 +533,7 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
     const deadline = Date.now() + 15_000;
     while (!launch.exited()) {
       const found = discovered().find((emulator) =>
-        emulator.consolePort === launch.consolePort && sameName(emulator.avdName, launch.avdName));
+        emulator.consolePort === launch.consolePort && sameAvdName(emulator.avdName, launch.avdName));
       if (found) {
         await stopAndroidEmulator({
           adbPath,
@@ -535,12 +551,27 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
       await Promise.race([sleep(250), launch.exit]);
     }
     if (!launch.exited()) {
-      // No discovery file after 15 s: qemu has not started, so the launcher
-      // is the whole emulator (and on macOS and Linux it is qemu itself).
-      launch.child.kill();
+      // No discovery file after 15 s. qemu may still be starting under the
+      // launcher (Windows), so end the whole tree, not only the launcher.
+      terminateProcessTree(launch.child, "SIGTERM", (detail) =>
+        logger?.warn("android.emulator_tree_kill_failed", { avdName: launch.avdName, pid: detail.pid, status: detail.status }));
       await Promise.race([launch.exit, sleep(5_000)]);
     }
+    // A qemu that outlived the kill stays ADE's, so a later stop can still end it.
+    const survivor = discovered().some((emulator) =>
+      emulator.consolePort === launch.consolePort && sameAvdName(emulator.avdName, launch.avdName));
+    if (survivor) {
+      logger?.warn("android.emulator_survived_stop", { avdName: launch.avdName, consolePort: launch.consolePort });
+      return;
+    }
     registry.forget({ avdName: launch.avdName, consolePort: launch.consolePort });
+  };
+
+  /** Waits for the lane's mid-boot stop; a failure is logged, never thrown. */
+  const settleLaunchStop = async (state: LaneState): Promise<void> => {
+    await state.launchStop?.catch((error: unknown) => {
+      logger?.warn("android.launch_stop_failed", { laneId: state.laneId, error: messageOf(error) });
+    });
   };
 
   /** Stops the lane's emulator if ADE started it. The caller holds the lane's queue. */
@@ -695,7 +726,7 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
 
   const assertLaneFree = (laneId: string, avdName: string | null) => {
     const held = deps.laneDevices.get(laneId);
-    if (held && !(avdName && sameName(held.avdName, avdName))) {
+    if (held && !(avdName && sameAvdName(held.avdName, avdName))) {
       throw new AndroidEmulatorFailure(
         "ANDROID_LANE_HAS_DEVICE",
         `This lane already has ${held.avdName}. Release it before adding another device.`,
@@ -711,7 +742,14 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
   };
 
   const definitionsFor = (root: string, images: readonly AndroidSystemImage[]) =>
-    listAndroidDeviceDefinitions({ sdkRoot: root, systemImageDirs: images.map((image) => image.path), platform, env, home });
+    listAndroidDeviceDefinitions({
+      sdkRoot: root,
+      systemImageDirs: images.map((image) => image.path),
+      platform,
+      env,
+      home,
+      onUnreadable: (filePath, error) => logger?.warn("android.profile_file_unreadable", { filePath, error: messageOf(error) }),
+    });
 
   /* ---------- input ---------- */
 
@@ -804,22 +842,25 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
   const ensureWorkCopyDeviceLocked = async (laneId: string): Promise<void> => {
     const ready = await requireSdk({ emulator: true });
     const running = discovered();
-    const runningAvd = (avd: AndroidAvd) => running.find((emulator) => sameName(emulator.avdName, avd.name)) ?? null;
+    const runningAvd = (avd: AndroidAvd) => running.find((emulator) => sameAvdName(emulator.avdName, avd.name)) ?? null;
     const madeForThisProject = (avd: AndroidAvd): boolean => {
       const madeFor = readAdeAvdLaneId(avd);
       if (!madeFor || isRemoteWorkLaneId(madeFor)) return false;
       const liveness = deps.laneDevices.laneState?.(madeFor) ?? null;
       return liveness === "active" || liveness === "archived";
     };
-    const rank = (avd: AndroidAvd): number => (avd.adeCreated ? 0 : 2) + (runningAvd(avd) ? 1 : 0);
+    const rank = (avd: AndroidAvd): number => (runningAvd(avd) ? 1 : 0);
+    // Only an ADE AVD made for a lane of this project is borrowed. The user's
+    // own AVDs are never taken: this lane table cannot see a lane of another
+    // project that holds one, and a run can rewrite the AVD's snapshot.
     // No await from here to the row write: two lanes asking at once cannot
     // both take one AVD.
     const free = listAndroidAvds(ready.avdHome)
       .filter((avd) => {
+        if (!avd.adeCreated || !madeForThisProject(avd)) return false;
         if (deps.laneDevices.holder(avd.name) !== null) return false;
         const emulator = runningAvd(avd);
-        if (emulator && !ownsEmulator(emulator)) return false;
-        return !avd.adeCreated || madeForThisProject(avd);
+        return !emulator || ownsEmulator(emulator);
       })
       .sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));
     const borrowed = free[0] ?? null;
@@ -863,8 +904,9 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
   const releaseGoneWorkCopy = (laneId: string) => {
     if (disposed || !deps.laneDevices.get(laneId)) return;
     void serialize(laneId, async () => {
-      // A new copy for the same chat may have come back while this waited.
-      if (workCopyPath(laneId)) return;
+      // A new copy for the same chat may have come back while this waited,
+      // and an unreadable copy list is not proof that the copy is gone.
+      if (laneLiveness(laneId) !== "missing") return;
       const device = deps.laneDevices.get(laneId);
       if (!device) return;
       const result = await endLaneLocked(device);
@@ -957,7 +999,7 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
         const madeFor = avd.adeCreated ? readAdeAvdLaneId(avd) : null;
         return {
           ...avd,
-          running: running.find((emulator) => sameName(emulator.avdName, avd.name)) ?? null,
+          running: running.find((emulator) => sameAvdName(emulator.avdName, avd.name)) ?? null,
           heldByLaneId: deps.laneDevices.holder(avd.name),
           madeForOtherLane: madeFor !== null && laneLiveness(madeFor) === "missing",
         };
@@ -995,6 +1037,9 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
         const avd = readAndroidAvd(ready.avdHome, avdName);
         if (!avd) throw new AndroidEmulatorFailure("ANDROID_AVD_NOT_FOUND", `No AVD named ${avdName} is on this machine.`);
         if (!deps.laneDevices.get(laneId)) {
+          // Again after the await: another lane's queue may have taken it meanwhile.
+          // No await from here to the row write.
+          assertNotHeldElsewhere(laneId, avdName);
           deps.laneDevices.set({
             laneId,
             avdName: avd.name,
@@ -1039,7 +1084,7 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
           const { adbPath } = await requireSdk({ emulator: false });
           state.launchStop = stopLaunch(state.launch, adbPath);
         }
-        await state.launchStop?.catch(() => undefined);
+        await settleLaunchStop(state);
       }
       return serialize(laneId, async () => {
         state.stopRequested = false;
@@ -1087,6 +1132,8 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
         const ready = await requireSdk({ emulator: false });
         const running = runningFor(avdName);
         if (running) throw new AndroidEmulatorFailure("ANDROID_AVD_RUNNING", `${avdName} is running. Stop it before deleting it.`);
+        // Again after the await: a lane may have attached it meanwhile.
+        assertNotHeldElsewhere(null, avdName);
         deleteAdeAndroidAvd(ready.avdHome, avdName, []);
         logger?.info("android.device_deleted", { avdName });
         emit({ type: "android.inventory.changed" });
@@ -1259,6 +1306,7 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
       const laneId = requireLaneId(args.laneId);
       const requested = args.outPath?.trim() || null;
       let outPath: string | null = null;
+      let outRoot: string | null = null;
       if (requested) {
         const root = laneRoot(laneId);
         if (!root) {
@@ -1270,6 +1318,7 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
           );
         }
         outPath = containAndroidOutPath(requested, root);
+        outRoot = root;
       }
       const { serial, adbPath } = await requireBooted(laneId);
       const result = await runAdb(adbPath, ["exec-out", "screencap", "-p"], {
@@ -1286,7 +1335,7 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
       fs.mkdirSync(path.dirname(target), { recursive: true });
       // Checked again right before the write (a link swapped in during the
       // capture), and the file is opened without following a link.
-      if (outPath) containAndroidOutPath(outPath, laneRoot(laneId) ?? path.dirname(outPath));
+      if (outPath && outRoot) containAndroidOutPath(outPath, outRoot);
       const handle = fs.openSync(target, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC | (fs.constants.O_NOFOLLOW ?? 0), 0o644);
       try {
         fs.writeSync(handle, png);
@@ -1306,7 +1355,7 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
         state.stopRequested = true;
         const sdk = state.launch && !state.launchStop ? await requireSdk({ emulator: false }).catch(() => null) : null;
         if (sdk && state.launch) state.launchStop = stopLaunch(state.launch, sdk.adbPath);
-        await state.launchStop?.catch(() => undefined);
+        await settleLaunchStop(state);
       }
       let hadDevice = false;
       await serialize(id, async () => {
@@ -1335,7 +1384,7 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
         if (!handOff && state.transient === "starting" && state.launch && sdk) {
           state.stopRequested = true;
           state.launchStop ??= stopLaunch(state.launch, sdk.adbPath);
-          await state.launchStop.catch(() => undefined);
+          await settleLaunchStop(state);
         }
       }));
       if (handOff) {
@@ -1366,7 +1415,11 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
       }
       lanes.clear();
       listeners.clear();
-      if (liveServices === 0) await androidStream.stopAllStreams().catch(() => undefined);
+      if (liveServices === 0) {
+        await androidStream.stopAllStreams().catch((error: unknown) => {
+          logger?.warn("android.stream_stop_all_failed", { error: messageOf(error) });
+        });
+      }
     },
 
     onEvent(listener) {

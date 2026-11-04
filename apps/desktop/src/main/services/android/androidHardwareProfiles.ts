@@ -286,6 +286,8 @@ export type AndroidProfileListOptions = {
   platform?: NodeJS.Platform;
   env?: AndroidEnv;
   home?: string;
+  /** A file that could not be read or parsed; the listing skips it. */
+  onUnreadable?: (filePath: string, error: unknown) => void;
 };
 
 /**
@@ -300,11 +302,20 @@ export function listAndroidDeviceDefinitions(options: AndroidProfileListOptions)
   const add = (definitions: AndroidDeviceDefinition[]) => {
     for (const definition of definitions) byId.set(definition.profile.id, definition);
   };
+  // One truncated jar or bad devices.xml must not hide every other profile.
+  const parse = (file: FileKey, read: () => AndroidDeviceDefinition[]): AndroidDeviceDefinition[] => {
+    try {
+      return cachedParse(file, read);
+    } catch (error) {
+      options.onUnreadable?.(file.path, error);
+      return [];
+    }
+  };
 
   for (const jar of androidSdklibJarCandidates(options.sdkRoot, { platform: options.platform, env, home })) {
     const file = fileKey(jar);
     if (!file) continue;
-    const definitions = cachedParse(file, () => {
+    const definitions = parse(file, () => {
       const entries = readZipTextEntries(jar, (name) => name.startsWith(SDKLIB_DEVICE_PREFIX) && name.endsWith(".xml"));
       return [...entries.keys()].sort().flatMap((name) => parseAndroidDeviceXml(entries.get(name)!, "sdk"));
     });
@@ -314,10 +325,10 @@ export function listAndroidDeviceDefinitions(options: AndroidProfileListOptions)
   }
   for (const dir of options.systemImageDirs ?? []) {
     const file = fileKey(path.join(dir, "devices.xml"));
-    if (file) add(cachedParse(file, () => parseAndroidDeviceXml(fs.readFileSync(file.path, "utf8"), "sdk")));
+    if (file) add(parse(file, () => parseAndroidDeviceXml(fs.readFileSync(file.path, "utf8"), "sdk")));
   }
   const userFile = fileKey(path.join(androidUserHome(env, home), "devices.xml"));
-  if (userFile) add(cachedParse(userFile, () => parseAndroidDeviceXml(fs.readFileSync(userFile.path, "utf8"), "user")));
+  if (userFile) add(parse(userFile, () => parseAndroidDeviceXml(fs.readFileSync(userFile.path, "utf8"), "user")));
   return [...byId.values()];
 }
 

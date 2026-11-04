@@ -4685,6 +4685,13 @@ export async function scopeUnboundAppleAdeActionArgs(
 /** `android_emulator` reads an agent may make without a lane: status and the AVD list. */
 const ANDROID_LANE_FREE_ACTIONS = new Set<string>(["getStatus", "listDevices"]);
 
+/**
+ * The `android_emulator` actions that may give a chat's work copy its first
+ * device, so `--machine` makes the copy for them. Every other action needs a
+ * device the copy already has, so it never makes one.
+ */
+const ANDROID_COPY_MAKING_ACTIONS = new Set<string>(["createDevice", "attachDevice", "start"]);
+
 function androidMissingLaneMessage(action: string): string | null {
   return ANDROID_LANE_FREE_ACTIONS.has(action)
     ? null
@@ -6720,15 +6727,19 @@ async function runTool(args: {
           if (copyExists) transformScopedResult = withWorkCopy;
         } else {
           androidArgs = { ...rest, laneId: workCopyLaneId };
-          // Used as it is (P0 has no build verb), made at the caller's commit
-          // when missing; busy until the call returns (a boot runs for its length).
-          prepareBeforeCall = async () => {
-            const { prepared } = await prepareCallerWorkCopy(runtime, session, { ...(remoteWork as Record<string, unknown>), sync: "none" });
-            afterScopedCall = prepared.done;
-          };
-          // The caller's machine learns which lane here is its work copy, so
-          // its views can show this emulator.
-          transformScopedResult = withWorkCopy;
+          // A stop, an input or a screenshot with no copy here has no device
+          // to act on: the service says so, and no copy is made for it.
+          if (ANDROID_COPY_MAKING_ACTIONS.has(action) || findRemoteWorkCopyForLane(runtime.projectRoot, workCopyLaneId) !== null) {
+            // Used as it is (P0 has no build verb), made at the caller's commit
+            // when missing; busy until the call returns (a boot runs for its length).
+            prepareBeforeCall = async () => {
+              const { prepared } = await prepareCallerWorkCopy(runtime, session, { ...(remoteWork as Record<string, unknown>), sync: "none" });
+              afterScopedCall = prepared.done;
+            };
+            // The caller's machine learns which lane here is its work copy, so
+            // its views can show this emulator.
+            transformScopedResult = withWorkCopy;
+          }
         }
       }
       scopedObjectArgs = isUserClient

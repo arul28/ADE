@@ -163,11 +163,12 @@ export function androidEmulatorErrorHint(message: string): string | null {
 /**
  * `--out` as an absolute path when the folder is this shell's: a relative path
  * means "from where this shell stands", as for any other command. It is sent
- * as typed when this shell has no lane, so a brain on another machine resolves
- * it against that lane's worktree instead of a folder that exists only here.
+ * as typed when this shell has no lane, or with `--machine`, so a brain on
+ * another machine resolves it against that lane's worktree (or the chat's
+ * work copy there) instead of a folder that exists only here.
  */
-function androidOutPath(value: string | null): string | null {
-  if (!value || path.isAbsolute(value)) return value;
+function androidOutPath(value: string | null, remote: boolean): string | null {
+  if (!value || path.isAbsolute(value) || remote) return value;
   return process.env.ADE_LANE_ID ? path.resolve(process.cwd(), value) : value;
 }
 
@@ -179,7 +180,7 @@ function finiteNumber(raw: string | undefined, label: string, verb: string): num
   return value;
 }
 
-export function buildAndroidPlan(args: string[]): CliPlan {
+export function buildAndroidPlan(args: string[], options: { remote?: boolean } = {}): CliPlan {
   const sub = firstStandalonePositional(args, ANDROID_VALUE_CARRIER_FLAGS) ?? "status";
   const positionals = (): string[] => standalonePositionals(args, ANDROID_VALUE_CARRIER_FLAGS);
   const verbFlags = ANDROID_VERB_FLAGS[sub];
@@ -267,7 +268,7 @@ export function buildAndroidPlan(args: string[]): CliPlan {
     }, "android-release");
   }
   if (sub === "screenshot") {
-    const outPath = androidOutPath(readValue(args, ["--out"]));
+    const outPath = androidOutPath(readValue(args, ["--out"]), options.remote === true);
     return androidAction("android screenshot", "screenshot", {
       ...laneClaim(),
       ...(outPath ? { outPath } : {}),

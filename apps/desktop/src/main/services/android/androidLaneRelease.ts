@@ -2,7 +2,7 @@ import os from "node:os";
 import type { AndroidLaneDevice } from "../../../shared/types/androidEmulator";
 import type { Logger } from "../logging/logger";
 import { runAdb } from "./adb";
-import { deleteAdeAndroidAvd, readAndroidAvd } from "./androidAvds";
+import { deleteAdeAndroidAvd, readAndroidAvd, sameAvdName } from "./androidAvds";
 import {
   forgetLaneAndroidDevice,
   laneHoldingAndroidAvd,
@@ -85,7 +85,6 @@ export type AndroidDeviceEndResult = {
   reason: string | null;
 };
 
-const sameName = (a: string, b: string) => a.toLowerCase() === b.toLowerCase();
 const DELETE_ATTEMPTS = 4;
 const DELETE_RETRY_MS = 1_000;
 
@@ -102,7 +101,7 @@ export async function endAndroidLaneDeviceOnDisk(
   const home = options.home ?? os.homedir();
   const avdHome = androidAvdHome(env, home);
   const running = readAndroidDiscoveryFiles(options.discoveryDirs ?? androidDiscoveryDirs(platform, env, home))
-    .find((emulator) => sameName(emulator.avdName, device.avdName)) ?? null;
+    .find((emulator) => sameAvdName(emulator.avdName, device.avdName)) ?? null;
 
   if (device.origin === "created") {
     if (options.deleteCreated === false) return { ended: true, deletedAvd: null, reason: null };

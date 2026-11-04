@@ -3573,7 +3573,13 @@ export function createLaneService({
                 remainingBundleIds: ended.remainingBundleIds,
               });
             }
-          }, () => undefined);
+          }, (error: unknown) => {
+            logger.warn("lane.merge.apple_device_left", {
+              laneId: duplicateId,
+              udid: orphan.device.udid,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          });
         }, 0);
       }
     } else {
@@ -3590,7 +3596,12 @@ export function createLaneService({
         const stillFree = (): boolean => {
           try {
             return !readLaneAndroidDevice(db, duplicateId) && androidRepo.holder(duplicateAndroid.avdName) === null;
-          } catch {
+          } catch (error) {
+            logger.warn("lane.merge.android_holder_unreadable", {
+              laneId: duplicateId,
+              avdName: duplicateAndroid.avdName,
+              error: error instanceof Error ? error.message : String(error),
+            });
             return false;
           }
         };
@@ -3604,7 +3615,13 @@ export function createLaneService({
                 reason: ended.reason,
               });
             }
-          }, () => undefined);
+          }, (error: unknown) => {
+            logger.warn("lane.merge.android_device_left", {
+              laneId: duplicateId,
+              avdName: duplicateAndroid.avdName,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          });
       }, 0);
     } else if (duplicateAndroid) {
       db.run("update lane_android_devices set lane_id = ? where lane_id = ?", [keeperId, duplicateId]);
