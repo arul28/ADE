@@ -1251,7 +1251,7 @@ export class RemoteConnectionService {
    * `"upload"` means the host advertised the streamed HTTP route and the socket
    * is direct enough to use it. `"base64"` is every other case — SSH targets,
    * relay-routed sockets, and hosts predating the feature — and keeps the
-   * legacy base64 command with its smaller, image-only ceiling.
+   * legacy base64 command with its smaller ceiling.
    *
    * The answer is already a {@link ChatAttachmentStagingMode}, so the renderer
    * routes on it directly. It used to be a separate `"command"` vocabulary that

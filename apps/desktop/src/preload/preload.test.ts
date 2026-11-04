@@ -1031,16 +1031,14 @@ describe("preload Apple device input routing", () => {
         request: expect.objectContaining({ domain: "chat", action: "saveTempAttachment", args }),
       }));
 
-      // A failed upload falls back to the command and says so in the console.
+      // Recovery belongs to the transport service; a final error propagates
+      // without issuing another save through the window's current binding.
       invoke.mockClear();
       modeByTarget.set("target-2", { mode: "upload", maxBytes: 50 * 1024 * 1024 });
       failUpload = true;
       await expect(bridge.agentChat.saveTempAttachment(args, pinnedRemote))
-        .resolves.toEqual({ path: "/via/command.png" });
-      expect(warn).toHaveBeenCalledWith(
-        expect.stringContaining("[ade-attachments] Streamed upload failed"),
-        expect.objectContaining({ error: "Attachment upload failed (HTTP 502)." }),
-      );
+        .rejects.toThrow("Attachment upload failed (HTTP 502).");
+      expect(invoke).not.toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, expect.anything());
 
       // A payload the command cannot carry is not resent through it. The
       // upload's own reason reaches the caller.

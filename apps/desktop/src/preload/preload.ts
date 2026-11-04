@@ -2453,7 +2453,7 @@ async function resolveRemoteBindingForPin(
  * same route.
  *
  * Returns null when the machine only takes the command. Upload failures and
- * bounded image recovery are owned by RemoteConnectionService, which can
+ * bounded attachment recovery are owned by RemoteConnectionService, which can
  * send directly through the command without repeating the failed HTTP leg.
  */
 async function uploadAttachmentBytesToRemote(

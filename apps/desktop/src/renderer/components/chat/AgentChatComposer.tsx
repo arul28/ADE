@@ -409,7 +409,8 @@ function attachmentErrorMessage(error: unknown, filename: string): string {
   if (error instanceof AttachmentConversionError) {
     return HEIC_CONVERSION_MESSAGES[error.code];
   }
-  const reason = error instanceof Error ? error.message.trim() : typeof error === "string" ? error.trim() : "";
+  const raw = error instanceof Error ? error.message : error;
+  const reason = typeof raw === "string" ? stripElectronErrorWrapper(raw) : "";
   return `Unable to attach "${filename || "file"}".${reason ? ` ${reason}` : ""}`;
 }
 

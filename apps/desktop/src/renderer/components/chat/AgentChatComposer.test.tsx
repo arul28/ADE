@@ -3258,47 +3258,6 @@ describe("AgentChatComposer", () => {
     }
   });
 
-  it.each([
-    { mode: "upload", size: 3, bytesFail: false, recovers: true },
-    { mode: "copy", size: 3, bytesFail: false, recovers: false },
-    { mode: "upload", size: 11 * 1024 * 1024, bytesFail: false, recovers: false },
-    { mode: "upload", size: 3, bytesFail: true, recovers: false },
-  ])("recovers a failed file upload within the command limit: $mode / $size / $bytesFail", async ({ mode, size, bytesFail, recovers }) => {
-    const saveTempAttachment = vi.fn(async () => {
-      if (bytesFail) throw new Error("Runtime connection closed");
-      return { path: "/remote/.ade/attachments/shot.png" };
-    });
-    (window as any).ade = {
-      project: { getDroppedPath: () => "C:\\Pictures\\shot.png" },
-      agentChat: {
-        getAttachmentStagingMode: async () => ({ mode, maxBytes: 50 * 1024 * 1024 }),
-        stageFileAttachment: async () => { throw new Error("Attachment upload failed (HTTP 502)."); },
-        saveTempAttachment,
-      },
-    };
-    const composerMachineBinding: OpenProjectBinding = {
-      kind: "remote", key: "remote:studio:ade", targetId: "studio",
-      runtimeName: "Studio", projectId: "ade", rootPath: "/remote", displayName: "ADE",
-    };
-    const props = renderComposer({ draft: "", turnActive: false, composerMachineBinding });
-    const file = new File([new Uint8Array([1, 2, 3])], "shot.png", { type: "image/png" });
-    Object.defineProperty(file, "size", { value: size });
-    Object.defineProperty(file, "arrayBuffer", { value: async () => new Uint8Array([1, 2, 3]).buffer });
-    fireEvent.drop(screen.getByPlaceholderText("Type to vibecode..."), {
-      dataTransfer: { files: [file], types: ["Files"], getData: () => "" },
-    });
-    if (recovers) {
-      await waitFor(() => expect(props.onAddAttachment).toHaveBeenCalledWith({
-        path: "/remote/.ade/attachments/shot.png", type: "image",
-      }));
-      expect(saveTempAttachment).toHaveBeenCalledWith({ data: "AQID", filename: "shot.png" }, composerMachineBinding);
-    } else {
-      await screen.findByText(bytesFail ? /Runtime connection closed/ : /HTTP 502/);
-      expect(props.onAddAttachment).not.toHaveBeenCalled();
-      if (!bytesFail) expect(saveTempAttachment).not.toHaveBeenCalled();
-    }
-  });
-
   it("shows a pasted image preview while the temp attachment is still saving", async () => {
     const createObjectURL = vi.fn().mockReturnValue("blob:ade-paste-preview");
     const revokeObjectURL = vi.fn();
