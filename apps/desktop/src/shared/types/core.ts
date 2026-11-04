@@ -986,7 +986,12 @@ export type KeybindingDefinition = {
   id: string;
   description: string;
   defaultBinding: string;
-  scope: "global" | "lanes" | "work" | "files" | "conflicts" | "history" | "home";
+  /**
+   * Where the shortcut is listened for. `chat` acts on the prompt box you last
+   * worked in, wherever it is; `terminal` is answered by the terminal tool
+   * while focus is inside it, before the shell sees the key.
+   */
+  scope: "global" | "lanes" | "work" | "chat" | "terminal" | "files" | "conflicts" | "history" | "home";
 };
 
 export type KeybindingsSnapshot = {

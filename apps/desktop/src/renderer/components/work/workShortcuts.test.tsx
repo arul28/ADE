@@ -32,8 +32,8 @@ type Row = { id: string; onClick: ReturnType<typeof vi.fn>; onWrapperClick: Retu
  * listen for a click, so a test can tell a press on the control from a press on
  * the wrapper it bubbles through.
  */
-function appendRows(): Row[] {
-  return ["session-a", "session-b"].map((id) => {
+function appendRows(ids: readonly string[] = ["session-a", "session-b"]): Row[] {
+  return ids.map((id) => {
     const wrapper = document.createElement("div");
     wrapper.setAttribute("data-session-row", "");
     wrapper.setAttribute("data-session-id", id);
@@ -106,8 +106,8 @@ describe("useWorkShortcuts", () => {
     vi.restoreAllMocks();
   });
 
-  it("moves the selection by pressing the next row's control, not the drag wrapper", () => {
-    const rows = appendRows();
+  it("moves the selection by pressing the next row's control, wrapping at the ends", () => {
+    const rows = appendRows(["session-a", "session-b", "session-c"]);
     render(<Harness selectedSessionId="session-a" />);
 
     fireEvent.keyDown(window, { key: "ArrowDown", ...mod });
@@ -116,10 +116,11 @@ describe("useWorkShortcuts", () => {
     expect(rows[1]?.onClick).toHaveBeenCalledTimes(1);
     expect(rows[0]?.onClick).not.toHaveBeenCalled();
 
+    // Before the first chat is the last one, like switching browser tabs.
     fireEvent.keyDown(window, { key: "ArrowUp", ...mod });
 
-    expect(rows[0]?.onClick).toHaveBeenCalledTimes(1);
-    expect(rows[1]?.onClick).toHaveBeenCalledTimes(1);
+    expect(rows[2]?.onClick).toHaveBeenCalledTimes(1);
+    expect(rows[0]?.onClick).not.toHaveBeenCalled();
   });
 
   it("leaves the caret chords to a text field and to a terminal", () => {

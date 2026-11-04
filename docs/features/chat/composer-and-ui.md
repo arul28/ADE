@@ -130,6 +130,12 @@ does not remove or transfer attachments as though the user changed machines.
 Browser, App Control, and iOS panels also fail closed when their local-only
 service cannot safely operate on the chat's owning runtime.
 
+Quick slots — nine user-assigned actions on a leader chord plus a digit — are
+documented in [Quick slots](quick-slots.md). `QuickSlotsHost` is mounted once in
+`AppShell`; the active composer publishes the insert/model/thinking surface
+through `renderer/quickSlots/useQuickSlotComposerTarget.ts`, and slots reach
+only a composer that is on screen.
+
 ## Pane layout
 
 `AgentChatPane` is the mount point. It:
