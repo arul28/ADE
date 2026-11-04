@@ -98,6 +98,14 @@ The rules that go with it (`AGENTS.md` and the context skill link here):
 - **Never hand-start `ade serve`**, never set a fresh `ADE_HOME`, never copy
   `~/.ade` secrets, and never run a packaged build on a machine serving live
   agents.
+- **Testing something saved to the account.** With sync off, a dev brain
+  has no account stores, so MCP servers and other vault-backed saves cannot
+  be tested. Start the app with `ADE_DEV_ACCOUNT_STORES=1` to open your real
+  account's settings and vault in a folder of the dev brain's own
+  (`~/.ade/dev-account-stores/<pid>`, deleted when it stops). Sync stays off,
+  and no migration or credential pull runs. The isolation report's `account`
+  line says which mode you are in. What you save reaches all your machines,
+  so remove test entries when you finish.
 - **`--no-sync` protects the sync lease only.** It does not isolate the
   database: a dev brain still sees every chat and task in every lane, so do not
   restart one casually while other lanes are working.

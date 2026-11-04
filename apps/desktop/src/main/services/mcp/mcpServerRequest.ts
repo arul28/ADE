@@ -13,6 +13,14 @@
 
 import { ACCOUNT_SCOPE_ALL } from "../../../shared/accountSettingsScope";
 import { ADE_RESERVED_MCP_SERVER_NAMES } from "../../../shared/callerMcpServers";
+import type { ConnectProviderId, IntegrationConnectRequestResult } from "../../../shared/integrationConnect";
+import {
+  matchMcpCatalogue,
+  mcpCatalogueEntry,
+  mcpCatalogueSecretValue,
+  mcpCatalogueServer,
+  type McpCatalogueEntry,
+} from "../../../shared/mcpCatalogue";
 import {
   MCP_OFF_SETTING_KEY,
   MCP_SECRET_VAULT_KIND,
@@ -229,7 +237,11 @@ type Proposal = {
   server: McpRegistryServer;
   providers: McpConfigProvider[];
   secrets: McpServerRequestSecret[];
+  catalogueId?: string;
 };
+
+/** `integration_connect.request`, for a catalogue name that is an ADE integration. */
+export type ConnectIntegration = (args: Record<string, unknown>) => Promise<IntegrationConnectRequestResult>;
 
 function stringList(value: unknown, label: string): string[] {
   if (value == null) return [];
@@ -251,6 +263,31 @@ function secretsFor(server: McpRegistryServer, copied: (field: McpSecretField, n
     ...server.envNames.map((name) => ({ field: "env" as const, name })),
     ...server.headerNames.map((name) => ({ field: "header" as const, name })),
   ].map((entry) => ({ ...entry, questionId: mcpServerSecretQuestionId(entry.field, entry.name), copied: copied(entry.field, entry.name) }));
+}
+
+function proposeCatalogue(entry: McpCatalogueEntry): Proposal {
+  const server = mcpCatalogueServer(entry);
+  return { source: "catalog", server, providers: [], secrets: secretsFor(server, () => false), catalogueId: entry.id };
+}
+
+async function connectNative(
+  deps: McpServerRequestDeps & { connectIntegration?: ConnectIntegration },
+  args: Record<string, unknown>,
+  name: string,
+  provider: ConnectProviderId,
+): Promise<McpServerRequestResult> {
+  if (!deps.connectIntegration) {
+    throw new Error(`${provider} is built into ADE. Run \`ade integrations connect ${provider} --reason "…"\` instead.`);
+  }
+  const result = await deps.connectIntegration({
+    chatSessionId: args.chatSessionId,
+    provider,
+    reason: args.reason,
+    ...(typeof args.timeoutMs === "number" ? { timeoutMs: args.timeoutMs } : {}),
+  });
+  return result.connected
+    ? { name, added: false, integration: provider, connected: true, next: `${provider} is built into ADE, so it is connected as an integration, not an MCP server. ${result.next}` }
+    : { name, added: false, integration: provider, connected: false, next: `The user declined to connect ${provider}.` };
 }
 
 function proposeImported(deps: McpServerRequestDeps, name: string): Proposal {
@@ -327,7 +364,7 @@ const inFlight = new Map<string, Promise<McpServerRequestResult>>();
  * declines, or the wait runs out.
  */
 export async function requestMcpServer(
-  deps: McpServerRequestDeps & { requestChatInput: RequestChatInput },
+  deps: McpServerRequestDeps & { requestChatInput: RequestChatInput; connectIntegration?: ConnectIntegration },
   rawArgs: unknown,
 ): Promise<McpServerRequestResult> {
   const args = readArgs(rawArgs);
@@ -346,13 +383,27 @@ export async function requestMcpServer(
   const reason = (typeof args.reason === "string" ? args.reason.trim() : "").slice(0, MCP_SERVER_REQUEST_REASON_MAX_CHARS);
   if (!reason) throw new Error("Say why you want the server (--reason). The person decides from that one line.");
   const sourceArg = typeof args.source === "string" ? args.source.trim().toLowerCase() : "";
-  if (sourceArg === "catalog") throw new Error("ADE has no MCP server catalogue. Use --import for a server another tool has, or describe it (--command or --url).");
-  const describes = ["command", "url", "transport"].some((key) => typeof args[key] === "string" && (args[key] as string).trim());
-  const source: McpServerRequestSource = sourceArg === "imported" || (!sourceArg && !describes) ? "imported" : "agent";
-  if (sourceArg && sourceArg !== "imported" && sourceArg !== "agent") {
-    throw new Error(`Unknown source "${sourceArg}". Use imported or agent.`);
+  if (sourceArg && sourceArg !== "imported" && sourceArg !== "agent" && sourceArg !== "catalog") {
+    throw new Error(`Unknown source "${sourceArg}". Use catalog, imported or agent.`);
   }
-  const proposal = source === "imported" ? proposeImported(deps, name) : proposeAgent(args, name);
+  const describes = ["command", "url", "transport"].some((key) => typeof args[key] === "string" && (args[key] as string).trim());
+  // A bare name is ADE's catalogue entry when there is one, else another
+  // tool's server; --import always means the other tool's.
+  const entry = mcpCatalogueEntry(name);
+  const source: McpServerRequestSource = sourceArg
+    ? sourceArg as McpServerRequestSource
+    : describes ? "agent" : entry ? "catalog" : "imported";
+  if (source === "catalog" && !entry) {
+    throw new Error(`ADE's catalogue has no server named "${name}". Run \`ade mcp servers --help\` for its names, or describe the server yourself (--command or --url).`);
+  }
+  const proposal = source === "catalog" ? proposeCatalogue(entry!)
+    : source === "imported" ? proposeImported(deps, name)
+      : proposeAgent(args, name);
+  // GitHub, Linear and Jira are ADE integrations: one connection covers
+  // `ade github`/`ade linear`/`ade jira` and every agent, so the connect card
+  // runs instead of adding a second connection as an MCP server.
+  const native = (source === "catalog" ? entry : matchMcpCatalogue(proposal.server))?.native;
+  if (native) return await connectNative(deps, args, name, native);
   const match = findSameMcpServer(readRegistry(deps).servers, proposal.server);
   if (match) return already(match, name);
 
@@ -388,7 +439,9 @@ async function askToAdd(
     runs,
     providers: proposal.providers,
     secrets: proposal.secrets,
+    ...(proposal.catalogueId ? { catalogueId: proposal.catalogueId } : {}),
   };
+  const catalogue = mcpCatalogueEntry(proposal.catalogueId);
   const asked = proposal.secrets.filter((secret) => !secret.copied);
 
   // A client that draws the native card reads the metadata; any other client
@@ -444,7 +497,10 @@ async function askToAdd(
     for (const secret of asked) {
       const value = firstAnswer(answers, secret.questionId);
       if (!value.length) continue;
-      const stored = await deps.registry.setSecret({ server: saved.name, field: secret.field, name: secret.name }, value);
+      const stored = await deps.registry.setSecret(
+        { server: saved.name, field: secret.field, name: secret.name },
+        mcpCatalogueSecretValue(catalogue, secret.name, value),
+      );
       if (!stored.ok) throw new Error(stored.message);
       typed.add(secret.questionId);
     }

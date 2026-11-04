@@ -1,3 +1,4 @@
+import type { ConnectProviderId } from "./integrationConnect";
 import type { PendingInputRequest } from "./types/chat";
 import type { McpConfigProvider, McpFoundServer } from "./types/mcpRegistry";
 import {
@@ -35,8 +36,11 @@ export const MCP_SERVER_DECLINE_VALUE = "not_now" as const;
 
 export const MCP_SERVER_REQUEST_REASON_MAX_CHARS = 500;
 
-/** Where the proposal came from. `catalog` is not offered: ADE has no catalogue. */
-export type McpServerRequestSource = "imported" | "agent";
+/**
+ * Where the proposal came from: another tool's config, an agent's own
+ * description, or ADE's catalogue of known servers (`mcpCatalogue.ts`).
+ */
+export type McpServerRequestSource = "imported" | "agent" | "catalog";
 
 /** One env variable or header the server reads from the vault. */
 export type McpServerRequestSecret = {
@@ -58,13 +62,17 @@ export type McpServerRequestCard = {
   /** `imported`: the tools whose config has it. */
   providers: McpConfigProvider[];
   secrets: McpServerRequestSecret[];
+  /** `catalog`: the entry it was built from (`mcpCatalogue.ts`). */
+  catalogueId?: string;
 };
 
 /** What `mcp_registry.request` returns. Never a secret value. */
 export type McpServerRequestResult =
   | { name: string; added: true; missing: string[]; next: string }
   | { name: string; added: false; already: true; existing: string; matchedBy: "name" | "url" | "command"; next: string }
-  | { name: string; added: false; declined: true };
+  | { name: string; added: false; declined: true }
+  /** A catalogue name that is an ADE integration: the connect card ran instead. */
+  | { name: string; added: false; integration: ConnectProviderId; connected: boolean; next: string };
 
 /** One registry server as `mcp_registry.list` reports it. */
 export type McpRegistryListEntry = {
@@ -145,7 +153,7 @@ export function readMcpServerRequestCard(
   if (!record) return null;
   const server = normalizeMcpRegistryServer(record.server);
   if (!server) return null;
-  const source: McpServerRequestSource = record.source === "imported" ? "imported" : "agent";
+  const source: McpServerRequestSource = record.source === "imported" || record.source === "catalog" ? record.source : "agent";
   return {
     source,
     reason: typeof record.reason === "string" ? record.reason.trim() : "",
@@ -156,6 +164,7 @@ export function readMcpServerRequestCard(
       ? record.providers.filter((entry): entry is McpConfigProvider => typeof entry === "string")
       : [],
     secrets: readSecrets(record.secrets),
+    ...(source === "catalog" && typeof record.catalogueId === "string" ? { catalogueId: record.catalogueId } : {}),
   };
 }
 

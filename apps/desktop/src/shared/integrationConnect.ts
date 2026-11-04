@@ -11,9 +11,9 @@ import type { PendingInputRequest } from "./types/chat";
  * saves it into the integration itself, on the machine that runs the chat,
  * and hands the agent only the outcome.
  *
- * A browser sign-in is the one method that is not a question: the card runs it
- * and then answers with the method alone, and the host checks the integration
- * really is connected before the card closes.
+ * A browser or device sign-in is the one method that is not a question: the
+ * card runs it and then answers with the method alone, and the host checks the
+ * integration really is connected before the card closes.
  *
  * One record per provider describes everything the card draws. A new provider
  * is one record here plus one status/save pair in the host.
@@ -33,7 +33,7 @@ export const INTEGRATION_CONNECT_METADATA_KEY = "integrationConnectRequest" as c
 /** Which way of connecting the person used. Always asked, so any client can answer. */
 export const CONNECT_METHOD_QUESTION_ID = "connect_method" as const;
 
-export type ConnectMethodId = "oauth" | "api_key" | "token" | "site_token";
+export type ConnectMethodId = "oauth" | "api_key" | "token" | "site_token" | "app";
 
 export type ConnectFieldKind = "secret" | "text" | "url" | "email";
 
@@ -49,14 +49,24 @@ export type ConnectMethod = {
   id: ConnectMethodId;
   /** The tab label and the fallback option label. */
   label: string;
-  /** One line under the fields: what this method is. */
+  /** What this method is, for clients that draw the plain question. */
   hint: string;
   fields: readonly ConnectField[];
   /** Where to make the key, when the method needs one. */
   help?: { label: string; url: string };
-  /** A browser sign-in the card runs itself; no fields. */
+  /**
+   * A browser sign-in the card runs itself; no fields. It returns to a port on
+   * the chat's machine, so the card offers it only when that is this computer.
+   */
   browser?: boolean;
+  /** A device-code sign-in the card runs itself; no fields. The code works from any computer. */
+  device?: boolean;
 };
+
+/** Whether the card runs this method itself and answers with the method alone. */
+export function isSelfRunConnectMethod(method: Pick<ConnectMethod, "browser" | "device">): boolean {
+  return method.browser === true || method.device === true;
+}
 
 export type ConnectProviderSpec = {
   id: ConnectProviderId;
@@ -95,7 +105,7 @@ const PROVIDERS: Record<ConnectProviderId, ConnectProviderSpec> = {
         label: "API key",
         hint: "A personal API key from your Linear settings.",
         fields: [{ id: CONNECT_FIELD_IDS.linearKey, label: "API key", kind: "secret", placeholder: "lin_api_…" }],
-        help: { label: "Create a key in Linear", url: "https://linear.app/settings/account/security" },
+        help: { label: "Get a key", url: "https://linear.app/settings/account/security" },
       },
     ],
   },
@@ -114,7 +124,7 @@ const PROVIDERS: Record<ConnectProviderId, ConnectProviderSpec> = {
           { id: CONNECT_FIELD_IDS.jiraEmail, label: "Email", kind: "email", placeholder: "you@company.com" },
           { id: CONNECT_FIELD_IDS.jiraToken, label: "API token", kind: "secret", placeholder: "ATATT…" },
         ],
-        help: { label: "Create a token at Atlassian", url: "https://id.atlassian.com/manage-profile/security/api-tokens" },
+        help: { label: "Get a token", url: "https://id.atlassian.com/manage-profile/security/api-tokens" },
       },
     ],
   },
@@ -126,13 +136,23 @@ const PROVIDERS: Record<ConnectProviderId, ConnectProviderSpec> = {
     methods: [
       {
         id: "token",
-        label: "Access token",
-        hint: "A personal access token with repo access.",
+        label: "Token",
+        hint: "A personal access token with repo access. It reads, pushes and opens PRs.",
         fields: [{ id: CONNECT_FIELD_IDS.githubToken, label: "Token", kind: "secret", placeholder: "github_pat_… or ghp_…" }],
         help: {
-          label: "Create a token on GitHub",
+          label: "Get a token",
           url: "https://github.com/settings/tokens/new?scopes=repo,read:org,workflow&description=ADE",
         },
+      },
+      {
+        // ADE's GitHub app reads and edits issues, but cannot push or open
+        // PRs, so the token stays first. The host offers it only while reads
+        // do not work yet.
+        id: "app",
+        label: "ADE app",
+        hint: "Sign in with ADE's GitHub app. It reads and edits issues, but cannot push or open PRs.",
+        fields: [],
+        device: true,
       },
     ],
   },
@@ -164,6 +184,10 @@ export type IntegrationConnectRequestCard = {
    * the provider's `savedWhere`.
    */
   savedNote?: string;
+  /** The methods the host offers, in order. Absent: all of the provider's methods. */
+  methods?: ConnectMethodId[];
+  /** What already works, in a few words (GitHub: "arul · reads only"). */
+  current?: string;
 };
 
 /** What `integration_connect.request` returns. Never a credential. */
@@ -201,11 +225,18 @@ export function readIntegrationConnectRequestCard(
 ): IntegrationConnectRequestCard | null {
   const record = readRecord(request?.providerMetadata?.[INTEGRATION_CONNECT_METADATA_KEY]);
   if (!record || !isConnectProviderId(record.provider)) return null;
+  const provider = record.provider;
   const savedNote = typeof record.savedNote === "string" ? record.savedNote.trim() : "";
+  const current = typeof record.current === "string" ? record.current.trim() : "";
+  const methods = Array.isArray(record.methods)
+    ? PROVIDERS[provider].methods.map((method) => method.id).filter((id) => (record.methods as unknown[]).includes(id))
+    : [];
   return {
-    provider: record.provider,
+    provider,
     reason: typeof record.reason === "string" ? record.reason.trim() : "",
     ...(savedNote ? { savedNote } : {}),
+    ...(methods.length ? { methods } : {}),
+    ...(current ? { current } : {}),
   };
 }
 
