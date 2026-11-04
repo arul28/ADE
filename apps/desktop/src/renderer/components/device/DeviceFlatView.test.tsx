@@ -5,6 +5,7 @@ import {
   screenContentSize,
   screenMaxScale,
   measureScreenBox,
+  viewToFrameFraction,
 } from "./DeviceFlatView";
 
 /** A 3× iPhone: 393×852 points, decoded at 1179×2556 pixels. */
@@ -92,5 +93,29 @@ describe("screenContentSize (round 4 §A6)", () => {
   it("is null only when neither size is real", () => {
     expect(screenContentSize(null, null)).toBeNull();
     expect(screenContentSize({ width: 0, height: 0 }, { width: 0, height: 0 })).toBeNull();
+  });
+});
+
+describe("viewToFrameFraction (round 5 §V1)", () => {
+  // A rotated device keeps its portrait framebuffer and the view turns it with
+  // CSS (`rotate(90deg)` is clockwise). A tap is a point on that framebuffer,
+  // so a tap on the picture must land where the user sees it.
+  it.each([
+    // Turned clockwise, the frame's top-left corner shows at the view's top-right.
+    [90, { x: 1, y: 0 }, { x: 0, y: 0 }],
+    [90, { x: 1, y: 1 }, { x: 1, y: 0 }],
+    [90, { x: 0.9, y: 0.25 }, { x: 0.25, y: 0.1 }],
+    // Turned counter-clockwise, it shows at the view's bottom-left.
+    [-90, { x: 0, y: 1 }, { x: 0, y: 0 }],
+    [-90, { x: 0, y: 0 }, { x: 1, y: 0 }],
+    [-90, { x: 0.1, y: 0.75 }, { x: 0.25, y: 0.1 }],
+    [180, { x: 1, y: 1 }, { x: 0, y: 0 }],
+    [180, { x: 0.75, y: 0.9 }, { x: 0.25, y: 0.1 }],
+    [0, { x: 0.25, y: 0.1 }, { x: 0.25, y: 0.1 }],
+  ] as const)("at %i°, a tap on the view at %o is the frame point %o", (rotation, onView, onFrame) => {
+    const mapped = viewToFrameFraction(onView, rotation);
+    expect(mapped.x).toBeCloseTo(onFrame.x, 10);
+    expect(mapped.y).toBeCloseTo(onFrame.y, 10);
+    expect(mapped.x >= 0 && mapped.x <= 1 && mapped.y >= 0 && mapped.y <= 1).toBe(true);
   });
 });

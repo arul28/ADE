@@ -35,7 +35,8 @@ needs:
   images; Intel and AMD hosts run `x86_64` images.
 - **Hardware acceleration.** macOS uses Hypervisor.framework (HVF), Windows
   uses WHPX (or AEHD), and Linux uses KVM (`/dev/kvm`). ADE reads
-  `emulator -accel-check`. WSL2 and nested VMs have no acceleration.
+  `emulator -accel-check`. WSL2 has no acceleration. A VM has it only when
+  its host passes nested virtualization through (`/dev/kvm` in the VM).
 
 `ade android status` and the pane report each part. A host that is not macOS,
 Windows or Linux reports `platformSupported: false`. A missing SDK is not
@@ -48,7 +49,7 @@ When the SDK or a part that a boot needs is missing, the pane shows
 
 | Row | Found | Missing |
 |---|---|---|
-| Acceleration | `HVF on`, `WHPX on`, `KVM on` | `<kind> off` or `not available`, with the check's sentence |
+| Acceleration | `HVF on`, `WHPX on`, `KVM on` | `<kind> off` or `not available`, with the check's sentence. Before the emulator is installed the check cannot run, so the row shows a dash and `checked after setup`. |
 | Android SDK | the SDK folder | `not found` |
 | Platform tools | the version | ~15 MB |
 | Emulator | the version | ~480 MB |
@@ -427,7 +428,7 @@ The full list is in §6 of the [plan](../../plans/android-emulator.md).
 | `ANDROID_SDK_NOT_FOUND` | Install Android Studio or the command-line tools, or set `ANDROID_HOME`. Then press **Check again** or run `ade android status --text`. |
 | `ANDROID_TOOL_MISSING` | Install the missing package (`platform-tools`, `emulator`) with `sdkmanager`. |
 | `ANDROID_NO_SYSTEM_IMAGE` | Install a system image for the host ABI, or pass `--image <package>`. `ade android devices --text` lists the installed images. |
-| `ANDROID_NO_ACCELERATION` | Turn on acceleration: Windows Hypervisor Platform on Windows, KVM access on Linux. WSL2 and nested VMs have none. The banner's **How to fix** opens Google's guide. |
+| `ANDROID_NO_ACCELERATION` | Turn on acceleration: Windows Hypervisor Platform on Windows, KVM access on Linux. WSL2 has none, and a VM has it only with nested virtualization. The banner's **How to fix** opens Google's guide. |
 | `ANDROID_EMULATOR_EXITED` | The emulator exited. Read its log, `<project>/.ade/android/logs/<avd>.log` on the emulator's machine (**Open log**, or the path in `ade android status --text`). Then **Restart**. |
 | `ANDROID_BOOT_TIMEOUT` | The boot took more than 180 s. Read the log, then run `ade android start` again. |
 | `ANDROID_PATH_OUTSIDE_LANE` | `screenshot --out` must be inside the lane worktree. Give a path there, or leave out `--out`. |
