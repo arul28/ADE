@@ -24,12 +24,15 @@
 #   APPLE_API_KEY_P8, APPLE_API_KEY_ID, APPLE_API_ISSUER
 #       App Store Connect API key (the .p8 text). Xcode signs with it
 #       (-allowProvisioningUpdates) and asc uploads and distributes with it.
-#   IOS_SIGNING_P12_BASE64, IOS_SIGNING_P12_PASSWORD (optional)
-#       A .p12 with an Apple Development and an Apple Distribution certificate
-#       and their private keys. Without it the job uses cloud signing: Xcode
-#       creates a development certificate on the runner and signs the export
-#       with a cloud-managed distribution certificate. That needs an API key
-#       with the Admin role. With the .p12, an App Manager key is enough.
+#   IOS_SIGNING_P12_BASE64, IOS_SIGNING_P12_PASSWORD
+#       A .p12 with the CI's own Apple Development certificate and its private
+#       key, kept from run to run, and optionally an Apple Distribution one.
+#       Without an Apple Distribution identity the export is signed with a
+#       cloud-managed distribution certificate (Admin-role key), which uses no
+#       certificate slot. Without the .p12 at all, Xcode creates a new
+#       development certificate on every runner and nothing revokes it: the
+#       team's certificate limit fills after about ten builds and every archive
+#       then fails ("reached the maximum number of certificates").
 #   ADE_POSTHOG_PROJECT_TOKEN, ADE_POSTHOG_HOST (optional) analytics config.
 #   SENTRY_AUTH_TOKEN (optional) dSYM upload; never fails the run.
 #   IOS_TESTFLIGHT_GROUP (default "Internal Testers") the internal group.
@@ -137,9 +140,12 @@ if [ -n "${IOS_SIGNING_P12_BASE64:-}" ]; then
   security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
   identities="$(security find-identity -v -p codesigning "$KEYCHAIN")"
   echo "$identities" | grep -q "Apple Development" || fail "IOS_SIGNING_P12_BASE64 has no Apple Development identity"
-  echo "$identities" | grep -q "Apple Distribution" || fail "IOS_SIGNING_P12_BASE64 has no Apple Distribution identity"
+  if ! echo "$identities" | grep -q "Apple Distribution"; then
+    SIGNING="certificate + cloud distribution"
+  fi
 else
   SIGNING=cloud
+  log "no IOS_SIGNING_P12_BASE64: Xcode creates a development certificate on this runner, and it stays on the team"
 fi
 log "signing: $SIGNING"
 

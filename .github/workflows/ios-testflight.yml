@@ -18,10 +18,12 @@ name: iOS TestFlight
 # comments on) the "iOS TestFlight failed" issue instead of the desktop's
 # "Beta build failed" one.
 #
-# Signing: the App Store Connect API key (APPLE_API_KEY_*) signs through
-# Xcode's -allowProvisioningUpdates. With no IOS_SIGNING_P12_BASE64 secret
-# that is cloud signing, which needs an Admin-role key; the script's header
-# lists what each mode needs.
+# Signing: IOS_SIGNING_P12_BASE64 holds the CI's own Apple Development
+# certificate, and the App Store Connect API key (APPLE_API_KEY_*) does the
+# rest through Xcode's -allowProvisioningUpdates (profiles, and a
+# cloud-managed distribution certificate). Without the .p12 every run leaves a
+# new development certificate on the team until the limit stops all archives;
+# the script's header lists what each mode needs.
 #
 # Xcode: 27.1, the version the iPhone app is built with on the owner's Mac.
 # The Duo layout and the other iOS 27 code compile only with Swift 6.4 or
