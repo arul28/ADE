@@ -62,7 +62,7 @@ export const ADE_SESSION_STATUS_PROTOCOL_GUIDANCE = [
   "- The next accepted user message clears the prior hand-raise; re-ask if still blocked.",
   '- Done: report it and leave `ade chat note "<delivered result>"`.',
   "- You cannot settle or unsettle a session; that is the user's call, or the automatic result of its PR merging.",
-  "- Lane and chat names are yours to keep accurate. When the work changes direction or moves to a new branch, rename without asking: `ade lanes rename`, `ade chat update --title`, or `ade chat generate-names`. A lane keeps its name when its branch changes.",
+  "- Keep lane and chat names accurate. When the work changes direction or moves to a new branch, rename without asking: `ade lanes rename`, `ade chat update --title`, or `ade chat generate-names`. A lane keeps its name when its branch changes.",
 ].join("\n");
 
 /**
@@ -301,12 +301,12 @@ export function buildAdeBootstrapGuidance(
   return [
     "## ADE",
     "ADE is a local-first dev environment for lanes, chats, terminals, PRs, proof, apps, iOS, and browsers. Its `ade` CLI controls ADE state.",
-    `ADE capabilities ship as Agent Skills; for ADE tasks read the matching \`ade-*\` skill first: ${adeBundledAgentSkills.filter((name) => !adeDeprecatedAgentSkillAliases.has(name)).map((name) => `\`${name}\``).join(", ")}.`,
+    `Skills: for ADE tasks read the matching \`ade-*\` skill first: ${adeBundledAgentSkills.filter((name) => !adeDeprecatedAgentSkillAliases.has(name)).map((name) => `\`${name}\``).join(", ")}.`,
     formatAdeAgentSkillRootsForPrompt(skillRoots),
     "No native skills? `ade skill list --text`, then `ade skill show <name> --text`.",
     // The one scene line every agent sees. Without it the skill was opened only
     // when a model happened to read the index, so scenes almost never appeared.
-    "Visuals: when there is an obvious thing to show and a picture beats prose (status across many items, a comparison, a trend), or when asked, add one ```scene block; its buttons can offer choices. Run `ade scene guide` first; check with `ade scene preview`.",
+    "Visuals: when a picture beats prose (status across many items, a comparison, a trend) or when asked, add one ```scene block; its buttons can offer choices. Run `ade scene guide` first; check with `ade scene preview`.",
     // The one proof line every agent sees. Chat shows a picture only from the
     // project's own files or the proof store; an agent that linked a screenshot
     // it saved to /tmp left the user a chip saying "Outside this project".
@@ -315,8 +315,12 @@ export function buildAdeBootstrapGuidance(
     // text of the rest with `gh pr edit`, which drops ADE's footer and leaves
     // cited proof as links GitHub cannot show.
     "PRs: open with `ade prs create`, rewrite text with `ade prs body`; `gh` skips proof upload and the lane link.",
-    "For computer use, read `ade-computer-use` first. `mcp__computer_use` drives the user's real screen: use it only on request; never substitute `@oai/sky` via `node_repl`.",
-    "CLI ground truth: `ade help <command>` and `ade actions list --text`; prefer typed commands with `--text`. Settings questions: `ade settings find <words>`. Read only requested `ade secrets`, never print them, and clean up started processes.",
+    "`mcp__computer_use` drives the user's real screen: use it only on request, after `ade-computer-use`; never substitute `@oai/sky` via `node_repl`.",
+    "CLI ground truth: `ade help <command>` and `ade actions list --text`; prefer typed commands with `--text`. Settings questions: `ade settings find <words>`; clean up started processes.",
+    // Without this line an agent that needed Linear asked for the API key in
+    // chat, where it stays in the transcript. Each command shows a card only
+    // the user can answer, and the value never reaches the agent.
+    "Credentials: never ask in chat. `ade secrets request` (a key), `ade integrations connect` (GitHub/Linear/Jira) and `ade mcp servers add` (MCP) show the user a card. Read only requested `ade secrets`; never print them.",
     // One default per scenario: same chat and lane, subagents for other
     // models, and one wake per thing waited on, so an agent never polls.
     "Stay in this chat and lane unless asked. Another model works as your subagent (`ade new chat --mode chat`). Later: subagents report back; a PR you watch → `ade prs watch`; terminal → `ade terminal watch`; else `ade chat scheduled-work create`. `ade drafts` sends as the user.",

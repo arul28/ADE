@@ -175,7 +175,6 @@ export function OpenQuestionReceipt({
           <span className="font-normal text-fg/55">{label} · </span>
           {first?.header?.trim() || first?.question || request.description || "Waiting for your answer"}
         </ChatCardTitle>
-        <ChatCardSub>Answer it in the composer below.</ChatCardSub>
       </ChatCardRow>
     </ChatCard>
   );

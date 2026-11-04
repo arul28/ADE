@@ -66,6 +66,27 @@ class MemoryCredentialStore {
   }
 }
 
+/** A project whose origin names it on every machine: its Linear connection syncs under this scope. */
+const LINEAR_REPO_SCOPE = "repo:github.com/acme/app";
+function withGitRemote(root: string): void {
+  fs.mkdirSync(path.join(root, ".git"), { recursive: true });
+  fs.writeFileSync(path.join(root, ".git", "config"), '[remote "origin"]\n\turl = https://github.com/acme/app.git\n');
+}
+
+function linearVaultConnection(connection: { token: string; authMode: "manual" | "oauth"; refreshToken?: string | null; expiresAt?: string | null }) {
+  return JSON.stringify({
+    v: 1,
+    authMode: connection.authMode,
+    token: connection.token,
+    refreshToken: connection.refreshToken ?? null,
+    expiresAt: connection.expiresAt ?? null,
+  });
+}
+
+function linearVaultItem(refreshOwner: string | null, updatedAt = "2026-09-16T00:00:00.000Z") {
+  return { scope: LINEAR_REPO_SCOPE, kind: "integration", key: "linear", value: null, updatedAt, refreshOwner };
+}
+
 function createVaultMock() {
   return {
     list: vi.fn(async () => ({ ok: true, value: [] })),
@@ -286,8 +307,9 @@ describe("linearCredentialService", () => {
     expect(fs.readFileSync(clientPath).toString("utf8")).toMatch(/^enc:/);
   });
 
-  it("writes an OAuth refresh token to the account vault", () => {
+  it("publishes the project's OAuth connection under its repo scope", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-linear-vault-write-"));
+    withGitRemote(root);
     const store = new MemoryCredentialStore();
     const vault = createVaultMock();
     const service = createLinearCredentialService({
@@ -301,11 +323,18 @@ describe("linearCredentialService", () => {
     service.setOAuthToken({ accessToken: "at", refreshToken: "rt-account" });
 
     expect(store.getSync("linear.refreshToken.v1")).toBe("rt-account");
-    expect(vault.set).toHaveBeenCalledWith("all", "linear_refresh_token", "default", "rt-account");
+    expect(vault.set).toHaveBeenCalledWith(
+      LINEAR_REPO_SCOPE,
+      "integration",
+      "linear",
+      linearVaultConnection({ token: "at", authMode: "oauth", refreshToken: "rt-account" }),
+      { refreshOwner: null },
+    );
   });
 
   it("stamps this machine as Linear refreshOwner when writing the vault grant", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-linear-vault-owner-"));
+    withGitRemote(root);
     const store = new MemoryCredentialStore();
     const vault = createVaultMock();
     const service = createLinearCredentialService({
@@ -320,54 +349,24 @@ describe("linearCredentialService", () => {
     service.setOAuthToken({ accessToken: "at", refreshToken: "rt-account" });
 
     expect(vault.set).toHaveBeenCalledWith(
-      "all",
-      "linear_refresh_token",
-      "default",
-      "rt-account",
+      LINEAR_REPO_SCOPE,
+      "integration",
+      "linear",
+      linearVaultConnection({ token: "at", authMode: "oauth", refreshToken: "rt-account" }),
       { refreshOwner: "device-a" },
     );
   });
 
-  it("does not hydrate a Linear refresh grant owned by another machine", async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-linear-vault-skip-hydrate-"));
-    const store = new MemoryCredentialStore();
-    store.setSync("linear.token.v1", "at-local");
-    store.setSync("linear.authMode.v1", "oauth");
-    const vault = createVaultMock();
-    vault.list.mockResolvedValue({
-      ok: true,
-      value: [{
-        scope: "all",
-        kind: "linear_refresh_token",
-        key: "default",
-        value: null,
-        updatedAt: "2026-09-16T00:00:00.000Z",
-        refreshOwner: "other-device",
-      }],
-    } as never);
-    vault.get.mockResolvedValue({ ok: true, value: "rt-from-account" } as never);
-    const service = createLinearCredentialService({
-      adeDir: path.join(root, ".ade"),
-      logger: createLogger(),
-      credentialStore: store,
-      getAccountVault: () => vault as never,
-      getAccountUserId: () => "account-a",
-      getDeviceId: () => "this-device",
-    });
-
-    await service.hydrateFromVault();
-
-    expect(store.getSync("linear.refreshToken.v1")).toBeNull();
-    expect(vault.get).not.toHaveBeenCalled();
-  });
-
-  it("hydrates a missing local OAuth refresh token without overwriting one already stored", async () => {
+  it("adopts the project's connection from the vault when this machine has none, and keeps its own", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-linear-vault-hydrate-"));
+    withGitRemote(root);
     const store = new MemoryCredentialStore();
-    store.setSync("linear.token.v1", "at-local");
-    store.setSync("linear.authMode.v1", "oauth");
     const vault = createVaultMock();
-    vault.get.mockResolvedValue({ ok: true, value: "rt-from-account" } as never);
+    vault.list.mockResolvedValue({ ok: true, value: [linearVaultItem("other-device")] } as never);
+    vault.get.mockResolvedValue({
+      ok: true,
+      value: linearVaultConnection({ token: "at-account", authMode: "oauth", refreshToken: "rt-from-account", expiresAt: "2026-12-01T00:00:00.000Z" }),
+    } as never);
     const service = createLinearCredentialService({
       adeDir: path.join(root, ".ade"),
       logger: createLogger(),
@@ -376,27 +375,29 @@ describe("linearCredentialService", () => {
       getAccountUserId: () => "account-a",
     });
 
+    // A second machine with the same project is connected without signing in.
     await service.hydrateFromVault();
-
-    expect(store.getSync("linear.refreshToken.v1")).toBe("rt-from-account");
-    expect(service.getStatus().refreshTokenStored).toBe(true);
-    expect(vault.get).toHaveBeenCalledWith("all", "linear_refresh_token", "default");
+    expect(service.getToken()).toBe("at-account");
+    expect(service.getStatus()).toMatchObject({ tokenStored: true, authMode: "oauth", refreshTokenStored: true });
     expect(vault.set).not.toHaveBeenCalled();
 
-    vault.get.mockClear();
-    store.setSync("linear.refreshToken.v1", "rt-local");
+    // A connection made on this machine is never overwritten by the vault's.
+    service.setToken("lin_api_local");
+    vault.set.mockClear();
     await service.hydrateFromVault();
-    expect(store.getSync("linear.refreshToken.v1")).toBe("rt-local");
-    expect(vault.get).not.toHaveBeenCalled();
+    expect(service.getToken()).toBe("lin_api_local");
   });
 
-  it("records account provenance for hydrated refresh tokens and purges it on sign-out", async () => {
+  it("records account provenance for a hydrated connection and purges it on sign-out", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-linear-vault-provenance-"));
+    withGitRemote(root);
     const store = new MemoryCredentialStore();
-    store.setSync("linear.token.v1", "at-local");
-    store.setSync("linear.authMode.v1", "oauth");
     const vault = createVaultMock();
-    vault.get.mockResolvedValue({ ok: true, value: "rt-from-account" } as never);
+    vault.list.mockResolvedValue({ ok: true, value: [linearVaultItem("other-device")] } as never);
+    vault.get.mockResolvedValue({
+      ok: true,
+      value: linearVaultConnection({ token: "at-account", authMode: "oauth", refreshToken: "rt-from-account" }),
+    } as never);
     const service = createLinearCredentialService({
       adeDir: path.join(root, ".ade"),
       logger: createLogger(),
@@ -413,11 +414,12 @@ describe("linearCredentialService", () => {
 
     service.purgeAccountCredentials();
     expect(store.getSync("linear.refreshToken.v1")).toBeNull();
-    expect(store.getSync("linear.token.v1")).toBe("at-local");
+    expect(store.getSync("linear.token.v1")).toBeNull();
   });
 
-  it("removes the Linear refresh token from both local storage and the account vault", () => {
+  it("removes the Linear connection from both local storage and the account vault", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-linear-vault-remove-"));
+    withGitRemote(root);
     const store = new MemoryCredentialStore();
     const vault = createVaultMock();
     const service = createLinearCredentialService({
@@ -425,6 +427,7 @@ describe("linearCredentialService", () => {
       logger: createLogger(),
       credentialStore: store,
       getAccountVault: () => vault as never,
+      getAccountUserId: () => "account-a",
     });
     service.setOAuthToken({ accessToken: "at", refreshToken: "rt-account" });
     vault.set.mockClear();
@@ -433,7 +436,7 @@ describe("linearCredentialService", () => {
 
     expect(store.getSync("linear.token.v1")).toBeNull();
     expect(store.getSync("linear.refreshToken.v1")).toBeNull();
-    expect(vault.remove).toHaveBeenCalledWith("all", "linear_refresh_token", "default");
+    expect(vault.remove).toHaveBeenCalledWith(LINEAR_REPO_SCOPE, "integration", "linear");
   });
 
   it("does not block or throw when the account vault is unavailable", async () => {
@@ -2024,17 +2027,13 @@ describe("linearCredentialService OAuth token refresh", () => {
   it("does not refresh a Linear grant owned by another machine", async () => {
     const fetchImpl = vi.fn(async () => okResponse({ access_token: "at_stolen" }));
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-linear-refresh-owner-"));
+    withGitRemote(root);
+    const expiresAt = new Date(Date.now() + 30_000).toISOString();
     const vault = createVaultMock();
-    vault.list.mockResolvedValue({
+    vault.list.mockResolvedValue({ ok: true, value: [linearVaultItem("other-device", new Date().toISOString())] } as never);
+    vault.get.mockResolvedValue({
       ok: true,
-      value: [{
-        scope: "all",
-        kind: "linear_refresh_token",
-        key: "default",
-        value: null,
-        updatedAt: "2026-09-16T00:00:00.000Z",
-        refreshOwner: "other-device",
-      }],
+      value: linearVaultConnection({ token: "at_old", authMode: "oauth", refreshToken: "rt_old", expiresAt }),
     } as never);
     const service = createLinearCredentialService({
       adeDir: path.join(root, ".ade"),
@@ -2042,12 +2041,13 @@ describe("linearCredentialService OAuth token refresh", () => {
       credentialStore: new MemoryCredentialStore(),
       fetchImpl: fetchImpl as unknown as typeof fetch,
       getAccountVault: () => vault as never,
+      getAccountUserId: () => "account-a",
       getDeviceId: () => "this-device",
     });
     service.setOAuthToken({
       accessToken: "at_old",
       refreshToken: "rt_old",
-      expiresAt: new Date(Date.now() + 30_000).toISOString(),
+      expiresAt,
     });
 
     await service.ensureFreshToken();

@@ -1,0 +1,364 @@
+/*
+ * The connect card in the composer. It wears the integration page's banner
+ * (the maker's art, the 3D logo) and takes `--ig-accent` from the maker's
+ * color, so it reads as the same object as the Settings page it saves into.
+ */
+
+.ade-icc {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  margin: 8px;
+  border-radius: 12px;
+  overflow: hidden;
+  isolation: isolate;
+  container-type: inline-size;
+  outline: none;
+  background: color-mix(in srgb, var(--ig-accent) 5%, rgba(14, 15, 19, 0.92));
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--ig-accent) 30%, transparent),
+    0 18px 36px -28px color-mix(in srgb, var(--ig-accent) 85%, transparent);
+  animation: ade-icc-in 260ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  font-size: calc(var(--chat-font-size, 14px) * 12.5 / 14);
+}
+@keyframes ade-icc-in {
+  from { opacity: 0; transform: translateY(6px) scale(0.99); }
+  to { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) { .ade-icc { animation: none; } }
+
+/* ── Banner: one line. Logo, who asks, status chips, Settings, close. ── */
+.ade-icc-banner {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 44px;
+  padding: 6px 8px 6px 10px;
+  color: #fff;
+  overflow: hidden;
+}
+.ade-icc[data-light="true"] .ade-icc-banner { color: #10151c; }
+.ade-icc-banner-art {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center 72%;
+  pointer-events: none;
+  user-select: none;
+}
+.ade-icc-banner-shade {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background: linear-gradient(90deg, rgba(0, 0, 0, 0.3), transparent 70%);
+}
+.ade-icc[data-light="true"] .ade-icc-banner-shade {
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0.7), rgba(255, 255, 255, 0.25) 65%, transparent);
+}
+.ade-icc-logo {
+  position: relative;
+  z-index: 1;
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+}
+.ade-icc-logo > .ade-pv-mark3d { width: 34px; height: 34px; }
+.ade-icc-logo .ade-pv-mark3d-floor { display: none; }
+.ade-icc-heading {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.ade-icc-heading-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  line-height: 1.2;
+}
+.ade-icc-heading-dim { opacity: 0.72; }
+.ade-icc-title { font-weight: 680; letter-spacing: -0.01em; }
+.ade-icc-asker {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  background: rgba(10, 11, 14, 0.55);
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.14);
+  color: #fff;
+}
+.ade-icc[data-light="true"] .ade-icc-asker { background: rgba(16, 21, 28, 0.86); box-shadow: none; }
+.ade-icc-banner-tools {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+}
+.ade-icc-chip {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 8px;
+  margin-right: 2px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.28);
+  font-size: 10.5px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.ade-icc[data-light="true"] .ade-icc-chip { background: rgba(255, 255, 255, 0.7); }
+.ade-icc-chip[data-tone="warn"] { background: rgba(250, 204, 21, 0.22); color: rgb(254, 240, 138); }
+.ade-icc[data-light="true"] .ade-icc-chip[data-tone="warn"] { background: rgba(250, 204, 21, 0.35); color: #5c4400; }
+.ade-icc-close {
+  display: inline-grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.22);
+  color: inherit;
+  cursor: pointer;
+  opacity: 0.8;
+  transition: opacity 140ms ease, background 140ms ease;
+}
+.ade-icc[data-light="true"] .ade-icc-close { background: rgba(255, 255, 255, 0.55); }
+.ade-icc-close:hover { opacity: 1; background: rgba(0, 0, 0, 0.36); }
+.ade-icc[data-light="true"] .ade-icc-close:hover { background: rgba(255, 255, 255, 0.85); }
+.ade-icc-close:disabled { opacity: 0.35; pointer-events: none; }
+
+/* ── Body: the agent's reason, then one row to act on. ── */
+.ade-icc-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 9px 10px 10px 12px;
+}
+.ade-icc-reason {
+  margin: 0;
+  line-height: 1.45;
+  color: color-mix(in srgb, var(--color-fg) 80%, transparent);
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.ade-icc-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+
+.ade-icc-tabs {
+  display: inline-flex;
+  flex: none;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--color-fg) 5%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-fg) 6%, transparent);
+}
+.ade-icc-tab {
+  height: 28px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: color-mix(in srgb, var(--color-fg) 55%, transparent);
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 550;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 140ms ease, background 140ms ease;
+}
+.ade-icc-tab:hover { color: color-mix(in srgb, var(--color-fg) 85%, transparent); }
+.ade-icc-tab[aria-selected="true"] {
+  color: #fff;
+  background: color-mix(in srgb, var(--ig-accent) 34%, rgba(20, 21, 26, 0.9));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ig-accent) 55%, transparent);
+}
+.ade-icc-tab:disabled { cursor: default; }
+
+.ade-icc-fields {
+  display: flex;
+  flex: 1 1 220px;
+  gap: 6px;
+  min-width: 0;
+}
+.ade-icc-input {
+  display: flex;
+  align-items: center;
+  flex: 1 1 0;
+  gap: 2px;
+  min-width: 0;
+  height: 32px;
+  padding: 0 4px 0 10px;
+  border-radius: 9px;
+  background: rgba(0, 0, 0, 0.26);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-fg) 8%, transparent);
+  transition: box-shadow 140ms ease;
+}
+.ade-icc-input[data-secret="true"] { flex-grow: 1.4; }
+.ade-icc-input:focus-within {
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--ig-accent) 70%, transparent),
+    0 0 0 3px color-mix(in srgb, var(--ig-accent) 18%, transparent);
+}
+.ade-icc-input > input {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-fg);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12.5px;
+  outline: none;
+}
+/* The field rings its frame (`.ade-icc-input:focus-within`), so the global
+   input focus ring, whose long :not() chain outranks a class, stays off. */
+.ade-icc-input > input,
+.ade-icc-input > input:focus,
+.ade-icc-input > input:focus-visible {
+  height: 100%;
+  padding: 0;
+  border: 0 !important;
+  border-radius: 0;
+  box-shadow: none !important;
+  outline: none;
+  appearance: none;
+}
+.ade-icc-input > input::placeholder {
+  font-family: var(--font-sans, inherit);
+  color: color-mix(in srgb, var(--color-fg) 28%, transparent);
+}
+.ade-icc-icon-button {
+  display: inline-grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: color-mix(in srgb, var(--color-fg) 42%, transparent);
+  cursor: pointer;
+}
+.ade-icc-icon-button:hover { color: var(--color-fg); background: color-mix(in srgb, var(--color-fg) 6%, transparent); }
+
+.ade-icc-link {
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+  gap: 3px;
+  padding: 0 2px;
+  border: 0;
+  background: transparent;
+  color: color-mix(in srgb, var(--ig-accent) 70%, white 30%);
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 550;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.ade-icc-link:hover { text-decoration: underline; text-underline-offset: 2px; }
+.ade-icc-link-dim { color: color-mix(in srgb, var(--color-fg) 50%, transparent); }
+
+.ade-icc-primary {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 9px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.14), rgba(255, 255, 255, 0) 55%),
+    color-mix(in srgb, var(--ig-accent) 76%, black 24%);
+  color: #fff;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 650;
+  white-space: nowrap;
+  cursor: pointer;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.22),
+    0 6px 16px -8px color-mix(in srgb, var(--ig-accent) 90%, transparent);
+  transition: transform 120ms ease, filter 140ms ease, opacity 140ms ease;
+}
+.ade-icc-primary:hover:not(:disabled) { filter: brightness(1.08); }
+.ade-icc-primary:active:not(:disabled) { transform: translateY(1px); }
+.ade-icc-primary:disabled {
+  cursor: default;
+  background: color-mix(in srgb, var(--color-fg) 7%, transparent);
+  color: color-mix(in srgb, var(--color-fg) 32%, transparent);
+  box-shadow: none;
+}
+.ade-icc-primary-brand:disabled {
+  /* Busy, not unavailable: keep the brand so "Waiting…" still reads as the provider's. */
+  background: color-mix(in srgb, var(--ig-accent) 55%, rgba(0, 0, 0, 0.4));
+  color: rgba(255, 255, 255, 0.86);
+}
+.ade-icc-primary:focus-visible { outline: 2px solid var(--ig-accent); outline-offset: 2px; }
+.ade-icc-primary-mark { display: inline-flex; line-height: 0; }
+
+/* GitHub's device code, while it waits for the person on github.com. */
+.ade-icc-code { display: inline-flex; align-items: center; gap: 10px; flex: 1 1 auto; min-width: 0; }
+.ade-icc-code-value {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 32px;
+  padding: 0 11px;
+  border: 0;
+  border-radius: 9px;
+  background: rgba(0, 0, 0, 0.3);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ig-accent) 45%, transparent);
+  color: var(--color-fg);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 14px;
+  font-weight: 650;
+  letter-spacing: 0.12em;
+  cursor: pointer;
+}
+.ade-icc-code-value > svg { color: color-mix(in srgb, var(--color-fg) 50%, transparent); }
+.ade-icc-wait { color: color-mix(in srgb, var(--color-fg) 45%, transparent); }
+
+/* ── Transcript receipt ── */
+.ade-icc-receipt-logo {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+
+/* Narrow: Jira's three fields stack, the button keeps its own line. */
+@container (max-width: 520px) {
+  .ade-icc-row[data-fields="3"] .ade-icc-fields { flex-basis: 100%; flex-direction: column; }
+  .ade-icc-row[data-fields="3"] .ade-icc-input { flex: none; }
+}
+

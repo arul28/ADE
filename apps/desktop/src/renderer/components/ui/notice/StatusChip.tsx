@@ -45,6 +45,7 @@ export function StatusChip({
   detailMono = false,
   tooltip,
   actions = [],
+  help,
   onDismiss,
   testId,
   dataAttributes,
@@ -57,6 +58,8 @@ export function StatusChip({
   detailMono?: boolean;
   tooltip?: string;
   actions?: StatusChipAction[];
+  /** A small "?" after the actions whose hover explains what they do. */
+  help?: string;
   onDismiss?: () => void;
   testId?: string;
   dataAttributes?: Record<`data-${string}`, string>;
@@ -79,7 +82,7 @@ export function StatusChip({
       aria-label={tooltip}
       title={tooltip}
       style={style}
-      className={cn("pointer-events-auto inline-flex h-[22px] max-w-full shrink-0 items-center gap-1.5 rounded-full border bg-[var(--status-chip-fill)] pl-2 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-fg/60", actions.length > 0 || onDismiss ? "pr-1" : "pr-2")}
+      className={cn("pointer-events-auto inline-flex h-[22px] max-w-full shrink-0 items-center gap-1.5 rounded-full border bg-[var(--status-chip-fill)] pl-2 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-fg/60", actions.length > 0 || help || onDismiss ? "pr-1" : "pr-2")}
     >
       <span className="inline-flex shrink-0" style={{ color: tokens.color }} aria-hidden>{icon}</span>
       <span className="shrink-0 font-medium" style={{ color: tokens.text }}>{label}</span>
@@ -99,6 +102,16 @@ export function StatusChip({
           {action.label}
         </button>
       ))}
+      {help ? (
+        <button
+          type="button"
+          aria-label={help}
+          title={help}
+          className="grid h-[16px] w-[16px] shrink-0 cursor-help place-items-center rounded-full text-[9px] font-semibold leading-none text-fg/45 shadow-[inset_0_0_0_1px_currentColor] transition-colors hover:text-fg/80 focus-visible:text-fg/80 focus-visible:outline-none"
+        >
+          ?
+        </button>
+      ) : null}
       {onDismiss ? (
         <button
           type="button"

@@ -12,32 +12,10 @@ import {
   type ProjectSecretRequestResult,
 } from "../../../shared/projectSecretRequest";
 import type { ProjectSecretSetArgs, ProjectSecretSummary, ProjectSecretsListResult } from "../../../shared/types/projectSecrets";
-
-/** The default wait: long enough to go find a key in another tab, not forever. */
-export const PROJECT_SECRET_REQUEST_DEFAULT_TIMEOUT_MS = 30 * 60_000;
-export const PROJECT_SECRET_REQUEST_MAX_TIMEOUT_MS = 2 * 60 * 60_000;
-
-type RequestChatInput = (args: {
-  chatSessionId: string;
-  title: string;
-  body: string;
-  timeoutMs?: number;
-  allowsFreeform?: boolean;
-  providerMetadata?: Record<string, unknown>;
-  eventDescription?: string;
-  questions?: Array<{
-    id?: string;
-    header?: string;
-    question: string;
-    options?: Array<{ label: string; value?: string; description?: string; recommended?: boolean }>;
-    allowsFreeform?: boolean;
-    isSecret?: boolean;
-  }>;
-  beforeAccept?: (answers: Record<string, string[]>) => void;
-}) => Promise<{ decision: string; answers: Record<string, string[]>; responseText: string | null; timedOut?: boolean }>;
+import { cardTimeoutMs, cardWasDeclined, joinInFlight, readCardArgs, type CardRequestChatInput } from "../chat/chatCardRequest";
 
 export type ProjectSecretRequestDeps = {
-  requestChatInput: RequestChatInput;
+  requestChatInput: CardRequestChatInput;
   projectSecrets: {
     list(): ProjectSecretsListResult;
     set(args: ProjectSecretSetArgs): ProjectSecretSummary;
@@ -65,10 +43,6 @@ const REQUEST_ID_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/;
  */
 const inFlightByRequestId = new Map<string, Promise<ProjectSecretRequestResult>>();
 
-function readArgs(raw: unknown): Record<string, unknown> {
-  return raw && typeof raw === "object" && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
-}
-
 /**
  * `project_secret.request` — ask the person in this chat for a secret and
  * store it in the project's secrets.
@@ -83,7 +57,7 @@ export async function requestProjectSecretFromUser(
   deps: ProjectSecretRequestDeps,
   rawArgs: unknown,
 ): Promise<ProjectSecretRequestResult> {
-  const args = readArgs(rawArgs);
+  const args = readCardArgs(rawArgs);
   const chatSessionId = typeof args.chatSessionId === "string" ? args.chatSessionId.trim() : "";
   if (!chatSessionId) {
     throw new Error("Asking for a secret needs a chat to ask in. Run `ade secrets request` from inside an ADE chat.");
@@ -102,16 +76,7 @@ export async function requestProjectSecretFromUser(
     if (earlier) {
       return { name, saved: true, delivery: "file", file: earlier.path, expiresAt: earlier.expiresAt, reused: true };
     }
-    const key = `${chatSessionId}\u0000${requestId}`;
-    const pending = inFlightByRequestId.get(key);
-    if (pending) return await pending;
-    const ask = askProjectSecret(deps, args, chatSessionId, requestId);
-    inFlightByRequestId.set(key, ask);
-    try {
-      return await ask;
-    } finally {
-      if (inFlightByRequestId.get(key) === ask) inFlightByRequestId.delete(key);
-    }
+    return await joinInFlight(inFlightByRequestId, `${chatSessionId}\u0000${requestId}`, () => askProjectSecret(deps, args, chatSessionId, requestId));
   }
   return await askProjectSecret(deps, args, chatSessionId, null);
 }
@@ -131,10 +96,7 @@ async function askProjectSecret(
     throw new Error("Say why you need the secret (--reason). The person decides from that one line.");
   }
   const generate = args.generate === true;
-  const requestedTimeout = typeof args.timeoutMs === "number" && Number.isFinite(args.timeoutMs)
-    ? Math.floor(args.timeoutMs)
-    : PROJECT_SECRET_REQUEST_DEFAULT_TIMEOUT_MS;
-  const timeoutMs = Math.min(Math.max(requestedTimeout, 10_000), PROJECT_SECRET_REQUEST_MAX_TIMEOUT_MS);
+  const timeoutMs = cardTimeoutMs(args);
 
   const askedDelivery = args.delivery == null ? "secrets" : readProjectSecretDelivery(args.delivery);
   if (!askedDelivery) throw new Error("--delivery must be `secrets` or `file`.");
@@ -243,7 +205,7 @@ async function askProjectSecret(
   if (response.timedOut) {
     throw new Error(`Nobody answered the request for ${name} in time. Ask again when the person is around.`);
   }
-  if (response.decision === "decline" || response.decision === "cancel" || response.decision === "none") {
+  if (cardWasDeclined(response)) {
     return { name, saved: false, declined: true };
   }
   const file = fileResult as { path: string; expiresAt: string } | null;

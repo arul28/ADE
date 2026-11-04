@@ -11,6 +11,7 @@ import { setIssueTopBarVisible, useIssueTopBarPreferences } from "../issues/issu
 import { JiraMark } from "../lanes/jiraBrand";
 import { SettingsTextField } from "./primitives";
 import {
+  credentialStorageFact,
   IntegrationCard,
   IntegrationColumns,
   IntegrationHero,
@@ -177,6 +178,7 @@ export function JiraSection() {
     ? [
         { label: "Site", value: siteHost || "—", mono: true },
         { label: "Projects here", value: projectKeys.length ? projectKeys.join(", ") : "None chosen", mono: projectKeys.length > 0 },
+        ...[credentialStorageFact(connection?.credentialStorage)].filter((fact): fact is IntegrationFact => fact != null),
       ]
     : [];
   const query = projectQuery.trim().toLowerCase();

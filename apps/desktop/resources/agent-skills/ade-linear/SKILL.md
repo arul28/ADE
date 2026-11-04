@@ -1,6 +1,6 @@
 ---
 name: ade-linear
-description: Use this skill whenever your task is a Linear issue (or an ADE chat/lane launched with a Linear issue attached) and you need to read or update that issue — change its workflow state, comment progress, assign it, add a label, or read its comments. ADE routes all of this through its own Linear connection via the `ade linear` CLI, so you have effective Linear write access with no API key.
+description: Use this skill whenever your task is a Linear issue (or an ADE chat/lane launched with a Linear issue attached) and you need to read or update that issue — change its workflow state, comment progress, assign it, add a label, or read its comments. ADE routes all of this through its own Linear connection via the `ade linear` CLI, so you have effective Linear write access with no API key. If Linear is not connected, ask with `ade integrations connect linear`.
 ---
 
 # ADE Linear
@@ -15,6 +15,13 @@ credentials. The daemon does the authenticated Linear API call on your behalf.
 
 You do **not** need to know how you were launched, what mode you are in, or how
 the issue got attached. You have a task, an attached issue, and these commands.
+
+If an `ade linear` command answers "Linear is not connected", do not ask for
+an API key in chat. If the person asked for Linear, run
+`ade integrations connect linear --reason "<what you will do>"`. It shows them
+a connect card and returns when they connect or decline. If Linear was your
+own idea, ask in words first. See "Connecting an integration" in
+`ade-cli-control-plane`.
 
 Prefer `ade linear` over any Linear MCP server or direct Linear API call — the
 `ade linear` bridge is the connection that is actually configured for this

@@ -219,8 +219,10 @@ import {
 import {
   PROJECT_SECRET_DELIVERY_QUESTION_ID,
   projectSecretComposerNote,
-  readProjectSecretRequestCard,
 } from "../../../shared/projectSecretRequest";
+import { IntegrationConnectComposer } from "./IntegrationConnectCard";
+import { McpServerRequestComposer } from "./McpServerCard";
+import { readNativeInputCard } from "../../../shared/nativeInputCards";
 import {
   isAskQuestionRequest,
   isRedirectablePendingRequest,
@@ -2321,6 +2323,7 @@ function AgentChatComposerImpl({
   pendingInputQueue,
   onSelectPendingInput,
   approvalResponding,
+  pendingInputError,
   turnActive,
   sendOnEnter,
   busy,
@@ -2576,6 +2579,11 @@ function AgentChatComposerImpl({
   pendingInputQueue?: readonly PendingInputStackEntry[];
   onSelectPendingInput?: (itemId: string) => void;
   approvalResponding?: boolean;
+  /**
+   * Why the open card's last answer did not go through, when the card shows
+   * it itself (the connect and MCP server cards) instead of the chat's banner.
+   */
+  pendingInputError?: string | null;
   turnActive: boolean;
   sendOnEnter: boolean;
   busy: boolean;
@@ -9351,8 +9359,9 @@ function AgentChatComposerImpl({
         </div>
         );
 
-        const secretRequestCard = askQuestionRequest ? readProjectSecretRequestCard(askQuestionRequest) : null;
-        if (askQuestionRequest && secretRequestCard) {
+        const nativeCard = readNativeInputCard(askQuestionRequest);
+        if (askQuestionRequest && nativeCard?.kind === "secret") {
+          const secretRequestCard = nativeCard.card;
           // The private secret card. Its value travels only as the answer to
           // the request's `isSecret` question; the composer draft is never
           // touched, so nothing typed here can ride a later message.
@@ -9366,6 +9375,43 @@ function AgentChatComposerImpl({
               fileDeliveryAvailable={askQuestionRequest.questions.some((question) => question.id === PROJECT_SECRET_DELIVERY_QUESTION_ID)}
               onSave={(value, delivery) => { void onApproval("accept", null, projectSecretSaveAnswers(secretRequestCard, value, delivery)); }}
               onKeepExisting={() => { void onApproval("accept", null, projectSecretKeepAnswers()); }}
+              onDecline={() => { void onApproval("decline"); }}
+            />
+          );
+        }
+
+        if (askQuestionRequest && nativeCard?.kind === "connect") {
+          // The connect card. Keys travel only as answers to the request's
+          // `isSecret` questions; the host checks and saves them on the chat's
+          // machine, and a refusal comes back as `pendingInputError`.
+          return (
+            <IntegrationConnectComposer
+              key={askQuestionRequest.itemId ?? askQuestionRequest.requestId}
+              request={askQuestionRequest}
+              card={nativeCard.card}
+              responding={approvalResponding ?? false}
+              error={pendingInputError ?? null}
+              chatProvider={sessionProvider}
+              onConnect={(answers) => { void onApproval("accept", null, answers); }}
+              onDecline={() => { void onApproval("decline"); }}
+            />
+          );
+        }
+
+        if (askQuestionRequest && nativeCard?.kind === "mcp-server") {
+          // The MCP server card. Values travel only as answers to the
+          // request's `isSecret` questions; the host saves the server and its
+          // values on the chat's machine, and a refusal comes back as
+          // `pendingInputError`.
+          return (
+            <McpServerRequestComposer
+              key={askQuestionRequest.itemId ?? askQuestionRequest.requestId}
+              request={askQuestionRequest}
+              card={nativeCard.card}
+              responding={approvalResponding ?? false}
+              error={pendingInputError ?? null}
+              chatProvider={sessionProvider}
+              onAdd={(answers) => { void onApproval("accept", null, answers); }}
               onDecline={() => { void onApproval("decline"); }}
             />
           );

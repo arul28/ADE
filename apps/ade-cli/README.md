@@ -514,6 +514,8 @@ ade mcp token create --label Grok --read-only --text     # a bearer token for he
 ade mcp scope <connection-id> read|write  # change one app's or token's access
 ade mcp remove <connection-id>            # disconnect an app or revoke a token
 ade mcp activity --text                   # what connected apps ran here
+ade mcp servers --text                    # the MCP servers your agents get, where each is on, which values are set
+ade mcp servers add notion --reason "…"   # MCP server card in the chat; the person approves it, then presses Refresh chat
 ade machines list --text                           # includes presence: asleep/online + battery or wall power
 ade machines rename <machine-key> "Build Mac"      # or --clear to fall back to the hostname
 ade machines remove <machine-key> --confirm REMOVE # revoke a machine and clear its Activity
@@ -857,6 +859,8 @@ printf %s "$TOKEN" | ade secrets set TOKEN --stdin
 ade secrets set TOKEN --value-file token.txt
 ade secrets delete STRIPE_API_KEY
 ade secrets request WEBHOOK_SECRET --reason "Signs deliveries" --generate  # private secret card in the chat; prints the outcome, never the value
+ade integrations status --text                    # GitHub, Linear, Jira: connected here or not, and as whom; never a credential
+ade integrations connect linear --reason "…"      # connect card in the chat (browser sign-in or key); saved for the project on your machines, prints the outcome
 ade usage snapshot --text                          # live quota headroom per window, the account it belongs to, and the provider limits link
 ade usage stats --preset 7d --text                 # tokens, cost, and activity for a range
 ade usage stats --scope account --text             # merged across every machine on the account

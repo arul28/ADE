@@ -4,6 +4,7 @@
  * standing on it in 3D (`SolidLogo`, shared with the provider pages).
  */
 import type { CSSProperties } from "react";
+import { CONNECT_PROVIDER_IDS, isConnectProviderId, type ConnectProviderId } from "../../../../shared/integrationConnect";
 import { JIRA_LOGO_PATH } from "../../lanes/jiraBrand";
 import { LINEAR_LOGO_PATH } from "../../lanes/linearBrand";
 import type { ProviderBrandLogo } from "../providers/providerBrand";
@@ -11,12 +12,13 @@ import githubArt from "./banners/github.webp";
 import jiraArt from "./banners/jira.webp";
 import linearArt from "./banners/linear.webp";
 
-export type IntegrationId = "github" | "linear" | "jira";
+/** The integrations are the ones an agent can ask to connect. */
+export type IntegrationId = ConnectProviderId;
 
-export const INTEGRATION_IDS: readonly IntegrationId[] = ["github", "linear", "jira"];
+export const INTEGRATION_IDS: readonly IntegrationId[] = CONNECT_PROVIDER_IDS;
 
 export function isIntegrationId(value: string | null | undefined): value is IntegrationId {
-  return value === "github" || value === "linear" || value === "jira";
+  return isConnectProviderId(value);
 }
 
 /** Simple Icons' GitHub mark (viewBox 0 0 24 24). */

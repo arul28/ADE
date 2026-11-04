@@ -48,6 +48,24 @@ when the user names one. Webhooks (run an agent when another service does
 something) are the **ade-webhooks** skill. Full detail:
 `references/secrets-and-webhooks.md`.
 
+## Connecting an integration
+
+GitHub, Linear and Jira are ADE integrations: ADE holds the credential, and
+you use them through `ade prs`, `ade github`, `ade linear` and `ade jira`.
+Never ask for a key in chat. Check, then ask with the connect card:
+
+```
+ade integrations status --text
+ade integrations connect linear --reason "To read the issues you mentioned and move them to In Review"
+```
+
+The card offers a browser sign-in where the provider has one, otherwise the
+key fields; ADE checks the key, then saves it. The command blocks and prints
+only the outcome: `{provider, connected: true, method, account, next}` or
+`{provider, connected: false, declined: true}` (`method: "already"` when it was
+connected). If the person named the integration, raise the card at once; if it
+was your own idea, ask in words first.
+
 ## The running app
 
 Browser, App Control, Apple device and proof commands talk to the running ADE
@@ -349,13 +367,24 @@ To make a message arrive later *as the user* (it shows in their Drafts), use
 
 ### MCP servers
 
-A chat keeps the MCP servers it started with; servers the user adds in
-Settings › MCP servers reach chats started or restarted after the change. An
-agent cannot add an MCP server or sign in to one. When the user asks for one
-you do not have, or one reports it needs authentication, tell them: press
-**Sign in** on its row in Settings › MCP servers if it asks for one, then
-right-click this chat in Work and choose **Restart agent session** (the
-conversation is kept), and send a message to try again.
+A chat keeps the MCP servers it started with. To get a new one, ask the user:
+`ade mcp servers add <name> --reason "…"` shows a card in the chat, and the
+user approves it in every permission mode. Never ask for a key in chat.
+
+- A name from ADE's catalogue (`ade mcp servers --help` lists them: `notion`,
+  `sentry`, `supabase`, `stripe`, …) uses the vendor's own server. The card
+  shows its brand, asks only for the key it needs, and runs the sign-in when
+  the server uses one.
+- `github`, `linear` and `atlassian` open ADE's own connect card instead: one
+  connection covers `ade github`/`ade linear`/`ade jira` and every agent.
+- Any other server works too: describe it (`--url`, or the command line after
+  `--`). Its card says Custom, so the user reads what it runs.
+
+When the user named the server, raise the card at once. When it was your own
+idea, ask in words first. A server the user adds reaches this chat only after
+they press **Refresh chat** above the composer; ask them to. If a server says it
+needs a sign-in, tell them to press **Sign in** on its row in
+Settings › Integrations › MCP servers, then **Refresh chat**.
 
 ## Side chats
 

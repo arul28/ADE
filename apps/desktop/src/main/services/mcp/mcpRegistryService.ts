@@ -1,5 +1,5 @@
 /**
- * The main-process half of Settings > MCP servers.
+ * The main-process half of Settings > Integrations > MCP servers.
  *
  * The renderer reads and writes the registry's three settings rows itself,
  * through the account settings bridge it already has. This service is the part
@@ -34,7 +34,7 @@ import {
   type McpOAuthToken,
   type McpRegistryServer,
 } from "../../../shared/mcpRegistry";
-import type { AccountVaultItem, AccountVaultResult } from "../../../shared/types/accountVault";
+import type { AccountVaultResult } from "../../../shared/types/accountVault";
 import type {
   McpRegistryCheck,
   McpRegistryContext,
@@ -46,15 +46,20 @@ import type {
   McpServerSignIn,
 } from "../../../shared/types/mcpRegistry";
 import { resolveExecutableFromKnownLocations } from "../ai/cliExecutableResolver";
-import { readCachedMcpRegistry } from "./mcpRegistryCache";
+import { readCachedMcpRegistry, readLocalDeviceId } from "./mcpRegistryCache";
+import {
+  CredentialRenewalLockTimeoutError,
+  credentialRenewalLockFileName,
+  withCredentialRenewalLock,
+} from "../account/credentialRenewalLock";
+import { decideRotatingRenewal, type RotatingCredentialVault } from "../account/rotatingCredentialOwner";
+import { safeVault } from "../account/accountVaultRead";
+import { describeVaultFailure } from "../account/vaultWrite";
 import { scanProviderMcpConfigs, toFoundServers, type ProviderMcpScan } from "./mcpProviderConfigScan";
 import { createMcpOAuthSignIns, probeMcpAuth, refreshMcpOAuthToken, type McpFetch } from "./mcpOAuth";
 
-/** The four vault calls this service makes. `createAccountVaultBridge` satisfies it. */
-export type McpRegistryVault = {
-  list(scope?: string | null): Promise<AccountVaultResult<AccountVaultItem[]>>;
-  get(scope: string, kind: string, key: string): Promise<AccountVaultResult<string | null>>;
-  set(scope: string, kind: string, key: string, value: string): Promise<AccountVaultResult<null>>;
+/** The vault calls this service makes. `createAccountVaultBridge` satisfies it. */
+export type McpRegistryVault = RotatingCredentialVault & {
   remove(scope: string, kind: string, key: string): Promise<AccountVaultResult<null>>;
 };
 
@@ -82,7 +87,96 @@ const REFRESH_WITHIN_MS = 15 * 60 * 1000;
 const RENEW_EVERY_MS = 5 * 60 * 1000;
 /** How long one "does this server want a sign-in" answer is reused. */
 const PROBE_TTL_MS = 10 * 60 * 1000;
+/** The refresh call times out at 10 s; a lock older than this is a crashed holder's. */
+const RENEW_LOCK_STALE_MS = 60 * 1000;
+const RENEW_LOCK_TIMEOUT_MS = 20 * 1000;
 const renewingMcpOAuthTokens = new Map<string, Promise<McpOAuthToken>>();
+
+/** Where one sign-in lives: read and write its value, and (optionally) ask the vault who renews it. */
+type McpTokenStore = {
+  read: (key: string) => Promise<string | null>;
+  write: (key: string, value: string, refreshOwner: string | null) => Promise<boolean>;
+  vault: RotatingCredentialVault | null;
+};
+
+function mcpTokenDue(token: McpOAuthToken): boolean {
+  return Boolean(token.refreshToken && token.expiresAt && Date.parse(token.expiresAt) - Date.now() < REFRESH_WITHIN_MS);
+}
+
+/**
+ * Renew one due sign-in, if this machine is the one that renews it.
+ *
+ * One owner renews, everyone else reads (see rotatingCredentialOwner.ts). A
+ * machine that is not the owner returns whatever the vault holds now, which is
+ * the owner's latest token once it has published. On the owner, the desktop
+ * app and the brain take a file lock, and whoever gets it second finds the
+ * token already renewed and uses it.
+ */
+async function renewDueMcpToken(args: {
+  key: string;
+  raw: string;
+  token: McpOAuthToken;
+  store: McpTokenStore;
+  adeHome: string;
+  fetchImpl: McpFetch;
+  logger?: { warn: (event: string, meta?: Record<string, unknown>) => void; info?: (event: string, meta?: Record<string, unknown>) => void } | null;
+  server: string;
+}): Promise<McpOAuthToken> {
+  const { key, token, store } = args;
+  if (!mcpTokenDue(token)) return token;
+  const existing = renewingMcpOAuthTokens.get(key);
+  if (existing) return await existing;
+  const deviceId = readLocalDeviceId(args.adeHome);
+  const readLatest = async (): Promise<{ raw: string | null; token: McpOAuthToken | null }> => {
+    const raw = await store.read(key);
+    return { raw, token: parseMcpOAuthToken(raw) };
+  };
+  const pending = (async (): Promise<McpOAuthToken> => {
+    const verdict = await decideRotatingRenewal({
+      vault: store.vault,
+      deviceId,
+      ref: { scope: ACCOUNT_SCOPE_ALL, kind: MCP_SECRET_VAULT_KIND, key },
+      expiresAtMs: token.expiresAt ? Date.parse(token.expiresAt) : null,
+      currentValue: args.raw,
+      logger: args.logger,
+      logContext: { source: "mcp_oauth", server: args.server },
+    });
+    if (!verdict.renew) {
+      // Another machine renews this one. Its latest token, when it has published.
+      const latest = await readLatest();
+      return latest.token ?? token;
+    }
+    const renewUnderLock = async (): Promise<McpOAuthToken> => {
+      const latest = await readLatest();
+      // A sibling process on this machine renewed while this one waited.
+      if (latest.raw !== args.raw) return latest.token ?? token;
+      const renewed = await refreshMcpOAuthToken(token, args.fetchImpl);
+      // The sign-in keeps working until it runs out, and the row then asks for
+      // a new one, so a failed renewal is logged rather than shown.
+      if (typeof renewed === "string") {
+        args.logger?.warn("mcp_registry.oauth_refresh_failed", { reason: renewed });
+        return token;
+      }
+      if (await store.write(key, JSON.stringify(renewed), deviceId)) return renewed;
+      args.logger?.warn("mcp_registry.oauth_refresh_not_saved", { server: args.server });
+      return token;
+    };
+    try {
+      return await withCredentialRenewalLock(
+        path.join(args.adeHome, "secrets"),
+        credentialRenewalLockFileName("mcp-oauth-renew", key),
+        renewUnderLock,
+        { timeoutMs: RENEW_LOCK_TIMEOUT_MS, staleMs: RENEW_LOCK_STALE_MS },
+      );
+    } catch (error) {
+      if (!(error instanceof CredentialRenewalLockTimeoutError)) throw error;
+      // Another process on this machine is still renewing; use what is stored.
+      return (await readLatest()).token ?? token;
+    }
+  })().finally(() => renewingMcpOAuthTokens.delete(key));
+  renewingMcpOAuthTokens.set(key, pending);
+  return await pending;
+}
 
 /**
  * What the registry holds for a server URL a provider wants a sign-in for.
@@ -100,11 +194,20 @@ export type McpRegistryAuthLookup = {
 export function createMcpRegistryAuthTokenResolver(args: {
   adeHome: string;
   readSecret: (key: string) => string | null | Promise<string | null>;
-  writeSecret: (key: string, value: string) => boolean | Promise<boolean>;
+  /** `refreshOwner` is this machine's device id when it renewed the token. */
+  writeSecret: (key: string, value: string, refreshOwner: string | null) => boolean | Promise<boolean>;
+  /**
+   * The account vault, for who-renews. Without it this resolver renews as a
+   * single machine would (still under the machine-local lock).
+   */
+  getVault?: () => RotatingCredentialVault | null | undefined;
   logger?: { warn: (event: string, meta?: Record<string, unknown>) => void } | null;
   fetch?: McpFetch;
 }): (serverUrl: string) => Promise<McpRegistryAuthLookup> {
   const fetchImpl = args.fetch ?? fetch;
+  const resolveVault = (): RotatingCredentialVault | null => safeVault(args.getVault, (error) => {
+    args.logger?.warn("mcp_registry.account_vault_unavailable", { error: describeVaultFailure(error) });
+  });
   return async (serverUrl) => {
     const url = serverUrl.trim();
     if (!url) return { registryConfigured: false };
@@ -117,26 +220,23 @@ export function createMcpRegistryAuthTokenResolver(args: {
         return { registryConfigured: true, serverName: server.name, off: true };
       }
       const key = mcpOAuthVaultKey(server.name);
-      const token = parseMcpOAuthToken(await args.readSecret(key));
+      const raw = await args.readSecret(key);
+      const token = parseMcpOAuthToken(raw);
       if (!token || mcpOAuthTokenState(token, server) === "none") return { registryConfigured: true, serverName: server.name };
-      let current = token;
-      if (token.refreshToken && token.expiresAt && Date.parse(token.expiresAt) - Date.now() < REFRESH_WITHIN_MS) {
-        let pending = renewingMcpOAuthTokens.get(key);
-        if (!pending) {
-          pending = (async () => {
-            const refreshed = await refreshMcpOAuthToken(token, fetchImpl);
-            if (typeof refreshed === "string") {
-              args.logger?.warn("mcp_registry.oauth_refresh_failed", { reason: refreshed });
-              return token;
-            }
-            if (await args.writeSecret(key, JSON.stringify(refreshed))) return refreshed;
-            args.logger?.warn("mcp_registry.oauth_refresh_not_saved", { server: server.name });
-            return token;
-          })().finally(() => renewingMcpOAuthTokens.delete(key));
-          renewingMcpOAuthTokens.set(key, pending);
-        }
-        current = await pending;
-      }
+      const current = raw ? await renewDueMcpToken({
+        key,
+        raw,
+        token,
+        store: {
+          read: async (readKey) => await args.readSecret(readKey),
+          write: async (writeKey, value, refreshOwner) => await args.writeSecret(writeKey, value, refreshOwner),
+          vault: resolveVault(),
+        },
+        adeHome: args.adeHome,
+        fetchImpl,
+        logger: args.logger,
+        server: server.name,
+      }) : token;
       if (mcpOAuthTokenState(current, server) !== "valid") return { registryConfigured: true, serverName: server.name };
       const expiresIn = current.expiresAt
         ? Math.max(0, Math.ceil((Date.parse(current.expiresAt) - Date.now()) / 1000))
@@ -204,36 +304,46 @@ export function createMcpRegistryService(options: McpRegistryServiceOptions) {
     return answer;
   };
 
-  // One renewal per vault key at a time. A server that rotates refresh tokens
-  // treats a second use of the old one as a replay and can revoke the grant.
+  const tokenStore: McpTokenStore = {
+    read: async (key) => {
+      const stored = await vault.get(ACCOUNT_SCOPE_ALL, MCP_SECRET_VAULT_KIND, key);
+      return stored.ok ? stored.value : null;
+    },
+    write: async (key, value, refreshOwner) => (await vault.set(
+      ACCOUNT_SCOPE_ALL,
+      MCP_SECRET_VAULT_KIND,
+      key,
+      value,
+      refreshOwner ? { refreshOwner } : undefined,
+    )).ok,
+    vault,
+  };
+
+  // One renewal per vault key at a time, and on one machine of the account
+  // (see renewDueMcpToken). A server that rotates refresh tokens treats a
+  // second use of the old one as a replay and can revoke the grant.
   /** The server's stored sign-in, renewed first when it is due. */
   const currentSignIn = async (server: McpRegistryServer): Promise<McpRegistryResult<McpOAuthToken | null>> => {
     const key = mcpOAuthVaultKey(server.name);
     const stored = await vault.get(ACCOUNT_SCOPE_ALL, MCP_SECRET_VAULT_KIND, key);
     if (!stored.ok) return stored;
     const token = parseMcpOAuthToken(stored.value);
-    if (!token || mcpOAuthTokenState(token, server) === "none" || !token.refreshToken || !token.expiresAt
-      || Date.parse(token.expiresAt) - Date.now() >= REFRESH_WITHIN_MS) {
+    if (!token || !stored.value || mcpOAuthTokenState(token, server) === "none" || !mcpTokenDue(token)) {
       return { ok: true, value: token };
     }
-    let pending = renewingMcpOAuthTokens.get(key);
-    if (!pending) {
-      pending = (async () => {
-        const renewed = await refreshMcpOAuthToken(token, fetchImpl);
-        // The sign-in keeps working until it runs out, and the row then asks
-        // for a new one, so a failed renewal is logged rather than shown.
-        if (typeof renewed === "string") {
-          options.logger?.warn("mcp_registry.oauth_refresh_failed", { reason: renewed });
-          return token;
-        }
-        const saved = await vault.set(ACCOUNT_SCOPE_ALL, MCP_SECRET_VAULT_KIND, key, JSON.stringify(renewed));
-        if (saved.ok) return renewed;
-        options.logger?.warn("mcp_registry.oauth_refresh_not_saved", { reason: saved.message });
-        return token;
-      })().finally(() => renewingMcpOAuthTokens.delete(key));
-      renewingMcpOAuthTokens.set(key, pending);
-    }
-    return { ok: true, value: await pending };
+    return {
+      ok: true,
+      value: await renewDueMcpToken({
+        key,
+        raw: stored.value,
+        token,
+        store: tokenStore,
+        adeHome: options.adeHome,
+        fetchImpl,
+        logger: options.logger,
+        server: server.name,
+      }),
+    };
   };
 
   /** One server's sign-in as the page shows it, renewing it first when it is due. */
@@ -306,7 +416,15 @@ export function createMcpRegistryService(options: McpRegistryServiceOptions) {
           ? { ok: false, rejected: true, cancelled: true, message: outcome.message }
           : { ok: false, rejected: true, message: outcome.message };
       }
-      const saved = await vault.set(ACCOUNT_SCOPE_ALL, MCP_SECRET_VAULT_KIND, mcpOAuthVaultKey(server.name), JSON.stringify(outcome.token));
+      // This machine made the grant, so it is the one that renews it.
+      const deviceId = readLocalDeviceId(options.adeHome);
+      const saved = await vault.set(
+        ACCOUNT_SCOPE_ALL,
+        MCP_SECRET_VAULT_KIND,
+        mcpOAuthVaultKey(server.name),
+        JSON.stringify(outcome.token),
+        deviceId ? { refreshOwner: deviceId } : undefined,
+      );
       if (!saved.ok) return saved;
       probes.delete(server.url);
       return { ok: true, value: { server: server.name, state: "valid", expiresAt: outcome.token.expiresAt } };

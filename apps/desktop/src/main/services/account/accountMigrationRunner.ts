@@ -24,6 +24,15 @@ export type AccountMigrationContext = {
     hydrateFromVault(): Promise<void>;
     purgeAccountCredentials?(): void;
   } | null;
+  jiraCredentialService?: {
+    hydrateFromVault(): Promise<void>;
+    purgeAccountCredentials?(): void;
+  } | null;
+  /** The pasted GitHub token is machine-wide; any context's service reaches it. */
+  githubService?: {
+    hydratePatFromVault?(): Promise<void>;
+    purgeAccountPat?(): void;
+  } | null;
   projectSecretService?: {
     list(): { secrets: Array<{ name: string; storage: string }> };
     getSecretProvenance(name: string): CredentialProvenance | null | undefined;
@@ -209,42 +218,17 @@ export function createAccountMigrationRunner(options: AccountMigrationRunnerOpti
     return { moved, skipped };
   };
 
-  const migrateLinearRefreshToken = async (
-    isCurrent: () => boolean,
-    expectedAccountUserId: string,
-  ): Promise<AccountMigrationSourceResult> => {
-    const services = openAccountContexts()
-      .map((context) => context.linearCredentialService)
-      .filter((service): service is NonNullable<AccountMigrationContext["linearCredentialService"]> => Boolean(service));
-    if (services.length === 0) return { moved: 0, skipped: 0, complete: false };
-    const refreshToken = services
-      .map((service) => ({
-        value: service.getRefreshToken(),
-        provenance: service.getRefreshTokenProvenance(),
-      }))
-      .find((entry) => Boolean(entry.value) && entry.provenance.source === "device")?.value ?? null;
-    if (!refreshToken) return { moved: 0, skipped: 0 };
-
-    const listed = await listVaultItems("all");
-    if (!listed) return { moved: 0, skipped: 0, complete: false };
-    if (!isCurrent()) return { moved: 0, skipped: 0, complete: false };
-    const present = listed.some(
-      (item) => item.scope === "all" && item.kind === "linear_refresh_token" && item.key === "default",
-    );
-    const existing = await options.accountVaultBridge.get("all", "linear_refresh_token", "default");
-    if (!existing.ok) return { moved: 0, skipped: 0, complete: false };
-    if (existing.value !== null || present) return { moved: 0, skipped: 1 };
-    const saved = await setVaultItem(
-      isCurrent,
-      expectedAccountUserId,
-      "all",
-      "linear_refresh_token",
-      "default",
-      refreshToken,
-    );
-    return saved?.ok
-      ? { moved: 1, skipped: 0 }
-      : { moved: 0, skipped: 0, complete: false };
+  /**
+   * Linear connections are per project now: each project's
+   * `hydrateFromVault` (run just above, for every open project) publishes its
+   * own connection under the project's repo scope, and the machine that owns
+   * the old account-wide `all/linear_refresh_token/default` row retires it.
+   * Nothing is written to that row any more, so this source only reports
+   * whether there was a project to do it for.
+   */
+  const migrateLinearRefreshToken = async (): Promise<AccountMigrationSourceResult> => {
+    const hasService = openAccountContexts().some((context) => Boolean(context.linearCredentialService));
+    return hasService ? { moved: 0, skipped: 0 } : { moved: 0, skipped: 0, complete: false };
   };
 
   const migrateProjectSecrets = async (
@@ -431,6 +415,8 @@ export function createAccountMigrationRunner(options: AccountMigrationRunnerOpti
           }
           try {
             await context.linearCredentialService?.hydrateFromVault();
+            await context.jiraCredentialService?.hydrateFromVault();
+            await context.githubService?.hydratePatFromVault?.();
             await context.projectSecretService?.hydrateFromVault();
           } catch (error) {
             complete = false;
@@ -461,7 +447,7 @@ export function createAccountMigrationRunner(options: AccountMigrationRunnerOpti
           ...migrationOptions(),
           sources: {
             provider_api_keys: () => migrateProviderApiKeys(isCurrent, ownerToken.userId),
-            linear_credentials: () => migrateLinearRefreshToken(isCurrent, ownerToken.userId),
+            linear_credentials: () => migrateLinearRefreshToken(),
           },
         });
         if (machineRun.pending.length > 0 || machineRun.failed.length > 0) complete = false;

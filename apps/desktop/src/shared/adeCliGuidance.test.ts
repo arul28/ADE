@@ -80,8 +80,10 @@ describe("ADE bootstrap guidance", () => {
 
     // The redesign dropped the ~4,300-char blob; the bootstrap must stay tiny
     // Keep the shared lifecycle protocol compact while guarding against
-    // regrowth into the old per-domain rulebook.
-    expect(bootstrap.length).toBeLessThan(2900);
+    // regrowth into the old per-domain rulebook. Raised from 2900 on
+    // 2026-11-03 (owner-approved) for the one credentials line, after the other
+    // lines were shortened to pay for most of it.
+    expect(bootstrap.length).toBeLessThan(2950);
     // The per-domain operating rules now live in their skills, not always-on.
     expect(bootstrap).not.toContain("### Minimum operating rules");
     expect(bootstrap).not.toContain("--socket");

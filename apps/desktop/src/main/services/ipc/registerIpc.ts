@@ -1665,6 +1665,7 @@ async function buildLinearConnectionStatus(
     authMode: null,
     oauthConfigured: false,
     tokenExpiresAt: null,
+    credentialStorage: null,
   };
   if (!ctx.linearIssueTracker || !tokenStored) {
     return {
@@ -1676,6 +1677,7 @@ async function buildLinearConnectionStatus(
       authMode: credentialStatus.authMode,
       oauthAvailable: credentialStatus.oauthConfigured,
       tokenExpiresAt: credentialStatus.tokenExpiresAt,
+      credentialStorage: credentialStatus.credentialStorage ?? null,
       message: message ?? (tokenStored ? "Linear tracker service unavailable." : "Linear token not configured."),
     };
   }
@@ -1696,6 +1698,7 @@ async function buildLinearConnectionStatus(
     authMode: credentialStatus.authMode,
     oauthAvailable: credentialStatus.oauthConfigured,
     tokenExpiresAt: credentialStatus.tokenExpiresAt,
+    credentialStorage: credentialStatus.credentialStorage ?? null,
     message: formatLinearConnectionMessage(status.message, credentialStatus.authMode),
   };
 }
@@ -12109,6 +12112,13 @@ export function registerIpc({
           context.linearCredentialService?.purgeAccountCredentials();
         } catch (error) {
           getCtx().logger.warn("account.local_linear_credentials_purge_failed", {
+            error: error instanceof Error ? error.message : String(error ?? ""),
+          });
+        }
+        try {
+          context.githubService?.purgeAccountPat?.();
+        } catch (error) {
+          getCtx().logger.warn("account.local_github_pat_purge_failed", {
             error: error instanceof Error ? error.message : String(error ?? ""),
           });
         }

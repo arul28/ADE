@@ -31,6 +31,7 @@ import type {
   JiraUser,
 } from "../shared/types/jira";
 import type { McpRegistryServer } from "../shared/mcpRegistry";
+import type { McpRegistryChatStatus } from "../shared/mcpServerRequest";
 import type { GetPrChatWatchArgs, PrChatWatchSummary, SetPrChatWatchArgs } from "../shared/prWatch";
 import type { ResolvePrMediaArgs, ResolvePrMediaResult } from "../shared/githubMedia";
 import type {
@@ -4662,7 +4663,7 @@ declare global {
         onChanged?: (listener: () => void) => () => void;
       };
       /**
-       * Settings > MCP servers: this computer's view of the registry, and the
+       * Settings > Integrations > MCP servers: this computer's view of the registry, and the
        * one path that writes a registry secret to the account vault. No call
        * returns a secret value.
        *
@@ -4685,6 +4686,11 @@ declare global {
         signIn: (args: { server: McpRegistryServer }) => Promise<McpRegistrySignInResult>;
         cancelSignIn: (args: { server: string }) => Promise<boolean>;
         signOut: (args: { server: string }) => Promise<McpRegistryResult<null>>;
+        /**
+         * Registry servers a chat's running agent did not start with, read on
+         * the chat's machine: `pin`, else the tab's runtime.
+         */
+        chatStatus?: (args: { chatSessionId: string }, pin?: OpenProjectBinding | null) => Promise<McpRegistryChatStatus>;
       };
       prs: {
         createFromLane: (args: CreatePrFromLaneArgs) => Promise<PrSummary>;

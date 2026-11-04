@@ -5628,7 +5628,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         sync: async () => ({ ok: true as const, value: null }),
       };
     })(),
-    // Settings > MCP servers, in memory. Values given to `setSecret` are kept
+    // Settings > Integrations > MCP servers, in memory. Values given to `setSecret` are kept
     // only as "held" flags, as the real bridge never hands one back either.
     mcpRegistry: (() => {
       const held = new Set<string>();

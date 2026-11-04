@@ -2,13 +2,16 @@
  * Jira Cloud: the contract between the brain's Jira service, the runtime
  * action domain `jira`, the renderer (`window.ade.jira`) and the CLI.
  *
- * Jira is a standalone tracker, like Linear: one credential per machine (the
- * brain's), stored in the machine credential store, and no repository. Text
+ * Jira is a standalone tracker, like Linear: one site connection per project,
+ * kept in the project's credential store and synced to the owner's other
+ * machines through the account vault (see jiraCredentialService.ts). Text
  * crosses this boundary as markdown; the service converts to and from Jira's
  * Atlassian Document Format (`shared/jiraAdf.ts`). Statuses are never set
  * directly: a status change runs one of the transitions the issue's workflow
  * offers (`listTransitions`, `transitionIssue`).
  */
+
+import type { IntegrationCredentialStorage } from "./integrationCredentialStorage";
 
 /** Why a Jira call failed, so every surface can say what fixes it. */
 export type JiraErrorReason =
@@ -29,6 +32,8 @@ export type JiraConnectionStatus = {
   /** Set when a stored credential no longer works. */
   error: { reason: JiraErrorReason; message: string } | null;
   checkedAt: string | null;
+  /** Whether this project's connection reaches the owner's other computers, and why not. */
+  credentialStorage?: IntegrationCredentialStorage;
 };
 
 export type JiraConnectArgs = {
