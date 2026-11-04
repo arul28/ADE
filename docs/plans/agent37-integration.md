@@ -111,7 +111,7 @@ agents included, can read its environment.
 - ADE calls `start` (or any exec) when the user opens one of the box's
   lanes, the phone taps it, or a scheduled wake-up is near. Wake is ~2 s.
 - After wake the brain must notice its relay connection died during the
-  checkpoint and reconnect promptly (test item §8.4).
+  checkpoint and reconnect promptly (test item §9.2).
 - A per-box spending cap stops runaway cost; the card shows time asleep
   and money saved.
 
@@ -121,7 +121,7 @@ agents included, can read its environment.
   first or asks; the box restarts and the entrypoint brings the brain back.
 - **Move box ↔ VM:** create the target, copy `$HOME` (repos, lanes,
   uncommitted work, ADE data), swap it in under the same lanes, delete the
-  source. Copy time is unmeasured (§8.3).
+  source. A real lane copies in about 33 s (§8).
 - **Fork** (warm box per lane): Agent37 `fork` plus §5.2, so the fork
   starts as a new machine and joins with a join token.
 
@@ -187,15 +187,23 @@ does nothing, so a renamed laptop is never mistaken for a copy.
 5. A shape above 4 vCPU, or a 4/16 priced for dev workloads.
 6. Referral credit for users ADE sends.
 
-## 8. Still to test
+## 8. Verified on this branch's build (Agent37, 2026-11-03)
 
-1. This branch's fixes on a real build end to end: a fresh box accepts
-   connections with no restart; the Mac connects over the relay without
-   hanging; live simulator video from a cloud chat on the MacBook.
-2. Fork with the guard: the copy comes up as a new machine; the original
-   keeps its row.
-3. Box → VM copy time for a real lane.
-4. Relay reconnect after a long sleep (minutes to hours).
-5. Wallet empty / suspended behaviour.
-6. EU and India regions over the relay.
-7. Android end to end on a VM lane.
+- Fork of a SIGNED-IN box: the copy came up signed out with a new device id
+  and moved the old identity aside; it made no relay claim or publish, and
+  the account row stayed with the original for the whole observation.
+- Sign-out removed the box's row from the account directory.
+- A fresh box with no project now answers sealed adoption: the Mac's error
+  changed from "could not verify the account" to "could not connect in
+  time" (the Mac still runs the released build, without the 3 s LAN cap).
+- Box → VM copy of a 730 MB / 23,307-file lane: 33 s (25 s gzipped).
+
+## 9. Still to test
+
+1. With the Mac on this branch: it connects to a fresh box over the relay
+   without timing out; live simulator video from a cloud chat on the
+   MacBook.
+2. Relay reconnect after a long sleep (minutes to hours).
+3. Wallet empty / suspended behaviour.
+4. EU and India regions over the relay.
+5. Android end to end on a VM lane.
