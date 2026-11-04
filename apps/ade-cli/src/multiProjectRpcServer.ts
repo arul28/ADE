@@ -2611,7 +2611,10 @@ export function createMultiProjectRpcRequestHandler(
       // sign-out still signs out, as it always did, and leaves the row (signing
       // in again re-pairs it).
       const signOutRemovesMachine = action === "signOut" && !callerIdentityIsAgent(callerIdentity());
-      if (signOutRemovesMachine && accountAuthService.getStatus().signedIn) {
+      // An `ADE_ACCOUNT_TOKEN` session survives sign-out (sign-out clears only
+      // the stored session), so this machine stays signed in and must keep its row.
+      const statusBeforeSignOut = signOutRemovesMachine ? accountAuthService.getStatus() : null;
+      if (statusBeforeSignOut?.signedIn && statusBeforeSignOut.source !== "env-token") {
         // Signing this computer out unlinks it from the account, so it leaves
         // the account's machine list too. Clearing the session alone left the
         // row in the directory, listed on every other device as an offline
