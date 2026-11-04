@@ -2337,3 +2337,43 @@ second from run to run, and the GPU row swings with it. ADE's loops step at
 30 a second (the owner turned down 15); T3 Code draws about 13 frames a
 second. PandaCode's lower script and heap come from a much smaller app and a
 WebAssembly Markdown parser.
+
+## Mac Studio (M4 Max): Work tools pane, Android and Apple tools (browser mock, 2026-11-03)
+
+Browser mock, not the baseline machine. Mac Studio (Mac16,9, M4 Max, 14
+cores, 36 GB, macOS 27.0), the renderer's Vite dev server at `62538fe26`
+(branch `ade/android-emulator-suite`), headless Chrome 155 at 1600×1000. The
+Codex chat in the mock is open with the Tools pane beside it. Each run opens
+a fresh tab and closes every other page. No perf run. One warm-up run per
+case is not counted, then 3 runs. Each window is 20 s after a 6 s settle.
+Main-thread work is `TaskDuration` from `Performance.getMetrics` (as in
+`route-sweep.mjs`), and frames are `DrawFrame` events in a `cc`/`viz` trace
+(as in `gpu-trace.mjs`). A scratch CDP script drove the clicks. The load
+average was 3.5–6 from other agents.
+
+Both live mocks draw a test picture and encode it with WebCodecs on the
+page's main thread (the same encoder serves both). Part of each live number
+is that mock encoder, which the real app does not have: there, the brain
+sends the stream and the renderer only decodes it. Android P0 is flat only.
+Apple opens in the 3D view by default, so the table has both Apple views.
+
+| Metric | Git, Android never opened | Git, Android opened then closed | Android live (flat) | Apple live, 3D (default) | Apple live, flat | Ceiling |
+|---|---:|---:|---:|---:|---:|---:|
+| Main-thread work | 4.4–5.3 ms/s | 3.9–4.2 ms/s | 29.2–31.1 ms/s | 93.6–131.4 ms/s | 76.4–90.6 ms/s | 30 ms/s idle (Idle table); none set for a live device |
+| Frames drawn | 2.1–2.2/s | 1.5–1.6/s | 31.5–31.8/s | 56.0–56.6/s | 31.3–31.6/s | not set |
+| Renderer JS heap | 100 MB | 101 MB | 101 MB | 119–153 MB | 131–134 MB | 220 MB |
+| Page elements | 721 | 721 | 713 | 747 | 747 | 3k |
+| `androidEmulator` calls | 0 | 0 in 60 s after closing (the pane unmounts) | `getStreamStatus` every 3 s (the status strip's fps, only while live) | — | — | no call after the tool closes |
+
+Opening the Android tool from Git (click to frame, 3 runs): the pane's
+first frame 7–10 ms, the first decoded video frame 251–259 ms, and no long
+task in the 4 s after the click. The 250 ms is mostly the mock stream's
+start; the real stream start is in the Android Development feature doc.
+
+Android live costs about a third of Apple's flat view and a quarter of its
+3D view. In a 10 s CPU profile, the Android pane's own time is the mock
+encoder (`drawImage`, `drawScreen`, `encode`). The Apple pane's top entries
+are React render work (`jsxDEV`, `diffProperties`, `AppleDeviceRail`) that
+repeats while the picture plays. It is an Apple pane cost, not an Android
+cost. It was not measured on `main`, so this table does not say when it
+started; it is an open item for the Apple pane.
