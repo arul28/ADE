@@ -106,27 +106,6 @@ type DeviceStream = {
   failure: AndroidStreamError | null;
   firstConfig: { promise: Promise<void>; resolve: () => void };
   lastEnd: ScrcpySessionEnd | null;
-  /** Config packets from the encoder: one per encoder start, reset or rotation. */
-  configPackets: number;
-  /** Capture sessions the server announced; one per start, rotation or reset. */
-  sessions: number;
-};
-
-export type AndroidStreamDiagnostics = {
-  serial: string;
-  running: boolean;
-  deviceName: string | null;
-  /** The server's process id on the device. */
-  devicePid: number | null;
-  displaySize: { width: number; height: number } | null;
-  timings: ScrcpySession["timings"] | null;
-  restarts: number;
-  lastEnd: ScrcpySessionEnd | null;
-  failure: string | null;
-  configPackets: number;
-  sessions: number;
-  serverLog: string[];
-  metrics: AndroidStreamMetrics | null;
 };
 
 function deferred(): { promise: Promise<void>; resolve: () => void } {
@@ -200,7 +179,6 @@ export function createAndroidStreamHub() {
       {
         onPacket: (packet) => {
           if (devices.get(args.serial) !== device) return;
-          if (packet.config) device.configPackets += 1;
           let outputs;
           try {
             outputs = device.builder.push(packet);
@@ -212,9 +190,6 @@ export function createAndroidStreamHub() {
             server.publish(args.serial, output);
             if (output.kind === "config") device.firstConfig.resolve();
           }
-        },
-        onSession: () => {
-          if (devices.get(args.serial) === device) device.sessions += 1;
         },
         onEnd: (end) => handleSessionEnd(device, end),
       },
@@ -342,8 +317,6 @@ export function createAndroidStreamHub() {
         failure: null,
         firstConfig: deferred(),
         lastEnd: null,
-        configPackets: 0,
-        sessions: 0,
       };
       devices.set(args.serial, device);
       const server = ensureStreamServer(args.logger ?? null);
@@ -448,26 +421,6 @@ export function createAndroidStreamHub() {
       };
     },
 
-    /** Everything the status strip, the perf table and a crash report need. */
-    diagnostics(serial: string): AndroidStreamDiagnostics | null {
-      const device = devices.get(serial);
-      if (!device) return null;
-      return {
-        serial,
-        running: Boolean(!device.failure && device.session),
-        deviceName: device.session?.header.deviceName ?? null,
-        devicePid: device.session?.devicePid ?? null,
-        displaySize: device.displaySize,
-        timings: device.session?.timings ?? null,
-        restarts: device.restarts.length,
-        lastEnd: device.lastEnd,
-        failure: device.failure?.message ?? null,
-        configPackets: device.configPackets,
-        sessions: device.sessions,
-        serverLog: device.session?.serverLog() ?? device.lastEnd?.serverLog ?? [],
-        metrics: streamServer?.metrics(serial) ?? null,
-      };
-    },
   };
 }
 
