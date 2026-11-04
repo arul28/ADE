@@ -15225,25 +15225,67 @@ export function createAgentChatService(args: {
     };
   };
 
+  /** The failed turns at or after `oldest` (every one with no oldest), newest kept within the limit. */
+  const turnFailuresSince = (
+    failures: readonly AgentChatTranscriptTurnFailure[],
+    oldest: string | undefined,
+    limit: number,
+  ): AgentChatTranscriptTurnFailure[] =>
+    failures.filter((failure) => !oldest || failure.timestamp >= oldest).slice(-limit);
+
+  const turnFailureCharCount = (failure: AgentChatTranscriptTurnFailure): number =>
+    failure.message.length + (failure.detail?.length ?? 0);
+
+  /**
+   * What a read keeps back from its entries for failed turns: what they need,
+   * up to a quarter of the read's `maxChars`. Sized on the failures `byLimit`
+   * covers, which hold every failure the bounded window can end up with.
+   */
+  const turnFailureCharReserve = (
+    failures: readonly AgentChatTranscriptTurnFailure[],
+    byLimit: readonly AgentChatTranscriptEntry[],
+    limit: number,
+    maxChars: number,
+  ): number => Math.min(
+    Math.floor(maxChars / 4),
+    turnFailuresSince(failures, byLimit[0]?.timestamp, limit)
+      .reduce((total, failure) => total + turnFailureCharCount(failure), 0),
+  );
+
   /**
    * The failed turns a read window covers: those at or after its oldest entry
-   * (every one when the window holds no entry), newest kept within the limit.
+   * (every one when the window holds no entry), newest kept within the limit
+   * and within `budget`, the characters the read has left after its entries.
+   * One budget for the whole answer: `truncated` says a failure was clipped
+   * or left out.
    */
   const turnFailuresForWindow = (
     failures: readonly AgentChatTranscriptTurnFailure[],
     entries: readonly AgentChatTranscriptEntry[],
     limit: number,
-    maxChars: number,
-  ): AgentChatTranscriptTurnFailure[] => {
+    budget: number,
+  ): { turnFailures: AgentChatTranscriptTurnFailure[]; truncated: boolean } => {
     const oldest = entries[0]?.timestamp;
-    return failures
-      .filter((failure) => !oldest || failure.timestamp >= oldest)
-      .slice(-limit)
-      .map((failure) => ({
-        ...failure,
-        message: clipTranscriptField(failure.message, maxChars),
-        ...(failure.detail ? { detail: clipTranscriptField(failure.detail, maxChars) } : {}),
-      }));
+    const inWindow = failures.filter((failure) => !oldest || failure.timestamp >= oldest);
+    const candidates = inWindow.slice(-limit);
+    let truncated = candidates.length < inWindow.length;
+    let remaining = budget;
+    const keptNewestFirst: AgentChatTranscriptTurnFailure[] = [];
+    for (let index = candidates.length - 1; index >= 0; index -= 1) {
+      const failure = candidates[index]!;
+      if (remaining <= 0) {
+        truncated = true;
+        break;
+      }
+      const message = clipTranscriptField(failure.message, remaining);
+      remaining -= message.length;
+      const detail = failure.detail && remaining > 0 ? clipTranscriptField(failure.detail, remaining) : "";
+      remaining -= detail.length;
+      if (message !== failure.message || (failure.detail ?? "") !== detail) truncated = true;
+      const { detail: _detail, ...rest } = failure;
+      keptNewestFirst.push({ ...rest, message, ...(detail ? { detail } : {}) });
+    }
+    return { turnFailures: keptNewestFirst.reverse(), truncated };
   };
 
   const readLatestTranscriptTodoItems = (
@@ -15385,7 +15427,9 @@ export function createAgentChatService(args: {
 
     const byLimit = fallbackEntries.slice(-normalizedLimit);
     let truncated = fallbackEntries.length > byLimit.length;
-    let remainingChars = normalizedMaxChars;
+    // `maxChars` bounds the whole answer, failed turns included.
+    const failureReserve = turnFailureCharReserve(allTurnFailures, byLimit, normalizedLimit, normalizedMaxChars);
+    let remainingChars = normalizedMaxChars - failureReserve;
     const bounded: AgentChatTranscriptEntry[] = [];
 
     for (let index = byLimit.length - 1; index >= 0; index -= 1) {
@@ -15407,11 +15451,12 @@ export function createAgentChatService(args: {
     }
 
     bounded.reverse();
-    const turnFailures = turnFailuresForWindow(allTurnFailures, bounded, normalizedLimit, normalizedMaxChars);
+    const failureWindow = turnFailuresForWindow(allTurnFailures, bounded, normalizedLimit, failureReserve + remainingChars);
+    const turnFailures = failureWindow.turnFailures;
     return {
       sessionId: managed.session.id,
       entries: bounded,
-      truncated,
+      truncated: truncated || failureWindow.truncated,
       totalEntries: fallbackEntries.length,
       ...(turnFailures.length ? { turnFailures } : {}),
     };
@@ -15510,7 +15555,10 @@ export function createAgentChatService(args: {
 
     const byLimit = converted.slice(-normalizedLimit);
     let charTruncated = converted.length > byLimit.length;
-    let remainingChars = normalizedMaxChars;
+    // `maxChars` bounds the whole page, failed turns included.
+    const pageTurnFailures = transcriptTurnFailuresFromEnvelopes(sessionId, collected.map((row) => row.envelope));
+    const failureReserve = turnFailureCharReserve(pageTurnFailures, byLimit, normalizedLimit, normalizedMaxChars);
+    let remainingChars = normalizedMaxChars - failureReserve;
     const boundedNewestFirst: AgentChatTranscriptEntry[] = [];
     for (let index = byLimit.length - 1; index >= 0; index -= 1) {
       const entry = byLimit[index]!;
@@ -15542,17 +15590,13 @@ export function createAgentChatService(args: {
         nextCursor = oldestSourceOffset > 0 ? oldestSourceOffset : null;
       }
     }
-    const turnFailures = turnFailuresForWindow(
-      transcriptTurnFailuresFromEnvelopes(sessionId, collected.map((row) => row.envelope)),
-      entries,
-      normalizedLimit,
-      normalizedMaxChars,
-    );
+    const failureWindow = turnFailuresForWindow(pageTurnFailures, entries, normalizedLimit, failureReserve + remainingChars);
+    const turnFailures = failureWindow.turnFailures;
     return {
       sessionId,
       entries,
       ...(turnFailures.length ? { turnFailures } : {}),
-      truncated: charTruncated || nextCursor != null,
+      truncated: charTruncated || failureWindow.truncated || nextCursor != null,
       // Byte-cursor consumers must treat this as the count resident in this
       // bounded page, not as a global transcript index.
       totalEntries: entries.length,
@@ -16294,7 +16338,9 @@ export function createAgentChatService(args: {
     const newestFirst: AgentChatEventEnvelope[] = [];
     let retainedChars = 0;
     let retainedConversationEvents = 0;
+    let retainedFailureEvents = 0;
     const maxRetainedEvents = 10_000;
+    const maxRetainedFailureEvents = 2_000;
     const maxRetainedChars = 4_000_000;
     for (let pageCount = 0; cursor > 0 && pageCount < 8; pageCount += 1) {
       let page: TranscriptHistoryPageRead;
@@ -16320,15 +16366,27 @@ export function createAgentChatService(args: {
       for (let index = page.envelopes.length - 1; index >= 0; index -= 1) {
         const envelope = page.envelopes[index]!;
         const conversational = envelope.event.type === "user_message" || envelope.event.type === "text";
-        const envelopeChars = conversational ? safeJsonChars(envelope) : 0;
+        // What `transcriptTurnFailuresFromEnvelopes` reads: a failed turn and
+        // the error that ended it. Kept as they are (within the same budget),
+        // or `ade chat read` would never report a failed turn. Each is a
+        // content event, so it ends an assistant run exactly as the stand-in
+        // status below does.
+        const failureSignal = envelope.event.type === "error"
+          || (envelope.event.type === "done" && envelope.event.status === "failed")
+          || (envelope.event.type === "status" && envelope.event.turnStatus === "failed");
+        const envelopeChars = conversational || failureSignal ? safeJsonChars(envelope) : 0;
+        const fitsChars = envelopeChars <= maxRetainedChars && retainedChars + envelopeChars <= maxRetainedChars;
         if (
           conversational
-          && envelopeChars <= maxRetainedChars
+          && fitsChars
           && retainedConversationEvents < maxRetainedEvents
-          && retainedChars + envelopeChars <= maxRetainedChars
         ) {
           newestFirst.push(envelope);
           retainedConversationEvents += 1;
+          retainedChars += envelopeChars;
+        } else if (failureSignal && fitsChars && retainedFailureEvents < maxRetainedFailureEvents) {
+          newestFirst.push(envelope);
+          retainedFailureEvents += 1;
           retainedChars += envelopeChars;
         } else if (newestFirst.length > 0 && newestFirst.at(-1)?.event.type !== "status") {
           newestFirst.push({

@@ -329,9 +329,15 @@ export function transcriptTurnFailuresFromEnvelopes(
       const turnId = event.turnId?.trim();
       if (turnId) errorByTurn.set(turnId, error);
       else unattributedError = error;
-      // A late error for a turn already reported failed names the real cause.
+      // A late error for a turn already reported failed names the real cause:
+      // its message and detail together, never one error's message beside
+      // another's detail.
       const reported = turnId ? failureByTurn.get(turnId) : null;
-      if (reported) Object.assign(reported, error);
+      if (reported) {
+        reported.message = error.message;
+        if (error.detail) reported.detail = error.detail;
+        else delete reported.detail;
+      }
       continue;
     }
     const failed = (event.type === "done" && event.status === "failed")
