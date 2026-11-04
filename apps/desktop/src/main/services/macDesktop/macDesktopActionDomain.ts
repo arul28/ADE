@@ -7,9 +7,10 @@
  * `actionPolicy.ts`'s job, and nothing touches the driver.
  *
  * Kept beside the service rather than inside `adeActions/registry.ts` because
- * the seven readers below are this domain's grammar — `handle` / `text` / `x,y`
+ * the readers below are this domain's grammar — `handle` / `text` / `x,y`
  * targets, the modifier set, the resolution presets — and they belong with the
- * contract they read, not in a file that wires every domain in ADE.
+ * contract they read, not in a file that wires every domain in ADE. The plain
+ * readers they build on are `adeActions/domainArgs.ts`.
  */
 
 import {
@@ -23,6 +24,7 @@ import {
   type MacDesktopServiceApi,
   type MacDesktopTarget,
 } from "../../../shared/types/macDesktop";
+import { createDomainArgReaders } from "../adeActions/domainArgs";
 
 /** What the registry passes in. Exactly the one field this domain reads. */
 export type MacDesktopActionRuntime = {
@@ -63,53 +65,16 @@ class MacDesktopUnsupportedPlatformError extends Error {
   }
 }
 
-function objectArgs(args: unknown): Record<string, unknown> {
-  return args && typeof args === "object" && !Array.isArray(args)
-    ? args as Record<string, unknown>
-    : {};
-}
-
-function requiredLaneId(args: unknown, action: string): string {
-  const laneId = objectArgs(args).laneId;
-  const trimmed = typeof laneId === "string" ? laneId.trim() : "";
-  if (!trimmed) throw new Error(`macDesktop.${action} requires laneId.`);
-  return trimmed;
-}
-
-function optionalLaneId(args: unknown): string | null {
-  const laneId = objectArgs(args).laneId;
-  const trimmed = typeof laneId === "string" ? laneId.trim() : "";
-  return trimmed.length ? trimmed : null;
-}
-
-function optionalString(args: unknown, key: string): string | null {
-  const value = objectArgs(args)[key];
-  const trimmed = typeof value === "string" ? value.trim() : "";
-  return trimmed.length ? trimmed : null;
-}
-
-function requiredString(args: unknown, key: string, action: string): string {
-  const value = optionalString(args, key);
-  if (!value) throw new Error(`macDesktop.${action} requires ${key}.`);
-  return value;
-}
-
-function optionalNumber(args: unknown, key: string): number | null {
-  const value = objectArgs(args)[key];
-  if (value == null || value === "") return null;
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed)) throw new Error(`macDesktop: ${key} must be a number.`);
-  return parsed;
-}
-
-function optionalBoolean(args: unknown, key: string): boolean | null {
-  const value = objectArgs(args)[key];
-  if (value == null) return null;
-  if (typeof value === "boolean") return value;
-  if (value === "true") return true;
-  if (value === "false") return false;
-  throw new Error(`macDesktop: ${key} must be a boolean.`);
-}
+const {
+  objectArgs,
+  requiredLaneId,
+  optionalLaneId,
+  optionalString,
+  requiredString,
+  optionalNumber,
+  optionalBoolean,
+  enumValue,
+} = createDomainArgReaders("macDesktop");
 
 const MAC_DESKTOP_SCROLL_DIRECTIONS = ["up", "down", "left", "right"] as const;
 /**
@@ -127,14 +92,7 @@ function enumOf<T extends string>(
   action: string,
 ): T | null {
   const raw = optionalString(args, key);
-  if (!raw) return null;
-  const match = valid.find((entry) => entry === raw);
-  if (!match) {
-    throw new Error(
-      `macDesktop.${action}: unknown ${key} '${raw}'. Valid values: ${valid.join(", ")}.`,
-    );
-  }
-  return match;
+  return raw ? enumValue(raw, key, valid, action) : null;
 }
 
 function inputMode(args: unknown, action: string): MacDesktopInputMode | null {

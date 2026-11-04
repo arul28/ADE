@@ -21,6 +21,7 @@ import {
   type AndroidEmulatorServiceApi,
   type AndroidTouchEvent,
 } from "../../../shared/types/androidEmulator";
+import { createDomainArgReaders } from "../adeActions/domainArgs";
 
 /** What the registry passes in. Exactly the one field this domain reads. */
 export type AndroidActionRuntime = {
@@ -35,64 +36,29 @@ type OpaqueService = Record<string, (args?: unknown) => unknown>;
 
 const TOUCH_ACTIONS = ["down", "move", "up"] as const;
 
-function objectArgs(args: unknown): Record<string, unknown> {
-  return args && typeof args === "object" && !Array.isArray(args)
-    ? args as Record<string, unknown>
-    : {};
-}
-
-function optionalString(args: unknown, key: string): string | null {
-  const value = objectArgs(args)[key];
-  const trimmed = typeof value === "string" ? value.trim() : "";
-  return trimmed.length ? trimmed : null;
-}
-
-function requiredString(args: unknown, key: string, action: string): string {
-  const value = optionalString(args, key);
-  if (!value) throw new Error(`androidEmulator.${action} requires ${key}.`);
-  return value;
-}
+const {
+  objectArgs,
+  optionalString,
+  requiredString,
+  optionalNumber,
+  requiredNumber,
+  optionalBoolean: readBoolean,
+  enumValue: enumOf,
+  requiredLaneId,
+  optionalLaneId: readOptionalLaneId,
+} = createDomainArgReaders("androidEmulator");
 
 function laneArgs(args: unknown, action: string): { laneId: string } {
-  return { laneId: requiredString(args, "laneId", action) };
+  return { laneId: requiredLaneId(args, action) };
 }
 
 function optionalLaneId(args: unknown): { laneId: string | null } {
-  return { laneId: optionalString(args, "laneId") };
-}
-
-function optionalNumber(args: unknown, key: string): number | null {
-  const value = objectArgs(args)[key];
-  if (value == null || value === "") return null;
-  const parsed = Number(value);
-  if (!Number.isFinite(parsed)) throw new Error(`androidEmulator: ${key} must be a number.`);
-  return parsed;
-}
-
-function requiredNumber(args: unknown, key: string, action: string): number {
-  const value = optionalNumber(args, key);
-  if (value == null) throw new Error(`androidEmulator.${action} requires ${key}.`);
-  return value;
+  return { laneId: readOptionalLaneId(args) };
 }
 
 /** Omitted stays omitted: the service applies its own default (true for `start`). */
 function optionalBoolean(args: unknown, key: string): boolean | undefined {
-  const value = objectArgs(args)[key];
-  if (value == null) return undefined;
-  if (typeof value === "boolean") return value;
-  if (value === "true") return true;
-  if (value === "false") return false;
-  throw new Error(`androidEmulator: ${key} must be a boolean.`);
-}
-
-function enumOf<T extends string>(raw: unknown, key: string, valid: readonly T[], action: string): T {
-  const match = valid.find((entry) => entry === raw);
-  if (!match) {
-    throw new Error(
-      `androidEmulator.${action}: unknown ${key} '${String(raw)}'. Valid values: ${valid.join(", ")}.`,
-    );
-  }
-  return match;
+  return readBoolean(args, key) ?? undefined;
 }
 
 function touchEvents(args: unknown): AndroidTouchEvent[] {
