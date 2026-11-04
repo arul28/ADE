@@ -1,7 +1,6 @@
 import { useMemo, useState, type ReactNode } from "react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import {
-  ArrowsClockwise,
   Copy,
   DeviceMobile,
   DeviceTablet,
@@ -19,7 +18,7 @@ import { useAppStore } from "../../state/appStore";
 import { cn } from "../ui/cn";
 import { Button } from "../ui/Button";
 import { PaneTooltip } from "../ui/PaneTooltip";
-import { WorkToolPickerBackdrop } from "../terminals/WorkToolPickerBackdrop";
+import { DEVICE_CARD_GRID_COLUMNS, DevicePickerPage, DevicePickerRefreshButton } from "../device/DevicePickerPage";
 import {
   MENU_CONTENT_CLASS,
   MENU_ITEM_CLASS,
@@ -67,9 +66,6 @@ export type AndroidDevicePickerProps = {
   playing?: boolean;
 };
 
-const COLUMN_MAX_PX = 560;
-const CARD_MIN_TRACK_PX = 188;
-
 function profileGlyph(profile: AndroidHardwareProfile | null | undefined): Icon {
   return profile?.formFactor === "tablet" ? DeviceTablet : DeviceMobile;
 }
@@ -92,7 +88,9 @@ export function AndroidDevicePicker({
   const theme = useAppStore((s) => s.theme);
   const lanes = useAppStore((s) => s.lanes);
   const laneName = (id: string) => lanes.find((entry) => entry.id === id)?.name ?? id;
-  const profiles = inventory?.profiles ?? [];
+  // Keyed on the inventory's own array: `?? []` outside a memo is a new array each render.
+  const inventoryProfiles = inventory?.profiles;
+  const profiles = useMemo(() => inventoryProfiles ?? [], [inventoryProfiles]);
   const profileById = useMemo(() => new Map(profiles.map((profile) => [profile.id, profile])), [profiles]);
   const laneAvdName = lane?.device?.avdName ?? null;
   const others = useMemo(
@@ -103,11 +101,17 @@ export function AndroidDevicePicker({
   const hasImage = (inventory?.images.length ?? 0) > 0;
 
   return (
-    <PickerPage theme={theme} playing={playing}>
+    <DevicePickerPage tool="android" theme={theme} playing={playing}>
       <section aria-label="This lane" data-android-picker-section="This lane" className="flex min-w-0 flex-col gap-2">
         <div className="flex min-w-0 items-center justify-between gap-2">
           <SectionHeading>This lane</SectionHeading>
-          <RefreshButton refreshing={refreshing} onRefresh={onRefresh} />
+          <DevicePickerRefreshButton
+            tool="android"
+            tooltip="Re-read this machine's Android devices"
+            label="Refresh the Android device list"
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+          />
         </div>
         {lane?.device ? (
           <LaneDeviceCard
@@ -139,7 +143,7 @@ export function AndroidDevicePicker({
         ) : (
           <div
             className="grid min-w-0 gap-2"
-            style={{ gridTemplateColumns: `repeat(auto-fit, minmax(min(100%, ${CARD_MIN_TRACK_PX}px), 1fr))` }}
+            style={{ gridTemplateColumns: DEVICE_CARD_GRID_COLUMNS }}
           >
             {others.map((avd) => (
               <AvdCard
@@ -168,7 +172,7 @@ export function AndroidDevicePicker({
         creating={pending === "create"}
         onCreate={onCreate}
       />
-    </PickerPage>
+    </DevicePickerPage>
   );
 }
 
@@ -177,28 +181,6 @@ function SectionHeading({ children }: { children: ReactNode }) {
     <h3 className="min-w-0 px-0.5 font-sans text-[11px] font-medium uppercase tracking-[0.08em] text-muted-fg">
       {children}
     </h3>
-  );
-}
-
-/** The Apple picker's page: the tools grid's backdrop, its scroller and its column. */
-function PickerPage({
-  theme,
-  playing,
-  children,
-}: {
-  theme: Parameters<typeof WorkToolPickerBackdrop>[0]["theme"];
-  playing: boolean;
-  children: ReactNode;
-}) {
-  return (
-    <div className="ade-pane-chrome relative h-full min-h-0 min-w-0" data-android-picker="">
-      <WorkToolPickerBackdrop theme={theme} playing={playing} />
-      <div className="relative flex h-full min-h-0 min-w-0 flex-col overflow-y-auto">
-        <div className="relative mx-auto flex w-full min-w-0 flex-col gap-4 px-5 py-6" style={{ maxWidth: COLUMN_MAX_PX }}>
-          {children}
-        </div>
-      </div>
-    </div>
   );
 }
 
@@ -493,7 +475,7 @@ function NewDeviceSection({
         <div
           data-android-stock-profiles=""
           className="grid min-w-0 gap-2"
-          style={{ gridTemplateColumns: `repeat(auto-fit, minmax(min(100%, ${CARD_MIN_TRACK_PX}px), 1fr))` }}
+          style={{ gridTemplateColumns: DEVICE_CARD_GRID_COLUMNS }}
         >
           {stock.map((choice) => {
             const Glyph = profileGlyph(choice.profile);
@@ -579,20 +561,3 @@ function NewDeviceSection({
   );
 }
 
-function RefreshButton({ refreshing, onRefresh }: { refreshing: boolean; onRefresh: () => void }) {
-  return (
-    <PaneTooltip label="Re-read this machine's Android devices" side="bottom">
-      <Button
-        variant="ghost"
-        size="sm"
-        disabled={refreshing}
-        aria-label="Refresh the Android device list"
-        data-android-picker-refresh=""
-        onClick={onRefresh}
-        className="h-6 w-6 shrink-0 p-0 text-muted-fg"
-      >
-        <ArrowsClockwise size={14} className={cn(refreshing && "animate-spin")} />
-      </Button>
-    </PaneTooltip>
-  );
-}
