@@ -229,7 +229,7 @@ second caller exists only adds churn to the diff.
 | Lifecycle queue | `services/ios/laneDeviceLifecycle.ts` |
 | Recording rules + store | `services/ios/recording/*` (helper calls become a port) |
 | Local viewers | `services/ios/appleLocalViewers.ts` |
-| Renderer stream lease | `components/apple/appleStreamLease.ts` |
+| Renderer stream lease | `components/device/streamLease.ts` (one table per tool; Apple keeps its viewer data in `appleStreamLease.ts`) |
 | Renderer player | `components/device/h264StreamPlayer.ts`, `H264StreamView.tsx`, `videoRecordParser.ts` (moved in P0) |
 | Mini player store | `components/apple/appleMiniPlayerStore.ts` (generalize the device key) |
 | Show requests | `shared/types/workToolShow.ts` (add `android`, `floating-android`) |
