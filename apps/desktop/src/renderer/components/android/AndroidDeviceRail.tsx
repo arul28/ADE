@@ -34,7 +34,7 @@ export type AndroidDeviceRailProps = {
   inputConnected: boolean;
   screenshotPending: boolean;
   onKey: (key: AndroidHardwareKey) => void;
-  /** Rotate is not in the P0 contract yet; absent shows it disabled with the reason. */
+  /** Toggles portrait and landscape; absent shows the button disabled. */
   onRotate?: (() => void) | undefined;
   onScreenshot: () => void;
   /** Absent when the lane's device is not this pane's to change. */
@@ -112,7 +112,7 @@ export function AndroidDeviceRail({
           <>
             <RailButton
               label="Rotate"
-              description={onRotate ? "Rotate" : "Rotate comes in a later version"}
+              description="Portrait or landscape. The home screen stays portrait; apps that allow rotation turn."
               disabled={keysDisabled || !onRotate}
               onClick={() => onRotate?.()}
             >
@@ -139,6 +139,20 @@ export function AndroidDeviceRail({
               <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={onSwitchDevice}>
                 <DeviceMobile size={14} />
                 Switch device…
+              </DropdownMenu.Item>
+              <DropdownMenu.Separator className={MENU_SEPARATOR_CLASS} />
+            </>
+          ) : null}
+          {compact ? (
+            <>
+              {/* A short pane drops these two from the rail; they live here instead. */}
+              <DropdownMenu.Item className={MENU_ITEM_CLASS} disabled={keysDisabled || !onRotate} onSelect={() => onRotate?.()}>
+                <DeviceMobile size={14} style={{ transform: "rotate(90deg)" }} />
+                Rotate
+              </DropdownMenu.Item>
+              <DropdownMenu.Item className={MENU_ITEM_CLASS} disabled={keysDisabled || screenshotPending} onSelect={onScreenshot}>
+                <Camera size={14} />
+                Save screenshot
               </DropdownMenu.Item>
               <DropdownMenu.Separator className={MENU_SEPARATOR_CLASS} />
             </>

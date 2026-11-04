@@ -6,6 +6,7 @@ import type {
   AndroidEmulatorStatus,
   AndroidHardwareKey,
   AndroidLaneDeviceStatus,
+  AndroidOrientation,
 } from "../../../shared/types/androidEmulator";
 import { useAppStore } from "../../state/appStore";
 import { effectiveRuntimeBinding } from "../../lib/chatMachineRouting";
@@ -358,6 +359,28 @@ export function AndroidDevicePane({
     if (laneState === "off" || laneState === "crashed") start();
   }, [laneState, start]);
 
+  /**
+   * The orientation this pane last asked for. The brain has no read of it,
+   * and the stream's shape cannot stand in: the home screen stays portrait
+   * whatever is sent, so a second click would ask for landscape again.
+   */
+  const orientationRef = useRef<AndroidOrientation | null>(null);
+  useEffect(() => {
+    orientationRef.current = null;
+  }, [laneId, pinKey, avdName]);
+  const streamLandscape = Boolean(stream.width && stream.height && stream.width > stream.height);
+  const rotate = useCallback(() => {
+    if (!api) return;
+    const current = orientationRef.current ?? (streamLandscape ? "landscape" : "portrait");
+    const next: AndroidOrientation = current === "landscape" ? "portrait" : "landscape";
+    orientationRef.current = next;
+    // The new size reaches the view with the stream's next config record (~1 s).
+    void api.rotate({ laneId, orientation: next }, runtimePinRef.current).catch((caught: unknown) => {
+      orientationRef.current = current;
+      setError(describeAndroidError(caught));
+    });
+  }, [api, laneId, streamLandscape]);
+
   const screenshot = useCallback(() => {
     if (!api) return;
     setScreenshotPending(true);
@@ -541,7 +564,13 @@ export function AndroidDevicePane({
             onReaderStatus={stream.handleReaderStatus}
             onDimensions={stream.handleDimensions}
             onFrame={stream.noteFrame}
-            className={cn("bg-transparent", paneState === "video-lost" && "opacity-40")}
+            className={cn(
+              "bg-transparent",
+              // Clear of the rail (w-14): a landscape screen fills the width,
+              // and the rail would cover its right edge and take its taps.
+              androidRailVisible(paneState) && "mr-14",
+              paneState === "video-lost" && "opacity-40",
+            )}
           >
             {paneState === "starting" ? (
               <div className="absolute inset-0 z-[1]">
@@ -573,6 +602,7 @@ export function AndroidDevicePane({
                 inputConnected={androidInputAllowed(paneState)}
                 screenshotPending={screenshotPending}
                 onKey={pressKey}
+                onRotate={rotate}
                 onScreenshot={screenshot}
                 onSwitchDevice={noPicker ? undefined : () => setPickerRequested(true)}
                 onPowerOff={powerOff}

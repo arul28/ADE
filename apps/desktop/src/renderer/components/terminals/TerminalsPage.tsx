@@ -26,6 +26,7 @@ import { useWorkShowRequests } from "./useWorkShowRequests";
 import { AppleShutdownConfirmHost } from "../apple/AppleShutdownConfirm";
 import { MacDesktopStopConfirmHost } from "../chat/MacDesktopStopConfirm";
 import { NativeToolFeedsProvider } from "./NativeToolFeedsContext";
+import { useRemoteDeviceTabs } from "./useRemoteDeviceTabs";
 import { useWorkSidebarTool } from "./useWorkSidebarTool";
 import {
   clearPendingWorkToolRequest,
@@ -1260,6 +1261,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     openTools: workSidebarOpenTools,
     setTool: setWorkSidebarTool,
     showTool: showWorkSidebarTool,
+    addTool: addWorkSidebarTool,
     closeTool: closeWorkSidebarTool,
   } = useWorkSidebarTool(
     activeLaneId,
@@ -1268,6 +1270,17 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     // tool with the right owner.
     contextTarget?.kind === "chat" ? contextTarget.sessionId : null,
   );
+
+  // The pane's chat starts driving a simulator or emulator on another
+  // machine: its tab joins the open strip, behind the one on screen.
+  useRemoteDeviceTabs({
+    session: contextTarget?.kind === "chat" ? activeWorkSession : null,
+    // The person's open pane, also while another page is in front: a tab
+    // added then is waiting for them when they come back.
+    paneOpen: work.workSidebarOpen,
+    openTools: workSidebarOpenTools,
+    addTool: addWorkSidebarTool,
+  });
 
   /**
    * The floating device asks to come back into the pane. The pane IS the Apple

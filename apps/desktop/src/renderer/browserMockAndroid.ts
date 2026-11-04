@@ -47,6 +47,8 @@ export const MOCK_STREAM_URL = `http://127.0.0.1:9${MOCK_STREAM_PATH}`;
 /** The video is the lane AVD's 1080×2400 at the brain's 1280 px long side, rounded to even. */
 const VIDEO_WIDTH = 576;
 const VIDEO_HEIGHT = 1280;
+/** What `rotate` last set; the stream turns to it ~0.9 s later, as the brain's does. */
+let mockOrientation: "portrait" | "landscape" = "portrait";
 const LCD = { width: 1080, height: 2400 };
 
 function remoteWorkCopyEmpty(): boolean {
@@ -147,6 +149,8 @@ export function createMockAndroidEmulator(): AndroidEmulatorPreloadApi {
   const typed: string[] = [];
   (window as unknown as Record<string, unknown>).__adeMockAndroidTyped = typed;
   const keys: string[] = [];
+  const rotations: string[] = [];
+  (window as unknown as Record<string, unknown>).__adeMockAndroidRotations = rotations;
   (window as unknown as Record<string, unknown>).__adeMockAndroidKeys = keys;
 
   /** The lane the pane asked about; the lane's device belongs to whichever lane that is. */
@@ -306,7 +310,10 @@ export function createMockAndroidEmulator(): AndroidEmulatorPreloadApi {
     sendText: async (args) => {
       typed.push(args.text);
     },
-    rotate: async () => {},
+    rotate: async (args) => {
+      rotations.push(args.orientation);
+      window.setTimeout(() => { mockOrientation = args.orientation; }, 900);
+    },
     screenshot: async () => delay({
       path: "/Users/mock/.ade/android/screenshots/ade_lane_medium_phone-1.png",
       width: LCD.width,
@@ -331,6 +338,7 @@ type WebCodecsEncoderScope = {
   }) => {
     configure: (config: Record<string, unknown>) => void;
     encode: (frame: unknown, options?: { keyFrame?: boolean }) => void;
+    flush: () => Promise<void>;
     close: () => void;
     readonly state: string;
   };
@@ -348,9 +356,14 @@ function record(type: number, flags: number, payload: Uint8Array): Uint8Array {
   return out;
 }
 
-function drawScreen(context: OffscreenCanvasRenderingContext2D, tick: number, touches: AndroidTouchEvent[]) {
-  const w = VIDEO_WIDTH;
-  const h = VIDEO_HEIGHT;
+function drawScreen(
+  context: OffscreenCanvasRenderingContext2D,
+  tick: number,
+  touches: AndroidTouchEvent[],
+  w: number,
+  h: number,
+) {
+  const landscape = w > h;
   const gradient = context.createLinearGradient(0, 0, w, h);
   gradient.addColorStop(0, "#0b3d2e");
   gradient.addColorStop(1, "#14213d");
@@ -363,7 +376,7 @@ function drawScreen(context: OffscreenCanvasRenderingContext2D, tick: number, to
   context.font = "600 96px sans-serif";
   context.fillText(`${now.getHours()}:${String(now.getMinutes()).padStart(2, "0")}`, 60, 300);
   context.font = "400 26px sans-serif";
-  context.fillText("Mock emulator · 1080×2400", 64, 350);
+  context.fillText(landscape ? "Mock emulator · 2400×1080" : "Mock emulator · 1080×2400", 64, 350 * (h / VIDEO_HEIGHT) + (landscape ? 60 : 0));
   // App icons in a 4×2 grid near the foot.
   const colors = ["#3ddc84", "#4285f4", "#ea4335", "#fbbc05", "#a142f4", "#24c1e0", "#f6aea9", "#ffffff"];
   for (let index = 0; index < 8; index += 1) {
@@ -371,7 +384,7 @@ function drawScreen(context: OffscreenCanvasRenderingContext2D, tick: number, to
     const row = Math.floor(index / 4);
     context.fillStyle = colors[index]!;
     context.beginPath();
-    context.arc(88 + col * 133, 900 + row * 150, 46, 0, Math.PI * 2);
+    context.arc(w * (0.153 + col * 0.231), h * (0.703 + row * 0.117), Math.min(w, h) * 0.08, 0, Math.PI * 2);
     context.fill();
   }
   // A moving bar so the stream is never still.
@@ -380,8 +393,8 @@ function drawScreen(context: OffscreenCanvasRenderingContext2D, tick: number, to
   // The last touches, scaled from device pixels to the video.
   const recent = touches.slice(-24);
   recent.forEach((touch, index) => {
-    const x = (touch.x / LCD.width) * w;
-    const y = (touch.y / LCD.height) * h;
+    const x = (touch.x / (landscape ? LCD.height : LCD.width)) * w;
+    const y = (touch.y / (landscape ? LCD.width : LCD.height)) * h;
     context.fillStyle = touch.action === "down" ? "rgba(255,80,80,0.95)" : touch.action === "up" ? "rgba(80,160,255,0.95)" : `rgba(255,255,255,${0.25 + (index / recent.length) * 0.6})`;
     context.beginPath();
     context.arc(x, y, touch.action === "move" ? 6 : 14, 0, Math.PI * 2);
@@ -434,13 +447,39 @@ function mockStreamBody(signal: AbortSignal | null | undefined, touches: Android
           }
         },
       });
-      encoder.configure({ codec, width: VIDEO_WIDTH, height: VIDEO_HEIGHT, bitrate: 2_000_000, framerate: 30, avc: { format: "annexb" }, latencyMode: "realtime" });
-      const canvas = new OffscreenCanvas(VIDEO_WIDTH, VIDEO_HEIGHT);
-      const context = canvas.getContext("2d")!;
+      const configure = (width: number, height: number) => {
+        encoder!.configure({ codec, width, height, bitrate: 2_000_000, framerate: 30, avc: { format: "annexb" }, latencyMode: "realtime" });
+      };
+      configure(VIDEO_WIDTH, VIDEO_HEIGHT);
+      let shape = "portrait";
+      let canvas = new OffscreenCanvas(VIDEO_WIDTH, VIDEO_HEIGHT);
+      let context = canvas.getContext("2d")!;
+      let switching = false;
       let tick = 0;
       timer = window.setInterval(() => {
-        if (!encoder || encoder.state !== "configured") return;
-        drawScreen(context, tick, touches);
+        if (!encoder || encoder.state !== "configured" || switching) return;
+        if (shape !== mockOrientation) {
+          // A turn: the old size's frames out first, then a config record of
+          // the new size, then a keyframe, the order the brain sends them in.
+          switching = true;
+          const next = mockOrientation;
+          void encoder.flush().then(() => {
+            if (!encoder || encoder.state !== "configured") return;
+            const [width, height] = next === "landscape" ? [VIDEO_HEIGHT, VIDEO_WIDTH] : [VIDEO_WIDTH, VIDEO_HEIGHT];
+            controller.enqueue(record(
+              IOS_VIDEO_RECORD_TYPE_CONFIG,
+              0,
+              new TextEncoder().encode(JSON.stringify({ codec, width, height, annexB: true })),
+            ));
+            configure(width, height);
+            canvas = new OffscreenCanvas(width, height);
+            context = canvas.getContext("2d")!;
+            shape = next;
+            tick = Math.ceil(tick / 60) * 60;
+          }).catch(stop).finally(() => { switching = false; });
+          return;
+        }
+        drawScreen(context, tick, touches, canvas.width, canvas.height);
         const frame = new scope.VideoFrame!(canvas, { timestamp: tick * 33_333 });
         encoder.encode(frame, { keyFrame: tick % 60 === 0 });
         frame.close();

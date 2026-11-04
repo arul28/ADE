@@ -2838,6 +2838,47 @@ function setBrowserMockDemoChatRunning(sessionId: string, running: boolean): voi
   notifyBrowserMockSessionsChanged(sessionId);
 }
 
+/**
+ * `?mockRemoteMidTurn=android|ios`: the Codex chat is in a turn, and 3 s after
+ * load it starts driving the Studio Mac's emulator (or simulator) through its
+ * work copy there. The turn began at the top of the hour, so a reload inside
+ * the hour is the same turn and the same use.
+ */
+(function startBrowserMockRemoteMidTurn() {
+  let kind: string | null = null;
+  try {
+    kind = new URLSearchParams(window.location.search).get("mockRemoteMidTurn");
+  } catch {
+    return;
+  }
+  if (kind !== "android" && kind !== "ios") return;
+  const row = MOCK_SESSIONS.find((entry) => entry.id === "mock-session-codex-1");
+  if (!row) return;
+  const turnStart = new Date(Math.floor(Date.now() / 3_600_000) * 3_600_000).toISOString();
+  row.status = "running";
+  row.runtimeState = "running";
+  row.endedAt = null;
+  row.currentTurnStartedAt = turnStart;
+  row.remoteWork = [];
+  row.remoteWorkActiveMachineKeys = [];
+  window.setTimeout(() => {
+    row.remoteWork = [{
+      machineKey: "mk_studio_mac",
+      machineName: "Studio Mac",
+      machinePlatform: "darwin",
+      projectId: "mock-project-studio",
+      projectRootPath: "/Users/mock/Projects/ADE",
+      terminalIds: [],
+      workCopyLaneId: "remote-work-0a1b2c3d4e5f",
+      usesSimulator: kind === "ios",
+      usesAndroidEmulator: kind === "android",
+      lastStartedAt: new Date().toISOString(),
+    }];
+    row.remoteWorkActiveMachineKeys = ["mk_studio_mac"];
+    notifyBrowserMockSessionsChanged(row.id);
+  }, 3_000);
+})();
+
 /** A chat the demo's New Chat page starts: a real row in the session list, so the app opens it. */
 function createBrowserMockDemoChat(args: any): any {
   const lane = MOCK_LANES.find((row) => row.id === args.laneId) ?? MOCK_LANES.find((row) => row.laneType === "primary") ?? MOCK_LANES[0];
@@ -8298,7 +8339,26 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       attachToChatSession: resolved(null),
       shutdown: resolvedArg({ ok: true } as any),
       screenshot: resolvedArg({} as any),
-      getScreenSnapshot: resolvedArg({} as any),
+      // `?mockIosLive`: Inspect finds one element, the white circle of the
+      // test picture, so its box can be checked against the circle on screen.
+      getScreenSnapshot: browserMockFlag("mockIosLive")
+        ? async () => {
+          const frame = { x: 441, y: 1004, width: 92, height: 92 };
+          const circle = {
+            id: "mock-white-circle", source: "accessibility", layer: "accessibility", label: "White circle", value: null,
+            role: "button", elementType: "Button", identifier: "white-circle", frame, pixelFrame: frame,
+            componentId: null, sourceFile: null, sourceLine: null, metadata: {}, ref: "white-circle",
+          };
+          return {
+            deviceUdid: "pro",
+            capturedAt: new Date().toISOString(),
+            screen: { width: 576, height: 1280, scale: 1 },
+            elements: [circle],
+            hitElement: null,
+            providers: [{ source: "accessibility", available: true, elementCount: 1 }],
+          } as any;
+        }
+        : resolvedArg({} as any),
       getInspectorSnapshot: resolved(null),
       inspectPoint: resolvedArg({} as any),
       getPreviewCapability: resolvedArg(BROWSER_MOCK_PREVIEW_CAPABILITY_UNSUPPORTED as any),
