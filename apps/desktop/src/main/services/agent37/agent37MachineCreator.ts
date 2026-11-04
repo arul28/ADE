@@ -33,6 +33,7 @@ import type { AdeAccountMachine, AdeAccountMachinesResult } from "../../../share
 import type { Agent37Client, Agent37Instance } from "./agent37Client";
 import {
   deleteAgent37InstanceConfirmed,
+  readAgent37BoxSignedIn,
   reconcileAgent37PendingCreate,
   type Agent37PendingCreateStore,
 } from "./agent37PendingCreates";
@@ -247,6 +248,10 @@ export async function createAgent37Machine(
   deps.pendingCreates?.attach(requestId, instance.id);
   logger.info?.("agent37.machine_created", { instanceId: instance.id, kind: rawArgs.kind, shape: shape.id });
 
+  // Set once ADE asks the account to approve the box's sign-in. Before that the
+  // box cannot be signed in to this account, so a failure may delete it
+  // outright; after it, only the box's own answer decides.
+  let approvalSent = false;
   try {
     checkCancelled();
     progress("waiting_for_brain", "Starting ADE on the new machine…", instance.id);
@@ -291,6 +296,7 @@ export async function createAgent37Machine(
       let response: Response;
       let body: Record<string, unknown> | null;
       try {
+        approvalSent = true;
         response = await fetcher(`${directory.replace(/\/+$/, "")}/device/approve`, {
           method: "POST",
           headers: { accept: "application/json", "content-type": "application/json", authorization: `Bearer ${token}` },
@@ -379,8 +385,25 @@ export async function createAgent37Machine(
     // Signed in: a real machine, kept from here on.
     deps.pendingCreates?.finish(requestId);
   } catch (error) {
-    // A box that never joined is only a bill: take it back off Agent 37.
     logger.warn?.("agent37.machine_setup_failed", { instanceId: instance.id, error: errorText(error) });
+    const reasonFor = () => (signal?.aborted ? new Agent37CreateCancelled().message : errorText(error));
+    // A cancel or failure after approval may come after the box signed in: then
+    // it is a real machine on the account, not a bill, and is kept. Asked
+    // without the create's signal, which a cancel has already aborted.
+    if (approvalSent) {
+      const signedIn = await readAgent37BoxSignedIn(client, instance.id, logger);
+      if (signedIn === true) {
+        deps.pendingCreates?.finish(requestId);
+        logger.info?.("agent37.machine_kept_signed_in", { instanceId: instance.id, requestId });
+        throw new Error(`${reasonFor()} "${name}" had already signed in, so ADE kept it: it's under Your computers. Delete it from its row if you don't want it.`);
+      }
+      if (signedIn === "unknown") {
+        // Left on the pending list: the next start asks the box again and
+        // deletes it only on a clear "signed out".
+        throw new Error(`${reasonFor()} ADE couldn't tell whether "${name}" (${instance.id}) finished signing in, so it didn't delete it. If it isn't under Your computers, delete it in your Agent 37 dashboard; ADE also checks again when it next starts.`);
+      }
+    }
+    // A box that never signed in is only a bill: take it back off Agent 37.
     const deleted = await deleteAgent37InstanceConfirmed(client, instance.id, { logger, sleep });
     // Kept on the pending list until Agent 37 confirms: the next app start tries again.
     if (deleted) {
@@ -388,7 +411,7 @@ export async function createAgent37Machine(
       deps.pendingCreates?.finish(requestId);
     }
     // A request the cancel cut short reads as the cancel, not as its own error.
-    const reason = signal?.aborted ? new Agent37CreateCancelled().message : errorText(error);
+    const reason = reasonFor();
     throw new Error(deleted
       ? `${reason} ADE deleted the box it made, so it isn't billing.`
       : `${reason} ADE couldn't confirm it deleted the box it made ("${name}", ${instance.id}). Delete it in your Agent 37 dashboard so it stops billing; ADE also tries again when it next starts.`);

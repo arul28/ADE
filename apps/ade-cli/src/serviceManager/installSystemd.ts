@@ -298,7 +298,10 @@ export async function installSystemdService(
   // A supervisor an earlier start ran while systemd was unavailable would
   // keep its own brain on the socket next to the unit's.
   if (hasLiveDetachedSupervisor({ env, homeDir })) {
-    await uninstallDetachedRuntimeService({ env, homeDir, spawnSync: run });
+    const detached = await uninstallDetachedRuntimeService({ env, homeDir, spawnSync: run });
+    // Refused (a brain asked to stop itself): starting the unit anyway would
+    // put two brains on one socket, so stop here as uninstall does.
+    if (detached?.selfMutationBlocked) return detached;
   }
 
   fs.mkdirSync(path.dirname(targetPath), { recursive: true });

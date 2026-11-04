@@ -48,7 +48,8 @@ export type HostInstanceGuardResult =
       action: "blocked";
       instanceId: string;
       previousInstanceId: string;
-      movedTo: string;
+      /** Null when the original identity itself could not be moved aside. */
+      movedTo: string | null;
       retiredProjectSiteIds: string[];
       failures: Array<{ path: string; error: string }>;
     };
@@ -155,7 +156,19 @@ export function guardAgainstCopiedAdeHome(args: {
   // is found by its folder name and not moved twice (whatever is in secrets/
   // now was made on this box), and only projects not retired yet are retired.
   const copiedDir = path.join(args.adeDir, "copied-identities");
-  let movedTo = earlierMove(copiedDir, record.instanceId);
+  // The original's identity could not be moved aside: the box must not serve
+  // under it, and nothing is recorded, so the next start tries again.
+  const blockedMove = (failedPath: string, error: unknown): HostInstanceGuardResult => {
+    const failures = [{ path: failedPath, error: errorText(error) }];
+    args.logger?.warn?.("host_instance.copied_home_reset_blocked", { instanceId, previousInstanceId: record.instanceId, failures });
+    return { action: "blocked", instanceId, previousInstanceId: record.instanceId, movedTo: null, retiredProjectSiteIds: [], failures };
+  };
+  let movedTo: string | null;
+  try {
+    movedTo = earlierMove(copiedDir, record.instanceId);
+  } catch (error) {
+    return blockedMove(copiedDir, error);
+  }
   if (movedTo) {
     args.logger?.info?.("host_instance.copied_home_reset_resumed", { instanceId, previousInstanceId: record.instanceId, movedTo });
   } else {
@@ -166,8 +179,15 @@ export function guardAgainstCopiedAdeHome(args: {
     // machine's identity, its trust in other devices, or ciphertext under its
     // `.machine-key`, and a list would silently miss the next file anyone adds.
     // API keys and the account vault come back from the account after sign-in.
-    if (fs.existsSync(secretsDir)) fs.renameSync(secretsDir, movedTo);
-    else fs.mkdirSync(movedTo, { recursive: true });
+    // `pathPresent`, not `existsSync`: a secrets folder ADE cannot even look at
+    // must stop the reset (it throws), not read as absent and leave the
+    // original's identity in place under the new host record.
+    try {
+      if (pathPresent(secretsDir)) fs.renameSync(secretsDir, movedTo);
+      else fs.mkdirSync(movedTo, { recursive: true });
+    } catch (error) {
+      return blockedMove(secretsDir, error);
+    }
   }
 
   // Each project database takes its cr-sqlite site id from the project's own
