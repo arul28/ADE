@@ -304,6 +304,37 @@ export function createTurnEndQuestionCheck(deps: TurnEndQuestionCheckDeps): Turn
     finishTurnEnd({ ...args, jev, asksUser, decidedBy, startedAt });
   };
 
+  const confirmQuietAsk = async (
+    facts: TurnEndQuestionFacts,
+    turnId: string,
+    replyText: string,
+    question: string,
+  ): Promise<void> => {
+    const { sessionId } = facts;
+    let jev: JevTurnEndReading | null = null;
+    try {
+      jev = await askJev(facts, replyText);
+    } catch (error) {
+      logger.warn("agent_chat.turn_end_question_quiet_check_failed", {
+        sessionId,
+        turnId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    const stillOpen = pendingTurnBySession.get(sessionId) === turnId
+      && facts.isStillCurrent()
+      && handCanRise(deps.readHandState(sessionId));
+    if (pendingTurnBySession.get(sessionId) === turnId) pendingTurnBySession.delete(sessionId);
+    const confirmed = jev?.asksUser === true;
+    logger.info("agent_chat.turn_end_question_quiet_check", {
+      sessionId,
+      turnId,
+      jev: jev ? (jev.asksUser === null ? "unsure" : jev.asksUser ? "ask" : "not_ask") : "no_answer",
+      stillOpen,
+    });
+    if (confirmed && stillOpen) raise(sessionId, turnId, question, "jev");
+  };
+
   return {
     onEvent(sessionId, event, turnStartedAt) {
       if (event.type === "status" && event.turnStatus === "started") {
@@ -345,14 +376,26 @@ export function createTurnEndQuestionCheck(deps: TurnEndQuestionCheckDeps): Turn
       if (checkedTurns.has(checkKey)) return;
       rememberChecked(checkKey);
       const hasBackgroundWork = facts.backgroundWorkCount > 0;
-      if (facts.isSubagentWithParent || (!hasBackgroundWork && (facts.liveChildCount ?? 0) <= 0)) return;
+      const hasLiveChildren = (facts.liveChildCount ?? 0) > 0;
+      // A subagent's question goes to its parent in its report, not to the user.
+      if (facts.isSubagentWithParent) return;
       if (!handCanRise(deps.readHandState(sessionId))) return;
       if (!reply || (reply.turnId && reply.turnId !== turnId)) return;
 
       const classification = classifyTurnEndAsk(reply.text);
+      if (!hasBackgroundWork && !hasLiveChildren) {
+        // A quiet turn end shows its reply under Done, where an open question
+        // is easy to miss. Raise the hand only when the rules see a clear ask
+        // AND Jev confirms it: a false Needs you is worse than a missed one, so
+        // no Jev, an unsure Jev, or a "no" leaves the row alone.
+        if (classification.verdict !== "ask" || !deps.decide) return;
+        pendingTurnBySession.set(sessionId, turnId);
+        void confirmQuietAsk(facts, turnId, reply.text, classification.question);
+        return;
+      }
       if (classification.verdict === "ask") {
-        // With only child chats running, the row already reads Done and shows
-        // the question; the hand is for a reply hidden under Working.
+        // With work still running the row reads Working and hides the
+        // question, so a clear ask raises the hand at once.
         if (hasBackgroundWork) raise(sessionId, turnId, classification.question, "rules");
         return;
       }

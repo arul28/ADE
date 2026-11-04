@@ -118,7 +118,7 @@ const SPAWN_TYPE_ENUM_MESSAGE =
  * without a spawn kind have to read identically.
  */
 const SPAWN_TYPE_REQUIRED_MESSAGE =
-  "--type is required for a parented agent spawn. Use --type subagent when you will need, join, or review the result (including parallel work); use --type peer only for fire-and-forget work. Use --no-parent only for an independent top-level session.";
+  "A parented launch needs a spawn type: pass --arg spawnKind=subagent (reports back to the parent) or peer.";
 const SPAWN_PARENT_REQUIRED_MESSAGE =
   "--type requires a parent session. Remove --no-parent or omit --type for an independent top-level session.";
 
@@ -197,8 +197,8 @@ export function readAgentSpawnLineage(
   if (normalizedSpawnKind && normalizedSpawnKind !== "subagent" && normalizedSpawnKind !== "peer") {
     throw new CliUsageError(SPAWN_TYPE_ENUM_MESSAGE);
   }
-  const spawnKind = normalizedSpawnKind as CliAgentSpawnKind | undefined;
-  if (options.allowSpawnType === false && spawnKind) {
+  const requestedSpawnKind = normalizedSpawnKind as CliAgentSpawnKind | undefined;
+  if (options.allowSpawnType === false && requestedSpawnKind) {
     throw new CliUsageError(SPAWN_TYPE_SHELL_MESSAGE);
   }
   if (options.allowSpawnType === false && hasExplicitParentSessionId) {
@@ -207,14 +207,14 @@ export function readAgentSpawnLineage(
   if (options.allowSpawnType === false) {
     return { kind: "dropped", droppedAmbientParentSessionId: ambientParentSessionId };
   }
-  if (orchestrationParentSessionId && !spawnKind) {
-    throw new CliUsageError(SPAWN_TYPE_REQUIRED_MESSAGE);
-  }
-  if (!orchestrationParentSessionId && spawnKind) {
+  if (!orchestrationParentSessionId && requestedSpawnKind) {
     throw new CliUsageError(
       options.missingParentMessage ?? SPAWN_PARENT_REQUIRED_MESSAGE,
     );
   }
+  // A parented launch with no `--type` is a subagent: it reports back to the
+  // chat that started it, which is what "have this model do the work" means.
+  const spawnKind = requestedSpawnKind ?? (orchestrationParentSessionId ? "subagent" : undefined);
   return { kind: "lineage", orchestrationParentSessionId, spawnKind };
 }
 

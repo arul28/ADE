@@ -215,13 +215,14 @@ project workflow tools are not injected. See [Personal chats](../personal-chats/
 Any chat-bound agent can run `ade new chat` to spawn either another ADE chat
 or a tracked agent CLI session. Both modes inherit
 `orchestrationParentSessionId` from the spawner's `ADE_CHAT_SESSION_ID`, and
-both accept `--parent`, `--no-parent`, and the required parented-spawn type
-`--type subagent|peer`. Plain shell terminals do not record this lineage. The
-child is a normal agent with the same runtime, permissions, and tools, but the
-type is a coordination contract: `subagent` is required whenever the parent
-will need, join, read, or review the result (including parallel work); `peer`
-is fire-and-forget and leaves quiet turn-completion notes. Missing types and
-the legacy `none` value are rejected for new parented sessions. A `--no-parent`
+both accept `--parent`, `--no-parent`, and `--type subagent|peer`. Plain
+shell terminals do not record this lineage. The child is a normal agent with
+the same runtime, permissions, and tools, but the type is a coordination
+contract: `subagent` (the default when `--type` is left out) reports back to
+the parent after every turn; `peer` is fire-and-forget and leaves quiet
+turn-completion notes. The legacy `none` value is rejected. Lineage decides
+only who gets reports: any agent may read, message, interrupt, or stop any
+chat (see `MESH_CHAT_ACTIONS` in `adeRpcServer.ts`). A `--no-parent`
 session an agent starts records the agent as `launchedBySessionId`: no
 nesting, wake or permission ceiling, only the Focus rule that keeps a finished
 helper from holding its busy launcher's lane open.

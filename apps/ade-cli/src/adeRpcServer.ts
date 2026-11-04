@@ -2753,8 +2753,8 @@ export function describeLaneDisplayProofRefusal(
       + "Use `ade browser proof`, `ade app-control proof` or `ade proof attach <file>`.";
   }
   const lanePaths = kind === "screenshot"
-    ? "`ade mac-desktop proof`, `ade apple proof`, `ade app-control proof` or `ade browser proof`"
-    : "`ade mac-desktop record`, `ade apple record-start` or `ade browser record`";
+    ? "`ade screen proof`, `ade apple proof`, `ade app-control proof` or `ade browser proof`"
+    : "`ade screen record`, `ade apple record-start` or `ade browser record`";
   return `refused: this lane has no Mac Desktop display, and ADE does not ${noun} your real screen by default. `
     + `Use ${lanePaths}, or pass --real-screen to ${noun} the whole real screen.`;
 }
@@ -3764,6 +3764,29 @@ const CROSS_MACHINE_MOVE_ACTIONS = new Set([
   "retryCrossMachineBatchMove",
 ]);
 
+/**
+ * ADE is a mesh: any agent may read, stop, or steer any chat, whoever started
+ * it. Lineage only decides who gets a chat's completion report, never who may
+ * act on it. These stay in SCOPED_CHAT_ACTIONS so an unbound external caller
+ * is still refused and an omitted target still means the caller's own chat.
+ */
+const MESH_CHAT_ACTIONS = new Set([
+  "getChatEventHistory",
+  "getChatEventHistoryPage",
+  "listScheduledWork",
+  "getScheduledWorkState",
+  "cancelScheduledWork",
+  "setScheduledWorkPaused",
+  "interrupt",
+  "interruptWithQueueMode",
+  "stopTask",
+  "messageSubagent",
+  "controlSubagent",
+  "restartSession",
+  "holdBackgroundWork",
+  "restoreCancelledQueue",
+]);
+
 const SCOPED_CHAT_ACTIONS = new Set([
   "getChatEventHistory",
   "getChatEventHistoryPage",
@@ -3944,6 +3967,14 @@ function scopeChatAdeActionArgs(
   if (session.identity.role === "external" && !callerChatSessionId) {
     if (action === "sendMessage") return scopedArgs;
     chatAccessDenied(method, { callerChatSessionId, requestedSessionId });
+  }
+
+  if (MESH_CHAT_ACTIONS.has(action)) {
+    if (!requestedSessionId) {
+      if (!callerChatSessionId) chatAccessDenied(method, { callerChatSessionId, requestedSessionId });
+      scopedArgs.sessionId = callerChatSessionId;
+    }
+    return scopedArgs;
   }
 
   const requestedOwnedTerminal = action === "setSessionActivity"
@@ -7031,6 +7062,9 @@ async function runTool(args: {
         provider,
         permissionMode,
         sessionActivityReportingEnabled: runtime.sessionActivityReportingEnabled,
+        ...(orchestrationParentSessionId
+          ? { spawnLineage: { parentChatSessionId: orchestrationParentSessionId, spawnKind: spawnKind ?? null } }
+          : {}),
         ...(droidPermissionMode ? { droidPermissionMode } : {}),
         ...(musePermissionMode ? { musePermissionMode } : {}),
         sessionId: preassignedSessionId,

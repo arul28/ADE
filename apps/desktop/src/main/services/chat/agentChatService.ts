@@ -9642,7 +9642,7 @@ export function buildComputerUseDirective(
     [
       "### Proof Capture",
       "When the user asks for proof, capture visual proof first; logs are supporting diagnostics only. ADE does not passively ingest computer-use output: file each capture with the tool that shows the work (`ade browser proof`, `ade app-control proof`, `ade apple proof`"
-        + (options.windowsDesktopAvailable || options.linuxDesktopAvailable ? ", `ade screen proof`" : options.macDesktopAvailable ? ", `ade mac-desktop proof`" : "")
+        + (options.windowsDesktopAvailable || options.linuxDesktopAvailable || options.macDesktopAvailable ? ", `ade screen proof`" : "")
         + "), or `ade proof attach` / `ingest_computer_use_artifacts` for an existing file. "
         + (ownScreen
           ? "`ade proof capture/record` capture the lane's screen once it is started; `--real-screen` captures the user's whole real screen, only when the user asks."
@@ -10569,16 +10569,16 @@ function buildSpawnSelfReportGuidance(
   }
   const selfReportCommandGuidance = [
     "Send reports with the typed `ade chat message` command, which passes a JSON object to `chat.messageSession`. Pass the report through stdin or a file with `--text-file`, never as an argument: on Windows `ade.cmd` cuts an argument at its first line break.",
-    "In Bash/zsh or Git Bash, use a quoted here-doc with an end marker absent from the report: `ade chat message \"$ADE_PARENT_CHAT_SESSION_ID\" --kind auto --text-file - <<'REPORT_END'`, the report, then `REPORT_END`.",
-    "In PowerShell, put it in a single-quoted here-string (`$report = @'` ... `'@`; nothing inside is expanded), run `$f = New-TemporaryFile; Set-Content -LiteralPath $f -Value $report -Encoding utf8`, then `ade chat message $env:ADE_PARENT_CHAT_SESSION_ID --kind auto --text-file $f`.",
+    "In Bash/zsh or Git Bash, use a quoted here-doc with an end marker absent from the report: `ade chat message \"$ADE_PARENT_CHAT_SESSION_ID\" --text-file - <<'REPORT_END'`, the report, then `REPORT_END`.",
+    "In PowerShell, put it in a single-quoted here-string (`$report = @'` ... `'@`; nothing inside is expanded), run `$f = New-TemporaryFile; Set-Content -LiteralPath $f -Value $report -Encoding utf8`, then `ade chat message $env:ADE_PARENT_CHAT_SESSION_ID --text-file $f`.",
   ].join(" ");
   if (session.spawnKind === "subagent") {
-    return `You were spawned as a subagent. Each closing summary wakes your parent, including scheduled turns. Human replies keep reports; takeover makes a quiet peer. Report approvals and decisions with a recommendation. Escalate via parents; only the root asks the user about critical decisions with no safe solution. User-only consent needs the user. You may send extra context or recover from a delivery failure with: ${selfReportCommandGuidance} Do not poll the parent transcript for coordination.`;
+    return `You are a subagent of another chat. Your final reply each turn is sent to that parent chat automatically, so end each turn with a clear report. If you need a decision, put the question and your recommendation in that report instead of asking the user; the parent asks the user when it cannot decide. Only an approval or consent that the user alone can give goes to the user. To send something mid-turn, or if a report failed to arrive: ${selfReportCommandGuidance} Do not read the parent's transcript to coordinate.`;
   }
   if (session.spawnKind === "peer") {
     return `You were spawned as a peer for fire-and-forget work. ADE records quiet completion notes but does not wake your parent. If the parent unexpectedly needs your result, report it directly with: ${selfReportCommandGuidance}`;
   }
-  return "This legacy child session has parent lineage but no supported spawn type. Report your result directly to `$ADE_PARENT_CHAT_SESSION_ID`, and use `--type subagent|peer` for any new child session.";
+  return "This chat has a parent chat but no spawn type. Report your result directly to `$ADE_PARENT_CHAT_SESSION_ID`.";
 }
 
 function buildAdeSessionLineageGuidance(

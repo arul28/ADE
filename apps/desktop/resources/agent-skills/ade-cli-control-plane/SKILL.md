@@ -7,7 +7,7 @@ description: Use this skill when you need to hand work to another ADE agent, wai
 
 ## Core rule
 
-Use normal shell commands for local repo edits, tests, and Git inspection. Use `ade` when you need ADE state or ADE-owned services: lanes, chats, PR metadata, proof/artifacts, managed terminals, App Control, iOS Simulator, browser, settings, project secrets, usage, updates, or service actions.
+Use normal shell commands for local repo edits, tests, and local Git. Push, pull and fetch with `ade git` (see ade-lanes-git). Use `ade` when you need ADE state or ADE-owned services: lanes, chats, PR metadata, proof/artifacts, managed terminals, App Control, iOS Simulator, browser, settings, project secrets, usage, updates, or service actions.
 
 Do not route ordinary repo commands through ADE chat-attached terminals. Those
 terminals exist so ADE Work chats can expose long-running process logs or let a
@@ -23,74 +23,39 @@ to inspect or control an existing ADE-owned terminal session.
 4. Use `ade actions list --text` or `ade actions list --domain <domain> --text` as the escape hatch for service methods without a typed command.
 5. Before running an action, `ade actions describe <domain.action> --text` prints its read/write access, description, documented input fields and an example (actions without a documented contract say so).
 
-## Project secrets
+## Detail files
 
-ADE project secrets are encrypted, project-scoped, and shared by ADE Desktop,
-the CLI, runtime-backed actions, lanes, and agents on the same machine. They live
-under the active project root, not inside an individual lane worktree.
+Rarely needed detail lives next to this file. Read one when its topic comes
+up (or `ade skill show ade-cli-control-plane references/<file>`):
 
-Use them only when the user names a secret or clearly asks you to use a stored
-credential. List output is metadata-only; `get` prints the value, so avoid
-echoing it into logs or chat unless the user explicitly asks.
+| Topic | File |
+| --- | --- |
+| Secrets: request, get, set, file delivery; webhooks | `references/secrets-and-webhooks.md` |
+| Claiming and showing drawer surfaces; runtime vs desktop bridge | `references/app-surfaces.md` |
+| Work board columns, activity labels, card drags | `references/work-board.md` |
+| Usage limits: early resume, switching accounts, what to tell the user | `references/usage-limits.md` |
+| Scheduled work in full; drafts | `references/scheduled-work.md` |
+| Running a command on another machine; moving this chat there | `references/machines.md` |
+| Lane branch drift; archived lanes, chats and shells | `references/lanes-and-archives.md` |
 
-```
-ade secrets list --text
-ade secrets pull --text                 # take this repository's account secrets out of the vault
-ade secrets get STRIPE_API_KEY --text
-ade secrets set STRIPE_API_KEY --value sk_...
-printf %s "$TOKEN" | ade secrets set TOKEN --stdin
-ade secrets set TOKEN --value-file token.txt
-ade secrets delete STRIPE_API_KEY
-ade actions list --domain project_secret --text
-```
+## Secrets
 
-**Never ask the user to paste a secret into chat.** When you need a key,
-token, or webhook secret the project does not have yet, ask for it with the
-private secret card:
+**Never ask the user to paste a secret into chat.** Ask with the private card:
+`ade secrets request NAME --reason "<why>"` (add `--generate` to suggest a
+strong one). Use a stored secret by name without printing it:
+`gh secret set X --body "$(ade secrets get NAME --text)"`. Read secrets only
+when the user names one. Webhooks (run an agent when another service does
+something) are the **ade-webhooks** skill. Full detail:
+`references/secrets-and-webhooks.md`.
 
-```
-ade secrets request GITHUB_WEBHOOK_SECRET --reason "Signs GitHub deliveries to your triage webhook" --generate
-```
+## The running app
 
-The chat shows the user a password field (with a "Generate a strong one"
-button; `--generate` marks it as suggested). The command blocks until they
-answer and prints only the outcome — `{name, saved: true}`, `{name, saved:
-false, kept: true}` or `{name, saved: false, declined: true}` — never the
-value. For a token a shell CLI needs that should not stay in ADE, add
-`--delivery file --request-id <key>`: the user may choose a temporary private
-file, and you get `{saved: true, delivery: "file", file}`. Read it only inside
-a command (`TOKEN="$(cat <file>)" wrangler deploy`) and never print it; it is
-deleted after 24 hours or when the chat is archived. Otherwise use the secret by name without printing it, e.g.
-`gh secret set X --body "$(ade secrets get NAME --text)"`. If the user
-declines, carry on without it or explain what is blocked.
-
-## Webhook automations
-
-To run an agent whenever another service does something (GitHub, Stripe,
-Linear, Sentry, a deploy hook), read the **ade-webhooks** skill. The short
-version: `ade automations webhook create --preset github --filter
-body.action=opened --in-this-chat --text` makes the URL and the rule;
-`ade secrets request <NAME> --reason "…"` collects the signing secret without
-it ever entering chat; `ade automations webhook deliveries <wh-id> --text`
-shows what arrived and why it ran or was skipped.
-
-## Socket mode
-
-Use `--socket` when the CLI and ADE desktop drawer must share live state. This matters for App Control, Apple devices / Preview Lab, browser tabs, terminal logs, context selection, and proof drawer updates. The **ade-app-control**, **ade-apple**, and **ade-browser** skills all assume it. `ade-ios-simulator` still resolves and points at **ade-apple**.
-
-### Owning a drawer surface
-
-ADE injects `ADE_LANE_ID` and `ADE_CHAT_SESSION_ID` into every agent it launches, and the drawer services (App Control, Apple device, browser) carry them so the Work tools pane attributes what you drive to your lane rather than to the visible chat. When you *attach to something already running* instead of starting it yourself, run that surface's `claim` subcommand first — `ade --socket app-control claim`, `ade --socket apple claim`, `ade --socket browser claim` — or Work will keep showing the previous owner.
-
-### Showing a surface to the user
-
-`ade ui show apple | floating-apple | browser | proof` asks the desktop window that has your chat in front to open that surface (`ade apple show` is the Apple alias). It prints `shown`, `held` (a window has the project but the user cannot see your chat yet — another chat is in front or the window is hidden; it opens when the user goes there) or `no_desktop` (exit 1, nothing was shown — tell the user rather than claiming it opened). A shell with no `ADE_CHAT_SESSION_ID` (an OpenCode agent shell, for one) cannot use it; ask the user to open the surface.
-
-## Runtime daemon vs. desktop bridge
-
-Most domains (`lane`, `git`, `chat`, `app_control`, `ios_simulator`, etc.) run **inside the runtime daemon** at `~/.ade/sock/ade.sock` and work whether or not the desktop is open.
-
-A small set of domains require the **desktop bridge** because the underlying service needs real Electron APIs. Today that is just `built_in_browser`; the **ade-browser** skill documents that hop, its socket path, and the exact failure text when no desktop is running. A bridge-backed domain with no desktop also surfaces as `Domain unavailable` — report the blocker and continue with the rest of the control plane, which is unaffected.
+Browser, App Control, Apple device and proof commands talk to the running ADE
+app. They find it on their own; you do not need `--socket`. When ADE is not
+running they fail with a clear error instead of acting on a copy.
+To show a surface to the user: `ade ui show browser|apple|proof`. To take over
+a surface you did not start: that surface's `claim` command. Detail:
+`references/app-surfaces.md`.
 
 ## Linear issues attached to your session
 
@@ -105,46 +70,44 @@ ade lanes link-linear-issue <lane> --linear-issue-json '{...}'
 
 - `ade sync web [--open]` — print + copy the web-client pairing link and code (pair a browser to this machine).
 
-Start work from an issue:
+## Starting chats
+
+Do the user's work in this chat and this lane. Start another chat or lane only
+when the user asks, or when they ask another model to do part of the work
+(below). `ade new chat` is the launch command:
 
 ```
-ade new chat --mode chat --lane <lane> --provider codex --model <m> --type subagent --prompt "Work this issue"
-ade lanes create --name ENG-431 --issue-id ENG-431 --start-chat --provider codex --model <m> --type subagent
-ade chat create --from-linear-issue ENG-431 --type subagent # compatibility path: chat with the issue attached + kickoff
+ade new chat --mode chat --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --prompt "Fix the issue"
+ade new chat --mode chat --lane auto --lane-name fix-issue --prompt "Fix the issue"     # only when the user asks for a new lane
+ade lanes create --name ENG-431 --issue-id ENG-431 --start-chat --provider codex --model <m>   # a lane for an issue, when asked
 ```
 
-## Chat vs. CLI sessions
-
-Use `ade new chat` as the canonical launch command. It mirrors the desktop New
-Chat mode toggle:
-
-```
-ade new chat --mode chat --lane <lane> --provider codex --model openai/gpt-5.6-sol --type subagent --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the issue"
-ade new chat --mode cli --lane <lane> --provider codex --model openai/gpt-5.6-sol --type subagent --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the issue"
-ade new chat --mode chat --lane auto --lane-name fix-issue --type subagent --prompt "Fix the issue"
-```
-
-`--mode chat` creates a persistent ADE Work chat. `--mode cli` starts a tracked
-provider CLI terminal. Both accept lane, provider, model, reasoning effort,
-permission mode, fast/no-fast, and prompt flags. Use `--lane auto` or
-`--auto-create-lane` when the desktop UI would use the auto-create lane row.
+Always use `--mode chat`. `--mode cli` starts the provider's own CLI in a
+terminal instead. ADE cannot tell reliably when a terminal finishes a task, so
+it is told it is your subagent and messages you its reports itself. Use it
+only when the user asks for a terminal.
 
 ### Spawning agents
 
-`ade new chat --mode chat --provider <p> --type <subagent|peer> --prompt "..."`
-spawns a tracked ADE agent and automatically links it to the current chat
-through `ADE_CHAT_SESSION_ID`. The type is required for every parented agent
-spawn; omitting it is a hard error whose message includes the decision rule.
-There is no silent `none` type.
+When the user asks you to have another model or agent do work, start a
+subagent. Do this unless they ask for a separate chat:
 
-The type controls what happens to the parent when the child finishes: a
-`subagent` turn wakes or steers the parent, a `peer` turn only leaves a quiet
-completion note. `--no-parent` creates an unparented top-level session that
-neither nests under you nor wakes you. ADE still records it as launched by
-you: once it finishes, it stays out of Focus only while you are busy in the
-same lane, and only if it is not asking for anything. A helper that needs
-input, or one in another lane, stays visible, so `--no-parent` never hides
-work. Use `--type peer` for a fire-and-forget helper you want linked.
+```
+ade new chat --mode chat --provider <p> --model <m> --prompt "<task>"
+```
+
+From an agent this is your subagent. It runs in your lane, under your chat,
+and reports back after every turn it finishes: ADE steers you if you are busy
+and wakes you if you are idle. Two opt-outs, used only when the user asks:
+
+- `--type peer`: linked to you, leaves only a quiet note when it finishes.
+- `--no-parent`: a separate top-level chat that does not report back.
+
+ADE is a mesh. You can read, message, interrupt, or stop any chat, whoever
+started it, but act on a chat that is not yours only when the user asks.
+Stop a chat with `ade chat interrupt <session>`. A chat with no parent can be
+made your subagent with `ade chat set-parent <session> --parent
+$ADE_CHAT_SESSION_ID`.
 
 For persistent Work chats, a subagent turn reports back with its child turn id
 and latest assistant summary whenever the parent still owns the child's
@@ -159,18 +122,12 @@ still exists retries and then becomes one visible warning in the child. Every
 child receives `ADE_PARENT_CHAT_SESSION_ID` and direct-report guidance while
 that parent is reachable.
 
-Tracked provider CLI sessions also require `subagent` or `peer` when parented
-and receive the same lineage environment. The parent thread shows a CLI child
-as a subagent card, but the card closes (and a `subagent` wakes the parent with
-the CLI's last message) only when the CLI process exits. An interactive CLI
-that finishes its task and stays open reports nothing until it is closed.
-Poll CLI children with `ade chat status <id>` (running / blocked / waiting / idle;
-`waiting` means the turn ended but background agents or shells it started still
-run and report back, so it is not done yet; it exits 0 like running), find
-them with `ade chat list` (archived ones need `--include-archived`), and read their last message plus terminal tail with
-`ade chat read <id>` (`ade terminal read <id>` for the full output). **Default
-to `--mode chat` for a subagent that must report back**: a chat child reports
-after every turn it finishes.
+A `--mode cli` child sends its own report with `ade chat message` when it
+finishes a task, and ADE adds one more when its process exits. Check any child
+with `ade chat status <id>` (running / blocked / waiting / idle; `waiting`
+means its turn ended but work it started still runs, so it is not done yet) and read it with `ade chat read <id>` (`ade terminal
+read <id>` for the full output). To give it a new instruction, type into it:
+`ade terminal write --terminal <id> --data "<text>\n"`.
 
 **Which lane a child goes in.** An ADE child chat is a subagent that can run
 another provider, so it works where a native subagent would: in your lane,
@@ -211,143 +168,74 @@ response ceiling; a single oversized entry is visibly clipped and the response
 sets `truncated`. This machine-wide route is read-only; it does not broaden
 cross-project message or mutation routing.
 
-Within the active project, use `ade chat show <session> --text` before messaging
-a chat you do not own:
+### Messaging and stopping other chats
 
-- If you just need to hand context/directive/status to another chat, prefer
-  `ade chat message <session> --kind auto --text ...`. ADE inspects the target:
-  active turns are steered, idle chats are woken with a new turn, and the result
-  reports the route (`sendMessage`, `steer`, or `interrupt-replace`) plus whether
-  a steer was queued.
-- If `status` is `active` and it is not waiting for user input, use
-  `ade chat steer <session> --text ...`. This routes through the provider's
-  active-turn path: Codex receives `turn/steer`, Claude stages a steer message,
-  and Cursor/Droid/OpenCode queue the message for the next safe boundary.
-- If the chat is idle/dormant, use `ade chat send <session> --text ...` to start
-  the next turn. The CLI also checks the session summary and will steer instead
-  of sending when the target is already active, but prefer the explicit verb
-  when your intent is to steer.
-- If you need to wait for a subagent before reading final output, use
-  `ade chat wait <session> --for idle --timeout-ms <ms>` (also supports
-  `active`, `awaiting-input`, and `terminal`).
-- To wait on several chats without holding your turn open, arm a wait and end
-  your turn: `ade chat wait <id> <id> --async [--any] [--for idle]` — ADE wakes
-  you once all (or any) of them get there, even across a restart. List with
-  `ade chat waits`, cancel with `ade chat wait --cancel <waitId>`.
-- To start one chat after another finishes, `ade chat send <B> --after <A>
-  "<prompt>"` sends B the prompt once A is idle.
-- To be woken when your own background job ends, `ade chat wait --background
-  [--job <id>]`, then end your turn (Claude and OpenCode already wake you on
-  their own; this matters for Codex).
-- **A child blocked on a question.** While a chat waits on a question or an
-  approval, `ade chat message` / `ade chat send` to it are refused ("Answer or
-  decline the pending request…", error -32011). When your `--type subagent`
-  child asks a question, ADE also sends it to you as a message with the
-  options and the exact command. See what it waits on with
-  `ade chat pending <session> --text`, then answer:
-  `ade chat respond <session> --option 2` (number, value or label; repeat for
-  multi-select), `--text "<answer>"` for a free answer or a note on the pick,
-  `--answer 1=<value> --answer 2=<value>` for several questions, and
-  `--approve` / `--approve-session` / `--deny --text "<why>"` for an approval.
-  Add `--item <id>` when more than one input is open. Questions that need the
-  person (money, credentials, a product call) are theirs: ask them, or leave
-  the card for them. Approvals and secret questions are never relayed to you.
-  Approvals are the person's to answer unless you were told you may approve.
-- When a subagent waits on a card only the person can answer (a real-input
-  lease, a consent, a secret), you get one message that says so, also from
-  another project or machine. `ade chat status` shows the same as `only the
-  user can answer this`. That chat is waiting, not stuck: do not start a
-  second chat for the same work or on the same lane. Tell the person, then
-  carry on with other work.
-- A peer (`--type peer`) never wakes you. If you wait on one, `ade chat wait`
-  stops with `waiting_on_user` (exit 1) when it waits on such a card, and an
-  `--async` wait wakes you once to say so and stays armed.
-- `ade chat send <B> --after <A>` also tells you once when A waits on such a
-  card: the queued prompt has not been sent yet. It goes when the person
-  answers and A moves on.
-- **Long or multi-line text goes through a file or stdin, not an argument.**
-  `ade chat create ... --prompt-file -` and `ade chat message|send|steer|side
-  <session> --text-file -` read stdin (or a path instead of `-`). The file is
-  read on this machine, so this works with `--machine` too:
+Any chat, whoever started it. Act on a chat you did not start only when the
+user asks.
+
+- **Send:** `ade chat message <session> --text "..."`. ADE picks the route: an
+  active chat is steered, an idle one gets a new turn. This is the only send
+  verb you need.
+- **Stop:** `ade chat interrupt <session>`. To redirect, stop it, then
+  `ade chat message` the new instruction.
+- **Long or multi-line text** goes through `--text-file -` (stdin) or a path,
+  never an argument. A long first prompt for a new chat is `--prompt-file -`:
 
   ```bash
-  ade chat message "$ADE_PARENT_CHAT_SESSION_ID" --kind auto --text-file - <<'REPORT_END'
+  ade chat message "$ADE_PARENT_CHAT_SESSION_ID" --text-file - <<'REPORT_END'
   ...the report...
   REPORT_END
   ```
 
-  On Windows, never pass multi-line text to `ade.cmd`: it runs through
-  cmd.exe, which cuts the command at the first line break, so the other agent
-  gets only the first line (the CLI then prints a note on stderr). In
-  PowerShell, write the text to a file (`$f = New-TemporaryFile;
-  Set-Content -LiteralPath $f -Value $text -Encoding utf8`) and pass
-  `--text-file $f`, or call `& $env:ADE_CLI_PATH`, which is a real `.exe` and
-  keeps every line. In Git Bash, call `ade` (not `ade.cmd`) and use a here-doc
-  as above.
-- If you need to stop or redirect a running chat, use
-  `ade chat message <session> --kind interrupt-replace --text ...` or, when
-  you need manual control, `ade chat interrupt <session>` first, then
-  `ade chat send ...` with the new instruction. Do not send a second normal turn
-  into an active chat and hope the provider interprets it as steering.
-- When the user asks you to restart or refresh your session (to pick up new
-  skills, plugins, MCP servers or project instructions), run
-  `ade chat restart`. It restarts your own chat after this turn ends; the
-  conversation is kept. Finish your reply in the same turn: the next message
-  starts the fresh process. Background jobs you started (`run_in_background`,
-  background subagents) stop with the old process, so wait for them or tell
-  the user first. Only restart when the user asks.
+  On Windows, never pass multi-line text to `ade.cmd` (cmd.exe cuts it at the
+  first line break). In PowerShell, write the text to a file and pass
+  `--text-file $f`, or call `& $env:ADE_CLI_PATH`. In Git Bash, call `ade`
+  with a here-doc.
+- **A chat waiting on a question or approval** refuses messages (error
+  -32011). When your subagent asks a question, ADE forwards it to you with the
+  options. See it with `ade chat pending <session> --text`, then answer with
+  `ade chat respond <session> --option 2` (or `--text "<answer>"`;
+  `--answer 1=<v> --answer 2=<v>` for several; `--item <id>` when more than
+  one is open). Questions that need the person (money, credentials, a product
+  call) and every approval are theirs: tell them, and do not start a second
+  chat for the same work.
+- **Restart:** only when the user asks (to pick up new skills, plugins, MCP
+  servers or instructions), run `ade chat restart`. It restarts your chat
+  after this turn; finish your reply first.
 
-### Checking whether delegated / backgrounded work finished
+### Waiting for work to finish
 
-Prefer **harness-tracked** delegation and wait on the tracked handle — do not
-background a raw CLI and then guess at its state:
+Never poll and never block on a long wait. Match the thing you wait on:
 
-#### Native subagents vs ADE child chats
+| Waiting on | Do this, then end your turn or keep working |
+| --- | --- |
+| A subagent chat | Nothing. Its report wakes you. |
+| A PR (CI, reviews) | `ade prs watch <pr>` |
+| A dev server, build or log | `ade terminal watch <terminal-id> [--match "ready"]` |
+| A `--mode cli` child or a peer | `ade chat wait <id> --async [--for idle]` |
+| Anything else, later | `ade chat scheduled-work create --in 20m --prompt "<what to check>"` (see Scheduled work) |
 
-Use the provider's native subagent tool first when the current chat exposes one
-and the result belongs in the same provider SDK thread. This is especially
-important for Claude: a Claude chat should use its native `Agent`/`Task` tool
-(and its native `model` override for another Anthropic-family model) instead of
-creating a second ADE chat in the same lane with `--type subagent` merely to
-run Opus, Sonnet, or another Claude model.
+Claude's own `ScheduleWakeup`, `CronCreate` and `/loop` are mirrored into the
+same scheduler, so in a Claude chat they are equivalent.
 
-Use an ADE child chat when the work needs an independent durable transcript,
-its own wake/schedule, cross-provider execution, separate permissions, or a
-user-visible tracked lifecycle. Do not treat `--type subagent` as the generic
-replacement for a provider-native child; it adds a separate ADE session and
-should be intentional.
+#### Claude models in a Claude chat
 
-- **ADE Work-chat subagents:** spawn with `--type subagent`; every completed
-  turn wakes or steers the parent while the parent owns the mission. Read the
-  bounded transcript after that signal when you need more detail. You never poll
-  a transcript in a loop.
-- **Tracked provider CLI subagents:** wait with `ade chat wait <session> --for
-  idle|terminal --timeout-ms <ms>` or require an explicit direct report through
-  `$ADE_PARENT_CHAT_SESSION_ID`.
-- **A background provider CLI (e.g. `codex exec`):** run it detached with its own
-  log and stdin closed, capturing the PID immediately, e.g.
-  `codex exec "…" </dev/null >"$LOG" 2>&1 & CODEX_PID=$!` (closing stdin is
-  required — without it `codex` blocks forever on "Reading additional input from
-  stdin…"). The authoritative completion signal is the waited PID: run
-  `wait "$CODEX_PID"` and read its exit status as the outcome. Log end-of-run
-  markers, a new session file under `~/.codex/sessions/<date>/`, and `pgrep` are
-  supporting evidence only — not a deterministic done signal. Do keep the
-  session-file existence check as a liveness diagnostic for wedge detection: no
-  session file after ~2 min means the process wedged (kill and relaunch). Never
-  check completion with a bare `pgrep <name>` — it matches your own shell and
-  sibling processes (the self-match trap); if you must use `pgrep` at all, match
-  the full command line and exclude yourself (`pgrep -f "codex exec" | grep -v $$`),
-  never the bare program name.
+In a Claude chat, run another Claude model (Opus, Sonnet, Haiku) with the
+native `Agent` tool and its `model` override. It is a subagent in the same
+thread. Use an ADE subagent chat for a model from another provider.
 
-### Session lifecycle: snooze, wake (settling is not yours)
+A raw background CLI (`codex exec` in a shell) is not tracked by ADE. Prefer
+an ADE subagent chat. If you must, close its stdin (`</dev/null`), capture the
+PID, and `wait "$PID"` for its exit status; never use a bare `pgrep`, which
+matches your own shell.
+
+### Finishing: settling is not yours
 
 **You cannot settle or unsettle a session.** `ade chat settle`, `ade chat unsettle`,
 `ade session settle`, and `ade session unsettle` were removed: whether work is
 actually finished is a subjective judgment, and a chat that settles itself
 disappears from the user's active list on your say-so. A row leaves the active
-list only when the user settles it in ADE, or when its PR merges and the
-deterministic `autoSettleLaneSessionsOnPrMerge` policy files the lane's
-sessions.
+list only when the user settles it, or when its PR merges.
 
 What to do instead when you finish: say so in your final message, and use
 `ade chat note "<one-line status>"` to leave a durable status line on the Work
@@ -371,16 +259,15 @@ ade lanes rename <lane> --name "Better name"
 They are two separate signals on the row the user is looking at:
 
 - **`ade chat note` sets the row's status line.** It shows a durable one-line
-  summary of the current state; it does not change the row's phase. Length
-  guidance and the hard display bound live in
-  `apps/desktop/src/shared/sessionStatusNote.ts` (a note past that bound is
-  truncated with an ellipsis, so put the decisive state first).
+  summary of the current state; it does not change the row's phase. Keep it to about six words with the decisive state first; long notes are cut off.
   Good: `CI green; awaiting Codex review`
   Bad: `Working`, `Still looking`, `Blocked`, or `Done`.
 - **`ade chat ask` raises the row's hand**, moving it to **Needs you**. Because
   a note alone never changes the phase, an idle row with only a note can read as
   **Done** — whenever your reply asks the user a question or for a decision,
   call `note` for the context and then `ask` for the exact question.
+- **Subagents do not ask the user.** Put the question in your final reply; it
+  reaches your parent, which asks the user if it cannot answer.
 - **Ask even while background work runs.** A chat whose subagents or monitors
   are still running reads as **Working**, so a question at the end of your turn
   is invisible unless you `ask`. "Ship this, or keep building?" and "Want me to
@@ -400,7 +287,6 @@ They are two separate signals on the row the user is looking at:
   agent-raised ask — never one the user raised, never a provider question card.
   When you answered a subagent's question yourself, take its hand down too:
   `ade chat ask --clear --session <subagent>` (only chats you started).
-  Snoozing it does not help: a snooze gives way to a raised hand.
   A message from another agent is not a user answer, so it does not clear the
   hand on its own.
 - **`ade notify --title "<t>" [--body "<b>"]` tells the user something they
@@ -415,262 +301,51 @@ They are two separate signals on the row the user is looking at:
   the command exits non-zero and says when to try again. It is not a question:
   if you need an answer, `ask`.
 
-#### Activity detail on the card
+#### The Work board
 
-ADE derives the parent state automatically, and for ADE chats it also detects
-the activity detail (Exploring, Implementing, Testing, Reviewing, Shipping,
-Monitoring) from your tool calls, so you do not need to report it. Some
-provider adapters also surface structured activity, such as Plan mode or a
-background monitor. ADE offers agent-reported activity only when the current
-provider can invoke the session's ADE CLI; use it to correct or refine the
-detected state (Debugging, which looks like testing to the detector). When available, session-specific guidance gives the exact
-command and allowed values. For tracked terminals, `ade chat activity` targets
-`ADE_ACTIVITY_SESSION_ID`, while other ADE commands continue to use the owning
-chat in `ADE_CHAT_SESSION_ID`. Use that guidance to report or clear a detail;
-when it is absent, do not try to set one.
+ADE puts your row in a column (Needs you, Working, Waiting, Done) from what
+you do; there is no command to move it, so never claim one. Keep the inputs
+true: a current `note`, and `ask` when you need the user. ADE detects your
+activity label (Implementing, Testing, …) by itself.
 
-An activity report refines a Working card and never moves it to Needs you,
-Waiting, or Done. ADE clears it when a new user turn is accepted. Update it
-when the work changes; do not keep a stale label. Each card shows at most one
-status: Needs you has priority, otherwise one current activity detail occupies
-the label in place of generic Working.
+**When the user drags your card you get one message. Act on it:**
+- **Done → Working:** they reopened the work. Re-read the recent transcript
+  and continue.
+- **→ Needs you:** stop, summarise where you are in one short message, and
+  list exactly what you need from them.
 
-#### Board and status
+Snoozing a row is the user's call; do not snooze. Detail:
+`references/work-board.md`.
 
-The Work tab has a board view with four columns. Your row sits in exactly one of
-them. The host derives the column; you never write it directly.
+### Usage limits
 
-| Column | How the host derives it |
-| --- | --- |
-| **Needs you** | Your row has a raised hand or an unanswered approval card. |
-| **Working** | A turn is running and nothing waits on the user. |
-| **Waiting** | The row is snoozed, or its lane PR has CI pending or a review requested. |
-| **Done** | The session ended or the user settled it. |
-
-Two rules follow from that:
-
-- **The column is derived, so keep the inputs true.** Call `ade chat note` when
-  the state changes, and call `ade chat ask` whenever you need an answer or a
-  decision from the user, even while background work keeps running. A stale note makes a correct column read as the wrong work.
-- **Never claim a column.** There is no command that moves your own row. Do not
-  say a row is Done; end the turn and leave a note.
-
-**The user can drag your card.** A drag writes the status and then delivers one
-message to you. It arrives as a normal message with a board-move marker and a
-fixed sentence. React to it, do not ignore it:
-
-- **Done to Working.** The user reopened work you thought was finished. Re-read
-  the recent transcript, continue the work, and if the next step is genuinely
-  unclear, ask rather than guess.
-- **Any column to Needs you.** The user parked the work for their input. Stop
-  what you are doing, summarise where you are in one short message, and list
-  exactly what you need from them.
-- **Working to Done.** The user filed the row. No message reaches you.
-
-If your provider cannot take a message mid-turn, the board move still applies
-and the message arrives at the next turn boundary. Handle it then.
-
-Snooze is the lifecycle verb you *do* own. The typed family takes the session id
-as a positional, also accepts `--session`, and falls back to
-`ADE_CHAT_SESSION_ID` when you omit it.
-
-```bash
-ade session show <id> --text                 # lifecycle state incl. wake reason
-ade session snooze <id> --for 1h             # also 30m, 4h, 1d (cap 30d)
-ade session snooze <id> --until <iso>        # mutually exclusive with --for
-ade session snooze <id> --until-asked        # no deadline; only a hand-raise returns it
-ade session wake <id> [--reason <reason>]
-ade session clear-woke <id>
-```
-
-Semantics that hold on every surface:
-
-- **Snooze is a visibility overlay, not a lifecycle state.** It never changes a
-  session's canonical phase; it only files the row in a quiet tier. Timer expiry
-  is derived by comparing `snoozedUntil` to now — nothing schedules a wakeup.
-  This is why snooze is safe for you and settling is not: snooze quiets a row
-  you are waiting on without claiming the work is done.
-- **A snoozed session hand-raises early** when it needs approval or input, when
-  it hits an error *newer than* the snooze, or when a running turn completes.
-  The row then carries a woke marker plus the reason (`needs approval`,
-  `errored`, `turn finished`, `snooze ended`).
-- **Nothing derives a settle.** A clean process exit means the CLI ended, not
-  that the work is done — such a row is `ended`, never `settled`.
-
-Generic action-domain equivalents you can call: `session.snoozeSession`,
-`session.snoozeSessions`, `session.wakeSession`, `session.wakeSessions`,
-`session.clearWokeMarker`. The settle writers (`session.settleSession`,
-`session.unsettleSession`, `session.settleSessions`,
-`session.unsettleSessions`, `session.setSettleOverride`) are CTO-only and will
-refuse your calls.
-
-### Usage limits: waiting out a reset
-
-When a provider rejects a turn for a usage limit, ADE parks the chat and re-sends
-a `continue` prompt on its own once the published reset passes. Nothing is lost —
-subagents restart with the resumed turn — so the default answer is to wait.
-
-`ade chat status <session> --text` prints a `resume` line whenever a limit is
-live, next to `tool` / `queued` / `ask`:
-
-```
-  resume     resumes 2026-09-07T23:31:30Z (in 3 min) · usage limit · attempts 1/2
-  resume     resuming now · usage limit · attempts 1/2
-  resume     paused after 2 tries · turn auto-resume back on to try at <reset>
-  resume     won't auto-resume (opted out)
-  resume     usage limit · no reset time
-```
-
-`--json` carries the raw `usageLimitResume` object under `summary`. The line is
-absent when no limit is live, and the exit codes are unchanged (0 running,
-1 idle, 2 blocked).
-
-```bash
-ade chat resume-now <session> --text         # alias: ade chat resume
-```
-
-`resume-now` cancels the armed row, clears the paused streak, and sends the same
-`continue` prompt immediately as an ordinary turn: `Resume sent · turn <turnId>`.
-It exits 1 with a one-line reason when the host reports no live usage limit.
-Use it only when you know the limit has actually lifted early — calling it while
-the limit is still live burns the attempt and re-parks the chat. Action:
-`chat.resumeUsageLimitNow`. To stop auto-resuming altogether, or to turn it back
-on after a pause, use `chat.updateSession` with `autoContinueAtUsageLimit`.
-
-### Usage limits: when the user asks about them
-
-Don't track usage limits on your own. Read them only when the user asks you to:
-"work until 5% is left", "start it on the account with the most room",
-"split this across my machines", "how much Claude do I have left?".
-
-```bash
-ade usage limits --text                       # this machine, every account
-ade usage limits --provider claude --text     # one provider
-ade usage limits --machine "Mac mini" --text  # another machine (must be online)
-ade usage limits --all-machines --text        # every machine in one table
-ade chat status "$ADE_CHAT_SESSION_ID" --text # `account` row: the account you run on
-```
-
-Each row is one window of one account: `account` is the id
-`ade chat create --instance` takes (Claude and Codex, the providers with several
-logins), then `left`, `resets`, and `pace` (`lasts to reset` or
-`runs out in 3h`). `(this chat)` marks your own account and `(next chat)` the
-account smart balance would start a new chat on; with smart balance on, a chat
-started without `--instance` goes there by itself. A `note` says when a row can't
-be trusted or used: `signed out` (can't take a chat), `login expired` (renews on
-its next chat), a failed check showing the last numbers, or a reading more than
-10 minutes old. `--json` gives the same report with ISO times and minutes.
-
-The numbers are the machine's cached poll (about every 1–5 minutes), so read them
-between steps rather than in a loop. Common requests:
-
-- **Work until X% is left, then continue after the reset.** Check between steps.
-  At X%, finish the step you are in, then
-  `ade chat scheduled-work create --at <the window's reset time> --prompt "Limits reset; continue <task>"`
-  and stop. Reset times come from `--json` (`windows[].resetsAt`).
-- **Start a chat on the account with the most room.**
-  `ade chat create --lane <lane> --provider claude --instance <account> --prompt "…"`.
-- **Use another machine's accounts.** Read them with `--machine <name>`, then
-  start the chat there: `ade chat create --machine <name> --lane <lane there> --instance <account> …`.
-  An offline machine answers with an error and can't take chats either.
-
-The same login on two machines is one quota; `--all-machines` says so under the
-table. Providers without a limits source (Droid, Qwen, Pi, Devin, Antigravity,
-generic ACP) are not listed.
-
-### Lane branch drift
-
-A lane's worktree HEAD can drift from the branch ADE recorded (someone runs
-`git checkout` inside it). While drifted, PR matching is paused, because a PR
-created from that lane would target the wrong branch.
-
-```bash
-ade lane drift [--lane <id>] --text
-ade lane drift resolve --switch-back            # restore the recorded branch
-ade lane drift resolve --keep-head              # adopt the live branch instead
-```
-
-`--switch-back` refuses on a dirty worktree rather than risking work. `--keep-head`
-re-points the lane's branch and renames the lane only when its name was literally
-advertising the old branch. Actions: `lane.getBranchDrift`, `lane.resolveBranchDrift`.
+When a provider hits a usage limit, ADE parks the chat and resumes it on its
+own when the limit resets. Nothing is lost, so the default is to wait; do not
+start another chat to work around it. When the user asks to keep going on
+another account, move this same chat there: `ade chat continue-on-account
+<session>` (picks an account with room; exits 1 when none has any), or
+`ade chat switch-account <session> --account <email>` to name one.
+`ade chat status <session> --text` shows a `resume` line while a limit is live. To resume early, switch
+accounts, or answer the user's questions about limits, read
+`references/usage-limits.md`.
 
 ### Scheduled work
 
-To make a message arrive in a chat later as if the user sent it, use
-`ade drafts` (see "Composer drafts" below), not scheduled work. Scheduled work
-is for waking *yourself* to do work later.
-
-Persistent ADE chats and tracked provider CLI sessions can schedule their own
-durable wakeups. Use the typed `ade chat scheduled-work create|list|cancel`
-commands or the generic `chat.createScheduledWork`, `chat.listScheduledWork`,
-and `chat.cancelScheduledWork` actions. Pause or resume that session with
-`ade chat scheduled-work pause|resume <session>` or
-`chat.setScheduledWorkPaused`. `ade chat scheduled-work status <session>` (or
-`chat.getScheduledWorkState`) shows pause state, the next wake, and active
-jobs for either a chat or tracked provider CLI session.
-
-Omitting the target in an ADE-bound agent defaults create/list to
-`ADE_CHAT_SESSION_ID`; an agent cannot schedule another session, and an
-ordinary untracked shell fails instead of creating orphaned work. Chat delivery
-starts a new turn at the next safe turn boundary. Tracked provider CLI delivery
-waits for the provider's visible composer boundary, or resumes the same ended
-CLI session before sending the prompt. Both survive brain restarts, and
-recurring schedules expire seven days after creation. Users can pause chat jobs
-in Chat Info or all scheduled work in Settings; CLI-owned jobs remain
-manageable through these commands and the Settings recovery list.
-
-Prefer a relative one-shot whenever the intent is "wake me in N minutes":
-`--in 12m` in the typed CLI or `delaySeconds: 720` in the action. This avoids
-timezone conversion entirely. Absolute one-shots use `--at` / `runAt` and must
-include `Z` or an explicit UTC offset. Five-field cron is interpreted in the
-ADE brain machine's local timezone, not UTC unless that machine itself uses UTC.
-The create result prints the computed next run in both local and ISO form;
-verify that time before ending the turn.
+To wake yourself later, `ade chat scheduled-work create`:
 
 ```
-ade chat scheduled-work create --in 12m --prompt "Check CI and report" --text
-ade actions run chat.createScheduledWork --input-json '{"delaySeconds":720,"prompt":"Check CI and report"}' --text
-ade chat scheduled-work create --at "2026-07-23T01:05:00-04:00" --prompt "Check CI and report" --text
-ade chat scheduled-work create --cron "9,29,49 * * * *" --prompt "Check CI and report" --text
-ade chat scheduled-work list --all --text
-ade chat scheduled-work cancel <session> <id> --text   # session first; inside your own chat, 'cancel <id>' is enough
-ade chat scheduled-work pause "$ADE_CHAT_SESSION_ID" --text
+ade chat scheduled-work create --in 20m --prompt "Check CI and report" --text
+ade chat scheduled-work create --cron "0 9 * * *" --prompt "Daily check" --text
+ade chat scheduled-work list --text
+ade chat scheduled-work cancel <id> --text
 ```
 
-Compatibility commands still exist, but do not teach them as the first choice:
+Prefer `--in`; it needs no timezone math. Cron runs in the ADE machine's local
+time. Check the next run time the command prints. In a Claude chat,
+`ScheduleWakeup`, `CronCreate` and `/loop` feed the same scheduler.
 
-```
-ade chat create --lane <lane> --provider codex --model <m> --type subagent --prompt "Fix" # persistent Work chat
-ade shell start-cli codex --lane <lane> --model <m> --prompt "Fix"             # tracked provider CLI terminal
-```
-
-Common reasoning tiers include
-`minimal`, `low`, `medium`, `high`, `xhigh`, `max`, and `ultracode`; confirm
-model-specific support with `ade actions run chat.modelCatalog --json`.
-
-Composer drafts and their scheduled sends are a separate surface: `ade drafts
-list | create | schedule | update | delete | now | show` (actions `chat.*Draft`)
-saves unsent text, arms a send for a fire time, or manages an armed one.
-
-Pick deliberately between the two. A draft send is *the user's message arriving
-later*: it lands as a real user turn in the target chat, shows in the user's
-Drafts list where they can read, edit, retime or cancel it, and only the
-machine it names delivers it. `ade drafts schedule <id> --in 2h --target
-<chatId>` (or `--new-chat --lane <laneId> --provider <p> --model <m>`); the
-target is always explicit, and `--in` avoids timezone arithmetic. A scheduled
-wake (`ade chat scheduled-work create`, or Claude's `ScheduleWakeup` /
-`CronCreate` / `/loop`) is *you doing work later*: it is not a message from the
-user and does not appear in their drafts. Never paste secrets into an unsent
-draft, and remember that a send you arm is indistinguishable from one the user
-armed.
-
-In a Claude chat, the native `ScheduleWakeup`, `CronCreate` and `/loop` are
-mirrored into ADE's durable scheduler. `durable: true` also persists Claude's
-own copy, but ADE's delivery does not depend on it. Due jobs start a new turn at
-the next turn boundary even if the chat was busy. The SDK's `CronList` is
-advisory; ADE state wins. `CronCreate` always creates a new job, so replace one
-with `CronList` + `CronDelete` first. Users pause schedules in Chat Info or
-project-wide in Settings.
+To make a message arrive later *as the user* (it shows in their Drafts), use
+`ade drafts` instead. Detail on both: `references/scheduled-work.md`.
 
 ### MCP servers
 
@@ -705,126 +380,25 @@ agent, under that machine's own policy.
 ```bash
 ade machines list --projects --text              # who is online, what projects each has
 ade chat list --all-machines --text              # every machine in one table
-ade chat create --machine "Mac mini" --lane <lane there> --type subagent \
-  --provider claude --model anthropic/claude-opus-5 --prompt "…"
-ade chat launch "…" --machine "Mac mini"          # in a new lane there
+ade chat create --machine "Mac mini" --lane <lane there> \
+  --provider claude --model anthropic/claude-opus-5 --prompt "…"   # your subagent there
 ade chat read <id> --machine "Mac mini" --text
-ade chat wait <id> --machine "Mac mini" --for idle --timeout-ms 900000
+ade shell start --machine "Windows PC" --wait -- npm test   # one command there, in this chat's work copy
 ```
 
 - The project there defaults to this repository's checkout; pick another with
   `--project <name|path|id>`, add `--clone` to set a missing GitHub repo up,
   or use `--personal` for projectless chats. Your own lane is never sent: get a
   lane id with `ade lanes list --machine …`.
-- A `--type subagent` child there wakes you when it finishes, like a local one,
+- A subagent there reports back to you when it finishes, like a local one,
   with "· on <machine>" and the `ade chat read … --machine` command.
 - `--machine "a,b"` on `chat create` starts one child per machine.
 - An offline machine fails at once and nothing is queued; retry later.
 - Ask the user before you use another machine, and say which one and why
   ("Your Windows PC is online. Run the Windows tests there?"). Do not spread
   work across machines on your own.
-
-### Running one command on another machine
-
-To run tests, a build, or a CLI signed in only there, keep this chat where it
-is and run the command there. It runs in this chat's **work copy** on that
-machine: a hidden worktree at your commit (not a lane), with your uncommitted
-changes applied. Nothing is installed for you; install deps there yourself
-when a command needs them, and they stay for the next run.
-
-```bash
-git push                                          # your commit must be on origin
-ade shell start --machine "Windows PC" --wait -- npm test   # streams output, exits with its code
-ade terminal list --machine "Windows PC" --text   # this chat's shells there
-ade shell clean --machine "Windows PC"            # delete the work copy when done
-```
-
-- The command uses that machine's shell (PowerShell on Windows).
-- The simulator works the same way: `ade apple launch --machine "Mac Studio"`
-  with no `--lane` builds this chat's work copy there and runs it on a free
-  simulator that machine already has (a new one only when none is free).
-  `--no-sync` builds the copy as it is; `--discard` throws away unpushed work there first.
-  `launch`, `install` and `test` sync the copy first; taps and screenshots use it as it is.
-- Git moves code between the machines. To keep work you did there, commit and
-  push from there (`ade shell start --machine … --no-sync -- git push origin HEAD:<branch>`),
-  then pull here. A sync refuses while the copy holds unpushed work; `--no-sync`
-  runs in the copy as it is, `--discard` throws that work away.
-- The copy goes by itself after a week unused, or when this chat is deleted or
-  archived; unpushed work there stays, except when the chat is deleted. A whole task with its own lane there is `ade chat create --machine`.
-
-### Moving this chat to another machine
-
-When the user says "continue this on the Mac mini" (or you need hardware
-another machine has), move the chat itself rather than starting a child:
-
-```bash
-ade chat handoff <session> --options --json        # where it can go, blockers and their fixes
-ade chat handoff <session> --machine "Mac mini" --model <model> \
-  --prompt "what to do first there" --when-turn-ends
-ade chat move --machine "Mac Studio" <session> [<session>…]
-ade chat move --machine "Mac Studio" --all          # every active Work chat on this brain
-ade chat move --status <batch-id>                    # progress for every lane and chat
-ade chat move --retry <batch-id>                     # resume remaining items in dependency order
-```
-
-- `--machine` here is the DESTINATION; the command runs on this machine.
-  Brief by default; `--fork` carries full history (same provider only).
-  Don't add `--machine` to `--cancel`/`--retry`/`--options`; it is refused.
-- Moving your own chat or a descendant you started needs no approval, at any
-  permission level. Moving another chat always needs the person's approval,
-  including when that chat is full-auto. The moved chat runs there at its own
-  permission level mapped to the target model's provider, never broader: any
-  `--permissions`/`--sandbox` you pass is dropped.
-- If the last move is `unknown` (its answer was lost), a new move is refused.
-  Tell the user to check the other machine; `--retry` resends it, `--cancel`
-  dismisses it. A retry is refused when the chat changed since it was sent.
-- From inside your own turn you need `--when-turn-ends`: the move starts when
-  your turn ends, and any new message from the user cancels it.
-- `--include-changes` brings uncommitted and unpushed work; otherwise push
-  first (`ade git push --lane <lane>`). `--clone` sets a missing repo up there.
-- For an unrelated single chat, the user approves your request from that
-  chat's banner. Say that you asked, and stop; do not retry while it waits. If
-  they deny it, don't ask again (a new request is refused for two minutes).
-- Your `--prompt` is the first message the chat gets there, so write it as the
-  next instruction to yourself.
-- `chat move` is a batch: selected chats expand to descendants by default, and
-  their lanes plus ancestor lanes arrive root first. Fork is the default;
-  `--brief` requests briefs, while a chat that cannot fork falls back to a
-  brief with the reason recorded in its arrival. Use `--no-descendants` to
-  select only the named chats, `--no-changes` to leave local changes behind,
-  `--interrupt` to stop active turns before moving, and `--note` for a note
-  every arrived chat receives. `--all` selects active Work chats in this
-  project on the current brain. Busy chats otherwise wait for their turn to
-  end. A lost answer or failed item can leave its dependents blocked; check
-  `--status`, then retry the batch after resolving the reported issue.
-  An agent batch that includes any chat outside its own subtree waits for one
-  approval on the caller's chat, with a card listing every chat in the batch.
-  Approve starts the whole batch; deny cancels it. Self/descendant-only agent
-  batches and a person's batch need no approval.
-- After the destination starts, the source chat cannot start turns or deliver
-  automatic work until the person chooses **Work here instead**. Its scheduled
-  work moves with it (the destination recreates it); anything the destination
-  did not take stays pending while the source is locked. A chat that continues
-  on another machine can't be moved again (`--all` and descendants skip it, a
-  named one is refused) until the person chooses **Work here instead**.
-
-## Archived lanes, chats, and shells
-
-Archiving hides an item; ADE never deletes anything on its own. Archived chats
-and shells are left out of `ade chat list`, `ade terminal list`, and `ade search`
-by default. Pass `--include-archived` to see them in a list. A known id still
-works: `ade chat read <id>`, `ade chat show <id>`, `ade terminal read <id>`.
-
-```bash
-ade archive list --text                       # everything archived, newest first
-ade archive list --kind chat --older-than 14 --text
-ade archive summary --text                    # counts per kind, what is 14+ days old
-```
-
-Restoring is for the CTO (`ade archive restore <kind>:<id>`). Deleting is the
-user's alone: agents and automations are refused. When old archived items pile
-up, tell the user and point them to Settings → Archive; do not try to delete
-them yourself.
+- Running a command there (tests on Windows) and moving this chat to another
+  machine ("continue this on the Mac mini"): `references/machines.md`.
 
 ## Fallback path
 

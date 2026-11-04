@@ -58,11 +58,10 @@ export const adeDeprecatedAgentSkillAliases: ReadonlySet<string> = new Set(["ade
 export const ADE_SESSION_STATUS_PROTOCOL_GUIDANCE = [
   "ADE control protocol for truthful Work status:",
   `- Use \`ade chat note "testing desktop auth fallback"\` for a durable one-line summary (aim for ${STATUS_NOTE_GUIDELINE_WORDS} words or fewer; notes truncate past ${MAX_STATUS_NOTE_CHARACTERS} characters).`,
-  '- Asking the user anything, even while background work runs: `ade chat ask "<the exact question>"`; a note alone can leave an idle row looking Done. Not for progress updates.',
+  '- Asking the user anything, even while background work runs: `ade chat ask "<the exact question>"`; a note alone can leave an idle row looking Done. Not for progress updates. A subagent puts its question in its report instead.',
   "- The next accepted user message clears the prior hand-raise; re-ask if still blocked.",
   '- Done: report it and leave `ade chat note "<delivered result>"`.',
   "- You cannot settle or unsettle a session; that is the user's call, or the automatic result of its PR merging.",
-  "- Waiting a while? `ade session snooze <id> --for <duration>` hides the row without claiming done; a hand-raise wakes it.",
   "- Lane and chat names are yours to keep accurate. When the work changes direction or moves to a new branch, rename without asking: `ade lanes rename`, `ade chat update --title`, or `ade chat generate-names`. A lane keeps its name when its branch changes.",
 ].join("\n");
 
@@ -231,19 +230,44 @@ export const ADE_CLI_AGENT_GUIDANCE = buildAdeCliAgentGuidance();
 export const ADE_CLI_SESSION_SCREEN_RULES = [
   "Screens and proof: every `ade` command works from this terminal.",
   "- The user's own screen, apps and windows are not yours to change. Never close, quit, hide or reset an app or window you did not open. Act on their real screen only when they ask.",
-  "- Pick the surface: check with a CLI, test or file first; a web page or localhost is `ade browser`; an Electron app's DOM is `ade app-control`; an iOS app is `ade apple`; only a desktop app none of those reach goes on this lane's own screen, `ade mac-desktop` (`ade screen` on Windows), and you stop it when you finish.",
+  "- Pick the surface: check with a CLI, test or file first; a web page or localhost is `ade browser`; an Electron app's DOM is `ade app-control`; an iOS app is `ade apple`; only a desktop app none of those reach goes on this lane's own screen, `ade screen`, and you stop it when you finish.",
   "- Do not click, type or capture with anything else (osascript, cliclick, screencapture, a browser you start yourself): those drive the user's real screen.",
   "- An ok result only means the input was sent. Observe before you report, and file proof with the surface's own `proof` or `record` command.",
 ].join("\n");
 
+/**
+ * What a provider CLI started by another chat is told about that chat. A
+ * terminal has no reliable turn end ADE can read, so unlike a chat subagent
+ * nothing reports for it: the CLI reports itself, by message, when it is done.
+ */
+export function buildCliSpawnReportGuidance(
+  lineage: { parentChatSessionId: string; spawnKind?: string | null } | null | undefined,
+): string | null {
+  const parent = lineage?.parentChatSessionId?.trim();
+  if (!parent) return null;
+  const send = `\`ade chat message ${parent} --text-file - <<'REPORT_END'\`, then the report, then \`REPORT_END\` (PowerShell: write the report to a file and pass \`--text-file <file>\`)`;
+  if (lineage?.spawnKind === "peer") {
+    return `ADE chat ${parent} started you as a peer: nobody waits on your result. If that chat needs your result, send it with ${send}.`;
+  }
+  return [
+    `You are a subagent of ADE chat ${parent}. That chat cannot see this terminal, so report to it yourself:`,
+    `- When you finish the task, send your report with ${send}. Say what you did, what you checked, and anything left open.`,
+    "- When you need a decision, put the question and your recommendation in a report and wait; do not ask the user. That chat asks them when it cannot decide.",
+    "- Send a report for each task you finish, not only when you exit.",
+  ].join("\n");
+}
+
 /** What a tracked provider CLI session is told: the bootstrap, then the screen rules. */
 export function buildAdeCliSessionGuidance(
   skillRoots: readonly string[] = getAdeAgentSkillRootsForPrompt(),
+  spawnLineage?: { parentChatSessionId: string; spawnKind?: string | null } | null,
 ): string {
+  const report = buildCliSpawnReportGuidance(spawnLineage);
   return [
     buildAdeCliAgentGuidance(skillRoots),
     "",
     ADE_CLI_SESSION_SCREEN_RULES,
+    ...(report ? ["", report] : []),
   ].join("\n");
 }
 
@@ -282,10 +306,9 @@ export function buildAdeBootstrapGuidance(
     "PRs: open with `ade prs create`, rewrite text with `ade prs body`; `gh` skips proof upload and the lane link.",
     "For computer use, read `ade-computer-use` first. `mcp__computer_use` drives the user's real screen: use it only on request; never substitute `@oai/sky` via `node_repl`.",
     "CLI ground truth: `ade help <command>` and `ade actions list --text`; prefer typed commands with `--text`. Settings questions: `ade settings find <words>`. Read only requested `ade secrets`, never print them, and clean up started processes.",
-    // The distinction agents get wrong: a wake is you doing work later, a
-    // draft send is the user's message arriving later. Naming both here keeps
-    // an agent from reaching for its own cron when the user asked for a send.
-    "`ade chat scheduled-work create` wakes *you* later to work (durably resumes bound chats and tracked provider CLIs); `ade drafts` sends a message later as a real user turn, shown in the user's Drafts.",
+    // One default per scenario: same chat and lane, subagents for other
+    // models, and one wake per thing waited on, so an agent never polls.
+    "Stay in this chat and lane unless asked. Another model works as your subagent (`ade new chat --mode chat`). Later: subagents report back; PR → `ade prs watch`; terminal → `ade terminal watch`; else `ade chat scheduled-work create`. `ade drafts` sends as the user.",
     ADE_SESSION_STATUS_PROTOCOL_GUIDANCE,
   ].join("\n");
 }

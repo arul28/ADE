@@ -2,12 +2,14 @@
 // Local (non-RPC) CLI command for available agent skills.
 //
 //   ade skill list [--text|--json]
-//   ade skill show <name> [--text|--json]
+//   ade skill show <name> [<file>] [--text|--json]
 //
 // This catalog works headless without the runtime daemon. ADE MCP calls hide
 // personal skills so a remote app sees only project and ADE-provided skills.
 // ---------------------------------------------------------------------------
 
+import fs from "node:fs";
+import path from "node:path";
 import {
   isRemoteMcpInvocation,
   listAgentSkills,
@@ -25,6 +27,7 @@ const HELP_SKILL = [
   "Usage:",
   "  ade skill list [--text|--json]        List available agent skills",
   "  ade skill show <name> [--text|--json] Show a skill's SKILL.md",
+  "  ade skill show <name> <file> [--text] Show another file in the skill, e.g. references/usage-limits.md",
   "",
   "  Lists project, user, and ADE skills without a runtime daemon. JSON output",
   "  is the default; pass --text for human-readable output.",
@@ -126,6 +129,28 @@ export function runSkillShow(args: string[]): SkillCliResult {
     throw new CliSkillUsageError(
       `Unknown skill: ${name}. Available skills: ${available}.`,
     );
+  }
+  const file = rest[1];
+  if (file) {
+    // A skill keeps rarely needed detail in files next to SKILL.md. Only
+    // Markdown inside the skill's own folder is readable here.
+    const skillDir = path.dirname(skill.entry.path);
+    const target = path.resolve(skillDir, file);
+    const relative = path.relative(skillDir, target);
+    if (!relative || relative.startsWith("..") || path.isAbsolute(relative) || !relative.endsWith(".md")) {
+      throw new CliSkillUsageError(`${file} is not a Markdown file inside the ${skill.entry.name} skill.`);
+    }
+    let text: string;
+    try {
+      text = fs.readFileSync(target, "utf8");
+    } catch {
+      throw new CliSkillUsageError(`The ${skill.entry.name} skill has no file ${relative}.`);
+    }
+    if (format === "text") return { output: `${text.replace(/\r?\n$/, "")}\n`, exitCode: 0 };
+    return {
+      output: `${JSON.stringify({ name: skill.entry.name, file: relative, content: text, path: target }, null, 2)}\n`,
+      exitCode: 0,
+    };
   }
   if (format === "text") {
     return { output: `${skill.body.replace(/\r?\n$/, "")}\n`, exitCode: 0 };

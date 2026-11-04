@@ -1343,7 +1343,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade machines list                             List machines from the ADE account directory
     $ ade machines show <name|key> --text           Read one machine's status, projects, lanes and recent chats
     $ ade machines connect <id|name>                Save an account machine on this install
-    $ ade new chat --mode chat|cli --no-parent --prompt "fix"   Start an independent ADE Work chat or tracked CLI session
+    $ ade new chat --mode chat|cli --prompt "fix"   Start an ADE Work chat or tracked CLI session (from an agent: a subagent)
     $ ade desktop                                   Launch the installed ADE desktop app
     $ ade screen start | observe | click | proof    Drive this lane's screen (Mac, Windows
                                                      or Linux Desktop)
@@ -1452,8 +1452,8 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade --socket browser open http://localhost:5173 --new-tab --text
     $ ade terminal read --chat-session <owner-session-id> --text
     $ ade terminal read --pty <pty-id> --text
-    $ ade new chat --mode chat --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --no-parent --prompt "Fix the tests"
-    $ ade new chat --mode cli --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --no-parent --prompt "Fix the tests"
+    $ ade new chat --mode chat --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
+    $ ade new chat --mode cli --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
 
   Generic ADE action JSON contract:
     Object-shaped call:
@@ -1510,7 +1510,7 @@ function commandHelpText(key: string): string | undefined {
 function helpCatalogTopic(key: string): string {
   if (key === "windows-desktop" || key === "windows-desk") return "screen";
   if (
-    process.platform === "win32"
+    (process.platform === "win32" || process.platform === "linux")
     && (key === "mac-desktop" || key === "mac-desk" || key === "desk")
   ) {
     return "screen";
@@ -2034,6 +2034,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade skill list --text                         One "name — description" line per skill
     $ ade skill show <name>                         Print a skill's SKILL.md (JSON: name, description, content, path)
     $ ade skill show <name> --text                  Print just the skill's markdown body
+    $ ade skill show <name> <file> --text           Print another file in the skill (references/<topic>.md)
 
   Flags:
     --text          Human-readable output.
@@ -2174,10 +2175,10 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   Start either a persistent ADE Work chat or a tracked provider CLI session
   with one command. This mirrors the desktop New Chat mode toggle.
 
-    $ ade new chat --mode chat --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --no-parent --prompt "Fix the tests"
-    $ ade new chat --mode cli --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --no-parent --prompt "Fix the tests"
-    $ ade new chat --mode chat --auto-create-lane --no-parent --prompt "Fix login"
-    $ ade new cli --lane <lane> --provider claude --model anthropic/claude-opus-5 --effort high --no-parent --prompt "Review the diff"
+    $ ade new chat --mode chat --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
+    $ ade new chat --mode cli --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
+    $ ade new chat --mode chat --auto-create-lane --prompt "Fix login"
+    $ ade new cli --lane <lane> --provider claude --model anthropic/claude-opus-5 --effort high --prompt "Review the diff"
 
   Flags:
     --mode <chat|cli>      Select a persistent ADE chat or tracked provider CLI session.
@@ -2187,9 +2188,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     --from <default|primary|branch>  Start source for an auto-created lane.
     --on <remote|local|uncommitted>  Which copy of the branch to start from.
     --existing-branch <branch>  Work directly on an existing branch.
-    --type <subagent|peer>  Required for a parented agent spawn. Use subagent
-                           whenever you will need, join, or review the result;
-                           use peer only for fire-and-forget work.
+    --type <subagent|peer>  From an agent the new session is a subagent that
+                           reports back (the default). peer: no report.
     --provider <name>      Chat: claude | codex | cursor | droid | opencode | pi | muse | qwen | kimi | grok | copilot | devin | antigravity.
                            CLI: claude | codex | cursor | droid | opencode | pi | muse | qwen | kimi | grok | copilot | devin; CLI mode also accepts shell.
     --model <id>           Runtime model id.
@@ -2208,10 +2208,9 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     --prompt <text>        First chat message or CLI initial input.
 
   Spawn lineage:
-    In tracked agent shells, chat mode and agent-provider CLI mode default
-    their parent to $ADE_CHAT_SESSION_ID. Use --parent <sessionId> to override
-    it or --no-parent to opt out. CLI terminals record lineage without taking
-    attached-terminal ownership. Plain shell terminals do not record lineage.
+    From an agent, the new session is a subagent of that agent's chat and
+    reports back to it. --type peer: no report. --no-parent: a separate chat,
+    only when the user asks. Plain shell terminals do not record lineage.
 
   Compatibility:
     ade chat create still creates persistent Work chats.
@@ -2224,22 +2223,15 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     --mode chat creates a persistent ADE Work chat.
     --mode cli starts a tracked provider CLI terminal.
 
-    $ ade new chat --mode chat --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --no-parent --prompt "Fix the tests"
-    $ ade new chat --mode cli --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --no-parent --prompt "Fix the tests"
-    $ ade new chat --mode chat --lane auto --lane-name fix-login --no-parent --prompt "Fix login"
+    $ ade new chat --mode chat --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
+    $ ade new chat --mode cli --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
+    $ ade new chat --mode chat --lane auto --lane-name fix-login --prompt "Fix login"
 
   The command defaults to the current ADE lane when ADE_LANE_ID is set. Use
   --auto-create-lane or --lane auto to create a lane before launching.
-  --type <subagent|peer> is required when the new agent has a parent. Use
-  subagent whenever the parent will need, join, or review the result (including
-  parallel work); use peer only for fire-and-forget work. Use --no-parent for
-  an independent top-level session.
-
-  Spawn lineage: when run from a tracked agent shell (ADE_CHAT_SESSION_ID set),
-  the new session links back to the spawning chat. In CLI mode, the terminal
-  shows that spawn lineage on its own sidebar card and links back to the chat
-  (agent providers only — plain shell terminals don't record lineage).
-  Override with --parent <sessionId>; opt out with --no-parent.
+  From an agent, the new session is a subagent of that agent's chat and
+  reports back to it. --type peer: no report. --no-parent: a separate chat,
+  only when the user asks. --parent <sessionId> names a different parent.
 `,
   lanes: `${ADE_BANNER}
   Lanes
@@ -2459,9 +2451,9 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade shell start --lane <lane> -- npm test     Start a tracked shell session
     $ ade shell start -- npm test                   Without --lane: your own lane, else the project's primary lane
     $ ade shell start --lane <lane> -c "npm test"   Start with a command string
-    $ ade new chat --mode cli --lane <lane> --provider codex --permission-mode edit --no-parent --prompt "fix tests"
-    $ ade shell start-cli codex --lane <lane> --permission-mode edit --no-parent
-    $ ade shell start-cli claude --lane <lane> --reasoning-effort ultracode --no-parent --prompt "fix tests"
+    $ ade new chat --mode cli --lane <lane> --provider codex --permission-mode edit --prompt "fix tests"
+    $ ade shell start-cli codex --lane <lane> --permission-mode edit
+    $ ade shell start-cli claude --lane <lane> --reasoning-effort ultracode --prompt "fix tests"
     $ ade shell start --provider claude --lane <lane> --message "fix tests"
     $ ade shell start --lane <lane> --chat-session <owner-session-id> -c "npm test"
     $ ade shell write <pty-id> --data "q"           Write data to a PTY
@@ -2597,7 +2589,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade chat actions --personal --text            List machine personal-chat actions
     $ ade chat action --personal models --input-json '{"provider":"codex"}'
     $ ade chat list --include-automation --text
-    $ ade chat create --lane <lane> --provider codex --model openai/gpt-5.6-sol --no-parent --reasoning-effort xhigh --no-fast --permissions full-auto
+    $ ade chat create --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --no-fast --permissions full-auto
     $ ade chat create --personal --provider codex --model openai/gpt-5.6-sol --prompt "Plan my trip"
     $ ade chat create --personal --provider copilot --model github-copilot/auto --copilot-auto-tier balance
     $ ade chat create --personal --provider claude --model anthropic/claude-opus-5 --arg-json mcpServers='{"docs":{"type":"http","url":"https://mcp.example/mcp"}}'
@@ -2610,7 +2602,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                                                     <session> --personal --json) for what the provider could honor:
                                                     only level "enforced" means the caller's servers are the whole
                                                     surface. A server the provider cannot carry fails the create.
-    $ ade chat create --lane <lane> --provider claude --model anthropic/claude-opus-5 --no-parent --prompt "fix the tests"
+    $ ade chat create --lane <lane> --provider claude --model anthropic/claude-opus-5 --prompt "fix the tests"
     $ ade chat create --from-linear-issue ENG-431 --parent <session> --type subagent
                                                     Start a child chat with an attached issue + kickoff (alias: --linear-issue-json)
     $ ade chat launch "fix the flaky test" --provider codex --model openai/gpt-5.6-sol --wait
@@ -2825,10 +2817,10 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                             does not create a chat.
     --parent <sessionId>    Link the new chat as a child of that session.
                             Defaults to $ADE_CHAT_SESSION_ID in tracked agent shells.
-    --no-parent             Create the chat without a parent link. From an agent
-                            it is still recorded as launched by that agent.
-    --type <subagent|peer>  Required with a parent. subagent always wakes the
-                            parent after every turn; peer leaves quiet notes.
+    --no-parent             A separate top-level chat that does not report back.
+                            Only when the user asks for one.
+    --type <subagent|peer>  subagent (default with a parent) reports back after
+                            every turn; peer leaves quiet notes.
 
   Transcript read flags:
     --limit <n>             Messages per bounded window (default 50, max 100).
@@ -2864,11 +2856,11 @@ export const HELP_BY_COMMAND: Record<string, string> = {
 
   Create a persistent ADE Work chat session with provider/model/runtime settings.
 
-    $ ade chat create --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --no-fast --permissions full-auto --no-parent
-    $ ade chat create --lane <lane> --provider claude --model anthropic/claude-opus-5 --effort high --permissions plan --no-parent
-    $ ade chat create --lane <lane> --provider claude --model anthropic/claude-opus-5 --effort max --no-parent --prompt "fix"
-    $ ade chat create --lane <lane> --provider cursor --model cursor/<model> --standard --no-parent --print-config --json
-    $ ade chat create --from-linear-issue ENG-431 --provider codex --model openai/gpt-5.6-sol --no-parent --prompt "Work this issue"
+    $ ade chat create --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --no-fast --permissions full-auto
+    $ ade chat create --lane <lane> --provider claude --model anthropic/claude-opus-5 --effort high --permissions plan
+    $ ade chat create --lane <lane> --provider claude --model anthropic/claude-opus-5 --effort max --prompt "fix"
+    $ ade chat create --lane <lane> --provider cursor --model cursor/<model> --standard --print-config --json
+    $ ade chat create --from-linear-issue ENG-431 --provider codex --model openai/gpt-5.6-sol --prompt "Work this issue"
 
   Flags:
     --personal              Use machine-owned chats instead of a project/lane chat.
@@ -2908,10 +2900,10 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     --parent <sessionId>    Link the new chat as a child of that session.
                             Defaults to $ADE_CHAT_SESSION_ID when run from a
                             tracked agent shell (the spawning chat).
-    --no-parent             Create the chat without a parent link. From an agent
-                            it is still recorded as launched by that agent.
-    --type <subagent|peer>  Required with a parent. subagent always wakes the
-                            parent after every turn; peer leaves quiet notes.
+    --no-parent             A separate top-level chat that does not report back.
+                            Only when the user asks for one.
+    --type <subagent|peer>  subagent (default with a parent) reports back after
+                            every turn; peer leaves quiet notes.
 
   With --lane, chat create warns on stderr when another chat on that lane is in
   a turn or waiting on input: the two chats then share one worktree.
@@ -11242,7 +11234,7 @@ function buildChatPlan(args: string[]): CliPlan {
     // that opts out of lineage gets one hint on stderr (stdout may be JSON).
     if (findFlagName(args, ["--no-parent"]) !== null && process.env.ADE_CHAT_SESSION_ID?.trim()) {
       process.stderr.write(
-        "note: --no-parent chats do not nest under you or wake you (they are recorded as launched by you). For a fire-and-forget helper, use --type peer.\n",
+        "note: --no-parent starts a separate chat that will not report back to you. Drop --no-parent for a subagent.\n",
       );
     }
     // `chat create` never launches a shell (no `allowSpawnType` option here,
@@ -17369,7 +17361,13 @@ function buildBrowserPlan(args: string[]): CliPlan {
   const literalTail = takeArgsAfterTerminator(args, BROWSER_VALUE_CARRIER_FLAGS) ?? [];
   const here = readFlag(args, ["--here"]);
   const plan = buildBrowserPlanWithLiteralTail(args, literalTail);
-  return here ? withBrowserOnThisMachine(plan) : plan;
+  const placed = here ? withBrowserOnThisMachine(plan) : plan;
+  // The built-in browser lives in the running ADE app. A headless one-shot
+  // runtime has no tabs to drive or show, so fail clearly instead (this is what
+  // agents used to pass `--socket` for).
+  return placed.kind === "execute" && !placed.needsLiveRuntime
+    ? { ...placed, needsLiveRuntime: "The ADE browser" }
+    : placed;
 }
 
 /**

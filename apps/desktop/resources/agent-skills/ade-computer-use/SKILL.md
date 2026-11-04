@@ -8,6 +8,19 @@ description: Use this skill for any computer use — driving an app, a screen, a
 This is the one entry point for computer use in ADE. Decide whether you need a
 screen at all, then pick the surface, then follow that surface's loop.
 
+## Detail files
+
+Rarely needed detail lives next to this file. Read one when its topic comes
+up (or `ade skill show ade-computer-use references/<file>`):
+
+| Topic | File |
+| --- | --- |
+| Driving a simulator, screen or app on another machine (`--machine`) | `references/other-machines.md` |
+| Windows Desktop: the two seats, what needs the user, Windows specifics, proof | `references/windows-desktop.md` |
+| Linux Desktop: packages, browsers, Electron apps, stalled apps | `references/linux-desktop.md` |
+| Mac Desktop: `next:` hints, global and local points, documents and second copies, moving windows, panels, alerts and sheets | `references/mac-screen-details.md` |
+| Staging a showcase per surface; how a recording becomes a demo; `--plain` | `references/proof-staging-and-demos.md` |
+
 ## Do you need a screen?
 
 Go down this list and stop at the first step that answers the question:
@@ -18,7 +31,7 @@ Go down this list and stop at the first step that answers the question:
    `ade browser`. An Electron app → `ade app-control`. An iOS app or an iOS
    SwiftUI view → `ade apple`. They run in the background and never touch the user's
    screen, pointer or focus.
-3. **The lane's own screen** (`ade mac-desktop`, `ade screen` on Windows and Linux),
+3. **The lane's own screen** (`ade screen`, on every host),
    only for what steps 1 and 2 cannot reach:
    - a native or custom-drawn Mac app: the Mac app you are building, a DAW
      (FL Studio, Ableton, Logic), a game, a canvas or an OpenGL/Unity build;
@@ -43,7 +56,7 @@ stop it when you are done (see **Rules that will bite you**).
 | An Electron app — your dev build, or an installed one such as Slack — or anything whose DOM you need: labels, selectors, hover, its console | `ade app-control` (CDP, one session per lane, runs in the background, no cursor) | **ade-app-control** |
 | A web page or a localhost URL | `ade browser` | **ade-browser** |
 | A tab in the user's own browser — only when the user asks ("the tab I have open", "use my Chrome") | `ade browser attach`, then the usual `ade browser` commands; `ade browser detach` when done | **ade-browser** |
-| Step 3 above, on a Mac | `ade mac-desktop` (the lane's private display) | this skill, below |
+| Step 3 above, on a Mac | `ade screen` (the lane's private display) | this skill, below |
 | A Windows app with no other route (on a Windows host) | `ade screen` (Windows Desktop) | this skill, **Windows Desktop** below |
 | Any GUI app on a Linux host — Chrome, Firefox, an Electron or GTK/Qt app — with no other route | `ade screen` (Linux Desktop: the lane's own X display) | this skill, **Linux specifics** below |
 
@@ -73,15 +86,10 @@ Note: `ade desktop` is a different command. It launches the ADE desktop app.
 
 ## A device on another machine
 
-`ade apple`, `ade mac-desktop` and `ade app-control` take `--machine <name>` to
-drive that machine's simulator, screen or app (`--lane <lane there>`; use
-`--machine-project` to pick the project, since `ade apple` already uses
-`--project`). `proof` captures there and files the still in YOUR proof drawer.
-Recordings stay on that machine. The person at that Mac sees "Driven by an
-agent on <your machine>" and can end your session; stop it yourself when done.
-If the app needs building, start a subagent on that machine instead
-(`ade chat create --machine …`, see ade-cli-control-plane). Let one agent
-drive a device; other agents hand it work rather than take turns on it.
+`ade apple`, `ade screen` and `ade app-control` take `--machine <name>` to
+drive that machine's simulator, screen or app. The person at that Mac sees
+your session and can end it; stop it yourself when done. Flags, where proof
+lands, and building there: `references/other-machines.md`.
 
 ## The same answer on every surface
 
@@ -99,20 +107,11 @@ fill, scroll, drag) reports two lines:
 When the effect is `unconfirmed`, observe again before you act again or report
 the step. Do not repeat the action blindly.
 
-An `unconfirmed` answer can carry a third line, `next:`. It names the one
-input method to try next and why, and often a command to run:
-
-- `observe` — keep the same method. Look at the new screen, or `wait` for the
-  label you expect. The action probably applied, or the element is disabled.
-- `background_input` — run the click it prints: the same click at the
-  element's point, delivered to the app alone. No approval, no pointer moves.
-- `real_input` — repeat the same command with `--real`.
-- `lease` — real input is the fix, but this chat must ask for it first. Run
-  the `ade mac-desktop lease` command it prints, then repeat with `--real`.
-- `browser` — the target is a web page. Drive it in the ADE browser, unless
-  the task needs that exact browser.
-
-Follow `next:` instead of a guess. Today only the Mac Desktop prints it.
+An `unconfirmed` answer can carry a third line, `next:`, naming the one
+input method to try next (`observe`, `background_input`, `real_input`,
+`lease`, `browser`) and often a command to run. Follow `next:` instead of a
+guess. Today only the Mac Desktop prints it. What each value means:
+`references/mac-screen-details.md`.
 
 ## Proof per surface
 
@@ -123,14 +122,9 @@ Follow `next:` instead of a guess. Today only the Mac Desktop prints it.
 | App Control | `ade app-control proof --caption "<what>"` | `ade app-control record start --caption "<what>"`, then `record stop` |
 | Browser | `ade browser proof --tab <id> --caption "<what>"` | `ade browser record start --tab <id> --caption "<what>"`, then `record stop --tab <id>` |
 
-Stage before showcase proof (the steps are in **ade-proof-artifacts**):
-
-| Surface | Stage |
-|---|---|
-| Apple | `ade apple status-bar --time 9:41 --wifi-bars 3 --battery-level 100`; a device never paired with ADE (no push banners). New screens: add a hero shot with `ade apple render --angles three-quarter-left` |
-| Mac / Windows / Linux Desktop | `ade screen windows --text`, then `close` or `minimize --window <id>` everything that is not the subject |
-| App Control | Only the app's window is recorded: make the subject big inside it (collapse sidebars, open the panel); `ade proof step --focus` for the rest |
-| Browser | `ade browser emulate --tab <id> --width 1280 --height 800 --scale 2` (not smaller: stills come out at this size); `ade browser zoom --tab <id> --factor 1.25` when text is small |
+Stage before showcase proof: close or minimize every window that is not the
+subject (`ade screen windows --text`). Per surface, and the steps, in
+`references/proof-staging-and-demos.md` and **ade-proof-artifacts**.
 
 `ade proof capture` and `ade proof record` capture the lane's display. They
 refuse the user's real screen unless you pass `--real-screen`. Pass it only
@@ -147,14 +141,14 @@ each item, and say what it does not show.
 
 ```bash
 ade ui show mac-desktop     # also: apple, browser, proof, app-control
-ade mac-desktop show --text
-ade mac-desktop show --floating --text
+ade screen show --text
+ade screen show --floating --text
 ade app-control show --floating --text
 ```
 
 # Mac Desktop
 
-Each lane owns a private macOS screen. `ade mac-desktop ...` creates it, parks
+Each lane owns a private macOS screen. `ade screen ...` creates it, parks
 apps on it, and drives them through the Accessibility API. ADE captures the
 user's real display only through `--real-screen`, and drives their pointer only
 under a lease, so background and Accessibility clicks need no ask. The one
@@ -165,130 +159,39 @@ session.
 For web tasks, use `ade browser` (step 2 above). Open Safari or another browser
 here only when the user names that app or asks for the Mac Desktop.
 
-macOS runtime hosts only. `ade mac-desktop status --text` answers everywhere;
-every other command refuses off macOS with `MAC_DESKTOP_UNSUPPORTED_PLATFORM`.
+This section is the Mac. On Windows and Linux the same `ade screen` verbs drive
+that host's screen; read `references/windows-desktop.md` or
+`references/linux-desktop.md` first.
 `--lane` defaults to `ADE_LANE_ID`. In a chat, the command is pinned to that
 chat's lane: `--lane` naming a different lane is refused, not silently swapped.
 
 # Windows Desktop
 
-On a Windows host, `ade screen` is Windows Desktop (`ade windows-desktop` and
-`ade mac-desktop` are aliases of the same Windows screen; every output says
-"Windows Desktop"). The verbs are the Mac ones below, with the Windows notes
-here. Start every task with `ade screen status --text`: it names the seat, who
-holds the private screen, whether setup and the saved password are done, whether
-the PC is locked, and a `next` line with the exact command or ask.
-
-## The two seats
-
-- **private** (default): a separate Windows session of the user's own account.
-  **It shows their wallpaper and taskbar, but it is not their screen.** It has
-  its own pointer, keyboard and foreground, so point clicks, drags and `--real`
-  need no lease. One lane holds it at a time.
-- **shared**: the user's main desktop, only after the user says yes. Actions
-  take over the window the user is using. Real input there is covered by the
-  user's yes; only one shared lane drives at a time
-  (`MAC_DESKTOP_LEASE_HELD_BY_OTHER` names the other lane: wait and retry).
-
-## What needs the user — ask, never do it yourself
-
-| Situation (`status` / error) | What you do |
-|---|---|
-| Setup not done (`WINDOWS_DESKTOP_SETUP_REQUIRED`) | Ask the user to run the setup card in the Windows Desktop pane. You cannot. |
-| Password not saved | `start` still works; Windows asks the user to sign in on the PC. Tell them, and suggest **Save Windows password** in the pane. Never ask for the password in chat. |
-| Private screen held by another lane (`WINDOWS_DESKTOP_HELD`) | Ask the user to **Take over** in the pane, or ask for the main desktop: `ade screen start --shared --reason "<what for>" --text`. |
-| Private unavailable (`WINDOWS_DESKTOP_NOT_CONSOLE_SESSION`, Home edition) | `ade screen start --shared --reason "<what for>" --text` |
-| PC locked (`WINDOWS_DESKTOP_LOCKED`) | Ask the user to unlock it, then retry the same command. |
-| Administrator window (`WINDOWS_DESKTOP_ELEVATED_WINDOW`) | Ask the user to close or minimize it on the lane screen, or stop the sign-in task that opens it. Never close it yourself; it may be a service they need. |
-| User said no (`WINDOWS_DESKTOP_CONSENT_REQUIRED`) | Stop and say what you could not do. Do not ask again this turn. |
-
-`start --shared` puts an Allow / Don't allow card in your chat and waits; on
-Allow it starts the shared seat. Only the user's button press counts: typed
-text is not an answer, and an agent that tries to answer the card itself (or
-the real-input lease card) is refused. If nobody answers within about three
-minutes the card is withdrawn and the command fails; ask again later. The same
-chat is not asked twice. Never pass `--consent` or `--allow-prompt`: those are
-the user's clients' flags and an agent is refused. A command with no chat (a
-plain shell outside one) cannot act on the main desktop at all; only the
-user's own `ade --role cto` can. Never use that role yourself; a `holderId`
-you pass is stripped.
-
-## Windows specifics
-
-- **Sign-in tasks:** the private seat is a real sign-in, so logon tasks and
-  startup apps run there too. ADE cannot control administrator windows; status
-  and window listings mark them `[admin]`.
-- **Long text:** on the private seat, and for `--real` typing, Windows types
-  one character at a time, so `type` takes about 25 ms per character and
-  refuses more than 4,000 characters in one call; split longer text.
-- **Browsers:** `ade screen open chrome` (or `msedge`) on the private seat gets
-  a lane-private profile, not the user's. `open` prints the windows that
-  appeared; if none did it says why (for example the request was handed to an
-  instance that was already running) and what to run next. Do not invent a
-  `--user-data-dir`. For web tasks prefer `ade browser`.
-- **Editors restore the user's tabs.** Notepad reopens the user's open files,
-  which can hold secrets. Create a blank file for the task and open that one:
-  `ade screen open notepad -- C:\Users\<you>\AppData\Local\Temp\ade-proof.txt --text`.
-  Then `observe` (or look at the screenshot) **before** you record or file
-  proof, and stop if anything private is visible.
-- **Modifier keys:** `--ctrl`, `--alt`, `--shift`, `--win`. `--cmd` is sent as
-  Ctrl. Example: `ade screen press s --ctrl --text`.
-- **Windows:** `ade screen focus --window <id>` raises one of your lane's
-  windows, `minimize --window <id>` hides it, `close --window <id>` closes it
-  (it reports `closed no` when a save prompt kept it open). Only your lane's
-  windows; ids come from `ade screen windows --text`.
-- **Paths** print with backslashes; quote them. `--out` must be in the lane
-  worktree or `%TEMP%`.
+On a Windows host, `ade screen` is Windows Desktop, with the Mac verbs below.
+Start every task with `ade screen status --text` and follow its `next` line.
+The default **private** seat is a separate session of the user's account, not
+their screen. The **shared** seat is the user's main desktop and needs their
+yes (`ade screen start --shared --reason "<what for>" --text`); never pass
+`--consent` or `--allow-prompt`, and never use `--role cto`. Setup, a saved
+password, a locked PC or an administrator window need the user: ask, never
+do it yourself, and never ask for the password in chat. Editors such as
+Notepad reopen the user's files, which can hold secrets: open a blank file
+for the task. Seats, the ask-the-user table, Windows specifics and proof:
+`references/windows-desktop.md`.
 
 ## Linux specifics
 
-- **The screen is the lane's own X display.** No human pointer is on it, so
-  point clicks, drags, keys and `--real` need no lease. A person who takes
-  control from a viewer still wins; wait for them to hand it back.
-- **Missing packages:** a plain server may lack Xvfb, the window manager,
-  AT-SPI or ffmpeg. `ade screen status --text` lists them with the install
-  command (`missing packages`, `install with`). You cannot install them: ask
-  the user to run `ade screen setup --allow-prompt` from their ADE client, or
-  the printed command on that machine.
-- **Browsers:** `ade screen open https://…` starts the machine's Chrome or
-  Chromium (Firefox if that is all there is) with a lane-private profile and
-  its accessibility tree on. `ade screen open chrome` works too. If no browser
-  is installed, `open` says so; ask the user to install one.
-- **Electron and desktop apps:** `ade screen open <app or path>`; Electron
-  apps get `--force-renderer-accessibility` so their elements appear in
-  `observe`. For an Electron app whose DOM you need, add
-  `-- --remote-debugging-port=9333` and attach with `ade app-control connect`.
-- **No elements?** `observe` lists `stalledApps` with the reason (no
-  accessibility bus, an app that stopped answering). Act by point from the
-  screenshot (`ade screen click 640,400`) until it answers again.
-- **Modifier keys:** `--ctrl`, `--alt`, `--shift`, `--win` (Super). `--cmd`
-  is sent as Ctrl, so the shortcuts you know from a Mac work.
-- **Windows:** `focus`, `minimize` and `close --window <id>` work as on
-  Windows. There is no `claim`, `release` or "Bring to my screen": every window
-  on the lane's screen is already the lane's.
-- **Recording and the live view need ffmpeg.** Without it, everything else
-  works and `record start` says what is missing.
-
-## Proof on Windows
-
-```bash
-ade screen observe --text                       # check nothing private shows
-ade screen record start --caption "Notepad saves hello" --text
-ade proof step "Type hello"
-ade screen type "hello" --text
-ade screen wait --label "hello" --text
-ade screen record stop --text                   # prints duration and a cite line
-ade screen proof --caption "hello typed in a blank Notepad file" --text
-```
-
-Paste the `cite` line under your claim. The shared seat files proof the same way.
+On a Linux host the lane screen is the lane's own X display, so point clicks,
+drags, keys and `--real` need no lease. Missing packages (Xvfb, AT-SPI,
+ffmpeg): you cannot install them; ask the user. Browsers, Electron apps,
+stalled apps, modifier keys and windows: `references/linux-desktop.md`.
 
 ## Check each step before you report it
 
 A click, type or press that returns `ok` only means ADE sent the input. It
 does not mean the app did what you wanted. After each step that matters,
-confirm it: read the screen the command printed, `ade mac-desktop wait --label
-"<text>"`, `ade mac-desktop observe`, or a screenshot. Report only what you
+confirm it: read the screen the command printed, `ade screen wait --label
+"<text>"`, `ade screen observe`, or a screenshot. Report only what you
 confirmed. If a step failed, say which step, and do not describe the result
 you meant to get. Before `record stop`, confirm the final state, so the video
 ends on it.
@@ -319,10 +222,10 @@ Use these directly; you do not need `--help` for them.
 ### 1. Start the screen and put an app on it
 
 ```bash
-ade mac-desktop status --text
-ade mac-desktop start --text
-ade mac-desktop open "Preview" --text
-ade mac-desktop windows --text
+ade screen status --text
+ade screen start --text
+ade screen open "Preview" --text
+ade screen windows --text
 ```
 
 `open` takes an app name, a bundle id, a path, or a URL; everything after `--`
@@ -334,54 +237,40 @@ windows, tabs or documents, and never a process shared with the user's windows.
 The copy still shares that app's data with the user (cookies, history, recent
 files).
 
-A document is different. `open <file>` (or `open <app> -- <file>`) hands the
-file to the copy this lane already runs, when it runs one. When the user (or
-another lane) also runs that app, ADE refuses: macOS picks which running copy
-gets the file, and it may be the user's. Open the file from the lane's copy
-(its File menu), or pass `--new-instance` for a separate copy. When only the
-user runs the app, the lane gets its own second copy, and the result says so.
-Apps that hold a fixed port or a lock (Ableton Live, FL Studio) can misbehave
-with two copies; if one does, quit the lane's copy with `ade mac-desktop quit
-<pid>`.
+A document is different: `open <file>` hands it to the lane's own copy of
+the app, and ADE refuses when the user also runs that app (macOS might give
+the file to the user's copy). Open it from the lane's copy, or pass
+`--new-instance`. Detail: `references/mac-screen-details.md`.
 
 To adopt a window that is already running, claim it:
 
 ```bash
-ade mac-desktop claim --window <id> --text
-ade mac-desktop release --window <id> --text
+ade screen claim --window <id> --text
+ade screen release --window <id> --text
 ```
 
 `release` gives the window to the user. For an app the lane opened, the user
 gets the whole app: all its windows move to the user's screen, the lane stops
 watching it, and `stop` no longer quits it. A claimed window goes back alone.
 
-`claim` is also how you move a window onto the lane, a floating palette
-included. `drag` cannot move a window: it posts mouse events to the app, and
-only macOS moves windows, so a title bar or a frameless (Electron) drag region
-stays put. ADE places a claimed window on the lane's display; `present main`
-brings the lane's windows to the user's screen and `present display` sends them
-back.
+`drag` cannot move a window; `claim` moves one onto the lane, and `present
+main` / `present display` bring the lane's windows to the user's screen and
+back. Detail: `references/mac-screen-details.md`.
 
 Window ids die with their process. Re-run `windows` rather than caching one.
 
-Panels and alerts of the lane's apps are windows too. `windows` and `observe`
-mark them `[panel]` (a floating palette) or `[modal panel]` (an alert or dialog
-that blocks its app until it closes). Their elements come first in `observe`,
-and `press` with no target sends the key to the modal panel when one is up. A
-new panel that opens on the user's screen is moved onto the lane's display; if
-ADE cannot move it, `observe` ends with a `Warning:` line naming the window.
-Then do not act on it: ask the user to close it or drag it onto the lane's
-screen. A lane app's macOS Open/Save panel opens on the lane's display and
-shows up as one of the app's windows. ADE cannot move an Open/Save panel. A
-sheet attached to a window or panel (a "Replace?" question on a Save panel) is
-listed as `[sheet of #<id>]`. Its buttons are in `observe`, first, and a
-`press return` with no target goes to it. Claiming a sheet claims its window.
+Panels, alerts and sheets of the lane's apps are windows too (`[panel]`,
+`[modal panel]`, `[sheet of #<id>]` in `windows` and `observe`); their
+elements come first, and `press` with no target goes to them. If `observe`
+ends with a `Warning:` line naming a window, do not act on it: ask the user
+to close it or drag it onto the lane's screen. Detail:
+`references/mac-screen-details.md`.
 
 `open` answers before the app has a window (`watching: yes`, no windows yet).
-Wait for it before you observe — `ade mac-desktop wait --label "<window title>"
+Wait for it before you observe — `ade screen wait --label "<window title>"
 --timeout 8000 --text`, or re-run `windows`. A document app such as TextEdit
 opens an empty untitled document. An app that opens no window when launched
-bare (Preview): open a file with it, or press ⌘N (`ade mac-desktop press n
+bare (Preview): open a file with it, or press ⌘N (`ade screen press n
 --cmd --text`) once the app is up. `MAC_DESKTOP_NO_WINDOW` means the display
 exists but has no window yet: open an app or claim a window; do not run
 `start` again.
@@ -389,8 +278,8 @@ exists but has no window yet: open an app or claim a window; do not run
 ### 2. Observe before you act
 
 ```bash
-ade mac-desktop observe --text
-ade mac-desktop observe --window <id> --map --limit 80 --text
+ade screen observe --text
+ade screen observe --window <id> --map --limit 80 --text
 ```
 
 An observation gives you a screenshot and a numbered element list:
@@ -403,32 +292,28 @@ buttons, and a custom-drawn app (FL Studio, Ableton, a game, a canvas) shows
 its panels but not the controls inside them. Then act by point and click it
 with `--x/--y`. That is still delivered to the app alone and moves no pointer.
 
-Points are **global screen points**, the plane the element list uses, not
-screenshot pixels. The lane's display sits somewhere on that plane (often far
-from 0,0), and the observation's `points` line says where: the screenshot's
-top-left pixel is the display's origin. Add the origin to a point read off the
-screenshot, or pass `--local` and ADE adds it. A point off the lane's display is
-refused with the display's range. A point that another lane window covers goes
-to that window, the one on top, as a click would.
+Points are **global screen points**, not screenshot pixels: pass `--local`
+for a point read off the screenshot and ADE adds the display's origin. How
+the plane works: `references/mac-screen-details.md`.
 
 ### 3. Act — the result already contains the next observation
 
 ```bash
-ade mac-desktop click obs-a1b2:e:3 --text
-ade mac-desktop click --text "Sign in" --text
-ade mac-desktop type "ada@example.com" --clear --target obs-a1b2:e:7 --text
-ade mac-desktop type "typed into whatever has focus" --text
-ade mac-desktop type "reddit" --submit --target obs-a1b2:e:4 --text
-ade mac-desktop press return --text
-ade mac-desktop press tab --text
-ade mac-desktop press return --cmd --text
-ade mac-desktop scroll down --amount 5 --text
-ade mac-desktop click --x 900 --y 420 --text            # a global point
-ade mac-desktop click --x 300 --y 200 --local --text    # a point read off the screenshot
-ade mac-desktop click --x 900 --y 420 --right --text    # context menu; --double for a double click
-ade mac-desktop scroll down --x 900 --y 420 --amount 5 --text
-ade mac-desktop drag --from obs-a1b2:e:3 --to 900,420 --text
-ade mac-desktop wait --label "Saved" --timeout 8000 --text
+ade screen click obs-a1b2:e:3 --text
+ade screen click --text "Sign in" --text
+ade screen type "ada@example.com" --clear --target obs-a1b2:e:7 --text
+ade screen type "typed into whatever has focus" --text
+ade screen type "reddit" --submit --target obs-a1b2:e:4 --text
+ade screen press return --text
+ade screen press tab --text
+ade screen press return --cmd --text
+ade screen scroll down --amount 5 --text
+ade screen click --x 900 --y 420 --text            # a global point
+ade screen click --x 300 --y 200 --local --text    # a point read off the screenshot
+ade screen click --x 900 --y 420 --right --text    # context menu; --double for a double click
+ade screen scroll down --x 900 --y 420 --amount 5 --text
+ade screen drag --from obs-a1b2:e:3 --to 900,420 --text
+ade screen wait --label "Saved" --timeout 8000 --text
 ```
 
 `type --submit` presses Return after the text, to submit a search or a form.
@@ -464,8 +349,8 @@ cannot reach: a control that appears only on hover, or a drop onto another
 app or the Dock. Tell the user their pointer will move before you ask:
 
 ```bash
-ade mac-desktop lease --reason "drag the file onto the Dock" --text
-ade mac-desktop drag --from obs-a1b2:e:3 --to 1200,1400 --real --text
+ade screen lease --reason "drag the file onto the Dock" --text
+ade screen drag --from obs-a1b2:e:3 --to 1200,1400 --real --text
 ```
 
 `lease` waits up to about three minutes for the user's answer. Its `outcome`
@@ -478,7 +363,7 @@ do not pipe the command into `tail` or `head` without `set -o pipefail`.
 - **Never quit an app, and never touch a window you did not open.** An app
   like Safari, TextEdit or Finder is one process for all its windows, on every
   screen. ⌘Q on the lane screen also closes the user's own windows of that app.
-  To finish, close your own window with `ade mac-desktop press w --cmd --text`
+  To finish, close your own window with `ade screen press w --cmd --text`
   (it presses the window's close button) or `release` it. ⌘W refuses a window
   the lane claimed from the user — release that one — and ⌘Q quits only an app
   the lane itself opened with `open`; for any other app it refuses. Do not
@@ -493,9 +378,9 @@ do not pipe the command into `tail` or `head` without `set -o pipefail`.
   on the user's Mac: their screens stay rearranged around it and its apps
   keep running. Once the result is confirmed and any proof is filed, close
   your own windows (the unsaved-work rule below says how), then `ade
-  mac-desktop stop --text`. Every chat in a lane shares its one screen, and
+  screen stop --text`. Every chat in a lane shares its one screen, and
   `stop` quits every app the lane opened and drops a recording in progress.
-  So first check `ade mac-desktop status --text` and `ade mac-desktop windows
+  So first check `ade screen status --text` and `ade screen windows
   --text`. Leave it running when a window you did not open or claim is there,
   or status shows a recording you did not start, a lease held by another chat,
   or a running stream (someone is watching).
@@ -503,36 +388,36 @@ do not pipe the command into `tail` or `head` without `set -o pipefail`.
   working in it. Whenever you leave it up, say so in your reply. When
   the user wants to keep using an app, `release` it (see above): its windows
   move to the user's screen. When the user asks you to close, clean up or
-  shut down what you opened, run `ade mac-desktop quit --text` (every app the
+  shut down what you opened, run `ade screen quit --text` (every app the
   lane opened, including apps you released to the user; `quit <app>` for
-  one), then `ade mac-desktop stop --text`, and report what quit. `stop`
+  one), then `ade screen stop --text`, and report what quit. `stop`
   alone does not quit a released app.
 - **A prompt only the user can answer stops you.** A macOS permission prompt
   (Accessibility, Screen Recording, microphone, camera, files), a password or
   a sign-in can open on the lane screen, where the user cannot see it. Do not
-  try to answer it yourself. Show the screen (`ade mac-desktop show --text`),
+  try to answer it yourself. Show the screen (`ade screen show --text`),
   then ask with `ade chat ask "<which app is asking for what, and that it is
   waiting on the lane screen>"`. Before you open an app for the first time,
   say if it is likely to ask.
 - **Do not leave an app waiting on unsaved work.** An app with an unsaved
   document shows a save dialog on the lane screen when it quits, and the user
   cannot see that dialog. Close your own document window without saving
-  before you finish (`ade mac-desktop press w --cmd --text`, then choose
+  before you finish (`ade screen press w --cmd --text`, then choose
   "Don't Save"), or save it where the user asked.
-- **Open a file as a document:** `ade mac-desktop open "<absolute path>"`
-  opens it in its app, and `ade mac-desktop open TextEdit -- "<absolute
+- **Open a file as a document:** `ade screen open "<absolute path>"`
+  opens it in its app, and `ade screen open TextEdit -- "<absolute
   path>"` opens it in that app. Do not type a file's text into a new document
   to stand in for the file: that checks nothing and leaves unsaved work.
-- **`ade: Unknown command 'mac-desktop'` means your shell found an older
+- **`ade: Unknown command 'screen'` means your shell found an older
   `ade`,** not that the lane has no screen: a login shell can rebuild PATH and
   put an installed CLI ahead of the one this ADE launched. Run the same command
-  through the launched CLI: `"$ADE_CLI_PATH" mac-desktop status --text`
-  (PowerShell: `& $env:ADE_CLI_PATH mac-desktop status --text`), and keep
+  through the launched CLI: `"$ADE_CLI_PATH" screen status --text`
+  (PowerShell: `& $env:ADE_CLI_PATH screen status --text`), and keep
   using it for the rest of the task.
 - **Never repair ADE from a task.** Do not start, stop or install a brain or
   service (another channel may own it), and do not `npm install` in the user's
   repo to fix ADE's own errors. Report the error.
-- **If `ade mac-desktop` still refuses after that, stop and report it.** Do not
+- **If `ade screen` still refuses after that, stop and report it.** Do not
   fall back to the user's real screen, and do not record it with `ade proof
   record --real-screen`.
 
@@ -548,10 +433,10 @@ do not pipe the command into `tail` or `head` without `set -o pipefail`.
 ## Capture and proof
 
 ```bash
-ade mac-desktop screenshot --out shot.png --text
-ade mac-desktop record start --caption "the fix in motion" --text
-ade mac-desktop record stop --text
-ade mac-desktop proof --caption "Preferences now saves the API key" --text
+ade screen screenshot --out shot.png --text
+ade screen record start --caption "the fix in motion" --text
+ade screen record stop --text
+ade screen proof --caption "Preferences now saves the API key" --text
 ```
 
 `screenshot` writes a file and files nothing. `--out` must land inside the lane
@@ -559,11 +444,9 @@ worktree or the OS temp directory (`$TMPDIR`); anywhere else is refused. `proof`
 is the intentional one and **refuses without `--caption`** — a record nobody can
 judge is not proof. It captures, then re-observes, and prints the state it filed.
 
-A recording becomes a **demo** when it stops. ADE cuts still time, speeds up
-waits (a load, a spinner) with a small `4×` badge, zooms to the part of the
-screen where the actions happen (not on a phone, unless you pass `--zoom`),
-draws the pointer and a ring on each click, and keeps the file under 10 MB.
-You do none of that; you only choose what to record.
+A recording becomes a **demo** when it stops (still time cut, waits sped
+up, zoom, pointer and click rings, under 10 MB). You only choose what to
+record. Detail: `references/proof-staging-and-demos.md`.
 
 - **Record the flow that shows the claim, not the whole task.** Do the setup
   first (open the app, reach the starting screen), start recording, run the
@@ -578,16 +461,16 @@ You do none of that; you only choose what to record.
   instead of `sleep` (for example `ade app-control wait --text-match "Saved"`
   or `ade apple wait-for-element --label "Saved"`): the recording stops as
   soon as the result shows, and a slow load still gets its time.
-- **`--plain`** files the recording as it was recorded (no cuts, zoom, pointer
-  or captions), still under 10 MB. Use it only when the user asks for it.
+- **`--plain`** files the recording as it was recorded. Use it only when
+  the user asks for it.
 
 ```bash
-ade mac-desktop record start --caption "Preferences saves the API key" --text
+ade screen record start --caption "Preferences saves the API key" --text
 ade proof step "Open Preferences"
 # ... act ...
 ade proof step "Save the key"
 # ... act, then confirm the result on screen ...
-ade mac-desktop record stop --text
+ade screen record stop --text
 ```
 
 `record stop` finalizes within about two seconds. If it fails, the status it
@@ -607,8 +490,8 @@ than filing nothing.
 When the user asks to see the lane screen ("show me", "open the desktop"):
 
 ```bash
-ade mac-desktop show --text              # the Mac Desktop in the tools pane
-ade mac-desktop show --floating --text   # the floating card over the chat
+ade screen show --text              # the Mac Desktop in the tools pane
+ade screen show --floating --text   # the floating card over the chat
 ```
 
 `ade ui show mac-desktop` and `ade ui show floating-mac-desktop` do the same.
@@ -621,4 +504,4 @@ It targets your own chat and reports what really happened:
 - `no_desktop` (exit 1) — no desktop window is open for this chat, so nothing
   was shown. Tell the user; do not claim you opened it.
 
-`show` does not start the screen. Run `ade mac-desktop start` first.
+`show` does not start the screen. Run `ade screen start` first.

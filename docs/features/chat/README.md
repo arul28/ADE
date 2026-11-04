@@ -1520,8 +1520,8 @@ session, posts "The agent session restarts when this turn ends", and returns
 `scheduled: true`. The restart runs at the next turn end that leaves the chat
 idle; a
 queued message that starts the next turn first keeps it waiting for that turn.
-A session-bound agent can aim `restartSession` only at its own chat
-(`SCOPED_CHAT_ACTIONS` in `adeRpcServer.ts`). The hook lives in
+Like interrupt and stop, `restartSession` is a mesh action: a session-bound
+agent may aim it at any chat (`MESH_CHAT_ACTIONS` in `adeRpcServer.ts`). The hook lives in
 `setSessionIdle`, which every turn end passes through, with the `done` event
 as a backstop.
 

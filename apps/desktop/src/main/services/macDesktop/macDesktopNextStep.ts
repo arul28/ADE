@@ -143,7 +143,7 @@ function realInputStep(
       return {
         method: "lease",
         reason: `${why}; real input fixes this, and it needs the user's approval once per chat — ask for it, then repeat the command with --real`,
-        command: `ade mac-desktop lease --reason "${args.action} did not apply through accessibility" --text`,
+        command: `ade screen lease --reason "${args.action} did not apply through accessibility" --text`,
       };
     }
     const holder = lease.code === "MAC_DESKTOP_USER_HAS_CONTROL" ? "the user is driving this display" : "another chat holds real input";
@@ -177,14 +177,14 @@ function pointCommand(
   if (args.action === "scroll") {
     if (!args.direction) return null;
     const amount = args.amount != null ? ` --amount ${args.amount}` : "";
-    return `ade mac-desktop scroll ${args.direction} ${at}${amount}${real} --text`;
+    return `ade screen scroll ${args.direction} ${at}${amount}${real} --text`;
   }
   if (args.action !== "click") return null;
   const count = args.count ?? 1;
   if (count > 2) return null;
   const button = args.button === "right" ? " --right" : "";
   const repeat = count === 2 ? " --double" : "";
-  return `ade mac-desktop click ${at}${button}${repeat}${real} --text`;
+  return `ade screen click ${at}${button}${repeat}${real} --text`;
 }
 
 /**
@@ -362,13 +362,13 @@ export function macDesktopWindowDragNextStep(args: {
     // Already this lane's: there is nowhere to claim it to.
     return {
       method: "observe",
-      reason: `${why}. The window is already on this lane and needs no move; to show it on the user's screen, use \`ade mac-desktop present main\``,
+      reason: `${why}. The window is already on this lane and needs no move; to show it on the user's screen, use \`ade screen present main\``,
       command: null,
     };
   }
   return {
     method: "observe",
     reason: `${why}. Claim it instead: ADE moves it onto this lane's display`,
-    command: `ade mac-desktop claim --window ${hit.id} --text`,
+    command: `ade screen claim --window ${hit.id} --text`,
   };
 }

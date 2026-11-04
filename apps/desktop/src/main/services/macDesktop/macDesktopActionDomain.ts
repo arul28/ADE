@@ -1,6 +1,6 @@
 /**
  * The `mac_desktop` action domain: one private macOS screen per lane, reached
- * by agents and by `ade mac-desktop` through the action bus.
+ * by agents and by `ade screen` through the action bus.
  *
  * Only argument reading and the platform gate live here. Every method is one
  * call on `MacDesktopServiceApi`; nothing in this file decides policy, which is
