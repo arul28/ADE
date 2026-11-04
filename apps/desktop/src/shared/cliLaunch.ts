@@ -5,6 +5,7 @@ import type {
   AgentChatDroidPermissionMode,
   AgentChatMusePermissionMode,
   AgentChatPermissionMode,
+  AgentSpawnLineage,
   PtySendToSessionArgs,
   TerminalResumeLaunchConfig,
   TerminalResumeMetadata,
@@ -1210,6 +1211,8 @@ export function buildTrackedCliLaunchCommand(args: {
   preset?: TrackedCliPresetLaunch | null;
   /** False when this runtime has no RPC endpoint that can accept agent reports. */
   sessionActivityReportingEnabled?: boolean;
+  /** The chat that started this CLI, so the CLI knows to report back to it. */
+  spawnLineage?: AgentSpawnLineage | null;
 }): TrackedCliLaunchCommand {
   const permissionMode = args.permissionMode ?? "default";
   validateLaunchProfilePermissionMode(args.provider, permissionMode);
@@ -1217,7 +1220,7 @@ export function buildTrackedCliLaunchCommand(args: {
   const skillRoots = args.laneWorktreePath
     ? getAgentSkillRootCandidates({ cwd: args.laneWorktreePath })
     : getAdeAgentSkillRootsForPrompt();
-  const sessionGuidance = buildAdeCliSessionGuidance(skillRoots);
+  const sessionGuidance = buildAdeCliSessionGuidance(skillRoots, args.spawnLineage);
   // The preset lands LAST so it outranks the account env: a preset that names
   // its own config home must win over the instance patch, or a key-sourced
   // preset would run inside the user's own signed-in directory.

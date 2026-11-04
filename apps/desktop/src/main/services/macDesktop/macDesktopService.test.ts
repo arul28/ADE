@@ -1547,7 +1547,7 @@ describe("macDesktopService real input and the lease", () => {
       .catch((error: Error) => error)) as Error;
     expect(failure.message).toContain("answered no press action.");
     expect(failure.message).toContain("Next: the element has no press action");
-    expect(failure.message).toContain("mac-desktop lease");
+    expect(failure.message).toContain("screen lease");
     service.dispose();
   });
 

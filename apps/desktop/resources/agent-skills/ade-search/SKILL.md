@@ -41,7 +41,7 @@ ade search --rebuild --text                # rebuild the index (CTO-only)
 ```
 
 `ade search` refuses an option it does not know. Global options such as
-`--socket` go before the command: `ade --socket <path> search "<query>"`.
+`--project-root` go before the command: `ade --project-root <path> search "<query>"`.
 
 ## Query syntax
 

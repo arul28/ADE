@@ -17,7 +17,7 @@ describe("buildMacDesktopDirective", () => {
   // The line names the screen of the machine running the chat: a Windows
   // brain's agent was once told it had a macOS screen (2026-10-20).
   it.each([
-    { host: "darwin", command: "ade mac-desktop", wrongHost: /Windows|ade screen/, safety: /do not fall back to the user's real screen/ },
+    { host: "darwin", command: "ade screen", wrongHost: /Windows/, safety: /do not fall back to the user's real screen/ },
     { host: "win32", command: "ade screen", wrongHost: /macOS|mac-desktop|Mac Desktop/, safety: /default seat is private.*needs their yes.*never use `--allow-prompt` or `--consent`/ },
   ] as const)("emits one $host line before and after screen activation", ({ host, command, wrongHost, safety }) => {
     for (const active of [false, true]) {

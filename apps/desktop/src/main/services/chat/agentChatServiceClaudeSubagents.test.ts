@@ -1640,18 +1640,22 @@ describe("createAgentChatService", () => {
         model: "sonnet",
         orchestrationParentSessionId: parent.id,
         spawnKind: "none" as never,
-      })).rejects.toThrow(/requires spawnKind 'subagent' or 'peer'/);
+      })).rejects.toThrow(/spawnKind must be 'subagent' or 'peer'/);
     });
 
-    it("rejects a parented child chat with no explicit spawn type", async () => {
+    it("makes a parented child chat with no spawn type a subagent of its parent", async () => {
       const { service } = createService();
       const parent = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
-      await expect(service.createSession({
+      const child = await service.createSession({
         laneId: "lane-1",
         provider: "claude",
         model: "sonnet",
         orchestrationParentSessionId: parent.id,
-      })).rejects.toThrow(/requires spawnKind 'subagent' or 'peer'/);
+      });
+      expect(child.orchestrationParentSessionId).toBe(parent.id);
+      expect(child.spawnKind).toBe("subagent");
+      const unparented = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      expect(unparented.spawnKind).toBeUndefined();
     });
   });
 

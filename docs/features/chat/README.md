@@ -51,7 +51,7 @@ switching projects so they cannot populate the new project's panes.
 | `apps/desktop/src/shared/composerAtMenuRanking.ts`, `apps/desktop/src/shared/slashCommandSections.ts` | `@` / `/` menu rankers used by `ChatCommandMenu`. `composerAtMenuRanking` mixes files, chats, lanes, and terminals onto one score so a better entity is not buried under vaguely matching files (file rows keep the full path as the title and the basename as a subtitle). `slashCommandSections` ranks `/` rows on the same tiers (exact > prefix > word-prefix > substring, scattered letters only when nothing better matches, so `/test` ranks `test` first) and classifies each row as a command, a skill (`plugin:x`), or an MCP prompt (`server:name`) so the menu can group them. |
 | `apps/desktop/src/shared/modelPermissions.ts` | The canonical per-provider permission vocabulary a model chip and the composer footer share: each provider's own modes and labels (Claude `default`→"Manual" … `bypassPermissions`→"Bypass", Codex presets, OpenCode, Cursor modes, Droid tiers), the default for a fresh chip, and the map from a stored value (native or a legacy generic one) back to the `--permissions` word the CLI accepts. |
 | `apps/desktop/src/main/services/chat/claudePlanMode.ts` | Plan-mode transitions for Claude sessions, extracted from `agentChatService.ts` so the invariant is unit-testable. Entering plan mode sets `claudePermissionMode = "plan"` and stashes the suspended access mode in `claudePrePlanAccessMode` (persisted and rehydrated with the session); leaving restores it. `isSessionInPlanMode` is the single predicate the `ExitPlanMode` gate uses. Moving the access mode is what makes plan mode real: while it stayed on the pre-plan value, a `bypassPermissions` session read as bypass throughout, so the composer chip never left Bypass and the gate auto-approved the plan with no card. See [Agent Routing](agent-routing.md#interaction-mode). |
-| `apps/desktop/src/main/services/chat/turnEndQuestionCheck.ts`, `turnEndAsk.ts` | The turn-end question check. A chat whose turn ends while it still owns live background work reads as running, so a blocking question in that reply would sit under Working; `createTurnEndQuestionCheck` keeps the turn's last assistant message verbatim (raw deltas, not the trimmed `recentConversationEntries`), classifies its ending (`classifyTurnEndAsk`: ask / not_ask / unsure), raises the hand with source `turn_end_question` for a clear blocking ask, and sends an unsure ending first to Jev (`ai.jevDecide`, feature `turn_end`, background priority, any provider): `asksUser` ≥ 0.8 raises, ≤ 0.2 does not, anything between or a `null` answer falls through to the provider's cheap model exactly as before (`{asksUser}` JSON, 8s, fresh OS temp dir, fails quiet; Claude, Codex and Cursor only). The same single Jev request also asks `waitingOnOwnWork`; at ≥ 0.8, when the turn ended with live background work or a live chat it launched and no hand went up, the chat's summary carries `awaitingOwnWorkAt` (in brain memory only, cleared by the next turn start or user message, refetched through a transient `session_meta_updated`), which the Work fold reads as Waiting. Turns with only live child chats get the Jev question too, but never a hand-raise or a cheap-model call. Only a present blocked state or a stated prerequisite counts as a blocking cue; a progress note that mentions what might block later does not. Conditional opt-in offers do not block progress and are not raised. A timestamped next-turn start clears only an older `turn_end_question` marker; explicit asks and provider approvals survive. A user message or turn start cancels a pending tiebreak; repeated start events are idempotent. Subagents, open approvals and an already-raised hand are skipped. |
+| `apps/desktop/src/main/services/chat/turnEndQuestionCheck.ts`, `turnEndAsk.ts` | The turn-end question check. A chat whose turn ends while it still owns live background work reads as running, so a blocking question in that reply would sit under Working; `createTurnEndQuestionCheck` keeps the turn's last assistant message verbatim (raw deltas, not the trimmed `recentConversationEntries`), classifies its ending (`classifyTurnEndAsk`: ask / not_ask / unsure), raises the hand with source `turn_end_question` for a clear blocking ask, and sends an unsure ending first to Jev (`ai.jevDecide`, feature `turn_end`, background priority, any provider): `asksUser` ≥ 0.8 raises, ≤ 0.2 does not, anything between or a `null` answer falls through to the provider's cheap model exactly as before (`{asksUser}` JSON, 8s, fresh OS temp dir, fails quiet; Claude, Codex and Cursor only). The same single Jev request also asks `waitingOnOwnWork`; at ≥ 0.8, when the turn ended with live background work or a live chat it launched and no hand went up, the chat's summary carries `awaitingOwnWorkAt` (in brain memory only, cleared by the next turn start or user message, refetched through a transient `session_meta_updated`), which the Work fold reads as Waiting. Turns with only live child chats get the Jev question too, but never a cheap-model call. A turn that does not own live background work (quiet, or with only child chats running) raises the hand only for a clear rules ask that Jev also confirms (`asksUser` ≥ 0.8); no Jev, an unsure Jev or a "no" leaves the row alone, because a false Needs you there is worse than a missed one. Only a present blocked state or a stated prerequisite counts as a blocking cue; a progress note that mentions what might block later does not. Conditional opt-in offers do not block progress and are not raised. A timestamped next-turn start clears only an older `turn_end_question` marker; explicit asks and provider approvals survive. A user message or turn start cancels a pending tiebreak; repeated start events are idempotent. Subagents, open approvals and an already-raised hand are skipped. |
 | `apps/desktop/src/main/services/jev/jevService.ts`, `jevTally.ts`, `jevZenCredential.ts`; `shared/jevSettings.ts` | The Jev decision helper (see [Jev decisions](#jev-decisions)): the route chain (free, Zen credit, ADE bonus) with a breaker per route, the per-day tally (`jevTally.ts`), the OpenCode Zen sign-in reader for the Zen credit route (`jevZenCredential.ts`), and which Smart decisions switch gates each feature (`jevSettings.ts`). |
 | `apps/desktop/src/main/services/chat/awaitingOwnWorkTracker.ts`, `statusLineStaleCheck.ts`, `settleNudgeSweep.ts` | Jev-backed chat checks: the awaiting-own-work marker set at turn end, the stale status-line regen, and the settle-nudge sweep (every 30 minutes, at most 10 calls, skipped while no Jev route can answer (`status().answerable`); a switched-off setting hides this machine's verdicts within a minute). |
 | `apps/desktop/src/main/services/pty/cliStatusInspector.ts` | The idle-terminal check's request (last 40 lines, each capped at 200 characters, 4 KB in all, run through `redactSecrets`) and verdict; `ptyService.ts` decides when to ask and raises the `cli_prompt` hand. |
@@ -1520,8 +1520,8 @@ session, posts "The agent session restarts when this turn ends", and returns
 `scheduled: true`. The restart runs at the next turn end that leaves the chat
 idle; a
 queued message that starts the next turn first keeps it waiting for that turn.
-A session-bound agent can aim `restartSession` only at its own chat
-(`SCOPED_CHAT_ACTIONS` in `adeRpcServer.ts`). The hook lives in
+Like interrupt and stop, `restartSession` is a mesh action: a session-bound
+agent may aim it at any chat (`CHAT_ACTION_SCOPE` in `adeRpcServer.ts`). The hook lives in
 `setSessionIdle`, which every turn end passes through, with the `done` event
 as a backstop.
 
@@ -3629,13 +3629,15 @@ A chat can spawn another chat. New relationships use `spawnKind = "subagent" |
 (`apps/desktop/src/shared/types/chat.ts`), which rides the same session
 lineage field bag as `orchestrationParentSessionId` (persisted, hydrated,
 and projected onto summaries through `SPAWN_LINEAGE_FIELD_NAMES` in
-`agentChatService.ts`). Hydration ignores legacy `none` values, and every new
-parented session rejects missing or `none` types.
+`agentChatService.ts`). Hydration ignores legacy `none` values; a new parented
+session with no type becomes a `subagent`, and `none` is rejected.
 
 The child remains a full ADE agent with normal runtime, permissions, and tools.
-The type is a coordination contract: use `subagent` whenever the parent will
-need, join, read, or review the result (including parallel fan-out); use `peer`
-only for fire-and-forget work the parent does not expect to consume.
+The type is a coordination contract: `subagent` (the default) reports back to
+the parent; `peer` is for fire-and-forget work the parent does not expect to
+consume. A tracked CLI child cannot be read for turn ends, so its launch
+guidance (`buildCliSpawnReportGuidance`) tells it to report with
+`ade chat message` itself.
 
 Where it is set:
 
@@ -3646,7 +3648,7 @@ Where it is set:
   passive `launchedBySessionId` from the RPC-stamped runtime actor (never from
   the payload). That record does not nest, wake or cap permissions; it only
   lets Focus treat the finished helper as the launcher's business (see
-  `terminals-and-sessions/ui-surfaces.md`). A parent without a type is a hard CLI/RPC/service error.
+  `terminals-and-sessions/ui-surfaces.md`). A parent without a type defaults to `subagent` on every layer (CLI flags, the `--arg` bag, `start_cli_session`, `createSession`); only an unknown type is an error.
   Chat mode stores the fields on the child chat and uses `spawnKind` for the
   completion policy below. Agent-provider CLI mode sends the same fields to
   `start_cli_session`, which stores them in `TerminalResumeMetadata` for
@@ -3659,9 +3661,9 @@ Where it is set:
   thread. There is no separate orchestration mode.
 - The CTO's `spawnChat` tool sets `orchestrationParentSessionId` to the calling
   CTO session unconditionally and defaults `spawnKind` to `"subagent"` — twice,
-  in the zod schema and again in the tool body, because the host rejects a
-  parented chat with no spawn kind and `execute` is reachable without schema
-  parsing. The resolved kind is echoed back in the tool result.
+  in the zod schema and again in the tool body, so the kind echoed back in the
+  tool result is explicit (the host also defaults a parented chat with no kind
+  to `subagent`).
 
 New `subagent` chats and tracked CLI sessions inherit a full-auto parent's
 permissions when the launch does not specify a child permission mode. The
