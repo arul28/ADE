@@ -1,18 +1,19 @@
 /**
- * Settings › Connections, before one is opened: what ADE and its agents are
+ * Settings › Integrations, before one is opened: what ADE and its agents are
  * connected to, then everything that can be added.
  *
  * - Connected: GitHub, Linear and Jira when they work, and every MCP server in
- *   the account. Each tile says where it is saved.
- * - Add a connection: ADE's own integrations, then the verified MCP servers of
- *   ADE's catalogue (`mcpCatalogue.ts`), then "Add your own".
+ *   the account.
+ * - Add: ADE's own integrations, then MCP servers. Any MCP server can be
+ *   added by command or URL; the catalogue (`mcpCatalogue.ts`) is only quick
+ *   setups for popular ones, so the page never reads as the full list.
  *
  * Integration statuses are read on the page's machine (`pin`), where their
  * credentials live. MCP servers belong to the account, so they are read
- * through this desktop's brain with no pin, as Settings › Connections › MCP servers does.
+ * through this desktop's brain with no pin, as Settings › Integrations › MCP servers does.
  */
 import React, { useEffect, useMemo, useState } from "react";
-import { CaretRight, DownloadSimple, MagnifyingGlass, Plugs, Plus, SealCheck } from "@phosphor-icons/react";
+import { CaretRight, DownloadSimple, MagnifyingGlass, Plugs, Plus } from "@phosphor-icons/react";
 import type { OpenProjectBinding } from "../../../../shared/types";
 import { captureError } from "../../../../shared/sentry/capture";
 import { MCP_CATALOGUE, matchMcpCatalogue, type McpCatalogueEntry } from "../../../../shared/mcpCatalogue";
@@ -23,11 +24,13 @@ import { SolidLogo } from "../providers/ProviderHero";
 import { useMcpRegistry } from "../mcp/useMcpRegistry";
 import { MCP_ACCENT, mcpCatalogueBrand } from "../mcp/mcpCatalogueBrand";
 import { McpCatalogueAddDialog } from "../mcp/McpCatalogueAddDialog";
+import { McpServerDialog } from "../mcp/McpServerDialog";
+import { showToast } from "../../app/toast/toastStore";
 import "../providers/providerPage.css";
 import "./integrationPage.css";
 
-/** A page under Connections: one integration's, or the MCP servers'. */
-export type ConnectionPageId = IntegrationId | "mcp";
+/** A page under Integrations: GitHub, Linear or Jira, or the MCP servers. */
+export type IntegrationsPageId = IntegrationId | "mcp";
 
 type Summary = { tone: IntegrationTone; label: string };
 
@@ -118,7 +121,7 @@ function matches(query: string, ...fields: Array<string | undefined>): boolean {
 }
 
 /** A small logo tile: an integration's or a catalogue server's 3D mark, or a plug. */
-function ConnectionMark({ server, entry, integration }: {
+function IntegrationMark({ server, entry, integration }: {
   server?: McpRegistryServer;
   entry?: McpCatalogueEntry | null;
   integration?: IntegrationId;
@@ -126,7 +129,7 @@ function ConnectionMark({ server, entry, integration }: {
   if (integration) {
     const brand = integrationBrand(integration);
     return (
-      <span className="ade-cx-mark" style={brand.banner} data-light={brand.lightBanner ? "true" : undefined}>
+      <span className="ade-ix-mark" style={brand.banner} data-light={brand.lightBanner ? "true" : undefined}>
         <SolidLogo spec={{ ...brand.logo, size: 22 }} straight />
       </span>
     );
@@ -134,31 +137,32 @@ function ConnectionMark({ server, entry, integration }: {
   if (entry) {
     const brand = mcpCatalogueBrand(entry);
     return (
-      <span className="ade-cx-mark" style={brand.banner}>
+      <span className="ade-ix-mark" style={brand.banner}>
         <SolidLogo spec={{ ...brand.logo, size: 22 }} straight />
       </span>
     );
   }
   return (
-    <span className="ade-cx-mark ade-cx-mark-plain" title={server?.name}>
+    <span className="ade-ix-mark ade-ix-mark-plain" title={server?.name}>
       <Plugs size={18} weight="duotone" />
     </span>
   );
 }
 
-export function ConnectionsHome({
+export function IntegrationsHome({
   pin,
   onOpen,
 }: {
   /** The page's machine: each integration status is read where its credential lives. */
   pin: OpenProjectBinding | null;
   /** Opens a page; `server` focuses one MCP server on it. */
-  onOpen: (page: ConnectionPageId, server?: string) => void;
+  onOpen: (page: IntegrationsPageId, server?: string) => void;
 }) {
   const summaries = useIntegrationSummaries(pin);
   const registry = useMcpRegistry();
   const [query, setQuery] = useState("");
   const [adding, setAdding] = useState<McpCatalogueEntry | null>(null);
+  const [addingOwn, setAddingOwn] = useState(false);
   const needle = query.trim().toLowerCase();
 
   const connectedIntegrations = INTEGRATION_IDS.filter((id) => summaries[id].tone === "ok");
@@ -181,24 +185,24 @@ export function ConnectionsHome({
   const canAdd = registry.phase === "ready";
 
   return (
-    <div className="ade-ig-home ade-cx-home">
+    <div className="ade-ig-home ade-ix-home">
       {connectedIntegrations.length || servers.length ? (
-        <section className="ade-cx-section" aria-label="Connected">
-          <h3 className="ade-cx-heading">Connected</h3>
-          <div className="ade-cx-chips">
+        <section className="ade-ix-section" aria-label="Connected">
+          <h3 className="ade-ix-heading">Connected</h3>
+          <div className="ade-ix-chips">
             {connectedIntegrations.map((id) => (
               <button
                 key={id}
                 type="button"
-                className="ade-cx-chip"
+                className="ade-ix-chip"
                 style={integrationThemeVars(integrationBrand(id).accent)}
-                data-testid={`connection-connected-${id}`}
+                data-testid={`integrations-connected-${id}`}
                 onClick={() => onOpen(id)}
               >
-                <ConnectionMark integration={id} />
-                <span className="ade-cx-chip-text">
-                  <span className="ade-cx-chip-name"><i className="ade-ig-dot" data-tone="ok" />{integrationBrand(id).label}</span>
-                  <span className="ade-cx-chip-meta">{SAVED_IN[id]}</span>
+                <IntegrationMark integration={id} />
+                <span className="ade-ix-chip-text">
+                  <span className="ade-ix-chip-name"><i className="ade-ig-dot" data-tone="ok" />{integrationBrand(id).label}</span>
+                  <span className="ade-ix-chip-meta">{SAVED_IN[id]}</span>
                 </span>
               </button>
             ))}
@@ -208,18 +212,18 @@ export function ConnectionsHome({
                 <button
                   key={server.name}
                   type="button"
-                  className="ade-cx-chip"
+                  className="ade-ix-chip"
                   style={integrationThemeVars(entry ? mcpCatalogueBrand(entry).accent : MCP_ACCENT)}
-                  data-testid={`connection-connected-mcp-${server.name}`}
+                  data-testid={`integrations-connected-mcp-${server.name}`}
                   onClick={() => onOpen("mcp", server.name)}
                 >
-                  <ConnectionMark server={server} entry={entry} />
-                  <span className="ade-cx-chip-text">
-                    <span className="ade-cx-chip-name">
+                  <IntegrationMark server={server} entry={entry} />
+                  <span className="ade-ix-chip-text">
+                    <span className="ade-ix-chip-name">
                       <i className="ade-ig-dot" data-tone={server.enabled ? "ok" : undefined} />
                       {entry?.name ?? server.name}
                     </span>
-                    <span className="ade-cx-chip-meta">MCP · your account</span>
+                    <span className="ade-ix-chip-meta">MCP · your account</span>
                   </span>
                 </button>
               );
@@ -228,17 +232,17 @@ export function ConnectionsHome({
         </section>
       ) : null}
 
-      <section className="ade-cx-section" aria-label="Add a connection">
-        <div className="ade-cx-heading-row">
-          <h3 className="ade-cx-heading">Add a connection</h3>
-          <label className="ade-cx-search">
+      <section className="ade-ix-section" aria-label="Add">
+        <div className="ade-ix-heading-row">
+          <h3 className="ade-ix-heading">Add</h3>
+          <label className="ade-ix-search">
             <MagnifyingGlass size={13} />
             <input
               type="search"
               value={query}
               placeholder="Search"
-              aria-label="Search connections"
-              data-testid="connections-search"
+              aria-label="Search integrations"
+              data-testid="integrations-search"
               onChange={(event) => setQuery(event.target.value)}
             />
           </label>
@@ -246,7 +250,7 @@ export function ConnectionsHome({
 
         {builtIn.length ? (
           <>
-            <h4 className="ade-cx-subheading">Built into ADE</h4>
+            <h4 className="ade-ix-subheading">Built into ADE</h4>
             <div className="ade-ig-grid">
               {builtIn.map((id) => {
                 const brand = integrationBrand(id);
@@ -273,7 +277,7 @@ export function ConnectionsHome({
                       <span className="ade-ig-tile-status">
                         <i className="ade-ig-dot" data-tone={summary.tone} />
                         <span>{summary.label}</span>
-                        <span className="ade-cx-saved">{SAVED_IN[id]}</span>
+                        <span className="ade-ix-saved">{SAVED_IN[id]}</span>
                       </span>
                     </span>
                   </button>
@@ -283,67 +287,88 @@ export function ConnectionsHome({
           </>
         ) : null}
 
-        <h4 className="ade-cx-subheading">
-          MCP servers
-          <span className="ade-cx-subheading-note"><SealCheck size={11} weight="fill" /> Verified by ADE · saved to your account</span>
-        </h4>
-        <div className="ade-cx-grid">
+        <div className="ade-ix-mcp-head">
+          <h4 className="ade-ix-subheading">MCP servers</h4>
+          <span className="ade-ix-mcp-actions">
+            {registry.found.length ? (
+              <button
+                type="button"
+                className="ade-ix-btn"
+                data-testid="integrations-import"
+                onClick={() => onOpen("mcp")}
+              >
+                <DownloadSimple size={13} weight="bold" />
+                Import {registry.found.length} from your other tools
+              </button>
+            ) : null}
+            <button
+              type="button"
+              className="ade-ix-btn"
+              data-variant="primary"
+              disabled={!canAdd}
+              data-testid="integrations-add-own"
+              onClick={() => setAddingOwn(true)}
+            >
+              <Plus size={13} weight="bold" />
+              Add any MCP server
+            </button>
+          </span>
+        </div>
+        <p className="ade-ix-mcp-lead">Any MCP server works, by command or URL. Below are quick setups for popular ones.</p>
+        <div className="ade-ix-grid">
           {catalogue.map((entry) => {
             const brand = mcpCatalogueBrand(entry);
             return (
               <button
                 key={entry.id}
                 type="button"
-                className="ade-cx-tile"
+                className="ade-ix-tile"
                 style={integrationThemeVars(brand.accent)}
                 disabled={!canAdd}
-                data-testid={`connection-catalogue-${entry.id}`}
+                data-testid={`integrations-catalogue-${entry.id}`}
                 onClick={() => setAdding(entry)}
               >
-                <ConnectionMark entry={entry} />
-                <span className="ade-cx-tile-text">
-                  <span className="ade-cx-tile-name">{entry.name}</span>
-                  <span className="ade-cx-tile-desc">{entry.description}</span>
+                <IntegrationMark entry={entry} />
+                <span className="ade-ix-tile-text">
+                  <span className="ade-ix-tile-name">{entry.name}</span>
+                  <span className="ade-ix-tile-desc">{entry.description}</span>
                 </span>
-                <Plus size={13} weight="bold" className="ade-cx-tile-add" />
+                <Plus size={13} weight="bold" className="ade-ix-tile-add" />
               </button>
             );
           })}
-          {matches(needle, "add your own mcp server custom") ? (
-            <button
-              type="button"
-              className="ade-cx-tile ade-cx-tile-own"
-              style={integrationThemeVars(MCP_ACCENT)}
-              data-testid="connection-add-own"
-              onClick={() => onOpen("mcp")}
-            >
-              <span className="ade-cx-mark ade-cx-mark-plain"><Plus size={18} weight="bold" /></span>
-              <span className="ade-cx-tile-text">
-                <span className="ade-cx-tile-name">Add your own</span>
-                <span className="ade-cx-tile-desc">Any MCP server, by command or URL.</span>
-              </span>
-            </button>
-          ) : null}
-          {registry.found.length && matches(needle, "import found this computer") ? (
-            <button
-              type="button"
-              className="ade-cx-tile ade-cx-tile-own"
-              style={integrationThemeVars(MCP_ACCENT)}
-              data-testid="connection-import"
-              onClick={() => onOpen("mcp")}
-            >
-              <span className="ade-cx-mark ade-cx-mark-plain"><DownloadSimple size={18} weight="bold" /></span>
-              <span className="ade-cx-tile-text">
-                <span className="ade-cx-tile-name">Import {registry.found.length}</span>
-                <span className="ade-cx-tile-desc">Servers your other tools have on this computer.</span>
-              </span>
-            </button>
-          ) : null}
+          <button
+            type="button"
+            className="ade-ix-tile ade-ix-tile-own"
+            style={integrationThemeVars(MCP_ACCENT)}
+            disabled={!canAdd}
+            data-testid="integrations-add-own-tile"
+            onClick={() => setAddingOwn(true)}
+          >
+            <span className="ade-ix-mark ade-ix-mark-plain"><Plus size={18} weight="bold" /></span>
+            <span className="ade-ix-tile-text">
+              <span className="ade-ix-tile-name">{needle ? `Add "${query.trim()}"` : "Not listed?"}</span>
+              <span className="ade-ix-tile-desc">Add any MCP server by its command or URL.</span>
+            </span>
+          </button>
         </div>
-        {!builtIn.length && !catalogue.length && needle ? (
-          <p className="ade-cx-empty">Nothing matches "{query.trim()}". Add it as your own MCP server.</p>
-        ) : null}
       </section>
+
+      {addingOwn ? (
+        <McpServerDialog
+          editing={null}
+          existingNames={servers.map((server) => server.name)}
+          heldSecretKeys={registry.check?.heldSecretKeys ?? null}
+          onClose={() => setAddingOwn(false)}
+          onSave={async (server, secrets) => {
+            const error = await registry.saveServer(server, secrets, "create");
+            if (error) return error;
+            showToast({ tone: "success", title: `Added ${server.name}`, message: "New chats get it from now on." });
+            setAddingOwn(false);
+            return null;
+          }}
+        />
+      ) : null}
 
       {adding ? (
         <McpCatalogueAddDialog

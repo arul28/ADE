@@ -708,18 +708,18 @@ user approves it in every permission mode. Never ask for a key in chat.
 
 - A name from ADE's catalogue (`ade mcp servers --help` lists them: `notion`,
   `sentry`, `supabase`, `stripe`, …) uses the vendor's own server. The card
-  shows it as Verified, asks only for the key it needs, and runs the sign-in
-  when the server uses one.
+  shows its brand, asks only for the key it needs, and runs the sign-in when
+  the server uses one.
 - `github`, `linear` and `atlassian` open ADE's own connect card instead: one
   connection covers `ade github`/`ade linear`/`ade jira` and every agent.
-- Any other server: describe it (`--url`, or the command line after `--`).
-  Its card says Not verified.
+- Any other server works too: describe it (`--url`, or the command line after
+  `--`). Its card says Custom, so the user reads what it runs.
 
 When the user named the server, raise the card at once. When it was your own
 idea, ask in words first. A server the user adds reaches this chat only after
 they press **Refresh chat** above the composer; ask them to. If a server says it
 needs a sign-in, tell them to press **Sign in** on its row in
-Settings › Connections › MCP servers, then **Refresh chat**.
+Settings › Integrations › MCP servers, then **Refresh chat**.
 
 ## Side chats
 

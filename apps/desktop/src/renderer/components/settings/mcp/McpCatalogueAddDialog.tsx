@@ -1,5 +1,5 @@
 /**
- * Add one server from ADE's catalogue, from Settings › Connections.
+ * Add one server from ADE's catalogue, from Settings › Integrations.
  *
  * The definition is the catalogue's, so the person reads what runs and types
  * only the key it needs. A server that signs in through the browser is added,
@@ -7,14 +7,14 @@
  * goes to the account vault, so every machine finds it.
  */
 import React, { useState } from "react";
-import { ArrowSquareOut, SealCheck } from "@phosphor-icons/react";
+import { ArrowSquareOut } from "@phosphor-icons/react";
 import {
   mcpCatalogueSecretValue,
   mcpCatalogueServer,
   type McpCatalogueEntry,
 } from "../../../../shared/mcpCatalogue";
 import type { McpSecretField } from "../../../../shared/mcpRegistry";
-import { mcpServerRunsLine } from "../../../../shared/mcpServerRequest";
+import { mcpServerRunsLabel, mcpServerRunsLine } from "../../../../shared/mcpServerRequest";
 import { Dialog } from "../../ui/dialog";
 import { Banner } from "../../ui/notice";
 import { showToast } from "../../app/toast/toastStore";
@@ -74,7 +74,7 @@ export function McpCatalogueAddDialog({
       showToast({
         tone: result.cancelled ? "info" : "warning",
         title: `Added ${entry.name}, not signed in`,
-        message: result.cancelled ? "Sign in from its row in Connections › MCP servers." : result.message,
+        message: result.cancelled ? "Sign in from its row in Integrations › MCP servers." : result.message,
       });
     }
     onAdded();
@@ -105,17 +105,17 @@ export function McpCatalogueAddDialog({
         { label: "Cancel", onClick: onClose, disabled: phase === "saving" },
       ]}
     >
-      <div className="ade-cx-dialog" style={integrationThemeVars(brand.accent)}>
-        <div className="ade-cx-dialog-hero" style={brand.banner}>
+      <div className="ade-ix-dialog" style={integrationThemeVars(brand.accent)}>
+        <div className="ade-ix-dialog-hero" style={brand.banner}>
           <SolidLogo spec={{ ...brand.logo, size: 34 }} straight />
-          <div className="ade-cx-dialog-id">
-            <span className="ade-cx-dialog-name">{entry.name}</span>
-            <span className="ade-cx-dialog-by"><SealCheck size={11} weight="fill" /> {entry.publisher} · verified by ADE</span>
+          <div className="ade-ix-dialog-id">
+            <span className="ade-ix-dialog-name">{entry.name}</span>
+            <span className="ade-ix-dialog-by">By {entry.publisher}</span>
           </div>
         </div>
-        <p className="ade-cx-dialog-desc">{entry.description}</p>
+        <p className="ade-ix-dialog-desc">{entry.description}</p>
         <div className="ade-mcpc-runs">
-          <span className="ade-mcpc-runs-label">Runs</span>
+          <span className="ade-mcpc-runs-label">{mcpServerRunsLabel(server)}</span>
           <code className="ade-mcpc-runs-line">{mcpServerRunsLine(server)}</code>
         </div>
         {(entry.secrets ?? []).map((secret, index) => (
@@ -135,7 +135,7 @@ export function McpCatalogueAddDialog({
             />
           </label>
         ))}
-        <div className="ade-cx-dialog-links">
+        <div className="ade-ix-dialog-links">
           {entry.tokenUrl && entry.secrets?.length ? (
             <button type="button" className="ade-icc-link" onClick={() => openUrl(entry.tokenUrl!)}>
               Get a key <ArrowSquareOut size={10} weight="bold" />

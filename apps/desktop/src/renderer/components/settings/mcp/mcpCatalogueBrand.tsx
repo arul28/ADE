@@ -1,7 +1,7 @@
 /**
  * A catalogue server's look, built from its entry's brand color and mark:
  * the same shape as an integration's (`IntegrationHeroBrand`), so the MCP
- * card, the Connections tiles and the server page draw it the same way.
+ * card, the Integrations tiles and the server page draw it the same way.
  * A server outside the catalogue keeps MCP's own violet and a plug.
  */
 import type { CSSProperties, ReactNode } from "react";

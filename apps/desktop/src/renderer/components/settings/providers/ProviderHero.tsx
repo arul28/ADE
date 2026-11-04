@@ -79,6 +79,9 @@ const SOLID_DEPTH = 10;
 export function SolidLogo({ spec, straight = false }: { spec: Extract<ProviderBrandLogo, { kind: "solid" }>; straight?: boolean }) {
   const size = spec.size ?? 84;
   const layers = Array.from({ length: SOLID_DEPTH }, (_, index) => SOLID_DEPTH - index);
+  // A straight mark is seen from the front: a thin edge, in proportion to the
+  // mark. A fixed depth would make a small mark look tall and tipped back.
+  const straightStep = 0.45 * (size / 84);
   return (
     <div className="ade-pv-mark3d" data-straight={straight ? "true" : undefined} aria-hidden>
       <div className="ade-pv-mark3d-floor" />
@@ -88,7 +91,7 @@ export function SolidLogo({ spec, straight = false }: { spec: Extract<ProviderBr
             key={depth}
             className="ade-pv-mark3d-layer"
             style={{
-              transform: straight ? `translateY(${depth * 0.7}px)` : `translate(${depth * 0.8}px, ${depth * 1}px)`,
+              transform: straight ? `translateY(${depth * straightStep}px)` : `translate(${depth * 0.8}px, ${depth * 1}px)`,
               // The far layers are darker, so the side reads as lit from the front.
               ...(spec.fullColor
                 ? { filter: `brightness(${0.32 + (SOLID_DEPTH - depth) * 0.035}) saturate(1.3)` }

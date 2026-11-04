@@ -1108,7 +1108,7 @@ export const IPC = {
   accountSettingsSync: "ade.accountSettings.sync",
 
   /**
-   * Settings > Connections > MCP servers: what the renderer cannot do itself. It reads and
+   * Settings > Integrations > MCP servers: what the renderer cannot do itself. It reads and
    * writes the registry's settings rows through `accountSettings`; these look
    * at this computer and put secret values in the account vault. None of them
    * returns a secret value.

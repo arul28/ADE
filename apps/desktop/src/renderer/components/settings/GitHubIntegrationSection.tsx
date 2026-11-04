@@ -3,7 +3,7 @@ import { GitHubSection } from "./GitHubSection";
 import { useSettingsMachineScope } from "./SettingsMachineScope";
 
 /**
- * Settings › Connections › GitHub: the GitHub page, banner and cards.
+ * Settings › Integrations › GitHub: the GitHub page, banner and cards.
  *
  * Keyed on the machine's pin: a new pin starts a fresh section, so nothing
  * the last machine was doing (a device code, a pending save) lands here.

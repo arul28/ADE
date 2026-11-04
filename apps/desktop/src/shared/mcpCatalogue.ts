@@ -2,10 +2,11 @@
  * ADE's catalogue of known MCP servers: the vendor's own address or command,
  * how it signs in, and its brand. It ships with ADE and is read-only.
  *
- * A catalogue entry is what makes a server "verified": the card and Settings
- * show the brand and a badge only when a server's URL or package is exactly an
- * entry's. Every address here comes from the vendor's own docs; an entry that
- * could not be confirmed is left out, never guessed.
+ * The catalogue is quick setups for popular servers, not a list of what ADE
+ * supports: any MCP server can be added by command or URL. The card and
+ * Settings show an entry's brand and publisher only when a server's URL or
+ * package is exactly the entry's. Every address here comes from the vendor's
+ * own docs; an entry that could not be confirmed is left out, never guessed.
  *
  * GitHub, Linear and Jira are ADE integrations. Their entries carry `native`,
  * and asking for one raises the integration's connect card instead of adding

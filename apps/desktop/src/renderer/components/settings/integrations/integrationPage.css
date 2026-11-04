@@ -1,5 +1,5 @@
 /*
- * Settings › Connections: the grid of integrations, and one integration's
+ * Settings › Integrations: the grid of integrations, and one integration's
  * page. The page root (`.ade-ig-page`, also `.ade-pv-provider`) sets
  * `--ig-accent` from the maker's color; the 3D logo is the provider pages'.
  *
@@ -583,12 +583,12 @@
 }
 .ade-ig-hero[data-light="true"] .ade-ig-hero-panel > .ade-ig-hero-toggle { border-top-color: rgba(16, 21, 28, 0.08); }
 
-/* ── Connections home: what is connected, then what can be added ── */
-.ade-cx-home { gap: 22px; }
-.ade-cx-section { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
-.ade-cx-heading-row { display: flex; align-items: center; gap: 12px; }
-.ade-cx-heading { margin: 0; font-size: 13px; font-weight: 650; color: var(--color-fg); }
-.ade-cx-subheading {
+/* ── Integrations home: what is connected, then what can be added ── */
+.ade-ix-home { gap: 22px; }
+.ade-ix-section { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.ade-ix-heading-row { display: flex; align-items: center; gap: 12px; }
+.ade-ix-heading { margin: 0; font-size: 13px; font-weight: 650; color: var(--color-fg); }
+.ade-ix-subheading {
   display: flex;
   align-items: center;
   gap: 10px;
@@ -599,16 +599,37 @@
   text-transform: uppercase;
   color: var(--kit-text-3, var(--color-muted-fg));
 }
-.ade-cx-subheading-note {
+/* MCP servers: any server can be added; the catalogue is only quick setups. */
+.ade-ix-mcp-head { display: flex; align-items: center; gap: 12px; margin-top: 6px; }
+.ade-ix-mcp-head > .ade-ix-subheading { margin: 0; }
+.ade-ix-mcp-actions { display: inline-flex; align-items: center; gap: 8px; margin-left: auto; }
+.ade-ix-btn {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  font-weight: 550;
-  letter-spacing: 0;
-  text-transform: none;
+  gap: 6px;
+  height: 28px;
+  padding: 0 11px;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--color-fg) 5%, transparent);
+  box-shadow: inset 0 0 0 1px var(--kit-card-edge, var(--color-border));
+  color: var(--color-fg);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
 }
-.ade-cx-subheading-note > svg { color: #4ade80; }
-.ade-cx-search {
+.ade-ix-btn:hover:not(:disabled) { background: color-mix(in srgb, var(--color-fg) 9%, transparent); }
+.ade-ix-btn[data-variant="primary"] {
+  background: var(--color-accent);
+  box-shadow: none;
+  color: var(--color-accent-fg, #fff);
+}
+.ade-ix-btn[data-variant="primary"]:hover:not(:disabled) { filter: brightness(1.08); background: var(--color-accent); }
+.ade-ix-btn:disabled { opacity: 0.5; cursor: default; }
+.ade-ix-btn:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.ade-ix-mcp-lead { margin: -4px 0 0; font-size: 12px; color: var(--kit-text-3, var(--color-muted-fg)); }
+.ade-ix-search {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -621,8 +642,8 @@
   box-shadow: inset 0 0 0 1px var(--kit-card-edge, var(--color-border));
   color: var(--kit-text-3, var(--color-muted-fg));
 }
-.ade-cx-search:focus-within { box-shadow: inset 0 0 0 1px var(--color-accent); }
-.ade-cx-search > input {
+.ade-ix-search:focus-within { box-shadow: inset 0 0 0 1px var(--color-accent); }
+.ade-ix-search > input {
   flex: 1 1 auto;
   min-width: 0;
   height: 100%;
@@ -637,7 +658,7 @@
 }
 
 /* A brand's mark on its own banner, small. */
-.ade-cx-mark {
+.ade-ix-mark {
   flex: none;
   display: grid;
   place-items: center;
@@ -647,16 +668,16 @@
   overflow: hidden;
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
 }
-.ade-cx-mark > .ade-pv-mark3d { width: 30px; height: 30px; }
-.ade-cx-mark .ade-pv-mark3d-floor { display: none; }
-.ade-cx-mark-plain {
+.ade-ix-mark > .ade-pv-mark3d { width: 30px; height: 30px; }
+.ade-ix-mark .ade-pv-mark3d-floor { display: none; }
+.ade-ix-mark-plain {
   color: color-mix(in srgb, var(--ig-accent) 60%, white 40%);
   background: color-mix(in srgb, var(--ig-accent) 22%, rgba(14, 15, 19, 0.9));
 }
 
 /* Connected: one chip per service. */
-.ade-cx-chips { display: flex; flex-wrap: wrap; gap: 8px; }
-.ade-cx-chip {
+.ade-ix-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.ade-ix-chip {
   display: inline-flex;
   align-items: center;
   gap: 9px;
@@ -671,18 +692,18 @@
   cursor: pointer;
   transition: border-color 140ms ease, transform 140ms ease;
 }
-.ade-cx-chip:hover { border-color: color-mix(in srgb, var(--ig-accent) 50%, transparent); transform: translateY(-1px); }
-.ade-cx-chip:focus-visible { outline: 2px solid var(--ig-accent); outline-offset: 2px; }
-.ade-cx-chip-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.ade-cx-chip-name { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 600; color: var(--color-fg); white-space: nowrap; }
-.ade-cx-chip-meta { font-size: 11px; color: var(--kit-text-3, var(--color-muted-fg)); white-space: nowrap; }
-.ade-cx-saved { margin-left: auto; flex: none; font-size: 10.5px; color: var(--kit-text-3, var(--color-muted-fg)); }
+.ade-ix-chip:hover { border-color: color-mix(in srgb, var(--ig-accent) 50%, transparent); transform: translateY(-1px); }
+.ade-ix-chip:focus-visible { outline: 2px solid var(--ig-accent); outline-offset: 2px; }
+.ade-ix-chip-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ade-ix-chip-name { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 600; color: var(--color-fg); white-space: nowrap; }
+.ade-ix-chip-meta { font-size: 11px; color: var(--kit-text-3, var(--color-muted-fg)); white-space: nowrap; }
+.ade-ix-saved { margin-left: auto; flex: none; font-size: 10.5px; color: var(--kit-text-3, var(--color-muted-fg)); }
 
 /* MCP servers: a dense grid of logo tiles. */
-.ade-cx-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
-@container integrationhome (max-width: 720px) { .ade-cx-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-@container integrationhome (max-width: 460px) { .ade-cx-grid { grid-template-columns: minmax(0, 1fr); } }
-.ade-cx-tile {
+.ade-ix-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+@container integrationhome (max-width: 720px) { .ade-ix-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@container integrationhome (max-width: 460px) { .ade-ix-grid { grid-template-columns: minmax(0, 1fr); } }
+.ade-ix-tile {
   position: relative;
   display: flex;
   align-items: center;
@@ -698,17 +719,17 @@
   cursor: pointer;
   transition: border-color 140ms ease, transform 140ms ease, box-shadow 140ms ease;
 }
-.ade-cx-tile:hover:not(:disabled) {
+.ade-ix-tile:hover:not(:disabled) {
   border-color: color-mix(in srgb, var(--ig-accent) 50%, transparent);
   transform: translateY(-1px);
   box-shadow: 0 12px 24px -20px color-mix(in srgb, var(--ig-accent) 90%, transparent);
 }
-.ade-cx-tile:focus-visible { outline: 2px solid var(--ig-accent); outline-offset: 2px; }
-.ade-cx-tile:disabled { opacity: 0.55; cursor: default; }
-.ade-cx-tile-own { border-style: dashed; }
-.ade-cx-tile-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.ade-cx-tile-name { font-size: 12.5px; font-weight: 600; color: var(--color-fg); }
-.ade-cx-tile-desc {
+.ade-ix-tile:focus-visible { outline: 2px solid var(--ig-accent); outline-offset: 2px; }
+.ade-ix-tile:disabled { opacity: 0.55; cursor: default; }
+.ade-ix-tile-own { border-style: dashed; }
+.ade-ix-tile-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ade-ix-tile-name { font-size: 12.5px; font-weight: 600; color: var(--color-fg); }
+.ade-ix-tile-desc {
   font-size: 11px;
   line-height: 1.35;
   color: var(--kit-text-3, var(--color-muted-fg));
@@ -716,7 +737,7 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.ade-cx-tile-add {
+.ade-ix-tile-add {
   position: absolute;
   right: 10px;
   top: 50%;
@@ -725,13 +746,12 @@
   opacity: 0;
   transition: opacity 140ms ease;
 }
-.ade-cx-tile:hover .ade-cx-tile-add, .ade-cx-tile:focus-visible .ade-cx-tile-add { opacity: 1; color: var(--ig-accent); }
-@media (prefers-reduced-motion: reduce) { .ade-cx-chip, .ade-cx-tile { transition: none; } .ade-cx-chip:hover, .ade-cx-tile:hover:not(:disabled) { transform: none; } }
-.ade-cx-empty { margin: 0; font-size: 12px; color: var(--kit-text-3, var(--color-muted-fg)); }
+.ade-ix-tile:hover .ade-ix-tile-add, .ade-ix-tile:focus-visible .ade-ix-tile-add { opacity: 1; color: var(--ig-accent); }
+@media (prefers-reduced-motion: reduce) { .ade-ix-chip, .ade-ix-tile { transition: none; } .ade-ix-chip:hover, .ade-ix-tile:hover:not(:disabled) { transform: none; } }
 
 /* Add one catalogue server. */
-.ade-cx-dialog { display: flex; flex-direction: column; gap: 12px; }
-.ade-cx-dialog-hero {
+.ade-ix-dialog { display: flex; flex-direction: column; gap: 12px; }
+.ade-ix-dialog-hero {
   display: flex;
   align-items: center;
   gap: 12px;
@@ -739,11 +759,11 @@
   border-radius: 12px;
   color: #fff;
 }
-.ade-cx-dialog-hero > .ade-pv-mark3d { width: 40px; height: 40px; }
-.ade-cx-dialog-hero .ade-pv-mark3d-floor { display: none; }
-.ade-cx-dialog-id { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
-.ade-cx-dialog-name { font-size: 16px; font-weight: 680; }
-.ade-cx-dialog-by { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; opacity: 0.8; }
-.ade-cx-dialog-by > svg { color: #4ade80; }
-.ade-cx-dialog-desc { margin: 0; font-size: 12.5px; color: var(--kit-text-2, var(--color-secondary-fg)); }
-.ade-cx-dialog-links { display: flex; align-items: center; gap: 14px; }
+.ade-ix-dialog-hero > .ade-pv-mark3d { width: 40px; height: 40px; }
+.ade-ix-dialog-hero .ade-pv-mark3d-floor { display: none; }
+.ade-ix-dialog-id { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.ade-ix-dialog-name { font-size: 16px; font-weight: 680; }
+.ade-ix-dialog-by { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; opacity: 0.8; }
+.ade-ix-dialog-by > svg { color: #4ade80; }
+.ade-ix-dialog-desc { margin: 0; font-size: 12.5px; color: var(--kit-text-2, var(--color-secondary-fg)); }
+.ade-ix-dialog-links { display: flex; align-items: center; gap: 14px; }

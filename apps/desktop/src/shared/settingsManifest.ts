@@ -31,9 +31,9 @@ export const SETTINGS_TAB_IDS = [
   "stats",
   "chat",
   "agents",
-  // GitHub, Linear, Jira and the MCP servers, on one page. It replaced the
-  // Integrations and MCP servers tabs; both ids alias here.
-  "connections",
+  // GitHub, Linear, Jira and the MCP servers, on one page. It took in the
+  // MCP servers tab; that id aliases here.
+  "integrations",
   "ade-mcp",
   "notifications",
   "appearance",
@@ -131,7 +131,7 @@ export function isMachineSettingsTab(tab: SettingsTabId): boolean {
  * The open project's pages. They always act on the machine that owns the
  * project (the tab's binding), never on a picked machine.
  */
-export const PROJECT_SETTINGS_TAB_IDS: readonly SettingsTabId[] = ["lanes-git", "project-agents", "storage", "location", "secrets", "connections"];
+export const PROJECT_SETTINGS_TAB_IDS: readonly SettingsTabId[] = ["lanes-git", "project-agents", "storage", "location", "secrets", "integrations"];
 
 export function isProjectSettingsTab(tab: SettingsTabId): boolean {
   return PROJECT_SETTINGS_TAB_IDS.includes(tab);
@@ -179,9 +179,9 @@ export const SETTINGS_TABS: readonly SettingsTab[] = [
   // under one picker for the machine they run on.
   { id: "agents", label: "Providers", group: "app" },
   // GitHub, Linear and Jira (saved for this project or your account) and the
-  // MCP servers (your account), as one grid of what ADE connects to. Each
-  // tile says where it is saved; a tile opens its own page.
-  { id: "connections", label: "Connections", description: "GitHub, Linear, Jira and MCP servers: the services ADE and your agents use.", group: "app" },
+  // MCP servers (your account), as one grid of what ADE connects to. A tile
+  // opens its own page.
+  { id: "integrations", label: "Integrations", description: "GitHub, Linear, Jira and MCP servers: the services ADE and your agents use.", group: "app" },
   // One MCP server for the account: one URL reaches every computer you
   // include. The id stays `ade-mcp`, so links from when it was a Computer page
   // still land here.
@@ -310,7 +310,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     id: "mcp.servers",
     label: "MCP servers",
     keywords: ["mcp", "model context protocol", "tools", "server", "stdio", "http", "sse", "context7", "registry", "header", "env", "secret", "token"],
-    tab: "connections",
+    tab: "integrations",
     anchor: "mcp-servers",
     scope: "account",
     web: "hidden",
@@ -320,7 +320,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     id: "mcp.found",
     label: "Import MCP servers from this computer",
     keywords: ["mcp", "import", "claude", "codex", "cursor", "opencode", "droid", "found", "config", "mcp.json", "config.toml"],
-    tab: "connections",
+    tab: "integrations",
     anchor: "mcp-found",
     scope: "account",
     web: "hidden",
@@ -1338,7 +1338,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     id: "integrations.github",
     label: "GitHub",
     keywords: ["git", "pr", "pull request", "token", "pat", "app", "auth", "webhook"],
-    tab: "connections",
+    tab: "integrations",
     anchor: "github-connection",
     scope: "machine",
     web: "hidden",
@@ -1348,7 +1348,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     id: "integrations.linear",
     label: "Linear",
     keywords: ["issue", "ticket", "oauth", "sync", "workflow"],
-    tab: "connections",
+    tab: "integrations",
     anchor: "linear-connection",
     scope: "machine",
     web: "hidden",
@@ -1358,7 +1358,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     id: "integrations.jira",
     label: "Jira",
     keywords: ["issue", "ticket", "atlassian", "api token", "jira cloud"],
-    tab: "connections",
+    tab: "integrations",
     anchor: "jira-connection",
     scope: "machine",
     web: "hidden",
@@ -1379,7 +1379,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     id: "integrations.jira-projects",
     label: "Jira projects for this project",
     keywords: ["jira", "project", "issue tracker", "binding", "default"],
-    tab: "connections",
+    tab: "integrations",
     anchor: "jira-projects",
     scope: "account-repo",
     web: "hidden",
@@ -1389,7 +1389,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     id: "integrations.jira-top-bar",
     label: "Show Jira in the top bar",
     keywords: ["jira", "issues", "top bar", "header", "hide", "button"],
-    tab: "connections",
+    tab: "integrations",
     anchor: "jira-top-bar",
     scope: "machine",
     web: "hidden",
@@ -1399,7 +1399,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     id: "integrations.linear-top-bar",
     label: "Show Linear in the top bar",
     keywords: ["linear", "issues", "top bar", "header", "hide", "button"],
-    tab: "connections",
+    tab: "integrations",
     anchor: "linear-top-bar",
     scope: "machine",
     web: "hidden",
@@ -1409,7 +1409,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     id: "integrations.github-issues-top-bar",
     label: "Show GitHub issues in the top bar",
     keywords: ["github", "issues", "top bar", "header", "hide", "button", "count"],
-    tab: "connections",
+    tab: "integrations",
     anchor: "github-issues-top-bar",
     scope: "machine",
     web: "hidden",
@@ -1638,16 +1638,16 @@ export const LEGACY_TAB_ALIASES: Readonly<Record<string, SettingsTabId>> = {
   project: "location",
   "project-location": "location",
   context: "advanced",
-  // Integrations and MCP servers became Connections.
-  integrations: "connections",
-  mcp: "connections",
-  "mcp-servers": "connections",
+  // MCP servers moved into Integrations; Connections was its name for a while.
+  connections: "integrations",
+  mcp: "integrations",
+  "mcp-servers": "integrations",
   sync: "account",
   devices: "account",
   "multi-device": "account",
-  github: "connections",
-  linear: "connections",
-  jira: "connections",
+  github: "integrations",
+  linear: "integrations",
+  jira: "integrations",
   "computer-use": "behaviour",
   behavior: "behaviour",
   onboarding: "general",
