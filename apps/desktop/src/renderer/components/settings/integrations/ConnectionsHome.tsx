@@ -38,6 +38,7 @@ const DESCRIPTIONS: Record<IntegrationId, string> = {
   github: "Open, review and merge pull requests, follow checks, and work on issues.",
   linear: "Start lanes from Linear issues, link them to PRs, and let your team assign work to ADE.",
   jira: "Bring a Jira Cloud site's issues into ADE and tie them to this project.",
+  agent37: "Make cloud Linux machines for your lanes, signed in to your account with no code to type.",
 };
 
 /** Where each integration's credential is saved. */
@@ -45,9 +46,18 @@ const SAVED_IN: Record<IntegrationId, string> = {
   github: "Your account",
   linear: "This project",
   jira: "This project",
+  agent37: "Your account",
 };
 
 async function readSummary(id: IntegrationId, pin: OpenProjectBinding | null): Promise<Summary> {
+  if (id === "agent37") {
+    // Account-wide: the key is in the account vault, so this computer answers for every machine.
+    const status = await window.ade.agent37?.getStatus();
+    if (!status) return UNKNOWN;
+    if (status.error) return { tone: "warn", label: status.connected ? "Couldn't reach Agent37" : "Needs attention" };
+    if (status.connected) return { tone: "ok", label: status.balanceUsd != null ? `Connected · $${status.balanceUsd.toFixed(2)} left` : "Connected" };
+    return { tone: "neutral", label: "Not connected" };
+  }
   if (id === "github") {
     const status = await window.ade.github.getStatus(undefined, pin);
     if (status.connected) return { tone: "ok", label: status.userLogin ? `Connected as ${status.userLogin}` : "Connected" };
@@ -78,10 +88,11 @@ function useIntegrationSummaries(pin: OpenProjectBinding | null): Record<Integra
     github: CHECKING,
     linear: CHECKING,
     jira: CHECKING,
+    agent37: CHECKING,
   });
   useEffect(() => {
     let cancelled = false;
-    setSummaries({ github: CHECKING, linear: CHECKING, jira: CHECKING });
+    setSummaries({ github: CHECKING, linear: CHECKING, jira: CHECKING, agent37: CHECKING });
     for (const id of INTEGRATION_IDS) {
       readSummary(id, pin)
         .then((summary) => { if (!cancelled) setSummaries((prev) => ({ ...prev, [id]: summary })); })

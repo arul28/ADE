@@ -19,12 +19,12 @@ import type { PendingInputRequest } from "./types/chat";
  * is one record here plus one status/save pair in the host.
  */
 
-export type ConnectProviderId = "github" | "linear" | "jira";
+export type ConnectProviderId = "github" | "linear" | "jira" | "agent37";
 
-export const CONNECT_PROVIDER_IDS: readonly ConnectProviderId[] = ["github", "linear", "jira"];
+export const CONNECT_PROVIDER_IDS: readonly ConnectProviderId[] = ["github", "linear", "jira", "agent37"];
 
 export function isConnectProviderId(value: unknown): value is ConnectProviderId {
-  return value === "github" || value === "linear" || value === "jira";
+  return value === "github" || value === "linear" || value === "jira" || value === "agent37";
 }
 
 /** `providerMetadata` key on the card. Its presence makes the card user-only. */
@@ -84,6 +84,7 @@ export const CONNECT_FIELD_IDS = {
   jiraSite: "connect_jira_site",
   jiraEmail: "connect_jira_email",
   jiraToken: "connect_jira_token",
+  agent37Key: "connect_agent37_key",
 } as const;
 
 const PROVIDERS: Record<ConnectProviderId, ConnectProviderSpec> = {
@@ -156,6 +157,21 @@ const PROVIDERS: Record<ConnectProviderId, ConnectProviderSpec> = {
       },
     ],
   },
+  agent37: {
+    id: "agent37",
+    label: "Agent37",
+    savedWhere: "Saved to your account, on all your machines.",
+    settingsSection: "integrations.agent37",
+    methods: [
+      {
+        id: "api_key",
+        label: "API key",
+        hint: "A workspace API key from your Agent37 dashboard.",
+        fields: [{ id: CONNECT_FIELD_IDS.agent37Key, label: "API key", kind: "secret", placeholder: "sk_live_…" }],
+        help: { label: "Create a key in Agent37", url: "https://www.agent37.com/dashboard/cloud/api-keys" },
+      },
+    ],
+  },
 };
 
 /** The line an agent gets once the integration is connected: what to use now. */
@@ -163,6 +179,7 @@ export const CONNECT_NEXT_STEP: Record<ConnectProviderId, string> = {
   github: "Use `ade prs` and `ade github` (see the ade-pr-workflows skill).",
   linear: "Use `ade linear` (see the ade-linear skill).",
   jira: "Use `ade jira` (run `ade help jira`).",
+  agent37: "The person can now make Agent37 machines from Add computer in ADE.",
 };
 
 export function connectProviderSpec(id: ConnectProviderId): ConnectProviderSpec {

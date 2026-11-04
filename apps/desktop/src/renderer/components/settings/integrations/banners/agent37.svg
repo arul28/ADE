@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 240" width="480" height="240">
+  <defs>
+    <linearGradient id="top" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FFB38A"/>
+      <stop offset="1" stop-color="#F25F29"/>
+    </linearGradient>
+    <linearGradient id="left" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#C2410C"/>
+      <stop offset="1" stop-color="#7C2D12"/>
+    </linearGradient>
+    <linearGradient id="right" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#EA580C"/>
+      <stop offset="1" stop-color="#9A3412"/>
+    </linearGradient>
+    <g id="cube">
+      <path d="M0 -34 L58 0 L0 34 L-58 0 Z" fill="url(#top)"/>
+      <path d="M-58 0 L0 34 L0 100 L-58 66 Z" fill="url(#left)"/>
+      <path d="M58 0 L0 34 L0 100 L58 66 Z" fill="url(#right)"/>
+      <path d="M-40 26 L-14 41 M-40 40 L-14 55" stroke="#FFD7C2" stroke-opacity="0.5" stroke-width="3" stroke-linecap="round"/>
+      <circle cx="22" cy="50" r="4" fill="#4ADE80"/>
+    </g>
+  </defs>
+  <use href="#cube" transform="translate(300 70) scale(0.8)" opacity="0.55"/>
+  <use href="#cube" transform="translate(410 96) scale(0.7)" opacity="0.4"/>
+  <use href="#cube" transform="translate(356 120)"/>
+  <use href="#cube" transform="translate(250 150) scale(0.75)" opacity="0.75"/>
+</svg>

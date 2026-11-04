@@ -1089,6 +1089,13 @@ export const IPC = {
   accountStartSyncHost: "ade.account.startSyncHost",
   accountRepairSession: "ade.account.repairSession",
 
+  /** Agent37: the account-wide key, and new machines made on it. */
+  agent37GetStatus: "ade.agent37.getStatus",
+  agent37SaveKey: "ade.agent37.saveKey",
+  agent37RemoveKey: "ade.agent37.removeKey",
+  agent37CreateMachine: "ade.agent37.createMachine",
+  agent37CreateProgress: "agent37:createProgress",
+
   /**
    * The account settings store, reached through the brain's `account_settings`
    * action domain. Every one of these resolves to an "unavailable" result

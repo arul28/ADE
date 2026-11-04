@@ -1,0 +1,246 @@
+/**
+ * Where the Agent37 workspace key lives, and the integration's status/save
+ * pair over it.
+ *
+ * Agent37 keys are per workspace, not per project, so the key is account-wide:
+ * account vault item scope `all`, kind `integration`, key `agent37` (the same
+ * shape as a pasted GitHub token). Every computer on the account reads it
+ * straight from its vault, which is machine-local first and synchronized by
+ * the brain, so there is no per-machine copy to reconcile. Signed out, or with
+ * no vault on this runtime, the key stays in this machine's shared credential
+ * file and the status says so.
+ *
+ * The same module serves desktop Settings (over the brain's vault bridge) and
+ * the connect card an agent raises (over the brain's own vault store).
+ */
+
+import type { SyncCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
+import { ACCOUNT_SCOPE_ALL } from "../../../shared/accountSettingsScope";
+import type { Agent37Status } from "../../../shared/agent37";
+import { CONNECT_FIELD_IDS } from "../../../shared/integrationConnect";
+import type { AccountVaultResult } from "../../../shared/types/accountVault";
+import { describeIntegrationCredentialStorage, type IntegrationCredentialStorage } from "../account/integrationCredentialStorage";
+import type { IntegrationConnectAdapter } from "../integrations/integrationConnectRequest";
+import { Agent37Error, createAgent37Client, type Agent37Client } from "./agent37Client";
+
+export const AGENT37_VAULT_KIND = "integration";
+export const AGENT37_VAULT_KEY = "agent37";
+/** The machine-local fallback, in the credential file the app, brain and CLI share. */
+export const AGENT37_MACHINE_CREDENTIAL_KEY = "agent37.apiKey.v1";
+
+type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
+
+/** The account vault, reduced to this one item. `ok: false` means unreachable, not empty. */
+export type Agent37Vault = {
+  get(): Promise<{ ok: true; value: string | null } | { ok: false }>;
+  set(value: string): Promise<boolean>;
+  remove(): Promise<boolean>;
+};
+
+export type Agent37CredentialDeps = {
+  /** Null when this runtime has no vault (no brain, nothing booted). */
+  vault: () => Agent37Vault | null;
+  machineStore: () => SyncCredentialStore | null;
+  signedIn: () => boolean;
+  fetch?: FetchLike;
+};
+
+/** Desktop main: the brain's vault over `accountVaultBridge`. */
+export function agent37VaultFromBridge(bridge: {
+  get(scope: string, kind: string, key: string): Promise<AccountVaultResult<string | null>>;
+  set(scope: string, kind: string, key: string, value: string): Promise<AccountVaultResult<null>>;
+  remove(scope: string, kind: string, key: string): Promise<AccountVaultResult<null>>;
+}): Agent37Vault {
+  return {
+    async get() {
+      const result = await bridge.get(ACCOUNT_SCOPE_ALL, AGENT37_VAULT_KIND, AGENT37_VAULT_KEY);
+      return result.ok ? { ok: true, value: result.value } : { ok: false };
+    },
+    async set(value) {
+      return (await bridge.set(ACCOUNT_SCOPE_ALL, AGENT37_VAULT_KIND, AGENT37_VAULT_KEY, value)).ok;
+    },
+    async remove() {
+      return (await bridge.remove(ACCOUNT_SCOPE_ALL, AGENT37_VAULT_KIND, AGENT37_VAULT_KEY)).ok;
+    },
+  };
+}
+
+/** The brain: its own vault store. */
+export function agent37VaultFromStore(store: {
+  get(scope: string, kind: "integration", key: string): string | null;
+  set(scope: string, kind: "integration", key: string, value: string): boolean;
+  remove(scope: string, kind: "integration", key: string): boolean;
+}): Agent37Vault {
+  return {
+    async get() {
+      return { ok: true, value: store.get(ACCOUNT_SCOPE_ALL, AGENT37_VAULT_KIND, AGENT37_VAULT_KEY) };
+    },
+    async set(value) {
+      return store.set(ACCOUNT_SCOPE_ALL, AGENT37_VAULT_KIND, AGENT37_VAULT_KEY, value);
+    },
+    async remove() {
+      return store.remove(ACCOUNT_SCOPE_ALL, AGENT37_VAULT_KIND, AGENT37_VAULT_KEY);
+    },
+  };
+}
+
+function encode(key: string): string {
+  return JSON.stringify({ v: 1, key });
+}
+
+function decode(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    return parsed?.v === 1 && typeof parsed.key === "string" && parsed.key.trim() ? parsed.key.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
+function resolveVault(deps: Agent37CredentialDeps): Agent37Vault | null {
+  if (!deps.signedIn()) return null;
+  try {
+    return deps.vault();
+  } catch {
+    return null;
+  }
+}
+
+function readMachine(deps: Agent37CredentialDeps): string | null {
+  try {
+    return decode(deps.machineStore()?.getSync(AGENT37_MACHINE_CREDENTIAL_KEY));
+  } catch {
+    return null;
+  }
+}
+
+/** Where a key saved now would land. */
+export function agent37StorageFor(deps: Agent37CredentialDeps): IntegrationCredentialStorage {
+  return describeIntegrationCredentialStorage({
+    scope: ACCOUNT_SCOPE_ALL,
+    perProject: false,
+    signedIn: deps.signedIn(),
+    hasVault: resolveVault(deps) != null,
+  });
+}
+
+/** The saved key and where it came from, or null. The key never leaves the main process or brain. */
+export async function readAgent37Key(
+  deps: Agent37CredentialDeps,
+): Promise<{ key: string; storage: IntegrationCredentialStorage } | null> {
+  const vault = resolveVault(deps);
+  if (vault) {
+    const got = await vault.get().catch(() => ({ ok: false as const }));
+    const key = got.ok ? decode(got.value) : null;
+    if (key) return { key, storage: { storage: "account", reason: null, message: null } };
+  }
+  const local = readMachine(deps);
+  if (!local) return null;
+  // A key kept here while signed out (or while the vault was unreachable).
+  const storage = agent37StorageFor(deps);
+  return {
+    key: local,
+    storage: storage.storage === "account"
+      ? { storage: "device", reason: "vault_unavailable", message: "Saved on this computer only. Save it again to use it on your other computers." }
+      : storage,
+  };
+}
+
+/** A client for the saved key; throws a plain sentence when there is none. */
+export async function requireAgent37Client(deps: Agent37CredentialDeps): Promise<Agent37Client> {
+  const saved = await readAgent37Key(deps);
+  if (!saved) throw new Error("Connect Agent37 first: Settings › Connections › Agent37.");
+  return createAgent37Client({ apiKey: saved.key, fetch: deps.fetch });
+}
+
+/**
+ * Checks the key with Agent37, then stores it: in the account vault when it
+ * can reach every machine, otherwise on this computer.
+ */
+export async function saveAgent37Key(deps: Agent37CredentialDeps, rawKey: string): Promise<Agent37Status> {
+  const key = rawKey.trim();
+  if (!key) throw new Error("Paste your Agent37 API key.");
+  if (!/^sk_(live|test)_/.test(key)) throw new Error("That doesn't look like an Agent37 API key. They start with sk_live_.");
+  // A refused key throws here, before anything is stored.
+  await createAgent37Client({ apiKey: key, fetch: deps.fetch }).billing();
+  const vault = resolveVault(deps);
+  const store = deps.machineStore();
+  if (vault && await vault.set(encode(key)).catch(() => false)) {
+    store?.deleteSync(AGENT37_MACHINE_CREDENTIAL_KEY);
+  } else {
+    if (!store) throw new Error("ADE could not save the key on this computer.");
+    store.setSync(AGENT37_MACHINE_CREDENTIAL_KEY, encode(key));
+  }
+  return await readAgent37Status(deps);
+}
+
+/** Forgets the key everywhere this computer can reach. Boxes on Agent37 keep running. */
+export async function removeAgent37Key(deps: Agent37CredentialDeps): Promise<Agent37Status> {
+  const vault = resolveVault(deps);
+  if (vault) await vault.remove().catch(() => false);
+  deps.machineStore()?.deleteSync(AGENT37_MACHINE_CREDENTIAL_KEY);
+  return await readAgent37Status(deps);
+}
+
+export async function readAgent37Status(deps: Agent37CredentialDeps): Promise<Agent37Status> {
+  const saved = await readAgent37Key(deps);
+  const empty: Agent37Status = {
+    connected: false,
+    credentialStorage: null,
+    balanceUsd: null,
+    tier: null,
+    instanceLimit: null,
+    instanceCount: null,
+    pastDue: false,
+    error: null,
+  };
+  if (!saved) return empty;
+  const client = createAgent37Client({ apiKey: saved.key, fetch: deps.fetch });
+  try {
+    const [billing, instances] = await Promise.all([client.billing(), client.listInstances()]);
+    return {
+      connected: true,
+      credentialStorage: saved.storage,
+      balanceUsd: billing.balanceUsd,
+      tier: billing.tier,
+      instanceLimit: billing.instanceLimit,
+      instanceCount: instances.filter((instance) => instance.status !== "deleted" && instance.status !== "failed").length,
+      pastDue: billing.pastDue,
+      error: null,
+    };
+  } catch (error) {
+    const refused = error instanceof Agent37Error && (error.code === "invalid_api_key" || error.code === "ip_not_allowed");
+    return {
+      ...empty,
+      // A key Agent37 refuses is not a connection; one it could not reach still is.
+      connected: !refused,
+      credentialStorage: saved.storage,
+      error: error instanceof Error ? error.message : "Couldn't reach Agent37.",
+    };
+  }
+}
+
+function balanceLabel(status: Agent37Status): string | null {
+  return status.balanceUsd == null ? null : `Agent37 wallet $${status.balanceUsd.toFixed(2)}`;
+}
+
+/** The connect card's status/save pair. */
+export function buildAgent37ConnectAdapter(deps: Agent37CredentialDeps): IntegrationConnectAdapter {
+  return {
+    async status() {
+      const status = await readAgent37Status(deps);
+      const storage = agent37StorageFor(deps);
+      return {
+        connected: status.connected && !status.error,
+        account: balanceLabel(status),
+        detail: status.error ?? (status.connected ? null : "No API key saved."),
+        storedOnThisMachine: storage.storage === "device" ? storage.message ?? "Saved on this computer only." : null,
+      };
+    },
+    async save(_method, values) {
+      const status = await saveAgent37Key(deps, values[CONNECT_FIELD_IDS.agent37Key] ?? "");
+      return { account: balanceLabel(status) };
+    },
+  };
+}

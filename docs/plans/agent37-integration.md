@@ -102,6 +102,52 @@ from a Dockerfile in this repo:
 Never plant the durable `ade account token` on a box: anything on the box,
 agents included, can read its environment.
 
+**What A1 built instead (2026-11-04), and the join-token recommendation.**
+A1 uses the device sign-in that already exists, approved by the creating
+ADE, with nothing planted on the box:
+
+1. ADE runs `ade login --headless` on the new box through Agent37 exec and
+   reads the code it prints.
+2. ADE calls `POST /device/approve` with its own account bearer and gets a
+   one-time Clerk sign-in ticket that continues to that code's authorize URL.
+3. ADE opens the ticket in a private, hidden window and waits for
+   `/device/callback`. If the page stops (a consent click), the window is
+   shown, titled "Sign in <box name>", as the one confirmation. ADE never
+   clicks it.
+4. ADE also watches the box itself, so an approval from anywhere ends the
+   wait.
+
+Measured on 2026-11-04:
+
+- Production `POST /device/approve` answers **503 `unavailable`**:
+  `CLERK_SECRET_KEY` is not set on `ade-account-directory-production`
+  (`wrangler secret list --env production` shows no such secret). A1 falls
+  back to the code's own `/device` page in a window that uses ADE's browser
+  session: Continue, then Clerk's consent page, then Allow.
+- Clerk's consent page ("ADE CLI wants to access ADE on behalf of …",
+  Allow / Deny, with a "make sure you trust ADE CLI (arulsharma1028.workers.dev)"
+  warning) appears on **every** device sign-in. It is not remembered.
+
+Recommendation: **no separate join token yet.** The device flow already gives
+the box its own session, is single use, expires in 10 minutes, and a fork
+cannot reuse it. A join token would still have to end in Clerk OAuth tokens
+for the box, and Clerk only issues those through a browser authorize, so it
+would rebuild this same chain inside the Worker. Two settings make the
+current chain zero-touch: set `CLERK_SECRET_KEY` on the production account
+directory, and turn off the consent screen for ADE's own OAuth application
+(`Az7TbviBocyXjZk1`, "ADE CLI") in Clerk. Revisit a join token only if ADE
+starts issuing its own machine credentials instead of Clerk sessions.
+
+**Template distribution.** Agent37 templates are per workspace, so each
+user's workspace needs ADE's template. Today only
+`infra/agent37/build-template.sh` puts it there, and ADE says so plainly
+when it is missing. Options: (a) Agent37 publishes `agent37-ade` as a system
+template (founder ask 1); (b) CI publishes a public GHCR image per release
+and ADE registers it in the user's workspace on first use (one
+`POST /v1/templates {name, image_ref}`); (c) ADE runs the cloud build in the
+user's workspace on first use (about five minutes, free). (a) is best; (b) is
+the fallback.
+
 ### 4.3 Sleep and wake, owned by ADE
 
 - Agent37 auto-sleep stays **off** (it would suspend a working brain).
@@ -165,9 +211,12 @@ does nothing, so a renamed laptop is never mistaken for a copy.
 
 ## 6. Phases (after the connect-cards lane merges)
 
-- **A1 — template + join token.** Template in the repo with CI build and
-  publish; join token in the account service; "New Agent37 machine" from
-  the picker; the Integrations card.
+- **A1 — template + sign-in + picker + card.** Built on `ade/agent37-a1`:
+  `infra/agent37` (template and build script, no CI yet), the Agent37 client
+  and account-vault key (`apps/desktop/src/main/services/agent37`), the
+  Agent37 connection page and connect card, and "New Agent37 machine" in
+  Add a computer. The join token was replaced by the approved device
+  sign-in (§4.2).
 - **A2 — machine cards + lifecycle.** Cards, Sleep/Wake/Resize/Back up,
   Remove from ADE / Delete box, spending, Agent37 error states (box limit,
   empty wallet, suspended).
@@ -203,6 +252,16 @@ does nothing, so a renamed laptop is never mistaken for a copy.
   hid every relay-only account machine), then Connect reached it over the
   relay in seconds (211 ms). The box's sign-in was approved from ADE's
   browser, with no step for the owner.
+- 2026-11-04, A1 (`ade/agent37-a1`), template `ade-a1-test` with released
+  ADE 1.2.128: "New Agent37 machine" made a 2/4 box; Agent37 answered in
+  about 10 s with the brain already up; the box's device sign-in was
+  approved (Continue, Clerk consent, Allow, see §4.2); it joined the account
+  under the chosen name with a relay route. The first automatic Connect
+  failed with "could not verify the account": **released 1.2.128 needs a
+  registered project before it answers account verification** (fixed on
+  this branch, §5.1). After `ade init` on the box and a brain restart,
+  Connect reached it over the relay (151 ms). Boxes `s321i7brh3`,
+  `0terhcg4bw`, `mxf022t45j`, `0mqkjuhzqp`, all deleted.
 
 ## 9. Still to test
 

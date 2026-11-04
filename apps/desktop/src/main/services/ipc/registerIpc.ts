@@ -922,6 +922,7 @@ import {
   createBrainRefreshBroker,
 } from "../account/accountBridge";
 import { createAccountVaultBridge } from "../account/accountVaultBridge";
+import { registerAgent37Ipc } from "../agent37/registerAgent37Ipc";
 import { createMcpRegistryService } from "../mcp/mcpRegistryService";
 import type { McpRegistryServer } from "../../../shared/mcpRegistry";
 import type {
@@ -12287,6 +12288,14 @@ export function registerIpc({
     getPool: () => localRuntimeConnectionPool,
     getRootPath: () => bootedUsageScopeRoot(getResourceUsageContexts?.() ?? []) ?? getCtx().project?.rootPath ?? null,
     logger: { debug: (message, meta) => getCtx().logger.debug(message, meta) },
+  });
+
+  // Agent37: the account-wide key and new machines made on it (no pin; see the module).
+  registerAgent37Ipc({
+    vaultBridge: accountVaultBridge,
+    listAccountMachines: () => accountBridge.listMachines(),
+    renameMachine: (machineKey, name) => accountBridge.renameMachine(machineKey, name),
+    logger: { info: (event, meta) => getCtx().logger.info(event, meta), warn: (event, meta) => getCtx().logger.warn(event, meta) },
   });
 
   const mcpRegistryService = createMcpRegistryService({

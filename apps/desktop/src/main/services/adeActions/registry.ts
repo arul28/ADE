@@ -291,6 +291,8 @@ import { createSessionBoardMoveActions } from "./sessionBoardMove";
 import { noteSessionInputOrigin } from "../chat/sessionInputOrigins";
 import { requestProjectSecretFromUser } from "../secrets/projectSecretRequest";
 import { buildIntegrationConnectAdapters } from "../integrations/integrationConnectAdapters";
+import { agent37VaultFromStore, buildAgent37ConnectAdapter } from "../agent37/agent37Credential";
+import { EncryptedFileCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
 import { listIntegrationConnections, requestIntegrationConnect } from "../integrations/integrationConnectRequest";
 import { createMcpRegistryService } from "../mcp/mcpRegistryService";
 import { scanProviderMcpConfigs } from "../mcp/mcpProviderConfigScan";
@@ -3952,6 +3954,13 @@ function buildProjectSecretDomainService(runtime: AdeRuntime): OpaqueService | n
   };
 }
 
+/** The machine's shared credential file, for an Agent37 key saved while signed out. One per process. */
+let agent37MachineCredentialStore: EncryptedFileCredentialStore | null = null;
+function agent37MachineStore(): EncryptedFileCredentialStore {
+  agent37MachineCredentialStore ??= new EncryptedFileCredentialStore({ secretsDir: resolveMachineAdeLayout().secretsDir });
+  return agent37MachineCredentialStore;
+}
+
 /**
  * The connect card. `status` lists every integration this runtime knows and
  * whether it is connected, never a credential. `request` asks the person in a
@@ -3964,6 +3973,11 @@ function integrationConnectAdapters(runtime: AdeRuntime) {
     linearCredentialService: runtime.linearCredentialService ?? null,
     linearStatus: runtime.linearCredentialService ? () => buildRuntimeLinearConnectionStatus(runtime) : null,
     jiraService: runtime.jiraService ?? null,
+    agent37: buildAgent37ConnectAdapter({
+      vault: () => (runtime.accountVaultStore ? agent37VaultFromStore(runtime.accountVaultStore) : null),
+      machineStore: () => agent37MachineStore(),
+      signedIn: () => runtime.accountAuthService?.getStatus().signedIn === true,
+    }),
   });
 }
 
