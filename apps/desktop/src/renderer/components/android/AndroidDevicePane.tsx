@@ -29,7 +29,8 @@ import {
 } from "./androidDeviceState";
 import { androidStreamLeaseKey, androidStreamLeases } from "./androidStreamLease";
 import { AndroidDevicePicker } from "./AndroidDevicePicker";
-import { ANDROID_RAIL_WIDTH, AndroidDeviceRail } from "./AndroidDeviceRail";
+import { AndroidDeviceRail } from "./AndroidDeviceRail";
+import { DEVICE_RAIL_WIDTH } from "../device/DeviceRail";
 import { AndroidDeviceStage } from "./AndroidDeviceStage";
 import { AndroidSetupCard } from "./AndroidSetupCard";
 import {
@@ -566,7 +567,7 @@ export function AndroidDevicePane({
             onFrame={stream.noteFrame}
             // The screen moves left only when the rail would cover its right
             // edge and take its taps, as on the Apple stage.
-            railInset={androidRailVisible(paneState) ? ANDROID_RAIL_WIDTH : 0}
+            railInset={androidRailVisible(paneState) ? DEVICE_RAIL_WIDTH : 0}
             className={cn("bg-transparent", paneState === "video-lost" && "opacity-40")}
           >
             {paneState === "starting" ? (

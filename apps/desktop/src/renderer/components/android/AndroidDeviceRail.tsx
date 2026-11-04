@@ -13,20 +13,12 @@ import {
 } from "@phosphor-icons/react";
 import type { AndroidHardwareKey } from "../../../shared/types/androidEmulator";
 import { cn } from "../ui/cn";
-import { Button } from "../ui/Button";
-import { PaneTooltip } from "../ui/PaneTooltip";
+import { DEVICE_RAIL_COMPACT_WIDTH, DeviceRail, RailButton, RailDivider, RailMenu } from "../device/DeviceRail";
 import {
-  MENU_CONTENT_CLASS,
   MENU_ITEM_CLASS,
   MENU_LABEL_CLASS,
   MENU_SEPARATOR_CLASS,
 } from "../ui/paneMenuTokens";
-
-/** Below this the rail keeps the navigation keys and More, and nothing else (Apple's 360px rule). */
-export const ANDROID_RAIL_COMPACT_WIDTH = 360;
-
-/** The rail's width (`w-14`), which the stage keeps the screen clear of. */
-export const ANDROID_RAIL_WIDTH = 56;
 
 export type AndroidDeviceRailProps = {
   containerWidth: number;
@@ -69,172 +61,92 @@ export function AndroidDeviceRail({
   onPowerOff,
   extraControls,
 }: AndroidDeviceRailProps) {
-  const compact = containerWidth < ANDROID_RAIL_COMPACT_WIDTH;
+  // Below the compact width the rail keeps the navigation keys and More, and nothing else.
+  const compact = containerWidth < DEVICE_RAIL_COMPACT_WIDTH;
   const keysDisabled = !inputConnected;
   return (
-    <aside
-      aria-label="Device controls"
-      data-android-rail={compact ? "compact" : "full"}
-      className="pointer-events-none absolute inset-y-0 right-0 z-10 flex w-14 flex-col items-center justify-center py-3 pr-2"
-    >
-      <div
-        className={cn(
-          "pointer-events-auto flex shrink-0 flex-col items-center gap-1 overflow-y-auto",
-          "rounded-full border border-border bg-surface p-1 shadow-md",
-          "[scrollbar-width:none]",
-        )}
-      >
-        <RailButton label="Back" description="Back (Esc)" disabled={keysDisabled} onClick={() => onKey("back")}>
-          <ArrowArcLeft size={16} />
-        </RailButton>
-        <RailButton label="Home" disabled={keysDisabled} onClick={() => onKey("home")}>
-          <Circle size={16} />
-        </RailButton>
-        <RailButton label="Recents" disabled={keysDisabled} onClick={() => onKey("recents")}>
-          <Square size={15} />
-        </RailButton>
+    <DeviceRail railAttribute="data-android-rail" compact={compact}>
+      <RailButton label="Back" description="Back (Esc)" disabled={keysDisabled} onClick={() => onKey("back")}>
+        <ArrowArcLeft size={16} />
+      </RailButton>
+      <RailButton label="Home" disabled={keysDisabled} onClick={() => onKey("home")}>
+        <Circle size={16} />
+      </RailButton>
+      <RailButton label="Recents" disabled={keysDisabled} onClick={() => onKey("recents")}>
+        <Square size={15} />
+      </RailButton>
 
-        <RailDivider />
+      <RailDivider />
 
-        <RailMenu label="Power and volume" disabled={keysDisabled} icon={<Power size={16} />}>
-          <div className={MENU_LABEL_CLASS}>Hardware buttons</div>
-          <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={() => onKey("power")}>
-            <Power size={14} />
-            Power
-          </DropdownMenu.Item>
-          <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={() => onKey("volume_up")}>
-            <SpeakerHigh size={14} />
-            Volume up
-          </DropdownMenu.Item>
-          <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={() => onKey("volume_down")}>
-            <SpeakerLow size={14} />
-            Volume down
-          </DropdownMenu.Item>
-        </RailMenu>
-        {compact ? null : (
+      <RailMenu label="Power and volume" disabled={keysDisabled} icon={<Power size={16} />}>
+        <div className={MENU_LABEL_CLASS}>Hardware buttons</div>
+        <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={() => onKey("power")}>
+          <Power size={14} />
+          Power
+        </DropdownMenu.Item>
+        <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={() => onKey("volume_up")}>
+          <SpeakerHigh size={14} />
+          Volume up
+        </DropdownMenu.Item>
+        <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={() => onKey("volume_down")}>
+          <SpeakerLow size={14} />
+          Volume down
+        </DropdownMenu.Item>
+      </RailMenu>
+      {compact ? null : (
+        <>
+          <RailButton
+            label="Rotate"
+            description="Portrait or landscape. The home screen stays portrait; apps that allow rotation turn."
+            disabled={keysDisabled || !onRotate}
+            onClick={() => onRotate?.()}
+          >
+            <DeviceMobile size={16} style={{ transform: "rotate(90deg)" }} />
+          </RailButton>
+          <RailButton
+            label={screenshotPending ? "Capturing screenshot" : "Save screenshot"}
+            disabled={keysDisabled || screenshotPending}
+            onClick={onScreenshot}
+          >
+            <Camera size={16} />
+          </RailButton>
+        </>
+      )}
+
+      <RailDivider />
+
+      {extraControls}
+
+      <RailMenu label="More device actions" icon={<DotsThree size={16} weight="bold" />}>
+        <div className={MENU_LABEL_CLASS}>{deviceSpec ? `${deviceName} · ${deviceSpec}` : deviceName}</div>
+        {onSwitchDevice ? (
           <>
-            <RailButton
-              label="Rotate"
-              description="Portrait or landscape. The home screen stays portrait; apps that allow rotation turn."
-              disabled={keysDisabled || !onRotate}
-              onClick={() => onRotate?.()}
-            >
-              <DeviceMobile size={16} style={{ transform: "rotate(90deg)" }} />
-            </RailButton>
-            <RailButton
-              label={screenshotPending ? "Capturing screenshot" : "Save screenshot"}
-              disabled={keysDisabled || screenshotPending}
-              onClick={onScreenshot}
-            >
-              <Camera size={16} />
-            </RailButton>
+            <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={onSwitchDevice}>
+              <DeviceMobile size={14} />
+              Switch device…
+            </DropdownMenu.Item>
+            <DropdownMenu.Separator className={MENU_SEPARATOR_CLASS} />
           </>
-        )}
-
-        <RailDivider />
-
-        {extraControls}
-
-        <RailMenu label="More device actions" icon={<DotsThree size={16} weight="bold" />}>
-          <div className={MENU_LABEL_CLASS}>{deviceSpec ? `${deviceName} · ${deviceSpec}` : deviceName}</div>
-          {onSwitchDevice ? (
-            <>
-              <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={onSwitchDevice}>
-                <DeviceMobile size={14} />
-                Switch device…
-              </DropdownMenu.Item>
-              <DropdownMenu.Separator className={MENU_SEPARATOR_CLASS} />
-            </>
-          ) : null}
-          {compact ? (
-            <>
-              {/* A short pane drops these two from the rail; they live here instead. */}
-              <DropdownMenu.Item className={MENU_ITEM_CLASS} disabled={keysDisabled || !onRotate} onSelect={() => onRotate?.()}>
-                <DeviceMobile size={14} style={{ transform: "rotate(90deg)" }} />
-                Rotate
-              </DropdownMenu.Item>
-              <DropdownMenu.Item className={MENU_ITEM_CLASS} disabled={keysDisabled || screenshotPending} onSelect={onScreenshot}>
-                <Camera size={14} />
-                Save screenshot
-              </DropdownMenu.Item>
-              <DropdownMenu.Separator className={MENU_SEPARATOR_CLASS} />
-            </>
-          ) : null}
-          <DropdownMenu.Item className={cn(MENU_ITEM_CLASS, "text-[var(--color-error)]")} onSelect={onPowerOff}>
-            <Power size={14} />
-            Power off
-          </DropdownMenu.Item>
-        </RailMenu>
-      </div>
-    </aside>
-  );
-}
-
-function RailDivider() {
-  return <div aria-hidden="true" className="my-1 h-px w-5 shrink-0 bg-border" />;
-}
-
-/** The Apple rail's button: the shared `Button` trimmed to a 28px circle. */
-const RAIL_BUTTON_CLASS = cn(
-  "h-7 w-7 shrink-0 gap-0 rounded-full p-0",
-  "text-muted-fg hover:bg-fg/[0.07] hover:text-fg",
-  "disabled:cursor-not-allowed disabled:opacity-40",
-);
-
-function RailButton({
-  label,
-  description,
-  disabled,
-  onClick,
-  children,
-}: {
-  label: string;
-  description?: string | null;
-  disabled?: boolean;
-  onClick: () => void;
-  children: ReactNode;
-}) {
-  return (
-    <PaneTooltip label={description ?? label} side="left">
-      <Button
-        variant="ghost"
-        size="sm"
-        aria-label={label}
-        disabled={disabled}
-        onClick={onClick}
-        className={RAIL_BUTTON_CLASS}
-      >
-        {children}
-      </Button>
-    </PaneTooltip>
-  );
-}
-
-function RailMenu({
-  label,
-  icon,
-  disabled,
-  children,
-}: {
-  label: string;
-  icon: ReactNode;
-  disabled?: boolean;
-  children: ReactNode;
-}) {
-  return (
-    <DropdownMenu.Root>
-      <PaneTooltip label={label} side="left">
-        <DropdownMenu.Trigger asChild>
-          <Button variant="ghost" size="sm" aria-label={label} disabled={disabled} className={RAIL_BUTTON_CLASS}>
-            {icon}
-          </Button>
-        </DropdownMenu.Trigger>
-      </PaneTooltip>
-      <DropdownMenu.Portal>
-        <DropdownMenu.Content className={MENU_CONTENT_CLASS} side="left" align="center" sideOffset={6}>
-          {children}
-        </DropdownMenu.Content>
-      </DropdownMenu.Portal>
-    </DropdownMenu.Root>
+        ) : null}
+        {compact ? (
+          <>
+            {/* A short pane drops these two from the rail; they live here instead. */}
+            <DropdownMenu.Item className={MENU_ITEM_CLASS} disabled={keysDisabled || !onRotate} onSelect={() => onRotate?.()}>
+              <DeviceMobile size={14} style={{ transform: "rotate(90deg)" }} />
+              Rotate
+            </DropdownMenu.Item>
+            <DropdownMenu.Item className={MENU_ITEM_CLASS} disabled={keysDisabled || screenshotPending} onSelect={onScreenshot}>
+              <Camera size={14} />
+              Save screenshot
+            </DropdownMenu.Item>
+            <DropdownMenu.Separator className={MENU_SEPARATOR_CLASS} />
+          </>
+        ) : null}
+        <DropdownMenu.Item className={cn(MENU_ITEM_CLASS, "text-[var(--color-error)]")} onSelect={onPowerOff}>
+          <Power size={14} />
+          Power off
+        </DropdownMenu.Item>
+      </RailMenu>
+    </DeviceRail>
   );
 }
