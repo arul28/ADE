@@ -166,12 +166,12 @@ export function agent37ChoiceBlocker(
   kind: Agent37MachineKind,
   shape: Agent37Shape,
 ): string | null {
-  if (status.pastDue) return "Your Agent37 wallet is past due. Top it up to make machines.";
+  if (status.pastDue) return "Your Agent 37 wallet is past due. Top it up to make machines.";
   if (status.instanceLimit != null && status.instanceCount != null && status.instanceCount >= status.instanceLimit) {
-    return `Your Agent37 workspace holds ${status.instanceLimit} machine${status.instanceLimit === 1 ? "" : "s"} at most, sleeping ones included. Delete one or top up to raise the limit.`;
+    return `Your Agent 37 workspace holds ${status.instanceLimit} machine${status.instanceLimit === 1 ? "" : "s"} at most, sleeping ones included. Delete one or top up to raise the limit.`;
   }
   if (status.tier === 0 && (kind === "vm" || shape.id !== "2x4")) {
-    return "Agent37 unlocks VMs and bigger sizes after your first top-up.";
+    return "Agent 37 unlocks VMs and bigger sizes after your first top-up.";
   }
   return null;
 }
@@ -218,7 +218,7 @@ export function describeAgent37TemplateStatus(status: Agent37TemplateStatus): st
       const left = status.minutesLeft != null ? `, about ${status.minutesLeft} min left` : "";
       return status.usable
         ? `Updating ADE's machine template${left}. New machines use the current one until then.`
-        : `Setting up ADE's machine template in your Agent37 workspace${left}.`;
+        : `Setting up ADE's machine template in your Agent 37 workspace${left}.`;
     }
     case "failed":
       return `ADE couldn't set up its machine template: ${status.error ?? "the build failed."}`;

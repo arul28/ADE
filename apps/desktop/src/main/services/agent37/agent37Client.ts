@@ -89,36 +89,36 @@ const UPLOAD_TIMEOUT_MS = 2 * 60_000;
 export function agent37ErrorMessage(code: string, status: number, upstream: string | null): string {
   switch (code) {
     case "invalid_api_key":
-      return "Agent37 did not accept this API key. Check that you copied all of it, or make a new one.";
+      return "Agent 37 did not accept this API key. Check that you copied all of it, or make a new one.";
     case "ip_not_allowed":
-      return "This Agent37 key only works from certain addresses, and this computer's isn't one of them.";
+      return "This Agent 37 key only works from certain addresses, and this computer's isn't one of them.";
     case "insufficient_balance":
-      return "Your Agent37 wallet is too low to make this machine (it needs a day of its price). Top it up and try again.";
+      return "Your Agent 37 wallet is too low to make this machine (it needs a day of its price). Top it up and try again.";
     case "instance_suspended":
-      return "Your Agent37 wallet is past due, so its machines are suspended. Top it up to use them again.";
+      return "Your Agent 37 wallet is past due, so its machines are suspended. Top it up to use them again.";
     case "instance_limit_reached":
-      return "Your Agent37 workspace is at its machine limit, sleeping ones included. Delete one, or top up to raise the limit.";
+      return "Your Agent 37 workspace is at its machine limit, sleeping ones included. Delete one, or top up to raise the limit.";
     case "tier_limit":
-      return "Agent37 unlocks VMs and bigger sizes after your first top-up.";
+      return "Agent 37 unlocks VMs and bigger sizes after your first top-up.";
     case "no_capacity":
     case "capacity_unavailable":
-      return "Agent37 has no room for this size right now. Try again in a few minutes or pick another size.";
+      return "Agent 37 has no room for this size right now. Try again in a few minutes or pick another size.";
     case "not_found":
-      return "Agent37 has no such machine or template in this workspace.";
+      return "Agent 37 has no such machine or template in this workspace.";
     case "rate_limited":
-      return "Agent37 is limiting requests right now. Try again in a minute.";
+      return "Agent 37 is limiting requests right now. Try again in a minute.";
     case "try_again":
     case "wake_failed":
     case "wake_timeout":
     case "container_unreachable":
     case "upstream_unreachable":
     case "host_mesh_not_ready":
-      return "The Agent37 machine is busy changing state. Try again in a moment.";
+      return "The Agent 37 machine is busy changing state. Try again in a moment.";
     case "provisioning_failed":
-      return `Agent37 could not start the machine${upstream ? `: ${upstream}` : "."}`;
+      return `Agent 37 could not start the machine${upstream ? `: ${upstream}` : "."}`;
     default:
-      if (status >= 500) return "Agent37 is having trouble right now. Try again in a moment.";
-      return upstream ? `Agent37: ${upstream}` : `Agent37 answered with an error (${status}).`;
+      if (status >= 500) return "Agent 37 is having trouble right now. Try again in a moment.";
+      return upstream ? `Agent 37: ${upstream}` : `Agent 37 answered with an error (${status}).`;
   }
 }
 
@@ -204,9 +204,9 @@ export function createAgent37Client(args: { apiKey: string; fetch?: FetchLike })
         redirect: "error",
       });
     } catch (error) {
-      if (controller.signal.aborted) throw new Agent37Error("Agent37 did not answer in time. Try again.", "timeout", 0);
+      if (controller.signal.aborted) throw new Agent37Error("Agent 37 did not answer in time. Try again.", "timeout", 0);
       throw new Agent37Error(
-        `Could not reach Agent37: ${error instanceof Error ? error.message : String(error)}`,
+        `Could not reach Agent 37: ${error instanceof Error ? error.message : String(error)}`,
         "network",
         0,
       );
@@ -249,7 +249,7 @@ export function createAgent37Client(args: { apiKey: string; fetch?: FetchLike })
 
     async getInstance(id: string): Promise<Agent37Instance> {
       const instance = toInstance(await api("GET", `/instances/${encodeURIComponent(id)}`));
-      if (!instance) throw new Agent37Error("Agent37 answered with a machine ADE could not read.", "bad_response", 200);
+      if (!instance) throw new Agent37Error("Agent 37 answered with a machine ADE could not read.", "bad_response", 200);
       return instance;
     },
 
@@ -266,7 +266,7 @@ export function createAgent37Client(args: { apiKey: string; fetch?: FetchLike })
         ...(input.env ? { env: input.env } : {}),
         ...(input.metadata ? { metadata: input.metadata } : {}),
       }, CREATE_TIMEOUT_MS));
-      if (!instance) throw new Agent37Error("Agent37 answered with a machine ADE could not read.", "bad_response", 201);
+      if (!instance) throw new Agent37Error("Agent 37 answered with a machine ADE could not read.", "bad_response", 201);
       return instance;
     },
 
@@ -320,7 +320,7 @@ export function createAgent37Client(args: { apiKey: string; fetch?: FetchLike })
       const id = str(body?.id);
       const uploadUrl = str(body?.upload_url);
       if (!id || !uploadUrl || !/^https:\/\//.test(uploadUrl)) {
-        throw new Agent37Error("Agent37 answered with a template build ADE could not read.", "bad_response", 201);
+        throw new Agent37Error("Agent 37 answered with a template build ADE could not read.", "bad_response", 201);
       }
       return { id, uploadUrl };
     },
@@ -337,12 +337,12 @@ export function createAgent37Client(args: { apiKey: string; fetch?: FetchLike })
           redirect: "error",
         });
         if (!response.ok) {
-          throw new Agent37Error(`Agent37 refused the template upload (${response.status}).`, `upload_${response.status}`, response.status);
+          throw new Agent37Error(`Agent 37 refused the template upload (${response.status}).`, `upload_${response.status}`, response.status);
         }
       } catch (error) {
         if (error instanceof Agent37Error) throw error;
         throw new Agent37Error(
-          controller.signal.aborted ? "The template upload to Agent37 timed out." : "Could not upload the template to Agent37.",
+          controller.signal.aborted ? "The template upload to Agent 37 timed out." : "Could not upload the template to Agent 37.",
           "network",
           0,
         );

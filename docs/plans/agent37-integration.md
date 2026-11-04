@@ -148,6 +148,34 @@ and ADE registers it in the user's workspace on first use (one
 user's workspace on first use (about five minutes, free). (a) is best; (b) is
 the fallback.
 
+**Built: (c), on connect (2026-11-04, `ade/agent37-template-on-connect`).**
+Saving the key, and every app start with a key saved (20 s after boot), runs
+`agent37TemplateBuilder.ts`: it asks Agent37 for the template and, when it is
+missing or older than the running release, runs the cloud build over the REST
+API (`POST /v1/template-builds`, PUT the gzipped context, `start`, poll). No
+CLI, no Node, no Docker: the context is `infra/agent37/template`, shipped as
+the `agent37-template` app resource and packed in the main process.
+
+- What a template installs is in its Agent37 description:
+  `ADE <version> · template <hash of the two files>`. A release build replaces
+  a template that has no marker, other files, or an older ADE; a newer one
+  (built by a newer ADE elsewhere) stays. A development or alpha build bakes
+  the newest release and only creates a missing template, never replaces one.
+- A build in flight is recorded (build id, start time, version, hash) in the
+  account vault (`integration` / `agent37-template-build`), falling back to
+  this computer's credential file. Another computer that sees a fresh record
+  polls that build instead of starting one; an app restart resumes polling it.
+  Agent37 has no "list builds" endpoint, so this record is the only guard.
+- Failures retry after 1, 5 and 15 minutes, then wait for Retry. A refused key
+  or an unfunded workspace does not retry.
+- The Agent37 page shows the template (setting up, about N min left / ready /
+  failed with the reason and Retry). New Agent37 machine says so and keeps
+  Make box off while there is no usable template; while an older template is
+  being updated, boxes come from the older one.
+
+Measured 2026-11-04 with a test name (`ade-t2-test`): connect to ready in about
+3.5 minutes, revision 1, description marker set by the build.
+
 ### 4.3 Sleep and wake, owned by ADE
 
 - Agent37 auto-sleep stays **off** (it would suspend a working brain).
@@ -278,6 +306,17 @@ does nothing, so a renamed laptop is never mistaken for a copy.
   this branch, §5.1). After `ade init` on the box and a brain restart,
   Connect reached it over the relay (151 ms). Boxes `s321i7brh3`,
   `0terhcg4bw`, `mxf022t45j`, `0mqkjuhzqp`, all deleted.
+- 2026-11-04, `ade/agent37-template-on-connect`, after Clerk's consent screen
+  was turned off and `CLERK_SECRET_KEY` set on the production account
+  directory: connecting the key built `ade-t2-test` in about 3.5 minutes; a
+  2/4 box made from it signed in with **no window and no click**
+  (`/device/approve` answered with a ticket; the hidden window reached
+  `/device/callback` without being shown) and was Online in the account about
+  35 s after Make box. Closing the dialog while a second box was starting
+  cancelled the create and deleted the box within 2 s. Boxes `1g90zd1vub`,
+  `k5dwsniok0`, `vjjw6svmrg`, all deleted. Released 1.2.128's `ade logout`
+  does not remove the account row (the fix is on this branch only), so the
+  rows were removed from ADE by hand.
 
 ## 9. Still to test
 

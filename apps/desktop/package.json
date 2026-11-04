@@ -384,6 +384,14 @@
         "to": "docs/triage"
       },
       {
+        "from": "../../infra/agent37/template",
+        "to": "agent37-template",
+        "filter": [
+          "Dockerfile",
+          "ade-entrypoint.sh"
+        ]
+      },
+      {
         "from": "../../NOTICE",
         "to": "NOTICE"
       }

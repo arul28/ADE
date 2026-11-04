@@ -152,7 +152,7 @@ export async function readAgent37Key(
 /** A client for the saved key; throws a plain sentence when there is none. */
 export async function requireAgent37Client(deps: Agent37CredentialDeps): Promise<Agent37Client> {
   const saved = await readAgent37Key(deps);
-  if (!saved) throw new Error("Connect Agent37 first: Settings › Connections › Agent37.");
+  if (!saved) throw new Error("Connect Agent 37 first: Settings › Connections › Agent 37.");
   return createAgent37Client({ apiKey: saved.key, fetch: deps.fetch });
 }
 
@@ -162,8 +162,8 @@ export async function requireAgent37Client(deps: Agent37CredentialDeps): Promise
  */
 export async function saveAgent37Key(deps: Agent37CredentialDeps, rawKey: string): Promise<Agent37Status> {
   const key = rawKey.trim();
-  if (!key) throw new Error("Paste your Agent37 API key.");
-  if (!/^sk_(live|test)_/.test(key)) throw new Error("That doesn't look like an Agent37 API key. They start with sk_live_.");
+  if (!key) throw new Error("Paste your Agent 37 API key.");
+  if (!/^sk_(live|test)_/.test(key)) throw new Error("That doesn't look like an Agent 37 API key. They start with sk_live_.");
   // A refused key throws here, before anything is stored.
   await createAgent37Client({ apiKey: key, fetch: deps.fetch }).billing();
   const vault = resolveVault(deps);
@@ -218,13 +218,13 @@ export async function readAgent37Status(deps: Agent37CredentialDeps): Promise<Ag
       // A key Agent37 refuses is not a connection; one it could not reach still is.
       connected: !refused,
       credentialStorage: saved.storage,
-      error: error instanceof Error ? error.message : "Couldn't reach Agent37.",
+      error: error instanceof Error ? error.message : "Couldn't reach Agent 37.",
     };
   }
 }
 
 function balanceLabel(status: Agent37Status): string | null {
-  return status.balanceUsd == null ? null : `Agent37 wallet $${status.balanceUsd.toFixed(2)}`;
+  return status.balanceUsd == null ? null : `Agent 37 wallet $${status.balanceUsd.toFixed(2)}`;
 }
 
 /** The connect card's status/save pair. */

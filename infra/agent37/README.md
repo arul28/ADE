@@ -42,8 +42,14 @@ trial template with `ADE_AGENT37_TEMPLATE=ade-a1-test`.
 
 ## Known gaps
 
-- Every user's workspace needs the template, and today only this script puts
-  it there. See "Template distribution" in `docs/plans/agent37-integration.md`.
+- ADE itself builds the template in the person's workspace when they connect
+  the key, and again when ADE updates (`agent37TemplateBuilder.ts`; see
+  "Template distribution" in `docs/plans/agent37-integration.md`). This script
+  is for trial templates and by-hand builds. A template it builds has no
+  `ADE <version> · template <hash>` description, so a released ADE replaces it
+  once with its own build.
+- The desktop app ships this folder as the `agent37-template` resource
+  (`apps/desktop/package.json` `extraResources`); keep it to the two files.
 - The image installs whatever ADE release is current at build time. A box from
   ADE 1.2.128 needs a registered project before another computer can connect
   to it (fixed on `ade/agent37-integration`, not yet released).

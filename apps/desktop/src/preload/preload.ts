@@ -78,7 +78,7 @@ import { machineNameForBinding } from "../shared/machineIdentity";
 import type { DeeplinkOwnership } from "../shared/deeplinks";
 import type { MachineInventoryDetail } from "../shared/types/machineInventory";
 import type { MachineConnectionRoutes } from "../shared/types/account";
-import type { Agent37CreateMachineArgs, Agent37CreateProgress, Agent37Status } from "../shared/agent37";
+import type { Agent37CreateMachineArgs, Agent37CreateProgress, Agent37Status, Agent37TemplateStatus } from "../shared/agent37";
 import {
   loopbackOriginLabel,
   parseLoopbackUrl,
@@ -12856,6 +12856,15 @@ const adeBridge = {
       const listener = (_event: Electron.IpcRendererEvent, progress: Agent37CreateProgress) => cb(progress);
       ipcRenderer.on(IPC.agent37CreateProgress, listener);
       return () => ipcRenderer.removeListener(IPC.agent37CreateProgress, listener);
+    },
+    cancelCreate: (requestId: string): Promise<{ cancelled: boolean }> =>
+      ipcRenderer.invoke(IPC.agent37CancelCreate, { requestId }),
+    getTemplateStatus: (): Promise<Agent37TemplateStatus | null> => ipcRenderer.invoke(IPC.agent37GetTemplateStatus),
+    retryTemplate: (): Promise<Agent37TemplateStatus | null> => ipcRenderer.invoke(IPC.agent37RetryTemplate),
+    onTemplateStatus: (cb: (status: Agent37TemplateStatus) => void): (() => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, status: Agent37TemplateStatus) => cb(status);
+      ipcRenderer.on(IPC.agent37TemplateStatus, listener);
+      return () => ipcRenderer.removeListener(IPC.agent37TemplateStatus, listener);
     },
   },
   /**

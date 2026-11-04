@@ -170,18 +170,18 @@ export function packAgent37TemplateContext(files: Agent37TemplateContextFiles): 
 function buildFailureMessage(code: string | null, message: string | null): string {
   switch (code) {
     case "build_failed":
-      return "a step of the template build failed on Agent37.";
+      return "a step of the template build failed on Agent 37.";
     case "build_timeout":
-      return "the template build ran past Agent37's 45-minute limit.";
+      return "the template build ran past Agent 37's 45-minute limit.";
     case "image_too_large":
-      return "the template came out larger than Agent37 allows.";
+      return "the template came out larger than Agent 37 allows.";
     case "try_again":
-      return "Agent37 had no build machine free.";
+      return "Agent 37 had no build machine free.";
     case "image_ingest_failed":
     case "internal_error":
-      return "Agent37 had a problem on its side while building.";
+      return "Agent 37 had a problem on its side while building.";
     default:
-      return message ? `Agent37 said: ${message}` : "the template build failed on Agent37.";
+      return message ? `Agent 37 said: ${message}` : "the template build failed on Agent 37.";
   }
 }
 
@@ -189,10 +189,17 @@ class BuildFailed extends Error {}
 
 /** No point retrying these on a timer: the key itself is the problem. */
 function isFatal(error: unknown): boolean {
-  return error instanceof Agent37Error && (error.code === "invalid_api_key" || error.code === "ip_not_allowed");
+  return error instanceof Agent37Error
+    && (error.code === "invalid_api_key" || error.code === "ip_not_allowed" || error.code === "insufficient_balance");
 }
 
 function plainReason(error: unknown): string {
+  if (error instanceof Agent37Error && error.code === "insufficient_balance") {
+    return "Agent 37 builds templates only for a workspace with money in its wallet. Top it up, then press Retry.";
+  }
+  if (error instanceof Agent37Error && error.code === "invalid_api_key") {
+    return "Agent 37 no longer accepts the saved key. Connect a new key on this page.";
+  }
   const text = error instanceof Error ? error.message : String(error);
   return text.replace(/\.$/, "") + ".";
 }
@@ -240,7 +247,7 @@ export function createAgent37TemplateBuilder(deps: Agent37TemplateBuilderDeps) {
     for (;;) {
       if (signal.aborted) return;
       const build = await client.getTemplateBuild(buildId);
-      if (!build) throw new BuildFailed("Agent37 lost track of the template build.");
+      if (!build) throw new BuildFailed("Agent 37 lost track of the template build.");
       if (build.status === "succeeded") return;
       if (build.status === "failed") throw new BuildFailed(buildFailureMessage(build.errorCode, build.errorMessage));
       // Made but never started: whoever made it stopped before uploading.
@@ -363,7 +370,7 @@ export function createAgent37TemplateBuilder(deps: Agent37TemplateBuilderDeps) {
         if (error instanceof BuildFailed) await deps.records.clear().catch(() => undefined);
         set(signal, {
           state: "failed",
-          error: reason.charAt(0).toUpperCase() + reason.slice(1),
+          error: reason,
           startedAt: null,
           minutesLeft: null,
           nextRetryAt: delay == null ? null : now() + delay,

@@ -14,6 +14,8 @@ set -eu
 
 name="${1:-ade}"
 ade_version="${2:-latest}"
+# install.sh takes the release tag ("v1.2.128"); accept "1.2.128" too.
+case "$ade_version" in latest|v*) ;; *) ade_version="v$ade_version" ;; esac
 here="$(cd "$(dirname "$0")" && pwd)"
 
 if [ -z "${AGENT37_API_KEY:-}" ]; then

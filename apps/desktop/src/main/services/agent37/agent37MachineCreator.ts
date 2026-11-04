@@ -156,7 +156,7 @@ function approvalErrorMessage(status: number, code: string | null): string {
 
 export function normalizeAgent37MachineName(raw: string): string {
   const cleaned = raw.replace(/[\u0000-\u001f]/g, " ").replace(/\s+/g, " ").trim().slice(0, 60);
-  return cleaned || "Agent37 box";
+  return cleaned || "Agent 37 box";
 }
 
 export async function createAgent37Machine(

@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Check, CircleNotch, Cube, Minus, Warning } from "@phosphor-icons/react";
+import { ArrowClockwise, Check, CircleNotch, Minus, Warning } from "@phosphor-icons/react";
 import {
   AGENT37_KINDS,
   AGENT37_SHAPES,
   agent37ChoiceBlocker,
   agent37HourlyUsd,
+  describeAgent37TemplateStatus,
   agent37Shape,
   formatAgent37HourlyPrice,
   type Agent37CreateMachineResult,
@@ -14,6 +15,8 @@ import {
   type Agent37Status,
 } from "../../../shared/agent37";
 import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
+import { Agent37Mark, AGENT37_NAME } from "./agent37Brand";
+import { agent37RetryLabel, useAgent37Template } from "./useAgent37Template";
 
 function newRequestId(): string {
   return typeof crypto !== "undefined" && "randomUUID" in crypto
@@ -39,16 +42,34 @@ export function NewAgent37MachineForm({
 }) {
   const [kind, setKind] = useState<Agent37MachineKind>("box");
   const [shapeId, setShapeId] = useState<Agent37ShapeId>("2x4");
-  const [name, setName] = useState("Agent37 box");
+  const [name, setName] = useState(`${AGENT37_NAME} box`);
   const [progress, setProgress] = useState<Agent37CreateProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
   const requestRef = useRef<string | null>(null);
+  const runningRef = useRef(false);
   const onCreatedRef = useRef(onCreated);
   onCreatedRef.current = onCreated;
+  const template = useAgent37Template(true);
 
   const running = progress != null && progress.stage !== "done" && progress.stage !== "failed";
+  runningRef.current = running;
   const shape = agent37Shape(shapeId) ?? AGENT37_SHAPES[0]!;
   const blocker = agent37ChoiceBlocker(status, kind, shape);
+  // Create waits for a template it can make the box from; an older one that
+  // is being updated still works.
+  const templateReady = template.status?.usable === true;
+  const templateNote = templateReady && template.status?.state !== "building"
+    ? null
+    : template.status && template.status.state !== "idle"
+      ? describeAgent37TemplateStatus(template.status)
+      : "Checking ADE's machine template…";
+
+  // Closing the dialog mid-create cancels it, and main deletes the box it
+  // made, so nothing is left billing. A box that already signed in is kept.
+  useEffect(() => () => {
+    const requestId = requestRef.current;
+    if (requestId && runningRef.current) void window.ade.agent37?.cancelCreate(requestId).catch(() => undefined);
+  }, []);
 
   useEffect(() => {
     const bridge = window.ade.agent37;
@@ -73,11 +94,11 @@ export function NewAgent37MachineForm({
 
   const create = async () => {
     const bridge = window.ade.agent37;
-    if (!bridge || running || blocker) return;
+    if (!bridge || running || blocker || !templateReady) return;
     const requestId = newRequestId();
     requestRef.current = requestId;
     setError(null);
-    setProgress({ requestId, stage: "creating", message: "Asking Agent37 for the machine…" });
+    setProgress({ requestId, stage: "creating", message: `Asking ${AGENT37_NAME} for the machine…` });
     try {
       const started = await bridge.createMachine(requestId, { kind, shape: shapeId, name });
       if (!started.started) {
@@ -88,6 +109,13 @@ export function NewAgent37MachineForm({
       setProgress(null);
       setError(startError instanceof Error ? startError.message : String(startError));
     }
+  };
+
+  const cancel = () => {
+    const requestId = requestRef.current;
+    if (!requestId || !running) return;
+    setProgress((current) => current ? { ...current, message: "Cancelling and deleting the box…" } : current);
+    void window.ade.agent37?.cancelCreate(requestId).catch(() => undefined);
   };
 
   return (
@@ -112,7 +140,7 @@ export function NewAgent37MachineForm({
               }}
             >
               <span className="ade-cx-way-label" style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                <Cube size={14} weight={selected ? "fill" : "regular"} /> {spec.label}
+                <Agent37Mark size={14} strokeWidth={selected ? 24 : 12.46} /> {spec.label}
                 <span style={{ marginLeft: "auto", fontWeight: 400, opacity: 0.75 }}>
                   from {prices[`${spec.kind}:2x4`]}
                 </span>
@@ -188,7 +216,7 @@ export function NewAgent37MachineForm({
 
       <div style={{ fontSize: 12, opacity: 0.8 }}>
         {shape.cpu} CPUs, {shape.memoryGb} GB memory, {shape.diskGb} GB disk. About {prices[`${kind}:${shape.id}`]} while it runs; asleep, only the disk bills.
-        {status.balanceUsd != null ? ` Your Agent37 wallet has $${status.balanceUsd.toFixed(2)}.` : ""}
+        {status.balanceUsd != null ? ` Your ${AGENT37_NAME} wallet has $${status.balanceUsd.toFixed(2)}.` : ""}
       </div>
 
       {blocker ? (
@@ -212,15 +240,38 @@ export function NewAgent37MachineForm({
         </div>
       ) : null}
 
-      <div style={{ display: "flex", justifyContent: "flex-end" }}>
+      {templateNote && !running && progress?.stage !== "done" ? (
+        <div role="status" style={{ display: "flex", gap: 8, alignItems: "flex-start", fontSize: 12 }}>
+          {template.status?.state === "failed"
+            ? <Warning size={14} weight="fill" style={{ flexShrink: 0, marginTop: 1, color: "var(--color-warning, #D29922)" }} />
+            : <CircleNotch size={14} className="animate-spin" style={{ flexShrink: 0, marginTop: 1 }} />}
+          <span>
+            {templateNote}
+            {template.status?.state === "failed" && template.status.nextRetryAt ? ` ${agent37RetryLabel(template.status.nextRetryAt)}` : ""}
+            {!templateReady && template.status?.state !== "failed" ? " You can wait here; Make box turns on when it's ready." : ""}
+          </span>
+          {template.status?.state === "failed" ? (
+            <button type="button" className="ade-modern-btn" data-size="sm" style={{ marginLeft: "auto", flexShrink: 0 }} onClick={template.retry}>
+              <ArrowClockwise size={12} /> Retry
+            </button>
+          ) : null}
+        </div>
+      ) : null}
+
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+        {running ? (
+          <button type="button" className="ade-modern-btn" data-variant="ghost" onClick={cancel}>
+            Cancel
+          </button>
+        ) : null}
         <button
           type="button"
           className="ade-cx-add-btn"
           data-size="lg"
-          disabled={running || blocker != null || progress?.stage === "done"}
+          disabled={running || blocker != null || !templateReady || progress?.stage === "done"}
           onClick={() => void create()}
         >
-          {running ? <CircleNotch size={13} className="animate-spin" /> : <Cube size={13} weight="bold" />}
+          {running ? <CircleNotch size={13} className="animate-spin" /> : <Agent37Mark size={13} />}
           {running ? "Making the machine…" : `Make ${kind === "vm" ? "VM" : "box"}`}
         </button>
       </div>
