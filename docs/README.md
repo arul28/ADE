@@ -55,6 +55,7 @@ docs/
     ├── files-and-editor/                  # watcher, editor, Monaco, search
     ├── history/                           # operations timeline, transcripts, export
     ├── apple-device/                      # Apple Development tool + helper stream + ADEInspector
+    ├── android-device/                    # Android Development tool + scrcpy stream (P0)
     ├── lanes/                             # worktree isolation, stacking, runtime, OAuth
     ├── issues/                            # open an issue where you are: Issues tool tab, issue sheet
     ├── linear-integration/                # issue reads, lane/PR flow, live-status round-trip
