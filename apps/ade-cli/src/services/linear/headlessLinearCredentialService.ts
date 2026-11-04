@@ -1,14 +1,10 @@
 import path from "node:path";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import type { AccountVaultBridge } from "../../../../desktop/src/main/services/account/accountVaultBridge";
-import { describeVaultFailure, fireAndForgetVaultWrite } from "../../../../desktop/src/main/services/account/vaultWrite";
 import {
-  LINEAR_REFRESH_VAULT_KEY,
-  LINEAR_REFRESH_VAULT_KIND,
-  LINEAR_REFRESH_VAULT_SCOPE,
-  linearRefreshVaultWriteOptions,
-  thisDeviceOwnsLinearRefreshGrant,
-} from "../../../../desktop/src/main/services/account/linearVaultRefreshOwner";
+  createLinearAccountSync,
+  type LinearAccountCredential,
+} from "../../../../desktop/src/main/services/cto/linearAccountSync";
 import { ADE_LINEAR_APP_CLIENT_ID, type LinearOAuthClientSource } from "../../../../desktop/src/main/services/cto/linearAppClient";
 import type { createLinearCredentialService } from "../../../../desktop/src/main/services/cto/linearCredentialService";
 import { createCredentialProvenanceStore } from "../../../../desktop/src/shared/credentialProvenanceStore";
@@ -82,6 +78,8 @@ export function createHeadlessLinearCredentialService(args: {
   const oauthClientKey = "linear.oauthClient.v1";
   let tokenOverride: string | null = null;
   let tokenDecryptionFailed = false;
+  /** Until when another machine is known to own the refresh grant (see LINEAR_REFRESH_OWNER_RECHECK_MS). */
+  let refreshOwnedElsewhereUntilMs = 0;
 
   const readCredential = (key: string): string | null => {
     try {
@@ -121,56 +119,51 @@ export function createHeadlessLinearCredentialService(args: {
       : deviceCredentialProvenance();
   };
 
-  const logVaultFailure = (operation: string, detail: unknown): void => {
-    args.logger?.warn("linear_sync.account_vault_sync_failed", {
-      operation,
-      error: describeVaultFailure(detail),
-    });
+  const readStoredCredential = (): LinearAccountCredential | null => {
+    const token = readCredential(tokenKey);
+    if (!token) return null;
+    const authMode = readCredential(authModeKey) === "oauth" ? "oauth" : "manual";
+    return {
+      token,
+      authMode,
+      refreshToken: authMode === "oauth" ? readCredential(refreshTokenKey) : null,
+      expiresAt: authMode === "oauth" ? readCredential(tokenExpiresAtKey) : null,
+    };
   };
 
-  const syncRefreshTokenToVault = (refreshToken: string): void => {
-    fireAndForgetVaultWrite(
-      {
-        getAccountVault: args.getAccountVault,
-        logger: args.logger,
-        logEvent: "linear_sync.account_vault_sync_failed",
-      },
-      "set",
-      (vault) => {
-        const options = linearRefreshVaultWriteOptions(args.getDeviceId);
-        return options
-          ? vault.set(
-            LINEAR_REFRESH_VAULT_SCOPE,
-            LINEAR_REFRESH_VAULT_KIND,
-            LINEAR_REFRESH_VAULT_KEY,
-            refreshToken,
-            options,
-          )
-          : vault.set(
-            LINEAR_REFRESH_VAULT_SCOPE,
-            LINEAR_REFRESH_VAULT_KIND,
-            LINEAR_REFRESH_VAULT_KEY,
-            refreshToken,
-          );
-      },
-    );
+  const writeStoredCredential = (record: LinearAccountCredential | null): void => {
+    tokenOverride = record ? record.token : "";
+    writeCredential(tokenKey, record?.token ?? null);
+    writeCredential(authModeKey, record?.authMode ?? null);
+    writeCredential(refreshTokenKey, record?.authMode === "oauth" ? record.refreshToken : null);
+    writeCredential(tokenExpiresAtKey, record?.authMode === "oauth" ? record.expiresAt : null);
   };
 
-  const removeRefreshTokenFromVault = (): void => {
-    fireAndForgetVaultWrite(
-      {
-        getAccountVault: args.getAccountVault,
-        logger: args.logger,
-        logEvent: "linear_sync.account_vault_sync_failed",
-      },
-      "remove",
-      (vault) => vault.remove(
-        LINEAR_REFRESH_VAULT_SCOPE,
-        LINEAR_REFRESH_VAULT_KIND,
-        LINEAR_REFRESH_VAULT_KEY,
-      ),
-    );
-  };
+  const accountSync = createLinearAccountSync({
+    projectRoot: path.dirname(args.adeDir),
+    getAccountVault: args.getAccountVault,
+    getAccountUserId: args.getAccountUserId,
+    getDeviceId: args.getDeviceId,
+    logger: args.logger,
+    readLocal: readStoredCredential,
+    localIsFromAccount: () => getCredentialProvenance(tokenKey).source === "account",
+    hasEnvToken: () => envToken("ADE_LINEAR_API", "LINEAR_API_KEY", "ADE_LINEAR_TOKEN", "LINEAR_TOKEN") !== null,
+    writeFromAccount: (record, accountUserId) => {
+      // Ownership first, so a failed value write cannot leave an account
+      // credential that looks like this device's own.
+      const provenance = accountProvenance(accountUserId);
+      setCredentialProvenance(tokenKey, provenance);
+      if (record.authMode === "oauth" && record.refreshToken) setCredentialProvenance(refreshTokenKey, provenance);
+      else deleteCredentialProvenance(refreshTokenKey);
+      writeStoredCredential(record);
+      refreshOwnedElsewhereUntilMs = 0;
+    },
+    clearFromAccount: () => {
+      writeStoredCredential(null);
+      deleteCredentialProvenance(tokenKey);
+      deleteCredentialProvenance(refreshTokenKey);
+    },
+  });
 
   const readToken = (): {
     token: string;
@@ -229,8 +222,6 @@ export function createHeadlessLinearCredentialService(args: {
   // so headless `ade serve` Linear connections survive past Linear's ~24h token
   // lifetime. No-op for manual tokens / env tokens / when no refresh token.
   let refreshInFlight: Promise<void> | null = null;
-  /** Until when another machine is known to own the refresh grant (see LINEAR_REFRESH_OWNER_RECHECK_MS). */
-  let refreshOwnedElsewhereUntilMs = 0;
   const ensureFreshToken = async (opts?: { force?: boolean }): Promise<void> => {
     if (readToken().source === "env") return;
     if (readCredential(authModeKey) !== "oauth") return;
@@ -246,10 +237,9 @@ export function createHeadlessLinearCredentialService(args: {
     const client = readOAuthClientCredentials();
     if (!client) return;
     refreshInFlight = (async () => {
-      if (!(await thisDeviceOwnsLinearRefreshGrant({
-        getAccountVault: args.getAccountVault,
-        getDeviceId: args.getDeviceId,
-      }))) {
+      const stored = readStoredCredential();
+      const plan = stored ? await accountSync.planRefresh(stored) : { renew: true, publish: false };
+      if (!plan.renew) {
         refreshOwnedElsewhereUntilMs = Date.now() + LINEAR_REFRESH_OWNER_RECHECK_MS;
         args.logger?.info("linear_sync.oauth_refresh_skipped_other_owner", {});
         return;
@@ -267,7 +257,11 @@ export function createHeadlessLinearCredentialService(args: {
           const nextRefreshToken = result.refreshToken ?? tokenToRefresh;
           writeCredential(refreshTokenKey, nextRefreshToken);
           writeCredential(tokenExpiresAtKey, result.expiresAt);
-          syncRefreshTokenToVault(nextRefreshToken);
+          // The owner publishes each turn before the lock opens, so a sibling
+          // process here (or another machine) reads it instead of exchanging.
+          if (plan.publish) {
+            await accountSync.publishNow({ token: result.accessToken, authMode: "oauth", refreshToken: nextRefreshToken, expiresAt: result.expiresAt });
+          }
           return;
         }
         if (result.invalidGrant) {
@@ -291,7 +285,8 @@ export function createHeadlessLinearCredentialService(args: {
           writeCredential(tokenExpiresAtKey, null);
           deleteCredentialProvenance(tokenKey);
           deleteCredentialProvenance(refreshTokenKey);
-          removeRefreshTokenFromVault();
+          // Only the owner of a shared grant may say it is dead everywhere.
+          if (plan.publish) accountSync.publish(null);
         }
       };
 
@@ -300,6 +295,8 @@ export function createHeadlessLinearCredentialService(args: {
           const latestRefresh = readCredential(refreshTokenKey);
           if (!latestRefresh) return;
           if (!opts?.force && !linearTokenNeedsRefresh(readCredential(tokenExpiresAtKey), Date.now())) return;
+          const latest = readStoredCredential();
+          if (latest && await accountSync.adoptNewerTurn(latest)) return;
           await performRefresh(latestRefresh);
         });
       } catch (error: unknown) {
@@ -315,69 +312,9 @@ export function createHeadlessLinearCredentialService(args: {
   };
 
   const hydrateFromVault = async (): Promise<void> => {
-    const accountUserId = args.getAccountUserId?.()?.trim() || null;
-    if (!accountUserId) return;
-    if (!(await thisDeviceOwnsLinearRefreshGrant({
-      getAccountVault: args.getAccountVault,
-      getDeviceId: args.getDeviceId,
-    }))) {
-      return;
-    }
-    // This machine owns the grant now; an earlier "owned elsewhere" is stale.
+    await accountSync.hydrate();
+    // An adopted or republished connection can change who renews; ask again.
     refreshOwnedElsewhereUntilMs = 0;
-
-    try {
-      if (readCredential(refreshTokenKey)) return;
-      const { source } = readToken();
-      const authMode = readCredential(authModeKey);
-      // Manual and environment-provided credentials remain authoritative on
-      // this machine; only an OAuth connection can accept a refresh grant.
-      if (authMode && authMode !== "oauth") return;
-      if (source === "env" || (source !== null && authMode !== "oauth")) return;
-    } catch (error) {
-      logVaultFailure("hydrate", error);
-      return;
-    }
-
-    let vault: AccountVaultBridge | null | undefined;
-    try {
-      vault = args.getAccountVault?.() ?? null;
-    } catch (error) {
-      logVaultFailure("get", error);
-      return;
-    }
-    if (!vault) return;
-
-    let result: Awaited<ReturnType<AccountVaultBridge["get"]>>;
-    try {
-      result = await vault.get(
-        LINEAR_REFRESH_VAULT_SCOPE,
-        LINEAR_REFRESH_VAULT_KIND,
-        LINEAR_REFRESH_VAULT_KEY,
-      );
-    } catch (error) {
-      logVaultFailure("get", error);
-      return;
-    }
-    if (!result.ok) {
-      logVaultFailure("get", result);
-      return;
-    }
-    const refreshToken = result.value?.trim() ?? "";
-    if (!refreshToken.length) return;
-    if ((args.getAccountUserId?.()?.trim() || null) !== accountUserId) return;
-
-    try {
-      if (readCredential(refreshTokenKey)) return;
-      const { source } = readToken();
-      const authMode = readCredential(authModeKey);
-      if (source === "env" || (source !== null && authMode !== "oauth")) return;
-      setCredentialProvenance(refreshTokenKey, accountProvenance(accountUserId));
-      writeCredential(authModeKey, "oauth");
-      writeCredential(refreshTokenKey, refreshToken);
-    } catch (error) {
-      logVaultFailure("hydrate", error);
-    }
   };
 
   return {
@@ -411,6 +348,7 @@ export function createHeadlessLinearCredentialService(args: {
         // The bundled ADE app client makes OAuth always available; a custom
         // client (if configured) takes precedence over it.
         oauthConfigured: true,
+        credentialStorage: accountSync.storage(),
       };
     },
     getTokenOrThrow() {
@@ -431,7 +369,7 @@ export function createHeadlessLinearCredentialService(args: {
       writeCredential(tokenExpiresAtKey, null);
       setCredentialProvenance(tokenKey, deviceCredentialProvenance());
       deleteCredentialProvenance(refreshTokenKey);
-      removeRefreshTokenFromVault();
+      accountSync.publish(tokenOverride ? { token: tokenOverride, authMode: "manual", refreshToken: null, expiresAt: null } : null);
     },
     setOAuthToken(args: {
       accessToken: string;
@@ -447,11 +385,16 @@ export function createHeadlessLinearCredentialService(args: {
       setCredentialProvenance(tokenKey, deviceCredentialProvenance());
       if (args.refreshToken?.trim()) {
         setCredentialProvenance(refreshTokenKey, deviceCredentialProvenance());
-        syncRefreshTokenToVault(args.refreshToken.trim());
       } else {
         deleteCredentialProvenance(refreshTokenKey);
-        removeRefreshTokenFromVault();
       }
+      // A sign-in here makes this machine the one that renews the grant.
+      accountSync.publish(tokenOverride ? {
+        token: tokenOverride,
+        authMode: "oauth",
+        refreshToken: args.refreshToken?.trim() || null,
+        expiresAt: args.expiresAt?.trim() || null,
+      } : null);
     },
     clearToken() {
       refreshOwnedElsewhereUntilMs = 0;
@@ -462,7 +405,7 @@ export function createHeadlessLinearCredentialService(args: {
       writeCredential(tokenExpiresAtKey, null);
       deleteCredentialProvenance(tokenKey);
       deleteCredentialProvenance(refreshTokenKey);
-      removeRefreshTokenFromVault();
+      accountSync.publish(null);
     },
     hydrateFromVault,
     setOAuthClientCredentials(args: {

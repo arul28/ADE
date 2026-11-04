@@ -201,7 +201,8 @@ describe("account runtime lifecycle", () => {
       await vi.advanceTimersByTimeAsync(30_000);
 
       expect(syncAttempts).toBe(2);
-      expect(setup.context.linearCredentialService?.hydrateFromVault).toHaveBeenCalledOnce();
+      // The ready tick's pull and the migration both reconcile the project's Linear connection.
+      expect(setup.context.linearCredentialService?.hydrateFromVault).toHaveBeenCalled();
     } finally {
       setup.cleanup();
       vi.useRealTimers();

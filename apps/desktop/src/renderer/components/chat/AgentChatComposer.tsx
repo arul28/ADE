@@ -220,6 +220,10 @@ import {
   projectSecretComposerNote,
   readProjectSecretRequestCard,
 } from "../../../shared/projectSecretRequest";
+import { IntegrationConnectComposer } from "./IntegrationConnectCard";
+import { readIntegrationConnectRequestCard } from "../../../shared/integrationConnect";
+import { McpServerRequestComposer } from "./McpServerCard";
+import { readMcpServerRequestCard } from "../../../shared/mcpServerRequest";
 import {
   isAskQuestionRequest,
   isRedirectablePendingRequest,
@@ -2318,6 +2322,7 @@ function AgentChatComposerImpl({
   pendingInputQueue,
   onSelectPendingInput,
   approvalResponding,
+  pendingInputError,
   turnActive,
   sendOnEnter,
   busy,
@@ -2571,6 +2576,11 @@ function AgentChatComposerImpl({
   pendingInputQueue?: readonly PendingInputStackEntry[];
   onSelectPendingInput?: (itemId: string) => void;
   approvalResponding?: boolean;
+  /**
+   * Why the open card's last answer did not go through, when the card shows
+   * it itself (the connect card) instead of the chat's banner.
+   */
+  pendingInputError?: string | null;
   turnActive: boolean;
   sendOnEnter: boolean;
   busy: boolean;
@@ -9280,6 +9290,45 @@ function AgentChatComposerImpl({
               fileDeliveryAvailable={askQuestionRequest.questions.some((question) => question.id === PROJECT_SECRET_DELIVERY_QUESTION_ID)}
               onSave={(value, delivery) => { void onApproval("accept", null, projectSecretSaveAnswers(secretRequestCard, value, delivery)); }}
               onKeepExisting={() => { void onApproval("accept", null, projectSecretKeepAnswers()); }}
+              onDecline={() => { void onApproval("decline"); }}
+            />
+          );
+        }
+
+        const connectRequestCard = askQuestionRequest ? readIntegrationConnectRequestCard(askQuestionRequest) : null;
+        if (askQuestionRequest && connectRequestCard) {
+          // The connect card. Keys travel only as answers to the request's
+          // `isSecret` questions; the host checks and saves them on the chat's
+          // machine, and a refusal comes back as `pendingInputError`.
+          return (
+            <IntegrationConnectComposer
+              key={askQuestionRequest.itemId ?? askQuestionRequest.requestId}
+              request={askQuestionRequest}
+              card={connectRequestCard}
+              responding={approvalResponding ?? false}
+              error={pendingInputError ?? null}
+              chatProvider={sessionProvider}
+              onConnect={(answers) => { void onApproval("accept", null, answers); }}
+              onDecline={() => { void onApproval("decline"); }}
+            />
+          );
+        }
+
+        const mcpServerRequestCard = askQuestionRequest ? readMcpServerRequestCard(askQuestionRequest) : null;
+        if (askQuestionRequest && mcpServerRequestCard) {
+          // The MCP server card. Values travel only as answers to the
+          // request's `isSecret` questions; the host saves the server and its
+          // values on the chat's machine, and a refusal comes back as
+          // `pendingInputError`.
+          return (
+            <McpServerRequestComposer
+              key={askQuestionRequest.itemId ?? askQuestionRequest.requestId}
+              request={askQuestionRequest}
+              card={mcpServerRequestCard}
+              responding={approvalResponding ?? false}
+              error={pendingInputError ?? null}
+              chatProvider={sessionProvider}
+              onAdd={(answers) => { void onApproval("accept", null, answers); }}
               onDecline={() => { void onApproval("decline"); }}
             />
           );

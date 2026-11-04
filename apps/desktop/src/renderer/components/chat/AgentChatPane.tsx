@@ -211,6 +211,7 @@ import { ChatSubagentTakeoverBanner } from "./ChatSubagentTakeoverBanner";
 import { resolveModelDescriptorWithRuntimeCatalog } from "../shared/ModelPicker/modelCatalog";
 import { latestContextUsageInput, toUsageViewModel, type ContextUsageViewModel } from "./usage/contextUsageModel";
 import { CompactFirstChip } from "./CompactFirstChip";
+import { McpRefreshChip } from "./McpRefreshChip";
 import { resolveContextCompactControl } from "../../../shared/contextCompaction";
 import {
   DEFAULT_RUNTIME_CATALOG_SCOPE,
@@ -365,6 +366,8 @@ import {
   retainChatSession,
 } from "./chatSessionRetention";
 import { settingsRouteFor } from "../settings/settingsManifest";
+import { readIntegrationConnectRequestCard } from "../../../shared/integrationConnect";
+import { readMcpServerRequestCard } from "../../../shared/mcpServerRequest";
 import { ClaudeLoginPromptButton } from "../work/ClaudeLoginPromptButton";
 import type { ComposerClaudeSignInTarget } from "./ComposerClaudeSignIn";
 import { CHAT_AUTH_RECOVERED_EVENT, CHAT_AUTH_RETRY_REJECTED_EVENT, CHAT_RETRY_AUTH_TURN_EVENT } from "./AgentCliAuthCard";
@@ -14335,13 +14338,16 @@ export function AgentChatPane({
 
   /** The banner text a failed card answer raised, so its successful retry can clear it. */
   const approvalErrorRef = useRef<string | null>(null);
+  const [inlineApprovalError, setInlineApprovalError] = useState<{ itemId: string; message: string } | null>(null);
   const handleApproval = useCallback(async (
     itemId: string,
     decision: AgentChatApprovalDecision,
     responseText?: string | null,
     answers?: Record<string, string | string[]>,
+    options?: { inlineError?: boolean },
   ): Promise<boolean> => {
     if (!selectedSessionId) return false;
+    setInlineApprovalError((current) => (current?.itemId === itemId ? null : current));
     try {
       touchSession(selectedSessionId);
       setRespondingApprovalIds((prev) => new Set(prev).add(itemId));
@@ -14367,6 +14373,11 @@ export function AgentChatPane({
       setRespondingApprovalIds((prev) => { const next = new Set(prev); next.delete(itemId); return next; });
       const rawApprovalError = approvalError instanceof Error ? approvalError.message : String(approvalError);
       const message = stripElectronErrorWrapper(rawApprovalError) || rawApprovalError;
+      if (options?.inlineError) {
+        // The card shows it itself, beside the fields the person retries.
+        setInlineApprovalError({ itemId, message });
+        return false;
+      }
       approvalErrorRef.current = message;
       setError(message);
       return false;
@@ -15912,7 +15923,10 @@ export function AgentChatPane({
     // restores it when delivery failed, because a failed response leaves the
     // card open and still asking.
     if (!selectedSessionId || !pendingInput) return false;
-    return await handleApproval(pendingInput.itemId, decision, responseText, answers);
+    return await handleApproval(pendingInput.itemId, decision, responseText, answers, {
+      inlineError: readIntegrationConnectRequestCard(pendingInput.request) != null
+        || readMcpServerRequestCard(pendingInput.request) != null,
+    });
   }, [handleApproval, pendingInput, selectedSessionId]);
 
   const updateNativeControls = useCallback(async (patch: Partial<NativeControlState>) => {
@@ -18212,6 +18226,15 @@ export function AgentChatPane({
       onDismiss={() => compactFirst.setChoice({ sessionId: selectedSessionId, value: false, dismissed: true })}
     />
   ) : null;
+  // A registry server this chat's running agent did not start with.
+  const mcpRefreshChip = composerSessionId && !parallelChatMode ? (
+    <McpRefreshChip
+      sessionId={composerSessionId}
+      runtimePin={renderedChatRuntimePin}
+      turnActive={turnActive}
+      pendingInputItemId={pendingInput?.itemId ?? null}
+    />
+  ) : null;
   // What Claude mods draw for the open chat, on top of the prompt box.
   const claudeModUi = claudeModUiSessionId
     ? <ClaudeModUi sessionId={claudeModUiSessionId} pin={chatRuntimePin} />
@@ -18439,6 +18462,7 @@ export function AgentChatPane({
             pendingInputQueue={pendingInputQueue}
             onSelectPendingInput={setFocusedPendingItemId}
             approvalResponding={pendingInput ? respondingApprovalIds.has(pendingInput.itemId) : false}
+            pendingInputError={pendingInput && inlineApprovalError?.itemId === pendingInput.itemId ? inlineApprovalError.message : null}
             turnActive={turnActive}
             sendOnEnter={sendOnEnter}
             busy={
@@ -18788,6 +18812,7 @@ export function AgentChatPane({
         {usageLimitChip}
         <LaneBranchComposerChip laneId={composerDriftLaneId} />
         {compactFirstChip}
+        {mcpRefreshChip}
         {pendingSettingsChip}
         {sessionDelta ? (
           <StatusChip

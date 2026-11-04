@@ -1,6 +1,6 @@
 /**
  * The MCP registry as this computer last saved it, read off the account
- * settings cache: the one copy both a chat launch and Settings > MCP servers
+ * settings cache: the one copy both a chat launch and Settings > Integrations > MCP servers
  * read, so the two can never disagree about which servers are on here.
  */
 

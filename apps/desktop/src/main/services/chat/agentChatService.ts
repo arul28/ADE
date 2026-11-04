@@ -233,6 +233,8 @@ import {
   type CrossMachineMoveLock,
 } from "../../../shared/crossMachineMoveLock";
 import { isUserOnlyConsentCard, USER_ONLY_CONSENT_CARD_REFUSAL } from "../../../shared/types/macDesktop";
+import { CONNECT_METHOD_QUESTION_ID, connectProviderSpec, readIntegrationConnectRequestCard } from "../../../shared/integrationConnect";
+import { readMcpServerRequestCard } from "../../../shared/mcpServerRequest";
 import { personalHostPathContext, validatePersonalAttachmentRoots } from "./personalHostPaths";
 import { MAX_PERSONAL_CHAT_ATTACHMENT_ROOTS } from "../../../shared/types/personalChats";
 import {
@@ -5715,9 +5717,12 @@ type ManagedChatSession = {
     /**
      * Runs on an accepting answer BEFORE the card resolves. Throwing keeps the
      * card open and fails the user's respond call, so a card whose work did
-     * not happen never reads as done.
+     * not happen never reads as done. It may be async (a connect card checks
+     * the key with the provider); the card stays open while it runs.
      */
-    beforeAccept?: (answers: Record<string, string[]>) => void;
+    beforeAccept?: (answers: Record<string, string[]>) => void | Promise<void>;
+    /** Set while an async `beforeAccept` runs, so a second answer cannot run it twice. */
+    accepting?: boolean;
   }>;
   /**
    * Codex async questions, keyed by item id. Deliberately NOT in
@@ -11428,7 +11433,7 @@ export type RequestChatInputArgs = {
    */
   signal?: AbortSignal;
   /** Do the answer's work before the card resolves; throw to keep it open. */
-  beforeAccept?: (answers: Record<string, string[]>) => void;
+  beforeAccept?: (answers: Record<string, string[]>) => void | Promise<void>;
   /** The provider-native subagent that asks, when it is not the main agent. */
   subagent?: PendingInputSubagent;
   questions?: Array<{
@@ -12057,6 +12062,15 @@ export function createAgentChatService(args: {
   const mcpRegistryNoticeBySession = new Map<string, string>();
 
   /**
+   * The registry servers each chat's running agent was started with, by the
+   * runtime epoch they were read in. A teardown bumps the epoch, so the next
+   * launch records afresh and a stale record reads as "nothing missing".
+   * In memory only: a chat with no live runtime gets every server on its next
+   * launch anyway. Read by `mcpRegistryChatStatus` (the "Refresh chat" chip).
+   */
+  const mcpRegistryLaunchedBySession = new WeakMap<ManagedChatSession, { epoch: number; names: ReadonlySet<string> }>();
+
+  /**
    * The servers the user defined once in Settings (the MCP registry), for an
    * ordinary chat. A chat that asked for a strict MCP surface, and the light
    * profile (side jobs, embedders, personal chats), get none: those callers
@@ -12075,6 +12089,12 @@ export function createAgentChatService(args: {
       provider: managed.session.provider,
       readSecret: (vaultKey) => args.readAccountSecret?.(vaultKey) ?? null,
     });
+    // The first read in a runtime's life is its launch; later reads in the
+    // same epoch (redaction, status lookups) see what it already runs.
+    const epoch = runtimeTeardownEpoch(managed);
+    if (mcpRegistryLaunchedBySession.get(managed)?.epoch !== epoch) {
+      mcpRegistryLaunchedBySession.set(managed, { epoch, names: new Set(Object.keys(registry.servers ?? {})) });
+    }
     const gaps = mcpRegistryLaunchNotices(registry);
     const key = gaps.join("\n");
     if (!key) {
@@ -12086,6 +12106,33 @@ export function createAgentChatService(args: {
       }
     }
     return registry.servers ? chatUserMcp.registryServers(chatMcpTarget(managed), registry.servers) : null;
+  };
+
+  /**
+   * Registry servers on for this chat now that its running agent did not
+   * start with, minus the ones the provider's own config already runs. Empty
+   * when the chat has no live agent (its next launch gets everything) or is a
+   * chat the registry does not reach. Reads files only; never restarts.
+   */
+  const mcpRegistryChatStatus = (sessionId: string): { missing: string[] } => {
+    const managed = managedSessions.get(sessionId);
+    const adeHome = args.machineAdeHome?.trim();
+    if (!managed || !managed.runtime || !adeHome) return { missing: [] };
+    const launched = mcpRegistryLaunchedBySession.get(managed);
+    if (!launched || launched.epoch !== runtimeTeardownEpoch(managed)) return { missing: [] };
+    const current = resolveMcpRegistryForLaunch({
+      adeHome,
+      projectRoot: args.projectRoot,
+      provider: managed.session.provider,
+      readSecret: () => null,
+    }).servers ?? {};
+    const added: CallerMcpServers = {};
+    for (const [name, server] of Object.entries(current)) {
+      if (!launched.names.has(name)) added[name] = server;
+    }
+    if (!Object.keys(added).length) return { missing: [] };
+    const leftOut = chatUserMcp.registryServersLeftToProvider(chatMcpTarget(managed), added);
+    return { missing: Object.keys(added).filter((name) => !leftOut.has(name)).sort() };
   };
 
   /** The caller's servers on top of the registry's: a caller that names a server keeps its own definition. */
@@ -69514,13 +69561,27 @@ export function createAgentChatService(args: {
     // A secret card is never re-routed (its value must not reach the
     // transcript), so say plainly that nothing was saved and where to add it.
     const secretCard = readProjectSecretRequestCard(request);
+    const connectCard = readIntegrationConnectRequestCard(request);
+    const mcpServerCard = readMcpServerRequestCard(request);
+    const connectLabel = connectCard ? connectProviderSpec(connectCard.provider).label : null;
+    // A browser sign-in finished on its own before the answer; a typed key
+    // was never saved, because only the asker's host saves it.
+    const connectMethodAnswer = answer?.answers?.[CONNECT_METHOD_QUESTION_ID];
+    const connectSignedIn = connectCard != null
+      && (Array.isArray(connectMethodAnswer) ? connectMethodAnswer.includes("oauth") : connectMethodAnswer === "oauth");
     settleDeadPendingInput(
       managed,
       itemId,
       decision,
       secretCard && accepted
         ? `The agent that asked for ${secretCard.name} stopped waiting, so ADE did not save it. Add it with Add secret… in the composer, or ask the agent again.`
-        : undefined,
+        : connectLabel && accepted
+          ? connectSignedIn
+            ? `${connectLabel} is signed in, but the agent that asked stopped waiting. Tell it to go on.`
+            : `The agent that asked to connect ${connectLabel} stopped waiting, so ADE did not save the key. Connect it in Settings › Integrations, or ask the agent again.`
+          : mcpServerCard && accepted
+            ? `The agent that asked to add the MCP server ${mcpServerCard.server.name} stopped waiting, so ADE did not add it. Add it in Settings › Integrations › MCP servers, or ask the agent again.`
+            : undefined,
     );
   };
 
@@ -69598,7 +69659,17 @@ export function createAgentChatService(args: {
     const localPending = managed.localPendingInputs.get(itemId);
     if (localPending) {
       if (localPending.beforeAccept && resolvedDecision !== "decline" && resolvedDecision !== "cancel") {
-        localPending.beforeAccept(normalizePendingInputAnswers(localPending.request, answers, responseText));
+        if (localPending.accepting) throw new Error("This answer is already being saved.");
+        localPending.accepting = true;
+        try {
+          await localPending.beforeAccept(normalizePendingInputAnswers(localPending.request, answers, responseText));
+        } finally {
+          localPending.accepting = false;
+        }
+        // The card may have timed out or been cancelled while the work ran.
+        if (managed.localPendingInputs.get(itemId) !== localPending) {
+          throw new Error("This request is no longer open.");
+        }
       }
       managed.localPendingInputs.delete(itemId);
       emitPendingInputResolved(managed, {
@@ -77048,6 +77119,7 @@ export function createAgentChatService(args: {
     messageSubagent,
     controlSubagent,
     restartSession,
+    mcpRegistryChatStatus,
     waitFor: chatWaitRegistry.waitFor,
     armWait: chatWaitRegistry.arm,
     listWaits: chatWaitRegistry.list,

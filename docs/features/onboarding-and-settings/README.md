@@ -897,15 +897,26 @@ Renderer — settings:
   this machine by the desktop app. See
   [storage and recovery → Auto-send](../storage-and-recovery/README.md#auto-send).
 - `apps/desktop/src/renderer/components/settings/integrations/` — the
-  Integrations tab's frame, built like the provider pages. With nothing open
-  the tab is a grid of GitHub, Linear and Jira (`IntegrationsHome.tsx`: the
-  maker's banner, what it does, and this machine's connection state, each read
-  with the Settings machine's pin). `?integration=<id>` opens one page, and a
-  `#hash` naming any of its settings (`#github-connection`, `#jira-projects`)
-  opens it too; the hash wins over the param, because a search result keeps
-  the query string (`openIntegrationFromUrl` in `settingsTabContent.tsx`).
+  Integrations tab's frame (under **App**), built like the provider pages. It
+  took in the MCP servers tab; `?tab=mcp`, `?tab=connections`, `github`,
+  `linear` and `jira` all alias to it. With nothing open the tab is the
+  Integrations home (`IntegrationsHome.tsx`): a **Connected** row (GitHub,
+  Linear and Jira when they work, read with the Settings machine's pin, and
+  every MCP server in the account), then **Add** with a search box: the three
+  integrations as banner tiles, each with where it is saved (your account for
+  GitHub, this project for Linear and Jira), then **MCP servers**. That
+  section says any MCP server works and leads with **Add any MCP server**
+  (the same dialog as the MCP servers page) and, when other tools have
+  servers, **Import**. Below it, the catalogue's quick setups as logo tiles
+  (`McpCatalogueAddDialog.tsx` adds one, and signs it in when it uses a
+  browser sign-in), and a last **Not listed?** tile.
+  `?integration=<github|linear|jira|mcp>` opens one page, and a `#hash`
+  naming any of its settings (`#github-connection`, `#jira-projects`,
+  `#mcp-servers`) opens it too; the hash wins over the param, because a search
+  result keeps the query string (`openIntegrationFromUrl` in
+  `settingsTabContent.tsx`).
   Only one integration's page is mounted at a time, so Settings search lists a
-  match on another integration's page (or every match while the grid is open)
+  match on another connection's page (or every match while the home is open)
   as an "On other pages" result that opens it. Each page (`IntegrationChrome.tsx`)
   starts with a banner in the maker's colors: the logo standing in 3D
   (`SolidLogo` from the provider hero), the state, a panel naming what this
@@ -1323,6 +1334,10 @@ Renderer — settings:
   private secret card, and the composer's "Add secret…" item opens the same
   form. Both save through `projectSecretService`; see
   [Private secret card](../chat/composer-and-ui.md#private-secret-card).
+- Chats can connect GitHub, Linear and Jira the same way: an agent's
+  `ade integrations connect <provider> --reason "…"` raises the connect card,
+  which saves through each integration's own service on the chat's machine;
+  see [Connect card](../chat/composer-and-ui.md#connect-card).
 - `apps/desktop/src/renderer/components/settings/SecretsImportEnvModal.tsx`
   — dotenv import review dialog. Displays extracted names and plaintext values,
   marks replacements, supports select all or individual selection, and saves
@@ -2014,7 +2029,7 @@ banner):
   (the program ADE runs) and a model provider (the account, key, or
   subscription that answers for it), managed in Settings › Providers › Custom
   and selectable from the Custom tab of every model picker.
-- [mcp-servers.md](./mcp-servers.md) — Settings › MCP servers: servers
+- [mcp-servers.md](./mcp-servers.md) — Settings › Integrations › MCP servers: servers
   defined once in the account and handed to every agent, switched off per
   computer or per project, with secret values in the account vault and an
   import from the provider CLIs' own configs.

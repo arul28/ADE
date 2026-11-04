@@ -181,6 +181,34 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "ade --role cto actions run attention.putMachinePreferences --input-json '{\"accountOwnerId\":\"user_123\",\"machineKey\":\"machine:abc\",\"preferences\":{\"notificationsEnabled\":false}}' --json",
     },
   },
+  integration_connect: {
+    request: {
+      description: "Ask the person in this chat to connect an integration (github, linear, or jira) through the connect card, and save what they give straight into it on the machine that runs this chat. Returns at once with method \"already\" when it is connected. Otherwise blocks until they connect or decline. Returns {provider, connected: true, method, account} | {provider, connected: false, declined: true}; a key or token is never returned, logged, or written to the transcript. If the person named the integration, ask at once; if it was your own idea, ask in words first and raise the card only after a yes.",
+      input: "object { provider: \"github\" | \"linear\" | \"jira\", reason: string, timeoutMs?: number }",
+      example: "ade integrations connect linear --reason \"To read and update the issues you mentioned\"",
+    },
+    status: {
+      description: "List every integration ADE can connect (github, linear, jira) with whether it is connected for this project on this machine, and as whom. Never returns a credential.",
+      input: "no input",
+      example: "ade integrations status --text",
+    },
+  },
+  mcp_registry: {
+    list: {
+      description: "Read the person's MCP setup on this machine: every server in ADE's MCP registry (name, transport, the command and args or the URL, the env variable and header NAMES, on or off for the account / this machine / this project, and whether each value is set here), plus the servers other tools' configs on this machine have that the registry does not, with the tools they come from. Never returns a value.",
+      input: "no input",
+      example: "ade mcp servers --text",
+    },
+    request: {
+      description: "Propose adding one MCP server to the person's ADE registry: an MCP server card opens in this chat showing exactly what runs, and the person approves it (always, in every permission mode) and types any env or header values. ADE saves it to their account and the values to the account vault, on the machine that runs this chat. Returns at once with {already: true} when the registry has the same name, URL, or command line. Otherwise blocks until they add or decline. Returns {name, added: true, missing, next} | {name, added: false, already: true, existing, matchedBy, next} | {name, added: false, declined: true}; a value is never returned, logged, or written to the transcript. source \"imported\" takes a server another tool's config has (by its name, see mcp_registry.list); source \"agent\" describes one: command + args (stdio) or url (http/sse), with envNames or headerNames. After it is added, this chat's agent does not have the tools until the person presses Refresh chat. If the person named the server, raise the card at once; if it was your own idea, ask in words first and raise the card only after a yes.",
+      input: "object { name: string, reason: string, source?: \"imported\" | \"agent\", transport?: \"stdio\" | \"http\" | \"sse\", command?: string, args?: string[], url?: string, envNames?: string[], headerNames?: string[], timeoutMs?: number }",
+      example: "ade mcp servers add github --reason \"To read your PRs\" --env GITHUB_PERSONAL_ACCESS_TOKEN -- npx -y @modelcontextprotocol/server-github",
+    },
+    chatStatus: {
+      description: "Name the registry servers that are on for one chat but that its running agent did not start with (it loads them after Refresh chat). Empty when the chat has no running agent.",
+      input: "object { chatSessionId: string }",
+    },
+  },
   project_secret: {
     request: {
       description: "Ask the person in this chat for a project secret through the private secret card, and save their answer to this project's encrypted secrets. Blocks until they save, keep the existing value, or decline. Returns {name, saved: true, replaced} | {name, saved: false, kept: true} | {name, saved: false, declined: true}; the value is never returned, logged, or written to the transcript. Use this instead of asking a person to paste a secret into chat.",

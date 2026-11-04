@@ -26,7 +26,7 @@ import "./mcpServers.css";
 import { isImeComposing } from "../../../lib/imeComposition";
 
 /**
- * Settings › MCP servers.
+ * Settings › Integrations › MCP servers.
  *
  * Three views of one list:
  *
@@ -160,7 +160,7 @@ export function McpServersSection() {
   }, [registry, run]);
 
   return (
-    <SettingsColumn wide>
+    <>
       <ModernPage>
         {registry.phase === "unavailable" ? (
           <Banner
@@ -298,7 +298,7 @@ export function McpServersSection() {
           }}
         />
       ) : null}
-    </SettingsColumn>
+    </>
   );
 }
 

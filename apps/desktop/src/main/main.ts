@@ -2535,7 +2535,14 @@ app.whenReady().then(async () => {
       const result = await accountVaultBridge.get("all", MCP_SECRET_VAULT_KIND, key);
       return result.ok ? result.value : null;
     },
-    writeSecret: async (key, value) => (await accountVaultBridge.set("all", MCP_SECRET_VAULT_KIND, key, value)).ok,
+    writeSecret: async (key, value, refreshOwner) => (await accountVaultBridge.set(
+      "all",
+      MCP_SECRET_VAULT_KIND,
+      key,
+      value,
+      refreshOwner ? { refreshOwner } : undefined,
+    )).ok,
+    getVault: () => accountVaultBridge,
     logger: localRuntimeLogger,
   });
   // Carry this machine's OS-level suspend/resume into the brain, which has no
@@ -4478,6 +4485,9 @@ app.whenReady().then(async () => {
       credentialStore: createDesktopCredentialStore(machineAdeLayout.secretsDir),
       githubRelaySecretReader: (ref) => githubRelaySecretService?.getSecret(ref) ?? null,
       getAccountAccessToken,
+      // A pasted token follows the owner's ADE account to their other machines.
+      getAccountVault: () => accountVaultBridge,
+      getAccountUserId: () => accountAuthService.getStatus().userId,
       // A repaired or removed App credential ends the relay's auth-pending
       // cooldown at once. Wired here rather than inside either service: the
       // ingress loop must stay free of GitHub internals, and only this owner

@@ -18,8 +18,7 @@ import {
   MagnifyingGlass,
   MapPin,
   Palette,
-  Plugs,
-  PlugsConnected,
+  PuzzlePiece,
   Robot,
   ShareNetwork,
   SlidersHorizontal,
@@ -68,7 +67,7 @@ import {
   STANDALONE_TAB_IDS,
   TabContent,
   decodeSettingsHash,
-  integrationIdForAnchor,
+  integrationPageForAnchor,
   openIntegrationFromUrl,
 } from "../settings/settingsTabContent";
 import { isIntegrationId } from "../settings/integrations/integrationBrand";
@@ -89,14 +88,13 @@ const TAB_ICONS: Record<SettingsTabId, PhosphorIcon> = {
   account: UserCircle,
   chat: ChatCircle,
   notifications: Bell,
-  mcp: Plugs,
   stats: ChartLineUp,
   "lanes-git": GitBranch,
   "project-agents": Robot,
   storage: HardDrives,
   location: MapPin,
   secrets: Key,
-  integrations: PlugsConnected,
+  integrations: PuzzlePiece,
   agents: Brain,
   apple: DeviceMobile,
   appearance: Palette,
@@ -113,7 +111,6 @@ const CENTERED_COLUMN_TABS: ReadonlySet<SettingsTabId> = new Set<SettingsTabId>(
   "chat",
   "apple",
   "notifications",
-  "mcp",
   "stats",
   "secrets",
   "behaviour",
@@ -345,7 +342,7 @@ export function SettingsPage({
   }, [active, location.hash, location.pathname, navigate, resolvedTab, searchParams, tabParam]);
 
   // `?integration=github|linear|jira|cli` with no tab predates the manifest.
-  // GitHub, Linear and Jira are the Integrations tab's own sub-pages now, so
+  // GitHub, Linear and Jira are the Connections tab's own sub-pages now, so
   // their links only gain the tab; the CLI moved to its own setting.
   useEffect(() => {
     if (!active || tabParam) return;
@@ -378,8 +375,11 @@ export function SettingsPage({
     setSection(next);
     const nextParams = new URLSearchParams(searchParams);
     nextParams.set("tab", next);
-    // One integration's page belongs to the Integrations tab only.
-    if (next !== "integrations") nextParams.delete("integration");
+    // One connection's page belongs to the Connections tab only.
+    if (next !== "integrations") {
+      nextParams.delete("integration");
+      nextParams.delete("mcpServer");
+    }
     // The machine travels with Machines pages only. Account and Project pages
     // have no machine, and a stale one in the URL would mislead the next link.
     // Appearance describes this computer's own screen, so it never carries one.
@@ -431,12 +431,12 @@ export function SettingsPage({
       return { matchesThisTab: null as SettingEntry[] | null, matchesOtherTabs: [] as SettingEntry[] };
     }
     const all = searchSettingsEntries(trimmedQuery);
-    // Integrations mount one integration's page at a time (or the grid), so a
-    // match on another integration's page is a link, like another tab's.
-    const openIntegration = section === "integrations" ? openIntegrationFromUrl(searchParams, location.hash) : null;
+    // Connections mounts one connection's page at a time (or the home), so a
+    // match on another connection's page is a link, like another tab's.
+    const openConnection = section === "integrations" ? openIntegrationFromUrl(searchParams, location.hash) : null;
     const elsewhere = (entry: SettingEntry) =>
       entry.tab !== section
-      || (section === "integrations" && integrationIdForAnchor(entry.anchor) !== openIntegration);
+      || (section === "integrations" && integrationPageForAnchor(entry.anchor) !== openConnection);
     return {
       matchesThisTab: all.filter((entry) => !elsewhere(entry)),
       matchesOtherTabs: all.filter(elsewhere),

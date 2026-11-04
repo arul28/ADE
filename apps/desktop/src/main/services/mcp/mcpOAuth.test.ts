@@ -2,7 +2,7 @@
 
 import { createHash } from "node:crypto";
 import http, { type IncomingMessage } from "node:http";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   createMcpOAuthSignIns,
@@ -408,5 +408,159 @@ describe("MCP registry OAuth service", () => {
     for (const result of results) expect(result.ok && result.value.signIns).toMatchObject([{ server: "Docs", state: "valid" }]);
     expect(JSON.parse(vault.values.get(key)!).accessToken).toBe("access-secret");
     service.dispose();
+  });
+});
+
+/**
+ * Two machines on one account share a vault and a rotating grant. The token
+ * server revokes the grant on any replayed refresh token, which is exactly
+ * what happens to a real sign-in when two machines renew at once. Each machine
+ * is its own copy of the module (its own in-process renewal map) with its own
+ * ADE home and sync device id, as two computers would be.
+ */
+describe("MCP sign-in renewal across machines", () => {
+  const URL_ = "https://docs.example/mcp";
+  const KEY = mcpOAuthVaultKey("Docs");
+  const homes: string[] = [];
+
+  afterEach(async () => {
+    const { rmSync } = await import("node:fs");
+    for (const home of homes.splice(0)) rmSync(home, { recursive: true, force: true });
+  });
+
+  /** A shared vault with the Worker's rule: the last write wins, and it carries its owner. */
+  function sharedVault(nowMs: () => number) {
+    const rows = new Map<string, { value: string; updatedAt: string; refreshOwner: string | null }>();
+    const ok = <T>(value: T): AccountVaultResult<T> => ({ ok: true, value });
+    return {
+      rows,
+      seed(value: string, refreshOwner: string | null, updatedAtMs = nowMs()) {
+        rows.set(KEY, { value, refreshOwner, updatedAt: new Date(updatedAtMs).toISOString() });
+      },
+      async list() {
+        return ok([...rows].map(([key, row]): AccountVaultItem => ({
+          scope: "all", kind: "secret", key, value: null, updatedAt: row.updatedAt, refreshOwner: row.refreshOwner,
+        })));
+      },
+      async get(_scope: string, _kind: string, key: string) { return ok(rows.get(key)?.value ?? null); },
+      async set(_scope: string, _kind: string, key: string, value: string, options?: { refreshOwner?: string | null }) {
+        rows.set(key, { value, refreshOwner: options?.refreshOwner ?? null, updatedAt: new Date(nowMs()).toISOString() });
+        return ok(null);
+      },
+      async sync() { return ok("ready"); },
+    };
+  }
+
+  /** A token endpoint that rotates the refresh token and revokes the grant on a replay. */
+  function rotatingServer() {
+    let current = "rt-0";
+    let turn = 0;
+    const state = { exchanges: 0, revoked: false };
+    const fetchImpl = (async (_input: unknown, init?: RequestInit) => {
+      const presented = new URLSearchParams(String(init?.body ?? "")).get("refresh_token");
+      state.exchanges += 1;
+      if (state.revoked || presented !== current) {
+        state.revoked = true;
+        return new Response(JSON.stringify({ error: "invalid_grant" }), { status: 400 });
+      }
+      turn += 1;
+      current = `rt-${turn}`;
+      return new Response(JSON.stringify({ access_token: `at-${turn}`, refresh_token: current, expires_in: 3600 }), { status: 200 });
+    }) as unknown as typeof fetch;
+    return { state, fetchImpl };
+  }
+
+  async function machine(deviceId: string, vault: ReturnType<typeof sharedVault>, fetchImpl: typeof fetch) {
+    const fs = await import("node:fs");
+    const os = await import("node:os");
+    const path = await import("node:path");
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), `ade-mcp-${deviceId}-`));
+    homes.push(home);
+    fs.mkdirSync(path.join(home, "secrets"), { recursive: true });
+    fs.writeFileSync(path.join(home, "secrets", "sync-device-id"), deviceId);
+    const server = { name: "Docs", transport: "http", url: URL_, enabled: true };
+    fs.writeFileSync(path.join(home, "account-settings.json"), JSON.stringify({ settings: { "all\u0000mcp.servers": { value: [server] } } }));
+    vi.resetModules();
+    const mod = await import("./mcpRegistryService");
+    return mod.createMcpRegistryAuthTokenResolver({
+      adeHome: home,
+      readSecret: async (key) => vault.rows.get(key)?.value ?? null,
+      writeSecret: async (key, value, refreshOwner) => (await vault.set("all", "secret", key, value, { refreshOwner })).ok,
+      getVault: () => vault,
+      fetch: fetchImpl,
+    });
+  }
+
+  const tokenJson = (accessToken: string, refreshToken: string, expiresAtMs: number) => JSON.stringify(tokenFor(URL_, {
+    accessToken, refreshToken, expiresAt: new Date(expiresAtMs).toISOString(), tokenEndpoint: "https://docs.example/token",
+  }));
+
+  afterEach(() => { vi.useRealTimers(); });
+
+  it("lets only the owner renew, and the other machine reads what the owner published", async () => {
+    vi.useFakeTimers({ toFake: ["Date"], now: Date.parse("2026-11-03T12:00:00Z") });
+    const vault = sharedVault(() => Date.now());
+    const server = rotatingServer();
+    vault.seed(tokenJson("at-0", "rt-0", Date.now() + 5 * 60_000), "device-a", Date.now() - 60 * 60_000);
+    const a = await machine("device-a", vault, server.fetchImpl);
+    const b = await machine("device-b", vault, server.fetchImpl);
+
+    await Promise.all([a(URL_), b(URL_), a(URL_), b(URL_)]);
+    expect(server.state).toEqual({ exchanges: 1, revoked: false });
+    expect(vault.rows.get(KEY)?.refreshOwner).toBe("device-a");
+    expect((await b(URL_)).accessToken).toBe("at-1");
+    expect(server.state.exchanges).toBe(1);
+  });
+
+  it("takes over from an owner that went quiet, once, and only after its claim has stood", async () => {
+    vi.useFakeTimers({ toFake: ["Date"], now: Date.parse("2026-11-03T12:00:00Z") });
+    const vault = sharedVault(() => Date.now());
+    const server = rotatingServer();
+    const expiredAt = Date.now() - 11 * 60_000;
+    vault.seed(tokenJson("at-0", "rt-0", expiredAt), "device-gone", expiredAt - 60 * 60_000);
+    const a = await machine("device-a", vault, server.fetchImpl);
+    const b = await machine("device-b", vault, server.fetchImpl);
+
+    // Both see a stale owner and claim; nobody exchanges yet.
+    await Promise.all([a(URL_), b(URL_)]);
+    expect(server.state.exchanges).toBe(0);
+    const claimant = vault.rows.get(KEY)?.refreshOwner;
+    expect(["device-a", "device-b"]).toContain(claimant);
+
+    const owner = claimant === "device-a" ? a : b;
+    const other = claimant === "device-a" ? b : a;
+    // The fresh claim is not stale even though the token still is: the other
+    // machine leaves it alone instead of claiming back.
+    vi.setSystemTime(Date.now() + 31_000);
+    await other(URL_);
+    expect(server.state.exchanges).toBe(0);
+    expect(vault.rows.get(KEY)?.refreshOwner).toBe(claimant);
+    await Promise.all([owner(URL_), other(URL_), owner(URL_), other(URL_)]);
+    expect(server.state).toEqual({ exchanges: 1, revoked: false });
+    expect(vault.rows.get(KEY)?.refreshOwner).toBe(claimant);
+    expect((await other(URL_)).accessToken).toBe("at-1");
+  });
+
+  it("claims an ownerless (older ADE) sign-in before renewing it, so two machines never both exchange", async () => {
+    vi.useFakeTimers({ toFake: ["Date"], now: Date.parse("2026-11-03T12:00:00Z") });
+    const vault = sharedVault(() => Date.now());
+    const server = rotatingServer();
+    vault.seed(tokenJson("at-0", "rt-0", Date.now() + 5 * 60_000), null, Date.now() - 60 * 60_000);
+    const a = await machine("device-a", vault, server.fetchImpl);
+    const b = await machine("device-b", vault, server.fetchImpl);
+
+    const first = await Promise.all([a(URL_), b(URL_)]);
+    expect(server.state.exchanges).toBe(0);
+    // Still signed in while the claim settles: the old token has minutes left.
+    for (const lookup of first) expect(lookup.accessToken).toBe("at-0");
+    // A claim stands before its machine exchanges, so a claim it has not yet
+    // seen overwritten (another machine's, still syncing) cannot make two.
+    vi.setSystemTime(Date.now() + 5_000);
+    await Promise.all([a(URL_), b(URL_)]);
+    expect(server.state.exchanges).toBe(0);
+
+    vi.setSystemTime(Date.now() + 31_000);
+    await Promise.all([a(URL_), b(URL_)]);
+    expect(server.state).toEqual({ exchanges: 1, revoked: false });
   });
 });

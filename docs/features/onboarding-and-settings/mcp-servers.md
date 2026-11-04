@@ -1,14 +1,49 @@
 # MCP servers
 
-Settings › MCP servers is where a user defines an MCP server one time and
+Settings › Integrations › MCP servers is where a user defines an MCP server one time and
 every ADE agent gets it, on every computer they sign in on. Each provider CLI
 keeps its own MCP list, so without this a server added to Claude never reaches
 Codex and a second computer starts with none.
 
-The page is under **Account** in the settings sidebar. It is desktop only: the
+The page is one of the pages of **Connections** (under **App** in the settings
+sidebar), next to GitHub, Linear and Jira. It is desktop only: the
 hosted web client hides it (`web: "hidden"` in `settingsManifest.ts`), because
 a browser has no account-settings or vault bridge and the page's checks read
 files on a computer.
+
+## The catalogue
+
+`apps/desktop/src/shared/mcpCatalogue.ts` (entries in `mcpCatalogueEntries.ts`)
+is ADE's list of known servers: the vendor's own URL or package, how it signs
+in (`oauth`, `header`, `env` or `none`), the key's label and where to make it,
+and the brand color and mark (Simple Icons, CC0). It ships with ADE and is
+read-only. Every entry was checked against the vendor's own docs and its
+npm/PyPI publisher, and every `oauth` server offers the dynamic client
+registration that ADE's sign-in needs. Vendors that need an approved client
+(Slack, Canva, Asana, hosted Figma, Vercel) are left out.
+
+The catalogue is a set of quick setups, not the list of servers ADE supports:
+any MCP server can be added by its command or URL, and Settings says so above
+the grid. `matchMcpCatalogue` finds the entry a server is, by its exact URL or
+package name. A match gives the MCP server card and the Integrations tiles the
+entry's brand and a **By <publisher>** chip. Any other server's card says
+**Custom**. A remote server's card reads **Connects to** <URL>; a local one
+reads **Runs** <command line>.
+
+Three entries are ADE integrations (`native`: GitHub, Linear, Atlassian).
+Asking for one (`ade mcp servers add linear`, or a URL that matches one) runs
+the integration's connect card instead, so the person connects once for both
+`ade linear` and every agent.
+
+Where the catalogue is used:
+
+- `ade mcp servers add <name>`: a bare catalogue name builds the entry's
+  definition (`source: "catalog"`). `--import` still means another tool's
+  server. The card asks only for the entry's key, adds `Bearer ` when the
+  entry's header wants it, and runs the browser sign-in before it adds an
+  `oauth` server.
+- Settings › Integrations: the grid under **MCP servers**, after the
+  **Add any MCP server** button and a last **Not listed?** tile.
 
 ## The data
 

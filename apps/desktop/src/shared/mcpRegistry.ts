@@ -184,6 +184,60 @@ export function sameMcpServerUrl(left: string | null | undefined, right: string 
   return a.length > 0 && a === key(right);
 }
 
+/** The facts that say which server a definition starts: what it runs, or where it answers. */
+export type McpServerTarget = {
+  transport: McpRegistryTransport;
+  command?: string | null;
+  args?: readonly string[] | null;
+  url?: string | null;
+};
+
+/**
+ * True when two definitions start the same server whatever they are called:
+ * the same URL (as {@link sameMcpServerUrl} reads it), or the same command
+ * with the same arguments in the same order.
+ */
+export function sameMcpServerTarget(left: McpServerTarget, right: McpServerTarget): boolean {
+  const leftRemote = left.transport !== "stdio";
+  const rightRemote = right.transport !== "stdio";
+  if (leftRemote !== rightRemote) return false;
+  if (leftRemote) return sameMcpServerUrl(left.url, right.url);
+  const leftCommand = left.command?.trim() ?? "";
+  if (!leftCommand || leftCommand !== (right.command?.trim() ?? "")) return false;
+  const leftArgs = left.args ?? [];
+  const rightArgs = right.args ?? [];
+  return leftArgs.length === rightArgs.length && leftArgs.every((arg, index) => arg === rightArgs[index]);
+}
+
+/** Why a server counts as one the list already has. */
+export type McpServerMatch = { server: McpRegistryServer; by: "name" | "url" | "command" };
+
+/** The server in `list` that `candidate` would duplicate: same name, same URL, or same command line. */
+export function findSameMcpServer(
+  list: readonly McpRegistryServer[],
+  candidate: Pick<McpRegistryServer, "name"> & McpServerTarget,
+): McpServerMatch | null {
+  const byName = list.find((server) => server.name === candidate.name);
+  if (byName) return { server: byName, by: "name" };
+  const byTarget = list.find((server) => sameMcpServerTarget(server, candidate));
+  if (!byTarget) return null;
+  return { server: byTarget, by: byTarget.transport === "stdio" ? "command" : "url" };
+}
+
+/**
+ * The list with one new server added, or the sentence that says why not.
+ * The one rule for "add": Settings' Add and Import and an agent's request
+ * all go through it, against the list as the brain holds it now.
+ */
+export function addMcpRegistryServer(
+  current: readonly McpRegistryServer[],
+  server: McpRegistryServer,
+): McpRegistryServer[] | string {
+  if (current.some((entry) => entry.name === server.name)) return `You already have a server named ${server.name}.`;
+  if (current.length >= MCP_REGISTRY_LIMITS.maxServers) return `You can have up to ${MCP_REGISTRY_LIMITS.maxServers} servers.`;
+  return [...current, server];
+}
+
 /**
  * Where a server's browser sign-in is kept: one vault item holding a
  * {@link McpOAuthToken} as JSON. It is not one of the server's named values,

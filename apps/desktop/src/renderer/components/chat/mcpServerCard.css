@@ -1,0 +1,74 @@
+/*
+ * The MCP server card. It is the connect card's family (`ade-icc-*` in
+ * integrationConnectCard.css: banner, row, fields, buttons). A catalogue
+ * server's banner takes its brand (`mcpCatalogueBrand`); any other server
+ * keeps MCP's violet. The Runs line shows exactly what the person approves.
+ */
+
+.ade-mcpc-banner {
+  background:
+    radial-gradient(90% 180% at 0% 0%, color-mix(in srgb, var(--ig-accent) 30%, transparent), transparent 62%),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.03), transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--color-fg) 6%, transparent);
+}
+.ade-mcpc-tile {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  color: color-mix(in srgb, var(--ig-accent) 55%, white 45%);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0) 60%),
+    color-mix(in srgb, var(--ig-accent) 32%, rgba(14, 15, 19, 0.9));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.16),
+    0 0 0 1px color-mix(in srgb, var(--ig-accent) 45%, transparent);
+}
+.ade-mcpc-title-mono { font-family: var(--font-mono, ui-monospace, monospace); }
+.ade-icc-chip[data-tone="ok"] { gap: 4px; background: rgba(74, 222, 128, 0.16); color: rgb(187, 247, 208); }
+
+/* What will run: one mono line the person reads before they approve. */
+.ade-mcpc-runs {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  padding: 6px 9px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.3);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-fg) 8%, transparent);
+}
+.ade-mcpc-runs-label {
+  flex: none;
+  font-size: 10.5px;
+  font-weight: 650;
+  color: color-mix(in srgb, var(--ig-accent) 50%, white 50%);
+}
+.ade-mcpc-runs-line {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--color-fg);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  user-select: text;
+}
+.ade-mcpc-from { display: inline-flex; align-items: center; gap: 4px; flex: none; align-self: center; opacity: 0.8; }
+.ade-mcpc-copied { gap: 5px; background: color-mix(in srgb, var(--color-fg) 6%, transparent); color: color-mix(in srgb, var(--color-fg) 65%, transparent); }
+.ade-mcpc-spacer { flex: 1 1 auto; }
+
+.ade-mcpc-receipt-logo {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  color: #ede9fe;
+  background: color-mix(in srgb, #8b7cf6 55%, rgba(14, 15, 19, 0.9));
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+.ade-mcpc-runs[data-inline] { flex: 1 1 auto; align-self: stretch; align-items: center; }
