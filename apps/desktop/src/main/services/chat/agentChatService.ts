@@ -69578,9 +69578,9 @@ export function createAgentChatService(args: {
         : connectLabel && accepted
           ? connectSignedIn
             ? `${connectLabel} is signed in, but the agent that asked stopped waiting. Tell it to go on.`
-            : `The agent that asked to connect ${connectLabel} stopped waiting, so ADE did not save the key. Connect it in Settings › Integrations, or ask the agent again.`
+            : `The agent that asked to connect ${connectLabel} stopped waiting, so ADE did not save the key. Connect it in Settings › Connections, or ask the agent again.`
           : mcpServerCard && accepted
-            ? `The agent that asked to add the MCP server ${mcpServerCard.server.name} stopped waiting, so ADE did not add it. Add it in Settings › MCP servers, or ask the agent again.`
+            ? `The agent that asked to add the MCP server ${mcpServerCard.server.name} stopped waiting, so ADE did not add it. Add it in Settings › Connections › MCP servers, or ask the agent again.`
             : undefined,
     );
   };

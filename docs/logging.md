@@ -640,7 +640,7 @@ path drops arbitrary strings. Provider mapping is also performed by
 `featureProductAnalytics.ts` before capture, and local dedupe keys are hashed
 by the analytics service rather than transmitted.
 
-A browser sign-in to an MCP server (Settings › MCP servers) records
+A browser sign-in to an MCP server (Settings › Connections › MCP servers) records
 `mcp_servers/sign_in` once when it ends, in the desktop IPC handler that runs
 it (`desktop`). It is a deliberate click that waits on a browser, deduplicated
 per outcome for an hour, so the worst case is three events a day inside the

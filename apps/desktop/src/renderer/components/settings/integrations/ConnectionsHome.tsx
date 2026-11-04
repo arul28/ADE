@@ -9,7 +9,7 @@
  *
  * Integration statuses are read on the page's machine (`pin`), where their
  * credentials live. MCP servers belong to the account, so they are read
- * through this desktop's brain with no pin, as Settings › MCP servers does.
+ * through this desktop's brain with no pin, as Settings › Connections › MCP servers does.
  */
 import React, { useEffect, useMemo, useState } from "react";
 import { CaretRight, DownloadSimple, MagnifyingGlass, Plugs, Plus, SealCheck } from "@phosphor-icons/react";

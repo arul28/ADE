@@ -120,7 +120,7 @@ const PROVIDERS: Record<ConnectProviderId, ConnectProviderSpec> = {
         label: "API token",
         hint: "Your Jira Cloud site, your Atlassian email, and an API token.",
         fields: [
-          { id: CONNECT_FIELD_IDS.jiraSite, label: "Site", kind: "url", placeholder: "your-team.atlassian.net" },
+          { id: CONNECT_FIELD_IDS.jiraSite, label: "Site", kind: "url", placeholder: "team.atlassian.net" },
           { id: CONNECT_FIELD_IDS.jiraEmail, label: "Email", kind: "email", placeholder: "you@company.com" },
           { id: CONNECT_FIELD_IDS.jiraToken, label: "API token", kind: "secret", placeholder: "ATATT…" },
         ],

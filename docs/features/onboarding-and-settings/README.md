@@ -897,15 +897,23 @@ Renderer — settings:
   this machine by the desktop app. See
   [storage and recovery → Auto-send](../storage-and-recovery/README.md#auto-send).
 - `apps/desktop/src/renderer/components/settings/integrations/` — the
-  Integrations tab's frame, built like the provider pages. With nothing open
-  the tab is a grid of GitHub, Linear and Jira (`IntegrationsHome.tsx`: the
-  maker's banner, what it does, and this machine's connection state, each read
-  with the Settings machine's pin). `?integration=<id>` opens one page, and a
-  `#hash` naming any of its settings (`#github-connection`, `#jira-projects`)
-  opens it too; the hash wins over the param, because a search result keeps
-  the query string (`openIntegrationFromUrl` in `settingsTabContent.tsx`).
-  Only one integration's page is mounted at a time, so Settings search lists a
-  match on another integration's page (or every match while the grid is open)
+  Connections tab's frame (under **App**), built like the provider pages. It
+  replaced the Integrations and MCP servers tabs; `?tab=integrations`,
+  `?tab=mcp`, `github`, `linear` and `jira` all alias to it. With nothing open
+  the tab is the Connections home (`ConnectionsHome.tsx`): a **Connected** row
+  (GitHub, Linear and Jira when they work, read with the Settings machine's
+  pin, and every MCP server in the account), then **Add a connection** with a
+  search box: the three integrations as banner tiles, the verified MCP servers
+  of ADE's catalogue as logo tiles (`McpCatalogueAddDialog.tsx` adds one, and
+  signs it in when it uses a browser sign-in), and "Add your own". Each tile
+  says where it is saved: your account (GitHub, MCP) or this project (Linear,
+  Jira). `?integration=<github|linear|jira|mcp>` opens one page, and a `#hash`
+  naming any of its settings (`#github-connection`, `#jira-projects`,
+  `#mcp-servers`) opens it too; the hash wins over the param, because a search
+  result keeps the query string (`openConnectionFromUrl` in
+  `settingsTabContent.tsx`).
+  Only one connection's page is mounted at a time, so Settings search lists a
+  match on another connection's page (or every match while the home is open)
   as an "On other pages" result that opens it. Each page (`IntegrationChrome.tsx`)
   starts with a banner in the maker's colors: the logo standing in 3D
   (`SolidLogo` from the provider hero), the state, a panel naming what this
@@ -2018,7 +2026,7 @@ banner):
   (the program ADE runs) and a model provider (the account, key, or
   subscription that answers for it), managed in Settings › Providers › Custom
   and selectable from the Custom tab of every model picker.
-- [mcp-servers.md](./mcp-servers.md) — Settings › MCP servers: servers
+- [mcp-servers.md](./mcp-servers.md) — Settings › Connections › MCP servers: servers
   defined once in the account and handed to every agent, switched off per
   computer or per project, with secret values in the account vault and an
   import from the provider CLIs' own configs.
@@ -2238,7 +2246,7 @@ first read.
 | Plan running low | A Claude or Codex limit at 20% left or less with one account signed in (the tab machine's usage snapshot); once per provider per reset window | Settings › AI accounts |
 | `@` sends work to another machine | Another machine of the project is online, and no sent message has ever had an `@machine` mention | A new chat in the primary lane |
 | ADE secrets | A sent message looks like it holds a key or password (`shared/secretText.ts`, the clipboard history's check); again only after 30 days | Settings › Secrets |
-| Connect the tracker | A sent message links a Linear, Jira or GitHub issue (or PR) and the tab's machine is not connected to it; the status is read only then | Settings › Integrations › that tracker |
+| Connect the tracker | A sent message links a Linear, Jira or GitHub issue (or PR) and the tab's machine is not connected to it; the status is read only then | Settings › Connections › that tracker |
 | The Work grid | Activity shows three or more chats working and the grid is off | Turns on Focus with the grid in the open project, opens Work |
 | Automations | The same prompt (normalized, 20+ characters, not a slash command) sent three times in a week in this project; only hashes are kept | Automations |
 | ADE on iPhone | A week after first run, still no other machine and no paired phone (paired devices are read once, then) | Connections › Phone |

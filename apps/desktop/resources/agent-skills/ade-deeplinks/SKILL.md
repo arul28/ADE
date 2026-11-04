@@ -153,7 +153,7 @@ The template uses Linear's documented placeholders (`{{issue.identifier}}`,
 `{{issue.branchName}}`) — Linear does NOT expose the GitHub repo, so the
 desktop renderer opens the active project's Linear pane to the issue. If the
 project is not connected to Linear yet, ADE shows a setup modal that routes to
-Settings > Integrations > Linear.
+Settings > Connections > Linear.
 
 ## RPC for programmatic dispatch
 

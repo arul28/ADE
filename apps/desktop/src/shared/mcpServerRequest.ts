@@ -19,7 +19,7 @@ import {
  * question can answer it. A secret value travels only as the answer to an
  * `isSecret` question, which the transcript writer drops. The host on the
  * chat's machine saves the server into the account registry and its values
- * into the account vault, the way Settings › MCP servers does, and hands the
+ * into the account vault, the way Settings › Connections › MCP servers does, and hands the
  * agent only the outcome.
  *
  * Approval is always the person's: the metadata key below makes the card

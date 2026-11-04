@@ -12860,7 +12860,7 @@ const adeBridge = {
       remoteAccountSettingsChangedFanout.subscribe(() => cb()),
   },
   /**
-   * Settings > MCP servers. Secret values go in; none come out. Each call
+   * Settings > Connections > MCP servers. Secret values go in; none come out. Each call
    * that reaches the vault resolves to an `ok: false` result rather than
    * rejecting when no brain is reachable.
    */

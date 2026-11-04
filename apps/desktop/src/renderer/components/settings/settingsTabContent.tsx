@@ -5,6 +5,7 @@ import {
   Database,
   Gauge,
   GithubLogo,
+  Plugs,
   ShieldCheck,
   Terminal,
   UsersThree,
@@ -352,6 +353,12 @@ const TAB_GROUPS = {
     description: "Issues and the Jira Cloud site connected for this project.",
     icon: <JiraMark size={15} />,
     tone: "blue",
+  },
+  mcp: {
+    title: "MCP servers",
+    description: "Tools every ADE agent gets, on every computer.",
+    icon: <Plugs size={15} weight="duotone" />,
+    tone: "violet",
   },
 } satisfies Record<string, TabGroup>;
 

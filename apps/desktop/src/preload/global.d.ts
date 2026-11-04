@@ -4642,7 +4642,7 @@ declare global {
         onChanged?: (listener: () => void) => () => void;
       };
       /**
-       * Settings > MCP servers: this computer's view of the registry, and the
+       * Settings > Connections > MCP servers: this computer's view of the registry, and the
        * one path that writes a registry secret to the account vault. No call
        * returns a secret value.
        *

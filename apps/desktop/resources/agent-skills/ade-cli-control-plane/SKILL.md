@@ -702,13 +702,24 @@ project-wide in Settings.
 
 ### MCP servers
 
-A chat keeps the MCP servers it started with; servers the user adds in
-Settings › MCP servers reach chats started or restarted after the change. An
-agent cannot add an MCP server or sign in to one. When the user asks for one
-you do not have, or one reports it needs authentication, tell them: press
-**Sign in** on its row in Settings › MCP servers if it asks for one, then
-right-click this chat in Work and choose **Restart agent session** (the
-conversation is kept), and send a message to try again.
+A chat keeps the MCP servers it started with. To get a new one, ask the user:
+`ade mcp servers add <name> --reason "…"` shows a card in the chat, and the
+user approves it in every permission mode. Never ask for a key in chat.
+
+- A name from ADE's catalogue (`ade mcp servers --help` lists them: `notion`,
+  `sentry`, `supabase`, `stripe`, …) uses the vendor's own server. The card
+  shows it as Verified, asks only for the key it needs, and runs the sign-in
+  when the server uses one.
+- `github`, `linear` and `atlassian` open ADE's own connect card instead: one
+  connection covers `ade github`/`ade linear`/`ade jira` and every agent.
+- Any other server: describe it (`--url`, or the command line after `--`).
+  Its card says Not verified.
+
+When the user named the server, raise the card at once. When it was your own
+idea, ask in words first. A server the user adds reaches this chat only after
+they press **Refresh chat** above the composer; ask them to. If a server says it
+needs a sign-in, tell them to press **Sign in** on its row in
+Settings › Connections › MCP servers, then **Refresh chat**.
 
 ## Side chats
 
