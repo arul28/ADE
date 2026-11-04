@@ -27091,6 +27091,18 @@ async function runServe(
     roleCeilingNote,
   ].filter((note): note is string => note !== null);
   for (const note of brainIdentityNotes) process.stderr.write(`ADE: ${note}\n`);
+  // Before anything reads this machine's identity: a home copied onto another
+  // box (a cloud fork) must come up as a new machine, not as this one.
+  if (!embedded) {
+    const { guardAgainstCopiedAdeHome } = await import("./services/sync/hostInstanceGuard");
+    const hostGuard = guardAgainstCopiedAdeHome({ adeDir: resolveMachineAdeLayout().adeDir });
+    if (hostGuard.action === "reset") {
+      process.stderr.write(
+        `ADE: this ADE home was copied from ${hostGuard.previousInstanceId}, so this box starts as a new machine `
+          + `(signed out; the old identity is kept in ${hostGuard.movedTo}).\n`,
+      );
+    }
+  }
   if (process.platform === "darwin" || process.platform === "linux") {
     const runtimeDir = path.dirname(lastFailurePathForMachine());
     boundServiceOutputLogs(runtimeDir);
