@@ -102,7 +102,7 @@ function sdkStatus(which: Scenario): AndroidSdkStatus {
     tools: [
       { id: "platform-tools", available: found, path: found ? `${root}/platform-tools/adb` : null, version: found ? "36.0.0" : null, detail: found ? null : "adb is part of the SDK's platform-tools." },
       { id: "emulator", available: found, path: found ? `${root}/emulator/emulator` : null, version: found ? "37.1.11" : null, detail: found ? null : "The Android emulator is not installed." },
-      { id: "cmdline-tools", available: false, path: null, version: null, detail: "Optional." },
+      { id: "cmdline-tools", available: false, path: null, version: null, detail: "Android SDK Command-line Tools are not installed. ADE reads the hardware profiles from them (or from Android Studio); without either it can only use AVDs you already have." },
       { id: "system-image", available: found, path: found ? IMAGE.path : null, version: found ? "API 36" : null, detail: found ? null : "No phone image for arm64-v8a is installed." },
     ],
     acceleration: which === "noaccel"

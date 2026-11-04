@@ -29,8 +29,13 @@ needs:
   `~/Android/Sdk` (Linux). On Linux it then tries `/opt/android-sdk` and
   `/usr/lib/android-sdk`, so a system-wide install is found even when the
   brain's service has no `ANDROID_HOME`.
-- **`platform-tools`** (`adb`) and **`emulator`**. `cmdline-tools` is
-  optional, because ADE writes the AVD files itself.
+- **`platform-tools`** (`adb`) and **`emulator`**.
+- **`cmdline-tools`, to make devices.** ADE writes the AVD files itself and
+  needs no JDK, but it reads the hardware profiles (`medium_phone`, the
+  Pixels) from the Command-line Tools' `sdklib` jar, or from Android
+  Studio's. An SDK with neither can boot and attach an existing AVD, but
+  cannot make one: `device-create` fails with `ANDROID_TOOL_MISSING`, and
+  the picker says so under "New device".
 - **One system image for the host ABI.** Apple Silicon runs only `arm64-v8a`
   images; Intel and AMD hosts run `x86_64` images.
 - **Hardware acceleration.** macOS uses Hypervisor.framework (HVF), Windows

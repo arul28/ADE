@@ -505,6 +505,11 @@ function NewDeviceSection({
           })}
         </div>
       )}
+      {!loading && profiles.length === 0 ? (
+        <p data-android-no-profiles="" className="min-w-0 break-words px-0.5 font-sans text-[11px] leading-4 text-warning">
+          This SDK has no hardware profiles. Install the Android SDK Command-line Tools (or Android Studio), then refresh.
+        </p>
+      ) : null}
       {!loading && !hasImage ? (
         <p data-android-no-image="" className="min-w-0 break-words px-0.5 font-sans text-[11px] leading-4 text-warning">
           No phone image is installed. Install one in Android Studio's SDK Manager, then refresh.

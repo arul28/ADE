@@ -582,7 +582,16 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
   const createLocked = async (laneId: string, profileId: string, wanted: string | null, displayName: string | null): Promise<void> => {
     const ready = await requireSdk({ emulator: true });
     const images = listAndroidSystemImages(ready.root);
-    const definition = definitionsFor(ready.root, images).find((entry) => entry.profile.id === profileId);
+    const definitions = definitionsFor(ready.root, images);
+    if (definitions.length === 0) {
+      // The profiles come from the SDK's Command-line Tools (or Android
+      // Studio). An SDK made of zips has neither, and then nothing can be made.
+      throw new AndroidEmulatorFailure(
+        "ANDROID_TOOL_MISSING",
+        "This machine's Android SDK has no hardware profiles, so ADE cannot make a device. Install the Android SDK Command-line Tools (`sdkmanager \"cmdline-tools;latest\"`, or Android Studio's SDK Manager), then try again. `device-attach` still works with an AVD you already have.",
+      );
+    }
+    const definition = definitions.find((entry) => entry.profile.id === profileId);
     if (!definition) {
       throw new AndroidEmulatorFailure("ANDROID_AVD_NOT_FOUND", `No hardware profile named ${profileId} is on this machine.`);
     }

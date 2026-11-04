@@ -259,8 +259,10 @@ does nothing, so a renamed laptop is never mistaken for a copy.
   1. `/dev/kvm` usable by the brain's user (group `kvm`); without it ADE
      refuses the start with `ANDROID_NO_ACCELERATION`. A default box cannot
      run Android.
-  2. An Android SDK with platform-tools, emulator and one x86_64 system image
-     (google_apis or default, API 34–36). ADE looks in `$ANDROID_HOME`,
+  2. An Android SDK with platform-tools, emulator, cmdline-tools (ADE reads
+     the hardware profiles from its `sdklib` jar; without it nothing can be
+     made) and one x86_64 system image (google_apis or default, API 34–36).
+     None of them needs a JDK at runtime. ADE looks in `$ANDROID_HOME`,
      `$ANDROID_SDK_ROOT`, `~/Android/Sdk`, and (from #2045) `/opt/android-sdk`
      and `/usr/lib/android-sdk`. Elsewhere: set `ANDROID_HOME` in
      `ade-entrypoint.sh` (the brain's own env), not only `.bashrc`.

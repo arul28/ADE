@@ -9,7 +9,7 @@ import { killWindowsProcessTreeAsync, terminateProcessTree } from "../shared/pro
 import { runAdb, runAdbText } from "./adb";
 import { readAndroidAvd, sameAvdName } from "./androidAvds";
 import { AndroidEmulatorFailure } from "./androidEmulatorErrors";
-import { parseAndroidIni, type AndroidEnv } from "./androidSdk";
+import { androidUserHome, parseAndroidIni, type AndroidEnv } from "./androidSdk";
 import { sleep } from "../shared/utils";
 
 /*
@@ -37,6 +37,9 @@ import { sleep } from "../shared/utils";
  *   `%TEMP%` is listed too in case it was moved);
  * - macOS: `~/Library/Caches/TemporaryItems/avd/running`;
  * - Linux: `$XDG_RUNTIME_DIR/avd/running`, else `/tmp/android-<user>/avd/running`.
+ *   Emulator 37 with no `XDG_RUNTIME_DIR` (a brain run as a service, with no
+ *   login session, as on an Agent37 VM) writes to `<Android user home>/avd/running`
+ *   instead, so that folder is read too.
  */
 export function androidDiscoveryDirs(
   platform: NodeJS.Platform = process.platform,
@@ -59,6 +62,7 @@ export function androidDiscoveryDirs(
       // No passwd entry; keep $USER.
     }
     dirs.push(path.join("/tmp", `android-${user}`, "avd", "running"));
+    dirs.push(path.join(androidUserHome(env, home), "avd", "running"));
   }
   const seen = new Set<string>();
   return dirs.filter((dir) => {
