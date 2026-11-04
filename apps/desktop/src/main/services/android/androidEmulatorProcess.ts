@@ -356,7 +356,7 @@ export type LaunchAndroidEmulatorInput = {
   snapshot: AndroidSnapshotMode;
   registry?: AdeStartedEmulators | null;
   discoveryDirs?: readonly string[];
-  env?: NodeJS.ProcessEnv;
+  env?: AndroidEnv;
   /**
    * Its own process group, so the emulator outlives this process: a brain
    * that exits (an update, a restart) hands it to the next brain instead of
