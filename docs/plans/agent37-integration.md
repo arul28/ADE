@@ -331,3 +331,12 @@ does nothing, so a renamed laptop is never mistaken for a copy.
 3. Wallet empty / suspended behaviour.
 4. EU and India regions over the relay.
 5. Android end to end on a VM lane.
+
+## 10. Final live run (2026-11-04, this branch's desktop)
+
+From the picker with the branch template `ade-brain-dev`: Make box → the box
+was signed in with no window or click, renamed, and auto-connected over the
+relay (178 ms) about 15 s later. The released-ADE "no project" gap does not
+apply to a box running this branch, so auto-connect is confirmed. Signing the
+box out removed its row; the box was deleted.
+
