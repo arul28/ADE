@@ -3,6 +3,8 @@ import type { IosSimulatorStreamStatus, OpenProjectBinding } from "../../../shar
 import type { H264StreamStatus } from "../device/h264StreamPlayer";
 import { workRuntimeScopeKey } from "../../lib/chatMachineRouting";
 import { useAppStore } from "../../state/appStore";
+import { useGracefulStreamLease } from "../device/useGracefulStreamLease";
+import { useStreamRecovery } from "../device/useStreamRecovery";
 import {
   acquireAppleStreamLease,
   appleStreamLaneLeaseCount,
@@ -41,26 +43,32 @@ export const APPLE_FRAME_STALL_MS = 3_000;
 export const APPLE_FIRST_FRAME_TIMEOUT_MS = 5_000;
 /** How often the live chip re-reads fps and bitrate. */
 const STREAM_METRICS_POLL_MS = 3_000;
+
 /**
- * How long after its capture ends a viewer that still wants frames asks
- * again. Short, but long enough for a power-off's `stopped` event, which
- * arrives just after the stream's, to take the device away first.
- */
-export const APPLE_STREAM_RECOVER_DELAY_MS = 750;
-/**
- * Automatic reconnects in a row before the viewer stops and shows Reconnect.
- * Reset by the first frame, so a stream that recovers can recover again.
- */
-export const APPLE_STREAM_RECOVER_MAX_TRIES = 3;
-/**
- * How long the last viewer's stop waits for another viewer to arrive.
+ * The lease this viewer holds.
  *
- * A handover is one viewer replacing another, and the order is not always
- * "arrive, then leave": `apple show` hides the floating player a beat before
- * the pane mounts. Stopping at once cut the capture in that gap, and the pane
- * had to open a new one (new port, a wait for a keyframe) instead of joining.
+ * This replaces a plain "I started it" boolean. The boolean was right while a
+ * device had one viewer and wrong the moment it had two: the column and the
+ * corner card both own a hook, `stopStream` is lane-scoped, and whichever one
+ * unmounted first stopped the other's frames.
  */
-export const APPLE_STREAM_STOP_GRACE_MS = 1_000;
+type AppleHeldLease = {
+  key: AppleStreamLeaseKey;
+  /**
+   * Which RUN of that stream this viewer's lease belongs to.
+   *
+   * Carried back to `releaseAppleStreamLease`, so an unmount that lands after
+   * another viewer has already started a NEW stream on the same key cannot
+   * stop it. The pane and the floating player hand the device to each other,
+   * and the one going away always releases after the one arriving has started.
+   */
+  epoch: number;
+  /** Cleanup targets the runtime that acquired the lease, even if props move on. */
+  pin: OpenProjectBinding | null;
+};
+
+/** The lane and chat a stop names. */
+type AppleStopScope = { laneId: string | null; chatSessionId: string | null };
 
 export type AppleStreamState =
   | "idle"
@@ -190,7 +198,6 @@ export function useAppleDeviceStream({
     },
   }), []);
   const [streamStatus, setStreamStatus] = useState<IosSimulatorStreamStatus | null>(null);
-  const [gaveUp, setGaveUp] = useState(false);
   /**
    * When the last frame landed, and whether any ever did.
    *
@@ -201,26 +208,6 @@ export function useAppleDeviceStream({
   const lastFrameAtRef = useRef(0);
   const sawFrameRef = useRef(false);
   const connectedAtRef = useRef(0);
-  /**
-   * The lease this viewer holds, or null when it holds none.
-   *
-   * This replaces a plain "I started it" boolean. The boolean was right while
-   * a device had one viewer and wrong the moment it had two: the column and
-   * the corner card both own a hook, `stopStream` is lane-scoped, and whichever
-   * one unmounted first stopped the other's frames.
-   */
-  const leaseKeyRef = useRef<AppleStreamLeaseKey | null>(null);
-  /**
-   * Which RUN of that stream this viewer's lease belongs to.
-   *
-   * Carried back to `releaseAppleStreamLease`, so an unmount that lands after
-   * another viewer has already started a NEW stream on the same key cannot
-   * stop it. The pane and the floating player hand the device to each other,
-   * and the one going away always releases after the one arriving has started.
-   */
-  const leaseEpochRef = useRef<number | null>(null);
-  /** Cleanup targets the runtime that acquired the lease, even if props move on. */
-  const leaseRuntimePinRef = useRef<OpenProjectBinding | null>(null);
   const onErrorRef = useRef(onError);
   onErrorRef.current = onError;
 
@@ -232,35 +219,25 @@ export function useAppleDeviceStream({
   /**
    * Hand this viewer's lease back, and stop the stream only if it was the last.
    *
-   * Takes the lane and chat ids as arguments rather than closing over them so
-   * the unmount path — which runs after the props are gone — stops the stream
-   * it actually started rather than whatever the last render happened to name.
+   * The lane and chat ids are arguments rather than a closure, so the unmount
+   * path — which runs after the props are gone — stops the stream it actually
+   * started rather than whatever the last render happened to name.
    */
-  const releaseLease = useCallback((scope: { laneId: string | null; chatSessionId: string | null }, immediate = false) => {
-    const key = leaseKeyRef.current;
-    if (!key) return;
-    const epoch = leaseEpochRef.current ?? undefined;
-    const pin = leaseRuntimePinRef.current;
-    leaseKeyRef.current = null;
-    leaseEpochRef.current = null;
-    leaseRuntimePinRef.current = null;
-    if (!releaseAppleStreamLease(key, epoch).last) return;
-    if (immediate) {
+  const scopeRef = useRef<AppleStopScope>({ laneId, chatSessionId });
+  scopeRef.current = { laneId, chatSessionId };
+  const { leaseRef, releaseLease } = useGracefulStreamLease<AppleHeldLease, AppleStopScope>({
+    release: (lease) => releaseAppleStreamLease(lease.key, lease.epoch),
+    // Somebody took the lane's stream up in the meantime, on this device or
+    // another one (a swap): theirs now. The stop is lane-scoped, so it would
+    // kill a new device's capture too.
+    heldAgain: (lease) => appleStreamLaneLeaseCount(lease.key) > 0,
+    stop: (lease, scope) => {
       void window.ade.iosSimulator
-        .stopStream(pin, { laneId: scope.laneId, chatSessionId: scope.chatSessionId })
+        .stopStream(lease.pin, { laneId: scope.laneId, chatSessionId: scope.chatSessionId })
         .catch(() => {});
-      return;
-    }
-    window.setTimeout(() => {
-      // Somebody took the lane's stream up in the meantime, on this device or
-      // another one (a swap): theirs now. The stop is lane-scoped, so it would
-      // kill a new device's capture too.
-      if (appleStreamLaneLeaseCount(key) > 0) return;
-      void window.ade.iosSimulator
-        .stopStream(pin, { laneId: scope.laneId, chatSessionId: scope.chatSessionId })
-        .catch(() => {});
-    }, APPLE_STREAM_STOP_GRACE_MS);
-  }, []);
+    },
+    scopeRef,
+  });
 
   const reconnect = useCallback(() => {
     sawFrameRef.current = false;
@@ -278,42 +255,17 @@ export function useAppleDeviceStream({
   const urlRef = useRef<string | null>(null);
   urlRef.current = url;
 
-  /*
-   * A viewer that still wants frames never waits for a remount.
-   *
-   * The capture can end under it: another viewer's stop, a helper restart, a
-   * device reset. Before, the viewer kept a dead address — a frozen picture,
-   * or "Connecting video" for ever — and only switching tabs asked the
-   * service again. Now it asks again by itself, a few times with a pause
-   * between, and the service's `startStream` either joins the capture that is
-   * running or opens a new one.
-   */
-  const recoverTimerRef = useRef<number | null>(null);
-  const recoverTriesRef = useRef(0);
-  const scheduleRecover = useCallback(() => {
-    if (recoverTimerRef.current != null) return;
-    if (recoverTriesRef.current >= APPLE_STREAM_RECOVER_MAX_TRIES) {
-      setGaveUp(true);
-      // Out of tries: say so. Left `idle` with its old address, the column
-      // would call the frozen picture live and offer no Reconnect.
-      setState((current) => (current === "error" || current === "paused" ? current : "stalled"));
-      return;
-    }
-    recoverTriesRef.current += 1;
-    const delay = APPLE_STREAM_RECOVER_DELAY_MS * recoverTriesRef.current;
-    recoverTimerRef.current = window.setTimeout(() => {
-      recoverTimerRef.current = null;
-      if (wantedRef.current) reconnect();
-    }, delay);
-  }, [reconnect]);
-  useEffect(() => () => {
-    if (recoverTimerRef.current != null) window.clearTimeout(recoverTimerRef.current);
-  }, []);
-  // A new device is a new story: its failures start from zero.
-  useEffect(() => {
-    recoverTriesRef.current = 0;
-    setGaveUp(false);
-  }, [deviceUdid]);
+  // Before, a viewer whose capture ended kept a dead address — a frozen
+  // picture, or "Connecting video" for ever — and only switching tabs asked
+  // the service again. Now it asks again by itself.
+  const { gaveUp, scheduleRecover, noteRecovered } = useStreamRecovery({
+    wantedRef,
+    reconnect,
+    // Out of tries: say so. Left `idle` with its old address, the column
+    // would call the frozen picture live and offer no Reconnect.
+    onGiveUp: () => setState((current) => (current === "error" || current === "paused" ? current : "stalled")),
+    resetKey: deviceUdid,
+  });
 
   // The service says this device's capture ended while we still want it.
   useEffect(() => {
@@ -358,17 +310,15 @@ export function useAppleDeviceStream({
     // A device swap inside one mounted viewer: the old capture's lease is this
     // viewer's to give back, or the count never reaches zero and the helper
     // keeps encoding a device nobody is watching.
-    if (leaseKeyRef.current && leaseKeyRef.current.id !== leaseKey.id) {
+    if (leaseRef.current && leaseRef.current.key.id !== leaseKey.id) {
       releaseLease({ laneId, chatSessionId });
     }
-    if (!leaseKeyRef.current) {
+    if (!leaseRef.current) {
       // The descriptor is what makes the lease answerable from outside: the
       // mini-player handover reads it to learn, synchronously, that this lane
       // has frames and which device they are of (round 4 §B4).
       const { epoch } = acquireAppleStreamLease(leaseKey, { laneId, deviceUdid, pinKey });
-      leaseKeyRef.current = leaseKey;
-      leaseEpochRef.current = epoch;
-      leaseRuntimePinRef.current = pin ?? bound;
+      leaseRef.current = { key: leaseKey, epoch, pin: pin ?? bound };
     }
 
     let cancelled = false;
@@ -446,45 +396,21 @@ export function useAppleDeviceStream({
     hidden,
     laneId,
     machineName,
+    leaseRef,
     reconnectNonce,
     releaseLease,
     runtimePinRef,
     wanted,
   ]);
 
-  /**
-   * Unmount hands this viewer's lease back.
-   *
-   * The scope is read from refs because the cleanup runs with whatever the
-   * closure captured, and a stop aimed at a stale lane is a stop that misses.
-   */
-  const scopeRef = useRef({ laneId, chatSessionId });
-  scopeRef.current = { laneId, chatSessionId };
-  useEffect(() => () => {
-    releaseLease(scopeRef.current);
-  }, [releaseLease]);
-
-  /*
-   * A reload or a closed window tears the page down before the stop's grace
-   * timer can fire, and no viewer is left to stop the capture: it ran on in
-   * the helper with nobody watching. The page going away is final, so the
-   * stop goes now. (A renderer crash still skips this.)
-   */
-  useEffect(() => {
-    const onPageHide = () => releaseLease(scopeRef.current, true);
-    window.addEventListener("pagehide", onPageHide);
-    return () => window.removeEventListener("pagehide", onPageHide);
-  }, [releaseLease]);
-
   const noteFrame = useCallback(() => {
     lastFrameAtRef.current = Date.now();
     sawFrameRef.current = true;
-    recoverTriesRef.current = 0;
-    setGaveUp(false);
+    noteRecovered();
     setHasFrame(true);
     for (const listener of frameListenersRef.current) listener();
     setState((current) => (current === "live" ? current : "live"));
-  }, []);
+  }, [noteRecovered]);
 
   const handleReaderStatus = useCallback((next: H264StreamStatus, nextError: string | null) => {
     if (next === "error") {

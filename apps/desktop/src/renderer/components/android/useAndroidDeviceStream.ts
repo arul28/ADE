@@ -2,12 +2,9 @@ import { useCallback, useEffect, useRef, useState, type MutableRefObject } from 
 import type { OpenProjectBinding } from "../../../shared/types";
 import type { H264StreamStatus } from "../device/h264StreamPlayer";
 import { useAppStore } from "../../state/appStore";
-import {
-  acquireAndroidStreamLease,
-  androidStreamLeaseCount,
-  androidStreamLeaseKey,
-  releaseAndroidStreamLease,
-} from "./androidStreamLease";
+import { useGracefulStreamLease } from "../device/useGracefulStreamLease";
+import { useStreamRecovery } from "../device/useStreamRecovery";
+import { androidStreamLeaseKey, androidStreamLeases } from "./androidStreamLease";
 import type { AndroidStreamState } from "./androidDeviceState";
 
 /**
@@ -25,13 +22,17 @@ import type { AndroidStreamState } from "./androidDeviceState";
  */
 
 /** Connected, but the first access unit never arrived. */
-export const ANDROID_FIRST_FRAME_TIMEOUT_MS = 6_000;
+const ANDROID_FIRST_FRAME_TIMEOUT_MS = 6_000;
 /** How often the status strip re-reads fps, only while the picture is on screen. */
 const STREAM_METRICS_POLL_MS = 3_000;
-const STREAM_RECOVER_DELAY_MS = 750;
-const STREAM_RECOVER_MAX_TRIES = 3;
-/** How long the last viewer's stop waits for another viewer (a remount) to arrive. */
-export const ANDROID_STREAM_STOP_GRACE_MS = 1_000;
+
+/** The lease this viewer holds: the lane's stream on one machine, and the run it joined. */
+type AndroidHeldLease = {
+  key: string;
+  epoch: number;
+  pin: OpenProjectBinding | null;
+  laneId: string;
+};
 
 export type UseAndroidDeviceStreamArgs = {
   laneId: string | null;
@@ -83,42 +84,23 @@ export function useAndroidDeviceStream({
   const [size, setSize] = useState<{ width: number | null; height: number | null }>({ width: null, height: null });
   const [fps, setFps] = useState<number | null>(null);
   const [reconnectNonce, setReconnectNonce] = useState(0);
-  const [gaveUp, setGaveUp] = useState(false);
 
   const sawFrameRef = useRef(false);
   const connectedAtRef = useRef(0);
-  const leaseKeyRef = useRef<string | null>(null);
-  const leaseEpochRef = useRef<number | null>(null);
-  const leasePinRef = useRef<OpenProjectBinding | null>(null);
-  const leaseLaneRef = useRef<string | null>(null);
   const onErrorRef = useRef(onError);
   onErrorRef.current = onError;
 
-  /** Give the lease back; stop the lane's stream only when this was the last viewer. */
-  const releaseLease = useCallback((immediate = false) => {
-    const key = leaseKeyRef.current;
-    const lane = leaseLaneRef.current;
-    if (!key || !lane) return;
-    const epoch = leaseEpochRef.current ?? undefined;
-    const pin = leasePinRef.current;
-    leaseKeyRef.current = null;
-    leaseEpochRef.current = null;
-    leasePinRef.current = null;
-    leaseLaneRef.current = null;
-    if (!releaseAndroidStreamLease(key, epoch).last) return;
-    const stop = () => {
-      void window.ade?.androidEmulator?.stopStream({ laneId: lane }, pin).catch(() => {});
-    };
-    if (immediate) {
-      stop();
-      return;
-    }
-    window.setTimeout(() => {
-      // A remount took the lane's stream up again in the meantime: theirs now.
-      if (androidStreamLeaseCount(key) > 0) return;
-      stop();
-    }, ANDROID_STREAM_STOP_GRACE_MS);
-  }, []);
+  // The stop names the lane the lease was taken for, so it needs no scope.
+  const noScopeRef = useRef(null);
+  const { leaseRef, releaseLease } = useGracefulStreamLease<AndroidHeldLease, null>({
+    release: (lease) => androidStreamLeases.release(lease.key, lease.epoch),
+    // A remount took the lane's stream up again in the meantime: theirs now.
+    heldAgain: (lease) => androidStreamLeases.count(lease.key) > 0,
+    stop: (lease) => {
+      void window.ade?.androidEmulator?.stopStream({ laneId: lease.laneId }, lease.pin).catch(() => {});
+    },
+    scopeRef: noScopeRef,
+  });
 
   const reconnect = useCallback(() => {
     sawFrameRef.current = false;
@@ -132,30 +114,14 @@ export function useAndroidDeviceStream({
   const urlRef = useRef<string | null>(null);
   urlRef.current = url;
 
-  const recoverTimerRef = useRef<number | null>(null);
-  const recoverTriesRef = useRef(0);
-  const scheduleRecover = useCallback(() => {
-    if (recoverTimerRef.current != null) return;
-    if (recoverTriesRef.current >= STREAM_RECOVER_MAX_TRIES) {
-      setGaveUp(true);
+  const { gaveUp, scheduleRecover, noteRecovered } = useStreamRecovery({
+    wantedRef,
+    reconnect,
+    onGiveUp: () => {
       if (stateRef.current !== "error" && stateRef.current !== "paused") setState("stalled");
-      return;
-    }
-    recoverTriesRef.current += 1;
-    const delay = STREAM_RECOVER_DELAY_MS * recoverTriesRef.current;
-    recoverTimerRef.current = window.setTimeout(() => {
-      recoverTimerRef.current = null;
-      if (wantedRef.current) reconnect();
-    }, delay);
-  }, [reconnect, setState]);
-  useEffect(() => () => {
-    if (recoverTimerRef.current != null) window.clearTimeout(recoverTimerRef.current);
-  }, []);
-  // A new device starts its failures from zero.
-  useEffect(() => {
-    recoverTriesRef.current = 0;
-    setGaveUp(false);
-  }, [avdName]);
+    },
+    resetKey: avdName,
+  });
 
   // The brain says the lane's stream stopped while we still want it. The brain
   // restarts a crashed scrcpy server by itself (3 a minute); this covers the
@@ -177,19 +143,16 @@ export function useAndroidDeviceStream({
       setUrl(null);
       setToken(null);
       setFps(null);
-      releaseLease();
+      releaseLease(null);
       return;
     }
     const pin = runtimePinRef.current;
     const bound = useAppStore.getState().projectBinding;
     const leaseKey = androidStreamLeaseKey({ pin, bound, laneId });
-    if (leaseKeyRef.current && leaseKeyRef.current !== leaseKey) releaseLease();
-    if (!leaseKeyRef.current) {
-      const { epoch } = acquireAndroidStreamLease(leaseKey);
-      leaseKeyRef.current = leaseKey;
-      leaseEpochRef.current = epoch;
-      leasePinRef.current = pin;
-      leaseLaneRef.current = laneId;
+    if (leaseRef.current && leaseRef.current.key !== leaseKey) releaseLease(null);
+    if (!leaseRef.current) {
+      const { epoch } = androidStreamLeases.acquire(leaseKey, () => null);
+      leaseRef.current = { key: leaseKey, epoch, pin, laneId };
     }
 
     let cancelled = false;
@@ -216,32 +179,22 @@ export function useAndroidDeviceStream({
 
     void run().catch((caught: unknown) => {
       if (cancelled) return;
-      releaseLease();
+      releaseLease(null);
       setState("error");
       onErrorRef.current(caught instanceof Error ? caught.message : String(caught));
     });
     return () => {
       cancelled = true;
     };
-  }, [avdName, hidden, laneId, reconnectNonce, releaseLease, runtimePinRef, setState, wanted]);
-
-  useEffect(() => () => releaseLease(), [releaseLease]);
-
-  // A reload tears the page down before the grace timer fires: stop now.
-  useEffect(() => {
-    const onPageHide = () => releaseLease(true);
-    window.addEventListener("pagehide", onPageHide);
-    return () => window.removeEventListener("pagehide", onPageHide);
-  }, [releaseLease]);
+  }, [avdName, hidden, laneId, leaseRef, reconnectNonce, releaseLease, runtimePinRef, setState, wanted]);
 
   const noteFrame = useCallback(() => {
     if (!sawFrameRef.current) {
       sawFrameRef.current = true;
-      recoverTriesRef.current = 0;
-      setGaveUp(false);
+      noteRecovered();
     }
     setState("live");
-  }, [setState]);
+  }, [noteRecovered, setState]);
 
   const handleReaderStatus = useCallback((next: H264StreamStatus, nextError: string | null) => {
     if (next === "error") {

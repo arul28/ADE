@@ -27,7 +27,7 @@ import {
   resolveAndroidPaneState,
   type AndroidErrorDescription,
 } from "./androidDeviceState";
-import { androidStreamLeaseKey, forgetAndroidStreamLeases } from "./androidStreamLease";
+import { androidStreamLeaseKey, androidStreamLeases } from "./androidStreamLease";
 import { AndroidDevicePicker } from "./AndroidDevicePicker";
 import { ANDROID_RAIL_WIDTH, AndroidDeviceRail } from "./AndroidDeviceRail";
 import { AndroidDeviceStage } from "./AndroidDeviceStage";
@@ -268,7 +268,7 @@ export function AndroidDevicePane({
   }, []);
 
   const forgetStream = useCallback(() => {
-    forgetAndroidStreamLeases(androidStreamLeaseKey({
+    androidStreamLeases.forget(androidStreamLeaseKey({
       pin: runtimePinRef.current,
       bound: useAppStore.getState().projectBinding,
       laneId,
