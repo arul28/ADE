@@ -5,6 +5,7 @@ import {
   CaretLeft,
   CaretRight,
   CircleNotch,
+  Cube,
   Desktop,
   Key,
   Laptop,
@@ -42,6 +43,8 @@ import {
   type RemoteTargetFormPrefill,
 } from "./RemoteTargetForm";
 import { PairMachineForm } from "./PairMachineForm";
+import { NewAgent37MachineForm } from "./NewAgent37MachineForm";
+import type { Agent37CreateMachineResult, Agent37Status } from "../../../shared/agent37";
 import {
   accountMachineMatchesTarget,
   assignMachineSections,
@@ -107,7 +110,7 @@ type ConnectTargetOptions = {
   onTrustRequired?: (state: "needs_trust" | "changed") => void;
 };
 
-type AddMode = "choose" | "nearby" | "pair" | "ssh" | "code";
+type AddMode = "choose" | "nearby" | "pair" | "ssh" | "code" | "agent37";
 
 type AccountConnectionToast = {
   targetId: string;
@@ -895,6 +898,29 @@ export function RemoteTargetList({
     ],
   );
 
+  // Agent37 is account-wide (its key is in the account vault), so this asks
+  // with no pin. Read when the sheet opens, not polled.
+  const [agent37Status, setAgent37Status] = useState<Agent37Status | null>(null);
+  useEffect(() => {
+    if (addMode !== "choose") return;
+    let cancelled = false;
+    window.ade.agent37?.getStatus()
+      .then((next) => { if (!cancelled) setAgent37Status(next); })
+      .catch(() => { if (!cancelled) setAgent37Status(null); });
+    return () => { cancelled = true; };
+  }, [addMode]);
+
+  // A new box signed in to this account on its own: find its row and connect.
+  const onAgent37MachineCreated = useCallback(async (result: Agent37CreateMachineResult) => {
+    onAccountMachinesChanged?.();
+    if (!result.machineKey) return;
+    const listed = await window.ade.account.listMachines().catch(() => null);
+    const machine = listed?.machines.find((candidate) => candidate.machineKey === result.machineKey);
+    if (!machine) return;
+    setAddMode(null);
+    await connectAccountMachine(machine);
+  }, [connectAccountMachine, onAccountMachinesChanged]);
+
   const onPaired = useCallback(
     async (targetId: string) => {
       await loadTargets();
@@ -1361,6 +1387,15 @@ export function RemoteTargetList({
     label: string;
     detail: string;
   }> = [
+    // Only once Agent37 is connected: a new cloud machine, signed in for you.
+    ...(agent37Status?.connected && !agent37Status.error
+      ? [{
+          key: "agent37" as const,
+          icon: <Cube size={18} weight="bold" />,
+          label: "New Agent37 machine",
+          detail: "A cloud Linux box or VM, signed in to your account for you",
+        }]
+      : []),
     {
       key: "nearby",
       icon: <WifiHigh size={18} weight="bold" />,
@@ -1389,6 +1424,7 @@ export function RemoteTargetList({
     pair: "Pair with a nearby computer",
     ssh: "Add over SSH",
     code: "This computer's pairing code",
+    agent37: "New Agent37 machine",
   };
 
   const showEmptyState = !loading
@@ -1506,6 +1542,9 @@ export function RemoteTargetList({
               </>
             ) : null}
 
+            {addMode === "agent37" && agent37Status ? (
+              <NewAgent37MachineForm status={agent37Status} onCreated={(result) => void onAgent37MachineCreated(result)} />
+            ) : null}
             {addMode === "code" ? (
               <div style={{ display: "grid", gap: 10 }}>
                 <div style={helperTextStyle}>

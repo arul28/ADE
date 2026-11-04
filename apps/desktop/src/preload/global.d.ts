@@ -1,4 +1,5 @@
 import type { DeeplinkOwnership } from "../shared/deeplinks";
+import type { Agent37CreateMachineArgs, Agent37CreateProgress, Agent37Status } from "../shared/agent37";
 import type { RemoteWorkCopyListing } from "../shared/types/remoteWork";
 import type { MachineStats } from "../shared/types/machineStats";
 import type { NewLaneDefaults } from "../shared/laneStart";
@@ -4628,6 +4629,19 @@ declare global {
          * background service. Optional because older preloads lack it.
          */
         repairSession?: () => Promise<AdeAccountSessionRepairResult>;
+      };
+      /**
+       * Agent37, account-wide: the workspace key (in the account vault) and
+       * new machines made on it. No pin: nothing here acts on a lane, chat or
+       * another machine. Optional because the web client does not expose it.
+       */
+      agent37?: {
+        getStatus: () => Promise<Agent37Status | null>;
+        saveKey: (apiKey: string) => Promise<Agent37Status | null>;
+        removeKey: () => Promise<Agent37Status | null>;
+        /** Returns at once; the create reports through `onCreateProgress`, ending in `done` or `failed`. */
+        createMachine: (requestId: string, machine: Agent37CreateMachineArgs) => Promise<{ started: boolean }>;
+        onCreateProgress: (cb: (progress: Agent37CreateProgress) => void) => () => void;
       };
       /**
        * The account settings store (the `account_settings` action domain),

@@ -29,6 +29,7 @@ import { BackgroundServiceSection } from "./BackgroundServiceSection";
 import { CaptureGestureSection } from "./CaptureGestureSection";
 import { LinearIntegrationSection } from "./LinearIntegrationSection";
 import { JiraSection } from "./JiraSection";
+import { Agent37Section } from "./Agent37Section";
 import { NotificationsSection } from "./NotificationsSection";
 import { McpServersSection } from "./mcp/McpServersSection";
 import { BrowserLinksSection } from "./BrowserLinksSection";
@@ -495,6 +496,8 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
     { entryIds: ["integrations.github", "integrations.github-issues-top-bar"], render: () => <GitHubIntegrationSection />, machine: "routed", title: "GitHub", group: "github" },
     { entryIds: ["integrations.linear", "integrations.linear-top-bar"], render: () => <LinearIntegrationSection />, machine: "routed", title: "Linear", group: "linear" },
     { entryIds: ["integrations.jira", "integrations.jira-projects", "integrations.jira-top-bar"], render: () => <JiraSection />, machine: "routed", title: "Jira", group: "jira" },
+    // Account-wide: one workspace key in the account vault, so no machine kind and no pin.
+    { entryIds: ["integrations.agent37"], render: () => <Agent37Section />, title: "Agent37", group: "agent37" },
   ],
   notifications: [{ entryIds: "tab", render: () => <NotificationsSection /> }],
   // Account-wide: the on/off switch, the computers and the connections live in

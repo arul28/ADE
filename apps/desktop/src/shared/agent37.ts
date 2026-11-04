@@ -1,0 +1,177 @@
+import type { IntegrationCredentialStorage } from "./types/integrationCredentialStorage";
+
+/**
+ * Agent37: persistent Linux machines metered per minute, driven by one
+ * workspace API key. ADE uses it as a place to make new machines from: a box
+ * comes up from ADE's template with the brain as its main process, signs in to
+ * the creator's ADE account without a code, and joins the machine list.
+ *
+ * Everything here is account-level. The key lives in the account vault, so
+ * every computer on the account sees the same Agent37 workspace, and making a
+ * box acts on that workspace, not on any lane, chat or machine.
+ */
+
+export const AGENT37_API_BASE_URL = "https://api.agent37.com/v1";
+export const AGENT37_SANDBOX_BASE_URL = "https://sandbox.agent37.app/v1";
+export const AGENT37_API_KEYS_URL = "https://www.agent37.com/dashboard/cloud/api-keys";
+export const AGENT37_BILLING_URL = "https://www.agent37.com/dashboard/cloud/billing";
+
+/** The workspace template ADE creates boxes from (infra/agent37). */
+export const AGENT37_DEFAULT_TEMPLATE = "ade";
+
+/** What the person picks: a sandboxed box, or a full VM. */
+export type Agent37MachineKind = "box" | "vm";
+
+export type Agent37ShapeId = "2x4" | "4x8" | "4x16" | "4x32";
+
+export type Agent37Shape = {
+  id: Agent37ShapeId;
+  cpu: number;
+  memoryGb: number;
+  /** The disk ADE asks for: the most each shape allows, since repos and lanes grow. */
+  diskGb: number;
+};
+
+export const AGENT37_SHAPES: readonly Agent37Shape[] = [
+  { id: "2x4", cpu: 2, memoryGb: 4, diskGb: 12 },
+  { id: "4x8", cpu: 4, memoryGb: 8, diskGb: 20 },
+  { id: "4x16", cpu: 4, memoryGb: 16, diskGb: 40 },
+  { id: "4x32", cpu: 4, memoryGb: 32, diskGb: 80 },
+];
+
+export function agent37Shape(id: string | null | undefined): Agent37Shape | null {
+  return AGENT37_SHAPES.find((shape) => shape.id === id) ?? null;
+}
+
+export function isAgent37MachineKind(value: unknown): value is Agent37MachineKind {
+  return value === "box" || value === "vm";
+}
+
+/** Agent37's `type` for each kind. */
+export function agent37InstanceType(kind: Agent37MachineKind): "default" | "vm" {
+  return kind === "vm" ? "vm" : "default";
+}
+
+/**
+ * Agent37's published rates (2026-11): $0.80 per vCPU-month, $0.70 per
+ * GB-month of memory, $0.09 per GB-month of disk, 730 hours a month. A VM's
+ * compute costs 2.5x; disk is the same.
+ */
+const VCPU_MONTH_USD = 0.8;
+const MEMORY_GB_MONTH_USD = 0.7;
+const DISK_GB_MONTH_USD = 0.09;
+const HOURS_PER_MONTH = 730;
+
+/** What one running hour costs, in US dollars. Asleep or stopped, only the disk bills. */
+export function agent37HourlyUsd(kind: Agent37MachineKind, shape: Agent37Shape): number {
+  const compute = shape.cpu * VCPU_MONTH_USD + shape.memoryGb * MEMORY_GB_MONTH_USD;
+  const monthly = compute * (kind === "vm" ? 2.5 : 1) + shape.diskGb * DISK_GB_MONTH_USD;
+  return monthly / HOURS_PER_MONTH;
+}
+
+/** "0.7¢ an hour" / "3.4¢ an hour". */
+export function formatAgent37HourlyPrice(usd: number): string {
+  const cents = usd * 100;
+  return `${cents < 10 ? cents.toFixed(1) : Math.round(cents)}¢ an hour`;
+}
+
+export type Agent37KindSpec = {
+  kind: Agent37MachineKind;
+  label: string;
+  /** One line under the label. */
+  summary: string;
+  can: readonly string[];
+  cannot: readonly string[];
+};
+
+export const AGENT37_KINDS: readonly Agent37KindSpec[] = [
+  {
+    kind: "box",
+    label: "Box",
+    summary: "A sandboxed Linux machine. The cheapest way to run lanes in the cloud.",
+    can: ["Lanes and Git", "Chats, CLIs and terminals", "A Linux Desktop screen for browser and app testing"],
+    cannot: ["No Android emulator", "No Docker"],
+  },
+  {
+    kind: "vm",
+    label: "VM",
+    summary: "A full Linux virtual machine with its own kernel.",
+    can: ["Everything a box does", "Android emulator", "Docker"],
+    cannot: ["Costs about 2.5 times a box"],
+  },
+];
+
+export function agent37KindSpec(kind: Agent37MachineKind): Agent37KindSpec {
+  return AGENT37_KINDS.find((spec) => spec.kind === kind) ?? AGENT37_KINDS[0]!;
+}
+
+/** The integration's state, as Settings and the machine picker read it. Never the key. */
+export type Agent37Status = {
+  connected: boolean;
+  /** Where the key is kept; null when there is no key. */
+  credentialStorage: IntegrationCredentialStorage | null;
+  /** The workspace wallet, when Agent37 answered. */
+  balanceUsd: number | null;
+  /** 0 before the first top-up: one box, the smallest shape, no VMs. */
+  tier: number | null;
+  instanceLimit: number | null;
+  instanceCount: number | null;
+  pastDue: boolean;
+  /** Set when a key is saved but Agent37 refused it or could not be reached. */
+  error: string | null;
+};
+
+export type Agent37CreateMachineArgs = {
+  kind: Agent37MachineKind;
+  shape: Agent37ShapeId;
+  /** The name the machine gets in ADE and on Agent37. */
+  name: string;
+};
+
+export type Agent37CreateStage =
+  | "creating"
+  | "waiting_for_brain"
+  | "signing_in"
+  | "confirm_in_window"
+  | "joining"
+  | "done"
+  | "failed";
+
+export type Agent37CreateMachineResult = {
+  instanceId: string;
+  /** The box's ADE machine key, once it signed in; the picker connects to it. */
+  machineKey: string | null;
+  name: string;
+};
+
+/**
+ * A create runs for minutes, longer than any IPC call may wait, so starting
+ * one returns at once and the rest arrives as these events. The last one is
+ * `done` (with `result`) or `failed` (with `error`).
+ */
+export type Agent37CreateProgress = {
+  /** The id the renderer gave this create, so one dialog follows its own. */
+  requestId: string;
+  stage: Agent37CreateStage;
+  /** One plain line for the dialog. */
+  message: string;
+  instanceId?: string;
+  result?: Agent37CreateMachineResult;
+  error?: string;
+};
+
+/** Why a shape or kind cannot be made on this workspace right now, or null. */
+export function agent37ChoiceBlocker(
+  status: Pick<Agent37Status, "tier" | "instanceLimit" | "instanceCount" | "pastDue">,
+  kind: Agent37MachineKind,
+  shape: Agent37Shape,
+): string | null {
+  if (status.pastDue) return "Your Agent37 wallet is past due. Top it up to make machines.";
+  if (status.instanceLimit != null && status.instanceCount != null && status.instanceCount >= status.instanceLimit) {
+    return `Your Agent37 workspace holds ${status.instanceLimit} machine${status.instanceLimit === 1 ? "" : "s"} at most, sleeping ones included. Delete one or top up to raise the limit.`;
+  }
+  if (status.tier === 0 && (kind === "vm" || shape.id !== "2x4")) {
+    return "Agent37 unlocks VMs and bigger sizes after your first top-up.";
+  }
+  return null;
+}
