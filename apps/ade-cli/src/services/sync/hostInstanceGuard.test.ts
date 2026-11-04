@@ -98,4 +98,43 @@ describe("guardAgainstCopiedAdeHome", () => {
     expect(moved).toHaveLength(1);
     expect(fs.existsSync(path.join(adeDir, "copied-identities", moved[0]!, "machine.json"))).toBe(true);
   });
+
+  it("resets a home copied back and forth every time: a finished reset never stands in for a later one", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-host-guard-"));
+    dirs.push(root);
+    const adeDir = path.join(root, "home");
+    const project = path.join(root, "project");
+    const secretsDir = path.join(adeDir, "secrets");
+    const siteIdPath = path.join(project, ".ade", "secrets", "sync-site-id");
+    fs.mkdirSync(secretsDir, { recursive: true });
+    fs.writeFileSync(path.join(adeDir, HOST_INSTANCE_RECORD_FILE), JSON.stringify({ instanceId: "box-a" }));
+    fs.writeFileSync(path.join(adeDir, "projects.json"), JSON.stringify({ projects: [{ rootPath: project }] }));
+    fs.mkdirSync(path.dirname(siteIdPath), { recursive: true });
+    let clock = Date.parse("2026-11-04T00:00:00.000Z");
+    // Each box made its own identity and site id while it served.
+    const serveOn = (box: string) => {
+      fs.mkdirSync(secretsDir, { recursive: true });
+      fs.writeFileSync(path.join(secretsDir, "machine.json"), JSON.stringify({ box }));
+      fs.writeFileSync(siteIdPath, `site-${box}`);
+    };
+    const copyTo = (box: string) => guardAgainstCopiedAdeHome({
+      adeDir,
+      env: { [HOST_INSTANCE_ENV]: box },
+      now: () => new Date((clock += 1_000)),
+    });
+
+    serveOn("box-a");
+    expect(copyTo("box-b").action).toBe("reset");
+    serveOn("box-b");
+    expect(copyTo("box-a").action).toBe("reset");
+    serveOn("box-a");
+    // The same two ids as the first reset: it must move box-a's identity and
+    // retire its site id again, not read the first reset's leftovers as done.
+    expect(copyTo("box-b").action).toBe("reset");
+    expect(fs.existsSync(secretsDir)).toBe(false);
+    expect(fs.existsSync(siteIdPath)).toBe(false);
+    const kept = fs.readdirSync(path.join(adeDir, "copied-identities"))
+      .map((folder) => JSON.parse(fs.readFileSync(path.join(adeDir, "copied-identities", folder, "machine.json"), "utf8")).box);
+    expect(kept.sort()).toEqual(["box-a", "box-a", "box-b"]);
+  });
 });

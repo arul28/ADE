@@ -98,9 +98,21 @@ function registeredProjectRoots(registryPath: string): string[] {
     .filter((rootPath) => rootPath.length > 0);
 }
 
-/** A folder an earlier, interrupted reset of this same copy already moved the identity into. */
-function earlierMove(copiedDir: string, previousInstanceId: string): string | null {
-  const suffix = `-from-${folderSafe(previousInstanceId)}`;
+/**
+ * The suffix that names one reset in progress: from this previous id to this
+ * new one. A finished reset renames its folder (`.done` appended), so it never
+ * matches again: an old, completed A→B must not let a later A→B (the home
+ * went back to A, then was copied to B again) skip moving what is in secrets/.
+ */
+function openMoveSuffix(previousInstanceId: string, instanceId: string): string {
+  return `-from-${folderSafe(previousInstanceId)}-to-${folderSafe(instanceId)}`;
+}
+
+const FINISHED_MOVE_SUFFIX = ".done";
+
+/** A folder an earlier, interrupted pass of this same reset already moved the identity into. */
+function earlierMove(copiedDir: string, previousInstanceId: string, instanceId: string): string | null {
+  const suffix = openMoveSuffix(previousInstanceId, instanceId);
   let entries: string[];
   try {
     entries = fs.readdirSync(copiedDir);
@@ -153,8 +165,11 @@ export function guardAgainstCopiedAdeHome(args: {
 
   // Safe to run again: a start that was blocked below left the old record in
   // place, so the next start comes back here. The identity it already moved
-  // is found by its folder name and not moved twice (whatever is in secrets/
-  // now was made on this box), and only projects not retired yet are retired.
+  // is found by its open folder (this previous id to this new one) and not
+  // moved twice (whatever is in secrets/ now was made on this box), and only
+  // projects not retired by this same pass are retired. Every marker is named
+  // after that one folder, and the folder is closed when the pass finishes, so
+  // nothing a finished reset left behind can stand in for a later one.
   const copiedDir = path.join(args.adeDir, "copied-identities");
   // The original's identity could not be moved aside: the box must not serve
   // under it, and nothing is recorded, so the next start tries again.
@@ -165,7 +180,7 @@ export function guardAgainstCopiedAdeHome(args: {
   };
   let movedTo: string | null;
   try {
-    movedTo = earlierMove(copiedDir, record.instanceId);
+    movedTo = earlierMove(copiedDir, record.instanceId, instanceId);
   } catch (error) {
     return blockedMove(copiedDir, error);
   }
@@ -173,7 +188,7 @@ export function guardAgainstCopiedAdeHome(args: {
     args.logger?.info?.("host_instance.copied_home_reset_resumed", { instanceId, previousInstanceId: record.instanceId, movedTo });
   } else {
     const stamp = now().toISOString().replace(/[:.]/g, "-");
-    movedTo = path.join(copiedDir, `${stamp}-from-${folderSafe(record.instanceId)}`);
+    movedTo = path.join(copiedDir, `${stamp}${openMoveSuffix(record.instanceId, instanceId)}`);
     fs.mkdirSync(copiedDir, { recursive: true });
     // The whole secrets folder, not a list of files: everything in it is this
     // machine's identity, its trust in other devices, or ciphertext under its
@@ -206,9 +221,10 @@ export function guardAgainstCopiedAdeHome(args: {
   }
   for (const rootPath of roots) {
     const siteIdPath = path.join(rootPath, ".ade", "secrets", "sync-site-id");
-    const retiredPath = `${siteIdPath}.copied-from-${folderSafe(record.instanceId)}`;
+    // Named after this pass's folder, so only this same reset reads it as done.
+    const retiredPath = `${siteIdPath}.retired-${path.basename(movedTo)}`;
     try {
-      // Retired by an earlier pass: a site id there now was minted on this box.
+      // Retired by an earlier pass of this reset: a site id there now was minted on this box.
       if (pathPresent(retiredPath)) continue;
       // `existsSync` reads "cannot look" as "absent", and an unreadable site id
       // skipped here would keep writing as the original. Only ENOENT is absent.
@@ -228,6 +244,25 @@ export function guardAgainstCopiedAdeHome(args: {
     });
     return { action: "blocked", instanceId, previousInstanceId: record.instanceId, movedTo, retiredProjectSiteIds, failures };
   }
+
+  // Close the pass before the record says this box: a folder left open could
+  // be resumed by a later reset with the same two ids, which would then skip
+  // moving the identity in secrets/. Closed first, a crash before the record is
+  // written only runs a harmless fresh pass on the next start.
+  const finishedMove = `${movedTo}${FINISHED_MOVE_SUFFIX}`;
+  try {
+    fs.renameSync(movedTo, finishedMove);
+  } catch (error) {
+    const closeFailures = [{ path: movedTo, error: errorText(error) }];
+    args.logger?.warn?.("host_instance.copied_home_reset_blocked", {
+      instanceId,
+      previousInstanceId: record.instanceId,
+      movedTo,
+      failures: closeFailures,
+    });
+    return { action: "blocked", instanceId, previousInstanceId: record.instanceId, movedTo, retiredProjectSiteIds, failures: closeFailures };
+  }
+  movedTo = finishedMove;
 
   writeRecord(recordPath, instanceId, now());
   args.logger?.info?.("host_instance.copied_home_reset", {

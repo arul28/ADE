@@ -139,7 +139,10 @@ identity; a later start with a different id moves `secrets/` aside to
 `copied-identities/` (never deleted) and retires each registered project's
 `.ade/secrets/sync-site-id`, so the box starts signed out as a new machine and
 keeps every file. Until every site id is retired the brain refuses to serve,
-and the next start finishes what is left. Without the variable the guard does
+and the next start finishes what is left. The moved folder and the retired site
+ids are named for that one reset (old id to new id), and the folder is marked
+`.done` when the reset finishes, so a finished reset never lets a later copy
+skip its own. Without the variable the guard does
 nothing, so a renamed laptop is never mistaken for a copy.
 
 ## Logging and analytics

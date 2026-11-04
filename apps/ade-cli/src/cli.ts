@@ -27327,30 +27327,6 @@ async function runServe(
     process.env.ADE_TAILSCALE_SERVE = "0";
     process.env.ADE_SYNC_HOST_LOCK_PATH ||= path.join(adeDir, "sync-host-lock.json");
   }
-  // Before anything reads this machine's identity: a home copied onto another
-  // box (a cloud fork) must come up as a new machine, not as this one.
-  if (!embedded) {
-    const { guardAgainstCopiedAdeHome } = await import("./services/sync/hostInstanceGuard");
-    const hostGuard = guardAgainstCopiedAdeHome({ adeDir: resolveMachineAdeLayout().adeDir });
-    if (hostGuard.action === "blocked") {
-      // Serving now would let a project write under the original machine's
-      // site id. Refuse; the next start runs the rest of the reset.
-      const lines = hostGuard.failures.map((failure) => `  ${failure.path}: ${failure.error}`);
-      throw new CliToolError(
-        `This ADE home was copied from ${hostGuard.previousInstanceId}, and ADE couldn't give every project its own sync identity, `
-          + "so the brain won't start (it would write as the machine it was copied from):\n"
-          + `${lines.join("\n")}\n`
-          + "Fix the problem above (usually file permissions), then start ADE again; it picks up where it stopped.",
-        undefined,
-      );
-    }
-    if (hostGuard.action === "reset") {
-      process.stderr.write(
-        `ADE: this ADE home was copied from ${hostGuard.previousInstanceId}, so this box starts as a new machine `
-          + `(signed out; the old identity is kept in ${hostGuard.movedTo}).\n`,
-      );
-    }
-  }
   if (process.platform === "darwin" || process.platform === "linux") {
     const runtimeDir = path.dirname(lastFailurePathForMachine());
     boundServiceOutputLogs(runtimeDir);
@@ -27409,7 +27385,35 @@ async function runServe(
   // only restart a brain the service manager owns, and whether this one is that
   // brain is not known until the service command has been resolved.
   let brainMemoryRestartGuard: BrainMemoryRestartGuard | null = null;
+  // Read here: the `try` below declares its own `resolveMachineAdeLayout`.
+  const copiedHomeGuardAdeDir = resolveMachineAdeLayout().adeDir;
   try {
+  // Before anything reads this machine's identity: a home copied onto another
+  // box (a cloud fork) must come up as a new machine, not as this one. Inside
+  // the startup `try`, so a blocked or failed reset is recorded as a brain
+  // startup failure like any other, and counts toward the startup backoff.
+  if (!embedded) {
+    const { guardAgainstCopiedAdeHome } = await import("./services/sync/hostInstanceGuard");
+    const hostGuard = guardAgainstCopiedAdeHome({ adeDir: copiedHomeGuardAdeDir });
+    if (hostGuard.action === "blocked") {
+      // Serving now would let a project write under the original machine's
+      // site id. Refuse; the next start runs the rest of the reset.
+      const lines = hostGuard.failures.map((failure) => `  ${failure.path}: ${failure.error}`);
+      throw new CliToolError(
+        `This ADE home was copied from ${hostGuard.previousInstanceId}, and ADE couldn't finish giving this box and every project its own identity, `
+          + "so the brain won't start (it would write as the machine it was copied from):\n"
+          + `${lines.join("\n")}\n`
+          + "Fix the problem above (usually file permissions), then start ADE again; it picks up where it stopped.",
+        undefined,
+      );
+    }
+    if (hostGuard.action === "reset") {
+      process.stderr.write(
+        `ADE: this ADE home was copied from ${hostGuard.previousInstanceId}, so this box starts as a new machine `
+          + `(signed out; the old identity is kept in ${hostGuard.movedTo}).\n`,
+      );
+    }
+  }
   const removeRuntimeProcessErrorBoundary = installRuntimeProcessErrorBoundary("ADE brain");
   const [
     { brainLogPath, resolveMachineAdeLayout, isSyncCapableAdeHome },

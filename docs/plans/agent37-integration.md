@@ -234,7 +234,7 @@ how to propose a change.
 `apps/ade-cli/src/services/sync/hostInstanceGuard.ts`, called first in
 `ade serve`. With `ADE_HOST_INSTANCE_ID` set, the brain records the id in
 `$ADE_HOME/host-instance.json`; a later start with a different id moves the
-whole `secrets/` folder to `copied-identities/<stamp>-from-<old id>/` and
+whole `secrets/` folder to `copied-identities/<stamp>-from-<old id>-to-<new id>/` and
 retires each project's `.ade/secrets/sync-site-id`, so the box starts
 signed out as a new machine with every file kept. Without the variable it
 does nothing, so a renamed laptop is never mistaken for a copy.
