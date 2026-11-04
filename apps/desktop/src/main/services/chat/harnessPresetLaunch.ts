@@ -107,6 +107,7 @@ import {
   harnessAcceptsRoutes,
   isRoutePresetId,
   launchModelIdFor,
+  sourceModelIdFor,
   stripTrailingV1,
   type HarnessRoute,
 } from "../../../shared/harnessRoutes";
@@ -389,6 +390,9 @@ export function resolveHarnessPresetPlan(
   };
   const harness = preset.harness;
   const notes: string[] = [];
+  // What the source's own API calls the model: an ADE catalog id
+  // (`openai/gpt-5.6-luna`) loses the vendor namespace the vendor never sees.
+  const sourceModel = sourceModelIdFor(preset.source, preset.model);
 
   if (!isSafeIdentifier(preset.id)) {
     return {
@@ -465,6 +469,7 @@ export function resolveHarnessPresetPlan(
     }
     return {
       ...(codexAccountSubagents ? withoutSubagentSettings(base) : base),
+      model: sourceModel,
       instanceId: accountInstance.id,
       env: {
         // The base identity inherits the environment (`isBaseProviderInstance`);
@@ -535,7 +540,7 @@ export function resolveHarnessPresetPlan(
       const built = runRouteBuild(writeConfig, () => buildSubscriptionRouteLaunch({
         harness,
         provider: subscriptionProvider,
-        model: preset.model,
+        model: sourceModel,
         configHome: configHomeFor(adeHome, preset),
         prefix: connection.prefix,
         ...(subagentLaunch ? { subagent: subagentLaunch } : {}),
@@ -567,7 +572,7 @@ export function resolveHarnessPresetPlan(
       proxy = proxyEnvForSubscription(
         subscriptionProvider,
         harness,
-        { ...connection, model: preset.model },
+        { ...connection, model: sourceModel },
       );
     } catch (error) {
       return {
@@ -669,7 +674,7 @@ export function resolveHarnessPresetPlan(
     }
     return {
       ...withoutSubagentSettings(base),
-      model: launchModelIdFor(harness, preset.source, preset.model),
+      model: launchModelIdFor(harness, preset.source, sourceModel),
       env: {},
       route: { kind: "native" },
       ...(notes.length ? { notes } : {}),
@@ -686,6 +691,7 @@ export function resolveHarnessPresetPlan(
     const routed = runRouteBuild(writeConfig, () => buildRouteLaunch({
       harness,
       source: routeSource,
+      // Spelled for the source inside, where a key's own endpoint is known.
       model: preset.model,
       configHome: configHomeFor(adeHome, preset),
       ...(subagentModel ? { subagentModel } : {}),

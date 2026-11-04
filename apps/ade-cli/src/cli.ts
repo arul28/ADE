@@ -15014,11 +15014,16 @@ function buildIosSimulatorPlan(
     const title =
       readValue(args, ["--title", "--name"]) ?? caption ?? "ADE iOS simulator proof";
     const ownerBase = readProofOwnerBase(args);
-    const screenshotArgs = collectGenericObjectArgs(args, {
-      deviceUdid: readIosSimulatorDevice(args),
-      ...rootArgs(),
-      ...readIosSimulatorOutPath(args),
-    });
+    const screenshotArgs = {
+      ...collectGenericObjectArgs(args, {
+        deviceUdid: readIosSimulatorDevice(args),
+        ...rootArgs(),
+        ...readIosSimulatorOutPath(args),
+      }),
+      // The ingest below files this shot; filing it in the capture too would
+      // make two rows (and, through --machine, one on the device's machine).
+      proof: false,
+    };
     return {
       kind: "execute",
       label: "iOS simulator proof",
@@ -25677,11 +25682,19 @@ async function spawnMachineRuntimeDaemon(
   if (isEphemeralRuntimeSocketPath(socketPath) && !args.includes("--no-sync")) {
     args.push("--no-sync");
   }
+  // The machine socket's brain serves the desktop, phone and web (all `cto`),
+  // so it starts at `cto` like the service would, whatever role this command
+  // runs at. It used to take the caller's role, and a plain `ade lanes list`
+  // (role `agent`) left an `agent` brain on the machine socket that refused
+  // every other device. A command run from an agent's shell still gets an
+  // `agent` brain: `serve` lowers the role itself when it sees that shell's
+  // caller identity (#1832), and that stays as it is.
+  const spawnRole: GlobalOptions["role"] = isMachineDefaultRuntimeSocket(socketPath) ? "cto" : options.role;
 
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     ...(serviceCommand.env ?? {}),
-    ADE_DEFAULT_ROLE: options.role,
+    ADE_DEFAULT_ROLE: spawnRole,
     ADE_RPC_SOCKET_PATH: socketPath,
     ADE_RUNTIME_SOCKET_PATH: socketPath,
   };
@@ -32828,15 +32841,29 @@ function formatChatRead(value: unknown): string {
   const entries = Array.isArray(value)
     ? value.filter(isRecord)
     : firstArray(value, ["entries", "messages", "items"]);
+  // A failed turn often wrote no assistant text, so its error is listed in
+  // time order among the messages; without it the read shows a bare prompt.
+  const failures = firstArray(record, ["turnFailures"]).map((failure) => ({
+    role: "turn failed",
+    timestamp: asString(failure.timestamp),
+    text: [asString(failure.message), asString(failure.detail)].filter(Boolean).join("\n"),
+  }));
+  const rows = [
+    ...entries.map((entry) => ({
+      role: asString(entry.role) ?? "message",
+      timestamp: asString(entry.timestamp),
+      text: asString(entry.displayText) ?? asString(entry.text) ?? "",
+    })),
+    ...failures,
+  ];
+  // Stable: a failure sorts after a message with the same timestamp.
+  if (failures.length) rows.sort((a, b) => (a.timestamp ?? "").localeCompare(b.timestamp ?? ""));
   const lines = ["ADE chat transcript"];
   if (!entries.length) lines.push("(no messages in this physical page)");
-  for (const entry of entries) {
-    const role = asString(entry.role) ?? "message";
-    const timestamp = asString(entry.timestamp);
-    const text = asString(entry.displayText) ?? asString(entry.text) ?? "";
+  for (const row of rows) {
     lines.push("");
-    lines.push(timestamp ? `${role} ${timestamp}` : role);
-    lines.push(text.length ? text : "(empty)");
+    lines.push(row.timestamp ? `${row.role} ${row.timestamp}` : row.role);
+    lines.push(row.text.length ? row.text : "(empty)");
   }
   if (record.truncated === true) lines.push("", "(bounded transcript window; more content exists)");
   if (typeof record.nextCursor === "number") {

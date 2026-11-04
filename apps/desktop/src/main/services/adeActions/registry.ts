@@ -971,14 +971,22 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
         if (!since) return transcript;
         const sinceMs = Date.parse(since);
         if (!Number.isFinite(sinceMs)) return transcript;
-        const filteredEntries = entries.filter((entry) => {
+        const atOrAfterSince = (entry: unknown): boolean => {
           if (!isRecord(entry) || typeof entry.timestamp !== "string") return true;
           const timestampMs = Date.parse(entry.timestamp);
           return !Number.isFinite(timestampMs) || timestampMs >= sinceMs;
-        });
-        return isRecord(transcript)
-          ? { ...transcript, entries: filteredEntries }
-          : filteredEntries;
+        };
+        const filteredEntries = entries.filter(atOrAfterSince);
+        if (!isRecord(transcript)) return filteredEntries;
+        const turnFailures = Array.isArray(transcript.turnFailures)
+          ? transcript.turnFailures.filter(atOrAfterSince)
+          : [];
+        const { turnFailures: _allTurnFailures, ...rest } = transcript;
+        return {
+          ...rest,
+          entries: filteredEntries,
+          ...(turnFailures.length ? { turnFailures } : {}),
+        };
       }
       if (typeof chatService.readTranscript === "function") {
         const entries = await chatService.readTranscript(sessionId, limit, since);

@@ -3,6 +3,7 @@ import type { ServiceManagerResult, ServiceManagerStatusResult } from "./common"
 import { ADE_RUNTIME_SERVICE_NAME } from "./common";
 import { getLaunchdServiceMainPid, getLaunchdServiceStatus, installLaunchdService, uninstallLaunchdService } from "./installLaunchd";
 import { getSystemdServiceStatus, installSystemdService, uninstallSystemdService } from "./installSystemd";
+import { readDetachedSupervisedBrainPid } from "./detachedSupervisor";
 import {
   getWindowsServiceStatus,
   installWindowsService,
@@ -27,9 +28,11 @@ export function getRuntimeServiceMainPid(): number | null {
         ["--user", "show", ADE_RUNTIME_SERVICE_NAME, "-p", "MainPID", "--value"],
         { encoding: "utf8" },
       );
-      if (result.status !== 0) return null;
-      const pid = Number(String(result.stdout ?? "").trim());
-      return Number.isFinite(pid) && pid > 0 ? Math.floor(pid) : null;
+      const pid = result.status === 0 ? Number(String(result.stdout ?? "").trim()) : 0;
+      if (Number.isFinite(pid) && pid > 0) return Math.floor(pid);
+      // No systemd unit running: the brain ADE supervises itself on a machine
+      // without a usable systemd, if there is one.
+      return readDetachedSupervisedBrainPid();
     }
     case "win32":
       return readWindowsServicePidRecord()?.runtimePid ?? null;

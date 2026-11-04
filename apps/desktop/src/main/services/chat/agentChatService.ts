@@ -286,7 +286,7 @@ import {
   recordChatTextFlush,
   type ChatTextFlushReason,
 } from "../perf/chatTextProbe";
-import { transcriptEntriesFromEnvelopes } from "./chatTranscriptEntries";
+import { transcriptEntriesFromEnvelopes, transcriptTurnFailuresFromEnvelopes } from "./chatTranscriptEntries";
 import {
   buildFittedTranscriptReplay,
   buildTranscriptReplayDocument,
@@ -711,6 +711,7 @@ import type {
   AgentChatSubagentSnapshot,
   AgentChatUsageAccount,
   AgentChatTranscriptEntry,
+  AgentChatTranscriptTurnFailure,
   AgentChatSurface,
   AgentChatPersonalProfile,
   AgentChatSteerArgs,
@@ -15163,11 +15164,33 @@ export function createAgentChatService(args: {
   const readTranscriptEntries = async (
     managed: ManagedChatSession,
     signal?: AbortSignal,
-  ): Promise<AgentChatTranscriptEntry[]> => {
-    return transcriptEntriesFromEnvelopes(
-      managed.session.id,
-      await readRecentTranscriptEnvelopesForSessionIdAsync(managed.session.id, signal),
-    );
+  ): Promise<{ entries: AgentChatTranscriptEntry[]; turnFailures: AgentChatTranscriptTurnFailure[] }> => {
+    const envelopes = await readRecentTranscriptEnvelopesForSessionIdAsync(managed.session.id, signal);
+    return {
+      entries: transcriptEntriesFromEnvelopes(managed.session.id, envelopes),
+      turnFailures: transcriptTurnFailuresFromEnvelopes(managed.session.id, envelopes),
+    };
+  };
+
+  /**
+   * The failed turns a read window covers: those at or after its oldest entry
+   * (every one when the window holds no entry), newest kept within the limit.
+   */
+  const turnFailuresForWindow = (
+    failures: readonly AgentChatTranscriptTurnFailure[],
+    entries: readonly AgentChatTranscriptEntry[],
+    limit: number,
+    maxChars: number,
+  ): AgentChatTranscriptTurnFailure[] => {
+    const oldest = entries[0]?.timestamp;
+    return failures
+      .filter((failure) => !oldest || failure.timestamp >= oldest)
+      .slice(-limit)
+      .map((failure) => ({
+        ...failure,
+        message: clipTranscriptField(failure.message, maxChars),
+        ...(failure.detail ? { detail: clipTranscriptField(failure.detail, maxChars) } : {}),
+      }));
   };
 
   const readLatestTranscriptTodoItems = (
@@ -15277,6 +15300,8 @@ export function createAgentChatService(args: {
     entries: AgentChatTranscriptEntry[];
     truncated: boolean;
     totalEntries: number;
+    /** Failed turns in this window, with the error that ended each. Absent when none failed. */
+    turnFailures?: AgentChatTranscriptTurnFailure[];
     /** Set when the id names a tracked CLI terminal: the entry is its report, not a chat transcript. */
     cliSession?: CliSessionFacts;
   }> => {
@@ -15294,7 +15319,7 @@ export function createAgentChatService(args: {
     const managed = ensureManagedSession(sessionId);
     // Flush any pending buffered text so the transcript includes all content
     flushBufferedText(managed);
-    const transcriptEntries = await readTranscriptEntries(managed, signal);
+    const { entries: transcriptEntries, turnFailures: allTurnFailures } = await readTranscriptEntries(managed, signal);
     const fallbackEntries = transcriptEntries.length
       ? transcriptEntries
       : managed.recentConversationEntries.map((entry) => ({
@@ -15329,11 +15354,13 @@ export function createAgentChatService(args: {
     }
 
     bounded.reverse();
+    const turnFailures = turnFailuresForWindow(allTurnFailures, bounded, normalizedLimit, normalizedMaxChars);
     return {
       sessionId: managed.session.id,
       entries: bounded,
       truncated,
       totalEntries: fallbackEntries.length,
+      ...(turnFailures.length ? { turnFailures } : {}),
     };
   };
 
@@ -15356,6 +15383,8 @@ export function createAgentChatService(args: {
     totalEntries: number;
     nextCursor: number | null;
     cursorKind: "byte";
+    /** Failed turns in this page, with the error that ended each. Absent when none failed. */
+    turnFailures?: AgentChatTranscriptTurnFailure[];
   }> => {
     if (!managedSessions.has(sessionId.trim()) && readTrackedCliRow(sessionId)) {
       throw new Error(
@@ -15460,9 +15489,16 @@ export function createAgentChatService(args: {
         nextCursor = oldestSourceOffset > 0 ? oldestSourceOffset : null;
       }
     }
+    const turnFailures = turnFailuresForWindow(
+      transcriptTurnFailuresFromEnvelopes(sessionId, collected.map((row) => row.envelope)),
+      entries,
+      normalizedLimit,
+      normalizedMaxChars,
+    );
     return {
       sessionId,
       entries,
+      ...(turnFailures.length ? { turnFailures } : {}),
       truncated: charTruncated || nextCursor != null,
       // Byte-cursor consumers must treat this as the count resident in this
       // bounded page, not as a global transcript index.

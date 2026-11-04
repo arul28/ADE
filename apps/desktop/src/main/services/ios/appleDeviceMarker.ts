@@ -4,6 +4,7 @@ import { resolveMachineAdeDir } from "../../../../../ade-cli/src/services/projec
 import type { AppleInstalledSimulator, AppleSimulatorOwnershipInfo } from "../../../shared/types/iosSimulator";
 import { APPLE_RELEASED_DEVICE_GRACE_MS } from "../../../shared/types/iosSimulator";
 import { pathsEqual } from "../shared/pathCompare";
+import { isRemoteWorkLaneId, remoteWorkLaneState } from "../remoteWork/remoteWorkCopyService";
 
 /**
  * The file that proves a simulator is ADE's.
@@ -259,7 +260,23 @@ function projectHoldsAt(
         where d.udid = ? and coalesce(l.status, '') != 'archived'
         limit 1`,
     ).get(udid);
-    return row ? "held" : "free";
+    if (row) return "held";
+    // A chat on another machine holds it through a work copy, which has no
+    // lanes row: held while that project still has the copy. Its own row may
+    // be lost (its own pass re-adopts it), so the marker's lane counts too.
+    const remoteLaneIds = new Set<string>();
+    if (isRemoteWorkLaneId(marker.laneId)) remoteLaneIds.add(marker.laneId);
+    const remoteRow = db.prepare(
+      `select lane_id as laneId from ${table} where udid = ? and lane_id like 'remote-work-%' limit 1`,
+    ).get(udid) as { laneId?: unknown } | undefined;
+    if (typeof remoteRow?.laneId === "string") remoteLaneIds.add(remoteRow.laneId);
+    let answer: "held" | "free" | "unknown" = "free";
+    for (const laneId of remoteLaneIds) {
+      const state = remoteWorkLaneState(projectRoot, laneId);
+      if (state === "live") return "held";
+      if (state === "unknown") answer = "unknown";
+    }
+    return answer;
   } catch {
     return "unknown";
   } finally {

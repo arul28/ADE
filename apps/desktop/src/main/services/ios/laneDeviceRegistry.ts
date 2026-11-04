@@ -1,4 +1,4 @@
-import { findRemoteWorkCopyForLane, isRemoteWorkLaneId } from "../remoteWork/remoteWorkCopyService";
+import { findRemoteWorkCopyForLane, isRemoteWorkLaneId, remoteWorkLaneState } from "../remoteWork/remoteWorkCopyService";
 import type {
   AppleDeviceCleanupResult,
   AppleDeviceDiskUsage,
@@ -469,9 +469,10 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
 
   const isLaneLive = (laneId: string): boolean => {
     // A chat on another machine's work copy: live while the copy exists.
+    // A list that cannot be read is live, like a failed lane read below.
     if (isRemoteWorkLaneId(laneId)) {
       const projectRoot = deps.projectRoot?.trim();
-      return projectRoot ? findRemoteWorkCopyForLane(projectRoot, laneId) !== null : true;
+      return projectRoot ? remoteWorkLaneState(projectRoot, laneId) !== "gone" : true;
     }
     if (!deps.store) return true;
     try {

@@ -25,6 +25,12 @@ import {
   type ResponsivenessProbe,
   serviceHandoverSleep,
 } from "./serviceHandover";
+import {
+  getDetachedRuntimeServiceStatus,
+  hasLiveDetachedSupervisor,
+  installDetachedRuntimeService,
+  uninstallDetachedRuntimeService,
+} from "./detachedSupervisor";
 
 type SystemdServiceManagerDeps = {
   command?: AdeServiceCommand;
@@ -148,6 +154,18 @@ export function getSystemdUnitState(
   return { active: activeState === "active" || activeState === "activating", mainPid };
 }
 
+/**
+ * Whether `systemctl --user` has a manager to talk to. Containers and cloud
+ * boxes (tini or a vendor init as PID 1, gVisor) have no systemd at all, and
+ * a root shell there has no user bus: every `systemctl --user` call fails, so
+ * the unit could be written but never started. Asked only after a
+ * `systemctl --user show` already failed, so a working systemd pays nothing.
+ */
+export function isSystemdUserManagerUsable(run: ServiceManagerSpawnSync = spawnSync): boolean {
+  const probe = run("systemctl", ["--user", "show-environment"], { encoding: "utf8" });
+  return probe.status === 0 && !probe.error;
+}
+
 function handoverFailure(
   targetPath: string,
   failureStep: NonNullable<ServiceManagerResult["failureStep"]>,
@@ -197,6 +215,20 @@ export async function installSystemdService(
   const forceRestart = env.ADE_FORCE_RUNTIME_SERVICE_RESTART === "1";
 
   let state = getSystemdUnitState(run, unitName);
+  if (state === null && !isSystemdUserManagerUsable(run)) {
+    // No systemd to own the brain: ADE supervises it itself, with the same
+    // command and environment (role included) the unit would carry.
+    return installDetachedRuntimeService({
+      command,
+      homeDir,
+      env,
+      spawnSync: run,
+      responsivenessProbe: deps.responsivenessProbe,
+      handoverTimeoutMs: deps.handoverTimeoutMs,
+      handoverPollMs: deps.handoverPollMs,
+      sleep: deps.sleep,
+    });
+  }
 
   // The unit is current and systemd already has a live, answering child.
   // Restarting it would only interrupt a working brain.
@@ -261,6 +293,12 @@ export async function installSystemdService(
   if (young.kind === "died") {
     // The young child died while we waited: fall through and (re)start it.
     state = getSystemdUnitState(run, unitName);
+  }
+
+  // A supervisor an earlier start ran while systemd was unavailable would
+  // keep its own brain on the socket next to the unit's.
+  if (hasLiveDetachedSupervisor({ env, homeDir })) {
+    await uninstallDetachedRuntimeService({ env, homeDir, spawnSync: run });
   }
 
   fs.mkdirSync(path.dirname(targetPath), { recursive: true });
@@ -369,7 +407,14 @@ function ensureLinger(run: ServiceManagerSpawnSync): string {
   return ` To keep ADE running after logout and reboot, run once: sudo loginctl enable-linger ${user || "$USER"}`;
 }
 
-export function uninstallSystemdService(): ServiceManagerResult {
+export async function uninstallSystemdService(): Promise<ServiceManagerResult> {
+  if (!isSystemdUserManagerUsable()) {
+    // `stopUnsupervised` always yields a result.
+    return (await uninstallDetachedRuntimeService({ stopUnsupervised: true }))!;
+  }
+  // A supervisor left from a time systemd was unavailable.
+  const detached = await uninstallDetachedRuntimeService();
+  if (detached?.selfMutationBlocked) return detached;
   const targetPath = servicePath();
   spawnSync("systemctl", ["--user", "disable", "--now", serviceUnitName()], { stdio: "ignore" });
   try { fs.unlinkSync(targetPath); } catch {}
@@ -388,6 +433,11 @@ export function getSystemdServiceStatus(): ServiceManagerStatusResult {
   const unitName = serviceUnitName();
   const enabled = spawnSync("systemctl", ["--user", "is-enabled", unitName], { encoding: "utf8" });
   const active = spawnSync("systemctl", ["--user", "is-active", unitName], { encoding: "utf8" });
+  // Without a usable systemd the unit file (if an older start wrote one) says
+  // nothing about the brain; the supervisor ADE runs instead does.
+  if (active.status !== 0 && !isSystemdUserManagerUsable()) {
+    return getDetachedRuntimeServiceStatus();
+  }
   const installed = fs.existsSync(targetPath) || enabled.status === 0;
   if (!installed) {
     return {

@@ -151,6 +151,21 @@ function readRegistryAt(projectRoot: string): Registry {
   }
 }
 
+/**
+ * Does a `remote-work-…` lane still have its work copy in the project at
+ * `projectRoot`? For deciding whether to delete what the lane holds, so a
+ * list that cannot be read is "unknown", never "gone".
+ */
+export function remoteWorkLaneState(projectRoot: string, laneId: string): "live" | "gone" | "unknown" {
+  if (!isRemoteWorkLaneId(laneId)) return "gone";
+  try {
+    const copy = readRegistryAt(projectRoot).copies.find((entry) => remoteWorkLaneIdFor(entry.owner) === laneId);
+    return copy && fs.existsSync(copy.path) ? "live" : "gone";
+  } catch {
+    return "unknown";
+  }
+}
+
 /** The work copy a `remote-work-…` lane id names in this project, or null when it is gone or unreadable. */
 export function findRemoteWorkCopyForLane(projectRoot: string, laneId: string): RemoteWorkCopy | null {
   if (!isRemoteWorkLaneId(laneId)) return null;

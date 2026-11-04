@@ -85,6 +85,7 @@ import { useTurnStallClock } from "../../lib/useTurnStallClock";
 import { HarnessLogo } from "../shared/HarnessLogo";
 import { harnessBodyLabel } from "../../../shared/harnessPresets";
 import {
+  isHomeVendorRoute,
   resolveHarnessLaunchTarget,
   type HarnessLaunchTarget,
 } from "../settings/harnesses/harnessLaunchTarget";
@@ -418,10 +419,12 @@ function SessionProviderLogoStack({
   // the row being relisted. The ROOT store, because a project store only ever
   // holds the seed copy it was created with (see `useHarnessPresets`).
   const harnessPresets = useRootAppStore((state) => state.harnessPresets);
-  const customTarget = React.useMemo(
-    () => resolveHarnessLaunchTarget(session.presetId, harnessPresets),
-    [harnessPresets, session.presetId],
-  );
+  const customTarget = React.useMemo(() => {
+    const target = resolveHarnessLaunchTarget(session.presetId, harnessPresets);
+    // A key or account of the harness's own vendor is billing, not another
+    // model: the row looks like any other chat of that harness.
+    return target && !isHomeVendorRoute(target) ? target : null;
+  }, [harnessPresets, session.presetId]);
   const providers = modelHandoffProviderSequence(session);
   if (providers.length < 2) {
     return customTarget

@@ -57,6 +57,17 @@ import { MAX_ROUTE_ATTEMPTS } from "./pairedRuntimeRoutes";
 
 const STORE_FILE_NAME = "desktop-paired-machines.json";
 const DEFAULT_PAIRING_TIMEOUT_MS = 15_000;
+/**
+ * How long account adoption waits for a LAN or Tailscale address to accept
+ * the connection when the machine also has a relay route. A computer on the
+ * same network answers in well under a second; a cloud box publishes its
+ * private addresses too (10.x, 172.17.x), which nothing outside its own
+ * network can reach. At the full connect timeout each of those cost 10 s
+ * ahead of the relay, so the desktop sat on "Trying local network…" until its
+ * 25 s deadline and never reached the route that works. Same budget as the
+ * saved-pairing dial's `LAN_CONNECT_TIMEOUT_WITH_FALLBACK_MS`.
+ */
+const DIRECT_ADOPTION_ROUTE_CONNECT_TIMEOUT_MS = 3_000;
 
 export type PairWithMachineOptions = Omit<
   OpenSyncEnvelopeConnectionOptions,
@@ -1051,6 +1062,7 @@ export class DesktopPairedMachineStore {
     };
     const correlationId = randomUUID();
     const failures: AccountMachineAdoptionFailure[] = [];
+    const hasRelayRoute = accountAuthenticationRoutes.some((route) => route.kind === "relay");
     for (const route of accountAuthenticationRoutes) {
       throwIfAborted(options.signal);
       const routeStartedAt = Date.now();
@@ -1067,7 +1079,9 @@ export class DesktopPairedMachineStore {
       try {
         connection = await openSyncEnvelopeConnection({
           endpoint: route.endpoint,
-          connectTimeoutMs: options.connectTimeoutMs,
+          connectTimeoutMs: route.kind !== "relay" && hasRelayRoute
+            ? Math.min(options.connectTimeoutMs ?? DIRECT_ADOPTION_ROUTE_CONNECT_TIMEOUT_MS, DIRECT_ADOPTION_ROUTE_CONNECT_TIMEOUT_MS)
+            : options.connectTimeoutMs,
           signal: options.signal,
           createWebSocket: options.createWebSocket,
           ...(route.kind === "relay" ? { correlationId } : {}),

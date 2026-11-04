@@ -2606,6 +2606,34 @@ export function createMultiProjectRpcRequestHandler(
         return { domain: "account", action, result, statusHints: {} };
       }
       const accountActionArgs = isRecord(params.args) ? params.args : {};
+      if (action === "signOut" && accountAuthService.getStatus().signedIn) {
+        // Signing this computer out unlinks it from the account, so it leaves
+        // the account's machine list too. Clearing the session alone left the
+        // row in the directory, listed on every other device as an offline
+        // machine with Connect and "Why offline?" for good, because nothing
+        // signed out can ever publish again to update or remove it. It has to
+        // happen first: after the sign-out there is no token to remove it with.
+        // The same removal `ade machines remove` does; signing in again here
+        // re-pairs it (`repairMachinePairing` below). Best effort: an
+        // unreachable directory must not keep a person from signing out.
+        try {
+          const ownMachineKey = createSyncCloudRelayStore({
+            filePath: path.join(resolveMachineAdeLayout().secretsDir, "sync-cloud-relay.json"),
+          }).getMachineIdentity().machineKey.trim();
+          if (ownMachineKey) {
+            await new AccountMachineDirectoryService(accountAuthService, {
+              appVersion: options.serverVersion,
+              directoryBaseUrl: () => getSharedAccountDirectoryBaseUrl({
+                projectRoots: () => projectRegistry.list().map((record) => record.rootPath),
+              }),
+            }).deleteMachine(ownMachineKey, { timeoutMs: 5_000 });
+          }
+        } catch (error) {
+          machineProjectLogger.warn("account.sign_out_unlist_failed", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
       const signIn = accountSignInAnalyticsForCaller();
       const signInSource = SIGN_IN_SOURCE_BY_ACTION[action] ?? null;
       let response: Awaited<ReturnType<typeof callAccountAction>>;

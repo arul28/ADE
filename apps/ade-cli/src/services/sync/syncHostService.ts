@@ -2023,7 +2023,8 @@ type ParsedAccountChallenge = {
   supportedAeads: string[] | null;
 };
 
-function parseAccountChallengePayload(payload: unknown): ParsedAccountChallenge | null {
+/** Shared with the projectless brain, which serves the same sealed adoption. */
+export function parseAccountChallengePayload(payload: unknown): ParsedAccountChallenge | null {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
   const value = payload as Record<string, unknown>;
   if (value.v !== 1) return null;
@@ -2059,7 +2060,7 @@ function parseAccountChallengePayload(payload: unknown): ParsedAccountChallenge 
   };
 }
 
-function parseUnsealedAccountAuth(value: unknown): Extract<
+export function parseUnsealedAccountAuth(value: unknown): Extract<
   SyncHelloPayload["auth"],
   { kind: "account" }
 > | null {
