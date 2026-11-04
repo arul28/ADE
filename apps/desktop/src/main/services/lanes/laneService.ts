@@ -145,8 +145,7 @@ import {
 import { appleLaneDerivedDataPath, endLaneDeviceOnDisk, releaseLaneAppleDevice } from "../ios/laneDeviceRelease";
 import { anotherLaneHoldsUdid, readLaneAppleDeviceRecord } from "../ios/laneDeviceRows";
 import { bareSimulatorPowerOff } from "../ios/simulatorPower";
-import { endAndroidLaneDeviceOnDisk, releaseAndroidLaneDevice, sqlAndroidLaneDeviceRepo } from "../android/androidLaneRelease";
-import { readLaneAndroidDevice } from "../android/androidLaneDeviceStore";
+import { releaseAndroidLaneDevice, settleMergedAndroidDevice, sqlAndroidLaneDeviceRepo } from "../android/androidLaneRelease";
 
 /** `simctl` for the Apple-device half of a lane delete. Nothing else shells out here. */
 const execFileAsync = promisify(execFileCallback);
@@ -3589,42 +3588,12 @@ export function createLaneService({
     // or adopts the duplicate's. A duplicate AVD that loses is deleted on disk
     // once the transaction has settled, and only while no lane holds it.
     const androidRepo = sqlAndroidLaneDeviceRepo(db);
-    const duplicateAndroid = readLaneAndroidDevice(db, duplicateId);
-    if (duplicateAndroid && readLaneAndroidDevice(db, keeperId)) {
-      db.run("delete from lane_android_devices where lane_id = ?", [duplicateId]);
-      setTimeout(() => {
-        const stillFree = (): boolean => {
-          try {
-            return !readLaneAndroidDevice(db, duplicateId) && androidRepo.holder(duplicateAndroid.avdName) === null;
-          } catch (error) {
-            logger.warn("lane.merge.android_holder_unreadable", {
-              laneId: duplicateId,
-              avdName: duplicateAndroid.avdName,
-              error: error instanceof Error ? error.message : String(error),
-            });
-            return false;
-          }
-        };
-        if (!stillFree()) return;
-        void endAndroidLaneDeviceOnDisk(duplicateAndroid, { anotherLaneHolds: () => !stillFree(), logger })
-          .then((ended) => {
-            if (!ended.ended || ended.reason) {
-              logger.warn("lane.merge.android_device_left", {
-                laneId: duplicateId,
-                avdName: duplicateAndroid.avdName,
-                reason: ended.reason,
-              });
-            }
-          }, (error: unknown) => {
-            logger.warn("lane.merge.android_device_left", {
-              laneId: duplicateId,
-              avdName: duplicateAndroid.avdName,
-              error: error instanceof Error ? error.message : String(error),
-            });
-          });
-      }, 0);
+    const duplicateAndroid = androidRepo.get(duplicateId);
+    if (duplicateAndroid && androidRepo.get(keeperId)) {
+      androidRepo.forgetLane(duplicateId);
+      setTimeout(() => settleMergedAndroidDevice(androidRepo, duplicateAndroid, logger), 0);
     } else if (duplicateAndroid) {
-      db.run("update lane_android_devices set lane_id = ? where lane_id = ?", [keeperId, duplicateId]);
+      androidRepo.moveLane(duplicateId, keeperId);
     }
     // Extra devices (`device-create --extra`) are keyed by udid, so the
     // keeper takes all of them; left behind, the cleanup pass would delete
@@ -5435,8 +5404,7 @@ export function createLaneService({
 
   /**
    * The lane's Android AVD, on archive and on delete: an AVD ADE made is
-   * deleted, the user's own AVD only loses the packages ADE installed. Not
-   * awaited, like the Apple side. Works with no emulator service: it never
+   * deleted, the user's own AVD stays as it is. Not awaited, like the Apple side. Works with no emulator service: it never
    * stops an emulator, and a running AVD is kept with its row.
    */
   const releaseAndroidSideOfLane = (laneId: string): void => {

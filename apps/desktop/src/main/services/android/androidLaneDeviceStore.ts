@@ -10,7 +10,7 @@ import type { AndroidLaneDevice } from "../../../shared/types/androidEmulator";
  * for an AVD.
  */
 
-export const LANE_ANDROID_DEVICES_TABLE = "lane_android_devices" as const;
+const LANE_ANDROID_DEVICES_TABLE = "lane_android_devices" as const;
 
 /** The slice of `AdeDb` the store needs. Narrow so tests need no database. */
 export type AndroidLaneDeviceStore = {
@@ -113,15 +113,12 @@ export function laneHoldingAndroidAvd(
   return row?.lane_id ?? null;
 }
 
-/** Saves the packages ADE installed on the lane's AVD, so release uninstalls only those. */
-export function writeAdeInstalledPackages(
-  store: Pick<AndroidLaneDeviceStore, "run">,
-  laneId: string,
-  avdName: string,
-  packages: readonly string[],
-): void {
-  store.run(
-    `update ${LANE_ANDROID_DEVICES_TABLE} set ade_installed_packages = ? where lane_id = ? and avd_name = ?`,
-    [JSON.stringify([...packages]), laneId, avdName],
-  );
+/** Drops every row of one lane, whatever AVD it names. */
+export function forgetLaneAndroidDevices(store: Pick<AndroidLaneDeviceStore, "run">, laneId: string): void {
+  store.run(`delete from ${LANE_ANDROID_DEVICES_TABLE} where lane_id = ?`, [laneId]);
+}
+
+/** Hands one lane's row to another lane (a lane merge). */
+export function moveLaneAndroidDevice(store: Pick<AndroidLaneDeviceStore, "run">, fromLaneId: string, toLaneId: string): void {
+  store.run(`update ${LANE_ANDROID_DEVICES_TABLE} set lane_id = ? where lane_id = ?`, [toLaneId, fromLaneId]);
 }

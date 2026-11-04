@@ -1,22 +1,23 @@
 import os from "node:os";
 import type { AndroidLaneDevice } from "../../../shared/types/androidEmulator";
 import type { Logger } from "../logging/logger";
-import { runAdb } from "./adb";
+import { getErrorMessage, sleep } from "../shared/utils";
 import { deleteAdeAndroidAvd, readAndroidAvd, sameAvdName } from "./androidAvds";
 import {
   forgetLaneAndroidDevice,
+  forgetLaneAndroidDevices,
   laneHoldingAndroidAvd,
+  moveLaneAndroidDevice,
   readLaneAndroidDevice,
   writeLaneAndroidDevice,
   type AndroidLaneDeviceStore,
 } from "./androidLaneDeviceStore";
-import { androidDiscoveryDirs, readAndroidBootCompleted, readAndroidDiscoveryFiles } from "./androidEmulatorProcess";
-import { androidAvdHome, androidSdkPaths, locateAndroidSdk, type AndroidEnv } from "./androidSdk";
+import { androidDiscoveryDirs, readAndroidDiscoveryFiles } from "./androidEmulatorProcess";
+import { androidAvdHome, type AndroidEnv } from "./androidSdk";
 
 /*
- * A lane giving up its AVD on disk: delete the AVD ADE made for it, or, for
- * the user's own AVD, uninstall only the packages ADE installed. Then the
- * lane's row goes.
+ * A lane giving up its AVD on disk: delete the AVD ADE made for it; the
+ * user's own AVD stays as it is. Then the lane's row goes.
  *
  * Needs no emulator service: lane archive and delete call it from
  * `laneService` on a host that never built one (a CLI brain with no project
@@ -32,6 +33,10 @@ export type AndroidLaneDeviceRepo = {
   set: (device: AndroidLaneDevice) => void;
   /** Drops the row only while it still names this AVD. */
   forget: (laneId: string, avdName: string) => void;
+  /** Drops the lane's row, whatever AVD it names. */
+  forgetLane: (laneId: string) => void;
+  /** Hands one lane's row to another lane (a lane merge). */
+  moveLane: (fromLaneId: string, toLaneId: string) => void;
   /** The lane holding this AVD, other than `exceptLaneId`. */
   holder: (avdName: string, exceptLaneId?: string | null) => string | null;
   /** Every row, for the start-up reconcile. Absent = no reconcile of rows. */
@@ -53,6 +58,8 @@ export function sqlAndroidLaneDeviceRepo(store: AndroidLaneDeviceSqlStore): Andr
     get: (laneId) => readLaneAndroidDevice(store, laneId),
     set: (device) => writeLaneAndroidDevice(store, device),
     forget: (laneId, avdName) => forgetLaneAndroidDevice(store, laneId, avdName),
+    forgetLane: (laneId) => forgetLaneAndroidDevices(store, laneId),
+    moveLane: (fromLaneId, toLaneId) => moveLaneAndroidDevice(store, fromLaneId, toLaneId),
     holder: (avdName, exceptLaneId = null) => laneHoldingAndroidAvd(store, avdName, exceptLaneId),
     list: () => store
       .all<{ lane_id: string }>("select lane_id from lane_android_devices")
@@ -67,13 +74,10 @@ export function sqlAndroidLaneDeviceRepo(store: AndroidLaneDeviceSqlStore): Andr
 }
 
 export type AndroidDiskEnv = {
-  /** The SDK the user picked in Settings, when any. */
-  sdkSettingPath?: string | null;
   env?: AndroidEnv;
   platform?: NodeJS.Platform;
   home?: string;
   discoveryDirs?: readonly string[];
-  signal?: AbortSignal;
   logger?: Pick<Logger, "info" | "warn"> | null;
 };
 
@@ -92,7 +96,7 @@ const DELETE_RETRY_MS = 1_000;
  * Ends one lane device on disk. `anotherLaneHolds` is asked last, right before
  * the delete, so a lane that took the AVD in the meantime keeps it.
  */
-export async function endAndroidLaneDeviceOnDisk(
+async function endAndroidLaneDeviceOnDisk(
   device: AndroidLaneDevice,
   options: AndroidDiskEnv & { deleteCreated?: boolean; anotherLaneHolds: () => boolean },
 ): Promise<AndroidDeviceEndResult> {
@@ -126,40 +130,15 @@ export async function endAndroidLaneDeviceOnDisk(
         break;
       } catch (error) {
         if (attempt >= DELETE_ATTEMPTS || !/in use/u.test(error instanceof Error ? error.message : "")) throw error;
-        await new Promise<void>((resolve) => setTimeout(resolve, DELETE_RETRY_MS));
+        await sleep(DELETE_RETRY_MS);
       }
     }
     options.logger?.info("android.lane_device.deleted", { laneId: device.laneId, avdName: device.avdName });
     return { ended: true, deletedAvd: device.avdName, reason: null };
   }
 
-  // The user's own AVD: never deleted. Only the packages ADE installed go, and
-  // only while it runs (adb needs a booted device).
-  if (device.adeInstalledPackages.length === 0) return { ended: true, deletedAvd: null, reason: null };
-  const located = locateAndroidSdk({ settingPath: options.sdkSettingPath, env, platform, home });
-  const adbPath = located ? androidSdkPaths(located.root, platform).adb : null;
-  if (!running || !adbPath || !(await readAndroidBootCompleted(adbPath, running.serial))) {
-    options.logger?.warn("android.lane_device.packages_left", {
-      laneId: device.laneId,
-      avdName: device.avdName,
-      packages: device.adeInstalledPackages,
-    });
-    return { ended: true, deletedAvd: null, reason: `${device.avdName} is not running, so ADE's packages were left on it.` };
-  }
-  for (const packageName of device.adeInstalledPackages) {
-    await runAdb(adbPath, ["uninstall", packageName], {
-      serial: running.serial,
-      timeoutMs: 60_000,
-      allowFailure: true,
-      signal: options.signal,
-    }).catch((error: unknown) => {
-      options.logger?.warn("android.lane_device.uninstall_failed", {
-        laneId: device.laneId,
-        packageName,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    });
-  }
+  // The user's own AVD: never deleted. (P1 adds back the uninstall of the
+  // packages ADE installed on it, with the install verb.)
   return { ended: true, deletedAvd: null, reason: null };
 }
 
@@ -182,4 +161,46 @@ export async function releaseAndroidLaneDevice(
   if (!result.ended) return { released: false, deletedAvd: null, reason: result.reason };
   repo.forget(laneId, device.avdName);
   return { released: true, deletedAvd: result.deletedAvd, reason: result.reason };
+}
+
+/**
+ * A lane merge where both lanes held an AVD: the keeper keeps its own, the
+ * duplicate's row is already gone, and its AVD is ended on disk here, once
+ * the merge's transaction has settled, and only while no lane holds it. The
+ * duplicate's row is gone, so nothing retries this; what is left is logged.
+ */
+export function settleMergedAndroidDevice(
+  repo: AndroidLaneDeviceRepo,
+  device: AndroidLaneDevice,
+  logger: Pick<Logger, "info" | "warn">,
+): void {
+  const stillFree = (): boolean => {
+    try {
+      return !repo.get(device.laneId) && repo.holder(device.avdName) === null;
+    } catch (error) {
+      logger.warn("lane.merge.android_holder_unreadable", {
+        laneId: device.laneId,
+        avdName: device.avdName,
+        error: getErrorMessage(error),
+      });
+      return false;
+    }
+  };
+  if (!stillFree()) return;
+  void endAndroidLaneDeviceOnDisk(device, { anotherLaneHolds: () => !stillFree(), logger })
+    .then((ended) => {
+      if (!ended.ended || ended.reason) {
+        logger.warn("lane.merge.android_device_left", {
+          laneId: device.laneId,
+          avdName: device.avdName,
+          reason: ended.reason,
+        });
+      }
+    }, (error: unknown) => {
+      logger.warn("lane.merge.android_device_left", {
+        laneId: device.laneId,
+        avdName: device.avdName,
+        error: getErrorMessage(error),
+      });
+    });
 }
