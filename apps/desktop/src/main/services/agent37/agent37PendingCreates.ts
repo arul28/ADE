@@ -27,7 +27,7 @@ export type Agent37PendingCreate = {
 
 export type Agent37PendingCreateStore = {
   list(): Agent37PendingCreate[];
-  /** Before the create request goes out. */
+  /** Before the create request goes out. Throws when it could not be saved: then no box may be made. */
   begin(requestId: string, startedAt: number): void;
   /** The box this request made, once ADE knows its id. */
   attach(requestId: string, instanceId: string): void;
@@ -77,12 +77,14 @@ export function createAgent37PendingCreateStore(
   logger: Logger,
   now: () => number = () => Date.now(),
 ): Agent37PendingCreateStore {
-  const read = (): Agent37PendingCreate[] => {
+  /** `strict`: throw instead of reading an unreadable store as empty, so an update cannot overwrite it. */
+  const read = (strict = false): Agent37PendingCreate[] => {
     let records: Agent37PendingCreate[] = [];
     try {
       records = parseRecords(machineStore().getSync(PENDING_CREATES_KEY));
     } catch (error) {
       logger.warn?.("agent37.pending_creates_read_failed", { error: errorText(error) });
+      if (strict) throw error;
     }
     // Ids an older build recorded: reconciled by id, with no request to list by.
     try {
@@ -100,7 +102,7 @@ export function createAgent37PendingCreateStore(
     }
     return records;
   };
-  const write = (records: Agent37PendingCreate[]): void => {
+  const write = (records: Agent37PendingCreate[], strict = false): void => {
     try {
       if (records.length) machineStore().setSync(PENDING_CREATES_KEY, JSON.stringify(records));
       else machineStore().deleteSync(PENDING_CREATES_KEY);
@@ -109,10 +111,15 @@ export function createAgent37PendingCreateStore(
       // The create still cleans up after itself in this session; only a quit
       // in the middle of it would go unrecovered.
       logger.warn?.("agent37.pending_creates_write_failed", { error: errorText(error), count: records.length });
+      if (strict) throw error;
     }
   };
-  const update = (requestId: string, change: (record: Agent37PendingCreate | null) => Agent37PendingCreate | null) => {
-    const records = read();
+  const update = (
+    requestId: string,
+    change: (record: Agent37PendingCreate | null) => Agent37PendingCreate | null,
+    strict = false,
+  ) => {
+    const records = read(strict);
     const index = records.findIndex((record) => record.requestId === requestId);
     const next = change(index >= 0 ? records[index]! : null);
     if (index >= 0) {
@@ -121,11 +128,11 @@ export function createAgent37PendingCreateStore(
     } else if (next) {
       records.push(next);
     }
-    write(records);
+    write(records, strict);
   };
   return {
     list: read,
-    begin: (requestId, startedAt) => update(requestId, (record) => record ?? { requestId, startedAt, instanceIds: [] }),
+    begin: (requestId, startedAt) => update(requestId, (record) => record ?? { requestId, startedAt, instanceIds: [] }, true),
     attach: (requestId, instanceId) => update(requestId, (record) => {
       const base = record ?? { requestId, startedAt: now(), instanceIds: [] };
       return base.instanceIds.includes(instanceId) ? base : { ...base, instanceIds: [...base.instanceIds, instanceId] };
@@ -199,7 +206,8 @@ export async function reconcileAgent37PendingCreate(
     logger: Logger;
     sleep: (ms: number) => Promise<void>;
     now?: () => number;
-    isSignedIn?: (instanceId: string) => Promise<boolean>;
+    /** "unknown" (asleep, unreachable, unreadable answer) keeps the box and its record. */
+    isSignedIn?: (instanceId: string) => Promise<boolean | "unknown">;
   },
 ): Promise<Agent37ReconcileResult> {
   const now = deps.now ?? (() => Date.now());
@@ -232,8 +240,15 @@ export async function reconcileAgent37PendingCreate(
       result.gone.push(id);
       continue;
     }
-    if (deps.isSignedIn && await deps.isSignedIn(id)) {
+    // Delete only on a clear "signed out". A box that is asleep or cannot be
+    // asked may be a real machine: keep it, and its record, for the next start.
+    const signedIn = deps.isSignedIn ? await deps.isSignedIn(id) : false;
+    if (signedIn === true) {
       result.kept.push(id);
+      continue;
+    }
+    if (signedIn === "unknown") {
+      result.unresolved.push(id);
       continue;
     }
     if (await deleteAgent37InstanceConfirmed(client, id, deps)) {

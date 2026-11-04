@@ -124,7 +124,15 @@ export function Agent37Section() {
     setBusy(true);
     setError(null);
     try {
-      setStatus(await bridge.removeKey());
+      const next = await bridge.removeKey();
+      if (next && !next.connected && next.error) {
+        // This computer's copy is gone but the account's may not be: say so, with a retry.
+        setStatus({ ...next, error: null });
+        setErrorRetry("disconnect");
+        setError(next.error);
+      } else {
+        setStatus(next);
+      }
     } catch (removeError) {
       setErrorRetry("disconnect");
       setError(errorText(removeError, `Couldn't disconnect ${AGENT37_NAME}.`));

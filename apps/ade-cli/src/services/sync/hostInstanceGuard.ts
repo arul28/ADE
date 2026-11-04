@@ -104,6 +104,17 @@ function earlierMove(copiedDir: string, previousInstanceId: string): string | nu
   return match ? path.join(copiedDir, match) : null;
 }
 
+/** True when the path exists, false only when it does not (ENOENT); any other error is thrown. */
+function pathPresent(target: string): boolean {
+  try {
+    fs.lstatSync(target);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+}
+
 /** A filesystem-safe stamp for the folder the old identity moves into. */
 function folderSafe(value: string): string {
   return value.replace(/[^A-Za-z0-9._-]+/g, "_").slice(0, 80) || "unknown";
@@ -168,10 +179,12 @@ export function guardAgainstCopiedAdeHome(args: {
   for (const rootPath of roots) {
     const siteIdPath = path.join(rootPath, ".ade", "secrets", "sync-site-id");
     const retiredPath = `${siteIdPath}.copied-from-${folderSafe(record.instanceId)}`;
-    // Retired by an earlier pass: a site id there now was minted on this box.
-    if (fs.existsSync(retiredPath)) continue;
     try {
-      if (!fs.existsSync(siteIdPath)) continue;
+      // Retired by an earlier pass: a site id there now was minted on this box.
+      if (pathPresent(retiredPath)) continue;
+      // `existsSync` reads "cannot look" as "absent", and an unreadable site id
+      // skipped here would keep writing as the original. Only ENOENT is absent.
+      if (!pathPresent(siteIdPath)) continue;
       fs.renameSync(siteIdPath, retiredPath);
       retiredProjectSiteIds.push(rootPath);
     } catch (error) {

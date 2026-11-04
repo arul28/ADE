@@ -362,8 +362,15 @@ export function createAgent37TemplateBuilder(deps: Agent37TemplateBuilderDeps) {
     try {
       claimed = await deps.records.read();
     } catch (error) {
-      // Unknown: nothing says another build exists, so carry on with ours.
+      // Unknown is not "nobody else": leave ours unstarted and retry the pass,
+      // rather than risk two computers building at once.
       deps.logger?.warn?.("agent37.template_claim_check_failed", { template, buildId: build.id, error: plainReason(error) });
+      throw new Error("ADE couldn't confirm no other computer is setting up the template. It will try again.");
+    }
+    if (!claimed) {
+      // Our own claim did not land (the shared record refused the write).
+      deps.logger?.warn?.("agent37.template_claim_not_recorded", { template, buildId: build.id });
+      throw new Error("ADE couldn't save that it's setting up the template. It will try again.");
     }
     if (sameBuild(claimed) && claimed.buildId !== build.id) {
       const [theirs, mine] = await Promise.all([

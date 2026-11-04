@@ -20,6 +20,7 @@
  *   npm run dev:machine -- remove [--name <n>]     sign out (drops its account row) and stop
  */
 import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -115,8 +116,11 @@ function windowsUserTag() {
     process.stderr.write(`[ade] couldn't read this user's name (${error instanceof Error ? error.message : String(error)}); using USERNAME.\n`);
   }
   if (!user) user = process.env.USERNAME?.trim() ?? "";
-  const tag = user.toLowerCase().replace(/[^a-z0-9_-]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 32);
-  return tag || "user";
+  const tag = user.toLowerCase().replace(/[^a-z0-9_-]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 24) || "user";
+  // Two accounts can share a name (another domain) or sanitize to one: the
+  // profile folder is unique per account on this computer, so it breaks ties.
+  const profile = createHash("sha256").update(os.homedir().toLowerCase()).digest("hex").slice(0, 8);
+  return `${tag}-${profile}`;
 }
 
 function machinePaths(name) {

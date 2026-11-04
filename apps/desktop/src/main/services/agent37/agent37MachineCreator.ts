@@ -206,7 +206,14 @@ export async function createAgent37Machine(
 
   // On disk before the request goes out: whatever happens to the answer, the
   // box carries this request id and the next start can find it.
-  deps.pendingCreates?.begin(requestId, Date.now());
+  // If ADE cannot write down that it is making a box, it does not make one:
+  // a quit before the answer would leave a box nothing can find.
+  try {
+    deps.pendingCreates?.begin(requestId, Date.now());
+  } catch (error) {
+    logger.warn?.("agent37.machine_create_not_recorded", { error: errorText(error) });
+    throw new Error("ADE couldn't save a note of the machine it's about to make, so it didn't make one. Check that ADE can write to its folder, then try again.");
+  }
   progress("creating", `Making ${name} on Agent 37…`);
   let instance: Agent37Instance;
   try {

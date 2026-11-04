@@ -349,7 +349,9 @@ export function registerAgent37Ipc(args: {
           requestId,
           stage: "done",
           message: result.joined
-            ? `${result.name} is ready.`
+            ? result.renamed
+              ? `${result.name} is ready.`
+              : `Your new machine is ready. ADE couldn't name it "${result.name}"; rename it from its row under Your computers.`
             : result.machineKey
               ? agent37StillStartingMessage(result.name)
               : `${result.name} is signed in but still starting. It will appear under Your computers; connect it from there when it's ready.`,
@@ -495,12 +497,22 @@ async function sweepPendingCreates(
   logger: Logger,
 ): Promise<void> {
   const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
-  const isSignedIn = async (instanceId: string): Promise<boolean> => {
+  // Tri-state on purpose: only a clear "signed out" answer lets the sweep
+  // delete a box. Asleep, unreachable or unreadable is "unknown", and a box
+  // that may be someone's real machine is never deleted on a guess.
+  const isSignedIn = async (instanceId: string): Promise<boolean | "unknown"> => {
     const auth = await client.exec(instanceId, "timeout 20 ade auth status --json 2>/dev/null", { timeoutMs: 40_000 }).catch((error: unknown) => {
       logger.warn("agent37.half_made_box_auth_read_failed", { instanceId, error: error instanceof Error ? error.message : String(error) });
       return null;
     });
-    return auth?.exitCode === 0 && /"signedIn"\s*:\s*true/.test(auth.stdout);
+    if (!auth) return "unknown";
+    // The box answered but has no ADE to ask (127, command not found): it never signed in.
+    if (auth.exitCode === 127) return false;
+    if (auth.exitCode !== 0) return "unknown";
+    if (/"signedIn"\s*:\s*true/.test(auth.stdout)) return true;
+    if (/"signedIn"\s*:\s*false/.test(auth.stdout)) return false;
+    logger.warn("agent37.half_made_box_auth_unreadable", { instanceId });
+    return "unknown";
   };
   for (const record of leftover) {
     const result = await reconcileAgent37PendingCreate(client, record, { store: pending, logger, sleep, isSignedIn });

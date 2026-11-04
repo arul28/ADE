@@ -208,6 +208,7 @@ export async function removeAgent37Key(
       return { ok: false as const };
     });
     const inAccount = got.ok ? decode(got.value) != null : null;
+    let accountUnverified = false;
     if (inAccount !== false) {
       let removed: boolean;
       let detail: string | null = null;
@@ -218,8 +219,22 @@ export async function removeAgent37Key(
         detail = error instanceof Error ? error.message : String(error);
       }
       if (!removed && inAccount === true) throw new Agent37DisconnectFailed(detail);
-      if (!removed) logger?.warn("agent37.disconnect_account_unverified", { error: detail ?? "the account vault is unreachable" });
+      if (!removed) {
+        accountUnverified = true;
+        logger?.warn("agent37.disconnect_account_unverified", { error: detail ?? "the account vault is unreachable" });
+      }
     }
+    deps.machineStore()?.deleteSync(AGENT37_MACHINE_CREDENTIAL_KEY);
+    const status = await readAgent37Status(deps);
+    // Never report a clean disconnect the account may not have seen: this
+    // computer's copy is gone, but one on the account would come back.
+    if (accountUnverified && !status.error) {
+      return {
+        ...status,
+        error: "ADE removed the key from this computer but couldn't reach your account to remove it there. Press Disconnect again when you're online.",
+      };
+    }
+    return status;
   }
   deps.machineStore()?.deleteSync(AGENT37_MACHINE_CREDENTIAL_KEY);
   return await readAgent37Status(deps);
