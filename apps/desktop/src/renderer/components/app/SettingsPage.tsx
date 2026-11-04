@@ -18,7 +18,7 @@ import {
   MagnifyingGlass,
   MapPin,
   Palette,
-  PlugsConnected,
+  PuzzlePiece,
   Robot,
   ShareNetwork,
   SlidersHorizontal,
@@ -67,8 +67,8 @@ import {
   STANDALONE_TAB_IDS,
   TabContent,
   decodeSettingsHash,
-  connectionPageForAnchor,
-  openConnectionFromUrl,
+  integrationPageForAnchor,
+  openIntegrationFromUrl,
 } from "../settings/settingsTabContent";
 import { isIntegrationId } from "../settings/integrations/integrationBrand";
 
@@ -94,7 +94,7 @@ const TAB_ICONS: Record<SettingsTabId, PhosphorIcon> = {
   storage: HardDrives,
   location: MapPin,
   secrets: Key,
-  connections: PlugsConnected,
+  integrations: PuzzlePiece,
   agents: Brain,
   apple: DeviceMobile,
   appearance: Palette,
@@ -120,7 +120,7 @@ const CENTERED_COLUMN_TABS: ReadonlySet<SettingsTabId> = new Set<SettingsTabId>(
   "project-agents",
   "storage",
   "location",
-  "connections",
+  "integrations",
 ]);
 
 
@@ -349,14 +349,14 @@ export function SettingsPage({
     const integration = searchParams.get("integration")?.trim().toLowerCase() ?? "";
     if (isIntegrationId(integration)) {
       const nextParams = new URLSearchParams(searchParams);
-      nextParams.set("tab", "connections");
+      nextParams.set("tab", "integrations");
       navigate({ pathname: location.pathname, search: `?${nextParams.toString()}`, hash: location.hash }, { replace: true });
       return;
     }
     if (integration !== "cli") return;
     const entry = resolveSettingsHash("ade-cli");
     const nextParams = new URLSearchParams(searchParams);
-    nextParams.set("tab", entry?.tab ?? "connections");
+    nextParams.set("tab", entry?.tab ?? "integrations");
     nextParams.delete("integration");
     navigate(
       {
@@ -376,7 +376,7 @@ export function SettingsPage({
     const nextParams = new URLSearchParams(searchParams);
     nextParams.set("tab", next);
     // One connection's page belongs to the Connections tab only.
-    if (next !== "connections") {
+    if (next !== "integrations") {
       nextParams.delete("integration");
       nextParams.delete("mcpServer");
     }
@@ -433,10 +433,10 @@ export function SettingsPage({
     const all = searchSettingsEntries(trimmedQuery);
     // Connections mounts one connection's page at a time (or the home), so a
     // match on another connection's page is a link, like another tab's.
-    const openConnection = section === "connections" ? openConnectionFromUrl(searchParams, location.hash) : null;
+    const openConnection = section === "integrations" ? openIntegrationFromUrl(searchParams, location.hash) : null;
     const elsewhere = (entry: SettingEntry) =>
       entry.tab !== section
-      || (section === "connections" && connectionPageForAnchor(entry.anchor) !== openConnection);
+      || (section === "integrations" && integrationPageForAnchor(entry.anchor) !== openConnection);
     return {
       matchesThisTab: all.filter((entry) => !elsewhere(entry)),
       matchesOtherTabs: all.filter(elsewhere),

@@ -3975,7 +3975,7 @@ function buildIntegrationConnectDomainService(runtime: AdeRuntime): OpaqueServic
   };
 }
 
-/** One registry service per runtime, built on first use: the vault-writing half of Settings › Connections › MCP servers. */
+/** One registry service per runtime, built on first use: the vault-writing half of Settings › Integrations › MCP servers. */
 const mcpRegistryServices = new WeakMap<AdeRuntime, ReturnType<typeof createMcpRegistryService>>();
 
 function mcpRegistryDeps(runtime: AdeRuntime): McpServerRequestDeps {
@@ -4001,7 +4001,7 @@ function mcpRegistryDeps(runtime: AdeRuntime): McpServerRequestDeps {
  * The MCP server registry, for agents. `list` reads the person's setup on
  * this machine (names and set/not-set only, never a value). `request` raises
  * the MCP server card in the caller's own chat and saves the server the way
- * Settings › Connections › MCP servers does, on the machine that runs the chat.
+ * Settings › Integrations › MCP servers does, on the machine that runs the chat.
  * `chatStatus` says which registry servers a chat's running agent lacks
  * (the "Refresh chat" chip).
  */

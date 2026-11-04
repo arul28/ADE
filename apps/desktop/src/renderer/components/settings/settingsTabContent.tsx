@@ -57,7 +57,7 @@ import {
   type SettingsMachinePage,
 } from "./SettingsMachinesNav";
 import { WebSettingsSection } from "./WebScopePill";
-import { ConnectionsHome, type ConnectionPageId } from "./integrations/ConnectionsHome";
+import { IntegrationsHome, type IntegrationsPageId } from "./integrations/IntegrationsHome";
 import { isIntegrationId } from "./integrations/integrationBrand";
 import { useSettingsMachineScope } from "./SettingsMachineScope";
 import {
@@ -176,48 +176,48 @@ function AgentsTabContent() {
   );
 }
 
-function isConnectionPageId(value: string | null | undefined): value is ConnectionPageId {
+function isIntegrationsPageId(value: string | null | undefined): value is IntegrationsPageId {
   return value === "mcp" || isIntegrationId(value);
 }
 
 /**
- * The Connections page a settings anchor or `#hash` deeplink belongs to:
+ * The Integrations page a settings anchor or `#hash` deeplink belongs to:
  * every integration anchor starts with its integration's id
  * (`github-connection`, `jira-projects`, the legacy bare `#github`), and
  * every MCP servers anchor with `mcp`.
  */
-export function connectionPageForAnchor(anchorOrHash: string): ConnectionPageId | null {
+export function integrationPageForAnchor(anchorOrHash: string): IntegrationsPageId | null {
   const head = decodeSettingsHash(anchorOrHash).split("-")[0] ?? "";
-  return isConnectionPageId(head) ? head : null;
+  return isIntegrationsPageId(head) ? head : null;
 }
 
 /**
- * The Connections page the URL has open, or null for the home grid. A hash
+ * The Integrations page the URL has open, or null for the home grid. A hash
  * wins: a settings search result keeps the query string, so a stale
  * `integration=` from the page open before it must not override its target.
  */
-export function openConnectionFromUrl(searchParams: URLSearchParams, hash: string): ConnectionPageId | null {
+export function openIntegrationFromUrl(searchParams: URLSearchParams, hash: string): IntegrationsPageId | null {
   const param = searchParams.get("integration")?.trim().toLowerCase();
-  return connectionPageForAnchor(hash) ?? (isConnectionPageId(param) ? param : null);
+  return integrationPageForAnchor(hash) ?? (isIntegrationsPageId(param) ? param : null);
 }
 
 /**
- * Connections. Like Providers, one connection's page is a sub-view of the
+ * Integrations. Like Providers, one integration's page is a sub-view of the
  * tab, `?integration=<github|linear|jira|mcp>`; a `#hash` naming one of its
- * settings opens it too. With none open, the tab is the Connections home.
+ * settings opens it too. With none open, the tab is the Integrations home.
  */
-function ConnectionsTabContent({ machine }: { machine: SettingsMachinePage | null }) {
+function IntegrationsTabContent({ machine }: { machine: SettingsMachinePage | null }) {
   const location = useLocation();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const { pin } = useSettingsMachineScope();
-  const requested = openConnectionFromUrl(searchParams, location.hash);
-  const sections = (TAB_SECTIONS.connections ?? []).filter(
+  const requested = openIntegrationFromUrl(searchParams, location.hash);
+  const sections = (TAB_SECTIONS.integrations ?? []).filter(
     (section) => !machine || !section.machine || machineSectionAvailable(section.machine, machine),
   );
   const section = requested ? sections.find((entry) => entry.group === requested) : undefined;
 
-  const open = useCallback((next: ConnectionPageId | null, server?: string) => {
+  const open = useCallback((next: IntegrationsPageId | null, server?: string) => {
     const nextParams = new URLSearchParams(searchParams);
     if (next) nextParams.set("integration", next);
     else nextParams.delete("integration");
@@ -229,16 +229,16 @@ function ConnectionsTabContent({ machine }: { machine: SettingsMachinePage | nul
   if (!section) {
     return (
       <SettingsColumn wide>
-        <ConnectionsHome pin={pin} onOpen={open} />
+        <IntegrationsHome pin={pin} onOpen={open} />
       </SettingsColumn>
     );
   }
-  const entryIds = section.entryIds === "tab" ? settingsEntryIdsForTab("connections") : section.entryIds;
+  const entryIds = section.entryIds === "tab" ? settingsEntryIdsForTab("integrations") : section.entryIds;
   return (
     <SettingsColumn wide>
       <div className="ade-ig-route">
         <button type="button" className="ade-ig-back" onClick={() => open(null)}>
-          <CaretLeft size={12} weight="bold" /> All connections
+          <CaretLeft size={12} weight="bold" /> All integrations
         </button>
         <WebSettingsSection entryIds={entryIds}>{section.render()}</WebSettingsSection>
       </div>
@@ -508,7 +508,7 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
   //
   // The MCP servers page is the account's (settings store and vault), read
   // through this desktop's own brain, so it carries no machine kind.
-  connections: [
+  integrations: [
     { entryIds: ["integrations.github", "integrations.github-issues-top-bar"], render: () => <GitHubIntegrationSection />, machine: "routed", title: "GitHub", group: "github" },
     { entryIds: ["integrations.linear", "integrations.linear-top-bar"], render: () => <LinearIntegrationSection />, machine: "routed", title: "Linear", group: "linear" },
     { entryIds: ["integrations.jira", "integrations.jira-projects", "integrations.jira-top-bar"], render: () => <JiraSection />, machine: "routed", title: "Jira", group: "jira" },
@@ -574,9 +574,9 @@ export function TabContent({
   if (machine && !machine.online) {
     return <MachineUnavailableNotice machine={machine} />;
   }
-  // Connections routes between its home and one connection's page off
+  // Integrations routes between its home and one integration's page off
   // `?integration=`; its sections are the pages.
-  if (tab === "connections") return <ConnectionsTabContent machine={machine} />;
+  if (tab === "integrations") return <IntegrationsTabContent machine={machine} />;
   // Providers is the one tab that is not a list of sections: it routes between
   // the grid and one provider's page off `?provider=`.
   if (tab === "agents") {

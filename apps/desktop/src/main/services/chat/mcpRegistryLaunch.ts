@@ -52,13 +52,13 @@ export function resolveMcpRegistryForLaunch(args: {
 export function mcpRegistryLaunchNotices(registry: McpRegistryLaunch): string[] {
   return [
     ...(registry.missing.length
-      ? [`These MCP servers started without a secret value this computer does not have (add it in Settings > Connections > MCP servers): ${registry.missing.join(", ")}.`]
+      ? [`These MCP servers started without a secret value this computer does not have (add it in Settings > Integrations > MCP servers): ${registry.missing.join(", ")}.`]
       : []),
     ...(registry.unsupported.length
       ? [`This provider cannot connect to these MCP servers, so they were left out: ${registry.unsupported.join(", ")}.`]
       : []),
     ...(registry.signInExpired.length
-      ? [`The sign-in for these MCP servers has run out, so they started signed out (sign in again in Settings > Connections > MCP servers): ${registry.signInExpired.join(", ")}.`]
+      ? [`The sign-in for these MCP servers has run out, so they started signed out (sign in again in Settings > Integrations > MCP servers): ${registry.signInExpired.join(", ")}.`]
       : []),
   ];
 }

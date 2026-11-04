@@ -638,6 +638,23 @@ import { remoteCommandAvailability } from "./services/remoteMcp/remoteMcpCommand
 import { isSyntheticCallerId, syntheticCallerId } from "../../desktop/src/shared/syntheticCallerId";
 import { formatProofDuration, hasDrawerOwner, proofIdleCutLabel } from "../../desktop/src/shared/proofProvenance";
 
+/** The catalogue's names for the `mcp servers` help, wrapped to fit the terminal's usual width. */
+function catalogueNameLines(): string {
+  const lines: string[] = [];
+  let line = "";
+  for (const id of MCP_CATALOGUE.filter((entry) => !entry.native).map((entry) => entry.id)) {
+    const next = line ? `${line}, ${id}` : id;
+    if (next.length > 72 && line) {
+      lines.push(`${line},`);
+      line = id;
+    } else {
+      line = next;
+    }
+  }
+  if (line) lines.push(line);
+  return lines.join("\n      ");
+}
+
 export type JsonObject = Record<string, unknown>;
 
 type SyncWebPairingCliOutput = {
@@ -4222,7 +4239,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   card only after they say yes.
 `,
   "mcp servers": `${ADE_BANNER}
-  ADE MCP servers (Settings › Connections › MCP servers)
+  ADE MCP servers (Settings › Integrations › MCP servers)
 
   The MCP servers every agent ADE launches gets, defined once for the
   person's account. Values (tokens, keys) live in the account vault and are
@@ -4237,8 +4254,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   ADE saves the server to their account, on all their machines:
 
     $ ade mcp servers add notion --reason "To read the spec page"
-      A server in ADE's catalogue: the vendor's own address, checked by ADE. Names:
-      ${MCP_CATALOGUE.filter((entry) => !entry.native).map((entry) => entry.id).join(", ")}.
+      A quick setup from ADE's catalogue: the vendor's own address. Names:
+      ${catalogueNameLines()}.
       github, linear and atlassian open ADE's own connect card instead (one connection for ADE and agents).
     $ ade mcp servers add sentry --import --reason "To read the crash"
       A server another tool here already has (see the list); its values are copied.
@@ -22262,7 +22279,7 @@ function buildCliPlan(
     return buildSyncPlan(args);
   }
   if (primary === "mcp") {
-    // `ade mcp servers` is the MCP registry (Settings › Connections › MCP servers); every
+    // `ade mcp servers` is the MCP registry (Settings › Integrations › MCP servers); every
     // other `ade mcp` word is ADE MCP.
     const word = args.find((arg) => !arg.startsWith("-"));
     if (word === "servers" || word === "server") {
@@ -34947,7 +34964,7 @@ function formatMcpServers(value: unknown): string {
         : server.state === "off-account" ? "off everywhere"
           : server.state === "off-machine" ? "off on this machine" : "off in this project";
       lines.push(`  ${cell(server.name)}  ${cell(server.transport)}  ${where}`);
-      lines.push(`    runs: ${cell(server.runs)}`);
+      lines.push(`    ${server.transport === "stdio" ? "runs" : "url"}: ${cell(server.runs)}`);
       const secrets = Array.isArray(server.secrets) ? server.secrets.filter(isRecord) : [];
       if (secrets.length) {
         lines.push(`    ${secrets.map((secret) => `${cell(secret.name)} (${secret.field === "header" ? "header" : "env"}) ${secret.set ? "set" : "NOT SET"}`).join(", ")}`);
@@ -34962,7 +34979,7 @@ function formatMcpServers(value: unknown): string {
           : cell(server.url);
         const providers = Array.isArray(server.providers) ? server.providers.join(", ") : "";
         lines.push(`  ${cell(server.name)}  ${cell(server.transport)}  from ${providers}`);
-        lines.push(`    runs: ${runs}`);
+        lines.push(`    ${server.transport === "stdio" ? "runs" : "url"}: ${runs}`);
       }
       lines.push("", "Ask to add one from a chat: ade mcp servers add <name> --import --reason \"…\"");
     }
@@ -34970,7 +34987,7 @@ function formatMcpServers(value: unknown): string {
   }
   if (record.added === true) {
     const missing = Array.isArray(record.missing) && record.missing.length
-      ? ` Not set yet (the person can add them in Settings › Connections › MCP servers): ${record.missing.join(", ")}.`
+      ? ` Not set yet (the person can add them in Settings › Integrations › MCP servers): ${record.missing.join(", ")}.`
       : "";
     const next = typeof record.next === "string" && record.next ? record.next : `Added ${cell(record.name)}.`;
     return `${next}${missing}`;
