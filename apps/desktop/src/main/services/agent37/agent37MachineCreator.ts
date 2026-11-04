@@ -36,6 +36,7 @@ import {
   readAgent37BoxSignedIn,
   reconcileAgent37PendingCreate,
   type Agent37PendingCreateStore,
+  type Agent37ReconcileResult,
 } from "./agent37PendingCreates";
 
 type FetchLike = (input: string, init?: RequestInit) => Promise<Response>;
@@ -266,7 +267,7 @@ export async function createAgent37Machine(
         // until the request resolves; the next app start covers a quit.
         void (async () => {
           const followUntil = Date.now() + CANCELLED_CREATE_FOLLOW_MS;
-          let followed = cleanup;
+          let followed: Agent37ReconcileResult | null = cleanup;
           while (followed && !followed.resolved && Date.now() < followUntil) {
             await sleep(CANCELLED_CREATE_FOLLOW_POLL_MS);
             followed = await reconcileOnce();
