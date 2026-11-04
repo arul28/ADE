@@ -46,6 +46,7 @@ export function AndroidDeviceStage({
   onReaderStatus,
   onDimensions,
   onFrame,
+  railInset = 0,
   children,
   className,
 }: {
@@ -61,6 +62,8 @@ export function AndroidDeviceStage({
   onReaderStatus: (status: "connecting" | "playing" | "error" | "stopped", error: string | null) => void;
   onDimensions: (size: { width: number; height: number }) => void;
   onFrame: () => void;
+  /** The rail's width while it shows; the screen stays clear of it. */
+  railInset?: number;
   children?: ReactNode;
   className?: string;
 }) {
@@ -118,6 +121,7 @@ export function AndroidDeviceStage({
         onDeviceInput={onDeviceInput}
         onDeviceScroll={onDeviceScroll}
         onDeviceKey={onDeviceKey}
+        railInset={railInset}
         onGeometryChange={setGeometry}
       />
       {children}

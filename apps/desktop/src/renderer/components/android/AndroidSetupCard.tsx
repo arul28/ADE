@@ -130,7 +130,7 @@ export function AndroidSetupCard({
           </p>
         ) : null}
         <p className="min-w-0 break-words font-sans text-xs leading-5 text-fg/85">
-          Install Android Studio or set the SDK path in Settings.
+          Install Android Studio, or set ANDROID_HOME to your SDK folder, then check again.
         </p>
         <div className="flex min-w-0 items-center gap-2">
           <Button variant="outline" size="sm" disabled={refreshing} onClick={onRefresh} data-android-setup-refresh="">

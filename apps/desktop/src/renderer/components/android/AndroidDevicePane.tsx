@@ -29,7 +29,7 @@ import {
 } from "./androidDeviceState";
 import { androidStreamLeaseKey, forgetAndroidStreamLeases } from "./androidStreamLease";
 import { AndroidDevicePicker } from "./AndroidDevicePicker";
-import { AndroidDeviceRail } from "./AndroidDeviceRail";
+import { ANDROID_RAIL_WIDTH, AndroidDeviceRail } from "./AndroidDeviceRail";
 import { AndroidDeviceStage } from "./AndroidDeviceStage";
 import { AndroidSetupCard } from "./AndroidSetupCard";
 import {
@@ -564,13 +564,10 @@ export function AndroidDevicePane({
             onReaderStatus={stream.handleReaderStatus}
             onDimensions={stream.handleDimensions}
             onFrame={stream.noteFrame}
-            className={cn(
-              "bg-transparent",
-              // Clear of the rail (w-14): a landscape screen fills the width,
-              // and the rail would cover its right edge and take its taps.
-              androidRailVisible(paneState) && "mr-14",
-              paneState === "video-lost" && "opacity-40",
-            )}
+            // The screen moves left only when the rail would cover its right
+            // edge and take its taps, as on the Apple stage.
+            railInset={androidRailVisible(paneState) ? ANDROID_RAIL_WIDTH : 0}
+            className={cn("bg-transparent", paneState === "video-lost" && "opacity-40")}
           >
             {paneState === "starting" ? (
               <div className="absolute inset-0 z-[1]">

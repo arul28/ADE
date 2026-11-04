@@ -25,6 +25,9 @@ import {
 /** Below this the rail keeps the navigation keys and More, and nothing else (Apple's 360px rule). */
 export const ANDROID_RAIL_COMPACT_WIDTH = 360;
 
+/** The rail's width (`w-14`), which the stage keeps the screen clear of. */
+export const ANDROID_RAIL_WIDTH = 56;
+
 export type AndroidDeviceRailProps = {
   containerWidth: number;
   deviceName: string;

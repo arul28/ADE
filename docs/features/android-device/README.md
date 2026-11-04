@@ -53,8 +53,8 @@ When the SDK or a part that a boot needs is missing, the pane shows
 | Phone image | the version | the host ABI and ~1.8 GB |
 
 The card shows the SDK folder, or the default folder that ADE looks in. It
-says "Install Android Studio or set the SDK path in Settings." and has
-**Check again**.
+says "Install Android Studio, or set ANDROID_HOME to your SDK folder, then
+check again." and has **Check again**.
 
 The card is read-only in P0. ADE installs nothing. The guided install
 (licence review, "Use mine…", the optional Android CLI) is P1. P0 has no
@@ -102,8 +102,9 @@ stock list in P1.
 
 The stage is the flat view only in P0. The video arrives the right way up,
 because scrcpy turns it with the display. The screen box fits the pane and
-keeps clear of the rail while the rail shows, so a landscape screen never sits
-under it.
+stays centred. While the rail shows, the box moves left (and shrinks if it
+must) only when the rail would cover its right edge, as on the Apple stage. So
+a landscape screen never sits under the rail.
 
 Touch maps to device pixels. Keys typed while the screen has focus go to the
 device. Esc sends Back.
