@@ -3936,39 +3936,21 @@ function AgentChatComposerImpl({
           // is written once below. Duplicating it is how the two branches drift.
           let staged: StagedAttachment;
           if (plan.transport === "path") {
-            try {
-              const { path: stagedPath } = await agentChatApiRef.current.stageFileAttachment(
-                {
-                  sourcePath: plan.sourcePath,
-                  filename: normalizeImageAttachmentFilename(sourceAttachmentName, file.type),
-                },
-                attachmentOwnerBinding,
-              );
-              staged = { path: stagedPath, mimeType: file.type || null, previewDataUrl: null };
-              rememberDraftAttachmentSource(stagedPath, {
-                kind: "local",
-                // A local staged copy is a snapshot of the original file.
-                sourcePath: attachmentOwnerBinding?.kind === "local" ? stagedPath : plan.sourcePath,
+            const { path: stagedPath } = await agentChatApiRef.current.stageFileAttachment(
+              {
+                sourcePath: plan.sourcePath,
                 filename: normalizeImageAttachmentFilename(sourceAttachmentName, file.type),
-              });
-            } catch (error) {
-              // A direct upload can fail while the authenticated command
-              // connection still works. Small drops can use the same bytes
-              // recovery as a paste; large files must keep the upload error.
-              if (
-                stagingMode.mode !== "upload"
-                || !isImageAttachment
-                || file.size > LEGACY_MAX_CHAT_ATTACHMENT_BYTES
-                || latestComposerMachineBindingRef.current?.key !== attachmentOwnerBinding?.key
-              ) throw error;
-              staged = await stageAttachmentBytesFromFile({
-                api: agentChatApiRef.current,
-                file,
-                filename: sourceAttachmentName,
-                requiresHeicConversion: false,
-                pin: attachmentOwnerBinding,
-              });
-            }
+              },
+              attachmentOwnerBinding,
+            );
+            staged = { path: stagedPath, mimeType: file.type || null, previewDataUrl: null };
+            rememberDraftAttachmentSource(stagedPath, {
+              kind: "local",
+              // Staged on this computer, the copy is a snapshot: a later edit
+              // or delete of the original cannot change what moves.
+              sourcePath: attachmentOwnerBinding?.kind === "local" ? stagedPath : plan.sourcePath,
+              filename: normalizeImageAttachmentFilename(sourceAttachmentName, file.type),
+            });
           } else {
             staged = await stageAttachmentBytesFromFile({
               api: agentChatApiRef.current,

@@ -1,4 +1,6 @@
 import { forwardSignalToSentry } from "../../../shared/sentry/logBridge";
+import fs from "node:fs";
+import { captureError } from "../../../shared/sentry/capture";
 import type {
   AdeActionRegistryEntry,
   CloneProjectInput,
@@ -1292,24 +1294,47 @@ export class RemoteConnectionService {
     sourcePath: string;
     filename: string;
   }): Promise<{ path: string }> {
-    const route = await this.pool.getAttachmentUploadRoute(args.targetId);
-    if (!route) {
-      throw new Error("This machine does not accept attachment uploads.");
+    let maxBytes = LEGACY_MAX_CHAT_ATTACHMENT_BYTES;
+    try {
+      const route = await this.pool.getAttachmentUploadRoute(args.targetId);
+      if (!route) throw new Error("This machine does not accept attachment uploads.");
+      maxBytes = Math.min(maxBytes, route.maxBytes);
+      const minted = await this.callAction(args.targetId, args.projectId, {
+        domain: "chat",
+        action: "createAttachmentUpload",
+        args: { filename: args.filename },
+      });
+      const ticket = parseRemoteAttachmentUploadTicket(minted.result);
+      if (!ticket) throw new Error("This machine returned an unusable attachment upload ticket.");
+      maxBytes = Math.min(maxBytes, ticket.maxBytes);
+      return await uploadRemoteAttachment({ route, ticket, sourcePath: args.sourcePath });
+    } catch (error) {
+      captureError(error, { fingerprint: ["chat", "attachment_upload_failed"], handled: true, level: "warning" });
+      // A direct HTTP route can fail while the authenticated command still
+      // works. Recover once, on this same target/project, within both limits.
+      // A missing source cannot recover; keep the original upload diagnosis.
+      const stat = await fs.promises.stat(args.sourcePath).catch(() => null);
+      if (!stat?.isFile() || stat.size > maxBytes) throw error;
+      const chunks: Buffer[] = [];
+      let size = 0;
+      // Include one extra byte to detect a file growing after the stat while
+      // bounding the read even if another process keeps appending to it.
+      for await (const chunk of fs.createReadStream(args.sourcePath, { end: maxBytes })) {
+        const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+        size += bytes.length;
+        if (size > maxBytes) throw error;
+        chunks.push(bytes);
+      }
+      const saved = await this.callAction(args.targetId, args.projectId, {
+        domain: "chat", action: "saveTempAttachment",
+        args: { data: Buffer.concat(chunks).toString("base64"), filename: args.filename },
+      });
+      const stagedPath = asRecord(saved.result).path;
+      if (typeof stagedPath !== "string" || !stagedPath.trim()) {
+        throw new Error("The machine did not return an attachment path.");
+      }
+      return { path: stagedPath };
     }
-    const minted = await this.callAction(args.targetId, args.projectId, {
-      domain: "chat",
-      action: "createAttachmentUpload",
-      args: { filename: args.filename },
-    });
-    const ticket = parseRemoteAttachmentUploadTicket(minted.result);
-    if (!ticket) {
-      throw new Error("This machine returned an unusable attachment upload ticket.");
-    }
-    return await uploadRemoteAttachment({
-      route,
-      ticket,
-      sourcePath: args.sourcePath,
-    });
   }
 
   /**
