@@ -104,7 +104,6 @@ import type {
 import {
   LEGACY_MAX_CHAT_ATTACHMENT_BYTES,
   MAX_CHAT_ATTACHMENT_BYTES,
-  maxBase64EncodedLength,
 } from "../shared/chatAttachmentLimits";
 import {
   type AttentionAcknowledgmentOutcome,
@@ -2454,11 +2453,9 @@ async function resolveRemoteBindingForPin(
  * pasted bytes (a terminal's clipboard image, a composer screenshot) on the
  * same route.
  *
- * Returns null when the machine only takes the command, so the caller uses the
- * command. A failed upload also returns null, but only for a payload the
- * command can carry. A larger one would only be refused again with the
- * command's 10 MB reason, or overflow the host's RPC buffer, so the upload's
- * own error is thrown instead.
+ * Returns null when the machine only takes the command. Upload failures and
+ * bounded attachment recovery are owned by RemoteConnectionService, which can
+ * send directly through the command without repeating the failed HTTP leg.
  */
 async function uploadAttachmentBytesToRemote(
   pin: OpenProjectBinding | null | undefined,
@@ -2473,22 +2470,13 @@ async function uploadAttachmentBytesToRemote(
     return null;
   }
   if (mode.mode !== "upload") return null;
-  try {
-    return (await ipcRenderer.invoke(IPC.remoteRuntimeUploadChatAttachment, {
-      id: binding.targetId,
-      projectId: binding.projectId,
-      data: args.data,
-      filename: args.filename,
-      maxBytes: mode.maxBytes,
-    })) as { path: string };
-  } catch (error) {
-    if (args.data.length > maxBase64EncodedLength(LEGACY_MAX_CHAT_ATTACHMENT_BYTES)) throw error;
-    console.warn("[ade-attachments] Streamed upload failed; sending the bytes in the runtime command instead.", {
-      targetId: binding.targetId,
-      error: error instanceof Error ? error.message : String(error),
-    });
-    return null;
-  }
+  return (await ipcRenderer.invoke(IPC.remoteRuntimeUploadChatAttachment, {
+    id: binding.targetId,
+    projectId: binding.projectId,
+    data: args.data,
+    filename: args.filename,
+    maxBytes: mode.maxBytes,
+  })) as { path: string };
 }
 
 // Chat launches exist only on a runtime (local daemon or remote machine); an
@@ -9025,14 +9013,15 @@ const adeBridge = {
     getAttachmentStagingMode: async (
       pin?: OpenProjectBinding | null,
     ): Promise<ChatAttachmentStagingMode> => {
-      if (pin?.kind !== "remote") {
+      const binding = await resolveRemoteBindingForPin(pin);
+      if (!binding) {
         // Same machine as the main process: the bytes never move, only the
         // path. `copy` is the one mode the main process cannot answer with,
         // because it is a property of the caller, not of the target — so it is
         // decided here and every other mode comes back ready to use.
         return { mode: "copy", maxBytes: MAX_CHAT_ATTACHMENT_BYTES };
       }
-      return await readRemoteAttachmentStagingMode(pin.targetId);
+      return await readRemoteAttachmentStagingMode(binding.targetId);
     },
     /**
      * Stage a file that exists on this machine's disk without reading it into
@@ -9045,10 +9034,11 @@ const adeBridge = {
       args: AgentChatCopyTempAttachmentArgs,
       pin?: OpenProjectBinding | null,
     ): Promise<{ path: string }> => {
-      if (pin?.kind === "remote") {
+      const binding = await resolveRemoteBindingForPin(pin);
+      if (binding) {
         return (await ipcRenderer.invoke(IPC.remoteRuntimeUploadChatAttachment, {
-          id: pin.targetId,
-          projectId: pin.projectId,
+          id: binding.targetId,
+          projectId: binding.projectId,
           sourcePath: args.sourcePath,
           filename: args.filename,
         })) as { path: string };

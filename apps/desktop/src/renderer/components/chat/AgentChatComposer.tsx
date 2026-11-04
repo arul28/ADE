@@ -410,7 +410,9 @@ function attachmentErrorMessage(error: unknown, filename: string): string {
   if (error instanceof AttachmentConversionError) {
     return HEIC_CONVERSION_MESSAGES[error.code];
   }
-  return `Unable to attach "${filename || "file"}".`;
+  const raw = error instanceof Error ? error.message : error;
+  const reason = typeof raw === "string" ? stripElectronErrorWrapper(raw) : "";
+  return `Unable to attach "${filename || "file"}".${reason ? ` ${reason}` : ""}`;
 }
 
 // Every rich-composer chip carries `data-composer-chip`. Chips are
@@ -3123,8 +3125,10 @@ function AgentChatComposerImpl({
   const pendingDraftEditIntentRef = useRef<ComposerDraftEditIntent | null>(null);
   const fileAddInProgressRef = useRef(false);
   const addFileAttachmentsRef = useRef<(files: FileList | File[] | null | undefined) => void>(() => {});
-  const latestComposerMachineBindingRef = useRef(composerMachineBinding);
-  latestComposerMachineBindingRef.current = composerMachineBinding;
+  const chatRuntimeScope = useChatRuntimeScope();
+  const attachmentMachineBinding = composerMachineBinding ?? (projectChatPane ? chatRuntimeScope.binding : null);
+  const latestComposerMachineBindingRef = useRef(attachmentMachineBinding);
+  latestComposerMachineBindingRef.current = attachmentMachineBinding;
   // Catalog bucket for every model-derived control in this composer (picker
   // rows, availability, thinking levels). Empty only when no machine is known.
   const modelCatalogScopeKey = catalogScopeKey ?? modelRuntimePin?.key ?? DEFAULT_RUNTIME_CATALOG_SCOPE;
@@ -3418,7 +3422,7 @@ function AgentChatComposerImpl({
   // Voice runs on the chat machine's brain and Codex sign-in, not this window's.
   // The chat-scope pin is null when the chat is on the tab's machine, which
   // keeps the unpinned route (transition guard + local fallback) there.
-  const chatRuntimePin = useChatRuntimeScope().pin;
+  const chatRuntimePin = chatRuntimeScope.pin;
   // Bumped per effort picked by hand; the hint chip stands down for that prompt.
   const [effortPickedByHand, setEffortPickedByHand] = useState(0);
   const handleReasoningEffortPickerChange = useCallback((effort: string | null) => {
@@ -3899,14 +3903,20 @@ function AgentChatComposerImpl({
     setAttachRetryFiles(null);
     const retryable: File[] = [];
     let chipPlacement: AttachmentChipPlacement = options.chipPlacement ?? { kind: "end" };
+    const attachmentOwnerBinding = attachmentMachineBinding;
+    const attachmentApi = agentChatApiRef.current;
     try {
       let addedInBatch = 0;
       const initialSlotCount = attachmentSlotsUsed;
       // One probe per batch, not per file: the answer is a property of the
       // machine, and asking again mid-batch would only widen the window in
       // which half the files were staged under a different contract.
-      const stagingMode = await readAttachmentStagingMode(composerMachineBinding, agentChatApiRef.current);
+      const stagingMode = await readAttachmentStagingMode(attachmentOwnerBinding, attachmentApi);
       for (const file of Array.from(files)) {
+        if (latestComposerMachineBindingRef.current?.key !== attachmentOwnerBinding?.key) {
+          setAttachError("Files were not attached because the selected project or machine changed. Attach them again.");
+          break;
+        }
         if (parallelChatMode && initialSlotCount + addedInBatch >= PARALLEL_CHAT_MAX_ATTACHMENTS) {
           setAttachError(`You can attach up to ${PARALLEL_CHAT_MAX_ATTACHMENTS} files for parallel launch.`);
           break;
@@ -3933,7 +3943,6 @@ function AgentChatComposerImpl({
         const pendingImage = isImageAttachment
           ? addPendingImageAttachment(sourceAttachmentName, isHeicUpload ? null : createObjectPreviewUrl(file))
           : null;
-        const attachmentOwnerBinding = composerMachineBinding;
         try {
           // The two transports differ only in HOW the bytes reach the host.
           // Each yields the same three facts, and everything after — the
@@ -3942,7 +3951,7 @@ function AgentChatComposerImpl({
           // is written once below. Duplicating it is how the two branches drift.
           let staged: StagedAttachment;
           if (plan.transport === "path") {
-            const { path: stagedPath } = await agentChatApiRef.current.stageFileAttachment(
+            const { path: stagedPath } = await attachmentApi.stageFileAttachment(
               {
                 sourcePath: plan.sourcePath,
                 filename: normalizeImageAttachmentFilename(sourceAttachmentName, file.type),
@@ -3959,7 +3968,7 @@ function AgentChatComposerImpl({
             });
           } else {
             staged = await stageAttachmentBytesFromFile({
-              api: agentChatApiRef.current,
+              api: attachmentApi,
               file,
               filename: sourceAttachmentName,
               requiresHeicConversion: isHeicUpload,
@@ -3970,7 +3979,7 @@ function AgentChatComposerImpl({
           if (latestComposerMachineBindingRef.current?.key !== attachmentOwnerBinding?.key) {
             if (pendingImage) dropPendingImageAttachment(pendingImage.id);
             setAttachError(`"${sourceAttachmentName}" was not attached because the selected machine changed. Attach it again.`);
-            continue;
+            break;
           }
           if (pendingImage && cancelledPendingImageAttachmentsRef.current.has(pendingImage.id)) {
             cancelledPendingImageAttachmentsRef.current.delete(pendingImage.id);
@@ -4042,7 +4051,8 @@ function AgentChatComposerImpl({
     fileAddInProgressRef.current = true;
     setAttachError(null);
     const pendingImage = addPendingImageAttachment("clipboard.png", null);
-    const attachmentOwnerBinding = composerMachineBinding;
+    const attachmentOwnerBinding = attachmentMachineBinding;
+    const attachmentApi = agentChatApiRef.current;
     let clipboardWasEmpty = false;
     try {
       const image = await window.ade.app.readClipboardImage();
@@ -4051,7 +4061,12 @@ function AgentChatComposerImpl({
         clipboardWasEmpty = true;
         return;
       }
-      const { path: tempPath } = await agentChatApiRef.current.saveTempAttachment({
+      if (latestComposerMachineBindingRef.current?.key !== attachmentOwnerBinding?.key) {
+        dropPendingImageAttachment(pendingImage.id);
+        setAttachError("Clipboard image was not attached because the selected project or machine changed. Paste it again.");
+        return;
+      }
+      const { path: tempPath } = await attachmentApi.saveTempAttachment({
         data: image.data,
         filename: image.filename || "clipboard.png",
       }, attachmentOwnerBinding);

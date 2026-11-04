@@ -130,6 +130,12 @@ The log tails go as ADE wrote them, on purpose: they hold paths, action argument
 
 ## Operational logs versus analytics
 
+Failed direct attachment uploads are reported with the stable Sentry fingerprint
+`chat/attachment_upload_failed`, including failures recovered through the
+authenticated attachment command. The report contains the error, never file
+contents. The existing Sentry fingerprint and process budgets apply; automatic
+transport recovery sends no PostHog event because it is not a new user decision.
+
 Operational logs use ADE's local logging services and may include bounded diagnostic context appropriate for the local machine. They are for debugging a specific installation and must not be forwarded to PostHog.
 
 When the optional CLI-status decision classifies an idle terminal as errored
