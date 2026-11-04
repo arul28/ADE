@@ -2,6 +2,7 @@ import React, { useCallback } from "react";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import {
   CaretLeft,
+  Cube,
   Database,
   Gauge,
   GithubLogo,
@@ -353,6 +354,12 @@ const TAB_GROUPS = {
     description: "Issues and the Jira Cloud site connected for this project.",
     icon: <JiraMark size={15} />,
     tone: "blue",
+  },
+  agent37: {
+    title: "Agent37",
+    description: "Cloud Linux machines, made and signed in from ADE.",
+    icon: <Cube size={15} weight="duotone" />,
+    tone: "amber",
   },
 } satisfies Record<string, TabGroup>;
 
