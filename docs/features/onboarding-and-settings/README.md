@@ -898,8 +898,8 @@ Renderer — settings:
   [storage and recovery → Auto-send](../storage-and-recovery/README.md#auto-send).
 - `apps/desktop/src/renderer/components/settings/integrations/` — the
   Integrations tab's frame (under **App**), built like the provider pages. It
-  took in the MCP servers tab; `?tab=mcp`, `?tab=connections`, `github`,
-  `linear` and `jira` all alias to it. With nothing open the tab is the
+  took in the MCP servers tab; `?tab=mcp`, `github`, `linear` and `jira`
+  all alias to it. With nothing open the tab is the
   Integrations home (`IntegrationsHome.tsx`): a **Connected** row (GitHub,
   Linear and Jira when they work, read with the Settings machine's pin, and
   every MCP server in the account), then **Add** with a search box: the three

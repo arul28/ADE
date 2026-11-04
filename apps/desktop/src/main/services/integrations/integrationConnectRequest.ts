@@ -1,5 +1,4 @@
 import {
-  CONNECT_FIELD_IDS,
   CONNECT_METHOD_QUESTION_ID,
   CONNECT_NEXT_STEP,
   CONNECT_PROVIDER_IDS,
@@ -9,36 +8,20 @@ import {
   connectProviderSpec,
   isConnectProviderId,
   isSelfRunConnectMethod,
-  normalizeConnectSiteInput,
   type ConnectMethodId,
   type ConnectProviderId,
   type IntegrationConnectRequestCard,
   type IntegrationConnectRequestResult,
   type IntegrationConnectionSummary,
 } from "../../../shared/integrationConnect";
-
-/** The default wait: long enough to go make a key in another tab, not forever. */
-export const INTEGRATION_CONNECT_DEFAULT_TIMEOUT_MS = 30 * 60_000;
-export const INTEGRATION_CONNECT_MAX_TIMEOUT_MS = 2 * 60 * 60_000;
-
-type RequestChatInput = (args: {
-  chatSessionId: string;
-  title: string;
-  body: string;
-  timeoutMs?: number;
-  allowsFreeform?: boolean;
-  providerMetadata?: Record<string, unknown>;
-  eventDescription?: string;
-  questions?: Array<{
-    id?: string;
-    header?: string;
-    question: string;
-    options?: Array<{ label: string; value?: string; description?: string; recommended?: boolean }>;
-    allowsFreeform?: boolean;
-    isSecret?: boolean;
-  }>;
-  beforeAccept?: (answers: Record<string, string[]>) => void | Promise<void>;
-}) => Promise<{ decision: string; answers: Record<string, string[]>; responseText: string | null; timedOut?: boolean }>;
+import { captureError } from "../../../shared/sentry/capture";
+import {
+  cardTimeoutMs,
+  firstAnswer,
+  joinInFlight,
+  readCardArgs,
+  type CardRequestChatInput,
+} from "../chat/chatCardRequest";
 
 export type IntegrationConnectionState = {
   connected: boolean;
@@ -70,7 +53,7 @@ export type IntegrationConnectAdapter = {
 };
 
 export type IntegrationConnectDeps = {
-  requestChatInput: RequestChatInput;
+  requestChatInput: CardRequestChatInput;
   adapters: Partial<Record<ConnectProviderId, IntegrationConnectAdapter>>;
 };
 
@@ -79,14 +62,6 @@ export type IntegrationConnectDeps = {
  * the command again while the card is open joins the same card.
  */
 const inFlight = new Map<string, Promise<IntegrationConnectRequestResult>>();
-
-function readArgs(raw: unknown): Record<string, unknown> {
-  return raw && typeof raw === "object" && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
-}
-
-function firstAnswer(answers: Record<string, string[]>, id: string): string {
-  return answers[id]?.[0] ?? "";
-}
 
 /** `integration_connect.status`: every integration this runtime knows, never a credential. */
 export async function listIntegrationConnections(deps: Pick<IntegrationConnectDeps, "adapters">): Promise<IntegrationConnectionSummary[]> {
@@ -116,7 +91,7 @@ export async function requestIntegrationConnect(
   deps: IntegrationConnectDeps,
   rawArgs: unknown,
 ): Promise<IntegrationConnectRequestResult> {
-  const args = readArgs(rawArgs);
+  const args = readCardArgs(rawArgs);
   const chatSessionId = typeof args.chatSessionId === "string" ? args.chatSessionId.trim() : "";
   if (!chatSessionId) {
     throw new Error("Connecting an integration needs a chat to ask in. Run `ade integrations connect` from inside an ADE chat.");
@@ -125,16 +100,7 @@ export async function requestIntegrationConnect(
   if (!isConnectProviderId(provider)) {
     throw new Error(`Unknown integration "${provider}". Use one of: ${CONNECT_PROVIDER_IDS.join(", ")}.`);
   }
-  const key = `${chatSessionId}\u0000${provider}`;
-  const pending = inFlight.get(key);
-  if (pending) return await pending;
-  const ask = askToConnect(deps, args, chatSessionId, provider);
-  inFlight.set(key, ask);
-  try {
-    return await ask;
-  } finally {
-    if (inFlight.get(key) === ask) inFlight.delete(key);
-  }
+  return await joinInFlight(inFlight, `${chatSessionId}\u0000${provider}`, () => askToConnect(deps, args, chatSessionId, provider));
 }
 
 async function askToConnect(
@@ -150,12 +116,14 @@ async function askToConnect(
   if (!reason) {
     throw new Error("Say why you need the integration (--reason). The person decides from that one line.");
   }
-  const requestedTimeout = typeof args.timeoutMs === "number" && Number.isFinite(args.timeoutMs)
-    ? Math.floor(args.timeoutMs)
-    : INTEGRATION_CONNECT_DEFAULT_TIMEOUT_MS;
-  const timeoutMs = Math.min(Math.max(requestedTimeout, 10_000), INTEGRATION_CONNECT_MAX_TIMEOUT_MS);
+  const timeoutMs = cardTimeoutMs(args);
 
-  const before = await adapter.status().catch(() => null);
+  // A status that fails to read is treated as not connected: the card still
+  // asks, and the save checks the key with the provider.
+  const before = await adapter.status().catch((error: unknown) => {
+    captureError(error, { fingerprint: ["integration_connect", "status_read"], tags: { provider } });
+    return null;
+  });
   if (before?.connected) {
     return { provider, connected: true, method: "already", account: before.account, next: CONNECT_NEXT_STEP[provider] };
   }
@@ -207,8 +175,7 @@ async function askToConnect(
   const beforeAccept = async (answers: Record<string, string[]>): Promise<void> => {
     const chosen = connectMethod(provider, firstAnswer(answers, CONNECT_METHOD_QUESTION_ID))
       ?? (keyMethods.length === 1 ? keyMethods[0]! : null);
-    if (!chosen) throw new Error(`Pick how to connect ${spec.label}.`);
-    if (!offered.includes(chosen)) throw new Error(`Pick how to connect ${spec.label}.`);
+    if (!chosen || !offered.includes(chosen)) throw new Error(`Pick how to connect ${spec.label}.`);
     if (isSelfRunConnectMethod(chosen)) {
       // The card ran the sign-in itself; trust only what the integration says.
       const after = adapter.checkSignIn ? await adapter.checkSignIn(chosen.id) : await adapter.status();
@@ -243,14 +210,24 @@ async function askToConnect(
     questions,
   });
 
+  // The save may finish while the card is being closed (a timeout, the turn
+  // ending): once it ran, the integration is connected whatever the card says.
+  if (usedMethod) return connectedResult(provider, usedMethod, account);
   if (response.timedOut) {
     throw new Error(`Nobody connected ${spec.label} in time. Ask again when the person is around.`);
   }
-  if (response.decision === "decline" || response.decision === "cancel" || response.decision === "none" || !usedMethod) {
-    return { provider, connected: false, declined: true };
-  }
-  return { provider, connected: true, method: usedMethod, account, next: CONNECT_NEXT_STEP[provider] };
+  // Declined, closed, or accepted by a client that never ran the save.
+  return { provider, connected: false, declined: true };
 }
 
-/** Field ids, re-exported for the adapters so they read the same keys the card sends. */
-export { CONNECT_FIELD_IDS, normalizeConnectSiteInput };
+function connectedResult(
+  provider: ConnectProviderId,
+  method: ConnectMethodId,
+  account: string | null,
+): IntegrationConnectRequestResult {
+  const next = provider === "github" && method === "app"
+    ? "GitHub reads work through the ADE app. It cannot push or open PRs; ask again and pick Token when you need that."
+    : CONNECT_NEXT_STEP[provider];
+  return { provider, connected: true, method, account, next };
+}
+

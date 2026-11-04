@@ -10,6 +10,7 @@ import { formatCost, formatTokens } from "../../../lib/format";
 import { providerBrand, type ProviderBrandLogo } from "./providerBrand";
 import { providerStatusColor } from "./providerUi";
 import type { ProviderDescriptor, ProviderStatusState } from "./types";
+import "./providerPage.css";
 
 type HeroUsage = {
   tokens: number;

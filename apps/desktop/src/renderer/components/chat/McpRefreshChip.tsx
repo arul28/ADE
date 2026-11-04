@@ -2,6 +2,7 @@ import React from "react";
 import { Plugs } from "@phosphor-icons/react";
 
 import type { OpenProjectBinding } from "../../../shared/types";
+import { captureError } from "../../../shared/sentry/capture";
 import { restartAgentSession } from "../terminals/sessionLifecycleActions";
 import { StatusChip } from "../ui/notice/StatusChip";
 
@@ -49,7 +50,11 @@ export function McpRefreshChip({
     let active = true;
     void read({ chatSessionId: sessionId }, pinRef.current)
       .then((status) => { if (active) setMissing(Array.isArray(status?.missing) ? status.missing : []); })
-      .catch(() => { if (active) setMissing([]); });
+      .catch((error: unknown) => {
+        // No chip is the safe fallback; report why the read failed.
+        captureError(error, { fingerprint: ["mcp_refresh_chip", "chat_status_read"] });
+        if (active) setMissing([]);
+      });
     return () => { active = false; };
     // A rebuilt pin with the same key is the same machine.
     // eslint-disable-next-line react-hooks/exhaustive-deps

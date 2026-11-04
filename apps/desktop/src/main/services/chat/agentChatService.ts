@@ -233,7 +233,7 @@ import {
   type CrossMachineMoveLock,
 } from "../../../shared/crossMachineMoveLock";
 import { isUserOnlyConsentCard, USER_ONLY_CONSENT_CARD_REFUSAL } from "../../../shared/types/macDesktop";
-import { CONNECT_METHOD_QUESTION_ID, connectProviderSpec, readIntegrationConnectRequestCard } from "../../../shared/integrationConnect";
+import { CONNECT_METHOD_QUESTION_ID, connectMethod, connectProviderSpec, isSelfRunConnectMethod, readIntegrationConnectRequestCard } from "../../../shared/integrationConnect";
 import { readMcpServerRequestCard } from "../../../shared/mcpServerRequest";
 import { personalHostPathContext, validatePersonalAttachmentRoots } from "./personalHostPaths";
 import { MAX_PERSONAL_CHAT_ATTACHMENT_ROOTS } from "../../../shared/types/personalChats";
@@ -69564,11 +69564,12 @@ export function createAgentChatService(args: {
     const connectCard = readIntegrationConnectRequestCard(request);
     const mcpServerCard = readMcpServerRequestCard(request);
     const connectLabel = connectCard ? connectProviderSpec(connectCard.provider).label : null;
-    // A browser sign-in finished on its own before the answer; a typed key
-    // was never saved, because only the asker's host saves it.
+    // A browser or device sign-in finished on its own before the answer; a
+    // typed key was never saved, because only the asker's host saves it.
     const connectMethodAnswer = answer?.answers?.[CONNECT_METHOD_QUESTION_ID];
-    const connectSignedIn = connectCard != null
-      && (Array.isArray(connectMethodAnswer) ? connectMethodAnswer.includes("oauth") : connectMethodAnswer === "oauth");
+    const connectMethodId = Array.isArray(connectMethodAnswer) ? connectMethodAnswer[0] : connectMethodAnswer;
+    const connectAnswered = connectCard ? connectMethod(connectCard.provider, typeof connectMethodId === "string" ? connectMethodId : null) : null;
+    const connectSignedIn = connectAnswered != null && isSelfRunConnectMethod(connectAnswered);
     settleDeadPendingInput(
       managed,
       itemId,
@@ -75718,13 +75719,21 @@ export function createAgentChatService(args: {
       });
       args.signal?.addEventListener("abort", () => cancelLocalPendingInput(managed, itemId), { once: true });
       if (args.timeoutMs && args.timeoutMs > 0) {
-        expiry = setTimeout(() => {
+        const expire = () => {
+          const pending = managed.localPendingInputs.get(itemId);
           // Answered, or cancelled by a turn ending, in the meantime.
-          if (managed.localPendingInputs.get(itemId)?.resolve !== resolve) return;
+          if (pending?.resolve !== resolve) return;
+          // An answer still saving (`beforeAccept`) finishes first, so a key
+          // that was saved is never reported as timed out.
+          if (pending.accepting) {
+            expiry = setTimeout(expire, 1_000);
+            return;
+          }
           timedOut = true;
           cancelLocalPendingInput(managed, itemId);
           persistChatState(managed);
-        }, args.timeoutMs);
+        };
+        expiry = setTimeout(expire, args.timeoutMs);
       }
     }).finally(() => {
       if (expiry) clearTimeout(expiry);

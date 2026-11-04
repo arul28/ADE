@@ -24,7 +24,7 @@ export type ConnectProviderId = "github" | "linear" | "jira";
 export const CONNECT_PROVIDER_IDS: readonly ConnectProviderId[] = ["github", "linear", "jira"];
 
 export function isConnectProviderId(value: unknown): value is ConnectProviderId {
-  return value === "github" || value === "linear" || value === "jira";
+  return (CONNECT_PROVIDER_IDS as readonly unknown[]).includes(value);
 }
 
 /** `providerMetadata` key on the card. Its presence makes the card user-only. */
@@ -55,22 +55,25 @@ export type ConnectMethod = {
   /** Where to make the key, when the method needs one. */
   help?: { label: string; url: string };
   /**
-   * A browser sign-in the card runs itself; no fields. It returns to a port on
-   * the chat's machine, so the card offers it only when that is this computer.
+   * A sign-in the card runs itself; no fields.
+   * - `browser` returns to a port on the chat's machine, so the card offers it
+   *   only when that is this computer.
+   * - `device` is a code the person enters on the provider's site; it works
+   *   from any computer.
    */
-  browser?: boolean;
-  /** A device-code sign-in the card runs itself; no fields. The code works from any computer. */
-  device?: boolean;
+  signIn?: "browser" | "device";
 };
 
 /** Whether the card runs this method itself and answers with the method alone. */
-export function isSelfRunConnectMethod(method: Pick<ConnectMethod, "browser" | "device">): boolean {
-  return method.browser === true || method.device === true;
+export function isSelfRunConnectMethod(method: Pick<ConnectMethod, "signIn">): boolean {
+  return method.signIn != null;
 }
 
 export type ConnectProviderSpec = {
   id: ConnectProviderId;
   label: string;
+  /** Where the credential lands: this project (on every machine that has it), or the whole account. */
+  savedScope: "project" | "account";
   /** Where the credential lands, in one plain sentence. */
   savedWhere: string;
   methods: readonly ConnectMethod[];
@@ -90,6 +93,7 @@ const PROVIDERS: Record<ConnectProviderId, ConnectProviderSpec> = {
   linear: {
     id: "linear",
     label: "Linear",
+    savedScope: "project",
     savedWhere: "Saved for this project, on all your machines.",
     settingsSection: "integrations.linear",
     methods: [
@@ -98,7 +102,7 @@ const PROVIDERS: Record<ConnectProviderId, ConnectProviderSpec> = {
         label: "Sign in",
         hint: "Opens Linear in your browser. Approve ADE and you are done.",
         fields: [],
-        browser: true,
+        signIn: "browser",
       },
       {
         id: "api_key",
@@ -112,6 +116,7 @@ const PROVIDERS: Record<ConnectProviderId, ConnectProviderSpec> = {
   jira: {
     id: "jira",
     label: "Jira",
+    savedScope: "project",
     savedWhere: "Saved for this project, on all your machines.",
     settingsSection: "integrations.jira",
     methods: [
@@ -131,6 +136,7 @@ const PROVIDERS: Record<ConnectProviderId, ConnectProviderSpec> = {
   github: {
     id: "github",
     label: "GitHub",
+    savedScope: "account",
     savedWhere: "Saved to your account, on all your machines.",
     settingsSection: "integrations.github",
     methods: [
@@ -152,7 +158,7 @@ const PROVIDERS: Record<ConnectProviderId, ConnectProviderSpec> = {
         label: "ADE app",
         hint: "Sign in with ADE's GitHub app. It reads and edits issues, but cannot push or open PRs.",
         fields: [],
-        device: true,
+        signIn: "device",
       },
     ],
   },

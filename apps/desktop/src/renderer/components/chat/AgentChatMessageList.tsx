@@ -246,11 +246,9 @@ import { buildLegacyPendingInputFromApprovalEvent } from "./pendingInput";
 import { readPendingInputRequest } from "../../../shared/pendingInputRequest";
 import { AnsweredQuestionReceipt, OpenQuestionReceipt } from "./QuestionReceipts";
 import { ProjectSecretRequestReceipt } from "./ProjectSecretCard";
-import { readProjectSecretRequestCard } from "../../../shared/projectSecretRequest";
 import { IntegrationConnectReceipt } from "./IntegrationConnectCard";
-import { readIntegrationConnectRequestCard } from "../../../shared/integrationConnect";
 import { McpServerRequestReceipt } from "./McpServerCard";
-import { readMcpServerRequestCard } from "../../../shared/mcpServerRequest";
+import { readNativeInputCard } from "../../../shared/nativeInputCards";
 import { isQuestionKind } from "../../../shared/pendingInputAnswers";
 import { CodexPlanCard } from "./codex/CodexPlanCard";
 import { ChatTaskListCard } from "./ChatTaskListCard";
@@ -4355,37 +4353,35 @@ function renderEvent(
        resolves, and a one-line "awaiting you" row while it is still open (which
        is also where a *queued* second question waits until it becomes the
        composer's primary gate). */
-    const secretRequestCard = pendingRequest ? readProjectSecretRequestCard(pendingRequest) : null;
-    if (secretRequestCard) {
+    const nativeCard = readNativeInputCard(pendingRequest);
+    if (nativeCard?.kind === "secret") {
       // The private secret card's record. Its value never reached the event,
       // so the receipt is built from the name and the outcome alone.
       return (
         <ProjectSecretRequestReceipt
-          card={secretRequestCard}
+          card={nativeCard.card}
           resolution={isResolved ? (resolvedState ?? "cancelled") : null}
           answers={options?.resolvedInputAnswers?.get(event.itemId)}
         />
       );
     }
 
-    const connectRequestCard = pendingRequest ? readIntegrationConnectRequestCard(pendingRequest) : null;
-    if (connectRequestCard) {
+    if (nativeCard?.kind === "connect") {
       // The connect card's record: the provider and the method only.
       return (
         <IntegrationConnectReceipt
-          card={connectRequestCard}
+          card={nativeCard.card}
           resolution={isResolved ? (resolvedState ?? "cancelled") : null}
           answers={options?.resolvedInputAnswers?.get(event.itemId)}
         />
       );
     }
 
-    const mcpServerRequestCard = pendingRequest ? readMcpServerRequestCard(pendingRequest) : null;
-    if (mcpServerRequestCard) {
+    if (nativeCard?.kind === "mcp-server") {
       // The MCP server card's record: the definition and the approval only.
       return (
         <McpServerRequestReceipt
-          card={mcpServerRequestCard}
+          card={nativeCard.card}
           resolution={isResolved ? (resolvedState ?? "cancelled") : null}
           answers={options?.resolvedInputAnswers?.get(event.itemId)}
         />

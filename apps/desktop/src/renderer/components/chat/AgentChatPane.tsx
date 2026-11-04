@@ -366,8 +366,7 @@ import {
   retainChatSession,
 } from "./chatSessionRetention";
 import { settingsRouteFor } from "../settings/settingsManifest";
-import { readIntegrationConnectRequestCard } from "../../../shared/integrationConnect";
-import { readMcpServerRequestCard } from "../../../shared/mcpServerRequest";
+import { cardShowsOwnError, readNativeInputCard } from "../../../shared/nativeInputCards";
 import { ClaudeLoginPromptButton } from "../work/ClaudeLoginPromptButton";
 import type { ComposerClaudeSignInTarget } from "./ComposerClaudeSignIn";
 import { CHAT_AUTH_RECOVERED_EVENT, CHAT_AUTH_RETRY_REJECTED_EVENT, CHAT_RETRY_AUTH_TURN_EVENT } from "./AgentCliAuthCard";
@@ -15924,8 +15923,7 @@ export function AgentChatPane({
     // card open and still asking.
     if (!selectedSessionId || !pendingInput) return false;
     return await handleApproval(pendingInput.itemId, decision, responseText, answers, {
-      inlineError: readIntegrationConnectRequestCard(pendingInput.request) != null
-        || readMcpServerRequestCard(pendingInput.request) != null,
+      inlineError: cardShowsOwnError(readNativeInputCard(pendingInput.request)),
     });
   }, [handleApproval, pendingInput, selectedSessionId]);
 

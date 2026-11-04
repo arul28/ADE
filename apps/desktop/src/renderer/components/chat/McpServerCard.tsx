@@ -1,5 +1,5 @@
-import { useCallback, useState, type KeyboardEvent } from "react";
-import { ArrowSquareOut, CheckCircle, Copy, Eye, EyeSlash, GearSix, LockKey, Plugs, Prohibit, SpinnerGap, Warning, X } from "@phosphor-icons/react";
+import { useCallback, useState } from "react";
+import { ArrowSquareOut, Copy, LockKey, Plugs, SpinnerGap } from "@phosphor-icons/react";
 import type { PendingInputRequest } from "../../../shared/types";
 import { MCP_TRANSPORT_LABEL } from "../../../shared/mcpRegistry";
 import { matchMcpCatalogue, mcpCatalogueEntry, type McpCatalogueEntry } from "../../../shared/mcpCatalogue";
@@ -7,28 +7,20 @@ import {
   MCP_SERVER_APPROVE_QUESTION_ID,
   MCP_SERVER_APPROVE_VALUE,
   mcpServerRequestAnswers,
-  mcpServerRunsLabel,
   type McpServerRequestCard,
-  type McpServerRequestSecret,
 } from "../../../shared/mcpServerRequest";
 import { ownQuestionValue } from "../../../shared/pendingInputAnswers";
 import { cardAskerFamily, providerDisplayName } from "../../../shared/pendingInputLabels";
-import { navigateToAppTarget } from "../../lib/openExternal";
-import { isImeComposing } from "../../lib/imeComposition";
+import { navigateToAppTarget, openExternalUrl } from "../../lib/openExternal";
 import { integrationThemeVars } from "../settings/integrations/integrationBrand";
 import { MCP_ACCENT, mcpCatalogueBrand } from "../settings/mcp/mcpCatalogueBrand";
+import { McpRunsLine } from "../settings/mcp/McpRunsLine";
 import { SolidLogo } from "../settings/providers/ProviderHero";
 import { ProviderLogo } from "../shared/ProviderLogos";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
 import { chatSettingsMachineId } from "./chatDeeplinks";
-import { ChatCard, ChatCardRow, ChatCardSub, ChatCardTitle } from "./chatCardPrimitives";
-import "../settings/providers/providerPage.css";
-import "./integrationConnectCard.css";
+import { CardBannerButtons, CardError, CardFieldInput, CardHeading, CardReceipt, cardEscapeHandler } from "./composerCardParts";
 import "./mcpServerCard.css";
-
-function openUrl(url: string): void {
-  void window.ade?.app?.openExternal?.(url);
-}
 
 /**
  * The MCP server card.
@@ -45,60 +37,6 @@ function openUrl(url: string): void {
  * with the reason.
  */
 
-function SecretFieldInput({
-  secret,
-  label,
-  value,
-  onChange,
-  onSubmit,
-  disabled,
-  autoFocus,
-}: {
-  secret: McpServerRequestSecret;
-  /** The catalogue's name for it ("API key"); absent: the variable or header name. */
-  label: string | null;
-  value: string;
-  onChange: (next: string) => void;
-  onSubmit: () => void;
-  disabled: boolean;
-  autoFocus: boolean;
-}) {
-  const [revealed, setRevealed] = useState(false);
-  return (
-    <span className="ade-icc-input" data-secret="true" title={`${secret.name} (${secret.field === "env" ? "env variable" : "header"})`}>
-      <input
-        type={revealed ? "text" : "password"}
-        aria-label={label ?? secret.name}
-        value={value}
-        disabled={disabled}
-        autoFocus={autoFocus}
-        autoComplete="new-password"
-        spellCheck={false}
-        autoCapitalize="off"
-        autoCorrect="off"
-        placeholder={label ?? secret.name}
-        data-testid={`mcp-server-field-${secret.questionId}`}
-        onChange={(event) => onChange(event.target.value)}
-        onKeyDown={(event) => {
-          if (event.key !== "Enter" || event.shiftKey || isImeComposing(event)) return;
-          event.preventDefault();
-          onSubmit();
-        }}
-      />
-      <button
-        type="button"
-        className="ade-icc-icon-button"
-        disabled={disabled}
-        aria-label={revealed ? "Hide" : "Show"}
-        title={revealed ? "Hide" : "Show"}
-        onClick={() => setRevealed((prev) => !prev)}
-      >
-        {revealed ? <EyeSlash size={13} /> : <Eye size={13} />}
-      </button>
-    </span>
-  );
-}
-
 function toolList(providers: readonly string[]): string {
   const names = providers.map(providerDisplayName);
   if (names.length <= 1) return names.join("");
@@ -106,7 +44,7 @@ function toolList(providers: readonly string[]): string {
 }
 
 /** The catalogue entry a card's server is: the one it was built from, or the one its URL or package matches. */
-export function cardCatalogueEntry(card: McpServerRequestCard): McpCatalogueEntry | null {
+function cardCatalogueEntry(card: McpServerRequestCard): McpCatalogueEntry | null {
   return mcpCatalogueEntry(card.catalogueId) ?? matchMcpCatalogue(card.server);
 }
 
@@ -143,7 +81,8 @@ export function McpServerRequestComposer({
   // A catalogue server that signs in through the browser: ADE signs in first,
   // on this computer, into the account vault, then adds it. The server finds
   // its sign-in already there on every machine.
-  const signsIn = entry?.auth === "oauth" && server.transport !== "stdio" && Boolean(window.ade?.mcpRegistry?.signIn);
+  const signIn = window.ade?.mcpRegistry?.signIn;
+  const signsIn = entry?.auth === "oauth" && server.transport !== "stdio" && Boolean(signIn);
   const [signingIn, setSigningIn] = useState(false);
   const [signInError, setSignInError] = useState<string | null>(null);
   const busy = responding || signingIn;
@@ -152,20 +91,20 @@ export function McpServerRequestComposer({
     if (busy) return;
     const answers: Record<string, string> = {};
     for (const secret of asked) answers[secret.questionId] = values[secret.questionId] ?? "";
-    if (!signsIn) {
+    if (!signsIn || !signIn) {
       onAdd(mcpServerRequestAnswers(answers));
       return;
     }
     setSigningIn(true);
     setSignInError(null);
-    void window.ade.mcpRegistry!.signIn({ server })
+    void signIn({ server })
       .then((result) => {
         if (result.ok) onAdd(mcpServerRequestAnswers(answers));
         else if (!("cancelled" in result && result.cancelled)) setSignInError(result.message);
       })
       .catch((signInFailure: unknown) => setSignInError(signInFailure instanceof Error ? signInFailure.message : "The sign-in did not finish."))
       .finally(() => setSigningIn(false));
-  }, [asked, busy, onAdd, server, signsIn, values]);
+  }, [asked, busy, onAdd, server, signIn, signsIn, values]);
 
   const cancelSignIn = useCallback(() => {
     void window.ade?.mcpRegistry?.cancelSignIn({ server: server.name });
@@ -176,34 +115,26 @@ export function McpServerRequestComposer({
     navigateToAppTarget({ kind: "settings", entryId: "mcp.servers", machineId: chatSettingsMachineId(scope) });
   }, [scope]);
 
-  const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (isImeComposing(event)) return;
-    if (event.key === "Escape") {
-      event.preventDefault();
-      event.stopPropagation();
-      if (signingIn) cancelSignIn();
-      else if (!responding) onDecline();
-    }
-  };
+  const onKeyDown = cardEscapeHandler({ signingIn, cancelSignIn, responding, onDecline });
 
   const askerFamily = cardAskerFamily(request.source, chatProvider);
   const asker = providerDisplayName(askerFamily);
   const title = entry?.name ?? server.name;
   const savedTitle = `Saved to your account, on all your machines.${card.secrets.length ? " Values are never shown to the agent." : ""}`;
   const shownError = signInError ?? error;
+  // The catalogue's name for a value ("API key"); otherwise the variable or header name.
+  const secretLabel = (name: string) => entry?.secrets?.find((candidate) => candidate.name === name)?.label ?? name;
 
   // With nothing to type, what runs and the button share one line.
   const inlineRuns = !asked.length && !copied.length;
   const runs = (
-    <div className="ade-mcpc-runs" data-inline={inlineRuns || undefined} data-testid="mcp-server-runs">
-      <span className="ade-mcpc-runs-label">{mcpServerRunsLabel(server)}</span>
-      <code className="ade-mcpc-runs-line">{card.runs}</code>
+    <McpRunsLine server={server} line={card.runs} inline={inlineRuns}>
       {card.source === "imported" && card.providers.length ? (
         <span className="ade-mcpc-from" title={`In ${toolList(card.providers)}'s settings on this computer`}>
           {card.providers.slice(0, 3).map((provider) => <ProviderLogo key={provider} family={provider} size={11} />)}
         </span>
       ) : null}
-    </div>
+    </McpRunsLine>
   );
   return (
     <div
@@ -226,13 +157,7 @@ export function McpServerRequestComposer({
             <span className="ade-mcpc-tile" aria-hidden><Plugs size={17} weight="duotone" /></span>
           )}
         </span>
-        <span className="ade-icc-heading">
-          <span className="ade-icc-asker" title={asker}><ProviderLogo family={askerFamily} size={11} /></span>
-          <span className="ade-icc-heading-text">
-            <span className="ade-icc-heading-dim">{asker} asks to add </span>
-            <span className={entry ? "ade-icc-title" : "ade-icc-title ade-mcpc-title-mono"}>{title}</span>
-          </span>
-        </span>
+        <CardHeading askerFamily={askerFamily} asker={asker} verb="asks to add" title={title} mono={!entry} />
         <span className="ade-icc-banner-tools">
           {entry ? (
             <span className="ade-icc-chip" title={`${entry.publisher}'s own server, set up by ADE.`} data-testid="mcp-server-publisher">
@@ -244,27 +169,7 @@ export function McpServerRequestComposer({
             </span>
           )}
           <span className="ade-icc-chip" data-testid="mcp-server-transport">{MCP_TRANSPORT_LABEL[server.transport]}</span>
-          <button
-            type="button"
-            className="ade-icc-close"
-            title="Open in Settings"
-            aria-label="Open in Settings"
-            data-testid="mcp-server-settings"
-            onClick={openSettings}
-          >
-            <GearSix size={13} weight="bold" />
-          </button>
-          <button
-            type="button"
-            className="ade-icc-close"
-            disabled={responding}
-            title="Not now (Esc)"
-            aria-label="Not now"
-            data-testid="mcp-server-decline"
-            onClick={onDecline}
-          >
-            <X size={13} weight="bold" />
-          </button>
+          <CardBannerButtons onOpenSettings={openSettings} onDecline={onDecline} responding={responding} testIdPrefix="mcp-server" />
         </span>
       </div>
 
@@ -278,15 +183,18 @@ export function McpServerRequestComposer({
           {asked.length ? (
             <span className="ade-icc-fields" title={savedTitle}>
               {asked.map((secret, index) => (
-                <SecretFieldInput
+                <CardFieldInput
                   key={secret.questionId}
-                  secret={secret}
-                  label={entry?.secrets?.find((candidate) => candidate.name === secret.name)?.label ?? null}
+                  kind="secret"
+                  label={secretLabel(secret.name)}
+                  placeholder={secretLabel(secret.name)}
+                  title={`${secret.name} (${secret.field === "env" ? "env variable" : "header"})`}
                   value={values[secret.questionId] ?? ""}
                   onChange={(next) => setValues((prev) => ({ ...prev, [secret.questionId]: next }))}
                   onSubmit={add}
                   disabled={busy}
                   autoFocus={index === 0}
+                  testId={`mcp-server-field-${secret.questionId}`}
                 />
               ))}
             </span>
@@ -297,7 +205,7 @@ export function McpServerRequestComposer({
             </span>
           ) : null}
           {asked.length && entry?.tokenUrl ? (
-            <button type="button" className="ade-icc-link" onClick={() => openUrl(entry.tokenUrl!)}>
+            <button type="button" className="ade-icc-link" onClick={() => openExternalUrl(entry.tokenUrl)}>
               Get a key
               <ArrowSquareOut size={10} weight="bold" />
             </button>
@@ -326,12 +234,7 @@ export function McpServerRequestComposer({
           </button>
         </div>
 
-        {shownError ? (
-          <div className="ade-icc-error" role="alert" data-testid="mcp-server-error">
-            <Warning size={13} weight="fill" />
-            <span>{shownError}</span>
-          </div>
-        ) : null}
+        {shownError ? <CardError id="mcp-server-error" message={shownError} /> : null}
       </div>
     </div>
   );
@@ -353,27 +256,16 @@ export function McpServerRequestReceipt({
   const entry = cardCatalogueEntry(card);
   const brand = entry ? mcpCatalogueBrand(entry) : null;
   const logo = brand ? (
-    <span className="ade-mcpc-receipt-logo" style={{ ...brand.banner, color: brand.logo.face }} aria-hidden>
+    <span className="ade-icc-receipt-logo" style={{ ...brand.banner, color: brand.logo.face }} aria-hidden>
       {brand.logo.mark(11)}
     </span>
   ) : (
-    <span className="ade-mcpc-receipt-logo" aria-hidden>
+    <span className="ade-icc-receipt-logo ade-mcpc-receipt-plain" aria-hidden>
       <Plugs size={11} weight="bold" />
     </span>
   );
   if (resolution === null) {
-    return (
-      <ChatCard skin="line" data-testid="mcp-server-receipt-open">
-        <ChatCardRow tone="running" meta="awaiting you">
-          <ChatCardTitle>
-            <span className="inline-flex items-center gap-1.5 align-middle">
-              {logo}
-              <span><span className="font-normal text-fg/55">Add MCP server </span>{card.server.name}</span>
-            </span>
-          </ChatCardTitle>
-        </ChatCardRow>
-      </ChatCard>
-    );
+    return <CardReceipt testId="mcp-server-receipt-open" logo={logo} state="open" before="Add MCP server " name={card.server.name} />;
   }
   const raw = ownQuestionValue(answers, MCP_SERVER_APPROVE_QUESTION_ID);
   const approval = Array.isArray(raw) ? raw[0] : raw;
@@ -383,16 +275,13 @@ export function McpServerRequestReceipt({
     ? "added to your MCP servers · on all your machines"
     : resolution === "cancelled" ? "· closed before it was answered" : "· not now";
   return (
-    <ChatCard skin="line" data-testid="mcp-server-receipt">
-      <ChatCardRow tone={added ? "ok" : "idle"} icon={added ? CheckCircle : Prohibit}>
-        <ChatCardTitle>
-          <span className="inline-flex items-center gap-1.5 align-middle">
-            {logo}
-            <span>{card.server.name}<span className="font-normal text-fg/55"> {text}</span></span>
-          </span>
-        </ChatCardTitle>
-        <ChatCardSub><span className="font-mono">{card.runs}</span></ChatCardSub>
-      </ChatCardRow>
-    </ChatCard>
+    <CardReceipt
+      testId="mcp-server-receipt"
+      logo={logo}
+      state={added ? "done" : "not-done"}
+      name={card.server.name}
+      after={text}
+      sub={<span className="font-mono">{card.runs}</span>}
+    />
   );
 }

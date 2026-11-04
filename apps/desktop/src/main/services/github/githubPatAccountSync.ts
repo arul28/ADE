@@ -15,17 +15,18 @@
 import type { SyncCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
 import { ACCOUNT_SCOPE_ALL } from "../../../shared/accountSettingsScope";
 import type { AccountVaultBridge } from "../account/accountVaultBridge";
+import { readAccountVaultItem, safeVault } from "../account/accountVaultRead";
 import { describeVaultFailure, fireAndForgetVaultWrite } from "../account/vaultWrite";
 import {
   describeIntegrationCredentialStorage,
   type IntegrationCredentialStorage,
 } from "../account/integrationCredentialStorage";
 
-export const GITHUB_PAT_MACHINE_KEY = "github.token.v1";
+const GITHUB_PAT_MACHINE_KEY = "github.token.v1";
 /** "account" when the machine's token was copied from the vault. */
 const GITHUB_PAT_SOURCE_KEY = "github.token.source.v1";
-export const GITHUB_PAT_VAULT_KIND = "integration";
-export const GITHUB_PAT_VAULT_KEY = "github";
+const GITHUB_PAT_VAULT_KIND = "integration";
+const GITHUB_PAT_VAULT_KEY = "github";
 
 type Logger = {
   info?(event: string, meta?: Record<string, unknown>): void;
@@ -54,13 +55,11 @@ export type GithubPatAccountSyncArgs = {
 
 export function createGithubPatAccountSync(args: GithubPatAccountSyncArgs) {
   const accountUserId = (): string | null => args.getAccountUserId?.()?.trim() || null;
-  const resolveVault = (): AccountVaultBridge | null => {
-    try {
-      return args.getAccountVault?.() ?? null;
-    } catch {
-      return null;
-    }
+  const logFailure = (operation: string, detail: unknown): void => {
+    args.logger?.warn?.("github.account_vault_sync_failed", { operation, error: describeVaultFailure(detail) });
   };
+  const resolveVault = (): AccountVaultBridge | null =>
+    safeVault(args.getAccountVault, (error) => logFailure("resolve_vault", error));
   const store = args.credentialStore ?? null;
   const readLocal = (): string | null => store?.getSync(GITHUB_PAT_MACHINE_KEY)?.trim() || null;
   const localIsFromAccount = (): boolean => store?.getSync(GITHUB_PAT_SOURCE_KEY) === "account";
@@ -122,27 +121,18 @@ export function createGithubPatAccountSync(args: GithubPatAccountSyncArgs) {
       const userId = accountUserId();
       const vault = resolveVault();
       if (!userId || !vault || !store) return;
-      let deleted = false;
-      let present = false;
-      let remoteRaw: string | null = null;
-      try {
-        const listed = await vault.list(ACCOUNT_SCOPE_ALL);
-        if (!listed.ok) return;
-        const item = listed.value.find((entry) =>
-          entry.scope === ACCOUNT_SCOPE_ALL && entry.kind === GITHUB_PAT_VAULT_KIND && entry.key === GITHUB_PAT_VAULT_KEY);
-        deleted = item?.deleted === true;
-        present = Boolean(item) && !deleted;
-        if (present) {
-          const got = await vault.get(ACCOUNT_SCOPE_ALL, GITHUB_PAT_VAULT_KIND, GITHUB_PAT_VAULT_KEY);
-          if (!got.ok) return;
-          remoteRaw = got.value;
-        }
-      } catch (error) {
-        args.logger?.warn?.("github.account_vault_sync_failed", { operation: "read", error: describeVaultFailure(error) });
-        return;
-      }
+      const read = await readAccountVaultItem(
+        vault,
+        { scope: ACCOUNT_SCOPE_ALL, kind: GITHUB_PAT_VAULT_KIND, key: GITHUB_PAT_VAULT_KEY },
+        decodeToken,
+        logFailure,
+      );
+      if (!read) return;
       if (accountUserId() !== userId) return;
-      const remote = decodeToken(remoteRaw);
+      const deleted = read.item?.deleted === true;
+      const present = Boolean(read.item) && !deleted;
+      const remoteRaw = read.raw;
+      const remote = read.value;
       try {
         const local = readLocal();
         const fromAccount = local ? localIsFromAccount() : false;
@@ -168,7 +158,7 @@ export function createGithubPatAccountSync(args: GithubPatAccountSyncArgs) {
         }
         args.logger?.warn?.("github.account_vault_collision", {});
       } catch (error) {
-        args.logger?.warn?.("github.account_vault_sync_failed", { operation: "hydrate", error: describeVaultFailure(error) });
+        logFailure("hydrate", error);
       }
     },
 

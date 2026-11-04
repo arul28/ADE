@@ -2,9 +2,10 @@
  * Add one server from ADE's catalogue, from Settings › Integrations.
  *
  * The definition is the catalogue's, so the person reads what runs and types
- * only the key it needs. A server that signs in through the browser is added,
- * then signed in, the way its row on the MCP servers page does it; the token
- * goes to the account vault, so every machine finds it.
+ * only the key it needs. A server that signs in through the browser signs in
+ * first, the way the chat's MCP server card does it, and is added only when
+ * the sign-in finishes; the token goes to the account vault, so every machine
+ * finds it.
  */
 import React, { useState } from "react";
 import { ArrowSquareOut } from "@phosphor-icons/react";
@@ -14,20 +15,17 @@ import {
   type McpCatalogueEntry,
 } from "../../../../shared/mcpCatalogue";
 import type { McpSecretField } from "../../../../shared/mcpRegistry";
-import { mcpServerRunsLabel, mcpServerRunsLine } from "../../../../shared/mcpServerRequest";
 import { Dialog } from "../../ui/dialog";
 import { Banner } from "../../ui/notice";
 import { showToast } from "../../app/toast/toastStore";
 import { SolidLogo } from "../providers/ProviderHero";
 import { integrationThemeVars } from "../integrations/integrationBrand";
+import { openExternalUrl } from "../../../lib/openExternal";
+import { CardFieldInput } from "../../chat/composerCardParts";
 import { mcpCatalogueBrand } from "./mcpCatalogueBrand";
-import "../../chat/integrationConnectCard.css";
-import "../../chat/mcpServerCard.css";
+import { McpRunsLine } from "./McpRunsLine";
 import type { McpRegistryApi, McpSecretValue } from "./useMcpRegistry";
-
-function openUrl(url: string): void {
-  void window.ade?.app?.openExternal?.(url);
-}
+import "../integrations/integrationPage.css";
 
 export function McpCatalogueAddDialog({
   entry,
@@ -45,12 +43,22 @@ export function McpCatalogueAddDialog({
   const field: McpSecretField = server.transport === "stdio" ? "env" : "header";
   const signsIn = entry.auth === "oauth";
   const [values, setValues] = useState<Record<string, string>>({});
-  const [phase, setPhase] = useState<"idle" | "saving" | "signing-in">("idle");
+  const [phase, setPhase] = useState<"idle" | "signing-in" | "saving">("idle");
   const [error, setError] = useState<string | null>(null);
   const busy = phase !== "idle";
 
   const add = async () => {
     setError(null);
+    if (signsIn) {
+      // Signed in first: a sign-in that fails or is cancelled adds nothing.
+      setPhase("signing-in");
+      const result = await registry.signIn(server);
+      if (!result.ok) {
+        setPhase("idle");
+        if (!result.cancelled) setError(result.message);
+        return;
+      }
+    }
     setPhase("saving");
     const secrets: McpSecretValue[] = (entry.secrets ?? [])
       .map((secret) => ({ field, name: secret.name, value: mcpCatalogueSecretValue(entry, secret.name, (values[secret.name] ?? "").trim()) }))
@@ -61,33 +69,24 @@ export function McpCatalogueAddDialog({
       setError(saveError);
       return;
     }
-    if (!signsIn) {
-      showToast({ tone: "success", title: `Added ${entry.name}`, message: "New chats get it from now on." });
-      onAdded();
-      return;
-    }
-    setPhase("signing-in");
-    const result = await registry.signIn(server);
-    if (result.ok) {
-      showToast({ tone: "success", title: `Added ${entry.name}`, message: "Signed in. New chats get it, on every computer." });
-    } else {
-      showToast({
-        tone: result.cancelled ? "info" : "warning",
-        title: `Added ${entry.name}, not signed in`,
-        message: result.cancelled ? "Sign in from its row in Integrations › MCP servers." : result.message,
-      });
-    }
+    showToast({
+      tone: "success",
+      title: `Added ${entry.name}`,
+      message: signsIn ? "Signed in. New chats get it, on every computer." : "New chats get it from now on.",
+    });
     onAdded();
+  };
+
+  // Closing stops a sign-in that is still waiting for the browser.
+  const close = () => {
+    if (phase === "signing-in") registry.cancelSignIn(server.name);
+    onClose();
   };
 
   return (
     <Dialog
       open
-      onOpenChange={(next) => {
-        if (next) return;
-        if (phase === "signing-in") registry.cancelSignIn(server.name);
-        onClose();
-      }}
+      onOpenChange={(next) => { if (!next) close(); }}
       title={`Add ${entry.name}`}
       size="sm"
       dismissible={phase !== "saving"}
@@ -102,7 +101,7 @@ export function McpCatalogueAddDialog({
           busy,
           disabled: busy,
         },
-        { label: "Cancel", onClick: onClose, disabled: phase === "saving" },
+        { label: "Cancel", onClick: close, disabled: phase === "saving" },
       ]}
     >
       <div className="ade-ix-dialog" style={integrationThemeVars(brand.accent)}>
@@ -114,34 +113,30 @@ export function McpCatalogueAddDialog({
           </div>
         </div>
         <p className="ade-ix-dialog-desc">{entry.description}</p>
-        <div className="ade-mcpc-runs">
-          <span className="ade-mcpc-runs-label">{mcpServerRunsLabel(server)}</span>
-          <code className="ade-mcpc-runs-line">{mcpServerRunsLine(server)}</code>
-        </div>
+        <McpRunsLine server={server} />
         {(entry.secrets ?? []).map((secret, index) => (
           <label key={secret.name} className="ade-ap-field">
             <span className="ade-ap-field-label">{secret.label}</span>
-            <input
-              className="ade-ap-input"
-              type="password"
-              autoComplete="new-password"
-              spellCheck={false}
-              autoFocus={index === 0}
-              disabled={busy}
+            <CardFieldInput
+              kind="secret"
+              label={secret.label}
               placeholder={secret.name}
               value={values[secret.name] ?? ""}
-              onChange={(event) => setValues((prev) => ({ ...prev, [secret.name]: event.target.value }))}
-              onKeyDown={(event) => { if (event.key === "Enter" && !busy) void add(); }}
+              onChange={(next) => setValues((prev) => ({ ...prev, [secret.name]: next }))}
+              onSubmit={() => { if (!busy) void add(); }}
+              disabled={busy}
+              autoFocus={index === 0}
+              testId={`mcp-catalogue-field-${secret.name}`}
             />
           </label>
         ))}
         <div className="ade-ix-dialog-links">
           {entry.tokenUrl && entry.secrets?.length ? (
-            <button type="button" className="ade-icc-link" onClick={() => openUrl(entry.tokenUrl!)}>
+            <button type="button" className="ade-ig-link" onClick={() => openExternalUrl(entry.tokenUrl)}>
               Get a key <ArrowSquareOut size={10} weight="bold" />
             </button>
           ) : null}
-          <button type="button" className="ade-icc-link ade-icc-link-dim" onClick={() => openUrl(entry.docsUrl)}>
+          <button type="button" className="ade-ig-link" data-dim="true" onClick={() => openExternalUrl(entry.docsUrl)}>
             {entry.name}'s docs <ArrowSquareOut size={10} weight="bold" />
           </button>
         </div>
