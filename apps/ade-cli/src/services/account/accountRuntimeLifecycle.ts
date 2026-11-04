@@ -182,6 +182,8 @@ export function createAccountRuntimeLifecycle(options: AccountRuntimeLifecycleOp
       for (const [source, service] of [
         ["project_secrets", context.projectSecretService],
         ["linear_credentials", context.linearCredentialService],
+        ["jira_credentials", context.jiraCredentialService],
+        ["github_pat", context.githubService ? { purgeAccountCredentials: context.githubService.purgeAccountPat } : null],
       ] as const) {
         try {
           service?.purgeAccountCredentials?.();
@@ -276,6 +278,11 @@ export function createAccountRuntimeLifecycle(options: AccountRuntimeLifecycleOp
       for (const context of options.getContexts()) {
         try {
           await context.projectSecretService?.hydrateFromVault();
+          // Integration connections follow the project too (Linear, Jira).
+          await context.linearCredentialService?.hydrateFromVault();
+          await context.jiraCredentialService?.hydrateFromVault();
+          // A pasted GitHub token follows the account (machine-wide, so any context will do).
+          await context.githubService?.hydratePatFromVault?.();
         } catch (error) {
           options.logger.warn("account.vault_hydrate_failed", {
             source: "project_context",

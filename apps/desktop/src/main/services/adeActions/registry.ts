@@ -290,6 +290,12 @@ import {
 import { createSessionBoardMoveActions } from "./sessionBoardMove";
 import { noteSessionInputOrigin } from "../chat/sessionInputOrigins";
 import { requestProjectSecretFromUser } from "../secrets/projectSecretRequest";
+import { buildIntegrationConnectAdapters } from "../integrations/integrationConnectAdapters";
+import { listIntegrationConnections, requestIntegrationConnect } from "../integrations/integrationConnectRequest";
+import { createMcpRegistryService } from "../mcp/mcpRegistryService";
+import { scanProviderMcpConfigs } from "../mcp/mcpProviderConfigScan";
+import { listMcpRegistry, mcpRegistryVaultFromStore, requestMcpServer, type McpServerRequestDeps } from "../mcp/mcpServerRequest";
+import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import { machineSecretTempFiles } from "../secrets/secretTempFiles";
 import { isClaudePromptCacheTtl } from "../../../shared/claudePromptCache";
 
@@ -3394,6 +3400,7 @@ async function buildRuntimeLinearConnectionStatus(runtime: AdeRuntime): Promise<
     authMode: null,
     oauthConfigured: false,
     tokenExpiresAt: null,
+    credentialStorage: null,
   };
   const tokenStored = Boolean(credentialStatus.tokenStored);
   if (!runtime.linearIssueTracker || !tokenStored) {
@@ -3406,6 +3413,7 @@ async function buildRuntimeLinearConnectionStatus(runtime: AdeRuntime): Promise<
       authMode: credentialStatus.authMode,
       oauthAvailable: credentialStatus.oauthConfigured,
       tokenExpiresAt: credentialStatus.tokenExpiresAt,
+      credentialStorage: credentialStatus.credentialStorage ?? null,
       message: tokenStored ? "Linear tracker service unavailable." : "Linear token not configured.",
     };
   }
@@ -3424,6 +3432,7 @@ async function buildRuntimeLinearConnectionStatus(runtime: AdeRuntime): Promise<
       authMode: credentialStatus.authMode,
       oauthAvailable: credentialStatus.oauthConfigured,
       tokenExpiresAt: credentialStatus.tokenExpiresAt,
+      credentialStorage: credentialStatus.credentialStorage ?? null,
       message: formatLinearConnectionMessage(status.message, credentialStatus.authMode),
     };
   } catch (error) {
@@ -3436,6 +3445,7 @@ async function buildRuntimeLinearConnectionStatus(runtime: AdeRuntime): Promise<
       authMode: credentialStatus.authMode,
       oauthAvailable: credentialStatus.oauthConfigured,
       tokenExpiresAt: credentialStatus.tokenExpiresAt,
+      credentialStorage: credentialStatus.credentialStorage ?? null,
       message: formatLinearConnectionMessage(
         getErrorMessage(error) || "Linear connection check failed.",
         credentialStatus.authMode,
@@ -3942,6 +3952,83 @@ function buildProjectSecretDomainService(runtime: AdeRuntime): OpaqueService | n
   };
 }
 
+/**
+ * The connect card. `status` lists every integration this runtime knows and
+ * whether it is connected, never a credential. `request` asks the person in a
+ * chat to connect one, and saves what they give into the integration here, on
+ * the machine that runs the chat.
+ */
+function buildIntegrationConnectDomainService(runtime: AdeRuntime): OpaqueService {
+  const adapters = () => buildIntegrationConnectAdapters({
+    githubService: runtime.githubService ?? null,
+    linearCredentialService: runtime.linearCredentialService ?? null,
+    linearStatus: runtime.linearCredentialService ? () => buildRuntimeLinearConnectionStatus(runtime) : null,
+    jiraService: runtime.jiraService ?? null,
+  });
+  const agentChatService = runtime.agentChatService;
+  return {
+    status: () => listIntegrationConnections({ adapters: adapters() }),
+    ...(agentChatService
+      ? {
+          request: (args?: unknown) => requestIntegrationConnect({
+            requestChatInput: (input) => agentChatService.requestChatInput(input),
+            adapters: adapters(),
+          }, args),
+        }
+      : {}),
+  };
+}
+
+/** One registry service per runtime, built on first use: the vault-writing half of Settings › MCP servers. */
+const mcpRegistryServices = new WeakMap<AdeRuntime, ReturnType<typeof createMcpRegistryService>>();
+
+function mcpRegistryDeps(runtime: AdeRuntime): McpServerRequestDeps {
+  let registry = mcpRegistryServices.get(runtime);
+  if (!registry) {
+    registry = createMcpRegistryService({
+      vault: mcpRegistryVaultFromStore(() => runtime.accountVaultStore ?? null),
+      adeHome: resolveMachineAdeLayout().adeDir,
+      logger: { warn: (event, meta) => runtime.logger.warn(event, meta) },
+    });
+    mcpRegistryServices.set(runtime, registry);
+  }
+  return {
+    settings: runtime.accountSettingsStore ?? null,
+    vault: runtime.accountVaultStore ?? null,
+    registry,
+    scanConfigs: (projectRoot) => scanProviderMcpConfigs({ projectRoot }),
+    projectRoot: runtime.projectRoot ?? null,
+  };
+}
+
+/**
+ * The MCP server registry, for agents. `list` reads the person's setup on
+ * this machine (names and set/not-set only, never a value). `request` raises
+ * the MCP server card in the caller's own chat and saves the server the way
+ * Settings › MCP servers does, on the machine that runs the chat.
+ * `chatStatus` says which registry servers a chat's running agent lacks
+ * (the "Refresh chat" chip).
+ */
+function buildMcpRegistryDomainService(runtime: AdeRuntime): OpaqueService {
+  const agentChatService = runtime.agentChatService;
+  return {
+    list: () => listMcpRegistry(mcpRegistryDeps(runtime)),
+    ...(agentChatService
+      ? {
+          request: (args?: unknown) => requestMcpServer({
+            ...mcpRegistryDeps(runtime),
+            requestChatInput: (input) => agentChatService.requestChatInput(input),
+          }, args),
+          chatStatus: (args?: { chatSessionId?: unknown; sessionId?: unknown }) => {
+            const raw = args?.chatSessionId ?? args?.sessionId;
+            const sessionId = typeof raw === "string" ? raw.trim() : "";
+            return sessionId ? agentChatService.mcpRegistryChatStatus(sessionId) : { missing: [] };
+          },
+        }
+      : {}),
+  };
+}
+
 function buildStorageDomainService(runtime: AdeRuntime): OpaqueService | null {
   const storageInsightsService = runtime.storageInsightsService;
   if (!storageInsightsService) return null;
@@ -4041,6 +4128,8 @@ export function getAdeActionDomainServices(
     ade_project: toService(runtime.adeProjectService),
     project_config: toService(runtime.projectConfigService),
     project_secret: toService(buildProjectSecretDomainService(runtime)),
+    integration_connect: buildIntegrationConnectDomainService(runtime),
+    mcp_registry: buildMcpRegistryDomainService(runtime),
     account_settings: buildAccountSettingsDomainService(runtime),
     account_vault: buildAccountVaultDomainService(runtime),
     linear_credentials: toService(runtime.linearCredentialService),

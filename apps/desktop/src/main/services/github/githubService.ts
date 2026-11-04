@@ -113,6 +113,8 @@ import {
 } from "./githubRestPagination";
 import { githubAutolinksAccessError } from "../../../shared/githubAutolinks";
 import { redactGitOutput } from "../../utils/redaction";
+import type { AccountVaultBridge } from "../account/accountVaultBridge";
+import { createGithubPatAccountSync } from "./githubPatAccountSync";
 
 export { fetchAdeLatestRelease } from "./adeReleaseFeed";
 
@@ -654,6 +656,8 @@ export function createGithubService({
   githubRelaySecretReader,
   getAccountAccessToken,
   onAppUserAuthChanged,
+  getAccountVault,
+  getAccountUserId,
 }: {
   logger: Logger;
   projectRoot: string;
@@ -672,6 +676,9 @@ export function createGithubService({
    * internals — so the owner that holds both wires this up.
    */
   onAppUserAuthChanged?: (() => void) | null;
+  /** For a pasted token to follow the owner's ADE account to their other machines. */
+  getAccountVault?: () => AccountVaultBridge | null | undefined;
+  getAccountUserId?: () => string | null;
 }) {
   const legacyGithubStateDir = resolveAdeLayout(projectRoot).githubSecretsDir;
   const legacyTokenPath = path.join(legacyGithubStateDir, AUTH_STORE_FILE_NAME);
@@ -1158,9 +1165,20 @@ export function createGithubService({
     }, "write") ?? ghFallback;
   };
 
+  const patAccountSync = createGithubPatAccountSync({
+    credentialStore,
+    getAccountVault,
+    getAccountUserId,
+    logger,
+    onTokenChanged: () => credentialsChanged({ tokensToClear: [], clearGhCaches: true }),
+  });
+
   const persistToken = (token: string | null): void => {
     persistEncryptedToken(tokenPath, token);
     persistMachineToken(token);
+    if ((token ?? "").trim()) patAccountSync.markLocal();
+    // A token pasted here follows the account to its other machines.
+    patAccountSync.publish(token);
     if (!(token ?? "").trim()) {
       removeTokenFile(legacyTokenPath);
     } else if (fs.existsSync(legacyTokenPath)) {
@@ -2745,6 +2763,12 @@ export function createGithubService({
         return `${revision}:unknown`;
       }
     },
+
+    /** Take (or drop) the account's pasted token; runs at sign-in and on vault sync, never on a request. */
+    hydratePatFromVault: () => patAccountSync.hydrate(),
+    /** At sign-out: drop a token copied from the account, keep one pasted here. */
+    purgeAccountPat: () => patAccountSync.purgeAccountCredentials(),
+    getPatCredentialStorage: () => patAccountSync.storage(),
 
     clearToken(): void {
       const previousToken = readStoredPatToken();

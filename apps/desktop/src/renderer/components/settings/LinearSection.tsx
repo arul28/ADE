@@ -13,6 +13,7 @@ import { ADE_DEEPLINK_HTTPS_BASE_URL } from "../../../shared/deeplinks";
 import { captureError } from "../../../shared/sentry/capture";
 import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
 import {
+  credentialStorageFact,
   IntegrationCard,
   IntegrationColumns,
   IntegrationHero,
@@ -463,6 +464,7 @@ export function LinearSection() {
         ...(authModeLabel ? [{ label: "Method", value: authModeLabel }] : []),
         { label: "Projects", value: String(connection?.projectCount ?? projects.length) },
         { label: "Repository", value: githubRepoSlug ?? "None found", mono: Boolean(githubRepoSlug) },
+        ...[credentialStorageFact(connection?.credentialStorage)].filter((fact): fact is IntegrationFact => fact != null),
       ]
     : [];
   const oauthDisabled = oauthStarting || validating || connection?.oauthAvailable === false || isRemoteRuntime;

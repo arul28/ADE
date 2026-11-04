@@ -6,54 +6,21 @@ import { EncryptedFileCredentialStore } from "../credentials/credentialStore";
 import { createHeadlessLinearCredentialService } from "./headlessLinearCredentialService";
 
 describe("headless Linear credential service", () => {
-  it("hydrates a vault refresh token with OAuth mode", async () => {
+  it("adopts the project's vault connection, so a second machine is connected without signing in", async () => {
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-headless-linear-vault-"));
     const adeDir = path.join(projectRoot, ".ade");
-    const vault = {
-      list: vi.fn(async () => ({ ok: true as const, value: [] })),
-      get: vi.fn(async () => ({ ok: true as const, value: "remote-refresh-token" })),
-      set: vi.fn(async () => ({ ok: true as const, value: null })),
-      remove: vi.fn(async () => ({ ok: true as const, value: null })),
-      sync: vi.fn(async () => ({ ok: true as const, value: null })),
-    };
-    const service = createHeadlessLinearCredentialService({
-      adeDir,
-      getAccountVault: () => vault,
-      getAccountUserId: () => "user_ada",
-    });
-    try {
-      await service.hydrateFromVault();
-
-      expect(service.getRefreshToken()).toBe("remote-refresh-token");
-      expect(service.getRefreshTokenProvenance()).toEqual({
-        source: "account",
-        accountUserId: "user_ada",
-      });
-      expect(service.getStatus().authMode).toBe("oauth");
-      expect(new EncryptedFileCredentialStore({ secretsDir: path.join(adeDir, "secrets") })
-        .getSync("linear.authMode.v1"))
-        .toBe("oauth");
-    } finally {
-      fs.rmSync(projectRoot, { recursive: true, force: true });
-    }
-  });
-
-  it("does not hydrate a Linear refresh grant owned by another machine", async () => {
-    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-headless-linear-owner-"));
-    const adeDir = path.join(projectRoot, ".ade");
+    fs.mkdirSync(path.join(projectRoot, ".git"), { recursive: true });
+    fs.writeFileSync(path.join(projectRoot, ".git", "config"), '[remote "origin"]\n\turl = https://github.com/acme/app.git\n');
+    const scope = "repo:github.com/acme/app";
     const vault = {
       list: vi.fn(async () => ({
         ok: true as const,
-        value: [{
-          scope: "all",
-          kind: "linear_refresh_token",
-          key: "default",
-          value: null,
-          updatedAt: "2026-09-16T00:00:00.000Z",
-          refreshOwner: "other-device",
-        }],
+        value: [{ scope, kind: "integration", key: "linear", value: null, updatedAt: "2026-09-16T00:00:00.000Z", refreshOwner: "other-device" }],
       })),
-      get: vi.fn(async () => ({ ok: true as const, value: "remote-refresh-token" })),
+      get: vi.fn(async () => ({
+        ok: true as const,
+        value: JSON.stringify({ v: 1, authMode: "oauth", token: "remote-access", refreshToken: "remote-refresh-token", expiresAt: "2026-12-01T00:00:00.000Z" }),
+      })),
       set: vi.fn(async () => ({ ok: true as const, value: null })),
       remove: vi.fn(async () => ({ ok: true as const, value: null })),
       sync: vi.fn(async () => ({ ok: true as const, value: null })),
@@ -66,8 +33,19 @@ describe("headless Linear credential service", () => {
     });
     try {
       await service.hydrateFromVault();
-      expect(service.getRefreshToken()).toBeNull();
-      expect(vault.get).not.toHaveBeenCalled();
+
+      expect(vault.get).toHaveBeenCalledWith(scope, "integration", "linear");
+      expect(service.getToken()).toBe("remote-access");
+      expect(service.getRefreshToken()).toBe("remote-refresh-token");
+      expect(service.getRefreshTokenProvenance()).toEqual({
+        source: "account",
+        accountUserId: "user_ada",
+      });
+      expect(service.getStatus().authMode).toBe("oauth");
+      expect(new EncryptedFileCredentialStore({ secretsDir: path.join(adeDir, "secrets") })
+        .getSync("linear.authMode.v1"))
+        .toBe("oauth");
+      expect(vault.set).not.toHaveBeenCalled();
     } finally {
       fs.rmSync(projectRoot, { recursive: true, force: true });
     }

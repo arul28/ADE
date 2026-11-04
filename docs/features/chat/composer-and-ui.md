@@ -3042,6 +3042,62 @@ secret…"): the same fields in a `Dialog`, saved through
 value) is appended to the draft, so the next message tells the agent the name
 exists and how to use it without printing it.
 
+### Connect card
+
+An agent that needs GitHub, Linear or Jira does not ask for a key in chat. It
+runs `ade integrations connect <provider> --reason "…" [--timeout 30m]` (the
+ADE action `integration_connect.request`). If the integration is connected,
+the command returns at once with `method: "already"`. Otherwise the chat shows
+the connect card in the composer's place.
+
+The card wears the integration's Settings page look: the maker's banner art,
+the 3D logo (`SolidLogo`), and the maker's accent (`integrationThemeVars`).
+Under the banner it shows the agent's reason, one tab for each way to connect,
+the fields, a link to the page where the person makes the key, "Open in
+Settings" (opened on the chat's machine with `chatSettingsMachineId`), "Not
+now", and one line that says where the credential goes. Enter connects, Esc
+says not now.
+
+Ways to connect come from one record per provider
+(`shared/integrationConnect.ts`):
+
+- Linear: "Sign in" (browser OAuth) and "API key".
+- Jira: "API token" (site, email, token).
+- GitHub: "Access token".
+
+A browser sign-in comes back to a port on the chat's machine. So the card
+offers it only when that machine is the computer in front of the person (no
+remote pin, and the tab is not bound to another machine). For a chat on
+another machine the card shows the key methods and says why.
+
+The card is a pending-input request marked by
+`providerMetadata.integrationConnectRequest` (`provider`, `reason`). It is
+user-only (`isUserOnlyConsentCard`). The method travels as the answer to the
+`connect_method` question. Each key or token travels as the answer to an
+`isSecret` question, so the transcript writer drops it. The brain's
+`requestIntegrationConnect`
+(`main/services/integrations/integrationConnectRequest.ts`) saves in the
+`beforeAccept` hook, before the card resolves. For a key, the adapter
+(`integrationConnectAdapters.ts`) first checks it with the provider
+(`api.github.com/user`, Linear's GraphQL `viewer`, `jiraService.connect`).
+Then it stores it through the integration's own service. For a browser sign-in,
+the card runs `cto.startLinearOAuth` with the chat's pin, and the host checks
+that the integration now reports connected. A refusal keeps the card open.
+The pane shows the host's message inside the card (`pendingInputError`), not
+in the chat banner. A second `connect` for the same chat and provider joins
+the open card.
+
+The action returns `{provider, connected: true, method, account, next}` or
+`{provider, connected: false, declined: true}`; `next` names the commands to
+use now. The transcript keeps one line with the provider's mark: "Linear
+connected with an API key · never shown to the agent", "Jira · not now", or
+"Connect GitHub · awaiting you" while it is open. If the asker stopped waiting,
+an answer saves nothing, and a notice says so. A browser sign-in that already
+finished says the integration is signed in.
+
+`ade integrations status` (`integration_connect.status`) lists each
+integration with connected or not and the account, never a credential.
+
 ### Approval vs question
 
 `approval_request.kind` describes the *shape* of the thing being confirmed

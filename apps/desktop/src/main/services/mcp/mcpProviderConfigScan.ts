@@ -69,16 +69,47 @@ export function readText(filePath: string): string | null {
   }
 }
 
-/** A JSON or JSONC config file as an object; null when missing, unreadable or not an object. */
+/**
+ * Parsed configs by path, kept while the file's size and change time stay the
+ * same. A chat's registry read parses the provider's config (Claude's
+ * `~/.claude.json` runs to megabytes) on its launch, redaction and status
+ * paths; an unchanged file is parsed once. Bounded: the oldest entry goes.
+ */
+const parsedJsonCache = new Map<string, { size: number; mtimeMs: number; value: Record<string, unknown> | null }>();
+const PARSED_JSON_CACHE_LIMIT = 32;
+
+/**
+ * A JSON or JSONC config file as an object; null when missing, unreadable or
+ * not an object. The object can be shared with other callers: read it, never
+ * change it.
+ */
 export function readJson(filePath: string): Record<string, unknown> | null {
-  const text = readText(filePath);
-  if (text == null) return null;
+  let stat: fs.Stats;
   try {
-    const parsed = parseJsonc(text);
-    return isRecord(parsed) ? parsed : null;
+    stat = fs.statSync(filePath);
   } catch {
+    parsedJsonCache.delete(filePath);
     return null;
   }
+  const cached = parsedJsonCache.get(filePath);
+  if (cached && cached.size === stat.size && cached.mtimeMs === stat.mtimeMs) return cached.value;
+  const text = readText(filePath);
+  let value: Record<string, unknown> | null = null;
+  if (text != null) {
+    try {
+      const parsed = parseJsonc(text);
+      value = isRecord(parsed) ? parsed : null;
+    } catch {
+      value = null;
+    }
+  }
+  parsedJsonCache.delete(filePath);
+  parsedJsonCache.set(filePath, { size: stat.size, mtimeMs: stat.mtimeMs, value });
+  if (parsedJsonCache.size > PARSED_JSON_CACHE_LIMIT) {
+    const oldest = parsedJsonCache.keys().next().value;
+    if (oldest !== undefined) parsedJsonCache.delete(oldest);
+  }
+  return value;
 }
 
 // ---------------------------------------------------------------------------
@@ -499,6 +530,121 @@ export function providerMcpConfigSources(
     default:
       return [];
   }
+}
+
+/** A JSON file's server table: `key`, or (no key) `mcpServers` else the whole file. */
+function jsonServerTable(file: string, key: string | null): Record<string, unknown> | null {
+  const json = readJson(file);
+  if (!json) return null;
+  const table = key ? json[key] : (isRecord(json.mcpServers) ? json.mcpServers : json);
+  return isRecord(table) ? table : null;
+}
+
+function tomlServerTable(file: string): Record<string, unknown> | null {
+  const text = readText(file);
+  return text == null ? null : parseCodexMcpServers(text);
+}
+
+function folderAndAbove(cwd: string): string[] {
+  const dirs: string[] = [];
+  for (let dir = path.resolve(cwd); ; dir = path.dirname(dir)) {
+    dirs.push(dir);
+    if (path.dirname(dir) === dir) break;
+  }
+  return dirs;
+}
+
+/**
+ * What every MCP server a provider loads on its own for a chat in `cwd` runs
+ * or dials: its own config files (the account's config home from `env`, the
+ * machine login's from `baseEnv`, and the project's files). Best-effort, like
+ * the scan. Used to leave out a registry server the provider already starts
+ * under another name, so a chat does not run two copies of one server.
+ */
+export function providerLoadedMcpServers(
+  provider: string,
+  args: {
+    cwd: string;
+    env?: NodeJS.ProcessEnv;
+    /** The env whose config home is the machine login's. Defaults to this process's. */
+    baseEnv?: NodeJS.ProcessEnv;
+    homeDir?: string;
+    /** More folders a provider keys this project's own servers by (a worktree's main checkout). */
+    projectRoots?: readonly string[];
+  },
+): McpServerDefinition[] {
+  const env = args.env ?? process.env;
+  const baseEnv = args.baseEnv ?? process.env;
+  const homeDir = args.homeDir ?? os.homedir();
+  const roots = [args.cwd, ...(args.projectRoots ?? [])];
+  const tables: Array<Record<string, unknown> | null> = [];
+  const homesFor = (candidate: NodeJS.ProcessEnv) => ({ env: candidate, homeDir });
+  const distinct = (files: string[]): string[] => files.filter((file, index) => files.findIndex((other) => pathsEqual(other, file)) === index);
+  switch (provider) {
+    case "claude": {
+      const configFiles = distinct([env, baseEnv].map((candidate) => {
+        const dir = candidate.CLAUDE_CONFIG_DIR?.trim();
+        return path.join(dir ? path.resolve(dir) : homeDir, ".claude.json");
+      }));
+      for (const file of configFiles) {
+        const config = readJson(file);
+        if (!config) continue;
+        tables.push(isRecord(config.mcpServers) ? config.mcpServers : null);
+        if (isRecord(config.projects)) {
+          for (const [projectPath, entry] of Object.entries(config.projects)) {
+            if (isRecord(entry) && roots.some((root) => pathsEqual(projectPath, root))) {
+              tables.push(isRecord(entry.mcpServers) ? entry.mcpServers : null);
+            }
+          }
+        }
+      }
+      for (const root of roots) tables.push(jsonServerTable(path.join(root, ".mcp.json"), "mcpServers"));
+      break;
+    }
+    case "codex":
+      for (const file of distinct([env, baseEnv].map((candidate) => path.join(codexConfigHome(homesFor(candidate)), "config.toml")))) {
+        tables.push(tomlServerTable(file));
+      }
+      tables.push(tomlServerTable(path.join(args.cwd, ".codex", "config.toml")));
+      break;
+    case "copilot":
+      tables.push(jsonServerTable(path.join(copilotConfigHome(homesFor(env)), "mcp-config.json"), "mcpServers"));
+      for (const dir of folderAndAbove(args.cwd)) {
+        tables.push(jsonServerTable(path.join(dir, ".mcp.json"), null));
+        tables.push(jsonServerTable(path.join(dir, ".github", "mcp.json"), null));
+      }
+      break;
+    case "cursor":
+      tables.push(jsonServerTable(path.join(homeDir, ".cursor", "mcp.json"), "mcpServers"));
+      tables.push(jsonServerTable(path.join(args.cwd, ".cursor", "mcp.json"), "mcpServers"));
+      break;
+    case "opencode":
+      for (const file of ["opencode.json", "opencode.jsonc"]) {
+        tables.push(jsonServerTable(path.join(openCodeConfigDir(homesFor(env)), file), "mcp"));
+        tables.push(jsonServerTable(path.join(args.cwd, file), "mcp"));
+      }
+      tables.push(jsonServerTable(path.join(args.cwd, ".opencode", "opencode.json"), "mcp"));
+      break;
+    case "pi":
+      tables.push(jsonServerTable(path.join(piAgentDir(homesFor(env)), "mcp.json"), "mcpServers"));
+      tables.push(jsonServerTable(path.join(args.cwd, ".pi", "mcp.json"), "mcpServers"));
+      break;
+    default:
+      for (const source of providerMcpConfigSources(provider, { cwd: args.cwd, env, homeDir })) {
+        tables.push(source.format === "toml" ? tomlServerTable(source.file) : jsonServerTable(source.file, source.key));
+      }
+  }
+  const servers: McpServerDefinition[] = [];
+  for (const table of tables) {
+    if (!table) continue;
+    for (const [name, entry] of Object.entries(table)) {
+      // A server its own config switched off does not start.
+      if (isRecord(entry) && (entry.enabled === false || entry.disabled === true)) continue;
+      const definition = mcpServerDefinitionFromConfig(name, entry);
+      if (definition) servers.push(definition);
+    }
+  }
+  return servers;
 }
 
 /**

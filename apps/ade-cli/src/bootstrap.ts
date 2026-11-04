@@ -1404,6 +1404,8 @@ export async function createAdeRuntime(args: {
     const pushRelayFilePath = resolvePushRelayStateFile(resolveMachineAdeLayout().secretsDir);
     let projectSecretServiceForAccount: ReturnType<typeof createProjectSecretService> | null = null;
     let linearCredentialServiceForAccount: ReturnType<typeof createLinearCredentialService> | null = null;
+    let jiraCredentialServiceForAccount: ReturnType<typeof createJiraCredentialService> | null = null;
+    let githubServiceForAccount: { hydratePatFromVault(): Promise<void>; purgeAccountPat(): void } | null = null;
     const getAccountAccessToken = (
       options?: Parameters<typeof getSignedInAccountAccessToken>[1],
     ) => getSignedInAccountAccessToken(accountAuthService, options);
@@ -1423,6 +1425,8 @@ export async function createAdeRuntime(args: {
       getContexts: () => [{
         project: { rootPath: projectRoot },
         linearCredentialService: linearCredentialServiceForAccount,
+        jiraCredentialService: jiraCredentialServiceForAccount,
+        githubService: githubServiceForAccount,
         projectSecretService: projectSecretServiceForAccount,
       }],
       teardown,
@@ -2456,8 +2460,19 @@ export async function createAdeRuntime(args: {
     teardown.push(() => headlessLinearServices.dispose());
     linearIssueTrackerRef = headlessLinearServices.linearIssueTracker;
     githubServiceRef = headlessLinearServices.githubService as ReturnType<typeof createGithubService>;
+    githubServiceForAccount = headlessLinearServices.githubService;
+    // Jira is per project and follows the project to the account's other
+    // machines. A project with none of its own adopts the machine's old one.
+    jiraCredentialServiceForAccount = createJiraCredentialService({
+      credentialStore: new EncryptedFileCredentialStore({ secretsDir: path.join(paths.adeDir, "secrets") }),
+      legacyCredentialStore: new EncryptedFileCredentialStore(),
+      projectRoot,
+      getAccountVault: accountRuntimeLifecycle.getAccountVault,
+      getAccountUserId: () => accountAuthService.getStatus().userId,
+      logger,
+    });
     jiraServiceRef = createJiraService({
-      credentials: createJiraCredentialService({ credentialStore: new EncryptedFileCredentialStore() }),
+      credentials: jiraCredentialServiceForAccount,
     });
     const issueTrackerService = createIssueTrackerService({
       linearIssueTracker: headlessLinearServices.linearIssueTracker,
@@ -2572,7 +2587,14 @@ export async function createAdeRuntime(args: {
         resolveMcpAuthToken: createMcpRegistryAuthTokenResolver({
           adeHome: resolveMachineAdeLayout().adeDir,
           readSecret: (key) => accountVaultStore?.get("all", MCP_SECRET_VAULT_KIND, key) ?? null,
-          writeSecret: (key, value) => accountVaultStore?.set("all", MCP_SECRET_VAULT_KIND, key, value) ?? false,
+          writeSecret: (key, value, refreshOwner) => accountVaultStore?.set(
+            "all",
+            MCP_SECRET_VAULT_KIND,
+            key,
+            value,
+            refreshOwner ? { refreshOwner } : undefined,
+          ) ?? false,
+          getVault: () => accountRuntimeLifecycle.getAccountVault(),
           logger,
         }),
         runtimeBudget: chatRuntimeBudget,
