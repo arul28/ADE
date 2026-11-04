@@ -2245,10 +2245,13 @@ export async function createAdeRuntime(args: {
       : createAndroidEmulatorService({
         laneDevices: sqlAndroidLaneDeviceRepo(db),
         dataDir: path.join(paths.adeDir, "android"),
-        // The packaged app's `resources/android` first, then a source
-        // checkout's. A standalone brain archive ships no jar yet: only
-        // `startStream` fails then (`ANDROID_STREAM_FAILED`, naming the path).
+        // A standalone brain's runtime archive first (`<runtime>/android`,
+        // where install-runtime and `ade brain update` unpack it), then the
+        // packaged app's `resources/android`, then a source checkout's. With
+        // no jar anywhere, only `startStream` fails (`ANDROID_STREAM_FAILED`,
+        // naming the path).
         serverJarPath: resolveScrcpyServerJarPath({
+          runtimeRoots: [process.env.ADE_RESOLVED_RUNTIME_ROOT, process.env.ADE_RUNTIME_ROOT],
           resourcesPath: (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath ?? null,
           startDir: path.dirname(currentModulePath),
         }),

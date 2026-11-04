@@ -260,3 +260,19 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+================================================================================
+9. scrcpy server
+================================================================================
+
+Upstream:   https://github.com/Genymobile/scrcpy
+Copyright:  Copyright (C) 2018 Genymobile
+            Copyright (C) 2018-2026 Romain Vimont
+License:    Apache-2.0
+Bundled as: apps/desktop/resources/android/scrcpy-server (release asset
+            scrcpy-server-v5.0.1, not modified by ADE), in the desktop app's
+            resources/android and in each runtime archive's android/ folder.
+            The full license text is beside it as scrcpy-LICENSE.
+
+The Apache License, Version 2.0 is available at
+https://www.apache.org/licenses/LICENSE-2.0.

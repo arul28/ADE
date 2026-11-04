@@ -62,8 +62,10 @@ const JAR_RELATIVE_PATH = ["android", "scrcpy-server"] as const;
 /**
  * The bundled jar's path, for the Electron main process and for a brain.
  *
- * - `resourcesPath`: a packaged app's resources folder (extraResources). Its
- *   jar comes first.
+ * - `runtimeRoots`: a standalone brain's unpacked runtime archive
+ *   (`<root>/android/scrcpy-server`, from package-native-deps.mjs). These
+ *   come first: the archive ships the brain's own copy.
+ * - `resourcesPath`: a packaged app's resources folder (extraResources).
  * - `startDir`: a folder inside a source checkout. Each folder from it up to
  *   the disk root is tried, `<dir>/resources/android/scrcpy-server` first, so
  *   a dev run from `apps/desktop` finds the checkout's jar.
@@ -71,8 +73,15 @@ const JAR_RELATIVE_PATH = ["android", "scrcpy-server"] as const;
  * The first candidate that exists wins. When none does, the first candidate is
  * returned, so the stream's error names a real place to look.
  */
-export function resolveScrcpyServerJarPath(input: { resourcesPath?: string | null; startDir?: string | null }): string {
+export function resolveScrcpyServerJarPath(input: {
+  runtimeRoots?: readonly (string | null | undefined)[];
+  resourcesPath?: string | null;
+  startDir?: string | null;
+}): string {
   const candidates: string[] = [];
+  for (const root of input.runtimeRoots ?? []) {
+    if (root?.trim()) candidates.push(path.join(root.trim(), ...JAR_RELATIVE_PATH));
+  }
   if (input.resourcesPath) candidates.push(path.join(input.resourcesPath, ...JAR_RELATIVE_PATH));
   if (input.startDir) {
     let dir = path.resolve(input.startDir);

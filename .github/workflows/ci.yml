@@ -548,6 +548,9 @@ jobs:
             exit 1
           fi
           node apps/ade-cli/scripts/probe-runtime-crsqlite.mjs --archive "$archive" --target "${{ matrix.target }}"
+          # Android streaming on a standalone brain, every OS (package-native-deps.mjs).
+          grep -q '^\./android/scrcpy-server$' "$archive_listing"
+          grep -q '^\./android/scrcpy-LICENSE$' "$archive_listing"
 
       - name: Upload ADE runtime binary
         uses: actions/upload-artifact@v4
