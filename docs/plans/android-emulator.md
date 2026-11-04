@@ -210,7 +210,7 @@ where the code is generic.
 parser (to `services/media/`), the video record constants (to a neutral
 `shared/types` module), the renderer player and stream view, the flat view
 (`components/device/DeviceFlatView.tsx`), and the spinner, danger menu item
-and drawer primitives that the picker uses. Each other row in the table moves
+and drawer primitives that the picker uses (to `components/ui/`). Each other row in the table moves
 in the phase where Android first uses it: the relay, the relay-to-service seam,
 pacing, the local viewers and the renderer lease in P2 (viewers); the lease
 queue, the lifecycle queue and the recording store in P1 (agent suite); the
@@ -219,17 +219,17 @@ second caller exists only adds churn to the diff.
 
 | Piece | Today |
 |---|---|
-| Video record framing | `media/videoRecords.ts`, `shared/types/iosSimulator.ts` (`IOS_VIDEO_RECORD_*`) |
+| Video record framing | `media/videoRecords.ts`, `shared/types/videoRecords.ts` (`VIDEO_RECORD_*`, moved in P0) |
 | Stream relay + tickets | `services/ios/appleStreamRelay.ts` (service-agnostic since #2039) |
 | Relay-to-service seam | `services/ios/appleStreamRelayForService.ts` (`AppleStreamOwningService`, new in #2039) |
 | Pacing + bitrate adapter | `services/ios/appleStreamPacing.ts` |
-| Annex B parser | `services/ios/h264AnnexB.ts` |
+| Annex B parser | `services/media/h264AnnexB.ts` (moved in P0) |
 | Device lease queue | `services/ios/appleDeviceLease.ts` |
 | Lifecycle queue | `services/ios/laneDeviceLifecycle.ts` |
 | Recording rules + store | `services/ios/recording/*` (helper calls become a port) |
 | Local viewers | `services/ios/appleLocalViewers.ts` |
 | Renderer stream lease | `components/apple/appleStreamLease.ts` |
-| Renderer player | `components/chat/h264StreamPlayer.ts`, `H264StreamView.tsx`, `iosSimVideoRecords.ts` |
+| Renderer player | `components/device/h264StreamPlayer.ts`, `H264StreamView.tsx`, `videoRecordParser.ts` (moved in P0) |
 | Mini player store | `components/apple/appleMiniPlayerStore.ts` (generalize the device key) |
 | Show requests | `shared/types/workToolShow.ts` (add `android`, `floating-android`) |
 
