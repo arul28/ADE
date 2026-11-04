@@ -8,11 +8,13 @@
         "apps/desktop/src/main/services/remoteRuntime/**",
         "apps/desktop/src/main/services/localRuntime/**",
         "apps/desktop/src/main/services/account/**",
-        "apps/ade-cli/src/services/account/**"
+        "apps/ade-cli/src/services/account/**",
+        "apps/desktop/src/main/services/updates/**"
       ],
       "pages": [
         "concepts/machines-and-clients",
         "getting-started/install",
+        "getting-started/ade-beta",
         "getting-started/connect-machine",
         "getting-started/windows"
       ]
