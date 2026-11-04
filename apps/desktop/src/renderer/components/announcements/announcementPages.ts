@@ -33,9 +33,39 @@ export type AnnouncementPageDef = {
 
 export const ANNOUNCEMENT_PAGES: readonly AnnouncementPageDef[] = [
   {
+    id: "subagents-any-model",
+    added: "2026-11-04",
+    title: "Subagents on any model",
+    Page: lazy(() => import("./pages/SubagentsAnnouncement")),
+  },
+  {
+    id: "integrations-page",
+    added: "2026-11-04",
+    title: "Every integration on one page",
+    Page: lazy(() => import("./pages/IntegrationsAnnouncement")),
+  },
+  {
+    id: "custom-harnesses",
+    added: "2026-11-04",
+    title: "Any harness on your plan",
+    Page: lazy(() => import("./pages/CustomHarnessAnnouncement")),
+  },
+  {
+    id: "media-comments",
+    added: "2026-11-04",
+    title: "Comments on screenshots and videos",
+    Page: lazy(() => import("./pages/MediaCommentsAnnouncement")),
+  },
+  {
+    id: "ade-beta",
+    added: "2026-11-04",
+    title: "ADE Beta",
+    Page: lazy(() => import("./pages/BetaAnnouncement")),
+  },
+  {
     id: "performance-vs-t3-code",
     added: "2026-10-31",
-    title: "Faster than T3 Code",
+    title: "Half the CPU of T3 Code",
     Page: lazy(() => import("./pages/PerformanceAnnouncement")),
   },
   {
@@ -101,7 +131,7 @@ export const ANNOUNCEMENT_PAGES: readonly AnnouncementPageDef[] = [
   {
     id: "windows-desktop",
     added: "2026-10-21",
-    title: "Windows desktop from any machine",
+    title: "Windows and Linux for agents",
     Page: lazy(() => import("./pages/WindowsDesktopAnnouncement")),
   },
 ];

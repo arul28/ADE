@@ -10,7 +10,9 @@ import {
   ChatCenteredText,
   ChatsCircle,
   ClockCounterClockwise,
+  Cards,
   Cloud,
+  CloudCheck,
   Crown,
   DesktopTower,
   DeviceMobile,
@@ -18,12 +20,15 @@ import {
   Eye,
   FileCode,
   FilmStrip,
+  Flask,
   GitBranch,
   GitFork,
   GitPullRequest,
   Globe,
   GridFour,
+  GridNine,
   HardDrives,
+  Keyboard,
   Laptop,
   Lightning,
   LinkSimple,
@@ -34,12 +39,14 @@ import {
   MusicNotes,
   PaintBrush,
   Palette,
+  Play,
   Plug,
   Plugs,
   PlugsConnected,
   PresentationChart,
   Robot,
   Screencast,
+  ShareNetwork,
   ShieldCheck,
   SquaresFour,
   StackSimple,
@@ -63,8 +70,10 @@ import {
   showSpotlight,
   type SpotlightSpot,
 } from "../components/onboarding/spotlight/spotlight";
+import agent37Shot from "../components/onboarding/tips/assets/agent37.webp";
 import automationsShot from "../components/onboarding/tips/assets/automations.webp";
 import awakeShot from "../components/onboarding/tips/assets/awake.webp";
+import betaShot from "../components/onboarding/tips/assets/beta-track.webp";
 import commentsShot from "../components/onboarding/tips/assets/comments.webp";
 import ctoShot from "../components/onboarding/tips/assets/cto.webp";
 import filesShot from "../components/onboarding/tips/assets/files.webp";
@@ -72,15 +81,20 @@ import gridShot from "../components/onboarding/tips/assets/grid.webp";
 import historyShot from "../components/onboarding/tips/assets/history.webp";
 import importShot from "../components/onboarding/tips/assets/import.webp";
 import integrationsShot from "../components/onboarding/tips/assets/integrations.webp";
+import iosSimulatorShot from "../components/onboarding/tips/assets/ios-simulator.webp";
+import keyboardShot from "../components/onboarding/tips/assets/keyboard.webp";
 import lanesShot from "../components/onboarding/tips/assets/lanes.webp";
 import machinesShot from "../components/onboarding/tips/assets/machines.webp";
 import mcpShot from "../components/onboarding/tips/assets/mcp.webp";
+import musicShot from "../components/onboarding/tips/assets/music.webp";
+import phoneShot from "../components/onboarding/tips/assets/phone.webp";
+import privateDesktopShot from "../components/onboarding/tips/assets/private-desktop.webp";
 import proofShot from "../components/onboarding/tips/assets/proof.webp";
 import prsShot from "../components/onboarding/tips/assets/prs.webp";
+import quickSlotsShot from "../components/onboarding/tips/assets/quick-slots.webp";
 import secretsShot from "../components/onboarding/tips/assets/secrets.webp";
 import sideChatShot from "../components/onboarding/tips/assets/side-chat.webp";
-import iosSimulatorShot from "../components/onboarding/tips/assets/ios-simulator.webp";
-import phoneSimulatorShot from "../components/onboarding/tips/assets/phone-simulator.webp";
+import subagentsShot from "../components/onboarding/tips/assets/subagents.webp";
 import themesShot from "../components/onboarding/tips/assets/themes.webp";
 import widgetsShot from "../components/onboarding/tips/assets/widgets.webp";
 
@@ -229,9 +243,10 @@ const TIP_LIST = [
     ),
   },
   {
-    id: "at-menu", group: "agents", icon: At, title: "The @ menu", size: "wide",
-    sentence: "Type @ in the composer to hand part of a task to another model as a subagent, or to another machine.",
-    action: draft(spot("composer", "Type @ to hand part of the task to a subagent, or to another machine.")),
+    id: "at-menu", group: "agents", icon: At, title: "Subagents on any model",
+    size: "screen", shot: { src: subagentsShot, alt: "A message asking for DeepSeek and GPT-6 Luna subagents, and the four subagents it started" },
+    sentence: "Type @ to pick any model, from any provider, at the effort you want. It runs as a subagent and reports back.",
+    action: draft(spot("composer", "Type @ and a model's name to give part of the task to a subagent on it. Pick as many as you like.")),
   },
   {
     id: "chat-tools", group: "agents", icon: Toolbox, title: "Chat tools", size: "wide",
@@ -244,9 +259,14 @@ const TIP_LIST = [
     ),
   },
   {
+    id: "cli-chats", group: "agents", icon: TerminalWindow, title: "CLI chats", size: "wide",
+    sentence: "Run the same agents in a terminal when you prefer their own interface, with ADE's lanes around them.",
+    action: draft(spot("draft-mode-switch", "Pick CLI to run an agent in its own terminal interface.")),
+  },
+  {
     id: "comments", group: "agents", icon: ChatCenteredText, title: "Comments on replies",
     size: "screen", shot: { src: commentsShot, alt: "A comment on a line of an agent's reply, set to send with the next message" },
-    sentence: "Comment on any part of a reply, then send your comments to the chat.",
+    sentence: "Comment on any part of a reply, an image or a video, then send your comments to the chat.",
     action: inOpenChat(
       at("[data-thread-comment-key]", "Select a few words in this reply, then pick Comment."),
       "This chat has no reply yet. In a chat with one, select a few words of the reply and pick Comment.",
@@ -276,11 +296,6 @@ const TIP_LIST = [
     action: setting("chat.voice-conversations", "Turn voice on here, then talk from any chat's composer."),
   },
   {
-    id: "cli-chats", group: "agents", icon: TerminalWindow, title: "CLI chats", size: "wide",
-    sentence: "Run the same agents in a terminal when you prefer their own interface, with ADE's lanes around them.",
-    action: draft(spot("draft-mode-switch", "Pick CLI to run an agent in its own terminal interface.")),
-  },
-  {
     id: "side-chats", group: "agents", icon: ChatsCircle, title: "Side chats",
     size: "screen", shot: { src: sideChatShot, alt: "A read-only side chat beside the main chat, sending a note back to it" },
     sentence: "Type /side to ask a quick question in a read-only side chat that already knows the conversation.",
@@ -303,19 +318,17 @@ const TIP_LIST = [
     action: draft(spot("composer", "Ask the agent to watch a terminal, like your dev server. It wakes up when something new prints.")),
   },
   {
+    id: "run-code-block", group: "agents", icon: Play, title: "Run a code block", size: "small",
+    sentence: "Run a shell block from a reply in a new terminal, then send what it printed back to the agent.",
+    action: inOpenChat(
+      at("[data-chat-message-list-root] pre", "Hover a shell code block and press Run. When it ends, send its output back from under the block."),
+      "When a reply has a shell code block, hover it and press Run.",
+    ),
+  },
+  {
     id: "another-account", group: "agents", icon: UserSwitch, title: "Continue on another account", size: "small",
     sentence: "When one account hits its limit, continue the same chat on another.",
     action: setting("agents.providers", "Open a provider and add a second account. A chat that hits its limit can continue on it."),
-  },
-  {
-    id: "custom-provider", group: "agents", icon: ArrowsLeftRight, title: "Any harness on your plan", size: "small",
-    sentence: "Run Claude Code on your ChatGPT plan, or Codex on Claude, with the sign-ins you already have.",
-    action: setting("agents.harnesses", "Pick a harness and a model you already pay for. It shows up in every model picker."),
-  },
-  {
-    id: "startup-context", group: "agents", icon: Brain, title: "Understand startup context", size: "small",
-    sentence: "See what goes into your agent's context when a new chat starts, and where to change it.",
-    action: setting("agents.providers", "Open a provider to see its initial context and where each item is configured."),
   },
   {
     id: "ios-simulator", group: "agents", icon: AppleLogo, title: "iOS simulator", size: "wide",
@@ -329,8 +342,17 @@ const TIP_LIST = [
     ),
   },
   {
+    id: "custom-provider", group: "agents", icon: ArrowsLeftRight, title: "Any harness on your plan", size: "small",
+    sentence: "Run Claude Code, Codex or Droid on a plan you already pay for, with the sign-ins you already have.",
+    action: setting("agents.harnesses", "Pick a harness and a model you already pay for. It shows up in every model picker."),
+  },
+  {
+    id: "startup-context", group: "agents", icon: Brain, title: "Understand startup context", size: "small",
+    sentence: "See what goes into your agent's context when a new chat starts, and where to change it.",
+    action: setting("agents.providers", "Open a provider to see its initial context and where each item is configured."),
+  },
+  {
     id: "simulator-on-phone", group: "agents", icon: Screencast, title: "Simulator on your phone", size: "wide",
-    shot: { src: phoneSimulatorShot, alt: "An iPhone driving the simulator by touch" },
     sentence: "Stream the simulator to your iPhone and tap it like a real phone.",
     action: connections("mobile", "Pair your iPhone here. Then it can stream the simulator and drive it by touch."),
   },
@@ -372,6 +394,7 @@ const TIP_LIST = [
   },
   {
     id: "phone", group: "machines", icon: DeviceMobile, title: "ADE on your phone", size: "wide",
+    shot: { src: phoneShot, alt: "A pull request open in the ADE iPhone app" },
     sentence: "Check on agents and answer them from the iPhone app when you are away.",
     action: connections("mobile", "Pair the iPhone app here."),
   },
@@ -379,6 +402,17 @@ const TIP_LIST = [
     id: "web-app", group: "machines", icon: Globe, title: "The web app", size: "wide",
     sentence: "Control every machine and agent from a browser, the same way as here.",
     action: connections("web", "Turn on the web app here."),
+  },
+  {
+    id: "other-machine-commands", group: "machines", icon: ShareNetwork, title: "Work on another machine", size: "wide",
+    sentence: "From one chat, an agent can run commands and simulators on your other computers.",
+    action: draft(spot("composer", "Ask the agent to run a command or a simulator on one of your other computers.")),
+  },
+  {
+    id: "beta-track", group: "machines", icon: Flask, title: "Beta track", size: "wide",
+    shot: { src: betaShot, alt: "ADE 1.2.128-beta.2 with the Beta chip, above the Update track setting" },
+    sentence: "Get new features first: the Beta track is built from main every few hours, on every machine you pick.",
+    action: setting("general.update-track", "Switch to Beta to get new features first."),
   },
   {
     id: "headless", group: "machines", icon: HardDrives, title: "Headless brain", size: "small",
@@ -401,8 +435,19 @@ const TIP_LIST = [
   {
     id: "mcp-once", group: "integrations", icon: Plugs, title: "One MCP setup for every agent",
     size: "screen", shot: { src: mcpShot, alt: "Settings, MCP servers found on this computer, ready to import" },
-    sentence: "Add an MCP server once and every ADE agent gets it, on every computer.",
-    action: setting("mcp.servers", "Add a server once; every agent gets it, on every computer."),
+    sentence: "Pick an MCP server from the catalogue or add your own, once; every ADE agent gets it, on every computer.",
+    action: setting("mcp.servers", "Pick one from the catalogue or add your own; every agent gets it, on every computer."),
+  },
+  {
+    id: "agent37", group: "integrations", icon: CloudCheck, title: "Agent 37 cloud machines", size: "wide",
+    shot: { src: agent37Shot, alt: "The Agent 37 card in Settings, Integrations" },
+    sentence: "Make a cheap Linux box, billed by the minute, in one click. It signs in by itself and joins your computers.",
+    action: setting("integrations.agent37", "Paste your Agent 37 key here, then pick New Agent 37 machine in Add a computer."),
+  },
+  {
+    id: "connect-cards", group: "integrations", icon: Cards, title: "Connect from the chat", size: "wide",
+    sentence: "When an agent needs GitHub, Linear or an MCP server, it asks with a card in the chat you fill in once.",
+    action: draft(spot("composer", "Ask the agent to set up GitHub, Linear or an MCP server; it asks with a card here.")),
   },
   {
     id: "cloud-agents", group: "integrations", icon: Cloud, title: "Cursor and Devin cloud agents", size: "small",
@@ -461,7 +506,7 @@ const TIP_LIST = [
   },
   {
     id: "deep-links", group: "git", icon: LinkSimple, title: "Deep links", size: "wide",
-    sentence: "Share a link to a chat, file or PR that opens right there in ADE.",
+    sentence: "Share a link to a chat, file or PR; it opens right there in ADE, on the machine it lives on.",
     action: inAChat("Right-click a chat to copy its deep link.", FIRST_CHAT),
   },
 
@@ -486,6 +531,7 @@ const TIP_LIST = [
   },
   {
     id: "music", group: "yours", icon: MusicNotes, title: "Music", size: "wide",
+    shot: { src: musicShot, alt: "An album open in the Music tab, ready to play" },
     sentence: "Play, pause and skip what you are listening to without leaving ADE.",
     action: {
       place: { kind: "music" },
@@ -496,6 +542,18 @@ const TIP_LIST = [
         spot("music-page", "Connect your music app, then play it from here or the top bar."),
       ],
     },
+  },
+  {
+    id: "keyboard", group: "yours", icon: Keyboard, title: "Your own shortcuts", size: "wide",
+    shot: { src: keyboardShot, alt: "Settings, Keyboard: shortcuts for the command palette, Browser, Work and Files" },
+    sentence: "Rebind any shortcut in Settings, Keyboard. They are saved for this computer, in every project.",
+    action: setting("keyboard.shortcuts", "Click a shortcut, then press the keys you want."),
+  },
+  {
+    id: "quick-slots", group: "yours", icon: GridNine, title: "Quick slots", size: "wide",
+    shot: { src: quickSlotsShot, alt: "Quick slots: nine numbered actions like New chat, Model picker and Git" },
+    sentence: "Put nine actions or models on one key plus a digit, so the ones you use most are a chord away.",
+    action: setting("keyboard.quick-slots", "Fill a slot with an action or a model, then press the leader key and its digit."),
   },
 
   // Safety
@@ -517,6 +575,7 @@ const TIP_LIST = [
   },
   {
     id: "private-desktop", group: "safety", icon: AppWindow, title: "A private desktop for agents", size: "wide",
+    shot: { src: privateDesktopShot, alt: "A screenshot of an agent's private Windows desktop, posted in the chat" },
     sentence: "Agents drive apps on their own Mac, Windows or Linux screen, so yours stays free.",
     action: inAChat(
       "Open a chat, then its Tools: agents get a desktop of their own there.",

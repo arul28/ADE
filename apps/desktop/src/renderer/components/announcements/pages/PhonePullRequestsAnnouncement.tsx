@@ -1,4 +1,4 @@
-import { ChatCircleText, CheckCircle, DeviceMobile, Smiley } from "@phosphor-icons/react";
+import { DeviceMobile } from "@phosphor-icons/react";
 import type { AnnouncementPageProps } from "../announcementPages";
 import { WhatsNewFeature } from "./WhatsNewFeature";
 import pr from "./assets/phone-pr.webp";
@@ -11,13 +11,8 @@ export default function PhonePullRequestsAnnouncement({ close }: AnnouncementPag
     <WhatsNewFeature
       close={close}
       place={{ icon: <DeviceMobile size={17} weight="fill" />, name: "iPhone app" }}
-      headline="Review pull requests from your phone."
-      sentence="Read the PR, react, comment and watch checks finish, from the ADE app on your iPhone or iPad."
-      marks={[
-        { icon: <Smiley size={14} weight="fill" />, label: "Reactions" },
-        { icon: <ChatCircleText size={14} weight="fill" />, label: "Comments" },
-        { icon: <CheckCircle size={14} weight="fill" color="#3fb950" />, label: "Live checks" },
-      ]}
+      headline="Review PRs from your phone."
+      sentence="Read, comment and watch checks in the ADE iPhone app."
       action={{ tipId: "phone", label: "Pair your iPhone" }}
       media={{
         kind: "phones",

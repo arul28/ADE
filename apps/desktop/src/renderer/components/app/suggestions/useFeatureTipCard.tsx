@@ -88,10 +88,11 @@ export function useFeatureTipCard(enabled: boolean): void {
           id: `feature-tip-${tip.id}`,
           tone: "accent",
           icon,
-          eyebrow: "Tip",
-          // Drawn like its tile in ADE Tips: its group's colour, and its screenshot when it has one.
+          // No eyebrow: the title sits beside the icon, so the card wastes no row on a label.
+          eyebrow: null,
+          // Drawn like its tile in ADE Tips: its group's colour, and its screenshot when it has one, large for a large tile.
           hue: adeTipGroup(tip.group).hue,
-          art: tip.shot,
+          art: tip.shot ? { ...tip.shot, large: tip.size === "screen" } : undefined,
           title: tip.title,
           detail: tip.sentence,
           actions: [

@@ -75,15 +75,22 @@ export type BannerModel = {
   extra?: ReactNode;
   /** Inline failure line under the text ("Rebase failed: …"). */
   error?: string;
-  /** The quiet label above a `suggestion` card's title. Defaults to "Suggestion". */
-  eyebrow?: string;
+  /**
+   * The quiet label above a `suggestion` card's title. Defaults to "Suggestion";
+   * null drops it and sets the title beside the icon instead.
+   */
+  eyebrow?: string | null;
   /**
    * `suggestion` only: the card's colour (its glow, icon tile and eyebrow), a
    * hex. A tip card wears its ADE Tips group's hue; defaults to ADE violet.
    */
   hue?: string;
-  /** `suggestion` only: a screenshot of the feature, peeking out of the card's corner. */
-  art?: { src: string; alt: string };
+  /**
+   * `suggestion` only: a screenshot of the feature, peeking out of the card's
+   * corner. `large` gives it a row of its own under the buttons, for the tips
+   * that are large tiles in ADE Tips.
+   */
+  art?: { src: string; alt: string; large?: boolean };
 };
 
 export function isDurableDismiss(
@@ -305,10 +312,14 @@ function SuggestionCard({
         <span className="ade-suggest-icon" aria-hidden>
           {model.busy ? <NoticeIcon tone={model.tone} busy size="sm" /> : model.icon ?? <NoticeIcon tone={model.tone} size="sm" />}
         </span>
-        <span className="ade-suggest-eyebrow">{model.eyebrow ?? "Suggestion"}</span>
+        {model.eyebrow === null ? (
+          <span className="ade-suggest-title" data-in-head="true">{model.title}</span>
+        ) : (
+          <span className="ade-suggest-eyebrow">{model.eyebrow ?? "Suggestion"}</span>
+        )}
       </div>
       <div className="ade-suggest-text">
-        <span className="ade-suggest-title">{model.title}</span>
+        {model.eyebrow === null ? null : <span className="ade-suggest-title">{model.title}</span>}
         {model.detail ? <span className="ade-suggest-detail">{model.detail}</span> : null}
         {model.extra ? <div data-ph-mask="" style={{ marginTop: 4 }}>{model.extra}</div> : null}
         {model.error ? (
@@ -319,12 +330,17 @@ function SuggestionCard({
       </div>
       <div className="ade-suggest-foot">
         <NoticeActions actions={model.actions} tone={model.tone} size="md" />
-        {model.art ? (
+        {model.art && !model.art.large ? (
           <div className="ade-suggest-art">
             <img src={model.art.src} alt={model.art.alt} loading="lazy" decoding="async" draggable={false} />
           </div>
         ) : null}
       </div>
+      {model.art?.large ? (
+        <div className="ade-suggest-art" data-size="large">
+          <img src={model.art.src} alt={model.art.alt} loading="lazy" decoding="async" draggable={false} />
+        </div>
+      ) : null}
     </section>
   );
 }

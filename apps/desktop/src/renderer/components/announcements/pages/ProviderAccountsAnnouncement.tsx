@@ -7,10 +7,10 @@ export default function ProviderAccountsAnnouncement({ close }: AnnouncementPage
   return (
     <WhatsNewFeature
       close={close}
-      place={{ icon: <UserCircle size={17} weight="fill" />, name: "AI connections" }}
-      headline="Manage your accounts in detail."
-      sentence="Add multiple accounts, check usage and settings, and see what goes into your agent's context when a chat starts."
-      action={{ tipId: "another-account", label: "Open AI connections" }}
+      place={{ icon: <UserCircle size={17} weight="fill" />, name: "Providers" }}
+      headline="Every account, in full detail."
+      sentence="Add accounts, check their usage, and see what a new chat starts with, in Settings › Providers."
+      action={{ tipId: "another-account", label: "Open Providers" }}
       media={{
         kind: "images",
         width: 1370,

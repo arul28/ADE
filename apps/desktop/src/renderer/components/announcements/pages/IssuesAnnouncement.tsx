@@ -1,4 +1,4 @@
-import { GithubLogo, Ticket } from "@phosphor-icons/react";
+import { Ticket } from "@phosphor-icons/react";
 import type { AnnouncementPageProps } from "../announcementPages";
 import { WhatsNewFeature } from "./WhatsNewFeature";
 import { JiraMark } from "../../lanes/jiraBrand";
@@ -14,13 +14,9 @@ export default function IssuesAnnouncement({ close }: AnnouncementPageProps) {
     <WhatsNewFeature
       close={close}
       place={{ icon: <Ticket size={17} weight="fill" />, name: "Issues" }}
-      headline="Track Jira, Linear and GitHub issues in ADE."
-      sentence="Attach an issue to a chat and the agent starts with all of it. Read, comment and file new issues without leaving ADE."
-      marks={[
-        { icon: <JiraMark size={13} />, label: "Jira" },
-        { icon: <span style={{ color: LINEAR_BRAND.primaryBright, display: "inline-flex" }}><LinearMark size={13} /></span>, label: "Linear" },
-        { icon: <GithubLogo size={14} weight="fill" />, label: "GitHub" },
-      ]}
+      headline="Your issues, inside ADE."
+      sentence="Attach a Jira, Linear or GitHub issue to a chat and the agent starts with all of it."
+      action={{ tipId: "issues", label: "Connect your tracker" }}
       media={{
         kind: "images",
         width: 1560,

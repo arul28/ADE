@@ -1,4 +1,4 @@
-import { FileDoc, FilePpt, FileText, FileXls, FlowArrow } from "@phosphor-icons/react";
+import { FileText } from "@phosphor-icons/react";
 import type { AnnouncementPageProps } from "../announcementPages";
 import { WhatsNewFeature } from "./WhatsNewFeature";
 import word from "./assets/files-word.webp";
@@ -11,14 +11,9 @@ export default function OpenAnyFileAnnouncement({ close }: AnnouncementPageProps
     <WhatsNewFeature
       close={close}
       place={{ icon: <FileText size={17} weight="fill" />, name: "Files" }}
-      headline="Open docs, sheets and decks in ADE."
-      sentence="Word, Excel and PowerPoint files open in Files the way they look, and diagrams draw themselves. Click a file an agent mentions to open it."
-      marks={[
-        { icon: <FileDoc size={14} weight="fill" color="#4b8bf5" />, label: "Word" },
-        { icon: <FileXls size={14} weight="fill" color="#22a06b" />, label: "Excel" },
-        { icon: <FilePpt size={14} weight="fill" color="#e8743b" />, label: "PowerPoint" },
-        { icon: <FlowArrow size={14} weight="bold" />, label: "Mermaid" },
-      ]}
+      headline="Docs, sheets and decks open in ADE."
+      sentence="Word, Excel, PowerPoint and diagrams open in Files the way they look."
+      action={{ tipId: "files", label: "Open Files" }}
       media={{
         kind: "images",
         width: 1560,
