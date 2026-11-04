@@ -204,7 +204,18 @@ Design round (owner, 2026-11-03):
 
 Move these out of `services/ios` / `components/apple` into a neutral home and
 make iOS import them. Behaviour does not change; names lose the Apple prefix
-where the code is generic, with re-exports to keep the diff small.
+where the code is generic.
+
+**P0 moves only what Android imports in P0** (decided 2026-11-04): the Annex B
+parser (to `services/media/`), the video record constants (to a neutral
+`shared/types` module), the renderer player and stream view, the flat view
+(`components/device/DeviceFlatView.tsx`), and the spinner, danger menu item
+and drawer primitives that the picker uses. Each other row in the table moves
+in the phase where Android first uses it: the relay, the relay-to-service seam,
+pacing, the local viewers and the renderer lease in P2 (viewers); the lease
+queue, the lifecycle queue and the recording store in P1 (agent suite); the
+mini player store in P2 (two floating players). A module that moves before a
+second caller exists only adds churn to the diff.
 
 | Piece | Today |
 |---|---|
@@ -366,8 +377,8 @@ Each phase is one PR, reviewed and merged before the next.
 on 2026-11-03 (`51c6eabf6`). This lane is updated to that commit, and §4 and
 §5 describe the merged seams.
 
-- **P0 — foundation.** The shared device layer move (iOS unchanged, its tests
-  green). SDK detection + `status` capability on Mac, Windows, Linux. AVD
+- **P0 — foundation.** The shared device layer move for the pieces Android
+  uses in P0 (§4; iOS unchanged, its tests green). SDK detection + `status` capability on Mac, Windows, Linux. AVD
   list, create from a stock profile, boot, stop, delete; the lane table and
   marker; lane archive/delete teardown. scrcpy stream into the pane, flat view
   only. Touch and the hardware keys (rail in the §5 order). The picker's "This
