@@ -478,6 +478,7 @@ import { createMacDesktopService } from "./services/macDesktop/macDesktopService
 import { createAndroidEmulatorService } from "./services/android/androidEmulatorService";
 import { sqlAndroidLaneDeviceRepo } from "./services/android/androidLaneRelease";
 import { resolveScrcpyServerJarPath } from "./services/android/scrcpyServer";
+import { createAndroidStreamHub } from "./services/android/androidStream";
 import { createMacDesktopLogger } from "./services/macDesktop/macDesktopLogger";
 import { createWindowsDesktopSeatAdapter } from "./services/windowsDesktop/windowsDesktopSeatProvider";
 import { createLinuxDesktopSeatAdapter } from "./services/linuxDesktop/linuxDesktopSeatProvider";
@@ -546,6 +547,9 @@ import { createWebhookRemoteSource } from "./services/automations/webhookAutomat
 
 /** One warm-runtime budget for every project context in this process. */
 const chatRuntimeBudget = createChatRuntimeBudget();
+
+/** One Android stream hub (the emulators' live pictures) for every project context in this process. */
+const androidStreamHub = createAndroidStreamHub();
 
 /** The desktop's windows, in a project service's App Control frame demand. */
 const APP_CONTROL_WINDOWS_FRAME_DEMAND_SOURCE = "desktop-windows";
@@ -5777,11 +5781,11 @@ app.whenReady().then(async () => {
       // Per project, like `lane_android_devices`: the started-emulators state
       // file, emulator logs and default screenshots.
       dataDir: path.join(resolveAdeLayout(projectRoot).adeDir, "android"),
-      serverJarPath: resolveScrcpyServerJarPath({
-        isPackaged: app.isPackaged,
-        resourcesPath: process.resourcesPath,
-        appPath: app.getAppPath(),
-      }),
+      // A packaged app's extraResources; a dev run's `apps/desktop/resources`.
+      serverJarPath: resolveScrcpyServerJarPath(app.isPackaged
+        ? { resourcesPath: process.resourcesPath }
+        : { startDir: app.getAppPath() }),
+      streamHub: androidStreamHub,
       // A screenshot `outPath` must stay inside the lane's worktree.
       resolveLaneWorktreePath: (laneId: string): string | null => {
         try {

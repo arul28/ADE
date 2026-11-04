@@ -30,7 +30,6 @@ import type { IncomingMessage, Server, ServerResponse } from "node:http";
 
 import type { Logger } from "../logging/logger";
 import {
-  ZERO_CLIENT_GRACE_MS,
   answerLoopbackPreamble,
   bindLoopbackServer,
   openStreamBody,
@@ -39,7 +38,7 @@ import {
 } from "../media/loopbackTokenServer";
 import type { ScrcpyRecordOutput, ScrcpyVideoConfig } from "./scrcpyVideo";
 
-export const ANDROID_STREAM_PATH = "/android/stream";
+const ANDROID_STREAM_PATH = "/android/stream";
 
 /**
  * A keyframe request that produced no keyframe in this time is asked again.
@@ -74,8 +73,6 @@ export type AndroidStreamServerDeps = {
   now?: () => number;
   /** Asks the device's encoder for a keyframe now. */
   requestKeyframe: (key: string) => void;
-  /** Fired after the grace period once a stream has no readers left. */
-  onZeroReaders?: (key: string) => void;
 };
 
 type Reader = {
@@ -100,7 +97,6 @@ type DeviceStream = {
   firstConfigAtMs: number | null;
   firstKeyframeAtMs: number | null;
   lastError: string | null;
-  graceTimer: ReturnType<typeof setTimeout> | null;
 };
 
 export function createAndroidStreamServer(deps: AndroidStreamServerDeps) {
@@ -112,24 +108,12 @@ export function createAndroidStreamServer(deps: AndroidStreamServerDeps) {
   /** The bind in flight, so two first starts share one server. */
   let binding: Promise<number> | null = null;
 
-  const scheduleZeroReaderCheck = (stream: DeviceStream): void => {
-    if (stream.readers.size > 0) return;
-    if (stream.graceTimer) clearTimeout(stream.graceTimer);
-    stream.graceTimer = setTimeout(() => {
-      stream.graceTimer = null;
-      if (stream.readers.size > 0 || streams.get(stream.key) !== stream) return;
-      deps.onZeroReaders?.(stream.key);
-    }, ZERO_CLIENT_GRACE_MS);
-    stream.graceTimer.unref?.();
-  };
-
   const dropReader = (stream: DeviceStream, reader: Reader, reason: string): void => {
     if (!stream.readers.delete(reader)) return;
     // Info, not debug: a reader coming and going is rare, and it is the one
     // fact that tells a stream nobody read from a stream whose reader left.
     deps.logger?.info("android.stream_reader_dropped", { key: stream.key, reason, readers: stream.readers.size });
     reader.response.destroy();
-    scheduleZeroReaderCheck(stream);
   };
 
   const write = (stream: DeviceStream, reader: Reader, record: Uint8Array): boolean =>
@@ -146,10 +130,6 @@ export function createAndroidStreamServer(deps: AndroidStreamServerDeps) {
   const attachReader = (stream: DeviceStream, response: ServerResponse): Reader => {
     const reader: Reader = { response, backlogBytes: 0, waitingForKeyframe: true };
     stream.readers.add(reader);
-    if (stream.graceTimer) {
-      clearTimeout(stream.graceTimer);
-      stream.graceTimer = null;
-    }
     // Before the first config there is nothing to send; the config branch of
     // `publish` writes it to every reader, this one included.
     if (stream.config) {
@@ -234,7 +214,6 @@ export function createAndroidStreamServer(deps: AndroidStreamServerDeps) {
     const stream = streams.get(key);
     if (!stream) return false;
     streams.delete(key);
-    if (stream.graceTimer) clearTimeout(stream.graceTimer);
     for (const reader of [...stream.readers]) {
       stream.readers.delete(reader);
       reader.response.destroy();
@@ -269,12 +248,8 @@ export function createAndroidStreamServer(deps: AndroidStreamServerDeps) {
         firstConfigAtMs: null,
         firstKeyframeAtMs: null,
         lastError: null,
-        graceTimer: null,
       };
       streams.set(key, stream);
-      // A run nobody ever reads from must still be reported; the first
-      // reader cancels this.
-      scheduleZeroReaderCheck(stream);
       return transportFor(stream);
     },
 

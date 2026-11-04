@@ -17,7 +17,7 @@ export type AdbRunResult = {
   exitCode: number;
 };
 
-export class AdbError extends Error {
+class AdbError extends Error {
   constructor(
     message: string,
     readonly exitCode: number | null,

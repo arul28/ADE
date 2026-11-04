@@ -35,7 +35,7 @@ const MOTION_ACTION = { down: 0, up: 1, move: 2 } as const;
 export const SCRCPY_POINTER_ID_GENERIC_FINGER = -2n;
 
 /** The server reads at most this many UTF-8 bytes of one text message. */
-export const SCRCPY_INJECT_TEXT_MAX_BYTES = 300;
+const SCRCPY_INJECT_TEXT_MAX_BYTES = 300;
 
 /** Android key codes (`KeyEvent.KEYCODE_*`) for the rail's keys. */
 export const ANDROID_HARDWARE_KEYCODES: Record<AndroidHardwareKey, number> = {
@@ -47,7 +47,7 @@ export const ANDROID_HARDWARE_KEYCODES: Record<AndroidHardwareKey, number> = {
   volume_down: 25,
 };
 
-export function encodeInjectKeycode(args: {
+function encodeInjectKeycode(args: {
   action: keyof typeof KEY_ACTION;
   keycode: number;
   repeat?: number;
@@ -67,7 +67,7 @@ export function encodeInjectKeycode(args: {
  * is off and BACK when it is on, so the rail's Back never lands on a dark
  * screen and does nothing.
  */
-export function encodeBackOrScreenOn(action: keyof typeof KEY_ACTION): Buffer {
+function encodeBackOrScreenOn(action: keyof typeof KEY_ACTION): Buffer {
   return Buffer.from([TYPE_BACK_OR_SCREEN_ON, KEY_ACTION[action]]);
 }
 

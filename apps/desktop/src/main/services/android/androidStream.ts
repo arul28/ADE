@@ -17,6 +17,7 @@
  */
 
 import type { Logger } from "../logging/logger";
+import { getErrorMessage } from "../shared/utils";
 import type {
   AndroidEmulatorErrorCode,
   AndroidHardwareKey,
@@ -25,6 +26,7 @@ import type {
   AndroidTouchEvent,
 } from "../../../shared/types/androidEmulator";
 import { runAdbText } from "./adb";
+import { AndroidEmulatorFailure } from "./androidEmulatorErrors";
 import { createAndroidStreamServer, type AndroidStreamMetrics, type AndroidStreamServer } from "./androidStreamServer";
 import {
   encodeHardwareKeyPress,
@@ -46,7 +48,7 @@ import { createScrcpyRecordBuilder } from "./scrcpyVideo";
  * encoder. The server sets real-time priority and one-frame latency itself
  * (scrcpy 4.0 and later).
  */
-export const ANDROID_STREAM_DEFAULTS = {
+const ANDROID_STREAM_DEFAULTS = {
   /** Longest side of the encoded picture (464x1024 for a 1080x2400 phone). */
   maxSize: 1024,
   bitRate: 4_000_000,
@@ -58,7 +60,7 @@ const MAX_RESTARTS = 3;
 const RESTART_WINDOW_MS = 60_000;
 const RESTART_BACKOFF_MS = 500;
 
-export class AndroidStreamError extends Error {
+class AndroidStreamError extends Error {
   constructor(
     readonly code: AndroidEmulatorErrorCode,
     message: string,
@@ -67,6 +69,12 @@ export class AndroidStreamError extends Error {
     super(message);
     this.name = "AndroidStreamError";
   }
+}
+
+/** Rethrows a stream's refusal as the service's coded one; anything else as it is. */
+export function asStreamFailure(error: unknown): never {
+  if (error instanceof AndroidStreamError) throw new AndroidEmulatorFailure(error.code, error.message);
+  throw error;
 }
 
 export type AndroidStreamStartArgs = {
@@ -104,22 +112,22 @@ type DeviceStream = {
   sessions: number;
 };
 
-const devices = new Map<string, DeviceStream>();
-let streamServer: AndroidStreamServer | null = null;
-let serverLogger: Logger | null = null;
-
-function ensureStreamServer(logger: Logger | null): AndroidStreamServer {
-  serverLogger ??= logger;
-  streamServer ??= createAndroidStreamServer({
-    logger: serverLogger,
-    requestKeyframe: (serial) => {
-      const control = devices.get(serial)?.session?.control;
-      if (!control?.isOpen()) return;
-      void control.send([encodeResetVideo()]).catch(() => undefined);
-    },
-  });
-  return streamServer;
-}
+export type AndroidStreamDiagnostics = {
+  serial: string;
+  running: boolean;
+  deviceName: string | null;
+  /** The server's process id on the device. */
+  devicePid: number | null;
+  displaySize: { width: number; height: number } | null;
+  timings: ScrcpySession["timings"] | null;
+  restarts: number;
+  lastEnd: ScrcpySessionEnd | null;
+  failure: string | null;
+  configPackets: number;
+  sessions: number;
+  serverLog: string[];
+  metrics: AndroidStreamMetrics | null;
+};
 
 function deferred(): { promise: Promise<void>; resolve: () => void } {
   let resolve!: () => void;
@@ -138,296 +146,329 @@ function parseWmSize(text: string): { width: number; height: number } | null {
   return pick("Override") ?? pick("Physical");
 }
 
-function transportOf(device: DeviceStream): AndroidStreamTransport | null {
-  const transport = streamServer?.getTransport(device.args.serial);
-  const config = device.builder.currentConfig();
-  if (!transport || !config) return null;
-  return { url: transport.url, token: transport.token, codec: config.codec, width: config.width, height: config.height };
+function serverLogOf(error: unknown): string[] {
+  return error instanceof Error && "serverLog" in error ? (error as { serverLog: string[] }).serverLog : [];
 }
 
-async function openSession(device: DeviceStream): Promise<void> {
-  const { args } = device;
-  const server = ensureStreamServer(args.logger ?? null);
-  const session = await startScrcpySession(
-    {
-      adbPath: args.adbPath,
-      serial: args.serial,
-      serverJarPath: args.serverJarPath,
-      maxSize: args.maxSize ?? ANDROID_STREAM_DEFAULTS.maxSize,
-      videoBitRate: args.bitRate ?? ANDROID_STREAM_DEFAULTS.bitRate,
-      maxFps: args.maxFps ?? ANDROID_STREAM_DEFAULTS.maxFps,
-      codecOptions: args.codecOptions ?? null,
-      videoEncoder: args.videoEncoder ?? null,
-      logger: args.logger ?? null,
-    },
-    {
-      onPacket: (packet) => {
-        if (devices.get(args.serial) !== device) return;
-        if (packet.config) device.configPackets += 1;
-        let outputs;
-        try {
-          outputs = device.builder.push(packet);
-        } catch (error) {
-          server.recordError(args.serial, error instanceof Error ? error.message : String(error));
-          return;
-        }
-        for (const output of outputs) {
-          server.publish(args.serial, output);
-          if (output.kind === "config") device.firstConfig.resolve();
-        }
-      },
-      onSession: () => {
-        if (devices.get(args.serial) === device) device.sessions += 1;
-      },
-      onEnd: (end) => handleSessionEnd(device, end),
-    },
-  );
-  if (device.stopped || devices.get(args.serial) !== device) {
-    await session.stop();
-    return;
-  }
-  device.session = session;
-}
+/**
+ * Every emulator stream of one process, and the one loopback server they
+ * share. Each process builds one (`main.ts`, `bootstrap.ts`) and gives it to
+ * every emulator service it builds. A service holds it with `retain`; when the
+ * last holder lets go, every stream and the server stop.
+ */
+export function createAndroidStreamHub() {
+  const devices = new Map<string, DeviceStream>();
+  let streamServer: AndroidStreamServer | null = null;
+  let serverLogger: Logger | null = null;
+  let holders = 0;
 
-function handleSessionEnd(device: DeviceStream, end: ScrcpySessionEnd): void {
-  device.lastEnd = end;
-  device.session = null;
-  if (end.reason === "stopped" || device.stopped || devices.get(device.args.serial) !== device) return;
-  const server = streamServer;
-  server?.recordError(device.args.serial, end.message ?? end.reason);
-  const at = Date.now();
-  device.restarts = device.restarts.filter((when) => at - when < RESTART_WINDOW_MS);
-  if (device.restarts.length >= MAX_RESTARTS) {
-    device.failure = new AndroidStreamError(
-      "ANDROID_STREAM_FAILED",
-      `The emulator's video stopped ${MAX_RESTARTS + 1} times in a minute: ${end.message ?? end.reason}`,
-      end.serverLog,
-    );
-    device.args.logger?.warn("android.stream_gave_up", { serial: device.args.serial, reason: end.reason, message: end.message });
-    server?.stop(device.args.serial);
-    return;
-  }
-  device.restarts.push(at);
-  const backoff = RESTART_BACKOFF_MS * device.restarts.length;
-  device.args.logger?.info("android.stream_restarting", { serial: device.args.serial, reason: end.reason, backoffMs: backoff });
-  device.restartTimer = setTimeout(() => {
-    device.restartTimer = null;
-    if (device.stopped) return;
-    openSession(device).catch((error: unknown) => {
-      handleSessionEnd(device, {
-        reason: "server-exited",
-        message: error instanceof Error ? error.message : String(error),
-        serverLog: error instanceof Error && "serverLog" in error ? (error as { serverLog: string[] }).serverLog : [],
-      });
+  const ensureStreamServer = (logger: Logger | null): AndroidStreamServer => {
+    serverLogger ??= logger;
+    streamServer ??= createAndroidStreamServer({
+      logger: serverLogger,
+      requestKeyframe: (serial) => {
+        const control = devices.get(serial)?.session?.control;
+        if (!control?.isOpen()) return;
+        void control.send([encodeResetVideo()]).catch(() => undefined);
+      },
     });
-  }, backoff);
-}
-
-/**
- * Starts the emulator's stream, or returns the one already running. Resolves
- * once the first config record exists, so the transport names the codec and
- * the size.
- */
-export async function startStream(args: AndroidStreamStartArgs): Promise<AndroidStreamTransport> {
-  const existing = devices.get(args.serial);
-  if (existing && !existing.stopped && !existing.failure) {
-    if (existing.starting) return existing.starting;
-    const transport = transportOf(existing);
-    if (transport) return transport;
-  }
-  if (existing) await stopStream(args.serial);
-
-  const device: DeviceStream = {
-    args,
-    session: null,
-    builder: createScrcpyRecordBuilder(),
-    displaySize: null,
-    starting: null,
-    restartTimer: null,
-    restarts: [],
-    stopped: false,
-    failure: null,
-    firstConfig: deferred(),
-    lastEnd: null,
-    configPackets: 0,
-    sessions: 0,
+    return streamServer;
   };
-  devices.set(args.serial, device);
-  const server = ensureStreamServer(args.logger ?? null);
 
-  device.starting = (async () => {
-    try {
-      await server.start(args.serial);
-      // The display size scales touches from device to video pixels.
-      const sizeText = await runAdbText(args.adbPath, ["shell", "wm", "size"], { serial: args.serial, timeoutMs: 10_000 })
-        .catch(() => "");
-      device.displaySize = parseWmSize(sizeText);
-      await openSession(device);
-      let timer: ReturnType<typeof setTimeout> | null = null;
-      const timedOut = new Promise<"timeout">((resolve) => {
-        timer = setTimeout(() => resolve("timeout"), FIRST_CONFIG_TIMEOUT_MS);
-      });
-      const result = await Promise.race([device.firstConfig.promise.then(() => "config" as const), timedOut]);
-      if (timer) clearTimeout(timer);
-      if (device.stopped) throw new AndroidStreamError("ANDROID_NOT_RUNNING", "The stream was stopped while it was starting.");
-      if (result === "timeout") {
-        throw new AndroidStreamError("ANDROID_STREAM_FAILED", `The emulator sent no video within ${FIRST_CONFIG_TIMEOUT_MS / 1000} s.`);
-      }
-      const transport = transportOf(device);
-      if (!transport) throw new AndroidStreamError("ANDROID_STREAM_FAILED", "The emulator's stream stopped while it was starting.");
-      return transport;
-    } catch (error) {
-      if (devices.get(args.serial) === device) await stopStream(args.serial);
-      if (error instanceof AndroidStreamError) throw error;
-      const serverLog = error instanceof Error && "serverLog" in error ? (error as { serverLog: string[] }).serverLog : [];
-      throw new AndroidStreamError("ANDROID_STREAM_FAILED", error instanceof Error ? error.message : String(error), serverLog);
-    } finally {
-      device.starting = null;
-    }
-  })();
-  return device.starting;
-}
+  const transportOf = (device: DeviceStream): AndroidStreamTransport | null => {
+    const transport = streamServer?.getTransport(device.args.serial);
+    const config = device.builder.currentConfig();
+    if (!transport || !config) return null;
+    return { url: transport.url, token: transport.token, codec: config.codec, width: config.width, height: config.height };
+  };
 
-/** Stops the emulator's stream: ends the server, removes the forward, closes every viewer. */
-export async function stopStream(serial: string): Promise<void> {
-  const device = devices.get(serial);
-  if (!device) return;
-  devices.delete(serial);
-  device.stopped = true;
-  // A start still waiting for its first picture fails now, not at its timeout.
-  device.firstConfig.resolve();
-  if (device.restartTimer) clearTimeout(device.restartTimer);
-  device.restartTimer = null;
-  streamServer?.stop(serial);
-  const session = device.session;
-  device.session = null;
-  await session?.stop();
-}
-
-/** Stops every stream and the loopback server (app quit, tests). */
-export async function stopAllStreams(): Promise<void> {
-  await Promise.all([...devices.keys()].map((serial) => stopStream(serial)));
-  streamServer?.dispose();
-  streamServer = null;
-  serverLogger = null;
-}
-
-function runningDevice(serial: string): { device: DeviceStream; session: ScrcpySession } {
-  const device = devices.get(serial);
-  if (device?.failure) throw device.failure;
-  const session = device?.session;
-  if (!device || !session || !session.control.isOpen()) {
-    const restarting = Boolean(device && !device.stopped && (device.restartTimer || device.lastEnd));
-    throw new AndroidStreamError(
-      "ANDROID_NOT_RUNNING",
-      restarting
-        ? `The stream for ${serial} is restarting (${device?.lastEnd?.message ?? "the server stopped"}).`
-        : `No stream is running for ${serial}.`,
+  const openSession = async (device: DeviceStream): Promise<void> => {
+    const { args } = device;
+    const server = ensureStreamServer(args.logger ?? null);
+    const session = await startScrcpySession(
+      {
+        adbPath: args.adbPath,
+        serial: args.serial,
+        serverJarPath: args.serverJarPath,
+        maxSize: args.maxSize ?? ANDROID_STREAM_DEFAULTS.maxSize,
+        videoBitRate: args.bitRate ?? ANDROID_STREAM_DEFAULTS.bitRate,
+        maxFps: args.maxFps ?? ANDROID_STREAM_DEFAULTS.maxFps,
+        codecOptions: args.codecOptions ?? null,
+        videoEncoder: args.videoEncoder ?? null,
+        logger: args.logger ?? null,
+      },
+      {
+        onPacket: (packet) => {
+          if (devices.get(args.serial) !== device) return;
+          if (packet.config) device.configPackets += 1;
+          let outputs;
+          try {
+            outputs = device.builder.push(packet);
+          } catch (error) {
+            server.recordError(args.serial, getErrorMessage(error));
+            return;
+          }
+          for (const output of outputs) {
+            server.publish(args.serial, output);
+            if (output.kind === "config") device.firstConfig.resolve();
+          }
+        },
+        onSession: () => {
+          if (devices.get(args.serial) === device) device.sessions += 1;
+        },
+        onEnd: (end) => handleSessionEnd(device, end),
+      },
     );
-  }
-  return { device, session };
-}
+    if (device.stopped || devices.get(args.serial) !== device) {
+      await session.stop();
+      return;
+    }
+    device.session = session;
+  };
 
-/**
- * Sends one touch event. Coordinates are device pixels in the current
- * orientation; the server wants video pixels with the video size, so they are
- * scaled here. Use one `pointerId` for the whole gesture (down, moves, up).
- */
-export async function sendTouch(serial: string, event: AndroidTouchEvent): Promise<void> {
-  const { device, session } = runningDevice(serial);
-  const video = device.builder.currentConfig();
-  if (!video) throw new AndroidStreamError("ANDROID_NOT_RUNNING", `The stream for ${serial} has no picture yet.`);
-  let scaleX = 1;
-  let scaleY = 1;
-  if (device.displaySize) {
-    // The video follows the display's rotation, so the display's long side
-    // lies along the video's long side.
-    const long = Math.max(device.displaySize.width, device.displaySize.height);
-    const short = Math.min(device.displaySize.width, device.displaySize.height);
-    const landscape = video.width > video.height;
-    scaleX = video.width / (landscape ? long : short);
-    scaleY = video.height / (landscape ? short : long);
-  }
-  const x = Math.min(video.width - 1, Math.max(0, event.x * scaleX));
-  const y = Math.min(video.height - 1, Math.max(0, event.y * scaleY));
-  await session.control.send([
-    encodeInjectTouch({
-      action: event.action,
-      pointerId: typeof event.pointerId === "number" && event.pointerId >= 0
-        ? BigInt(Math.trunc(event.pointerId))
-        : SCRCPY_POINTER_ID_GENERIC_FINGER,
-      x,
-      y,
-      videoWidth: video.width,
-      videoHeight: video.height,
-    }),
-  ]);
-}
+  const handleSessionEnd = (device: DeviceStream, end: ScrcpySessionEnd): void => {
+    device.lastEnd = end;
+    device.session = null;
+    if (end.reason === "stopped" || device.stopped || devices.get(device.args.serial) !== device) return;
+    const server = streamServer;
+    server?.recordError(device.args.serial, end.message ?? end.reason);
+    const at = Date.now();
+    device.restarts = device.restarts.filter((when) => at - when < RESTART_WINDOW_MS);
+    if (device.restarts.length >= MAX_RESTARTS) {
+      device.failure = new AndroidStreamError(
+        "ANDROID_STREAM_FAILED",
+        `The emulator's video stopped ${MAX_RESTARTS + 1} times in a minute: ${end.message ?? end.reason}`,
+        end.serverLog,
+      );
+      device.args.logger?.warn("android.stream_gave_up", { serial: device.args.serial, reason: end.reason, message: end.message });
+      server?.stop(device.args.serial);
+      return;
+    }
+    device.restarts.push(at);
+    const backoff = RESTART_BACKOFF_MS * device.restarts.length;
+    device.args.logger?.info("android.stream_restarting", { serial: device.args.serial, reason: end.reason, backoffMs: backoff });
+    device.restartTimer = setTimeout(() => {
+      device.restartTimer = null;
+      if (device.stopped) return;
+      openSession(device).catch((error: unknown) => {
+        handleSessionEnd(device, {
+          reason: "server-exited",
+          message: getErrorMessage(error),
+          serverLog: serverLogOf(error),
+        });
+      });
+    }, backoff);
+  };
 
-/** Presses and releases one hardware key. Back also wakes a dark screen. */
-export async function sendKey(serial: string, key: AndroidHardwareKey): Promise<void> {
-  const { session } = runningDevice(serial);
-  await session.control.send(encodeHardwareKeyPress(key));
-}
+  /** Stops the emulator's stream: ends the server, removes the forward, closes every viewer. */
+  const stopStream = async (serial: string): Promise<void> => {
+    const device = devices.get(serial);
+    if (!device) return;
+    devices.delete(serial);
+    device.stopped = true;
+    // A start still waiting for its first picture fails now, not at its timeout.
+    device.firstConfig.resolve();
+    if (device.restartTimer) clearTimeout(device.restartTimer);
+    device.restartTimer = null;
+    streamServer?.stop(serial);
+    const session = device.session;
+    device.session = null;
+    await session?.stop();
+  };
 
-/**
- * Types text into the focused field. The server types it with the virtual
- * keyboard's key map, so characters that map has no keys for (most non-ASCII)
- * are skipped on the device.
- */
-export async function sendText(serial: string, text: string): Promise<void> {
-  if (!text) return;
-  const { session } = runningDevice(serial);
-  await session.control.send(encodeInjectText(text));
-}
+  /** Stops every stream and the loopback server. */
+  const stopAllStreams = async (): Promise<void> => {
+    await Promise.all([...devices.keys()].map((serial) => stopStream(serial)));
+    streamServer?.dispose();
+    streamServer = null;
+    serverLogger = null;
+  };
 
-export function status(serial: string, laneId?: string | null): AndroidStreamStatus {
-  const device = devices.get(serial) ?? null;
-  const running = Boolean(device && !device.failure && device.session);
-  const metrics = streamServer?.metrics(serial) ?? null;
+  const runningDevice = (serial: string): { device: DeviceStream; session: ScrcpySession } => {
+    const device = devices.get(serial);
+    if (device?.failure) throw device.failure;
+    const session = device?.session;
+    if (!device || !session || !session.control.isOpen()) {
+      const restarting = Boolean(device && !device.stopped && (device.restartTimer || device.lastEnd));
+      throw new AndroidStreamError(
+        "ANDROID_NOT_RUNNING",
+        restarting
+          ? `The stream for ${serial} is restarting (${device?.lastEnd?.message ?? "the server stopped"}).`
+          : `No stream is running for ${serial}.`,
+      );
+    }
+    return { device, session };
+  };
+
   return {
-    laneId: laneId ?? device?.args.laneId ?? "",
-    running,
-    backend: running ? "scrcpy" : null,
-    transport: running && device ? transportOf(device) : null,
-    fps: running ? metrics?.fps ?? null : null,
+    /**
+     * Holds the hub for one service. The returned call lets go; the last one
+     * to let go stops every stream and the loopback server.
+     */
+    retain(): () => Promise<void> {
+      holders += 1;
+      let released = false;
+      return async () => {
+        if (released) return;
+        released = true;
+        holders -= 1;
+        if (holders === 0) await stopAllStreams();
+      };
+    },
+
+    /**
+     * Starts the emulator's stream, or returns the one already running. Resolves
+     * once the first config record exists, so the transport names the codec and
+     * the size.
+     */
+    async startStream(args: AndroidStreamStartArgs): Promise<AndroidStreamTransport> {
+      const existing = devices.get(args.serial);
+      if (existing && !existing.stopped && !existing.failure) {
+        if (existing.starting) return existing.starting;
+        const transport = transportOf(existing);
+        if (transport) return transport;
+      }
+      if (existing) await stopStream(args.serial);
+
+      const device: DeviceStream = {
+        args,
+        session: null,
+        builder: createScrcpyRecordBuilder(),
+        displaySize: null,
+        starting: null,
+        restartTimer: null,
+        restarts: [],
+        stopped: false,
+        failure: null,
+        firstConfig: deferred(),
+        lastEnd: null,
+        configPackets: 0,
+        sessions: 0,
+      };
+      devices.set(args.serial, device);
+      const server = ensureStreamServer(args.logger ?? null);
+
+      device.starting = (async () => {
+        try {
+          await server.start(args.serial);
+          // The display size scales touches from device to video pixels.
+          const sizeText = await runAdbText(args.adbPath, ["shell", "wm", "size"], { serial: args.serial, timeoutMs: 10_000 })
+            .catch(() => "");
+          device.displaySize = parseWmSize(sizeText);
+          await openSession(device);
+          let timer: ReturnType<typeof setTimeout> | null = null;
+          const timedOut = new Promise<"timeout">((resolve) => {
+            timer = setTimeout(() => resolve("timeout"), FIRST_CONFIG_TIMEOUT_MS);
+          });
+          const result = await Promise.race([device.firstConfig.promise.then(() => "config" as const), timedOut]);
+          if (timer) clearTimeout(timer);
+          if (device.stopped) throw new AndroidStreamError("ANDROID_NOT_RUNNING", "The stream was stopped while it was starting.");
+          if (result === "timeout") {
+            throw new AndroidStreamError("ANDROID_STREAM_FAILED", `The emulator sent no video within ${FIRST_CONFIG_TIMEOUT_MS / 1000} s.`);
+          }
+          const transport = transportOf(device);
+          if (!transport) throw new AndroidStreamError("ANDROID_STREAM_FAILED", "The emulator's stream stopped while it was starting.");
+          return transport;
+        } catch (error) {
+          if (devices.get(args.serial) === device) await stopStream(args.serial);
+          if (error instanceof AndroidStreamError) throw error;
+          throw new AndroidStreamError("ANDROID_STREAM_FAILED", getErrorMessage(error), serverLogOf(error));
+        } finally {
+          device.starting = null;
+        }
+      })();
+      return device.starting;
+    },
+
+    stopStream,
+
+    /**
+     * Sends one touch event. Coordinates are device pixels in the current
+     * orientation; the server wants video pixels with the video size, so they are
+     * scaled here. Use one `pointerId` for the whole gesture (down, moves, up).
+     */
+    async sendTouch(serial: string, event: AndroidTouchEvent): Promise<void> {
+      const { device, session } = runningDevice(serial);
+      const video = device.builder.currentConfig();
+      if (!video) throw new AndroidStreamError("ANDROID_NOT_RUNNING", `The stream for ${serial} has no picture yet.`);
+      let scaleX = 1;
+      let scaleY = 1;
+      if (device.displaySize) {
+        // The video follows the display's rotation, so the display's long side
+        // lies along the video's long side.
+        const long = Math.max(device.displaySize.width, device.displaySize.height);
+        const short = Math.min(device.displaySize.width, device.displaySize.height);
+        const landscape = video.width > video.height;
+        scaleX = video.width / (landscape ? long : short);
+        scaleY = video.height / (landscape ? short : long);
+      }
+      const x = Math.min(video.width - 1, Math.max(0, event.x * scaleX));
+      const y = Math.min(video.height - 1, Math.max(0, event.y * scaleY));
+      await session.control.send([
+        encodeInjectTouch({
+          action: event.action,
+          pointerId: typeof event.pointerId === "number" && event.pointerId >= 0
+            ? BigInt(Math.trunc(event.pointerId))
+            : SCRCPY_POINTER_ID_GENERIC_FINGER,
+          x,
+          y,
+          videoWidth: video.width,
+          videoHeight: video.height,
+        }),
+      ]);
+    },
+
+    /** Presses and releases one hardware key. Back also wakes a dark screen. */
+    async sendKey(serial: string, key: AndroidHardwareKey): Promise<void> {
+      const { session } = runningDevice(serial);
+      await session.control.send(encodeHardwareKeyPress(key));
+    },
+
+    /**
+     * Types text into the focused field. The server types it with the virtual
+     * keyboard's key map, so characters that map has no keys for (most non-ASCII)
+     * are skipped on the device.
+     */
+    async sendText(serial: string, text: string): Promise<void> {
+      if (!text) return;
+      const { session } = runningDevice(serial);
+      await session.control.send(encodeInjectText(text));
+    },
+
+    status(serial: string, laneId?: string | null): AndroidStreamStatus {
+      const device = devices.get(serial) ?? null;
+      const running = Boolean(device && !device.failure && device.session);
+      const metrics = streamServer?.metrics(serial) ?? null;
+      return {
+        laneId: laneId ?? device?.args.laneId ?? "",
+        running,
+        backend: running ? "scrcpy" : null,
+        transport: running && device ? transportOf(device) : null,
+        fps: running ? metrics?.fps ?? null : null,
+      };
+    },
+
+    /** Everything the status strip, the perf table and a crash report need. */
+    diagnostics(serial: string): AndroidStreamDiagnostics | null {
+      const device = devices.get(serial);
+      if (!device) return null;
+      return {
+        serial,
+        running: Boolean(!device.failure && device.session),
+        deviceName: device.session?.header.deviceName ?? null,
+        devicePid: device.session?.devicePid ?? null,
+        displaySize: device.displaySize,
+        timings: device.session?.timings ?? null,
+        restarts: device.restarts.length,
+        lastEnd: device.lastEnd,
+        failure: device.failure?.message ?? null,
+        configPackets: device.configPackets,
+        sessions: device.sessions,
+        serverLog: device.session?.serverLog() ?? device.lastEnd?.serverLog ?? [],
+        metrics: streamServer?.metrics(serial) ?? null,
+      };
+    },
   };
 }
 
-export type AndroidStreamDiagnostics = {
-  serial: string;
-  running: boolean;
-  deviceName: string | null;
-  /** The server's process id on the device. */
-  devicePid: number | null;
-  displaySize: { width: number; height: number } | null;
-  timings: ScrcpySession["timings"] | null;
-  restarts: number;
-  lastEnd: ScrcpySessionEnd | null;
-  failure: string | null;
-  configPackets: number;
-  sessions: number;
-  serverLog: string[];
-  metrics: AndroidStreamMetrics | null;
-};
-
-/** Everything the status strip, the perf table and a crash report need. */
-export function diagnostics(serial: string): AndroidStreamDiagnostics | null {
-  const device = devices.get(serial);
-  if (!device) return null;
-  return {
-    serial,
-    running: Boolean(!device.failure && device.session),
-    deviceName: device.session?.header.deviceName ?? null,
-    devicePid: device.session?.devicePid ?? null,
-    displaySize: device.displaySize,
-    timings: device.session?.timings ?? null,
-    restarts: device.restarts.length,
-    lastEnd: device.lastEnd,
-    failure: device.failure?.message ?? null,
-    configPackets: device.configPackets,
-    sessions: device.sessions,
-    serverLog: device.session?.serverLog() ?? device.lastEnd?.serverLog ?? [],
-    metrics: streamServer?.metrics(serial) ?? null,
-  };
-}
+export type AndroidStreamHub = ReturnType<typeof createAndroidStreamHub>;

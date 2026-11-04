@@ -7,6 +7,8 @@
  * so a device here is always an AVD that this machine's SDK can boot.
  */
 
+import type { OpenProjectBinding } from "./core";
+
 /** Where an SDK path came from, in the order the brain tries them. */
 export type AndroidSdkSource = "ANDROID_HOME" | "ANDROID_SDK_ROOT" | "default" | "setting";
 
@@ -178,6 +180,10 @@ export const ANDROID_HARDWARE_KEYS = [
   "volume_down",
 ] as const;
 export type AndroidHardwareKey = (typeof ANDROID_HARDWARE_KEYS)[number];
+
+export function isAndroidHardwareKey(value: unknown): value is AndroidHardwareKey {
+  return typeof value === "string" && (ANDROID_HARDWARE_KEYS as readonly string[]).includes(value);
+}
 
 export const ANDROID_EMULATOR_ERROR_CODES = [
   "ANDROID_SDK_NOT_FOUND",
@@ -379,7 +385,7 @@ export type AndroidAgentAction = (typeof ANDROID_AGENT_ACTIONS)[number];
 export const ANDROID_USER_ONLY_ACTIONS = ["startStream", "stopStream", "sendTouch", "deleteDevice"] as const;
 export type AndroidUserOnlyAction = (typeof ANDROID_USER_ONLY_ACTIONS)[number];
 
-type Pin = import("./core").OpenProjectBinding | null | undefined;
+type Pin = OpenProjectBinding | null | undefined;
 
 /** `window.ade.androidEmulator`. Every call takes the optional machine pin last. */
 export type AndroidEmulatorPreloadApi = {

@@ -250,7 +250,7 @@ function toHexByte(value: number): string {
  * their own when the profile and level read but a later field does not, which
  * still lets the caller build a codec string for `VideoDecoder`.
  */
-export function parseH264Sps(nalPayload: Uint8Array): {
+function parseH264Sps(nalPayload: Uint8Array): {
   codec: string;
   width: number | null;
   height: number | null;

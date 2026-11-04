@@ -10,20 +10,25 @@ import type {
   AndroidEmulatorEvent,
   AndroidEmulatorServiceApi,
   AndroidEmulatorStatus,
-  AndroidHardwareKey,
   AndroidLaneDevice,
   AndroidLaneDeviceStatus,
   AndroidRunningEmulator,
-  AndroidScreenshot,
   AndroidSdkStatus,
   AndroidStreamStatus,
   AndroidSystemImage,
-  AndroidTouchEvent,
 } from "../../../shared/types/androidEmulator";
 import type { Logger } from "../logging/logger";
-import { runAdb } from "./adb";
-import { createAndroidAvd, deleteAdeAndroidAvd, listAndroidAvds, readAdeAvdLaneId, readAndroidAvd, sameAvdName } from "./androidAvds";
-import { AndroidEmulatorFailure } from "./androidEmulatorErrors";
+import { getErrorMessage, sleep } from "../shared/utils";
+import {
+  createAndroidAvd,
+  deleteAdeAndroidAvd,
+  listAndroidAvds,
+  pickAndroidSystemImage,
+  readAdeAvdLaneId,
+  readAndroidAvd,
+  sameAvdName,
+} from "./androidAvds";
+import { AndroidEmulatorFailure, requireLaneId } from "./androidEmulatorErrors";
 import {
   AdeStartedEmulators,
   androidDiscoveryDirs,
@@ -31,29 +36,28 @@ import {
   readAndroidBootCompleted,
   readAndroidDiscoveryFiles,
   stopAndroidEmulator,
+  stopAndroidLaunch,
   waitForAndroidBoot,
   type AndroidDiscoveredEmulator,
   type AndroidEmulatorLaunch,
 } from "./androidEmulatorProcess";
-import { listAndroidDeviceDefinitions, type AndroidDeviceDefinition } from "./androidHardwareProfiles";
+import { listAndroidDeviceDefinitions } from "./androidHardwareProfiles";
+import { createAndroidInput } from "./androidInput";
 import { releaseAndroidLaneDevice, type AndroidLaneDeviceRepo } from "./androidLaneRelease";
+import { takeAndroidScreenshot } from "./androidScreenshot";
 import {
   androidSdkPaths,
   androidUserHome,
   listAndroidSystemImages,
   locateAndroidSdk,
   readAndroidSdkStatus,
+  requireAndroidSdkTools,
   type AndroidEnv,
+  type ReadyAndroidSdk,
 } from "./androidSdk";
-import * as androidStream from "./androidStream";
-import { terminateProcessTree } from "../shared/processExecution";
-import { ANDROID_HARDWARE_KEYCODES } from "./scrcpyControl";
-import {
-  findRemoteWorkCopyForLane,
-  isRemoteWorkLaneId,
-  onRemoteWorkCopyReleased,
-  remoteWorkCopyExists,
-} from "../remoteWork/remoteWorkCopyService";
+import { asStreamFailure, createAndroidStreamHub, type AndroidStreamHub } from "./androidStream";
+import { isRemoteWorkLaneId } from "../remoteWork/remoteWorkCopyService";
+import { createAndroidLaneScope, pickWorkCopyAvd } from "./androidWorkCopy";
 
 /*
  * The lane's Android emulator: one per brain, composing the phase A modules
@@ -78,19 +82,11 @@ import {
  */
 
 /** A first boot of a new AVD measured 54 s on Windows; slower hosts need more. */
-export const ANDROID_BOOT_TIMEOUT_MS = 180_000;
-const SWIPE_DEFAULT_MS = 300;
-const SWIPE_STEP_MS = 16;
-const SCREENSHOT_TIMEOUT_MS = 20_000;
-/** How long `rotate` waits for the display to turn before it returns anyway. */
-const ROTATE_SETTLE_MS = 2_000;
-/** A window manager still at the old rotation this long after the lock means the app keeps its orientation. */
-const ROTATE_REFUSED_AFTER_MS = 400;
-const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const ANDROID_BOOT_TIMEOUT_MS = 180_000;
 /** The profile a chat's work copy gets when no AVD here is free. */
 const WORK_COPY_PROFILE_ID = "medium_phone";
 
-export type AndroidEmulatorServiceDeps = {
+type AndroidEmulatorServiceDeps = {
   /** The lane rows (`lane_android_devices`); `sqlAndroidLaneDeviceRepo(db)` in the app. */
   laneDevices: AndroidLaneDeviceRepo;
   /**
@@ -98,8 +94,13 @@ export type AndroidEmulatorServiceDeps = {
    * file, the emulator logs, default screenshots.
    */
   dataDir: string;
-  /** The bundled scrcpy server (`resolveScrcpyServerJarPath` or `findScrcpyServerJar`). */
+  /** The bundled scrcpy server (`resolveScrcpyServerJarPath`). */
   serverJarPath: string;
+  /**
+   * The process's streams (`createAndroidStreamHub`), shared by every service
+   * the process builds. Absent = a hub of this service's own.
+   */
+  streamHub?: AndroidStreamHub;
   /**
    * The lane's worktree. A screenshot `outPath` resolves against it and must
    * stay inside it; without one, a call that names an `outPath` is refused.
@@ -147,171 +148,6 @@ type LaneState = {
   streamSerial: string | null;
 };
 
-/**
- * The started-emulators registry, read from its file on every call.
- *
- * Two services can share one project's file (the desktop's own copy in a dev
- * build and the brain's). A registry that loaded once would write its stale
- * list over the other's starts, and those emulators would stop counting as
- * ADE's. Reading per call keeps both, short of two writes in one instant.
- */
-class FileBackedStartedEmulators extends AdeStartedEmulators {
-  /** One warning per kind of failure: the file is read on every call. */
-  private readonly warned = new Set<string>();
-
-  constructor(private readonly file: string, private readonly logger: Logger | null | undefined) {
-    super(null);
-  }
-
-  private fresh(): AdeStartedEmulators {
-    return new AdeStartedEmulators(this.file, (op, error) => {
-      const code = (error as NodeJS.ErrnoException)?.code ?? "parse";
-      if (this.warned.has(`${op}:${code}`)) return;
-      this.warned.add(`${op}:${code}`);
-      this.logger?.warn("android.started_emulators_file_failed", { op, file: this.file, error: messageOf(error) });
-    });
-  }
-
-  override record(entry: Parameters<AdeStartedEmulators["record"]>[0]): void {
-    this.fresh().record(entry);
-  }
-
-  override forget(match: Parameters<AdeStartedEmulators["forget"]>[0]): void {
-    this.fresh().forget(match);
-  }
-
-  override owns(emulator: Parameters<AdeStartedEmulators["owns"]>[0]): boolean {
-    return this.fresh().owns(emulator);
-  }
-
-  override prune(discovered?: Parameters<AdeStartedEmulators["prune"]>[0]): void {
-    this.fresh().prune(discovered);
-  }
-}
-
-/**
- * The scrcpy server jar for a brain that is not the Electron main process:
- * `<resources>/android/scrcpy-server` when it runs from the packaged app, else
- * the checkout's `apps/desktop/resources/android/scrcpy-server`, found by
- * walking up from `startDir`. Returns the first candidate when none exists, so
- * the stream's error names a real place to look.
- */
-export function findScrcpyServerJar(input: { resourcesPath?: string | null; startDir: string }): string {
-  const candidates: string[] = [];
-  if (input.resourcesPath) candidates.push(path.join(input.resourcesPath, "android", "scrcpy-server"));
-  let dir = path.resolve(input.startDir);
-  for (;;) {
-    candidates.push(path.join(dir, "apps", "desktop", "resources", "android", "scrcpy-server"));
-    candidates.push(path.join(dir, "resources", "android", "scrcpy-server"));
-    const parent = path.dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
-  return candidates.find((candidate) => fs.existsSync(candidate)) ?? candidates[0]!;
-}
-
-const samePath = (a: string, b: string) => (process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b);
-
-function isInside(child: string, root: string): boolean {
-  const relative = path.relative(root, child);
-  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
-}
-
-/** The real path of `target`'s nearest existing ancestor, joined with the missing tail. */
-function realPathAllowMissing(target: string): string {
-  const missing: string[] = [];
-  let current = path.resolve(target);
-  for (;;) {
-    try {
-      return path.join(fs.realpathSync.native(current), ...missing.reverse());
-    } catch {
-      const parent = path.dirname(current);
-      if (samePath(parent, current)) return path.resolve(target);
-      missing.push(path.basename(current));
-      current = parent;
-    }
-  }
-}
-
-/**
- * Where an agent's screenshot may go: inside the lane's worktree, after both
- * a lexical check and a real-path check (a symlink inside the worktree can
- * point anywhere). `outPath` comes from agents and other machines, so an
- * unchecked one could overwrite any file the brain can write.
- */
-export function containAndroidOutPath(outPath: string, root: string): string {
-  const resolvedRoot = path.resolve(root);
-  const target = path.resolve(resolvedRoot, outPath);
-  const outside = () => new AndroidEmulatorFailure(
-    "ANDROID_PATH_OUTSIDE_LANE",
-    `${target} is outside the lane's worktree (${resolvedRoot}). Pick a path inside it, or leave the path out.`,
-  );
-  if (!isInside(target, resolvedRoot)) throw outside();
-  if (fs.existsSync(resolvedRoot) && !isInside(realPathAllowMissing(target), realPathAllowMissing(resolvedRoot))) throw outside();
-  return target;
-}
-
-/** The services alive in this process; the last one to go stops the shared stream server. */
-let liveServices = 0;
-
-const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
-
-function messageOf(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-function requireLaneId(laneId: unknown): string {
-  const trimmed = typeof laneId === "string" ? laneId.trim() : "";
-  if (!trimmed) throw new Error("laneId is required.");
-  return trimmed;
-}
-
-function finiteNumber(value: unknown, name: string): number {
-  if (typeof value !== "number" || !Number.isFinite(value)) throw new Error(`${name} must be a number.`);
-  return value;
-}
-
-/** Width and height from a PNG's IHDR chunk (bytes 16–23), or null for anything else. */
-export function readPngSize(buffer: Buffer): { width: number; height: number } | null {
-  if (buffer.length < 24 || !buffer.subarray(0, 8).equals(PNG_SIGNATURE)) return null;
-  if (buffer.toString("ascii", 12, 16) !== "IHDR") return null;
-  return { width: buffer.readUInt32BE(16), height: buffer.readUInt32BE(20) };
-}
-
-/** `system-images;…;google_apis_playstore;…` first, then `google_apis`, then the rest. */
-function imageTagRank(tag: string): number {
-  if (tag === "google_apis_playstore") return 0;
-  if (tag === "google_apis") return 1;
-  if (tag === "default" || tag === "aosp_atd" || tag === "google_atd") return 2;
-  return 3;
-}
-
-/** Tags that only fit their own form factor (a watch, a TV, a car, an XR headset). */
-const SPECIAL_IMAGE_TAG = /wear|tv|automotive|xr|desktop/iu;
-
-/**
- * The image a new AVD gets when the caller names none: the newest API level
- * for the host ABI, Play Store first within one level. A watch or TV profile
- * takes an image with its own tag; a phone never gets one of those.
- */
-export function pickAndroidSystemImage(
-  images: readonly AndroidSystemImage[],
-  hostAbi: string,
-  definition: Pick<AndroidDeviceDefinition, "tagId">,
-): AndroidSystemImage | null {
-  const wantedTag = definition.tagId?.trim() || null;
-  const candidates = images.filter((image) =>
-    image.abi === hostAbi
-    && (wantedTag && SPECIAL_IMAGE_TAG.test(wantedTag) ? image.tag.includes(wantedTag) : !SPECIAL_IMAGE_TAG.test(image.tag)));
-  candidates.sort((a, b) => b.apiLevel - a.apiLevel || imageTagRank(a.tag) - imageTagRank(b.tag) || a.packageId.localeCompare(b.packageId));
-  return candidates[0] ?? null;
-}
-
-/** `adb shell input text` takes one shell word; spaces are `%s`. */
-function shellInputText(text: string): string {
-  return `'${text.replace(/ /gu, "%s").replace(/'/gu, "'\\''")}'`;
-}
-
 export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): AndroidEmulatorServiceApi {
   const logger = deps.logger ?? null;
   const env = deps.env ?? process.env;
@@ -320,7 +156,17 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
   const discoveryDirs = deps.discoveryDirs ?? androidDiscoveryDirs(platform, env, home);
   const bootTimeoutMs = Math.max(deps.bootTimeoutMs ?? ANDROID_BOOT_TIMEOUT_MS, 120_000);
   const now = deps.now ?? (() => new Date());
-  const registry = new FileBackedStartedEmulators(path.join(deps.dataDir, "started-emulators.json"), logger);
+  /** One warning per kind of failure: the file is read on every call. */
+  const registryWarned = new Set<string>();
+  const registryFile = path.join(deps.dataDir, "started-emulators.json");
+  const registry = new AdeStartedEmulators(registryFile, (op, error) => {
+    const code = (error as NodeJS.ErrnoException)?.code ?? "parse";
+    if (registryWarned.has(`${op}:${code}`)) return;
+    registryWarned.add(`${op}:${code}`);
+    logger?.warn("android.started_emulators_file_failed", { op, file: registryFile, error: getErrorMessage(error) });
+  });
+  const streams = deps.streamHub ?? createAndroidStreamHub();
+  const releaseStreams = streams.retain();
   const listeners = new Set<(event: AndroidEmulatorEvent) => void>();
   const lanes = new Map<string, LaneState>();
   /** `serial:pid` of emulators already seen booted; booted stays booted for one process. */
@@ -329,7 +175,6 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
   const lifetime = new AbortController();
   let lastSdkKey: string | null = null;
   let disposed = false;
-  liveServices += 1;
 
   const platformSupported = platform === "darwin" || platform === "win32" || platform === "linux";
   const unsupportedReason = platformSupported
@@ -340,13 +185,13 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
     try {
       deps.onEvent?.(event);
     } catch (error) {
-      logger?.warn("android.event_forward_failed", { error: messageOf(error) });
+      logger?.warn("android.event_forward_failed", { error: getErrorMessage(error) });
     }
     for (const listener of listeners) {
       try {
         listener(event);
       } catch (error) {
-        logger?.warn("android.event_listener_failed", { error: messageOf(error) });
+        logger?.warn("android.event_listener_failed", { error: getErrorMessage(error) });
       }
     }
   };
@@ -383,35 +228,11 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
 
   /* ---------- lanes and work copies ---------- */
 
-  const projectRoot = deps.projectRoot?.trim() || null;
-
-  /** The work copy a `remote-work-…` lane names here, while it exists. */
-  const workCopyPath = (laneId: string): string | null =>
-    projectRoot ? findRemoteWorkCopyForLane(projectRoot, laneId)?.path ?? null : null;
-
-  /** The folder a lane's files stay in: its worktree, or a chat's work copy. */
-  const laneRoot = (laneId: string): string | null =>
-    isRemoteWorkLaneId(laneId) ? workCopyPath(laneId) : deps.resolveLaneWorktreePath?.(laneId) ?? null;
-
-  /** Whether the lane still exists; null when this service cannot tell. */
-  const laneLiveness = (laneId: string): "active" | "archived" | "missing" | null => {
-    if (isRemoteWorkLaneId(laneId)) {
-      const exists = projectRoot ? remoteWorkCopyExists(projectRoot, laneId) : null;
-      return exists === null ? null : exists ? "active" : "missing";
-    }
-    return deps.laneDevices.laneState?.(laneId) ?? null;
-  };
-
-  /** A chat's work copy that is gone (or that this service cannot see) has no device here. */
-  const assertWorkCopyLive = (laneId: string) => {
-    if (!isRemoteWorkLaneId(laneId) || workCopyPath(laneId)) return;
-    throw new AndroidEmulatorFailure(
-      "ANDROID_NOT_RUNNING",
-      projectRoot
-        ? "This chat has no work copy on this machine, so it has no Android device here. `ade android start --machine` makes the copy and its device."
-        : "This ADE cannot find work copies of chats on other machines, so it has no Android device for one.",
-    );
-  };
+  const { laneRoot, laneLiveness, assertWorkCopyLive, onWorkCopyReleased } = createAndroidLaneScope({
+    projectRoot: deps.projectRoot,
+    resolveLaneWorktreePath: deps.resolveLaneWorktreePath,
+    laneDevices: deps.laneDevices,
+  });
 
   /* ---------- the SDK, read on use ---------- */
 
@@ -423,28 +244,10 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
     return sdk;
   };
 
-  type ReadySdk = { sdk: AndroidSdkStatus; root: string; avdHome: string; adbPath: string; emulatorPath: string };
-
   /** The SDK with adb and the emulator, or the refusal that says what is missing. */
-  const requireSdk = async (needs: { emulator: boolean }): Promise<ReadySdk> => {
-    if (!platformSupported) throw new AndroidEmulatorFailure("ANDROID_SDK_NOT_FOUND", unsupportedReason!);
-    const sdk = await readSdk();
-    if (!sdk.found || !sdk.root || !sdk.avdHome) {
-      throw new AndroidEmulatorFailure("ANDROID_SDK_NOT_FOUND", "No Android SDK was found on this machine. Install Android Studio or the SDK command-line tools.");
-    }
-    const paths = androidSdkPaths(sdk.root, platform);
-    const tool = (id: "platform-tools" | "emulator") => sdk.tools.find((entry) => entry.id === id);
-    const adb = tool("platform-tools");
-    if (!adb?.available) {
-      throw new AndroidEmulatorFailure("ANDROID_TOOL_MISSING", adb?.detail ?? "Android SDK Platform-Tools (adb) is not installed.");
-    }
-    if (needs.emulator) {
-      const emulator = tool("emulator");
-      if (!emulator?.available) {
-        throw new AndroidEmulatorFailure("ANDROID_TOOL_MISSING", emulator?.detail ?? "The Android Emulator package is not installed.");
-      }
-    }
-    return { sdk, root: sdk.root, avdHome: sdk.avdHome, adbPath: paths.adb, emulatorPath: paths.emulator };
+  const requireSdk = async (needs: { emulator: boolean }): Promise<ReadyAndroidSdk> => {
+    if (unsupportedReason !== null) throw new AndroidEmulatorFailure("ANDROID_SDK_NOT_FOUND", unsupportedReason);
+    return requireAndroidSdkTools(await readSdk(), platform, needs);
   };
 
   /* ---------- running emulators ---------- */
@@ -515,63 +318,51 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
     if (!serial) return;
     state.streamSerial = null;
     try {
-      await androidStream.stopStream(serial);
+      await streams.stopStream(serial);
     } catch (error) {
-      logger?.warn("android.stream_stop_failed", { laneId: state.laneId, serial, error: messageOf(error) });
+      logger?.warn("android.stream_stop_failed", { laneId: state.laneId, serial, error: getErrorMessage(error) });
     }
     emit({ type: "android.stream.state", laneId: state.laneId, running: false });
   };
 
   /* ---------- stop ---------- */
 
-  /**
-   * Stops an emulator this process launched, at any point of its boot. Before
-   * qemu wrote its discovery file there is no qemu pid yet, so it waits a
-   * little for one (or for the launcher to exit) before ending the launcher.
-   */
-  const stopLaunch = async (launch: AndroidEmulatorLaunch, adbPath: string): Promise<void> => {
-    const deadline = Date.now() + 15_000;
-    while (!launch.exited()) {
-      const found = discovered().find((emulator) =>
-        emulator.consolePort === launch.consolePort && sameAvdName(emulator.avdName, launch.avdName));
-      if (found) {
-        await stopAndroidEmulator({
-          adbPath,
-          serial: launch.serial,
-          consolePort: launch.consolePort,
-          avdName: found.avdName,
-          pid: found.pid,
-          launcherPid: launch.launcherPid,
-          registry,
-          discoveryDirs,
-        });
-        return;
-      }
-      if (Date.now() >= deadline) break;
-      await Promise.race([sleep(250), launch.exit]);
-    }
-    if (!launch.exited()) {
-      // No discovery file after 15 s. qemu may still be starting under the
-      // launcher (Windows), so end the whole tree, not only the launcher.
-      terminateProcessTree(launch.child, "SIGTERM", (detail) =>
-        logger?.warn("android.emulator_tree_kill_failed", { avdName: launch.avdName, pid: detail.pid, status: detail.status }));
-      await Promise.race([launch.exit, sleep(5_000)]);
-    }
-    // A qemu that outlived the kill stays ADE's, so a later stop can still end it.
-    const survivor = discovered().some((emulator) =>
-      emulator.consolePort === launch.consolePort && sameAvdName(emulator.avdName, launch.avdName));
-    if (survivor) {
-      logger?.warn("android.emulator_survived_stop", { avdName: launch.avdName, consolePort: launch.consolePort });
-      return;
-    }
-    registry.forget({ avdName: launch.avdName, consolePort: launch.consolePort });
-  };
+  /** Stops one running emulator ADE started; the stop forgets it in the state file. */
+  const stopEmulator = (emulator: AndroidDiscoveredEmulator, adbPath: string, launcherPid: number | null = null) =>
+    stopAndroidEmulator({
+      adbPath,
+      serial: emulator.serial,
+      consolePort: emulator.consolePort,
+      avdName: emulator.avdName,
+      pid: emulator.pid,
+      launcherPid,
+      registry,
+      discoveryDirs,
+    });
+
+  /** Stops an emulator this process launched, at any point of its boot. */
+  const stopLaunch = (launch: AndroidEmulatorLaunch, adbPath: string): Promise<void> =>
+    stopAndroidLaunch(launch, { adbPath, registry, discoveryDirs, logger });
 
   /** Waits for the lane's mid-boot stop; a failure is logged, never thrown. */
   const settleLaunchStop = async (state: LaneState): Promise<void> => {
     await state.launchStop?.catch((error: unknown) => {
-      logger?.warn("android.launch_stop_failed", { laneId: state.laneId, error: messageOf(error) });
+      logger?.warn("android.launch_stop_failed", { laneId: state.laneId, error: getErrorMessage(error) });
     });
+  };
+
+  /**
+   * Ends the lane's boot in progress: the failing start then reads
+   * `stopRequested`. Starts the stop of the booting emulator unless one runs;
+   * `adbPath` is asked for only then, and a null one starts none.
+   */
+  const abortBoot = async (state: LaneState, adbPath: () => Promise<string | null>): Promise<void> => {
+    state.stopRequested = true;
+    if (state.launch && !state.launchStop) {
+      const resolved = await adbPath();
+      if (resolved && state.launch && !state.launchStop) state.launchStop = stopLaunch(state.launch, resolved);
+    }
+    await settleLaunchStop(state);
   };
 
   /** Stops the lane's emulator if ADE started it. The caller holds the lane's queue. */
@@ -594,16 +385,7 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
     emit({ type: "android.device.state", laneId: state.laneId, state: "stopping" });
     try {
       await stopLaneStream(state);
-      await stopAndroidEmulator({
-        adbPath,
-        serial: emulator.serial,
-        consolePort: emulator.consolePort,
-        avdName: emulator.avdName,
-        pid: emulator.pid,
-        launcherPid: state.launch?.consolePort === emulator.consolePort ? state.launch.launcherPid : null,
-        registry,
-        discoveryDirs,
-      });
+      await stopEmulator(emulator, adbPath, state.launch?.consolePort === emulator.consolePort ? state.launch.launcherPid : null);
       bootedSeen.delete(`${emulator.serial}:${emulator.pid}`);
       state.launch = null;
       state.error = null;
@@ -672,7 +454,7 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
         snapshot: device.origin === "created" ? "cold" : "no-save",
         registry,
         discoveryDirs,
-        env: env as NodeJS.ProcessEnv,
+        env,
         detached: deps.handOffOnDispose === true,
       });
       state.launch = launch;
@@ -702,7 +484,7 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
         state.transient = "stopping";
         const ending = state.launchStop ?? (launch.exited() ? Promise.resolve() : stopLaunch(launch, ready.adbPath));
         await ending.catch((stopError: unknown) => {
-          logger?.warn("android.failed_boot_stop_failed", { laneId, error: messageOf(stopError) });
+          logger?.warn("android.failed_boot_stop_failed", { laneId, error: getErrorMessage(stopError) });
         });
       }
       state.transient = null;
@@ -714,7 +496,7 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
       }
       const failure = error instanceof AndroidEmulatorFailure
         ? error
-        : new AndroidEmulatorFailure("ANDROID_EMULATOR_EXITED", `The emulator for ${device.avdName} did not start: ${messageOf(error)}`, logPath);
+        : new AndroidEmulatorFailure("ANDROID_EMULATOR_EXITED", `The emulator for ${device.avdName} did not start: ${getErrorMessage(error)}`, logPath);
       state.error = failure.toAndroidEmulatorError();
       logger?.warn("android.emulator_start_failed", { laneId, avdName: device.avdName, code: failure.code, error: failure.message });
       emit({ type: "android.device.state", laneId, state: "crashed" });
@@ -748,7 +530,7 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
       platform,
       env,
       home,
-      onUnreadable: (filePath, error) => logger?.warn("android.profile_file_unreadable", { filePath, error: messageOf(error) }),
+      onUnreadable: (filePath, error) => logger?.warn("android.profile_file_unreadable", { filePath, error: getErrorMessage(error) }),
     });
 
   /* ---------- input ---------- */
@@ -768,21 +550,29 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
   /** The serial of the lane's live stream, when one runs (input then goes through scrcpy). */
   const liveStreamSerial = (laneId: string): string | null => {
     const serial = lanes.get(laneId)?.streamSerial ?? null;
-    return serial && androidStream.status(serial, laneId).running ? serial : null;
+    return serial && streams.status(serial, laneId).running ? serial : null;
   };
 
-  const asStreamFailure = (error: unknown): never => {
-    if (error instanceof androidStream.AndroidStreamError) throw new AndroidEmulatorFailure(error.code, error.message);
-    throw error;
-  };
+  const input = createAndroidInput({ streams, requireBooted, liveStreamSerial, signal: lifetime.signal });
 
-  const touch = async (serial: string, events: readonly AndroidTouchEvent[]) => {
-    for (const event of events) await androidStream.sendTouch(serial, event).catch(asStreamFailure);
-  };
+  /** A new row for the lane's AVD. */
+  const newLaneDevice = (
+    laneId: string,
+    avdName: string,
+    origin: AndroidLaneDevice["origin"],
+    profileId: string | null,
+    systemImage: string | null,
+  ): AndroidLaneDevice => ({ laneId, avdName, origin, profileId, systemImage, createdAt: now().toISOString(), adeInstalledPackages: [] });
 
-  const adbInput = async (adbPath: string, serial: string, args: string[]) => {
-    await runAdb(adbPath, ["shell", "input", ...args], { serial, timeoutMs: 15_000, signal: lifetime.signal });
-  };
+  /** How the lane release reads this machine's disks. */
+  const releaseOptions = (deleteCreated?: boolean) => ({
+    env,
+    platform,
+    home,
+    discoveryDirs,
+    logger,
+    ...(deleteCreated === undefined ? {} : { deleteCreated }),
+  });
 
   /**
    * Makes a new AVD for the lane and records it as the lane's own (deleted
@@ -816,15 +606,7 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
       image,
       displayName,
     });
-    deps.laneDevices.set({
-      laneId,
-      avdName: avd.name,
-      origin: "created",
-      profileId,
-      systemImage: image.packageId,
-      createdAt: now().toISOString(),
-      adeInstalledPackages: [],
-    });
+    deps.laneDevices.set(newLaneDevice(laneId, avd.name, "created", profileId, image.packageId));
     logger?.info("android.device_created", { laneId, avdName: avd.name, profileId, systemImage: image.packageId });
     emit({ type: "android.inventory.changed" });
   };
@@ -832,48 +614,16 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
   /**
    * A chat's work copy gets its first device: a free AVD this machine already
    * has before a new one, since a new one costs gigabytes and a first boot.
-   * ADE's own AVDs come first, then the user's; stopped ones before running
-   * ones. Free means no lane here holds it and it does not run outside ADE.
-   * An ADE AVD qualifies only when it was made for a lane of this project: one
-   * made for a lane this project cannot see may be another project's lane's.
    * The borrowed AVD is attached, so releasing it never deletes it. The caller
    * holds the lane's queue.
    */
   const ensureWorkCopyDeviceLocked = async (laneId: string): Promise<void> => {
     const ready = await requireSdk({ emulator: true });
-    const running = discovered();
-    const runningAvd = (avd: AndroidAvd) => running.find((emulator) => sameAvdName(emulator.avdName, avd.name)) ?? null;
-    const madeForThisProject = (avd: AndroidAvd): boolean => {
-      const madeFor = readAdeAvdLaneId(avd);
-      if (!madeFor || isRemoteWorkLaneId(madeFor)) return false;
-      const liveness = deps.laneDevices.laneState?.(madeFor) ?? null;
-      return liveness === "active" || liveness === "archived";
-    };
-    const rank = (avd: AndroidAvd): number => (runningAvd(avd) ? 1 : 0);
-    // Only an ADE AVD made for a lane of this project is borrowed. The user's
-    // own AVDs are never taken: this lane table cannot see a lane of another
-    // project that holds one, and a run can rewrite the AVD's snapshot.
     // No await from here to the row write: two lanes asking at once cannot
     // both take one AVD.
-    const free = listAndroidAvds(ready.avdHome)
-      .filter((avd) => {
-        if (!avd.adeCreated || !madeForThisProject(avd)) return false;
-        if (deps.laneDevices.holder(avd.name) !== null) return false;
-        const emulator = runningAvd(avd);
-        return !emulator || ownsEmulator(emulator);
-      })
-      .sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));
-    const borrowed = free[0] ?? null;
+    const borrowed = pickWorkCopyAvd(listAndroidAvds(ready.avdHome), discovered(), { ...deps.laneDevices, owns: ownsEmulator });
     if (borrowed) {
-      deps.laneDevices.set({
-        laneId,
-        avdName: borrowed.name,
-        origin: "attached",
-        profileId: borrowed.profileId,
-        systemImage: null,
-        createdAt: now().toISOString(),
-        adeInstalledPackages: [],
-      });
+      deps.laneDevices.set(newLaneDevice(laneId, borrowed.name, "attached", borrowed.profileId, null));
       logger?.info("android.work_copy_borrowed", { laneId, avdName: borrowed.name, adeCreated: borrowed.adeCreated });
       emit({ type: "android.inventory.changed" });
       return;
@@ -887,15 +637,7 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
    */
   const endLaneLocked = async (device: AndroidLaneDevice) => {
     await stopLocked(laneState(device.laneId), device, { refuseForeign: false });
-    const result = await releaseAndroidLaneDevice(device.laneId, deps.laneDevices, {
-      sdkSettingPath: deps.readSdkSettingPath?.() ?? null,
-      env,
-      platform,
-      home,
-      discoveryDirs,
-      signal: lifetime.signal,
-      logger,
-    });
+    const result = await releaseAndroidLaneDevice(device.laneId, deps.laneDevices, releaseOptions());
     lanes.delete(device.laneId);
     return result;
   };
@@ -914,10 +656,10 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
       emit({ type: "android.inventory.changed" });
       emit({ type: "android.device.state", laneId, state: "none" });
     }).catch((error: unknown) => {
-      logger?.warn("android.work_copy_release_failed", { laneId, error: messageOf(error) });
+      logger?.warn("android.work_copy_release_failed", { laneId, error: getErrorMessage(error) });
     });
   };
-  const offCopyReleased = projectRoot ? onRemoteWorkCopyReleased(projectRoot, releaseGoneWorkCopy) : () => undefined;
+  const offCopyReleased = onWorkCopyReleased(releaseGoneWorkCopy);
 
   /* ---------- start-up reconcile ---------- */
 
@@ -951,25 +693,17 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
         changed = true;
         logger?.info("android.reconcile.released", { laneId: device.laneId, avdName: device.avdName, ...result });
       }).catch((error: unknown) => {
-        logger?.warn("android.reconcile.release_failed", { laneId: device.laneId, error: messageOf(error) });
+        logger?.warn("android.reconcile.release_failed", { laneId: device.laneId, error: getErrorMessage(error) });
       });
     }
     for (const emulator of orphans()) {
       if (disposed) return;
-      await stopAndroidEmulator({
-        adbPath,
-        serial: emulator.serial,
-        consolePort: emulator.consolePort,
-        avdName: emulator.avdName,
-        pid: emulator.pid,
-        registry,
-        discoveryDirs,
-      }).then(
+      await stopEmulator(emulator, adbPath).then(
         () => {
           changed = true;
           logger?.info("android.reconcile.stopped_orphan", { serial: emulator.serial, avdName: emulator.avdName });
         },
-        (error: unknown) => logger?.warn("android.reconcile.stop_failed", { serial: emulator.serial, error: messageOf(error) }),
+        (error: unknown) => logger?.warn("android.reconcile.stop_failed", { serial: emulator.serial, error: getErrorMessage(error) }),
       );
     }
     if (changed) emit({ type: "android.inventory.changed" });
@@ -1040,19 +774,12 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
           // Again after the await: another lane's queue may have taken it meanwhile.
           // No await from here to the row write.
           assertNotHeldElsewhere(laneId, avdName);
-          deps.laneDevices.set({
-            laneId,
-            avdName: avd.name,
-            // Only the lane an AVD was made for deletes it with the lane. An
-            // ADE AVD made for another lane may belong to a lane of another
-            // project (this lane table cannot see it), so it is attached:
-            // never deleted on release, like the user's own AVDs.
-            origin: avd.adeCreated && readAdeAvdLaneId(avd) === laneId ? "created" : "attached",
-            profileId: avd.profileId,
-            systemImage: null,
-            createdAt: now().toISOString(),
-            adeInstalledPackages: [],
-          });
+          // Only the lane an AVD was made for deletes it with the lane. An
+          // ADE AVD made for another lane may belong to a lane of another
+          // project (this lane table cannot see it), so it is attached:
+          // never deleted on release, like the user's own AVDs.
+          const origin = avd.adeCreated && readAdeAvdLaneId(avd) === laneId ? "created" : "attached";
+          deps.laneDevices.set(newLaneDevice(laneId, avd.name, origin, avd.profileId, null));
           emit({ type: "android.inventory.changed" });
         }
         if (args.start === false) return emitDeviceState(laneId);
@@ -1077,14 +804,9 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
       // A stop during a start does not wait behind the boot: it ends it now,
       // and the start fails with "stopped while it was starting".
       if (state.transient === "starting") {
-        state.stopRequested = true;
         state.transient = "stopping";
         emit({ type: "android.device.state", laneId, state: "stopping" });
-        if (state.launch && !state.launchStop) {
-          const { adbPath } = await requireSdk({ emulator: false });
-          state.launchStop = stopLaunch(state.launch, adbPath);
-        }
-        await settleLaunchStop(state);
+        await abortBoot(state, async () => (await requireSdk({ emulator: false })).adbPath);
       }
       return serialize(laneId, async () => {
         state.stopRequested = false;
@@ -1103,16 +825,7 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
         const device = deps.laneDevices.get(laneId);
         if (!device) return { released: false, deletedAvd: null };
         await stopLocked(state, device, { refuseForeign: false });
-        const result = await releaseAndroidLaneDevice(laneId, deps.laneDevices, {
-          sdkSettingPath: deps.readSdkSettingPath?.() ?? null,
-          env,
-          platform,
-          home,
-          discoveryDirs,
-          deleteCreated: args.deleteCreated !== false,
-          signal: lifetime.signal,
-          logger,
-        });
+        const result = await releaseAndroidLaneDevice(laneId, deps.laneDevices, releaseOptions(args.deleteCreated !== false));
         if (!result.released) {
           throw new AndroidEmulatorFailure("ANDROID_AVD_RUNNING", result.reason ?? `${device.avdName} could not be released.`);
         }
@@ -1148,7 +861,7 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
       const { serial, adbPath } = await requireBooted(laneId);
       const state = laneState(laneId);
       if (state.streamSerial && state.streamSerial !== serial) await stopLaneStream(state);
-      const transport = await androidStream.startStream({
+      const transport = await streams.startStream({
         adbPath,
         serial,
         serverJarPath: deps.serverJarPath,
@@ -1161,7 +874,7 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
       const fresh = state.streamSerial !== serial;
       state.streamSerial = serial;
       if (fresh) emit({ type: "android.stream.state", laneId, running: true });
-      const status = androidStream.status(serial, laneId);
+      const status = streams.status(serial, laneId);
       return { ...status, laneId, running: true, backend: "scrcpy", transport };
     },
 
@@ -1175,175 +888,27 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
       const laneId = requireLaneId(args.laneId);
       const serial = lanes.get(laneId)?.streamSerial ?? null;
       const status: AndroidStreamStatus = serial
-        ? androidStream.status(serial, laneId)
+        ? streams.status(serial, laneId)
         : { laneId, running: false, backend: null, transport: null, fps: null };
       // Redacted: the token is only for the viewer that started the stream.
       return { ...status, laneId, transport: null };
     },
 
-    async sendTouch(args) {
-      const laneId = requireLaneId(args.laneId);
-      if (!Array.isArray(args.events) || args.events.length === 0) return;
-      const serial = liveStreamSerial(laneId);
-      if (!serial) throw new AndroidEmulatorFailure("ANDROID_NOT_RUNNING", "No live view is running for this lane.");
-      await touch(serial, args.events);
-    },
-
-    async tap(args) {
-      const laneId = requireLaneId(args.laneId);
-      const x = finiteNumber(args.x, "x");
-      const y = finiteNumber(args.y, "y");
-      const serial = liveStreamSerial(laneId);
-      if (serial) {
-        await touch(serial, [{ action: "down", x, y }, { action: "up", x, y }]);
-        return;
-      }
-      // No viewer is open: an agent's tap goes through `adb shell input`.
-      const booted = await requireBooted(laneId);
-      await adbInput(booted.adbPath, booted.serial, ["tap", String(Math.round(x)), String(Math.round(y))]);
-    },
-
-    async swipe(args) {
-      const laneId = requireLaneId(args.laneId);
-      const fromX = finiteNumber(args.fromX, "fromX");
-      const fromY = finiteNumber(args.fromY, "fromY");
-      const toX = finiteNumber(args.toX, "toX");
-      const toY = finiteNumber(args.toY, "toY");
-      const durationMs = Math.min(10_000, Math.max(0, typeof args.durationMs === "number" && Number.isFinite(args.durationMs) ? args.durationMs : SWIPE_DEFAULT_MS));
-      const serial = liveStreamSerial(laneId);
-      if (!serial) {
-        const booted = await requireBooted(laneId);
-        await adbInput(booted.adbPath, booted.serial, [
-          "swipe",
-          String(Math.round(fromX)), String(Math.round(fromY)),
-          String(Math.round(toX)), String(Math.round(toY)),
-          String(Math.round(durationMs)),
-        ]);
-        return;
-      }
-      const steps = Math.max(1, Math.round(durationMs / SWIPE_STEP_MS));
-      await touch(serial, [{ action: "down", x: fromX, y: fromY }]);
-      try {
-        for (let step = 1; step <= steps; step += 1) {
-          await sleep(durationMs / steps);
-          const t = step / steps;
-          await touch(serial, [{ action: "move", x: fromX + (toX - fromX) * t, y: fromY + (toY - fromY) * t }]);
-        }
-      } finally {
-        // Always lift the finger, or the device keeps a pointer down.
-        await touch(serial, [{ action: "up", x: toX, y: toY }]).catch(() => undefined);
-      }
-    },
-
-    async sendKey(args) {
-      const laneId = requireLaneId(args.laneId);
-      const key = args.key as AndroidHardwareKey;
-      if (!(key in ANDROID_HARDWARE_KEYCODES)) throw new Error(`Unknown Android key ${String(args.key)}.`);
-      const serial = liveStreamSerial(laneId);
-      if (serial) {
-        await androidStream.sendKey(serial, key).catch(asStreamFailure);
-        return;
-      }
-      const booted = await requireBooted(laneId);
-      await adbInput(booted.adbPath, booted.serial, ["keyevent", String(ANDROID_HARDWARE_KEYCODES[key])]);
-    },
-
-    async sendText(args) {
-      const laneId = requireLaneId(args.laneId);
-      const text = typeof args.text === "string" ? args.text : "";
-      if (!text) return;
-      const serial = liveStreamSerial(laneId);
-      if (serial) {
-        await androidStream.sendText(serial, text).catch(asStreamFailure);
-        return;
-      }
-      const booted = await requireBooted(laneId);
-      await adbInput(booted.adbPath, booted.serial, ["text", shellInputText(text)]);
-    },
-
-    async rotate(args) {
-      const laneId = requireLaneId(args.laneId);
-      const orientation = args.orientation;
-      if (orientation !== "portrait" && orientation !== "landscape") throw new Error("orientation must be portrait or landscape.");
-      const { serial, adbPath } = await requireBooted(laneId);
-      const shell = async (command: string[]) => {
-        const result = await runAdb(adbPath, ["shell", ...command], { serial, timeoutMs: 15_000, signal: lifetime.signal, allowFailure: true });
-        return { exitCode: result.exitCode, text: `${result.stdout.toString("utf8")}${result.stderr}`.trim() };
-      };
-      // Rotation 0 is the display's natural orientation: portrait on a phone,
-      // landscape on most tablets.
-      const size = /Physical size:\s*(\d+)x(\d+)/u.exec((await shell(["wm", "size"])).text);
-      const naturalLandscape = size ? Number(size[1]) > Number(size[2]) : false;
-      const rotation = (orientation === "landscape") === naturalLandscape ? "0" : "1";
-      // Absolute and headless; `adb emu rotate` only turns 90° from wherever
-      // the sensor is. Measured on Windows: the stream shows the new size
-      // 0.8–1.2 s after the call starts.
-      const locked = await shell(["cmd", "window", "user-rotation", "lock", rotation]);
-      if (locked.exitCode !== 0 || /unknown|error|exception/iu.test(locked.text)) {
-        // Android 10 and older have no `cmd window user-rotation`.
-        await shell(["settings", "put", "system", "accelerometer_rotation", "0"]);
-        const set = await shell(["settings", "put", "system", "user_rotation", rotation]);
-        if (set.exitCode !== 0) throw new Error(`The emulator ${serial} did not rotate: ${set.text || locked.text}`);
-      }
-      // The display turns after the lock returns (measured on Windows: the
-      // first screenshot after it still had the old size). Wait until a
-      // capture has the new shape, so a screenshot or tap that follows sees
-      // it. An app that fixes its own orientation never turns: stop once the
-      // window manager has kept the old rotation for a moment.
-      const lockedAt = Date.now();
-      while (Date.now() - lockedAt < ROTATE_SETTLE_MS && !lifetime.signal.aborted) {
-        const header = /(\d+)\s+(\d+)/u.exec((await shell(["screencap | head -c 8 | od -An -tu4"])).text);
-        if (header && (Number(header[1]) > Number(header[2])) === (orientation === "landscape")) return;
-        if (Date.now() - lockedAt >= ROTATE_REFUSED_AFTER_MS) {
-          const current = /mRotation=(\d)/u.exec((await shell(["dumpsys window | grep -m1 -oE 'mRotation=[0-9]'"])).text);
-          if (current && current[1] !== rotation) return;
-        }
-        await sleep(50);
-      }
-    },
+    ...input,
 
     async screenshot(args) {
       const laneId = requireLaneId(args.laneId);
-      const requested = args.outPath?.trim() || null;
-      let outPath: string | null = null;
-      let outRoot: string | null = null;
-      if (requested) {
-        const root = laneRoot(laneId);
-        if (!root) {
-          throw new AndroidEmulatorFailure(
-            "ANDROID_PATH_OUTSIDE_LANE",
-            isRemoteWorkLaneId(laneId)
-              ? "This chat's work copy on this machine is gone, so ADE will not write a screenshot to a chosen path. Leave the path out."
-              : "ADE cannot find this lane's worktree, so it will not write a screenshot to a chosen path. Leave the path out.",
-          );
-        }
-        outPath = containAndroidOutPath(requested, root);
-        outRoot = root;
-      }
-      const { serial, adbPath } = await requireBooted(laneId);
-      const result = await runAdb(adbPath, ["exec-out", "screencap", "-p"], {
-        serial,
-        timeoutMs: SCREENSHOT_TIMEOUT_MS,
+      return takeAndroidScreenshot({
+        laneId,
+        outPath: args.outPath?.trim() || null,
+        laneRoot: () => laneRoot(laneId),
+        workCopy: isRemoteWorkLaneId(laneId),
+        requireBooted: () => requireBooted(laneId),
+        dataDir: deps.dataDir,
+        platform,
         signal: lifetime.signal,
+        now,
       });
-      const png = result.stdout;
-      const size = readPngSize(png);
-      if (!size) throw new Error(`The emulator ${serial} did not return a PNG (${png.length} bytes).`);
-      const capturedAt = now();
-      const target = outPath
-        ?? path.join(deps.dataDir, "screenshots", `${laneId.replace(/[^A-Za-z0-9_-]+/gu, "_")}-${capturedAt.toISOString().replace(/[:.]/gu, "-")}.png`);
-      fs.mkdirSync(path.dirname(target), { recursive: true });
-      // Checked again right before the write (a link swapped in during the
-      // capture), and the file is opened without following a link.
-      if (outPath && outRoot) containAndroidOutPath(outPath, outRoot);
-      const handle = fs.openSync(target, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC | (fs.constants.O_NOFOLLOW ?? 0), 0o644);
-      try {
-        fs.writeSync(handle, png);
-      } finally {
-        fs.closeSync(handle);
-      }
-      const shot: AndroidScreenshot = { path: target, width: size.width, height: size.height, bytes: png.length, capturedAt: capturedAt.toISOString() };
-      return shot;
     },
 
     async stopForLane(laneId) {
@@ -1352,10 +917,7 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
       const hadState = lanes.has(id);
       const state = laneState(id);
       if (state.transient === "starting") {
-        state.stopRequested = true;
-        const sdk = state.launch && !state.launchStop ? await requireSdk({ emulator: false }).catch(() => null) : null;
-        if (sdk && state.launch) state.launchStop = stopLaunch(state.launch, sdk.adbPath);
-        await settleLaunchStop(state);
+        await abortBoot(state, async () => (await requireSdk({ emulator: false }).catch(() => null))?.adbPath ?? null);
       }
       let hadDevice = false;
       await serialize(id, async () => {
@@ -1365,7 +927,7 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
         if (device) await stopLocked(state, device, { refuseForeign: false });
         else await stopLaneStream(state);
       }).catch((error: unknown) => {
-        logger?.warn("android.stop_for_lane_failed", { laneId: id, error: messageOf(error) });
+        logger?.warn("android.stop_for_lane_failed", { laneId: id, error: getErrorMessage(error) });
       });
       lanes.delete(id);
       if (hadDevice || hadState) emit({ type: "android.device.state", laneId: id, state: hadDevice ? "off" : "none" });
@@ -1374,18 +936,13 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
     async dispose() {
       if (disposed) return;
       disposed = true;
-      liveServices -= 1;
       lifetime.abort();
       offCopyReleased();
       const sdk = await requireSdk({ emulator: false }).catch(() => null);
       const handOff = deps.handOffOnDispose === true;
       await Promise.all([...lanes.values()].map(async (state) => {
         await stopLaneStream(state);
-        if (!handOff && state.transient === "starting" && state.launch && sdk) {
-          state.stopRequested = true;
-          state.launchStop ??= stopLaunch(state.launch, sdk.adbPath);
-          await settleLaunchStop(state);
-        }
+        if (!handOff && state.transient === "starting" && state.launch && sdk) await abortBoot(state, async () => sdk.adbPath);
       }));
       if (handOff) {
         // A brain exit: the emulators stay up and stay in the state file, and
@@ -1399,27 +956,18 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
         // one (the state file), and nothing else.
         for (const emulator of discovered()) {
           if (!registry.owns(emulator)) continue;
-          await stopAndroidEmulator({
-            adbPath: sdk.adbPath,
-            serial: emulator.serial,
-            consolePort: emulator.consolePort,
-            avdName: emulator.avdName,
-            pid: emulator.pid,
-            launcherPid: [...lanes.values()].find((state) => state.launch?.consolePort === emulator.consolePort)?.launch?.launcherPid ?? null,
-            registry,
-            discoveryDirs,
-          }).catch((error: unknown) => {
-            logger?.warn("android.dispose_stop_failed", { serial: emulator.serial, error: messageOf(error) });
+          const launcherPid = [...lanes.values()].find((state) => state.launch?.consolePort === emulator.consolePort)?.launch?.launcherPid ?? null;
+          await stopEmulator(emulator, sdk.adbPath, launcherPid).catch((error: unknown) => {
+            logger?.warn("android.dispose_stop_failed", { serial: emulator.serial, error: getErrorMessage(error) });
           });
         }
       }
       lanes.clear();
       listeners.clear();
-      if (liveServices === 0) {
-        await androidStream.stopAllStreams().catch((error: unknown) => {
-          logger?.warn("android.stream_stop_all_failed", { error: messageOf(error) });
-        });
-      }
+      // The last service of the process stops every stream and the server.
+      await releaseStreams().catch((error: unknown) => {
+        logger?.warn("android.stream_stop_all_failed", { error: getErrorMessage(error) });
+      });
     },
 
     onEvent(listener) {
@@ -1433,7 +981,7 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
   // lane steps still queue behind it through `serialize`.
   setTimeout(() => {
     void reconcile().catch((error: unknown) => {
-      logger?.warn("android.reconcile_failed", { error: messageOf(error) });
+      logger?.warn("android.reconcile_failed", { error: getErrorMessage(error) });
     });
   }, 0);
   return service;

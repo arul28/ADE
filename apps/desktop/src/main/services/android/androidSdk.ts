@@ -9,6 +9,7 @@ import type {
   AndroidSdkTool,
   AndroidSystemImage,
 } from "../../../shared/types/androidEmulator";
+import { AndroidEmulatorFailure } from "./androidEmulatorErrors";
 
 /*
  * Where this machine's Android SDK is and what it holds: the tools, the
@@ -72,7 +73,7 @@ function isFile(target: string): boolean {
 }
 
 /** The platform's default SDK folder, the one Android Studio installs to. */
-export function androidDefaultSdkRoot(
+function androidDefaultSdkRoot(
   platform: NodeJS.Platform = process.platform,
   env: AndroidEnv = process.env,
   home = os.homedir(),
@@ -172,7 +173,7 @@ export function androidSdkPaths(root: string, platform: NodeJS.Platform = proces
 }
 
 /** `Pkg.Revision` from a package's `source.properties` (`37.1.11`). */
-export function androidPackageRevision(packageDir: string): string | null {
+function androidPackageRevision(packageDir: string): string | null {
   return readAndroidIniFile(path.join(packageDir, "source.properties"))?.get("Pkg.Revision") ?? null;
 }
 
@@ -200,7 +201,7 @@ export function androidAvdHome(env: AndroidEnv = process.env, home = os.homedir(
  * The only system-image ABI this host runs at full speed: Apple Silicon (HVF)
  * runs only `arm64-v8a`, every x86 host runs `x86_64`.
  */
-export function androidHostAbi(machine: string = typeof os.machine === "function" ? os.machine() : process.arch): "x86_64" | "arm64-v8a" {
+function androidHostAbi(machine: string = typeof os.machine === "function" ? os.machine() : process.arch): "x86_64" | "arm64-v8a" {
   return /^(arm64|aarch64)/iu.test(machine) ? "arm64-v8a" : "x86_64";
 }
 
@@ -253,7 +254,7 @@ function safeReaddir(dir: string): string[] {
  *
  * where the number is the emulator's status code (0 = usable).
  */
-export function parseAccelCheck(output: string, exitCode: number | null): AndroidAcceleration {
+function parseAccelCheck(output: string, exitCode: number | null): AndroidAcceleration {
   const lines = output.split(/\r?\n/u).map((line) => line.trim()).filter(Boolean);
   const start = lines.indexOf("accel:");
   const body = start >= 0 ? lines.slice(start + 1).filter((line) => line !== "accel") : lines;
@@ -277,7 +278,7 @@ const ACCEL_FAIL_TTL_MS = 30_000;
 const ACCEL_CHECK_TIMEOUT_MS = 20_000;
 
 /** Runs `emulator -accel-check`, cached per emulator binary (path + mtime). */
-export async function readAndroidAcceleration(emulatorPath: string, options: { force?: boolean } = {}): Promise<AndroidAcceleration> {
+async function readAndroidAcceleration(emulatorPath: string, options: { force?: boolean } = {}): Promise<AndroidAcceleration> {
   let stat: fs.Stats;
   try {
     stat = fs.statSync(emulatorPath);
@@ -302,6 +303,32 @@ export async function readAndroidAcceleration(emulatorPath: string, options: { f
   });
   accelCache.set(emulatorPath, { key, at: Date.now(), value });
   return value;
+}
+
+export type ReadyAndroidSdk = { sdk: AndroidSdkStatus; root: string; avdHome: string; adbPath: string; emulatorPath: string };
+
+/** The SDK with adb (and the emulator, when asked), or the coded refusal that says what is missing. */
+export function requireAndroidSdkTools(
+  sdk: AndroidSdkStatus,
+  platform: NodeJS.Platform,
+  needs: { emulator: boolean },
+): ReadyAndroidSdk {
+  if (!sdk.found || !sdk.root || !sdk.avdHome) {
+    throw new AndroidEmulatorFailure("ANDROID_SDK_NOT_FOUND", "No Android SDK was found on this machine. Install Android Studio or the SDK command-line tools.");
+  }
+  const paths = androidSdkPaths(sdk.root, platform);
+  const tool = (id: "platform-tools" | "emulator") => sdk.tools.find((entry) => entry.id === id);
+  const adb = tool("platform-tools");
+  if (!adb?.available) {
+    throw new AndroidEmulatorFailure("ANDROID_TOOL_MISSING", adb?.detail ?? "Android SDK Platform-Tools (adb) is not installed.");
+  }
+  if (needs.emulator) {
+    const emulator = tool("emulator");
+    if (!emulator?.available) {
+      throw new AndroidEmulatorFailure("ANDROID_TOOL_MISSING", emulator?.detail ?? "The Android Emulator package is not installed.");
+    }
+  }
+  return { sdk, root: sdk.root, avdHome: sdk.avdHome, adbPath: paths.adb, emulatorPath: paths.emulator };
 }
 
 export type AndroidSdkStatusOptions = AndroidSdkLocateOptions & {

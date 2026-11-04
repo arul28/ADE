@@ -226,7 +226,9 @@ import {
   type MacDesktopService,
 } from "../../desktop/src/main/services/macDesktop/macDesktopService";
 import { createMacDesktopLogger } from "../../desktop/src/main/services/macDesktop/macDesktopLogger";
-import { createAndroidEmulatorService, findScrcpyServerJar } from "../../desktop/src/main/services/android/androidEmulatorService";
+import { createAndroidEmulatorService } from "../../desktop/src/main/services/android/androidEmulatorService";
+import { createAndroidStreamHub } from "../../desktop/src/main/services/android/androidStream";
+import { resolveScrcpyServerJarPath } from "../../desktop/src/main/services/android/scrcpyServer";
 import { sqlAndroidLaneDeviceRepo } from "../../desktop/src/main/services/android/androidLaneRelease";
 import { createWindowsDesktopSeatAdapter } from "../../desktop/src/main/services/windowsDesktop/windowsDesktopSeatProvider";
 import { createLinuxDesktopSeatAdapter } from "../../desktop/src/main/services/linuxDesktop/linuxDesktopSeatProvider";
@@ -590,6 +592,9 @@ export function ensureAdePaths(projectRoot: string): AdeRuntimePaths {
 
 const currentModulePath =
   typeof __filename === "string" ? __filename : fileURLToPath(import.meta.url);
+
+/** One Android stream hub (the emulators' live pictures) for every project this brain runs. */
+const androidStreamHub = createAndroidStreamHub();
 
 if (
   !isSourceCheckoutRuntimeModule(currentModulePath)
@@ -2243,10 +2248,11 @@ export async function createAdeRuntime(args: {
         // The packaged app's `resources/android` first, then a source
         // checkout's. A standalone brain archive ships no jar yet: only
         // `startStream` fails then (`ANDROID_STREAM_FAILED`, naming the path).
-        serverJarPath: findScrcpyServerJar({
+        serverJarPath: resolveScrcpyServerJarPath({
           resourcesPath: (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath ?? null,
           startDir: path.dirname(currentModulePath),
         }),
+        streamHub: androidStreamHub,
         // A chat on another machine (`remote-work-…`) uses its work copy in
         // this project as its lane.
         projectRoot,

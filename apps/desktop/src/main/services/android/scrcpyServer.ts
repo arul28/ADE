@@ -20,12 +20,14 @@
  */
 
 import { createHash, randomInt } from "node:crypto";
+import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { connect as netConnect, type Socket } from "node:net";
 import path from "node:path";
 import type { ChildProcess } from "node:child_process";
 
 import type { Logger } from "../logging/logger";
+import { getErrorMessage, sleep } from "../shared/utils";
 import { runAdb, runAdbText, spawnAdb } from "./adb";
 import { createScrcpyControlWriter, type ScrcpyControlWriter } from "./scrcpyControl";
 import {
@@ -46,7 +48,7 @@ export const SCRCPY_SERVER_SHA256 = "764eb6f79811d5211fe9df341120882ba9994c7a61b
  * pushes to that path, and overwriting a jar under a running `app_process`
  * can crash it.
  */
-export const SCRCPY_DEVICE_JAR_PATH = `/data/local/tmp/ade-scrcpy-server-${SCRCPY_SERVER_VERSION}.jar`;
+const SCRCPY_DEVICE_JAR_PATH = `/data/local/tmp/ade-scrcpy-server-${SCRCPY_SERVER_VERSION}.jar`;
 
 const PID_LINE_PREFIX = "ADE_SCRCPY_PID=";
 const CONNECT_RETRY_MS = 100;
@@ -55,22 +57,37 @@ const DEFAULT_CONNECT_TIMEOUT_MS = 15_000;
 const EXIT_AFTER_CLOSE_WAIT_MS = 1_500;
 const SERVER_LOG_TAIL_LINES = 30;
 
+const JAR_RELATIVE_PATH = ["android", "scrcpy-server"] as const;
+
 /**
- * The jar's path: packaged builds put extraResources under
- * `process.resourcesPath`, and a dev run resolves them from the `apps/desktop`
- * checkout, as the capture helper does.
+ * The bundled jar's path, for the Electron main process and for a brain.
+ *
+ * - `resourcesPath`: a packaged app's resources folder (extraResources). Its
+ *   jar comes first.
+ * - `startDir`: a folder inside a source checkout. Each folder from it up to
+ *   the disk root is tried, `<dir>/resources/android/scrcpy-server` first, so
+ *   a dev run from `apps/desktop` finds the checkout's jar.
+ *
+ * The first candidate that exists wins. When none does, the first candidate is
+ * returned, so the stream's error names a real place to look.
  */
-export function resolveScrcpyServerJarPath(input: {
-  isPackaged: boolean;
-  resourcesPath: string;
-  appPath: string;
-}): string {
-  return input.isPackaged
-    ? path.join(input.resourcesPath, "android", "scrcpy-server")
-    : path.join(input.appPath, "resources", "android", "scrcpy-server");
+export function resolveScrcpyServerJarPath(input: { resourcesPath?: string | null; startDir?: string | null }): string {
+  const candidates: string[] = [];
+  if (input.resourcesPath) candidates.push(path.join(input.resourcesPath, ...JAR_RELATIVE_PATH));
+  if (input.startDir) {
+    let dir = path.resolve(input.startDir);
+    for (;;) {
+      candidates.push(path.join(dir, "resources", ...JAR_RELATIVE_PATH));
+      candidates.push(path.join(dir, "apps", "desktop", "resources", ...JAR_RELATIVE_PATH));
+      const parent = path.dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
+    }
+  }
+  return candidates.find((candidate) => existsSync(candidate)) ?? candidates[0] ?? path.join(...JAR_RELATIVE_PATH);
 }
 
-export class ScrcpySessionError extends Error {
+class ScrcpySessionError extends Error {
   constructor(
     message: string,
     /** The server's last output lines, for the log and "Open log". */
@@ -192,8 +209,6 @@ function serverCommand(scid: string, options: ScrcpySessionOptions): string {
     `exec app_process / com.genymobile.scrcpy.Server ${SCRCPY_SERVER_VERSION} ${params.join(" ")}`,
   ].join("; ");
 }
-
-const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 /** One connection attempt through the forward: the socket and its first bytes, or null if adb closed it. */
 function connectForFirstBytes(port: number): Promise<{ socket: Socket; first: Buffer } | null> {
@@ -372,7 +387,7 @@ export async function startScrcpySession(
       if (Date.now() > deadline) {
         throw new ScrcpySessionError(`The scrcpy server did not accept a connection within ${connectTimeoutMs} ms.`, [...logTail]);
       }
-      await delay(CONNECT_RETRY_MS);
+      await sleep(CONNECT_RETRY_MS);
     }
     video = attempt.socket;
     // The server accepts control only after it has sent the dummy byte on video.
@@ -454,6 +469,6 @@ export async function startScrcpySession(
     ended = true;
     await stop();
     if (error instanceof ScrcpySessionError) throw error;
-    throw new ScrcpySessionError(error instanceof Error ? error.message : String(error), [...logTail]);
+    throw new ScrcpySessionError(getErrorMessage(error), [...logTail]);
   }
 }

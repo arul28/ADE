@@ -52,7 +52,7 @@ const SDKLIB_DEVICE_PREFIX = "com/android/sdklib/devices/";
  * then inflates only the wanted entries. Zip64 is not handled; an SDK jar is
  * a few MB.
  */
-export function readZipTextEntries(zipPath: string, wanted: (name: string) => boolean): Map<string, string> {
+function readZipTextEntries(zipPath: string, wanted: (name: string) => boolean): Map<string, string> {
   const buffer = fs.readFileSync(zipPath);
   const eocd = findEndOfCentralDirectory(buffer);
   if (eocd < 0) throw new Error(`${zipPath} is not a zip file`);
@@ -152,7 +152,7 @@ function formFactor(tagId: string | null, hinge: boolean, diagonal: number | nul
  * The `<d:device>` entries of one device XML. A legacy entry with no `<d:id>`
  * (`Galaxy Nexus`) uses its name as the id, as `avdmanager` does.
  */
-export function parseAndroidDeviceXml(xml: string, origin: AndroidHardwareProfile["origin"]): AndroidDeviceDefinition[] {
+function parseAndroidDeviceXml(xml: string, origin: AndroidHardwareProfile["origin"]): AndroidDeviceDefinition[] {
   const definitions: AndroidDeviceDefinition[] = [];
   for (const device of elements(xml, "device")) {
     const body = device.body;
@@ -234,7 +234,7 @@ function androidStudioSdklibJars(platform: NodeJS.Platform, env: AndroidEnv, hom
 }
 
 /** The SDK jars that may hold `com/android/sdklib/devices/*.xml`, best first. */
-export function androidSdklibJarCandidates(
+function androidSdklibJarCandidates(
   sdkRoot: string | null,
   options: { platform?: NodeJS.Platform; env?: AndroidEnv; home?: string } = {},
 ): string[] {

@@ -47,3 +47,10 @@ export class AndroidEmulatorFailure extends Error {
     };
   }
 }
+
+/** The lane id every lane call takes, trimmed, or a plain refusal. */
+export function requireLaneId(laneId: unknown): string {
+  const trimmed = typeof laneId === "string" ? laneId.trim() : "";
+  if (!trimmed) throw new Error("laneId is required.");
+  return trimmed;
+}

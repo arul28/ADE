@@ -22,9 +22,9 @@ import { REMOTE_WORK_LANE_PREFIX } from "../remoteWork/remoteWorkCopyService";
  * kept: the safe direction.
  */
 
-export const ADE_AVD_CREATED_KEY = "ade.created";
-export const ADE_AVD_LANE_KEY = "ade.laneId";
-export const ADE_AVD_CREATED_AT_KEY = "ade.createdAt";
+const ADE_AVD_CREATED_KEY = "ade.created";
+const ADE_AVD_LANE_KEY = "ade.laneId";
+const ADE_AVD_CREATED_AT_KEY = "ade.createdAt";
 
 /** The AVD names the emulator accepts: letters, digits, `.`, `_`, `-`. */
 const AVD_NAME_PATTERN = /^[A-Za-z0-9._-]+$/u;
@@ -139,7 +139,7 @@ export function listAndroidAvds(
  * chat's work copy (`remote-work-<hash>`) is `rw` and its hash's start, so
  * two chats' AVDs differ by more than a suffix.
  */
-export function adeAvdName(laneId: string, profileId: string, taken: ReadonlySet<string>): string {
+function adeAvdName(laneId: string, profileId: string, taken: ReadonlySet<string>): string {
   const clean = (value: string) => value.replace(/[^A-Za-z0-9_]+/gu, "_").replace(/^_+|_+$/gu, "");
   const shortLane = (laneId.startsWith(REMOTE_WORK_LANE_PREFIX)
     ? `rw${clean(laneId.slice(REMOTE_WORK_LANE_PREFIX.length)).slice(0, 6)}`
@@ -171,6 +171,35 @@ function imageSysdir(sdkRoot: string, image: AndroidSystemImage): string {
 function imageTarget(image: AndroidSystemImage): string {
   // `system-images;android-36;…` → `android-36`, which also covers `android-36.1`.
   return image.packageId.split(";")[1] || `android-${image.apiLevel}`;
+}
+
+/** `system-images;…;google_apis_playstore;…` first, then `google_apis`, then the rest. */
+function imageTagRank(tag: string): number {
+  if (tag === "google_apis_playstore") return 0;
+  if (tag === "google_apis") return 1;
+  if (tag === "default" || tag === "aosp_atd" || tag === "google_atd") return 2;
+  return 3;
+}
+
+/** Tags that only fit their own form factor (a watch, a TV, a car, an XR headset). */
+const SPECIAL_IMAGE_TAG = /wear|tv|automotive|xr|desktop/iu;
+
+/**
+ * The image a new AVD gets when the caller names none: the newest API level
+ * for the host ABI, Play Store first within one level. A watch or TV profile
+ * takes an image with its own tag; a phone never gets one of those.
+ */
+export function pickAndroidSystemImage(
+  images: readonly AndroidSystemImage[],
+  hostAbi: string,
+  definition: Pick<AndroidDeviceDefinition, "tagId">,
+): AndroidSystemImage | null {
+  const wantedTag = definition.tagId?.trim() || null;
+  const candidates = images.filter((image) =>
+    image.abi === hostAbi
+    && (wantedTag && SPECIAL_IMAGE_TAG.test(wantedTag) ? image.tag.includes(wantedTag) : !SPECIAL_IMAGE_TAG.test(image.tag)));
+  candidates.sort((a, b) => b.apiLevel - a.apiLevel || imageTagRank(a.tag) - imageTagRank(b.tag) || a.packageId.localeCompare(b.packageId));
+  return candidates[0] ?? null;
 }
 
 export type CreateAndroidAvdInput = {

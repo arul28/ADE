@@ -4,10 +4,13 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import type { AndroidRunningEmulator } from "../../../shared/types/androidEmulator";
+import type { Logger } from "../logging/logger";
+import { terminateProcessTree } from "../shared/processExecution";
 import { runAdb, runAdbText } from "./adb";
 import { readAndroidAvd, sameAvdName } from "./androidAvds";
 import { AndroidEmulatorFailure } from "./androidEmulatorErrors";
 import { parseAndroidIni, type AndroidEnv } from "./androidSdk";
+import { sleep } from "../shared/utils";
 
 /*
  * Booting, finding and stopping emulators.
@@ -75,7 +78,7 @@ export type AndroidDiscoveredEmulator = Omit<AndroidRunningEmulator, "startedByA
  * `grpc.jwks` when the emulator was started with gRPC auth (Android Studio
  * does that; ADE does not).
  */
-export function parseAndroidDiscoveryFile(fileName: string, text: string): AndroidDiscoveredEmulator | null {
+function parseAndroidDiscoveryFile(fileName: string, text: string): AndroidDiscoveredEmulator | null {
   const pid = Number(/^pid_(\d+)\.ini$/u.exec(fileName)?.[1]);
   if (!Number.isInteger(pid) || pid <= 0) return null;
   const values = parseAndroidIni(text);
@@ -150,16 +153,26 @@ type AdeStartRecord = {
  * The emulators ADE started. With a `statePath` the list is kept in a JSON
  * file, so an emulator started before a brain restart is still ADE's (and
  * still stopped with its lane) afterwards.
+ *
+ * With a `statePath` the file is read again on every call. Two services can
+ * share one project's file (the desktop's own copy in a dev build and the
+ * brain's). A list loaded once would write its stale copy over the other's
+ * starts, and those emulators would stop counting as ADE's. Reading per call
+ * keeps both, short of two writes in one instant.
  */
 export class AdeStartedEmulators {
-  private records: AdeStartRecord[];
+  /** The list when there is no file. */
+  private records: AdeStartRecord[] = [];
 
   constructor(
     private readonly statePath: string | null = null,
     /** A read or write of the file failed. A missing file is not a failure. */
     private readonly onFileError?: (op: "load" | "save", error: unknown) => void,
-  ) {
-    this.records = this.load();
+  ) {}
+
+  /** The current list: the file's, read now, or the in-memory one. */
+  private read(): AdeStartRecord[] {
+    return this.statePath ? this.load() : this.records;
   }
 
   private load(): AdeStartRecord[] {
@@ -176,29 +189,30 @@ export class AdeStartedEmulators {
     }
   }
 
-  private save(): void {
+  /** Keeps `records` as the list: in memory, and in the file when there is one. */
+  private save(records: AdeStartRecord[]): void {
+    this.records = records;
     if (!this.statePath) return;
     try {
       fs.mkdirSync(path.dirname(this.statePath), { recursive: true });
       const temp = `${this.statePath}.${process.pid}.tmp`;
-      fs.writeFileSync(temp, JSON.stringify(this.records, null, 2));
+      fs.writeFileSync(temp, JSON.stringify(records, null, 2));
       fs.renameSync(temp, this.statePath);
     } catch (error) {
-      // The in-memory list still holds this process's starts.
       this.onFileError?.("save", error);
     }
   }
 
   record(entry: Omit<AdeStartRecord, "startedAt"> & { startedAt?: string }): void {
-    this.records = this.records.filter((record) => !(sameAvdName(record.avdName, entry.avdName) && record.consolePort === entry.consolePort));
-    this.records.push({ ...entry, startedAt: entry.startedAt ?? new Date().toISOString() });
-    this.save();
+    const records = this.read().filter((record) => !(sameAvdName(record.avdName, entry.avdName) && record.consolePort === entry.consolePort));
+    records.push({ ...entry, startedAt: entry.startedAt ?? new Date().toISOString() });
+    this.save(records);
   }
 
   forget(match: { avdName: string; consolePort: number }): void {
-    const before = this.records.length;
-    this.records = this.records.filter((record) => !(sameAvdName(record.avdName, match.avdName) && record.consolePort === match.consolePort));
-    if (this.records.length !== before) this.save();
+    const before = this.read();
+    const records = before.filter((record) => !(sameAvdName(record.avdName, match.avdName) && record.consolePort === match.consolePort));
+    if (records.length !== before.length) this.save(records);
   }
 
   /**
@@ -208,7 +222,7 @@ export class AdeStartedEmulators {
    * console port alone; that port came from ADE's own reservation.
    */
   owns(emulator: Pick<AndroidRunningEmulator, "avdName" | "consolePort" | "pid">): boolean {
-    return this.records.some((record) =>
+    return this.read().some((record) =>
       sameAvdName(record.avdName, emulator.avdName)
       && record.consolePort === emulator.consolePort
       && (record.pid === null || record.pid === emulator.pid || record.launcherPid === emulator.pid));
@@ -220,13 +234,13 @@ export class AdeStartedEmulators {
    * console port, so a launcher that exits before qemu does not drop it.
    */
   prune(discovered: readonly Pick<AndroidRunningEmulator, "avdName" | "consolePort">[] = []): void {
-    const before = this.records.length;
-    this.records = this.records.filter((record) =>
+    const before = this.read();
+    const records = before.filter((record) =>
       isProcessAlive(record.pid ?? record.launcherPid)
       || isProcessAlive(record.launcherPid)
       || (record.pid === null
         && discovered.some((emulator) => sameAvdName(emulator.avdName, record.avdName) && emulator.consolePort === record.consolePort)));
-    if (this.records.length !== before) this.save();
+    if (records.length !== before.length) this.save(records);
   }
 }
 
@@ -240,29 +254,11 @@ export async function readAndroidBootCompleted(adbPath: string, serial: string, 
   }
 }
 
-/**
- * Every running emulator, marked with whether ADE started it. With `adbPath`,
- * each one's `sys.boot_completed` is read (one `getprop` each, in parallel).
- */
-export async function readRunningAndroidEmulators(options: {
-  registry?: AdeStartedEmulators | null;
-  adbPath?: string | null;
-  discoveryDirs?: readonly string[];
-} = {}): Promise<AndroidRunningEmulator[]> {
-  const discovered = readAndroidDiscoveryFiles(options.discoveryDirs ?? androidDiscoveryDirs());
-  options.registry?.prune(discovered);
-  return Promise.all(discovered.map(async (emulator) => ({
-    ...emulator,
-    startedByAde: options.registry?.owns(emulator) ?? false,
-    booted: options.adbPath ? await readAndroidBootCompleted(options.adbPath, emulator.serial) : false,
-  })));
-}
-
 /* ---------- ports ---------- */
 
 /** Console ports are even, 5554–5682 (64 emulators); adb is console + 1. */
-export const ANDROID_CONSOLE_PORT_FIRST = 5554;
-export const ANDROID_CONSOLE_PORT_LAST = 5682;
+const ANDROID_CONSOLE_PORT_FIRST = 5554;
+const ANDROID_CONSOLE_PORT_LAST = 5682;
 const GRPC_PORT_FIRST = 8554;
 
 /** Ports this process has handed out and whose emulator has not exited yet. */
@@ -293,7 +289,7 @@ export type AndroidEmulatorPorts = {
  * process already handed out, and every port something else is bound to.
  * gRPC prefers the emulator's own convention, 8554 + (console − 5554).
  */
-export async function allocateAndroidEmulatorPorts(
+async function allocateAndroidEmulatorPorts(
   running: readonly Pick<AndroidRunningEmulator, "consolePort" | "adbPort" | "grpcPort">[],
 ): Promise<AndroidEmulatorPorts> {
   const used = new Set<number>(reservedPorts);
@@ -390,7 +386,7 @@ export type AndroidEmulatorLaunch = {
 };
 
 /** The emulator flags ADE always passes, before the snapshot flag. */
-export function androidEmulatorArgs(input: { avdName: string; consolePort: number; grpcPort: number; snapshot: AndroidSnapshotMode }): string[] {
+function androidEmulatorArgs(input: { avdName: string; consolePort: number; grpcPort: number; snapshot: AndroidSnapshotMode }): string[] {
   return [
     "-avd", input.avdName,
     "-no-window",
@@ -486,7 +482,7 @@ export async function launchAndroidEmulator(input: LaunchAndroidEmulatorInput): 
 }
 
 /** The last error line of an emulator log (`ERROR | …`, `FATAL | …`), for the panel's sentence. */
-export function lastAndroidEmulatorLogError(logPath: string): string | null {
+function lastAndroidEmulatorLogError(logPath: string): string | null {
   let text: string;
   try {
     const stat = fs.statSync(logPath);
@@ -518,8 +514,6 @@ function exitedFailure(launch: AndroidEmulatorLaunch, info: AndroidEmulatorExit)
     launch.logPath,
   );
 }
-
-const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 export type AndroidBootResult = {
   /** qemu's pid, from the discovery file (equal to the launcher's on macOS and Linux). */
@@ -688,4 +682,50 @@ export async function stopAndroidEmulator(input: StopAndroidEmulatorInput): Prom
   }
   await launcherGone();
   return done("terminate");
+}
+
+/**
+ * Stops an emulator this process launched, at any point of its boot. Before
+ * qemu wrote its discovery file there is no qemu pid yet, so it waits a
+ * little for one (or for the launcher to exit) before ending the launcher.
+ */
+export async function stopAndroidLaunch(
+  launch: AndroidEmulatorLaunch,
+  options: { adbPath: string; registry: AdeStartedEmulators; discoveryDirs: readonly string[]; logger?: Pick<Logger, "warn"> | null },
+): Promise<void> {
+  const { adbPath, registry, discoveryDirs, logger } = options;
+  const isThisLaunch = (emulator: AndroidDiscoveredEmulator) =>
+    emulator.consolePort === launch.consolePort && sameAvdName(emulator.avdName, launch.avdName);
+  const deadline = Date.now() + 15_000;
+  while (!launch.exited()) {
+    const found = readAndroidDiscoveryFiles(discoveryDirs).find(isThisLaunch);
+    if (found) {
+      await stopAndroidEmulator({
+        adbPath,
+        serial: found.serial,
+        consolePort: found.consolePort,
+        avdName: found.avdName,
+        pid: found.pid,
+        launcherPid: launch.launcherPid,
+        registry,
+        discoveryDirs,
+      });
+      return;
+    }
+    if (Date.now() >= deadline) break;
+    await Promise.race([sleep(250), launch.exit]);
+  }
+  if (!launch.exited()) {
+    // No discovery file after 15 s. qemu may still be starting under the
+    // launcher (Windows), so end the whole tree, not only the launcher.
+    terminateProcessTree(launch.child, "SIGTERM", (detail) =>
+      logger?.warn("android.emulator_tree_kill_failed", { avdName: launch.avdName, pid: detail.pid, status: detail.status }));
+    await Promise.race([launch.exit, sleep(5_000)]);
+  }
+  // A qemu that outlived the kill stays ADE's, so a later stop can still end it.
+  if (readAndroidDiscoveryFiles(discoveryDirs).some(isThisLaunch)) {
+    logger?.warn("android.emulator_survived_stop", { avdName: launch.avdName, consolePort: launch.consolePort });
+    return;
+  }
+  registry.forget({ avdName: launch.avdName, consolePort: launch.consolePort });
 }

@@ -32,7 +32,7 @@ import {
 } from "../../../shared/types/videoRecords";
 
 /** `"h264"` in ASCII: the only codec ADE asks the server for. */
-export const SCRCPY_CODEC_ID_H264 = 0x68323634;
+const SCRCPY_CODEC_ID_H264 = 0x68323634;
 
 const DEVICE_NAME_FIELD_BYTES = 64;
 const CODEC_ID_BYTES = 4;
