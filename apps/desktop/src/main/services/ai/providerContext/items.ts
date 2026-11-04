@@ -448,7 +448,7 @@ export function adeMcpItems(ctx: Ctx, servers: AdeChatContextPreview["mcpServers
       owner: "user",
       kind: "mcp-server",
       label: `MCP server: ${server.name}`,
-      setIn: "ADE Settings › MCP servers",
+      setIn: "ADE Settings › Connections › MCP servers",
       settingsEntry: "mcp.servers",
       tokens: null,
       timing: "every-request",

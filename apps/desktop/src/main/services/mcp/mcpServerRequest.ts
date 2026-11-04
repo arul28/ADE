@@ -5,7 +5,7 @@
  * Runs on the machine that runs the chat. The registry list is the account
  * settings row every machine shares (`mcp.servers`), read and written through
  * this runtime's account settings store, the same store the desktop's
- * Settings › MCP servers writes through. Secret values go to the account vault
+ * Settings › Connections › MCP servers writes through. Secret values go to the account vault
  * through {@link createMcpRegistryService}'s own `setSecret` / `importServer`
  * / `pruneSecrets`, the calls behind that page's IPC handlers. Nothing here
  * returns, logs, or puts a secret value in a card or a transcript.
@@ -373,7 +373,7 @@ export async function requestMcpServer(
     throw new Error("Adding an MCP server needs a chat to ask in. Run `ade mcp servers add` from inside an ADE chat.");
   }
   if (!deps.settings || !deps.vault) {
-    throw new Error("This machine is not signed in to an ADE account, or its sync is off, so it cannot add MCP servers. The person can add one in Settings › MCP servers.");
+    throw new Error("This machine is not signed in to an ADE account, or its sync is off, so it cannot add MCP servers. The person can add one in Settings › Connections › MCP servers.");
   }
   const name = typeof args.name === "string" ? args.name.trim() : "";
   if (!isValidMcpRegistryName(name)) {
@@ -477,7 +477,7 @@ async function askToAdd(
       return;
     }
     const current = readRegistry(deps);
-    if (!current.live || !deps.settings) throw new Error("This machine lost its ADE account connection. Try again, or add the server in Settings › MCP servers.");
+    if (!current.live || !deps.settings) throw new Error("This machine lost its ADE account connection. Try again, or add the server in Settings › Connections › MCP servers.");
     // Another machine may have added it while the card was open.
     const raced = findSameMcpServer(current.servers, server);
     if (raced) {
@@ -507,7 +507,7 @@ async function askToAdd(
     const next = addMcpRegistryServer(current.servers, saved);
     if (typeof next === "string") throw new Error(next);
     if (!deps.settings.set(ACCOUNT_SCOPE_ALL, MCP_SERVERS_SETTING_KEY, next)) {
-      throw new Error("Your ADE account did not take the change. Try again, or add the server in Settings › MCP servers.");
+      throw new Error("Your ADE account did not take the change. Try again, or add the server in Settings › Connections › MCP servers.");
     }
     // Values the server does not name. A failure leaves an unused value, not a broken server.
     await deps.registry.pruneSecrets(saved.name, saved).catch(() => undefined);

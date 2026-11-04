@@ -413,7 +413,7 @@ export function IntegrationConnectComposer({
       <div className="ade-icc-banner" style={brand.banner}>
         <img className="ade-icc-banner-art" src={brand.art} alt="" draggable={false} />
         <div className="ade-icc-banner-shade" aria-hidden />
-        <span className="ade-icc-logo"><SolidLogo spec={{ ...brand.logo, size: 30 }} straight /></span>
+        <span className="ade-icc-logo"><SolidLogo spec={{ ...brand.logo, size: 25 }} straight /></span>
         <span className="ade-icc-heading">
           <span className="ade-icc-asker" title={asker}><ProviderLogo family={askerFamily} size={11} /></span>
           <span className="ade-icc-heading-text">

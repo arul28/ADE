@@ -1,5 +1,5 @@
 /**
- * The main-process half of Settings > MCP servers.
+ * The main-process half of Settings > Connections > MCP servers.
  *
  * The renderer reads and writes the registry's three settings rows itself,
  * through the account settings bridge it already has. This service is the part

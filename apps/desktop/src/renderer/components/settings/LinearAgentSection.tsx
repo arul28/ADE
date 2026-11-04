@@ -44,7 +44,7 @@ function Field({ label, children, wide = false }: { label: string; children: Rea
 }
 
 /**
- * The "ADE agent" card on Settings › Integrations › Linear. Installs
+ * The "ADE agent" card on Settings › Connections › Linear. Installs
  * the agent in the workspace, makes this machine's delegation rules, and says
  * where delegations from teammates go.
  *

@@ -42,7 +42,7 @@ const openCodeBackgroundWorkGuidance = "**Background work:** `shell` with `backg
  * The server list is fixed when the provider process starts, and only the user
  * can sign in, so the agent's job is to point at the two steps, not to try.
  */
-const adeMcpServersGuidance = "**MCP servers:** this chat keeps the MCP servers it started with, and you cannot add or sign in to one. Tell the user: **Sign in** on its row in Settings › MCP servers if it asks, then right-click this chat in Work and choose **Restart agent session** (the conversation is kept).";
+const adeMcpServersGuidance = "**MCP servers:** this chat keeps the MCP servers it started with, and you cannot add or sign in to one. Tell the user: **Sign in** on its row in Settings › Connections › MCP servers if it asks, then right-click this chat in Work and choose **Restart agent session** (the conversation is kept).";
 
 const adeIndependentChildChatGuidance = "Use an ADE `--type subagent` chat for an independent durable transcript, scheduling, another provider, or tracked lifecycle; it stays in this lane unless the user wants a new one.";
 

@@ -12,6 +12,8 @@ export const MCP_ACCENT = "#8b7cf6";
 
 export type McpBrand = {
   accent: string;
+  /** The accent is light (a black-and-white brand): buttons on it take dark text. */
+  inkDark: boolean;
   banner: CSSProperties;
   logo: { kind: "solid"; mark: (size: number) => ReactNode; face: string; side: string; size?: number };
 };
@@ -47,21 +49,23 @@ function letterMark(name: string) {
 export function mcpCatalogueBrand(entry: McpCatalogueEntry): McpBrand {
   const hex = /^#[0-9a-f]{6}$/i.test(entry.brand.hex) ? entry.brand.hex : MCP_ACCENT;
   const light = luminance(hex);
-  // A near-black brand (Notion, Vercel) still needs an accent that reads on
-  // the dark card, and a near-white one needs a face that shows.
-  const accent = light < 0.06 ? "#a1a1aa" : light > 0.8 ? "#d4d4d8" : hex;
+  // A near-black brand (Notion, PostHog) still needs an accent that reads on
+  // the dark card: its buttons go white with dark text, the way its own are.
+  const mono = light < 0.06 || light > 0.8;
+  const accent = mono ? "#e4e4e7" : hex;
   return {
     accent,
+    inkDark: mono,
     banner: {
       background: [
-        `radial-gradient(90% 180% at 0% 0%, color-mix(in srgb, ${accent} 42%, transparent), transparent 62%)`,
+        `radial-gradient(90% 180% at 0% 0%, color-mix(in srgb, ${accent} ${mono ? 16 : 42}%, transparent), transparent 62%)`,
         `linear-gradient(90deg, color-mix(in srgb, ${hex} 26%, #0d0e12) 0%, color-mix(in srgb, ${hex} 12%, #0d0e12) 100%)`,
       ].join(", "),
     },
     logo: {
       kind: "solid",
       mark: entry.brand.path ? pathMark(entry.brand.path) : letterMark(entry.name),
-      face: light < 0.06 || light > 0.8 ? "#ffffff" : hex,
+      face: mono ? "#ffffff" : hex,
       side: `color-mix(in srgb, ${light < 0.06 ? "#52525b" : hex} 45%, #000)`,
     },
   };

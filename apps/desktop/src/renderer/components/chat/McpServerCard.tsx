@@ -198,6 +198,7 @@ export function McpServerRequestComposer({
       data-testid="mcp-server-composer"
       data-server={server.name}
       data-catalogue={entry?.id}
+      data-ink={brand?.inkDark ? "dark" : undefined}
       className="ade-icc ade-mcpc"
       style={integrationThemeVars(brand?.accent ?? MCP_ACCENT)}
       onKeyDown={onKeyDown}
@@ -206,7 +207,7 @@ export function McpServerRequestComposer({
       <div className="ade-icc-banner ade-mcpc-banner" style={brand?.banner}>
         <span className="ade-icc-logo">
           {brand ? (
-            <SolidLogo spec={{ ...brand.logo, size: 26 }} straight />
+            <SolidLogo spec={{ ...brand.logo, size: 24 }} straight />
           ) : (
             <span className="ade-mcpc-tile" aria-hidden><Plugs size={17} weight="duotone" /></span>
           )}

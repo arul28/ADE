@@ -4226,7 +4226,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   card only after they say yes.
 `,
   "mcp servers": `${ADE_BANNER}
-  ADE MCP servers (Settings › MCP servers)
+  ADE MCP servers (Settings › Connections › MCP servers)
 
   The MCP servers every agent ADE launches gets, defined once for the
   person's account. Values (tokens, keys) live in the account vault and are
@@ -22271,7 +22271,7 @@ function buildCliPlan(
     return buildSyncPlan(args);
   }
   if (primary === "mcp") {
-    // `ade mcp servers` is the MCP registry (Settings › MCP servers); every
+    // `ade mcp servers` is the MCP registry (Settings › Connections › MCP servers); every
     // other `ade mcp` word is ADE MCP.
     const word = args.find((arg) => !arg.startsWith("-"));
     if (word === "servers" || word === "server") {
@@ -35038,7 +35038,7 @@ function formatMcpServers(value: unknown): string {
   }
   if (record.added === true) {
     const missing = Array.isArray(record.missing) && record.missing.length
-      ? ` Not set yet (the person can add them in Settings › MCP servers): ${record.missing.join(", ")}.`
+      ? ` Not set yet (the person can add them in Settings › Connections › MCP servers): ${record.missing.join(", ")}.`
       : "";
     const next = typeof record.next === "string" && record.next ? record.next : `Added ${cell(record.name)}.`;
     return `${next}${missing}`;

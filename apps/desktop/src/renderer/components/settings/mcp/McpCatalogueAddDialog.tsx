@@ -13,6 +13,7 @@ import {
   mcpCatalogueServer,
   type McpCatalogueEntry,
 } from "../../../../shared/mcpCatalogue";
+import type { McpSecretField } from "../../../../shared/mcpRegistry";
 import { mcpServerRunsLine } from "../../../../shared/mcpServerRequest";
 import { Dialog } from "../../ui/dialog";
 import { Banner } from "../../ui/notice";
@@ -41,7 +42,7 @@ export function McpCatalogueAddDialog({
 }) {
   const brand = mcpCatalogueBrand(entry);
   const server = mcpCatalogueServer(entry);
-  const field = server.transport === "stdio" ? "env" : "header";
+  const field: McpSecretField = server.transport === "stdio" ? "env" : "header";
   const signsIn = entry.auth === "oauth";
   const [values, setValues] = useState<Record<string, string>>({});
   const [phase, setPhase] = useState<"idle" | "saving" | "signing-in">("idle");

@@ -375,3 +375,11 @@
   .ade-icc-row[data-fields="3"] .ade-icc-fields { flex-basis: 100%; flex-direction: column; }
   .ade-icc-row[data-fields="3"] .ade-icc-input { flex: none; }
 }
+
+/* A black-and-white brand (Notion): a white button with dark text, as its own are. */
+.ade-icc[data-ink="dark"] .ade-icc-primary:not(:disabled) {
+  background: linear-gradient(180deg, #ffffff, #e4e4e7);
+  color: #111114;
+  box-shadow: inset 0 -1px 0 rgba(0, 0, 0, 0.12), 0 6px 16px -10px rgba(255, 255, 255, 0.5);
+}
+.ade-icc[data-ink="dark"] .ade-icc-tab[aria-selected="true"] { color: #111114; background: #e4e4e7; }
