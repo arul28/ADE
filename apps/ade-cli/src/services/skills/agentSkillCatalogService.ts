@@ -246,7 +246,10 @@ export function readAgentSkillFile(
 ): { relative: string; path: string; content: string } {
   const skillDir = path.dirname(entry.path);
   const lexical = path.relative(skillDir, path.resolve(skillDir, file));
-  if (!lexical || path.isAbsolute(lexical) || !lexical.toLowerCase().endsWith(".md")) {
+  // Lexical first, so a `..` path is refused before anything touches the disk
+  // (otherwise "missing" vs "outside" would reveal whether a file exists).
+  const escapes = lexical === ".." || lexical.startsWith(`..${path.sep}`) || path.isAbsolute(lexical);
+  if (!lexical || escapes || !lexical.toLowerCase().endsWith(".md")) {
     throw new AgentSkillFileError(`${file} is not a Markdown file inside the ${entry.name} skill.`);
   }
   try {

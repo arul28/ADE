@@ -425,7 +425,7 @@ export function createTurnEndQuestionCheck(deps: TurnEndQuestionCheckDeps): Turn
       if (!deps.decide && !provider) return;
       pendingTurnBySession.set(sessionId, turnId);
       void runTiebreak({ facts, turnId, provider, replyText: reply.text, rulesVerdict: classification.verdict }).catch((error) => {
-        logger.warn("agent_chat.turn_end_question_tiebreak_failed", {
+        logger.warn("agent_chat.turn_end_question_tiebreak_crashed", {
           sessionId,
           turnId,
           error: error instanceof Error ? error.message : String(error),

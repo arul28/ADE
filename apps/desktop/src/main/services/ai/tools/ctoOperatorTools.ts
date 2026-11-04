@@ -1034,9 +1034,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
           // ending in silence. The CTO thread is the parent for everything it
           // starts; `spawnKind` decides whether that report wakes it.
           orchestrationParentSessionId: deps.currentSessionId,
-          // Defaulted here as well as in the schema: the host rejects a
-          // parented chat with no spawn kind, and callers that reach `execute`
-          // without parsing the schema first would otherwise fail the create.
+          // Defaulted here as well as in the schema. The host also defaults a
+          // parented chat with no kind to `subagent`; naming it here keeps the
+          // kind echoed in the tool result explicit.
           spawnKind: spawnKind ?? "subagent",
           surface: "work",
           sessionProfile: "workflow",

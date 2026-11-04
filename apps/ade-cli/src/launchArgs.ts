@@ -373,7 +373,7 @@ export function assertMergedLaunchArgs(
   // the merged bag: `--arg spawnKind=…` writes the same wire field `--type`
   // does and wins the merge, so without this a bag could record a kind with
   // nothing to hang it on. (A parent with no kind was defaulted to `subagent`
-  // by `collectLaunchArgs`, like the flag reader does.)
+  // by `normalizeLaunchArgs`, like the flag reader does.)
   if (
     merged.spawnKind !== undefined
     && merged.orchestrationParentSessionId === undefined
@@ -522,8 +522,7 @@ export function normalizeLaunchArgs(
     // A parent with no kind is a subagent, exactly as `--parent` without
     // `--type` is in `readAgentSpawnLineage`. A shell keeps no lineage, so the
     // shell rule below still refuses the parent itself.
-    const mergedProvider = typeof merged.provider === "string" ? merged.provider.trim().toLowerCase() : "";
-    if (merged.spawnKind === undefined && mergedProvider !== "shell") merged.spawnKind = "subagent";
+    if (merged.spawnKind === undefined && merged.provider !== "shell") merged.spawnKind = "subagent";
   }
 
   assertMergedLaunchArgs(merged, options);

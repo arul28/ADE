@@ -3766,8 +3766,8 @@ const CROSS_MACHINE_MOVE_ACTIONS = new Set([
 
 /**
  * Chat actions that name a target chat, by who a session-bound agent may aim
- * them at. Both kinds refuse an unbound external caller, and an omitted target
- * means the caller's own chat.
+ * them at. Both kinds refuse an unbound external caller (except `sendMessage`),
+ * and an omitted target means the caller's own chat.
  *
  * - `mesh`: any chat. ADE is a mesh: any agent may read, stop, steer or
  *   restart any chat, whoever started it; lineage only decides who gets a

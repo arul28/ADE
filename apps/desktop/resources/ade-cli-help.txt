@@ -1446,8 +1446,8 @@ Apple Development
   iOS simulator through ADE's vendored helper. `ade ios-sim` is a deprecated
   alias for one minor release (`ade ios` and `ade simulator` still route here).
   Commands reach the running ADE brain, so launch/select/tap operate on the
-  same long-lived service (--socket only turns a missing brain into an error). Launch keeps
-  the device in the background; pass --open-drawer when the user should see the
+  same long-lived service (--socket only turns a missing brain into an
+  error). Launch keeps the device in the background; pass --open-drawer when the user should see the
   Apple column, or run "apple show" at any time to put the device on screen.
   Tap, drag, type, and inspect go through the helper — no idb, no Screen
   Recording grant, and no Simulator.app window.
