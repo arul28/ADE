@@ -94,8 +94,8 @@ export type Agent37MachineCreatorDeps = {
 
 /** The person cancelled (closed the dialog or pressed Cancel). */
 export class Agent37CreateCancelled extends Error {
-  constructor() {
-    super("You cancelled making the machine.");
+  constructor(message = "You cancelled making the machine.") {
+    super(message);
     this.name = "Agent37CreateCancelled";
   }
 }
@@ -106,6 +106,8 @@ const JOIN_TIMEOUT_MS = 2 * 60_000;
 const POLL_MS = 2_000;
 /** `/device/approve` answers in a second; this bounds a stalled account service. */
 const APPROVE_TIMEOUT_MS = 20_000;
+/** How long a cancelled create keeps looking for a box Agent 37 still made. */
+const CANCELLED_CREATE_LOOK_MS = 90_000;
 /** Rename tries once the row is ready to connect, before ADE stops waiting on it. */
 const RENAME_ATTEMPTS_AFTER_JOIN = 3;
 
@@ -224,13 +226,13 @@ export async function createAgent37Machine(
       type: agent37InstanceType(rawArgs.kind),
       resources: { cpu: shape.cpu, memory: shape.memoryGb, disk: shape.diskGb },
       metadata: { created_by: "ade", ade_request_id: requestId },
-    });
+    }, signal);
   } catch (error) {
     // A create that timed out or broke mid-way may still have made a box.
     // Find it by the tag ADE put on it and take it back off Agent 37; what
     // can't be confirmed stays recorded for the next start.
-    const cleanup = deps.pendingCreates
-      ? await reconcileAgent37PendingCreate(
+    const reconcileOnce = () => deps.pendingCreates
+      ? reconcileAgent37PendingCreate(
         client,
         deps.pendingCreates.list().find((record) => record.requestId === requestId)
           ?? { requestId, startedAt: Date.now(), instanceIds: [] },
@@ -239,7 +241,23 @@ export async function createAgent37Machine(
         logger.warn?.("agent37.machine_create_reconcile_failed", { requestId, error: errorText(reconcileError) });
         return null;
       })
-      : null;
+      : Promise.resolve(null);
+    let cleanup = await reconcileOnce();
+    // A cancel stops ADE waiting, not Agent 37 making the box: it can still
+    // appear a few seconds later. Look for it for a while so a cancelled box
+    // doesn't bill until the next app start (which would still catch it).
+    if (signal?.aborted) {
+      const lookUntil = Date.now() + CANCELLED_CREATE_LOOK_MS;
+      while (cleanup && !cleanup.resolved && Date.now() < lookUntil) {
+        await sleep(POLL_MS);
+        cleanup = await reconcileOnce();
+      }
+    }
+    if (signal?.aborted) {
+      throw new Agent37CreateCancelled(cleanup?.resolved
+        ? undefined
+        : "ADE stopped making the machine. If Agent 37 still makes it, ADE deletes it when it next starts.");
+    }
     if (cleanup && cleanup.unresolved.length) {
       throw new Error(`${errorText(error).replace(/\.$/, "")}. Agent 37 may have made the box anyway and ADE couldn't delete it yet; it tries again when ADE next starts.`);
     }
@@ -434,6 +452,12 @@ export async function createAgent37Machine(
     logger.warn?.(event, meta);
   };
   while (Date.now() < joinDeadline) {
+    // Signed in already, so a cancel here keeps the box (it is a real machine)
+    // and only stops the wait; it is not reported as a finished create.
+    if (signal?.aborted) {
+      logger.info?.("agent37.machine_join_cancelled", { instanceId: instance.id, requestId });
+      throw new Agent37CreateCancelled(`You stopped waiting. "${name}" had already signed in, so ADE kept it: it appears under Your computers when it's ready.`);
+    }
     if (!machineKey) {
       const read = await client.exec(instance.id, MACHINE_KEY_COMMAND).catch((error: unknown) => {
         warnOnce("agent37.machine_key_read_failed", { instanceId: instance.id, error: errorText(error) });

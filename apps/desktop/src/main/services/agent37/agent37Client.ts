@@ -241,11 +241,12 @@ export function createAgent37Client(args: { apiKey: string; fetch?: FetchLike })
     return body;
   }
 
-  const api = (method: string, path: string, body?: unknown, timeoutMs?: number) =>
+  const api = (method: string, path: string, body?: unknown, timeoutMs?: number, signal?: AbortSignal) =>
     request(`${AGENT37_API_BASE_URL}${path}`, {
       method,
       body,
       timeoutMs,
+      signal,
       headers: { authorization: `Bearer ${apiKey}` },
     });
 
@@ -273,7 +274,11 @@ export function createAgent37Client(args: { apiKey: string; fetch?: FetchLike })
     },
 
     /** Resolves once the box is `running` (Agent37 holds the request until then). */
-    async createInstance(input: Agent37CreateInstanceInput): Promise<Agent37Instance> {
+    /**
+     * `signal` stops waiting on a cancel. Agent 37 may still make the box; the
+     * caller finds it by its `ade_request_id` tag and deletes it.
+     */
+    async createInstance(input: Agent37CreateInstanceInput, signal?: AbortSignal): Promise<Agent37Instance> {
       const instance = toInstance(await api("POST", "/instances", {
         template: input.template,
         name: input.name,
@@ -284,7 +289,7 @@ export function createAgent37Client(args: { apiKey: string; fetch?: FetchLike })
         auto_sleep: false,
         ...(input.env ? { env: input.env } : {}),
         ...(input.metadata ? { metadata: input.metadata } : {}),
-      }, CREATE_TIMEOUT_MS));
+      }, CREATE_TIMEOUT_MS, signal));
       if (!instance) throw new Agent37Error("Agent 37 answered with a machine ADE could not read.", "bad_response", 201);
       return instance;
     },

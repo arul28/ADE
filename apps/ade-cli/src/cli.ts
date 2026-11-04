@@ -33108,16 +33108,22 @@ function formatChatRead(value: unknown): string {
     timestamp: asString(failure.timestamp),
     text: [asString(failure.message), asString(failure.detail)].filter(Boolean).join("\n"),
   }));
-  const rows = [
-    ...entries.map((entry) => ({
-      role: asString(entry.role) ?? "message",
-      timestamp: asString(entry.timestamp),
-      text: asString(entry.displayText) ?? asString(entry.text) ?? "",
-    })),
-    ...failures,
-  ];
-  // Stable: a failure sorts after a message with the same timestamp.
-  if (failures.length) rows.sort((a, b) => (a.timestamp ?? "").localeCompare(b.timestamp ?? ""));
+  const messages = entries.map((entry) => ({
+    role: asString(entry.role) ?? "message",
+    timestamp: asString(entry.timestamp),
+    text: asString(entry.displayText) ?? asString(entry.text) ?? "",
+  }));
+  // The transcript keeps its own order. Each failure goes in after the last
+  // message at or before its time (an untimed one goes at the end), so a
+  // message with no timestamp never moves.
+  const rows: typeof messages = [];
+  const timed = failures.filter((failure) => failure.timestamp).sort((a, b) => a.timestamp!.localeCompare(b.timestamp!));
+  let next = 0;
+  for (const message of messages) {
+    while (next < timed.length && message.timestamp && timed[next]!.timestamp! < message.timestamp) rows.push(timed[next++]!);
+    rows.push(message);
+  }
+  rows.push(...timed.slice(next), ...failures.filter((failure) => !failure.timestamp));
   const lines = ["ADE chat transcript"];
   if (!entries.length) lines.push("(no messages in this physical page)");
   for (const row of rows) {
