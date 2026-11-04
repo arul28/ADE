@@ -112,13 +112,10 @@ const SPAWN_PARENT_SHELL_MESSAGE =
 const SPAWN_TYPE_ENUM_MESSAGE =
   "--type must be subagent or peer; silent spawn type 'none' is no longer supported.";
 /**
- * The two parent/spawn-kind pairing messages, hoisted for the same reason: the
- * flag reader and `assertMergedLaunchArgs` enforce the same pairing, so
- * `--parent p` without `--type` and `--arg orchestrationParentSessionId=p`
- * without a spawn kind have to read identically.
+ * A spawn kind with no parent, hoisted for the same reason: the flag reader
+ * and `assertMergedLaunchArgs` refuse it with the same words. (A parent with
+ * no kind is not an error: both default it to `subagent`.)
  */
-const SPAWN_TYPE_REQUIRED_MESSAGE =
-  "--type is required for a parented agent spawn. Use --type subagent when you will need, join, or review the result (including parallel work); use --type peer only for fire-and-forget work. Use --no-parent only for an independent top-level session.";
 const SPAWN_PARENT_REQUIRED_MESSAGE =
   "--type requires a parent session. Remove --no-parent or omit --type for an independent top-level session.";
 
@@ -197,8 +194,8 @@ export function readAgentSpawnLineage(
   if (normalizedSpawnKind && normalizedSpawnKind !== "subagent" && normalizedSpawnKind !== "peer") {
     throw new CliUsageError(SPAWN_TYPE_ENUM_MESSAGE);
   }
-  const spawnKind = normalizedSpawnKind as CliAgentSpawnKind | undefined;
-  if (options.allowSpawnType === false && spawnKind) {
+  const requestedSpawnKind = normalizedSpawnKind as CliAgentSpawnKind | undefined;
+  if (options.allowSpawnType === false && requestedSpawnKind) {
     throw new CliUsageError(SPAWN_TYPE_SHELL_MESSAGE);
   }
   if (options.allowSpawnType === false && hasExplicitParentSessionId) {
@@ -207,14 +204,14 @@ export function readAgentSpawnLineage(
   if (options.allowSpawnType === false) {
     return { kind: "dropped", droppedAmbientParentSessionId: ambientParentSessionId };
   }
-  if (orchestrationParentSessionId && !spawnKind) {
-    throw new CliUsageError(SPAWN_TYPE_REQUIRED_MESSAGE);
-  }
-  if (!orchestrationParentSessionId && spawnKind) {
+  if (!orchestrationParentSessionId && requestedSpawnKind) {
     throw new CliUsageError(
       options.missingParentMessage ?? SPAWN_PARENT_REQUIRED_MESSAGE,
     );
   }
+  // A parented launch with no `--type` is a subagent: it reports back to the
+  // chat that started it, which is what "have this model do the work" means.
+  const spawnKind = requestedSpawnKind ?? (orchestrationParentSessionId ? "subagent" : undefined);
   return { kind: "lineage", orchestrationParentSessionId, spawnKind };
 }
 
@@ -373,18 +370,10 @@ export function assertMergedLaunchArgs(
     );
   }
   // The parent/spawn-kind pairing the flag reader enforces, repeated here for
-  // the merged bag: `--arg orchestrationParentSessionId=…` and
-  // `--arg spawnKind=…` write the same two wire fields the `--parent`/`--type`
-  // flags do and win the merge, so without this a bag could record a parented
-  // spawn with no kind, or a kind with nothing to hang it on. Provider-
-  // independent: the shell rule above has already refused both fields for a
-  // shell launch, and every other profile records lineage in pairs.
-  if (
-    merged.orchestrationParentSessionId !== undefined
-    && merged.spawnKind === undefined
-  ) {
-    throw new CliUsageError(SPAWN_TYPE_REQUIRED_MESSAGE);
-  }
+  // the merged bag: `--arg spawnKind=…` writes the same wire field `--type`
+  // does and wins the merge, so without this a bag could record a kind with
+  // nothing to hang it on. (A parent with no kind was defaulted to `subagent`
+  // by `normalizeLaunchArgs`, like the flag reader does.)
   if (
     merged.spawnKind !== undefined
     && merged.orchestrationParentSessionId === undefined
@@ -530,6 +519,10 @@ export function normalizeLaunchArgs(
       );
     }
     merged.orchestrationParentSessionId = merged.orchestrationParentSessionId.trim();
+    // A parent with no kind is a subagent, exactly as `--parent` without
+    // `--type` is in `readAgentSpawnLineage`. A shell keeps no lineage, so the
+    // shell rule below still refuses the parent itself.
+    if (merged.spawnKind === undefined && merged.provider !== "shell") merged.spawnKind = "subagent";
   }
 
   assertMergedLaunchArgs(merged, options);

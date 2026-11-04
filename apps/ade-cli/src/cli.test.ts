@@ -4616,9 +4616,13 @@ describe("ADE CLI", () => {
       });
     });
 
-    it("rejects an inherited parent when --type is missing", () => {
+    it("makes an inherited parent with no --type a subagent", () => {
       process.env.ADE_CHAT_SESSION_ID = "parent-session-1";
-      expect(() => dryRunCreate()).toThrow(/--type is required for a parented agent spawn/);
+      const input = (expectStaticPlan(dryRunCreate()).value as { input: Record<string, unknown> }).input;
+      expect(input.orchestrationParentSessionId).toBe("parent-session-1");
+      expect(input.spawnKind).toBe("subagent");
+      const peer = (expectStaticPlan(dryRunCreate("--type", "peer")).value as { input: Record<string, unknown> }).input;
+      expect(peer.spawnKind).toBe("peer");
     });
 
     it("omits the parent when the env var is not set", () => {
@@ -11588,7 +11592,7 @@ describe("ADE CLI", () => {
     });
   });
 
-  it("requires and persists a spawn type when lanes create --start-chat starts a child chat", () => {
+  it("persists a spawn type, subagent by default, when lanes create --start-chat starts a child chat", () => {
     const baseArgs = [
       "lanes",
       "create",
@@ -11597,8 +11601,7 @@ describe("ADE CLI", () => {
       "--start-chat",
     ];
     withEnv({ ADE_CHAT_SESSION_ID: "parent-chat-1" }, () => {
-      expect(() => buildCliPlan(baseArgs)).toThrow(/--type is required for a parented agent spawn/);
-      const plan = expectExecutePlan(buildCliPlan([...baseArgs, "--type", "subagent"]));
+      const plan = expectExecutePlan(buildCliPlan(baseArgs));
       const chatParams = (plan.steps[1]?.params as (v: Record<string, unknown>) => Record<string, unknown>)({
         lane: { domain: "lane", action: "create", result: { lane: { id: "lane-new" } } },
       });
@@ -12174,24 +12177,14 @@ describe("ADE CLI", () => {
     });
   });
 
-  it("requires and forwards spawn type for inherited start-cli lineage", () => {
+  it("forwards spawn type, subagent by default, for inherited start-cli lineage", () => {
     withEnv({ ADE_CHAT_SESSION_ID: "parent-chat-1" }, () => {
-      expect(() => buildCliPlan([
-        "shell",
-        "start-cli",
-        "codex",
-        "--lane",
-        "lane-1",
-      ])).toThrow(/--type is required for a parented agent spawn/);
-
       const plan = expectExecutePlan(buildCliPlan([
         "shell",
         "start-cli",
         "codex",
         "--lane",
         "lane-1",
-        "--type",
-        "subagent",
       ]));
       expect(plan.steps[0]?.params).toMatchObject({
         name: "start_cli_session",

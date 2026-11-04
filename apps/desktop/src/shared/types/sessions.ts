@@ -625,6 +625,9 @@ export type ClaudeSessionPointer = {
 
 export type WindowsShellKind = "powershell" | "cmd" | "git-bash";
 
+/** The chat that started an agent CLI, and how it reports back to that chat. */
+export type AgentSpawnLineage = { parentChatSessionId: string; spawnKind: AgentChatSpawnKind | null };
+
 export type PtyCreateArgs = {
   sessionId?: string;
   /** Allow callers to pre-assign a new session id instead of only resuming an existing tracked session. */
@@ -653,7 +656,7 @@ export type PtyCreateArgs = {
    */
   freshRun?: boolean;
   /** Parent chat lineage to export to a spawned agent CLI process. */
-  spawnLineage?: { parentChatSessionId: string; spawnKind: AgentChatSpawnKind | null } | null;
+  spawnLineage?: AgentSpawnLineage | null;
   laneId: string;
   cwd?: string;
   cols: number;

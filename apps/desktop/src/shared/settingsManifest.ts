@@ -39,6 +39,7 @@ export const SETTINGS_TAB_IDS = [
   "appearance",
   "behaviour",
   "apple",
+  "keyboard",
   // Project → Lanes keeps the id `lanes-git` so every link ever shipped to it
   // still lands.
   "lanes-git",
@@ -142,7 +143,7 @@ export function isProjectSettingsTab(tab: SettingsTabId): boolean {
  * (Behaviour), its simulators (Apple devices), its service (Advanced) and its
  * overview (General). Another machine's own settings are on its Machines page.
  */
-export const THIS_COMPUTER_ONLY_TAB_IDS: readonly SettingsTabId[] = ["general", "appearance", "behaviour", "apple", "advanced"];
+export const THIS_COMPUTER_ONLY_TAB_IDS: readonly SettingsTabId[] = ["general", "appearance", "behaviour", "apple", "keyboard", "advanced"];
 
 export function isThisComputerOnlyTab(tab: SettingsTabId): boolean {
   return THIS_COMPUTER_ONLY_TAB_IDS.includes(tab);
@@ -195,6 +196,9 @@ export const SETTINGS_TABS: readonly SettingsTab[] = [
   // network. Values are filed under this device's account scope so the brain
   // on this computer can read the remote streaming cap (see accountSettingsSync).
   { id: "apple", label: "Apple devices", description: "Simulator display, recording overlays, and remote streaming on this computer.", group: "app" },
+  // Keys are read by the window you type into, and each computer has its own
+  // keyboard and OS shortcuts, so the page is per computer.
+  { id: "keyboard", label: "Keyboard", description: "Shortcuts and Quick slots on this computer.", group: "app" },
 
   // ── Project: the open project, on the machine that owns it ──────────────
   { id: "lanes-git", label: "Lanes", description: "How new lanes start, and every lane in this project.", group: "project" },
@@ -726,6 +730,38 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     // The setting is the host's project configuration, which the hosted client cannot write.
     web: "hidden",
     group: "Composer",
+  },
+  {
+    id: "keyboard.shortcuts",
+    label: "Keyboard shortcuts",
+    keywords: ["keyboard", "shortcut", "keybinding", "hotkey", "rebind", "chord", "key", "reset"],
+    tab: "keyboard",
+    anchor: "keyboard-shortcuts",
+    // This computer's renderer storage (lib/keybindingStore.ts); the hosted client keeps its own in the browser.
+    scope: "machine",
+    web: "browser",
+    group: "Shortcuts",
+  },
+  {
+    id: "keyboard.quick-slots",
+    label: "Quick slots",
+    keywords: ["keyboard", "shortcut", "chord", "slots", "leader", "one to nine", "composer", "actions"],
+    tab: "keyboard",
+    anchor: "quick-slots",
+    // A renderer preference (localStorage), like the theme; it follows the browser profile.
+    scope: "machine",
+    web: "browser",
+    group: "Quick slots",
+  },
+  {
+    id: "keyboard.model-profiles",
+    label: "Model profiles",
+    keywords: ["model", "profile", "thinking", "effort", "quick slot", "preset", "composer"],
+    tab: "keyboard",
+    anchor: "model-profiles",
+    scope: "machine",
+    web: "browser",
+    group: "Quick slots",
   },
   {
     id: "chat.smart-decisions",

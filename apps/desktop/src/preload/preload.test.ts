@@ -976,6 +976,28 @@ describe("preload Apple device input routing", () => {
       const bridge = (globalThis as any).__adeBridge;
       const args = { data: "iVBORw0KGgo=", filename: "clipboard.png" };
 
+      // A file belongs to the desktop's disk even when the window is bound
+      // elsewhere. Omitted pins must upload, never ask that host to copy it.
+      const fileArgs = { sourcePath: "C:\\Pictures\\shot.png", filename: "shot.png" };
+      for (const pin of [undefined, pinnedRemote, localPin]) {
+        invoke.mockClear();
+        const mode = await bridge.agentChat.getAttachmentStagingMode(pin);
+        expect(mode.mode).toBe(pin === localPin ? "copy" : "upload");
+        await bridge.agentChat.stageFileAttachment(fileArgs, pin);
+        if (pin === localPin) {
+          expect(invoke).not.toHaveBeenCalledWith(IPC.remoteRuntimeUploadChatAttachment, expect.anything());
+        } else {
+          const target = pin === pinnedRemote ? pinnedRemote : boundRemote;
+          expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeUploadChatAttachment, {
+            id: target.targetId,
+            projectId: target.projectId,
+            ...fileArgs,
+          });
+          expect(invoke).not.toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, expect.anything());
+        }
+      }
+      invoke.mockClear();
+
       // An explicit remote pin streams to that machine, never through the command.
       await expect(bridge.agentChat.saveTempAttachment(args, pinnedRemote))
         .resolves.toEqual({ path: "/remote/uploaded.png" });
@@ -1009,16 +1031,14 @@ describe("preload Apple device input routing", () => {
         request: expect.objectContaining({ domain: "chat", action: "saveTempAttachment", args }),
       }));
 
-      // A failed upload falls back to the command and says so in the console.
+      // Recovery belongs to the transport service; a final error propagates
+      // without issuing another save through the window's current binding.
       invoke.mockClear();
       modeByTarget.set("target-2", { mode: "upload", maxBytes: 50 * 1024 * 1024 });
       failUpload = true;
       await expect(bridge.agentChat.saveTempAttachment(args, pinnedRemote))
-        .resolves.toEqual({ path: "/via/command.png" });
-      expect(warn).toHaveBeenCalledWith(
-        expect.stringContaining("[ade-attachments] Streamed upload failed"),
-        expect.objectContaining({ error: "Attachment upload failed (HTTP 502)." }),
-      );
+        .rejects.toThrow("Attachment upload failed (HTTP 502).");
+      expect(invoke).not.toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, expect.anything());
 
       // A payload the command cannot carry is not resent through it. The
       // upload's own reason reaches the caller.

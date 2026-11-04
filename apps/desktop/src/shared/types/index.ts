@@ -43,6 +43,7 @@ export * from "./search";
 export * from "./externalSessions";
 export * from "./externalSessionDetail";
 export * from "./providerInstances";
+export * from "./agentCliLogin";
 export * from "./recovery";
 export * from "./productAnalytics";
 export * from "./account";

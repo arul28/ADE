@@ -33,6 +33,9 @@ export const ipcChannelRedactionMap: Record<string, ReadonlySet<string>> = {
   // A Pi sign-in prompt answer is the credential itself when Pi asks for an
   // API key, so it must never reach a verbose IPC trace.
   [IPC.aiPiLoginSubmit]: new Set(["value"]),
+  // A code pasted from a sign-in page finishes that sign-in on its own.
+  [IPC.providerInstancesLoginSubmitCode]: new Set(["code"]),
+  [IPC.aiCliLoginSubmitCode]: new Set(["code"]),
   // Both key-store channels carry the raw provider credential as `key`.
   // These entries are the ONLY thing redacting it: the generic guard below
   // does not treat a bare `key` as a secret, because it is the ordinary word

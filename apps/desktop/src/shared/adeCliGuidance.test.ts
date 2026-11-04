@@ -46,8 +46,12 @@ describe("ADE bootstrap guidance", () => {
     expect(bootstrap).toContain("ade actions list --text");
     expect(bootstrap).toContain("ade skill list --text");
     expect(bootstrap).toContain("ade skill show <name> --text");
+    // One default per scenario: same chat and lane, another model as a
+    // subagent, and one wake per thing waited on.
     expect(bootstrap).toContain("ade chat scheduled-work create");
-    expect(bootstrap).toContain("tracked provider CLIs");
+    expect(bootstrap).toContain("`ade new chat --mode chat`");
+    expect(bootstrap).toContain("`ade prs watch`");
+    expect(bootstrap).toContain("`ade terminal watch`");
     expect(bootstrap).toContain('ade chat note "testing desktop auth fallback"');
     expect(bootstrap).toContain("6 words or fewer");
     expect(bootstrap).toContain(`${MAX_STATUS_NOTE_CHARACTERS} characters`);
@@ -59,7 +63,8 @@ describe("ADE bootstrap guidance", () => {
     expect(bootstrap).toContain("You cannot settle or unsettle a session");
     expect(bootstrap).toContain("the user's call, or the automatic result of its PR merging");
     expect(bootstrap).not.toContain("ade chat settle --outcome");
-    expect(bootstrap).toContain("ade session snooze <id> --for <duration>");
+    // Snoozing is the user's call; agents are not handed the command.
+    expect(bootstrap).not.toContain("ade session snooze");
     expect(bootstrap).toContain("ade chat generate-names");
     expect(bootstrap).toContain("ade chat update --title");
     expect(bootstrap).toContain("ade lanes rename");
@@ -101,9 +106,6 @@ describe("ADE bootstrap guidance", () => {
     }
     expect(bootstrap).toContain("next accepted user message clears the prior hand-raise");
     expect(skill).toContain("next accepted user message clears the hand-raise");
-    // The skill deliberately points at the code-owned bounds instead of
-    // duplicating values that can drift from the runtime contract.
-    expect(skill).toContain("sessionStatusNote.ts");
     expect(bootstrap).toContain(`${STATUS_NOTE_GUIDELINE_WORDS} words or fewer`);
     expect(bootstrap).toContain(`${MAX_STATUS_NOTE_CHARACTERS} characters`);
   });

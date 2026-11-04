@@ -680,6 +680,10 @@ import type {
   AntigravitySignInCompleteArgs,
   AntigravitySignInStartArgs,
   AntigravitySignInState,
+  AgentCliLoginRefArgs,
+  AgentCliLoginStartArgs,
+  AgentCliLoginStatus,
+  AgentCliLoginSubmitCodeArgs,
   AiApiKeyVerificationResult,
   AiConfig,
   AiSettingsStatus,
@@ -5515,6 +5519,39 @@ export function registerIpc({
   ipcMain.handle(IPC.aiAntigravitySignInCancel, async (_event, arg: AntigravitySignInCancelArgs): Promise<AntigravitySignInState> => {
     const { cancelAntigravitySignIn } = await import("../ai/antigravitySignIn");
     return cancelAntigravitySignIn(arg);
+  });
+
+  // The unpinned route for an agent CLI's sign-in (Grok, Devin, Muse,
+  // Copilot, Droid, Kimi) on this machine; a pinned call goes to the owning
+  // machine's `ai.cliLogin*` actions.
+  ipcMain.handle(IPC.aiCliLoginStart, async (_event, arg: AgentCliLoginStartArgs): Promise<AgentCliLoginStatus> => {
+    const { getMachineAgentCliLoginRunner } = await import("../ai/machineAgentCliLoginRunner");
+    return getMachineAgentCliLoginRunner().start(arg);
+  });
+  ipcMain.handle(IPC.aiCliLoginStatus, async (_event, arg: AgentCliLoginRefArgs): Promise<AgentCliLoginStatus> => {
+    const { getMachineAgentCliLoginRunner } = await import("../ai/machineAgentCliLoginRunner");
+    const status = getMachineAgentCliLoginRunner().status(arg?.loginId);
+    if (status.state === "succeeded") {
+      try {
+        getCtx().aiIntegrationService?.invalidateProviderReadinessCaches();
+      } catch (error) {
+        // Matches the action-path twin so both halves of one incident are
+        // searchable under a single event name.
+        getCtx().logger.warn("ai.cli_login_cache_invalidation_failed", {
+          provider: status.provider,
+          error: getErrorMessage(error),
+        });
+      }
+    }
+    return status;
+  });
+  ipcMain.handle(IPC.aiCliLoginSubmitCode, async (_event, arg: AgentCliLoginSubmitCodeArgs): Promise<AgentCliLoginStatus> => {
+    const { getMachineAgentCliLoginRunner } = await import("../ai/machineAgentCliLoginRunner");
+    return getMachineAgentCliLoginRunner().submitCode(arg?.loginId, arg?.code);
+  });
+  ipcMain.handle(IPC.aiCliLoginCancel, async (_event, arg: AgentCliLoginRefArgs): Promise<AgentCliLoginStatus> => {
+    const { getMachineAgentCliLoginRunner } = await import("../ai/machineAgentCliLoginRunner");
+    return getMachineAgentCliLoginRunner().cancel(arg?.loginId);
   });
 
   // The unpinned route for Settings > Muse Code on this machine; a pinned call

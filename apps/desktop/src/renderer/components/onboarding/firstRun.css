@@ -131,8 +131,9 @@
   width: min(640px, 100%);
 }
 
+/* The agents rail needs the room: thirteen logos hang on it. */
 .ade-gate-stack[data-step="agents"] {
-  width: min(640px, 100%);
+  width: min(980px, 100%);
 }
 
 /* Kimi's colour mark draws its "K" in hard-coded white, which vanishes on the
