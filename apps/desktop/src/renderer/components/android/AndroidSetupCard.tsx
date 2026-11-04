@@ -1,4 +1,4 @@
-import { Check, X } from "@phosphor-icons/react";
+import { Check, Minus, X } from "@phosphor-icons/react";
 import type { AndroidSdkStatus } from "../../../shared/types/androidEmulator";
 import { cn } from "../ui/cn";
 import { Button } from "../ui/Button";
@@ -23,7 +23,8 @@ const MISSING_SIZE = {
 type ChecklistRow = {
   id: string;
   label: string;
-  ok: boolean;
+  /** Null when it cannot be checked yet: acceleration needs the emulator to check it. */
+  ok: boolean | null;
   /** The found value or the missing part's size. */
   value: string;
   detail: string | null;
@@ -42,13 +43,17 @@ function androidSetupRows(sdk: AndroidSdkStatus): ChecklistRow[] {
   const emulator = androidSdkTool(sdk, "emulator");
   const image = androidSdkTool(sdk, "system-image");
   const accel = sdk.acceleration;
+  // `emulator -accel-check` answers this, so without the emulator it is unknown, not missing.
+  const accelCheckable = emulator?.available === true;
   return [
     {
       id: "acceleration",
       label: "Acceleration",
-      ok: accel.usable,
-      value: accel.usable ? `${accel.kind ?? "Hypervisor"} on` : accel.kind ? `${accel.kind} off` : "not available",
-      detail: accel.usable ? null : accel.detail,
+      ok: accelCheckable ? accel.usable : null,
+      value: !accelCheckable
+        ? "checked after setup"
+        : accel.usable ? `${accel.kind ?? "Hypervisor"} on` : accel.kind ? `${accel.kind} off` : "not available",
+      detail: accelCheckable && !accel.usable ? accel.detail : null,
     },
     {
       id: "sdk",
@@ -104,15 +109,17 @@ export function AndroidSetupCard({
         <p className="min-w-0 font-sans text-sm font-medium leading-5 text-fg">Set up Android on this machine</p>
         <ul className="flex min-w-0 flex-col gap-1.5" aria-label="What the emulator needs">
           {rows.map((row) => (
-            <li key={row.id} data-android-setup-row={row.id} data-android-setup-ok={row.ok ? "true" : "false"} className="flex min-w-0 flex-col gap-0.5">
+            <li key={row.id} data-android-setup-row={row.id} data-android-setup-ok={row.ok === null ? "unknown" : row.ok ? "true" : "false"} className="flex min-w-0 flex-col gap-0.5">
               <span className="flex min-w-0 items-center gap-2 font-sans text-xs leading-5">
                 {row.ok ? (
                   <Check size={13} weight="bold" aria-label="Found" className="shrink-0 text-success" />
+                ) : row.ok === null ? (
+                  <Minus size={13} weight="bold" aria-label="Not checked yet" className="shrink-0 text-muted-fg" />
                 ) : (
                   <X size={13} weight="bold" aria-label="Missing" className="shrink-0 text-[var(--color-error)]" />
                 )}
                 <span className="w-28 shrink-0 text-fg">{row.label}</span>
-                <span className={cn("min-w-0 flex-1 truncate", row.ok ? "text-muted-fg" : "text-fg/80")} title={row.value}>
+                <span className={cn("min-w-0 flex-1 truncate", row.ok === false ? "text-fg/80" : "text-muted-fg")} title={row.value}>
                   {row.value}
                 </span>
               </span>
