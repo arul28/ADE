@@ -2141,6 +2141,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     --socket <path>         Local RPC endpoint to listen on.
     --port <n>              Also listen for local TCP JSON-RPC on 127.0.0.1:n.
     --no-sync               Disable machine sync discovery for this foreground brain process.
+    --dev-test-machine      Dev only: run as its own machine on the account, beside the
+                            installed ADE (own home required). Use npm run dev:machine.
     --install-service       Register the per-user login service and exit.
     --uninstall-service     Remove the per-user login service and exit.
     --service-status        Print per-user login service status and exit.
@@ -27273,6 +27275,25 @@ async function runServe(
     roleCeilingNote,
   ].filter((note): note is string => note !== null);
   for (const note of brainIdentityNotes) process.stderr.write(`ADE: ${note}\n`);
+  // A dev test machine (`npm run dev:machine`): this checkout's brain as its
+  // own machine on the account, beside the installed one. Set before anything
+  // reads the home, the sync lease or Tailscale; see devTestMachine.ts.
+  if (readFlag(args, ["--dev-test-machine"])) {
+    const [{ DEV_TEST_MACHINE_ENV, markDevTestMachineHome }, { isSyncCapableAdeHome }] = await Promise.all([
+      import("./services/sync/devTestMachine"),
+      import("./services/projects/machineLayout"),
+    ]);
+    const adeDir = resolveMachineAdeLayout().adeDir;
+    if (!isSyncCapableAdeHome(adeDir, { ...process.env, [DEV_TEST_MACHINE_ENV]: "1" })) {
+      throw new CliUsageError(
+        `A dev test machine needs its own ADE home; ${adeDir} belongs to an installed ADE. Start it with npm run dev:machine.`,
+      );
+    }
+    markDevTestMachineHome(adeDir);
+    process.env[DEV_TEST_MACHINE_ENV] = "1";
+    process.env.ADE_TAILSCALE_SERVE = "0";
+    process.env.ADE_SYNC_HOST_LOCK_PATH ||= path.join(adeDir, "sync-host-lock.json");
+  }
   // Before anything reads this machine's identity: a home copied onto another
   // box (a cloud fork) must come up as a new machine, not as this one.
   if (!embedded) {

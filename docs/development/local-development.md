@@ -66,7 +66,7 @@ npm run dev
 
 That aliases to `npm run dev:desktop`: it rebuilds `apps/ade-cli`, refreshes the shared dev runtime at `/tmp/ade-runtime-dev.sock` when needed, launches the Electron desktop app, and points desktop at that runtime. This is the normal desktop-dev flow.
 
-**This is the only supported way to run a dev app on a machine that also runs the installed ADE.** The dev brain shares `~/.ade` (your account, projects, and sync identity are served by the installed brain) and is started with `--no-sync`, so it can never take the machine-wide sync host lease. Its own socket keeps it from taking over chats run by the installed brain, including across different ADE homes. While the installed brain is live on the project, the dev brain leaves chats it does not run to it: it does not recover or prewarm them or fire their scheduled wakes. Other dev brains do not make one another yield. Its own chats and messages sent directly to it still work; a send, steer or interrupt for a chat another brain runs is refused with the owner's socket instead of starting a second provider process. An unpackaged app never installs or repairs the launchd brain service. The launcher prints a dev isolation report (state root, socket, sync, project, installed brain untouched) before the window opens; read it. Do not start `ade serve` by hand or copy `~/.ade` secrets into another home. Use a separate `ADE_HOME` only for deliberate scratch-home work; a new home shows the account gate, and full project isolation also needs a throwaway project. `ADE_DEV_RUNTIME_SYNC=1` opts a dev brain into sync on purpose and is almost never what you want.
+**This is the only supported way to run a dev app on a machine that also runs the installed ADE.** The dev brain shares `~/.ade` (your account, projects, and sync identity are served by the installed brain) and is started with `--no-sync`, so it can never take the machine-wide sync host lease. Its own socket keeps it from taking over chats run by the installed brain, including across different ADE homes. While the installed brain is live on the project, the dev brain leaves chats it does not run to it: it does not recover or prewarm them or fire their scheduled wakes. Other dev brains do not make one another yield. Its own chats and messages sent directly to it still work; a send, steer or interrupt for a chat another brain runs is refused with the owner's socket instead of starting a second provider process. An unpackaged app never installs or repairs the launchd brain service. The launcher prints a dev isolation report (state root, socket, sync, project, installed brain untouched) before the window opens; read it. Do not start `ade serve` by hand or copy `~/.ade` secrets into another home. Use a separate `ADE_HOME` only for deliberate scratch-home work; a new home shows the account gate, and full project isolation also needs a throwaway project. `ADE_DEV_RUNTIME_SYNC=1` opts a dev brain into sync on purpose and is almost never what you want. When another machine must reach a branch brain, use a dev test machine (below) instead.
 
 ### If you are an agent, start it detached
 
@@ -159,6 +159,48 @@ npm run dev:all              # start shared dev runtime, then run `npm run dev:d
 npm run dev:stop             # stop the dev runtime
 npm stop dev                 # same as dev:stop
 ```
+
+### Test what other machines call into: a dev test machine
+
+A dev app's brain runs `--no-sync`, so nothing else can reach it. That covers
+everything you can see from this computer, but not a change another machine
+calls into: a cloud box asking this Mac for a simulator, the phone, another
+computer's desktop connecting. Do not replace the installed brain for that,
+and do not wait for a merge. Run this checkout's brain as its own machine:
+
+```bash
+npm run dev:machine -- start            # builds the CLI if needed; prints a report
+npm run dev:machine -- login            # once: approve the code, it is named "<Mac> (dev)"
+npm run dev:machine -- project --clone  # a --shared clone of this repo, on this branch
+# from any machine on the account:
+ade lanes list --machine "<Mac> (dev)"
+ade apple start --machine "<Mac> (dev)"
+npm run dev:machine -- stop             # keeps its home and sign-in
+npm run dev:machine -- remove           # signs out (its account row goes) and stops
+```
+
+`--name <n>` runs more than one. What keeps it apart from the installed ADE
+(`apps/ade-cli/src/services/sync/devTestMachine.ts`):
+
+- **Its own home,** `~/.ade-dev-machine-<name>`: its own machine key, device id,
+  sign-in and account row. The row's hardware anchor hashes the home path, so
+  it never merges with this computer's row.
+- **Its own sync lease** (a lock file in its home) and the next free sync port.
+  Every brain's listener scan skips a brain started with `--dev-test-machine`,
+  so neither reports the other as a conflict or offers to quit it.
+- **No Tailscale entry.** Tailscale Serve is machine-wide; a test machine
+  publishes and tidies nothing there. It is reached over the relay or the LAN.
+- **No shared project.** Its home is marked, and any `ade` command on it refuses
+  a project the installed ADE (or Alpha) has registered, or a folder inside one
+  such as a lane worktree: two machines would both write one project database.
+  `project --clone` gives it a clone with the real `origin`, which is how
+  `--machine` finds the repository there.
+
+Approving the sign-in code needs a browser signed in to your account; an agent
+can do it in ADE's browser (`ade browser open <the printed URL>`, Continue,
+Allow) when the test machine is its own. A dev desktop can connect to the test
+machine like any other (Connections, Connect), which is how you check a
+desktop-side change against a branch brain.
 
 ### Walk first-run setup as a new user
 
