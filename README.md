@@ -12,6 +12,7 @@
   <a href="https://ade-app.dev/download/mac-arm64">macOS</a> ·
   <a href="https://ade-app.dev/download/windows">Windows</a> ·
   <a href="https://testflight.apple.com/join/ZSdJGKPy">iOS</a> ·
+  <a href="#ade-beta">Beta</a> ·
   <a href="https://app.ade-app.dev">Web</a> ·
   <a href="https://ade-app.dev/docs">Docs</a> ·
   <a href="https://ade-app.dev/docs/changelog">Changelog</a>
@@ -111,6 +112,18 @@ More: [AI providers](https://ade-app.dev/docs/configuration/ai-providers).
 | Brain only | Linux (x64, arm64), plus everything above |
 
 There's no Linux desktop app yet, but a Linux machine can run the Brain and you can use it from any client. A few Mac features aren't on Windows yet ([details](https://ade-app.dev/docs/getting-started/windows)).
+
+## ADE Beta
+
+Want the newest work first? ADE Beta is built automatically from `main`, so fixes and features reach you hours after they merge. Every stable release is a beta that already ran on real machines without new errors. Beta builds are less tested, so expect the odd rough edge.
+
+| | |
+| --- | --- |
+| Desktop | **Settings › General › Update track › Beta**. Same install and data, orange icon. Switch back to Stable any time. |
+| iPhone | Join [ADE Beta on TestFlight](https://testflight.apple.com/join/SsxDjqbF). A separate app with an orange icon, installed beside the normal one. |
+| Web | No separate beta: [app.ade-app.dev](https://app.ade-app.dev) updates minutes after a change merges. |
+
+More: [ADE Beta docs](https://ade-app.dev/docs/getting-started/ade-beta).
 
 ## Handy commands
 

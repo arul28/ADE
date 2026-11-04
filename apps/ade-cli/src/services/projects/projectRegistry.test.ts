@@ -270,7 +270,10 @@ describe("ProjectRegistry", () => {
     { refused: "a folder inside it", target: ["work", "repo", "packages", "web"], damageInstalledRegistry: false, error: /already uses/ },
     { refused: "any project while the installed registry is unreadable", target: ["work", "another-clone"], damageInstalledRegistry: true, error: /cannot check which projects/ },
   ])("a dev test machine refuses $refused and keeps it out of its registry", ({ target, damageInstalledRegistry, error }) => {
-    const homeDir = fs.realpathSync(makeTempRoot("ade-dev-test-machine-home-"));
+    // `.native`: on Windows the temp folder can come back in 8.3 form
+    // (RUNNER~1) from `realpathSync` but long from the registry's own
+    // normalization; the native resolver gives the one the registry stores.
+    const homeDir = fs.realpathSync.native(makeTempRoot("ade-dev-test-machine-home-"));
     vi.spyOn(os, "homedir").mockReturnValue(homeDir);
     const installedProject = path.join(homeDir, "work", "repo");
     const clone = path.join(homeDir, "work", "repo-dev-clone");

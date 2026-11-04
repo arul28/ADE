@@ -1,0 +1,55 @@
+---
+title: "ADE Beta"
+description: "Get new ADE builds every few hours on the desktop and iPhone, before they reach a stable release."
+icon: "flask"
+---
+
+ADE Beta is the early track. It is built automatically from ADE's `main` branch, so fixes and features reach you hours after they merge instead of waiting for the next stable release. Every stable release is a beta that has already run on real machines without new errors.
+
+Beta builds are less tested than stable ones. Use Beta if you want the newest work and don't mind the occasional rough edge, and tell us what breaks.
+
+<CardGroup cols={2}>
+  <Card title="Desktop Beta" icon="desktop" href="#desktop">
+    Switch any Mac or Windows machine to the Beta track in Settings.
+  </Card>
+  <Card title="ADE Beta for iPhone" icon="mobile-screen" href="https://testflight.apple.com/join/SsxDjqbF">
+    Join the public TestFlight beta. It installs beside the normal app.
+  </Card>
+</CardGroup>
+
+## Desktop
+
+The desktop app, the brain and the `ade` CLI all follow the track of their machine.
+
+1. Open **Settings › General**.
+2. Under **Update track**, choose **Beta**.
+3. Restart when ADE offers the new build.
+
+A beta build is the same ADE install with the same data, projects and `ade` CLI. It shows an orange icon and a **Beta** label next to the logo, and its version looks like `1.2.129-beta.3`. A new beta comes out when something that ships has changed, at most every few hours.
+
+Each machine has its own track. You can keep your main Mac on Stable and run Beta on a second machine; they work together either way. A phone shows a **Beta** chip on a machine that runs the Beta track.
+
+To leave, choose **Stable** under **Update track**. ADE installs the newest stable build, even though it is older than the beta you are on. If a beta ever fails to start, the **ADE could not start** window offers **Go back** to the previous version.
+
+## iPhone
+
+Beta iPhone builds go to a separate app, **ADE Beta**, with an orange icon. Join it from your iPhone:
+
+<Card title="Join ADE Beta on TestFlight" icon="apple" href="https://testflight.apple.com/join/SsxDjqbF" horizontal>
+  testflight.apple.com/join/SsxDjqbF
+</Card>
+
+- It installs beside the normal ADE app with its own data and pairings, so a bad beta never replaces the app you rely on.
+- Either app connects to machines on either track. Sign in with the same account and your machines appear.
+- A new ADE Beta build comes with each desktop beta that changed the iPhone app. Apple reviews each public beta build first, which usually takes minutes but can take longer.
+- Web links and the pairing QR code from the Camera app open the normal app. To pair ADE Beta, use the scanner inside ADE Beta.
+
+The normal app stays on its own TestFlight link, [testflight.apple.com/join/ZSdJGKPy](https://testflight.apple.com/join/ZSdJGKPy), and updates with stable releases.
+
+## Web
+
+The web client at [app.ade-app.dev](https://app.ade-app.dev) has no separate beta. It updates minutes after a change merges, so it is always the newest version.
+
+## Report a problem
+
+Found a bug in a beta? Open an issue on [GitHub](https://github.com/arul28/ADE/issues) with the version from **Settings › General** (or the build number from TestFlight). Beta crashes are also reported automatically, which is how a beta earns its way to stable.

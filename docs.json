@@ -46,6 +46,7 @@
             "icon": "flag-checkered",
             "pages": [
               "getting-started/install",
+              "getting-started/ade-beta",
               "getting-started/connect-machine",
               "getting-started/connect-provider",
               "getting-started/open-project",
