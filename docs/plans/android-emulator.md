@@ -485,3 +485,50 @@ on 2026-11-03 (`51c6eabf6`). This lane is updated to that commit, and §4 and
   video on plain-HTTP remote origins.
 - Sizes (zip): platform-tools 8–16 MB; emulator 354–489 MB; arm64 Google Play
   API 35 image 1.79 GB; arm64 default API 35 image 0.77 GB.
+- P0 build checks, 2026-11-03/04 (same Windows machine; branch tip at the
+  time):
+  - Stream (scrcpy v5.0.1, software encoder in the guest, 4 vCPU), swipe fps
+    avg / max: 800 px 58 / 61; 1024 px 39 / 52.5; 1280 px 23–38 / 47–48;
+    1600 px 26 / 29.5. Start to first keyframe 0.7–1.5 s; idle 0–6 fps.
+    Pixel count sets the rate; bit rate matters less. P0 default:
+    1024 px / 4 Mbps / 60 fps for every view (`ANDROID_STREAM_DEFAULTS`).
+  - Rotate: `cmd window user-rotation lock` (absolute, 0.43–0.55 s to the
+    new stream size); `settings put system user_rotation` for Android 10
+    and older; `adb emu rotate` rejected (relative, 2.3 s). The service waits
+    until a capture has the new shape (224–582 ms). The launcher stays
+    portrait.
+  - Real brain from this branch (Phase C, own `ADE_HOME`, `--no-sync`,
+    `--role cto`, throwaway project, private `ANDROID_AVD_HOME`): build 82 s;
+    `ade android` `device-create` 56.4 s (first boot), warm `start` 23.5 s,
+    `tap`/`type`/`button`/`swipe`/`rotate` 1.0–1.7 s each, `screenshot`
+    2.0 s, `stop` 2.0 s, `device-detach` 0.9 s; unknown flag refused; lane
+    scoping and the viewer-only actions refused for agents.
+  - Stream through the brain: cold start 1.0 s (460×1024), first picture
+    8 ms after the GET, 47.7 fps while swiping (~3.6 Mbit/s), 1.5 fps idle,
+    stop 76 ms.
+  - CPU (% of one core, 32 threads): qemu idle ~13%; swipes ~610% without a
+    stream, ~880% with one (the encoder adds ~270%); brain ≤ 4% while
+    streaming.
+  - Hand-off with a real brain process (terminal ended, hard kill, clean
+    `shutdown`): the emulator survived each time; the next brain re-adopted
+    it in 2.2–2.4 s (same qemu PID). The installed Windows brain runs in a
+    job object without kill-on-close (flags 0x0), so emulators survive a
+    brain restart, an update or an ended task; only a tree kill or a logoff
+    ends them.
+  - Work copy, remote side (a local caller with the paired identity
+    `remote:<machine>:<chat>`, `remoteWork` args): no copy before a
+    lane-bound call; first `start` 22.8 s (copy made, a free ADE AVD
+    borrowed as attached, booted); every answer carries `workCopy.laneId`;
+    paths outside the copy refused; the screenshot bytes travel back
+    (1.38 MB in 11 ms); releasing the copy stops the emulator and keeps the
+    AVD.
+  - Not yet run across two real machines. Steps for that run: (1) put this
+    branch on both machines as the machine brain; (2) pair them; (3) open
+    the same repository on both, push the commit; (4) optional: make a kept
+    ADE AVD on Windows to see a borrow; (5) from a Mac chat with no `--lane`:
+    `ade android status|start|tap|rotate|screenshot|stop --machine windows`
+    (the screenshot must reach the chat's proof); (6) check `workCopy.laneId`
+    and that the chat records `usesAndroidEmulator`; (7) open the chat's
+    Android tool and confirm "Android · windows" streams; (8)
+    `ade shell clean --machine windows` stops the emulator and keeps the
+    AVD; (9) check a packaged Windows brain finds the scrcpy jar.
