@@ -1,27 +1,10 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 240" width="480" height="240">
-  <defs>
-    <linearGradient id="top" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#FFB38A"/>
-      <stop offset="1" stop-color="#F25F29"/>
-    </linearGradient>
-    <linearGradient id="left" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#C2410C"/>
-      <stop offset="1" stop-color="#7C2D12"/>
-    </linearGradient>
-    <linearGradient id="right" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#EA580C"/>
-      <stop offset="1" stop-color="#9A3412"/>
-    </linearGradient>
-    <g id="cube">
-      <path d="M0 -34 L58 0 L0 34 L-58 0 Z" fill="url(#top)"/>
-      <path d="M-58 0 L0 34 L0 100 L-58 66 Z" fill="url(#left)"/>
-      <path d="M58 0 L0 34 L0 100 L58 66 Z" fill="url(#right)"/>
-      <path d="M-40 26 L-14 41 M-40 40 L-14 55" stroke="#FFD7C2" stroke-opacity="0.5" stroke-width="3" stroke-linecap="round"/>
-      <circle cx="22" cy="50" r="4" fill="#4ADE80"/>
-    </g>
-  </defs>
-  <use href="#cube" transform="translate(300 70) scale(0.8)" opacity="0.55"/>
-  <use href="#cube" transform="translate(410 96) scale(0.7)" opacity="0.4"/>
-  <use href="#cube" transform="translate(356 120)"/>
-  <use href="#cube" transform="translate(250 150) scale(0.75)" opacity="0.75"/>
+  <!-- Agent 37's own mark (agent37.com/logo.svg), large and faint, as the banner art. -->
+  <g transform="translate(250 -26) scale(0.58)" fill="none" stroke="#FFFFFF" stroke-width="10" stroke-linejoin="round" opacity="0.22">
+    <path d="M226.31 69.18 L280.18 69.18 L442.82 231.82 L442.82 278.38 L284.11 437.1 L230.73 437.1 L68.93 275.3 L68.93 226.56 Z"/>
+    <path d="M281.22 70.22 L126.17 225.26 L256.67 355.76"/>
+    <path d="M73.6 221.89 L232.07 380.36 L354.43 258"/>
+    <path d="M230.19 436.56 L381.59 285.16 L249.23 152.8"/>
+    <path d="M438.45 282.76 L278.86 123.17 L151.47 250.56"/>
+  </g>
 </svg>

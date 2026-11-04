@@ -5,7 +5,6 @@ import {
   CaretLeft,
   CaretRight,
   CircleNotch,
-  Cube,
   Desktop,
   Key,
   Laptop,
@@ -75,6 +74,7 @@ import {
   helperTextStyle,
   panelStyle,
 } from "./remoteTargetListStyles";
+import { Agent37Mark, AGENT37_NAME } from "./agent37Brand";
 
 type RemoteTargetListProps = {
   onConnected?: (result: RemoteRuntimeConnectResult) => void;
@@ -1391,8 +1391,8 @@ export function RemoteTargetList({
     ...(agent37Status?.connected && !agent37Status.error
       ? [{
           key: "agent37" as const,
-          icon: <Cube size={18} weight="bold" />,
-          label: "New Agent37 machine",
+          icon: <Agent37Mark size={18} strokeWidth={24} />,
+          label: `New ${AGENT37_NAME} machine`,
           detail: "A cloud Linux box or VM, signed in to your account for you",
         }]
       : []),

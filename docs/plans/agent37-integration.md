@@ -224,7 +224,23 @@ does nothing, so a renamed laptop is never mistaken for a copy.
 - **A4 — fork and move.** Warm box per lane; box ↔ VM move.
 - **A5 — agent primitives.** `ade` verbs, runtime actions, skill, approval
   cards for cost-changing actions.
-- **A6 — Android on VM lanes** with the Android emulator lane.
+- **A6 — Android on VM lanes** with the Android emulator lane (PR #2045). Its
+  needs from a VM, as that lane stated them (2026-11-04):
+  1. `/dev/kvm` usable by the brain's user (group `kvm`); without it ADE
+     refuses the start with `ANDROID_NO_ACCELERATION`. A default box cannot
+     run Android.
+  2. An Android SDK with platform-tools, emulator and one x86_64 system image
+     (google_apis or default, API 34–36). ADE looks in `$ANDROID_HOME`,
+     `$ANDROID_SDK_ROOT`, `~/Android/Sdk`, and (from #2045) `/opt/android-sdk`
+     and `/usr/lib/android-sdk`. Elsewhere: set `ANDROID_HOME` in
+     `ade-entrypoint.sh` (the brain's own env), not only `.bashrc`.
+  3. No display: ADE starts the emulator `-no-window -no-audio -gpu auto`.
+  4. Live view needs the scrcpy server jar, which #2045 adds to the standalone
+     brain archive. Until that release ships, a VM brain can create, start,
+     screenshot and tap but not stream.
+  5. 4 vCPU / 8 GB runs one emulator; 4/16 if Gradle builds run there too.
+  When this lane merges, that lane tests `ade android … --machine <vm>` end to
+  end on one Agent37 VM and deletes the VM afterwards.
 
 ## 7. Founder asks
 
