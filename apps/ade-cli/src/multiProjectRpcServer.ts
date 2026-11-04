@@ -2606,7 +2606,12 @@ export function createMultiProjectRpcRequestHandler(
         return { domain: "account", action, result, statusHints: {} };
       }
       const accountActionArgs = isRecord(params.args) ? params.args : {};
-      if (action === "signOut" && accountAuthService.getStatus().signedIn) {
+      // People only, as `account.deleteMachine` is: the removal revokes this
+      // machine and purges its Activity, which an agent may not do. An agent's
+      // sign-out still signs out, as it always did, and leaves the row (signing
+      // in again re-pairs it).
+      const signOutRemovesMachine = action === "signOut" && !callerIdentityIsAgent(callerIdentity());
+      if (signOutRemovesMachine && accountAuthService.getStatus().signedIn) {
         // Signing this computer out unlinks it from the account, so it leaves
         // the account's machine list too. Clearing the session alone left the
         // row in the directory, listed on every other device as an offline
@@ -2629,9 +2634,10 @@ export function createMultiProjectRpcRequestHandler(
             }).deleteMachine(ownMachineKey, { timeoutMs: 5_000 });
           }
         } catch (error) {
-          machineProjectLogger.warn("account.sign_out_unlist_failed", {
-            error: error instanceof Error ? error.message : String(error),
-          });
+          const reason = error instanceof Error ? error.message : String(error);
+          machineProjectLogger.warn("account.sign_out_unlist_failed", { error: reason });
+          // `machineProjectLogger` writes nowhere; the brain's log must say it.
+          console.warn("[account] signing out could not remove this machine from the account's list", reason);
         }
       }
       const signIn = accountSignInAnalyticsForCaller();
