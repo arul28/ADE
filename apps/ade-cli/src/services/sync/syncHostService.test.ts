@@ -1124,6 +1124,7 @@ describe("brain project actions fallback handler", () => {
       transportOrigin: "direct",
     }));
     let client: WebSocket | null = null;
+    let fresh: WebSocket | null = null;
     try {
       await new Promise<void>((resolve, reject) => {
         server.once("listening", resolve);
@@ -1174,15 +1175,26 @@ describe("brain project actions fallback handler", () => {
       )).toBe(true);
 
       // A malformed one gets a readable refusal, never the generic invalid_hello.
-      client.send(encodeSyncEnvelope({
+      // On a fresh connection: this one already holds a challenge, and would
+      // refuse a second before ever reading it.
+      fresh = new WebSocket(`ws://127.0.0.1:${(server.address() as AddressInfo).port}`);
+      const freshEnvelopes = trackClientEnvelopes(fresh).envelopes;
+      await new Promise<void>((resolve, reject) => {
+        fresh!.once("open", resolve);
+        fresh!.once("error", reject);
+      });
+      fresh.send(encodeSyncEnvelope({
         type: "account_challenge",
         requestId: "bad-challenge",
         payload: { v: 1, nonce: "bm9uY2U=", clientEphemeralPublicKey: "a2V5" },
       }));
-      const refusal = await waitForEnvelope(envelopes, "account_challenge_error", "bad-challenge");
-      expect((refusal.payload as { message?: string }).message?.trim()).toBeTruthy();
-      expect(envelopes.some((entry) => entry.type === "hello_error")).toBe(false);
+      const refusal = await waitForEnvelope(freshEnvelopes, "account_challenge_error", "bad-challenge");
+      const message = (refusal.payload as { message?: string }).message?.trim() ?? "";
+      expect(message).toBeTruthy();
+      expect(message).not.toMatch(/already active/i);
+      expect(freshEnvelopes.some((entry) => entry.type === "hello_error")).toBe(false);
     } finally {
+      fresh?.close();
       client?.close();
       await new Promise<void>((resolve) => server.close(() => resolve()));
       cleanup();
