@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { AdeStartedEmulators } from "./androidEmulatorProcess";
+import { AdeStartedEmulators, androidDiscoveryDirs, readAndroidDiscoveryFiles } from "./androidEmulatorProcess";
 
 // ADE's console ports are the emulator's defaults, so a user's own emulator can
 // come up on the very AVD name and port an old ADE start used. Claiming it
@@ -71,5 +71,38 @@ describe("AdeStartedEmulators", () => {
     const later = new AdeStartedEmulators(statePath);
     expect(later.owns({ avdName: AVD, consolePort: PORT, pid: 4_100_002 })).toBe(false);
     expect(later.owns({ avdName: AVD, consolePort: PORT, pid: 4_100_001 })).toBe(true);
+  });
+});
+
+describe("Linux emulator discovery", () => {
+  let home: string;
+
+  beforeEach(() => {
+    home = fs.mkdtempSync(path.join(os.tmpdir(), "ade-android-discovery-"));
+  });
+
+  afterEach(() => {
+    fs.rmSync(home, { recursive: true, force: true });
+  });
+
+  // Emulator 37 writes its discovery file to XDG_RUNTIME_DIR in a login
+  // session, and to the Android user home in a service (an Agent37 VM brain).
+  // A file ADE does not read makes a booted lane emulator read as off.
+  it.each([
+    ["a login session", (root: string) => path.join(root, "xdg"), (root: string) => ({ XDG_RUNTIME_DIR: path.join(root, "xdg") })],
+    ["a service with no XDG_RUNTIME_DIR", (root: string) => path.join(root, "user", ".android"), (root: string) => ({ ANDROID_USER_HOME: path.join(root, "user", ".android") })],
+  ])("finds an emulator started from %s", (_label, base, env) => {
+    const running = path.join(base(home), "avd", "running");
+    fs.mkdirSync(running, { recursive: true });
+    fs.writeFileSync(path.join(running, `pid_${LIVE}.ini`), "port.serial=5560\nport.adb=5561\navd.id=ade_lane_pixel\n");
+
+    // The real /tmp/android-<user> folder is read too; match only this file.
+    const found = readAndroidDiscoveryFiles(androidDiscoveryDirs("linux", env(home), home))
+      .filter((emulator) => emulator.pid === LIVE);
+
+    expect(found).toHaveLength(1);
+    expect(found[0]?.avdName).toBe(AVD);
+    expect(found[0]?.serial).toBe("emulator-5560");
+    expect(found[0]?.pid).toBe(LIVE);
   });
 });

@@ -593,8 +593,9 @@ describe("RemoteConnectionService", () => {
     });
   });
 
-  it("broadcasts connection changes, not every successful call or an unchanged project list", async () => {
+  it("broadcasts connection changes, not every successful call, port forward or an unchanged project list", async () => {
     const remote = target("quiet-status", null);
+    let open = false;
     const project = {
       projectId: "p1",
       rootPath: "/srv/repo",
@@ -609,15 +610,29 @@ describe("RemoteConnectionService", () => {
       update: vi.fn((_id: string, patch: Partial<RemoteRuntimeTarget>) => ({ ...remote, ...patch })),
     } as unknown as RemoteTargetRegistry;
     const pool = {
-      connect: vi.fn(async () => connectResult(remote)),
+      connect: vi.fn(async () => {
+        open = true;
+        return connectResult(remote);
+      }),
       callActionForTarget: vi.fn(async () => ({ ok: true })),
       // A fresh decode each read, as a real round trip returns.
       projectsForTarget: vi.fn(async () => [{ ...project }]),
+      ensureLocalPortForward: vi.fn(async (targetId: string, request: { remotePort: number }) => ({
+        targetId,
+        remoteHost: "127.0.0.1",
+        remotePort: request.remotePort,
+        localHost: "127.0.0.1",
+        localPort: 50_000 + request.remotePort,
+        localUrl: `http://127.0.0.1:${50_000 + request.remotePort}`,
+        label: null,
+        createdAt: 1,
+      })),
       disconnect: vi.fn(),
       onHostStorageWait: vi.fn(() => () => {}),
       onEntryConnected: vi.fn(() => () => {}),
       onEntryEvicted: vi.fn(() => () => {}),
       ...poolConnectStateStubs(),
+      hasEntry: () => open,
     } as unknown as RemoteConnectionPool;
     const service = new RemoteConnectionService(registry, pool);
     await service.connect(remote.id, { explicit: true });
@@ -630,6 +645,12 @@ describe("RemoteConnectionService", () => {
     await service.callAction(remote.id, "p1", { domain: "lane", action: "list", args: {} });
     await service.callAction(remote.id, "p1", { domain: "lane", action: "list", args: {} });
     await service.projects(remote.id);
+    // A live view asks for its forward on each start. A "connecting" flash
+    // there made views keyed on the machine's state remount and start again.
+    const forward = await service.ensurePortForward(remote.id, { remotePort: 7000 });
+    await service.ensurePortForward(remote.id, { remotePort: 7000 });
+    expect(forward.localPort).toBe(57_000);
+    expect(pool.connect).toHaveBeenCalledTimes(1);
     expect(snapshots).toHaveLength(0);
 
     (pool.callActionForTarget as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
