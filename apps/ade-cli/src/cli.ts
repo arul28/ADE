@@ -3502,7 +3502,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     ANDROID_BOOT_TIMEOUT / ANDROID_EMULATOR_EXITED   read the log the error names
     ANDROID_NOT_RUNNING              ade android start first
   The live view (stream and live touch) and deleting an AVD no lane holds are
-  the user's, in the Android panel; an agent uses tap, swipe, key and text.
+  the user's, in the Android panel; an agent uses tap, swipe, button and type.
 `,
   "app-control": `${ADE_BANNER}
   App Control
