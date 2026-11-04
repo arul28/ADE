@@ -39,6 +39,9 @@ export const REMOTE_MCP_HELP = `
     $ ade mcp remove <connection-id>         Disconnect an app or revoke a token
     $ ade mcp activity [--limit 50] --text   What connected apps ran on this computer, newest first
 
+  The MCP servers your agents get (Settings › MCP servers) are a different
+  list: 'ade mcp servers --help'.
+
   Two ways to connect an app:
     Sign in   Add the server URL from 'ade mcp status' as a custom connector.
               The app opens ADE sign-in: sign in to your ADE account, pick

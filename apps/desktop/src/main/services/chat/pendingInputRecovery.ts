@@ -1,5 +1,6 @@
 import type { AgentChatEventEnvelope, PendingInputRequest } from "../../../shared/types/chat";
 import { readPendingInputRequest } from "../../../shared/pendingInputRequest";
+import { readMcpServerRequestCard } from "../../../shared/mcpServerRequest";
 
 export type PendingInputRecord = {
   request: PendingInputRequest | null;
@@ -68,5 +69,8 @@ export function readPendingInputRecord(
  */
 export function isQuestionShapedPendingInput(request: PendingInputRequest | null): boolean {
   if (request?.kind !== "question" && request?.kind !== "structured_question") return false;
+  // The MCP server card's answer is an approval only its asker's host acts on;
+  // as a message it would read as "added" for a server nobody added.
+  if (readMcpServerRequestCard(request)) return false;
   return !(request.questions ?? []).some((question) => question.isSecret === true);
 }

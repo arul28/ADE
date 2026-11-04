@@ -367,6 +367,9 @@ import {
 import { parseLinearGraphQLInput } from "../../desktop/src/main/services/cto/linearGraphQLInput";
 import { longRunningLocalRuntimeActionTimeoutMs } from "../../desktop/src/main/services/localRuntime/localRuntimeTimeoutPolicy";
 import { PROJECT_SECRET_REQUEST_DEFAULT_TIMEOUT_MS } from "../../desktop/src/main/services/secrets/projectSecretRequest";
+import { INTEGRATION_CONNECT_DEFAULT_TIMEOUT_MS } from "../../desktop/src/main/services/integrations/integrationConnectRequest";
+import { MCP_SERVER_REQUEST_DEFAULT_TIMEOUT_MS } from "../../desktop/src/main/services/mcp/mcpServerRequest";
+import { CONNECT_PROVIDER_IDS, connectProviderSpec, isConnectProviderId } from "../../desktop/src/shared/integrationConnect";
 import { browseProjectDirectories } from "../../desktop/src/main/services/projects/projectBrowserService";
 import { createProjectScaffoldService } from "../../desktop/src/main/services/projects/projectScaffoldService";
 import { resolveRepoRoot } from "../../desktop/src/main/services/projects/projectService";
@@ -831,6 +834,8 @@ export type FormatterId =
   | "terminal-list"
   | "terminal-read"
   | "project-secrets"
+  | "integrations"
+  | "mcp-servers"
   | "history-list"
   | "history-commits"
   | "history-show"
@@ -1418,6 +1423,8 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade proxy status | start | stop | login | logout
                                                     Manage local subscription sign-ins
     $ ade secrets list | get | set | request | delete  Manage encrypted ADE project secrets (account or device)
+    $ ade integrations status | connect <provider>    See and connect GitHub, Linear, and Jira
+    $ ade mcp servers | servers add <name>          Read the MCP servers your agents get; ask to add one
     $ ade settings find <words>                     Where an ADE setting or page is, as a link the chat shows as a chip
     $ ade update status | check | install | dismiss Read auto-update state and drive install
     $ ade tools status | ensure | gc                Inspect and populate the pinned agent-CLI cache
@@ -4190,6 +4197,56 @@ export const HELP_BY_COMMAND: Record<string, string> = {
       archived or deleted, or after --ttl (24h, the maximum). Re-running with
       the same --request-id returns the same file without asking again.
 `,
+  integrations: `${ADE_BANNER}
+  ADE integrations
+
+  GitHub, Linear, and Jira. Status never shows a key or token.
+
+    $ ade integrations status --text                 Which are connected here, and as whom
+
+  Asking the person to connect one (agents: use this, never ask them to paste
+  a key into chat). The chat shows a connect card with the provider's own
+  ways to connect: a browser sign-in where there is one, otherwise a key. ADE
+  checks the key with the provider and saves it into the integration on the
+  machine that runs this chat. Only the outcome comes back:
+
+    $ ade integrations connect linear --reason "To read and update the issues you mentioned"
+      --timeout 30m (default, 2h at most). Returns at once if it is already connected.
+      Prints {provider, connected: true, method, account} | {provider, connected: false, declined: true}
+
+  When to ask: if the person named the integration ("use Linear"), raise the
+  card at once. If it was your own idea, ask in words first and raise the
+  card only after they say yes.
+`,
+  "mcp servers": `${ADE_BANNER}
+  ADE MCP servers (Settings › MCP servers)
+
+  The MCP servers every agent ADE launches gets, defined once for the
+  person's account. Values (tokens, keys) live in the account vault and are
+  never shown: the list says only whether each one is set.
+
+    $ ade mcp servers --text                         Every server in ADE, where it is on, what is set;
+                                                     and servers other tools' configs here have that ADE does not
+
+  Asking the person to add one (agents: use this, never ask them to paste a
+  key into chat). The chat shows an MCP server card with exactly what runs;
+  the person approves it, in every permission mode, and types any values.
+  ADE saves the server to their account, on all their machines:
+
+    $ ade mcp servers add github --import --reason "To read your PRs"
+      A server another tool here already has (see the list); its values are copied.
+    $ ade mcp servers add github --reason "To read your PRs" --env GITHUB_PERSONAL_ACCESS_TOKEN -- npx -y @modelcontextprotocol/server-github
+      A local server: the command line after --. --env NAME for each value it reads.
+    $ ade mcp servers add linear --reason "To read your issues" --url https://mcp.linear.app/mcp [--sse] [--header Authorization]
+      A remote server.
+      --timeout 30m (default, 2h at most). Returns at once if ADE already has that name, URL, or command line.
+      Prints {name, added: true, missing, next} | {name, already: true, existing, next} | {name, declined: true}
+
+  When to ask: if the person named the server ("add the GitHub MCP"), raise
+  the card at once. If it was your own idea, ask in words first and raise the
+  card only after they say yes. Once added, your own chat gets the tools only
+  after the person presses Refresh chat; ask them to.
+`,
   linear: `${ADE_BANNER}
   Linear workflows
 
@@ -5971,7 +6028,10 @@ const CHAT_VALUE_FLAGS: ReadonlySet<string> = new Set([
 const LANES_VALUE_FLAGS: ReadonlySet<string> = new Set([
   "--name", "--description", "--desc", "--branch-name", "--linear-issue-json", "--reason",
 ]);
+const INTEGRATIONS_VALUE_FLAGS: ReadonlySet<string> = new Set(["--provider", "--reason", "--session", "--timeout"]);
 const TRAILING_ROOT_FLAG_COMMANDS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
+  ["integrations", INTEGRATIONS_VALUE_FLAGS],
+  ["integration", INTEGRATIONS_VALUE_FLAGS],
   ["lanes", LANES_VALUE_FLAGS],
   ["lane", LANES_VALUE_FLAGS],
   ["secrets", SECRETS_VALUE_FLAGS],
@@ -19667,6 +19727,119 @@ function formatProjectHealthFix(value: unknown): string {
   ].join("\n");
 }
 
+function buildIntegrationsPlan(args: string[]): CliPlan {
+  if (hasHelpFlag(args)) {
+    return { kind: "help", text: HELP_BY_COMMAND.integrations ?? topLevelHelpText() };
+  }
+  const sub = firstPositional(args) ?? "status";
+  if (sub === "status" || sub === "list" || sub === "ls") {
+    return {
+      kind: "execute",
+      label: "integrations status",
+      formatter: "integrations",
+      steps: [actionStep("result", "integration_connect", "status", {})],
+    };
+  }
+  if (sub === "connect" || sub === "request" || sub === "add") {
+    // Read every value flag before the positional helper, as `secrets request` does.
+    const providerFlag = readValue(args, ["--provider"]);
+    const reason = readValue(args, ["--reason", "--why", "--message"]);
+    const timeoutValue = readValue(args, ["--timeout"]);
+    const sessionId = readValue(args, ["--session", "--session-id"]);
+    const provider = (providerFlag ?? firstPositional(args) ?? "").trim().toLowerCase();
+    if (!isConnectProviderId(provider)) {
+      throw new CliUsageError(`Name the integration to connect: ${CONNECT_PROVIDER_IDS.join(", ")}.`);
+    }
+    if (!reason?.trim()) {
+      throw new CliUsageError("integrations connect needs --reason \"…\": one line telling the person why you need it.");
+    }
+    const timeoutMs = timeoutValue ? parseSnoozeDurationMs(timeoutValue) : INTEGRATION_CONNECT_DEFAULT_TIMEOUT_MS;
+    return {
+      kind: "execute",
+      label: "integrations connect",
+      formatter: "integrations",
+      steps: [actionStep("result", "integration_connect", "request", {
+        provider,
+        reason: reason.trim(),
+        timeoutMs,
+        ...(sessionId ? { chatSessionId: sessionId } : {}),
+      })],
+      // The wait for the person is the point of the command; the transport
+      // must outlive it.
+      minTimeoutMs: timeoutMs + 30_000,
+      progressNotice: `Asked the user to connect ${connectProviderSpec(provider).label} in the chat. Waiting for them to connect or decline…`,
+    };
+  }
+  throw new CliUsageError(`Unknown integrations command "${sub}". Use status or connect.`);
+}
+
+/** `ade mcp servers …`: the MCP registry. `args` are the words after `servers`. */
+function buildMcpServersPlan(args: string[]): CliPlan {
+  if (hasHelpFlag(args)) {
+    return { kind: "help", text: HELP_BY_COMMAND["mcp servers"] ?? topLevelHelpText() };
+  }
+  // The command line of a local server is everything after `--`, split off
+  // before any flag reader can take a token from it.
+  const fence = args.indexOf("--");
+  const commandLine = fence >= 0 ? args.splice(fence).slice(1) : [];
+  const sub = firstPositional(args) ?? "list";
+  if (sub === "list" || sub === "ls" || sub === "status") {
+    return {
+      kind: "execute",
+      label: "mcp servers",
+      formatter: "mcp-servers",
+      steps: [actionStep("result", "mcp_registry", "list", {})],
+    };
+  }
+  if (sub === "add" || sub === "request") {
+    const reason = readValue(args, ["--reason", "--why", "--message"]);
+    const timeoutValue = readValue(args, ["--timeout"]);
+    const sessionId = readValue(args, ["--session", "--session-id"]);
+    const commandFlag = readValue(args, ["--command"]);
+    const url = readValue(args, ["--url"]);
+    const transport = readValue(args, ["--transport"]);
+    const sse = readFlag(args, ["--sse"]);
+    const imported = readFlag(args, ["--import", "--imported"]);
+    const extraArgs = readRepeatedValues(args, ["--arg"]);
+    const envNames = readRepeatedValues(args, ["--env"]).flatMap((value) => value.split(",")).map((value) => value.trim()).filter(Boolean);
+    const headerNames = readRepeatedValues(args, ["--header"]).flatMap((value) => value.split(",")).map((value) => value.trim()).filter(Boolean);
+    const name = (readValue(args, ["--name"]) ?? firstPositional(args) ?? "").trim();
+    if (!name) throw new CliUsageError("Name the server: ade mcp servers add <name> --reason \"…\" …");
+    if (!reason?.trim()) {
+      throw new CliUsageError("mcp servers add needs --reason \"…\": one line telling the person why you want it.");
+    }
+    const [fencedCommand, ...fencedArgs] = commandLine;
+    const command = commandFlag?.trim() || fencedCommand || "";
+    const commandArgs = commandFlag?.trim() ? [...extraArgs, ...commandLine] : [...extraArgs, ...fencedArgs];
+    const describes = Boolean(command || url?.trim());
+    if (imported && describes) {
+      throw new CliUsageError("--import copies a server another tool has. Leave out --command, -- and --url with it.");
+    }
+    const timeoutMs = timeoutValue ? parseSnoozeDurationMs(timeoutValue) : MCP_SERVER_REQUEST_DEFAULT_TIMEOUT_MS;
+    return {
+      kind: "execute",
+      label: "mcp servers add",
+      formatter: "mcp-servers",
+      steps: [actionStep("result", "mcp_registry", "request", {
+        name,
+        reason: reason.trim(),
+        source: describes ? "agent" : "imported",
+        ...(command ? { command, args: commandArgs } : {}),
+        ...(url?.trim() ? { url: url.trim(), transport: sse ? "sse" : (transport?.trim() || "http") } : {}),
+        ...(envNames.length ? { envNames } : {}),
+        ...(headerNames.length ? { headerNames } : {}),
+        timeoutMs,
+        ...(sessionId ? { chatSessionId: sessionId } : {}),
+      })],
+      // The wait for the person is the point of the command; the transport
+      // must outlive it.
+      minTimeoutMs: timeoutMs + 30_000,
+      progressNotice: `Asked the user to add the MCP server ${name} in the chat. Waiting for them to add it or decline…`,
+    };
+  }
+  throw new CliUsageError(`Unknown 'ade mcp servers' command "${sub}". Use list or add.`);
+}
+
 function buildSecretsPlan(args: string[]): CliPlan {
   if (hasHelpFlag(args)) {
     return { kind: "help", text: HELP_BY_COMMAND.secrets ?? topLevelHelpText() };
@@ -22079,6 +22252,13 @@ function buildCliPlan(
     return buildSyncPlan(args);
   }
   if (primary === "mcp") {
+    // `ade mcp servers` is the MCP registry (Settings › MCP servers); every
+    // other `ade mcp` word is ADE MCP.
+    const word = args.find((arg) => !arg.startsWith("-"));
+    if (word === "servers" || word === "server") {
+      args.splice(args.indexOf(word), 1);
+      return buildMcpServersPlan(args);
+    }
     return buildRemoteMcpPlan(args);
   }
   if (primary === "notify") {
@@ -22328,6 +22508,8 @@ function buildCliPlan(
     return buildArchivePlan(args);
   if (primary === "secrets" || primary === "secret")
     return buildSecretsPlan(args);
+  if (primary === "integrations" || primary === "integration")
+    return buildIntegrationsPlan(args);
   if (primary === "proxy") return buildProxyPlan(args);
   if (primary === "harness" || primary === "harnesses") return buildHarnessPlan(args);
   if (primary === "providers" || primary === "provider")
@@ -34719,6 +34901,75 @@ function formatHarnessTest(value: unknown): string {
   return `Failed: ${typeof record.error === "string" ? record.error : "unknown error"}`;
 }
 
+function formatIntegrations(value: unknown): string {
+  if (Array.isArray(value)) {
+    const rows = value.filter(isRecord);
+    if (rows.length === 0) return "No integrations on this machine.";
+    return rows.map((row) => {
+      const label = typeof row.label === "string" ? row.label : cell(row.provider);
+      const account = typeof row.account === "string" && row.account ? ` as ${row.account}` : "";
+      const detail = typeof row.detail === "string" && row.detail ? ` (${row.detail})` : "";
+      return row.connected ? `${label}: connected${account}` : `${label}: not connected${detail}`;
+    }).join("\n") + "\n\nConnect one from a chat: ade integrations connect <provider> --reason \"…\"";
+  }
+  const record = isRecord(value) ? value : {};
+  const label = isConnectProviderId(record.provider) ? connectProviderSpec(record.provider).label : cell(record.provider);
+  if (record.connected === true) {
+    const account = typeof record.account === "string" && record.account ? ` as ${record.account}` : "";
+    const next = typeof record.next === "string" && record.next ? ` ${record.next}` : "";
+    return record.method === "already"
+      ? `${label} is already connected${account}.${next}`
+      : `Connected ${label}${account}. The key stays hidden from you.${next}`;
+  }
+  if (record.declined === true) return `The user declined to connect ${label}.`;
+  return JSON.stringify(value, null, 2);
+}
+
+function formatMcpServers(value: unknown): string {
+  const record = isRecord(value) ? value : {};
+  if (Array.isArray(record.servers) && Array.isArray(record.found)) {
+    const lines: string[] = [];
+    if (typeof record.notice === "string" && record.notice) lines.push(record.notice, "");
+    const servers = record.servers.filter(isRecord);
+    lines.push(servers.length ? "In ADE (every agent ADE launches gets these):" : "ADE's MCP registry is empty.");
+    for (const server of servers) {
+      const where = server.state === "on" ? "on"
+        : server.state === "off-account" ? "off everywhere"
+          : server.state === "off-machine" ? "off on this machine" : "off in this project";
+      lines.push(`  ${cell(server.name)}  ${cell(server.transport)}  ${where}`);
+      lines.push(`    runs: ${cell(server.runs)}`);
+      const secrets = Array.isArray(server.secrets) ? server.secrets.filter(isRecord) : [];
+      if (secrets.length) {
+        lines.push(`    ${secrets.map((secret) => `${cell(secret.name)} (${secret.field === "header" ? "header" : "env"}) ${secret.set ? "set" : "NOT SET"}`).join(", ")}`);
+      }
+    }
+    const found = record.found.filter(isRecord);
+    if (found.length) {
+      lines.push("", "Found in other tools' configs on this machine, not in ADE:");
+      for (const server of found) {
+        const runs = server.transport === "stdio"
+          ? [server.command, ...(Array.isArray(server.args) ? server.args : [])].map((part) => String(part ?? "")).join(" ")
+          : cell(server.url);
+        const providers = Array.isArray(server.providers) ? server.providers.join(", ") : "";
+        lines.push(`  ${cell(server.name)}  ${cell(server.transport)}  from ${providers}`);
+        lines.push(`    runs: ${runs}`);
+      }
+      lines.push("", "Ask to add one from a chat: ade mcp servers add <name> --import --reason \"…\"");
+    }
+    return lines.join("\n");
+  }
+  if (record.added === true) {
+    const missing = Array.isArray(record.missing) && record.missing.length
+      ? ` Not set yet (the person can add them in Settings › MCP servers): ${record.missing.join(", ")}.`
+      : "";
+    const next = typeof record.next === "string" && record.next ? record.next : `Added ${cell(record.name)}.`;
+    return `${next}${missing}`;
+  }
+  if (record.already === true) return typeof record.next === "string" ? record.next : `${cell(record.name)} is already in ADE.`;
+  if (record.declined === true) return `The user declined to add the MCP server ${cell(record.name)}.`;
+  return JSON.stringify(value, null, 2);
+}
+
 function formatProjectSecrets(value: unknown): string {
   const record = isRecord(value) ? value : {};
   if (isProjectSecretPullResult(value)) {
@@ -35653,6 +35904,10 @@ function formatTextOutput(
       return formatTerminalRead(value);
     case "project-secrets":
       return formatProjectSecrets(value);
+    case "integrations":
+      return formatIntegrations(value);
+    case "mcp-servers":
+      return formatMcpServers(value);
     case "harness-env":
       return formatHarnessEnv(value);
     case "harness-routes":

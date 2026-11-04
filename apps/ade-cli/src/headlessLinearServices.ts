@@ -147,6 +147,7 @@ import {
   type GithubCredentialCandidate,
 } from "../../desktop/src/main/services/github/githubCredentialHealth";
 import { githubAutolinksAccessError } from "../../desktop/src/shared/githubAutolinks";
+import { createGithubPatAccountSync } from "../../desktop/src/main/services/github/githubPatAccountSync";
 
 type HeadlessGitHubStatus = GitHubStatus;
 export type HeadlessGitHubService = GithubService;
@@ -864,6 +865,9 @@ export function createHeadlessGitHubService(
       "token" | "ghCliPath" | "ghAuthError"
     >) | null;
     fetchImpl?: typeof fetch;
+    /** For a pasted token to follow the owner's ADE account to their other machines. */
+    getAccountVault?: () => AccountVaultBridge | null | undefined;
+    getAccountUserId?: () => string | null;
   } = {},
 ): HeadlessGitHubService {
   configureGithubRequestAccounting(getBrainRequestAccountingLogger);
@@ -1947,6 +1951,23 @@ export function createHeadlessGitHubService(
       });
   };
 
+  const patAccountSync = createGithubPatAccountSync({
+    credentialStore,
+    getAccountVault: options.getAccountVault,
+    getAccountUserId: options.getAccountUserId,
+    logger,
+    // The vault changed the machine's token under this service: forget the
+    // in-process copy so the next read takes the store's.
+    onTokenChanged: () => {
+      const previousToken = tokenOverride;
+      tokenOverride = null;
+      if (previousToken) clearGithubCredentialHealth(previousToken);
+      credentialRevision += 1;
+      invalidateStatusCache();
+      emitStatusChanged();
+    },
+  });
+
   const performStatusLookup = async (
     forceRefresh: boolean,
     generation: number,
@@ -2402,9 +2423,12 @@ export function createHeadlessGitHubService(
       tokenOverride = clean || null;
       if (clean) {
         credentialStore.setSync(tokenKey, clean);
+        patAccountSync.markLocal();
       } else {
         credentialStore.deleteSync(tokenKey);
       }
+      // A token pasted here follows the account to its other machines.
+      patAccountSync.publish(clean || null);
       tokenDecryptionFailed = false;
       // A write that landed re-sealed the store with a key this process holds,
       // so whatever made the previous read unreadable no longer applies. Without
@@ -2421,6 +2445,7 @@ export function createHeadlessGitHubService(
       const previousToken = readStoredPatToken();
       tokenOverride = null;
       credentialStore.deleteSync(tokenKey);
+      patAccountSync.publish(null);
       tokenDecryptionFailed = false;
       // Same reasoning as `setToken`: the delete rewrote the store with a key
       // this process holds, so the previous unreadable verdict is stale.
@@ -2430,6 +2455,10 @@ export function createHeadlessGitHubService(
       invalidateStatusCache();
       emitStatusChanged();
     },
+    /** See the desktop service. */
+    hydratePatFromVault: () => patAccountSync.hydrate(),
+    purgeAccountPat: () => patAccountSync.purgeAccountCredentials(),
+    getPatCredentialStorage: () => patAccountSync.storage(),
     /** See the desktop service: a signed-URL cache keys on the effective token. */
     async getCredentialRevision(): Promise<string> {
       const revision = credentialRevision;
@@ -3177,6 +3206,8 @@ export function createHeadlessLinearServices(
       onStatusChanged: args.onGitHubStatusChanged,
       githubRelaySecretReader: (ref) => automationSecretService.getSecret(ref),
       getAccountAccessToken: args.getAccountAccessToken,
+      getAccountVault: args.getAccountVault,
+      getAccountUserId: args.getAccountUserId,
     },
   );
   const linearClient = createLinearClientImpl({

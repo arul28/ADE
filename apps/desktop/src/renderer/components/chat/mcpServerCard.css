@@ -1,0 +1,130 @@
+/*
+ * The MCP server card. It is the connect card's family (`ade-icc-*` in
+ * integrationConnectCard.css: body, fields, buttons, footer) with a header
+ * row in place of a maker's banner, and a Runs line that shows exactly what
+ * the person is approving.
+ */
+
+.ade-mcpc-head {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 12px 48px 10px 14px;
+  background:
+    radial-gradient(120% 140% at 0% 0%, color-mix(in srgb, var(--ig-accent) 22%, transparent), transparent 60%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.025), transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--color-fg) 6%, transparent);
+}
+.ade-mcpc-tile {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 11px;
+  color: color-mix(in srgb, var(--ig-accent) 55%, white 45%);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.12), rgba(255, 255, 255, 0) 60%),
+    color-mix(in srgb, var(--ig-accent) 32%, rgba(14, 15, 19, 0.9));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.16),
+    0 0 0 1px color-mix(in srgb, var(--ig-accent) 45%, transparent),
+    0 8px 18px -10px color-mix(in srgb, var(--ig-accent) 90%, transparent);
+}
+.ade-mcpc-id { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.ade-mcpc-title-row { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-width: 0; }
+.ade-mcpc-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 16px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  line-height: 1.15;
+  color: var(--color-fg);
+}
+.ade-mcpc-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 18px;
+  padding: 0 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+  color: color-mix(in srgb, var(--ig-accent) 45%, white 55%);
+  background: color-mix(in srgb, var(--ig-accent) 16%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ig-accent) 34%, transparent);
+  white-space: nowrap;
+}
+.ade-mcpc-chip-quiet {
+  font-weight: 550;
+  color: color-mix(in srgb, var(--color-fg) 58%, transparent);
+  background: color-mix(in srgb, var(--color-fg) 5%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-fg) 8%, transparent);
+}
+.ade-mcpc-close { background: color-mix(in srgb, var(--color-fg) 6%, transparent); color: color-mix(in srgb, var(--color-fg) 70%, transparent); }
+.ade-mcpc-close:hover { background: color-mix(in srgb, var(--color-fg) 12%, transparent); }
+
+/* What will run: one mono line the person reads before they approve. */
+.ade-mcpc-runs {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  padding: 8px 10px;
+  border-radius: 9px;
+  background: rgba(0, 0, 0, 0.3);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-fg) 8%, transparent);
+}
+.ade-mcpc-runs-label {
+  flex: none;
+  font-size: 10.5px;
+  font-weight: 650;
+  color: color-mix(in srgb, var(--ig-accent) 50%, white 50%);
+}
+.ade-mcpc-runs-line {
+  min-width: 0;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--color-fg);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  user-select: text;
+}
+
+.ade-mcpc-fields { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+.ade-mcpc-fields > .ade-icc-field:only-child { grid-column: 1 / -1; }
+.ade-mcpc-field-label { display: inline-flex; align-items: center; gap: 6px; }
+.ade-mcpc-field-name { font-family: var(--font-mono, ui-monospace, monospace); color: color-mix(in srgb, var(--color-fg) 75%, transparent); }
+.ade-mcpc-field-kind {
+  padding: 0 5px;
+  border-radius: 4px;
+  font-size: 9.5px;
+  font-weight: 600;
+  color: color-mix(in srgb, var(--color-fg) 45%, transparent);
+  background: color-mix(in srgb, var(--color-fg) 6%, transparent);
+}
+.ade-mcpc-copied { display: flex; align-items: flex-start; gap: 6px; line-height: 1.45; }
+.ade-mcpc-copied > svg { flex: none; margin-top: 2px; }
+
+.ade-mcpc-receipt-logo {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  color: #ede9fe;
+  background: color-mix(in srgb, #8b7cf6 55%, rgba(14, 15, 19, 0.9));
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+
+@container (max-width: 420px) {
+  .ade-mcpc-fields { grid-template-columns: minmax(0, 1fr); }
+}

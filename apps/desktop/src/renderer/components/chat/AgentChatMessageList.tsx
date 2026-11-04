@@ -247,6 +247,10 @@ import { readPendingInputRequest } from "../../../shared/pendingInputRequest";
 import { AnsweredQuestionReceipt, OpenQuestionReceipt } from "./QuestionReceipts";
 import { ProjectSecretRequestReceipt } from "./ProjectSecretCard";
 import { readProjectSecretRequestCard } from "../../../shared/projectSecretRequest";
+import { IntegrationConnectReceipt } from "./IntegrationConnectCard";
+import { readIntegrationConnectRequestCard } from "../../../shared/integrationConnect";
+import { McpServerRequestReceipt } from "./McpServerCard";
+import { readMcpServerRequestCard } from "../../../shared/mcpServerRequest";
 import { isQuestionKind } from "../../../shared/pendingInputAnswers";
 import { CodexPlanCard } from "./codex/CodexPlanCard";
 import { ChatTaskListCard } from "./ChatTaskListCard";
@@ -4358,6 +4362,30 @@ function renderEvent(
       return (
         <ProjectSecretRequestReceipt
           card={secretRequestCard}
+          resolution={isResolved ? (resolvedState ?? "cancelled") : null}
+          answers={options?.resolvedInputAnswers?.get(event.itemId)}
+        />
+      );
+    }
+
+    const connectRequestCard = pendingRequest ? readIntegrationConnectRequestCard(pendingRequest) : null;
+    if (connectRequestCard) {
+      // The connect card's record: the provider and the method only.
+      return (
+        <IntegrationConnectReceipt
+          card={connectRequestCard}
+          resolution={isResolved ? (resolvedState ?? "cancelled") : null}
+          answers={options?.resolvedInputAnswers?.get(event.itemId)}
+        />
+      );
+    }
+
+    const mcpServerRequestCard = pendingRequest ? readMcpServerRequestCard(pendingRequest) : null;
+    if (mcpServerRequestCard) {
+      // The MCP server card's record: the definition and the approval only.
+      return (
+        <McpServerRequestReceipt
+          card={mcpServerRequestCard}
           resolution={isResolved ? (resolvedState ?? "cancelled") : null}
           answers={options?.resolvedInputAnswers?.get(event.itemId)}
         />

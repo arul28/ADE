@@ -22,6 +22,8 @@
 
 import type { AgentActionTraceEntry, AgentFrame, ComputerUseActionEffect } from "./agentObservation";
 import { PROJECT_SECRET_REQUEST_METADATA_KEY } from "../projectSecretRequest";
+import { INTEGRATION_CONNECT_METADATA_KEY } from "../integrationConnect";
+import { MCP_SERVER_REQUEST_METADATA_KEY } from "../mcpServerRequest";
 import { MCP_APP_TOOL_CALL_METADATA_KEY } from "../mcpApp";
 
 // ---------------------------------------------------------------------------
@@ -1961,15 +1963,17 @@ export const MAC_DESKTOP_INPUT_LEASE_METADATA_KEY = "macDesktopInputLease" as co
 
 /**
  * True for a pending-input card only the user may answer: the shared-seat
- * consent, the real-input lease, the private secret card, and an MCP App's
- * tool call. The answer IS the permission (or the secret), so an agent caller
+ * consent, the real-input lease, the private secret card, the connect card,
+ * the MCP server card, and an MCP App's tool call. The answer IS the permission (or the secret), so an agent caller
  * (session-bound, unbound, or the CTO's tools) is refused.
  */
 export function isUserOnlyConsentCard(providerMetadata: Record<string, unknown> | null | undefined): boolean {
   return providerMetadata?.[WINDOWS_DESKTOP_SHARED_CONSENT_METADATA_KEY] === true
     || providerMetadata?.[MAC_DESKTOP_INPUT_LEASE_METADATA_KEY] === true
     || providerMetadata?.[MCP_APP_TOOL_CALL_METADATA_KEY] === true
-    || isNonNullRecord(providerMetadata?.[PROJECT_SECRET_REQUEST_METADATA_KEY]);
+    || isNonNullRecord(providerMetadata?.[PROJECT_SECRET_REQUEST_METADATA_KEY])
+    || isNonNullRecord(providerMetadata?.[INTEGRATION_CONNECT_METADATA_KEY])
+    || isNonNullRecord(providerMetadata?.[MCP_SERVER_REQUEST_METADATA_KEY]);
 }
 
 function isNonNullRecord(value: unknown): boolean {

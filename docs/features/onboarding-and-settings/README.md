@@ -1323,6 +1323,10 @@ Renderer — settings:
   private secret card, and the composer's "Add secret…" item opens the same
   form. Both save through `projectSecretService`; see
   [Private secret card](../chat/composer-and-ui.md#private-secret-card).
+- Chats can connect GitHub, Linear and Jira the same way: an agent's
+  `ade integrations connect <provider> --reason "…"` raises the connect card,
+  which saves through each integration's own service on the chat's machine;
+  see [Connect card](../chat/composer-and-ui.md#connect-card).
 - `apps/desktop/src/renderer/components/settings/SecretsImportEnvModal.tsx`
   — dotenv import review dialog. Displays extracted names and plaintext values,
   marks replacements, supports select all or individual selection, and saves

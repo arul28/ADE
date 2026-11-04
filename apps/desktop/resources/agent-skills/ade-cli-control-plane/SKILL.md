@@ -64,6 +64,34 @@ deleted after 24 hours or when the chat is archived. Otherwise use the secret by
 `gh secret set X --body "$(ade secrets get NAME --text)"`. If the user
 declines, carry on without it or explain what is blocked.
 
+## Connecting an integration
+
+GitHub, Linear and Jira are ADE integrations: ADE holds the credential, and
+you use them through `ade prs`, `ade github`, `ade linear` and `ade jira`.
+Check first, then ask with the connect card. Never ask for a key in chat.
+
+```
+ade integrations status --text
+ade integrations connect linear --reason "To read the issues you mentioned and move them to In Review"
+```
+
+The chat shows a connect card with the provider's banner, your reason, and
+its ways to connect: a browser sign-in where the provider has one (Linear,
+only for a chat on the computer in front of the person), otherwise the key
+fields. ADE checks the key with the provider, then saves it. Linear and Jira
+follow the project to the person's other machines, and a GitHub token follows
+their ADE account. The command blocks until the person connects or declines, and prints
+only the outcome: `{provider, connected: true, method, account, next}` or
+`{provider, connected: false, declined: true}`. It returns at once with
+`method: "already"` when the integration is connected.
+
+When to raise it:
+
+1. If the person named the integration ("use Linear", "check the Jira
+   ticket"), raise the card at once.
+2. If it was your own idea, ask in words first. Raise the card only after
+   they say yes.
+
 ## Webhook automations
 
 To run an agent whenever another service does something (GitHub, Stripe,

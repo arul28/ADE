@@ -37,6 +37,7 @@ import type {
   JiraUser,
 } from "../shared/types/jira";
 import type { McpRegistryServer } from "../shared/mcpRegistry";
+import type { McpRegistryChatStatus } from "../shared/mcpServerRequest";
 import type { GetPrChatWatchArgs, PrChatWatchSummary, SetPrChatWatchArgs } from "../shared/prWatch";
 import type {
   TerminalListWatchesArgs,
@@ -12884,6 +12885,18 @@ const adeBridge = {
       ipcRenderer.invoke(IPC.mcpRegistryCancelSignIn, args),
     signOut: (args: { server: string }): Promise<McpRegistryResult<null>> =>
       ipcRenderer.invoke(IPC.mcpRegistrySignOut, args),
+    /**
+     * Registry servers a chat's running agent did not start with, read on the
+     * chat's machine (`pin`, else the tab's runtime). Nothing without a runtime.
+     */
+    chatStatus: (args: { chatSessionId: string }, pin?: OpenProjectBinding | null): Promise<McpRegistryChatStatus> =>
+      callPinnedOrBoundRuntimeActionOr<McpRegistryChatStatus>(
+        pin,
+        "mcp_registry",
+        "chatStatus",
+        { args },
+        async () => ({ missing: [] }),
+      ),
   },
   prs: {
     createFromLane: async (args: CreatePrFromLaneArgs): Promise<PrSummary> =>

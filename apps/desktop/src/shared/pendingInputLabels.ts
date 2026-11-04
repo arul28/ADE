@@ -42,6 +42,17 @@ export function providerDisplayName(source: string | null | undefined): string {
     .join(" ");
 }
 
+/**
+ * The agent a command-raised card names. A card an agent raises through an
+ * `ade` command reaches the chat with the source "ade", so the chat's own
+ * provider is the agent that asked.
+ */
+export function cardAskerFamily(source: string | null | undefined, chatProvider: string | null | undefined): string {
+  const key = (source ?? "").trim().toLowerCase();
+  if ((!key || key === "ade") && chatProvider?.trim()) return chatProvider.trim();
+  return source ?? "";
+}
+
 const CHAT_PROVIDER_DISPLAY_NAMES: Record<string, string> = {
   claude: "Claude",
   codex: "Codex",

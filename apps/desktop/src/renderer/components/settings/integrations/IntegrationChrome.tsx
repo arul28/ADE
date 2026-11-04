@@ -7,6 +7,7 @@ import React, { type ReactNode } from "react";
 import { SolidLogo } from "../providers/ProviderHero";
 import { SettingsToggle } from "../primitives";
 import { integrationBrand, integrationThemeVars, type IntegrationHeroBrand, type IntegrationId } from "./integrationBrand";
+import type { IntegrationCredentialStorage } from "../../../../shared/types/integrationCredentialStorage";
 import "../providers/providerPage.css";
 import "./integrationPage.css";
 
@@ -24,6 +25,14 @@ export type IntegrationFact = {
   tone?: "warn";
   mono?: boolean;
 };
+
+/** The "Saved" fact: whether this credential follows the person to their other machines. */
+export function credentialStorageFact(storage: IntegrationCredentialStorage | null | undefined): IntegrationFact | null {
+  if (!storage) return null;
+  return storage.storage === "account"
+    ? { label: "Saved", value: "All your machines", title: "Your ADE account carries this credential to your other machines for this project." }
+    : { label: "Saved", value: "This computer only", tone: "warn", title: storage.message?.trim() || "This credential stays on this computer." };
+}
 
 export function IntegrationPage({ id, children }: { id: IntegrationId; children: ReactNode }) {
   return (

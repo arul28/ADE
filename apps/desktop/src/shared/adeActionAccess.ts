@@ -335,6 +335,14 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "request",
     ],
   },
+  integration_connect: {
+    read: ["status"],
+    write: ["request"],
+  },
+  mcp_registry: {
+    read: ["list", "chatStatus"],
+    write: ["request"],
+  },
   account_settings: {
     read: [
       "list", "deletedKeys", "get",
