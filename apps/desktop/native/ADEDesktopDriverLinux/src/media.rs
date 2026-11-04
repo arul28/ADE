@@ -206,7 +206,7 @@ impl StreamServer {
         self.count.load(Ordering::SeqCst)
     }
 
-    /// The config record every viewer parses (`iosSimVideoRecords.ts`): JSON
+    /// The config record every viewer parses (`videoRecordParser.ts`): JSON
     /// with the WebCodecs codec string and the picture size, Annex-B units.
     pub fn set_config(&self, codec: &str) {
         let (width, height) = *self.size.lock().unwrap();

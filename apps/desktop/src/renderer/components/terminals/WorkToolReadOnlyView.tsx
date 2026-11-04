@@ -9,8 +9,8 @@ import {
   type WorkToolsMacDesktopState,
   type WorkToolsObservation,
 } from "../../../shared/types/workTools";
-import { H264StreamView } from "../chat/H264StreamView";
-import { isWebCodecsAvailable, type H264StreamStatus } from "../chat/h264StreamPlayer";
+import { H264StreamView } from "../device/H264StreamView";
+import { isWebCodecsAvailable, type H264StreamStatus } from "../device/h264StreamPlayer";
 import {
   MAC_DESKTOP_TAKEOVER_CURSOR_HIDDEN_CLASS,
   MacDesktopTakeoverCursor,

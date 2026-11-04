@@ -1,7 +1,8 @@
 import { useCallback, useMemo, useState, type ReactNode } from "react";
-import { H264StreamView } from "../chat/H264StreamView";
-import { h264SourceForUrl, isWebCodecsAvailable } from "../chat/h264StreamPlayer";
+import { H264StreamView } from "../device/H264StreamView";
+import { h264SourceForUrl, isWebCodecsAvailable } from "../device/h264StreamPlayer";
 import { cn } from "../ui/cn";
+import type { AppleFrameFeed } from "./useAppleDeviceStream";
 import type { AppleDeviceOrientation } from "../../../shared/types";
 import { APPLE_STREAM_NOT_RUNNING_CODE } from "../../../shared/types/iosSimulator";
 import {
@@ -13,11 +14,11 @@ import {
   type AppleDeviceFamily,
 } from "./AppleDevice3DView";
 import {
-  AppleDeviceFlatView,
-  appleScreenMediaRect,
-  type AppleDeviceGeometry,
-  type AppleDeviceInput,
-} from "./AppleDeviceFlatView";
+  DeviceFlatView,
+  screenMediaRect,
+  type DeviceGeometry,
+  type DeviceInput,
+} from "../device/DeviceFlatView";
 
 /**
  * The stage: black, the decoder, and whichever presenter is showing it.
@@ -62,15 +63,15 @@ export type AppleDeviceStageProps = {
   duo?: AppleDeviceDuoProps | undefined;
   /** The 3D view's render methods, for the Render sheet. */
   rendererRef?: { current: AppleDeviceRenderer | null } | undefined;
-  onDeviceInput: (input: AppleDeviceInput) => void;
+  onDeviceInput: (input: DeviceInput) => void;
   onDeviceScroll?: (delta: { x: number; y: number; deltaX: number; deltaY: number }) => void;
   /** A key pressed while the flat screen holds focus. True = forwarded. */
   onDeviceKey?: (event: { key: string; metaKey: boolean; ctrlKey: boolean; altKey: boolean }) => boolean;
   onReaderStatus: (status: "connecting" | "playing" | "error" | "stopped", error: string | null) => void;
   onDimensions: (size: { width: number; height: number }) => void;
   onFrame: () => void;
-  /** Increments per drawn frame; the 3D view re-uploads its texture on change. */
-  frameVersion: number;
+  /** Each drawn frame; the 3D view re-uploads its texture on each. */
+  frames: AppleFrameFeed | null;
   /**
    * The 3D presenter cannot show this device (no WebGL, or the bundled body
    * would not load). Round 4 §A1: there is no procedural slab to fall back
@@ -92,6 +93,11 @@ export type AppleDeviceStageProps = {
   renderScreenOverlay?: (
     deviceToView: ((point: { x: number; y: number }) => { x: number; y: number }) | null,
   ) => ReactNode;
+  /**
+   * CSS pixels at the stage's right edge the device must stay out of: the
+   * floating rail, while it shows. 0 (the default) when nothing floats there.
+   */
+  railInset?: number;
   /** Blockers, ribbons and the toolbar rail, drawn over the whole stage. */
   children?: ReactNode;
   className?: string;
@@ -140,16 +146,17 @@ export function AppleDeviceStage({
   onReaderStatus,
   onDimensions,
   onFrame,
-  frameVersion,
+  frames,
   onThreeUnavailable,
   onThreeReady,
   renderScreenOverlay,
+  railInset = 0,
   children,
   className,
 }: AppleDeviceStageProps) {
   const [canvas, setCanvas] = useState<HTMLCanvasElement | null>(null);
   const [screenPixelSize, setScreenPixelSize] = useState<{ width: number; height: number } | null>(null);
-  const [geometry, setGeometry] = useState<AppleDeviceGeometry | null>(null);
+  const [geometry, setGeometry] = useState<DeviceGeometry | null>(null);
 
   const handleDimensions = useCallback((size: { width: number; height: number }) => {
     setScreenPixelSize((current) => (
@@ -175,7 +182,7 @@ export function AppleDeviceStage({
   const videoStyle = useMemo(() => {
     if (!flat) return PARKED_CANVAS_STYLE;
     if (!geometry) return { ...PARKED_CANVAS_STYLE, opacity: 0 };
-    const rect = appleScreenMediaRect(geometry, geometry.rotation);
+    const rect = screenMediaRect(geometry, geometry.rotation);
     return {
       position: "absolute" as const,
       left: rect.left,
@@ -211,22 +218,24 @@ export function AppleDeviceStage({
       </div>
 
       {flat ? (
-        <AppleDeviceFlatView
+        <DeviceFlatView
           screenPixelSize={screenPixelSize}
           devicePointSize={devicePointSize}
           orientation={orientation}
+          ariaLabel="iOS Simulator screen"
           interactive={interactive}
           onDeviceInput={onDeviceInput}
           onDeviceScroll={onDeviceScroll}
           onDeviceKey={onDeviceKey}
           onGeometryChange={setGeometry}
           screenOverlay={renderScreenOverlay?.(flatDeviceToView(geometry))}
+          railInset={railInset}
         />
       ) : (
         <AppleDevice3DView
           screenCanvas={canvas}
           resetNonce={viewNonce}
-          frameVersion={frameVersion}
+          frames={frames}
           family={family}
           deviceTypeName={deviceTypeName}
           deviceTypeIdentifier={deviceTypeIdentifier ?? null}
@@ -242,6 +251,7 @@ export function AppleDeviceStage({
           onReady={onThreeReady}
           onUnavailable={onThreeUnavailable}
           renderScreenOverlay={renderScreenOverlay}
+          railInset={railInset}
         />
       )}
 
@@ -260,7 +270,7 @@ export function AppleDeviceStage({
  * term here: both sides rotated together, and the one scale still holds.
  */
 export function flatDeviceToView(
-  geometry: AppleDeviceGeometry | null,
+  geometry: DeviceGeometry | null,
 ): ((point: { x: number; y: number }) => { x: number; y: number }) | null {
   if (!geometry || geometry.scale <= 0) return null;
   return (point) => ({ x: point.x / geometry.scale, y: point.y / geometry.scale });

@@ -11,31 +11,33 @@ import {
 } from "./appleStreamRelay";
 import {
   APPLE_DUO_INNER_SCREEN_ID,
-  IOS_VIDEO_RECORD_FLAG_KEYFRAME,
-  IOS_VIDEO_RECORD_HEADER_BYTES,
-  IOS_VIDEO_RECORD_MAGIC,
-  IOS_VIDEO_RECORD_TYPE_ACCESS_UNIT,
-  IOS_VIDEO_RECORD_TYPE_CONFIG,
   type AppleDevicePosture,
 } from "../../../shared/types/iosSimulator";
+import {
+  VIDEO_RECORD_FLAG_KEYFRAME,
+  VIDEO_RECORD_HEADER_BYTES,
+  VIDEO_RECORD_MAGIC,
+  VIDEO_RECORD_TYPE_ACCESS_UNIT,
+  VIDEO_RECORD_TYPE_CONFIG,
+} from "../../../shared/types/videoRecords";
 
 function record(type: number, payload: Uint8Array, keyframe = false): Uint8Array {
-  const bytes = new Uint8Array(IOS_VIDEO_RECORD_HEADER_BYTES + payload.byteLength);
+  const bytes = new Uint8Array(VIDEO_RECORD_HEADER_BYTES + payload.byteLength);
   const view = new DataView(bytes.buffer);
-  view.setUint32(0, IOS_VIDEO_RECORD_MAGIC, false);
+  view.setUint32(0, VIDEO_RECORD_MAGIC, false);
   view.setUint8(4, type);
-  view.setUint8(5, keyframe ? IOS_VIDEO_RECORD_FLAG_KEYFRAME : 0);
+  view.setUint8(5, keyframe ? VIDEO_RECORD_FLAG_KEYFRAME : 0);
   view.setUint32(8, payload.byteLength, false);
-  bytes.set(payload, IOS_VIDEO_RECORD_HEADER_BYTES);
+  bytes.set(payload, VIDEO_RECORD_HEADER_BYTES);
   return bytes;
 }
 
 const configRecord = record(
-  IOS_VIDEO_RECORD_TYPE_CONFIG,
+  VIDEO_RECORD_TYPE_CONFIG,
   new TextEncoder().encode(JSON.stringify({ codec: "avc1.42E01E", width: 393, height: 852, annexB: true })),
 );
-const keyframeRecord = record(IOS_VIDEO_RECORD_TYPE_ACCESS_UNIT, new Uint8Array([1, 2, 3, 4]), true);
-const deltaRecord = record(IOS_VIDEO_RECORD_TYPE_ACCESS_UNIT, new Uint8Array([9, 9]), false);
+const keyframeRecord = record(VIDEO_RECORD_TYPE_ACCESS_UNIT, new Uint8Array([1, 2, 3, 4]), true);
+const deltaRecord = record(VIDEO_RECORD_TYPE_ACCESS_UNIT, new Uint8Array([9, 9]), false);
 
 function fakeUpstream(): AppleStreamUpstream & { push(chunk: Uint8Array): void; end(error?: Error): void; closed: () => boolean } {
   let data: ((chunk: Uint8Array) => void) | null = null;
@@ -123,13 +125,13 @@ describe("splitAppleStreamRecords", () => {
     // and a 3-byte fragment of a third is left over.
     const { records, rest } = splitAppleStreamRecords(stream.subarray(0, stream.byteLength - 2));
     expect(records).toHaveLength(2);
-    expect(records[0]?.type).toBe(IOS_VIDEO_RECORD_TYPE_CONFIG);
+    expect(records[0]?.type).toBe(VIDEO_RECORD_TYPE_CONFIG);
     expect(records[1]?.keyframe).toBe(true);
     expect(rest.byteLength).toBe(3);
   });
 
   it("refuses a stream that is not framed as expected", () => {
-    expect(() => splitAppleStreamRecords(new Uint8Array(IOS_VIDEO_RECORD_HEADER_BYTES)))
+    expect(() => splitAppleStreamRecords(new Uint8Array(VIDEO_RECORD_HEADER_BYTES)))
       .toThrow(/not framed as expected/);
   });
 });

@@ -1282,19 +1282,7 @@ export type IosSimulatorCloseDeviceResult = {
   previousDeviceSession: IosSimulatorDeviceSession | null;
 };
 
-/**
- * The framing the video server writes and the renderer reads.
- *
- * A chunked HTTP body has no message boundaries, so every record carries a
- * fixed 12-byte header. The constants live here, in the one module both
- * processes already import, because two independent copies of a binary
- * contract desynchronise at runtime instead of failing to compile.
- */
-export const IOS_VIDEO_RECORD_MAGIC = 0xade1f00d;
-export const IOS_VIDEO_RECORD_HEADER_BYTES = 12;
-export const IOS_VIDEO_RECORD_TYPE_CONFIG = 1;
-export const IOS_VIDEO_RECORD_TYPE_ACCESS_UNIT = 2;
-export const IOS_VIDEO_RECORD_FLAG_KEYFRAME = 1;
+/** The loopback path the simulator video server serves its framed records on (`videoRecords.ts`). */
 export const IOS_VIDEO_STREAM_PATH = "/ios-simulator-video";
 
 /**

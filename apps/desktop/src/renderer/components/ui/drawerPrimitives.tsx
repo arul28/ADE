@@ -1,8 +1,8 @@
 import { useState, type FormEvent, type ReactNode } from "react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { CaretDown, Check } from "@phosphor-icons/react";
-import { cn } from "../../ui/cn";
-import { MENU_CONTENT_CLASS, MENU_ITEM_CLASS, MENU_LABEL_CLASS } from "../../ui/paneMenuTokens";
+import { cn } from "./cn";
+import { MENU_CONTENT_CLASS, MENU_ITEM_CLASS, MENU_LABEL_CLASS } from "./paneMenuTokens";
 
 /**
  * The drawer's vocabulary (round 4 §B2): one GROUP card, one row shape, one
@@ -79,15 +79,6 @@ export const DRAWER_INPUT = cn(
   "disabled:cursor-not-allowed disabled:opacity-40",
 );
 
-/** The four groups, in the order the drawer stacks them (§B1). */
-export const APPLE_DRAWER_GROUPS = ["device", "app", "capture", "preview-lab"] as const;
-
-export type AppleDrawerGroupId = (typeof APPLE_DRAWER_GROUPS)[number];
-
-export function isAppleDrawerGroupId(value: unknown): value is AppleDrawerGroupId {
-  return typeof value === "string" && (APPLE_DRAWER_GROUPS as readonly string[]).includes(value);
-}
-
 /**
  * One collapsible group card.
  *
@@ -101,7 +92,7 @@ export function isAppleDrawerGroupId(value: unknown): value is AppleDrawerGroupI
  * and a hidden group that keeps polling is four timers running for a card you
  * cannot see.
  */
-export function Group({
+export function Group<Id extends string>({
   id,
   title,
   open,
@@ -110,10 +101,10 @@ export function Group({
   children,
   testId,
 }: {
-  id: AppleDrawerGroupId;
+  id: Id;
   title: string;
   open: boolean;
-  onToggle: (id: AppleDrawerGroupId) => void;
+  onToggle: (id: Id) => void;
   /** Header-right control, e.g. Preview Lab's `⋯`. Only drawn while open. */
   right?: ReactNode;
   children: ReactNode;

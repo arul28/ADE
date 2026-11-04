@@ -8,7 +8,7 @@ import { CliUsageError, asString, isRecord, type JsonObject } from "./cli";
 
 /* ──────────────────────────────────────────────────────────────────────────
    THIS CHAT'S WORK COPY ON ANOTHER MACHINE — `ade shell start --machine`,
-   and `ade apple … --machine` with no `--lane`.
+   and `ade apple … --machine` and `ade android … --machine` with no `--lane`.
 
    The other machine keeps a git worktree for this chat
    (desktop/src/main/services/remoteWork/remoteWorkCopyService.ts). Each call
@@ -81,6 +81,34 @@ export function withRemoteAppleArgs(params: JsonObject, cwd: string, workCopy: M
         remoteWork: builds
           ? { ...readLocalWorkSource(cwd), ...(sync ? { sync } : {}) }
           : { ...readLocalHead(cwd), sync: "none" },
+      },
+    },
+  };
+}
+
+/**
+ * Android reads about the machine. They never make a work copy: the other
+ * machine reports this chat's emulator only when the copy already exists.
+ */
+const ANDROID_MACHINE_ACTIONS: ReadonlySet<string> = new Set(["getStatus", "listDevices"]);
+
+/**
+ * `ade android … --machine` with no `--lane`: the emulator there works for
+ * this chat's work copy. P0 has no build verb, so every verb uses the copy as
+ * it is, and makes it at this commit when it does not exist yet. A status or
+ * device list sends no commit and makes no copy.
+ */
+export function withRemoteAndroidArgs(params: JsonObject, cwd: string): JsonObject {
+  const toolArgs = isRecord(params.arguments) ? params.arguments : {};
+  if (!isRecord(toolArgs.args) || asString(toolArgs.args.laneId)) return params;
+  const action = asString(toolArgs.action) ?? "";
+  return {
+    ...params,
+    arguments: {
+      ...toolArgs,
+      args: {
+        ...toolArgs.args,
+        remoteWork: ANDROID_MACHINE_ACTIONS.has(action) ? { sync: "none" } : { ...readLocalHead(cwd), sync: "none" },
       },
     },
   };

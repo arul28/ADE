@@ -1,4 +1,4 @@
-import { activeRemoteWorkOnRow, remoteSimulatorUses } from "../../../shared/chatRemoteWork";
+import { activeRemoteWorkOnRow, remoteAndroidEmulatorUses, remoteSimulatorUses } from "../../../shared/chatRemoteWork";
 import {
   useCallback,
   useEffect,
@@ -204,14 +204,16 @@ export function WorkSidebar({
   );
   const hasSideChat = sideChat.kind !== "none";
   const hasRemoteSimulator = remoteSimulatorUses(activeSession).length > 0;
+  const hasRemoteAndroidEmulator = remoteAndroidEmulatorUses(activeSession).length > 0;
   const toolContext = useMemo(
     () => ({
       ...feedsToolContext,
       ...(laneCloud ? { cloudLane: laneCloud } : {}),
       hasSideChat,
       ...(hasRemoteSimulator ? { hasRemoteSimulator } : {}),
+      ...(hasRemoteAndroidEmulator ? { hasRemoteAndroidEmulator } : {}),
     }),
-    [feedsToolContext, hasSideChat, hasRemoteSimulator, laneCloud],
+    [feedsToolContext, hasSideChat, hasRemoteAndroidEmulator, hasRemoteSimulator, laneCloud],
   );
   // An unavailable tool falls back to the PICKER, not to some other tool: being
   // dropped into Git because the simulator is unavailable on this machine is a

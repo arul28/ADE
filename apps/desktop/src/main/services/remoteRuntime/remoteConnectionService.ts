@@ -1061,7 +1061,11 @@ export class RemoteConnectionService {
     request: RemoteRuntimePortForwardRequest,
   ): Promise<RemoteRuntimePortForward> {
     const target = await this.requireTargetForImplicitUse(targetId);
-    await this.connect(target.id);
+    // Connect only when there is no connection. `connect` reports
+    // "connecting" first, and a live view asks for its forward on every
+    // start, so an open machine read as not connected for a moment on each
+    // start; views keyed on that state remounted and started again, forever.
+    if (!this.pool.hasEntry(target.id)) await this.connect(target.id);
     try {
       return await this.pool.ensureLocalPortForward(target.id, request);
     } catch (error) {

@@ -1,7 +1,7 @@
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { Trash, type Icon } from "@phosphor-icons/react";
-import { cn } from "../ui/cn";
-import { MENU_ITEM_CLASS } from "../ui/paneMenuTokens";
+import { cn } from "./cn";
+import { MENU_ITEM_CLASS } from "./paneMenuTokens";
 
 /**
  * The pane's two-row destructive menu item.

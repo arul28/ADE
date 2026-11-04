@@ -26,6 +26,7 @@ const SUBCOMMANDS = [
   "tests",
   "proof",
   "ios-sim",
+  "android",
   "app-control",
   "browser",
   "settings",

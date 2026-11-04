@@ -1,7 +1,7 @@
-import { IOS_VIDEO_RECORD_FLAG_KEYFRAME, IOS_VIDEO_RECORD_HEADER_BYTES, IOS_VIDEO_RECORD_MAGIC, IOS_VIDEO_RECORD_TYPE_ACCESS_UNIT, IOS_VIDEO_RECORD_TYPE_CONFIG } from "../../../shared/types/iosSimulator";
+import { VIDEO_RECORD_FLAG_KEYFRAME, VIDEO_RECORD_HEADER_BYTES, VIDEO_RECORD_MAGIC, VIDEO_RECORD_TYPE_ACCESS_UNIT, VIDEO_RECORD_TYPE_CONFIG } from "../../../shared/types/videoRecords";
 import { describe, expect, it } from "vitest";
 
-import { IosSimVideoProtocolError, createIosSimVideoRecordParser } from "./iosSimVideoRecords";
+import { VideoRecordProtocolError, createVideoRecordParser } from "./videoRecordParser";
 
 /**
  * Builds one framed record the way the server does.
@@ -15,27 +15,27 @@ function frame(
   payload: Uint8Array,
   options: { keyframe?: boolean; magic?: number; declaredLength?: number } = {},
 ): Uint8Array {
-  const record = new Uint8Array(IOS_VIDEO_RECORD_HEADER_BYTES + payload.byteLength);
+  const record = new Uint8Array(VIDEO_RECORD_HEADER_BYTES + payload.byteLength);
   const view = new DataView(record.buffer);
-  view.setUint32(0, options.magic ?? IOS_VIDEO_RECORD_MAGIC, false);
+  view.setUint32(0, options.magic ?? VIDEO_RECORD_MAGIC, false);
   view.setUint8(4, type);
-  view.setUint8(5, options.keyframe ? IOS_VIDEO_RECORD_FLAG_KEYFRAME : 0);
+  view.setUint8(5, options.keyframe ? VIDEO_RECORD_FLAG_KEYFRAME : 0);
   view.setUint16(6, 0, false);
   view.setUint32(8, options.declaredLength ?? payload.byteLength, false);
-  record.set(payload, IOS_VIDEO_RECORD_HEADER_BYTES);
+  record.set(payload, VIDEO_RECORD_HEADER_BYTES);
   return record;
 }
 
 function configFrame(config: Record<string, unknown>): Uint8Array {
-  return frame(IOS_VIDEO_RECORD_TYPE_CONFIG, new TextEncoder().encode(JSON.stringify(config)));
+  return frame(VIDEO_RECORD_TYPE_CONFIG, new TextEncoder().encode(JSON.stringify(config)));
 }
 
 function rawConfigFrame(text: string): Uint8Array {
-  return frame(IOS_VIDEO_RECORD_TYPE_CONFIG, new TextEncoder().encode(text));
+  return frame(VIDEO_RECORD_TYPE_CONFIG, new TextEncoder().encode(text));
 }
 
 function accessUnitFrame(payload: number[], keyframe = false): Uint8Array {
-  return frame(IOS_VIDEO_RECORD_TYPE_ACCESS_UNIT, Uint8Array.from(payload), { keyframe });
+  return frame(VIDEO_RECORD_TYPE_ACCESS_UNIT, Uint8Array.from(payload), { keyframe });
 }
 
 function concat(...parts: Uint8Array[]): Uint8Array {
@@ -51,9 +51,9 @@ function concat(...parts: Uint8Array[]): Uint8Array {
 
 const CONFIG = { codec: "avc1.640032", width: 1170, height: 2532, annexB: true };
 
-describe("createIosSimVideoRecordParser", () => {
+describe("createVideoRecordParser", () => {
   it("parses a config record and an access unit from one chunk", () => {
-    const parser = createIosSimVideoRecordParser();
+    const parser = createVideoRecordParser();
     const records = parser.push(concat(configFrame(CONFIG), accessUnitFrame([1, 2, 3], true)));
 
     expect(records).toHaveLength(2);
@@ -72,7 +72,7 @@ describe("createIosSimVideoRecordParser", () => {
   });
 
   it("reads a config record with no width or height as null", () => {
-    const parser = createIosSimVideoRecordParser();
+    const parser = createVideoRecordParser();
     const records = parser.push(configFrame({ codec: "avc1.42e01e" }));
     expect(records[0]).toEqual({
       kind: "config",
@@ -84,7 +84,7 @@ describe("createIosSimVideoRecordParser", () => {
   });
 
   it("reassembles a record split across three chunks, including inside the header", () => {
-    const parser = createIosSimVideoRecordParser();
+    const parser = createVideoRecordParser();
     const record = accessUnitFrame([9, 8, 7, 6], true);
 
     // The first split lands at byte 5, inside the header. A parser that read a
@@ -101,7 +101,7 @@ describe("createIosSimVideoRecordParser", () => {
   });
 
   it("parses two records that arrive in one chunk", () => {
-    const parser = createIosSimVideoRecordParser();
+    const parser = createVideoRecordParser();
     const records = parser.push(concat(accessUnitFrame([1], true), accessUnitFrame([2])));
 
     expect(records.map((record) => record.kind)).toEqual(["access-unit", "access-unit"]);
@@ -110,17 +110,17 @@ describe("createIosSimVideoRecordParser", () => {
   });
 
   it("reports only the keyframe flag, not the other header bits", () => {
-    const parser = createIosSimVideoRecordParser();
+    const parser = createVideoRecordParser();
     const record = accessUnitFrame([1, 2]);
     // Set a second flag bit the reader does not know about.
-    record[5] = IOS_VIDEO_RECORD_FLAG_KEYFRAME | 0b10;
+    record[5] = VIDEO_RECORD_FLAG_KEYFRAME | 0b10;
     const unit = parser.push(record)[0];
     if (unit?.kind !== "access-unit") throw new Error("Expected an access unit.");
     expect(unit.keyframe).toBe(true);
   });
 
   it("reports the tail it is still holding", () => {
-    const parser = createIosSimVideoRecordParser();
+    const parser = createVideoRecordParser();
     const record = accessUnitFrame([4, 5, 6]);
 
     expect(parser.push(record.subarray(0, 6))).toEqual([]);
@@ -132,36 +132,36 @@ describe("createIosSimVideoRecordParser", () => {
   });
 
   it("throws on bad magic", () => {
-    const parser = createIosSimVideoRecordParser();
-    const record = frame(IOS_VIDEO_RECORD_TYPE_ACCESS_UNIT, Uint8Array.from([1]), { magic: 0xdeadbeef });
-    expect(() => parser.push(record)).toThrow(IosSimVideoProtocolError);
+    const parser = createVideoRecordParser();
+    const record = frame(VIDEO_RECORD_TYPE_ACCESS_UNIT, Uint8Array.from([1]), { magic: 0xdeadbeef });
+    expect(() => parser.push(record)).toThrow(VideoRecordProtocolError);
   });
 
   it("throws on a declared length larger than any record the server sends", () => {
-    const parser = createIosSimVideoRecordParser();
+    const parser = createVideoRecordParser();
     // A desynchronised reader misreads the length field. Allocating on it is
     // how a stray chunk turns into an out-of-memory crash.
-    const record = frame(IOS_VIDEO_RECORD_TYPE_ACCESS_UNIT, Uint8Array.from([1]), {
+    const record = frame(VIDEO_RECORD_TYPE_ACCESS_UNIT, Uint8Array.from([1]), {
       declaredLength: 64 * 1024 * 1024,
     });
-    expect(() => parser.push(record)).toThrow(IosSimVideoProtocolError);
+    expect(() => parser.push(record)).toThrow(VideoRecordProtocolError);
     expect(() => parser.push(record)).toThrow("declared a 67108864 byte record");
   });
 
   it("throws when the config payload is not JSON", () => {
-    const parser = createIosSimVideoRecordParser();
-    expect(() => parser.push(rawConfigFrame("{not json"))).toThrow(IosSimVideoProtocolError);
+    const parser = createVideoRecordParser();
+    expect(() => parser.push(rawConfigFrame("{not json"))).toThrow(VideoRecordProtocolError);
   });
 
   it("throws when the config names no codec", () => {
-    const parser = createIosSimVideoRecordParser();
+    const parser = createVideoRecordParser();
     expect(() => parser.push(configFrame({ width: 100, height: 200 })))
-      .toThrow(IosSimVideoProtocolError);
-    expect(() => parser.push(configFrame({ codec: "" }))).toThrow(IosSimVideoProtocolError);
+      .toThrow(VideoRecordProtocolError);
+    expect(() => parser.push(configFrame({ codec: "" }))).toThrow(VideoRecordProtocolError);
   });
 
   it("skips an unknown record type and keeps the record behind it", () => {
-    const parser = createIosSimVideoRecordParser();
+    const parser = createVideoRecordParser();
     // A newer server may add a record type. An older reader must step over it
     // by its length rather than stop, or the stream is lost from that byte on.
     const records = parser.push(concat(
@@ -176,7 +176,7 @@ describe("createIosSimVideoRecordParser", () => {
   });
 
   it("drops the tail on reset", () => {
-    const parser = createIosSimVideoRecordParser();
+    const parser = createVideoRecordParser();
     parser.push(accessUnitFrame([1, 2, 3]).subarray(0, 7));
     expect(parser.pendingBytes()).toBe(7);
 
@@ -187,14 +187,14 @@ describe("createIosSimVideoRecordParser", () => {
   });
 
   it("returns bytes the caller cannot mutate", () => {
-    const parser = createIosSimVideoRecordParser();
+    const parser = createVideoRecordParser();
     const chunk = accessUnitFrame([5, 6, 7], true);
     const unit = parser.push(chunk)[0];
     if (unit?.kind !== "access-unit") throw new Error("Expected an access unit.");
 
     // The reader reuses its receive buffer, and the decoder keeps the view it
     // was handed. A view onto the caller's chunk would decode different bytes.
-    chunk[IOS_VIDEO_RECORD_HEADER_BYTES] = 0xff;
+    chunk[VIDEO_RECORD_HEADER_BYTES] = 0xff;
     expect([...unit.bytes]).toEqual([5, 6, 7]);
   });
 });

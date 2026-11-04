@@ -3,6 +3,7 @@ import { IPC } from "../../../shared/ipc";
 import { isReplaySafeAdeAction } from "../../../shared/adeActionAccess";
 import {
   localRuntimeActionIpcTimeoutMs,
+  localRuntimeCallIpcTimeoutMs,
   longRunningLocalRuntimeActionTimeoutMs,
   LOCAL_RUNTIME_IPC_ACTION_REGISTRY_TIMEOUT_MS,
   LOCAL_RUNTIME_IPC_EVENT_POLL_TIMEOUT_MS,
@@ -18,6 +19,7 @@ import {
   IOS_SIMULATOR_DEVICE_CLEANUP_TIMEOUT_MS,
   WINDOWS_DESKTOP_INTERACTIVE_IPC_TIMEOUT_MS,
   REMOTE_MACHINE_UPDATE_IPC_TIMEOUT_MS,
+  ANDROID_EMULATOR_LIFECYCLE_TIMEOUT_MS,
 } from "../localRuntime/localRuntimeTimeoutPolicy";
 import { DEMO_RECORDING_STOP_TIMEOUT_MS } from "../../../shared/demoVideo/demoContract";
 import { builtInBrowserRemoteCallDoneTimeoutMs } from "../../../shared/types/builtInBrowserRemote";
@@ -116,6 +118,16 @@ const RUNTIME_ACTION_CHANNEL: Record<string, Record<string, string>> = {
     setupWindows: IPC.macDesktopSetupWindows,
     takeoverWindows: IPC.macDesktopTakeoverWindows,
     useSharedDesktop: IPC.macDesktopUseSharedDesktop,
+  },
+  // An emulator boot takes the same time whichever brain runs it; see
+  // ANDROID_EMULATOR_LIFECYCLE_TIMEOUT_MS.
+  android_emulator: {
+    createDevice: IPC.androidEmulatorCreateDevice,
+    attachDevice: IPC.androidEmulatorAttachDevice,
+    start: IPC.androidEmulatorStart,
+    stop: IPC.androidEmulatorStop,
+    releaseDevice: IPC.androidEmulatorReleaseDevice,
+    deleteDevice: IPC.androidEmulatorDeleteDevice,
   },
 };
 
@@ -337,6 +349,16 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     case IPC.macDesktopTakeoverWindows:
     case IPC.macDesktopUseSharedDesktop:
       return WINDOWS_DESKTOP_INTERACTIVE_IPC_TIMEOUT_MS;
+    // An emulator boot (create and attach boot too), or a stop that waits for
+    // the emulator to exit; see ANDROID_EMULATOR_LIFECYCLE_TIMEOUT_MS. Sized
+    // like the runtime-action twin so the brain's own answer arrives first.
+    case IPC.androidEmulatorCreateDevice:
+    case IPC.androidEmulatorAttachDevice:
+    case IPC.androidEmulatorStart:
+    case IPC.androidEmulatorStop:
+    case IPC.androidEmulatorReleaseDevice:
+    case IPC.androidEmulatorDeleteDevice:
+      return localRuntimeCallIpcTimeoutMs(ANDROID_EMULATOR_LIFECYCLE_TIMEOUT_MS);
     case IPC.transcriptionTranscribe:
       return 6 * 60_000;
     // The ~464 MB speech model download. On the 30s default the renderer showed

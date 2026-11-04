@@ -32,6 +32,7 @@ const WORK_PAGE_SHOW_SURFACES: readonly WorkToolShowSurface[] = [
   "floating-mac-desktop",
   "app-control",
   "floating-app-control",
+  "android",
 ];
 
 /** How a surface that lives in the tools pane is shown there. */
@@ -323,6 +324,14 @@ export function useWorkShowRequests({
     if (request.surface === "browser") {
       setWorkSidebarTool("browser");
       return showOutcomeWhenOnScreen(workSurfaceKey("browser", scopeKey, activeLaneId));
+    }
+    // Android has no floating player yet (plan P2), so the pane is its only
+    // surface. An open pane switches to it; a closed one opens only for a
+    // request someone made, never for an automatic offer.
+    if (request.surface === "android") {
+      if (!workSidebarVisible && request.auto) return "declined";
+      (workSidebarVisible ? showWorkSidebarTool : setWorkSidebarTool)("android");
+      return showOutcomeWhenOnScreen(workSurfaceKey("android", scopeKey, activeLaneId));
     }
     const pane = paneSurfaces[request.surface];
     if (pane) {

@@ -47,6 +47,7 @@ import {
   USAGE_REFRESH_HISTORY_REMOTE_TRANSPORT_TIMEOUT_MS,
   WINDOWS_DESKTOP_INTERACTIVE_REMOTE_TRANSPORT_TIMEOUT_MS,
   WINDOWS_DESKTOP_TYPE_REMOTE_TRANSPORT_TIMEOUT_MS,
+  ANDROID_EMULATOR_LIFECYCLE_REMOTE_TRANSPORT_TIMEOUT_MS,
 } from "../localRuntime/localRuntimeTimeoutPolicy";
 import { GIT_PULL_ACTION_TIMEOUT_MS, LANE_GIT_WRITE_ACTION_TIMEOUT_MS } from "../git/gitTimeouts";
 import { bootstrapPairedRuntime } from "./pairedRuntimeBootstrap";
@@ -273,6 +274,14 @@ const LONG_RUNNING_REMOTE_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> =
   ["mac_desktop.requestInputLease", WINDOWS_DESKTOP_INTERACTIVE_REMOTE_TRANSPORT_TIMEOUT_MS],
   // A long Windows `type` is typed one character at a time.
   ["mac_desktop.type", WINDOWS_DESKTOP_TYPE_REMOTE_TRANSPORT_TIMEOUT_MS],
+  // An Android boot on the other machine (a Windows or Linux brain hosting
+  // the lane's emulator); see ANDROID_EMULATOR_LIFECYCLE_TIMEOUT_MS.
+  ["android_emulator.createDevice", ANDROID_EMULATOR_LIFECYCLE_REMOTE_TRANSPORT_TIMEOUT_MS],
+  ["android_emulator.attachDevice", ANDROID_EMULATOR_LIFECYCLE_REMOTE_TRANSPORT_TIMEOUT_MS],
+  ["android_emulator.start", ANDROID_EMULATOR_LIFECYCLE_REMOTE_TRANSPORT_TIMEOUT_MS],
+  ["android_emulator.stop", ANDROID_EMULATOR_LIFECYCLE_REMOTE_TRANSPORT_TIMEOUT_MS],
+  ["android_emulator.releaseDevice", ANDROID_EMULATOR_LIFECYCLE_REMOTE_TRANSPORT_TIMEOUT_MS],
+  ["android_emulator.deleteDevice", ANDROID_EMULATOR_LIFECYCLE_REMOTE_TRANSPORT_TIMEOUT_MS],
 ]);
 const CONNECT_FAILURE_BASE_BACKOFF_MS = 3_000;
 const CONNECT_FAILURE_MAX_BACKOFF_MS = 15_000;

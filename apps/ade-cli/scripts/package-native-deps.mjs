@@ -335,6 +335,28 @@ async function copyAgentSkills(bundleRoot) {
   await fs.cp(source, destination, { recursive: true });
 }
 
+/**
+ * The scrcpy server the brain pushes to an Android emulator to stream it,
+ * with its Apache-2.0 licence, on every target: a standalone brain (a
+ * headless Linux VM, a Windows or macOS box with no ADE app) has no app
+ * resources to read it from. The brain looks for
+ * <ADE_RUNTIME_ROOT>/android/scrcpy-server first (bootstrap.ts,
+ * resolveScrcpyServerJarPath) and checks its SHA-256 before each use.
+ */
+const ANDROID_SCRCPY_FILES = ["scrcpy-server", "scrcpy-LICENSE"];
+
+async function copyAndroidScrcpyServer(bundleRoot) {
+  for (const name of ANDROID_SCRCPY_FILES) {
+    const source = path.join(packageRoot, "..", "desktop", "resources", "android", name);
+    if (!(await exists(source))) {
+      throw new Error(`Missing ${source}; a standalone brain could not stream Android emulators without it.`);
+    }
+    const destination = path.join(bundleRoot, "android", name);
+    await fs.mkdir(path.dirname(destination), { recursive: true });
+    await fs.copyFile(source, destination);
+  }
+}
+
 async function chmodRuntimeExecutables(bundleRoot, target) {
   // Provider CLIs are fetched into the pinned tools cache, not launched from
   // this archive. node-pty's macOS helper is the only copied executable here.
@@ -397,6 +419,7 @@ async function main() {
   await copyCrsqliteExtension(bundleRoot, args.target);
   await copyLinuxDesktopDriver(bundleRoot, args.target);
   await copyDarwinNativeHelpers(bundleRoot, args.target);
+  await copyAndroidScrcpyServer(bundleRoot);
   await chmodRuntimeExecutables(bundleRoot, args.target);
   await writeManifest(bundleRoot, args.target, copied, inlined);
 

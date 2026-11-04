@@ -11,11 +11,11 @@ const heldOn = (deviceUdid: string) =>
 import {
   APPLE_FIRST_FRAME_TIMEOUT_MS,
   APPLE_FRAME_STALL_MS,
-  APPLE_STREAM_RECOVER_DELAY_MS,
-  APPLE_STREAM_STOP_GRACE_MS,
   useAppleDeviceStream,
   type AppleDeviceStream,
 } from "./useAppleDeviceStream";
+import { STREAM_STOP_GRACE_MS } from "../device/useGracefulStreamLease";
+import { STREAM_RECOVER_DELAY_MS } from "../device/useStreamRecovery";
 
 type Api = {
   startStream: ReturnType<typeof vi.fn>;
@@ -173,7 +173,7 @@ describe("useAppleDeviceStream", () => {
     await waitFor(() => expect(api.startStream).toHaveBeenCalled());
     rerender(<Harness onStream={(next) => { box.current = next; }} hidden />);
     await waitFor(() => expect(box.current?.state).toBe("paused"));
-    await act(async () => { vi.advanceTimersByTime(APPLE_STREAM_STOP_GRACE_MS + 50); });
+    await act(async () => { vi.advanceTimersByTime(STREAM_STOP_GRACE_MS + 50); });
     expect(api.stopStream).toHaveBeenCalled();
     expect(box.current?.url).toBeNull();
   });
@@ -202,7 +202,7 @@ describe("useAppleDeviceStream", () => {
     const viewer = render(<Harness onStream={onStream} runtimePin={original} />);
     await waitFor(() => expect(box.current?.url).toBeTruthy());
     viewer.rerender(<Harness onStream={onStream} runtimePin={next} enabled={false} />);
-    await act(async () => { vi.advanceTimersByTime(APPLE_STREAM_STOP_GRACE_MS); });
+    await act(async () => { vi.advanceTimersByTime(STREAM_STOP_GRACE_MS); });
     expect(api.stopStream.mock.calls.map(([pin]) => pin?.rootPath)).toEqual(["/original"]);
   });
 
@@ -227,7 +227,7 @@ describe("useAppleDeviceStream", () => {
     // The column leaves too. Last viewer out turns the capture off, once the
     // grace for a handover has passed.
     cleanup();
-    await act(async () => { vi.advanceTimersByTime(APPLE_STREAM_STOP_GRACE_MS + 50); });
+    await act(async () => { vi.advanceTimersByTime(STREAM_STOP_GRACE_MS + 50); });
     await waitFor(() => expect(api.stopStream).toHaveBeenCalledTimes(1));
     expect(heldOn("UDID-1")).toBe(0);
   });
@@ -265,7 +265,7 @@ describe("useAppleDeviceStream", () => {
     expect(box.current?.state).toBe("stalled");
     // And it asks the service again by itself.
     await act(async () => {
-      vi.advanceTimersByTime(APPLE_STREAM_RECOVER_DELAY_MS + 100);
+      vi.advanceTimersByTime(STREAM_RECOVER_DELAY_MS + 100);
     });
     await waitFor(() => expect(api.startStream).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(box.current?.url).toBeTruthy());
@@ -285,7 +285,7 @@ describe("useAppleDeviceStream", () => {
       }
     });
     await act(async () => {
-      vi.advanceTimersByTime(APPLE_STREAM_RECOVER_DELAY_MS + 100);
+      vi.advanceTimersByTime(STREAM_RECOVER_DELAY_MS + 100);
     });
     await waitFor(() => expect(api.startStream).toHaveBeenCalledTimes(2));
 
@@ -296,7 +296,7 @@ describe("useAppleDeviceStream", () => {
       }
     });
     await act(async () => {
-      vi.advanceTimersByTime(APPLE_STREAM_RECOVER_DELAY_MS * 4);
+      vi.advanceTimersByTime(STREAM_RECOVER_DELAY_MS * 4);
     });
     expect(api.startStream).toHaveBeenCalledTimes(2);
   });
@@ -308,7 +308,7 @@ describe("useAppleDeviceStream", () => {
     act(() => box.current?.noteFrame());
     act(() => box.current?.handleReaderStatus("stopped", null));
     await act(async () => {
-      vi.advanceTimersByTime(APPLE_STREAM_RECOVER_DELAY_MS + 100);
+      vi.advanceTimersByTime(STREAM_RECOVER_DELAY_MS + 100);
     });
     await waitFor(() => expect(api.startStream).toHaveBeenCalledTimes(2));
   });
@@ -319,7 +319,7 @@ describe("useAppleDeviceStream", () => {
     const { rerender } = render(<Harness onStream={(next) => { box.current = next; }} />);
     for (let i = 0; i < 8; i += 1) {
       await act(async () => {
-        vi.advanceTimersByTime(APPLE_FIRST_FRAME_TIMEOUT_MS + APPLE_STREAM_RECOVER_DELAY_MS * 4);
+        vi.advanceTimersByTime(APPLE_FIRST_FRAME_TIMEOUT_MS + STREAM_RECOVER_DELAY_MS * 4);
       });
     }
     // One start, and three recoveries at most.
@@ -333,7 +333,7 @@ describe("useAppleDeviceStream", () => {
       }
     });
     await act(async () => {
-      vi.advanceTimersByTime(APPLE_STREAM_RECOVER_DELAY_MS * 4);
+      vi.advanceTimersByTime(STREAM_RECOVER_DELAY_MS * 4);
     });
     expect(api.startStream.mock.calls.length).toBe(calls);
   });
@@ -343,10 +343,10 @@ describe("useAppleDeviceStream", () => {
     const player = render(<Harness onStream={() => {}} />);
     await waitFor(() => expect(heldOn("UDID-1")).toBe(1));
     player.unmount();
-    await act(async () => { vi.advanceTimersByTime(APPLE_STREAM_STOP_GRACE_MS / 2); });
+    await act(async () => { vi.advanceTimersByTime(STREAM_STOP_GRACE_MS / 2); });
     render(<Harness onStream={() => {}} />);
     await waitFor(() => expect(heldOn("UDID-1")).toBe(1));
-    await act(async () => { vi.advanceTimersByTime(APPLE_STREAM_STOP_GRACE_MS * 2); });
+    await act(async () => { vi.advanceTimersByTime(STREAM_STOP_GRACE_MS * 2); });
     expect(api.stopStream).not.toHaveBeenCalled();
   });
 
@@ -360,7 +360,7 @@ describe("useAppleDeviceStream", () => {
     rerender(<Harness onStream={() => {}} deviceUdid="UDID-2" />);
     await waitFor(() => expect(heldOn("UDID-2")).toBe(1));
     expect(heldOn("UDID-1")).toBe(0);
-    await act(async () => { vi.advanceTimersByTime(APPLE_STREAM_STOP_GRACE_MS * 2); });
+    await act(async () => { vi.advanceTimersByTime(STREAM_STOP_GRACE_MS * 2); });
     expect(api.stopStream).not.toHaveBeenCalled();
   });
 });

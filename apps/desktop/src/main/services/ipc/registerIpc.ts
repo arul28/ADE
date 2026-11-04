@@ -980,6 +980,7 @@ import type { createComputerUseArtifactBrokerService } from "../computerUse/comp
 import { buildComputerUseOwnerSnapshot } from "../computerUse/controlPlane";
 import type { createIosSimulatorService } from "../ios/iosSimulatorService";
 import type { MacDesktopServiceApi } from "../../../shared/types/macDesktop";
+import type { AndroidEmulatorServiceApi } from "../../../shared/types/androidEmulator";
 import { createMacDesktopEscapeHotkey } from "../macDesktop/macDesktopEscapeHotkey";
 import type { createAppControlService } from "../appControl/appControlService";
 import type { createBuiltInBrowserService } from "../builtInBrowser/builtInBrowserService";
@@ -1350,6 +1351,12 @@ export type AppContext = {
    * handler below states the absence instead of dereferencing null.
    */
   macDesktopService?: MacDesktopServiceApi | null;
+  /**
+   * The lane's Android emulator. Built on every host OS by the embedded
+   * desktop host; a runtime-backed build reaches it through the
+   * `android_emulator` action domain instead, so it may be absent here.
+   */
+  androidEmulatorService?: AndroidEmulatorServiceApi | null;
   appControlService?: ReturnType<typeof createAppControlService> | null;
   builtInBrowserService?: ReturnType<typeof createBuiltInBrowserService> | null;
   githubService: ReturnType<typeof createGithubService>;
@@ -2682,6 +2689,14 @@ export function registerIpc({
     const service = getCtx().macDesktopService;
     if (!service) {
       throw new Error("Mac Desktop is not available on this machine.");
+    }
+    return service;
+  };
+
+  const ensureAndroidEmulator = (): AndroidEmulatorServiceApi => {
+    const service = getCtx().androidEmulatorService;
+    if (!service) {
+      throw new Error("The Android emulator service is not available. Open a project so ADE can reach the machine that runs its emulators.");
     }
     return service;
   };
@@ -10507,6 +10522,28 @@ export function registerIpc({
     else macDesktopEscapeHotkey.disarm(event.sender.id);
     return { armed: macDesktopEscapeHotkey.isArmed() };
   });
+
+  // ── Android emulator ────────────────────────────────────────────────────
+  //
+  // The LOCAL arm behind the `android_emulator` action domain, one handler per
+  // `AndroidEmulatorPreloadApi` method that reaches the service. The preload
+  // routes a pinned or remote-bound call through the action domain first.
+  ipcMain.handle(IPC.androidEmulatorGetStatus, async (_event, arg = {}) => ensureAndroidEmulator().getStatus(arg ?? {}));
+  ipcMain.handle(IPC.androidEmulatorListDevices, async (_event, arg = {}) => ensureAndroidEmulator().listDevices(arg ?? {}));
+  ipcMain.handle(IPC.androidEmulatorCreateDevice, async (_event, arg) => ensureAndroidEmulator().createDevice(arg));
+  ipcMain.handle(IPC.androidEmulatorAttachDevice, async (_event, arg) => ensureAndroidEmulator().attachDevice(arg));
+  ipcMain.handle(IPC.androidEmulatorStart, async (_event, arg) => ensureAndroidEmulator().start(arg));
+  ipcMain.handle(IPC.androidEmulatorStop, async (_event, arg) => ensureAndroidEmulator().stop(arg));
+  ipcMain.handle(IPC.androidEmulatorReleaseDevice, async (_event, arg) => ensureAndroidEmulator().releaseDevice(arg));
+  ipcMain.handle(IPC.androidEmulatorDeleteDevice, async (_event, arg) => ensureAndroidEmulator().deleteDevice(arg));
+  ipcMain.handle(IPC.androidEmulatorStartStream, async (_event, arg) => ensureAndroidEmulator().startStream(arg));
+  ipcMain.handle(IPC.androidEmulatorStopStream, async (_event, arg) => ensureAndroidEmulator().stopStream(arg));
+  ipcMain.handle(IPC.androidEmulatorGetStreamStatus, async (_event, arg) => ensureAndroidEmulator().getStreamStatus(arg));
+  ipcMain.handle(IPC.androidEmulatorSendTouch, async (_event, arg) => ensureAndroidEmulator().sendTouch(arg));
+  ipcMain.handle(IPC.androidEmulatorSendKey, async (_event, arg) => ensureAndroidEmulator().sendKey(arg));
+  ipcMain.handle(IPC.androidEmulatorSendText, async (_event, arg) => ensureAndroidEmulator().sendText(arg));
+  ipcMain.handle(IPC.androidEmulatorRotate, async (_event, arg) => ensureAndroidEmulator().rotate(arg));
+  ipcMain.handle(IPC.androidEmulatorScreenshot, async (_event, arg) => ensureAndroidEmulator().screenshot(arg));
 
   ipcMain.handle(IPC.appControlGetStatus, async (event, arg) => {
     guardAppControlIpc(event, IPC.appControlGetStatus, { windowMs: 10_000, max: 80 });

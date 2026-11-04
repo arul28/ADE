@@ -798,6 +798,16 @@ ade screen start --text                               # Windows: the private sea
 ade screen start --shared --reason "<why>" --text     # Windows: ask the user in this chat for their main desktop; their Allow is the consent
 ade screen focus --window <id> --text                 # Windows: raise one of this lane's windows; also: minimize, close
 ade screen setup --allow-prompt --text                # Windows: the user's one-time admin step; also: takeover (user only)
+# Android emulator: one per lane, on the machine that runs the lane's brain.
+ade android status --text                             # SDK, tools, acceleration, and this lane's emulator
+ade android devices --profiles --text                 # AVDs (and the lane holding each), system images, hardware profiles
+ade android device-create --profile medium_phone --text  # make an AVD for this lane and boot it; --image <pkg>, --no-start
+ade android device-attach --avd <name> --text         # hold an AVD no other lane holds, and boot it
+ade android start --text                              # also: stop; device-detach [--keep] (an ADE-made AVD is deleted unless --keep)
+ade android screenshot --out shot.png --text          # PNG on the emulator's machine
+ade android tap 540 1200 --text                       # device pixels; also: swipe x1 y1 x2 y2 --duration-ms 300, button back, type "hi"
+ade android rotate landscape --text                   # lock the screen to portrait or landscape; apps that fix their orientation keep it
+ade android device-create --profile medium_phone --machine windows --text  # on another machine, for this chat's work copy there (no new lane); --lane <id> for a lane there
 ade --socket app-control launch --command "npm run dev" --text
 ade --socket app-control connect --cdp-port 9222 --text           # attach to an already-running app
 ade --socket app-control focus --text

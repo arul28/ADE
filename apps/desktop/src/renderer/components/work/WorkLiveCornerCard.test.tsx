@@ -42,8 +42,8 @@ import {
  */
 const fakeDecoder = { playing: false };
 
-vi.mock("../chat/H264StreamView", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../chat/H264StreamView")>();
+vi.mock("../device/H264StreamView", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../device/H264StreamView")>();
   const { useEffect } = await import("react");
   function FakeH264StreamView(props: Parameters<typeof actual.H264StreamView>[0]) {
     useEffect(() => {

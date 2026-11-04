@@ -2,6 +2,7 @@
 
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type * as WorkLiveIosPictureInPicture from "../work/workLiveIosPictureInPicture";
 
 vi.mock("./AppleDeviceStage", () => ({
   AppleDeviceStage: (props: { className?: string; interactive?: boolean }) => (
@@ -19,7 +20,7 @@ vi.mock("./AppleDeviceStage", () => ({
 
 /** Mutable so a test can mount the player BEFORE its first frame. */
 const stream = {
-  frameVersion: 1,
+  hasFrame: true,
   state: "live" as string,
   error: null as string | null,
   gaveUp: false,
@@ -40,7 +41,7 @@ vi.mock("./useAppleDeviceStream", () => ({
       height: 2_556,
       error: stream.error,
       chip: null,
-      frameVersion: stream.frameVersion,
+      hasFrame: stream.hasFrame,
       streamStatus: null,
       handleReaderStatus: vi.fn(),
       handleDimensions: vi.fn(),
@@ -56,7 +57,7 @@ vi.mock("./useAppleDeviceStream", () => ({
 const pipSessions: { video: HTMLVideoElement; stop: ReturnType<typeof vi.fn> }[] = [];
 
 vi.mock("../work/workLiveIosPictureInPicture", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../work/workLiveIosPictureInPicture")>();
+  const actual = await importOriginal<typeof WorkLiveIosPictureInPicture>();
   return {
     ...actual,
     enterCanvasPictureInPicture: vi.fn(async () => {
@@ -101,7 +102,7 @@ const TARGET = {
 const SURFACE = { laneId: "lane-1", runtimePin: null, boundBinding: null };
 
 beforeEach(() => {
-  stream.frameVersion = 1;
+  stream.hasFrame = true;
   stream.state = "live";
   stream.error = null;
   stream.gaveUp = false;
@@ -234,7 +235,7 @@ describe("AppleDeviceMiniPlayer", () => {
    */
   describe("the handover", () => {
     it("paints the pane's last frame in its very first render, on the stage's own box", () => {
-      stream.frameVersion = 0;
+      stream.hasFrame = false;
       noteAppleMiniPlayerPoster("pro", "data:image/jpeg;base64,AAA");
       render(<AppleDeviceMiniPlayer surface={SURFACE} onOpenInPane={vi.fn()} />);
       act(() => openAppleMiniPlayer(TARGET));
@@ -249,7 +250,7 @@ describe("AppleDeviceMiniPlayer", () => {
     });
 
     it("retires the poster the moment a real frame lands", () => {
-      stream.frameVersion = 1;
+      stream.hasFrame = true;
       noteAppleMiniPlayerPoster("pro", "data:image/jpeg;base64,AAA");
       render(<AppleDeviceMiniPlayer surface={SURFACE} onOpenInPane={vi.fn()} />);
       act(() => openAppleMiniPlayer(TARGET));
@@ -257,7 +258,7 @@ describe("AppleDeviceMiniPlayer", () => {
     });
 
     it("shows no poster at all when the player was opened by hand", () => {
-      stream.frameVersion = 0;
+      stream.hasFrame = false;
       render(<AppleDeviceMiniPlayer surface={SURFACE} onOpenInPane={vi.fn()} />);
       act(() => openAppleMiniPlayer(TARGET));
       expect(document.querySelector("[data-apple-mini-poster]")).toBeNull();
@@ -276,14 +277,14 @@ describe("AppleDeviceMiniPlayer", () => {
       (HTMLVideoElement.prototype as unknown as { requestPictureInPicture: unknown })
         .requestPictureInPicture = vi.fn();
 
-      stream.frameVersion = 0;
+      stream.hasFrame = false;
       const view = render(<AppleDeviceMiniPlayer surface={SURFACE} onOpenInPane={vi.fn()} />);
       act(() => openAppleMiniPlayer(TARGET));
       fireEvent.pointerEnter(screen.getByRole("group", { name: "iPhone 17 Pro, floating" }));
       expect((screen.getByRole("button", { name: "Picture in picture" }) as HTMLButtonElement).disabled).toBe(true);
 
       // Disabled, never hidden: the control keeps its place in the bar.
-      stream.frameVersion = 1;
+      stream.hasFrame = true;
       view.rerender(<AppleDeviceMiniPlayer surface={SURFACE} onOpenInPane={vi.fn()} />);
       fireEvent.pointerEnter(screen.getByRole("group", { name: "iPhone 17 Pro, floating" }));
       expect((screen.getByRole("button", { name: "Picture in picture" }) as HTMLButtonElement).disabled).toBe(false);

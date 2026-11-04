@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { withRemoteAppleArgs, withRemoteShellArgs } from "./cliRemoteWork";
+import { withRemoteAndroidArgs, withRemoteAppleArgs, withRemoteShellArgs } from "./cliRemoteWork";
 import { THIS_MACHINE_NAME } from "../../desktop/src/shared/machineIdentity";
 import { pickLiveCheckout } from "../../desktop/src/shared/crossMachineHandoff";
 import { gitRemoteIdentity } from "../../desktop/src/main/services/github/githubSshAlias";
@@ -67,6 +67,8 @@ const MACHINE_TARGETABLE_PRIMARIES: ReadonlySet<string> = new Set([
   "windows-desktop",
   "windows-desk",
   "app-control",
+  // The lane's Android emulator runs where that machine's brain runs.
+  "android",
   "usage",
 ]);
 /**
@@ -119,7 +121,7 @@ export function extractMachineTargeting(parsed: ParsedCli): ParsedCli {
       }
       throw new CliUsageError(
         `ade ${typed} runs on this machine only; --machine and --all-machines don't apply to it. `
-        + "Commands that run on another machine: chat, lanes, shell, terminal, projects, usage, apple, screen (mac-desktop, windows-desktop), app-control.",
+        + "Commands that run on another machine: chat, lanes, shell, terminal, projects, usage, apple, android, screen (mac-desktop, windows-desktop), app-control.",
       );
     }
     return parsed;
@@ -585,6 +587,9 @@ export async function createMachineRemoteConnection(
         const proofAction = appleActionFiledAsProof(appleParams);
         if (proofAction) return await fileRemoteAppleProofHere(appleParams, proofAction);
         return await callRemote(method, appleParams);
+      }
+      if (method === "ade/actions/call" && params?.name === "run_ade_action" && isRecord(params.arguments) && params.arguments.domain === "android_emulator") {
+        return await callRemote(method, withRemoteAndroidArgs(params, roots.workspaceRoot));
       }
       if (method === "ade/actions/call" && (params?.name === "list_computer_use_artifacts" || params?.name === "review_computer_use_artifact")) {
         // A proof command's verify step checks the drawer it filed into, and a

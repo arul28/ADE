@@ -21,26 +21,19 @@
 
 import type { OpenProjectBinding } from "../../../shared/types";
 import { laneOnMachineKey } from "../../lib/chatMachineRouting";
+import { createStreamLeaseTable } from "../device/streamLease";
 
-type AppleStreamLeaseEntry = {
-  count: number;
+/**
+ * What Apple keeps on top of the shared count and epoch (the epoch is which
+ * RUN of the stream a holder belongs to; see `releaseAppleStreamLease`).
+ */
+type AppleStreamLeaseMeta = {
   /** The key the first holder took it under. */
   key: AppleStreamLeaseKey;
-  /**
-   * Which RUN of this stream the holders belong to.
-   *
-   * Bumped every time the count rises from zero, so "the stream that was
-   * running when I took my lease" is a value a releaser can carry. A release
-   * stamped with an older epoch is a message from a stream that has already
-   * ended, and it must not be allowed to stop the one running now — see
-   * `releaseAppleStreamLease`.
-   */
-  epoch: number;
   viewer?: AppleStreamViewer;
 };
 
-const leases = new Map<string, AppleStreamLeaseEntry>();
-let epochCounter = 0;
+const leases = createStreamLeaseTable<AppleStreamLeaseMeta>();
 
 /**
  * What each held stream actually IS, so a surface that holds no lease of its
@@ -107,17 +100,9 @@ export function acquireAppleStreamLease(
   /** What this viewer is watching. Omitted by a holder that only parks a count. */
   viewer?: AppleStreamViewer,
 ): { first: boolean; epoch: number } {
-  const entry = leases.get(key.id);
-  if (!entry || entry.count <= 0) {
-    epochCounter += 1;
-    const fresh: AppleStreamLeaseEntry = { count: 1, epoch: epochCounter, key };
-    if (viewer) fresh.viewer = viewer;
-    leases.set(key.id, fresh);
-    return { first: true, epoch: fresh.epoch };
-  }
-  entry.count += 1;
-  if (viewer) entry.viewer = viewer;
-  return { first: false, epoch: entry.epoch };
+  const { first, epoch, meta } = leases.acquire(key.id, () => ({ key }));
+  if (viewer) meta.viewer = viewer;
+  return { first, epoch };
 }
 
 /**
@@ -128,11 +113,6 @@ export function acquireAppleStreamLease(
  * released must not be able to stop a stream a LATER viewer has since started.
  */
 export function releaseAppleStreamLease(key: AppleStreamLeaseKey, epoch?: number): { last: boolean } {
-  const entry = leases.get(key.id);
-  if (!entry || entry.count <= 0) {
-    leases.delete(key.id);
-    return { last: false };
-  }
   /*
    * A release from a previous run is not this run's business.
    *
@@ -144,15 +124,10 @@ export function releaseAppleStreamLease(key: AppleStreamLeaseKey, epoch?: number
    * `running: true` (its own short-circuit then refuses to start another one)
    * while the helper has stopped encoding, and the pane sits on "Connecting
    * video" until the renderer is reloaded. Stamping the epoch makes that
-   * message from the past a no-op instead of a race.
+   * message from the past a no-op instead of a race. The shared table makes
+   * both checks.
    */
-  if (epoch !== undefined && epoch !== entry.epoch) return { last: false };
-  entry.count -= 1;
-  if (entry.count === 0) {
-    leases.delete(key.id);
-    return { last: true };
-  }
-  return { last: false };
+  return leases.release(key.id, epoch);
 }
 
 /**
@@ -169,10 +144,11 @@ export function appleStreamViewerForLane(
 ): (AppleStreamViewer & { key: AppleStreamLeaseKey }) | null {
   const wanted = laneId?.trim() || null;
   if (!wanted) return null;
-  for (const entry of leases.values()) {
-    if (entry.count <= 0 || !entry.viewer) continue;
-    if (entry.viewer.pinKey !== pinKey) continue;
-    if (entry.viewer.laneId === wanted) return { ...entry.viewer, key: entry.key };
+  for (const [, entry] of leases.entries()) {
+    const viewer = entry.meta.viewer;
+    if (entry.count <= 0 || !viewer) continue;
+    if (viewer.pinKey !== pinKey) continue;
+    if (viewer.laneId === wanted) return { ...viewer, key: entry.meta.key };
   }
   return null;
 }
@@ -190,9 +166,9 @@ export function appleStreamViewerForLane(
 export function forgetAppleStreamLeasesForLane(laneId: string | null | undefined): void {
   const wanted = laneId?.trim() || null;
   if (!wanted) return;
-  for (const [id, entry] of [...leases]) {
+  for (const [id, entry] of [...leases.entries()]) {
     // The entry's own lane also catches a parked hold, which has no viewer.
-    if (entry.key.laneId === wanted || entry.viewer?.laneId === wanted) leases.delete(id);
+    if (entry.meta.key.laneId === wanted || entry.meta.viewer?.laneId === wanted) leases.forget(id);
   }
 }
 
@@ -205,20 +181,20 @@ export function forgetAppleStreamLeasesForLane(laneId: string | null | undefined
  */
 export function appleStreamLaneLeaseCount(key: AppleStreamLeaseKey): number {
   let count = 0;
-  for (const entry of leases.values()) {
-    if (entry.key.laneScope === key.laneScope) count += Math.max(0, entry.count);
+  for (const [, entry] of leases.entries()) {
+    if (entry.meta.key.laneScope === key.laneScope) count += Math.max(0, entry.count);
   }
   return count;
 }
 
 /** How many viewers hold this stream. Diagnostics and tests. */
 export function appleStreamLeaseCount(key: AppleStreamLeaseKey): number {
-  return leases.get(key.id)?.count ?? 0;
+  return leases.count(key.id);
 }
 
 /** Which run this key is on, or 0 when nobody holds it. Diagnostics and tests. */
 export function appleStreamLeaseEpoch(key: AppleStreamLeaseKey): number {
-  return leases.get(key.id)?.epoch ?? 0;
+  return leases.epoch(key.id);
 }
 
 /** Test-only: drops every lease. */

@@ -660,6 +660,26 @@ export const IPC = {
   macDesktopEvent: "ade.macDesktop.event",
   /** Pushed to the renderer when that Escape fires. */
   macDesktopEscapeHotkeyPressed: "ade.macDesktop.escapeHotkeyPressed",
+  // The lane's Android emulator. One channel per `AndroidEmulatorPreloadApi`
+  // method that reaches the service; the local arm behind the
+  // `android_emulator` action domain. Not gated on this desktop's platform.
+  androidEmulatorGetStatus: "ade.androidEmulator.getStatus",
+  androidEmulatorListDevices: "ade.androidEmulator.listDevices",
+  androidEmulatorCreateDevice: "ade.androidEmulator.createDevice",
+  androidEmulatorAttachDevice: "ade.androidEmulator.attachDevice",
+  androidEmulatorStart: "ade.androidEmulator.start",
+  androidEmulatorStop: "ade.androidEmulator.stop",
+  androidEmulatorReleaseDevice: "ade.androidEmulator.releaseDevice",
+  androidEmulatorDeleteDevice: "ade.androidEmulator.deleteDevice",
+  androidEmulatorStartStream: "ade.androidEmulator.startStream",
+  androidEmulatorStopStream: "ade.androidEmulator.stopStream",
+  androidEmulatorGetStreamStatus: "ade.androidEmulator.getStreamStatus",
+  androidEmulatorSendTouch: "ade.androidEmulator.sendTouch",
+  androidEmulatorSendKey: "ade.androidEmulator.sendKey",
+  androidEmulatorSendText: "ade.androidEmulator.sendText",
+  androidEmulatorRotate: "ade.androidEmulator.rotate",
+  androidEmulatorScreenshot: "ade.androidEmulator.screenshot",
+  androidEmulatorEvent: "ade.androidEmulator.event",
   appControlGetStatus: "ade.appControl.getStatus",
   appControlLaunch: "ade.appControl.launch",
   appControlLaunchInTerminal: "ade.appControl.launchInTerminal",

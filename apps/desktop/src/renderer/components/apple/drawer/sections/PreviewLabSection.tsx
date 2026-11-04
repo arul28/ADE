@@ -8,7 +8,7 @@ import {
   Row,
   Subhead,
   SwitchRow,
-} from "../drawerPrimitives";
+} from "../../../ui/drawerPrimitives";
 import type { AppleDrawerContext } from "../drawerContext";
 
 export type AppleRenderedPreview = { dataUrl: string; targetLabel: string };

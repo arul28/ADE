@@ -171,6 +171,7 @@ import { ADE_SUGGESTIONS } from "./onboarding/adeTipsSuggestions";
 import { EMPTY_SUGGESTIONS_STATE, SUGGESTIONS_STORAGE_KEY, type SuggestionsState } from "./onboarding/situationalSuggestions";
 import { ONBOARDING_PROGRESS_STORAGE_KEY, type OnboardingProgress } from "./onboarding/onboardingProgress";
 import { resetOnboardingTiers } from "./onboarding/resetOnboardingTiers";
+import { MOCK_STREAM_URL, createMockAndroidEmulator } from "./browserMockAndroid";
 
 // The browser preview holds no power locks, so it reports the honest default.
 const MOCK_KEEP_AWAKE_SNAPSHOT = INERT_KEEP_AWAKE_SNAPSHOT;
@@ -2281,6 +2282,24 @@ const BUILTIN_MOCK_SESSIONS: any[] = [
       targetId: "mock-session-codex-1",
       launch: {},
     },
+    // `?mockAndroidRemote`: the chat drove the Studio Mac's Android emulator
+    // through its work copy there (`ade android … --machine "Studio Mac"`).
+    ...(browserMockFlag("mockAndroidRemote")
+      ? {
+        remoteWork: [{
+          machineKey: "mk_studio_mac",
+          machineName: "Studio Mac",
+          machinePlatform: "darwin",
+          projectId: "mock-project-studio",
+          projectRootPath: "/Users/mock/Projects/ADE",
+          terminalIds: [],
+          workCopyLaneId: "remote-work-0a1b2c3d4e5f",
+          usesSimulator: false,
+          usesAndroidEmulator: true,
+          lastStartedAt: new Date().toISOString(),
+        }],
+      }
+      : {}),
   },
   {
     id: "mock-session-shell-1",
@@ -2929,6 +2948,47 @@ function setBrowserMockDemoChatRunning(sessionId: string, running: boolean): voi
   row.endedAt = running ? null : new Date().toISOString();
   notifyBrowserMockSessionsChanged(sessionId);
 }
+
+/**
+ * `?mockRemoteMidTurn=android|ios`: the Codex chat is in a turn, and 3 s after
+ * load it starts driving the Studio Mac's emulator (or simulator) through its
+ * work copy there. The turn began at the top of the hour, so a reload inside
+ * the hour is the same turn and the same use.
+ */
+(function startBrowserMockRemoteMidTurn() {
+  let kind: string | null = null;
+  try {
+    kind = new URLSearchParams(window.location.search).get("mockRemoteMidTurn");
+  } catch {
+    return;
+  }
+  if (kind !== "android" && kind !== "ios") return;
+  const row = MOCK_SESSIONS.find((entry) => entry.id === "mock-session-codex-1");
+  if (!row) return;
+  const turnStart = new Date(Math.floor(Date.now() / 3_600_000) * 3_600_000).toISOString();
+  row.status = "running";
+  row.runtimeState = "running";
+  row.endedAt = null;
+  row.currentTurnStartedAt = turnStart;
+  row.remoteWork = [];
+  row.remoteWorkActiveMachineKeys = [];
+  window.setTimeout(() => {
+    row.remoteWork = [{
+      machineKey: "mk_studio_mac",
+      machineName: "Studio Mac",
+      machinePlatform: "darwin",
+      projectId: "mock-project-studio",
+      projectRootPath: "/Users/mock/Projects/ADE",
+      terminalIds: [],
+      workCopyLaneId: "remote-work-0a1b2c3d4e5f",
+      usesSimulator: kind === "ios",
+      usesAndroidEmulator: kind === "android",
+      lastStartedAt: new Date().toISOString(),
+    }];
+    row.remoteWorkActiveMachineKeys = ["mk_studio_mac"];
+    notifyBrowserMockSessionsChanged(row.id);
+  }, 3_000);
+})();
 
 /** A chat the demo's New Chat page starts: a real row in the session list, so the app opens it. */
 function createBrowserMockDemoChat(args: any): any {
@@ -6127,7 +6187,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         name: "Studio Mac",
         hostname: "studio.local",
         transport: "paired",
-        pairedMachine: { hostIdentity: "mock-studio" },
+        pairedMachine: { hostIdentity: "mock-studio", machineKey: "mk_studio_mac" },
         sshUser: null,
         port: null,
         sshKeyPath: null,
@@ -6144,7 +6204,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
             name: "Studio Mac",
             hostname: "studio.local",
             transport: "paired",
-            pairedMachine: { hostIdentity: "mock-studio" },
+            pairedMachine: { hostIdentity: "mock-studio", machineKey: "mk_studio_mac" },
             sshUser: null,
             port: null,
             sshKeyPath: null,
@@ -8335,9 +8395,14 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         laneDevice: null,
         helper: { present: true, path: "/mock/ade-sim-helper", version: "mock" },
       }),
-      deviceList: resolvedArg({
+      // `?mockIosLive`: the lane holds the booted iPhone 17 Pro, which streams
+      // the Android mock's test picture and records each tap in
+      // `window.__adeMockIosTaps`, so iOS taps can be checked by number.
+      deviceList: async (args?: { laneId?: string | null }) => ({
         installed: BROWSER_MOCK_SIMULATORS,
-        lane: null,
+        lane: browserMockFlag("mockIosLive") && args?.laneId
+          ? { laneId: args.laneId, udid: "pro", name: "iPhone 17 Pro", origin: "attached", family: "iphone", runtime: "iOS 26.3", createdAt: "2026-11-03T09:00:00.000Z" }
+          : null,
         owners: [{
           udid: "repro",
           laneId: "lane-other",
@@ -8355,7 +8420,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           root: "/mock/devices",
           measuredAt: "2026-09-22T00:00:00.000Z",
         },
-      } as any),
+      }) as any,
       deviceStart: resolvedArg({} as any),
       deviceStop: resolvedArg(undefined as any),
       deviceCreate: resolvedArg({} as any),
@@ -8395,7 +8460,26 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       attachToChatSession: resolved(null),
       shutdown: resolvedArg({ ok: true } as any),
       screenshot: resolvedArg({} as any),
-      getScreenSnapshot: resolvedArg({} as any),
+      // `?mockIosLive`: Inspect finds one element, the white circle of the
+      // test picture, so its box can be checked against the circle on screen.
+      getScreenSnapshot: browserMockFlag("mockIosLive")
+        ? async () => {
+          const frame = { x: 441, y: 1004, width: 92, height: 92 };
+          const circle = {
+            id: "mock-white-circle", source: "accessibility", layer: "accessibility", label: "White circle", value: null,
+            role: "button", elementType: "Button", identifier: "white-circle", frame, pixelFrame: frame,
+            componentId: null, sourceFile: null, sourceLine: null, metadata: {}, ref: "white-circle",
+          };
+          return {
+            deviceUdid: "pro",
+            capturedAt: new Date().toISOString(),
+            screen: { width: 576, height: 1280, scale: 1 },
+            elements: [circle],
+            hitElement: null,
+            providers: [{ source: "accessibility", available: true, elementCount: 1 }],
+          } as any;
+        }
+        : resolvedArg({} as any),
       getInspectorSnapshot: resolved(null),
       inspectPoint: resolvedArg({} as any),
       getPreviewCapability: resolvedArg(BROWSER_MOCK_PREVIEW_CAPABILITY_UNSUPPORTED as any),
@@ -8437,10 +8521,22 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       } as any),
       renderPreview: resolvedArg({} as any),
       openPreviewWorkspace: resolved({ ok: true as const, path: "/tmp" }),
-      startStream: resolvedArg({ streaming: false, streamUrl: null, transport: null } as any),
+      startStream: browserMockFlag("mockIosLive")
+        ? async () => ({
+          deviceUdid: "pro",
+          running: true,
+          streaming: true,
+          streamUrl: MOCK_STREAM_URL,
+          transport: { url: MOCK_STREAM_URL, token: "mock-token", width: 576, height: 1280 },
+        }) as any
+        : resolvedArg({ streaming: false, streamUrl: null, transport: null } as any),
       stopStream: resolvedArg({ streaming: false, streamUrl: null } as any),
       getStreamStatus: resolvedArg({ streaming: false, streamUrl: null } as any),
-      tap: resolved({ ok: true as const }),
+      tap: async (args: unknown) => {
+        const taps = ((window as unknown as { __adeMockIosTaps?: unknown[] }).__adeMockIosTaps ??= []);
+        taps.push(args);
+        return { ok: true as const };
+      },
       longPress: resolved({ ok: true as const, action: "long-press" as const, durationMs: 1000 }),
       typeText: resolved({ ok: true as const }),
       drag: resolved({ ok: true as const }),
@@ -8502,9 +8598,16 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         caption: null,
         capturedAt: now,
       }),
-      resolveStreamUrl: resolvedArg({ url: null, forwarded: false, error: null }),
+      resolveStreamUrl: browserMockFlag("mockIosLive")
+        ? async (url: string) => ({ url, forwarded: false, error: null })
+        : resolvedArg({ url: null, forwarded: false, error: null }),
+      // The pane's recordings drawer reads these on mount.
+      recordList: resolvedArg([]),
+      recordingsTotalBytes: resolvedArg(0),
       onEvent: () => () => {},
     },
+    // Six AVDs, an SDK and one booted lane device; `?mockAndroid=` picks another state.
+    androidEmulator: createMockAndroidEmulator(),
     /**
      * Mac Desktop in the hosted web client: `getStatus` answers honestly with
      * `supported: false`, which is what hides the tab, and every other method
@@ -8514,7 +8617,9 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
      */
     macDesktop: {
       getStatus: resolvedArg({
-        platform: "browser" as unknown as NodeJS.Platform,
+        // `?mockHostPlatform=darwin` shows the host-bound tools (Apple
+        // Development) so a pane can be looked at beside them.
+        platform: (new URLSearchParams(window.location.search).get("mockHostPlatform") ?? "browser") as NodeJS.Platform,
         supported: false,
         unsupportedReason: "The hosted web client cannot host a Mac display.",
         driver: {

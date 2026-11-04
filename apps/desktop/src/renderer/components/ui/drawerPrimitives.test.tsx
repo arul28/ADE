@@ -2,24 +2,15 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import {
-  APPLE_DRAWER_GROUPS,
   DrawerSegmented,
   DrawerSwitch,
   Group,
   Subhead,
-  isAppleDrawerGroupId,
 } from "./drawerPrimitives";
 
 afterEach(cleanup);
 
 describe("drawer primitives", () => {
-  it("names the four groups §B1 asks for, in order", () => {
-    expect(APPLE_DRAWER_GROUPS).toEqual(["device", "app", "capture", "preview-lab"]);
-    expect(isAppleDrawerGroupId("capture")).toBe(true);
-    expect(isAppleDrawerGroupId("recording")).toBe(false);
-    expect(isAppleDrawerGroupId(null)).toBe(false);
-  });
-
   describe("Group", () => {
     function renderGroup(open: boolean, onToggle = vi.fn()) {
       return {

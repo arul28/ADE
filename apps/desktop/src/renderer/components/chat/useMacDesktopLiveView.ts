@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
 import type { OpenProjectBinding } from "../../../shared/types";
 import type { MacDesktopStreamStatus } from "../../../shared/types/macDesktop";
-import type { H264StreamSource, H264StreamStatus } from "./h264StreamPlayer";
+import type { H264StreamSource, H264StreamStatus } from "../device/h264StreamPlayer";
 import { setMacDesktopFrame } from "./macDesktopFrameStore";
 import {
   MAC_DESKTOP_LIVE_VIEW_PANE_PRIORITY,

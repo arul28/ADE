@@ -4,25 +4,25 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { MAC_DESKTOP_STREAM_PATH } from "../../../shared/types/macDesktop";
 import { MAC_DESKTOP_INPUT_PATH } from "./macDesktopStreamServer";
 import {
-  IOS_VIDEO_RECORD_TYPE_ACCESS_UNIT,
-  IOS_VIDEO_RECORD_TYPE_CONFIG,
-} from "../../../shared/types/iosSimulator";
+  VIDEO_RECORD_TYPE_ACCESS_UNIT,
+  VIDEO_RECORD_TYPE_CONFIG,
+} from "../../../shared/types/videoRecords";
 import { encodeVideoRecord } from "../media/videoRecords";
 // The renderer's own reader, used as the assertion: a test that re-implements
 // the framing proves the test agrees with itself and nothing else.
-import { createIosSimVideoRecordParser } from "../../../renderer/components/chat/iosSimVideoRecords";
+import { createVideoRecordParser } from "../../../renderer/components/device/videoRecordParser";
 import { createMacDesktopStreamServer } from "./macDesktopStreamServer";
 
 /** What the Swift driver actually writes: the config payload is a bare codec. */
 const driverConfigRecord = (codec: string): Buffer =>
-  Buffer.from(encodeVideoRecord(IOS_VIDEO_RECORD_TYPE_CONFIG, Buffer.from(codec, "utf8")));
+  Buffer.from(encodeVideoRecord(VIDEO_RECORD_TYPE_CONFIG, Buffer.from(codec, "utf8")));
 
 const driverAccessUnit = (payload: Buffer, keyframe: boolean): Buffer =>
-  Buffer.from(encodeVideoRecord(IOS_VIDEO_RECORD_TYPE_ACCESS_UNIT, payload, { keyframe }));
+  Buffer.from(encodeVideoRecord(VIDEO_RECORD_TYPE_ACCESS_UNIT, payload, { keyframe }));
 
 /** Reads the response body until `count` records have been parsed, or it ends. */
 async function readRecords(response: Response, count: number) {
-  const parser = createIosSimVideoRecordParser();
+  const parser = createVideoRecordParser();
   const reader = response.body!.getReader();
   const records: ReturnType<typeof parser.push> = [];
   while (records.length < count) {
@@ -215,7 +215,7 @@ describe("macDesktopStreamServer", () => {
   it("passes a config the helper already wrote as JSON through unchanged", async () => {
     const json = JSON.stringify({ codec: "avc1.42E01E", width: 800, height: 600, annexB: true });
     const upstream = await startUpstream(Buffer.concat([
-      Buffer.from(encodeVideoRecord(IOS_VIDEO_RECORD_TYPE_CONFIG, Buffer.from(json, "utf8"))),
+      Buffer.from(encodeVideoRecord(VIDEO_RECORD_TYPE_CONFIG, Buffer.from(json, "utf8"))),
       driverAccessUnit(Buffer.from([9]), true),
     ]));
     cleanups.push(upstream.close);

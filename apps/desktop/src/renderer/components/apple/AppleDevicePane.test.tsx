@@ -63,7 +63,7 @@ vi.mock("./useAppleDeviceStream", () => ({
     height: 2_556,
     error: null,
     chip: null,
-    frameVersion: 1,
+    hasFrame: true,
     streamStatus: null,
     handleReaderStatus: vi.fn(),
     handleDimensions: vi.fn(),
@@ -93,7 +93,6 @@ const { AppleDevicePane } = await import("./AppleDevicePane");
 const { DialogHost } = await import("../ui/dialog");
 const { __resetDialogRequestsForTests } = await import("../ui/dialog/confirm");
 const { APPLE_LOADING_RECHECK_MS, APPLE_START_GIVE_UP_MS } = await import("./useAppleDeviceStartTracker");
-const { expectNoHorizontalOverflow } = await import("./testLayout");
 const { useAppStore } = await import("../../state/appStore");
 
 /* ── Fixtures ─────────────────────────────────────────────────────────────── */

@@ -77,6 +77,9 @@ const EMBEDDED_EXCLUDED_NATIVE_PATHS = [
   // signs native Mach-O without the entitlement the simulator helper needs.
   "native/native/ade-sim-helper",
   "native/native/ade-media",
+  // The scrcpy server for Android streaming (package-native-deps.mjs). The
+  // SDK profile streams no emulators.
+  "native/android",
 ];
 
 export function runtimePackageName(target) {

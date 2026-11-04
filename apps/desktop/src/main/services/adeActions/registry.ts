@@ -112,6 +112,7 @@ import {
 } from "../../../../../ade-cli/src/services/push/pushRelayClient";
 import type { ComputerUseOwnerSnapshotArgs } from "../../../shared/types/computerUseArtifacts";
 import { buildMacDesktopDomainService } from "../macDesktop/macDesktopActionDomain";
+import { buildAndroidDomainService } from "../android/androidActionDomain";
 import { normalizeExternalSessionDetailArgs } from "../externalSessions/externalSessionDetail";
 import type {
   ChatMentionSuggestArgs,
@@ -4254,6 +4255,9 @@ export function getAdeActionDomainServices(
     // One private macOS screen per lane. The domain's own readers and its
     // platform gate live beside the service in `macDesktopActionDomain.ts`.
     mac_desktop: toService(buildMacDesktopDomainService(runtime)),
+    // One Android emulator per lane. The argument readers live beside the
+    // service in `androidActionDomain.ts`; null service = no domain.
+    android_emulator: toService(buildAndroidDomainService(runtime)),
     app_control: toService(runtime.appControlService),
     built_in_browser: toService(runtime.builtInBrowserService),
     automations: automationsEnabled ? toService(buildAutomationsDomainService(runtime)) : null,

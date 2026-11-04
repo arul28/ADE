@@ -3,13 +3,15 @@ import https from "node:https";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 
 import {
-  IOS_VIDEO_RECORD_FLAG_KEYFRAME,
-  IOS_VIDEO_RECORD_HEADER_BYTES,
-  IOS_VIDEO_RECORD_MAGIC,
-  IOS_VIDEO_RECORD_TYPE_ACCESS_UNIT,
-  IOS_VIDEO_RECORD_TYPE_CONFIG,
   type AppleDevicePosture,
 } from "../../../shared/types/iosSimulator";
+import {
+  VIDEO_RECORD_FLAG_KEYFRAME,
+  VIDEO_RECORD_HEADER_BYTES,
+  VIDEO_RECORD_MAGIC,
+  VIDEO_RECORD_TYPE_ACCESS_UNIT,
+  VIDEO_RECORD_TYPE_CONFIG,
+} from "../../../shared/types/videoRecords";
 import { appleDuoScreenName } from "../../../shared/appleOrientation";
 import {
   createAppleStreamBitrateAdapter,
@@ -280,13 +282,13 @@ export function splitAppleStreamRecords(
 ): { records: AppleStreamRecord[]; rest: Uint8Array } {
   const records: AppleStreamRecord[] = [];
   let offset = 0;
-  while (buffer.byteLength - offset >= IOS_VIDEO_RECORD_HEADER_BYTES) {
+  while (buffer.byteLength - offset >= VIDEO_RECORD_HEADER_BYTES) {
     const view = new DataView(
       buffer.buffer,
       buffer.byteOffset + offset,
-      IOS_VIDEO_RECORD_HEADER_BYTES,
+      VIDEO_RECORD_HEADER_BYTES,
     );
-    if (view.getUint32(0, false) !== IOS_VIDEO_RECORD_MAGIC) {
+    if (view.getUint32(0, false) !== VIDEO_RECORD_MAGIC) {
       throw new Error("The Apple device stream is not framed as expected.");
     }
     const type = view.getUint8(4);
@@ -295,11 +297,11 @@ export function splitAppleStreamRecords(
     if (length > MAX_RECORD_BYTES) {
       throw new Error(`The Apple device stream declared a ${length} byte record.`);
     }
-    const end = offset + IOS_VIDEO_RECORD_HEADER_BYTES + length;
+    const end = offset + VIDEO_RECORD_HEADER_BYTES + length;
     if (buffer.byteLength < end) break;
     records.push({
       type,
-      keyframe: (flags & IOS_VIDEO_RECORD_FLAG_KEYFRAME) !== 0,
+      keyframe: (flags & VIDEO_RECORD_FLAG_KEYFRAME) !== 0,
       bytes: buffer.subarray(offset, end).slice(),
     });
     offset = end;
@@ -498,7 +500,7 @@ export function createAppleStreamRelay(deps: AppleStreamRelayDeps): AppleStreamR
 
   const sendTo = (stream: LaneStream, viewer: Viewer, record: AppleStreamRecord): void => {
     if (viewer.closed || !viewer.visible) return;
-    if (record.type === IOS_VIDEO_RECORD_TYPE_ACCESS_UNIT) {
+    if (record.type === VIDEO_RECORD_TYPE_ACCESS_UNIT) {
       if (viewer.awaitingKeyframe) {
         if (!record.keyframe) {
           requestKeyframe(stream);
@@ -547,9 +549,9 @@ export function createAppleStreamRelay(deps: AppleStreamRelayDeps): AppleStreamR
     }
     stream.buffer = split.rest;
     for (const record of split.records) {
-      if (record.type === IOS_VIDEO_RECORD_TYPE_CONFIG) {
+      if (record.type === VIDEO_RECORD_TYPE_CONFIG) {
         stream.configRecord = record;
-      } else if (record.type === IOS_VIDEO_RECORD_TYPE_ACCESS_UNIT && record.keyframe) {
+      } else if (record.type === VIDEO_RECORD_TYPE_ACCESS_UNIT && record.keyframe) {
         stream.keyframeRecord = record;
       }
       for (const viewer of [...stream.viewers]) sendTo(stream, viewer, record);

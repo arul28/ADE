@@ -145,6 +145,7 @@ import {
 import { appleLaneDerivedDataPath, endLaneDeviceOnDisk, releaseLaneAppleDevice } from "../ios/laneDeviceRelease";
 import { anotherLaneHoldsUdid, readLaneAppleDeviceRecord } from "../ios/laneDeviceRows";
 import { bareSimulatorPowerOff } from "../ios/simulatorPower";
+import { releaseAndroidLaneDevice, settleMergedAndroidDevice, sqlAndroidLaneDeviceRepo } from "../android/androidLaneRelease";
 
 /** `simctl` for the Apple-device half of a lane delete. Nothing else shells out here. */
 const execFileAsync = promisify(execFileCallback);
@@ -1604,6 +1605,14 @@ export type LaneDeleteTeardownDeps = {
    * disk by `releaseLaneAppleDevice`, which needs no service.
    */
   iosSimulatorService?: {
+    stopForLane: (laneId: string) => Promise<void>;
+  };
+  /**
+   * The lane's Android stream and the emulator ADE started for it. The AVD
+   * itself is deleted (or, if attached, released) on disk by
+   * `releaseAndroidSideOfLane`, which needs no service.
+   */
+  androidEmulatorService?: {
     stopForLane: (laneId: string) => Promise<void>;
   };
   /**
@@ -3563,11 +3572,28 @@ export function createLaneService({
                 remainingBundleIds: ended.remainingBundleIds,
               });
             }
-          }, () => undefined);
+          }, (error: unknown) => {
+            logger.warn("lane.merge.apple_device_left", {
+              laneId: duplicateId,
+              udid: orphan.device.udid,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          });
         }, 0);
       }
     } else {
       db.run("update lane_apple_devices set lane_id = ? where lane_id = ?", [keeperId, duplicateId]);
+    }
+    // The lane's Android AVD follows the same rule: the keeper keeps its own,
+    // or adopts the duplicate's. A duplicate AVD that loses is deleted on disk
+    // once the transaction has settled, and only while no lane holds it.
+    const androidRepo = sqlAndroidLaneDeviceRepo(db);
+    const duplicateAndroid = androidRepo.get(duplicateId);
+    if (duplicateAndroid && androidRepo.get(keeperId)) {
+      androidRepo.forgetLane(duplicateId);
+      setTimeout(() => settleMergedAndroidDevice(androidRepo, duplicateAndroid, logger), 0);
+    } else if (duplicateAndroid) {
+      androidRepo.moveLane(duplicateId, keeperId);
     }
     // Extra devices (`device-create --extra`) are keyed by udid, so the
     // keeper takes all of them; left behind, the cleanup pass would delete
@@ -5377,6 +5403,24 @@ export function createLaneService({
   };
 
   /**
+   * The lane's Android AVD, on archive and on delete: an AVD ADE made is
+   * deleted, the user's own AVD stays as it is. Not awaited, like the Apple side. Works with no emulator service: it never
+   * stops an emulator, and a running AVD is kept with its row.
+   */
+  const releaseAndroidSideOfLane = (laneId: string): void => {
+    void releaseAndroidLaneDevice(laneId, sqlAndroidLaneDeviceRepo(db), { logger })
+      .then((result) => {
+        if (result.reason) logger.info("lane.android_release_note", { laneId, reason: result.reason });
+      })
+      .catch((error: unknown) => {
+        logger.warn("lane.android_release_failed", {
+          laneId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+  };
+
+  /**
    * The archive itself: stop the lane's running work, run whatever the caller
    * wants done between that and the status write, then write the archived
    * status, invalidate caches, announce it.
@@ -5418,6 +5462,7 @@ export function createLaneService({
     // device (if ADE made it) and the build cache are deleted, and unarchiving
     // makes a new device on the next ask.
     releaseAppleSideOfLane(laneId, { worktreePath: row.worktree_path || null, removeRecordings: false });
+    releaseAndroidSideOfLane(laneId);
     broadcastLifecycleEvent({
       type: "lane-archived",
       laneId,
@@ -5465,6 +5510,9 @@ export function createLaneService({
     try {
       await teardownDeps?.iosSimulatorService?.stopForLane(laneId);
     } catch (error) { warn("stop_apple_device", error); }
+    try {
+      await teardownDeps?.androidEmulatorService?.stopForLane(laneId);
+    } catch (error) { warn("stop_android_device", error); }
   };
 
   const missingWorktreeRecreates = new Map<string, Promise<RecreateMissingWorktreeResult>>();
@@ -8598,6 +8646,16 @@ export function createLaneService({
             error: error instanceof Error ? error.message : String(error),
           });
         }
+        // And the lane's Android emulator, so the AVD is not running when the
+        // release below deletes it.
+        try {
+          await teardownDeps?.androidEmulatorService?.stopForLane(laneId);
+        } catch (error) {
+          logger.warn("lane.delete.stop_android_device_failed", {
+            laneId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
 
         await runStep("cleanup_env", async () => {
           if (!runtimeOpts?.teardownEnv) return { detail: "no env to clean" };
@@ -8957,6 +9015,7 @@ export function createLaneService({
           // ADE device and only releases an attached one — ADE never deletes a
           // simulator it did not create.
           releaseAppleSideOfLane(laneId, { worktreePath: row.worktree_path || null, removeRecordings: true });
+          releaseAndroidSideOfLane(laneId);
           if (!laneArtifactFiles.length || removedProofFiles === 0) return undefined;
           return removedProofFiles === laneArtifactFiles.length
             ? { detail: `${removedProofFiles} proof file(s) removed` }

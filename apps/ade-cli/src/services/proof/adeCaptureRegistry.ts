@@ -136,4 +136,5 @@ export const ADE_CAPTURE_ACTIONS: ReadonlyMap<string, AdeCaptureAction> =
     ["built_in_browser.stopRecording", resultField("path", "ade-recorder")],
     // `ade mac-desktop proof` files the frame its own `screenshot` step wrote.
     ["mac_desktop.screenshot", resultField("filePath", "ade-capture")],
+    ["android_emulator.screenshot", resultField("path", "ade-capture")],
   ]);

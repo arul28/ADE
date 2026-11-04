@@ -111,8 +111,8 @@ export type AppleDeviceOrientation = "portrait" | "portrait-upside-down" | "land
 export type AppleDevice3DViewProps = {
   /** The decoded device screen. The stage draws every frame into this canvas; the view samples it as a texture. */
   screenCanvas: HTMLCanvasElement | null;
-  /** Increments once per drawn frame; the view re-uploads the texture when it changes and otherwise renders only on interaction. */
-  frameVersion: number;
+  /** Each drawn frame (`useAppleDeviceStream`'s feed, outside React); the view re-uploads the texture on each and otherwise renders only on interaction. */
+  frames: AppleFrameFeed | null;
   family: AppleDeviceFamily;
   /** Product hint from the simulator device type, e.g. "iPhone 17 Pro"; the model map picks the closest body. */
   deviceTypeName: string | null;

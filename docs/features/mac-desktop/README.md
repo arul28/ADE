@@ -180,7 +180,7 @@ required.
 | `apps/desktop/src/renderer/components/shared/RecordingReceipt.tsx` | The recording pill and the "Saved to proof" receipt, shared with the Apple device pane. |
 | `apps/desktop/src/renderer/components/chat/useMacDesktopLiveView.ts` | The live view, its low-power idle rate, and its reconnect budget. |
 | `apps/desktop/src/renderer/components/chat/macDesktopLiveViewLease.ts` | The renderer-side ref-counted lease: one stream per lane, one decoder, pane outranking the corner card. |
-| `apps/desktop/src/renderer/components/chat/h264FrameGate.ts` | The pure sequence-gap/keyframe gate both pushed-source decoders hold P-frames with after a skipped record or a decoder error. |
+| `apps/desktop/src/renderer/components/device/h264FrameGate.ts` | The pure sequence-gap/keyframe gate both pushed-source decoders hold P-frames with after a skipped record or a decoder error. |
 | `apps/desktop/src/renderer/components/work/MacDesktopMiniPlayer.tsx` | The lane's desktop floating over the chat. |
 | `apps/desktop/src/renderer/components/shared/FloatingPlayer.tsx` | The shared floating-player shell: drag, resize from any edge, an 8 px status dot at rest, and a hover bar (Open in pane, picture in picture, Close). The floating Apple device and the floating Mac Desktop both use it. |
 | `apps/ios/ADE/Views/Work/MacDesktopCard.swift` | The phone's tools-sheet card, including the Off row and its Start button. |

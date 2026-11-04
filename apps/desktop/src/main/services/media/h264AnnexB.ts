@@ -1,9 +1,10 @@
 /**
- * Annex-B H.264 stream tools for the iOS simulator live view.
+ * Annex-B H.264 stream tools for ADE's device live views.
  *
  * ADE streams a simulator by running the vendored Swift helper on the Mac that
- * owns the simulator. The helper writes Annex-B H.264: a flat byte
- * stream where each NAL unit starts with `00 00 01` or `00 00 00 01`. The
+ * owns the simulator, and an Android emulator through scrcpy (`scrcpyVideo.ts`).
+ * Both write Annex-B H.264: a flat byte stream where each NAL unit starts with
+ * `00 00 01` or `00 00 00 01`. The
  * browser decodes it with `VideoDecoder` in Annex-B mode, so the renderer needs
  * whole access units, not arbitrary pipe chunks. A chunk boundary falls in the
  * middle of a NAL far more often than not, and a decoder that receives half a
@@ -249,7 +250,7 @@ function toHexByte(value: number): string {
  * their own when the profile and level read but a later field does not, which
  * still lets the caller build a codec string for `VideoDecoder`.
  */
-export function parseH264Sps(nalPayload: Uint8Array): {
+function parseH264Sps(nalPayload: Uint8Array): {
   codec: string;
   width: number | null;
   height: number | null;

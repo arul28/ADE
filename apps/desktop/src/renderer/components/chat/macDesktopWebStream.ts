@@ -1,6 +1,6 @@
 import type { OpenProjectBinding } from "../../../shared/types";
 import type { MacDesktopWebApi } from "../../webclient/adapter/macDesktop";
-import type { H264PushSource } from "./h264StreamPlayer";
+import type { H264PushSource } from "../device/h264StreamPlayer";
 import type { MacDesktopInputSender } from "./useMacDesktopRealInput";
 
 /**

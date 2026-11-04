@@ -9,6 +9,7 @@ import type { AppleDeviceOrientation } from "../../../shared/types";
 import { cn } from "../ui/cn";
 import { appleDeviceModel, type AppleDeviceModelSource } from "./appleDeviceModels";
 import { appleEaseFactor, createAppleDeviceOrbit, type AppleDeviceOrbit } from "./appleDeviceOrbit";
+import type { AppleFrameFeed } from "./useAppleDeviceStream";
 import { loadAppleDeviceModelInstance } from "./appleDeviceModelLoader";
 import { appleDuoHingeAfterPinch } from "./appleDuo";
 import { createProceduralDuoBody } from "./appleDuoScene";
@@ -70,8 +71,8 @@ export type AppleDevice3DFailure =
 export type AppleDevice3DViewProps = {
   /** The decoded device screen. The stage draws every frame into this canvas; the view samples it as a texture. */
   screenCanvas: HTMLCanvasElement | null;
-  /** Increments once per drawn frame; the view re-uploads the texture when it changes and otherwise renders only on interaction. */
-  frameVersion: number;
+  /** Each drawn frame; the view re-uploads the texture on each and otherwise renders only on interaction. */
+  frames: AppleFrameFeed | null;
   family: AppleDeviceFamily;
   /** Product hint from the simulator device type, e.g. "iPhone 17 Pro"; the model map picks the closest body. */
   deviceTypeName: string | null;
@@ -128,6 +129,11 @@ export type AppleDevice3DViewProps = {
   renderScreenOverlay?: ((
     deviceToView: ((point: { x: number; y: number }) => { x: number; y: number }) | null,
   ) => ReactNode) | undefined;
+  /**
+   * CSS pixels at the right edge the framed body must stay out of: the rail,
+   * while it shows. The canvas still fills the stage; only the framing moves.
+   */
+  railInset?: number | undefined;
   className?: string;
 };
 
@@ -210,6 +216,8 @@ export type AppleDeviceRenderer = Pick<Viewer, "renderShots" | "renderTurntable"
 
 type Viewer = {
   sync(props: AppleDevice3DViewProps): void;
+  /** A new frame is in the screen canvas: re-upload the texture and draw. */
+  noteFrame(): void;
   resize(width: number, height: number, pixelRatio: number): void;
   pointerDown(nx: number, ny: number, now: number, forceOrbit: boolean): "input" | "orbit" | "none";
   pointerMove(nx: number, ny: number, dx: number, dy: number, now: number): void;
@@ -298,13 +306,21 @@ function createViewer(
   let shownDistance = 0;
   let lastDistanceAt = 0;
   let viewport = { width: 0, height: 0, pixelRatio: 1 };
+  /**
+   * True while a render owns the renderer: the live loop does not draw, or it
+   * would resize the drawing buffer back to the pane between a turntable's
+   * frames (and flash the person's lighting into the recording).
+   */
+  let renderingOffscreen = false;
+  /** The rail inset and display turn the camera was last framed for. */
+  let lastRailInset = 0;
+  let lastFitRotation = layout.rotation;
   let drawingBuffer = { width: 0, height: 0, pixelRatio: 0 };
   let pointerMode: "input" | "orbit" | null = null;
   /** Where the touch in progress last was, so a cancel ends it there. */
   let lastInputHit: ScreenHit | null = null;
   let loadGen = 0;
   let currentModelKey = "";
-  let lastFrameVersion = Number.NaN;
   let lastCanvas: HTMLCanvasElement | null = null;
   let lastPoseNotice = 0;
   let restoreTimer: ReturnType<typeof setTimeout> | null = null;
@@ -341,12 +357,29 @@ function createViewer(
 
   const fitCamera = () => {
     if (!viewport.width || !viewport.height || !body) return;
-    camera.aspect = viewport.width / viewport.height;
+    const { width, height } = viewport;
     body.root.updateMatrixWorld(true);
     const bounds = new THREE.Box3().setFromObject(body.root);
     const size = bounds.getSize(new THREE.Vector3());
     const tan = Math.tan(((CAMERA_FOV * Math.PI) / 180) / 2);
-    const distance = Math.max(size.x / (tan * camera.aspect), size.y / tan) * 0.62 + Math.max(0, bounds.max.z);
+    /** Distance from the body's front face that frames it in `room` CSS pixels of width. */
+    const fitFor = (room: number) => Math.max(size.x / (tan * (room / height)), size.y / tan) * 0.62;
+    let fit = fitFor(width);
+    // The rail floats over the right edge. A body framed in the whole width
+    // that would run under it is framed in the width left of it instead, by
+    // shifting the projection's centre; one that clears it is left alone. A
+    // render's frame has no rail.
+    const inset = renderingOffscreen ? 0 : Math.min(Math.max(0, getProps().railInset ?? 0), width / 2);
+    const rightEdge = width / 2 + (bounds.max.x / (fit * tan * (width / height))) * (width / 2);
+    if (inset > 0 && rightEdge > width - inset) {
+      fit = fitFor(width - inset);
+      camera.aspect = (width + inset) / height;
+      camera.setViewOffset(width + inset, height, inset, 0, width, height);
+    } else {
+      camera.aspect = width / height;
+      camera.clearViewOffset();
+    }
+    const distance = fit + Math.max(0, bounds.max.z);
     fitDistance = Math.max(1.4, distance);
     if (!shownDistance) shownDistance = fitDistance;
     camera.position.set(0, 0, shownDistance * Math.exp(zoomLog));
@@ -639,11 +672,6 @@ function createViewer(
       lastCanvas = props.screenCanvas;
       attachTexture(props.screenCanvas);
       paintDisplay();
-      lastFrameVersion = props.frameVersion;
-      invalidate();
-    } else if (props.frameVersion !== lastFrameVersion) {
-      lastFrameVersion = props.frameVersion;
-      if (texture) texture.needsUpdate = true;
       invalidate();
     }
     // Apple's Duo model is physical (its inner display is landscape), so the
@@ -652,6 +680,17 @@ function createViewer(
     if (body && !body.physical) {
       body.orientation.rotation.z = layout.rotation;
       body.rewriteUvs(THREE, layout);
+    }
+    // The rail came or went, or the body turned a quarter and changed shape:
+    // frame it again. Kept on the old framing, a landscape body ran past both
+    // edges of the pane and under the rail.
+    const railInset = props.railInset ?? 0;
+    if (railInset !== lastRailInset || layout.rotation !== lastFitRotation) {
+      lastRailInset = railInset;
+      lastFitRotation = layout.rotation;
+      fitCamera();
+      poseDirty = true;
+      invalidate();
     }
 
     const duo = props.duo;
@@ -746,12 +785,6 @@ function createViewer(
     return shadowMesh;
   };
 
-  /**
-   * True while a render owns the renderer: the live loop does not draw, or it
-   * would resize the drawing buffer back to the pane between a turntable's
-   * frames (and flash the person's lighting into the recording).
-   */
-  let renderingOffscreen = false;
   /** A resize that arrived while a render owned the viewport, applied when it ends. */
   let pendingViewport: typeof viewport | null = null;
 
@@ -839,6 +872,11 @@ function createViewer(
 
   return {
     sync,
+    noteFrame() {
+      if (disposed) return;
+      if (texture) texture.needsUpdate = true;
+      invalidate();
+    },
     renderShots(shots, options) {
       return withRenderSetup(options, () => shots.map((shot) => {
         renderOne(shot, options);
@@ -1176,17 +1214,32 @@ export function AppleDevice3DView(props: AppleDevice3DViewProps) {
       viewerRef.current = viewer;
       if (propsRef.current.rendererRef) propsRef.current.rendererRef.current = viewer;
       trackpadDispose = bindTrackpad(canvas, viewer);
-      const { width, height } = host.getBoundingClientRect();
-      viewer.resize(width, height, window.devicePixelRatio || 1);
+      resize();
     }, () => {
       if (!cancelled) fail("3D view needs WebGL, which this window does not have.");
     });
 
+    /**
+     * The viewport is the host's LAYOUT size, the CSS pixels the inspect
+     * overlay draws in. CSS zoom (the web client's 1.1) scales the bounding
+     * rect but not the layout box, so a rect-sized viewport put the overlay's
+     * boxes 10% off; the zoom goes into the pixel ratio instead, which keeps
+     * the canvas as sharp. Pointer input reads fractions of the rect, which
+     * zoom does not change.
+     */
+    let layoutSize: { width: number; height: number } | null = null;
     const resize = () => {
-      const { width, height } = host.getBoundingClientRect();
-      viewerRef.current?.resize(width, height, window.devicePixelRatio || 1);
+      const rect = host.getBoundingClientRect();
+      const width = layoutSize?.width || rect.width;
+      const height = layoutSize?.height || rect.height;
+      const zoom = width > 0 && rect.width > 0 ? rect.width / width : 1;
+      viewerRef.current?.resize(width, height, (window.devicePixelRatio || 1) * zoom);
     };
-    const observer = new ResizeObserver(resize);
+    const observer = new ResizeObserver((entries) => {
+      const box = entries[entries.length - 1]?.contentRect;
+      if (box) layoutSize = { width: box.width, height: box.height };
+      resize();
+    });
     observer.observe(host);
     const blur = () => viewerRef.current?.cancelGestures(performance.now());
     window.addEventListener("blur", blur);
@@ -1206,11 +1259,12 @@ export function AppleDevice3DView(props: AppleDevice3DViewProps) {
     viewerRef.current?.resetView(performance.now());
   }, [props.resetNonce]);
 
+  useEffect(() => props.frames?.subscribe(() => viewerRef.current?.noteFrame()), [props.frames]);
+
   useEffect(() => {
     viewerRef.current?.sync(propsRef.current);
   }, [
     props.screenCanvas,
-    props.frameVersion,
     props.family,
     props.deviceTypeName,
     props.orientation,
@@ -1225,6 +1279,7 @@ export function AppleDevice3DView(props: AppleDevice3DViewProps) {
     props.duo?.activeScreenId,
     props.duo?.physicalOrientation,
     props.duo?.tableMode,
+    props.railInset,
   ]);
 
   const localPoint = (event: React.PointerEvent<HTMLCanvasElement>) => {

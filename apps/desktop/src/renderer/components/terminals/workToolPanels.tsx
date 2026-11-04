@@ -23,10 +23,10 @@ import { SideChatToolPanel } from "../chat/SideChatToolPanel";
 import { ChatBuiltInBrowserPanel } from "../chat/ChatBuiltInBrowserPanel";
 import { ChatMacDesktopPanel } from "../chat/ChatMacDesktopPanel";
 import { AppleDevicePane } from "../apple/AppleDevicePane";
-import { remoteSimulatorUses, remoteWorkUseKey } from "../../../shared/chatRemoteWork";
+import { AndroidDevicePane } from "../android/AndroidDevicePane";
+import { remoteAndroidEmulatorUses, remoteSimulatorUses, remoteWorkUseKey } from "../../../shared/chatRemoteWork";
 import type { AgentChatRemoteWorkUse } from "../../../shared/types/chat";
-import { useRemoteWorkPinResolver } from "../../lib/remoteWorkPins";
-import { MachinePlatformLogo } from "../remoteTargets/MachineIdentity";
+import { RemoteTargetSwitcher, useRemoteTargetChoice } from "./RemoteTargetSwitcher";
 import { Banner } from "../ui/notice/Banner";
 import {
   getAppleMiniPlayerLaneDevice,
@@ -41,9 +41,9 @@ import { FilesTab } from "../files/FilesTab";
 import { LaneGitActionsPane } from "../lanes/LaneGitActionsPane";
 import { cn } from "../ui/cn";
 import { isReadOnlyWorkTool, type WorkToolContext } from "./workTools";
-import { WORK_TOOL_CHROME_CHIP, WORK_TOOL_CHROME_ROW, WorkToolEmptyLine } from "./workToolChrome";
+import { WORK_TOOL_CHROME_CHIP, WorkToolEmptyLine } from "./workToolChrome";
 import { WorkToolReadOnlyView } from "./WorkToolReadOnlyView";
-import { isWebCodecsAvailable } from "../chat/h264StreamPlayer";
+import { isWebCodecsAvailable } from "../device/h264StreamPlayer";
 import { macDesktopWebApi } from "../chat/macDesktopWebStream";
 
 /** App Control loads when its tool is first opened; the chat pane shares the chunk. */
@@ -351,32 +351,20 @@ function hasDecodedFrame(canvas: HTMLCanvasElement): boolean {
  */
 function WorkIosTool(props: WorkToolPanelProps) {
   const { activeSession, laneId, toolContext } = props;
-  const remoteUses = remoteSimulatorUses(activeSession);
-  const resolvePin = useRemoteWorkPinResolver(remoteUses.length > 0);
-  const laneOption = laneId && toolContext.supportsIosSimulator ? "lane" : null;
-  const options = [
-    ...remoteUses.map((use) => ({ key: remoteWorkUseKey(use), label: use.machineName, use })),
-    ...(laneOption ? [{ key: "lane", label: "This lane", use: null }] : []),
-  ];
-  const [chosenKey, setChosenKey] = useState<string | null>(null);
-  // The newest machine the chat used, unless the user picked another.
-  const chosen = options.find((option) => option.key === chosenKey) ?? options[0] ?? null;
+  const { options, chosen, choose, resolvePin } = useRemoteTargetChoice(
+    remoteSimulatorUses(activeSession),
+    Boolean(laneId && toolContext.supportsIosSimulator),
+  );
   if (!chosen) return <WorkIosDevice {...props} />;
-  const switcher = options.length > 1 ? (
-    <div className={WORK_TOOL_CHROME_ROW} data-testid="ios-target-switcher">
-      {options.map((option) => (
-        <button
-          key={option.key}
-          type="button"
-          onClick={() => setChosenKey(option.key)}
-          className={cn(WORK_TOOL_CHROME_CHIP, option.key === chosen.key ? "bg-fg/[0.08] text-fg" : "")}
-        >
-          {option.use ? <MachinePlatformLogo platform={option.use.machinePlatform} size={12} weight="bold" fallback /> : null}
-          <span>{option.use ? `Simulator · ${option.label}` : option.label}</span>
-        </button>
-      ))}
-    </div>
-  ) : null;
+  const switcher = (
+    <RemoteTargetSwitcher
+      options={options}
+      chosenKey={chosen.key}
+      onChoose={choose}
+      remoteLabel="Simulator"
+      testId="ios-target-switcher"
+    />
+  );
   if (!chosen.use) {
     return (
       <div className="flex h-full min-h-0 flex-col">
@@ -606,6 +594,140 @@ function WorkIosDevice({
   );
 }
 
+/**
+ * The Android tool: this lane's emulator, or the one this chat drives on
+ * another machine through its work copy (`ade android … --machine`), chosen
+ * with one row when there is more than one. The same shape as the iOS tool:
+ * there is no start control for the other machine's emulator, because the
+ * agent starts it and the tool only shows it.
+ *
+ * There is no floating player yet (plan P2), so closing the tab or switching
+ * tools only gives the stream's lease back; the emulator keeps running.
+ */
+function WorkAndroidTool(props: WorkToolPanelProps) {
+  const { activeSession, laneId, runtimePin, toolContext } = props;
+  const { options, chosen, choose, resolvePin } = useRemoteTargetChoice(
+    remoteAndroidEmulatorUses(activeSession),
+    Boolean(laneId && toolContext.supportsAndroidEmulator !== false),
+  );
+  const mountScope = useWorkToolMountScope(runtimePin);
+  // Registered for the pane's own lane whichever target is chosen, so
+  // `ade android show` for this chat finds the tool on screen.
+  const mountRef = useWorkSurfaceMountRef<HTMLDivElement>(laneId ? workSurfaceKey("android", mountScope, laneId) : null);
+  if (!laneId && !chosen) return <NoLaneEmptyLine />;
+  const switcher = (
+    <RemoteTargetSwitcher
+      options={options}
+      chosenKey={chosen?.key ?? null}
+      onChoose={choose}
+      remoteLabel="Android"
+      testId="android-target-switcher"
+    />
+  );
+  const use = chosen?.use ?? null;
+  const remotePin = use ? resolvePin(use) : null;
+  let body: ReactNode;
+  if (!use) {
+    body = <WorkAndroidDevice {...props} laneName={props.activeLane?.name ?? null} />;
+  } else if (remotePin === "unreachable" || !remotePin) {
+    body = <WorkToolEmptyState title={`This window is not connected to ${use.machineName}`} />;
+  } else {
+    body = <RemoteWorkAndroid key={`${remotePin.key}:${use.workCopyLaneId}`} {...props} use={use} remotePin={remotePin} />;
+  }
+  // Not padded, for the Apple pane's reason: the device fills its host.
+  return (
+    <NativePanelFrame frameRef={mountRef}>
+      <div className="flex h-full min-h-0 flex-col">
+        {switcher}
+        <div className="min-h-0 flex-1">{body}</div>
+      </div>
+    </NativePanelFrame>
+  );
+}
+
+/**
+ * The other machine's emulator for this chat's work copy, once that copy has
+ * one. Nothing is started or picked from here: with no device yet, it says so.
+ */
+function RemoteWorkAndroid(props: WorkToolPanelProps & {
+  use: AgentChatRemoteWorkUse & { workCopyLaneId: string };
+  remotePin: OpenProjectBinding;
+}) {
+  const { use, remotePin } = props;
+  const laneId = use.workCopyLaneId;
+  const [state, setState] = useState<"loading" | "device" | "none" | { error: string }>("loading");
+  useEffect(() => {
+    let cancelled = false;
+    const api = window.ade?.androidEmulator;
+    const read = () => {
+      void api?.getStatus?.({ laneId }, remotePin)
+        .then((status) => { if (!cancelled) setState(status?.lane?.device ? "device" : "none"); })
+        // A failed refresh keeps an emulator already shown: unmounting it would drop its stream.
+        .catch((error: unknown) => {
+          if (!cancelled) setState((current) => (current === "device" ? current : { error: error instanceof Error ? error.message : String(error) }));
+        });
+    };
+    read();
+    // The agent starts or gives back the device there; follow it.
+    const unsubscribe = api?.onEvent?.((event) => {
+      if (event.type === "android.device.state" && event.laneId === laneId) read();
+    }, remotePin);
+    return () => {
+      cancelled = true;
+      unsubscribe?.();
+    };
+    // Keyed by the component's key (pin key + lane); the pin object is stable for it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [laneId]);
+  if (state === "loading") return <WorkToolEmptyState title={`Reading ${use.machineName}…`} />;
+  if (state === "none") return <WorkToolEmptyState title={`No Android emulator on ${use.machineName} for this chat right now`} />;
+  if (typeof state === "object") {
+    return (
+      <div className="p-3">
+        <Banner
+          layout="inline"
+          model={{ id: `remote-android-${remoteWorkUseKey(use)}`, tone: "error", title: `Couldn't read the Android emulator on ${use.machineName}`, error: state.error }}
+        />
+      </div>
+    );
+  }
+  return (
+    <WorkAndroidDevice
+      {...props}
+      laneId={laneId}
+      runtimePin={remotePin}
+      laneName={null}
+      pinnedMachineName={use.machineName}
+      hostPlatform={use.machinePlatform}
+      noPicker={`No Android emulator on ${use.machineName} for this chat right now`}
+    />
+  );
+}
+
+function WorkAndroidDevice({
+  laneId,
+  laneName,
+  runtimePin,
+  toolContext,
+  pinnedMachineName,
+  hostPlatform,
+  noPicker,
+}: WorkToolPanelProps & { laneName: string | null; hostPlatform?: string | null; noPicker?: string | null }) {
+  const mountScope = useWorkToolMountScope(runtimePin);
+  if (!laneId) return <NoLaneEmptyLine />;
+  return (
+    <AndroidDevicePane
+      key={`work-android:${mountScope}:${laneId}`}
+      laneId={laneId}
+      laneName={laneName}
+      runtimePin={runtimePin}
+      machineName={runtimePin ? pinnedMachineName : null}
+      hostPlatform={hostPlatform !== undefined ? hostPlatform : toolContext.hostPlatform ?? null}
+      noPicker={noPicker ?? null}
+    />
+  );
+}
+
 function WorkAppControlTool({
   laneId,
   laneRoot,
@@ -801,6 +923,7 @@ export const WORK_TOOL_COMPONENTS: Record<WorkSidebarTab, ComponentType<WorkTool
   git: WorkGitTool,
   files: WorkFilesTool,
   ios: WorkIosTool,
+  android: WorkAndroidTool,
   "app-control": WorkAppControlTool,
   "mac-desktop": WorkMacDesktopTool,
   "windows-desktop": WorkWindowsDesktopTool,

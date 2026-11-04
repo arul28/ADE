@@ -1,4 +1,5 @@
 import {
+  AndroidLogo,
   ChatsCircle,
   Desktop,
   FolderOpen,
@@ -141,6 +142,19 @@ export const WORK_TOOL_DEFINITIONS: readonly WorkToolDefinition[] = [
     icon: AppleLogo,
     color: "#60a5fa",
     hint: "Open an Apple device",
+  },
+  {
+    /*
+     * Its own tab next to Apple Development, with the same layout, so moving
+     * between the two is easy. Not gated on the viewer's OS: an emulator runs
+     * on Mac, Windows and Linux hosts, and the lane's host answers.
+     */
+    id: "android",
+    label: "Android Development",
+    tabTooltip: "Android emulators",
+    icon: AndroidLogo,
+    color: "#3ddc84",
+    hint: "Open an Android device",
   },
   {
     id: "app-control",
@@ -294,6 +308,21 @@ export type WorkToolContext = {
    * stays even on a host that cannot run one.
    */
   hasRemoteSimulator?: boolean;
+  /**
+   * The chat drives an Android emulator on another machine through its work
+   * copy (`ade android … --machine`). The Android tool then shows it, so it
+   * stays even on a host that cannot run one.
+   */
+  hasRemoteAndroidEmulator?: boolean;
+  /**
+   * The lane's RUNTIME HOST can run the Android emulator at all
+   * (`androidEmulator.getStatus().platformSupported`). A missing SDK is still
+   * `true`: the panel shows the setup card. Same tri-state and the same "show
+   * while unanswered" rule as `supportsMacDesktop`.
+   */
+  supportsAndroidEmulator?: boolean | null;
+  /** The host's own words for a `false` above. */
+  androidEmulatorUnsupportedReason?: string | null;
 };
 
 export type WorkToolAvailability =
@@ -349,7 +378,12 @@ export function isReadOnlyWorkTool(id: WorkSidebarTab, context: WorkToolContext)
   return context.isWebClient && WEB_READ_ONLY_TOOL_IDS.has(id);
 }
 
-const CLOUD_MACHINE_TOOLS = new Set<WorkSidebarTab>(["ios", "mac-desktop", "windows-desktop", "app-control"]);
+const CLOUD_MACHINE_TOOLS = new Set<WorkSidebarTab>(["ios", "android", "mac-desktop", "windows-desktop", "app-control"]);
+
+/** The hosted web client has no Android viewer yet (plan P2). */
+export const ANDROID_WEB_CLIENT_UNAVAILABLE_REASON = "Android Development needs the ADE desktop app for now.";
+/** Shown when the host answers `platformSupported: false` without a reason. */
+export const ANDROID_HOST_UNSUPPORTED_REASON = "This lane's host can't run the Android emulator.";
 
 export const SIDE_CHAT_TOOL_UNAVAILABLE_REASON = "This chat has no side chat. Type /side and a question in its composer.";
 
@@ -378,6 +412,15 @@ export function workToolAvailability(
   if (id === "mac-desktop" && context.supportsMacDesktop === false) {
     const reason = context.macDesktopUnsupportedReason?.trim();
     return { available: false, reason: reason || "This lane's host isn't a Mac" };
+  }
+  if (id === "android") {
+    if (context.isWebClient) return { available: false, reason: ANDROID_WEB_CLIENT_UNAVAILABLE_REASON };
+    if (context.hasRemoteAndroidEmulator) return AVAILABLE;
+    if (context.supportsAndroidEmulator === false) {
+      const reason = context.androidEmulatorUnsupportedReason?.trim();
+      return { available: false, reason: reason || ANDROID_HOST_UNSUPPORTED_REASON };
+    }
+    return AVAILABLE;
   }
   if (isReadOnlyWorkTool(id, context)) return AVAILABLE;
   if (id === "ios" && context.hasRemoteSimulator) return AVAILABLE;

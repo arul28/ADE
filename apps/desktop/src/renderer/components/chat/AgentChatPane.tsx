@@ -2778,6 +2778,12 @@ function stableSessionDelayOffset(sessionId: string): number {
   return hash;
 }
 
+/** A UI-state patch that rides the event stream but is never a transcript row. */
+function isLiveOnlyChatEvent(event: AgentChatEvent): boolean {
+  return event.type === "session_meta_updated"
+    || (event.type === "system_notice" && event.status === "cross_machine_handoff_state");
+}
+
 /**
  * Append a BATCH of live envelopes into the module-level view cache while no
  * pane is mounted for the session (see `chatSessionRetention`).
@@ -2802,10 +2808,13 @@ function appendRetainedChatSessionEvents(
   sessionId: string,
   envelopes: readonly AgentChatEventEnvelope[],
 ): void {
-  if (!envelopes.length) return;
+  // Live-only patches are not transcript content: the open chat's intake
+  // drops them too, and a stored one draws as an empty "event" row.
+  const transcript = envelopes.filter((envelope) => !isLiveOnlyChatEvent(envelope.event));
+  if (!transcript.length) return;
   const cached = peekAgentChatSessionViewCache(sessionId);
   if (!cached) return;
-  const combined = mergeAgentChatLiveEvents(cached.events, envelopes);
+  const combined = mergeAgentChatLiveEvents(cached.events, transcript);
   if (combined === cached.events) return;
   const merged = trimChatEventHistory(
     combined,

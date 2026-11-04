@@ -9,7 +9,7 @@ import type {
 } from "../../../shared/types/iosSimulator";
 import { Button } from "../ui/Button";
 import { Banner } from "../ui/notice";
-import { AppleSpinner } from "./AppleSpinner";
+import { Spinner } from "../ui/Spinner";
 import { useBannerDismissals } from "../../lib/bannerDismiss";
 import { cn } from "../ui/cn";
 import { checkboxConfirmDialog } from "../ui/dialog/confirm";
@@ -252,7 +252,7 @@ export function AppleRuntimesSection({
             }}
             className="mt-1 h-auto w-full min-w-0 justify-start gap-2 rounded-none border-t border-border/40 px-1.5 pb-1 pt-2 text-left text-[12px] leading-5 text-accent"
           >
-            {removing ? <AppleSpinner /> : null}
+            {removing ? <Spinner /> : null}
             <span className="min-w-0 flex-1">
               {`Free ${replaceableBytes ? gigabytes(replaceableBytes) : "space"}: remove ${replaceable.length} older runtime${replaceable.length === 1 ? "" : "s"}`}
             </span>

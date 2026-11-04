@@ -12,7 +12,7 @@
  * What it proves:
  *   1. One helper process drives TWO booted simulators at once.
  *   2. Each device's stream is a separate loopback endpoint, token-gated, and
- *      framed exactly as `iosSimVideoRecords.ts` expects — that parser is
+ *      framed exactly as `videoRecordParser.ts` expects — that parser is
  *      re-implemented here so a drift shows up as a failure, not a black canvas.
  *   3. Touch, ax-describe and screenshot all work per device.
  *   4. Tap-to-visible-frame latency, measured from the frame bytes.
@@ -35,7 +35,7 @@ const outDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-sim-helper-proof-"));
 const log = (...parts) => console.log("[proof]", ...parts);
 
 // ---------------------------------------------------------------------------
-// The record parser, mirrored from src/renderer/components/chat/iosSimVideoRecords.ts
+// The record parser, mirrored from src/renderer/components/device/videoRecordParser.ts
 // ---------------------------------------------------------------------------
 
 const RECORD_MAGIC = 0xade1f00d;

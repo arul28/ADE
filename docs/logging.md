@@ -1181,8 +1181,8 @@ Which tool an installation opens in the Work tools pane records the existing
 palette, and the reveal channel a dev-server chip uses) with `feature: "work"`,
 `action: "tool_opened"`, `source: "renderer_route"`, and the tool id on a
 closed, prefixed `outcome`: `tool_terminal`, `tool_git`, `tool_files`,
-`tool_ios`, `tool_app_control`, `tool_browser`, `tool_pr`, `tool_mac_desktop`,
-`tool_windows_desktop`, or `tool_issues`. It is emitted from
+`tool_ios`, `tool_android`, `tool_app_control`, `tool_browser`, `tool_pr`,
+`tool_mac_desktop`, `tool_windows_desktop`, `tool_side_chat`, or `tool_issues`. It is emitted from
 the renderer because tool selection has no durable backend mutation — the
 runtime publish that mirrors it to iOS and the hosted web client is a
 device-mirror push, not a record of the choice.

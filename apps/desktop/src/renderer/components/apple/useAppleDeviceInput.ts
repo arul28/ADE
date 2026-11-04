@@ -5,7 +5,7 @@
 import { useCallback, useMemo, useRef, type MutableRefObject } from "react";
 import { isUnsupportedAdeActionError } from "../../../shared/codedError";
 import type { OpenProjectBinding } from "../../../shared/types";
-import type { AppleDeviceInput } from "./AppleDeviceFlatView";
+import type { DeviceInput } from "../device/DeviceFlatView";
 
 /**
  * One pointer gesture on the device, turned into ONE call.
@@ -51,7 +51,7 @@ const MAX_DRAG_MS = 2_000;
 
 export type AppleDeviceInputSender = {
   /** Wire to `AppleDeviceStage`'s `onDeviceInput`. */
-  send: (input: AppleDeviceInput) => void;
+  send: (input: DeviceInput) => void;
   /** Wire to `AppleDeviceStage`'s `onDeviceScroll`. */
   scroll: (delta: { x: number; y: number; deltaX: number; deltaY: number }) => void;
   /** Wire to the focused frame's `onKeyDown`. Returns true when it was sent. */
@@ -121,7 +121,7 @@ export function useAppleDeviceInput({
     [chatSessionId, laneId],
   );
 
-  const send = useCallback((input: AppleDeviceInput) => {
+  const send = useCallback((input: DeviceInput) => {
     if (!enabled || !deviceUdid) {
       gestureRef.current = null;
       return;

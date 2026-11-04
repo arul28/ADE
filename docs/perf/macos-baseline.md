@@ -2340,3 +2340,82 @@ second from run to run, and the GPU row swings with it. ADE's loops step at
 30 a second (the owner turned down 15); T3 Code draws about 13 frames a
 second. PandaCode's lower script and heap come from a much smaller app and a
 WebAssembly Markdown parser.
+
+## Mac Studio (M4 Max): Work tools pane, Android and Apple tools (browser mock, 2026-11-03)
+
+Browser mock, not the baseline machine. Mac Studio (Mac16,9, M4 Max, 14
+cores, 36 GB, macOS 27.0), the renderer's Vite dev server at `62538fe26`
+(branch `ade/android-emulator-suite`), headless Chrome 155 at 1600×1000. The
+Codex chat in the mock is open with the Tools pane beside it. Each run opens
+a fresh tab and closes every other page. No perf run. One warm-up run per
+case is not counted, then 3 runs. Each window is 20 s after a 6 s settle.
+Main-thread work is `TaskDuration` from `Performance.getMetrics` (as in
+`route-sweep.mjs`), and frames are `DrawFrame` events in a `cc`/`viz` trace
+(as in `gpu-trace.mjs`). A scratch CDP script drove the clicks. The load
+average was 3.5–6 from other agents.
+
+Both live mocks draw a test picture and encode it with WebCodecs on the
+page's main thread (the same encoder serves both). Part of each live number
+is that mock encoder, which the real app does not have: there, the brain
+sends the stream and the renderer only decodes it. Android P0 is flat only.
+Apple opens in the 3D view by default, so the table has both Apple views.
+
+| Metric | Git, Android never opened | Git, Android opened then closed | Android live (flat) | Apple live, 3D (default) | Apple live, flat | Ceiling |
+|---|---:|---:|---:|---:|---:|---:|
+| Main-thread work | 4.4–5.3 ms/s | 3.9–4.2 ms/s | 29.2–31.1 ms/s | 93.6–131.4 ms/s | 76.4–90.6 ms/s | 30 ms/s idle (Idle table); none set for a live device |
+| Frames drawn | 2.1–2.2/s | 1.5–1.6/s | 31.5–31.8/s | 56.0–56.6/s | 31.3–31.6/s | not set |
+| Renderer JS heap | 100 MB | 101 MB | 101 MB | 119–153 MB | 131–134 MB | 220 MB |
+| Page elements | 721 | 721 | 713 | 747 | 747 | 3k |
+| `androidEmulator` calls | 0 | 0 in 60 s after closing (the pane unmounts) | `getStreamStatus` every 3 s (the status strip's fps, only while live) | — | — | no call after the tool closes |
+
+Opening the Android tool from Git (click to frame, 3 runs): the pane's
+first frame 7–10 ms, the first decoded video frame 251–259 ms, and no long
+task in the 4 s after the click. The 250 ms is mostly the mock stream's
+start; the real stream start is in the Android Development feature doc.
+
+The Apple columns above are from before `734bf16ba`. In a 10 s CPU profile,
+the Android pane's own time is the mock encoder (`drawImage`, `drawScreen`,
+`encode`). The Apple pane's top entries were React render work (`jsxDEV`,
+`diffProperties`, `AppleDeviceRail`) that repeated while the picture played.
+
+**Fixed in `734bf16ba`.** `useAppleDeviceStream` bumped a `frameVersion`
+state on every decoded frame, so the whole Apple pane (rail, tooltips,
+menus) re-rendered at the stream's frame rate: about 3,900 component renders
+and 32 React commits a second. `main` has the same loop. The stream now
+sets `hasFrame` once and tells the 3D view about each frame outside React.
+Measured on this tree at `734bf16ba`, the same setup, 3 runs (load average
+4–5):
+
+| Metric | Apple live, 3D (default) | Apple live, flat | Ceiling |
+|---|---:|---:|---:|
+| Main-thread work | 79.7–85.1 ms/s | 22.6–31.3 ms/s | none set for a live device |
+| Frames drawn | 31.9–32.1/s (one draw per video frame) | 31.2–31.6/s | not set |
+| Renderer JS heap | 106–107 MB | 102–103 MB | 220 MB |
+| React (`render-hook.js`, 5 s) | 1.4 commits/s, 24 component renders/s | 1.6 commits/s, 23 component renders/s | no pane re-render per frame |
+
+Android live now costs about the same as Apple's flat view, and about a
+third of its 3D view. What the 3D view still costs is three.js drawing the
+body each frame (`getParameters`, `getProgram`, the texture upload) and the
+mock encoder.
+
+**Re-measured at `58f16b03b`,** after the Apple and Android panes moved to
+one shared device layer (the stream lease, the reconnect and stop-grace
+hooks, the rail, the loading card, the strips and the picker page). The
+same machine, script and method: one warm-up run, then 3 runs of 20 s after
+a 6 s settle. The load average was 3.5–9 (other agents). Each cell is the
+median, then the range of the 3 runs.
+
+| Metric | Git, Android never opened | Git, Android opened then closed | Android live (flat) | Apple live, 3D (default) | Apple live, flat | Ceiling |
+|---|---:|---:|---:|---:|---:|---:|
+| Main-thread work | 3.7 (3.5–3.7) ms/s | 3.5 (3.3–3.6) ms/s | 25.9 (24.5–26.3) ms/s | 58.8 (57.6–65.9) ms/s | 25.7 (23.4–27.8) ms/s | 30 ms/s idle (Idle table); none set for a live device |
+| Frames drawn | 2.2 (2.1–2.2)/s | 1.5 (1.5–1.6)/s | 31.4 (31.3–31.8)/s | 32.2 (31.9–32.2)/s | 31.3 (31.2–31.3)/s | not set |
+| Renderer JS heap | 100 MB | 101 MB | 101 MB | 107 MB | 102 MB | 220 MB |
+| Page elements | 722 | 722 | 714 | 748 | 748 | 3k |
+| `androidEmulator` calls | 0 | 0 after closing (the pane unmounts) | `getStreamStatus` every 3 s | — | — | no call after the tool closes |
+| React (`render-hook.js`, 5 s) | — | — | — | 1.0 commits/s, 22 component renders/s | 1.2 commits/s, 22 component renders/s | no pane re-render per frame |
+
+No row is worse than its earlier number. Git and Android live are 10–20%
+lower than on 2026-11-03, and Apple flat is in the same range as after
+`734bf16ba`. The Apple 3D view dropped from 79.7–85.1 to 57.6–65.9 ms/s.
+No change in the move targets the 3D draw, so treat that drop as run-to-run
+spread until a later run confirms it.

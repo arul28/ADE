@@ -1,6 +1,6 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { useMemo, useState } from "react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
-import { ArrowsClockwise, Copy, DotsThree } from "@phosphor-icons/react";
+import { Copy, DotsThree } from "@phosphor-icons/react";
 import type { Icon } from "@phosphor-icons/react";
 import type {
   AppleDeviceDiskUsage,
@@ -20,7 +20,7 @@ import { useAppStore } from "../../state/appStore";
 import { cn } from "../ui/cn";
 import { Button } from "../ui/Button";
 import { PaneTooltip } from "../ui/PaneTooltip";
-import { WorkToolPickerBackdrop } from "../terminals/WorkToolPickerBackdrop";
+import { DEVICE_CARD_GRID_COLUMNS, DevicePickerPage, DevicePickerRefreshButton } from "../device/DevicePickerPage";
 import {
   MENU_CONTENT_CLASS,
   MENU_ITEM_CLASS,
@@ -41,8 +41,8 @@ import {
   type AppleDeviceFamilyId,
 } from "./appleDeviceFamily";
 import { isAppleSimulatorBooted } from "./appleDeviceState";
-import { DangerConfirmMenuItem } from "./DangerConfirmMenuItem";
-import { DrawerMenu, type DrawerMenuOption } from "./drawer/drawerPrimitives";
+import { DangerConfirmMenuItem } from "../ui/DangerConfirmMenuItem";
+import { DrawerMenu, type DrawerMenuOption } from "../ui/drawerPrimitives";
 import {
   appleDeviceDiskLabel,
   appleDiskLabel,
@@ -52,7 +52,7 @@ import {
 } from "./applePickerInventory";
 import { AppleRuntimeInstallProgress, AppleRuntimesSection, AppleXcodeNote } from "./AppleRuntimesSection";
 import { appleRuntimeInstallActive } from "../../../shared/appleRuntimeVersions";
-import { AppleSpinner } from "./AppleSpinner";
+import { Spinner } from "../ui/Spinner";
 import { useTicker } from "../../lib/ticker";
 
 /**
@@ -109,12 +109,6 @@ export type AppleDevicePickerProps = {
   onPruneRuntimes?: (simulators: AppleRuntimeSimulatorDisposition) => void;
   onRunXcodeSetup?: () => Promise<void>;
 };
-
-/** The column the page is built around — the tools grid's 512 plus one card. */
-const COLUMN_MAX_PX = 560;
-
-/** Two cards at 432px of pane, one below it. Mirrors `WorkToolPicker`. */
-const CARD_MIN_TRACK_PX = 188;
 
 const FAMILY_GLYPH: Record<AppleDeviceFamilyId, Icon> = {
   iphone: AppleDeviceIPhoneGlyph,
@@ -192,7 +186,7 @@ export function AppleDevicePicker({
   const xcodeNote = onRunXcodeSetup ? <AppleXcodeNote xcode={runtimeInventory?.xcode} onRunSetup={onRunXcodeSetup} /> : null;
 
   return (
-    <PickerPage theme={theme} playing={playing}>
+    <DevicePickerPage tool="apple" theme={theme} playing={playing}>
       {xcodeNote}
       {installed.length === 0 && !canCreate ? (
         <EmptyCard refreshing={refreshing} onRefresh={onRefresh} />
@@ -205,7 +199,13 @@ export function AppleDevicePicker({
               installedCount={installed.length}
               freeCount={partition.available.length}
             />
-            <RefreshButton refreshing={refreshing} onRefresh={onRefresh} />
+            <DevicePickerRefreshButton
+              tool="apple"
+              tooltip="Re-read installed simulators"
+              label="Refresh the simulator list"
+              refreshing={refreshing}
+              onRefresh={onRefresh}
+            />
           </div>
 
           {groups.map((group) => (
@@ -220,7 +220,7 @@ export function AppleDevicePicker({
               </h4>
               <div
                 className="grid min-w-0 gap-2"
-                style={{ gridTemplateColumns: `repeat(auto-fit, minmax(min(100%, ${CARD_MIN_TRACK_PX}px), 1fr))` }}
+                style={{ gridTemplateColumns: DEVICE_CARD_GRID_COLUMNS }}
               >
                 {group.devices.map((simulator) => (
                   <DeviceCard
@@ -275,38 +275,7 @@ export function AppleDevicePicker({
           />
         </>
       )}
-    </PickerPage>
-  );
-}
-
-/**
- * The page itself: the tools grid's backdrop, its scroller and its column.
- *
- * Two boxes, for the same reason `WorkToolPicker` uses two — `inset: 0` inside
- * a scroller resolves against the scroll ORIGIN, so a mesh painted inside it
- * ends at the fold.
- */
-function PickerPage({
-  theme,
-  playing,
-  children,
-}: {
-  theme: Parameters<typeof WorkToolPickerBackdrop>[0]["theme"];
-  playing: boolean;
-  children: ReactNode;
-}) {
-  return (
-    <div className="ade-pane-chrome relative h-full min-h-0 min-w-0" data-apple-picker="">
-      <WorkToolPickerBackdrop theme={theme} playing={playing} />
-      <div className="relative flex h-full min-h-0 min-w-0 flex-col overflow-y-auto">
-        <div
-          className="relative mx-auto flex w-full min-w-0 flex-col gap-4 px-5 py-6"
-          style={{ maxWidth: COLUMN_MAX_PX }}
-        >
-          {children}
-        </div>
-      </div>
-    </div>
+    </DevicePickerPage>
   );
 }
 
@@ -469,7 +438,7 @@ function DeviceCard({
             <span className="min-w-0 flex-1 break-words font-sans text-[13px] font-medium leading-5 text-fg">
               {simulator.name}
             </span>
-            {pending ? <AppleSpinner /> : mine ? (
+            {pending ? <Spinner /> : mine ? (
               <span className="shrink-0 font-sans text-[10px] font-medium uppercase tracking-[0.08em] text-accent">
                 Yours
               </span>
@@ -754,7 +723,7 @@ function CreateSection({
             }}
             className="shrink-0"
           >
-            {creating || (pickedMissing && installing) ? <AppleSpinner /> : null}
+            {creating || (pickedMissing && installing) ? <Spinner /> : null}
             {pickedMissing ? "Install & create" : "Create"}
           </Button>
         </div>
@@ -837,7 +806,7 @@ function StorageSection({
               onClick={onCleanup}
               className="shrink-0"
             >
-              {cleaning ? <AppleSpinner /> : null}
+              {cleaning ? <Spinner /> : null}
               Clean up
             </Button>
           ) : null}
@@ -872,24 +841,3 @@ function EmptyCard({ refreshing, onRefresh }: { refreshing: boolean; onRefresh: 
   );
 }
 
-/** Top right of the pane, where a refresh belongs. Icon only; it needs no word. */
-function RefreshButton({ refreshing, onRefresh }: { refreshing: boolean; onRefresh: () => void }) {
-  return (
-    <PaneTooltip label="Re-read installed simulators" side="bottom">
-      <Button
-        variant="ghost"
-        size="sm"
-        disabled={refreshing}
-        aria-label="Refresh the simulator list"
-        data-apple-picker-refresh=""
-        onClick={onRefresh}
-        className="h-6 w-6 shrink-0 p-0 text-muted-fg"
-      >
-        <ArrowsClockwise
-          size={14}
-          className={cn(refreshing && "animate-spin")}
-        />
-      </Button>
-    </PaneTooltip>
-  );
-}

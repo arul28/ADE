@@ -31,6 +31,8 @@ export const WORK_TOOL_SHOW_SURFACES = [
   "app-control",
   /** The floating App Control card over the chat. */
   "floating-app-control",
+  /** The lane's Android emulator tool in the Work tools pane. */
+  "android",
 ] as const;
 
 export type WorkToolShowSurface = (typeof WORK_TOOL_SHOW_SURFACES)[number];

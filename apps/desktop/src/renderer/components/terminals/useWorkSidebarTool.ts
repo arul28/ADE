@@ -138,6 +138,11 @@ export function useWorkSidebarTool(
    * person opens the pane themselves.
    */
   showTool: (tool: WorkSidebarTab) => void;
+  /**
+   * Puts a tab in the strip behind the one on screen: no switch, no reveal.
+   * For a tool a chat starts using on its own (`useRemoteDeviceTabs`).
+   */
+  addTool: (tool: WorkSidebarTab) => void;
   closeTool: (tool: WorkSidebarTab) => void;
 } {
   const projectStateKey = useAppStore(selectActiveProjectStateKey);
@@ -234,6 +239,18 @@ export function useWorkSidebarTool(
     [activate],
   );
 
+  const addTool = useCallback(
+    (next: WorkSidebarTab) => {
+      const current = latestStrip.current;
+      if (current.openTools.includes(next)) return;
+      write({
+        workSidebarTool: current.tool,
+        workSidebarOpenTools: openWorkToolTab(current.openTools, next),
+      });
+    },
+    [write],
+  );
+
   const closeTool = useCallback(
     (target: WorkSidebarTab) => {
       const drop = (stopTool = true) => {
@@ -291,7 +308,7 @@ export function useWorkSidebarTool(
 
   usePublishActiveWorkTool(laneId, tool, openTools, runtimePin);
 
-  return { tool, openTools, setTool, showTool, closeTool };
+  return { tool, openTools, setTool, showTool, addTool, closeTool };
 }
 
 /**

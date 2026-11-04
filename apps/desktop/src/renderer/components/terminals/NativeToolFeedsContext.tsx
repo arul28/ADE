@@ -24,6 +24,7 @@ import { effectiveRuntimeBinding } from "../../lib/chatMachineRouting";
 import { isWebClientMode } from "../../lib/webClientMode";
 import type { WorkToolContext } from "./workTools";
 import { desktopToolContext, useMacDesktopSupport } from "./useMacDesktopSupport";
+import { androidToolContext, useAndroidEmulatorSupport } from "../android/useAndroidEmulatorSupport";
 import {
   useNativeToolSessions,
   type NativeToolFeedScope,
@@ -154,12 +155,16 @@ export function NativeToolFeedsProvider({
   // The Mac Desktop gate is the HOST's capability, read once per machine — the
   // only flag here that is not a property of this computer.
   const macDesktopSupport = useMacDesktopSupport({ runtimePin, enabled: active });
+  // Android follows the host's own answer too, read once per machine. The web
+  // client has no Android viewer yet, so it never asks.
+  const androidSupport = useAndroidEmulatorSupport({ runtimePin, enabled: active && !isWebClientMode() });
 
   const context = useMemo<WorkToolContext>(() => ({
     supportsIosSimulator,
     isWebClient: isWebClientMode(),
     ...desktopToolContext(macDesktopSupport),
-  }), [macDesktopSupport, supportsIosSimulator]);
+    ...androidToolContext(androidSupport),
+  }), [androidSupport, macDesktopSupport, supportsIosSimulator]);
 
   // Collection identity follows the session machine. A Studio pin must keep
   // Studio's checkout after the tab dropdown moves, including `kind: "remote"`

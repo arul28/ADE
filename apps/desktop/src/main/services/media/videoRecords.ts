@@ -2,7 +2,7 @@
  * The record framing both loopback video servers speak.
  *
  * Layout, big-endian: u32 magic, u8 type, u8 flags, u16 reserved, u32 payload
- * length. The renderer's reader (`iosSimVideoRecords.ts`) is the only consumer,
+ * length. The renderer's reader (`videoRecordParser.ts`) is the only consumer,
  * and it is the same code for the simulator and for a lane's macOS display, so
  * the writer and the splitter live together here rather than once per server.
  *
@@ -13,10 +13,10 @@
  */
 
 import {
-  IOS_VIDEO_RECORD_FLAG_KEYFRAME,
-  IOS_VIDEO_RECORD_HEADER_BYTES,
-  IOS_VIDEO_RECORD_MAGIC,
-} from "../../../shared/types/iosSimulator";
+  VIDEO_RECORD_FLAG_KEYFRAME,
+  VIDEO_RECORD_HEADER_BYTES,
+  VIDEO_RECORD_MAGIC,
+} from "../../../shared/types/videoRecords";
 
 /** A record larger than this is not something either server sends. */
 export const MAX_VIDEO_RECORD_BYTES = 16 * 1024 * 1024;
@@ -37,14 +37,14 @@ export function encodeVideoRecord(
   payload: Uint8Array,
   options: { keyframe?: boolean } = {},
 ): Uint8Array {
-  const record = new Uint8Array(IOS_VIDEO_RECORD_HEADER_BYTES + payload.byteLength);
+  const record = new Uint8Array(VIDEO_RECORD_HEADER_BYTES + payload.byteLength);
   const view = new DataView(record.buffer);
-  view.setUint32(0, IOS_VIDEO_RECORD_MAGIC, false);
+  view.setUint32(0, VIDEO_RECORD_MAGIC, false);
   view.setUint8(4, type);
-  view.setUint8(5, options.keyframe ? IOS_VIDEO_RECORD_FLAG_KEYFRAME : 0);
+  view.setUint8(5, options.keyframe ? VIDEO_RECORD_FLAG_KEYFRAME : 0);
   view.setUint16(6, 0, false);
   view.setUint32(8, payload.byteLength, false);
-  record.set(payload, IOS_VIDEO_RECORD_HEADER_BYTES);
+  record.set(payload, VIDEO_RECORD_HEADER_BYTES);
   return record;
 }
 
@@ -72,21 +72,21 @@ export function createVideoRecordSplitter(): {
       pending = pending.byteLength === 0 ? chunk : (Buffer.concat([pending, chunk]) as Buffer);
       const records: VideoRecord[] = [];
       let offset = 0;
-      while (pending.byteLength - offset >= IOS_VIDEO_RECORD_HEADER_BYTES) {
+      while (pending.byteLength - offset >= VIDEO_RECORD_HEADER_BYTES) {
         const magic = pending.readUInt32BE(offset);
-        if (magic !== IOS_VIDEO_RECORD_MAGIC) {
+        if (magic !== VIDEO_RECORD_MAGIC) {
           throw new VideoRecordFramingError("The video stream is not framed as expected.");
         }
         const length = pending.readUInt32BE(offset + 8);
         if (length > MAX_VIDEO_RECORD_BYTES) {
           throw new VideoRecordFramingError(`The video stream declared a ${length} byte record.`);
         }
-        const end = offset + IOS_VIDEO_RECORD_HEADER_BYTES + length;
+        const end = offset + VIDEO_RECORD_HEADER_BYTES + length;
         if (pending.byteLength < end) break;
         records.push({
           type: pending.readUInt8(offset + 4),
           flags: pending.readUInt8(offset + 5),
-          payload: pending.subarray(offset + IOS_VIDEO_RECORD_HEADER_BYTES, end),
+          payload: pending.subarray(offset + VIDEO_RECORD_HEADER_BYTES, end),
           raw: pending.subarray(offset, end),
         });
         offset = end;
