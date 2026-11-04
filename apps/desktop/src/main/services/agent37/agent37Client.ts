@@ -47,6 +47,24 @@ export type Agent37CreateInstanceInput = {
   metadata?: Record<string, string>;
 };
 
+export type Agent37Template = {
+  name: string;
+  revision: number | null;
+  description: string | null;
+  updated: number | null;
+};
+
+/** `created` → `building` → `ingesting` → `succeeded` | `failed`. Times are epoch seconds. */
+export type Agent37TemplateBuild = {
+  id: string;
+  status: string;
+  errorCode: string | null;
+  errorMessage: string | null;
+  created: number | null;
+  started: number | null;
+  finished: number | null;
+};
+
 export class Agent37Error extends Error {
   constructor(
     message: string,
@@ -62,6 +80,8 @@ export class Agent37Error extends Error {
 const REQUEST_TIMEOUT_MS = 20_000;
 /** A create returns once the box is running, which takes tens of seconds. */
 const CREATE_TIMEOUT_MS = 5 * 60_000;
+/** The template context is a few kilobytes; this only bounds a stalled upload. */
+const UPLOAD_TIMEOUT_MS = 2 * 60_000;
 
 /** The sentence for an Agent37 error code. Agent37's own message is the fallback. */
 export function agent37ErrorMessage(code: string, status: number, upstream: string | null): string {
@@ -249,6 +269,96 @@ export function createAgent37Client(args: { apiKey: string; fetch?: FetchLike })
         return true;
       } catch (error) {
         if (error instanceof Agent37Error && error.status === 404) return false;
+        throw error;
+      }
+    },
+
+    /** The workspace or system template, or null on 404. */
+    async getTemplate(name: string): Promise<Agent37Template | null> {
+      try {
+        const body = await api("GET", `/templates/${encodeURIComponent(name)}`) as Record<string, unknown> | null;
+        return {
+          name: str(body?.name) ?? name,
+          revision: num(body?.revision),
+          description: typeof body?.description === "string" ? body.description : null,
+          updated: num(body?.updated),
+        };
+      } catch (error) {
+        if (error instanceof Agent37Error && error.status === 404) return null;
+        throw error;
+      }
+    },
+
+    /** Metadata only; the image and revision stay as they are. */
+    async setTemplateDescription(name: string, description: string): Promise<void> {
+      await api("PATCH", `/templates/${encodeURIComponent(name)}`, { description });
+    },
+
+    /**
+     * Step one of a cloud build: Agent37 answers with the build id and a
+     * presigned upload URL for the gzipped context. The URL is a bearer
+     * credential; it is never logged.
+     */
+    async createTemplateBuild(input: { name: string; sizeBytes: number; description: string }): Promise<{ id: string; uploadUrl: string }> {
+      const body = await api("POST", "/template-builds", {
+        name: input.name,
+        size_bytes: input.sizeBytes,
+        description: input.description,
+      }) as Record<string, unknown> | null;
+      const id = str(body?.id);
+      const uploadUrl = str(body?.upload_url);
+      if (!id || !uploadUrl || !/^https:\/\//.test(uploadUrl)) {
+        throw new Agent37Error("Agent37 answered with a template build ADE could not read.", "bad_response", 201);
+      }
+      return { id, uploadUrl };
+    },
+
+    /** PUTs the context to the presigned URL. No Agent37 key goes with it. */
+    async uploadTemplateContext(uploadUrl: string, context: Uint8Array): Promise<void> {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), UPLOAD_TIMEOUT_MS);
+      try {
+        const response = await fetcher(uploadUrl, {
+          method: "PUT",
+          body: context as unknown as BodyInit,
+          signal: controller.signal,
+          redirect: "error",
+        });
+        if (!response.ok) {
+          throw new Agent37Error(`Agent37 refused the template upload (${response.status}).`, `upload_${response.status}`, response.status);
+        }
+      } catch (error) {
+        if (error instanceof Agent37Error) throw error;
+        throw new Agent37Error(
+          controller.signal.aborted ? "The template upload to Agent37 timed out." : "Could not upload the template to Agent37.",
+          "network",
+          0,
+        );
+      } finally {
+        clearTimeout(timer);
+      }
+    },
+
+    async startTemplateBuild(id: string): Promise<void> {
+      await api("POST", `/template-builds/${encodeURIComponent(id)}/start`, {});
+    },
+
+    /** The build, or null when Agent37 no longer knows it (404). */
+    async getTemplateBuild(id: string): Promise<Agent37TemplateBuild | null> {
+      try {
+        const body = await api("GET", `/template-builds/${encodeURIComponent(id)}`) as Record<string, unknown> | null;
+        const error = body?.error && typeof body.error === "object" ? body.error as Record<string, unknown> : null;
+        return {
+          id: str(body?.id) ?? id,
+          status: str(body?.status) ?? "unknown",
+          errorCode: str(error?.code),
+          errorMessage: str(error?.message),
+          created: num(body?.created),
+          started: num(body?.started),
+          finished: num(body?.finished),
+        };
+      } catch (error) {
+        if (error instanceof Agent37Error && error.status === 404) return null;
         throw error;
       }
     },
