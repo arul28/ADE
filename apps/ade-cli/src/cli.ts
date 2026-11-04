@@ -4246,9 +4246,9 @@ export const HELP_BY_COMMAND: Record<string, string> = {
       github, linear and atlassian open ADE's own connect card instead (one connection for ADE and agents).
     $ ade mcp servers add sentry --import --reason "To read the crash"
       A server another tool here already has (see the list); its values are copied.
-    $ ade mcp servers add github --reason "To read your PRs" --env GITHUB_PERSONAL_ACCESS_TOKEN -- npx -y @modelcontextprotocol/server-github
+    $ ade mcp servers add team-db --reason "To query the staging data" --env DB_TOKEN -- npx -y @example/db-mcp
       A local server: the command line after --. --env NAME for each value it reads.
-    $ ade mcp servers add linear --reason "To read your issues" --url https://mcp.linear.app/mcp [--sse] [--header Authorization]
+    $ ade mcp servers add team-wiki --reason "To read the runbook" --url https://mcp.example.com/mcp [--sse] [--header Authorization]
       A remote server.
       --timeout 30m (default, 2h at most). Returns at once if ADE already has that name, URL, or command line.
       Prints {name, added: true, missing, next} | {name, already: true, existing, next} | {name, declined: true}
