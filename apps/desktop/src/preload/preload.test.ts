@@ -976,6 +976,28 @@ describe("preload Apple device input routing", () => {
       const bridge = (globalThis as any).__adeBridge;
       const args = { data: "iVBORw0KGgo=", filename: "clipboard.png" };
 
+      // A file belongs to the desktop's disk even when the window is bound
+      // elsewhere. Omitted pins must upload, never ask that host to copy it.
+      const fileArgs = { sourcePath: "C:\\Pictures\\shot.png", filename: "shot.png" };
+      for (const pin of [undefined, pinnedRemote, localPin]) {
+        invoke.mockClear();
+        const mode = await bridge.agentChat.getAttachmentStagingMode(pin);
+        expect(mode.mode).toBe(pin === localPin ? "copy" : "upload");
+        await bridge.agentChat.stageFileAttachment(fileArgs, pin);
+        if (pin === localPin) {
+          expect(invoke).not.toHaveBeenCalledWith(IPC.remoteRuntimeUploadChatAttachment, expect.anything());
+        } else {
+          const target = pin === pinnedRemote ? pinnedRemote : boundRemote;
+          expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeUploadChatAttachment, {
+            id: target.targetId,
+            projectId: target.projectId,
+            ...fileArgs,
+          });
+          expect(invoke).not.toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, expect.anything());
+        }
+      }
+      invoke.mockClear();
+
       // An explicit remote pin streams to that machine, never through the command.
       await expect(bridge.agentChat.saveTempAttachment(args, pinnedRemote))
         .resolves.toEqual({ path: "/remote/uploaded.png" });

@@ -1756,6 +1756,12 @@ allowing a cross-provider fork.
   own error reaches the caller. The composer's clipboard paste and the
   terminal's image paste both go through this call, so neither sends a
   screenshot inside one runtime command when the machine can take a stream.
+  File staging resolves the same explicit pin or bound window machine before
+  choosing a local copy or remote upload. A dropped image whose direct upload
+  fails retries through the pasted-bytes path when it fits the 10 MB command
+  limit and the selected machine has not changed. Larger files retain the
+  upload failure. Attachment errors include the underlying reason in the
+  inline notice and its diagnostic report.
 - **Attachment images.** Every surface that shows or copies an attachment
   image (the tray thumbnail, the drafts list, draft transfer between
   machines) reads it through `readAttachmentImageDataUrl(path, pin)` in

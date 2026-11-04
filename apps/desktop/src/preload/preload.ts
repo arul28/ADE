@@ -9021,14 +9021,15 @@ const adeBridge = {
     getAttachmentStagingMode: async (
       pin?: OpenProjectBinding | null,
     ): Promise<ChatAttachmentStagingMode> => {
-      if (pin?.kind !== "remote") {
+      const binding = await resolveRemoteBindingForPin(pin);
+      if (!binding) {
         // Same machine as the main process: the bytes never move, only the
         // path. `copy` is the one mode the main process cannot answer with,
         // because it is a property of the caller, not of the target — so it is
         // decided here and every other mode comes back ready to use.
         return { mode: "copy", maxBytes: MAX_CHAT_ATTACHMENT_BYTES };
       }
-      return await readRemoteAttachmentStagingMode(pin.targetId);
+      return await readRemoteAttachmentStagingMode(binding.targetId);
     },
     /**
      * Stage a file that exists on this machine's disk without reading it into
@@ -9041,10 +9042,11 @@ const adeBridge = {
       args: AgentChatCopyTempAttachmentArgs,
       pin?: OpenProjectBinding | null,
     ): Promise<{ path: string }> => {
-      if (pin?.kind === "remote") {
+      const binding = await resolveRemoteBindingForPin(pin);
+      if (binding) {
         return (await ipcRenderer.invoke(IPC.remoteRuntimeUploadChatAttachment, {
-          id: pin.targetId,
-          projectId: pin.projectId,
+          id: binding.targetId,
+          projectId: binding.projectId,
           sourcePath: args.sourcePath,
           filename: args.filename,
         })) as { path: string };
