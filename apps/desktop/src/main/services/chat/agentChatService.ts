@@ -1198,6 +1198,7 @@ import {
 import { createChatAutoResumeCoordinator } from "./chatAutoResumeCoordinator";
 import type { ChatAutoResumeAnalyticsProperties } from "./chatAutoResumeCoordinator";
 import {
+  ADE_PARENT_REPORT_COMMAND_GUIDANCE,
   buildAdeCliAgentGuidance,
   buildAdeSessionActivityGuidance,
   buildAdeRuntimeSocketEnv,
@@ -9642,7 +9643,7 @@ export function buildComputerUseDirective(
     [
       "### Proof Capture",
       "When the user asks for proof, capture visual proof first; logs are supporting diagnostics only. ADE does not passively ingest computer-use output: file each capture with the tool that shows the work (`ade browser proof`, `ade app-control proof`, `ade apple proof`"
-        + (options.windowsDesktopAvailable || options.linuxDesktopAvailable ? ", `ade screen proof`" : options.macDesktopAvailable ? ", `ade mac-desktop proof`" : "")
+        + (options.windowsDesktopAvailable || options.linuxDesktopAvailable || options.macDesktopAvailable ? ", `ade screen proof`" : "")
         + "), or `ade proof attach` / `ingest_computer_use_artifacts` for an existing file. "
         + (ownScreen
           ? "`ade proof capture/record` capture the lane's screen once it is started; `--real-screen` captures the user's whole real screen, only when the user asks."
@@ -10567,18 +10568,14 @@ function buildSpawnSelfReportGuidance(
   if (opts?.parentReachable === false) {
     return "Your parent chat is gone. Do not try to report back to it. Keep working in this chat.";
   }
-  const selfReportCommandGuidance = [
-    "Send reports with the typed `ade chat message` command, which passes a JSON object to `chat.messageSession`. Pass the report through stdin or a file with `--text-file`, never as an argument: on Windows `ade.cmd` cuts an argument at its first line break.",
-    "In Bash/zsh or Git Bash, use a quoted here-doc with an end marker absent from the report: `ade chat message \"$ADE_PARENT_CHAT_SESSION_ID\" --kind auto --text-file - <<'REPORT_END'`, the report, then `REPORT_END`.",
-    "In PowerShell, put it in a single-quoted here-string (`$report = @'` ... `'@`; nothing inside is expanded), run `$f = New-TemporaryFile; Set-Content -LiteralPath $f -Value $report -Encoding utf8`, then `ade chat message $env:ADE_PARENT_CHAT_SESSION_ID --kind auto --text-file $f`.",
-  ].join(" ");
+  const selfReportCommandGuidance = ADE_PARENT_REPORT_COMMAND_GUIDANCE;
   if (session.spawnKind === "subagent") {
-    return `You were spawned as a subagent. Each closing summary wakes your parent, including scheduled turns. Human replies keep reports; takeover makes a quiet peer. Report approvals and decisions with a recommendation. Escalate via parents; only the root asks the user about critical decisions with no safe solution. User-only consent needs the user. You may send extra context or recover from a delivery failure with: ${selfReportCommandGuidance} Do not poll the parent transcript for coordination.`;
+    return `You are a subagent of another chat. Your final reply each turn is sent to that parent chat automatically, so end each turn with a clear report. If you need a decision, put the question and your recommendation in that report instead of asking the user; the parent asks the user when it cannot decide. Only an approval or consent that the user alone can give goes to the user. To send something mid-turn, or if a report failed to arrive: ${selfReportCommandGuidance} Do not read the parent's transcript to coordinate.`;
   }
   if (session.spawnKind === "peer") {
     return `You were spawned as a peer for fire-and-forget work. ADE records quiet completion notes but does not wake your parent. If the parent unexpectedly needs your result, report it directly with: ${selfReportCommandGuidance}`;
   }
-  return "This legacy child session has parent lineage but no supported spawn type. Report your result directly to `$ADE_PARENT_CHAT_SESSION_ID`, and use `--type subagent|peer` for any new child session.";
+  return "This chat has a parent chat but no spawn type. Report your result directly to `$ADE_PARENT_CHAT_SESSION_ID`.";
 }
 
 function buildAdeSessionLineageGuidance(
@@ -11360,6 +11357,12 @@ export type AgentChatTurnSettledEvent = Readonly<{
   status: Extract<AgentChatEvent, { type: "done" }>["status"];
   provider: AgentChatProvider;
   sessionSurface: AgentChatSurface;
+  /** The model that answered, as the runtime reported it (registry id when known). */
+  model?: string | null;
+  usage?: Extract<AgentChatEvent, { type: "done" }>["usage"];
+  costUsd?: number | null;
+  /** Wall time from the turn's start to its done event. */
+  durationMs?: number | null;
 }>;
 
 type AgentChatAutomationService = {
@@ -13533,6 +13536,8 @@ export function createAgentChatService(args: {
    * or is deleted.
    */
   const lastTurnStartedAtBySession = new Map<string, string>();
+  /** When the turn now running started, consumed by its settle (analytics latency). */
+  const pendingTurnStartMsBySession = new Map<string, number>();
   /**
    * The turn id of each chat's latest emitted event that named one. Proof that
    * a chat files is stamped with it, so the proof belongs to the same turn the
@@ -22012,6 +22017,7 @@ export function createAgentChatService(args: {
       }
       managed.session.currentTurnStartedAt = nowIso();
       lastTurnStartedAtBySession.set(managed.session.id, managed.session.currentTurnStartedAt);
+      pendingTurnStartMsBySession.set(managed.session.id, Date.now());
       // A new turn starts: the last turn's id no longer applies. Proof filed
       // before this turn's first event is placed by its time instead.
       lastTurnIdBySession.delete(managed.session.id);
@@ -24001,12 +24007,24 @@ export function createAgentChatService(args: {
     if (notifiedSettledTurns.has(callbackKey)) return;
     rememberBoundedId(notifiedSettledTurns, callbackKey, 1_024);
     try {
+      // Consumed here, so a `done` with no start of its own (a runtime that
+      // failed during setup) reports no latency rather than the idle gap since
+      // the previous turn.
+      const turnStartedMs = pendingTurnStartMsBySession.get(managed.session.id);
+      pendingTurnStartMsBySession.delete(managed.session.id);
+      // The model that answered: a reroute's served model when it is a catalog
+      // model, else the requested one. Non-catalog names report as `other`.
+      const servedModelId = event.servedModel ? getModelById(event.servedModel)?.id : undefined;
       onTurnSettled({
         sessionId: managed.session.id,
         turnId: event.turnId,
         status: event.status,
         provider: managed.session.provider,
         sessionSurface: managed.session.surface ?? "work",
+        model: servedModelId ?? event.modelId ?? event.model ?? null,
+        usage: event.usage,
+        costUsd: event.costUsd ?? null,
+        durationMs: turnStartedMs === undefined ? null : Math.max(0, Date.now() - turnStartedMs),
       });
     } catch (error) {
       logger.warn("agent_chat.turn_settled_callback_failed", {
@@ -29062,6 +29080,7 @@ export function createAgentChatService(args: {
     clearAcceptedStartWatch(managed.session.id);
     claudePluginUi.end(managed.session.id);
     lastTurnStartedAtBySession.delete(managed.session.id);
+    pendingTurnStartMsBySession.delete(managed.session.id);
     lastTurnIdBySession.delete(managed.session.id);
     laneBranchAtTurnStart.delete(managed.session.id);
     releaseChatBrowser(managed.session.id);
@@ -50071,7 +50090,7 @@ export function createAgentChatService(args: {
     recoveredFromSessionId,
     sessionId: requestedSessionId,
     orchestrationParentSessionId: requestedOrchestrationParentSessionId,
-    spawnKind: requestedSpawnKind,
+    spawnKind: rawSpawnKind,
     idempotencyKey,
     runtimeActor,
     rememberLaunchDefaults: rememberAsLaunchDefaults,
@@ -50103,11 +50122,12 @@ export function createAgentChatService(args: {
     // Passive lineage: the launching agent chat, recorded only when there is no
     // orchestration parent to carry the relation (the parent already does).
     const launchedBySessionId = normalizedParentSessionId ? null : requestedLaunchedBySessionId?.trim() || null;
-    if (normalizedParentSessionId && requestedSpawnKind !== "subagent" && requestedSpawnKind !== "peer") {
-      throw new Error(
-        "A parented agent chat requires spawnKind 'subagent' or 'peer'. Use subagent whenever the parent will need, join, or review the result; use peer only for fire-and-forget work.",
-      );
+    if (rawSpawnKind != null && rawSpawnKind !== "subagent" && rawSpawnKind !== "peer") {
+      throw new Error("spawnKind must be 'subagent' or 'peer'.");
     }
+    // A parented chat with no kind is a subagent: it reports back to the chat
+    // that started it. Every launch surface (CLI, RPC, service) defaults alike.
+    const requestedSpawnKind = rawSpawnKind ?? (normalizedParentSessionId ? "subagent" : undefined);
     if (!normalizedParentSessionId && requestedSpawnKind) {
       throw new Error("spawnKind requires orchestrationParentSessionId.");
     }
@@ -68650,6 +68670,7 @@ export function createAgentChatService(args: {
     clearAcceptedStartWatch(sessionId);
     claudePluginUi.end(sessionId);
     lastTurnStartedAtBySession.delete(sessionId);
+    pendingTurnStartMsBySession.delete(sessionId);
     lastTurnIdBySession.delete(sessionId);
     releaseChatBrowser(sessionId);
     eventHistoryBySession.delete(sessionId);
@@ -71313,6 +71334,7 @@ export function createAgentChatService(args: {
     transcriptHistoryCacheBySession.delete(trimmedSessionId);
     resolvedTranscriptPathBySession.delete(trimmedSessionId);
     lastTurnStartedAtBySession.delete(trimmedSessionId);
+    pendingTurnStartMsBySession.delete(trimmedSessionId);
     lastTurnIdBySession.delete(trimmedSessionId);
     lastPersistedPointerFingerprints.delete(trimmedSessionId);
 

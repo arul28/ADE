@@ -25,11 +25,17 @@ type PromptResult = { structuredOutput?: unknown; text?: string | null };
  * completion receipt (the tiebreak log line), so a test waits on that and not
  * on time.
  */
-function harness(options: { hand?: Partial<TurnEndHandState> } = {}) {
+function harness(options: {
+  hand?: Partial<TurnEndHandState>;
+  /** Jev's answer to the turn-end request; omitted means no Jev on this machine. */
+  decide?: () => Promise<unknown>;
+} = {}) {
   const hand: TurnEndHandState = { hasPendingInput: false, attentionRequestedAt: null, ...options.hand };
   let settlePrompt: { resolve: (value: PromptResult) => void; reject: (error: Error) => void } | null = null;
   let resolveTiebreakDone: () => void = () => {};
   const tiebreakDone = new Promise<void>((resolve) => { resolveTiebreakDone = resolve; });
+  let resolveQuietCheckDone: () => void = () => {};
+  const quietCheckDone = new Promise<void>((resolve) => { resolveQuietCheckDone = resolve; });
   const runPrompt = vi.fn((_args: { cwd: string; modelId: string }) =>
     new Promise<PromptResult>((resolve, reject) => { settlePrompt = { resolve, reject }; }));
   const requestAttention = vi.fn((_args: { sessionId: string; message: string; source: string }) => true);
@@ -47,6 +53,7 @@ function harness(options: { hand?: Partial<TurnEndHandState> } = {}) {
     error: vi.fn(),
     info: vi.fn((event: string) => {
       if (event === "agent_chat.turn_end_question_tiebreak") resolveTiebreakDone();
+      if (event === "agent_chat.turn_end_question_quiet_check") resolveQuietCheckDone();
     }),
   } as never;
   const check = createTurnEndQuestionCheck({
@@ -55,6 +62,7 @@ function harness(options: { hand?: Partial<TurnEndHandState> } = {}) {
     runPrompt,
     requestAttention,
     clearInferredAttention,
+    ...(options.decide ? { decide: options.decide as never } : {}),
   });
   const facts = (overrides: Partial<TurnEndQuestionFacts> = {}): TurnEndQuestionFacts => ({
     sessionId: SESSION,
@@ -85,6 +93,7 @@ function harness(options: { hand?: Partial<TurnEndHandState> } = {}) {
     requestAttention,
     clearInferredAttention,
     tiebreakDone,
+    quietCheckDone,
     settle: () => {
       expect(settlePrompt, "the tiebreak asked the model").not.toBeNull();
       return settlePrompt!;
@@ -278,6 +287,27 @@ describe("createTurnEndQuestionCheck", () => {
       expect(runPrompt).not.toHaveBeenCalled();
     },
   );
+
+  // A turn that owns no background work reads as Done, so a false Needs you is
+  // worse than a missed one: the hand rises only when Jev confirms the rules.
+  it.each([
+    { name: "Jev confirms a quiet turn's clear ask", jev: 0.95, liveChildCount: 0, raised: true },
+    { name: "Jev confirms a clear ask while only child chats run", jev: 0.95, liveChildCount: 1, raised: true },
+    { name: "Jev says the quiet turn's question is not an ask", jev: 0.05, liveChildCount: 0, raised: false },
+    { name: "Jev is unsure", jev: 0.5, liveChildCount: 0, raised: false },
+    { name: "the Jev call fails", jev: "reject", liveChildCount: 0, raised: false },
+  ] as const)("on a turn without background work: $name", async ({ jev, liveChildCount, raised }) => {
+    const decide = vi.fn(() => jev === "reject"
+      ? Promise.reject(new Error("jev down"))
+      : Promise.resolve({ asksUser: { type: "noul", noul: jev }, waitingOnOwnWork: { type: "noul", noul: 0 } }));
+    const { finishTurn, quietCheckDone, requestAttention, runPrompt } = harness({ decide });
+    finishTurn(CLEAR_ASK, { backgroundWorkCount: 0, liveChildCount });
+    await quietCheckDone;
+
+    expect(decide).toHaveBeenCalledTimes(1);
+    expect(runPrompt).not.toHaveBeenCalled();
+    expect(requestAttention.mock.calls.map(([args]) => args.message)).toEqual(raised ? [CLEAR_ASK] : []);
+  });
 
   it("judges a turn once, even when its done is reported again", () => {
     const { finishTurn, requestAttention } = harness();

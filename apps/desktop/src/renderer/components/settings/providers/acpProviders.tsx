@@ -20,6 +20,8 @@ import { listModelDescriptorsForProvider, providerTierIsPreview } from "../../..
 import { ACP_PROVIDER_METADATA } from "../../../../shared/acpProviderMetadata";
 import { SubsectionTitle } from "./providerUi";
 import { AntigravitySignIn } from "./bodies/AntigravitySignIn";
+import { SettingsAgentCliSignIn } from "./AgentCliSignInSheet";
+import { isAgentCliLoginProvider } from "../../../../shared/types/agentCliLogin";
 import type {
   AcpSettingsProviderId,
   ProviderDescriptor,
@@ -261,10 +263,15 @@ function AcpAuthActions({ ctx, id }: { ctx: ProvidersViewContext; id: AcpSetting
   // No terminal login: ADE runs the agent's own `authenticate` on that
   // machine. Shown when connected too, to switch method or account.
   if (!spec.loginCommand) return <AntigravitySignIn ctx={ctx} />;
-  if (status.state === "connected") return null;
+  if (status.state === "connected") {
+    // Signed in: the same sign-in, offered again to switch accounts or renew it.
+    return isAgentCliLoginProvider(id)
+      ? <SettingsAgentCliSignIn ctx={ctx} provider={id} providerLabel={spec.label} fallback={null} again />
+      : null;
+  }
   // Signed in and only waiting on the download: the pinned-tool row says so.
   if (status.state === "not-installed" && ctx.status?.providerConnections?.[id]?.authAvailable) return null;
-  return (
+  const terminalSignIn = (
     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
       <button
         type="button"
@@ -279,6 +286,12 @@ function AcpAuthActions({ ctx, id }: { ctx: ProvidersViewContext; id: AcpSetting
       </div>
     </div>
   );
+  // Grok, Kimi and Devin sign in without a terminal, like Claude and Codex;
+  // an older host (and Qwen, whose "login" is a key) keeps the terminal.
+  if (isAgentCliLoginProvider(id)) {
+    return <SettingsAgentCliSignIn ctx={ctx} provider={id} providerLabel={spec.label} fallback={terminalSignIn} />;
+  }
+  return terminalSignIn;
 }
 
 /**

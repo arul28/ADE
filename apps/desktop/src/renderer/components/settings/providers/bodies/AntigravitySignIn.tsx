@@ -21,7 +21,7 @@ import { Banner } from "../../../ui/notice";
 import { useSettingsMachineScope } from "../../SettingsMachineScope";
 import { useSettingsAction } from "../../useSettingsAction";
 import { usePolling } from "../../../../hooks/usePolling";
-import type { AntigravityAuthMethod, AntigravitySignInState } from "../../../../../shared/types/config";
+import { isAntigravitySignInRunning, type AntigravityAuthMethod, type AntigravitySignInState } from "../../../../../shared/types/config";
 import type { ProvidersViewContext } from "../types";
 
 const POLL_MS = 1_000;
@@ -44,10 +44,6 @@ const METHODS: ReadonlyArray<{ id: AntigravityAuthMethod; label: string; hint: s
 const METHOD_LABEL: Record<AntigravityAuthMethod, string> = Object.fromEntries(
   METHODS.map((method) => [method.id, method.label]),
 ) as Record<AntigravityAuthMethod, string>;
-
-function running(state: AntigravitySignInState | null): boolean {
-  return state?.phase === "starting" || state?.phase === "waiting" || state?.phase === "verifying";
-}
 
 const textInput: React.CSSProperties = {
   height: 28,
@@ -82,7 +78,7 @@ export function AntigravitySignIn({ ctx }: { ctx: ProvidersViewContext }) {
   const apply = useCallback((next: AntigravitySignInState | null) => {
     if (!next) return;
     setState(next);
-    if (next.recordedMethod && !running(next)) setMethod(next.recordedMethod);
+    if (next.recordedMethod && !isAntigravitySignInRunning(next)) setMethod(next.recordedMethod);
     if (next.agentPlatform.project) setProject((current) => current || next.agentPlatform.project || "");
     if (next.agentPlatform.location) setLocation((current) => current || next.agentPlatform.location || "");
     // Open Google's page once per flow, only when the browser is on that machine.
@@ -117,7 +113,7 @@ export function AntigravitySignIn({ ctx }: { ctx: ProvidersViewContext }) {
     const read = window.ade?.ai?.antigravitySignInStatus;
     if (!read) return;
     apply(await read(pinRef.current).catch(() => null));
-  }, POLL_MS, running(state));
+  }, POLL_MS, isAntigravitySignInRunning(state));
 
   const start = useCallback(() => runAction("start", async () => {
     const begin = window.ade?.ai?.antigravitySignInStart;
@@ -155,7 +151,7 @@ export function AntigravitySignIn({ ctx }: { ctx: ProvidersViewContext }) {
     );
   }
 
-  const busy = running(state);
+  const busy = isAntigravitySignInRunning(state);
   const methodHint = METHODS.find((entry) => entry.id === method)?.hint ?? "";
   const signedInLine = state?.signedIn && state.recordedMethod
     ? `Signed in on ${machineName} with ${METHOD_LABEL[state.recordedMethod]}.`

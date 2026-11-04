@@ -1140,7 +1140,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
       }
       // The driver has no resize op, so a new size is a new display. Saying
       // "ok" and leaving the old size in place — which is what returning the
-      // existing display did — made `ade mac-desktop display 1080p` a no-op
+      // existing display did — made `ade screen display 1080p` a no-op
       // that reported success. The same as `stop`: the apps the lane opened
       // quit, claimed windows go back to the user's screen, and the caller
       // re-opens what it still needs.

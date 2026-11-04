@@ -57,6 +57,7 @@ export function InlineErrorNotice({
       role={report === false ? "status" : "alert"}
       data-notice-tone={report === false ? "warning" : "error"}
       data-notice-id={id}
+      data-ph-unmask=""
       className="inline-flex min-w-0 items-center gap-1"
       style={{ fontSize: size, color, maxWidth, ...style }}
     >
@@ -82,7 +83,7 @@ export function InlineErrorNotice({
             className="outline-none"
             style={{ zIndex: Z_LAYERS.popover }}
           >
-            <div className="flex w-[320px] flex-col gap-2 rounded-xl border border-fg/[0.08] bg-(color:--work-popover-bg) p-3 shadow-[0_18px_48px_rgba(0,0,0,0.58)] backdrop-blur-md">
+            <div data-ph-unmask="" className="flex w-[320px] flex-col gap-2 rounded-xl border border-fg/[0.08] bg-(color:--work-popover-bg) p-3 shadow-[0_18px_48px_rgba(0,0,0,0.58)] backdrop-blur-md">
               <div className="flex items-start gap-1.5">
                 <WarningCircle size={13} weight="fill" className="mt-[2px] shrink-0" style={{ color }} />
                 <span className="text-[12px] font-semibold leading-snug text-fg">{failure.report?.headline ?? message}</span>

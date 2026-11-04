@@ -57,13 +57,24 @@ function resolveNpxInvocation() {
 
 /** Runs `sentry-cli <args>`; returns `{ ok, status, stdout, stderr }` and never throws. */
 export function runSentryCli(args, options = {}) {
+  return runNpxPackage(`@sentry/cli@${SENTRY_CLI_VERSION}`, args, {
+    ...options,
+    env: { SENTRY_LOAD_DOTENV: "0", ...(options.env ?? {}) },
+  });
+}
+
+/**
+ * Runs one pinned npm CLI (`<name>@<version>`) through npx, the same way on
+ * macOS, Linux and Windows. Returns `{ ok, status, stdout, stderr }`; never throws.
+ */
+export function runNpxPackage(packageSpec, args, options = {}) {
   const npx = resolveNpxInvocation();
   const result = spawnSync(
     npx.command,
-    [...npx.prefix, "--yes", `@sentry/cli@${SENTRY_CLI_VERSION}`, ...args],
+    [...npx.prefix, "--yes", packageSpec, ...args],
     {
       cwd: options.cwd ?? repoRoot,
-      env: { ...process.env, SENTRY_LOAD_DOTENV: "0", ...(options.env ?? {}) },
+      env: { ...process.env, ...(options.env ?? {}) },
       encoding: "utf8",
       shell: npx.shell,
       stdio: options.capture ? ["ignore", "pipe", "pipe"] : "inherit",

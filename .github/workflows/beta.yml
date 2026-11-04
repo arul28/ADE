@@ -235,6 +235,17 @@ jobs:
           fi
           echo "beta-feed now serves $TAG_NAME" >> "$GITHUB_STEP_SUMMARY"
 
+      # "Desktop 1.2.130-beta.3 · beta" on PostHog's charts, at the moment beta
+      # machines can take it. Skips without POSTHOG_PERSONAL_API_KEY, never
+      # fails the job, and a re-run does not add a second one.
+      - name: Mark the beta on PostHog
+        continue-on-error: true
+        env:
+          POSTHOG_PERSONAL_API_KEY: ${{ secrets.POSTHOG_PERSONAL_API_KEY }}
+          POSTHOG_PROJECT_ID: ${{ secrets.POSTHOG_PROJECT_ID }}
+          POSTHOG_HOST: ${{ secrets.POSTHOG_HOST }}
+        run: node scripts/posthog/annotate-release.mjs --desktop "$TAG_NAME"
+
   # The ADE Beta iPhone app build for this beta (a separate TestFlight app; the
   # normal app gets stable builds only). It runs beside the feed, never before
   # it, and the report job does not wait for it: a TestFlight failure reports

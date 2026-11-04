@@ -810,6 +810,7 @@ private struct WorkSceneLiveView: View {
     } else {
       VStack(alignment: .leading, spacing: 4) {
         WorkSceneContainer(controller: controller, parsed: parsed, messageId: messageId, bridge: bridge)
+          .adeReplayMasked()
           .frame(maxWidth: .infinity)
           .frame(height: controller.height)
         if let notice = controller.notice {

@@ -58,6 +58,9 @@ const USER_SETTING_WRITES = {
   keep_awake: { actions: ["setLevel", "migrateLegacyPreference", "fixSystemSleep"], entryId: "general.keep-awake" },
   pty: { actions: ["setDefaultShell"], entryId: "behaviour.terminal-shell" },
   budget: { actions: ["updateConfig"], entryId: "agents.budget" },
+  // An agent CLI's sign-in (Grok, Devin, Muse, Copilot, Droid, Kimi) is the
+  // person's, from that provider's Settings page; no agent starts one.
+  ai: { actions: ["cliLoginStart", "cliLoginSubmitCode", "cliLoginCancel"], entryId: "agents.providers" },
   analytics: { actions: ["setEnabled"], entryId: null },
   remote_mcp: {
     actions: ["setEnabled", "setMachineIncluded", "createToken", "updateConnection", "removeConnection"],
@@ -152,7 +155,7 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
   // Both are operator work, like `project_secret.exportEnv`. `museSettings`
   // opens a Muse host on the user's credential to read or change Muse's own
   // settings, the same tier.
-  ai: { only: ["setContinueAfterRestart", "harnessLaunchEnv", "testHarnessRoute", "acpProviderDiagnostics", "museSettings", "museSettingsClose", "storeApiCredential", "removeApiCredential", "updateConfig", "storeApiKey", "deleteApiKey", "opencodeOAuthStart", "opencodeOAuthCancel", "setOpencodeProviderKey", "clearOpencodeProviderKey", "opencodeAccountActivate", "opencodeAccountRename", "opencodeAccountRemove", "opencodeCloudConnect", "refreshModelsDev", "piLoginStart", "piLoginSubmit", "piLoginCancel", "cursorAuthLogin", "cursorAuthLogout", "cursorAuthCancel", "antigravitySignInStart", "antigravitySignInComplete", "antigravitySignInCancel"] },
+  ai: { only: ["setContinueAfterRestart", "harnessLaunchEnv", "testHarnessRoute", "acpProviderDiagnostics", "museSettings", "museSettingsClose", "storeApiCredential", "removeApiCredential", "updateConfig", "storeApiKey", "deleteApiKey", "opencodeOAuthStart", "opencodeOAuthCancel", "setOpencodeProviderKey", "clearOpencodeProviderKey", "opencodeAccountActivate", "opencodeAccountRename", "opencodeAccountRemove", "opencodeCloudConnect", "refreshModelsDev", "piLoginStart", "piLoginSubmit", "piLoginCancel", "cursorAuthLogin", "cursorAuthLogout", "cursorAuthCancel", "antigravitySignInStart", "antigravitySignInComplete", "antigravitySignInCancel", ...USER_SETTING_WRITES.ai.actions] },
   budget: { only: USER_SETTING_WRITES.budget.actions },
   // `applyAccountRollups` writes another machine's history into a
   // CRR-replicated table. The desktop app pushes it over the local socket
@@ -905,6 +908,10 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "antigravitySignInStart",
     "antigravitySignInComplete",
     "antigravitySignInCancel",
+    "cliLoginStart",
+    "cliLoginStatus",
+    "cliLoginSubmitCode",
+    "cliLoginCancel",
     "museSettings",
     "museSettingsClose",
     "acpProviderDiagnostics",

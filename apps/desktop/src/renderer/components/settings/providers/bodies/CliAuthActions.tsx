@@ -1,10 +1,11 @@
 /**
- * Auth for the three CLI providers ADE only observes: Claude, Codex, Droid.
+ * Auth for the CLI providers ADE only observes: Claude, Codex, Droid, Copilot.
  *
  * Claude and Codex sign in through the same guided sheet the Accounts panel
  * uses, run on the Settings page's own machine: the provider's login command
- * for the default account, with its link and code shown in the sheet. Droid has
- * no such flow, so the honest surface there is the command to run.
+ * for the default account, with its link and code shown in the sheet. Droid
+ * and Copilot sign in through the agent CLI sheet (`AgentCliSignInSheet`),
+ * the same flow without accounts; an older host shows the command to run.
  *
  * None of these offers an install: ADE runs its own pinned copy, and the
  * page's pinned-tool row downloads it. A login run before that download lands
@@ -18,6 +19,7 @@ import { useAccountSignInSheet } from "../accounts/AddProviderAccountSheet";
 import { useDefaultProviderInstance } from "../accounts/useProviderInstances";
 import type { ProviderInstanceProvider } from "../../../../../shared/types/providerInstances";
 import { cliTool } from "../cliTools";
+import { SettingsAgentCliSignIn } from "../AgentCliSignInSheet";
 import type { ProvidersViewContext } from "../types";
 
 /** The login command for a host with no account bridge. */
@@ -77,15 +79,31 @@ function CliAuthActions({ ctx, cli }: { ctx: ProvidersViewContext; cli: "codex" 
   const connection = ctx.status?.providerConnections?.[cli] ?? null;
   // Signed in already: what is left is the download, which the pinned-tool
   // row above shows.
-  if (ctx.isInitialCheckInFlight || connection?.runtimeAvailable || connection?.authAvailable) return null;
+  if (ctx.isInitialCheckInFlight) return null;
+  if (connection?.runtimeAvailable || connection?.authAvailable) {
+    // Copilot can sign in again (switch accounts, renew). Droid cannot: signed
+    // in, its CLI opens a normal session instead of a login, so only the host
+    // of a sheet still showing its result stays. Codex has accounts.
+    if (cli === "copilot") return <SettingsAgentCliSignIn ctx={ctx} provider="copilot" providerLabel={tool.label} fallback={null} again />;
+    if (cli === "droid") return <SettingsAgentCliSignIn ctx={ctx} provider="droid" providerLabel={tool.label} fallback={null} offered={false} />;
+    return null;
+  }
   if (cli === "codex") return <DefaultAccountSignIn ctx={ctx} provider="codex" providerLabel="Codex" />;
-  return (
+  const commandToRun = (
     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
       <div style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted }}>
         Sign in from a terminal, then refresh:
       </div>
       <CopyableCommand command={tool.loginCmd} />
     </div>
+  );
+  return (
+    <SettingsAgentCliSignIn
+      ctx={ctx}
+      provider={cli}
+      providerLabel={tool.label}
+      fallback={commandToRun}
+    />
   );
 }
 

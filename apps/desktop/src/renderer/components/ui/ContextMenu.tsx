@@ -153,6 +153,7 @@ function EntryRows({
                 role="menuitem"
                 disabled={entry.disabled}
                 title={entry.title}
+                data-ph-unmask=""
                 className={
                   (entry.danger ? DESTRUCTIVE_ITEM_CLASS : MENU_ITEM_CLASS)
                   + (entry.disabled ? " pointer-events-none opacity-40" : "")

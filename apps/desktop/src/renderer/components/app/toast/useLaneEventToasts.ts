@@ -38,6 +38,7 @@ export function useLaneEventToasts(navigate: NavigateFunction): void {
           showToast({
             id: `lane-${event.type}-${event.laneId}`,
             title: event.laneName,
+            replayMask: { title: true },
             message: "Lane created",
             tone: "success",
             colorDot: dot,
@@ -55,6 +56,7 @@ export function useLaneEventToasts(navigate: NavigateFunction): void {
         showToast({
           id: `lane-${event.type}-${event.laneId}`,
           title: event.laneName,
+          replayMask: { title: true },
           message:
             event.type === "lane-archived"
               ? "Lane archived"
@@ -92,18 +94,20 @@ export function useLaneEventToasts(navigate: NavigateFunction): void {
           showToast({
             id: `lane-rebase-${run.runId}`,
             title: laneLabel,
+            replayMask: { title: true },
             message: "Rebase completed",
             tone: "success",
           });
           return;
         }
+        // Git's own error text can name commits and files: masked in replays.
+        // The fixed "Rebase aborted" / "Rebase failed" stay readable.
+        const gitError = run.state === "aborted" ? "" : run.error?.trim() ?? "";
         showToast({
           id: `lane-rebase-${run.runId}`,
           title: laneLabel,
-          message:
-            run.state === "aborted"
-              ? "Rebase aborted"
-              : run.error?.trim() || "Rebase failed",
+          replayMask: { title: true, message: Boolean(gitError) },
+          message: run.state === "aborted" ? "Rebase aborted" : gitError || "Rebase failed",
           tone: "error",
         });
       },

@@ -348,3 +348,14 @@ non-fixed position. Reviewers (and `/quality`) should flag these by eye.
    own styling, or a toast library.
 8. Run `npm run lint:ci` in `apps/desktop`. It must report no new `ade-ui`
    violations.
+
+## Session replay
+
+Banners, toasts, inline errors, dialog headers and built-in dialog buttons are
+recorded readable in session replay (`data-ph-unmask` on the primitive; see
+[logging.md](../logging.md#session-replay)), with paths, emails, secrets and
+known project, lane and branch names starred out. So keep the person's content
+out of `title`, `detail` and `message` where you can: put a lane in a toast's
+`chips`, and anything richer in `extra` or `content`, which are always masked.
+When the title or message itself is the person's content (a lane name, a PR
+title), set `replayMask: { title: true }` or `{ message: true }` on the toast.

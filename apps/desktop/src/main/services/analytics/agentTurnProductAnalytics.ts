@@ -4,6 +4,7 @@ import type { ChatAutoResumeAnalyticsProperties } from "../chat/chatAutoResumeCo
 import type { CrossMachineMoveOutcome } from "../chat/crossMachineHandoffOrchestrator";
 import type { MacDesktopAnalyticsProperties } from "../macDesktop/macDesktopService";
 import type { ProductAnalyticsService } from "./productAnalyticsService";
+import { derivedEventId } from "./analyticsEventId";
 import { detectInstallSource } from "./installSource";
 
 type AgentTurnAnalytics = Pick<ProductAnalyticsService, "captureInternal">;
@@ -22,6 +23,8 @@ export function captureSessionMetadataRegeneratedAnalytics(args: {
       feature: "chat",
       action: "metadata_regenerated",
       outcome: args.event.outcome,
+      // Regenerated after a turn, never on request: not a person's use.
+      mode: "automatic",
       source: "runtime",
     },
   });
@@ -428,6 +431,30 @@ export function captureAgentTurnSettledAnalytics(args: {
     : event.status === "interrupted"
       ? "cancelled"
       : "failure";
+
+  // Every turn, not just the first: PostHog's LLM analytics (cost, tokens,
+  // latency and failures per provider and model). A stable id per turn makes a
+  // repeated settle notification one event in PostHog.
+  analytics.captureInternal({
+    event: "$ai_generation",
+    surface: "api",
+    projectId,
+    sessionId: event.sessionId,
+    clientEventId: derivedEventId(`ai-generation:${event.sessionId}`, event.turnId),
+    aiGeneration: {
+      provider: event.provider,
+      model: event.model ?? null,
+      status: event.status,
+      feature,
+      inputTokens: event.usage?.inputTokens ?? null,
+      outputTokens: event.usage?.outputTokens ?? null,
+      cacheReadTokens: event.usage?.cacheReadTokens ?? null,
+      cacheCreationTokens: event.usage?.cacheCreationTokens ?? null,
+      reasoningTokens: event.usage?.reasoningTokens ?? null,
+      costUsd: event.costUsd ?? null,
+      durationMs: event.durationMs ?? null,
+    },
+  });
 
   analytics.captureInternal({
     event: "ade_work_session_completed",

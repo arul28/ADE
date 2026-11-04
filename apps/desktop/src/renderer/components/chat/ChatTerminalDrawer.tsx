@@ -3,6 +3,9 @@ import { Terminal as TerminalIcon, Eraser, Plus, Power, Rows, X } from "@phospho
 import { cn } from "../ui/cn";
 import type { AppControlSession, ChatTerminalSession, OpenProjectBinding, PtyExitEvent } from "../../../shared/types";
 import { clearTerminalRuntimeScrollback, TerminalView } from "../terminals/TerminalView";
+import { useAppStore } from "../../state/appStore";
+import { eventMatchesBinding, getEffectiveBinding } from "../../lib/keybindings";
+import { isImeComposing } from "../../lib/imeComposition";
 import type { AgentChatRemoteWorkUse } from "../../../shared/types/chat";
 import { listRemoteWorkShells, useRemoteWorkPinResolver } from "../../lib/remoteWorkPins";
 import { remoteWorkUseKey } from "../../../shared/chatRemoteWork";
@@ -190,6 +193,11 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
   const uiStateKey = drawerStateKey(chatSessionId, laneId, pin, runtimeScopeKey);
   const [tabs, setTabs] = useState<TabEntry[]>([]);
   const [activeTabId, setActiveTabId] = useState<string | null>(null);
+  const keybindings = useAppStore((state) => state.keybindings);
+  const terminalBindings = useMemo(() => ({
+    next: getEffectiveBinding(keybindings, "terminal.next", "Mod+Shift+ArrowRight"),
+    prev: getEffectiveBinding(keybindings, "terminal.prev", "Mod+Shift+ArrowLeft"),
+  }), [keybindings]);
   const [creatingTab, setCreatingTab] = useState(false);
   const [restoringTabs, setRestoringTabs] = useState(false);
   const [appControlTabState, setAppControlTabState] = useState<AppControlTabState | null>(null);
@@ -673,6 +681,37 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
   if (!open) return null;
 
   const activeTab = tabs.find((tab) => tab.id === activeTabId) ?? tabs.at(-1) ?? null;
+
+  /**
+   * `terminal.next` / `terminal.prev`: step through this drawer's shells,
+   * wrapping at both ends. Capture phase, so the chord is answered before the
+   * shell sees it. With one shell there is nothing to switch to, so the keys
+   * stay the shell's (its own line editor may use them).
+   */
+  const onCycleKeyDownCapture = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    const native = event.nativeEvent;
+    if (isImeComposing(native)) return;
+    const direction = eventMatchesBinding(native, terminalBindings.next)
+      ? 1
+      : eventMatchesBinding(native, terminalBindings.prev)
+        ? -1
+        : 0;
+    if (!direction || tabs.length < 2) return;
+    event.preventDefault();
+    event.stopPropagation();
+    if (native.repeat) return;
+    const index = Math.max(0, tabs.findIndex((tab) => tab.id === activeTab?.id));
+    const next = tabs[(index + direction + tabs.length) % tabs.length];
+    if (!next) return;
+    setActiveTabId(next.id);
+    // The pane keeps one TerminalView and swaps its shell, so put the caret
+    // back in it once the new shell is drawn. The active shell is always the
+    // first pane; a split shell sits under it.
+    const root = event.currentTarget;
+    requestAnimationFrame(() => {
+      root.querySelector<HTMLTextAreaElement>(".xterm textarea")?.focus({ preventScroll: true });
+    });
+  };
   // An empty tab strip is a row of chrome for tabs that do not exist, and its
   // "+" competes with the centred button below it for the same single action.
   // With no shells the panel shows one affordance, not two.
@@ -757,7 +796,7 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
   };
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-[var(--color-surface-recessed)]">
+    <div className="flex h-full min-h-0 flex-col bg-[var(--color-surface-recessed)]" onKeyDownCapture={onCycleKeyDownCapture}>
       {showEmptyState ? null : (
         <div className={WORK_TOOL_CHROME_ROW}>
           <div className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto scrollbar-none">

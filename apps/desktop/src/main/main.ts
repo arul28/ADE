@@ -5,7 +5,8 @@ import { configureOutboundProxyFromEnv, trustSystemCertificates } from "./servic
 import { SENTRY_ENABLED_ARGV } from "../shared/sentry/config";
 import { flushSentry } from "../shared/sentry/capture";
 import { registerSentryDiagnosticAttachment, registerSentryDiagnosticContext } from "../shared/sentry/diagnostics";
-import { setSentryUserResolver } from "../shared/sentry/eventFilter";
+import { setSentryEventMirror, setSentryUserResolver } from "../shared/sentry/eventFilter";
+import { createExceptionAnalyticsMirror } from "./services/analytics/exceptionProductAnalytics";
 
 if (app.isPackaged && process.env.ADE_RUNTIME_PACKAGED === undefined) {
   process.env.ADE_RUNTIME_PACKAGED = "1";
@@ -101,6 +102,7 @@ import {
 import { detectInstallSource } from "./services/analytics/installSource";
 import { createSurveyService, defaultSurveyStateFile } from "./services/analytics/surveyService";
 import { registerSurveyIpc } from "./services/analytics/registerSurveyIpc";
+import { registerSessionReplayIpc, sessionReplayConnectSources } from "./services/analytics/registerSessionReplayIpc";
 import {
   captureAgentTurnSettledAnalytics,
   captureChatAutoResumeAnalytics,
@@ -1154,7 +1156,7 @@ async function createWindow(args: {
 
   // Set CSP dynamically so it works with both http:// (dev) and file:// (production).
   const isDevMode = !!process.env.VITE_DEV_SERVER_URL;
-  const cspPolicy = buildRendererCspPolicy(isDevMode);
+  const cspPolicy = buildRendererCspPolicy(isDevMode, { replayConnectSources: sessionReplayConnectSources() });
 
   win.webContents.session.webRequest.onHeadersReceived((details, callback) => {
     if (
@@ -2411,15 +2413,17 @@ app.whenReady().then(async () => {
     return status?.signedIn ? status.userId?.trim() || null : null;
   };
   const productAnalyticsStateFile = defaultProductAnalyticsStateFile(machineAdeLayout.adeDir);
+  const analyticsReleaseChannel = resolveReleaseChannel({ env: process.env, packaged: app.isPackaged, version: app.getVersion() });
   const productAnalyticsService = getSharedProductAnalyticsService(productAnalyticsStateFile, () =>
     createProductAnalyticsService({
       stateFilePath: productAnalyticsStateFile,
       logger: localRuntimeLogger,
       appVersion: app.getVersion(),
       runtimeMode: app.isPackaged ? "desktop_packaged" : "desktop_development",
-      releaseChannel: resolveReleaseChannel({ env: process.env, packaged: app.isPackaged, version: app.getVersion() }),
+      releaseChannel: analyticsReleaseChannel,
     }));
   setSentryUserResolver(() => productAnalyticsService.getDistinctId());
+  setSentryEventMirror(createExceptionAnalyticsMirror({ analytics: productAnalyticsService, surface: "desktop" }));
   // In-app surveys: this computer's own usage days, kept only while analytics
   // is on. A launch is counted a moment after startup, and a window focus
   // records the day once (no I/O for any later focus that day).
@@ -10296,6 +10300,13 @@ app.whenReady().then(async () => {
   registerDatabaseCopiesIpc({ logger: getMachineMainLogger() });
   // The in-app survey card: this desktop app's user only, so no pin.
   registerSurveyIpc({ surveyService, logger: getMachineMainLogger() });
+  // Session replay settings for this window only (analytics consent), so no pin.
+  registerSessionReplayIpc({
+    analytics: productAnalyticsService,
+    logger: getMachineMainLogger(),
+    appVersion: app.getVersion(),
+    releaseChannel: analyticsReleaseChannel,
+  });
   // The home page's clipboard, machine-health and weather widgets.
   registerHomeWidgetsIpc({
     logger: getMachineMainLogger(),

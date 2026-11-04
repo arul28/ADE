@@ -352,9 +352,11 @@ struct AppleDeviceViewer: View {
       AppleViewerPreviewPicture()
     } else {
       AppleStreamLayerView(layer: model.decoder.layer)
+        .adeReplayMasked()
     }
     #else
     AppleStreamLayerView(layer: model.decoder.layer)
+      .adeReplayMasked()
     #endif
   }
 

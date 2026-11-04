@@ -137,7 +137,7 @@ export function ProjectSidebar({ route, heldRoute = null }: { route: string; hel
       data-tour="app.sidebar"
       data-testid="project-sidebar"
     >
-      <nav className="ade-project-sidebar-tabs shrink-0" aria-label="Project tabs">
+      <nav className="ade-project-sidebar-tabs shrink-0" aria-label="Project tabs" data-ph-unmask="">
         {visibleProjectSidebarTabs(PROJECT_SIDEBAR_TABS).map((tab) => {
           const active = shownTab === tab.to;
           const attention =
@@ -184,7 +184,7 @@ export function ProjectSidebar({ route, heldRoute = null }: { route: string; hel
 
       {starPillSlotActive ? <StarRepoPill /> : null}
 
-      <div className="ade-project-sidebar-footer shrink-0">
+      <div className="ade-project-sidebar-footer shrink-0" data-ph-unmask="">
         {visibleProjectSidebarTabs(PROJECT_SIDEBAR_FOOTER_TABS).map((item) => {
           const active = activeTab === item.to;
           const waiting = item.to === "/cto" && ctoAwaitingInput;

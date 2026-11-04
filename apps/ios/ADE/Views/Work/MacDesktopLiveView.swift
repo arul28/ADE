@@ -266,6 +266,7 @@ struct MacDesktopLivePicture: View {
   var body: some View {
     ZStack {
       MacDesktopLiveView(session: session)
+        .adeReplayMasked()
       if !session.hasFrame {
         if let placeholder {
           Image(uiImage: placeholder)

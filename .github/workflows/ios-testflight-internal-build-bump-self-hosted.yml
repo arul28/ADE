@@ -67,3 +67,20 @@ jobs:
         run: |
           bash scripts/release-tools/upload-ios-dsyms.sh "${RUNNER_TEMP}/ade-ios-internal-bump-${ADE_IOS_BUILD_NUMBER}/ADE.xcarchive" \
             || echo "::warning::Sentry dSYM upload did not run; this build will not be symbolicated."
+
+      # "iOS 1.1.10 (10008) · TestFlight" on PostHog's charts, for the App Store
+      # app (the ADE Beta app is marked by ios-testflight.yml). Skips without
+      # POSTHOG_PERSONAL_API_KEY, Node, or the script (an older git_ref).
+      - name: Mark the TestFlight build on PostHog
+        if: ${{ success() }}
+        continue-on-error: true
+        env:
+          POSTHOG_PERSONAL_API_KEY: ${{ secrets.POSTHOG_PERSONAL_API_KEY }}
+          POSTHOG_PROJECT_ID: ${{ secrets.POSTHOG_PROJECT_ID }}
+          POSTHOG_HOST: ${{ secrets.POSTHOG_HOST }}
+        run: |
+          if ! command -v node >/dev/null 2>&1 || [ ! -f scripts/posthog/annotate-release.mjs ]; then
+            echo "::notice::Skipping the PostHog annotation (no Node or no script at this ref)."
+            exit 0
+          fi
+          node scripts/posthog/annotate-release.mjs --app "iOS" --ios "${ADE_IOS_MARKETING_VERSION:-}" --build "${ADE_IOS_BUILD_NUMBER:-}"

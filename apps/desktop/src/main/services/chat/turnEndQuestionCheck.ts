@@ -120,13 +120,18 @@ type JevTurnEndReading = { asksUser: boolean | null; waitingOnOwnWork: boolean }
 type AskDecider = "jev" | "model";
 
 /**
- * A turn that ends while the chat still owns live background work reads as
- * Working, so a question in its reply is invisible unless the agent called
- * `ade chat ask`. This reads the reply's ending and raises the hand for it:
- * clear asks at once, clear progress notes never, the rest by Jev for any
- * provider, then by a cheap model when the provider has one and Jev gave no
- * clear answer. Once per turn and live only (replay never reaches here); the
- * raised hand is what persists.
+ * Raises the hand when a turn ends on a question the user must answer, so the
+ * row reads Needs you instead of Working or Done. Once per turn and live only
+ * (replay never reaches here); the raised hand is what persists. Subagents
+ * never raise; their questions go to the parent in their report.
+ *
+ * - A turn that ends while the chat still owns live background work reads as
+ *   Working, which hides the question. Clear asks raise at once, clear
+ *   progress notes never, the rest go to Jev for any provider, then to a cheap
+ *   model when the provider has one and Jev gave no clear answer.
+ * - A quiet turn (nothing still running) reads as Done. A false Needs you there
+ *   is worse than a missed one, so only a clear ask by the rules that Jev also
+ *   confirms raises the hand.
  *
  * The same Jev request also asks whether the reply says the agent waits on
  * its own work. A turn that ends with live background work or live child
@@ -142,8 +147,8 @@ export function createTurnEndQuestionCheck(deps: TurnEndQuestionCheckDeps): Turn
    */
   const lastReplyBySession = new Map<string, { key: string; turnId: string | null; text: string }>();
   /**
-   * The turn whose ending question is still being judged by the cheap model,
-   * per chat. Any user message or turn start removes it, so an answer that
+   * The turn whose ending question is still being judged (by Jev or the cheap
+   * model), per chat. Any user message or turn start removes it, so an answer that
    * arrives after the chat moved on finds nothing to apply to.
    */
   const pendingTurnBySession = new Map<string, string>();
@@ -174,6 +179,13 @@ export function createTurnEndQuestionCheck(deps: TurnEndQuestionCheckDeps): Turn
       state: buildTurnEndAskPrompt({ userMessage: facts.lastUserMessage, replyText }),
       questions: TURN_END_JEV_QUESTIONS,
       priority: "background",
+    }).catch((error: unknown) => {
+      // No answer never raises a hand; the turn falls through like an absent Jev.
+      logger.warn("agent_chat.turn_end_question_jev_failed", {
+        sessionId: facts.sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
     });
     if (!answers) return null;
     const asks = answers.asksUser.noul;
@@ -248,6 +260,21 @@ export function createTurnEndQuestionCheck(deps: TurnEndQuestionCheckDeps): Turn
   };
 
   /**
+   * Whether the judged turn is still open, and the end of its pending entry:
+   * same live chat, no user message or new turn (either clears the entry), no
+   * approval card, and no hand raised in the meantime.
+   */
+  const claimStillOpen = (facts: TurnEndQuestionFacts, turnId: string): boolean => {
+    const { sessionId } = facts;
+    const pending = pendingTurnBySession.get(sessionId) === turnId;
+    if (pending) pendingTurnBySession.delete(sessionId);
+    return pending && facts.isStillCurrent() && handCanRise(deps.readHandState(sessionId));
+  };
+
+  const jevLabel = (jev: JevTurnEndReading | null): string =>
+    jev ? (jev.asksUser === null ? "unsure" : jev.asksUser ? "ask" : "not_ask") : "no_answer";
+
+  /**
    * Acts on the decision, only if nothing happened since the turn ended: a
    * hidden ask raises the hand; a reply that waits on the agent's own work
    * marks the chat as awaiting it.
@@ -264,18 +291,13 @@ export function createTurnEndQuestionCheck(deps: TurnEndQuestionCheckDeps): Turn
   }): void => {
     const { facts, turnId, jev, asksUser, decidedBy } = args;
     const { sessionId } = facts;
-    // Same live chat, no user message or new turn (either clears the pending
-    // entry), no approval card, and no hand raised in the meantime.
-    const stillOpen = pendingTurnBySession.get(sessionId) === turnId
-      && facts.isStillCurrent()
-      && handCanRise(deps.readHandState(sessionId));
-    if (pendingTurnBySession.get(sessionId) === turnId) pendingTurnBySession.delete(sessionId);
+    const stillOpen = claimStillOpen(facts, turnId);
     const awaitingOwnWork = stillOpen && asksUser !== true && jev?.waitingOnOwnWork === true;
     logger.info("agent_chat.turn_end_question_tiebreak", {
       sessionId,
       turnId,
       provider: args.provider,
-      jev: jev ? (jev.asksUser === null ? "unsure" : jev.asksUser ? "ask" : "not_ask") : "no_answer",
+      jev: jevLabel(jev),
       decidedBy,
       asksUser,
       awaitingOwnWork,
@@ -302,6 +324,23 @@ export function createTurnEndQuestionCheck(deps: TurnEndQuestionCheckDeps): Turn
     const jev = deps.decide ? await askJev(args.facts, args.replyText) : null;
     const { asksUser, decidedBy } = await decideAsk({ ...args, jev });
     finishTurnEnd({ ...args, jev, asksUser, decidedBy, startedAt });
+  };
+
+  const confirmQuietAsk = async (
+    facts: TurnEndQuestionFacts,
+    turnId: string,
+    replyText: string,
+    question: string,
+  ): Promise<void> => {
+    const jev = await askJev(facts, replyText);
+    const stillOpen = claimStillOpen(facts, turnId);
+    logger.info("agent_chat.turn_end_question_quiet_check", {
+      sessionId: facts.sessionId,
+      turnId,
+      jev: jevLabel(jev),
+      stillOpen,
+    });
+    if (jev?.asksUser === true && stillOpen) raise(facts.sessionId, turnId, question, "jev");
   };
 
   return {
@@ -345,17 +384,37 @@ export function createTurnEndQuestionCheck(deps: TurnEndQuestionCheckDeps): Turn
       if (checkedTurns.has(checkKey)) return;
       rememberChecked(checkKey);
       const hasBackgroundWork = facts.backgroundWorkCount > 0;
-      if (facts.isSubagentWithParent || (!hasBackgroundWork && (facts.liveChildCount ?? 0) <= 0)) return;
+      const hasLiveChildren = (facts.liveChildCount ?? 0) > 0;
+      // A subagent's question goes to its parent in its report, not to the user.
+      if (facts.isSubagentWithParent) return;
       if (!handCanRise(deps.readHandState(sessionId))) return;
       if (!reply || (reply.turnId && reply.turnId !== turnId)) return;
 
       const classification = classifyTurnEndAsk(reply.text);
       if (classification.verdict === "ask") {
-        // With only child chats running, the row already reads Done and shows
-        // the question; the hand is for a reply hidden under Working.
-        if (hasBackgroundWork) raise(sessionId, turnId, classification.question, "rules");
+        // With background work still running the row reads Working and hides
+        // the question, so a clear ask raises the hand at once.
+        if (hasBackgroundWork) {
+          raise(sessionId, turnId, classification.question, "rules");
+          return;
+        }
+        // Otherwise the reply shows under Done, where an open question is easy
+        // to miss. Raise the hand only when Jev confirms the rules: a false
+        // Needs you is worse than a missed one, so no Jev, an unsure Jev, or a
+        // "no" leaves the row alone.
+        if (!deps.decide) return;
+        pendingTurnBySession.set(sessionId, turnId);
+        void confirmQuietAsk(facts, turnId, reply.text, classification.question).catch((error) => {
+          logger.warn("agent_chat.turn_end_question_quiet_check_failed", {
+            sessionId,
+            turnId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
         return;
       }
+      // A quiet turn needs nothing more: only a clear ask raises its hand.
+      if (!hasBackgroundWork && !hasLiveChildren) return;
       // The cheap model keeps today's scope: unsure endings of background-work
       // turns. A progress note ("not an ask") on such a turn can still ask
       // ("…running. I need to know X before I merge."), so Jev, when it
@@ -365,7 +424,13 @@ export function createTurnEndQuestionCheck(deps: TurnEndQuestionCheckDeps): Turn
         : null;
       if (!deps.decide && !provider) return;
       pendingTurnBySession.set(sessionId, turnId);
-      void runTiebreak({ facts, turnId, provider, replyText: reply.text, rulesVerdict: classification.verdict });
+      void runTiebreak({ facts, turnId, provider, replyText: reply.text, rulesVerdict: classification.verdict }).catch((error) => {
+        logger.warn("agent_chat.turn_end_question_tiebreak_crashed", {
+          sessionId,
+          turnId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
     },
 
     forget(sessionId) {
