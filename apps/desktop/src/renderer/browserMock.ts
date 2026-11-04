@@ -1634,6 +1634,117 @@ const browserMockRemoteMcp = (() => {
 /** Setup finished or skipped in this page load; `?mockFirstRun` stops forcing it after that. */
 let browserMockFirstRunEnded = false;
 
+
+
+/** CLIs a mock sign-in finished for: `ai.getStatus` reads them as connected afterwards. */
+const browserMockSignedInClis = new Set<string>();
+
+/** The mock status, with the mock sign-ins that finished marked connected. */
+function browserMockAiStatusWithSignIns(base: any): any {
+  if (!browserMockSignedInClis.size) return base;
+  const connections = { ...(base?.providerConnections ?? {}) };
+  for (const provider of browserMockSignedInClis) {
+    connections[provider] = { ...(connections[provider] ?? {}), authAvailable: true, runtimeAvailable: true, runtimeDetected: true, accountEmail: "arul@example.com" };
+  }
+  return { ...base, providerConnections: connections };
+}
+
+/** The browser preview's stand-in for the agent CLI sign-in (`ai.cliLogin*`); nothing real runs. */
+const browserMockCliLogin = (() => {
+  const LINKS: Record<string, string> = {
+    grok: "https://accounts.x.ai/oauth2/device?user_code=6HPS-5JPM",
+    devin: "https://app.devin.ai/auth/cli/continue?state=mock",
+    muse: "https://auth.meta.com/oauth/device/?code=RXBW-LRZP",
+    copilot: "https://github.com/login/device",
+    droid: "https://auth.factory.ai/device?user_code=GWGG-JSVG",
+    kimi: "https://auth.kimi.com/device?user_code=KM4X-9QPA",
+  };
+  const CODES: Record<string, string> = { grok: "6HPS-5JPM", muse: "RXBW-LRZP", copilot: "1278-FC40", droid: "GWGG-JSVG", kimi: "KM4X-9QPA" };
+  const flows = new Map<string, { provider: string; polls: number; state: string; pasted: boolean; startedAt: string }>();
+  const view = (loginId: string) => {
+    const flow = flows.get(loginId);
+    if (!flow) throw new Error("That sign-in is no longer running. Start it again.");
+    const paste = flow.provider === "devin";
+    return {
+      loginId,
+      provider: flow.provider,
+      state: flow.state,
+      url: flow.polls >= 1 ? LINKS[flow.provider] ?? null : null,
+      ...(CODES[flow.provider] && flow.polls >= 1 ? { deviceCode: CODES[flow.provider] } : {}),
+      awaitingCode: paste && !flow.pasted && flow.polls >= 1 && flow.state === "running",
+      opensBrowser: ["grok", "muse", "droid"].includes(flow.provider),
+      downloading: null,
+      output: "",
+      ...(flow.state === "succeeded" ? { email: "arul@example.com" } : {}),
+      startedAt: flow.startedAt,
+    } as any;
+  };
+  return {
+    start(args: any) {
+      const loginId = `mock-cli-login-${Date.now()}`;
+      flows.set(loginId, { provider: String(args?.provider ?? "grok"), polls: 0, state: "running", pasted: false, startedAt: new Date().toISOString() });
+      return view(loginId);
+    },
+    read(loginId: string) {
+      const flow = flows.get(loginId);
+      if (flow && flow.state === "running") {
+        flow.polls += 1;
+        const waitsForPaste = flow.provider === "devin" && !flow.pasted;
+        if (!waitsForPaste && flow.polls >= 6) {
+          flow.state = "succeeded";
+          browserMockSignedInClis.add(flow.provider);
+        }
+      }
+      return view(loginId);
+    },
+    submit(loginId: string) {
+      const flow = flows.get(loginId);
+      if (flow) {
+        flow.pasted = true;
+        flow.polls = 4;
+      }
+      return view(loginId);
+    },
+    cancel(loginId: string) {
+      const flow = flows.get(loginId);
+      if (flow && flow.state === "running") flow.state = "cancelled";
+      return view(loginId);
+    },
+  };
+})();
+
+/** The browser preview's stand-in for Antigravity's sign-in flow (`ai.antigravitySignIn*`). */
+const browserMockAntigravitySignIn = (() => {
+  let flow: { id: string; polls: number; phase: string } | null = null;
+  const state = () => ({
+    flowId: flow?.id ?? null,
+    method: "oauth-personal",
+    phase: flow?.phase ?? "idle",
+    authorizationUrl: flow?.phase === "waiting" ? "https://accounts.google.com/o/oauth2/auth?mock=1" : null,
+    licensePickerUrl: null,
+    acceptsCallbackUrl: flow?.phase === "waiting",
+    message: flow?.phase === "waiting" ? "Finish signing in with Google in your browser." : null,
+    expiresAt: null,
+    recordedMethod: flow?.phase === "succeeded" ? "oauth-personal" : null,
+    signedIn: flow?.phase === "succeeded",
+    agentPlatform: { project: null, location: null },
+  }) as any;
+  return {
+    start() {
+      flow = { id: `mock-antigravity-${Date.now()}`, polls: 0, phase: "waiting" };
+      return state();
+    },
+    read() {
+      if (flow?.phase === "waiting" && ++flow.polls >= 4) flow.phase = "succeeded";
+      return state();
+    },
+    cancel() {
+      if (flow) flow.phase = "cancelled";
+      return state();
+    },
+  };
+})();
+
 function browserMockFirstRun(): boolean {
   return !browserMockFirstRunEnded && browserMockFlag("mockFirstRun");
 }
@@ -6376,7 +6487,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         browserMockContinueAfterRestart = enabled;
         return { enabled };
       },
-      getStatus: resolved(BROWSER_MOCK_AI_STATUS),
+      getStatus: async () => browserMockAiStatusWithSignIns(BROWSER_MOCK_AI_STATUS),
       getOpenCodeRuntimeDiagnostics: resolved({} as any),
       storeApiKey: resolvedArg(undefined),
       deleteApiKey: resolvedArg(undefined),
@@ -6412,6 +6523,16 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         loginInProgress: false,
       } as any),
       cursorAuthLogin: resolvedArg({ ok: false, error: "browser" } as any),
+      // The agent CLI sign-in (Grok, Devin, Muse, Copilot, Droid, Kimi): a device code or a pasted code, then success.
+      cliLoginStart: async (args: any) => browserMockCliLogin.start(args),
+      cliLoginStatus: async (args: any) => browserMockCliLogin.read(args?.loginId),
+      cliLoginSubmitCode: async (args: any) => browserMockCliLogin.submit(args?.loginId),
+      cliLoginCancel: async (args: any) => browserMockCliLogin.cancel(args?.loginId),
+      // Antigravity's Google sign-in: waits a few polls, then succeeds (no real Google page).
+      antigravitySignInStart: async () => browserMockAntigravitySignIn.start(),
+      antigravitySignInStatus: async () => browserMockAntigravitySignIn.read(),
+      antigravitySignInCancel: async () => browserMockAntigravitySignIn.cancel(),
+      antigravitySignInComplete: async () => browserMockAntigravitySignIn.read(),
       cursorAuthLogout: resolvedArg({ ok: false, error: "browser" } as any),
       cursorAuthCancel: resolvedArg(undefined),
       onCursorAuthStatus: () => () => {},

@@ -680,6 +680,10 @@ import type {
   AntigravitySignInCompleteArgs,
   AntigravitySignInStartArgs,
   AntigravitySignInState,
+  AgentCliLoginRefArgs,
+  AgentCliLoginStartArgs,
+  AgentCliLoginStatus,
+  AgentCliLoginSubmitCodeArgs,
   AiApiKeyVerificationResult,
   AiConfig,
   AiSettingsStatus,
@@ -5503,6 +5507,26 @@ export function registerIpc({
   ipcMain.handle(IPC.aiAntigravitySignInCancel, async (_event, arg: AntigravitySignInCancelArgs): Promise<AntigravitySignInState> => {
     const { cancelAntigravitySignIn } = await import("../ai/antigravitySignIn");
     return cancelAntigravitySignIn(arg);
+  });
+
+  // The unpinned route for an agent CLI's sign-in (Grok, Devin, Muse,
+  // Copilot, Droid, Kimi) on this machine; a pinned call goes to the owning
+  // machine's `ai.cliLogin*` actions.
+  ipcMain.handle(IPC.aiCliLoginStart, async (_event, arg: AgentCliLoginStartArgs): Promise<AgentCliLoginStatus> => {
+    const { getMachineAgentCliLoginRunner } = await import("../ai/machineAgentCliLoginRunner");
+    return getMachineAgentCliLoginRunner().start(arg);
+  });
+  ipcMain.handle(IPC.aiCliLoginStatus, async (_event, arg: AgentCliLoginRefArgs): Promise<AgentCliLoginStatus> => {
+    const { getMachineAgentCliLoginRunner } = await import("../ai/machineAgentCliLoginRunner");
+    return getMachineAgentCliLoginRunner().status(arg?.loginId);
+  });
+  ipcMain.handle(IPC.aiCliLoginSubmitCode, async (_event, arg: AgentCliLoginSubmitCodeArgs): Promise<AgentCliLoginStatus> => {
+    const { getMachineAgentCliLoginRunner } = await import("../ai/machineAgentCliLoginRunner");
+    return getMachineAgentCliLoginRunner().submitCode(arg?.loginId, arg?.code);
+  });
+  ipcMain.handle(IPC.aiCliLoginCancel, async (_event, arg: AgentCliLoginRefArgs): Promise<AgentCliLoginStatus> => {
+    const { getMachineAgentCliLoginRunner } = await import("../ai/machineAgentCliLoginRunner");
+    return getMachineAgentCliLoginRunner().cancel(arg?.loginId);
   });
 
   // The unpinned route for Settings > Muse Code on this machine; a pinned call

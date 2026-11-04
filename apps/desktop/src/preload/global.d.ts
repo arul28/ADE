@@ -488,6 +488,10 @@ import type {
   AntigravitySignInCompleteArgs,
   AntigravitySignInStartArgs,
   AntigravitySignInState,
+  AgentCliLoginRefArgs,
+  AgentCliLoginStartArgs,
+  AgentCliLoginStatus,
+  AgentCliLoginSubmitCodeArgs,
   AiApiKeyVerificationResult,
   AiConfig,
   AiSettingsStatus,
@@ -1714,6 +1718,17 @@ declare global {
         /** Forward a pasted 127.0.0.1 return URL to that machine's agent. */
         antigravitySignInComplete?: (args: AntigravitySignInCompleteArgs, pin?: OpenProjectBinding | null) => Promise<AntigravitySignInState>;
         antigravitySignInCancel?: (args: AntigravitySignInCancelArgs, pin?: OpenProjectBinding | null) => Promise<AntigravitySignInState>;
+        /**
+         * An agent CLI's own sign-in (Grok, Devin, Muse, Copilot, Droid, Kimi)
+         * on the machine `pin` names: ADE's copy of the CLI runs there in a
+         * private PTY; poll `cliLoginStatus` with the same pin. Optional: an
+         * older preload or brain predates it.
+         */
+        cliLoginStart?: (args: AgentCliLoginStartArgs, pin?: OpenProjectBinding | null) => Promise<AgentCliLoginStatus>;
+        cliLoginStatus?: (args: AgentCliLoginRefArgs, pin?: OpenProjectBinding | null) => Promise<AgentCliLoginStatus>;
+        /** Type a code pasted from the browser into the CLI (Devin). */
+        cliLoginSubmitCode?: (args: AgentCliLoginSubmitCodeArgs, pin?: OpenProjectBinding | null) => Promise<AgentCliLoginStatus>;
+        cliLoginCancel?: (args: AgentCliLoginRefArgs, pin?: OpenProjectBinding | null) => Promise<AgentCliLoginStatus>;
         /** Settings > Muse Code on the machine `pin` names: a Settings-owned `muse serve` host per `handleId`. */
         museSettings: <R extends MuseSettingsRequest>(
           args: MuseSettingsRunArgs<R>,

@@ -20,6 +20,7 @@ import { useSettingsMachineScope } from "../../SettingsMachineScope";
 import { useSettingsAction } from "../../useSettingsAction";
 import { usePolling } from "../../../../hooks/usePolling";
 import type { MuseBinaryStatus } from "../../../../../shared/museBinary";
+import { SettingsAgentCliSignIn } from "../AgentCliSignInSheet";
 import type { ProvidersViewContext } from "../types";
 
 /** How often the download's progress is re-read while it runs. */
@@ -119,8 +120,10 @@ export function MuseAuthActions({ ctx }: { ctx: ProvidersViewContext }) {
   const connection = ctx.status?.providerConnections?.muse ?? null;
   if (ctx.isInitialCheckInFlight) return null;
   if (!connection?.runtimeDetected) return <MuseDownload ctx={ctx} />;
-  if (connection.authAvailable) return null;
-  return (
+  if (connection.authAvailable) {
+    return <SettingsAgentCliSignIn ctx={ctx} provider="muse" providerLabel="Muse" fallback={null} again />;
+  }
+  const terminalSignIn = (
     <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
       <button
         type="button"
@@ -134,4 +137,5 @@ export function MuseAuthActions({ ctx }: { ctx: ProvidersViewContext }) {
       </div>
     </div>
   );
+  return <SettingsAgentCliSignIn ctx={ctx} provider="muse" providerLabel="Muse" fallback={terminalSignIn} />;
 }

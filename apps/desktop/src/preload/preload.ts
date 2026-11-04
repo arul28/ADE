@@ -334,6 +334,10 @@ import type {
   AntigravitySignInCompleteArgs,
   AntigravitySignInStartArgs,
   AntigravitySignInState,
+  AgentCliLoginRefArgs,
+  AgentCliLoginStartArgs,
+  AgentCliLoginStatus,
+  AgentCliLoginSubmitCodeArgs,
   AiApiKeyVerificationResult,
   AiConfig,
   AiSettingsStatus,
@@ -5615,6 +5619,25 @@ const adeBridge = {
     antigravitySignInCancel: async (args: AntigravitySignInCancelArgs, pin?: OpenProjectBinding | null): Promise<AntigravitySignInState> =>
       callPinnedOrBoundRuntimeActionOr(pin, "ai", "antigravitySignInCancel", { args }, () =>
         ipcRenderer.invoke(IPC.aiAntigravitySignInCancel, args),
+      ),
+    // An agent CLI's sign-in (Grok, Devin, Muse, Copilot, Droid, Kimi) on the
+    // machine that owns it: a pin goes there, else the tab's runtime, else this
+    // computer. Keep one pin for a sign-in's start, polls, code and cancel.
+    cliLoginStart: async (args: AgentCliLoginStartArgs, pin?: OpenProjectBinding | null): Promise<AgentCliLoginStatus> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "ai", "cliLoginStart", { args }, () =>
+        ipcRenderer.invoke(IPC.aiCliLoginStart, args),
+      ),
+    cliLoginStatus: async (args: AgentCliLoginRefArgs, pin?: OpenProjectBinding | null): Promise<AgentCliLoginStatus> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "ai", "cliLoginStatus", { args }, () =>
+        ipcRenderer.invoke(IPC.aiCliLoginStatus, args),
+      ),
+    cliLoginSubmitCode: async (args: AgentCliLoginSubmitCodeArgs, pin?: OpenProjectBinding | null): Promise<AgentCliLoginStatus> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "ai", "cliLoginSubmitCode", { args }, () =>
+        ipcRenderer.invoke(IPC.aiCliLoginSubmitCode, args),
+      ),
+    cliLoginCancel: async (args: AgentCliLoginRefArgs, pin?: OpenProjectBinding | null): Promise<AgentCliLoginStatus> =>
+      callPinnedOrBoundRuntimeActionOr(pin, "ai", "cliLoginCancel", { args }, () =>
+        ipcRenderer.invoke(IPC.aiCliLoginCancel, args),
       ),
     // Settings > Muse Code: one Settings-owned `muse serve` host per page visit
     // on the machine the page is showing (never a chat's host). The page

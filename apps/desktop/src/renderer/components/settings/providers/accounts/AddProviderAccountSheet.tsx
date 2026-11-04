@@ -552,7 +552,7 @@ export function AddProviderAccountSheet({
 }
 
 /** The CLI's own words, for when the friendly view is not enough. Closed by default. */
-function OutputDisclosure({ output, open, onToggle }: { output: string; open: boolean; onToggle: () => void }) {
+export function OutputDisclosure({ output, open, onToggle }: { output: string; open: boolean; onToggle: () => void }) {
   if (!output.trim()) return null;
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>

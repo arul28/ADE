@@ -58,6 +58,11 @@ import type {
   AntigravitySignInCompleteArgs,
   AntigravitySignInStartArgs,
 } from "../../../shared/types/config";
+import type {
+  AgentCliLoginRefArgs,
+  AgentCliLoginStartArgs,
+  AgentCliLoginSubmitCodeArgs,
+} from "../../../shared/types/agentCliLogin";
 import { getLastFetchedAt as getModelsDevLastFetchedAt, refreshNow as refreshModelsDevNow } from "../ai/modelsDevService";
 import { buildHarnessLaunchEnv, listHarnessRouteCatalog } from "../chat/harnessRouteCatalog";
 import { testHarnessRoute } from "../chat/harnessRouteTest";
@@ -2745,6 +2750,28 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
     antigravitySignInCancel: async (args?: AntigravitySignInCancelArgs) => {
       const { cancelAntigravitySignIn } = await import("../ai/antigravitySignIn");
       return cancelAntigravitySignIn({ flowId: requireNonEmptyString(args?.flowId, "flowId") });
+    },
+    // An agent CLI's own sign-in (Grok, Devin, Muse, Copilot, Droid, Kimi) on
+    // THIS machine: ADE's pinned copy runs here in a private PTY, and the
+    // result is the login it saved here. The person's to start (Settings).
+    cliLoginStart: async (args?: AgentCliLoginStartArgs) => {
+      const { getMachineAgentCliLoginRunner } = await import("../ai/machineAgentCliLoginRunner");
+      return getMachineAgentCliLoginRunner().start(args as AgentCliLoginStartArgs);
+    },
+    cliLoginStatus: async (args?: AgentCliLoginRefArgs) => {
+      const { getMachineAgentCliLoginRunner } = await import("../ai/machineAgentCliLoginRunner");
+      return getMachineAgentCliLoginRunner().status(requireNonEmptyString(args?.loginId, "loginId"));
+    },
+    cliLoginSubmitCode: async (args?: AgentCliLoginSubmitCodeArgs) => {
+      const { getMachineAgentCliLoginRunner } = await import("../ai/machineAgentCliLoginRunner");
+      return getMachineAgentCliLoginRunner().submitCode(
+        requireNonEmptyString(args?.loginId, "loginId"),
+        requireNonEmptyString(args?.code, "code"),
+      );
+    },
+    cliLoginCancel: async (args?: AgentCliLoginRefArgs) => {
+      const { getMachineAgentCliLoginRunner } = await import("../ai/machineAgentCliLoginRunner");
+      return getMachineAgentCliLoginRunner().cancel(requireNonEmptyString(args?.loginId, "loginId"));
     },
     // Settings > Providers > Muse Code on THIS machine: plugins, marketplaces,
     // skills, hooks, computer use and feedback, through a short-lived
