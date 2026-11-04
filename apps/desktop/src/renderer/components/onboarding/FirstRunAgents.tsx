@@ -44,19 +44,29 @@ export function FirstRunAgents({
   const [machineName, setMachineName] = useState<string | null>(null);
   const [failed, setFailed] = useState(false);
   const loadingRef = useRef(false);
+  /** A refresh asked for while one ran: that one may have read before the change, so it reads again. */
+  const pendingRef = useRef(false);
   // The top grid's order, fixed at the first answer, so a sign-in changes a
   // tile in place instead of reshuffling the grid under the pointer.
   const [order, setOrder] = useState<SettingsProviderId[] | null>(null);
 
   const refresh = useCallback(async () => {
-    if (loadingRef.current) return;
+    if (loadingRef.current) {
+      pendingRef.current = true;
+      return;
+    }
     loadingRef.current = true;
     try {
-      const next = await window.ade.ai.getStatus({ force: true });
-      setStatus(next);
-      setFailed(false);
-    } catch {
-      setFailed(true);
+      do {
+        pendingRef.current = false;
+        try {
+          const next = await window.ade.ai.getStatus({ force: true });
+          setStatus(next);
+          setFailed(false);
+        } catch {
+          setFailed(true);
+        }
+      } while (pendingRef.current);
     } finally {
       loadingRef.current = false;
     }

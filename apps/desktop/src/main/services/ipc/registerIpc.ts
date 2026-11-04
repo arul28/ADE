@@ -5518,7 +5518,20 @@ export function registerIpc({
   });
   ipcMain.handle(IPC.aiCliLoginStatus, async (_event, arg: AgentCliLoginRefArgs): Promise<AgentCliLoginStatus> => {
     const { getMachineAgentCliLoginRunner } = await import("../ai/machineAgentCliLoginRunner");
-    return getMachineAgentCliLoginRunner().status(arg?.loginId);
+    const status = getMachineAgentCliLoginRunner().status(arg?.loginId);
+    if (status.state === "succeeded") {
+      try {
+        getCtx().aiIntegrationService?.invalidateProviderReadinessCaches();
+      } catch (error) {
+        // Matches the action-path twin so both halves of one incident are
+        // searchable under a single event name.
+        getCtx().logger.warn("ai.cli_login_cache_invalidation_failed", {
+          provider: status.provider,
+          error: getErrorMessage(error),
+        });
+      }
+    }
+    return status;
   });
   ipcMain.handle(IPC.aiCliLoginSubmitCode, async (_event, arg: AgentCliLoginSubmitCodeArgs): Promise<AgentCliLoginStatus> => {
     const { getMachineAgentCliLoginRunner } = await import("../ai/machineAgentCliLoginRunner");

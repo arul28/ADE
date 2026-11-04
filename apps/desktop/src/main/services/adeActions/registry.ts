@@ -2760,7 +2760,20 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
     },
     cliLoginStatus: async (args?: AgentCliLoginRefArgs) => {
       const { getMachineAgentCliLoginRunner } = await import("../ai/machineAgentCliLoginRunner");
-      return getMachineAgentCliLoginRunner().status(requireNonEmptyString(args?.loginId, "loginId"));
+      const status = getMachineAgentCliLoginRunner().status(requireNonEmptyString(args?.loginId, "loginId"));
+      // Signing in unlocks models, so the readiness cache is stale until it
+      // is dropped; the IPC handler does the same.
+      if (status.state === "succeeded") {
+        try {
+          aiIntegrationService.invalidateProviderReadinessCaches();
+        } catch (error) {
+          runtime.logger.warn("ai.cli_login_cache_invalidation_failed", {
+            provider: status.provider,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+      return status;
     },
     cliLoginSubmitCode: async (args?: AgentCliLoginSubmitCodeArgs) => {
       const { getMachineAgentCliLoginRunner } = await import("../ai/machineAgentCliLoginRunner");

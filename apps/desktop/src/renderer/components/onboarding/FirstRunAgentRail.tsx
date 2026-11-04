@@ -432,15 +432,15 @@ type RailItemProps = {
 /** One charm, with the sign-in its agent can start from setup (if any). */
 function RailItem(props: RailItemProps) {
   const { tile } = props;
-  // A CLI's item stays mounted once its status reads connected: its sheet
-  // lives there, and unmounting it would cancel the sign-in it is finishing.
+  // An item with a sheet stays mounted once its status reads connected: the
+  // sheet lives there, and unmounting it would cancel the sign-in it is finishing.
   if (tile.agent.signIn === "cli" && isAgentCliLoginProvider(tile.agent.id)) {
     return <CliRailItem {...props} provider={tile.agent.id} />;
   }
+  if (tile.agent.id === "claude" || tile.agent.id === "codex") return <AccountRailItem {...props} provider={tile.agent.id} />;
   if (tile.status.state === "sign-in") {
     if (tile.agent.signIn === "cursor") return <CursorRailItem {...props} />;
     if (tile.agent.signIn === "antigravity") return <AntigravityRailItem {...props} />;
-    if (tile.agent.id === "claude" || tile.agent.id === "codex") return <AccountRailItem {...props} provider={tile.agent.id} />;
   }
   return <PlainRailItem {...props} />;
 }
@@ -464,7 +464,11 @@ function AccountRailItem(props: RailItemProps & { provider: "claude" | "codex" }
     },
   });
   const open = sheet.open;
-  useEffect(() => register(index, { start: () => open({ existing: instance }), busy: false }), [index, instance, open, register]);
+  const offered = tile.status.state === "sign-in";
+  useEffect(
+    () => register(index, offered ? { start: () => open({ existing: instance }), busy: false } : null),
+    [index, instance, offered, open, register],
+  );
   return (
     <>
       <Charm {...props} />

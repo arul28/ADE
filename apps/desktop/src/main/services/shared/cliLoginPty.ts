@@ -30,6 +30,7 @@ const PTY_ROWS = 40;
 const URL_PATTERN = /https:\/\/[^\s"'<>`]+/g;
 /** A device sign-in's one-time code, e.g. `ABCD-EFGHI`. */
 const DEVICE_CODE_PATTERN_ALL = /\b[A-Z0-9]{4}-[A-Z0-9]{4,6}\b/g;
+const DEVICE_CODE_EXACT = /^[A-Z0-9]{4}-[A-Z0-9]{4,6}$/;
 /** A CLI asking for a code pasted from the browser. */
 export const CODE_PROMPT_PATTERN = /paste (the )?(authorization )?code|enter (the )?(authorization )?code|code here/i;
 
@@ -123,10 +124,22 @@ export function findSignInUrl(text: string, hosts: readonly string[]): string | 
 /**
  * The last device code in the output, links removed first (a device link can
  * carry the code too). The last one: it is what a CLI prints before it waits,
- * and a redrawing TUI prints it many times.
+ * and a redrawing TUI prints it many times. A CLI that prints the code only on
+ * its link (Grok's and Kimi's `user_code`, Muse's `code`) gets it from there.
  */
 export function findDeviceCode(text: string): string | null {
-  return text.replace(URL_PATTERN, " ").match(DEVICE_CODE_PATTERN_ALL)?.at(-1) ?? null;
+  const printed = text.replace(URL_PATTERN, " ").match(DEVICE_CODE_PATTERN_ALL)?.at(-1);
+  if (printed) return printed;
+  for (const url of (text.match(URL_PATTERN) ?? []).reverse()) {
+    try {
+      const params = new URL(url.replace(/[).,;\]]+$/, "")).searchParams;
+      const code = (params.get("user_code") ?? params.get("code"))?.trim();
+      if (code && DEVICE_CODE_EXACT.test(code)) return code;
+    } catch {
+      // Not a link the URL parser takes; the next one may be.
+    }
+  }
+  return null;
 }
 
 /** The CLI's last non-empty output line, as a failure reason. */

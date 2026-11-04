@@ -73,7 +73,8 @@ describe("agentCliLoginRunner verification", () => {
 
     cli.print("To sign in, open this URL in your browser: https://accounts.x.ai/oauth2/device?user_code=6HPS-5JPM\n");
     await vi.advanceTimersByTimeAsync(300);
-    expect(runner.status(loginId).state).toBe("running");
+    // Grok prints its code only on the link.
+    expect(runner.status(loginId)).toMatchObject({ state: "running", deviceCode: "6HPS-5JPM" });
 
     saved.set({ signedIn: true, fingerprint: "new" });
     await vi.advanceTimersByTimeAsync(300);
