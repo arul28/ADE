@@ -3021,6 +3021,32 @@ async function prepareCallerWorkCopy(
 }
 
 /**
+ * A device action (`ios_simulator`, `android_emulator`) from a chat on another
+ * machine with no lane here: its work copy here stands in for the lane. Gives
+ * the args without the caller's `remoteWork`, `laneId` and `projectRoot`, the
+ * copy's lane id, a check for the copy, the step that readies it (resolving to
+ * its `done`), and the answer with `workCopy.laneId` added. `sync` overrides
+ * the caller's sync mode.
+ */
+function remoteWorkDeviceScope(
+  runtime: AdeRuntime,
+  session: SessionState,
+  deviceArgs: Record<string, unknown>,
+  sync?: "none",
+) {
+  const { remoteWork, laneId: _laneId, projectRoot: _projectRoot, ...rest } = deviceArgs;
+  const laneId = remoteWorkLaneIdFor(workCopyOwner(session));
+  const request = { ...(remoteWork as Record<string, unknown>), ...(sync ? { sync } : {}) };
+  return {
+    rest,
+    laneId,
+    copyExists: (): boolean => findRemoteWorkCopyForLane(runtime.projectRoot, laneId) !== null,
+    prepare: async (): Promise<() => void> => (await prepareCallerWorkCopy(runtime, session, request)).prepared.done,
+    withWorkCopy: (value: unknown): unknown => (isRecord(value) ? { ...value, workCopy: { laneId } } : value),
+  };
+}
+
+/**
  * A shell for a chat on another machine, in its work copy here, owned by the
  * caller's foreign session id so only that chat can read, write or stop it.
  * Only the fields a terminal needs are taken from the caller; ownership,
@@ -4604,6 +4630,33 @@ function withAppleAgentCaller(
 }
 
 /**
+ * The lane an agent's device action acts on (`ios_simulator`,
+ * `android_emulator`): a bound agent acts on its own chat's lane, and naming
+ * another lane is refused, naming both. With no lane at all it is refused
+ * unless `missingLaneMessage` is null (a lane-free read).
+ */
+function pinAgentDeviceLane(
+  runtime: AdeRuntime,
+  session: SessionState,
+  input: { method: string; requestedLaneId: string | null; device: string; missingLaneMessage: string | null },
+): string | null {
+  const { method, requestedLaneId } = input;
+  const boundLaneId = resolveChatSessionLaneId(runtime, session);
+  if (boundLaneId && requestedLaneId && requestedLaneId !== boundLaneId) {
+    throw new JsonRpcError(
+      JsonRpcErrorCode.policyDenied,
+      `This chat is bound to lane ${boundLaneId}; --lane ${requestedLaneId} was refused. An agent uses only its own lane's ${input.device}.`,
+      { kind: "lane_bound", method, callerLaneId: boundLaneId, requestedLaneId },
+    );
+  }
+  const laneId = boundLaneId ?? requestedLaneId ?? null;
+  if (!laneId && input.missingLaneMessage !== null) {
+    throw new JsonRpcError(JsonRpcErrorCode.invalidParams, input.missingLaneMessage);
+  }
+  return laneId;
+}
+
+/**
  * `ios_simulator` for an agent caller: a bound agent (chat, run, step) or an
  * `ade` process with no chat identity, which may be an agent's shell.
  *
@@ -4644,21 +4697,13 @@ export function scopeAppleAdeActionArgs(
   // An agent speaks only for its own chat: the chat id is who holds the
   // device's single-owner claim, so a foreign one would act as that chat.
   const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
-  const requestedLaneId = asOptionalTrimmedString(rest.laneId);
-  const boundLaneId = resolveChatSessionLaneId(runtime, session);
-  if (boundLaneId && requestedLaneId && requestedLaneId !== boundLaneId) {
-    throw new JsonRpcError(
-      JsonRpcErrorCode.policyDenied,
-      `This chat is bound to lane ${boundLaneId}; --lane ${requestedLaneId} was refused. An agent uses only its own lane's Apple device.`,
-      { kind: "lane_bound", method, callerLaneId: boundLaneId, requestedLaneId },
-    );
-  }
-  const laneId = boundLaneId ?? requestedLaneId;
-  const missingLaneMessage = appleMissingLaneMessage(action);
-  if (!laneId && missingLaneMessage !== null) {
-    throw new JsonRpcError(JsonRpcErrorCode.invalidParams, missingLaneMessage);
-  }
-  return withAppleAgentCaller(rest, laneId ?? null, callerChatSessionId ?? null);
+  const laneId = pinAgentDeviceLane(runtime, session, {
+    method,
+    requestedLaneId: asOptionalTrimmedString(rest.laneId),
+    device: "Apple device",
+    missingLaneMessage: appleMissingLaneMessage(action),
+  });
+  return withAppleAgentCaller(rest, laneId, callerChatSessionId ?? null);
 }
 
 /**
@@ -4727,20 +4772,12 @@ export function scopeAndroidAdeActionArgs(
       method,
     );
   }
-  const requestedLaneId = asOptionalTrimmedString(androidArgs.laneId);
-  const boundLaneId = resolveChatSessionLaneId(runtime, session);
-  if (boundLaneId && requestedLaneId && requestedLaneId !== boundLaneId) {
-    throw new JsonRpcError(
-      JsonRpcErrorCode.policyDenied,
-      `This chat is bound to lane ${boundLaneId}; --lane ${requestedLaneId} was refused. An agent uses only its own lane's Android emulator.`,
-      { kind: "lane_bound", method, callerLaneId: boundLaneId, requestedLaneId },
-    );
-  }
-  const laneId = boundLaneId ?? requestedLaneId;
-  const missingLaneMessage = androidMissingLaneMessage(action);
-  if (!laneId && missingLaneMessage !== null) {
-    throw new JsonRpcError(JsonRpcErrorCode.invalidParams, missingLaneMessage);
-  }
+  const laneId = pinAgentDeviceLane(runtime, session, {
+    method,
+    requestedLaneId: asOptionalTrimmedString(androidArgs.laneId),
+    device: "Android emulator",
+    missingLaneMessage: androidMissingLaneMessage(action),
+  });
   return { ...androidArgs, ...(laneId ? { laneId } : {}) };
 }
 
@@ -6690,19 +6727,17 @@ async function runTool(args: {
       // A chat on another machine with no lane here: its work copy stands in
       // for the lane (build root and device owner).
       if (isRecord(appleArgs.remoteWork)) {
-        const { remoteWork, laneId: _laneId, projectRoot: _projectRoot, ...rest } = appleArgs;
         // Checked first, so a chat on this machine is told why, not refused a lane it never named.
-        const workCopyLaneId = remoteWorkLaneIdFor(workCopyOwner(session));
-        appleArgs = { ...rest, laneId: workCopyLaneId };
+        const remote = remoteWorkDeviceScope(runtime, session, appleArgs);
+        appleArgs = { ...remote.rest, laneId: remote.laneId };
         // Readied last, right before the call, so a refusal on the way leaves
         // nothing busy; busy until the call returns (a build runs for its length).
         prepareBeforeCall = async () => {
-          const { prepared } = await prepareCallerWorkCopy(runtime, session, remoteWork as Record<string, unknown>);
-          afterScopedCall = prepared.done;
+          afterScopedCall = await remote.prepare();
         };
         // The caller's machine learns which lane here is its work copy, so its
         // views can show this simulator.
-        transformScopedResult = (value) => (isRecord(value) ? { ...value, workCopy: { laneId: workCopyLaneId } } : value);
+        transformScopedResult = remote.withWorkCopy;
       }
       scopedObjectArgs = isUserClient
         ? await scopeUnboundAppleAdeActionArgs(runtime, session, action, appleArgs, toolArgs.callerRoot)
@@ -6713,32 +6748,28 @@ async function runTool(args: {
       // A chat on another machine with no lane here: its work copy stands in
       // for the lane (the emulator's owner and the screenshot root).
       if (isRecord(androidArgs.remoteWork)) {
-        const { remoteWork, laneId: _laneId, projectRoot: _projectRoot, ...rest } = androidArgs;
-        const workCopyLaneId = remoteWorkLaneIdFor(workCopyOwner(session));
-        const withWorkCopy = (value: unknown): unknown => (isRecord(value)
-          ? { ...value, workCopy: { laneId: workCopyLaneId } }
-          // Input actions answer nothing; the caller's machine still learns the lane.
-          : value == null ? { workCopy: { laneId: workCopyLaneId } } : value);
+        // Used as it is (P0 has no build verb), made at the caller's commit when missing.
+        const remote = remoteWorkDeviceScope(runtime, session, androidArgs, "none");
+        // Input actions answer nothing; the caller's machine still learns the lane.
+        const answer = (value: unknown): unknown => (value == null ? { workCopy: { laneId: remote.laneId } } : remote.withWorkCopy(value));
         if (ANDROID_LANE_FREE_ACTIONS.has(action)) {
           // Status and the AVD list make no copy: they name this chat's
           // emulator only when its copy is here already.
-          const copyExists = findRemoteWorkCopyForLane(runtime.projectRoot, workCopyLaneId) !== null;
-          androidArgs = copyExists ? { ...rest, laneId: workCopyLaneId } : rest;
-          if (copyExists) transformScopedResult = withWorkCopy;
+          const copyExists = remote.copyExists();
+          androidArgs = copyExists ? { ...remote.rest, laneId: remote.laneId } : remote.rest;
+          if (copyExists) transformScopedResult = answer;
         } else {
-          androidArgs = { ...rest, laneId: workCopyLaneId };
+          androidArgs = { ...remote.rest, laneId: remote.laneId };
           // A stop, an input or a screenshot with no copy here has no device
           // to act on: the service says so, and no copy is made for it.
-          if (ANDROID_COPY_MAKING_ACTIONS.has(action) || findRemoteWorkCopyForLane(runtime.projectRoot, workCopyLaneId) !== null) {
-            // Used as it is (P0 has no build verb), made at the caller's commit
-            // when missing; busy until the call returns (a boot runs for its length).
+          if (ANDROID_COPY_MAKING_ACTIONS.has(action) || remote.copyExists()) {
+            // Busy until the call returns (a boot runs for its length).
             prepareBeforeCall = async () => {
-              const { prepared } = await prepareCallerWorkCopy(runtime, session, { ...(remoteWork as Record<string, unknown>), sync: "none" });
-              afterScopedCall = prepared.done;
+              afterScopedCall = await remote.prepare();
             };
             // The caller's machine learns which lane here is its work copy, so
             // its views can show this emulator.
-            transformScopedResult = withWorkCopy;
+            transformScopedResult = answer;
           }
         }
       }

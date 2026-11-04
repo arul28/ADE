@@ -4090,130 +4090,97 @@ function subscribeIosSimulatorEvents(
 }
 
 /**
- * Mac Desktop events for whichever machine hosts the lane's display.
+ * Events for a device that lives on the lane's machine: Mac Desktop's display
+ * or the Android emulator.
  *
  * Same three arms as the simulator, and for the same reason: a panel pinned to
- * another machine has to hear THAT machine's display, and a project bound to a
- * remote runtime hears it over the runtime event pump. A viewing client on
- * Windows or Linux only ever uses the last two — there is no local service to
- * fan out from — which is exactly what makes the tab work off macOS.
+ * another machine has to hear THAT machine's device, and a project bound to a
+ * remote runtime hears it over the runtime event pump. A Mac Desktop viewing
+ * client on Windows or Linux only ever uses the last two — there is no local
+ * service to fan out from — which is exactly what makes the tab work off macOS.
+ * The fanouts are read on each subscribe, because they are made further down.
  */
-function subscribeMacDesktopEvents(
-  cb: (payload: MacDesktopEventPayload) => void,
-  pin?: OpenProjectBinding | null,
-): () => void {
-  const removePinned = subscribePinnedProjectRuntimeEvents(
-    pin,
-    (payload) => toWrappedEvent<MacDesktopEventPayload>(payload, "mac_desktop_event"),
-    cb,
-    "Mac Desktop",
-  );
-  if (removePinned) return removePinned;
-  const removeLocal = macDesktopEventFanout(cb);
-  const removeRemote = remoteMacDesktopEventFanout.subscribe(cb);
-  return () => {
-    removeRemote();
-    removeLocal();
+function createDeviceEventSubscriber<T>(device: {
+  /** The wrapped runtime event type (`mac_desktop_event`). */
+  eventType: string;
+  /** Names the device in the pinned subscription's log lines. */
+  label: string;
+  localFanout: () => (cb: (payload: T) => void) => () => void;
+  remoteFanout: () => { subscribe: (cb: (payload: T) => void) => () => void };
+}) {
+  return (cb: (payload: T) => void, pin?: OpenProjectBinding | null): (() => void) => {
+    const removePinned = subscribePinnedProjectRuntimeEvents(
+      pin,
+      (payload) => toWrappedEvent<T>(payload, device.eventType),
+      cb,
+      device.label,
+    );
+    if (removePinned) return removePinned;
+    const removeLocal = device.localFanout()(cb);
+    const removeRemote = device.remoteFanout().subscribe(cb);
+    return () => {
+      removeRemote();
+      removeLocal();
+    };
   };
 }
 
+const subscribeMacDesktopEvents = createDeviceEventSubscriber<MacDesktopEventPayload>({
+  eventType: "mac_desktop_event",
+  label: "Mac Desktop",
+  localFanout: () => macDesktopEventFanout,
+  remoteFanout: () => remoteMacDesktopEventFanout,
+});
+
+const subscribeAndroidEmulatorEvents = createDeviceEventSubscriber<AndroidEmulatorEvent>({
+  eventType: "android_emulator_event",
+  label: "Android emulator",
+  localFanout: () => androidEmulatorEventFanout,
+  remoteFanout: () => remoteAndroidEmulatorEventFanout,
+});
+
 /**
- * Android emulator events for whichever machine hosts the lane's emulator.
- * Same three arms as Mac Desktop: the pinned machine's event pump, this
- * process's own service, and the bound remote runtime.
+ * Turns a device's stream URL into one this desktop can open. The URL names
+ * loopback on the machine that owns the device (the Mac with the display, the
+ * machine running the emulator), which is not this machine whenever the lane
+ * is remote; then a forward is opened, tagged with the device.
  */
-function subscribeAndroidEmulatorEvents(
-  cb: (payload: AndroidEmulatorEvent) => void,
-  pin?: OpenProjectBinding | null,
-): () => void {
-  const removePinned = subscribePinnedProjectRuntimeEvents(
-    pin,
-    (payload) => toWrappedEvent<AndroidEmulatorEvent>(payload, "android_emulator_event"),
-    cb,
-    "Android emulator",
-  );
-  if (removePinned) return removePinned;
-  const removeLocal = androidEmulatorEventFanout(cb);
-  const removeRemote = remoteAndroidEmulatorEventFanout.subscribe(cb);
-  return () => {
-    removeRemote();
-    removeLocal();
+function createLoopbackStreamUrlResolver(forwardTag: string) {
+  return async (
+    streamUrl: string | null,
+    pin?: OpenProjectBinding | null,
+  ): Promise<{ url: string | null; forwarded: boolean; error: string | null }> => {
+    const text = (streamUrl ?? "").trim();
+    if (!text) return { url: null, forwarded: false, error: null };
+    try {
+      const binding = pin ?? (await getProjectRuntimeBinding());
+      if (binding?.kind !== "remote") {
+        return { url: text, forwarded: false, error: null };
+      }
+      const parsed = parseLoopbackUrl(text);
+      if (!parsed) return { url: text, forwarded: false, error: null };
+      const forward = await ensureRemoteLoopbackForward(
+        binding,
+        parsed.port,
+        `${binding.displayName}:${forwardTag}:${parsed.port}`,
+      );
+      return {
+        url: rewriteUrlHostPort(text, forward.localHost, forward.localPort),
+        forwarded: true,
+        error: null,
+      };
+    } catch (error) {
+      return {
+        url: null,
+        forwarded: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
   };
 }
 
-/**
- * Turns an Android stream URL into one this desktop can open. The URL names
- * loopback on the machine that runs the emulator, which is not this machine
- * whenever the lane is remote.
- */
-const resolveAndroidEmulatorStreamUrl = async (
-  streamUrl: string | null,
-  pin?: OpenProjectBinding | null,
-): Promise<{ url: string | null; forwarded: boolean; error: string | null }> => {
-  const text = (streamUrl ?? "").trim();
-  if (!text) return { url: null, forwarded: false, error: null };
-  try {
-    const binding = pin ?? (await getProjectRuntimeBinding());
-    if (binding?.kind !== "remote") {
-      return { url: text, forwarded: false, error: null };
-    }
-    const parsed = parseLoopbackUrl(text);
-    if (!parsed) return { url: text, forwarded: false, error: null };
-    const forward = await ensureRemoteLoopbackForward(
-      binding,
-      parsed.port,
-      `${binding.displayName}:android:${parsed.port}`,
-    );
-    return {
-      url: rewriteUrlHostPort(text, forward.localHost, forward.localPort),
-      forwarded: true,
-      error: null,
-    };
-  } catch (error) {
-    return {
-      url: null,
-      forwarded: false,
-      error: error instanceof Error ? error.message : String(error),
-    };
-  }
-};
-
-/**
- * Turns a Mac Desktop stream URL into one this desktop can open, exactly as the
- * simulator's does — the URL names loopback on the Mac that owns the display,
- * which is not this machine whenever the lane is remote.
- */
-const resolveMacDesktopStreamUrl = async (
-  streamUrl: string | null,
-  pin?: OpenProjectBinding | null,
-): Promise<{ url: string | null; forwarded: boolean; error: string | null }> => {
-  const text = (streamUrl ?? "").trim();
-  if (!text) return { url: null, forwarded: false, error: null };
-  try {
-    const binding = pin ?? (await getProjectRuntimeBinding());
-    if (binding?.kind !== "remote") {
-      return { url: text, forwarded: false, error: null };
-    }
-    const parsed = parseLoopbackUrl(text);
-    if (!parsed) return { url: text, forwarded: false, error: null };
-    const forward = await ensureRemoteLoopbackForward(
-      binding,
-      parsed.port,
-      `${binding.displayName}:mac-desktop:${parsed.port}`,
-    );
-    return {
-      url: rewriteUrlHostPort(text, forward.localHost, forward.localPort),
-      forwarded: true,
-      error: null,
-    };
-  } catch (error) {
-    return {
-      url: null,
-      forwarded: false,
-      error: error instanceof Error ? error.message : String(error),
-    };
-  }
-};
+const resolveAndroidEmulatorStreamUrl = createLoopbackStreamUrlResolver("android");
+const resolveMacDesktopStreamUrl = createLoopbackStreamUrlResolver("mac-desktop");
 
 /**
  * Lanes whose screencast frames a mounted viewer is painting, refcounted. Main
