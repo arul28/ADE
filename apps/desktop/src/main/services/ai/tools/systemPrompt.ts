@@ -38,11 +38,11 @@ const adeScheduledWorkGuidance = "**Scheduled work:** wake yourself later with `
 const openCodeBackgroundWorkGuidance = "**Background work:** `shell` with `background: true` and background subagents are fine here: ADE shows each job in the chat, keeps the session open while it runs, and you are woken when it ends. They stop if ADE closes this chat's connection to OpenCode (for example on an ADE restart), so for a wait that must survive that, use `ade chat scheduled-work create` instead.";
 
 /**
- * What an agent says when the user asks for an MCP server it does not have.
- * The server list is fixed when the provider process starts, and only the user
- * can sign in, so the agent's job is to point at the two steps, not to try.
+ * What an agent does when the user asks for an MCP server it does not have.
+ * The agent asks with a card the user approves; the server list is fixed when
+ * the provider process starts, so a new server loads on **Refresh chat**.
  */
-const adeMcpServersGuidance = "**MCP servers:** this chat keeps the MCP servers it started with, and you cannot add or sign in to one. Tell the user: **Sign in** on its row in Settings › Integrations › MCP servers if it asks, then right-click this chat in Work and choose **Restart agent session** (the conversation is kept).";
+const adeMcpServersGuidance = "**MCP servers:** this chat keeps the MCP servers it started with. To get one the user asks for, run `ade mcp servers add <name> --reason \"…\"` (a catalogue name, `--url`, or the command after `--`): the user approves it in a card, then presses **Refresh chat** above the composer to load it (the conversation is kept). If a server asks to sign in, tell the user to press **Sign in** on its row in Settings › Integrations › MCP servers. Details: **ade-cli-control-plane**.";
 
 const adeIndependentChildChatGuidance = "Use an ADE `--type subagent` chat for an independent durable transcript, scheduling, another provider, or tracked lifecycle; it stays in this lane unless the user wants a new one.";
 

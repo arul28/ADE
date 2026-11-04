@@ -83,20 +83,35 @@ export function createGithubPatAccountSync(args: GithubPatAccountSyncArgs) {
 
   const vaultOptions = { getAccountVault: args.getAccountVault, logger: args.logger, logEvent: "github.account_vault_sync_failed" };
 
-  /** Share a token pasted here with the account's other machines, or remove it everywhere. */
-  const publish = (token: string | null): void => {
+  const vaultRef = { scope: ACCOUNT_SCOPE_ALL, kind: GITHUB_PAT_VAULT_KIND, key: GITHUB_PAT_VAULT_KEY };
+
+  /** Share a token pasted here with the account's other machines. */
+  const publish = (token: string): void => {
     if (!accountUserId()) return;
-    const clean = token?.trim() || "";
-    if (!clean) {
-      fireAndForgetVaultWrite(vaultOptions, "remove", (vault) => vault.remove(ACCOUNT_SCOPE_ALL, GITHUB_PAT_VAULT_KIND, GITHUB_PAT_VAULT_KEY));
-      return;
-    }
+    const clean = token.trim();
+    if (!clean) return;
     fireAndForgetVaultWrite(vaultOptions, "set", (vault) => vault.set(
       ACCOUNT_SCOPE_ALL,
       GITHUB_PAT_VAULT_KIND,
       GITHUB_PAT_VAULT_KEY,
       JSON.stringify({ v: 1, token: clean }),
     ));
+  };
+
+  /**
+   * Before this machine's token is cleared: remove the account's copy too,
+   * but only when it is this token. After a collision the account holds
+   * another machine's token, which stays.
+   */
+  const unpublish = (): void => {
+    const previous = readLocal();
+    const vault = resolveVault();
+    if (!accountUserId() || !previous || !vault) return;
+    void (async () => {
+      const read = await readAccountVaultItem(vault, vaultRef, decodeToken, logFailure);
+      if (read?.value !== previous) return;
+      fireAndForgetVaultWrite(vaultOptions, "remove", (target) => target.remove(vaultRef.scope, vaultRef.kind, vaultRef.key));
+    })();
   };
 
   return {
@@ -110,6 +125,7 @@ export function createGithubPatAccountSync(args: GithubPatAccountSyncArgs) {
     },
 
     publish,
+    unpublish,
 
     /**
      * Reconcile at account sign-in and on vault sync ticks. The vault's token
@@ -121,12 +137,7 @@ export function createGithubPatAccountSync(args: GithubPatAccountSyncArgs) {
       const userId = accountUserId();
       const vault = resolveVault();
       if (!userId || !vault || !store) return;
-      const read = await readAccountVaultItem(
-        vault,
-        { scope: ACCOUNT_SCOPE_ALL, kind: GITHUB_PAT_VAULT_KIND, key: GITHUB_PAT_VAULT_KEY },
-        decodeToken,
-        logFailure,
-      );
+      const read = await readAccountVaultItem(vault, vaultRef, decodeToken, logFailure);
       if (!read) return;
       if (accountUserId() !== userId) return;
       const deleted = read.item?.deleted === true;
