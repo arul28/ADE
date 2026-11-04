@@ -75,6 +75,10 @@ describe("settings manifest", () => {
     "appearance.apple-typed-badges": "apple",
     "appearance.apple-remote-bitrate": "apple",
     "appearance.apple-recordings-warn": "apple",
+    // The MCP server rows live on the Integrations tab; their ids keep the
+    // `mcp.` namespace that old deeplinks and telemetry hold on to.
+    "mcp.servers": "integrations",
+    "mcp.found": "integrations",
     // Overview became General; its cards keep the `overview.` ids.
     "overview.attention": "general",
     "overview.glance": "general",

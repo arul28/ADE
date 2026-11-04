@@ -33,10 +33,16 @@ import "./integrationPage.css";
 /** A page under Integrations: GitHub, Linear or Jira, or the MCP servers. */
 export type IntegrationsPageId = IntegrationId | "mcp";
 
-type Summary = { tone: IntegrationTone; label: string };
+type Summary = {
+  tone: IntegrationTone;
+  label: string;
+  /** Where the credential in use lives, when the status says; else where a new one is saved. */
+  savedIn?: string;
+};
 
 const CHECKING: Summary = { tone: "checking", label: "Checking…" };
 const UNKNOWN: Summary = { tone: "neutral", label: "Couldn't check" };
+const OFFLINE: Summary = { tone: "neutral", label: "Machine offline" };
 
 const DESCRIPTIONS: Record<IntegrationId, string> = {
   github: "Open, review and merge pull requests, follow checks, and work on issues.",
@@ -45,9 +51,9 @@ const DESCRIPTIONS: Record<IntegrationId, string> = {
   agent37: "Make cloud Linux machines for your lanes, signed in to your account with no code to type.",
 };
 
-/** Where each integration's credential is saved. */
-function savedIn(id: IntegrationId): string {
-  return connectProviderSpec(id).savedScope === "account" ? "Your account" : "This project";
+/** Where the credential lives: what the status says, else where a new one is saved. */
+function savedIn(id: IntegrationId, summary?: Summary): string {
+  return summary?.savedIn ?? (connectProviderSpec(id).savedScope === "account" ? "Your account" : "This project");
 }
 
 async function readSummary(id: IntegrationId, pin: OpenProjectBinding | null): Promise<Summary> {
@@ -56,12 +62,25 @@ async function readSummary(id: IntegrationId, pin: OpenProjectBinding | null): P
     const status = await window.ade.agent37?.getStatus();
     if (!status) return UNKNOWN;
     if (status.error) return { tone: "warn", label: status.connected ? "Couldn't reach Agent 37" : "Needs attention" };
-    if (status.connected) return { tone: "ok", label: status.balanceUsd != null ? `Connected · $${status.balanceUsd.toFixed(2)} left` : "Connected" };
+    if (status.connected) {
+      return {
+        tone: "ok",
+        label: status.balanceUsd != null ? `Connected · $${status.balanceUsd.toFixed(2)} left` : "Connected",
+        savedIn: status.credentialStorage?.storage === "device" ? "This computer" : "Your account",
+      };
+    }
     return { tone: "neutral", label: "Not connected" };
   }
   if (id === "github") {
     const status = await window.ade.github.getStatus(undefined, pin);
-    if (status.connected) return { tone: "ok", label: status.userLogin ? `Connected as ${status.userLogin}` : "Connected" };
+    if (status.connected) {
+      return {
+        tone: "ok",
+        label: status.userLogin ? `Connected as ${status.userLogin}` : "Connected",
+        // Only a pasted token follows the account; gh, an env token and the app sign-in are this computer's.
+        savedIn: status.authSource === "pat" ? "Your account" : "This computer",
+      };
+    }
     if (status.authFailure || status.credentialStoreUnreadable) return { tone: "warn", label: "Needs attention" };
     return { tone: "neutral", label: "Not connected" };
   }
@@ -84,7 +103,7 @@ async function readSummary(id: IntegrationId, pin: OpenProjectBinding | null): P
   return { tone: "neutral", label: "Not connected" };
 }
 
-function useIntegrationSummaries(pin: OpenProjectBinding | null): Record<IntegrationId, Summary> {
+function useIntegrationSummaries(pin: OpenProjectBinding | null, online: boolean): Record<IntegrationId, Summary> {
   const [summaries, setSummaries] = useState<Record<IntegrationId, Summary>>({
     github: CHECKING,
     linear: CHECKING,
@@ -93,6 +112,10 @@ function useIntegrationSummaries(pin: OpenProjectBinding | null): Record<Integra
   });
   useEffect(() => {
     let cancelled = false;
+    if (!online) {
+      setSummaries({ github: OFFLINE, linear: OFFLINE, jira: OFFLINE, agent37: OFFLINE });
+      return undefined;
+    }
     setSummaries({ github: CHECKING, linear: CHECKING, jira: CHECKING, agent37: CHECKING });
     for (const id of INTEGRATION_IDS) {
       readSummary(id, pin)
@@ -109,7 +132,7 @@ function useIntegrationSummaries(pin: OpenProjectBinding | null): Record<Integra
     return () => { cancelled = true; };
     // A rebuilt pin with the same key is the same machine.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pin?.key]);
+  }, [pin?.key, online]);
   return summaries;
 }
 
@@ -149,14 +172,17 @@ function IntegrationMark({ server, entry, integration }: {
 
 export function IntegrationsHome({
   pin,
+  machineOnline = true,
   onOpen,
 }: {
   /** The page's machine: each integration status is read where its credential lives. */
   pin: OpenProjectBinding | null;
+  /** False while that machine is offline: its integrations wait, the account's MCP servers do not. */
+  machineOnline?: boolean;
   /** Opens a page; `server` focuses one MCP server on it. */
   onOpen: (page: IntegrationsPageId, server?: string) => void;
 }) {
-  const summaries = useIntegrationSummaries(pin);
+  const summaries = useIntegrationSummaries(pin, machineOnline);
   const registry = useMcpRegistry();
   const [query, setQuery] = useState("");
   const [adding, setAdding] = useState<McpCatalogueEntry | null>(null);
@@ -200,7 +226,7 @@ export function IntegrationsHome({
                 <IntegrationMark integration={id} />
                 <span className="ade-ix-chip-text">
                   <span className="ade-ix-chip-name"><i className="ade-ig-dot" data-tone="ok" />{integrationBrand(id).label}</span>
-                  <span className="ade-ix-chip-meta">{savedIn(id)}</span>
+                  <span className="ade-ix-chip-meta">{savedIn(id, summaries[id])}</span>
                 </span>
               </button>
             ))}
@@ -260,6 +286,7 @@ export function IntegrationsHome({
                     className="ade-ig-tile"
                     style={integrationThemeVars(brand.accent)}
                     data-testid={`integration-tile-${id}`}
+                    disabled={!machineOnline}
                     onClick={() => onOpen(id)}
                   >
                     <span className="ade-ig-tile-banner" style={brand.banner} aria-hidden>
@@ -275,7 +302,7 @@ export function IntegrationsHome({
                       <span className="ade-ig-tile-status">
                         <i className="ade-ig-dot" data-tone={summary.tone} />
                         <span>{summary.label}</span>
-                        <span className="ade-ix-saved">{savedIn(id)}</span>
+                        <span className="ade-ix-saved">{savedIn(id, summary)}</span>
                       </span>
                     </span>
                   </button>

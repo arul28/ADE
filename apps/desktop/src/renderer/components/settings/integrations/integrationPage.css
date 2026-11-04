@@ -550,6 +550,9 @@
 }
 .ade-ig-tile-banner > .ade-pv-mark3d { position: relative; transform: scale(0.82); }
 .ade-ig-tile:hover .ade-ig-tile-banner > img { transform: scale(1.04); }
+/* The machine is offline: the tile says so and waits. */
+.ade-ig-tile:disabled { cursor: default; opacity: 0.55; transform: none; }
+.ade-ig-tile:disabled .ade-ig-tile-banner > img { transform: none; }
 @media (prefers-reduced-motion: reduce) { .ade-ig-tile:hover .ade-ig-tile-banner > img { transform: none; } }
 .ade-ig-tile-body { display: flex; flex-direction: column; gap: 6px; padding: 14px 16px 16px; flex: 1 1 auto; }
 .ade-ig-tile-name { display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 600; color: var(--color-fg); }

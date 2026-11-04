@@ -540,6 +540,25 @@ function jsonServerTable(file: string, key: string | null): Record<string, unkno
   return isRecord(table) ? table : null;
 }
 
+/**
+ * Claude starts a project's `.mcp.json` server only once the user approved it
+ * (`enableAllProjectMcpServers`, or its name in `enabledMcpjsonServers`, and
+ * not in `disabledMcpjsonServers`), kept in `.claude.json`'s project entry or a
+ * settings file. An unapproved one does not run, so it is no twin of anything.
+ */
+function claudeApprovedProjectServers(
+  table: Record<string, unknown> | null,
+  approvals: ReadonlyArray<Record<string, unknown>>,
+): Record<string, unknown> | null {
+  if (!table) return null;
+  const names = (key: string) => new Set(approvals.flatMap((record) =>
+    Array.isArray(record[key]) ? (record[key] as unknown[]).filter((name): name is string => typeof name === "string") : []));
+  const all = approvals.some((record) => record.enableAllProjectMcpServers === true);
+  const enabled = names("enabledMcpjsonServers");
+  const disabled = names("disabledMcpjsonServers");
+  return Object.fromEntries(Object.entries(table).filter(([name]) => !disabled.has(name) && (all || enabled.has(name))));
+}
+
 function tomlServerTable(file: string): Record<string, unknown> | null {
   const text = readText(file);
   return text == null ? null : parseCodexMcpServers(text);
@@ -582,23 +601,35 @@ export function providerLoadedMcpServers(
   const distinct = (files: string[]): string[] => files.filter((file, index) => files.findIndex((other) => pathsEqual(other, file)) === index);
   switch (provider) {
     case "claude": {
-      const configFiles = distinct([env, baseEnv].map((candidate) => {
+      const configDirs = distinct([env, baseEnv].map((candidate) => {
         const dir = candidate.CLAUDE_CONFIG_DIR?.trim();
-        return path.join(dir ? path.resolve(dir) : homeDir, ".claude.json");
+        return dir ? path.resolve(dir) : homeDir;
       }));
-      for (const file of configFiles) {
-        const config = readJson(file);
+      const approvals: Array<Record<string, unknown>> = [];
+      for (const dir of configDirs) {
+        const config = readJson(path.join(dir, ".claude.json"));
+        const settings = readJson(path.join(dir === homeDir ? path.join(homeDir, ".claude") : dir, "settings.json"));
+        if (settings) approvals.push(settings);
         if (!config) continue;
         tables.push(isRecord(config.mcpServers) ? config.mcpServers : null);
         if (isRecord(config.projects)) {
           for (const [projectPath, entry] of Object.entries(config.projects)) {
             if (isRecord(entry) && roots.some((root) => pathsEqual(projectPath, root))) {
               tables.push(isRecord(entry.mcpServers) ? entry.mcpServers : null);
+              approvals.push(entry);
             }
           }
         }
       }
-      for (const root of roots) tables.push(jsonServerTable(path.join(root, ".mcp.json"), "mcpServers"));
+      for (const root of roots) {
+        for (const name of ["settings.json", "settings.local.json"]) {
+          const settings = readJson(path.join(root, ".claude", name));
+          if (settings) approvals.push(settings);
+        }
+      }
+      for (const root of roots) {
+        tables.push(claudeApprovedProjectServers(jsonServerTable(path.join(root, ".mcp.json"), "mcpServers"), approvals));
+      }
       break;
     }
     case "codex":

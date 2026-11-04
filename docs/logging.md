@@ -652,6 +652,8 @@ raise a ceiling. The taxonomy is closed at the producer and again by
 | `automations` | `webhook_url_created` | `completed` | omitted; never the URL, hook id, preset, or rule |
 | `automations` | `safe_test_started`, `live_test_started` | `completed`, `failed` | omitted; never the rule, its steps, the event, or the lanes it made |
 | `chat` | `secret_requested` | `completed` (saved), `kept`, `cancelled` (declined), `failed` (unanswered in time or the request failed) | omitted; never the secret's name, value, reason, or chat |
+| `chat` | `connect_requested` | `completed` (connected), `kept` (already connected), `cancelled` (declined), `failed` (unanswered in time or the request failed) | omitted; never the integration's account, the key, or the chat |
+| `chat` | `mcp_server_requested` | `completed` (added), `kept` (already in ADE), `cancelled` (declined), `failed` (unanswered in time or the request failed) | omitted; never the server's name, its command or URL, a key, or the chat |
 | `home` | `tab_opened` | `tab_browser`, `tab_music` | omitted; never a URL, tab, song, or page |
 | `home` | `widget_added` | `widget_<type>` (one per home widget type) | omitted; never the layout, a preset name, or a widget's settings |
 | `home` | `music_connected` | `completed`, `cancelled`, `failed` | omitted; never the Apple account, storefront, or token |
@@ -695,7 +697,11 @@ the URL is made: the desktop's IPC handler (`desktop`) or the
 `automations.webhookCreateEndpoint` / `webhookCreateAutomation` actions
 (`api`, the CLI and agents). An agent's private secret card records
 `chat/secret_requested` once, when `project_secret.request` returns or fails,
-at the brain action that owns it. Neither carries a name, URL, value, or id;
+at the brain action that owns it. The connect card and the MCP server card do
+the same: `chat/connect_requested` at `integration_connect.request`, and
+`chat/mcp_server_requested` at `mcp_registry.request`. When an MCP server name
+is a built-in integration, the connect card runs instead and records only
+`connect_requested`. Neither carries a name, URL, value, or id;
 both are rare user decisions inside the existing `ade_feature_used` 140-per-day
 and 30-per-minute ceilings, and the per-action-and-outcome dedupe holds a burst
 (an agent creating several URLs, or re-asking) to one event per outcome per
