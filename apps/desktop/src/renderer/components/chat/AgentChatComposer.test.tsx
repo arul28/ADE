@@ -2706,6 +2706,51 @@ describe("AgentChatComposer", () => {
     expect(props.onApproval).not.toHaveBeenCalled();
   });
 
+  it.each([
+    { phase: "probe", nextRemote: false },
+    { phase: "probe", nextRemote: true },
+    { phase: "stage", nextRemote: false },
+    { phase: "stage", nextRemote: true },
+  ])("keeps a dropped batch on its original project during a switch: $phase / remote=$nextRemote", async ({ phase, nextRemote }) => {
+    const previousBinding = useAppStore.getState().projectBinding;
+    const original: OpenProjectBinding = { kind: "local", key: "local:C:/source", rootPath: "C:/source", displayName: "Source" };
+    const next: OpenProjectBinding = nextRemote
+      ? { kind: "remote", key: "remote:studio:next", targetId: "studio", projectId: "next", runtimeName: "Studio", rootPath: "/next", displayName: "Next" }
+      : { kind: "local", key: "local:C:/next", rootPath: "C:/next", displayName: "Next" };
+    let finishProbe!: (value: { mode: "copy"; maxBytes: number }) => void;
+    let finishStage!: (value: { path: string }) => void;
+    const getAttachmentStagingMode = vi.fn(() => phase === "probe"
+      ? new Promise<{ mode: "copy"; maxBytes: number }>((resolve) => { finishProbe = resolve; })
+      : Promise.resolve({ mode: "copy" as const, maxBytes: 50 * 1024 * 1024 }));
+    const stageFileAttachment = vi.fn((_args: unknown, _pin?: OpenProjectBinding | null) => new Promise<{ path: string }>((resolve) => { finishStage = resolve; }));
+    (window as any).ade = {
+      project: { getDroppedPath: (file: File) => `C:/Pictures/${file.name}` },
+      agentChat: { getAttachmentStagingMode, stageFileAttachment },
+    };
+    useAppStore.setState({ projectBinding: original });
+    try {
+      const props = renderComposer({ draft: "", turnActive: false, composerMachineBinding: null });
+      fireEvent.drop(screen.getByPlaceholderText("Type to vibecode..."), {
+        dataTransfer: { files: [new File(["a"], "first.png"), new File(["b"], "second.png")], types: ["Files"], getData: () => "" },
+      });
+      await waitFor(() => expect(phase === "probe" ? getAttachmentStagingMode : stageFileAttachment).toHaveBeenCalledTimes(1));
+      act(() => { useAppStore.setState({ projectBinding: next }); });
+      await act(async () => {
+        if (phase === "probe") finishProbe({ mode: "copy", maxBytes: 50 * 1024 * 1024 });
+        else finishStage({ path: "C:/source/.ade/attachments/first.png" });
+      });
+      await screen.findByRole("alert");
+      expect(props.onAddAttachment).not.toHaveBeenCalled();
+      if (phase === "probe") expect(stageFileAttachment).not.toHaveBeenCalled();
+      else {
+        expect(stageFileAttachment).toHaveBeenCalledTimes(1);
+        expect(stageFileAttachment.mock.calls[0][1]).toEqual(original);
+      }
+    } finally {
+      act(() => { useAppStore.setState({ projectBinding: previousBinding }); });
+    }
+  });
+
   it("accepts a file dropped onto the answer field and stages it for the next turn", async () => {
     const saveTempAttachment = vi.fn().mockResolvedValue({ path: "/tmp/ade-shot.png" });
     (window as any).ade = { agentChat: { saveTempAttachment } };

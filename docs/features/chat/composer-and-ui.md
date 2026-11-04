@@ -1759,7 +1759,11 @@ allowing a cross-provider fork.
   terminal's image paste both go through this call, so neither sends a
   screenshot inside one runtime command when the machine can take a stream.
   File staging resolves the same explicit pin or bound window machine before
-  choosing a local copy or remote upload. Dropped files and pasted bytes share
+  choosing a local copy or remote upload. The composer captures the effective
+  project binding, including local project identity, and its chat API before
+  probing a batch. Every file uses that captured owner. A project or machine
+  switch stops the remaining files and rejects an in-flight result.
+  Dropped files and pasted bytes share
   recovery in the connection service, using the original target and project
   without repeating the failed HTTP upload. Larger files retain the upload
   failure. Attachment errors include the underlying reason in the
