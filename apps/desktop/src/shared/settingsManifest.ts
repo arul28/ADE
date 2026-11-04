@@ -1366,9 +1366,9 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
   },
   {
     id: "integrations.agent37",
-    label: "Agent37",
-    keywords: ["cloud", "machine", "box", "vm", "linux", "sandbox", "api key", "agent37"],
-    tab: "connections",
+    label: "Agent 37",
+    keywords: ["cloud", "machine", "box", "vm", "linux", "sandbox", "api key", "agent37", "agent 37", "template"],
+    tab: "integrations",
     anchor: "agent37-connection",
     // One workspace key for the account, kept in the account vault.
     scope: "account",
