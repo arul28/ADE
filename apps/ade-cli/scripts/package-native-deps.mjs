@@ -437,7 +437,6 @@ async function main() {
 }
 
 export {
-  ANDROID_SCRCPY_FILES,
   DARWIN_RUNTIME_NATIVE_HELPERS,
   CRSQLITE_REQUIRED_TARGETS,
   copyCrsqliteExtension,

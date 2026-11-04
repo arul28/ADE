@@ -84,16 +84,16 @@ function androidDefaultSdkRoot(
 }
 
 /**
- * A folder that holds at least one SDK part. An env var left pointing at a
- * deleted SDK is not an answer; the next candidate is tried instead.
- */
-/**
  * Linux's system-wide SDK folders, tried after `~/Android/Sdk`: the usual
  * place for a shared or VM-template install, and the Debian/Ubuntu
  * `android-sdk` package.
  */
 const LINUX_SYSTEM_SDK_ROOTS = ["/opt/android-sdk", "/usr/lib/android-sdk"] as const;
 
+/**
+ * A folder that holds at least one SDK part. An env var left pointing at a
+ * deleted SDK is not an answer; the next candidate is tried instead.
+ */
 function looksLikeSdkRoot(dir: string): boolean {
   return ["platform-tools", "emulator", "system-images", "cmdline-tools"].some((part) => isDirectory(path.join(dir, part)));
 }
