@@ -220,7 +220,7 @@ export function appleMarkerMovedToProject(
 export function appleMarkerProjectHolds(
   marker: AppleDeviceMarker,
   udid: string,
-  openDatabase: (dbPath: string) => { prepare: (sql: string) => { get: (...params: string[]) => unknown }; close: () => void },
+  openDatabase: (dbPath: string) => { prepare: (sql: string) => { get: (...params: string[]) => unknown; all: (...params: string[]) => unknown[] }; close: () => void },
   movedTo: (root: string) => string | null = (root) => appleProjectMovedTo(root),
 ): "held" | "free" | "gone" | "unknown" {
   const seen: string[] = [];
@@ -244,7 +244,7 @@ function projectHoldsAt(
   projectRoot: string,
   marker: AppleDeviceMarker,
   udid: string,
-  openDatabase: (dbPath: string) => { prepare: (sql: string) => { get: (...params: string[]) => unknown }; close: () => void },
+  openDatabase: (dbPath: string) => { prepare: (sql: string) => { get: (...params: string[]) => unknown; all: (...params: string[]) => unknown[] }; close: () => void },
 ): "held" | "free" | "gone" | "unknown" {
   const dbPath = path.join(projectRoot, ".ade", "ade.db");
   if (!fs.existsSync(projectRoot) || !fs.existsSync(dbPath)) return "gone";
@@ -263,13 +263,19 @@ function projectHoldsAt(
     if (row) return "held";
     // A chat on another machine holds it through a work copy, which has no
     // lanes row: held while that project still has the copy. Its own row may
-    // be lost (its own pass re-adopts it), so the marker's lane counts too.
+    // be lost (its own pass re-adopts it), so the marker's lane counts too,
+    // unless the marker says that lane let the device go (detached or kept):
+    // a released device is never given back to it, so the lane holds nothing.
     const remoteLaneIds = new Set<string>();
-    if (isRemoteWorkLaneId(marker.laneId)) remoteLaneIds.add(marker.laneId);
-    const remoteRow = db.prepare(
-      `select lane_id as laneId from ${table} where udid = ? and lane_id like 'remote-work-%' limit 1`,
-    ).get(udid) as { laneId?: unknown } | undefined;
-    if (typeof remoteRow?.laneId === "string") remoteLaneIds.add(remoteRow.laneId);
+    if (isRemoteWorkLaneId(marker.laneId) && !marker.detachedAt && !marker.keptAt) remoteLaneIds.add(marker.laneId);
+    // Every row, not the first: rows of a lane that is gone can sit beside the
+    // row of one still at work, and "free" lets a cleanup delete the device.
+    const remoteRows = db.prepare(
+      `select lane_id as laneId from ${table} where udid = ? and lane_id like 'remote-work-%'`,
+    ).all(udid) as Array<{ laneId?: unknown }>;
+    for (const remoteRow of remoteRows) {
+      if (typeof remoteRow?.laneId === "string") remoteLaneIds.add(remoteRow.laneId);
+    }
     let answer: "held" | "free" | "unknown" = "free";
     for (const laneId of remoteLaneIds) {
       const state = remoteWorkLaneState(projectRoot, laneId);

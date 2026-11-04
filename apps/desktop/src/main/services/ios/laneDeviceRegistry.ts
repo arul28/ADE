@@ -133,7 +133,7 @@ export type LaneDeviceRegistryDeps = {
    * Open another project's `ade.db` read-only, to ask whether that project
    * still uses a device it made. Defaults to `node:sqlite` read-only.
    */
-  openProjectDatabase?: ((dbPath: string) => { prepare: (sql: string) => { get: (...params: string[]) => unknown }; close: () => void }) | null;
+  openProjectDatabase?: ((dbPath: string) => { prepare: (sql: string) => { get: (...params: string[]) => unknown; all: (...params: string[]) => unknown[] }; close: () => void }) | null;
   /** Human name for a lane, used in the device's name. Null falls back to the id. */
   resolveLaneName?: ((laneId: string) => string | null) | null;
   /** The lanes DB. Omitted in hosts that have none; the registry then keeps rows in memory. */

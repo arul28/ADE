@@ -160,8 +160,16 @@ export function remoteWorkLaneState(projectRoot: string, laneId: string): "live"
   if (!isRemoteWorkLaneId(laneId)) return "gone";
   try {
     const copy = readRegistryAt(projectRoot).copies.find((entry) => remoteWorkLaneIdFor(entry.owner) === laneId);
-    return copy && fs.existsSync(copy.path) ? "live" : "gone";
-  } catch {
+    if (!copy) return "gone";
+    // `statSync`, not `existsSync`: existsSync reads any error (EIO, EACCES)
+    // as "absent", and "gone" lets a cleanup delete the lane's simulator.
+    // Only a path that is confirmed missing is gone.
+    fs.statSync(copy.path);
+    return "live";
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException | null)?.code;
+    if (code === "ENOENT" || code === "ENOTDIR") return "gone";
+    console.warn(`[remote_work] could not tell whether ${laneId}'s work copy is still there: ${error instanceof Error ? error.message : String(error)}`);
     return "unknown";
   }
 }
