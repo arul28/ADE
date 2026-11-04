@@ -28,15 +28,15 @@ import { describeVaultFailure } from "./vaultWrite";
  * minutes, so an owner that has not published 10 minutes after expiry has
  * missed five chances: it is asleep, offline, or gone.
  */
-export const ROTATING_OWNER_TAKEOVER_GRACE_MS = 10 * 60 * 1000;
+const ROTATING_OWNER_TAKEOVER_GRACE_MS = 10 * 60 * 1000;
 /**
  * How long a claim has to stand before its machine renews. Two machines can
  * claim the same stale grant in the same instant; the vault keeps the later
  * write, and this wait lets the earlier claimant see that before it exchanges.
  */
-export const ROTATING_CLAIM_SETTLE_MS = 30 * 1000;
+const ROTATING_CLAIM_SETTLE_MS = 30 * 1000;
 /** How fresh the vault's view must be before deciding who renews. */
-export const ROTATING_VAULT_FRESH_MS = 30 * 1000;
+const ROTATING_VAULT_FRESH_MS = 30 * 1000;
 
 /** The vault calls the protocol needs; the desktop bridge and the brain store both fit. */
 export type RotatingCredentialVault = {
@@ -68,7 +68,7 @@ export type RotatingRenewalRole = "renew" | "claim" | "read";
  * rewrites the item without making the token any less expired: without it a
  * third machine would find the new owner already stale and claim again.
  */
-export function rotatingRenewalRole(args: {
+function rotatingRenewalRole(args: {
   deviceId: string | null | undefined;
   owner: string | null | undefined;
   expiresAtMs: number | null;
@@ -103,21 +103,28 @@ function findItem(items: AccountVaultItem[], ref: RotatingCredentialRef): Accoun
   return items.find((item) => item.scope === ref.scope && item.kind === ref.kind && item.key === ref.key) ?? null;
 }
 
-async function syncQuietly(vault: RotatingCredentialVault, maxAgeMs?: number): Promise<void> {
+type VaultWarn = (event: string, detail: unknown) => void;
+
+async function syncQuietly(vault: RotatingCredentialVault, warn: VaultWarn, maxAgeMs?: number): Promise<void> {
   if (!vault.sync) return;
   try {
     await vault.sync(maxAgeMs === undefined ? undefined : { maxAgeMs });
-  } catch {
+  } catch (error) {
     // A sync that cannot run leaves the cached view, which is still an answer.
+    warn("account_vault.rotating_sync_failed", error);
   }
 }
 
-async function readItem(vault: RotatingCredentialVault, ref: RotatingCredentialRef): Promise<AccountVaultItem | null | "unavailable"> {
+async function readItem(vault: RotatingCredentialVault, ref: RotatingCredentialRef, warn: VaultWarn): Promise<AccountVaultItem | null | "unavailable"> {
   try {
     const listed = await vault.list(ref.scope);
-    if (!listed.ok) return "unavailable";
+    if (!listed.ok) {
+      warn("account_vault.rotating_read_failed", listed);
+      return "unavailable";
+    }
     return findItem(listed.value, ref);
-  } catch {
+  } catch (error) {
+    warn("account_vault.rotating_read_failed", error);
     return "unavailable";
   }
 }
@@ -146,9 +153,10 @@ export async function decideRotatingRenewal(args: {
   // No vault or no sync identity: nothing else can hold this grant.
   if (!vault || !deviceId) return { renew: true, shared: false };
   const now = () => args.nowMs ?? Date.now();
+  const warn: VaultWarn = (event, detail) => args.logger?.warn?.(event, { ...args.logContext, error: describeVaultFailure(detail) });
 
-  await syncQuietly(vault, ROTATING_VAULT_FRESH_MS);
-  const item = await readItem(vault, args.ref);
+  await syncQuietly(vault, warn, ROTATING_VAULT_FRESH_MS);
+  const item = await readItem(vault, args.ref, warn);
   // A vault that cannot answer keeps the old single-machine behaviour; the
   // machine-local lock still keeps this computer's processes apart.
   if (item === "unavailable") return { renew: true, shared: false };
@@ -175,8 +183,8 @@ export async function decideRotatingRenewal(args: {
 
   // Claim: look at the newest view first, so a fresh token the owner just
   // published is read rather than overwritten by this machine's stale copy.
-  await syncQuietly(vault);
-  const latest = await readItem(vault, args.ref);
+  await syncQuietly(vault, warn);
+  const latest = await readItem(vault, args.ref, warn);
   if (latest === "unavailable" || !latest || latest.deleted === true) return { renew: false, reason: "claim_failed" };
   const latestRole = rotatingRenewalRole({
     deviceId,
@@ -190,7 +198,8 @@ export async function decideRotatingRenewal(args: {
   try {
     const got = await vault.get(args.ref.scope, args.ref.kind, args.ref.key);
     latestValue = got.ok ? got.value : null;
-  } catch {
+  } catch (error) {
+    warn("account_vault.rotating_read_failed", error);
     latestValue = null;
   }
   // The value moved under us: somebody published. Read it next time.
@@ -205,7 +214,7 @@ export async function decideRotatingRenewal(args: {
     args.logger?.warn?.("account_vault.rotating_claim_failed", { ...args.logContext, error: describeVaultFailure(error) });
     return { renew: false, reason: "claim_failed" };
   }
-  await syncQuietly(vault);
+  await syncQuietly(vault, warn);
   args.logger?.info?.("account_vault.rotating_claimed", {
     ...args.logContext,
     previousOwner: latest.refreshOwner ? "other" : "none",

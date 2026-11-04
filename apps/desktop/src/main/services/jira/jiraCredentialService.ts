@@ -17,6 +17,7 @@
 import type { SyncCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
 import type { JiraConnectArgs } from "../../../shared/types/jira";
 import type { AccountVaultBridge } from "../account/accountVaultBridge";
+import { readAccountVaultItem, safeVault } from "../account/accountVaultRead";
 import { describeVaultFailure, fireAndForgetVaultWrite } from "../account/vaultWrite";
 import {
   describeIntegrationCredentialStorage,
@@ -86,13 +87,11 @@ export function createJiraCredentialService(args: {
   const store = args.credentialStore;
   const accountUserId = (): string | null => args.getAccountUserId?.()?.trim() || null;
   const scope = (): string | null => (args.projectRoot ? projectCredentialAccountScope(args.projectRoot) : null);
-  const resolveVault = (): AccountVaultBridge | null => {
-    try {
-      return args.getAccountVault?.() ?? null;
-    } catch {
-      return null;
-    }
+  const logFailure = (operation: string, detail: unknown): void => {
+    args.logger?.warn?.("jira.account_vault_sync_failed", { operation, error: describeVaultFailure(detail) });
   };
+  const resolveVault = (): AccountVaultBridge | null =>
+    safeVault(args.getAccountVault, (error) => logFailure("resolve_vault", error));
 
   const readSource = (): JiraCredentialSource => {
     const raw = store.getSync(JIRA_SOURCE_KEY);
@@ -177,31 +176,15 @@ export function createJiraCredentialService(args: {
     const accountScope = scope();
     const vault = resolveVault();
     if (!userId || !accountScope || !vault) return;
-    let item;
-    let remote: JiraConnectArgs | null = null;
-    let remoteRaw: string | null = null;
-    try {
-      const listed = await vault.list(accountScope);
-      if (!listed.ok) {
-        args.logger?.warn?.("jira.account_vault_sync_failed", { operation: "list", error: describeVaultFailure(listed) });
-        return;
-      }
-      item = listed.value.find((entry) =>
-        entry.scope === accountScope && entry.kind === JIRA_ACCOUNT_VAULT_KIND && entry.key === JIRA_ACCOUNT_VAULT_KEY) ?? null;
-      if (item && item.deleted !== true) {
-        const got = await vault.get(accountScope, JIRA_ACCOUNT_VAULT_KIND, JIRA_ACCOUNT_VAULT_KEY);
-        if (!got.ok) {
-          args.logger?.warn?.("jira.account_vault_sync_failed", { operation: "get", error: describeVaultFailure(got) });
-          return;
-        }
-        remoteRaw = got.value;
-        remote = decodeJiraCredential(got.value);
-      }
-    } catch (error) {
-      args.logger?.warn?.("jira.account_vault_sync_failed", { operation: "read", error: describeVaultFailure(error) });
-      return;
-    }
+    const read = await readAccountVaultItem(
+      vault,
+      { scope: accountScope, kind: JIRA_ACCOUNT_VAULT_KIND, key: JIRA_ACCOUNT_VAULT_KEY },
+      decodeJiraCredential,
+      logFailure,
+    );
+    if (!read) return;
     if (accountUserId() !== userId) return;
+    const { item, raw: remoteRaw, value: remote } = read;
 
     try {
       const local = readLocal();
@@ -235,7 +218,7 @@ export function createJiraCredentialService(args: {
       }
       args.logger?.warn?.("jira.account_vault_collision", {});
     } catch (error) {
-      args.logger?.warn?.("jira.account_vault_sync_failed", { operation: "hydrate", error: describeVaultFailure(error) });
+      logFailure("hydrate", error);
     }
   };
 

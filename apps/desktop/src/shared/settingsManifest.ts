@@ -1638,8 +1638,7 @@ export const LEGACY_TAB_ALIASES: Readonly<Record<string, SettingsTabId>> = {
   project: "location",
   "project-location": "location",
   context: "advanced",
-  // MCP servers moved into Integrations; Connections was its name for a while.
-  connections: "integrations",
+  // MCP servers moved into Integrations.
   mcp: "integrations",
   "mcp-servers": "integrations",
   sync: "account",

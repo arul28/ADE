@@ -30,7 +30,7 @@ export const MCP_OFF_SETTING_KEY = "mcp.off";
 /** The vault kind registry secrets are stored as. The relay's kind list is closed; this one is its generic member. */
 export const MCP_SECRET_VAULT_KIND = "secret";
 
-export const MCP_REGISTRY_LIMITS = {
+const MCP_REGISTRY_LIMITS = {
   maxServers: 32,
   maxNameLength: 64,
   maxFieldNameLength: 128,

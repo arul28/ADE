@@ -218,12 +218,10 @@ import {
 import {
   PROJECT_SECRET_DELIVERY_QUESTION_ID,
   projectSecretComposerNote,
-  readProjectSecretRequestCard,
 } from "../../../shared/projectSecretRequest";
 import { IntegrationConnectComposer } from "./IntegrationConnectCard";
-import { readIntegrationConnectRequestCard } from "../../../shared/integrationConnect";
 import { McpServerRequestComposer } from "./McpServerCard";
-import { readMcpServerRequestCard } from "../../../shared/mcpServerRequest";
+import { readNativeInputCard } from "../../../shared/nativeInputCards";
 import {
   isAskQuestionRequest,
   isRedirectablePendingRequest,
@@ -2578,7 +2576,7 @@ function AgentChatComposerImpl({
   approvalResponding?: boolean;
   /**
    * Why the open card's last answer did not go through, when the card shows
-   * it itself (the connect card) instead of the chat's banner.
+   * it itself (the connect and MCP server cards) instead of the chat's banner.
    */
   pendingInputError?: string | null;
   turnActive: boolean;
@@ -9275,8 +9273,9 @@ function AgentChatComposerImpl({
         </div>
         );
 
-        const secretRequestCard = askQuestionRequest ? readProjectSecretRequestCard(askQuestionRequest) : null;
-        if (askQuestionRequest && secretRequestCard) {
+        const nativeCard = readNativeInputCard(askQuestionRequest);
+        if (askQuestionRequest && nativeCard?.kind === "secret") {
+          const secretRequestCard = nativeCard.card;
           // The private secret card. Its value travels only as the answer to
           // the request's `isSecret` question; the composer draft is never
           // touched, so nothing typed here can ride a later message.
@@ -9295,8 +9294,7 @@ function AgentChatComposerImpl({
           );
         }
 
-        const connectRequestCard = askQuestionRequest ? readIntegrationConnectRequestCard(askQuestionRequest) : null;
-        if (askQuestionRequest && connectRequestCard) {
+        if (askQuestionRequest && nativeCard?.kind === "connect") {
           // The connect card. Keys travel only as answers to the request's
           // `isSecret` questions; the host checks and saves them on the chat's
           // machine, and a refusal comes back as `pendingInputError`.
@@ -9304,7 +9302,7 @@ function AgentChatComposerImpl({
             <IntegrationConnectComposer
               key={askQuestionRequest.itemId ?? askQuestionRequest.requestId}
               request={askQuestionRequest}
-              card={connectRequestCard}
+              card={nativeCard.card}
               responding={approvalResponding ?? false}
               error={pendingInputError ?? null}
               chatProvider={sessionProvider}
@@ -9314,8 +9312,7 @@ function AgentChatComposerImpl({
           );
         }
 
-        const mcpServerRequestCard = askQuestionRequest ? readMcpServerRequestCard(askQuestionRequest) : null;
-        if (askQuestionRequest && mcpServerRequestCard) {
+        if (askQuestionRequest && nativeCard?.kind === "mcp-server") {
           // The MCP server card. Values travel only as answers to the
           // request's `isSecret` questions; the host saves the server and its
           // values on the chat's machine, and a refusal comes back as
@@ -9324,7 +9321,7 @@ function AgentChatComposerImpl({
             <McpServerRequestComposer
               key={askQuestionRequest.itemId ?? askQuestionRequest.requestId}
               request={askQuestionRequest}
-              card={mcpServerRequestCard}
+              card={nativeCard.card}
               responding={approvalResponding ?? false}
               error={pendingInputError ?? null}
               chatProvider={sessionProvider}

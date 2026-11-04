@@ -16,6 +16,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { CaretRight, DownloadSimple, MagnifyingGlass, Plugs, Plus } from "@phosphor-icons/react";
 import type { OpenProjectBinding } from "../../../../shared/types";
 import { captureError } from "../../../../shared/sentry/capture";
+import { connectProviderSpec } from "../../../../shared/integrationConnect";
 import { MCP_CATALOGUE, matchMcpCatalogue, type McpCatalogueEntry } from "../../../../shared/mcpCatalogue";
 import type { McpRegistryServer } from "../../../../shared/mcpRegistry";
 import { INTEGRATION_IDS, integrationBrand, integrationThemeVars, type IntegrationId } from "./integrationBrand";
@@ -45,19 +46,16 @@ const DESCRIPTIONS: Record<IntegrationId, string> = {
 };
 
 /** Where each integration's credential is saved. */
-const SAVED_IN: Record<IntegrationId, string> = {
-  github: "Your account",
-  linear: "This project",
-  jira: "This project",
-  agent37: "Your account",
-};
+function savedIn(id: IntegrationId): string {
+  return connectProviderSpec(id).savedScope === "account" ? "Your account" : "This project";
+}
 
 async function readSummary(id: IntegrationId, pin: OpenProjectBinding | null): Promise<Summary> {
   if (id === "agent37") {
     // Account-wide: the key is in the account vault, so this computer answers for every machine.
     const status = await window.ade.agent37?.getStatus();
     if (!status) return UNKNOWN;
-    if (status.error) return { tone: "warn", label: status.connected ? "Couldn't reach Agent37" : "Needs attention" };
+    if (status.error) return { tone: "warn", label: status.connected ? "Couldn't reach Agent 37" : "Needs attention" };
     if (status.connected) return { tone: "ok", label: status.balanceUsd != null ? `Connected · $${status.balanceUsd.toFixed(2)} left` : "Connected" };
     return { tone: "neutral", label: "Not connected" };
   }
@@ -202,7 +200,7 @@ export function IntegrationsHome({
                 <IntegrationMark integration={id} />
                 <span className="ade-ix-chip-text">
                   <span className="ade-ix-chip-name"><i className="ade-ig-dot" data-tone="ok" />{integrationBrand(id).label}</span>
-                  <span className="ade-ix-chip-meta">{SAVED_IN[id]}</span>
+                  <span className="ade-ix-chip-meta">{savedIn(id)}</span>
                 </span>
               </button>
             ))}
@@ -277,7 +275,7 @@ export function IntegrationsHome({
                       <span className="ade-ig-tile-status">
                         <i className="ade-ig-dot" data-tone={summary.tone} />
                         <span>{summary.label}</span>
-                        <span className="ade-ix-saved">{SAVED_IN[id]}</span>
+                        <span className="ade-ix-saved">{savedIn(id)}</span>
                       </span>
                     </span>
                   </button>

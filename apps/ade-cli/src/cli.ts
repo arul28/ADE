@@ -368,9 +368,7 @@ import {
 } from "../../desktop/src/shared/types/builtInBrowser";
 import { parseLinearGraphQLInput } from "../../desktop/src/main/services/cto/linearGraphQLInput";
 import { longRunningLocalRuntimeActionTimeoutMs } from "../../desktop/src/main/services/localRuntime/localRuntimeTimeoutPolicy";
-import { PROJECT_SECRET_REQUEST_DEFAULT_TIMEOUT_MS } from "../../desktop/src/main/services/secrets/projectSecretRequest";
-import { INTEGRATION_CONNECT_DEFAULT_TIMEOUT_MS } from "../../desktop/src/main/services/integrations/integrationConnectRequest";
-import { MCP_SERVER_REQUEST_DEFAULT_TIMEOUT_MS } from "../../desktop/src/main/services/mcp/mcpServerRequest";
+import { CARD_REQUEST_DEFAULT_TIMEOUT_MS } from "../../desktop/src/main/services/chat/chatCardRequest";
 import { CONNECT_PROVIDER_IDS, connectProviderSpec, isConnectProviderId } from "../../desktop/src/shared/integrationConnect";
 import { MCP_CATALOGUE } from "../../desktop/src/shared/mcpCatalogue";
 import { browseProjectDirectories } from "../../desktop/src/main/services/projects/projectBrowserService";
@@ -6057,7 +6055,9 @@ const CHAT_VALUE_FLAGS: ReadonlySet<string> = new Set([
 const LANES_VALUE_FLAGS: ReadonlySet<string> = new Set([
   "--name", "--description", "--desc", "--branch-name", "--linear-issue-json", "--reason",
 ]);
-const INTEGRATIONS_VALUE_FLAGS: ReadonlySet<string> = new Set(["--provider", "--reason", "--session", "--timeout"]);
+const INTEGRATIONS_VALUE_FLAGS: ReadonlySet<string> = new Set([
+  "--provider", "--reason", "--why", "--message", "--session", "--session-id", "--timeout",
+]);
 const TRAILING_ROOT_FLAG_COMMANDS: ReadonlyMap<string, ReadonlySet<string>> = new Map([
   ["integrations", INTEGRATIONS_VALUE_FLAGS],
   ["integration", INTEGRATIONS_VALUE_FLAGS],
@@ -19787,7 +19787,7 @@ function buildIntegrationsPlan(args: string[]): CliPlan {
     if (!reason?.trim()) {
       throw new CliUsageError("integrations connect needs --reason \"…\": one line telling the person why you need it.");
     }
-    const timeoutMs = timeoutValue ? parseSnoozeDurationMs(timeoutValue) : INTEGRATION_CONNECT_DEFAULT_TIMEOUT_MS;
+    const timeoutMs = timeoutValue ? parseSnoozeDurationMs(timeoutValue) : CARD_REQUEST_DEFAULT_TIMEOUT_MS;
     return {
       kind: "execute",
       label: "integrations connect",
@@ -19849,7 +19849,7 @@ function buildMcpServersPlan(args: string[]): CliPlan {
     if (imported && describes) {
       throw new CliUsageError("--import copies a server another tool has. Leave out --command, -- and --url with it.");
     }
-    const timeoutMs = timeoutValue ? parseSnoozeDurationMs(timeoutValue) : MCP_SERVER_REQUEST_DEFAULT_TIMEOUT_MS;
+    const timeoutMs = timeoutValue ? parseSnoozeDurationMs(timeoutValue) : CARD_REQUEST_DEFAULT_TIMEOUT_MS;
     return {
       kind: "execute",
       label: "mcp servers add",
@@ -19948,7 +19948,7 @@ function buildSecretsPlan(args: string[]): CliPlan {
     if (!reason?.trim()) {
       throw new CliUsageError("secrets request needs --reason \"…\": one line telling the person what the secret is for.");
     }
-    const timeoutMs = timeoutValue ? parseSnoozeDurationMs(timeoutValue) : PROJECT_SECRET_REQUEST_DEFAULT_TIMEOUT_MS;
+    const timeoutMs = timeoutValue ? parseSnoozeDurationMs(timeoutValue) : CARD_REQUEST_DEFAULT_TIMEOUT_MS;
     return {
       kind: "execute",
       label: "secrets request",

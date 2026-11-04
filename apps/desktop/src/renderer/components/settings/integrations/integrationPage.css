@@ -764,6 +764,6 @@
 .ade-ix-dialog-id { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .ade-ix-dialog-name { font-size: 16px; font-weight: 680; }
 .ade-ix-dialog-by { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; opacity: 0.8; }
-.ade-ix-dialog-by > svg { color: #4ade80; }
 .ade-ix-dialog-desc { margin: 0; font-size: 12.5px; color: var(--kit-text-2, var(--color-secondary-fg)); }
-.ade-ix-dialog-links { display: flex; align-items: center; gap: 14px; }
+.ade-ix-dialog-links { display: flex; align-items: center; gap: 14px; font-size: 11.5px; }
+.ade-ix-dialog-links .ade-ig-link[data-dim] { color: color-mix(in srgb, var(--color-fg) 50%, transparent); }
