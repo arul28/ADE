@@ -69,18 +69,17 @@ export type TakeAndroidScreenshotInput = {
  * link.
  */
 export async function takeAndroidScreenshot(input: TakeAndroidScreenshotInput): Promise<AndroidScreenshot> {
+  const laneGone = () => new AndroidEmulatorFailure(
+    "ANDROID_PATH_OUTSIDE_LANE",
+    input.workCopy
+      ? "This chat's work copy on this machine is gone, so ADE will not write a screenshot to a chosen path. Leave the path out."
+      : "ADE cannot find this lane's worktree, so it will not write a screenshot to a chosen path. Leave the path out.",
+  );
   let outPath: string | null = null;
   let outRoot: string | null = null;
   if (input.outPath) {
     const root = input.laneRoot();
-    if (!root) {
-      throw new AndroidEmulatorFailure(
-        "ANDROID_PATH_OUTSIDE_LANE",
-        input.workCopy
-          ? "This chat's work copy on this machine is gone, so ADE will not write a screenshot to a chosen path. Leave the path out."
-          : "ADE cannot find this lane's worktree, so it will not write a screenshot to a chosen path. Leave the path out.",
-      );
-    }
+    if (!root) throw laneGone();
     outPath = containAndroidOutPath(input.outPath, root, input.platform);
     outRoot = root;
   }
@@ -96,10 +95,15 @@ export async function takeAndroidScreenshot(input: TakeAndroidScreenshotInput): 
   const capturedAt = input.now();
   const target = outPath
     ?? path.join(input.dataDir, "screenshots", `${input.laneId.replace(/[^A-Za-z0-9_-]+/gu, "_")}-${capturedAt.toISOString().replace(/[:.]/gu, "-")}.png`);
+  if (outPath && outRoot) {
+    // Checked again before any folder is made: the lane's folder may be gone
+    // or moved, or a link swapped in, during the capture.
+    const rootNow = input.laneRoot();
+    if (!rootNow || path.resolve(rootNow) !== path.resolve(outRoot)) throw laneGone();
+    containAndroidOutPath(outPath, outRoot, input.platform);
+  }
   fs.mkdirSync(path.dirname(target), { recursive: true });
-  // Checked again right before the write (a link swapped in during the
-  // capture), and the file is opened without following a link.
-  if (outPath && outRoot) containAndroidOutPath(outPath, outRoot, input.platform);
+  // Opened without following a link.
   const handle = fs.openSync(target, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC | (fs.constants.O_NOFOLLOW ?? 0), 0o644);
   try {
     fs.writeSync(handle, png);
