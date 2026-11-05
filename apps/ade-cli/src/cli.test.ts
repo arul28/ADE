@@ -39,6 +39,7 @@ import {
   machineRuntimeMismatchReason,
   monitorBrainSocketOwnership,
   unlinkOwnedRuntimeSocket,
+  CliUsageError,
   parseCliArgs,
   parseSnoozeDurationMs,
   readRuntimeIdleExitMs,
@@ -895,6 +896,25 @@ describe("ADE CLI", () => {
     const parsed = parseCliArgs(argv);
     expect(parsed.options.projectRoot).toBe(root === null ? null : path.resolve(root));
     expect(parsed.command).toEqual(command);
+  });
+
+  // A target flag quoted into one word with its value was ignored, so the
+  // command ran on this machine, lane or device: for device-delete, the lane's own.
+  it.each([
+    { argv: ["apple", "device-delete", "--device iPhone 17 Pro"], refused: true },
+    { argv: ["lanes", "list", "--text", "--machine studio --lane l1"], refused: true },
+    { argv: ["--machine Arul's Mac Studio", "lanes", "list"], refused: true },
+    { argv: ["apple", "device-delete", "--lane=l1", "--device X"], refused: true },
+    { argv: ["chat", "create", "--lane", "l1", "--prompt", "--machine studio --lane l2"], refused: false },
+    { argv: ["lanes", "list", "--machine=Arul's Mac Studio"], refused: false },
+  ])("refuses fused target flags in $argv", ({ argv, refused }) => {
+    const parse = () => parseCliArgs(argv);
+    if (refused) {
+      expect(parse).toThrow(CliUsageError);
+      expect(parse).toThrow(/one argument/);
+    } else {
+      expect(parse().command).toEqual(argv);
+    }
   });
 
   it("defaults ordinary CLI calls to the agent runtime role", () => {

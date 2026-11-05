@@ -84,7 +84,8 @@ A lane may hold up to two EXTRA devices beside its own
 (`APPLE_LANE_EXTRA_DEVICE_LIMIT`; `ADE_APPLE_LANE_EXTRA_DEVICES` in ADE's
 environment raises it, up to 8), for a second model in the same piece of work:
 an iPad next to an iPhone Duo. `device-create --extra` makes one (an empty ADE
-device named `ADE · <lane> · <model>`) and boots it. Extras are their own
+device named `ADE · <lane> · <model>`) and boots it; a boot that fails names the
+device and its udid, since it already holds a slot. Extras are their own
 local-only table, `lane_apple_extra_devices` (keyed by udid), and their marker
 says `extra: true`, so a lost row is re-adopted as an extra, never as the lane's
 own device. They are reached only by name: `--device <udid|name>` on any command
@@ -412,7 +413,11 @@ chat claim and the hub session in the same order.
 - `device-delete` (`deviceDelete`) removes an ADE device. The registry powers the
   device off first. An attached device is refused unless `--force`, and
   `--force` only detaches it. ADE never deletes a simulator it did not create.
-  The device is also deleted on lane archive and delete.
+  The device is also deleted on lane archive and delete. The answer
+  (`AppleDeviceDeleteResult`) names what went: `deleted` (udid, name, whether
+  it was an extra), `detached` when `--force` only released an attached
+  device, or `deleted: null` when the lane held none, with `notFound` set to
+  the `--device` it was asked for.
 - Both verbs use the same owner rule as `stop` (`deviceStop`). They are
   refused while another chat drives the device, unless the caller passes
   `--ignore-ownership`. For detach, `--force` also passes. For delete,
@@ -586,7 +591,10 @@ all light the inner panel, so a panel-only check returned while the picture was
 still turning and printed the old shape (`fold` said wide for a tall laptop).
 `fold` now waits for the expected shape (`laptop` tall, `book`/`open` wide), or
 for two equal reads on a pose whose hold it cannot predict (cover poses and raw
-angles), and it never waits past the settle deadline.
+angles), and it never waits past the settle deadline. A fold that was still
+turning when the deadline came answers `settled: false`, and `--text` notes
+that the picture shown may be the old one; a guest that never names its panel
+is not counted as still turning.
 
 The orientation names are how the PHONE is held, so on the inner display they
 read backwards to anyone who means the picture: held portrait (open, book) the
