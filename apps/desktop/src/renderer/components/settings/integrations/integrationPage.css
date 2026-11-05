@@ -216,7 +216,8 @@
   gap: 18px;
   align-items: stretch;
 }
-.ade-ig-body > :only-child { grid-column: 1 / -1; }
+.ade-ig-body > :only-child,
+.ade-ig-body > .ade-ig-card[data-span="full"] { grid-column: 1 / -1; }
 .ade-ig-alerts { display: flex; flex-direction: column; gap: 8px; }
 .ade-ig-alerts:empty { display: none; }
 
@@ -771,3 +772,55 @@
 .ade-ix-dialog-desc { margin: 0; font-size: 12.5px; color: var(--kit-text-2, var(--color-secondary-fg)); }
 .ade-ix-dialog-links { display: flex; align-items: center; gap: 14px; font-size: 11.5px; }
 .ade-ix-dialog-links .ade-ig-link[data-dim] { color: color-mix(in srgb, var(--color-fg) 50%, transparent); }
+
+/* A label and its controls on one line, inside a card body. */
+.ade-ig-field { display: grid; grid-template-columns: 96px minmax(0, 1fr); align-items: center; gap: 12px; min-width: 0; }
+.ade-ig-field[data-align="top"] { align-items: start; }
+.ade-ig-field[data-align="top"] > .ade-ig-field-label { padding-top: 7px; }
+.ade-ig-field-label { font-size: 12px; font-weight: 500; color: var(--kit-text-2, var(--color-secondary-fg)); }
+.ade-ig-field-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
+.ade-ig-code-input {
+  width: 100%;
+  min-height: 58px;
+  resize: vertical;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* Two or three figures side by side: an eyebrow, a number, a quiet unit. */
+.ade-ig-figures {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(0, 1fr);
+  border: 1px solid var(--kit-panel-edge, var(--kit-rule));
+  border-radius: 10px;
+  background: var(--kit-panel-bg, transparent);
+  overflow: hidden;
+}
+.ade-ig-figure { display: flex; flex-direction: column; gap: 3px; padding: 10px 14px; min-width: 0; }
+.ade-ig-figure + .ade-ig-figure { border-left: 1px solid var(--kit-panel-edge, var(--kit-rule)); }
+.ade-ig-figure > b { font-size: 17px; font-weight: 500; letter-spacing: -0.01em; color: var(--color-fg); font-variant-numeric: tabular-nums; }
+.ade-ig-figure > b > small { font-size: 11.5px; font-weight: 400; color: var(--kit-text-3, var(--color-muted-fg)); margin-left: 3px; }
+
+/* What a card's thing is doing right now: an icon, a name, a quiet detail. */
+.ade-ig-state {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--kit-panel-edge, var(--kit-rule));
+  border-radius: 10px;
+  background: var(--kit-panel-bg, transparent);
+  min-width: 0;
+  font-size: 12.5px;
+}
+.ade-ig-state > b { font-weight: 600; color: var(--color-fg); flex: none; }
+.ade-ig-state > span { color: var(--kit-text-3, var(--color-muted-fg)); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ade-ig-state > .kit-num { margin-left: auto; flex: none; }
+.ade-ig-card-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+
+@container integrationpage (max-width: 560px) {
+  .ade-ig-field { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+  .ade-ig-field[data-align="top"] > .ade-ig-field-label { padding-top: 0; }
+}

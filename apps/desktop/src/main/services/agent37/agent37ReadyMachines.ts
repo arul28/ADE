@@ -326,8 +326,8 @@ export function createAgent37ReadyKeeper(deps: Agent37ReadyKeeperDeps) {
         // Made from a template older than ready machines: nothing on it runs the job.
         throw new Error("the machine's template is too old to run a setup. ADE updates its template on its own; Retry once it's ready.");
       }
-      const latest = read.tail[read.tail.length - 1];
-      if (read.started) setLocalMessage(settings.identity, latest ? `Running setup: ${latest.slice(0, 120)}` : "Running setup…");
+      // The step only: the setup's own output is install noise, and it can echo anything.
+      if (read.started) setLocalMessage(settings.identity, "Running your setup…");
     }
     if (read.exitCode !== 0) {
       // The last lines say why; the very last is usually the reason, so it is kept whole.
