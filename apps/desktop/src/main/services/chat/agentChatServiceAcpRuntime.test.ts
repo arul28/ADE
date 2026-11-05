@@ -607,6 +607,41 @@ describe("acp chat runtime", () => {
     expect(harness.agent.received.filter((entry) => entry.method === "session/prompt")).toHaveLength(0);
   });
 
+  it.each([
+    ["a steer (the composer's queue mode)", "steer"],
+    ["a direct send (CLI, automations)", "sendMessage"],
+  ] as const)("queues %s made while a Grok turn runs, and runs it next", async (_label, route) => {
+    const harness = await openAcpHarness({ provider: "grok", model: "grok-4.6", modelId: "xai/grok-4-6" });
+    let releaseFirst: (() => void) | null = null;
+    let prompts = 0;
+    harness.agent.on("session/prompt", async () => {
+      prompts += 1;
+      if (prompts === 1) await new Promise<void>((resolve) => { releaseFirst = resolve; });
+      return { result: { stopReason: "end_turn" } };
+    });
+    void harness.service.sendMessage({ sessionId: harness.session.id, text: "first" });
+    await vi.waitFor(() => { expect(releaseFirst).not.toBeNull(); });
+
+    if (route === "steer") {
+      const result = await harness.service.steer({ sessionId: harness.session.id, text: "second" });
+      expect(result.queued).toBe(true);
+    } else {
+      await harness.service.sendMessage({ sessionId: harness.session.id, text: "second" });
+    }
+    await vi.waitFor(() => {
+      expect(eventsOfType(harness, "user_message").some((event) => event.deliveryState === "queued")).toBe(true);
+    });
+    // Still the first turn: nothing failed and nothing ended it.
+    expect(eventsOfType(harness, "done")).toEqual([]);
+
+    releaseFirst!();
+    await vi.waitFor(() => { expect(eventsOfType(harness, "done")).toHaveLength(2); });
+    expect(eventsOfType(harness, "done").map((event) => event.status)).toEqual(["completed", "completed"]);
+    expect(eventsOfType(harness, "error")).toEqual([]);
+    expect(JSON.stringify(harness.agent.received.filter((entry) => entry.method === "session/prompt").at(-1)?.params))
+      .toContain("second");
+  });
+
   it("reopens an ACP runtime when permission mode changes during a turn", async () => {
     const harness = await openAcpHarness({
       provider: "grok",

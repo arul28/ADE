@@ -4338,6 +4338,8 @@ function isNonBlockingApprovalRequestEvent(
   return (request as Record<string, unknown>).blocking === false;
 }
 
+const TURN_ALREADY_ACTIVE_REASON = "Turn already active";
+
 function validateSessionReadyForTurn(managed: ManagedChatSession): { ready: true } | { ready: false; reason: string } {
   if (managed.closed) return { ready: false, reason: "Session is disposed" };
   if (!managed.runtime) return { ready: false, reason: "No runtime initialized" };
@@ -4348,7 +4350,7 @@ function validateSessionReadyForTurn(managed: ManagedChatSession): { ready: true
       || rt.kind === "pi" || rt.kind === "acp")
     && rt.busy
   ) {
-    return { ready: false, reason: "Turn already active" };
+    return { ready: false, reason: TURN_ALREADY_ACTIVE_REASON };
   }
   if (rt.kind === "opencode" && rt.pendingApprovals.size > 0) return { ready: false, reason: "Pending approvals not resolved" };
   if ((rt.kind === "cursor" || rt.kind === "droid") && rt.permissionWaiters.size > 0) {
@@ -5836,6 +5838,8 @@ type ManagedChatSession = {
    * persisted flag so the line stays once per chat across a runtime restart.
    */
   acpSupervisionNoticeShown?: boolean;
+  /** True once this chat was told Claude Code refused Full access as root. In memory only. */
+  claudeRootBypassNoticeShown?: boolean;
   /**
    * The last ACP agent process's captured stderr tail, kept so the next failed
    * turn's card can lead with the line that actually explains it instead of the
@@ -10381,6 +10385,17 @@ function hydrateNativePermissionControls(
   }
 
   session.permissionMode = syncLegacyPermissionMode(session);
+}
+
+/**
+ * Claude Code exits at startup when asked to skip permissions as root, unless
+ * it is told it runs in a sandbox. Its rule, read in the CLI (SDK 0.3.310):
+ * `getuid() === 0 && IS_SANDBOX !== "1" && !CLAUDE_CODE_BUBBLEWRAP`. Windows
+ * has no `getuid`, so it never applies there.
+ */
+function claudeCodeRefusesBypassHere(env: NodeJS.ProcessEnv): boolean {
+  if (typeof process.getuid !== "function" || process.getuid() !== 0) return false;
+  return env.IS_SANDBOX !== "1" && !env.CLAUDE_CODE_BUBBLEWRAP;
 }
 
 function resolveSessionClaudePermissionMode(
@@ -36651,7 +36666,7 @@ export function createAgentChatService(args: {
       onDispatched?: () => void;
       onBackendDispatched?: () => void;
     },
-  ): Promise<void> => {
+  ): Promise<"queued" | void> => {
     const turnId = randomUUID();
     const provider = managed.session.provider;
     if (!isAcpChatProvider(provider)) {
@@ -36666,10 +36681,38 @@ export function createAgentChatService(args: {
     managed.acpLastExitStderrTail = undefined;
 
     let runtime: AcpRuntime;
+    let behindActiveTurn: "queued" | "dropped" | null = null;
     try {
       runtime = await ensureAcpSessionRuntime(managed);
       const validation = validateSessionReadyForTurn(managed);
-      if (!validation.ready) throw new Error(validation.reason);
+      if (!validation.ready) {
+        // Another send started a turn while this one waited for the runtime.
+        // ACP takes no mid-turn message, so this one runs next, from the
+        // queue the running turn drains when it ends. Failed here, it was lost,
+        // and the setup failure below marked the running turn's chat idle.
+        // The busy runtime is the live one, which a recycle during the wait
+        // may have replaced; the queue that is drained belongs to it.
+        const live = managed.runtime;
+        if (validation.reason === TURN_ALREADY_ACTIVE_REASON && live?.kind === "acp" && live.busy) {
+          const queued = enqueueSteerOrDrop(
+            managed,
+            live,
+            managed.session.id,
+            randomUUID(),
+            args.userText?.trim() || args.promptText,
+            args.attachments ?? [],
+            args.contextAttachments ?? [],
+            args.resolvedAttachments ?? [],
+            args.metadata,
+            args.displayText !== undefined ? { displayText: args.displayText } : undefined,
+          );
+          // Settled below, past the setup failure: that path would end the
+          // running turn's chat.
+          behindActiveTurn = queued ? "queued" : "dropped";
+        } else {
+          throw new Error(validation.reason);
+        }
+      }
     } catch (error) {
       // Setup failure. One visible error, then the terminal markers that
       // release the composer — a chat that never reaches `done` stays stuck
@@ -36689,6 +36732,20 @@ export function createAgentChatService(args: {
       emitChatEvent(managed, { type: "done", turnId, status: "failed", ...doneModel });
       persistChatState(managed);
       return;
+    }
+    // Accepted: the message runs as the next turn, so a waiter on dispatch is
+    // released now; nothing else would release it. Its prompt was not sent, so
+    // the caller leaves the directives it carried undelivered. A full queue
+    // dropped it (with its notice): the send fails as busy, which leaves the
+    // running turn alone.
+    if (behindActiveTurn === "queued") {
+      logger.info("agent_chat.acp_send_queued_behind_active_turn", { sessionId: managed.session.id });
+      args.onDispatched?.();
+      args.onBackendDispatched?.();
+      return "queued";
+    }
+    if (behindActiveTurn === "dropped") {
+      throw new Error("A turn is already active and the message queue is full. Wait for the current turn to finish.");
     }
 
     emitAcpDegradationNotes(managed, runtime.dialect, runtime.permissionMode);
@@ -39296,7 +39353,8 @@ export function createAgentChatService(args: {
       return runPiTurn(managed, args);
     }
     if (runtimeKind === "acp" || isAcpChatProvider(managed.session.provider)) {
-      return runAcpTurn(managed, args);
+      await runAcpTurn(managed, args);
+      return;
     }
     if (runtimeKind === "muse" || managed.session.provider === "muse") {
       return runMuseTurn(managed, args);
@@ -46880,10 +46938,28 @@ export function createAgentChatService(args: {
     // normalization below clears the raw fields.
     const hadPlanIntentAtOptionBuildStart = isSessionInPlanMode(managed.session);
     const chatConfig = resolveChatConfig();
-    const claudePermissionMode = resolveSessionClaudePermissionMode(
+    const requestedClaudePermissionMode = resolveSessionClaudePermissionMode(
       managed.session,
       chatConfig.claudePermissionMode,
     );
+    // Asked for Full access as root, Claude Code exits before the first turn
+    // and every chat on the machine fails. Accept edits is the next mode down
+    // that it starts with, and the chat shows the mode it really runs in.
+    const claudePermissionMode = requestedClaudePermissionMode === "bypassPermissions"
+      && claudeCodeRefusesBypassHere(process.env)
+      ? "acceptEdits"
+      : requestedClaudePermissionMode;
+    if (claudePermissionMode !== requestedClaudePermissionMode && !managed.claudeRootBypassNoticeShown) {
+      managed.claudeRootBypassNoticeShown = true;
+      logger.warn("agent_chat.claude_bypass_refused_as_root", { sessionId: managed.session.id });
+      emitChatEvent(managed, {
+        type: "system_notice",
+        noticeKind: "info",
+        // Each ask waits for an answer: it reads "Needs you" on every connected
+        // window and phone, so a headless machine is never silently stuck.
+        message: "Claude Code does not allow Full access when ADE runs as root, so this chat uses Accept edits. Before it runs a command, Claude waits for you to allow it here, in any ADE window, or on your phone. Run ADE as a normal user to use Full access.",
+      });
+    }
     managed.session.claudePermissionMode = claudePermissionMode;
     managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? managed.session.permissionMode;
     const lightweight = isLightweightSession(managed.session);
@@ -62159,7 +62235,7 @@ export function createAgentChatService(args: {
       // A slash command is ordinary prompt text for every ACP dialect: the
       // agent advertises the list, ADE offers it, and the chosen text is sent
       // unchanged. There is no dispatch verb to translate it into.
-      await runAcpTurn(managed, {
+      const outcome = await runAcpTurn(managed, {
         promptText,
         userText: submittedText,
         displayText: visibleText,
@@ -62172,7 +62248,7 @@ export function createAgentChatService(args: {
         onDispatched,
         onBackendDispatched,
       });
-      markEpochDirectivesDelivered();
+      if (outcome !== "queued") markEpochDirectivesDelivered();
       return;
     }
 
@@ -64268,6 +64344,33 @@ export function createAgentChatService(args: {
     }
     if (managed.session.provider === "opencode") {
       preparedSteer.onBackendDispatched = options?.onAcceptedDispatch;
+    }
+    // ACP agents (Grok, Qwen, Kimi, Antigravity, Devin) take no mid-turn
+    // message, so one sent while a turn runs is staged and runs as the next
+    // turn, drained when `runAcpTurn` ends. Sent on as a new turn, it reached a
+    // busy runtime and failed as "Turn already active".
+    if (managed.runtime?.kind === "acp" && managed.runtime.busy) {
+      const queued = enqueueSteerOrDrop(
+        managed,
+        managed.runtime,
+        sessionId,
+        steerId,
+        preparedSteer.submittedText,
+        preparedSteer.attachments,
+        preparedSteer.contextAttachments,
+        preparedSteer.resolvedAttachments,
+        preparedSteer.metadata,
+        {
+          displayText: preparedSteer.visibleText,
+          reasoningEffort,
+          executionMode,
+          interactionMode,
+          ...(sentByUser === true ? { sentByUser: true } : {}),
+        },
+      );
+      return queued
+        ? { steerId, queued: true }
+        : { steerId, queued: false, reason: "queue_full" };
     }
     if (managed.session.provider === "claude") {
       const runtime = ensureClaudeSessionRuntime(managed);

@@ -109,6 +109,13 @@ export const GITHUB_RELAY_SUBSCRIPTION_BACKOFF_CAP_MS = 60_000;
 const GITHUB_RELAY_POLL_BACKOFF_BASE_MS = 30_000;
 const GITHUB_RELAY_POLL_BACKOFF_CAP_MS = 15 * 60_000;
 /**
+ * A second 401 in a row: the relay refuses this machine's credentials for the
+ * repository (signed out, or the ADE GitHub App is not on it), and another poll
+ * cannot change that. Polling stops for this long, or until an explicit
+ * `pollNow` (the user repairing the connection).
+ */
+const GITHUB_RELAY_UNAUTHORIZED_RETRY_MS = 6 * 60 * 60_000;
+/**
  * Safety ceiling for an honored rate-limit reset. A reset is GitHub's own
  * deadline and is honored in full (see the failure handler), but a bogus
  * far-future header must not be able to park the relay for a day.
@@ -136,6 +143,7 @@ class GithubRelayPollError extends Error {
      * their retry deadline honored past the generic backoff cap.
      */
     readonly rateLimited: boolean = false,
+    readonly status: number | null = null,
   ) {
     super(message);
     this.name = "GithubRelayPollError";
@@ -493,6 +501,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
   let lastRelayActivityAtMs = Date.now();
   let relayPollCooldownUntilMs = 0;
   let relayPollFailureCount = 0;
+  let relayPollUnauthorizedCount = 0;
   /** A poll failing on the same cause as the last one logs at info. */
   const relayPollFailures = createRepeatedFailureGate();
   let subscriptionLoggedState: "connected" | "disconnected" | null = null;
@@ -1218,7 +1227,8 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
           route: "events",
         });
       }
-      if (repo) {
+      const openRelaySubscription = (): void => {
+        if (!repo) return;
         const subscriptionUrl = new URL(
           `${baseUrl}/github/repos/${encodeURIComponent(repo.owner)}/${encodeURIComponent(repo.name)}/subscribe`,
         );
@@ -1233,7 +1243,11 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
           requestHeaders,
           hostedAuth?.ok ? "github-app-user-token" : "account-token",
         );
-      }
+      };
+      // After a refused poll the socket waits for a poll that succeeds: the
+      // relay refuses its upgrade with the same credentials.
+      const subscriptionWaitsForAuth = relayPollUnauthorizedCount > 0;
+      if (!subscriptionWaitsForAuth) openRelaySubscription();
       let remoteProjectId: string | null = null;
       if (useLegacyProjectRoute) remoteProjectId = config.remoteProjectId;
       else if (repo) remoteProjectId = `${repo.owner}/${repo.name}`;
@@ -1285,6 +1299,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
               : `GitHub relay poll failed (${response.status})`,
             failure.retryAtMs,
             failure.rateLimited,
+            response.status,
           );
         }
         const payload = await run.wait(response.json()) as {
@@ -1412,8 +1427,10 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
       flushCommittedPrReconciliation();
       if (lastDeliveryAt) noteRelayActivity();
       relayPollFailureCount = 0;
+      relayPollUnauthorizedCount = 0;
       relayPollCooldownUntilMs = 0;
       relayPollFailures.clear();
+      if (subscriptionWaitsForAuth) openRelaySubscription();
       clearRelayPollRetryTimer();
       updateGithubRelayStatus({
         healthy: true,
@@ -1450,6 +1467,17 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
           )
         : Math.min(nowMs + GITHUB_RELAY_POLL_BACKOFF_CAP_MS, retryAtMs ?? 0);
       relayPollCooldownUntilMs = Math.max(nowMs + backoffMs, retryFloorMs);
+      // A 401 is about the credentials, not the moment. The first is retried on
+      // the normal backoff, which reads fresh tokens; a second stops polling.
+      // Either way the subscription closes: its own reconnect timer re-polls,
+      // and each reconnect was another refused upgrade beside the refused poll.
+      const unauthorized = relayError?.status === 401;
+      relayPollUnauthorizedCount = unauthorized ? relayPollUnauthorizedCount + 1 : 0;
+      const authRefused = relayPollUnauthorizedCount >= 2;
+      if (unauthorized) disableRelaySubscription();
+      if (authRefused) {
+        relayPollCooldownUntilMs = Math.max(relayPollCooldownUntilMs, nowMs + GITHUB_RELAY_UNAUTHORIZED_RETRY_MS);
+      }
       scheduleRelayPollRetry();
       const failureMessage = error instanceof Error ? error.message : String(error);
       // A poll that keeps failing on the same cause (no GitHub auth, a paused
@@ -1462,9 +1490,11 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
       });
       updateGithubRelayStatus({
         healthy: false,
-        status: "error",
+        status: authRefused ? "disabled" : "error",
         lastPolledAt: new Date().toISOString(),
-        lastError: error instanceof Error ? error.message : String(error),
+        lastError: authRefused
+          ? "The GitHub relay refused this machine's credentials for this repository. Sign in to ADE again, or install the ADE GitHub App on the repository, then retry."
+          : error instanceof Error ? error.message : String(error),
       });
     }
   };
@@ -1563,6 +1593,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
       clearRelayPollRetryTimer();
       relayPollCooldownUntilMs = 0;
       relayPollFailureCount = 0;
+      relayPollUnauthorizedCount = 0;
       // An explicit poke is the user asking for freshness: leave idle decay.
       noteRelayActivity();
       await pollGithubRelayOnce();
@@ -1575,6 +1606,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
       githubRelayHealthy = false;
       relayPollCooldownUntilMs = 0;
       relayPollFailureCount = 0;
+      relayPollUnauthorizedCount = 0;
       if (pollTimer) {
         clearInterval(pollTimer);
         pollTimer = null;
