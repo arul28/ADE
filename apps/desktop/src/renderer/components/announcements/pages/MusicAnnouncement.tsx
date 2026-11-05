@@ -1,7 +1,6 @@
 import { MusicNotes } from "@phosphor-icons/react";
 import type { AnnouncementPageProps } from "../announcementPages";
 import { WhatsNewFeature } from "./WhatsNewFeature";
-import { HomeAppIcon } from "../../music/musicApps";
 import shot from "./assets/music.webp";
 
 /** Apple Music and Spotify in the Music tab. */

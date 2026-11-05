@@ -295,6 +295,11 @@ function SuggestionCard({
   style?: CSSProperties;
   testId?: string;
 }): JSX.Element {
+  const art = model.art ? (
+    <div className="ade-suggest-art" data-size={model.art.large ? "large" : undefined}>
+      <img src={model.art.src} alt={model.art.alt} loading="lazy" decoding="async" draggable={false} />
+    </div>
+  ) : null;
   return (
     <section
       role="status"
@@ -330,17 +335,9 @@ function SuggestionCard({
       </div>
       <div className="ade-suggest-foot">
         <NoticeActions actions={model.actions} tone={model.tone} size="md" />
-        {model.art && !model.art.large ? (
-          <div className="ade-suggest-art">
-            <img src={model.art.src} alt={model.art.alt} loading="lazy" decoding="async" draggable={false} />
-          </div>
-        ) : null}
+        {model.art && !model.art.large ? art : null}
       </div>
-      {model.art?.large ? (
-        <div className="ade-suggest-art" data-size="large">
-          <img src={model.art.src} alt={model.art.alt} loading="lazy" decoding="async" draggable={false} />
-        </div>
-      ) : null}
+      {model.art?.large ? art : null}
     </section>
   );
 }

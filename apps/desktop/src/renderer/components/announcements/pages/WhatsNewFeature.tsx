@@ -177,7 +177,8 @@ function Crossfade({ media }: { media: ImagesMedia }) {
         })}
       </div>
       {media.images.some((shot) => shot.caption) ? (
-        <p className="ade-wnf-shot-caption" aria-live="polite">{media.images[index]?.caption}</p>
+        // Not a live region: the slides move on by themselves, so it would announce every few seconds.
+        <p className="ade-wnf-shot-caption">{media.images[index]?.caption}</p>
       ) : null}
       {count > 1 ? (
         <div className="ade-wnf-shots" role="group" aria-label="Screenshots">

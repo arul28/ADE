@@ -1,8 +1,6 @@
 import { Ticket } from "@phosphor-icons/react";
 import type { AnnouncementPageProps } from "../announcementPages";
 import { WhatsNewFeature } from "./WhatsNewFeature";
-import { JiraMark } from "../../lanes/jiraBrand";
-import { LINEAR_BRAND, LinearMark } from "../../lanes/linearBrand";
 import attachVideo from "./assets/issues-attach.mp4";
 import attachStill from "./assets/issues-attach-still.webp";
 import browse from "./assets/issues-browse.webp";
