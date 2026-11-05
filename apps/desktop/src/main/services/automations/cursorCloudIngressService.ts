@@ -26,6 +26,10 @@ const CURSOR_CLOUD_RELAY_MAX_PAGES_PER_POLL = 20;
 const SECRET_ID_BACKFILL_FIRST_RETRY_MS = 60_000;
 const SECRET_ID_BACKFILL_MAX_RETRY_MS = 60 * 60_000;
 const MIN_CURSOR_WEBHOOK_SECRET_LENGTH = 32;
+const UNAUTHORIZED_FIRST_PAUSE_MS = 5 * 60_000;
+const UNAUTHORIZED_MAX_PAUSE_MS = 6 * 60 * 60_000;
+const CURSOR_CLOUD_RELAY_UNAUTHORIZED_MESSAGE =
+  "The Cursor Cloud relay refused this computer's credentials. Sign in to ADE again, or set up Cursor Cloud events again.";
 
 export type CursorCloudIngressStatus = {
   state: "unconfigured" | "ready" | "error";
@@ -103,6 +107,21 @@ function readString(source: Record<string, unknown> | null | undefined, key: str
 function readNested(source: Record<string, unknown> | null | undefined, key: string): Record<string, unknown> | null {
   const value = source?.[key];
   return isRecord(value) ? value : null;
+}
+
+/**
+ * The account a token names (its JWT `sub`), read without verifying it: only
+ * to tell a new sign-in from a refreshed token for the same account.
+ */
+function accountTokenSubject(token: string | null): string | null {
+  const payload = token?.split(".")[1];
+  if (!payload) return null;
+  try {
+    const claims = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as unknown;
+    return isRecord(claims) ? readString(claims, "sub") : null;
+  } catch {
+    return null;
+  }
 }
 
 function errorMessage(error: unknown): string {
@@ -200,6 +219,31 @@ export function createCursorCloudIngressService(deps: CursorCloudIngressServiceD
   // longer wait each time.
   let secretIdBackfillAt = 0;
   let secretIdBackfillDelayMs = SECRET_ID_BACKFILL_FIRST_RETRY_MS;
+  // A refused poll is retried once, after registering the secret again. Past
+  // that the credentials are wrong in a way another poll cannot fix, so polling
+  // pauses, longer each time, until a pause ends or setup runs again.
+  // Signing in to another account (or at all) ends the pause: the refusal was
+  // about the credentials polling had then.
+  let unauthorizedPausedUntil = 0;
+  let unauthorizedPauseMs = UNAUTHORIZED_FIRST_PAUSE_MS;
+  let unauthorizedPausedAccount: string | null = null;
+  const clearUnauthorizedPause = (): void => {
+    unauthorizedPausedUntil = 0;
+    unauthorizedPauseMs = UNAUTHORIZED_FIRST_PAUSE_MS;
+    unauthorizedPausedAccount = null;
+  };
+  const pauseAfterUnauthorized = (
+    accountAccessToken: string | null,
+    credentials: { hasSecret: boolean; hasAccountToken: boolean },
+  ): void => {
+    unauthorizedPausedUntil = Date.now() + unauthorizedPauseMs;
+    unauthorizedPausedAccount = accountTokenSubject(accountAccessToken);
+    deps.logger.warn("automations.cursor_cloud_relay_unauthorized", {
+      pausedUntil: new Date(unauthorizedPausedUntil).toISOString(),
+      ...credentials,
+    });
+    unauthorizedPauseMs = Math.min(unauthorizedPauseMs * 2, UNAUTHORIZED_MAX_PAUSE_MS);
+  };
 
   const setLastError = (message: string | null): void => {
     deps.db.setJson(CURSOR_CLOUD_RELAY_LAST_ERROR_REF, message);
@@ -270,6 +314,7 @@ export function createCursorCloudIngressService(deps: CursorCloudIngressServiceD
   };
 
   const setup = async (): Promise<CursorCloudIngressStatus> => {
+    clearUnauthorizedPause();
     try {
       const relayBaseUrl = resolveCursorCloudRelayBaseUrl(deps.db);
       const storedSecret = readCursorCloudWebhookSecret(deps.db, deps.credentialStore);
@@ -293,6 +338,7 @@ export function createCursorCloudIngressService(deps: CursorCloudIngressServiceD
   };
 
   const teardown = async (): Promise<CursorCloudIngressStatus> => {
+    clearUnauthorizedPause();
     try {
       clearCursorCloudWebhookSecret(deps.credentialStore);
       clearCursorCloudRelayRegistration(deps.db);
@@ -338,6 +384,13 @@ export function createCursorCloudIngressService(deps: CursorCloudIngressServiceD
 
   const poll = async (): Promise<void> => {
     if (deps.wantsEvents && !deps.wantsEvents()) return;
+    if (Date.now() < unauthorizedPausedUntil) {
+      // No subject is a failed token read as often as a sign-out; only a
+      // signed-in account other than the paused one ends the pause.
+      const account = accountTokenSubject(await readAccountAccessToken());
+      if (account === null || account === unauthorizedPausedAccount) return;
+      clearUnauthorizedPause();
+    }
     let status = getStatus();
     if (status.state === "unconfigured" || (status.state === "error" && !status.webhookId)) {
       try {
@@ -373,6 +426,7 @@ export function createCursorCloudIngressService(deps: CursorCloudIngressServiceD
       }
     }
 
+    let reregisteredAfterUnauthorized = false;
     for (let page = 0; page < CURSOR_CLOUD_RELAY_MAX_PAGES_PER_POLL; page += 1) {
       const cursor = deps.cursorStore.get("cursor-relay");
       const url = new URL(`${status.relayBaseUrl}/cursor/events`);
@@ -387,16 +441,30 @@ export function createCursorCloudIngressService(deps: CursorCloudIngressServiceD
       });
       const rawPayload = await response.json().catch(() => null) as unknown;
       if (!response.ok) {
-        // The relay sweeps unowned secrets it has not heard from in weeks.
-        // Re-registering the stored secret is idempotent and restores access.
-        if (response.status === 401 && binding?.secret) {
-          await reregisterSecret({ relayBaseUrl: status.relayBaseUrl, secret: binding.secret });
-          return;
+        if (response.status === 401) {
+          // The relay sweeps unowned secrets it has not heard from in weeks.
+          // Re-registering the stored secret is idempotent and restores
+          // access, so it is tried once and the same page asked again.
+          const credentials = { hasSecret: Boolean(binding?.secret), hasAccountToken: Boolean(accountAccessToken) };
+          if (binding?.secret && !reregisteredAfterUnauthorized) {
+            reregisteredAfterUnauthorized = true;
+            try {
+              await reregisterSecret({ relayBaseUrl: status.relayBaseUrl, secret: binding.secret });
+            } catch (error: unknown) {
+              pauseAfterUnauthorized(accountAccessToken, credentials);
+              throw error;
+            }
+            page -= 1;
+            continue;
+          }
+          pauseAfterUnauthorized(accountAccessToken, credentials);
+          throw new Error(CURSOR_CLOUD_RELAY_UNAUTHORIZED_MESSAGE);
         }
         const detail = isRecord(rawPayload) ? readString(rawPayload, "error") : null;
         throw new Error(detail ?? `Cursor Cloud relay poll failed (HTTP ${response.status}).`);
       }
       const payload = parseRelayEventsResponse(rawPayload);
+      clearUnauthorizedPause();
       // Signed in, the poll still works without the secret, but webhooks
       // signed with it would be refused. Register it again; the events below
       // are still valid, so a failed registration only waits for the next poll.
