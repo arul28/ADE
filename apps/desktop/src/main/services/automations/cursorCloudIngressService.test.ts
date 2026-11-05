@@ -10,6 +10,7 @@ import {
   CURSOR_CLOUD_RELAY_CONFIGURED_REF,
   CURSOR_CLOUD_RELAY_SECRET_REF,
   CURSOR_CLOUD_WEBHOOK_SECRET_CREDENTIAL_KEY,
+  CURSOR_CLOUD_WEBHOOK_SECRET_ID_CREDENTIAL_KEY,
 } from "./cursorCloudRelayConfig";
 
 class FakeDb {
@@ -99,6 +100,8 @@ function configureReady(harness: ReturnType<typeof createHarness>, secret = "cur
   harness.db.setJson(CURSOR_CLOUD_RELAY_CONFIGURED_REF, true);
   harness.db.setJson(CURSOR_CLOUD_RELAY_SECRET_REF, CURSOR_CLOUD_WEBHOOK_SECRET_CREDENTIAL_KEY);
   harness.credentials.setSync(CURSOR_CLOUD_WEBHOOK_SECRET_CREDENTIAL_KEY, secret);
+  // A setup made since the relay names each secret already holds its id.
+  harness.credentials.setSync(CURSOR_CLOUD_WEBHOOK_SECRET_ID_CREDENTIAL_KEY, "secret-id-1");
 }
 
 function relayEvent(args: {

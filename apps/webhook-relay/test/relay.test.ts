@@ -7,6 +7,7 @@ import {
   signGitHubWebhookBody,
   type RelayEnv,
 } from "../src/relay";
+import { MAX_HELD_REQUESTS_PER_HOOK } from "../src/customHooks";
 import { RepoEventsDurableObject } from "../src/repoEventsDurableObject";
 
 type StoredEvent = {
@@ -180,6 +181,13 @@ class FakeD1Database {
   }
 
   all<T>(sql: string, values: unknown[]): T[] {
+    if (sql.includes("from custom_hook_events") && sql.includes("event_id in")) {
+      const accountId = String(values[0]);
+      const eventIds = values.slice(1).map(String);
+      return this.customHookEvents
+        .filter((entry) => entry.account_id === accountId && eventIds.includes(entry.event_id))
+        .map((entry) => ({ ...entry } as T));
+    }
     if (sql.includes("from custom_hook_events")) {
       const accountId = String(values[0]);
       const hookIds = values.slice(1, -1).map(String);
@@ -189,6 +197,7 @@ class FakeD1Database {
         .sort((left, right) => left.event_seq - right.event_seq)
         .slice(0, limit)
         .map((entry) => ({
+          body_length: entry.body.length,
           event_seq: entry.event_seq,
           event_id: entry.event_id,
           hook_id: entry.hook_id,
@@ -263,6 +272,12 @@ class FakeD1Database {
         received_at: String(receivedAt),
       });
       return 1;
+    }
+    if (sql.includes("delete from custom_hook_events") && sql.includes("hook_id = ? and received_at <")) {
+      const [hookId, cutoff] = values.map(String);
+      const before = this.customHookEvents.length;
+      this.customHookEvents = this.customHookEvents.filter((entry) => entry.hook_id !== hookId || entry.received_at >= cutoff);
+      return before - this.customHookEvents.length;
     }
     if (sql.includes("delete from custom_hook_events") && sql.includes("received_at <")) {
       const cutoff = String(values[0]);
@@ -2271,6 +2286,24 @@ describe("custom webhook URLs", () => {
       account_id: "user_1",
       method: "POST",
     }));
+
+    // A full inbox refuses the sender. An inbox full of expired requests is
+    // cleared and takes the delivery, even when no sweep ran since.
+    const held = env.DB.customHookEvents[0]!;
+    for (let index = 1; index < MAX_HELD_REQUESTS_PER_HOOK; index += 1) {
+      env.DB.customHookEvents.push({ ...held, event_id: `held-${index}`, event_seq: held.event_seq + index });
+    }
+    const deliver = async (): Promise<Response> => await handleRequest(new Request(hookDeliveryUrl(), {
+      method: "POST",
+      body: JSON.stringify({ hello: "again" }),
+    }), env);
+    const full = await deliver();
+    expect(full.status).toBe(503);
+    expect(await full.json()).toEqual(expect.objectContaining({ error: "inbox_full" }));
+    for (const entry of env.DB.customHookEvents) entry.received_at = "2020-01-01T00:00:00.000Z";
+    const cleared = await deliver();
+    expect(cleared.status).toBe(202);
+    expect(env.DB.customHookEvents).toHaveLength(1);
   });
 
   it("answers 404 for a wrong token and an unknown hook without storing anything", async () => {

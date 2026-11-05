@@ -390,7 +390,12 @@ describe("device authorization bridge", () => {
     );
     const unnamedDevice = await unnamed.json() as Record<string, unknown>;
     const unnamedPreview = await handleRequest(new Request(String(unnamedDevice.verification_uri_complete)), env, { now: () => now });
-    expect(await unnamedPreview.text()).toContain("ADE on your computer asked to sign in.");
+    // Anyone can start a sign-in and send the link on, so a page with no name
+    // never tells the reader the request came from their own computer.
+    const unnamedHtml = await unnamedPreview.text();
+    expect(unnamedHtml).toContain("Confirm this sign-in");
+    expect(unnamedHtml).not.toContain("<strong>");
+    expect(unnamedHtml).not.toMatch(/your computer/i);
     // Format characters go: a right-to-left override could make the name read
     // as another computer.
     await handleRequest(
@@ -408,7 +413,8 @@ describe("device authorization bridge", () => {
     const deadPreview = await handleRequest(new Request(String(device.verification_uri_complete)), env, { now: () => now });
     const deadHtml = await deadPreview.text();
     expect(deadHtml).not.toContain("A computer named");
-    expect(deadHtml).toContain("ADE on your computer asked to sign in.");
+    expect(deadHtml).not.toContain("MacBook Pro");
+    expect(deadHtml).not.toMatch(/your computer/i);
 
   });
 

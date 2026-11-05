@@ -125,7 +125,8 @@ switching projects so they cannot populate the new project's panes.
 | `apps/desktop/src/main/services/chat/cursorSdkWorker.ts` | Node worker that hosts the official `@cursor/sdk` and bridges it to the main process via the JSON line protocol in `cursorSdkProtocol.ts`. It creates the SDK local agent platform with the lane workspace/state root, configures local agents to use HTTP/1 by default (`ADE_CURSOR_SDK_USE_HTTP1_FOR_AGENT=0` disables it), enables SDK local agent retries, passes ADE mode/idempotency keys on sends, and tolerates stream-iteration failures long enough to call `run.wait()` and emit a structured terminal result. The SDK's `local.force` send option (expire the currently active persisted run before starting this message as a new follow-up) is wired to the explicit `forceExpireActiveRun` payload flag and is set **only** on ADE's automatic recovery re-send — a normal send that expired a genuinely running turn would discard its output. It also serves the `steer` request added for Cursor's active-turn inline send: only the live **local** run is eligible (cloud runs are tracked separately and never reached from here), a build whose `Run` has no `steer` method reports ADE's diagnostics-only `unsupported`, and nothing throws for a missing channel — the caller's fallback is a normal follow-up message, and an exception would lose text the user already typed. Any outcome other than `complete_delivered` is normalized to `revert_to_followup` so the host keeps ownership of the message. User images are materialized here from attachment paths or URLs (`workerAttachmentImages.ts`) rather than as base64 on the JSON IPC pipe — several large screenshots on `child.send` can stall the turn so Cursor never sees the message. |
 | `apps/desktop/src/main/services/chat/cursorSdkWorkerGuards.ts` | The worker's self-defence once its brain is gone, kept apart from the worker so tests can drive it without the SDK. `sendToCursorSdkParent` drops a message when `process.connected` is false and sends with a callback, so a send on a closed channel never becomes a process `'error'`. `ignoreCursorSdkWorkerPipeErrors` swallows `'error'` on the process and on its stdio, where EPIPE shows after the parent dies. `createCursorSdkWorkerExit` gives every exit path a 2 s timer deadline (`CURSOR_SDK_WORKER_EXIT_DEADLINE_MS`), because timers still fire when promises cannot settle. `cursorSdkOwnerPidArg` / `readCursorSdkOwnerPid` write and read the `--ade-owner-pid=<pid>` argv marker, and `cursorSdkOwnerStillOwns` backs the 2 s owner poll. See [Cursor worker orphan guard](#cursor-worker-orphan-guard). |
 | `apps/desktop/src/main/services/chat/cursorSdkWorkerOrphans.ts` | `recoverCursorSdkWorkerOrphans`, the once-per-process startup sweep that the brain (`ade serve`) and desktop main both run. It lists processes asynchronously (`ps -ww -axo` on POSIX, a PowerShell CIM query on Windows) and `selectOrphanedCursorSdkWorkers` picks the workers whose owner pid is dead, plus unmarked workers from older builds only on POSIX with ppid 1 and the exact legacy command shape. It re-lists before every kill after the first, so a reused pid is never killed. |
-| `apps/desktop/src/main/services/chat/chatWaitRegistry.ts` | Event-driven chat waits: the `chat.waitFor` long-poll and the durable waiters (`chat.armWait` / `listWaits` / `cancelWait`), re-checked on each target's events, one check at a time. The chat service signals it from `emitChatEvent`. |
+| `apps/desktop/src/main/services/chat/chatWaitRegistry.ts` | Event-driven chat waits: the `chat.waitFor` long-poll and the durable waiters (`chat.armWait` / `listWaits` / `cancelWait`), re-checked on each target's events, one check at a time. The chat service signals it from `emitChatEvent`. A match seen while the session to wake cannot take a wake (a tracked agent CLI mid-turn) is kept on the waiter (`matchedWhileDeferred`), so it still fires as matched after the target moves on. |
+| `apps/desktop/src/main/services/chat/agentCliWakes.ts` | Wakes for tracked agent CLIs (`createAgentCliWakes`): a wake is typed at the CLI's prompt only at a turn boundary, one at a time per CLI, and a subagent's report to a CLI parent retries every 5 s for up to a day. An archived CLI refuses wakes and is not a reachable parent. |
 | `apps/desktop/src/shared/chatGoals.ts` | `parseClaudeGoalCommand` (what a sent `/goal …` asks for) and the `goal_reached` / `goal_blocked` notice statuses the push publisher alerts on. |
 | `apps/desktop/src/shared/prWatch.ts` | PR Watch / Ship's pure evaluator (`evaluatePrWatch`), the wake text and card, and the `PrChatWatchSummary` contract. See the PR docs. |
 | `apps/desktop/src/main/services/ai/tools/toolDeadline.ts` | ADE's own per-tool deadline (default 120 s) under a 65-minute MCP transport cap; time on an approval card does not count, and overlapping cards count once. See `tool-system.md`. |
@@ -1651,13 +1652,18 @@ accepted update alike, and the update dialog shows its answer per chat:
 - Tracked agent CLIs (Claude Code, Codex, … in a terminal) follow the same
   setting. When a runtime stops on purpose (an update, a reboot, the brain
   quitting), `ptyService.disposeAll({ reopenAfterRestart: true })` saves the
-  CLIs it still has open to `.ade/cache/reopen-cli-after-restart.json`
+  CLIs it still has open to its own file,
+  `.ade/cache/reopen-cli-after-restart.<pid>.json`
   (`apps/desktop/src/main/services/pty/cliReopenAfterRestart.ts`), and marks
-  one that is still printing and not at its prompt as mid-turn. The project's
-  next runtime reads the file once and deletes it
-  (`reopenCliSessionsAfterRestart`). A CLI is reopened at its prompt
-  (`ptyService.resumeSession`), and a mid-turn one gets the durable "continue"
-  row instead, which reopens it with `RESTART_RESUME_PROMPT`. Archived CLIs, ones
+  one that is still printing and not at its prompt as mid-turn. Two runtimes
+  of one project that stop together never overwrite each other's list. The
+  project's next runtime claims each file with a rename before it reads it,
+  so a list is acted on once (`reopenCliSessionsAfterRestart`). A CLI is
+  reopened at its prompt (`ptyService.resumeSession`), and a mid-turn one gets
+  the durable "continue" row instead, which reopens it with
+  `RESTART_RESUME_PROMPT`. The "continue" counts toward the same restart streak
+  as a chat's (`MAX_CONSECUTIVE_RESTART_RESUMES`); past it, the CLI only
+  reopens. Removing a project deletes its lists. Archived CLIs, ones
   already open, ones another runtime owns, and lists older than 6 h are
   skipped. A crash writes no list, so a crash never reopens a CLI. A brain
   that does this reports `cliSessionsReopen: true` in `runtime.updateImpact`,

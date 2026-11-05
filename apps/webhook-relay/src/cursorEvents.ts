@@ -20,6 +20,7 @@ import {
   verifyGitHubSignature,
 } from "./shared";
 import { authenticateAccount, readBearerToken } from "./auth";
+import { logCloudflareTransient } from "./cloudflareTransient";
 
 type CursorCloudEventRow = {
   event_seq: number;
@@ -193,8 +194,9 @@ async function authorizeCursorEventsRead(
     if (bearer && !bearerIsEnvSecret) {
       try {
         secretKnown = Boolean(await findPolledCursorSecret(env, bearer));
-      } catch {
+      } catch (error) {
         secretKnown = true;
+        logCloudflareTransient("ade-webhook-relay", "cursor_secret_lookup", "/cursor/events", error);
       }
     }
     return { accountId, secretId: null, secretKnown };
