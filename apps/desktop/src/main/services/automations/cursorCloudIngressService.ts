@@ -213,6 +213,14 @@ export function createCursorCloudIngressService(deps: CursorCloudIngressServiceD
     unauthorizedPausedUntil = 0;
     unauthorizedPauseMs = UNAUTHORIZED_FIRST_PAUSE_MS;
   };
+  const pauseAfterUnauthorized = (credentials: { hasSecret: boolean; hasAccountToken: boolean }): void => {
+    unauthorizedPausedUntil = Date.now() + unauthorizedPauseMs;
+    deps.logger.warn("automations.cursor_cloud_relay_unauthorized", {
+      pausedUntil: new Date(unauthorizedPausedUntil).toISOString(),
+      ...credentials,
+    });
+    unauthorizedPauseMs = Math.min(unauthorizedPauseMs * 2, UNAUTHORIZED_MAX_PAUSE_MS);
+  };
 
   const setLastError = (message: string | null): void => {
     deps.db.setJson(CURSOR_CLOUD_RELAY_LAST_ERROR_REF, message);
@@ -408,27 +416,19 @@ export function createCursorCloudIngressService(deps: CursorCloudIngressServiceD
           // The relay sweeps unowned secrets it has not heard from in weeks.
           // Re-registering the stored secret is idempotent and restores
           // access, so it is tried once and the same page asked again.
-          const pauseAfterUnauthorized = (): void => {
-            unauthorizedPausedUntil = Date.now() + unauthorizedPauseMs;
-            deps.logger.warn("automations.cursor_cloud_relay_unauthorized", {
-              pausedUntil: new Date(unauthorizedPausedUntil).toISOString(),
-              hasSecret: Boolean(binding?.secret),
-              hasAccountToken: Boolean(accountAccessToken),
-            });
-            unauthorizedPauseMs = Math.min(unauthorizedPauseMs * 2, UNAUTHORIZED_MAX_PAUSE_MS);
-          };
+          const credentials = { hasSecret: Boolean(binding?.secret), hasAccountToken: Boolean(accountAccessToken) };
           if (binding?.secret && !reregisteredAfterUnauthorized) {
             reregisteredAfterUnauthorized = true;
             try {
               await reregisterSecret({ relayBaseUrl: status.relayBaseUrl, secret: binding.secret });
             } catch (error: unknown) {
-              pauseAfterUnauthorized();
+              pauseAfterUnauthorized(credentials);
               throw error;
             }
             page -= 1;
             continue;
           }
-          pauseAfterUnauthorized();
+          pauseAfterUnauthorized(credentials);
           throw new Error(CURSOR_CLOUD_RELAY_UNAUTHORIZED_MESSAGE);
         }
         const detail = isRecord(rawPayload) ? readString(rawPayload, "error") : null;

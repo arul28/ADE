@@ -2364,8 +2364,6 @@ type PersistedChatState = {
    * once per runtime start.
    */
   acpSupervisionNoticeShown?: boolean;
-  /** True once ADE told this chat that Claude Code refused Full access as root. */
-  claudeRootBypassNoticeShown?: boolean;
   /**
    * Which provider ACCOUNT this chat runs as, when it is not the provider's
    * default. Persisted next to the provider thread pointer because the two are
@@ -5838,6 +5836,8 @@ type ManagedChatSession = {
    * persisted flag so the line stays once per chat across a runtime restart.
    */
   acpSupervisionNoticeShown?: boolean;
+  /** True once this chat was told Claude Code refused Full access as root. In memory only. */
+  claudeRootBypassNoticeShown?: boolean;
   /**
    * The last ACP agent process's captured stderr tail, kept so the next failed
    * turn's card can lead with the line that actually explains it instead of the
@@ -36689,8 +36689,13 @@ export function createAgentChatService(args: {
             args.metadata,
             args.displayText !== undefined ? { displayText: args.displayText } : undefined,
           );
-          if (!queued) throw new Error("The message queue is full. Wait for the current turn to finish.");
+          // Accepted either way: queued, or dropped with the queue-full notice.
+          // Thrown, it would reach the setup failure below and end the running
+          // turn's chat. A waiter on dispatch is released here; nothing else
+          // would ever release it.
+          if (queued) logger.info("agent_chat.acp_send_queued_behind_active_turn", { sessionId: managed.session.id });
           args.onDispatched?.();
+          args.onBackendDispatched?.();
           return;
         }
         throw new Error(validation.reason);

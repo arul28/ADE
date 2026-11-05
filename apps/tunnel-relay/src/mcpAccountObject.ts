@@ -32,20 +32,6 @@ const LEFT_OFF_KEY = "mcpAccountLeftOff";
 const OFF_MEMBERS_KEY = "off";
 
 /**
- * A stored machine-key list, read without trusting its shape. A value that is
- * not a list (`members.filter is not a function`, 56 times in October) failed
- * every join and leave on the account until it was replaced, and this read is
- * what replaces it: the next write stores a real list.
- */
-async function readStoredKeyList(storage: DurableObjectStorage, key: string): Promise<string[]> {
-  const value = await storage.get<unknown>(key);
-  if (value === undefined || value === null) return [];
-  if (Array.isArray(value)) return value.filter((entry): entry is string => typeof entry === "string");
-  logTunnel("mcp_account_list_reset", { key, type: typeof value });
-  return [];
-}
-
-/**
  * The `mcp-account:<accountKey>` object: the machines (relay keys) serving an
  * account, most recent registration last, and the one that last answered.
  */
@@ -54,10 +40,9 @@ export async function handleMcpAccount(
   request: Request,
   pathname: string,
 ): Promise<Response> {
-  const members = await readStoredKeyList(storage, "members");
-  const storedFront = await storage.get<unknown>("front");
-  const front = typeof storedFront === "string" ? storedFront : null;
-  const off = await readStoredKeyList(storage, OFF_MEMBERS_KEY);
+  const members = (await storage.get<string[]>("members")) ?? [];
+  const front = (await storage.get<string>("front")) ?? null;
+  const off = (await storage.get<string[]>(OFF_MEMBERS_KEY)) ?? [];
   if (pathname === MCP_ACCOUNT_PATH && request.method === "GET") {
     return jsonResponse(
       { members, front, ...(off.length ? { off } : {}) } satisfies McpAccountState,
@@ -175,7 +160,7 @@ export async function reconcileMcpAccount(
 ): Promise<McpAccountReconcile> {
   const { machineKey, desired, joined, stale } = args;
   const stored = (await storage.get<string>(JOINED_KEY)) ?? null;
-  const previouslyLeaving = await readStoredKeyList(storage, LEAVING_KEY);
+  const previouslyLeaving = (await storage.get<string[]>(LEAVING_KEY)) ?? [];
   // The account this machine is remembered as "off" on. Joining any account
   // other than that one tells the old one it moved on, so its address stops
   // saying "off" and says it is no longer served.
