@@ -38,6 +38,12 @@ export type ExternalSessionDiscoveryArgs = {
   projectRoot?: string | null;
   /** Exact provider session id to resolve without building a broad recent-session list. */
   sessionId?: string | null;
+  /**
+   * Keep sessions ADE itself ran, which import normally hides (they are ADE
+   * chats already). Recently deleted sets it to read a deleted chat's own
+   * conversation back; only an exact `sessionId` lookup should pass it.
+   */
+  includeAdeOwned?: boolean;
   limit?: number | null;
   scopeRoots?: string[] | null;
   /**
@@ -593,9 +599,20 @@ type ExternalSessionRecordShape = {
   isMeta: boolean;
 };
 
+/**
+ * Claude Code logs each API request it sends (`api-request`, and the request
+ * body as `api-request-blob`, whose `message` is the user's turn again). Those
+ * are a request log, not the conversation; read as turns, every prompt shows up
+ * twice.
+ */
+export function isClaudeRequestLogRecord(record: unknown): boolean {
+  const type = asRecord(record)?.type;
+  return typeof type === "string" && type.startsWith("api-request");
+}
+
 function externalSessionRecordShape(record: unknown): ExternalSessionRecordShape | null {
   const obj = asRecord(record);
-  if (!obj) return null;
+  if (!obj || isClaudeRequestLogRecord(obj)) return null;
   const payload = asRecord(obj.payload);
   const message = asRecord(obj.message);
   const payloadMessage = asRecord(payload?.message);

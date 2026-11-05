@@ -589,7 +589,7 @@ export async function discoverCursorSessions(
     const storePrompts = !group.transcript && group.store
       ? readCursorStorePrompts(group.store.filePath, args.logger)
       : null;
-    if (storePrompts?.adeOrigin) continue;
+    if (storePrompts?.adeOrigin && !args.includeAdeOwned) continue;
     const first = asRecord(jsonl[0]);
     const cwd = group.store?.cwd
       ?? cursorCwdFromRecords(jsonl)

@@ -1,0 +1,22 @@
+/*
+ * Settings › Recently deleted. The Import window's list and preview
+ * (`importSessions.css`), set inside one kit card on the settings page.
+ */
+
+.ade-rd-browser {
+  display: flex;
+  flex-direction: column;
+  height: clamp(420px, calc(100vh - 260px), 680px);
+  min-height: 0;
+  overflow: hidden;
+}
+
+.ade-rd-browser .import-split { flex: 1; min-height: 0; }
+.ade-rd-browser .import-list-col { width: 320px; }
+
+/* Sticky date labels sit on the card, not the import dialog's surface. */
+.ade-rd-browser .import-group-label { background: var(--color-card); }
+
+@container modernpage (max-width: 720px) {
+  .ade-rd-browser .import-list-col { width: 240px; }
+}

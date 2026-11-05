@@ -102,6 +102,8 @@ type CodexRecordSeed = {
 type CodexClassifyContext = {
   logger: ExternalSessionDiscoveryArgs["logger"];
   warnedSources: Set<string>;
+  /** ADE's own threads count too (Recently deleted reads one back by id). */
+  includeAdeOwned?: boolean;
 };
 
 function readCodexIndex(indexPath: string): Map<string, CodexIndexEntry> {
@@ -288,6 +290,7 @@ function structuredCodexSource(rawSource: unknown): boolean {
  * import list is worse than one extra row the user can ignore.
  */
 function isImportableCodexSource(rawSource: unknown, ctx: CodexClassifyContext): boolean {
+  if (ctx.includeAdeOwned) return true;
   if (structuredCodexSource(rawSource)) return false;
   const source = asString(rawSource)?.toLowerCase();
   if (!source) return true;
@@ -316,7 +319,7 @@ function isImportableCodexOriginator(originator: string | null): boolean {
 function isImportableCodexSession(meta: CodexSessionMeta, ctx: CodexClassifyContext): boolean {
   if (meta.agentRole) return false;
   if (!isImportableCodexSource(meta.source, ctx)) return false;
-  return isImportableCodexOriginator(meta.originator);
+  return ctx.includeAdeOwned === true || isImportableCodexOriginator(meta.originator);
 }
 
 function firstCodexUserText(records: unknown[]): string | null {
@@ -923,7 +926,11 @@ export async function discoverCodexSessions(
   const lookupId = args.sessionId?.trim() || null;
   const codexDir = codexHomeDir(args);
   const index = readCodexIndex(path.join(codexDir, "session_index.jsonl"));
-  const ctx: CodexClassifyContext = { logger: args.logger, warnedSources: new Set() };
+  const ctx: CodexClassifyContext = {
+    logger: args.logger,
+    warnedSources: new Set(),
+    includeAdeOwned: args.includeAdeOwned === true,
+  };
 
   const seeds = codexSeedsFromStateDb(args, codexDir, limit, lookupId, ctx)
     ?? codexSeedsFromFiles(path.join(codexDir, "sessions"), limit, lookupId, args.scopeRoots, ctx);

@@ -807,6 +807,13 @@ import type {
   ExternalSessionImportResult,
   ExternalSessionSummary,
   ExternalSessionDetail,
+  DeletedChatDetailArgs,
+  DeletedChatListArgs,
+  DeletedChatListResult,
+  DeletedChatRemoveArgs,
+  DeletedChatRemoveResult,
+  DeletedChatReopenArgs,
+  DeletedChatReopenResult,
   ExternalSessionDetailArgs,
   ExternalSessionDetailUpdatedEvent,
   ProviderInstance,
@@ -9449,6 +9456,18 @@ export function registerIpc({
     const ctx = ensureAgentChatContext();
     await ctx.agentChatService.deleteSession(arg);
   });
+
+  ipcMain.handle(IPC.agentChatListDeleted, async (_event, arg: DeletedChatListArgs): Promise<DeletedChatListResult> =>
+    ensureAgentChatContext().agentChatService.listDeletedChats(arg ?? {}));
+
+  ipcMain.handle(IPC.agentChatGetDeletedDetail, async (_event, arg: DeletedChatDetailArgs): Promise<ExternalSessionDetail> =>
+    ensureAgentChatContext().agentChatService.getDeletedChatDetail(arg));
+
+  ipcMain.handle(IPC.agentChatReopenDeleted, async (_event, arg: DeletedChatReopenArgs): Promise<DeletedChatReopenResult> =>
+    ensureAgentChatContext().agentChatService.reopenDeletedChat(arg));
+
+  ipcMain.handle(IPC.agentChatRemoveDeleted, async (_event, arg: DeletedChatRemoveArgs): Promise<DeletedChatRemoveResult> =>
+    ensureAgentChatContext().agentChatService.removeDeletedChats(arg));
 
   // One archive across lanes, chats, and shells (Settings → Archive). Built
   // from the window's own services; a runtime-bound window never reaches these

@@ -1,11 +1,12 @@
 import React from "react";
 import { useLocation } from "react-router-dom";
-import { Archive, ArrowClockwise, GitBranch, GitFork, HardDrives, SlidersHorizontal } from "@phosphor-icons/react";
+import { Archive, ArrowClockwise, ClockCounterClockwise, GitBranch, GitFork, HardDrives, SlidersHorizontal } from "@phosphor-icons/react";
 import { ModernSection } from "../primitives";
 import { useSettingsMachineScope } from "../SettingsMachineScope";
 import { useSettingsSearchAnchors } from "../settingsSearchContext";
 import { decodeSettingsHash } from "../settingsHash";
 import { ArchiveSection } from "../ArchiveSection";
+import { RecentlyDeletedSection } from "../RecentlyDeletedSection";
 import { SessionLifecycleSection } from "../SessionLifecycleSection";
 import { ProjectSection } from "../ProjectSection";
 import { NewLaneSettingsSection } from "../NewLaneSettingsSection";
@@ -25,7 +26,7 @@ import "../health/health.css";
 import "./lanes.css";
 import { isAdeAvailable } from "../../../lib/adeAvailability";
 
-type ViewId = "lanes" | "new-lanes" | "space" | "archive" | "cleanup-rules";
+type ViewId = "lanes" | "new-lanes" | "space" | "archive" | "recently-deleted" | "cleanup-rules";
 
 type View = {
   id: ViewId;
@@ -49,6 +50,12 @@ const STORAGE_VIEWS: readonly View[] = [
   { id: "space", label: "Space", icon: <HardDrives size={13} weight="duotone" />, anchors: ["storage", ...HEALTH_DETAIL_ANCHORS, "storage-cleanups"] },
   { id: "archive", label: "Archive", icon: <Archive size={13} weight="duotone" />, anchors: ["archive"] },
   {
+    id: "recently-deleted",
+    label: "Recently deleted",
+    icon: <ClockCounterClockwise size={13} weight="duotone" />,
+    anchors: ["recently-deleted"],
+  },
+  {
     id: "cleanup-rules",
     label: "Rules",
     icon: <SlidersHorizontal size={13} weight="duotone" />,
@@ -57,7 +64,7 @@ const STORAGE_VIEWS: readonly View[] = [
 ];
 
 /** The hosted web client can reach only the archive and the rules. */
-const WEB_VIEWS: ReadonlySet<ViewId> = new Set(["new-lanes", "archive", "cleanup-rules"]);
+const WEB_VIEWS: ReadonlySet<ViewId> = new Set(["new-lanes", "archive", "recently-deleted", "cleanup-rules"]);
 
 /** The view among `views` that draws `anchor`, or null when none of them does. */
 function viewForAnchor(views: readonly View[], anchor: string | null): ViewId | null {
@@ -222,6 +229,8 @@ function ProjectViewsPage({ allViews, label }: { allViews: readonly View[]; labe
         );
       case "archive":
         return <ArchiveSection />;
+      case "recently-deleted":
+        return <RecentlyDeletedSection />;
       case "new-lanes":
         return (
           <div className="ade-nl-flow">
