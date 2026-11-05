@@ -302,6 +302,8 @@ import { buildIntegrationConnectAdapters } from "../integrations/integrationConn
 import { agent37VaultFromStore, buildAgent37ConnectAdapter, type Agent37CredentialDeps } from "../agent37/agent37Credential";
 import { buildAgent37ReadyActions } from "../agent37/agent37ReadyActions";
 import { buildAgent37AgentActions } from "../agent37/agent37AgentActions";
+import { createAgent37BrainMaker, type Agent37BrainMaker } from "../agent37/agent37BrainMaker";
+import { AGENT37_DEFAULT_TEMPLATE } from "../../../shared/agent37";
 import { createAgent37Machines } from "../agent37/agent37Machines";
 import { AGENT37_BUDGET_VAULT_KEY, createAgent37BudgetStore } from "../agent37/agent37Sleep";
 import { readAgent37Key } from "../agent37/agent37Credential";
@@ -4041,6 +4043,53 @@ function integrationConnectAdapters(runtime: AdeRuntime) {
 }
 
 /**
+ * One maker per runtime: the domain services are rebuilt per call, and a
+ * background make (the phone's) is read back by a later `make_status`.
+ */
+const agent37BrainMakers = new WeakMap<AdeRuntime, Agent37BrainMaker | null>();
+
+function agent37BrainMakerFor(runtime: AdeRuntime, machines: ReturnType<typeof createAgent37Machines>): Agent37BrainMaker | null {
+  if (agent37BrainMakers.has(runtime)) return agent37BrainMakers.get(runtime) ?? null;
+  const account = runtime.accountAuthService ?? null;
+  if (!account) {
+    agent37BrainMakers.set(runtime, null);
+    return null;
+  }
+  const credentials = agent37CredentialDeps(runtime);
+  const directoryBaseUrl = () => {
+    try {
+      return getSharedAccountDirectoryBaseUrl({ projectRoots: () => (runtime.projectRoot ? [runtime.projectRoot] : []) }) || null;
+    } catch {
+      return null;
+    }
+  };
+  const directory = () => new AccountMachineDirectoryService(account, {
+    appVersion: process.env.ADE_CLI_VERSION?.trim() || "0.0.0",
+    directoryBaseUrl: () => directoryBaseUrl() ?? "",
+  });
+  const maker = createAgent37BrainMaker({
+    base: {
+      client: async () => {
+        const saved = await readAgent37Key(credentials);
+        if (!saved) throw new Error("Connect Agent 37 first: Settings › Integrations › Agent 37.");
+        return createAgent37Client({ apiKey: saved.key });
+      },
+      getAccountToken: async () => (account.getStatus().signedIn ? await account.getAccessToken().catch(() => null) : null),
+      directoryBaseUrl,
+      listAccountMachines: () => directory().listMachines(),
+      renameMachine: (machineKey, name) => directory().renameMachine(machineKey, name),
+      templateName: () => process.env.ADE_AGENT37_TEMPLATE?.trim() || AGENT37_DEFAULT_TEMPLATE,
+      spending: () => machines.spending(),
+      removeAccountMachine: (machineKey) => directory().deleteMachine(machineKey),
+      logger: runtime.logger,
+    },
+    logger: runtime.logger,
+  });
+  agent37BrainMakers.set(runtime, maker);
+  return maker;
+}
+
+/**
  * The `agent37` domain for the CLI and agents: ready machines (read through
  * the same store the desktop writes) and the machine verbs. The key, the cap
  * and the choice are the account's, so every brain answers the same; making a
@@ -4077,6 +4126,7 @@ function buildAgent37DomainService(runtime: AdeRuntime): OpaqueService {
     logger: runtime.logger,
   });
   const agentChatService = runtime.agentChatService ?? null;
+  const maker = agent37BrainMakerFor(runtime, machines);
   const ready = buildAgent37ReadyActions({
     credentials,
     readSettings: async () => (await settings.read()).projects,
@@ -4097,6 +4147,7 @@ function buildAgent37DomainService(runtime: AdeRuntime): OpaqueService {
     budget,
     readySettings: settings,
     desktop: () => runtime.getAgent37Desktop?.() ?? null,
+    maker,
     // A runtime with no chat service of its own (the CLI's in-process
     // fallback) has no chat to ask in; costly actions are then refused.
     approvals: agentChatService && typeof agentChatService.requestChatInput === "function"

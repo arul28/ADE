@@ -161,6 +161,8 @@ export type Agent37CreateStage =
   | "waiting_for_brain"
   | "signing_in"
   | "confirm_in_window"
+  /** No window here: the person approves from `approvalUrl` (the phone, any signed-in browser). */
+  | "approve_elsewhere"
   | "joining"
   | "done"
   | "failed";
@@ -200,6 +202,8 @@ export type Agent37CreateProgress = {
   /** One plain line for the dialog. */
   message: string;
   instanceId?: string;
+  /** With `approve_elsewhere`: the sign-in link the person opens to let the machine join. */
+  approvalUrl?: string;
   result?: Agent37CreateMachineResult;
   error?: string;
 };

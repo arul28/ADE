@@ -1046,7 +1046,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   // deletes asks the person first (the RPC server stamps who asks). Never the key.
   agent37: [
     "ready_status", "claim_ready", "release_ready", "list", "spending", "create", "sleep", "wake", "resize",
-    "copy", "move", "delete", "set_sleep", "set_cap", "ready_set", "ready_off", "ready_retry",
+    "copy", "move", "delete", "set_sleep", "set_cap", "ready_set", "ready_off", "ready_retry", "make_status",
   ],
   // `list` reads the MCP setup (names and set/not-set, never a value).
   // `request` raises the MCP server card in the caller's own chat; the person

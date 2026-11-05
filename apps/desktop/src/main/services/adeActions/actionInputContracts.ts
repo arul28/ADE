@@ -215,9 +215,14 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "ade agent37 spending --text",
     },
     create: {
-      description: "Make an Agent 37 machine from ADE's template, signed in to the account (through the ADE desktop app on this computer). Costs money: asks the person in your chat first (a full-auto chat is answered by ADE within the monthly cap). Refused at the cap. Returns the machine {instanceId, machineKey, name, joined}.",
-      input: "object { kind?: \"box\" | \"vm\", shape?: \"2x4\" | \"4x8\" | \"4x16\" | \"4x32\", name?: string }",
+      description: "Make an Agent 37 machine from ADE's template, signed in to the account. With an ADE desktop attached its window approves the sign-in; otherwise the person approves from a link ADE posts in your chat (the command waits up to 10 minutes). Costs money: asks the person in your chat first (a full-auto chat is answered by ADE within the monthly cap). Refused at the cap. Returns the machine {instanceId, machineKey, name, joined}; with background: true, returns {requestId} at once to read with make_status.",
+      input: "object { kind?: \"box\" | \"vm\", shape?: \"2x4\" | \"4x8\" | \"4x16\" | \"4x32\", name?: string, background?: boolean }",
       example: "ade agent37 create --kind vm --shape 4x8 --name \"android vm\"",
+    },
+    make_status: {
+      description: "A create, copy or move started with background: true: {stage, message, approvalUrl (the sign-in link to open while it waits for the person), done, result, error}.",
+      input: "object { requestId: string }",
+      example: "ade --role agent actions run agent37.make_status --input-json '{\"requestId\":\"…\"}' --json",
     },
     sleep: {
       description: "Put an Agent 37 machine to sleep now: memory kept, only its disk bills. Free.",

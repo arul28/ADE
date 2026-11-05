@@ -108,8 +108,8 @@ export async function copyAgent37Machine(
   const requestId = args.requestId ?? randomUUID();
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const logger: Agent37Logger = deps.logger ?? {};
-  const progress = (stage: Agent37CreateProgress["stage"], message: string, instanceId?: string) =>
-    onProgress({ requestId, stage, message, ...(instanceId ? { instanceId } : {}) });
+  const progress = (stage: Agent37CreateProgress["stage"], message: string, instanceId?: string, approvalUrl?: string) =>
+    onProgress({ requestId, stage, message, ...(instanceId ? { instanceId } : {}), ...(approvalUrl ? { approvalUrl } : {}) });
   const client = await deps.client();
   const directory = deps.directoryBaseUrl();
   if (!directory) throw new Error("ADE's account service isn't configured on this computer, so it can't sign the copy in.");
@@ -241,8 +241,8 @@ export async function moveAgent37Machine(
   const requestId = args.requestId ?? randomUUID();
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const logger: Agent37Logger = deps.logger ?? {};
-  const progress = (stage: Agent37CreateProgress["stage"], message: string, instanceId?: string) =>
-    onProgress({ requestId, stage, message, ...(instanceId ? { instanceId } : {}) });
+  const progress = (stage: Agent37CreateProgress["stage"], message: string, instanceId?: string, approvalUrl?: string) =>
+    onProgress({ requestId, stage, message, ...(instanceId ? { instanceId } : {}), ...(approvalUrl ? { approvalUrl } : {}) });
   const client = await deps.client();
   await assertUnderCap(deps);
   const source = await client.getInstance(args.instanceId);

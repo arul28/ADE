@@ -44,6 +44,7 @@ import type { PermissionLevel } from "../../../shared/permissionLadder";
 import { getErrorMessage } from "../shared/utils";
 import type { Agent37Logger } from "./agent37Client";
 import type { Agent37MoveResult } from "./agent37MachineCopy";
+import type { Agent37BrainMaker, Agent37MakeInput } from "./agent37BrainMaker";
 import type { createAgent37Machines } from "./agent37Machines";
 import { normalizeAgent37ReadySettings, type Agent37ReadySettingsStore } from "./agent37ReadySettings";
 import type { Agent37BudgetStore } from "./agent37Sleep";
@@ -88,6 +89,8 @@ export type Agent37AgentActionDeps = {
   readySettings: Agent37ReadySettingsStore;
   /** The desktop attached to this brain, or null. */
   desktop: () => Agent37DesktopBridge | null;
+  /** Makes machines here when no desktop is attached; the person approves from a link. */
+  maker?: Agent37BrainMaker | null;
   approvals: Agent37ChatApprovals | null;
   logger?: Agent37Logger;
 };
@@ -123,7 +126,7 @@ function readApproval(args: Record<string, unknown>): Agent37Approval {
   return { by: "agent", chatSessionId: typeof raw.chatSessionId === "string" && raw.chatSessionId.trim() ? raw.chatSessionId.trim() : null };
 }
 
-const NO_DESKTOP = "Making a machine signs it in through the ADE desktop app, and none is open on this computer. Open ADE here, or run the command on a computer where it is open (--machine).";
+const NO_DESKTOP = "This ADE can't make Agent 37 machines: it isn't signed in to your ADE account.";
 
 export function buildAgent37AgentActions(deps: Agent37AgentActionDeps) {
   const logger = deps.logger ?? {};
@@ -229,10 +232,33 @@ export function buildAgent37AgentActions(deps: Agent37AgentActionDeps) {
       : `${card.title}: the person said no, so nothing was done.`);
   };
 
-  const requireDesktop = (): Agent37DesktopBridge => {
+  /** True when nothing here can make a machine. */
+  const cannotMake = () => !deps.desktop() && !deps.maker;
+
+  /**
+   * Makes, copies or moves: through the attached desktop (its window approves
+   * the sign-in, no tap needed), else here, with the approval link sent to the
+   * agent's chat. `background` (the phone) returns a job to read with
+   * `make_status`, which carries the link.
+   */
+  const make = async (approval: Agent37Approval, input: Agent37MakeInput, background: boolean): Promise<unknown> => {
     const desktop = deps.desktop();
-    if (!desktop) throw new Error(NO_DESKTOP);
-    return desktop;
+    if (desktop && !background) {
+      if (input.kind === "create") return await desktop.create({ ...input.machine, madeByChat: input.madeByChat ?? null });
+      if (input.kind === "copy") return await desktop.copy(input);
+      return await desktop.move(input);
+    }
+    const maker = deps.maker;
+    if (!maker) throw new Error(NO_DESKTOP);
+    if (background) return { requestId: maker.start(input), background: true };
+    const chatSessionId = approval.by === "agent" ? approval.chatSessionId : null;
+    if (!chatSessionId || !deps.approvals) {
+      throw new Error("The new machine joins your account once you approve it, and ADE has no chat here to show you the link. Run this from an ADE chat, or from the phone's Agent 37 page.");
+    }
+    const approvals = deps.approvals;
+    return await maker.make(input, (url, name) => {
+      approvals.notice(chatSessionId, `Approve "${name}" joining your ADE account: open ${url} on your phone or in a browser signed in to ADE. The command waits up to 10 minutes.`);
+    });
   };
 
   const runAction = async (box: Agent37Machine, action: Parameters<typeof deps.machines.run>[0]): Promise<Agent37MachineActionResult> => {
@@ -287,7 +313,7 @@ export function buildAgent37AgentActions(deps: Agent37AgentActionDeps) {
       const shape = agent37Shape(shapeId)!;
       const name = text(args, "name") ?? (kind === "vm" ? "Agent 37 VM" : "Agent 37 box");
       await capCheck();
-      const desktop = requireDesktop();
+      if (cannotMake()) throw new Error(NO_DESKTOP);
       const approval = readApproval(args);
       await approve(approval, {
         action: "spend",
@@ -295,7 +321,7 @@ export function buildAgent37AgentActions(deps: Agent37AgentActionDeps) {
         body: `A ${kind === "vm" ? "VM" : "box"} with ${shape.cpu} vCPU and ${shape.memoryGb} GB, about ${formatAgent37HourlyPrice(agent37HourlyUsd(kind, shape))} while awake. It sleeps when idle and then bills only its disk.`,
         confirm: "Make it",
       });
-      return await desktop.create({ kind, shape: shapeId, name, madeByChat: madeByChat(approval) });
+      return await make(approval, { kind: "create", machine: { kind, shape: shapeId, name }, madeByChat: madeByChat(approval) }, args.background === true);
     },
 
     async sleep(rawArgs?: unknown) {
@@ -331,7 +357,7 @@ export function buildAgent37AgentActions(deps: Agent37AgentActionDeps) {
       const name = text(args, "name") ?? `${box.name ?? box.instanceId} copy`;
       const shapeId = shapeArg(args);
       await capCheck();
-      const desktop = requireDesktop();
+      if (cannotMake()) throw new Error(NO_DESKTOP);
       const rate = box.runningHourlyUsd != null ? formatAgent37HourlyPrice(box.runningHourlyUsd) : null;
       const approval = readApproval(args);
       await approve(approval, {
@@ -340,7 +366,7 @@ export function buildAgent37AgentActions(deps: Agent37AgentActionDeps) {
         body: `"${name}" gets the same files (repos, lanes, installed dependencies) and signs in as a new machine${rate ? `, about ${rate} while awake` : ""}. A big disk takes a few minutes to copy.`,
         confirm: "Copy it",
       });
-      return await desktop.copy({ instanceId: box.instanceId, name, shape: shapeId, madeByChat: madeByChat(approval) });
+      return await make(approval, { kind: "copy", instanceId: box.instanceId, name, shape: shapeId, madeByChat: madeByChat(approval) }, args.background === true);
     },
 
     async move(rawArgs?: unknown) {
@@ -350,7 +376,7 @@ export function buildAgent37AgentActions(deps: Agent37AgentActionDeps) {
       if (!to || !isAgent37MachineKind(to)) throw new Error("Move it to a box or a VM (--to box|vm).");
       const shapeId = shapeArg(args);
       await capCheck();
-      const desktop = requireDesktop();
+      if (cannotMake()) throw new Error(NO_DESKTOP);
       const name = box.name ?? box.instanceId;
       const approval = readApproval(args);
       await approve(approval, {
@@ -361,7 +387,16 @@ export function buildAgent37AgentActions(deps: Agent37AgentActionDeps) {
         madeByThisChat: approval.by === "agent" && approval.chatSessionId != null
           && (await deps.machines.instanceMetadata(box.instanceId).catch(() => null))?.[AGENT37_MADE_BY_CHAT_METADATA] === approval.chatSessionId,
       });
-      return await desktop.move({ instanceId: box.instanceId, machineKey: box.machineKey, to, shape: shapeId, madeByChat: madeByChat(approval) });
+      return await make(approval, { kind: "move", instanceId: box.instanceId, machineKey: box.machineKey, to, shape: shapeId, madeByChat: madeByChat(approval) }, args.background === true);
+    },
+
+    /** A make started with `background`: its stage, the approval link while it waits, then its result. */
+    async make_status(rawArgs?: unknown) {
+      const requestId = text(record(rawArgs), "requestId");
+      if (!requestId) throw new Error("Pass the requestId the make returned.");
+      const job = deps.maker?.status(requestId) ?? null;
+      if (!job) throw new Error("ADE has no make with that id here (it finished over 30 minutes ago, or ran on another machine).");
+      return job;
     },
 
     async delete(rawArgs?: unknown) {
