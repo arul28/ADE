@@ -70,7 +70,8 @@ const WAKE_TRANSIENT_CODES = new Set(["try_again", "wake_failed", "wake_timeout"
 const WAKE_RETRY_DEADLINE_MS = 15_000;
 const WAKE_RETRY_DELAY_MS = 500;
 
-async function wakeThroughTransition(client: Agent37Client, instanceId: string, now: () => number): Promise<void> {
+/** Wakes (or starts) a box, retrying through Agent 37's "still changing state" answers for a few seconds. */
+export async function wakeThroughTransition(client: Agent37Client, instanceId: string, now: () => number = () => Date.now()): Promise<void> {
   const deadline = now() + WAKE_RETRY_DEADLINE_MS;
   for (;;) {
     try {

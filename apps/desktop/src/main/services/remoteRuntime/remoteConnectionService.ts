@@ -95,6 +95,7 @@ import {
   describeLinkHeldByOtherAdeApp,
   type HostWentAwayRecovery,
 } from "../../../shared/connectionDiagnosis";
+import { adeActionAccess } from "../../../shared/adeActionAccess";
 
 type StatusPatch = Partial<Omit<RemoteRuntimeConnectionStatus, "target">>;
 
@@ -121,7 +122,19 @@ type RemoteConnectionServiceOptions = {
    * which then (rightly) waits for the person instead of fighting back.
    */
   explicitConnectOnly?: boolean;
+  /**
+   * Wakes a sleeping cloud machine (an Agent 37 box) the person is about to
+   * use. True when it woke one, so the connect waits for it to come back;
+   * throws with the reason when it may not (the monthly cap). Asked only for
+   * an explicit Connect and for a call that changes something: background
+   * reads never wake a box, or an open window would keep it awake forever.
+   */
+  wakeForUse?: (target: RemoteRuntimeTarget) => Promise<boolean>;
 };
+
+/** How long a woken machine gets to come back online before the call fails as usual. */
+const WOKEN_MACHINE_CONNECT_WAIT_MS = 45_000;
+const WOKEN_MACHINE_RETRY_MS = 1_500;
 
 const EXPLICIT_CONNECT_ONLY_MESSAGE =
   "This development ADE connects to other machines only when you press Connect, so the installed ADE keeps its connections.";
@@ -965,9 +978,14 @@ export class RemoteConnectionService {
       lastError: null,
     });
     try {
-      const result = explicit
-        ? await this.pool.connect(target, { bypassFailureBackoff: true })
-        : await this.pool.connect(target);
+      // Asked even with a pool entry: a sleeping box's relay tunnel can look
+      // open until a call times out. Only Agent 37 boxes cost a lookup.
+      const woke = explicit ? await this.wakeForUse(target) : false;
+      const result = woke
+        ? await this.connectWokenMachine(target)
+        : explicit
+          ? await this.pool.connect(target, { bypassFailureBackoff: true })
+          : await this.pool.connect(target);
       if (!this.isDisconnectGenerationCurrent(target.id, disconnectGeneration)) {
         if (this.manuallyDisconnectedTargetIds.has(target.id)) {
           this.pool.disconnect(target.id);
@@ -1437,13 +1455,28 @@ export class RemoteConnectionService {
     projectId: string,
     request: RemoteRuntimeActionRequest,
   ): Promise<RemoteRuntimeActionResult> {
+    // Sending to a chat or changing anything on a sleeping cloud machine wakes
+    // it first, and waits for it to come back.
+    if (!this.pool.hasEntry(targetId) && adeActionAccess(request.domain, request.action) === "write") {
+      const sleeping = this.registry.get(targetId);
+      if (sleeping && await this.wakeForUse(sleeping)) {
+        this.clearAutomaticReconnectState(targetId);
+        await this.connectWokenMachine(sleeping);
+      }
+    }
     const target = await this.requireTargetForImplicitUse(targetId);
     try {
-      const result = await this.pool.callActionForTarget(
-        target,
-        projectId,
-        request,
-      );
+      let result: RemoteRuntimeActionResult;
+      try {
+        result = await this.pool.callActionForTarget(target, projectId, request);
+      } catch (error) {
+        // A connection that looked open to a box that is asleep: the call never
+        // ran there (the box was frozen), so wake it and send it once more.
+        if (adeActionAccess(request.domain, request.action) !== "write" || !(await this.wakeForUse(target))) throw error;
+        this.clearAutomaticReconnectState(targetId);
+        await this.connectWokenMachine(target);
+        result = await this.pool.callActionForTarget(target, projectId, request);
+      }
       this.mergeStatus(targetId, {
         state: "connected",
         lastError: null,
@@ -1859,6 +1892,25 @@ export class RemoteConnectionService {
       return "reconnecting";
     }
     return this.statusById.get(targetId)?.recovery === "waiting_for_user" ? "waiting_for_user" : null;
+  }
+
+  /** Whether a sleeping cloud machine was woken for this use (see the option). */
+  private async wakeForUse(target: RemoteRuntimeTarget): Promise<boolean> {
+    if (!this.options.wakeForUse) return false;
+    return await this.options.wakeForUse(target);
+  }
+
+  /** Connects a machine that is waking: its relay route comes back a few seconds after the wake. */
+  private async connectWokenMachine(target: RemoteRuntimeTarget): Promise<RemoteRuntimeConnectResult> {
+    const deadline = Date.now() + WOKEN_MACHINE_CONNECT_WAIT_MS;
+    for (;;) {
+      try {
+        return await this.pool.connect(target, { bypassFailureBackoff: true });
+      } catch (error) {
+        if (Date.now() + WOKEN_MACHINE_RETRY_MS > deadline) throw error;
+        await new Promise((resolve) => setTimeout(resolve, WOKEN_MACHINE_RETRY_MS));
+      }
+    }
   }
 
   private clearAutomaticReconnectState(targetId: string): void {

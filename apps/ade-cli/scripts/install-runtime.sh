@@ -3,6 +3,10 @@ set -eu
 
 repo="${ADE_RELEASE_REPO:-arul28/ADE}"
 version="${ADE_VERSION:-latest}"
+# Releases are tagged "v1.2.129"; a bare "1.2.129" means the same release.
+case "$version" in
+  [0-9]*) version="v$version" ;;
+esac
 install_dir="${ADE_INSTALL_DIR:-}"
 ade_home="${ADE_HOME:-$HOME/.ade}"
 
@@ -440,7 +444,10 @@ install_started_at="$(date +%s)"
 print_banner
 printf '  Installing ADE to %s\n\n' "$ade_home" >&2
 
-download_with_progress "$(asset_url "$binary_name")" "$tmp_dir/ade" "ADE runtime"
+if ! download_with_progress "$(asset_url "$binary_name")" "$tmp_dir/ade" "ADE runtime"; then
+  [ "$version" = "latest" ] && die "could not download the ADE runtime."
+  die "could not download ADE $version. Check that it is a published release: https://github.com/$repo/releases"
+fi
 download_with_progress "$(asset_url "$archive_name")" "$tmp_dir/native.tar.gz" \
   "Native dependencies"
 download "$(asset_url "SHA256SUMS")" "$tmp_dir/SHA256SUMS"

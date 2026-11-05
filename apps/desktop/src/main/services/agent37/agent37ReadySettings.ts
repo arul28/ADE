@@ -59,7 +59,12 @@ export function normalizeAgent37ReadySettings(raw: Partial<Agent37ReadyProjectSe
     shape: agent37Shape(raw.shape)?.id ?? AGENT37_READY_DEFAULT_SHAPE,
     setup: typeof raw.setup === "string" ? raw.setup.replace(/\r\n/g, "\n").slice(0, 8_000) : "",
     failure: raw.failure && typeof raw.failure.error === "string" && typeof raw.failure.at === "number"
-      ? { error: raw.failure.error.slice(0, 600), at: raw.failure.at }
+      ? {
+          error: raw.failure.error.slice(0, 600),
+          at: raw.failure.at,
+          attempts: typeof raw.failure.attempts === "number" && raw.failure.attempts >= 1 ? Math.floor(raw.failure.attempts) : 1,
+          retryAt: typeof raw.failure.retryAt === "number" ? raw.failure.retryAt : null,
+        }
       : null,
   };
 }

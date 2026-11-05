@@ -31,6 +31,7 @@ export const adeBundledAgentSkills = [
   "ade-deeplinks",
   "ade-search",
   "ade-scene",
+  "ade-agent37",
 ] as const;
 
 /**

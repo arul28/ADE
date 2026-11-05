@@ -2,11 +2,15 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { app, BrowserWindow, ipcMain } from "electron";
+import { app, BrowserWindow, ipcMain, Notification } from "electron";
 import {
   AGENT37_DEFAULT_TEMPLATE,
   agent37StillStartingMessage,
   describeAgent37TemplateStatus,
+  formatAgent37Usd,
+  agent37CapReachedMessage,
+  type Agent37Budget,
+  type Agent37ShapeId,
   isAgent37InstanceId,
   type Agent37CreateMachineArgs,
   type Agent37CreateProgress,
@@ -48,6 +52,15 @@ import { createAgent37Client } from "./agent37Client";
 import { createAgent37Machines } from "./agent37Machines";
 import { claimAgent37ReadyMachine, releaseAgent37ReadyMachine } from "./agent37ReadyClaim";
 import { createAgent37ReadyKeeper } from "./agent37ReadyMachines";
+import { setAgent37WakeForUse } from "./agent37WakeHook";
+import { setAgent37DesktopActions } from "./agent37DesktopActions";
+import { copyAgent37Machine, moveAgent37Machine, type Agent37CopyDeps } from "./agent37MachineCopy";
+import {
+  AGENT37_BUDGET_VAULT_KEY,
+  createAgent37BudgetStore,
+  enableAgent37SleepWherePending,
+  wakeAgent37MachineForUse,
+} from "./agent37Sleep";
 import { AGENT37_READY_VAULT_KEY, createAgent37ReadySettingsStore } from "./agent37ReadySettings";
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
 import {
@@ -304,6 +317,12 @@ export function registerAgent37Ipc(args: {
     logger,
   };
 
+  const budget = createAgent37BudgetStore({
+    vault: () => (credentials.signedIn() ? agent37VaultFromBridge(args.vaultBridge, AGENT37_BUDGET_VAULT_KEY) : null),
+    machineStore: getMachineStore,
+    logger,
+  });
+
   const savedClient = async () => {
     const saved = await readAgent37Key(credentials);
     return saved ? createAgent37Client({ apiKey: saved.key }) : null;
@@ -340,7 +359,31 @@ export function registerAgent37Ipc(args: {
   const machines = createAgent37Machines({
     client: savedClient,
     removeAccountMachine: args.removeAccountMachine,
+    readBudget: () => budget.read(),
     logger,
+  });
+  startAgent37MoneyWatch({ client: savedClient, machines, logger });
+  // Remote connections wake a sleeping box the person is about to use. A
+  // machine that isn't an Agent 37 box is remembered for a minute, so calls
+  // to a laptop that is simply offline don't list the workspace each time.
+  const notAgent37Until = new Map<string, number>();
+  setAgent37WakeForUse(async (target) => {
+    const machineKey = target.pairedMachine?.machineKey?.trim();
+    if (!machineKey || (notAgent37Until.get(machineKey) ?? 0) > Date.now()) return false;
+    const client = await savedClient().catch(() => null);
+    if (!client) return false;
+    const result = await wakeAgent37MachineForUse(client, { machineKey, hostname: target.hostname }, {
+      spending: () => machines.spending(),
+      logger,
+    }).catch((error: unknown) => {
+      logger.warn("agent37.wake_for_use_failed", { error: error instanceof Error ? error.message : String(error) });
+      return null;
+    });
+    if (!result) return false;
+    if (result.state === "not_agent37") notAgent37Until.set(machineKey, Date.now() + 60_000);
+    if (result.state === "refused") throw new Error(result.message);
+    if (result.state === "woken") sendToAllWindows(IPC.agent37StatusChanged);
+    return result.state === "woken";
   });
 
   ipcMain.handle(IPC.agent37GetStatus, async (event): Promise<Agent37Status | null> => {
@@ -404,6 +447,34 @@ export function registerAgent37Ipc(args: {
     return result;
   });
 
+  ipcMain.handle(IPC.agent37GetBudget, async (event): Promise<Agent37Budget | null> => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.agent37GetBudget)) return null;
+    return await budget.read();
+  });
+
+  ipcMain.handle(IPC.agent37SetBudget, async (event, arg: { budget?: Agent37Budget }): Promise<Agent37Budget | null> => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.agent37SetBudget)) return null;
+    const raw = arg?.budget?.monthlyCapUsd;
+    const saved = await budget.write({ monthlyCapUsd: typeof raw === "number" ? raw : null });
+    logger.info("agent37.budget_set", { capped: saved.monthlyCapUsd != null });
+    sendToAllWindows(IPC.agent37StatusChanged);
+    return saved;
+  });
+
+  ipcMain.handle(IPC.agent37WakeMachine, async (event, arg: { machineKey?: unknown; hostname?: unknown }) => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.agent37WakeMachine)) return null;
+    const machineKey = typeof arg?.machineKey === "string" ? arg.machineKey.trim() : "";
+    if (!machineKey) return { state: "not_agent37" as const };
+    const client = await savedClient();
+    if (!client) return { state: "not_agent37" as const };
+    const result = await wakeAgent37MachineForUse(client, {
+      machineKey,
+      hostname: typeof arg?.hostname === "string" ? arg.hostname : null,
+    }, { spending: () => machines.spending(), logger });
+    if (result.state === "woken") sendToAllWindows(IPC.agent37StatusChanged);
+    return result;
+  });
+
   /** A project's identity from the renderer, normalized like every stored one. */
   const requireReadyIdentity = (value: unknown): string => {
     const identity = normalizeGitRemoteIdentity(typeof value === "string" ? value : null);
@@ -459,6 +530,117 @@ export function registerAgent37Ipc(args: {
   });
 
   const creates = new Map<string, AbortController>();
+
+  const copyDeps: Agent37CopyDeps = {
+    ...machineCreatorDeps,
+    spending: () => machines.spending(),
+    removeAccountMachine: args.removeAccountMachine,
+  };
+  // The CLI and agents make, copy and move machines through this app (the
+  // new machine signs in through its approval window), over the desktop bridge.
+  setAgent37DesktopActions({
+    create: async (machine) => {
+      const month = await machines.spending().catch(() => null);
+      if (month?.capReached) throw new Error(agent37CapReachedMessage(month));
+      const { madeByChat, ...shape } = machine;
+      const result = await createAgent37Machine(machineCreatorDeps, randomUUID(), shape, () => undefined, {
+        ...(madeByChat ? { metadata: { ade_made_by_chat: madeByChat } } : {}),
+      });
+      args.recordMachineCreate?.(result.joined ? "completed" : "partial");
+      sendToAllWindows(IPC.agent37StatusChanged);
+      return result;
+    },
+    copy: async (input) => {
+      const result = await copyAgent37Machine(copyDeps, input, () => undefined);
+      sendToAllWindows(IPC.agent37StatusChanged);
+      return result;
+    },
+    move: async (input) => {
+      const result = await moveAgent37Machine(copyDeps, input, () => undefined);
+      sendToAllWindows(IPC.agent37StatusChanged);
+      return result;
+    },
+    readyRefresh: () => readyKeeper.refresh(),
+  });
+
+  /**
+   * A copy or move from the machine card: answers at once and reports like a
+   * create (`agent37CreateProgress`, ending in done or failed), since a fork
+   * or a move runs for minutes. Stopped when the window that asked goes away.
+   */
+  const startLongAction = (
+    event: Electron.IpcMainInvokeEvent,
+    requestId: string,
+    run: (signal: AbortSignal, send: (progress: Agent37CreateProgress) => void) => Promise<{ message: string; result?: Agent37CreateProgress["result"] }>,
+  ) => {
+    if (creates.has(requestId)) return { started: true };
+    const sender = event.sender;
+    const controller = new AbortController();
+    creates.set(requestId, controller);
+    const onSenderGone = () => controller.abort();
+    sender.once("destroyed", onSenderGone);
+    const send = (progress: Agent37CreateProgress) => {
+      if (sender.isDestroyed()) return;
+      try {
+        sender.send(IPC.agent37CreateProgress, { ...progress, requestId });
+      } catch {
+        // The window closed mid-action.
+      }
+    };
+    void run(controller.signal, send).then(
+      (done) => send({ requestId, stage: "done", message: done.message, ...(done.result ? { result: done.result } : {}) }),
+      (error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        logger.warn("agent37.long_action_failed", { error: message });
+        send({ requestId, stage: "failed", message, error: message });
+      },
+    ).finally(() => {
+      creates.delete(requestId);
+      if (!sender.isDestroyed()) sender.removeListener("destroyed", onSenderGone);
+      sendToAllWindows(IPC.agent37StatusChanged);
+    });
+    return { started: true };
+  };
+
+  ipcMain.handle(IPC.agent37CopyMachine, async (event, arg: { requestId?: unknown; instanceId?: unknown; name?: unknown; shape?: unknown }) => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.agent37CopyMachine)) return { started: false };
+    const instanceId = typeof arg?.instanceId === "string" ? arg.instanceId.trim() : "";
+    if (!isAgent37InstanceId(instanceId)) throw new Error("ADE doesn't know that box.");
+    const requestId = typeof arg?.requestId === "string" && arg.requestId ? arg.requestId : randomUUID();
+    return startLongAction(event, requestId, async (signal, send) => {
+      const result = await copyAgent37Machine(copyDeps, {
+        instanceId,
+        requestId,
+        name: typeof arg?.name === "string" ? arg.name : null,
+        shape: typeof arg?.shape === "string" ? arg.shape as Agent37ShapeId : null,
+      }, send, { signal });
+      return { message: `${result.name} is ready: a copy with the same files.`, result };
+    });
+  });
+
+  ipcMain.handle(IPC.agent37MoveMachine, async (event, arg: { requestId?: unknown; instanceId?: unknown; machineKey?: unknown; to?: unknown; shape?: unknown }) => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.agent37MoveMachine)) return { started: false };
+    const instanceId = typeof arg?.instanceId === "string" ? arg.instanceId.trim() : "";
+    if (!isAgent37InstanceId(instanceId)) throw new Error("ADE doesn't know that box.");
+    if (arg?.to !== "vm" && arg?.to !== "box") throw new Error("Move it to a box or a VM.");
+    const to = arg.to;
+    const requestId = typeof arg?.requestId === "string" && arg.requestId ? arg.requestId : randomUUID();
+    return startLongAction(event, requestId, async (signal, send) => {
+      const result = await moveAgent37Machine(copyDeps, {
+        instanceId,
+        requestId,
+        to,
+        machineKey: typeof arg?.machineKey === "string" ? arg.machineKey : null,
+        shape: typeof arg?.shape === "string" ? arg.shape as Agent37ShapeId : null,
+      }, send, { signal });
+      return {
+        message: result.sourceDeleted
+          ? `${result.name} is now a ${to === "vm" ? "VM" : "box"}, with all its files.`
+          : `${result.name} has all its files on the new ${to === "vm" ? "VM" : "box"}. ADE couldn't delete the old one; delete it from its card.`,
+        result,
+      };
+    });
+  });
 
   ipcMain.handle(IPC.agent37CancelCreate, async (event, arg: { requestId?: unknown }): Promise<{ cancelled: boolean }> => {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.agent37CancelCreate)) return { cancelled: false };
@@ -528,6 +710,82 @@ export function registerAgent37Ipc(args: {
       return { started: true };
     },
   );
+}
+
+/** How often the money watch reads the workspace: Agent 37 settles compute hourly, so more often shows nothing new. */
+const MONEY_WATCH_MS = 10 * 60_000;
+/** A wallet that runs out within this, at the current rate, is worth a notification. */
+const WALLET_NOTIFY_HOURS = 24;
+
+/**
+ * Every ten minutes while a key is saved: turn sleep on for awake ADE boxes
+ * still waiting for it (made before ADE managed sleep, or whose ADE just
+ * updated), and tell the person once when the wallet is about to run dry or
+ * the monthly cap is near or reached. Nothing here wakes a box.
+ */
+function startAgent37MoneyWatch(deps: {
+  client: () => Promise<ReturnType<typeof createAgent37Client> | null>;
+  machines: ReturnType<typeof createAgent37Machines>;
+  logger: Logger;
+}): void {
+  /** Boxes whose ADE was too old to keep itself awake: asked again after an hour, not every pass. */
+  const tooOldUntil = new Map<string, number>();
+  const notified = new Set<string>();
+  const notifyOnce = (key: string, title: string, body: string) => {
+    if (notified.has(key)) return;
+    notified.add(key);
+    if (!Notification.isSupported()) return;
+    try {
+      new Notification({ title, body }).show();
+    } catch (error) {
+      deps.logger.warn("agent37.money_notification_failed", { error: error instanceof Error ? error.message : String(error) });
+    }
+  };
+  const pass = async () => {
+    const client = await deps.client().catch(() => null);
+    if (!client) return;
+    const result = await deps.machines.list();
+    if (result.state !== "ok") return;
+    const now = Date.now();
+    const instances = await client.listInstances().catch(() => []);
+    const enabled = await enableAgent37SleepWherePending(client, instances.filter((instance) => {
+      const box = result.machines.find((machine) => machine.instanceId === instance.id);
+      return box?.madeByAde === true;
+    }), {
+      logger: deps.logger,
+      skip: (instance) => (tooOldUntil.get(instance.id) ?? 0) > now,
+    }).catch((error: unknown) => {
+      deps.logger.warn("agent37.sleep_pass_failed", { error: error instanceof Error ? error.message : String(error) });
+      return [];
+    });
+    for (const { instanceId, result: outcome } of enabled) {
+      if (outcome.state === "brain_too_old") tooOldUntil.set(instanceId, now + 60 * 60_000);
+    }
+    const month = new Date(now).toISOString().slice(0, 7);
+    const { spending } = result;
+    if (spending.capReached && spending.monthlyCapUsd != null) {
+      notifyOnce(`cap:${month}`, "Agent 37 cap reached", `Your machines spent this month's ${formatAgent37Usd(spending.monthlyCapUsd)}. ADE won't make or wake machines until you raise the cap or the month ends.`);
+    } else if (spending.capNear && spending.monthlyCapUsd != null && spending.monthSpentUsd != null) {
+      notifyOnce(`near:${month}`, "Close to your Agent 37 cap", `${formatAgent37Usd(spending.monthSpentUsd)} of ${formatAgent37Usd(spending.monthlyCapUsd)} spent this month.`);
+    }
+    const hourly = result.machines.reduce((total, box) => total + ((box.state === "running" || box.state === "starting") ? box.runningHourlyUsd ?? 0 : box.idleHourlyUsd ?? 0), 0);
+    if (result.balanceUsd != null && hourly > 0 && result.balanceUsd / hourly < WALLET_NOTIFY_HOURS) {
+      notifyOnce(`wallet:${new Date(now).toISOString().slice(0, 10)}`, "Agent 37 wallet is running low",
+        `${formatAgent37Usd(result.balanceUsd)} left lasts under a day at this rate. Top it up, or Agent 37 suspends your machines.`);
+    }
+  };
+  const run = () => {
+    void pass().catch((error: unknown) => deps.logger.warn("agent37.money_watch_failed", { error: error instanceof Error ? error.message : String(error) }));
+  };
+  // After the startup check, off the boot path.
+  const first = setTimeout(run, STARTUP_CHECK_DELAY_MS + 30_000);
+  first.unref?.();
+  const timer = setInterval(run, MONEY_WATCH_MS);
+  timer.unref?.();
+  app.once("will-quit", () => {
+    clearTimeout(first);
+    clearInterval(timer);
+  });
 }
 
 /**

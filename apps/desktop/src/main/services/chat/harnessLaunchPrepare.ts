@@ -77,6 +77,46 @@ export async function prepareHarnessLaunch(args: {
   } catch {
     return false;
   }
-  if (!needsProxy) return false;
-  return startHarnessProxy();
+  const started = needsProxy ? await startHarnessProxy() : false;
+  // A translated route names the model through ADE's proxy, which reloads its
+  // config from disk a moment after the upstream is written. A harness that
+  // asks in that moment got "unknown provider for model ade-…/<model>", so
+  // write the upstream now and wait until the proxy lists the model.
+  try {
+    const plan = resolveLaunchBrain({ provider: args.provider, presetId, credentialId });
+    if (plan?.status === "ready") await waitForProxyModel(plan.env, plan.env.ANTHROPIC_MODEL ?? plan.model);
+  } catch (error) {
+    captureError(error, { tags: { feature: "proxy", stage: "launch_model_wait" }, fingerprint: ["proxy.launch_model_wait"] });
+  }
+  return started;
+}
+
+/** How long a launch waits for the proxy to pick up a just-written upstream. Its file watcher reloads within a second. */
+const PROXY_MODEL_WAIT_MS = 5_000;
+const PROXY_MODEL_POLL_MS = 200;
+
+/**
+ * Waits until ADE's local proxy lists `model` (a prefixed `ade-…/<id>`), when
+ * the launch points the harness at the proxy. Anything else returns at once.
+ */
+async function waitForProxyModel(env: Record<string, string>, model: string | undefined): Promise<void> {
+  const base = (env.ANTHROPIC_BASE_URL ?? env.OPENAI_BASE_URL ?? "").replace(/\/v1\/?$/, "").replace(/\/$/, "");
+  const token = env.ANTHROPIC_AUTH_TOKEN ?? env.OPENAI_API_KEY ?? "";
+  if (!model || !model.startsWith("ade-") || !/^http:\/\/127\.0\.0\.1:\d+$/.test(base) || !token) return;
+  const deadline = Date.now() + PROXY_MODEL_WAIT_MS;
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(`${base}/v1/models`, {
+        headers: { authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(2_000),
+      });
+      if (response.ok) {
+        const body = await response.json() as { data?: Array<{ id?: unknown }> };
+        if (Array.isArray(body.data) && body.data.some((entry) => entry?.id === model)) return;
+      }
+    } catch {
+      // The proxy is still starting; ask again.
+    }
+    await new Promise((resolve) => setTimeout(resolve, PROXY_MODEL_POLL_MS));
+  }
 }

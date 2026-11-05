@@ -36,6 +36,11 @@ export type Agent37Instance = {
    * `ade_request_id`, and with `ade_machine_key` once the box joins.
    */
   metadata: Record<string, string>;
+  /** Agent 37's own idle sleep: on, and after how many seconds with no traffic through the box's URLs. */
+  autoSleep: boolean;
+  idleTimeoutSeconds: number | null;
+  /** The box's public ports (unauthenticated URLs); ADE's wake URL is one of them. */
+  publicPorts: Array<{ port: number; url: string; label: string | null }>;
 };
 
 /** What the workspace spent per instance over a window (compute and managed calls). */
@@ -45,6 +50,8 @@ export type Agent37Usage = {
   to: string | null;
   /** US dollars per instance id. Instances that spent nothing are absent. */
   byInstance: Record<string, number>;
+  /** US dollars per UTC day (`YYYY-MM-DD`), the whole workspace. */
+  byDay: Record<string, number>;
 };
 
 export type Agent37Billing = {
@@ -67,6 +74,8 @@ export type Agent37CreateInstanceInput = {
   resources: { cpu: number; memory: number; disk: number };
   env?: Record<string, string>;
   metadata?: Record<string, string>;
+  /** Unauthenticated URLs to make with the box (ADE's wake URL). */
+  publicPorts?: Array<{ port: number; label: string }>;
 };
 
 export type Agent37Template = {
@@ -215,7 +224,22 @@ function toInstance(raw: unknown): Agent37Instance | null {
     created: num(record.created),
     statusReason: readStatusReason(record.status_reason),
     metadata: readMetadata(record.metadata),
+    autoSleep: record.auto_sleep === true,
+    idleTimeoutSeconds: num(record.idle_timeout_seconds),
+    publicPorts: readPublicPorts(record.public_ports),
   };
+}
+
+function readPublicPorts(value: unknown): Agent37Instance["publicPorts"] {
+  if (!Array.isArray(value)) return [];
+  const out: Agent37Instance["publicPorts"] = [];
+  for (const entry of value) {
+    const record = entry && typeof entry === "object" ? entry as Record<string, unknown> : null;
+    const port = num(record?.port);
+    const url = str(record?.url);
+    if (port != null && url && /^https:\/\//.test(url)) out.push({ port, url, label: str(record?.label) });
+  }
+  return out;
 }
 
 function readStatusReason(value: unknown): Agent37Instance["statusReason"] {
@@ -335,11 +359,13 @@ export function createAgent37Client(args: { apiKey: string; fetch?: FetchLike })
         name: input.name,
         type: input.type,
         resources: input.resources,
-        // ADE owns sleep and wake; Agent37's idle timer counts only URL traffic
-        // and would put a working brain to sleep.
+        // Off until the box's brain says it keeps the box awake while it works
+        // (agent37Sleep.ts): Agent 37's idle timer counts only URL traffic, and
+        // would put a brain that never pings to sleep under its work.
         auto_sleep: false,
         ...(input.env ? { env: input.env } : {}),
         ...(input.metadata ? { metadata: input.metadata } : {}),
+        ...(input.publicPorts?.length ? { public_ports: input.publicPorts } : {}),
       }, CREATE_TIMEOUT_MS, signal));
       if (!instance) throw new Agent37Error("Agent 37 answered with a machine ADE could not read.", "bad_response", 201);
       return instance;
@@ -376,6 +402,59 @@ export function createAgent37Client(args: { apiKey: string; fetch?: FetchLike })
       return { id: str(body?.id), created: num(body?.created), sizeBytes: num(body?.size_bytes) };
     },
 
+    /** Agent 37's idle sleep: on or off, and the seconds of quiet (300 to 86400) before it sleeps. */
+    async setAutoSleep(id: string, policy: { autoSleep: boolean; idleTimeoutSeconds?: number }): Promise<void> {
+      await api("PATCH", `/instances/${encodeURIComponent(id)}`, {
+        auto_sleep: policy.autoSleep,
+        ...(policy.idleTimeoutSeconds != null ? { idle_timeout_seconds: policy.idleTimeoutSeconds } : {}),
+      });
+    },
+
+    /** A permanent unauthenticated URL for one port of the box (a random hostname: the URL is the credential). */
+    async addPublicPort(id: string, input: { port: number; label: string }): Promise<{ port: number; url: string }> {
+      const body = await api("POST", `/instances/${encodeURIComponent(id)}/public-ports`, input) as Record<string, unknown> | null;
+      const url = str(body?.url);
+      if (!url || !/^https:\/\//.test(url)) throw new Agent37Error("Agent 37 answered with a public port ADE could not read.", "bad_response", 201);
+      return { port: num(body?.port) ?? input.port, url };
+    },
+
+    /**
+     * Copies the box's disk into a new box (same image and files, its own id
+     * and URLs). The copy boots fresh: nothing that ran on the source runs on
+     * it. Answers with the copy, possibly still `provisioning` (202).
+     */
+    async forkInstance(
+      id: string,
+      input: { name?: string; resources?: { cpu: number; memory: number; disk?: number }; metadata?: Record<string, string> },
+      signal?: AbortSignal,
+    ): Promise<Agent37Instance> {
+      const instance = toInstance(await api("POST", `/instances/${encodeURIComponent(id)}/fork`, {
+        ...(input.name ? { name: input.name } : {}),
+        ...(input.resources ? { resources: input.resources } : {}),
+        ...(input.metadata ? { metadata: input.metadata } : {}),
+        // The copy's own brain turns sleep on once it is signed in.
+        auto_sleep: false,
+      }, CREATE_TIMEOUT_MS, signal));
+      if (!instance) throw new Agent37Error("Agent 37 answered with a machine ADE could not read.", "bad_response", 201);
+      return instance;
+    },
+
+    /**
+     * A time-boxed link to one port of the box that needs no key (the token
+     * rides in the query). A credential: never logged, and kept short.
+     */
+    async signedUrl(id: string, input: { port: number; ttlSeconds: number }): Promise<{ url: string; expiresAt: number | null }> {
+      const body = await api("POST", `/instances/${encodeURIComponent(id)}/signed-url`, { port: input.port, ttl_seconds: input.ttlSeconds }) as Record<string, unknown> | null;
+      const url = str(body?.url);
+      if (!url || !/^https:\/\//.test(url)) throw new Agent37Error("Agent 37 answered with a link ADE could not read.", "bad_response", 200);
+      return { url, expiresAt: num(body?.expires_at) };
+    },
+
+    /** The box's label on Agent 37 (up to 60 characters). */
+    async setInstanceName(id: string, name: string): Promise<void> {
+      await api("PATCH", `/instances/${encodeURIComponent(id)}`, { name: name.slice(0, 60) });
+    },
+
     /** Replaces the box's metadata (Agent37 does not merge it). */
     async setInstanceMetadata(id: string, metadata: Record<string, string>): Promise<void> {
       await api("PATCH", `/instances/${encodeURIComponent(id)}`, { metadata });
@@ -392,7 +471,14 @@ export function createAgent37Client(args: { apiKey: string; fetch?: FetchLike })
         const micros = num(record?.total_micros);
         if (id && micros != null) byInstance[id] = micros / 1_000_000;
       }
-      return { from: str(body?.from), to: str(body?.to), byInstance };
+      const byDay: Record<string, number> = {};
+      for (const entry of Array.isArray(body?.days) ? body.days : []) {
+        const record = entry && typeof entry === "object" ? entry as Record<string, unknown> : null;
+        const date = str(record?.date);
+        const micros = num(record?.total_micros);
+        if (date && micros != null) byDay[date] = micros / 1_000_000;
+      }
+      return { from: str(body?.from), to: str(body?.to), byInstance, byDay };
     },
 
     /** Whether the workspace has this template; false on 404, throws on anything else. */
@@ -496,11 +582,14 @@ export function createAgent37Client(args: { apiKey: string; fetch?: FetchLike })
       }
     },
 
-    /** Runs `sh -c command` on the box as its default user. A non-zero exit is a result, not an error. */
-    async exec(id: string, command: string, options?: { timeoutMs?: number; signal?: AbortSignal }): Promise<Agent37ExecResult> {
+    /**
+     * Runs `sh -c command` on the box as its default user (or root). A
+     * non-zero exit is a result, not an error. Exec wakes a sleeping box.
+     */
+    async exec(id: string, command: string, options?: { timeoutMs?: number; signal?: AbortSignal; user?: "root" }): Promise<Agent37ExecResult> {
       const body = await request(`${AGENT37_SANDBOX_BASE_URL}/instances/${encodeURIComponent(id)}/exec`, {
         method: "POST",
-        body: { command },
+        body: { command, ...(options?.user ? { user: options.user } : {}) },
         timeoutMs: options?.timeoutMs,
         signal: options?.signal,
         headers: { "x-agent37-key": apiKey },

@@ -29,7 +29,7 @@ RUN curl -fsSL https://ade-app.dev/install.sh -o /tmp/install.sh \
 # Docker, for projects whose setup starts a stack (docker compose, Supabase).
 # Only a VM's own kernel runs it; on a sandboxed box the entrypoint skips it.
 # dockerd needs root, and the brain runs as `node`: the one thing `node` may
-# run as root is the entrypoint's own `--start-dockerd` step (sudoers below).
+# run as root is the entrypoint's own `--root-setup` step (sudoers below).
 # Docker access is root-equivalent anyway, and the machine is the person's.
 RUN install -m 0755 -d /etc/apt/keyrings \
  && curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc \
@@ -41,8 +41,28 @@ RUN install -m 0755 -d /etc/apt/keyrings \
       iptables kmod sudo \
  && rm -rf /var/lib/apt/lists/* \
  && usermod -aG docker node \
- && echo 'node ALL=(root) NOPASSWD: /usr/local/bin/ade-entrypoint.sh --start-dockerd' > /etc/sudoers.d/ade-dockerd \
- && chmod 440 /etc/sudoers.d/ade-dockerd
+ && echo 'node ALL=(root) NOPASSWD: /usr/local/bin/ade-entrypoint.sh --root-setup' > /etc/sudoers.d/ade-root-setup \
+ && chmod 440 /etc/sudoers.d/ade-root-setup
+
+# The Android SDK, for the Android tool on a VM (a sandboxed box has no
+# /dev/kvm and never uses it). In the image rather than on the machine's disk:
+# read-only at runtime, and it costs nothing against the disk. Java is only
+# for sdkmanager here: ADE needs none at runtime. The entrypoint sets
+# ANDROID_HOME for the brain.
+ARG ANDROID_CMDLINE_TOOLS_ZIP=commandlinetools-linux-16111833_latest.zip
+ARG ANDROID_SYSTEM_IMAGE="system-images;android-34;google_apis;x86_64"
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      default-jre-headless libgl1 libglu1-mesa libnss3 libpulse0 libasound2 libdbus-1-3 \
+      libxcomposite1 libxcursor1 libxdamage1 libxi6 libxrandr2 libxtst6 libxkbcommon-x11-0 libfontconfig1 \
+ && sdk=/opt/android-sdk \
+ && curl -fsSL "https://dl.google.com/android/repository/${ANDROID_CMDLINE_TOOLS_ZIP}" -o /tmp/clt.zip \
+ && mkdir -p "$sdk/cmdline-tools" && unzip -q /tmp/clt.zip -d "$sdk/cmdline-tools" \
+ && mv "$sdk/cmdline-tools/cmdline-tools" "$sdk/cmdline-tools/latest" && rm /tmp/clt.zip \
+ && yes | ANDROID_HOME="$sdk" "$sdk/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null \
+ && ANDROID_HOME="$sdk" "$sdk/cmdline-tools/latest/bin/sdkmanager" --install "platform-tools" "emulator" "$ANDROID_SYSTEM_IMAGE" > /dev/null \
+ && apt-get purge -y default-jre-headless && apt-get autoremove -y --purge \
+ && { rm -rf /var/lib/apt/lists/* /root/.android "$sdk/.temp" || true; } \
+ && chmod -R a+rX "$sdk"
 
 COPY ade-entrypoint.sh /usr/local/bin/ade-entrypoint.sh
 RUN chmod 755 /usr/local/bin/ade-entrypoint.sh

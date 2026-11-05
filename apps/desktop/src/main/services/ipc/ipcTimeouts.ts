@@ -247,6 +247,7 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     case IPC.agent37ReadyRemoveProject:
     case IPC.agent37ReadyRetry:
     case IPC.agent37ReadyStatus:
+    case IPC.agent37WakeMachine:
       return AGENT37_MACHINE_ACTION_IPC_TIMEOUT_MS;
     case IPC.filesDelete:
       return localRuntimeActionIpcTimeoutMs("file", "deletePath");

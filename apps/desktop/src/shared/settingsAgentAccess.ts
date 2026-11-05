@@ -90,6 +90,8 @@ const OWNER_ONLY: Record<Exclude<SettingOwnerOnlyReason, "preference">, readonly
   money: [
     // Keeps a billing cloud machine prepared for a project.
     "integrations.agent37-ready",
+    // The monthly cap on what Agent 37 machines may spend.
+    "integrations.agent37-spending",
     "agents.budget",
     "stats.usage",
     "chat.fast-mode",

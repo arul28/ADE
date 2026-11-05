@@ -291,7 +291,11 @@ endpoints. `shared/harnessRoutes.ts` decides, per harness + source + model:
   into the proxy's config, which hot-reloads, and the harness asks for the
   model through that entry's prefix (`ade-opencode-go/glm-5.3`), so two
   sources serving the same model id never mix. Removing a key drops its
-  upstream, so its secret does not outlive it there.
+  upstream, so its secret does not outlive it there. The proxy speaks to the
+  source in OpenAI chat when it can, except OpenAI itself, which goes through
+  its Responses API: gpt-5.x refuses the `max_tokens` the chat translation
+  sends ("Unsupported parameter: 'max_tokens'"), while Responses takes the
+  limit its own way (measured against a stand-in, 2026-11-05).
 - **impossible** — with the reason (Cursor, Copilot, Kimi and Pi only run on
   their own sign-in; OpenCode Zen's free models only answer inside OpenCode;
   an OpenAI sign-in inside OpenCode is a ChatGPT subscription whose token
@@ -327,7 +331,10 @@ A route needs the proxy running before the synchronous resolver can point a
 harness at it, so every async launch entry (chat create and send, PTY create,
 CLI-from-chat, the brain's CLI and remote-launch actions) first calls
 `prepareHarnessLaunch`, which starts the proxy only when that is the one
-missing piece.
+missing piece. It then writes the route's upstream and waits (up to 5 s)
+until the proxy lists the model: the proxy reloads its config a moment after
+the write, and a harness that asked in that moment got "unknown provider for
+model ade-…/<model>" (the first request 0.2 s after a write, measured).
 
 ### Ad-hoc routes
 

@@ -489,6 +489,23 @@ export async function readMachineRuntimeActivitySummary(args: BootedRuntimeSourc
 }
 
 /**
+ * The soonest scheduled wake-up of any chat in a project this brain has
+ * booted, in epoch ms, or null. A project that is not booted has none due:
+ * booting it is what loads its schedules.
+ */
+export async function readMachineNextScheduledWakeAt(args: BootedRuntimeSources): Promise<number | null> {
+  const times = await mapBootedProjectRuntimes(args, async (runtime) => {
+    const items = await runtime.agentChatService?.listScheduledWork?.({}).catch(() => []) ?? [];
+    return items
+      .filter((item) => item.status === "scheduled")
+      .map((item) => (item.nextRunAt ? Date.parse(item.nextRunAt) : Number.NaN))
+      .filter((at) => Number.isFinite(at));
+  });
+  const all = times.flat();
+  return all.length ? Math.min(...all) : null;
+}
+
+/**
  * What restarting this machine's ADE would stop, across every project the
  * brain has booted and its personal chats.
  */
