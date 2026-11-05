@@ -25,6 +25,66 @@ export type PairedRuntimeEndpointCandidate = {
 export const MAX_ROUTE_ATTEMPTS = 8;
 export const PAIRED_ENDPOINT_FAILURE_THRESHOLD = 2;
 
+/**
+ * How long a local-network route gets to open while another route is still
+ * waiting behind it. A socket on the same network opens in milliseconds; the
+ * default 10 s is for a route that is the last hope. A paired box in a data
+ * centre advertises private addresses nobody else can reach, and each of
+ * them used to hold the relay back by the full 10 s.
+ */
+export const LAN_CONNECT_TIMEOUT_WITH_FALLBACK_MS = 3_000;
+/**
+ * The same for a tailnet route. Tailscale answers in well under a second once
+ * its path is up, and a few seconds when it first has to go through a DERP
+ * relay; while the far brain restarts, `tailscale serve` still accepts the
+ * socket and the handshake hangs, which used to hold every later route back
+ * by the full 10 s.
+ */
+export const TAILNET_CONNECT_TIMEOUT_WITH_FALLBACK_MS = 5_000;
+
+/** The shorter connect deadline for a direct route with another route behind it, or null. */
+export function pairedRouteConnectTimeoutMs(
+  kind: PairedRuntimeEndpointCandidate["kind"],
+  hasFallback: boolean,
+): number | null {
+  if (!hasFallback) return null;
+  if (kind === "lan") return LAN_CONNECT_TIMEOUT_WITH_FALLBACK_MS;
+  if (kind === "tailnet") return TAILNET_CONNECT_TIMEOUT_WITH_FALLBACK_MS;
+  return null;
+}
+
+/** Failures where the address gave no answer at all. Demotion is for these only. */
+const ROUTE_SILENT_FAILURES = new Set<RemoteRuntimeConnectionAttemptFailure>([
+  "timeout",
+  "unreachable",
+  "unknown",
+]);
+
+/**
+ * Teach the saved dial order about a failed route, so a dead address stops
+ * going first: after PAIRED_ENDPOINT_FAILURE_THRESHOLD silent failures in a row
+ * it is tried last.
+ */
+export function recordPairedRouteFailure(
+  store: { markEndpointFailed(deviceId: string, endpoint: string): void; forgetEndpoint(deviceId: string, endpoint: string): void },
+  deviceId: string,
+  endpoint: string,
+  failure: RemoteRuntimeConnectionAttemptFailure,
+): void {
+  if (failure === "identity") {
+    // A different machine answered here. Demotion clears on any answer, and a
+    // neighbour can answer too, so the address is forgotten, not demoted.
+    store.forgetEndpoint(deviceId, endpoint);
+    return;
+  }
+  // Only a route that never answered is evidence against the address. Every
+  // other failure came from a host that did answer (a rejected pairing or
+  // account, a superseded or too-old peer), and demoting that route teaches
+  // the dial order nothing about whether the address is alive.
+  if (!ROUTE_SILENT_FAILURES.has(failure)) return;
+  store.markEndpointFailed(deviceId, endpoint);
+}
+
 export type PairedRouteAttemptRecorder = {
   attempts: RemoteRuntimeConnectionAttempt[];
   omittedAttemptCount: number;

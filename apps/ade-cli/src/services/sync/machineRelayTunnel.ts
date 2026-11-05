@@ -127,10 +127,12 @@ export async function createMachineRelayTunnel(args: MachineRelayTunnelArgs): Pr
     { createSyncTunnelClientService, getSharedSyncTunnelClientService },
     { createRelayTunnelAuthorityGate },
     { holdsSyncHostSingleton, onSyncHostSingletonAuthorityChanged },
+    { borrowSharedMachinePowerSource },
   ] = await Promise.all([
     import("./syncTunnelClientService"),
     import("./relayTunnelAuthorityGate"),
     import("./syncHostSingleton"),
+    import("../power/sharedMachinePowerMonitor"),
   ]);
   const lease = createMachineRelayAccountLease(args.accountAuthService);
 
@@ -141,6 +143,8 @@ export async function createMachineRelayTunnel(args: MachineRelayTunnelArgs): Pr
       isAccountSignedIn: lease.isAccountSignedIn,
       getAccountLease: lease.getAccountLease,
       onPublicationStateChanged: args.onPublicationStateChanged,
+      // A long sleep leaves the control socket dead; check it on wake.
+      powerSource: borrowSharedMachinePowerSource(),
       // The analytics sink is machine-scoped and shared, so capturing it in this
       // one-per-machine factory closure is safe — unlike listener accessors,
       // which is why those go through attachHostListener below.

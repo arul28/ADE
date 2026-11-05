@@ -11,8 +11,10 @@ import {
   dominantPairedRuntimeFailure,
   MAX_ROUTE_ATTEMPTS,
   orderPairedCandidates,
+  pairedRouteConnectTimeoutMs,
   pairedRuntimeFailureMessage,
   pairedRuntimeRouteHost,
+  recordPairedRouteFailure,
   type PairedRuntimeEndpointCandidate,
 } from "../../../../desktop/src/main/services/remoteRuntime/pairedRuntimeRoutes";
 import { DesktopPairedMachineStore } from "../../../../desktop/src/main/services/remoteRuntime/syncPairedMachineStore";
@@ -196,9 +198,15 @@ export async function openPairedCandidate<T>(args: {
   const { attempts, record: recordAttempt } = attemptRecorder;
   let relayAuthError: PairedRuntimeRelayAuthRequiredError | null = null;
   const orderedCandidates = orderPairedCandidates(candidates);
-  for (const candidate of orderedCandidates) {
+  for (const [candidateIndex, candidate] of orderedCandidates.entries()) {
     const attemptStartedAt = Date.now();
     const safeHost = pairedRuntimeRouteHost(candidate.endpoint);
+    // A cloud box's private address is unreachable from here and would hold
+    // the relay behind it for the full 10 s, on every connect.
+    const directConnectTimeoutMs = pairedRouteConnectTimeoutMs(
+      candidate.kind,
+      candidateIndex < orderedCandidates.length - 1,
+    );
     let transport: SyncRuntimeTransport | null = null;
     try {
       const relayProof = await pairedRouteAccountProof({
@@ -211,7 +219,7 @@ export async function openPairedCandidate<T>(args: {
           credentials,
           endpoint: candidate.endpoint,
           appVersion: args.appVersion,
-          connectTimeoutMs: attempt.timeoutMs,
+          connectTimeoutMs: Math.min(attempt.timeoutMs, directConnectTimeoutMs ?? attempt.timeoutMs),
           authTimeoutMs: attempt.timeoutMs,
           signal: attempt.signal,
           relayAccountToken: relayProof?.token ?? null,
@@ -266,6 +274,13 @@ export async function openPairedCandidate<T>(args: {
       }
       if (error instanceof PairedRuntimeCompatibilityError) throw error;
       const failure = classifyPairedRuntimeFailure(error);
+      try {
+        recordPairedRouteFailure(pairedStore, credentials.hostIdentity.deviceId, candidate.endpoint, failure);
+      } catch (storeError) {
+        process.stderr.write(
+          `Warning: could not save paired endpoint metadata: ${errorMessage(storeError)}\n`,
+        );
+      }
       recordAttempt({
         kind: candidate.kind,
         host: safeHost,

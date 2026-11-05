@@ -21,6 +21,7 @@ import {
 import { SYNC_RELAY_BRIDGE_PROOF_HEADER } from "./sharedSyncListener";
 import type { RemoteMcpHttpRequest, RemoteMcpHttpResponse } from "../remoteMcp/remoteMcpHttp";
 import { REMOTE_MCP_KEY_PATTERN } from "../remoteMcp/remoteMcpAccount";
+import type { MachinePowerSource } from "../power/machinePowerMonitor";
 
 type Logger = {
   info?: (event: string, data?: Record<string, unknown>) => void;
@@ -103,6 +104,11 @@ export type SyncTunnelClientService = {
    * machine — in practice, that it just acquired the sync host lease.
    */
   clearControlSuppression(): void;
+  /**
+   * This machine just woke. Ping the open control socket with a short deadline
+   * (a miss reconnects), or dial now if a reconnect was waiting on backoff.
+   */
+  notifyHostResumed(): void;
   getStatus(): SyncTunnelClientStatus;
   dispose(): Promise<void>;
 };
@@ -164,6 +170,8 @@ type SyncTunnelClientArgs = {
     url: string,
     options?: { headers?: Record<string, string> },
   ) => WebSocket;
+  /** Wake signals: the control socket is checked at once when this machine resumes. */
+  powerSource?: Pick<MachinePowerSource, "subscribe">;
   /** Requests a directory refresh when publication-relevant Relay state changes. */
   onPublicationStateChanged?: (
     reason: "identity-rotated" | "route-state-changed",
@@ -182,6 +190,12 @@ const BACKOFF_MIN_MS = 1_000;
 const ACCOUNT_STATUS_POLL_MS = 1_000;
 export const CONTROL_PING_INTERVAL_MS = 30_000;
 export const CONTROL_PONG_DEADLINE_MS = 10_000;
+/**
+ * Pong deadline for the ping sent the moment this machine wakes. A long sleep
+ * usually kills the socket (the relay dropped it), and without this the next
+ * scheduled ping finds out up to 40 s later while every remote call waits.
+ */
+export const CONTROL_RESUME_PONG_DEADLINE_MS = 3_000;
 export const CONTROL_JSON_PING_INTERVAL_MS = 180_000;
 export const CONTROL_JSON_PONG_DEADLINE_MS = 30_000;
 export const CONTROL_JSON_INITIAL_PING_DELAY_MS = 1_000;
@@ -500,6 +514,9 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
   let control: WebSocket | null = null;
   let stopControlLiveness: (() => void) | null = null;
   let stopControlJsonKeepalive: (() => void) | null = null;
+  /** Pings the open control socket now with a given deadline; null while none is open. */
+  let probeControl: ((deadlineMs: number) => void) | null = null;
+  let unsubscribePower: (() => void) | null = null;
   let controlReadyTimer: NodeJS.Timeout | null = null;
   let reconnectTimer: NodeJS.Timeout | null = null;
   let accountStatusTimer: NodeJS.Timeout | null = null;
@@ -1066,6 +1083,7 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
       control = socket;
       let socketLivenessStop: (() => void) | null = null;
       let socketJsonKeepaliveStop: (() => void) | null = null;
+      let socketProbe: ((deadlineMs: number) => void) | null = null;
       let acceptJsonPong: (() => void) | null = null;
       const activateLegacyFallback = (reason: string): boolean => {
         if (
@@ -1113,7 +1131,7 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
         // A new control socket starts "off" at the relay; say what is true.
         sendRemoteMcpState(socket);
         notifyRemoteMcpConnection();
-        socketLivenessStop = armControlLiveness(
+        const liveness = armControlLiveness(
           socket,
           () => {
             if (control !== socket) return;
@@ -1128,6 +1146,7 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
           args.controlPingIntervalMs ?? CONTROL_PING_INTERVAL_MS,
           args.controlPongDeadlineMs ?? CONTROL_PONG_DEADLINE_MS,
         );
+        socketLivenessStop = liveness.stop;
         stopControlLiveness = socketLivenessStop;
         const jsonKeepalive = armControlJsonKeepalive(
           socket,
@@ -1175,6 +1194,11 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
         socketJsonKeepaliveStop = jsonKeepalive.stop;
         acceptJsonPong = jsonKeepalive.acceptPong;
         stopControlJsonKeepalive = socketJsonKeepaliveStop;
+        socketProbe = (deadlineMs: number) => {
+          liveness.probe(deadlineMs);
+          jsonKeepalive.probe(deadlineMs);
+        };
+        probeControl = socketProbe;
         log.info?.("sync_tunnel.control_open", {
           machineKey: id.machineKey,
           openedAt: lastControlOpenAt,
@@ -1315,6 +1339,7 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
       socket.on("close", (code: number, rawReason: Buffer) => {
         socketLivenessStop?.();
         if (stopControlLiveness === socketLivenessStop) stopControlLiveness = null;
+        if (probeControl === socketProbe) probeControl = null;
         socketJsonKeepaliveStop?.();
         if (stopControlJsonKeepalive === socketJsonKeepaliveStop) {
           stopControlJsonKeepalive = null;
@@ -2040,6 +2065,7 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
   const closeRelayConnections = (controlReason: string): void => {
     stopControlLiveness?.();
     stopControlLiveness = null;
+    probeControl = null;
     stopControlJsonKeepalive?.();
     stopControlJsonKeepalive = null;
     clearControlReadyTimer();
@@ -2153,12 +2179,33 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
     }
   };
 
+  const notifyHostResumed = (): void => {
+    if (!started || stopped) return;
+    if (probeControl) {
+      log.info?.("sync_tunnel.resume_probe", { deadlineMs: CONTROL_RESUME_PONG_DEADLINE_MS });
+      probeControl(CONTROL_RESUME_PONG_DEADLINE_MS);
+      return;
+    }
+    // The backoff was chosen before the sleep; the network it was waiting out
+    // is a different one now.
+    if (reconnectTimer && !controlReplacedStopped) {
+      log.info?.("sync_tunnel.resume_redial", { attempt });
+      clearReconnect();
+      attempt = 0;
+      lastBackoffDelayMs = 0;
+      scheduleReconnect({ delayMs: 0 });
+    }
+  };
+
   return {
     async start(): Promise<void> {
       if (started) return;
       started = true;
       stopped = false;
       accountEligible = null;
+      unsubscribePower = args.powerSource?.subscribe((event) => {
+        if (event.kind === "resume") notifyHostResumed();
+      }) ?? null;
       accountStatusTimer = setInterval(
         () => { void refreshAccountLease(); },
         args.accountStatusPollMs ?? ACCOUNT_STATUS_POLL_MS,
@@ -2220,9 +2267,13 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
       }
     },
 
+    notifyHostResumed,
+
     async stop(): Promise<void> {
       stopped = true;
       started = false;
+      unsubscribePower?.();
+      unsubscribePower = null;
       // A stop/start cycle is how the lease gate hands relay ownership between
       // runtimes, so it must not inherit the previous owner's eviction state.
       resetControlEvictionState();
@@ -2472,7 +2523,7 @@ function armControlLiveness(
   onMiss: () => void,
   pingIntervalMs: number,
   pongDeadlineMs: number,
-): () => void {
+): { stop: () => void; probe: (deadlineMs: number) => void } {
   let stopped = false;
   let pongDeadline: NodeJS.Timeout | null = null;
   const clearPongDeadline = (): void => {
@@ -2483,12 +2534,11 @@ function armControlLiveness(
   const onPong = (): void => {
     clearPongDeadline();
   };
-  const pingTimer = setInterval(() => {
-    if (stopped || socket.readyState !== WebSocket.OPEN || pongDeadline) return;
+  const ping = (deadlineMs: number): void => {
     pongDeadline = setTimeout(() => {
       pongDeadline = null;
       if (!stopped) onMiss();
-    }, pongDeadlineMs);
+    }, deadlineMs);
     pongDeadline.unref?.();
     try {
       socket.ping();
@@ -2496,9 +2546,20 @@ function armControlLiveness(
       clearPongDeadline();
       onMiss();
     }
+  };
+  const pingTimer = setInterval(() => {
+    if (stopped || socket.readyState !== WebSocket.OPEN || pongDeadline) return;
+    ping(pongDeadlineMs);
   }, pingIntervalMs);
   pingTimer.unref?.();
   socket.on("pong", onPong);
+  // Ping now with a tighter deadline. Replaces an outstanding ping: after a
+  // wake its deadline was set by timers that slept too.
+  const probe = (deadlineMs: number): void => {
+    if (stopped || socket.readyState !== WebSocket.OPEN) return;
+    clearPongDeadline();
+    ping(deadlineMs);
+  };
 
   const stop = (): void => {
     if (stopped) return;
@@ -2508,7 +2569,7 @@ function armControlLiveness(
     socket.off("pong", onPong);
   };
   socket.once("close", stop);
-  return stop;
+  return { stop, probe };
 }
 
 function armControlJsonKeepalive(
@@ -2516,7 +2577,7 @@ function armControlJsonKeepalive(
   onMiss: () => void,
   pingIntervalMs: number,
   pongDeadlineMs: number,
-): { stop: () => void; acceptPong: () => void } {
+): { stop: () => void; acceptPong: () => void; probe: (deadlineMs: number) => void } {
   const normalizedIntervalMs = Math.max(1, Math.floor(pingIntervalMs));
   const normalizedDeadlineMs = Math.max(1, Math.floor(pongDeadlineMs));
   let stopped = false;
@@ -2532,9 +2593,9 @@ function armControlJsonKeepalive(
     clearPongDeadline();
     if (!stopped) onMiss();
   };
-  const sendPing = (): void => {
+  const sendPing = (deadlineMs: number = normalizedDeadlineMs): void => {
     if (stopped || socket.readyState !== WebSocket.OPEN || pongDeadline) return;
-    pongDeadline = setTimeout(miss, normalizedDeadlineMs);
+    pongDeadline = setTimeout(miss, deadlineMs);
     pongDeadline.unref?.();
     try {
       socket.send(JSON.stringify({ t: "ping" }), (error) => {
@@ -2549,6 +2610,10 @@ function armControlJsonKeepalive(
     initialPingTimer = null;
     sendPing();
   }, CONTROL_JSON_INITIAL_PING_DELAY_MS);
+  const probe = (deadlineMs: number): void => {
+    clearPongDeadline();
+    sendPing(Math.max(1, Math.floor(deadlineMs)));
+  };
   initialPingTimer.unref?.();
   const pingTimer = setInterval(() => {
     // A tick delayed by sleep/wake needs no special handling: sending the ping
@@ -2574,7 +2639,7 @@ function armControlJsonKeepalive(
     socket.off("close", onClose);
   };
   socket.once("close", onClose);
-  return { stop, acceptPong };
+  return { stop, acceptPong, probe };
 }
 
 function safeCloseWebSocket(socket: WebSocket, code: number, reason: string): void {

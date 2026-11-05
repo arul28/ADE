@@ -18,6 +18,17 @@ import {
   type MachinePowerMonitor,
   type MachinePowerSource,
 } from "./machinePowerMonitor";
+import { createSuspendGapDetector } from "./suspendGapDetector";
+
+/**
+ * How often the wake check runs, from `ADE_SUSPEND_GAP_TICK_MS`. Cloud machines
+ * that are slept and woken on demand (Agent 37) set 1000 so a wake is noticed in
+ * a second, not fifteen; a laptop keeps the default and its idle wake-ups.
+ */
+function suspendGapTickMsFromEnv(env: NodeJS.ProcessEnv = process.env): number | null {
+  const raw = Number(env.ADE_SUSPEND_GAP_TICK_MS);
+  return Number.isFinite(raw) && raw >= 1_000 ? Math.floor(raw) : null;
+}
 
 let shared: MachinePowerMonitor | null = null;
 
@@ -32,7 +43,10 @@ let shared: MachinePowerMonitor | null = null;
  */
 export function getSharedMachinePowerMonitor(): MachinePowerMonitor {
   if (!shared) {
-    shared = createMachinePowerMonitor();
+    const tickMs = suspendGapTickMsFromEnv();
+    shared = createMachinePowerMonitor(tickMs
+      ? { createGapDetector: (onGap) => createSuspendGapDetector({ onGap, tickMs }) }
+      : {});
     shared.start();
   }
   return shared;
