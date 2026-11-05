@@ -49011,9 +49011,14 @@ export function createAgentChatService(args: {
     return Boolean(row?.tracked && isTrackedAgentCliToolType(row.toolType));
   };
 
-  /** A parent this service can report to: a chat here, or a tracked agent CLI here. */
+  /**
+   * A parent this service can report to: a chat here, or a tracked agent CLI
+   * here that is not archived (an archived CLI refuses every wake, so its
+   * children are orphans).
+   */
   const parentSessionReachableHere = (parentSessionId: string): boolean =>
-    parentChatStillExists(parentSessionId) || isTrackedAgentCliSession(parentSessionId);
+    parentChatStillExists(parentSessionId)
+      || (isTrackedAgentCliSession(parentSessionId) && !sessionService.get(parentSessionId.trim())?.archivedAt);
 
   /** A parent outside this service that the brain's router knows how to reach. */
   const externalParentReachable = (parentSessionId: string): boolean =>
