@@ -552,7 +552,7 @@ export class ProjectScopeRegistry {
       }
       if (reason === "unregister" && inFlight.reason !== "unregister") {
         inFlight.rootPath ??= rootPath;
-        inFlight.upgrade = this.upgradeToUnregister(inFlight);
+        inFlight.upgrade = this.upgradeToUnregister(projectId, inFlight);
       }
       // A later removal waits for the clean-up too, not only the teardown.
       return await (inFlight.upgrade ?? inFlight.done);
@@ -570,7 +570,8 @@ export class ProjectScopeRegistry {
       devicesCleaned: false,
     };
     const disposal = this.disposeCached(projectId, cached, entry).finally(() => {
-      if (this.disposals.get(projectId) === entry) this.disposals.delete(projectId);
+      // A removal that joined keeps the entry until its clean-up is done too.
+      if (this.disposals.get(projectId) === entry && !entry.upgrade) this.disposals.delete(projectId);
     });
     entry.done = disposal;
     this.disposals.set(projectId, entry);
@@ -586,7 +587,15 @@ export class ProjectScopeRegistry {
    * registered late, so they come off the stack early), so whatever they
    * handed off is stopped afterwards.
    */
-  private async upgradeToUnregister(inFlight: InFlightDisposal): Promise<void> {
+  private async upgradeToUnregister(projectId: ProjectId, inFlight: InFlightDisposal): Promise<void> {
+    try {
+      await this.finishAsUnregister(inFlight);
+    } finally {
+      if (this.disposals.get(projectId) === inFlight) this.disposals.delete(projectId);
+    }
+  }
+
+  private async finishAsUnregister(inFlight: InFlightDisposal): Promise<void> {
     // A scope still booting reads this when its teardown starts.
     inFlight.reason = "unregister";
     if (inFlight.scope && !inFlight.runtimeDone) {
