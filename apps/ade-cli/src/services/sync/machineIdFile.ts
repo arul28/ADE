@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { FileStampedMemo } from "../../lib/fileStampedMemo";
+import { FileStampedMemo, readTextIfExists } from "../../lib/fileStampedMemo";
 
 /**
  * One-line machine id files under `~/.ade/secrets` (`sync-device-id`,
@@ -21,7 +21,7 @@ export function readMachineIdFile(filePath: string): string | null {
   const key = path.resolve(filePath);
   const remembered = idMemo.read(key, {
     filePath,
-    reload: async () => ({ id: parseId(await fs.promises.readFile(filePath, "utf8").catch(() => "")) }),
+    reload: async () => ({ id: parseId((await readTextIfExists(filePath)) ?? "") }),
   });
   if (remembered) return remembered.id;
   let id: string | null = null;

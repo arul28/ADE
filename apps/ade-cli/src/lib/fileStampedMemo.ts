@@ -1,5 +1,15 @@
 import fs from "node:fs";
 
+/** The file's text, or null when it does not exist. Any other failure throws. */
+export async function readTextIfExists(filePath: string): Promise<string | null> {
+  try {
+    return await fs.promises.readFile(filePath, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException | null)?.code === "ENOENT") return null;
+    throw error;
+  }
+}
+
 /**
  * A file's identity for change detection: inode, mtime and size, or
  * `"missing"`. Every ADE writer of a small state file replaces it by rename or
@@ -46,7 +56,10 @@ export class FileStampedMemo<T> {
   /**
    * The remembered value, or undefined when there is none yet. `reload`
    * returns the file's current value, or null to forget it (the next caller
-   * then takes its synchronous path, which may need to write).
+   * then takes its synchronous path, which may need to write). A `stat` or
+   * `reload` that throws (a file held by a scan, a permission error) keeps the
+   * last good value and leaves the stamp unset, so the next read retries;
+   * a reload must therefore throw, not guess, when it cannot read the file.
    */
   read(key: string, check: { filePath: string; reload: () => Promise<T | null> }): T | undefined {
     const entry = this.entries.get(key);
@@ -86,9 +99,9 @@ export class FileStampedMemo<T> {
       // up as a changed stamp on the next check.
       this.entries.set(key, { value, stamp, checking: false });
     })()
-      .catch(() => {
-        if (current()) this.entries.delete(key);
-      })
+      // A failure keeps the entry as it is: its stamp is unchanged, so the
+      // next read checks again.
+      .catch(() => undefined)
       .finally(() => {
         entry.checking = false;
       });

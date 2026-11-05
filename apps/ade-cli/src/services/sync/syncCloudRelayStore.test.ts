@@ -208,6 +208,35 @@ describe("syncCloudRelayStore", () => {
     expect(perRequest().getMachineIdentity()).toEqual(peer);
   });
 
+  // chmod cannot make a file unreadable on Windows or for root.
+  it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+    "keeps the identity it has while another process's rewrite cannot be read yet",
+    async () => {
+      createSyncCloudRelayStore({ filePath }).getMachineIdentity();
+      const brain = createSyncCloudRelayStore({ filePath });
+      const first = brain.getMachineIdentity();
+
+      // A peer rotates (the backup still names the old key), and for a while
+      // the new file cannot be read, as when a scan holds it.
+      const peer = { machineKey: "d".repeat(32), secret: "e".repeat(48) };
+      fs.writeFileSync(filePath, `${JSON.stringify(peer)}\n`);
+      fs.chmodSync(filePath, 0o000);
+      try {
+        for (let read = 0; read < 20; read += 1) {
+          expect(brain.getMachineIdentity()).toEqual(first);
+          await new Promise<void>((resolve) => setImmediate(resolve));
+        }
+      } finally {
+        fs.chmodSync(filePath, 0o600);
+      }
+
+      // Readable again: the reader moves to the peer's identity, and nothing
+      // rewrote the file back to the old one in the meantime.
+      await vi.waitFor(() => expect(brain.getMachineIdentity()).toEqual(peer));
+      expect(JSON.parse(fs.readFileSync(filePath, "utf8"))).toMatchObject(peer);
+    },
+  );
+
   it("rotates the full identity only when the expected key still matches", () => {
     const store = createSyncCloudRelayStore({ filePath });
     store.setRelayUrl("https://relay.example.com");

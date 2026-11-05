@@ -4,7 +4,7 @@ import { createHmac, randomBytes } from "node:crypto";
 import { safeJsonParse } from "../../../../desktop/src/main/services/shared/utils";
 import { writeFileAtomic } from "../../../../desktop/src/main/services/state/durableFile";
 import { DEFAULT_ADE_TUNNEL_RELAY_URL } from "../../../../desktop/src/shared/accountDirectory";
-import { FileStampedMemo } from "../../lib/fileStampedMemo";
+import { FileStampedMemo, readTextIfExists } from "../../lib/fileStampedMemo";
 
 const DEFAULT_RELAY_URL = DEFAULT_ADE_TUNNEL_RELAY_URL;
 
@@ -357,9 +357,7 @@ export function createSyncCloudRelayStore(args: {
   const readRelayPreference = (): SyncRelayPreference => {
     const remembered = preferenceMemo.read(preferenceKey, {
       filePath: preferencePath,
-      reload: async () => parseRelayPreference(
-        await fs.promises.readFile(preferencePath, "utf8").catch(() => ""),
-      ),
+      reload: async () => parseRelayPreference((await readTextIfExists(preferencePath)) ?? ""),
     });
     if (remembered) return remembered;
     let text = "";
@@ -413,14 +411,14 @@ export function createSyncCloudRelayStore(args: {
     return parseIdentityText(target, text);
   };
 
+  /**
+   * {@link readFileAt} for the memo's background check. Only a missing file
+   * reads as absent; any other failure throws, so the memo keeps the identity
+   * it has instead of resolving from a file it could not read.
+   */
   const readFileAtAsync = async (target: string): Promise<IdentityFileRead> => {
-    let text: string;
-    try {
-      text = await fs.promises.readFile(target, "utf8");
-    } catch {
-      return { raw: {}, present: false, parsed: false };
-    }
-    return parseIdentityText(target, text);
+    const text = await readTextIfExists(target);
+    return text === null ? { raw: {}, present: false, parsed: false } : parseIdentityText(target, text);
   };
 
   const parseIdentityText = (target: string, text: string): IdentityFileRead => {
