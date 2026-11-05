@@ -10,7 +10,7 @@ import { useDeviceDrawerActions, useDeviceDrawerGroup, type DeviceDrawerActions 
  */
 
 /** The groups, in the order the drawer stacks them (plan §5). */
-export const ANDROID_DRAWER_GROUPS = ["device", "app", "capture", "emulator", "logs"] as const;
+export const ANDROID_DRAWER_GROUPS = ["device", "app", "capture", "emulator", "logs", "previews"] as const;
 export type AndroidDrawerGroupId = (typeof ANDROID_DRAWER_GROUPS)[number];
 
 /** Which group is open: per chat, or for the session on a chatless surface. */

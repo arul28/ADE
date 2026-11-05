@@ -815,6 +815,12 @@ ade android tap 540 1200 --text                       # device pixels; also: swi
 ade android rotate landscape --text                   # lock the screen to portrait or landscape; apps that fix their orientation keep it
 ade android render --angles front,back --sheet --text  # 3D stills of the device with its live screen, filed as proof (ADE open on the lane's Android tool)
 ade android device-create --profile medium_phone --machine windows --text  # on another machine, for this chat's work copy there (no new lane); --lane <id> for a lane there
+ade android fold half --text                          # fold a foldable AVD (open, half, closed, or --angle 0-180); waits for the screen to swap
+ade android posture --text                            # the hinge: angle, fold state, the screen in front
+ade android preview list --module app --text          # the module's Compose @Preview functions (Android CLI, no emulator)
+ade android preview --module app --text               # render them to PNG, filed as proof (--fqn <name> for each one; --no-proof); exits 1 when one fails
+ade android test --class com.example.LoginTest --text  # instrumentation tests on the lane's emulator (--module, --variant, --method); exits 1 on a failure
+ade android sdk images --text                         # installed system images (size, AVDs) and the ones to add; install/remove --image are the user's, in the device picker
 ade --socket app-control launch --command "npm run dev" --text
 ade --socket app-control connect --cdp-port 9222 --text           # attach to an already-running app
 ade --socket app-control focus --text

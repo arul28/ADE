@@ -53,6 +53,7 @@ import {
 } from "../shared/types/videoRecords";
 import { createMockAndroidSetup } from "./browserMockAndroidSetup";
 import { createMockAndroidTools } from "./browserMockAndroidTools";
+import { createMockAndroidImages } from "./browserMockAndroidImages";
 import { androidCatalogColor, androidCatalogEntry, resolveAndroidCatalogProfile } from "../shared/androidDeviceCatalog";
 
 type Scenario = "live" | "picker" | "setup" | "noaccel" | "starting" | "off" | "crashed" | "unsupported";
@@ -319,15 +320,22 @@ export function createMockAndroidEmulator(): AndroidEmulatorPreloadApi {
   });
 
   const tools = createMockAndroidTools({ fail: mockParam("mockAndroidTools") === "fail" });
+  // P3: System images (on the setup card's install job) and "Run tests".
+  const systemImages = createMockAndroidImages({
+    setup,
+    emit,
+    avds: () => [...(laneAvdRecord() ? [laneAvdRecord()!] : []), ...otherAvds],
+  });
 
   return {
     ...setup,
     ...tools,
+    ...systemImages.api,
     getStatus: async (args, pin) => delay(status(args?.laneId ?? null, pin?.kind === "remote"), 60),
     listDevices: async (args) => {
       if (args?.laneId) laneId = args.laneId;
       const lane = laneAvdRecord();
-      const images = mockParam("mockAndroidNoImage") !== null ? [] : [IMAGE];
+      const images = mockParam("mockAndroidNoImage") !== null ? [] : systemImages.installed();
       // Storage measures the folders: a slower answer, as on a real drive.
       return delay({ avds: [...(lane ? [lane] : []), ...otherAvds], profiles: PROFILES, images }, args?.measureSizes ? 700 : 140);
     },

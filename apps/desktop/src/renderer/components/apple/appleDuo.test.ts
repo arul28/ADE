@@ -9,13 +9,13 @@ import {
   appleDuoStanceFor,
   appleDuoHingeAfterPinch,
   appleDuoPanelForInnerPoint,
-  appleDuoPanelRotationsDeg,
   appleDuoPoseForAngle,
   appleDuoPoseForStance,
   clampAppleDuoAngle,
   createAppleDuoState,
   reduceAppleDuoState,
 } from "./appleDuo";
+import { foldPanelRotationsDeg } from "../device/proceduralFoldBody";
 
 describe("clampAppleDuoAngle", () => {
   it("holds the hinge inside 0..180 and treats a non-number as flat", () => {
@@ -26,24 +26,24 @@ describe("clampAppleDuoAngle", () => {
   });
 });
 
-describe("appleDuoPanelRotationsDeg", () => {
+describe("the Duo body's fold (foldPanelRotationsDeg)", () => {
   it("lies flat at 180°", () => {
-    expect(appleDuoPanelRotationsDeg(appleDuoPoseForAngle(180))).toEqual({ upper: 0, lower: 0 });
+    expect(foldPanelRotationsDeg(appleDuoPoseForAngle(180).angle)).toEqual({ first: 0, second: 0 });
   });
 
   it("folds both halves to meet at 0°", () => {
     // Positive upper and negative lower both bring the faces toward the viewer,
     // so at 90° each they meet and the device is shut.
-    expect(appleDuoPanelRotationsDeg(appleDuoPoseForAngle(0))).toEqual({ upper: 90, lower: -90 });
+    expect(foldPanelRotationsDeg(appleDuoPoseForAngle(0).angle)).toEqual({ first: 90, second: -90 });
   });
 
   it("folds symmetrically for a tent", () => {
-    expect(appleDuoPanelRotationsDeg(appleDuoPoseForStance("tent"))).toEqual({ upper: 50, lower: -50 });
+    expect(foldPanelRotationsDeg(appleDuoPoseForStance("tent").angle)).toEqual({ first: 50, second: -50 });
   });
 
   it("draws a laptop with the same fold as any other 90° hinge", () => {
-    expect(appleDuoPanelRotationsDeg(appleDuoPoseForStance("laptop"))).toEqual({ upper: 45, lower: -45 });
-    expect(appleDuoPanelRotationsDeg(appleDuoPoseForAngle(30))).toEqual({ upper: 75, lower: -75 });
+    expect(foldPanelRotationsDeg(appleDuoPoseForStance("laptop").angle)).toEqual({ first: 45, second: -45 });
+    expect(foldPanelRotationsDeg(appleDuoPoseForAngle(30).angle)).toEqual({ first: 75, second: -75 });
   });
 });
 

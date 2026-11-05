@@ -29,10 +29,15 @@ export function androidLaneFolderName(laneId: string): string {
 }
 
 /**
- * Where an agent's screenshot may go: inside the lane's worktree, after both
- * a lexical check and a real-path check (a symlink inside the worktree can
- * point anywhere). `outPath` comes from agents and other machines, so an
- * unchecked one could overwrite any file the brain can write.
+ * Where an agent's file may go or come from: inside the lane's worktree.
+ * `outPath` comes from agents and other machines, so an unchecked one could
+ * overwrite or read any file the brain can.
+ *
+ * When the worktree exists, the real paths of both sides decide: a symlink
+ * inside the worktree can point anywhere, and one path can have two spellings
+ * (macOS `/tmp` is `/private/tmp`, a worktree can sit behind a linked
+ * folder). Only a worktree that is not on disk falls back to the lexical
+ * check.
  */
 export function containAndroidOutPath(outPath: string, root: string, platform: NodeJS.Platform): string {
   const resolvedRoot = path.resolve(root);
@@ -41,13 +46,14 @@ export function containAndroidOutPath(outPath: string, root: string, platform: N
     "ANDROID_PATH_OUTSIDE_LANE",
     `${target} is outside the lane's worktree (${resolvedRoot}). Pick a path inside it, or leave the path out.`,
   );
-  if (!isPathInside(target, resolvedRoot, platform)) throw outside();
-  if (fs.existsSync(resolvedRoot)) {
-    try {
-      resolvePathWithinRoot(resolvedRoot, target, { allowMissing: true });
-    } catch (error) {
-      throw isPathEscapeError(error) ? outside() : error;
-    }
+  if (!fs.existsSync(resolvedRoot)) {
+    if (!isPathInside(target, resolvedRoot, platform)) throw outside();
+    return target;
+  }
+  try {
+    resolvePathWithinRoot(resolvedRoot, target, { allowMissing: true });
+  } catch (error) {
+    throw isPathEscapeError(error) ? outside() : error;
   }
   return target;
 }
@@ -118,7 +124,11 @@ export async function takeAndroidScreenshot(input: TakeAndroidScreenshotInput): 
     timeoutMs: SCREENSHOT_TIMEOUT_MS,
     signal: input.signal,
   });
-  const png = result.stdout;
+  // `exec-out` has one stream for stdout and stderr, and on a device with two
+  // displays (a foldable) `screencap` writes a "Multiple displays" warning
+  // there before the PNG. The PNG starts at its signature.
+  const start = result.stdout.indexOf(PNG_SIGNATURE);
+  const png = start > 0 ? result.stdout.subarray(start) : result.stdout;
   const size = readPngSize(png);
   if (!size) throw new Error(`The emulator ${serial} did not return a PNG (${png.length} bytes).`);
   const capturedAt = input.now();

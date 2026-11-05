@@ -1,6 +1,6 @@
 ---
 name: ade-android
-description: Use this skill when you need to see an Android app actually running on an emulator — finding or creating the lane's Android emulator, booting it, building and installing the app with Gradle or an APK, driving it by element query, reading logcat, screenshotting, recording, capturing proof, or setting up the Android SDK — via `ade android`.
+description: Use this skill when you need to see an Android app actually running on an emulator — finding or creating the lane's Android emulator, booting it, building and installing the app with Gradle or an APK, driving it by element query, reading logcat, screenshotting, recording, capturing proof, folding a foldable, rendering Compose previews, running instrumentation tests, or setting up the Android SDK — via `ade android`.
 ---
 
 # ADE Android Development
@@ -90,6 +90,9 @@ screenshot and the snapshot.
 | Video proof | `"$A" android record-start --label "<what>" --text`, do the steps, then `"$A" android record-stop --text` |
 | Proof bundle | `"$A" android proof-bundle --caption "<what>" --package <name> --text` (screenshot, elements, log, meta) |
 | Show the emulator to the user | `"$A" android show --text` |
+| Fold a foldable / read the hinge | `"$A" android fold half --text` (`open`, `closed`, or `--angle 0-180`) / `"$A" android posture --text` |
+| Render Compose previews (no emulator) | `"$A" android preview list --module app --text`, then `"$A" android preview --module app --text` (all, up to 24) or `--fqn <name>` for each one |
+| Run instrumentation tests | `"$A" android test --text` (`--class com.example.LoginTest`, `--method signIn`); exits 1 when a test fails |
 
 ## Elements
 
@@ -139,6 +142,23 @@ a tap is fresh. `--fresh` reads again anyway.
   part is its own MP4 and its own proof row.
 - `record-stop --discard` keeps nothing.
 
+## Foldables and Compose previews
+
+- `android fold` works only on a foldable AVD (`android devices --profiles`
+  lists the Pixel Fold and Galaxy Z Fold profiles). It waits until Android
+  shows the screen that goes with the fold: the cover screen below 30°, the
+  inner screen above. `settled: no` means Android was still changing; read
+  `android posture` again. After a fold, take a new `snapshot`: the screen
+  size and the elements change.
+- `android preview` builds the module with Gradle and draws each `@Preview`
+  to PNG with Google's Android CLI. It needs no emulator, so use it to check
+  a Compose change fast, before a full build and launch. `--module` is the
+  module's folder (`app`, `feature/home`), never the project's root. Each
+  image is filed as proof; `Read` the printed path to look at it. A preview
+  with no image prints `failed:` with the reason.
+- Without the Android CLI, `preview` stops with `ANDROID_TOOL_MISSING`. Only
+  the user installs it (the setup card's Android CLI part), so ask them.
+
 ## Taking turns
 
 One agent should drive the emulator; other agents hand it work. When agents
@@ -158,8 +178,8 @@ The lease is advisory: it works only when every agent uses it. Renew with
 emulator there works for this chat's work copy (made at your commit, which
 must be on origin). `install`/`launch` with `--gradle` or `--apk` send your
 uncommitted changes first. An APK that git ignores does not travel: use
-`--gradle`. Screenshots, recordings and proof bundles are filed in this
-chat's proof drawer.
+`--gradle`. `preview` and `test` send them too. Screenshots, recordings,
+proof bundles and preview images are filed in this chat's proof drawer.
 
 ## The SDK
 

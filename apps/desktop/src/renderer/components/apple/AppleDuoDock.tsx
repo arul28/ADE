@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import type { ReactNode } from "react";
 import { DeviceMobile } from "@phosphor-icons/react";
 import { APPLE_DEVICE_POSE_TARGETS, type AppleDeviceOrientation } from "../../../shared/types/iosSimulator";
 import { appleOrientationIconDegrees, appleOrientationLabel } from "./appleDeviceState";
 import { appleDuoPanelOrientation, appleOrientationFamily, type AppleDuoScreen } from "../../../shared/appleOrientation";
 import { cn } from "../ui/cn";
+import { HingeSlider } from "../device/HingeSlider";
 
 /**
  * The iPhone Duo's own controls, docked under the device.
@@ -31,92 +32,15 @@ const DETENTS = [
   { angle: APPLE_DEVICE_POSE_TARGETS.laptop.angle, label: "Laptop" },
   { angle: APPLE_DEVICE_POSE_TARGETS.open.angle, label: "Open" },
 ] as const;
-const DETENT_RANGE = 4;
 
 /** Left to right, each a quarter turn of the phone clockwise from the one before. */
 const TURNS: readonly AppleDeviceOrientation[] = ["portrait", "landscape-left", "portrait-upside-down", "landscape-right"];
-
-function snapToDetent(angle: number): number {
-  return DETENTS.find((detent) => Math.abs(detent.angle - angle) <= DETENT_RANGE)?.angle ?? angle;
-}
 
 function Group({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div role="group" aria-label={label} className="flex min-w-0 items-center gap-2.5">
       <span aria-hidden="true" className="kit-eyebrow shrink-0">{label}</span>
       {children}
-    </div>
-  );
-}
-
-function HingeSlider({ angle, onPreview, onCommit }: {
-  angle: number;
-  onPreview: (angle: number) => void;
-  /** `onDetent`: the release landed on Closed, Laptop or Open. */
-  onCommit: (angle: number, onDetent: boolean) => void;
-}) {
-  const [value, setValue] = useState(Math.round(angle));
-  const [dragging, setDragging] = useState(false);
-  const valueRef = useRef(value);
-  valueRef.current = value;
-  const onCommitRef = useRef(onCommit);
-  onCommitRef.current = onCommit;
-  useEffect(() => {
-    if (!dragging) setValue(Math.round(angle));
-  }, [angle, dragging]);
-  const releaseRef = useRef<(() => void) | null>(null);
-  const commit = useCallback(() => {
-    releaseRef.current?.();
-    releaseRef.current = null;
-    setDragging(false);
-    const angle = valueRef.current;
-    onCommitRef.current(angle, DETENTS.some((detent) => detent.angle === angle));
-  }, []);
-  // The slider holds its own value only while the pointer is down. The
-  // release is heard on the window, so one the input never sees (off the
-  // window, a lost pointer) still ends the drag: a held value kept the slider
-  // on Closed while the phone was open.
-  const startDrag = () => {
-    setDragging(true);
-    if (releaseRef.current) return;
-    const events = ["pointerup", "pointercancel", "blur"] as const;
-    for (const name of events) window.addEventListener(name, commit);
-    releaseRef.current = () => {
-      for (const name of events) window.removeEventListener(name, commit);
-    };
-  };
-  useEffect(() => () => releaseRef.current?.(), []);
-  return (
-    <div className="flex min-w-0 flex-1 items-center gap-2.5">
-      <div className="relative w-[clamp(120px,28cqw,260px)] min-w-0">
-        <input
-          type="range"
-          min={0}
-          max={180}
-          step={1}
-          value={value}
-          aria-label="Hinge angle"
-          aria-valuetext={`${value} degrees`}
-          className="block w-full accent-accent"
-          onPointerDown={startDrag}
-          onChange={(event) => {
-            const raw = Number(event.currentTarget.value);
-            const next = dragging ? snapToDetent(raw) : raw;
-            valueRef.current = next;
-            setValue(next);
-            onPreview(next);
-          }}
-          onKeyUp={(event) => {
-            if (event.key.startsWith("Arrow") || ["Home", "End", "PageUp", "PageDown"].includes(event.key)) commit();
-          }}
-        />
-        <div aria-hidden="true" className="kit-eyebrow pointer-events-none mt-0.5 hidden justify-between !text-[9px] !tracking-[0.08em] @[520px]:flex">
-          {DETENTS.map((detent) => (
-            <span key={detent.angle} className={value === detent.angle ? "text-fg" : undefined}>{detent.label}</span>
-          ))}
-        </div>
-      </div>
-      <span className="kit-num w-9 shrink-0 text-right text-[12px] text-fg">{`${value}°`}</span>
     </div>
   );
 }
@@ -171,7 +95,7 @@ export function AppleDuoDock({
       <div className="flex min-h-12 flex-wrap items-center justify-center gap-x-6 gap-y-2 px-4 py-2">
         {mode === "3d" ? (
           <Group label="Hinge">
-            <HingeSlider angle={angle} onPreview={onPreviewAngle} onCommit={onCommitAngle} />
+            <HingeSlider angle={angle} detents={DETENTS} onPreview={onPreviewAngle} onCommit={onCommitAngle} />
           </Group>
         ) : (
           <Group label="Screen">

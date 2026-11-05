@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { H264StreamView } from "../device/H264StreamView";
 import { h264SourceForUrl } from "../device/h264StreamPlayer";
 import { cn } from "../ui/cn";
@@ -15,7 +15,7 @@ import {
 } from "../device/Device3DView";
 import type { DeviceRenderer } from "../device/deviceRenderPass";
 import type { DeviceOrientation } from "../../../shared/types/deviceOrientation";
-import { androidBodySource, type AndroidBodySpec } from "./androidDeviceBody";
+import { androidBodySource, type AndroidBodySpec, type AndroidFoldView } from "./androidDeviceBody";
 import type { AndroidBootScreen } from "./useAndroidBootScreen";
 
 /**
@@ -59,6 +59,29 @@ export function androidStageOrientation(size: { width: number; height: number } 
   return size && size.width > size.height ? "landscape-right" : "portrait";
 }
 
+/** Degrees of hinge per unit of pinch scale, as on the Duo. */
+const PINCH_DEGREES_PER_SCALE = 120;
+/** A pinch folds the emulator this long after it stops. */
+const PINCH_COMMIT_MS = 250;
+
+/**
+ * A foldable's picture is the cover screen when its shape is far from the
+ * inner screen's: the Pixel Fold's cover is 0.46 wide for 1 tall, its inner
+ * screen 0.96.
+ */
+function showsCoverScreen(size: { width: number; height: number } | null, innerAspect: number): boolean {
+  if (!size || size.width <= 0 || size.height <= 0 || innerAspect <= 0) return false;
+  const aspect = Math.min(size.width, size.height) / Math.max(size.width, size.height);
+  return Math.abs(aspect - innerAspect) > 0.15;
+}
+
+/** A foldable's hinge on the stage (P3 fold): the angle to draw, and the pinch's preview and fold. */
+export type AndroidStageFold = {
+  angle: number;
+  onPreview: (angle: number) => void;
+  onCommit: (angle: number) => void;
+};
+
 export function AndroidDeviceStage({
   streamUrl,
   streamToken,
@@ -70,6 +93,7 @@ export function AndroidDeviceStage({
   screenAspect = 0,
   boot = null,
   viewNonce = 0,
+  fold = null,
   rendererRef,
   onThreeUnavailable,
   onThreeReady,
@@ -99,6 +123,8 @@ export function AndroidDeviceStage({
   boot?: AndroidBootScreen | null;
   /** "Reset view", handled in place by the 3D view. */
   viewNonce?: number;
+  /** Set for a foldable whose emulator is booted. */
+  fold?: AndroidStageFold | null;
   rendererRef?: { current: DeviceRenderer | null } | undefined;
   onThreeUnavailable?: (reason: Device3DFailure) => void;
   onThreeReady?: () => void;
@@ -160,17 +186,51 @@ export function AndroidDeviceStage({
   const source = useMemo(() => (streamUrl ? h264SourceForUrl(streamUrl, streamToken) : null), [streamToken, streamUrl]);
 
   // The body's aspect: the profile's, so a boot and a rotate keep one body.
-  const aspect = screenAspect > 0
-    ? screenAspect
-    : screenPixelSize
-      ? Math.min(screenPixelSize.width, screenPixelSize.height) / Math.max(screenPixelSize.width, screenPixelSize.height)
-      : boot
-        ? boot.size.width / boot.size.height
-        : 9 / 20;
-  const bodySource = useMemo(
-    () => (bodySpec ? androidBodySource(bodySpec, aspect) : null),
-    [aspect, bodySpec],
+  // A shut foldable shows its cover screen, whose aspect is the picture's.
+  const streamAspect = screenPixelSize
+    ? Math.min(screenPixelSize.width, screenPixelSize.height) / Math.max(screenPixelSize.width, screenPixelSize.height)
+    : null;
+  const cover = fold !== null && !boot?.canvas && showsCoverScreen(screenPixelSize, screenAspect);
+  const aspect = cover && streamAspect
+    ? streamAspect
+    : screenAspect > 0
+      ? screenAspect
+      : streamAspect ?? (boot ? boot.size.width / boot.size.height : 9 / 20);
+  const foldAngle = fold?.angle ?? null;
+  const foldView = useMemo<AndroidFoldView | null>(
+    () => (foldAngle === null ? null : { angle: foldAngle, cover }),
+    [cover, foldAngle],
   );
+  const bodySource = useMemo(
+    () => (bodySpec ? androidBodySource(bodySpec, aspect, foldView) : null),
+    [aspect, bodySpec, foldView],
+  );
+
+  // Pinch on an open foldable is the hinge, not the camera: it folds the
+  // drawn body at once and the emulator when the pinch stops.
+  const foldRef = useRef(fold);
+  foldRef.current = fold;
+  const pinchCommit = useRef<number | null>(null);
+  /** The pinch's own angle: several gesture events can arrive before a render. */
+  const pinchAngle = useRef<number | null>(null);
+  useEffect(() => () => {
+    if (pinchCommit.current !== null) window.clearTimeout(pinchCommit.current);
+  }, []);
+  const onPinchScale = useCallback((fromScale: number, toScale: number): boolean => {
+    const current = foldRef.current;
+    if (!current || cover || !Number.isFinite(fromScale) || !Number.isFinite(toScale)) return false;
+    const from = pinchAngle.current ?? current.angle;
+    const next = Math.min(180, Math.max(0, from + (toScale - fromScale) * PINCH_DEGREES_PER_SCALE));
+    pinchAngle.current = next;
+    current.onPreview(Math.round(next));
+    if (pinchCommit.current !== null) window.clearTimeout(pinchCommit.current);
+    pinchCommit.current = window.setTimeout(() => {
+      pinchCommit.current = null;
+      pinchAngle.current = null;
+      foldRef.current?.onCommit(Math.round(next));
+    }, PINCH_COMMIT_MS);
+    return true;
+  }, [cover]);
 
   const showingBoot = Boolean(boot?.canvas);
   const orientation = showingBoot ? "portrait" : androidStageOrientation(screenPixelSize);
@@ -217,6 +277,7 @@ export function AndroidDeviceStage({
           onDeviceKey={onDeviceKey}
           onReady={onThreeReady}
           onUnavailable={onThreeUnavailable}
+          onPinchScale={fold ? onPinchScale : undefined}
           railInset={railInset}
           renderScreenOverlay={showingBoot ? undefined : renderScreenOverlay}
         />

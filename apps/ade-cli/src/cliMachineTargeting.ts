@@ -571,7 +571,7 @@ export async function createMachineRemoteConnection(
 
   /**
    * The Android verbs that file proof (`screenshot`, `captureProofBundle`,
-   * `recordStop`, `requestRender`), on the Apple rule above: run there with
+   * `recordStop`, `requestRender`, `renderComposePreviews`), on the Apple rule above: run there with
    * `proof: false`, read each file back, file it in THIS chat's drawer, and
    * answer the ids filed here.
    */
@@ -638,6 +638,28 @@ export async function createMachineRemoteConnection(
         if (id) ids.push(id);
       }
       return withAppleActionResult(answer, { ...record, filed: ids.length, proofArtifactIds: ids });
+    }
+    if (action === "renderComposePreviews") {
+      // P3: each Compose preview the CLI drew there is one still here.
+      const module = asString(record.module);
+      const images = Array.isArray(record.images) ? record.images.filter(isRecord) : [];
+      const filed = [];
+      for (const image of images) {
+        const imagePath = asString(image.path);
+        const fqn = asString(image.fqn) ?? "";
+        const proofArtifactId = imagePath
+          ? await fileOne({
+            kind: "screenshot",
+            title: `Compose preview: ${asString(image.name) ?? fqn.split(".").pop() ?? "preview"} · ${where}`,
+            description: `${fqn}, rendered from ${module ?? "the lane's module"} on ${where} with no emulator.`,
+            path: imagePath,
+            mimeType: "image/png",
+            metadata: { fqn, module },
+          }, "android preview")
+          : null;
+        filed.push({ ...image, proofArtifactId });
+      }
+      return withAppleActionResult(answer, { ...record, images: filed });
     }
     // recordStop: a discarded or failed recording has no file to file; each part is one video.
     const segments = Array.isArray(record.segments) ? record.segments.filter(isRecord) : [];
@@ -761,7 +783,7 @@ function appleActionFiledAsProof(params: JsonObject): AppleProofAction | null {
   return (APPLE_PROOF_ACTIONS as readonly string[]).includes(action ?? "") ? action as AppleProofAction : null;
 }
 
-const ANDROID_PROOF_ACTIONS = ["screenshot", "captureProofBundle", "recordStop", "requestRender"] as const;
+const ANDROID_PROOF_ACTIONS = ["screenshot", "captureProofBundle", "recordStop", "requestRender", "renderComposePreviews"] as const;
 type AndroidProofAction = (typeof ANDROID_PROOF_ACTIONS)[number];
 
 /** An Android action the emulator's machine would file as proof; `proof: false` files nothing at all. */

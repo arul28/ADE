@@ -9,6 +9,7 @@ import { AndroidAppSection } from "./AndroidAppSection";
 import { AndroidCaptureSection } from "./AndroidCaptureSection";
 import { AndroidEmulatorSection } from "./AndroidEmulatorSection";
 import { AndroidLogsSection } from "./AndroidLogsSection";
+import { AndroidPreviewsSection } from "./AndroidPreviewsSection";
 
 /**
  * The Android Tools drawer: the Apple drawer's layout with Android's groups
@@ -20,6 +21,7 @@ import { AndroidLogsSection } from "./AndroidLogsSection";
  * | Capture  | The lane's recordings |
  * | Emulator | Appearance, Location, Battery, Network |
  * | Logs     | Logcat for the lane's app, Send to chat |
+ * | Previews | Compose @Preview functions of a module, rendered with no emulator (P3) |
  *
  * `pin` is the binding of the machine that runs the emulator; every call goes
  * there. It is held in a ref: the binding object is rebuilt on each
@@ -48,6 +50,7 @@ const GROUP_TITLES: Record<AndroidDrawerGroupId, string> = {
   capture: "Capture",
   emulator: "Emulator",
   logs: "Logs",
+  previews: "Previews",
 };
 
 export function AndroidToolsDrawer({
@@ -90,6 +93,7 @@ export function AndroidToolsDrawer({
       {card("capture", <AndroidCaptureSection ctx={ctx} onOpenProof={onOpenProof} />)}
       {card("emulator", <AndroidEmulatorSection ctx={ctx} />)}
       {card("logs", <AndroidLogsSection ctx={ctx} />)}
+      {card("previews", <AndroidPreviewsSection ctx={ctx} chatSessionId={chatSessionId} onOpenProof={onOpenProof} />)}
     </DeviceToolsDrawerShell>
   );
 }

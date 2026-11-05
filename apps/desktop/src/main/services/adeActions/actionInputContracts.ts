@@ -1122,6 +1122,22 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       input: "object { path: string | null }",
       example: "Desktop app only: \"Use mine…\" on the setup card. A terminal is refused.",
     },
+    // P3 system images (`androidSystemImages.ts`).
+    listSystemImages: {
+      description: "List this machine's Android system images: each installed one with its size on disk and the AVDs that boot from it, then the phone images Google publishes for this host ABI with their download size and licence. includeAvailable false skips Google's repository.",
+      input: "object { laneId?: string, includeAvailable?: boolean }",
+      example: "ade android sdk images --json",
+    },
+    installSystemImage: {
+      description: "Download and install one system image on the guided install's job (one install per machine; progress as android.sdk.install events; cancelSdkInstall stops it). User-only: the ADE desktop app sends it from the device picker's System images; an agent and a terminal are refused. The image's licence must be named in acceptedLicenseIds.",
+      input: "object { id: string, acceptedLicenseIds: string[], laneId?: string }",
+      example: "Desktop app only: the device picker's System images. A terminal is refused.",
+    },
+    removeSystemImage: {
+      description: "Delete one installed system image folder. Refused while an AVD that boots from it runs; when AVDs use it, confirmedInUse must be true (their files stay, but they cannot start). User-only: the ADE desktop app sends it.",
+      input: "object { id: string, confirmedInUse?: boolean, laneId?: string }",
+      example: "Desktop app only: the device picker's System images. A terminal is refused.",
+    },
     getStatus: {
       description:
         "Read whether this host can run the Android emulator: the SDK and its tools, hardware acceleration, and (with laneId) the lane's emulator and its state.",
@@ -1205,6 +1221,11 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       description: "Install an app on the lane's emulator: an APK inside the lane's folder, or the project's Gradle build (gradlew :<module>:install<Variant>, module app and variant debug by default). ADE remembers the package, so a lane release can remove it.",
       input: "object { laneId: string, apkPath?: string, gradle?: { module?: string, variant?: string } }",
       example: "ade android install --gradle --module app --variant debug --json",
+    },
+    runInstrumentationTests: {
+      description: "Run the lane app's instrumentation tests on the lane's emulator (gradlew :<module>:connected<Variant>AndroidTest, module app and variant debug by default), one class or one method when asked. Answers with the counts and each failure, from the JUnit XML (or Gradle's output). Refused when the emulator is not booted.",
+      input: "object { laneId: string, gradle?: { module?: string, variant?: string }, className?: string, method?: string }",
+      example: "ade android test --class com.example.LoginTest --json",
     },
     launchApp: {
       description: "Start an app's launcher activity (or the named one) and wait for it to draw. With apkPath or gradle it installs first.",
@@ -1320,6 +1341,26 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       description: "Turn the emulator's dark theme on or off.",
       input: "object { laneId: string, appearance: \"light\" | \"dark\" }",
       example: "ade android appearance dark --json",
+    },
+    getPosture: {
+      description: "Read the hinge of a foldable emulator: the angle, the fold state (closed, half-open, open) and the size of the screen in front. supported is false on a device with no hinge.",
+      input: "object { laneId: string }",
+      example: "ade android posture --json",
+    },
+    setPosture: {
+      description: "Fold a foldable emulator: move its hinge to an angle (0 shut to 180 flat) or a pose, and wait until Android shows the screen that goes with it (the cover screen when shut).",
+      input: "object { laneId: string, angle?: number, pose?: \"open\" | \"half\" | \"closed\" }",
+      example: "ade android fold half --json",
+    },
+    listComposePreviews: {
+      description: "List the Jetpack Compose @Preview functions of a Gradle module in the lane (module app by default), through Google's Android CLI. Needs no emulator. all adds the previews of the modules it depends on.",
+      input: "object { laneId: string, module?: string, all?: boolean }",
+      example: "ade android preview list --module app --json",
+    },
+    renderComposePreviews: {
+      description: "Render Jetpack Compose @Preview functions of a Gradle module in the lane to PNG, with no emulator (Google's Android CLI and layoutlib). Every preview of the module (up to 24) when fqns is empty. Each image is filed as proof in the calling chat unless proof is false; inline adds each PNG as a data: URL.",
+      input: "object { laneId: string, module?: string, fqns?: string[], chatSessionId?: string, proof?: boolean, inline?: boolean }",
+      example: "ade android preview --module app --fqn com.example.ui.GreetingKt.GreetingPreview --json",
     },
     setPermission: {
       description: "Grant or revoke a runtime permission of an app (camera, or android.permission.CAMERA).",

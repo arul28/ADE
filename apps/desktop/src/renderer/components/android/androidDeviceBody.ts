@@ -20,6 +20,7 @@ import {
   type DisplayLayout,
   type ThreeNS,
 } from "../device/deviceScene";
+import { createProceduralFoldBody } from "../device/proceduralFoldBody";
 import { androidDeviceModelSource } from "./androidDeviceModels";
 
 /** The scene's screen height for a portrait device (the GLB contract: height 2.2). */
@@ -372,19 +373,75 @@ function recolorBody(body: DeviceBody, color: AndroidCatalogColor): void {
 }
 
 /**
+ * A foldable's hinge, for its body (P3 fold). Open or half open, the inner
+ * screen shows on two panels that fold at `angle`; shut, the cover screen
+ * shows on the folded phone (half as wide, twice as thick).
+ */
+export type AndroidFoldView = {
+  angle: number;
+  /** The stream shows the cover screen: the phone is shut. */
+  cover: boolean;
+};
+
+/** The shut foldable: one half of the open body, twice as thick, with no seam on its back. */
+function androidCoverShape(shape: AndroidCatalogBodyShape): AndroidCatalogBodyShape {
+  return { ...shape, widthMm: shape.widthMm / 2, depthMm: shape.depthMm * 2 };
+}
+
+/**
+ * The open foldable: the shared two-panel body (`device/proceduralFoldBody`)
+ * in the catalog colour, with the hinge down the inner screen as on a Pixel
+ * Fold or a Galaxy Z Fold (across it, if the inner screen is wider than tall).
+ */
+function androidFoldBodySource(
+  spec: AndroidBodySpec,
+  identity: string,
+  screenAspect: number,
+  angle: number,
+): DeviceBodySource {
+  const color = androidBodyColor(spec);
+  const shape = androidBodyShape(spec, screenAspect);
+  const aspect = screenAspect > 0 && screenAspect <= 1 ? screenAspect : 0.96;
+  const wide = (spec.entry?.screen.widthPx ?? spec.profile?.widthPx ?? 0) > (spec.entry?.screen.heightPx ?? spec.profile?.heightPx ?? Infinity);
+  // Scene units per millimetre: the inner screen's long side is the body height (2.2).
+  const unit = SCREEN_HEIGHT_UNITS / (Math.max(10, shape.widthMm - shape.bezelMm * 2) / aspect);
+  return {
+    key: `${identity}:${aspect.toFixed(3)}:fold`,
+    build: ({ THREE, texture, layout }) => createProceduralFoldBody(THREE, {
+      innerAspect: aspect,
+      texture,
+      layout,
+      angle,
+      hingeAxis: wide ? "across" : "down",
+      look: { body: color.body, hinge: color.frame, bezel: shape.bezelMm * unit, slabDepth: shape.depthMm * unit },
+      modelId: `${identity}:fold`,
+    }),
+    update: (body) => {
+      recolorBody(body, color);
+      body.duo?.setHinge(angle);
+      // Folding changes the phone's shape: frame it again.
+      return true;
+    },
+  };
+}
+
+/**
  * The 3D body source for an Android device. The key covers what changes the
  * body's shape (the entry or profile, and the screen aspect); the colour is
  * an `update`, so a new colour never rebuilds the body or its GPU buffers.
+ * `fold` is set for a foldable whose emulator is booted.
  */
-export function androidBodySource(spec: AndroidBodySpec, screenAspect: number): DeviceBodySource {
+export function androidBodySource(spec: AndroidBodySpec, screenAspect: number, fold: AndroidFoldView | null = null): DeviceBodySource {
+  const identity = spec.entry ? `catalog:${spec.entry.id}` : `profile:${spec.profile?.formFactor ?? "phone"}:${spec.profile?.screenInches ?? ""}`;
+  if (fold && !fold.cover) return androidFoldBodySource(spec, identity, screenAspect, fold.angle);
   const color = androidBodyColor(spec);
-  const shape = androidBodyShape(spec, screenAspect);
+  const openShape = androidBodyShape(spec, screenAspect);
+  const shape = fold?.cover ? androidCoverShape(openShape) : openShape;
   const formFactor = spec.entry?.formFactor ?? spec.profile?.formFactor ?? null;
   const aspectKey = screenAspect.toFixed(3);
-  const identity = spec.entry ? `catalog:${spec.entry.id}` : `profile:${spec.profile?.formFactor ?? "phone"}:${spec.profile?.screenInches ?? ""}`;
-  const model = spec.entry?.model ? androidDeviceModelSource(spec.entry.model) : null;
+  const model = spec.entry?.model && !fold ? androidDeviceModelSource(spec.entry.model) : null;
   return {
-    key: `${identity}:${aspectKey}:${model ? "glb" : "procedural"}`,
+    key: `${identity}:${aspectKey}:${model ? "glb" : fold?.cover ? "cover" : "procedural"}`,
     build: async ({ THREE, GLTFLoader, texture, layout }) => {
       if (model) {
         try {
@@ -404,7 +461,8 @@ export function androidBodySource(spec: AndroidBodySpec, screenAspect: number): 
         color,
         screenAspect,
         formFactor,
-        foldable: formFactor === "foldable",
+        // The seam down the back is the open phone's; shut, the hinge is an edge.
+        foldable: formFactor === "foldable" && !fold?.cover,
         texture,
         layout,
       }, identity);

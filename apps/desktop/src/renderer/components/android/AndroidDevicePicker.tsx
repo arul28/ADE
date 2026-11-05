@@ -46,7 +46,7 @@ import {
  * "This lane", "On this machine" (every other AVD, with running / off / TAKEN
  * and a ⋯ menu), "New device" (the brand grid: one click to create and boot,
  * plus "More…" with every profile), and "Storage" (what the AVDs take on
- * disk, and Clean up).
+ * disk, and Clean up), then "System images" (P3: `AndroidSystemImagesSection`).
  *
  * Every device picture comes from one shared WebGL context
  * (`androidTileRenderer.ts`): stills, cached, and a slow turn on the tile the
@@ -79,6 +79,8 @@ export type AndroidDevicePickerProps = {
   onRefresh: () => void;
   /** False pauses the backdrop's loop, as on the tools grid. */
   playing?: boolean;
+  /** P3: the System images section, under Storage (the pane builds it with the lane's machine pin). */
+  systemImages?: ReactNode;
 };
 
 /** The small picture on a lane or machine card: the AVD's catalog body in its colour, else a body from its profile. */
@@ -115,6 +117,7 @@ export function AndroidDevicePicker({
   onDelete,
   onRefresh,
   playing = true,
+  systemImages,
 }: AndroidDevicePickerProps) {
   const theme = useAppStore((s) => s.theme);
   const lanes = useAppStore((s) => s.lanes);
@@ -218,6 +221,8 @@ export function AndroidDevicePicker({
           onCleanUp={onCleanUp}
         />
       ) : null}
+
+      {systemImages}
     </DevicePickerPage>
   );
 }

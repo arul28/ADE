@@ -9,15 +9,20 @@
 
 import type { OpenProjectBinding } from "./core";
 import type { AndroidAppCrash, AndroidCapabilities, AndroidEmulatorAgentServiceApi, AndroidRecording } from "./androidEmulatorAgent";
+import type { AndroidEmulatorPostureServiceApi, AndroidPosture } from "./androidEmulatorPosture";
 import type { AndroidEmulatorToolsPreloadApi } from "./androidEmulatorDrawer";
 import type { AndroidEmulatorLookPreloadApi, AndroidEmulatorLookServiceApi, AndroidRenderRequestEvent } from "./androidEmulatorLook";
 import type { AndroidEmulatorSetupPreloadApi, AndroidEmulatorSetupServiceApi, AndroidSdkInstallState } from "./androidEmulatorSetup";
+import type { AndroidEmulatorImagesServiceApi } from "./androidEmulatorImages";
+import type { AndroidEmulatorInstrumentationServiceApi } from "./androidEmulatorInstrumentation";
+import type { AndroidEmulatorPreviewServiceApi } from "./androidEmulatorPreviews";
 import type { RuntimeDisposeReason } from "./runtimeLifecycle";
 
 /**
  * The Android panel's product facts (`ade_feature_used`, `action: "android_device"`):
  * whether the guided SDK install, app installs, renders, agent leases, the phone and web
- * viewers, and starts past the RAM guard are used at all.
+ * viewers, and starts past the RAM guard are used at all. P3 adds a system image
+ * installed from the image manager, and an instrumentation test run.
  * Closed: a spelling not listed here is dropped by the analytics policy, not widened.
  */
 export const ANDROID_DEVICE_ANALYTICS_OUTCOMES = [
@@ -27,6 +32,11 @@ export const ANDROID_DEVICE_ANALYTICS_OUTCOMES = [
   "device_leased",
   "remote_viewed",
   "start_forced",
+  "image_installed",
+  "tests_run",
+  // P3: a fold the emulator settled, and a Compose preview render that wrote an image.
+  "device_folded",
+  "previews_rendered",
 ] as const;
 export type AndroidDeviceAnalyticsOutcome = (typeof ANDROID_DEVICE_ANALYTICS_OUTCOMES)[number];
 
@@ -395,6 +405,8 @@ export type AndroidEmulatorEvent =
   | { type: "android.recording.state"; laneId: string; recording: AndroidRecording }
   /** P2 crash pin: the lane's app crashed. */
   | { type: "android.app.crashed"; laneId: string; crash: AndroidAppCrash }
+  /** P3 fold: the hinge moved (from any viewer or an agent). */
+  | { type: "android.device.posture"; laneId: string; posture: AndroidPosture }
   | AndroidRenderRequestEvent;
 
 export type AndroidEmulatorServiceApi = {
@@ -434,7 +446,8 @@ export type AndroidEmulatorServiceApi = {
    */
   dispose(options?: { reason?: RuntimeDisposeReason }): Promise<void>;
   onEvent(listener: (event: AndroidEmulatorEvent) => void): () => void;
-} & AndroidEmulatorLookServiceApi & AndroidEmulatorAgentServiceApi & AndroidEmulatorSetupServiceApi;
+} & AndroidEmulatorLookServiceApi & AndroidEmulatorAgentServiceApi & AndroidEmulatorSetupServiceApi & AndroidEmulatorPostureServiceApi
+  & AndroidEmulatorImagesServiceApi & AndroidEmulatorInstrumentationServiceApi & AndroidEmulatorPreviewServiceApi;
 
 /**
  * P1 agent suite (android-agent): the actions `ade android` adds for agents.
@@ -471,6 +484,12 @@ export const ANDROID_AGENT_SUITE_ACTIONS = [
   "captureProofBundle",
   "getDeviceSettings",
   "setDeviceSetting",
+  // P3 fold.
+  "getPosture",
+  "setPosture",
+  // P3 Compose previews (no emulator needed).
+  "listComposePreviews",
+  "renderComposePreviews",
 ] as const;
 export type AndroidAgentSuiteAction = (typeof ANDROID_AGENT_SUITE_ACTIONS)[number];
 
@@ -497,6 +516,9 @@ export const ANDROID_AGENT_ACTIONS = [
   "getSdkInstallState",
   // P1 agent suite (android-agent): apps, input, UI tree, logs, record, lease, emulator controls.
   ...ANDROID_AGENT_SUITE_ACTIONS,
+  // P3: the system image list (a read; install and remove are the person's), and instrumentation tests.
+  "listSystemImages",
+  "runInstrumentationTests",
 ] as const;
 export type AndroidAgentAction = (typeof ANDROID_AGENT_ACTIONS)[number];
 
@@ -507,7 +529,14 @@ export type AndroidAgentAction = (typeof ANDROID_AGENT_ACTIONS)[number];
  * the RPC server, the action policy (`ADE_ACTION_USER_ONLY`), `android.invoke`
  * and ADE MCP all refuse them to anyone else.
  */
-export const ANDROID_SDK_PERSON_ONLY_ACTIONS = ["installSdk", "cancelSdkInstall", "setSdkPath"] as const;
+export const ANDROID_SDK_PERSON_ONLY_ACTIONS = [
+  "installSdk",
+  "cancelSdkInstall",
+  "setSdkPath",
+  // P3 system images: a download with a licence, and a removal that can leave AVDs without an image.
+  "installSystemImage",
+  "removeSystemImage",
+] as const;
 export type AndroidSdkPersonOnlyAction = (typeof ANDROID_SDK_PERSON_ONLY_ACTIONS)[number];
 
 /** Actions only a viewing client (desktop, web, phone at cto role) may call. */
@@ -547,6 +576,8 @@ export const ANDROID_LANE_FREE_ACTIONS = [
   "listDevices",
   "getSdkSetupPlan",
   "getSdkInstallState",
+  // P3: the machine's system images.
+  "listSystemImages",
   ...ANDROID_SDK_PERSON_ONLY_ACTIONS,
 ] as const;
 
@@ -555,7 +586,15 @@ export const ANDROID_LANE_FREE_ACTIONS = [
  * Gradle wrapper): with `--machine` the work copy there gets the caller's
  * code first. Every other action uses the copy as it is.
  */
-export const ANDROID_CODE_SYNC_ACTIONS = ["installApp", "launchApp"] as const;
+export const ANDROID_CODE_SYNC_ACTIONS = [
+  "installApp",
+  "launchApp",
+  // P3: instrumentation tests build the lane's app and its test APK, and
+  // Compose previews build the lane's module.
+  "runInstrumentationTests",
+  "listComposePreviews",
+  "renderComposePreviews",
+] as const;
 
 type Pin = OpenProjectBinding | null | undefined;
 
@@ -602,4 +641,8 @@ export * from "./androidEmulatorLook";
 export * from "./androidEmulatorSetup";
 export * from "./androidEmulatorAgent";
 export * from "./androidEmulatorDrawer";
+export * from "./androidEmulatorPosture";
+export * from "./androidEmulatorImages";
+export * from "./androidEmulatorInstrumentation";
+export * from "./androidEmulatorPreviews";
 

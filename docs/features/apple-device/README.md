@@ -632,7 +632,7 @@ and folded, the lower half lies flat and the screen stands, seen from a
 little above (fading in from flat to 120° so a hinge drag moves smoothly); a
 tent stands hinge up with the cover facing out, also from a little above.
 Picking a preset resets the view to that framing. Taps send the
-live panel's framebuffer point. The drawn body (`appleDuoScene.ts`) remains the
+live panel's framebuffer point. The drawn body (`device/proceduralFoldBody.ts`) remains the
 fallback when the model is missing.
 
 **Controls.** The Duo's own dock (`AppleDuoDock`) is a band under the device,
@@ -795,7 +795,7 @@ minimized" for that chat.
 | `apps/desktop/src/main/services/ios/appleDuoService.ts` | The Duo's own service surface: fold and settle, posture, the live panel for screenshots, Apple's model and agent skill, the App Store set, render proofs and the `ade apple render` broker. |
 | `apps/desktop/src/shared/appleOrientation.ts` | Orientation facts the service and the pane share: an orientation's axis, the Duo's screen names, the inner panel's quarter turn, CoreDevice's pose names, and Tent. |
 | `apps/desktop/src/renderer/components/apple/useAppleDuoPosture.ts`, `AppleDuoDock.tsx`, `appleV68DuoBody.ts` | The simulator's reported posture and the fold call (pane and floating player), the Duo's dock under the device (hinge or screen, and turn), and Apple's physical Duo body. |
-| `apps/desktop/src/renderer/components/apple/appleDuo.ts`, `appleDuoScene.ts` | The foldable "Duo" mode: the pure posture state machine, panel rotations, inner-display coordinate mapping and capability matcher, plus the procedural two-panel body builder. Capability-gated; unused on non-foldable devices. |
+| `apps/desktop/src/renderer/components/apple/appleDuo.ts`, `apps/desktop/src/renderer/components/device/proceduralFoldBody.ts`, `device/HingeSlider.tsx` | The foldable "Duo" mode: the pure posture state machine, inner-display coordinate mapping and capability matcher, plus the procedural two-panel body builder (with its panel rotations) and the hinge slider, which Android foldables share. Capability-gated; unused on non-foldable devices. |
 | `apps/desktop/src/renderer/components/apple/AppleDevicePicker.tsx`, `applePickerInventory.ts` | The picker and its grouping (this lane's device, free devices, devices another lane holds), the Create control (runtime and model), and the Storage section (total size, Leftover / Old ADE? tags, Clean up). |
 | `apps/desktop/src/renderer/components/apple/useLaneAppleDevices.ts`, `LaneAppleDeviceMarker.tsx` | The Apple mark beside each lane in the Work session list that holds a device; green while booted, muted while claimed but off. |
 | `apps/desktop/src/renderer/components/apple/AppleToolCardMenu.tsx`, `useAppleLaneDeviceCard.ts` | The Work tools picker card's claim state and its corner menu (boot / open / release / delete). |

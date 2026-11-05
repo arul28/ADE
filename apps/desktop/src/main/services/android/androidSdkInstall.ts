@@ -412,6 +412,23 @@ export async function buildAndroidSdkSetupPlan(
   };
 }
 
+/* ---------- P3: the pieces the system image manager shares ---------- */
+
+/** One part the installer job takes (`androidSdkInstaller().start`). */
+export type AndroidPlannedSdkPart = PlannedPart;
+export const androidFreeBytesAt = freeBytesAt;
+export const androidSdkFolderWritable = checkWritable;
+export const androidSdkLicenseAccepted = licenseAccepted;
+
+export function androidSdkLicenseTitle(licenseId: string): string {
+  return LICENSE_TITLES[licenseId] ?? licenseId;
+}
+
+/** Disk after unpack for a system image of this download size (an estimate, as the plan's). */
+export function androidSystemImageInstalledBytes(downloadBytes: number): number {
+  return Math.round(downloadBytes * UNPACK_FACTOR["system-image"]);
+}
+
 /* ---------- the job ---------- */
 
 type InstallJob = {

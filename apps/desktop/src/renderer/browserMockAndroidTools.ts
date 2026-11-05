@@ -2,9 +2,11 @@ import type {
   AndroidAppInfo,
   AndroidDeviceSettings,
   AndroidEmulatorToolsPreloadApi,
+  AndroidPosture,
   AndroidRecording,
   AndroidUiSnapshot,
 } from "../shared/types/androidEmulator";
+import { ANDROID_FOLD_POSE_ANGLES } from "../shared/types/androidEmulator";
 
 /*
  * The browser preview's Tools drawer, Inspect and Record: a fake emulator
@@ -15,7 +17,24 @@ import type {
 const DISPLAY_SCALE = { small: 0.85, default: 1, large: 1.15, larger: 1.3 } as const;
 const TEXT_SCALE = { small: 0.85, default: 1, large: 1.15, largest: 1.3 } as const;
 
-export function createMockAndroidTools({ fail }: { fail: boolean }): AndroidEmulatorToolsPreloadApi {
+/** P3's System images and "Run tests" come from `browserMockAndroidImages.ts`. */
+type MockToolsApi = Omit<AndroidEmulatorToolsPreloadApi, "listSystemImages" | "installSystemImage" | "removeSystemImage" | "runInstrumentationTests">;
+
+const MOCK_PREVIEWS = [
+  { fqn: "com.example.sample.ui.GreetingKt.GreetingPreview", name: "Light", dark: false },
+  { fqn: "com.example.sample.ui.GreetingKt.GreetingDarkPreview", name: "Dark", dark: true },
+  { fqn: "com.example.sample.ui.SignInKt.SignInScreenPreview", name: null, dark: false },
+] as const;
+
+/** A preview card as an SVG `data:` URL. */
+function mockPreviewImage(label: string, dark: boolean): string {
+  const [bg, fg] = dark ? ["#1c1b1f", "#e6e1e5"] : ["#fffbfe", "#1c1b1f"];
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="320" height="180"><rect width="320" height="180" rx="16" fill="${bg}"/>`
+    + `<text x="24" y="96" font-family="sans-serif" font-size="22" fill="${fg}">Hello, ${label}!</text></svg>`;
+  return `data:image/svg+xml;base64,${btoa(svg)}`;
+}
+
+export function createMockAndroidTools({ fail }: { fail: boolean }): MockToolsApi {
   const delay = <T,>(value: T, ms = 160) => new Promise<T>((resolve) => window.setTimeout(() => resolve(value), ms));
   const refuse = (what: string) => Promise.reject(new Error(`ANDROID_DEVICE_NOT_BOOTED: The mock emulator refused ${what}.`));
   let foreground: string | null = null;
@@ -53,6 +72,15 @@ export function createMockAndroidTools({ fail }: { fail: boolean }): AndroidEmul
     network: { wifi: true, mobileData: true, airplane: false },
   };
   const read = (laneId: string): AndroidDeviceSettings => ({ ...settings, laneId, foregroundPackage: foreground });
+  // The fold: the Pixel Fold's ranges (shut below 30°, open from 150°) and screens.
+  let hingeAngle = 180;
+  const posture = (laneId: string): AndroidPosture => ({
+    laneId,
+    supported: true,
+    angle: hingeAngle,
+    state: hingeAngle < 30 ? "closed" : hingeAngle < 150 ? "half-open" : "open",
+    screen: hingeAngle < 30 ? { width: 1080, height: 2364 } : { width: 2076, height: 2152 },
+  });
   const change = <T,>(what: string, apply: () => T): Promise<T> => (fail ? refuse(what) : delay(apply()));
 
   const snapshot = (laneId: string): AndroidUiSnapshot => ({
@@ -121,6 +149,35 @@ export function createMockAndroidTools({ fail }: { fail: boolean }): AndroidEmul
       return { laneId, appearance };
     }),
     setPermission: async ({ laneId, action, packageName, permission }) => change("the permission", () => ({ laneId, action, packageName, permission })),
+    getPosture: async ({ laneId }) => delay(posture(laneId)),
+    setPosture: async ({ laneId, angle, pose }) => change("the fold", () => {
+      hingeAngle = typeof angle === "number" ? angle : ANDROID_FOLD_POSE_ANGLES[pose ?? "open"];
+      return { ...posture(laneId), settled: true };
+    }),
+    // P3 Compose previews: three previews, each drawn as a small card.
+    listComposePreviews: async ({ laneId, module }) => change("the preview list", () => ({
+      laneId,
+      module: module ?? "app",
+      previews: MOCK_PREVIEWS.map((preview) => ({ ...preview, params: {} })),
+    })),
+    renderComposePreviews: async ({ laneId, module, fqns }) => change("the preview render", () => {
+      const wanted = MOCK_PREVIEWS.filter((preview) => !fqns?.length || fqns.includes(preview.fqn));
+      return {
+        laneId,
+        module: module ?? "app",
+        outDir: "/Users/mock/.ade/android/compose-previews/lane/2026-11-05",
+        images: wanted.map((preview) => ({
+          fqn: preview.fqn,
+          name: preview.name,
+          path: `/Users/mock/.ade/android/compose-previews/lane/${preview.fqn}.png`,
+          proofArtifactId: `mock-proof-${preview.fqn}`,
+          dataUrl: mockPreviewImage(preview.name ?? preview.fqn, preview.dark),
+          error: null,
+        })),
+        skipped: 0,
+        durationMs: 18_400,
+      };
+    }),
     getDeviceSettings: async ({ laneId }) => delay(read(laneId), 120),
     setDeviceSetting: async ({ laneId, setting }) => change("the setting", () => {
       switch (setting.kind) {

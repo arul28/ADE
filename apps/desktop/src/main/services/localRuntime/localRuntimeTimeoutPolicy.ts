@@ -437,6 +437,15 @@ const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = 
   // P1 agent suite: see ANDROID_EMULATOR_BUILD_TIMEOUT_MS and its neighbours.
   ["android_emulator.installApp", ANDROID_EMULATOR_BUILD_TIMEOUT_MS],
   ["android_emulator.launchApp", ANDROID_EMULATOR_BUILD_TIMEOUT_MS],
+  // P3: instrumentation tests run on the same Gradle runner and time limit as an install.
+  ["android_emulator.runInstrumentationTests", ANDROID_EMULATOR_BUILD_TIMEOUT_MS],
+  // P3: a Compose preview builds the module (the first one also downloads the preview pack).
+  ["android_emulator.listComposePreviews", ANDROID_EMULATOR_BUILD_TIMEOUT_MS],
+  ["android_emulator.renderComposePreviews", ANDROID_EMULATOR_BUILD_TIMEOUT_MS],
+  // P3: the image list reads Google's repository; a removal deletes gigabytes.
+  ["android_emulator.listSystemImages", ANDROID_EMULATOR_LIFECYCLE_TIMEOUT_MS],
+  ["android_emulator.removeSystemImage", ANDROID_EMULATOR_LIFECYCLE_TIMEOUT_MS],
+  ["android_emulator.installSystemImage", ANDROID_EMULATOR_LIFECYCLE_TIMEOUT_MS],
   ["android_emulator.getScreenSnapshot", ANDROID_EMULATOR_UI_TIMEOUT_MS],
   ["android_emulator.findElement", ANDROID_EMULATOR_UI_TIMEOUT_MS],
   ["android_emulator.tapElement", ANDROID_EMULATOR_UI_TIMEOUT_MS],

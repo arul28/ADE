@@ -508,6 +508,8 @@ import {
   formatAndroidLaunch,
   formatAndroidLease,
   formatAndroidLog,
+  formatAndroidPosture,
+  formatAndroidPreviews,
   formatAndroidProofBundle,
   formatAndroidRecording,
   formatAndroidRecordings,
@@ -515,6 +517,8 @@ import {
   formatAndroidSdkLicenses,
   formatAndroidSdkStatus,
   formatAndroidSnapshot,
+  formatAndroidSdkImages,
+  formatAndroidTest,
 } from "./cliAndroidFormat";
 import {
   appleLeaseAnswer,
@@ -871,6 +875,8 @@ export type FormatterId =
   | "android-screenshot"
   | "android-action"
   | "android-settings"
+  | "android-posture"
+  | "android-previews"
   | "android-render"
   | "android-apps"
   | "android-install"
@@ -885,6 +891,8 @@ export type FormatterId =
   | "android-sdk-status"
   | "android-sdk-licenses"
   | "android-sdk-install"
+  | "android-sdk-images"
+  | "android-test"
   | "app-control-status"
   | "app-control-snapshot"
   | "app-control-selection"
@@ -3581,6 +3589,14 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                                                    fix their orientation, such as the home screen, keep it.
     $ ade android type "hello world" --text        Type into the focused field (--value "<text>" for text
                                                    that starts with a dash)
+    $ ade android fold half --text                 Fold a foldable AVD: open, half, closed, or an angle
+                                                   (--angle 0-180). Waits for the screen to swap.
+    $ ade android posture --text                   Read the hinge: angle, fold state, screen in front
+    $ ade android preview list --module app --text List the module's Compose @Preview functions (no emulator)
+    $ ade android preview --module app --fqn com.example.ui.GreetingKt.GreetingPreview --text
+                                                   Render Compose previews to PNG with no emulator, filed as
+                                                   proof (Android CLI). No --fqn: every preview (up to 24).
+                                                   --no-proof: write the images only.
     $ ade android render --angles front,back --lighting studio --sheet --text
                                                    3D renders of the device with its live screen, filed as
                                                    proof (needs ADE open on the lane's Android tool).
@@ -3609,6 +3625,10 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                                                    ADE installed
     $ ade android open-url https://example.com --text
                                                    Open a URL or a deep link (myapp://...)
+    $ ade android test --text                      Run the app's instrumentation tests on the
+                                                   lane's emulator (--module app, --variant debug,
+                                                   --class <fqcn>, --method <name>); exits 1 when
+                                                   a test fails
 
   Read the screen and act on elements:
     $ ade android snapshot --text                  The screen's elements: ref, role, name, center
@@ -3661,11 +3681,17 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                                                    the free space and the licences
                                                    (--folder <path>, --with-cli)
     $ ade android sdk licenses --text              Read the licences (--id <id> for one)
+    $ ade android sdk images --text                The installed system images (size, the AVDs that
+                                                   use each) and the ones to download for this
+                                                   machine (--installed: only the installed ones)
 
   Only the user installs the SDK, accepts Google's licences, stops an
   install or picks the SDK folder, in the ADE desktop app: the setup card in
   the Android tool, or Settings › Android devices. ADE never accepts a
   licence. \`sdk install\`, \`sdk use\` and \`sdk cancel\` refuse a terminal.
+  The user also installs and removes system images, in the device picker's
+  System images. \`sdk install --image <id>\` and \`sdk remove --image <id>\`
+  refuse a terminal too.
 
   The verbs and flags are the ones \`ade apple\` uses for the same job (tap
   also takes --x/--y, button --name, type --value). Any other flag is refused.
@@ -3679,8 +3705,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   status and devices make no copy. --lane <id> uses a lane on that machine
   instead. Files are written there; a screenshot, a recording or a proof
   bundle is also filed in this chat's proof drawer. install and launch with
-  --gradle or --apk send your checkout and its uncommitted changes first (an
-  APK that git ignores does not travel: use --gradle).
+  --gradle or --apk, and test, send your checkout and its uncommitted changes
+  first (an APK that git ignores does not travel: use --gradle).
     $ ade android device-create --profile medium_phone --machine windows --text
     $ ade android tap 540 1200 --machine windows --text
 
@@ -3696,6 +3722,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     ANDROID_LOW_MEMORY               free memory, or ask the user, then start --force
     ANDROID_ELEMENT_NOT_FOUND        ade android snapshot, then aim again
     ANDROID_BUILD_FAILED             read the Gradle output, fix the build
+    ANDROID_SYSTEM_IMAGE_IN_USE      an AVD uses that image; stop its emulator first
+    ANDROID_TESTS_RUNNING            the lane's tests already run; wait for them
     ANDROID_PACKAGE_NOT_ADE_INSTALLED   ADE did not install it on this AVD
   The live view (stream and live touch) and deleting an AVD no lane holds are
   the user's, in the Android panel; an agent uses tap, swipe, button and type.
@@ -36789,6 +36817,10 @@ function formatTextOutput(
       return formatAndroidAction(value);
     case "android-settings":
       return formatAndroidSettings(value);
+    case "android-posture":
+      return formatAndroidPosture(value);
+    case "android-previews":
+      return formatAndroidPreviews(value);
     case "android-render":
       return formatAndroidRender(value);
     case "android-apps":
@@ -36817,6 +36849,10 @@ function formatTextOutput(
       return formatAndroidSdkLicenses(value);
     case "android-sdk-install":
       return formatAndroidSdkInstall(value);
+    case "android-sdk-images":
+      return formatAndroidSdkImages(value);
+    case "android-test":
+      return formatAndroidTest(value);
     case "app-control-status":
       return formatAppControlStatus(value);
     case "app-control-snapshot":

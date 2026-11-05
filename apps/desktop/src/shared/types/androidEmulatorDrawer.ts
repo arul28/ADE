@@ -84,7 +84,18 @@ export type AndroidToolsPreloadAction =
   | "getDeviceSettings"
   | "setDeviceSetting"
   // P2: the Logs group.
-  | "readLog";
+  | "readLog"
+  // P3: the hinge of a foldable.
+  | "getPosture"
+  | "setPosture"
+  // P3: the device picker's System images, and the App group's instrumentation tests.
+  | "listSystemImages"
+  | "installSystemImage"
+  | "removeSystemImage"
+  | "runInstrumentationTests"
+  // P3: the Previews group.
+  | "listComposePreviews"
+  | "renderComposePreviews";
 
 /** What one service method answers, without the promise. */
 export type AndroidServiceResult<K extends keyof AndroidEmulatorServiceApi> = Awaited<ReturnType<AndroidEmulatorServiceApi[K]>>;

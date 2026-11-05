@@ -176,6 +176,8 @@ The picker shows when the lane holds no device, or when the user picks
    ("ADE made" or "Yours", in use or running, size). **Clean up** asks again
    ("Delete N — frees X") and deletes only the AVDs that the ⋯ menu could
    delete.
+5. **System images** (P3). A toggle that lists the images on the lane's
+   machine and the ones to add (see [System images](#system-images-p3)).
 
 Pixel tiles use the SDK's own hardware profiles. The other brands use ADE
 profiles (`ade_*` ids) that ADE merges into `<android user home>/devices.xml`
@@ -187,6 +189,45 @@ The tile stills come from one shared WebGL renderer. Each still is drawn
 once, then kept in memory and in `localStorage` (WebP). Hover turns the body
 slowly on the same renderer, one tile at a time; the renderer is freed after
 20 s with no use. Reduced motion stops the turn.
+
+### System images (P3)
+
+The picker's last section, in the place the Apple picker has **Runtimes**
+(`AndroidSystemImagesSection.tsx`, data in `useAndroidSystemImages.ts`, the
+service in `androidSystemImages.ts`). It reads only while it is open.
+
+- **Installed.** Each image in `<sdk>/system-images` with its API level, tag
+  and ABI, its size on disk, and the AVDs that boot from it. ADE finds an
+  AVD's image from `image.sysdir.1` in its `config.ini`, else from its API
+  level, tag and ABI. **newest** marks the image a brand tile uses when no
+  image is named.
+- **Available.** The stable images in Google's `sys-img2-3.xml` manifests for
+  the host ABI, with the Google Play or Google APIs tag, at the newest
+  revision of each. An installed image with a newer revision shows
+  **Update**. An image that needs a newer emulator than the installed one
+  shows its need and cannot install.
+- **Install.** The licence dialog of the setup card shows the image's licence
+  in full; the install starts only when the person ticks it. The install
+  runs on the machine's one SDK install job (`androidSdkInstall.ts`): it
+  checks the free space (the unpacked size and the zip), checks the SHA-1,
+  writes the licence file and the consent record ("ADE device picker ›
+  System images"), shows progress, and **Cancel** stops it. An update is
+  refused while an AVD on that image runs.
+- **Remove.** ADE asks first. When AVDs use the image, the question names
+  them: ADE keeps their files, but they cannot start until the image is
+  installed again. The service refuses a removal while one of those AVDs
+  runs, and refuses one with users that the person did not confirm
+  (`ANDROID_SYSTEM_IMAGE_IN_USE`). It moves the folder out of
+  `system-images/` first, then deletes it. On Windows, a file that another
+  program holds open is refused with the same code.
+
+A finished install or removal sends `android.inventory.changed`, and the
+picker reads its list again. The device list reads the images from disk on
+each read, so a brand tile uses a new image with no restart.
+
+`ade android sdk images [--installed]` prints the same list. Install and
+remove are the person's (`ANDROID_SDK_PERSON_ONLY_ACTIONS`): an agent, a
+terminal and ADE MCP are refused, and the CLI says to ask the user.
 
 ### The stage
 
@@ -213,6 +254,35 @@ a landscape screen never sits under the rail.
 
 Touch maps to device pixels. Keys typed while the screen has focus go to the
 device. Esc sends Back.
+
+### Fold (P3)
+
+A foldable AVD (a Pixel Fold or a Galaxy Z Fold profile) has a hinge. The
+pane reads it once when the emulator boots (`getPosture`), then follows the
+brain's `android.device.posture` events, so a fold from an agent or another
+viewer shows at once.
+
+- **3D:** the stage draws a two-panel body (`device/proceduralFoldBody.ts`,
+  the body the iPhone Duo also uses) at the hinge angle, with the live inner
+  screen across both panels. The hinge runs down a book-style inner screen.
+  Below 30° Android shows the cover screen, and the stage draws the cover
+  phone body instead (one panel, no seam).
+- **The dock** under the stage (`AndroidFoldDock.tsx`): in 3D, the hinge
+  slider (`device/HingeSlider.tsx`, shared with the Duo) with the detents
+  Closed, Half and Open. A drag folds the drawn body only; the release folds
+  the emulator. In flat, three buttons: Closed, Half, Open. The readout shows
+  what the emulator reports, for example `102° · half open · inner screen`.
+- **Pinch** on the 3D body folds it too (120° for each doubling of the pinch),
+  and commits 250 ms after the last move.
+
+The brain (`androidPosture.ts`) sets the hinge with the emulator console
+(`sensor set hinge-angle0 <angle>`) and waits up to 3 s until Android settles:
+the sensor reads the angle, no device state is pending, and the screen
+capture has the size of the screen in front. It answers `settled: false` when
+Android was still changing. On a device with no hinge, the console answers
+`KO: unknown sensor name`, `getPosture` answers `supported: false`, and
+`setPosture` refuses. The fold states are Android's: 0–30° closed, 30–150°
+half open, 150–180° open.
 
 ### The rail
 
@@ -268,10 +338,11 @@ group reads from the device.
 | Group | Controls |
 |---|---|
 | Device | Text size and Display size (Small, Default, Large, Largest or Larger), Animations off, Show taps, Show layout bounds. |
-| App | The app in front (read every 2 s while the group is open), **Build & run** (Gradle), **Relaunch**, **Stop**, **Uninstall**, **Start an app**, **Open** a link, **Install** an APK, and Permissions. |
+| App | The app in front (read every 2 s while the group is open), **Build & run** (Gradle), **Relaunch**, **Stop**, **Uninstall**, **Start an app**, **Open** a link, **Install** an APK, **Run tests** (P3, instrumentation tests), and Permissions. |
 | Capture | The lane's recordings, newest first: **Open in proof**, and a ⋯ menu with Show in Finder (not for another machine's files) and Delete. A running recording shows as one line at the top. |
 | Emulator | Appearance, Location (presets or a typed point), Battery level and Charging, Airplane mode, Wi-Fi, Mobile data. |
 | Logs | Logcat for the lane's app (P2): the newest package ADE installed for the lane, else the app in front, or **Whole device**. A level filter (All, Info, Warn, Error), a text filter, **Pause**, **Clear**, **Copy** and **Send to chat** (the newest 80 lines into the chat's draft). |
+| Previews | P3: Compose previews. A module box (`app` by default), **Find previews**, a check box for each `@Preview`, and **Render**. The images show as thumbnails; a click opens the proof row ([Compose previews](#compose-previews-p3)). |
 
 Each change is one call to the lane's machine, and the drawer shows the value
 the device reports after the change. It never shows a value it has not read.
@@ -524,6 +595,10 @@ any flag that a verb does not take.
 | `lease [--wait <s>] [--ttl <s>] [--holder <name>]`, `lease renew\|release --token <t>`, `lease status` | Take turns on the lane's emulator (the shared device lease). |
 | `location <lat> <lon>`, `appearance light\|dark`, `permission grant\|revoke <permission> --package <name>` | Emulator controls (`adb emu geo fix`, `cmd uimode night`, `pm grant`). |
 | `proof-bundle [--out <dir>] [--caption] [--package] [--no-elements]` | A screenshot, the elements, a log tail and a meta file, filed as proof. |
+| `fold open\|half\|closed\|<angle>` (or `--angle <0-180>`), `posture` | P3: fold a foldable AVD and wait for the screen to swap, or read the hinge ([Fold](#fold-p3)). |
+| `preview list [--module <m>] [--all]`, `preview [--module <m>] [--fqn <name>]… [--no-proof]` | P3: list a module's Compose `@Preview` functions, or render them to PNG with no emulator ([Compose previews](#compose-previews-p3)). Exits 1 when a preview has no image. |
+| `test [--module <m>] [--variant <v>] [--class <fqcn>] [--method <name>]` | P3: run the lane app's instrumentation tests on the lane's emulator ([Instrumentation tests](#instrumentation-tests-p3)). Exits 1 when a test fails. |
+| `sdk images [--installed]` | P3: the installed system images (size, the AVDs that use each) and the ones to add ([System images](#system-images-p3)). `sdk install --image <id>` and `sdk remove --image <id>` are the user's and refuse a terminal. |
 | `sdk status\|licenses` | The guided SDK install's plan and licences ([The setup card](#the-setup-card)). Installing, cancelling and picking the folder are the user's, in the desktop app; `sdk install\|use\|cancel` refuse a terminal. |
 
 Every verb also takes `--lane` and `--machine` (see
@@ -579,6 +654,66 @@ again after it resolves symlinks.
 
 `start`, `device-create` and `device-attach` print a progress line while the
 AVD boots. These lifecycle calls have a 4-minute timeout.
+
+### Instrumentation tests (P3)
+
+`ade android test` (`androidInstrumentationTests.ts`) runs
+`gradlew :<module>:connected<Variant>AndroidTest` in the lane's worktree,
+module `app` and variant `debug` by default. It uses the Gradle runner and the
+JDK of `install --gradle`, with `ANDROID_SERIAL` set to the lane's emulator,
+the same 20-minute limit, and the same stop when the brain shuts down.
+`--class <fqcn>` runs one class and `--method <name>` (with `--class`) one
+method, through `-Pandroid.testInstrumentationRunnerArguments.class=…`.
+
+- It refuses when the lane's emulator is not booted (`ANDROID_NOT_RUNNING`),
+  and while a run for the lane goes on (`ANDROID_TESTS_RUNNING`).
+- It reads the JUnit XML files that this run wrote under
+  `<module>/build/outputs/androidTest-results/connected/`. With none, it reads
+  Gradle's own test lines. The answer has the total, passed, failed and
+  skipped counts, each failure (class, test, the first lines of the message),
+  the XML files and the HTML report.
+- A build that fails before any test runs is `ANDROID_BUILD_FAILED`, with the
+  Gradle output, as for an install.
+- With `--machine`, the caller's checkout goes to the work copy there first,
+  as for `install --gradle`.
+
+The Tools drawer's App group has **Run tests** (with an optional class). The
+counts and the first three failures show inline, and a toast says when the
+run ends. The run keeps going when the group closes, and the result shows
+again when it opens.
+
+### Compose previews (P3)
+
+`ade android preview` (`androidComposePreviews.ts`) runs Google's Android CLI
+(`android preview list|render --format json`, always `--no-metrics`) in the
+lane's worktree. The CLI builds the module with Gradle and draws each
+`@Preview` with layoutlib, so no emulator is needed.
+
+- `--module` is the module's folder in the lane (`app` by default; `:feature:home`
+  reads as `feature/home`). It must be a folder inside the lane with a
+  `build.gradle` or `build.gradle.kts`. The project's root is refused: the CLI
+  takes a module.
+- `preview` with no `--fqn` lists the module first, then renders every preview,
+  up to 24. `skipped` counts the rest; name them with `--fqn`.
+- A `--fqn` must be a dotted name (`com.example.ui.GreetingKt.GreetingPreview`).
+  A name the CLI cannot find fails alone: the other images still come back,
+  and that preview has its `error`.
+- The images go to `<project>/.ade/android/compose-previews/<lane>/<time>/`
+  on the lane's machine. Each one is filed as proof in the calling chat,
+  unless `--no-proof`. With `--machine`, the images are read back and filed on
+  the caller's machine, as screenshots are.
+- It needs the Android CLI (`ANDROID_TOOL_MISSING`; install it with the setup
+  card's Android CLI part) and a JDK (`ANDROID_BUILD_FAILED`, with where ADE
+  looked). A failed build is `ANDROID_BUILD_FAILED` with the CLI's last lines.
+- One preview command runs for each lane at a time. Each CLI run has a
+  10-minute limit, and it stops when the brain shuts down.
+
+Measured on macOS with a small module: a cold `list` takes about 30 s, and a
+render of two previews takes 5–20 s.
+
+The Tools drawer's Previews group calls the same actions with `inline: true`,
+so each PNG (up to 1 MB) also comes back as a `data:` URL. That way the
+thumbnails show for an emulator's lane on another machine.
 
 ### Lane scoping
 
@@ -649,8 +784,9 @@ chips show the emulator while the lane has one, also when it is off, so the
 viewer can offer **Start**. Start and input need `android.invoke` and
 `android.input` at the controller role; a phone at the viewer role can only
 watch. The emulator sends no frames while its screen is still, so the viewer
-does not treat a still picture as a dead stream. Fold mirroring waits for a
-host posture API (P3).
+does not treat a still picture as a dead stream. The phone viewer does not
+fold yet: the host has the posture actions (P3), but the phone does not
+send them.
 
 ## Another machine
 
@@ -743,8 +879,11 @@ restarts in 60 s it stays down, and `status` says why.
 
 The emulator service in the brain records one coarse `ade_feature_used` fact
 (`action: "android_device"`) when the guided SDK install puts parts in place,
-an app installs, a 3D render files as proof, or an agent takes a new lease.
-Each outcome counts at most once a day. No path, AVD, package, lane or image
+an app installs, a 3D render files as proof, an agent takes a new lease, a
+system image installs (`image_installed`), an instrumentation run runs at
+least one test (`tests_run`), a fold settles (`device_folded`), or a Compose
+preview render writes an image (`previews_rendered`). Each outcome counts at
+most once a day. No path, AVD, package, lane, image, angle or preview name
 goes with it. `docs/logging.md` holds the contract.
 
 ## Source file map
@@ -752,7 +891,7 @@ goes with it. `docs/logging.md` holds the contract.
 | Path | Role |
 |---|---|
 | `apps/desktop/src/shared/types/androidEmulator.ts` | The contract: SDK, AVD and lane types, error codes, the service API, the action lists (`ANDROID_AGENT_ACTIONS`, `ANDROID_USER_ONLY_ACTIONS`, `ANDROID_PERSON_ONLY_ACTIONS`, `ANDROID_LANE_FREE_ACTIONS`, `ANDROID_CODE_SYNC_ACTIONS`), and the preload API. It re-exports its siblings: `androidEmulatorAgent.ts` (the agent suite, `ANDROID_PERMISSIONS`), `androidEmulatorSetup.ts` (the SDK install), `androidEmulatorLook.ts` (colour and render) and `androidEmulatorDrawer.ts` (the Tools drawer, `ANDROID_TEXT_SIZES`, `ANDROID_DISPLAY_SIZES`). |
-| `apps/desktop/src/main/services/android/androidEmulatorService.ts` | The service: lane queue, start, stop, input, screenshot, the work-copy lanes, the start-up cleanup, and the hand-off. |
+| `apps/desktop/src/main/services/android/androidEmulatorService.ts`, `androidEmulatorServiceDeps.ts` | The service: lane queue, start, stop, input, screenshot, the work-copy lanes, the start-up cleanup, and the hand-off. Its inputs and its state for one lane are in `androidEmulatorServiceDeps.ts`. |
 | `apps/desktop/src/main/services/android/androidHandedOffEmulators.ts` | The state file of the emulators ADE started, and the stops that use it: on dispose, and when a project is removed after a hand-off. |
 | `apps/desktop/src/main/services/android/androidDeviceInventory.ts` | The lane's AVD: the device list, create, attach, release, delete and colour, and the work copy's borrow rule. |
 | `apps/desktop/src/main/services/android/androidSdk.ts` | SDK detection, tools and acceleration. |
@@ -765,8 +904,13 @@ goes with it. `docs/logging.md` holds the contract.
 | `apps/desktop/src/main/services/android/androidStream.ts`, `androidStreamServer.ts`, `androidLaneStreams.ts` | Streams by adb serial, the defaults, restarts, and the loopback stream server; the lane's side of its stream (a viewer, a recording). |
 | `apps/desktop/src/main/services/android/scrcpyServer.ts`, `scrcpyVideo.ts`, `scrcpyControl.ts` | The scrcpy session, video records and control messages. |
 | `apps/desktop/src/main/services/android/androidActionDomain.ts` | The `android_emulator` action domain. |
-| `apps/desktop/src/main/services/android/androidMemoryGuard.ts`, `androidCrashWatch.ts` | P2: the RAM guard (with the machine-wide count of boots in flight), and the crash-buffer reader behind the crash pin. |
+| `apps/desktop/src/main/services/android/androidMemoryGuard.ts`, `androidCrashWatch.ts` | P2: the RAM guard (the check before each start, with the machine-wide count of boots in flight), and the crash-buffer reader behind the crash pin. |
 | `apps/desktop/src/main/services/android/androidAgentSuite.ts`, `androidJdk.ts` | The agent verbs (elements, apps, logcat, proof, lease), and the JDK that Gradle runs with. |
+| `apps/desktop/src/main/services/android/androidSystemImages.ts`, `apps/desktop/src/shared/types/androidEmulatorImages.ts` | P3: the system image list, install (on the guided install's job) and removal, and their types. |
+| `apps/desktop/src/main/services/android/androidInstrumentationTests.ts`, `apps/desktop/src/shared/types/androidEmulatorInstrumentation.ts` | P3: `ade android test`: the Gradle run, the JUnit XML and Gradle-output readers, and their types. |
+| `apps/desktop/src/main/services/android/androidPosture.ts`, `apps/desktop/src/shared/types/androidEmulatorPosture.ts` | P3: the hinge read and fold (the emulator console and `dumpsys device_state`), and their types. |
+| `apps/desktop/src/main/services/android/androidLaneQueue.ts` | P3: one step at a time per lane, for folds and Compose preview runs. A failed step does not stop the next one. |
+| `apps/desktop/src/main/services/android/androidComposePreviews.ts`, `apps/desktop/src/shared/types/androidEmulatorPreviews.ts` | P3: `ade android preview`: the Android CLI runs, the module check, the proof filing, and their types. |
 | `apps/desktop/src/main/services/android/androidUiSnapshot.ts`, `androidUiTree.ts` | The UI tree (the Android CLI, or uiautomator), its cache, and the element queries. |
 | `apps/desktop/src/main/services/android/androidRecordingSession.ts`, `androidRecording.ts` | The lane's recording sessions, and the MP4 writer and store. |
 | `apps/desktop/src/main/services/android/androidDeviceSettings.ts` | The Tools drawer's settings read and its changes, the app in front, and location, appearance and permissions. |
@@ -778,6 +922,9 @@ goes with it. `docs/logging.md` holds the contract.
 | `apps/desktop/src/renderer/components/android/useAndroidInspect.tsx`, `useAndroidRecording.ts` | Inspect (on the shared `device/useDeviceInspect.ts` and `device/DeviceInspectOverlay.tsx`) and the rail's Record. |
 | `apps/desktop/src/renderer/components/android/androidDeviceState.ts` | The pane state, stock profiles, menu rules and error sentences. The 3D-or-flat choice is kept by the shared `device/deviceViewMode.ts`. |
 | `apps/desktop/src/renderer/components/android/AndroidDevicePicker.tsx`, `AndroidSetupCard.tsx`, `AndroidLicenseDialog.tsx`, `useAndroidSdkSetup.ts` | The picker, the setup card, the licence dialog and the card's data. |
+| `apps/desktop/src/renderer/components/android/AndroidSystemImagesSection.tsx`, `useAndroidSystemImages.ts`, `drawer/AndroidInstrumentationTestsRow.tsx` | P3: the picker's System images section and its data, and the App group's Run tests row. |
+| `apps/desktop/src/renderer/components/android/useAndroidPosture.ts`, `AndroidFoldDock.tsx`, `apps/desktop/src/renderer/components/device/proceduralFoldBody.ts`, `device/HingeSlider.tsx` | P3: the pane's hinge state, the fold dock, and the two-panel body and hinge slider that the iPhone Duo shares. |
+| `apps/desktop/src/renderer/components/android/drawer/AndroidPreviewsSection.tsx` | P3: the Tools drawer's Previews group. |
 | `apps/desktop/src/renderer/components/settings/AndroidDevicesSection.tsx` | Settings › Android devices: the setup card for the picked machine. |
 | `apps/desktop/src/renderer/components/android/AndroidDeviceStage.tsx`, `AndroidDeviceRail.tsx`, `AndroidDeviceStatus.tsx` | The stage (on the shared `device/DeviceFlatView.tsx`), the rail (on `device/DeviceRail.tsx`), and the strips, cards and live line (on `device/DeviceStatusStrip.tsx` and `device/DeviceLoadingCard.tsx`). |
 | `apps/desktop/src/renderer/components/android/AndroidCatalogGrid.tsx`, `androidTileRenderer.ts` | The brand grid tiles and their details, and the one shared WebGL renderer for the tile stills and the hover turn. |
@@ -791,7 +938,7 @@ goes with it. `docs/logging.md` holds the contract.
 | `apps/desktop/src/renderer/webclient/adapter/androidDevice.ts`, `streamTicket.ts` | P2: the hosted web client's `androidEmulator` namespace, and the relay ticket helpers it shares with `appleDevice.ts` (one ticket for each stream URL). |
 | `apps/ios/ADE/Views/Work/AndroidDeviceViewer.swift`, `AndroidDeviceViewerModel.swift`, `apps/ios/ADE/Services/SyncService+AndroidDevice.swift` | P2: the phone viewer, its control model, and the `android.*` commands it sends. The stream itself is `AppleStreamSession.swift`, and the touch rules are `LiveStageTouch` in `LiveStageChrome.swift`, both shared with the simulator viewer. |
 | `apps/desktop/src/renderer/components/terminals/useRemoteDeviceTabs.ts` | The tab that joins the open pane for a remote device use (iOS and Android). |
-| `apps/ade-cli/src/cliAndroid.ts`, `cliAndroidFormat.ts` | `ade android` plans and error hints, and its text formatters. The help page is in `cli.ts`. |
+| `apps/ade-cli/src/cliAndroid.ts`, `cliAndroidSuite.ts`, `cliAndroidFormat.ts` | `ade android` plans and error hints (P0 verbs in `cliAndroid.ts`; the P1 agent, P3 and `sdk` verbs in `cliAndroidSuite.ts`), and its text formatters. The help page is in `cli.ts`. |
 | `apps/ade-cli/src/services/sync/androidRemoteCommands.ts` | The `android.*` remote commands a phone or a web tab sends. |
 | `apps/desktop/resources/android/` | The scrcpy server jar, its licence and its README. |
 
@@ -808,7 +955,8 @@ P0 does not have:
   drawer, the RAM guard, and two floating players, one for each device kind
   (P2, now built; see the sections above);
 - fold by drag, Compose preview render, a system image manager and
-  instrumentation tests (P3).
+  instrumentation tests (P3, now built; see the sections above). The phone
+  viewer does not fold yet.
 
 The full list is in §6 of the [plan](../../plans/android-emulator.md).
 
@@ -828,5 +976,9 @@ The full list is in §6 of the [plan](../../plans/android-emulator.md).
 | `ANDROID_AVD_HELD_BY_OTHER_LANE` | Pick a free AVD (`ade android devices --text`), or make one. |
 | `ANDROID_LANE_HAS_DEVICE` | Use the lane's AVD, or run `ade android device-detach` first. |
 | `ANDROID_AVD_RUNNING` | Another app started that AVD. Close it there, or attach another AVD. |
+| `ANDROID_SYSTEM_IMAGE_IN_USE` | An AVD uses that system image. Stop its emulator first. To remove an image that AVDs use, confirm it in the picker's System images. |
+| `ANDROID_TESTS_RUNNING` | The lane's instrumentation tests already run. Wait for that run to end. |
+| "This emulator has no hinge" | Fold works on a foldable AVD only. Make one from a Pixel Fold or Galaxy Z Fold tile. |
+| `preview`: "has no build.gradle" | Pass `--module <folder>`: the Gradle module that holds the `@Preview` functions, not the project's root. |
 | `ANDROID_NO_FREE_PORT` | All ports 5554–5682 are in use. Stop an emulator you do not need. |
 | `ANDROID_STREAM_FAILED` | The live view failed. `tap`, `swipe`, `button`, `type` and `screenshot` do not need it. Press **Reconnect** in the pane. |
