@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -7,6 +7,7 @@ import {
   AGENT37_DEFAULT_TEMPLATE,
   agent37StillStartingMessage,
   describeAgent37TemplateStatus,
+  isAgent37InstanceId,
   type Agent37CreateMachineArgs,
   type Agent37CreateProgress,
   type Agent37MachineActionArgs,
@@ -46,12 +47,9 @@ import {
 import { createAgent37Client } from "./agent37Client";
 import { createAgent37Machines } from "./agent37Machines";
 import { claimAgent37ReadyMachine, releaseAgent37ReadyMachine } from "./agent37ReadyClaim";
-import {
-  AGENT37_READY_VAULT_KEY,
-  agent37ReadyIdentity,
-  createAgent37ReadyKeeper,
-  createAgent37ReadySettingsStore,
-} from "./agent37ReadyMachines";
+import { createAgent37ReadyKeeper } from "./agent37ReadyMachines";
+import { AGENT37_READY_VAULT_KEY, createAgent37ReadySettingsStore } from "./agent37ReadySettings";
+import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
 import {
   createAgent37PendingCreateStore,
   readAgent37BoxSignedIn,
@@ -318,11 +316,11 @@ export function registerAgent37Ipc(args: {
       machineStore: getMachineStore,
       logger,
     }),
-    createMachine: (requestId, machine, onProgress, signal, metadata) =>
-      createAgent37Machine(machineCreatorDeps, requestId, machine, onProgress, signal, metadata),
+    createMachine: (requestId, machine, onProgress, options) =>
+      createAgent37Machine(machineCreatorDeps, requestId, machine, onProgress, options),
     removeAccountMachine: args.removeAccountMachine,
     // This computer and this app's data folder: a development copy beside the installed one is another preparer.
-    preparerId: `${os.hostname()}:${createHash("sha256").update(app.getPath("userData")).digest("hex").slice(0, 8)}`,
+    preparerId: readyPreparerId(logger),
     templateAdeVersion: () => {
       const template = builder.status();
       return template.template === templateName() && template.state === "ready" ? template.adeVersion : null;
@@ -332,6 +330,9 @@ export function registerAgent37Ipc(args: {
   });
   // After the template check, off the boot path; it reads every couple of minutes only while a project is on.
   readyKeeper.start(STARTUP_CHECK_DELAY_MS + 10_000);
+  // A prepare cut short by a quit deletes its machine on the way out (best
+  // effort); what a quit still leaves, this copy deletes at its next start.
+  app.once("will-quit", () => readyKeeper.stop());
 
   const machines = createAgent37Machines({
     client: savedClient,
@@ -400,6 +401,13 @@ export function registerAgent37Ipc(args: {
     return result;
   });
 
+  /** A project's identity from the renderer, normalized like every stored one. */
+  const requireReadyIdentity = (value: unknown): string => {
+    const identity = normalizeGitRemoteIdentity(typeof value === "string" ? value : null);
+    if (!identity) throw new Error("Which project?");
+    return identity;
+  };
+
   ipcMain.handle(IPC.agent37ReadyStatus, async (event): Promise<Agent37ReadyStatus | null> => {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.agent37ReadyStatus)) return null;
     return await readyKeeper.refresh();
@@ -412,19 +420,17 @@ export function registerAgent37Ipc(args: {
 
   ipcMain.handle(IPC.agent37ReadyRemoveProject, async (event, arg: { identity?: unknown }): Promise<Agent37ReadyStatus | null> => {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.agent37ReadyRemoveProject)) return null;
-    if (typeof arg?.identity !== "string" || !arg.identity.trim()) throw new Error("Which project?");
-    return await readyKeeper.removeProject(arg.identity.trim());
+    return await readyKeeper.removeProject(requireReadyIdentity(arg?.identity));
   });
 
   ipcMain.handle(IPC.agent37ReadyRetry, async (event, arg: { identity?: unknown }): Promise<Agent37ReadyStatus | null> => {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.agent37ReadyRetry)) return null;
-    if (typeof arg?.identity !== "string" || !arg.identity.trim()) throw new Error("Which project?");
-    return await readyKeeper.retry(arg.identity.trim());
+    return await readyKeeper.retry(requireReadyIdentity(arg?.identity));
   });
 
   ipcMain.handle(IPC.agent37ReadyClaim, async (event, arg: { originUrl?: unknown }): Promise<Agent37ReadyClaim | null> => {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.agent37ReadyClaim)) return null;
-    const identity = agent37ReadyIdentity(typeof arg?.originUrl === "string" ? arg.originUrl : null);
+    const identity = normalizeGitRemoteIdentity(typeof arg?.originUrl === "string" ? arg.originUrl : null);
     if (!identity) throw new Error("This project has no git origin, so it has no ready machine.");
     const claim = await claimAgent37ReadyMachine(await requireAgent37Client(credentials), identity, { logger });
     // The pool is one short: make the next one.
@@ -433,11 +439,12 @@ export function registerAgent37Ipc(args: {
     return claim;
   });
 
-  ipcMain.handle(IPC.agent37ReadyRelease, async (event, arg: { instanceId?: unknown }): Promise<{ released: boolean } | null> => {
+  ipcMain.handle(IPC.agent37ReadyRelease, async (event, arg: { instanceId?: unknown; claimToken?: unknown }): Promise<{ released: boolean } | null> => {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.agent37ReadyRelease)) return null;
     const instanceId = typeof arg?.instanceId === "string" ? arg.instanceId.trim() : "";
-    if (!/^[a-z0-9]{4,40}$/.test(instanceId)) return { released: false };
-    const released = await releaseAgent37ReadyMachine(await requireAgent37Client(credentials), instanceId, { logger });
+    const claimToken = typeof arg?.claimToken === "string" ? arg.claimToken : "";
+    if (!isAgent37InstanceId(instanceId) || !claimToken) return { released: false };
+    const released = await releaseAgent37ReadyMachine(await requireAgent37Client(credentials), instanceId, claimToken, { logger });
     if (released) void readyKeeper.refresh();
     return { released };
   });
@@ -478,7 +485,7 @@ export function registerAgent37Ipc(args: {
         requestId,
         arg?.machine as Agent37CreateMachineArgs,
         send,
-        controller.signal,
+        { signal: controller.signal },
       ).then(
         (result) => {
           args.recordMachineCreate?.(result.joined ? "completed" : "partial");
@@ -512,6 +519,30 @@ export function registerAgent37Ipc(args: {
       return { started: true };
     },
   );
+}
+
+/**
+ * This copy of ADE as a preparer of ready machines: a random id kept in its
+ * own data folder, so it survives restarts and a hostname change, and a
+ * development copy beside the installed one (another data folder) is another
+ * preparer. Unreadable or unwritable, it is a fresh id for this run: then a
+ * leftover is cleaned up as stale instead of at once.
+ */
+function readyPreparerId(logger: Logger): string {
+  const file = path.join(app.getPath("userData"), "agent37-ready-preparer-id");
+  try {
+    const saved = fs.readFileSync(file, "utf8").trim();
+    if (/^[a-z0-9-]{8,64}$/.test(saved)) return saved;
+  } catch {
+    // None yet.
+  }
+  const id = randomUUID();
+  try {
+    fs.writeFileSync(file, id, { mode: 0o600 });
+  } catch (error) {
+    logger.warn("agent37.ready_preparer_id_not_saved", { error: error instanceof Error ? error.message : String(error) });
+  }
+  return id;
 }
 
 /** Long enough that the boot path, the brain and the vault are settled first. */

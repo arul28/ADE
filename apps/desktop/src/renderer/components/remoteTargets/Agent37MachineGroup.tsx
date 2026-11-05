@@ -28,6 +28,12 @@ import { MachineActionsMenu, type MachineAction } from "./MachineActionsMenu";
 import { agent37PendingLabel, type Agent37BoxActionError, type Agent37BoxPending } from "./useAgent37BoxActions";
 import { connectButtonStyle, machineRowStyle, nameStyle, subTextStyle } from "./remoteTargetListStyles";
 
+/** The tag on a ready machine that is not yet anyone's (a claimed one is an ordinary machine). */
+const READY_STATE_LABELS = {
+  preparing: "Being prepared",
+  failed: "Prepare failed",
+} as const;
+
 const TOP_UP: NoticeAction = { label: "Top up", href: AGENT37_BILLING_URL };
 
 /** The group's head: the mark, how many boxes, and what they cost now and so far. */
@@ -206,7 +212,7 @@ export function Agent37BoxStrip({
               data-tone={box.ready.state === "failed" ? "crit" : undefined}
               title={`ADE keeps this machine ready for ${box.ready.projectName}: the next chat there starts on it. Settings › Integrations › Agent 37.`}
             >
-              {box.ready.state === "ready" ? `Ready for ${box.ready.projectName}` : box.ready.state === "preparing" ? "Being prepared" : "Prepare failed"}
+              {box.ready.state === "ready" ? `Ready for ${box.ready.projectName}` : READY_STATE_LABELS[box.ready.state]}
             </span>
           ) : null}
           <span className="ade-cx-a37-fact">{describeAgent37MachineSize(box)}</span>

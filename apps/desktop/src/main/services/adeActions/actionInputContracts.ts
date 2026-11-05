@@ -200,14 +200,14 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "ade agent37 ready --text",
     },
     claim_ready: {
-      description: "Take this project's ready Agent 37 machine for a new chat: marks it claimed and wakes it (about 1-2 s), then returns {instanceId, machineKey, name, projectPath, wakeMs}. Its ADE comes online a few seconds later; wait for it before sending work there. `ade chat create --machine agent37:ready` does all of this. Throws when there is no ready machine (with whether one is being prepared). A claimed machine bills while awake.",
+      description: "Take this project's ready Agent 37 machine for a new chat: marks it claimed and wakes it (about 1-2 s), then returns {instanceId, machineKey, name, projectPath, laneId, wakeMs, claimToken}. Its ADE comes online a few seconds later; wait for it before sending work there. `ade chat create --machine agent37:ready` does all of this. Throws when there is no ready machine (with whether one is being prepared). A claimed machine bills while awake; give an unused one back with release_ready.",
       input: "object { originUrl: string }",
       example: "ade chat create --machine agent37:ready --prompt \"…\"",
     },
     release_ready: {
-      description: "Give back a ready machine claimed in the last 30 minutes that no chat used: it is tagged ready again and put back to sleep. Returns {released: boolean}.",
-      input: "object { instanceId: string }",
-      example: "ade --role agent actions run agent37.release_ready --input-json '{\"instanceId\":\"o2m461src2\"}' --json",
+      description: "Give back a ready machine you claimed in the last 30 minutes and no chat used: it is tagged ready again and put back to sleep. Needs the claimToken claim_ready returned, so it never sleeps a machine another caller claimed. Returns {released: boolean}.",
+      input: "object { instanceId: string, claimToken: string }",
+      example: "ade --role agent actions run agent37.release_ready --input-json '{\"instanceId\":\"o2m461src2\",\"claimToken\":\"<from claim_ready>\"}' --json",
     },
   },
   mcp_registry: {

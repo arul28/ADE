@@ -336,7 +336,7 @@ export type Agent37Machine = {
    * Set when this is a project's ready machine (prepared and kept asleep for
    * the next chat): the project it is for, and where it is in that life.
    */
-  ready?: { projectName: string; state: Agent37ReadyMachineState } | null;
+  ready: { projectName: string; state: Agent37ReadyMachineState } | null;
 };
 
 export type Agent37MachinesResult = {
@@ -473,6 +473,21 @@ export function describeAgent37TemplateStatus(status: Agent37TemplateStatus): st
  * computer on the account, the brain and the CLI read the same answer.
  */
 
+/** The size a new ready machine gets until the person picks one: a 4 vCPU / 8 GB VM runs a Docker stack. */
+export const AGENT37_READY_DEFAULT_SHAPE: Agent37ShapeId = "4x8";
+
+/**
+ * How long a chat start waits, from the claim, for the woken machine's ADE to
+ * come online and take it. Agent 37 answers a wake in about a second; ADE's own
+ * reconnect after a long sleep takes longer.
+ */
+export const AGENT37_READY_WAKE_WAIT_MS = 120_000;
+
+/** An Agent 37 instance id, as ADE accepts one from a caller. */
+export function isAgent37InstanceId(value: unknown): value is string {
+  return typeof value === "string" && /^[a-z0-9]{4,40}$/.test(value);
+}
+
 /** `ade chat create --machine agent37:ready`: start the chat on this project's ready machine. */
 export const AGENT37_READY_MACHINE_SELECTOR = "agent37:ready";
 
@@ -494,6 +509,8 @@ export const AGENT37_READY_METADATA = {
   lane: "ade_ready_lane",
   /** Epoch ms of the claim. */
   claimedAt: "ade_ready_claimed_at",
+  /** The claim's own token: only the caller holding it can give the machine back. */
+  claimToken: "ade_ready_claim",
   /** Which copy of ADE is preparing it, so that copy knows its own leftovers after a restart. */
   preparedBy: "ade_ready_by",
   /** The ADE release its template installed; a ready machine is replaced when the template moves on. */
@@ -508,10 +525,8 @@ export function readAgent37ReadyMachineState(value: string | null | undefined): 
 
 /** What the person chose for one project, kept in the account vault so every computer agrees. */
 export type Agent37ReadyProjectSettings = {
-  /** The project's git identity; the key everything else matches on. */
+  /** The project's git identity (`github.com/owner/repo`); the machine clones it over HTTPS. */
   identity: string;
-  /** What the machine clones. */
-  originUrl: string;
   projectName: string;
   kind: Agent37MachineKind;
   shape: Agent37ShapeId;
@@ -526,7 +541,7 @@ export type Agent37ReadyProjectSettings = {
    * choice so no computer, and no app restart, pays to try again on its own;
    * Retry or a new choice clears it.
    */
-  failure?: { error: string; at: number } | null;
+  failure: { error: string; at: number } | null;
 };
 
 /**
@@ -569,7 +584,27 @@ export type Agent37ReadyClaim = {
   laneId: string | null;
   /** How long Agent37 took to answer the wake. */
   wakeMs: number;
+  /** Gives this claim back (`release`) while nothing has used the machine. */
+  claimToken: string;
 };
+
+/** One project's pool, as `ade agent37 ready` reports it (the `agent37.ready_status` action). */
+export type Agent37ReadyPoolEntry = {
+  identity: string;
+  projectName: string;
+  /** Whether a computer keeps this project's machine ready (its setting), or only machines are left. */
+  keptReady: boolean;
+  /** Machines per state: `ready` (asleep, the next chat takes one), `preparing`, `inUse` (claimed), `failed`. */
+  ready: number;
+  preparing: number;
+  inUse: number;
+  failed: number;
+  /** The last prepare's failure, kept until Retry. */
+  failure: string | null;
+  machines: Array<{ instanceId: string; name: string | null; state: Agent37ReadyMachineState; status: string }>;
+};
+
+export type Agent37ReadyPool = { projects: Agent37ReadyPoolEntry[] };
 
 /** What a ready machine costs a month asleep: its disk. */
 export function agent37ReadyIdleMonthlyUsd(shape: Agent37Shape): number {

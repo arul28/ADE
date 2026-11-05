@@ -16486,7 +16486,7 @@ export function AgentChatPane({
     abandon: abandonAgent37ReadyMachine,
   } = useAgent37ReadyDraftMachine({
     enabled: showDraftLaunchControls,
-    originUrl: projectBinding ? projectBinding.gitOriginUrl ?? originUrlForBinding(projectBinding) : null,
+    originUrl: originUrlForBinding(projectBinding),
     pickerOpened: draftMachinePickerOpened,
     connectedMachineIds: laneMachineOptionIds,
     onMachineReady: selectReadyMachine,

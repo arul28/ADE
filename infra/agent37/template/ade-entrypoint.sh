@@ -34,8 +34,9 @@ if [ "${1:-}" = "--start-dockerd" ]; then
 fi
 
 export ADE_HOST_INSTANCE_ID="agent37:$(hostname)"
-# Claude Code refuses full-auto permissions as root unless it is told the
-# machine is a sandbox; an Agent37 machine is one.
+# An Agent37 machine is a sandbox. Claude Code refuses full-auto permissions
+# to root unless told so; the brain here runs as `node`, but anything that runs
+# an agent as root on the machine (sudo, a root exec) gets the same answer.
 export IS_SANDBOX=1
 # Check for a resume (a wake from sleep) every second instead of every 15, so
 # the brain reconnects to the relay right after Agent37 wakes the machine.

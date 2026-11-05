@@ -23,6 +23,7 @@ function box(instanceId: string, machineKey: string | null): Agent37Machine {
     machineKey,
     madeByAde: true,
     createdAtMs: null,
+    ready: null,
   };
 }
 

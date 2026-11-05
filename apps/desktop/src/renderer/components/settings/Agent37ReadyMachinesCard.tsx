@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { ArrowClockwise, CircleNotch, Lightning, Warning } from "@phosphor-icons/react";
 import {
   AGENT37_KINDS,
+  AGENT37_READY_DEFAULT_SHAPE,
   AGENT37_SHAPES,
   agent37ChoiceBlocker,
   agent37Shape,
@@ -16,13 +17,9 @@ import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff"
 import { useAppStore } from "../../state/appStore";
 import { originUrlForBinding } from "../lanes/laneMachines";
 import { IntegrationCard } from "./integrations/IntegrationChrome";
+import { Banner } from "../ui/notice";
+import { ipcErrorMessage } from "../../lib/format";
 import { AGENT37_NAME } from "../remoteTargets/agent37Brand";
-
-function errorText(error: unknown, fallback: string): string {
-  const raw = error instanceof Error ? error.message : String(error ?? "");
-  const message = raw.replace(/^Error invoking remote method '[^']*': (?:Error: )?/, "").trim();
-  return message || fallback;
-}
 
 function elapsedLabel(startedAt: number | null): string {
   if (!startedAt) return "";
@@ -39,15 +36,14 @@ function elapsedLabel(startedAt: number | null): string {
 export function Agent37ReadyMachinesCard({ status }: { status: Agent37Status | null }) {
   const bridge = window.ade.agent37;
   const binding = useAppStore((state) => state.projectBinding);
-  const originUrl = binding ? binding.gitOriginUrl ?? originUrlForBinding(binding) : null;
-  const identity = normalizeGitRemoteIdentity(originUrl);
+  const identity = normalizeGitRemoteIdentity(originUrlForBinding(binding));
   const projectName = binding?.displayName ?? identity ?? "this project";
 
   const [ready, setReady] = useState<Agent37ReadyStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [kind, setKind] = useState<Agent37MachineKind>("vm");
-  const [shapeId, setShapeId] = useState<Agent37ShapeId>("4x8");
+  const [shapeId, setShapeId] = useState<Agent37ShapeId>(AGENT37_READY_DEFAULT_SHAPE);
   const [setup, setSetup] = useState("");
   const [, setTick] = useState(0);
 
@@ -65,7 +61,7 @@ export function Agent37ReadyMachinesCard({ status }: { status: Agent37Status | n
     let cancelled = false;
     void bridge.readyStatus().then(
       (next) => { if (!cancelled && next) setReady(next); },
-      (loadError: unknown) => { if (!cancelled) setError(errorText(loadError, "Couldn't read the ready machines.")); },
+      (loadError: unknown) => { if (!cancelled) setError(ipcErrorMessage(loadError) || "Couldn't read the ready machines."); },
     );
     const off = bridge.onReadyStatus?.((next) => setReady(next));
     return () => {
@@ -74,13 +70,15 @@ export function Agent37ReadyMachinesCard({ status }: { status: Agent37Status | n
     };
   }, [bridge]);
 
-  // The form shows the saved choice once it is read.
+  // The form shows the saved choice once it is read, and again when it changes
+  // (another window, another computer); a status update alone keeps the edit.
+  const saved = mine?.settings ?? null;
   useEffect(() => {
-    if (!mine) return;
-    setKind(mine.settings.kind);
-    setShapeId(mine.settings.shape);
-    setSetup(mine.settings.setup);
-  }, [mine?.settings.identity, mine?.settings.kind, mine?.settings.shape, mine?.settings.setup]);
+    if (!saved) return;
+    setKind(saved.kind);
+    setShapeId(saved.shape);
+    setSetup(saved.setup);
+  }, [saved?.identity, saved?.kind, saved?.shape, saved?.setup]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // A running prepare shows its elapsed time; one tick a second only while it runs.
   const preparing = mine?.state === "preparing";
@@ -97,7 +95,7 @@ export function Agent37ReadyMachinesCard({ status }: { status: Agent37Status | n
       const next = await work();
       if (next) setReady(next);
     } catch (runError) {
-      setError(errorText(runError, "That didn't work."));
+      setError(ipcErrorMessage(runError) || "That didn't work.");
     } finally {
       setBusy(false);
     }
@@ -108,10 +106,9 @@ export function Agent37ReadyMachinesCard({ status }: { status: Agent37Status | n
   const remove = bridge.readyRemoveProject;
   const retry = bridge.readyRetry;
 
-  const shape = agent37Shape(shapeId) ?? AGENT37_SHAPES[1]!;
+  const shape = agent37Shape(shapeId) ?? agent37Shape(AGENT37_READY_DEFAULT_SHAPE)!;
   const blocker = status ? agent37ChoiceBlocker(status, kind, shape) : null;
-  const saved = mine != null;
-  const changed = saved && (mine.settings.kind !== kind || mine.settings.shape !== shapeId || mine.settings.setup !== setup);
+  const changed = saved != null && (saved.kind !== kind || saved.shape !== shapeId || saved.setup !== setup);
   const icon = mine?.state === "failed"
     ? <Warning size={15} weight="fill" />
     : preparing
@@ -162,7 +159,7 @@ export function Agent37ReadyMachinesCard({ status }: { status: Agent37Status | n
               style={{ height: 28, width: "auto" }}
               disabled={busy}
               value={shapeId}
-              onChange={(event) => setShapeId((agent37Shape(event.target.value)?.id ?? "4x8"))}
+              onChange={(event) => setShapeId(agent37Shape(event.target.value)?.id ?? AGENT37_READY_DEFAULT_SHAPE)}
             >
               {AGENT37_SHAPES.map((candidate) => (
                 <option key={candidate.id} value={candidate.id}>{candidate.cpu} CPU · {candidate.memoryGb} GB</option>
@@ -187,16 +184,23 @@ export function Agent37ReadyMachinesCard({ status }: { status: Agent37Status | n
             {describeAgent37ReadyCost(kind, shape)}
             {kind === "box" ? " A box has no Docker; pick a VM for a project that starts containers." : ""}
           </p>
-          {blocker ? <p className="ade-ig-note" role="alert">{blocker}</p> : null}
-          {error ? <p className="ade-ig-note" role="alert">{error}</p> : null}
+          {blocker ? (
+            <Banner layout="inline" model={{ id: "agent37-ready-blocker", tone: "warning", title: "Can't make this machine", detail: blocker }} />
+          ) : null}
+          {error ? (
+            <Banner
+              layout="inline"
+              model={{ id: "agent37-ready-error", tone: "error", title: "Ready machine", detail: error, actions: [{ label: "Dismiss", onClick: () => setError(null) }] }}
+            />
+          ) : null}
           <div className="ade-ig-step-actions">
-            {!saved || changed ? (
+            {saved == null || changed ? (
               <button
                 type="button"
                 className="ade-modern-btn"
                 data-tone="primary"
                 disabled={busy || blocker != null}
-                onClick={() => void run(() => save({ identity, originUrl: originUrl ?? undefined, projectName, kind, shape: shapeId, setup }))}
+                onClick={() => void run(() => save({ identity, projectName, kind, shape: shapeId, setup }))}
               >
                 {busy ? <CircleNotch size={12} className="animate-spin" /> : null}
                 {saved ? "Save" : "Keep a machine ready"}
@@ -224,7 +228,9 @@ export function Agent37ReadyMachinesCard({ status }: { status: Agent37Status | n
           ))}
         </div>
       ) : null}
-      {ready?.error ? <p className="ade-ig-note" role="alert">{ready.error}</p> : null}
+      {ready?.error ? (
+        <Banner layout="inline" model={{ id: "agent37-ready-pool-error", tone: "warning", title: "Ready machines", detail: ready.error }} />
+      ) : null}
       <p className="ade-ig-note" style={{ marginTop: 8 }}>
         Start a chat on it from the machine list beside the composer ({AGENT37_NAME} · ready), or with <code>ade chat create --machine agent37:ready</code>.
       </p>

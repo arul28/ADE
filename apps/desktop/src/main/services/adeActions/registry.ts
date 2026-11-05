@@ -301,12 +301,7 @@ import { requestProjectSecretFromUser } from "../secrets/projectSecretRequest";
 import { buildIntegrationConnectAdapters } from "../integrations/integrationConnectAdapters";
 import { agent37VaultFromStore, buildAgent37ConnectAdapter, type Agent37CredentialDeps } from "../agent37/agent37Credential";
 import { buildAgent37ReadyActions } from "../agent37/agent37ReadyActions";
-import {
-  AGENT37_READY_MACHINE_CREDENTIAL_KEY,
-  AGENT37_READY_VAULT_KEY,
-  parseAgent37ReadySettings,
-} from "../agent37/agent37ReadyMachines";
-import { ACCOUNT_SCOPE_ALL } from "../../../shared/accountSettingsScope";
+import { AGENT37_READY_VAULT_KEY, createAgent37ReadySettingsStore } from "../agent37/agent37ReadySettings";
 import { EncryptedFileCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
 import { listIntegrationConnections, requestIntegrationConnect } from "../integrations/integrationConnectRequest";
 import { createMcpRegistryService } from "../mcp/mcpRegistryService";
@@ -4011,12 +4006,6 @@ function agent37MachineStore(): EncryptedFileCredentialStore {
   return agent37MachineCredentialStore;
 }
 
-/**
- * The connect card. `status` lists every integration this runtime knows and
- * whether it is connected, never a credential. `request` asks the person in a
- * chat to connect one, and saves what they give into the integration here, on
- * the machine that runs the chat.
- */
 function agent37CredentialDeps(runtime: AdeRuntime): Agent37CredentialDeps {
   return {
     vault: () => (runtime.accountVaultStore ? agent37VaultFromStore(runtime.accountVaultStore) : null),
@@ -4026,6 +4015,12 @@ function agent37CredentialDeps(runtime: AdeRuntime): Agent37CredentialDeps {
   };
 }
 
+/**
+ * The connect card. `status` lists every integration this runtime knows and
+ * whether it is connected, never a credential. `request` asks the person in a
+ * chat to connect one, and saves what they give into the integration here, on
+ * the machine that runs the chat.
+ */
 function integrationConnectAdapters(runtime: AdeRuntime) {
   return buildIntegrationConnectAdapters({
     githubService: runtime.githubService ?? null,
@@ -4036,26 +4031,18 @@ function integrationConnectAdapters(runtime: AdeRuntime) {
   });
 }
 
-/** Ready machines for the CLI and agents; the account's choice is read from this brain's vault. */
+/** Ready machines for the CLI and agents; the choice is read through the same store the desktop writes. */
 function buildAgent37DomainService(runtime: AdeRuntime): OpaqueService {
+  const settings = createAgent37ReadySettingsStore({
+    vault: () => (runtime.accountAuthService?.getStatus().signedIn === true && runtime.accountVaultStore
+      ? agent37VaultFromStore(runtime.accountVaultStore, AGENT37_READY_VAULT_KEY)
+      : null),
+    machineStore: () => agent37MachineStore(),
+    logger: runtime.logger,
+  });
   return buildAgent37ReadyActions({
     credentials: agent37CredentialDeps(runtime),
-    // The account's choice, else this computer's copy (see createAgent37ReadySettingsStore).
-    readSettings: () => {
-      const signedIn = runtime.accountAuthService?.getStatus().signedIn === true;
-      const fromAccount = signedIn
-        ? runtime.accountVaultStore?.get(ACCOUNT_SCOPE_ALL, "integration", AGENT37_READY_VAULT_KEY) ?? null
-        : null;
-      let raw = fromAccount;
-      if (raw == null) {
-        try {
-          raw = agent37MachineStore().getSync(AGENT37_READY_MACHINE_CREDENTIAL_KEY);
-        } catch {
-          raw = null;
-        }
-      }
-      return parseAgent37ReadySettings(raw, runtime.logger);
-    },
+    readSettings: async () => (await settings.read()).projects,
     logger: runtime.logger,
   });
 }

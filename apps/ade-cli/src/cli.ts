@@ -9,6 +9,7 @@ import { pendingCliDelegation } from "./lib/cliDelegationEntry";
 import { isCliMainArgv } from "./lib/cliDelegation";
 import type { CrossMachineHandoffTransport } from "../../desktop/src/main/services/chat/crossMachineHandoffOrchestrator";
 import type { AccountRollupFetcher } from "../../desktop/src/main/services/usage/usageTrackingService";
+import type { Agent37ReadyPool } from "../../desktop/src/shared/agent37";
 import {
   setSharedAccountLiveQuotaFetcher,
   setSharedAccountRollupFetcher,
@@ -19927,25 +19928,21 @@ function buildAgent37Plan(args: string[]): CliPlan {
 }
 
 function formatAgent37Ready(value: unknown): string {
-  const result = isRecord(value) && isRecord(value.result) ? value.result : value;
-  const projects = isRecord(result) && Array.isArray(result.projects) ? result.projects.filter(isRecord) : [];
-  if (!projects.length) {
+  const raw = isRecord(value) && isRecord(value.result) ? value.result : value;
+  const pool = isRecord(raw) && Array.isArray(raw.projects) ? raw as unknown as Agent37ReadyPool : { projects: [] };
+  if (!pool.projects.length) {
     return "No project keeps an Agent 37 machine ready. Turn it on in Settings › Integrations › Agent 37.";
   }
   const lines: string[] = [];
-  for (const project of projects) {
-    const machines = Array.isArray(project.machines) ? project.machines.filter(isRecord) : [];
-    const ready = Number(project.ready ?? 0);
-    const preparing = Number(project.preparing ?? 0);
-    const inUse = Number(project.inUse ?? 0);
+  for (const project of pool.projects) {
     const summary = [
-      ready ? `${ready} ready` : preparing ? "being prepared" : project.keptReady === true ? "none ready yet" : "turned off",
-      ...(inUse ? [`${inUse} in use`] : []),
-      ...(typeof project.failure === "string" ? [`last prepare failed: ${project.failure}`] : []),
+      project.ready ? `${project.ready} ready` : project.preparing ? "being prepared" : project.keptReady ? "none ready yet" : "turned off",
+      ...(project.inUse ? [`${project.inUse} in use`] : []),
+      ...(project.failure ? [`last prepare failed: ${project.failure}`] : []),
     ].join(", ");
-    lines.push(`${String(project.projectName ?? project.identity)} (${String(project.identity)}): ${summary}`);
-    for (const machine of machines) {
-      lines.push(`  ${String(machine.name ?? machine.instanceId)}  ${String(machine.state)}  (${String(machine.status)}, ${String(machine.instanceId)})`);
+    lines.push(`${project.projectName} (${project.identity}): ${summary}`);
+    for (const machine of project.machines) {
+      lines.push(`  ${machine.name ?? machine.instanceId}  ${machine.state}  (${machine.status}, ${machine.instanceId})`);
     }
   }
   return lines.join("\n");

@@ -12959,8 +12959,8 @@ const adeBridge = {
       ipcRenderer.invoke(IPC.agent37ReadyRemoveProject, { identity }),
     readyRetry: (identity: string): Promise<Agent37ReadyStatus | null> => ipcRenderer.invoke(IPC.agent37ReadyRetry, { identity }),
     readyClaim: (originUrl: string): Promise<Agent37ReadyClaim | null> => ipcRenderer.invoke(IPC.agent37ReadyClaim, { originUrl }),
-    readyRelease: (instanceId: string): Promise<{ released: boolean } | null> =>
-      ipcRenderer.invoke(IPC.agent37ReadyRelease, { instanceId }),
+    readyRelease: (instanceId: string, claimToken: string): Promise<{ released: boolean } | null> =>
+      ipcRenderer.invoke(IPC.agent37ReadyRelease, { instanceId, claimToken }),
     onReadyStatus: (cb: (status: Agent37ReadyStatus) => void): (() => void) => {
       const listener = (_event: Electron.IpcRendererEvent, status: Agent37ReadyStatus) => cb(status);
       ipcRenderer.on(IPC.agent37ReadyStatusChanged, listener);

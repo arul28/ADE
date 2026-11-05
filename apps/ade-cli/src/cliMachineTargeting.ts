@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { withRemoteAndroidArgs, withRemoteAppleArgs, withRemoteShellArgs } from "./cliRemoteWork";
 import { THIS_MACHINE_NAME } from "../../desktop/src/shared/machineIdentity";
-import { isAgent37ReadyMachineSelector } from "../../desktop/src/shared/agent37";
+import { AGENT37_READY_WAKE_WAIT_MS, isAgent37ReadyMachineSelector } from "../../desktop/src/shared/agent37";
 import { pickLiveCheckout } from "../../desktop/src/shared/crossMachineHandoff";
 import { gitRemoteIdentity } from "../../desktop/src/main/services/github/githubSshAlias";
 import { samePathOnPlatform } from "../../desktop/src/shared/pathContainment";
@@ -874,15 +874,11 @@ async function executePlanOnMachines(
   return { machineFanOut: rows };
 }
 
-/**
- * How long `--machine agent37:ready` waits, from the claim, for the woken
- * machine's ADE to come online and take the chat. Agent 37 answers a wake in
- * about a second; ADE's own reconnect after a long sleep takes longer.
- */
-const READY_MACHINE_WAIT_MS = 120_000;
 const READY_MACHINE_POLL_MS = 1_000;
+/** One reachability check on the woken machine; the overall wait is AGENT37_READY_WAKE_WAIT_MS. */
+const READY_MACHINE_PROBE_TIMEOUT_MS = 15_000;
 
-/** An error that left the request unsent (the machine offline, or not reachable yet), so sending again is safe. */
+/** An error that left the request unsent (the machine offline, or not reachable yet), so asking again is safe. */
 function nothingWasSent(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   // The connection layer wraps the bridge's refusal; its words are in `cause`.
@@ -908,12 +904,66 @@ function withDefaultChatLane<T extends CliPlan & { kind: "execute" }>(plan: T, l
   };
 }
 
+/** An `agent37` action on this machine's brain, in the project the CLI runs in; its `result`. */
+async function runAgent37Action(options: GlobalOptions, projectRoot: string, action: string, args: JsonObject): Promise<unknown> {
+  return await withMachineBrain(options, async (client) => {
+    const registered = await client.request("projects.add", automaticProjectRegistrationParams(projectRoot));
+    const projectId = isRecord(registered) ? asString(registered.projectId) : null;
+    if (!projectId) throw new Error("This machine's brain did not register the project.");
+    const answer = unwrapToolResult(await client.request("ade/actions/call", withProjectId({
+      name: "run_ade_action",
+      arguments: { domain: "agent37", action, args },
+    }, projectId)));
+    return isRecord(answer) && isRecord(answer.result) ? answer.result : answer;
+  });
+}
+
+/**
+ * Waits until the woken machine takes a request: online in the account, then
+ * one harmless call through it (`projects.list`), retried while it sends
+ * nothing. Only after this does the chat go, once, so a flapping presence
+ * can never start a second chat.
+ */
+async function waitForReadyMachine(options: GlobalOptions, machineKey: string, name: string, deadline: number): Promise<void> {
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+  const timedOut = () => new CliExecutionError(
+    `${name} woke on Agent 37 but its ADE didn't answer within ${AGENT37_READY_WAKE_WAIT_MS / 1000} s. Nothing was sent; ADE put it back to sleep for the next chat.`,
+    {},
+  );
+  for (;;) {
+    const roster = await withMachineBrain(options, (client) => client.request("machines.list", { includeProjects: false }))
+      .catch(() => null);
+    const row = isRecord(roster) && Array.isArray(roster.machines)
+      ? roster.machines.find((machine) => isRecord(machine) && machine.machineKey === machineKey)
+      : null;
+    if (isRecord(row) && row.online === true) break;
+    if (Date.now() > deadline) throw timedOut();
+    await sleep(READY_MACHINE_POLL_MS);
+  }
+  for (;;) {
+    try {
+      await withMachineBrain(options, (client) => client.request("machines.call", {
+        machine: machineKey,
+        scope: { kind: "machine" },
+        request: { method: "projects.list", params: {} },
+        timeoutMs: READY_MACHINE_PROBE_TIMEOUT_MS,
+      }));
+      return;
+    } catch (error) {
+      if (!nothingWasSent(error)) throw error;
+      if (Date.now() > deadline) throw timedOut();
+      await sleep(READY_MACHINE_POLL_MS);
+    }
+  }
+}
+
 /**
  * `ade chat create --machine agent37:ready`: take this project's ready Agent 37
- * machine (prepared and asleep), wake it, wait until ADE shows it online, then
+ * machine (prepared and asleep), wake it, wait until it takes requests, then
  * start the chat there like on any machine. A machine ADE still shows offline
- * refuses work at once ("Nothing was sent"), so the wait comes before the send,
- * and a send that left nothing sent is tried again until the deadline.
+ * refuses work at once ("Nothing was sent"), so all the waiting comes before
+ * the send. If nothing was sent, the claim is given back (ready again,
+ * asleep); once the chat create went out, the machine is the caller's.
  */
 async function executePlanOnAgent37ReadyMachine(
   plan: CliPlan & { kind: "execute" },
@@ -927,78 +977,36 @@ async function executePlanOnAgent37ReadyMachine(
   if (!originUrl) {
     throw new CliUsageError("--machine agent37:ready needs a project with a git origin: the ready machine is the one kept for that repository.");
   }
-  const startedAt = Date.now();
-  /** An `agent37` action on this machine's brain, in the project the CLI runs in. */
-  const runAgent37Action = (action: string, args: JsonObject) => withMachineBrain(options, async (client) => {
-    const registered = await client.request("projects.add", automaticProjectRegistrationParams(roots.projectRoot));
-    const projectId = isRecord(registered) ? asString(registered.projectId) : null;
-    if (!projectId) throw new Error("This machine's brain did not register the project.");
-    const answer = unwrapToolResult(await client.request("ade/actions/call", withProjectId({
-      name: "run_ade_action",
-      arguments: { domain: "agent37", action, args },
-    }, projectId)));
-    return isRecord(answer) && isRecord(answer.result) ? answer.result : answer;
-  });
-  const claim = await runAgent37Action("claim_ready", { originUrl });
-  const instanceId = isRecord(claim) ? asString(claim.instanceId) : null;
-  const machineKey = isRecord(claim) ? asString(claim.machineKey) : null;
-  const name = (isRecord(claim) ? asString(claim.name) : null) ?? "the ready machine";
   const say = (line: string) => {
     if (!options.json) process.stderr.write(`ade: ${line}\n`);
   };
-  let sent = false;
+  const startedAt = Date.now();
+  const claim = await runAgent37Action(options, roots.projectRoot, "claim_ready", { originUrl });
+  const field = (key: string) => (isRecord(claim) ? asString(claim[key]) : null);
+  const instanceId = field("instanceId");
+  const machineKey = field("machineKey");
+  const laneId = field("laneId");
+  const claimToken = field("claimToken");
+  const name = field("name") ?? "the ready machine";
+  const wakeMs = isRecord(claim) && typeof claim.wakeMs === "number" ? claim.wakeMs : null;
+  let sending = false;
   try {
     if (!machineKey) {
       throw new CliExecutionError(`${name} has no ADE machine recorded on it, so ADE can't tell which computer it is. Delete it from its row and let ADE prepare another.`, {});
     }
-    say(`Woke ${name} on Agent 37 (${Math.round(Number(isRecord(claim) ? claim.wakeMs : 0) || 0)} ms). Waiting for its ADE…`);
-    const deadline = startedAt + READY_MACHINE_WAIT_MS;
-    const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-    // Online in the account first: the send below would otherwise be refused at once.
-    for (;;) {
-      const roster = await withMachineBrain(options, (client) => client.request("machines.list", { includeProjects: false }))
-        .catch(() => null);
-      const row = isRecord(roster) && Array.isArray(roster.machines)
-        ? roster.machines.find((machine) => isRecord(machine) && machine.machineKey === machineKey)
-        : null;
-      if (isRecord(row) && row.online === true) break;
-      if (Date.now() > deadline) {
-        throw new CliExecutionError(`${name} woke on Agent 37 but its ADE didn't come online within ${READY_MACHINE_WAIT_MS / 1000} s. Nothing was sent; try again, or check it under Your computers.`, {});
-      }
-      await sleep(READY_MACHINE_POLL_MS);
-    }
+    say(`Woke ${name} on Agent 37 (${Math.round(wakeMs ?? 0)} ms). Waiting for its ADE…`);
+    await waitForReadyMachine(options, machineKey, name, startedAt + AGENT37_READY_WAKE_WAIT_MS);
     const onlineMs = Date.now() - startedAt;
     say(`${name} is online (${(onlineMs / 1000).toFixed(1)} s). Starting the chat…`);
-    const laneId = isRecord(claim) ? asString(claim.laneId) : null;
-    const planThere = laneId ? withDefaultChatLane(plan, laneId) : plan;
-    for (;;) {
-      try {
-        const result = await executePlan(planThere, { ...options, machine: machineKey });
-        sent = true;
-        // Which machine took it, for a caller (a benchmark harness) that reads it there next.
-        const readyMachine = {
-          name,
-          machineKey,
-          instanceId,
-          laneId,
-          wakeMs: isRecord(claim) && typeof claim.wakeMs === "number" ? claim.wakeMs : null,
-          onlineMs,
-          sentMs: Date.now() - startedAt,
-        };
-        return isRecord(result) ? { ...result, readyMachine } : { result, readyMachine };
-      } catch (error) {
-        if (!nothingWasSent(error) || Date.now() > deadline) {
-          // Anything but "not sent" may have reached the machine: it is in use now.
-          if (!nothingWasSent(error)) sent = true;
-          throw error;
-        }
-        await sleep(READY_MACHINE_POLL_MS);
-      }
-    }
+    // From here a request may reach the machine: never repeated, never given back.
+    sending = true;
+    const result = await executePlan(laneId ? withDefaultChatLane(plan, laneId) : plan, { ...options, machine: machineKey });
+    // Which machine took it, for a caller (a benchmark harness) that reads it there next.
+    const readyMachine = { name, machineKey, instanceId, laneId, wakeMs, onlineMs, sentMs: Date.now() - startedAt };
+    return isRecord(result) ? { ...result, readyMachine } : { result, readyMachine };
   } finally {
-    // Nothing reached it: give it back (ready again, asleep) rather than leave it awake and billing.
-    if (!sent && instanceId) {
-      await runAgent37Action("release_ready", { instanceId }).catch((error: unknown) => {
+    if (!sending && instanceId && claimToken) {
+      await runAgent37Action(options, roots.projectRoot, "release_ready", { instanceId, claimToken }).catch((error: unknown) => {
         say(`couldn't put ${name} back to sleep (${error instanceof Error ? error.message : String(error)}). Sleep it from its row under Your computers.`);
       });
     }

@@ -10,6 +10,7 @@
 
 import {
   AGENT37_READY_METADATA,
+  isAgent37InstanceId,
   readAgent37ReadyMachineState,
   agent37IdleHourlyUsd,
   agent37MachineLimitMessage,
@@ -231,7 +232,7 @@ export function createAgent37Machines(deps: Agent37MachinesDeps) {
     const client = await deps.client();
     if (!client) return { ok: false, blocker: "key", message: "Connect Agent 37 first: Settings › Integrations › Agent 37." };
     const instanceId = typeof args?.instanceId === "string" ? args.instanceId.trim() : "";
-    if (!/^[a-z0-9]{4,40}$/.test(instanceId)) return { ok: false, blocker: null, message: "ADE doesn't know that box." };
+    if (!isAgent37InstanceId(instanceId)) return { ok: false, blocker: null, message: "ADE doesn't know that box." };
     const action = args.action;
     logger.info?.("agent37.machine_action", { instanceId, action, shape: args.shape ?? null });
     try {

@@ -44,9 +44,9 @@ person is using.
   mapped to a sentence and a blocker. Also `recordAgent37MachineKey`, which
   tags a box with its ADE machine key when it joins.
 - `agent37ReadyMachines.ts` — ready machines: the keeper that prepares one
-  machine per project and keeps it asleep, the setup job it hands the box,
-  and the per-project choice (account vault, else this computer's
-  `agent37.ready.v1`).
+  machine per project and keeps it asleep, and the setup job it hands the box.
+- `agent37ReadySettings.ts` — the per-project choice (account vault, else
+  this computer's `agent37.ready.v1`), shared by the desktop and the brain.
 - `agent37ReadyClaim.ts` — claiming a ready machine (tag it `claimed`, wake
   it) and giving an unused claim back. No window and no Electron, so the
   brain uses it too.
@@ -248,23 +248,40 @@ failure.
   job, so what it starts is part of the entrypoint's process tree and
   survives sleep. Then ADE tags the machine `ready` and sleeps it.
 - **Claiming** (`agent37ReadyClaim.ts`) tags the oldest ready machine
-  `claimed` and wakes it. From then on it is an ordinary machine of the
-  person's, never touched by the keeper, and the next pass prepares the next
-  one. A claim nothing used (the person picked another machine, or the CLI
-  failed before sending) is given back: `ready` again, and asleep.
+  `claimed` with a claim token and wakes it. From then on it is an ordinary
+  machine of the person's, never touched by the keeper, and the next pass
+  prepares the next one. A claim nothing used (the person picked another
+  machine or closed the draft mid-wake, the connect timed out, or the CLI
+  failed before sending) is given back: `ready` again, and asleep. Only the
+  holder of the claim token can give it back, so one caller never sleeps a
+  machine another caller's chat is on.
 - **Starting the chat.** In the new-chat picker, "Agent 37 · ready" claims
   and wakes the machine as soon as it is picked, so the wake overlaps the
   typing, then pairs, connects and selects it like any machine. From the CLI,
   `ade chat create --machine agent37:ready` claims through this computer's
   brain, waits until ADE shows the machine online (a machine still shown
-  offline refuses work at once, "Nothing was sent"), then sends, retrying
-  only refusals that sent nothing, for up to two minutes.
+  offline refuses work at once, "Nothing was sent") and a harmless call
+  through it succeeds, for up to two minutes, then sends the chat once. With
+  no `--lane` the chat starts in the project's primary lane there (recorded
+  on the machine at setup). `--json` adds `readyMachine` (name, machine key,
+  instance id, lane id, wake, online and sent times). `ade agent37 ready
+  --json` reports each project's pool.
 - **Money.** A failed prepare deletes its machine and is recorded with the
-  project's choice, so no computer and no restart tries again on its own;
-  Retry does. Turning a project off deletes its unclaimed machine and its
-  account row. A machine still `preparing` that this copy of ADE started
-  before it quit (`ade_ready_by`) is deleted on the next pass; anyone else's
-  after an hour.
+  project's choice (and in memory, if the choice can't be saved), so no
+  computer and no restart tries again on its own; Retry does. Turning a
+  project off deletes its unclaimed machine and its account row, but only
+  when the account answered with the choice: a choice read from this
+  computer alone deletes only machines this copy of ADE made. A machine
+  still `preparing` that this copy started before it quit (`ade_ready_by`, a
+  random id in the app's data folder) is deleted on the next pass; anyone
+  else's after an hour. A machine Agent 37 reports as failed is deleted. Each
+  machine is read again right before a delete or a sleep, so a claim that
+  landed meanwhile is never touched. A quit stops a prepare in flight and
+  deletes its machine on the way out.
+- **Versions.** Ready machines record the ADE release their template
+  installed (`ade_ready_ade`); once the template moves to a newer release,
+  an unclaimed older one is replaced. Packaged builds pin the template to
+  their own version (a beta app bakes its beta).
 - **Fresh, not forked.** A fork of a warm VM took 167 s (it copies the disk,
   boots fresh and comes up signed out by design); a cold bring-up of the same
   Supabase stack took 93 s. So the next machine is made fresh.

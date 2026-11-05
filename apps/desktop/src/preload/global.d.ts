@@ -4690,7 +4690,7 @@ declare global {
         /** Takes the project's ready machine and wakes it; the chat then goes to `machineKey` like any machine. */
         readyClaim?: (originUrl: string) => Promise<Agent37ReadyClaim | null>;
         /** Gives back a claim no chat used yet: ready again, and asleep. */
-        readyRelease?: (instanceId: string) => Promise<{ released: boolean } | null>;
+        readyRelease?: (instanceId: string, claimToken: string) => Promise<{ released: boolean } | null>;
         onReadyStatus?: (cb: (status: Agent37ReadyStatus) => void) => () => void;
       };
       /**

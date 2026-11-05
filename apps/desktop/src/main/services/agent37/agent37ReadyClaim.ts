@@ -14,31 +14,24 @@
  * machine through its brain, so it takes no pin.
  */
 
+import { randomUUID } from "node:crypto";
 import {
   AGENT37_READY_METADATA,
   readAgent37ReadyMachineState,
   type Agent37ReadyClaim,
   type Agent37ReadyMachineState,
 } from "../../../shared/agent37";
-import { Agent37Error, type Agent37Client, type Agent37Instance } from "./agent37Client";
+import { Agent37Error, type Agent37Client, type Agent37Instance, type Agent37Logger } from "./agent37Client";
+import { getErrorMessage } from "../shared/utils";
 import { AGENT37_MACHINE_KEY_METADATA } from "./agent37Machines";
 
-type Logger = {
-  info?(event: string, meta?: Record<string, unknown>): void;
-  warn?(event: string, meta?: Record<string, unknown>): void;
-};
-
-/** There is no ready machine to take; `preparing` says whether one is on its way. */
+/** There is no ready machine to take. `code` reaches a CLI caller's JSON. */
 export class Agent37NoReadyMachine extends Error {
   readonly code = "agent37_no_ready_machine";
-  constructor(message: string, readonly preparing: boolean) {
+  constructor(message: string) {
     super(message);
     this.name = "Agent37NoReadyMachine";
   }
-}
-
-function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 export function agent37ReadyStateOf(instance: Pick<Agent37Instance, "metadata">): Agent37ReadyMachineState | null {
@@ -81,7 +74,7 @@ export async function patchAgent37Metadata(
 export async function claimAgent37ReadyMachine(
   client: Agent37Client,
   identity: string,
-  options: { logger?: Logger; now?: () => number } = {},
+  options: { logger?: Agent37Logger; now?: () => number } = {},
 ): Promise<Agent37ReadyClaim> {
   const now = options.now ?? (() => Date.now());
   const logger = options.logger ?? {};
@@ -94,13 +87,14 @@ export async function claimAgent37ReadyMachine(
       preparing
         ? "This project's ready machine is still being prepared. Try again in a few minutes, or pick another machine."
         : "This project has no ready machine. Turn on \"Keep a cloud machine ready\" in Settings › Integrations › Agent 37.",
-      preparing,
     );
   }
   const claimedAt = now();
+  const claimToken = randomUUID();
   const metadata = await patchAgent37Metadata(client, pick.id, {
     [AGENT37_READY_METADATA.state]: "claimed",
     [AGENT37_READY_METADATA.claimedAt]: String(claimedAt),
+    [AGENT37_READY_METADATA.claimToken]: claimToken,
   });
   const wakeStarted = now();
   try {
@@ -109,12 +103,12 @@ export async function claimAgent37ReadyMachine(
   } catch (error) {
     // Not woken, so not taken: put it back for the next chat.
     await patchAgent37Metadata(client, pick.id, { [AGENT37_READY_METADATA.state]: "ready" }).catch((restoreError: unknown) => {
-      logger.warn?.("agent37.ready_claim_restore_failed", { instanceId: pick.id, error: errorText(restoreError) });
+      logger.warn?.("agent37.ready_claim_restore_failed", { instanceId: pick.id, error: getErrorMessage(restoreError) });
     });
     logger.warn?.("agent37.ready_wake_failed", {
       instanceId: pick.id,
       code: error instanceof Agent37Error ? error.code : null,
-      error: errorText(error),
+      error: getErrorMessage(error),
     });
     throw error;
   }
@@ -127,22 +121,26 @@ export async function claimAgent37ReadyMachine(
     projectPath: metadata[AGENT37_READY_METADATA.path] ?? null,
     laneId: metadata[AGENT37_READY_METADATA.lane] ?? null,
     wakeMs,
+    claimToken,
   };
 }
 
 /**
- * Gives a claimed machine back before any chat started on it (the person
- * picked another machine): ready again, and asleep. A machine whose claim is
- * older than `maxAgeMs` is left alone, since work may have started on it.
+ * Gives a claim back before any chat started on it (the person picked another
+ * machine, the CLI failed before sending): ready again, and asleep. Only the
+ * claim that took it can, by its token, so one caller never sleeps a machine
+ * another caller's chat is on. A claim older than `maxAgeMs` is left alone.
  */
 export async function releaseAgent37ReadyMachine(
   client: Agent37Client,
   instanceId: string,
-  options: { logger?: Logger; now?: () => number; maxAgeMs?: number } = {},
+  claimToken: string,
+  options: { logger?: Agent37Logger; now?: () => number; maxAgeMs?: number } = {},
 ): Promise<boolean> {
   const now = options.now ?? (() => Date.now());
   const instance = await client.getInstance(instanceId);
   if (agent37ReadyStateOf(instance) !== "claimed") return false;
+  if (!claimToken || instance.metadata[AGENT37_READY_METADATA.claimToken] !== claimToken) return false;
   const claimedAt = Number(instance.metadata[AGENT37_READY_METADATA.claimedAt] ?? "");
   if (Number.isFinite(claimedAt) && now() - claimedAt > (options.maxAgeMs ?? 30 * 60_000)) return false;
   await client.setInstanceMetadata(instanceId, { ...instance.metadata, [AGENT37_READY_METADATA.state]: "ready" });
@@ -150,7 +148,7 @@ export async function releaseAgent37ReadyMachine(
     await client.sleepInstance(instanceId);
   } catch (error) {
     // Ready but awake: it bills until the next prepare pass sleeps it.
-    options.logger?.warn?.("agent37.ready_release_sleep_failed", { instanceId, error: errorText(error) });
+    options.logger?.warn?.("agent37.ready_release_sleep_failed", { instanceId, error: getErrorMessage(error) });
   }
   options.logger?.info?.("agent37.ready_released", { instanceId });
   return true;

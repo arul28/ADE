@@ -1,11 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { Agent37TemplateStatus } from "../../../shared/agent37";
+import { ipcErrorMessage } from "../../lib/format";
 
-function errorText(error: unknown): string {
-  const raw = error instanceof Error ? error.message : String(error ?? "");
-  // IPC wraps a main-process throw as "Error invoking remote method '…': Error: <message>".
-  return raw.replace(/^Error invoking remote method '[^']*': (?:Error: )?/, "").trim();
-}
 
 /**
  * ADE's template in the Agent 37 workspace, live. Account-wide like the key,
@@ -46,7 +42,7 @@ export function useAgent37Template(enabled: boolean): {
         setLoadError("ADE couldn't read the template's state.");
       }
     }, (error: unknown) => {
-      if (live) setLoadError(errorText(error) || "ADE couldn't read the template's state.");
+      if (live) setLoadError(ipcErrorMessage(error) || "ADE couldn't read the template's state.");
     });
     return () => {
       live = false;
@@ -63,7 +59,7 @@ export function useAgent37Template(enabled: boolean): {
       // The build may have been fine and only the read failed: read again too.
       setAttempt((value) => value + 1);
     }, (error: unknown) => {
-      setLoadError(errorText(error) || "ADE couldn't ask for the template again.");
+      setLoadError(ipcErrorMessage(error) || "ADE couldn't ask for the template again.");
     });
   }, []);
 

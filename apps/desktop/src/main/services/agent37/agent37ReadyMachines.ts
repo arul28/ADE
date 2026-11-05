@@ -33,7 +33,6 @@ import { randomUUID } from "node:crypto";
 import {
   AGENT37_READY_METADATA,
   agent37Shape,
-  isAgent37MachineKind,
   type Agent37CreateMachineArgs,
   type Agent37CreateMachineResult,
   type Agent37CreateProgress,
@@ -41,26 +40,18 @@ import {
   type Agent37ReadyProjectStatus,
   type Agent37ReadyStatus,
 } from "../../../shared/agent37";
-import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
-import type { Agent37Client, Agent37Instance } from "./agent37Client";
+import type { Agent37Client, Agent37Instance, Agent37Logger } from "./agent37Client";
+import { getErrorMessage } from "../shared/utils";
 import { agent37ReadyMachinesFor, agent37ReadyStateOf, patchAgent37Metadata } from "./agent37ReadyClaim";
 import { AGENT37_MACHINE_KEY_METADATA } from "./agent37Machines";
-import type { Agent37Vault } from "./agent37Credential";
+import { compareUpdateVersions } from "../../../shared/updateVersions";
 import { deleteAgent37InstanceConfirmed } from "./agent37PendingCreates";
-
-type Logger = {
-  info?(event: string, meta?: Record<string, unknown>): void;
-  warn?(event: string, meta?: Record<string, unknown>): void;
-};
-
-/** The account vault item that holds every project's choice. */
-export const AGENT37_READY_VAULT_KEY = "agent37-ready";
-
-export type Agent37ReadySettingsStore = {
-  /** Throws when the account vault can't be read: unknown is never "no projects". */
-  read(): Promise<Agent37ReadyProjectSettings[]>;
-  write(projects: Agent37ReadyProjectSettings[]): Promise<void>;
-};
+import {
+  agent37ReadyCloneUrl,
+  agent37ReadyFolderName,
+  normalizeAgent37ReadySettings,
+  type Agent37ReadySettingsStore,
+} from "./agent37ReadySettings";
 
 export type Agent37ReadyKeeperDeps = {
   client: () => Promise<Agent37Client | null>;
@@ -70,8 +61,7 @@ export type Agent37ReadyKeeperDeps = {
     requestId: string,
     machine: Agent37CreateMachineArgs,
     onProgress: (progress: Agent37CreateProgress) => void,
-    signal: AbortSignal,
-    metadata: Record<string, string>,
+    options: { signal: AbortSignal; metadata: Record<string, string> },
   ) => Promise<Agent37CreateMachineResult>;
   /** Takes a deleted machine's row off the ADE account. */
   removeAccountMachine: (machineKey: string) => Promise<unknown>;
@@ -88,7 +78,7 @@ export type Agent37ReadyKeeperDeps = {
    */
   templateAdeVersion?: () => string | null;
   onStatus?: (status: Agent37ReadyStatus) => void;
-  logger?: Logger;
+  logger?: Agent37Logger;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
 };
@@ -100,66 +90,45 @@ const PREPARING_STALE_MS = 60 * 60_000;
 /** The person's setup: clone, install, pull images, start. A cold Supabase stack took 93 s. */
 const SETUP_TIMEOUT_MS = 30 * 60_000;
 const SETUP_POLL_MS = 3_000;
-/** A template without the job runner never marks the job started. */
+/** A template without the job runner never marks the job started; this long means it has none. */
 const RUNNER_START_GRACE_MS = 20_000;
 const LOG_TAIL_LINES = 6;
-
-function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
 
 /** `'…'` for sh, whatever the text holds. */
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'"'"'`)}'`;
 }
 
-/** The project's identity on every computer and machine: its origin, normalized (`github.com/owner/repo`). */
-export function agent37ReadyIdentity(originUrl: string | null | undefined): string | null {
-  return normalizeGitRemoteIdentity(originUrl);
-}
-
-/**
- * What a machine with no SSH keys can clone: the identity over HTTPS. A
- * private repository needs a Git sign-in on the machine; the setup log says so.
- */
-export function agent37ReadyCloneUrl(identity: string): string {
-  return `https://${identity}.git`;
-}
-
-/** A folder name for the clone: the repository's last path part, made safe. */
-function cloneFolderName(identity: string): string {
-  const last = identity.split("/").filter(Boolean).pop() ?? "project";
-  return last.replace(/[^A-Za-z0-9._-]/g, "-").replace(/^[.-]+/, "") || "project";
-}
-
 /**
  * The box's setup job. Runs under `sh -e` from the home folder: clone (kept
  * if already there), register the project with the box's ADE so a chat finds
- * it by its origin, then the person's commands in the clone.
+ * it by its origin, wait for Docker on a VM, then the person's commands in the
+ * clone.
  */
 export function buildAgent37ReadySetupScript(settings: Pick<Agent37ReadyProjectSettings, "identity" | "setup">): string {
-  const folder = cloneFolderName(settings.identity);
-  return [
+  const folder = agent37ReadyFolderName(settings.identity);
+  const lines = [
     "set -e",
     `dir="$HOME/${folder}"`,
-    `echo "ADE_READY_PATH=$dir"`,
+    `echo "${READY_PATH_MARKER}$dir"`,
     'if [ ! -d "$dir/.git" ]; then',
     `  GIT_TERMINAL_PROMPT=0 git clone ${shellQuote(agent37ReadyCloneUrl(settings.identity))} "$dir"`
       + ' || { echo "ADE couldn\'t clone the repository. A private repository needs a Git sign-in on the machine." >&2; exit 1; }',
     "fi",
     'cd "$dir"',
     'ade projects add "$dir" >/dev/null',
-    // The primary lane's id, so a chat that names no lane starts there.
-    'lane=$(ade lanes list --json 2>/dev/null | node -e \'let s="";process.stdin.on("data",(d)=>{s+=d}).on("end",()=>{try{const l=JSON.parse(s).lanes||[];const p=l.find((x)=>x.laneType==="primary");process.stdout.write(p?p.id:"")}catch{}})\' || true)',
-    'echo "ADE_READY_LANE=$lane"',
     // Docker starts in the background at boot (VMs only); give it a moment before the setup needs it.
     'if command -v docker >/dev/null 2>&1 && [ "$(uname -r)" != "4.4.0" ]; then',
     '  i=0; until docker info >/dev/null 2>&1 || [ $i -ge 30 ]; do sleep 1; i=$((i+1)); done',
     "fi",
-    settings.setup.trim(),
-    'echo "ADE_READY_DONE"',
-  ].filter(Boolean).join("\n");
+  ];
+  const setup = settings.setup.trim();
+  if (setup) lines.push(setup);
+  return lines.join("\n");
 }
+
+/** The line the job prints first: where the clone is. */
+const READY_PATH_MARKER = "ADE_READY_PATH=";
 
 /** Writes the job where the entrypoint's runner picks it up, clearing any earlier run. */
 function writeJobCommand(script: string): string {
@@ -172,14 +141,6 @@ function writeJobCommand(script: string): string {
     'mv "$jobs/job.sh.tmp" "$jobs/job.sh"',
   ].join(" && ");
 }
-
-/** For a template without the runner: the same job, started over exec (it may not survive a sleep on a box). */
-const START_JOB_OVER_EXEC = [
-  'jobs="$ADE_HOME/ready"',
-  '[ -f "$jobs/job.started" ] && exit 0',
-  'date +%s > "$jobs/job.started"',
-  'nohup setsid sh -c \'cd "$HOME" && sh "$1/job.sh" > "$1/job.log" 2>&1 < /dev/null; echo $? > "$1/job.exit"\' sh "$jobs" > /dev/null 2>&1 &',
-].join("; ");
 
 const READ_JOB_COMMAND = [
   'jobs="$ADE_HOME/ready"',
@@ -197,8 +158,21 @@ function parseJobRead(stdout: string): JobRead {
   return {
     started,
     exitCode: exitRaw != null ? Number(exitRaw) : null,
-    tail: lines.slice(2).map((line) => line.trimEnd()).filter(Boolean),
+    tail: lines.slice(2).map((line) => line.trimEnd()).filter((line) => line && !line.startsWith(READY_PATH_MARKER)),
   };
+}
+
+/** The primary lane on the machine, read from its ADE once the project is registered. */
+async function readPrimaryLaneId(client: Agent37Client, instanceId: string, projectPath: string, signal: AbortSignal): Promise<string | null> {
+  const answer = await client.exec(instanceId, `cd ${shellQuote(projectPath)} && ade lanes list --json`, { timeoutMs: 30_000, signal })
+    .catch(() => null);
+  try {
+    const lanes = (JSON.parse(answer?.stdout ?? "") as { lanes?: Array<{ id?: unknown; laneType?: unknown }> }).lanes ?? [];
+    const primary = lanes.find((lane) => lane.laneType === "primary");
+    return typeof primary?.id === "string" ? primary.id : null;
+  } catch {
+    return null;
+  }
 }
 
 export class Agent37ReadyPrepareCancelled extends Error {
@@ -208,24 +182,12 @@ export class Agent37ReadyPrepareCancelled extends Error {
   }
 }
 
-/** The person's choice, checked: anything the renderer or vault hands in passes through here. */
-export function normalizeAgent37ReadySettings(raw: Partial<Agent37ReadyProjectSettings> | null | undefined): Agent37ReadyProjectSettings | null {
-  const identity = agent37ReadyIdentity(raw?.identity ?? raw?.originUrl ?? null);
-  if (!identity || !raw) return null;
-  const kind = isAgent37MachineKind(raw.kind) ? raw.kind : "vm";
-  const shape = agent37Shape(raw.shape)?.id ?? "4x8";
-  return {
-    identity,
-    originUrl: typeof raw.originUrl === "string" && raw.originUrl.trim() ? raw.originUrl.trim() : agent37ReadyCloneUrl(identity),
-    projectName: (typeof raw.projectName === "string" ? raw.projectName : "").replace(/[\u0000-\u001f]/g, " ").trim().slice(0, 60)
-      || cloneFolderName(identity),
-    kind,
-    shape,
-    setup: typeof raw.setup === "string" ? raw.setup.replace(/\r\n/g, "\n").slice(0, 8_000) : "",
-    failure: raw.failure && typeof raw.failure.error === "string" && typeof raw.failure.at === "number"
-      ? { error: raw.failure.error.slice(0, 600), at: raw.failure.at }
-      : null,
-  };
+/** The person's setup failed. Its output is shown to them but never logged: it can echo anything. */
+class Agent37ReadySetupFailed extends Error {
+  constructor(message: string, readonly exitCode: number | null) {
+    super(message);
+    this.name = "Agent37ReadySetupFailed";
+  }
 }
 
 type LocalPrepare = {
@@ -236,21 +198,35 @@ type LocalPrepare = {
   machineKey: string | null;
 };
 
+/** Why the pass deletes a pool machine, or null to keep it. */
+type DiscardReason = "agent37_failed" | "failed" | "unwanted" | "orphaned" | "stale" | "outdated";
+
 export function createAgent37ReadyKeeper(deps: Agent37ReadyKeeperDeps) {
   const logger = deps.logger ?? {};
   const now = deps.now ?? (() => Date.now());
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const local = new Map<string, LocalPrepare>();
+  /**
+   * Failed prepares, also kept here: when the choice can't be saved with the
+   * failure, this still stops the next pass from paying to try again.
+   */
+  const failures = new Map<string, { error: string; at: number }>();
   let last: Agent37ReadyStatus = { projects: [], error: null };
   let timer: NodeJS.Timeout | null = null;
   let passing: Promise<void> | null = null;
   let passAgain = false;
   let stopped = false;
+  /** A delete Agent 37 didn't confirm: keep passing until it does, even with nothing on. */
+  let cleanupOwed = false;
+  /** Every read-modify-write of the choice, one at a time. */
+  let settingsQueue: Promise<unknown> = Promise.resolve();
 
   const publish = (status: Agent37ReadyStatus) => {
     last = status;
     deps.onStatus?.(status);
   };
+
+  const failureOf = (settings: Agent37ReadyProjectSettings) => settings.failure ?? failures.get(settings.identity) ?? null;
 
   const statusFor = (
     settings: Agent37ReadyProjectSettings,
@@ -282,8 +258,9 @@ export function createAgent37ReadyKeeper(deps: Agent37ReadyKeeperDeps) {
         startedAt: elsewhere.created != null ? elsewhere.created * 1000 : null,
       };
     }
-    if (settings.failure) {
-      return { ...base, state: "failed", message: `ADE couldn't prepare it: ${settings.failure.error}`, error: settings.failure.error };
+    const failure = failureOf(settings);
+    if (failure) {
+      return { ...base, state: "failed", message: `ADE couldn't prepare it: ${failure.error}`, error: failure.error };
     }
     return { ...base, state: "waiting", message: "ADE will prepare one shortly." };
   };
@@ -304,9 +281,10 @@ export function createAgent37ReadyKeeper(deps: Agent37ReadyKeeperDeps) {
   /** Deletes a machine ADE made for the pool, and its account row. False when Agent37 didn't confirm. */
   const discard = async (client: Agent37Client, instanceId: string, machineKey: string | null): Promise<boolean> => {
     const gone = await deleteAgent37InstanceConfirmed(client, instanceId, { logger, sleep });
+    if (!gone) cleanupOwed = true;
     if (gone && machineKey) {
       await deps.removeAccountMachine(machineKey).catch((error: unknown) => {
-        logger.warn?.("agent37.ready_account_row_left", { instanceId, error: errorText(error) });
+        logger.warn?.("agent37.ready_account_row_left", { instanceId, error: getErrorMessage(error) });
       });
     }
     return gone;
@@ -317,9 +295,8 @@ export function createAgent37ReadyKeeper(deps: Agent37ReadyKeeperDeps) {
       if (signal.aborted) throw new Agent37ReadyPrepareCancelled();
     };
     const write = await client.exec(instanceId, writeJobCommand(buildAgent37ReadySetupScript(settings)), { timeoutMs: 60_000, signal });
-    if (write.exitCode !== 0) throw new Error(`ADE couldn't hand the machine its setup (${write.stderr.trim() || `exit ${write.exitCode}`}).`);
+    if (write.exitCode !== 0) throw new Error(`ADE couldn't hand the machine its setup (exit ${write.exitCode}).`);
     const began = now();
-    let fellBack = false;
     let read: JobRead = { started: false, exitCode: null, tail: [] };
     while (read.exitCode == null) {
       checkCancelled();
@@ -327,29 +304,28 @@ export function createAgent37ReadyKeeper(deps: Agent37ReadyKeeperDeps) {
       await sleep(SETUP_POLL_MS);
       const answer = await client.exec(instanceId, READ_JOB_COMMAND, { timeoutMs: 30_000, signal }).catch((error: unknown) => {
         if (signal.aborted) throw new Agent37ReadyPrepareCancelled();
-        logger.warn?.("agent37.ready_setup_read_failed", { instanceId, error: errorText(error) });
+        logger.warn?.("agent37.ready_setup_read_failed", { instanceId, error: getErrorMessage(error) });
         return null;
       });
       if (!answer) continue;
       read = parseJobRead(answer.stdout);
-      if (!read.started && !fellBack && now() - began > RUNNER_START_GRACE_MS) {
-        // An older template without the runner: start the job over exec.
-        fellBack = true;
-        logger.warn?.("agent37.ready_runner_missing", { instanceId });
-        await client.exec(instanceId, START_JOB_OVER_EXEC, { timeoutMs: 30_000, signal });
+      if (!read.started && now() - began > RUNNER_START_GRACE_MS) {
+        // Made from a template older than ready machines: nothing on it runs the job.
+        throw new Error("the machine's template is too old to run a setup. ADE updates its template on its own; Retry once it's ready.");
       }
-      const latest = read.tail.filter((line) => !line.startsWith("ADE_READY_")).pop();
+      const latest = read.tail[read.tail.length - 1];
       if (read.started) setLocalMessage(settings.identity, latest ? `Running setup: ${latest.slice(0, 120)}` : "Running setup…");
     }
     if (read.exitCode !== 0) {
       // The last lines say why; the very last is usually the reason, so it is kept whole.
-      const tail = read.tail.filter((line) => !line.startsWith("ADE_READY_")).slice(-2).join(" · ");
-      throw new Error(`the setup stopped with exit ${read.exitCode}${tail ? `: ${tail.slice(-500)}` : "."}`);
+      const tail = read.tail.slice(-2).join(" · ");
+      throw new Agent37ReadySetupFailed(`the setup stopped with exit ${read.exitCode}${tail ? `: ${tail.slice(-500)}` : "."}`, read.exitCode);
     }
-    const answer = await client.exec(instanceId, 'grep -E "^ADE_READY_(PATH|LANE)=" "$ADE_HOME/ready/job.log"', { timeoutMs: 20_000, signal })
+    const answer = await client.exec(instanceId, `grep -m 1 "^${READY_PATH_MARKER}" "$ADE_HOME/ready/job.log"`, { timeoutMs: 20_000, signal })
       .catch(() => null);
-    const value = (key: string) => new RegExp(`^ADE_READY_${key}=(.+)$`, "m").exec(answer?.stdout ?? "")?.[1]?.trim() || null;
-    return { projectPath: value("PATH"), laneId: value("LANE") };
+    const projectPath = answer?.stdout.trim().slice(READY_PATH_MARKER.length) || null;
+    const laneId = projectPath ? await readPrimaryLaneId(client, instanceId, projectPath, signal) : null;
+    return { projectPath, laneId };
   };
 
   const prepare = async (settings: Agent37ReadyProjectSettings): Promise<void> => {
@@ -368,19 +344,22 @@ export function createAgent37ReadyKeeper(deps: Agent37ReadyKeeperDeps) {
     const { signal } = entry.controller;
     const requestId = randomUUID();
     const suffix = requestId.replace(/-/g, "").slice(0, 4);
+    const templateVersion = deps.templateAdeVersion?.() ?? null;
     logger.info?.("agent37.ready_prepare_started", { kind: settings.kind, shape: settings.shape });
     try {
       const created = await deps.createMachine(
         requestId,
         { kind: settings.kind, shape: settings.shape, name: `${settings.projectName} ${suffix}` },
         (progress) => setLocalMessage(settings.identity, progress.message, progress.instanceId ?? null),
-        signal,
         {
-          [AGENT37_READY_METADATA.project]: settings.identity,
-          [AGENT37_READY_METADATA.state]: "preparing",
-          [AGENT37_READY_METADATA.projectName]: settings.projectName,
-          [AGENT37_READY_METADATA.preparedBy]: deps.preparerId,
-          ...(deps.templateAdeVersion?.() ? { [AGENT37_READY_METADATA.adeVersion]: deps.templateAdeVersion()! } : {}),
+          signal,
+          metadata: {
+            [AGENT37_READY_METADATA.project]: settings.identity,
+            [AGENT37_READY_METADATA.state]: "preparing",
+            [AGENT37_READY_METADATA.projectName]: settings.projectName,
+            [AGENT37_READY_METADATA.preparedBy]: deps.preparerId,
+            ...(templateVersion ? { [AGENT37_READY_METADATA.adeVersion]: templateVersion } : {}),
+          },
         },
       );
       entry.instanceId = created.instanceId;
@@ -400,13 +379,17 @@ export function createAgent37ReadyKeeper(deps: Agent37ReadyKeeperDeps) {
         await client.sleepInstance(created.instanceId);
       } catch (error) {
         // Ready, but awake and billing; the next pass tries the sleep again.
-        logger.warn?.("agent37.ready_sleep_failed", { instanceId: created.instanceId, error: errorText(error) });
+        logger.warn?.("agent37.ready_sleep_failed", { instanceId: created.instanceId, error: getErrorMessage(error) });
       }
       logger.info?.("agent37.ready_prepared", { instanceId: created.instanceId, ms: now() - entry.startedAt });
     } catch (error) {
       const cancelled = signal.aborted || error instanceof Agent37ReadyPrepareCancelled;
-      const reason = errorText(error);
-      logger.warn?.("agent37.ready_prepare_failed", { instanceId: entry.instanceId, cancelled, error: reason });
+      const reason = getErrorMessage(error);
+      logger.warn?.("agent37.ready_prepare_failed", {
+        instanceId: entry.instanceId,
+        cancelled,
+        ...(error instanceof Agent37ReadySetupFailed ? { setupExitCode: error.exitCode } : { error: reason }),
+      });
       // A machine made for the pool that isn't ready is only a bill.
       // createAgent37Machine already deleted one that never signed in.
       let left = false;
@@ -420,8 +403,9 @@ export function createAgent37ReadyKeeper(deps: Agent37ReadyKeeperDeps) {
             : reason,
           at: now(),
         };
+        failures.set(settings.identity, failure);
         await updateProject(settings.identity, (current) => ({ ...current, failure })).catch((writeError: unknown) => {
-          logger.warn?.("agent37.ready_failure_not_saved", { error: errorText(writeError) });
+          logger.warn?.("agent37.ready_failure_not_saved", { error: getErrorMessage(writeError) });
         });
       }
     } finally {
@@ -430,15 +414,70 @@ export function createAgent37ReadyKeeper(deps: Agent37ReadyKeeperDeps) {
     }
   };
 
-  /** One read of settings and pool: start what's missing, sleep what's awake, delete what's no longer wanted. */
+  /**
+   * Whether a pool machine should go. Never a claimed one (it is the
+   * person's). A project turned off deletes its machines only when the
+   * account said so, or when the machine is this copy's own: a choice read
+   * from this computer alone (signed out, an unreachable vault) is not enough
+   * to delete what another computer keeps.
+   */
+  const discardReason = (
+    instance: Agent37Instance,
+    pool: { wanted: Set<string>; authoritative: boolean; preparingHere: Set<string>; templateVersion: string | null },
+  ): DiscardReason | null => {
+    const identity = instance.metadata[AGENT37_READY_METADATA.project];
+    const state = agent37ReadyStateOf(instance);
+    if (!identity || !state || state === "claimed" || instance.status === "deleted") return null;
+    if (pool.preparingHere.has(instance.id) || local.get(identity)?.instanceId === instance.id) return null;
+    const ours = instance.metadata[AGENT37_READY_METADATA.preparedBy] === deps.preparerId;
+    if (instance.status === "failed") return "agent37_failed";
+    if (state === "failed") return "failed";
+    if (!pool.wanted.has(identity)) return pool.authoritative || ours ? "unwanted" : null;
+    if (state === "preparing" && !local.has(identity)) {
+      if (ours) return "orphaned";
+      if (instance.created != null && now() - instance.created * 1000 > PREPARING_STALE_MS) return "stale";
+    }
+    const tag = instance.metadata[AGENT37_READY_METADATA.adeVersion];
+    if (state === "ready" && tag && pool.templateVersion && compareUpdateVersions(tag, pool.templateVersion) < 0) return "outdated";
+    return null;
+  };
+
+  /** Deletes what should go and sleeps ready machines left awake, each re-read first (a claim may have landed). */
+  const reconcilePool = async (client: Agent37Client, instances: Agent37Instance[], wanted: Set<string>, authoritative: boolean) => {
+    const pool = {
+      wanted,
+      authoritative,
+      preparingHere: new Set([...local.values()].map((entry) => entry.instanceId).filter((id): id is string => id != null)),
+      templateVersion: deps.templateAdeVersion?.() ?? null,
+    };
+    for (const listed of instances) {
+      const reason = discardReason(listed, pool);
+      const asleepAlready = listed.status !== "running";
+      if (!reason && (agent37ReadyStateOf(listed) !== "ready" || asleepAlready)) continue;
+      const instance = await client.getInstance(listed.id).catch(() => null);
+      if (!instance || agent37ReadyStateOf(instance) === "claimed") continue;
+      if (reason) {
+        logger.info?.("agent37.ready_machine_discarded", { instanceId: instance.id, reason });
+        if (await discard(client, instance.id, instance.metadata[AGENT37_MACHINE_KEY_METADATA] ?? null)) listed.status = "deleted";
+      } else if (instance.status === "running") {
+        // Ready machines sleep; one left awake (a failed sleep, a released claim) is put back to sleep.
+        await client.sleepInstance(instance.id).catch((error: unknown) => {
+          logger.warn?.("agent37.ready_sleep_failed", { instanceId: instance.id, error: getErrorMessage(error) });
+        });
+      }
+    }
+  };
+
+  /** One read of the choice and the pool: reconcile the pool, start what's missing, publish. */
   const pass = async (): Promise<void> => {
-    let projects: Agent37ReadyProjectSettings[];
+    let read: Awaited<ReturnType<Agent37ReadySettingsStore["read"]>>;
     try {
-      projects = await deps.settings.read();
+      read = await deps.settings.read();
     } catch (error) {
-      publish({ projects: last.projects, error: `ADE couldn't read which projects keep a machine ready: ${errorText(error)}` });
+      publish({ projects: last.projects, error: `ADE couldn't read which projects keep a machine ready: ${getErrorMessage(error)}` });
       return;
     }
+    const { projects, authoritative } = read;
     // Read even with nothing on: a project just turned off still has a machine to delete.
     const client = await deps.client().catch(() => null);
     if (!client) {
@@ -449,50 +488,28 @@ export function createAgent37ReadyKeeper(deps: Agent37ReadyKeeperDeps) {
     try {
       instances = await client.listInstances();
     } catch (error) {
-      publish({ projects: projects.map((settings) => statusFor(settings, null)), error: errorText(error) });
+      publish({ projects: projects.map((settings) => statusFor(settings, null)), error: getErrorMessage(error) });
       return;
     }
+    cleanupOwed = false;
     const wanted = new Set(projects.map((settings) => settings.identity));
-    // Turned off (here or on another computer): stop a local prepare, delete an unclaimed machine.
+    // Turned off (here or on another computer): stop a local prepare; its own cleanup deletes the machine.
     for (const [identity, entry] of local) {
       if (!wanted.has(identity)) entry.controller.abort();
     }
-    for (const instance of instances) {
-      const identity = instance.metadata[AGENT37_READY_METADATA.project];
-      const state = agent37ReadyStateOf(instance);
-      if (!identity || !state || state === "claimed" || instance.status === "deleted") continue;
-      const notPreparingHere = state === "preparing" && ![...local.values()].some((entry) => entry.instanceId === instance.id);
-      // Ours from before a restart (nothing here is finishing it), or anyone's long past any setup.
-      const orphaned = notPreparingHere && !local.has(identity)
-        && instance.metadata[AGENT37_READY_METADATA.preparedBy] === deps.preparerId;
-      const stale = orphaned || (notPreparingHere && !local.has(identity)
-        && instance.created != null && now() - instance.created * 1000 > PREPARING_STALE_MS);
-      const templateVersion = deps.templateAdeVersion?.() ?? null;
-      const outdated = state === "ready" && templateVersion != null
-        && (instance.metadata[AGENT37_READY_METADATA.adeVersion] ?? null) !== templateVersion;
-      if (!wanted.has(identity) || state === "failed" || stale || outdated) {
-        if (local.get(identity)?.instanceId === instance.id) continue;
-        logger.info?.("agent37.ready_machine_discarded", { instanceId: instance.id, state, wanted: wanted.has(identity), stale, outdated });
-        await discard(client, instance.id, instance.metadata[AGENT37_MACHINE_KEY_METADATA] ?? null);
-        instance.status = "deleted";
-        continue;
-      }
-      if (state === "ready" && instance.status === "running") {
-        // Ready machines sleep; one left awake (a failed sleep, a released claim) is put back to sleep.
-        await client.sleepInstance(instance.id).catch((error: unknown) => {
-          logger.warn?.("agent37.ready_sleep_failed", { instanceId: instance.id, error: errorText(error) });
-        });
-      }
-    }
+    await reconcilePool(client, instances, wanted, authoritative);
     for (const settings of projects) {
       const pool = agent37ReadyMachinesFor(instances, settings.identity)
-        .filter((instance) => agent37ReadyStateOf(instance) !== "claimed");
-      if (!pool.length && !local.has(settings.identity) && !settings.failure) {
+        .filter((instance) => agent37ReadyStateOf(instance) !== "claimed" && instance.status !== "failed");
+      if (!pool.length && !local.has(settings.identity) && !failureOf(settings)) {
         void prepare(settings);
       }
     }
     publish({
-      projects: projects.map((settings) => statusFor(settings, agent37ReadyMachinesFor(instances, settings.identity))),
+      projects: projects.map((settings) => statusFor(
+        settings,
+        agent37ReadyMachinesFor(instances, settings.identity).filter((instance) => instance.status !== "failed"),
+      )),
       error: null,
     });
   };
@@ -509,7 +526,7 @@ export function createAgent37ReadyKeeper(deps: Agent37ReadyKeeperDeps) {
           await pass();
         } while (passAgain && !stopped);
       } catch (error) {
-        logger.warn?.("agent37.ready_pass_failed", { error: errorText(error) });
+        logger.warn?.("agent37.ready_pass_failed", { error: getErrorMessage(error) });
       } finally {
         passing = null;
       }
@@ -523,26 +540,35 @@ export function createAgent37ReadyKeeper(deps: Agent37ReadyKeeperDeps) {
     timer = setTimeout(() => {
       timer = null;
       void runPass().finally(() => {
-        // Only keep reading while something is on; a pass with nothing to do stops here.
-        if (last.projects.length || local.size) schedulePass(POOL_PASS_MS);
+        // Only keep reading while something is on or a delete is owed; otherwise the passes stop here.
+        if (last.projects.length || local.size || cleanupOwed) schedulePass(POOL_PASS_MS);
       });
     }, delayMs);
     timer.unref?.();
   }
 
-  /** Rewrites one project's entry, if it is still on. */
-  const updateProject = async (
-    identity: string,
-    update: (current: Agent37ReadyProjectSettings) => Agent37ReadyProjectSettings,
-  ) => {
-    const current = await deps.settings.read();
-    if (!current.some((entry) => entry.identity === identity)) return;
-    await deps.settings.write(current.map((entry) => (entry.identity === identity ? update(entry) : entry)));
+  /** Runs one read-modify-write of the choice after any already queued. */
+  const withSettings = <T>(work: () => Promise<T>): Promise<T> => {
+    const next = settingsQueue.then(work);
+    settingsQueue = next.catch(() => undefined);
+    return next;
   };
 
+  /** Rewrites one project's entry, if it is still on. */
+  const updateProject = (
+    identity: string,
+    update: (current: Agent37ReadyProjectSettings) => Agent37ReadyProjectSettings,
+  ) => withSettings(async () => {
+    const { projects } = await deps.settings.read();
+    if (!projects.some((entry) => entry.identity === identity)) return;
+    await deps.settings.write(projects.map((entry) => (entry.identity === identity ? update(entry) : entry)));
+  });
+
   const writeSettings = async (update: (current: Agent37ReadyProjectSettings[]) => Agent37ReadyProjectSettings[]) => {
-    const current = await deps.settings.read();
-    await deps.settings.write(update(current));
+    await withSettings(async () => {
+      const { projects } = await deps.settings.read();
+      await deps.settings.write(update(projects));
+    });
     await runPass();
     schedulePass(POOL_PASS_MS);
     return last;
@@ -554,6 +580,7 @@ export function createAgent37ReadyKeeper(deps: Agent37ReadyKeeperDeps) {
       stopped = false;
       schedulePass(delayMs);
     },
+    /** Stops passing and cancels a prepare in flight, which deletes its machine. */
     stop() {
       stopped = true;
       if (timer) clearTimeout(timer);
@@ -572,6 +599,7 @@ export function createAgent37ReadyKeeper(deps: Agent37ReadyKeeperDeps) {
       const settings = normalizeAgent37ReadySettings(raw);
       if (!settings) throw new Error("This project has no git origin, so a cloud machine can't clone it.");
       // A new choice is a fresh start: any earlier failure is cleared with it.
+      failures.delete(settings.identity);
       return await writeSettings((current) => [
         ...current.filter((entry) => entry.identity !== settings.identity),
         { ...settings, failure: null },
@@ -579,10 +607,12 @@ export function createAgent37ReadyKeeper(deps: Agent37ReadyKeeperDeps) {
     },
     /** Turns it off: an unclaimed machine for the project is deleted on the pass that follows. */
     removeProject: async (identity: string) => {
+      failures.delete(identity);
       return await writeSettings((current) => current.filter((entry) => entry.identity !== identity));
     },
     /** After a failure: prepare again now. */
     retry: async (identity: string) => {
+      failures.delete(identity);
       await updateProject(identity, (current) => ({ ...current, failure: null }));
       await runPass();
       return last;
@@ -591,66 +621,3 @@ export function createAgent37ReadyKeeper(deps: Agent37ReadyKeeperDeps) {
 }
 
 export type Agent37ReadyKeeper = ReturnType<typeof createAgent37ReadyKeeper>;
-
-/** The vault item's shape. A damaged item reads as no projects (logged), so it can never wedge the keeper. */
-export function parseAgent37ReadySettings(raw: string | null | undefined, logger?: Logger): Agent37ReadyProjectSettings[] {
-  if (!raw) return [];
-  try {
-    const parsed = JSON.parse(raw) as { v?: unknown; projects?: unknown };
-    if (parsed?.v !== 1 || !Array.isArray(parsed.projects)) return [];
-    const out: Agent37ReadyProjectSettings[] = [];
-    for (const entry of parsed.projects) {
-      const settings = normalizeAgent37ReadySettings(entry as Partial<Agent37ReadyProjectSettings>);
-      if (settings && !out.some((existing) => existing.identity === settings.identity)) out.push(settings);
-    }
-    return out;
-  } catch (error) {
-    logger?.warn?.("agent37.ready_settings_unreadable", { reason: error instanceof SyntaxError ? "invalid_json" : "unreadable" });
-    return [];
-  }
-}
-
-export function serializeAgent37ReadySettings(projects: Agent37ReadyProjectSettings[]): string {
-  return JSON.stringify({ v: 1, projects });
-}
-
-/** This computer's copy, in the credential file the app, brain and CLI share. */
-export const AGENT37_READY_MACHINE_CREDENTIAL_KEY = "agent37.ready.v1";
-
-/**
- * The choice per project: the account vault when it answers (every computer
- * reads the same), else this computer's copy, the same fallback the Agent37
- * key itself has. Every write also lands in this computer's copy, so a vault
- * that stops answering still reads the latest choice made here.
- */
-export function createAgent37ReadySettingsStore(deps: {
-  vault: () => Agent37Vault | null;
-  machineStore: () => { getSync(key: string): string | null; setSync(key: string, value: string): void } | null;
-  logger?: Logger;
-}): Agent37ReadySettingsStore {
-  const local = () => {
-    try {
-      return deps.machineStore();
-    } catch (error) {
-      deps.logger?.warn?.("agent37.ready_settings_local_unavailable", { error: errorText(error) });
-      return null;
-    }
-  };
-  return {
-    async read() {
-      const vault = deps.vault();
-      const got = vault ? await vault.get().catch(() => ({ ok: false as const })) : { ok: false as const };
-      if (got.ok) return parseAgent37ReadySettings(got.value, deps.logger);
-      return parseAgent37ReadySettings(local()?.getSync(AGENT37_READY_MACHINE_CREDENTIAL_KEY) ?? null, deps.logger);
-    },
-    async write(projects) {
-      const raw = serializeAgent37ReadySettings(projects);
-      const store = local();
-      if (store) store.setSync(AGENT37_READY_MACHINE_CREDENTIAL_KEY, raw);
-      const vault = deps.vault();
-      const saved = vault ? await vault.set(raw).catch(() => false) : false;
-      if (!saved && !store) throw new Error("ADE couldn't save that to your account or this computer. Try again.");
-      if (!saved) deps.logger?.warn?.("agent37.ready_settings_saved_locally", {});
-    },
-  };
-}

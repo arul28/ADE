@@ -17,6 +17,7 @@ import {
   type IntegrationFact,
 } from "./integrations/IntegrationChrome";
 import { Banner } from "../ui/notice";
+import { ipcErrorMessage } from "../../lib/format";
 import { Agent37ReadyMachinesCard } from "./Agent37ReadyMachinesCard";
 import { Agent37Mark, AGENT37_NAME } from "../remoteTargets/agent37Brand";
 import { agent37RetryLabel, useAgent37Template } from "../remoteTargets/useAgent37Template";
@@ -25,10 +26,7 @@ import { openExternalUrl } from "../../lib/openExternal";
 import "./IntegrationsSettings.css";
 
 function errorText(error: unknown, fallback: string): string {
-  const raw = error instanceof Error ? error.message : String(error ?? "");
-  // IPC wraps a main-process throw as "Error invoking remote method '…': Error: <message>".
-  const message = raw.replace(/^Error invoking remote method '[^']*': (?:Error: )?/, "").trim();
-  return message || fallback;
+  return ipcErrorMessage(error) || fallback;
 }
 
 /** The template row: setting up (about N min left), ready, or failed with a reason and Retry. */
