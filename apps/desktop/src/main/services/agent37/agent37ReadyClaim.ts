@@ -64,6 +64,25 @@ export async function patchAgent37Metadata(
   return next;
 }
 
+/** Agent 37 answers these while a machine is mid-transition (still going to sleep, say). */
+const WAKE_TRANSIENT_CODES = new Set(["try_again", "wake_failed", "wake_timeout", "host_mesh_not_ready"]);
+/** A machine marked ready a moment ago can take a few seconds to finish going to sleep; kept under the 30 s an IPC call may wait. */
+const WAKE_RETRY_DEADLINE_MS = 15_000;
+const WAKE_RETRY_DELAY_MS = 500;
+
+async function wakeThroughTransition(client: Agent37Client, instanceId: string, now: () => number): Promise<void> {
+  const deadline = now() + WAKE_RETRY_DEADLINE_MS;
+  for (;;) {
+    try {
+      await client.startInstance(instanceId);
+      return;
+    } catch (error) {
+      if (!(error instanceof Agent37Error) || !WAKE_TRANSIENT_CODES.has(error.code) || now() >= deadline) throw error;
+      await new Promise((resolve) => setTimeout(resolve, WAKE_RETRY_DELAY_MS));
+    }
+  }
+}
+
 /**
  * Takes the project's oldest ready machine, marks it claimed and wakes it.
  * Resolves once Agent37 answered the wake (the machine is running); the
@@ -134,7 +153,7 @@ export async function claimAgent37ReadyMachine(
   const wakeStarted = now();
   try {
     // A machine that is already awake (a claim right after preparing) answers at once.
-    if (pick.status !== "running") await client.startInstance(pick.id);
+    if (pick.status !== "running") await wakeThroughTransition(client, pick.id, now);
   } catch (error) {
     // Not woken, so not taken: put it back for the next chat.
     await patchAgent37Metadata(client, pick.id, { [AGENT37_READY_METADATA.state]: "ready" }).catch((restoreError: unknown) => {

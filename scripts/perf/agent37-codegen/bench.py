@@ -63,7 +63,7 @@ def transcript_lines(session, instance=None):
         if not path:
             # A ready machine's checkout lives wherever it was prepared; find it once.
             found = agent37.exec_on(instance, f'ls {args.remote_transcripts}/{session}.jsonl 2>/dev/null || '
-                                    f'find / -xdev -path "*/.ade/transcripts/chat/{session}.jsonl" 2>/dev/null | head -1', timeout=30)
+                                    f'find /home /root -path "*/.ade/transcripts/chat/{session}.jsonl" 2>/dev/null | head -1', timeout=30)
             path = found.get('stdout', '').strip().splitlines()[0] if found.get('stdout', '').strip() else None
             if not path:
                 return []
