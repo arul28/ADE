@@ -967,14 +967,25 @@ async function executePlanOnAgent37ReadyMachine(
       }
       await sleep(READY_MACHINE_POLL_MS);
     }
-    say(`${name} is online (${((Date.now() - startedAt) / 1000).toFixed(1)} s). Starting the chat…`);
+    const onlineMs = Date.now() - startedAt;
+    say(`${name} is online (${(onlineMs / 1000).toFixed(1)} s). Starting the chat…`);
     const laneId = isRecord(claim) ? asString(claim.laneId) : null;
     const planThere = laneId ? withDefaultChatLane(plan, laneId) : plan;
     for (;;) {
       try {
         const result = await executePlan(planThere, { ...options, machine: machineKey });
         sent = true;
-        return result;
+        // Which machine took it, for a caller (a benchmark harness) that reads it there next.
+        const readyMachine = {
+          name,
+          machineKey,
+          instanceId,
+          laneId,
+          wakeMs: isRecord(claim) && typeof claim.wakeMs === "number" ? claim.wakeMs : null,
+          onlineMs,
+          sentMs: Date.now() - startedAt,
+        };
+        return isRecord(result) ? { ...result, readyMachine } : { result, readyMachine };
       } catch (error) {
         if (!nothingWasSent(error) || Date.now() > deadline) {
           // Anything but "not sent" may have reached the machine: it is in use now.

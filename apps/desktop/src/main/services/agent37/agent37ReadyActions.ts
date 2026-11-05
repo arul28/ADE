@@ -25,6 +25,13 @@ export type Agent37ReadyPoolEntry = {
   projectName: string;
   /** Whether a computer keeps this project's machine ready (its setting), or only machines are left. */
   keptReady: boolean;
+  /** Machines per state: `ready` (asleep, the next chat takes one), `preparing`, `inUse` (claimed), `failed`. */
+  ready: number;
+  preparing: number;
+  inUse: number;
+  failed: number;
+  /** The last prepare's failure, kept until Retry. */
+  failure: string | null;
   machines: Array<{ instanceId: string; name: string | null; state: Agent37ReadyMachineState; status: string }>;
 };
 
@@ -56,10 +63,16 @@ export function buildAgent37ReadyActions(deps: Agent37ReadyActionDeps) {
         projects: [...identities].sort().map((identity) => {
           const setting = settings.find((entry) => entry.identity === identity) ?? null;
           const machines = agent37ReadyMachinesFor(instances, identity);
+          const count = (state: Agent37ReadyMachineState) => machines.filter((instance) => agent37ReadyStateOf(instance) === state).length;
           return {
             identity,
             projectName: setting?.projectName ?? machines[0]?.metadata[AGENT37_READY_METADATA.projectName] ?? identity,
             keptReady: setting != null,
+            ready: count("ready"),
+            preparing: count("preparing"),
+            inUse: count("claimed"),
+            failed: count("failed"),
+            failure: setting?.failure?.error ?? null,
             machines: machines.map((instance) => ({
               instanceId: instance.id,
               name: instance.name,

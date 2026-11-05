@@ -81,6 +81,12 @@ export type Agent37ReadyKeeperDeps = {
    * leftover, deleted on the next pass instead of billing until it goes stale.
    */
   preparerId: string;
+  /**
+   * The ADE release the template installs, once it is built and current; null
+   * while unknown or building. An unclaimed ready machine from another release
+   * is replaced, so a ready machine runs the same ADE as the desktop that keeps it.
+   */
+  templateAdeVersion?: () => string | null;
   onStatus?: (status: Agent37ReadyStatus) => void;
   logger?: Logger;
   now?: () => number;
@@ -336,8 +342,9 @@ export function createAgent37ReadyKeeper(deps: Agent37ReadyKeeperDeps) {
       if (read.started) setLocalMessage(settings.identity, latest ? `Running setup: ${latest.slice(0, 120)}` : "Running setup…");
     }
     if (read.exitCode !== 0) {
-      const tail = read.tail.filter((line) => !line.startsWith("ADE_READY_")).slice(-3).join(" · ");
-      throw new Error(`the setup stopped with exit ${read.exitCode}${tail ? `: ${tail.slice(0, 300)}` : "."}`);
+      // The last lines say why; the very last is usually the reason, so it is kept whole.
+      const tail = read.tail.filter((line) => !line.startsWith("ADE_READY_")).slice(-2).join(" · ");
+      throw new Error(`the setup stopped with exit ${read.exitCode}${tail ? `: ${tail.slice(-500)}` : "."}`);
     }
     const answer = await client.exec(instanceId, 'grep -E "^ADE_READY_(PATH|LANE)=" "$ADE_HOME/ready/job.log"', { timeoutMs: 20_000, signal })
       .catch(() => null);
@@ -373,6 +380,7 @@ export function createAgent37ReadyKeeper(deps: Agent37ReadyKeeperDeps) {
           [AGENT37_READY_METADATA.state]: "preparing",
           [AGENT37_READY_METADATA.projectName]: settings.projectName,
           [AGENT37_READY_METADATA.preparedBy]: deps.preparerId,
+          ...(deps.templateAdeVersion?.() ? { [AGENT37_READY_METADATA.adeVersion]: deps.templateAdeVersion()! } : {}),
         },
       );
       entry.instanceId = created.instanceId;
@@ -459,9 +467,12 @@ export function createAgent37ReadyKeeper(deps: Agent37ReadyKeeperDeps) {
         && instance.metadata[AGENT37_READY_METADATA.preparedBy] === deps.preparerId;
       const stale = orphaned || (notPreparingHere && !local.has(identity)
         && instance.created != null && now() - instance.created * 1000 > PREPARING_STALE_MS);
-      if (!wanted.has(identity) || state === "failed" || stale) {
+      const templateVersion = deps.templateAdeVersion?.() ?? null;
+      const outdated = state === "ready" && templateVersion != null
+        && (instance.metadata[AGENT37_READY_METADATA.adeVersion] ?? null) !== templateVersion;
+      if (!wanted.has(identity) || state === "failed" || stale || outdated) {
         if (local.get(identity)?.instanceId === instance.id) continue;
-        logger.info?.("agent37.ready_machine_discarded", { instanceId: instance.id, state, wanted: wanted.has(identity), stale });
+        logger.info?.("agent37.ready_machine_discarded", { instanceId: instance.id, state, wanted: wanted.has(identity), stale, outdated });
         await discard(client, instance.id, instance.metadata[AGENT37_MACHINE_KEY_METADATA] ?? null);
         instance.status = "deleted";
         continue;

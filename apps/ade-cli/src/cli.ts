@@ -19935,13 +19935,14 @@ function formatAgent37Ready(value: unknown): string {
   const lines: string[] = [];
   for (const project of projects) {
     const machines = Array.isArray(project.machines) ? project.machines.filter(isRecord) : [];
-    const ready = machines.filter((machine) => machine.state === "ready").length;
-    const preparing = machines.filter((machine) => machine.state === "preparing").length;
-    const summary = ready
-      ? `${ready} ready`
-      : preparing
-        ? "being prepared"
-        : project.keptReady === true ? "none ready yet" : "turned off";
+    const ready = Number(project.ready ?? 0);
+    const preparing = Number(project.preparing ?? 0);
+    const inUse = Number(project.inUse ?? 0);
+    const summary = [
+      ready ? `${ready} ready` : preparing ? "being prepared" : project.keptReady === true ? "none ready yet" : "turned off",
+      ...(inUse ? [`${inUse} in use`] : []),
+      ...(typeof project.failure === "string" ? [`last prepare failed: ${project.failure}`] : []),
+    ].join(", ");
     lines.push(`${String(project.projectName ?? project.identity)} (${String(project.identity)}): ${summary}`);
     for (const machine of machines) {
       lines.push(`  ${String(machine.name ?? machine.instanceId)}  ${String(machine.state)}  (${String(machine.status)}, ${String(machine.instanceId)})`);

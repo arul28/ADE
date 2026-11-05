@@ -336,7 +336,7 @@ export type Agent37Machine = {
    * Set when this is a project's ready machine (prepared and kept asleep for
    * the next chat): the project it is for, and where it is in that life.
    */
-  ready: { projectName: string; state: Agent37ReadyMachineState } | null;
+  ready?: { projectName: string; state: Agent37ReadyMachineState } | null;
 };
 
 export type Agent37MachinesResult = {
@@ -496,6 +496,8 @@ export const AGENT37_READY_METADATA = {
   claimedAt: "ade_ready_claimed_at",
   /** Which copy of ADE is preparing it, so that copy knows its own leftovers after a restart. */
   preparedBy: "ade_ready_by",
+  /** The ADE release its template installed; a ready machine is replaced when the template moves on. */
+  adeVersion: "ade_ready_ade",
 } as const;
 
 export type Agent37ReadyMachineState = "preparing" | "ready" | "claimed" | "failed";

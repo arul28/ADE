@@ -323,6 +323,10 @@ export function registerAgent37Ipc(args: {
     removeAccountMachine: args.removeAccountMachine,
     // This computer and this app's data folder: a development copy beside the installed one is another preparer.
     preparerId: `${os.hostname()}:${createHash("sha256").update(app.getPath("userData")).digest("hex").slice(0, 8)}`,
+    templateAdeVersion: () => {
+      const template = builder.status();
+      return template.template === templateName() && template.state === "ready" ? template.adeVersion : null;
+    },
     onStatus: (status) => sendToAllWindows(IPC.agent37ReadyStatusChanged, status),
     logger,
   });
