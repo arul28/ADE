@@ -108,7 +108,18 @@ export function createAgent37ReadySettingsStore(deps: {
       const vault = deps.vault();
       const got = vault ? await vault.get().catch(() => ({ ok: false as const })) : { ok: false as const };
       const fromAccount = got.ok && got.value != null ? parseAgent37ReadySettings(got.value, deps.logger) : null;
-      if (fromAccount) return { projects: fromAccount, authoritative: true };
+      if (got.ok && got.value != null && fromAccount) {
+        // Kept here too, so a vault that stops answering falls back to the account's last answer.
+        const store = local();
+        if (store && store.getSync(AGENT37_READY_MACHINE_CREDENTIAL_KEY) !== got.value) {
+          try {
+            store.setSync(AGENT37_READY_MACHINE_CREDENTIAL_KEY, got.value);
+          } catch (error) {
+            deps.logger?.warn?.("agent37.ready_settings_mirror_failed", { error: getErrorMessage(error) });
+          }
+        }
+        return { projects: fromAccount, authoritative: true };
+      }
       const raw = local()?.getSync(AGENT37_READY_MACHINE_CREDENTIAL_KEY) ?? null;
       return { projects: (raw ? parseAgent37ReadySettings(raw, deps.logger) : null) ?? [], authoritative: false };
     },

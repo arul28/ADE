@@ -107,7 +107,9 @@ export function Agent37ReadyMachinesCard({ status }: { status: Agent37Status | n
   const retry = bridge.readyRetry;
 
   const shape = agent37Shape(shapeId) ?? agent37Shape(AGENT37_READY_DEFAULT_SHAPE)!;
-  const blocker = status ? agent37ChoiceBlocker(status, kind, shape) : null;
+  // Editing a project that already keeps a machine makes none now (the next
+  // one uses the change), so the workspace's machine limit doesn't block it.
+  const blocker = status ? agent37ChoiceBlocker(saved ? { ...status, instanceCount: null } : status, kind, shape) : null;
   const changed = saved != null && (saved.kind !== kind || saved.shape !== shapeId || saved.setup !== setup);
   const icon = mine?.state === "failed"
     ? <Warning size={15} weight="fill" />

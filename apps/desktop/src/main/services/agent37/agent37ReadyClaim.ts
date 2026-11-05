@@ -80,7 +80,13 @@ export async function claimAgent37ReadyMachine(
   const logger = options.logger ?? {};
   const pool = agent37ReadyMachinesFor(await client.listInstances(), identity);
   const ready = pool.filter((instance) => agent37ReadyStateOf(instance) === "ready" && instance.status !== "failed");
-  const pick = ready[0];
+  // Without its ADE machine recorded, no caller can tell which computer it is:
+  // tagged failed (the keeper deletes it and prepares another), never handed out.
+  for (const broken of ready.filter((instance) => !instance.metadata[AGENT37_MACHINE_KEY_METADATA])) {
+    logger.warn?.("agent37.ready_machine_without_key", { instanceId: broken.id });
+    await patchAgent37Metadata(client, broken.id, { [AGENT37_READY_METADATA.state]: "failed" }).catch(() => undefined);
+  }
+  const pick = ready.find((instance) => instance.metadata[AGENT37_MACHINE_KEY_METADATA]);
   if (!pick) {
     const preparing = pool.some((instance) => agent37ReadyStateOf(instance) === "preparing");
     throw new Agent37NoReadyMachine(
@@ -116,7 +122,7 @@ export async function claimAgent37ReadyMachine(
   logger.info?.("agent37.ready_claimed", { instanceId: pick.id, wakeMs, waitedMs: wakeStarted - claimedAt });
   return {
     instanceId: pick.id,
-    machineKey: metadata[AGENT37_MACHINE_KEY_METADATA] ?? null,
+    machineKey: metadata[AGENT37_MACHINE_KEY_METADATA] ?? pick.metadata[AGENT37_MACHINE_KEY_METADATA]!,
     name: pick.name ?? pick.id,
     projectPath: metadata[AGENT37_READY_METADATA.path] ?? null,
     laneId: metadata[AGENT37_READY_METADATA.lane] ?? null,

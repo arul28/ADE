@@ -878,14 +878,6 @@ const READY_MACHINE_POLL_MS = 1_000;
 /** One reachability check on the woken machine; the overall wait is AGENT37_READY_WAKE_WAIT_MS. */
 const READY_MACHINE_PROBE_TIMEOUT_MS = 15_000;
 
-/** An error that left the request unsent (the machine offline, or not reachable yet), so asking again is safe. */
-function nothingWasSent(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  // The connection layer wraps the bridge's refusal; its words are in `cause`.
-  return [message, failureCause(error)].some((text) =>
-    /Nothing was sent/.test(text) || /^Couldn't reach /.test(text) || /\bis offline\b/.test(text));
-}
-
 /**
  * The plan with `laneId` in its chat create when the command named no lane:
  * lane ids are per machine, so a ready machine says which lane is its
@@ -926,8 +918,10 @@ async function runAgent37Action(options: GlobalOptions, projectRoot: string, act
  */
 async function waitForReadyMachine(options: GlobalOptions, machineKey: string, name: string, deadline: number): Promise<void> {
   const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+  let lastError: unknown = null;
   const timedOut = () => new CliExecutionError(
-    `${name} woke on Agent 37 but its ADE didn't answer within ${AGENT37_READY_WAKE_WAIT_MS / 1000} s. Nothing was sent; ADE put it back to sleep for the next chat.`,
+    `${name} woke on Agent 37 but its ADE didn't answer within ${AGENT37_READY_WAKE_WAIT_MS / 1000} s`
+      + `${lastError ? ` (${failureCause(lastError)})` : ""}. Nothing was sent; ADE put it back to sleep for the next chat.`,
     {},
   );
   for (;;) {
@@ -950,7 +944,9 @@ async function waitForReadyMachine(options: GlobalOptions, machineKey: string, n
       }));
       return;
     } catch (error) {
-      if (!nothingWasSent(error)) throw error;
+      // Right after a wake the brain may still be starting, refuse, or drop the
+      // connection; `projects.list` is harmless to repeat, so any error waits.
+      lastError = error;
       if (Date.now() > deadline) throw timedOut();
       await sleep(READY_MACHINE_POLL_MS);
     }
@@ -991,9 +987,7 @@ async function executePlanOnAgent37ReadyMachine(
   const wakeMs = isRecord(claim) && typeof claim.wakeMs === "number" ? claim.wakeMs : null;
   let sending = false;
   try {
-    if (!machineKey) {
-      throw new CliExecutionError(`${name} has no ADE machine recorded on it, so ADE can't tell which computer it is. Delete it from its row and let ADE prepare another.`, {});
-    }
+    if (!machineKey) throw new CliExecutionError("Agent 37 answered the claim without a machine. Try again.", {});
     say(`Woke ${name} on Agent 37 (${Math.round(wakeMs ?? 0)} ms). Waiting for its ADE…`);
     await waitForReadyMachine(options, machineKey, name, startedAt + AGENT37_READY_WAKE_WAIT_MS);
     const onlineMs = Date.now() - startedAt;

@@ -365,6 +365,9 @@ export function createAgent37ReadyKeeper(deps: Agent37ReadyKeeperDeps) {
       entry.instanceId = created.instanceId;
       entry.machineKey = created.machineKey;
       if (signal.aborted) throw new Agent37ReadyPrepareCancelled();
+      // A chat finds the machine by its ADE machine key; one that never told
+      // it is no use as a ready machine.
+      if (!created.machineKey) throw new Error("the new machine signed in but didn't say which ADE machine it is.");
       setLocalMessage(settings.identity, `Cloning ${settings.identity}…`, created.instanceId);
       const { projectPath, laneId } = await runSetup(client, settings, created.instanceId, signal);
       if (signal.aborted) throw new Agent37ReadyPrepareCancelled();
@@ -373,7 +376,7 @@ export function createAgent37ReadyKeeper(deps: Agent37ReadyKeeperDeps) {
         [AGENT37_READY_METADATA.state]: "ready",
         ...(projectPath ? { [AGENT37_READY_METADATA.path]: projectPath } : {}),
         ...(laneId ? { [AGENT37_READY_METADATA.lane]: laneId } : {}),
-        ...(created.machineKey ? { [AGENT37_MACHINE_KEY_METADATA]: created.machineKey } : {}),
+        [AGENT37_MACHINE_KEY_METADATA]: created.machineKey,
       });
       try {
         await client.sleepInstance(created.instanceId);
@@ -451,15 +454,15 @@ export function createAgent37ReadyKeeper(deps: Agent37ReadyKeeperDeps) {
       templateVersion: deps.templateAdeVersion?.() ?? null,
     };
     for (const listed of instances) {
-      const reason = discardReason(listed, pool);
-      const asleepAlready = listed.status !== "running";
-      if (!reason && (agent37ReadyStateOf(listed) !== "ready" || asleepAlready)) continue;
+      // The list is only a first sieve: what is done is decided on a fresh read.
+      if (!discardReason(listed, pool) && (agent37ReadyStateOf(listed) !== "ready" || listed.status !== "running")) continue;
       const instance = await client.getInstance(listed.id).catch(() => null);
-      if (!instance || agent37ReadyStateOf(instance) === "claimed") continue;
+      if (!instance) continue;
+      const reason = discardReason(instance, pool);
       if (reason) {
         logger.info?.("agent37.ready_machine_discarded", { instanceId: instance.id, reason });
         if (await discard(client, instance.id, instance.metadata[AGENT37_MACHINE_KEY_METADATA] ?? null)) listed.status = "deleted";
-      } else if (instance.status === "running") {
+      } else if (agent37ReadyStateOf(instance) === "ready" && instance.status === "running") {
         // Ready machines sleep; one left awake (a failed sleep, a released claim) is put back to sleep.
         await client.sleepInstance(instance.id).catch((error: unknown) => {
           logger.warn?.("agent37.ready_sleep_failed", { instanceId: instance.id, error: getErrorMessage(error) });

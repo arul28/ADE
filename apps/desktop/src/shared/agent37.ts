@@ -575,8 +575,8 @@ export type Agent37ReadyStatus = {
 /** What claiming a project's ready machine hands back: the machine to start the chat on. */
 export type Agent37ReadyClaim = {
   instanceId: string;
-  /** Its ADE machine (account row), recorded on it when it joined. */
-  machineKey: string | null;
+  /** Its ADE machine (account row), recorded on it when it joined; a machine without one is never handed out. */
+  machineKey: string;
   name: string;
   /** Where the project is on it. */
   projectPath: string | null;

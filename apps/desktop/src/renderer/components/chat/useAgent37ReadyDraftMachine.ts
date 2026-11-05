@@ -102,8 +102,12 @@ export function useAgent37ReadyDraftMachine({
     return () => window.clearTimeout(timer);
   }, [giveBack, onNotice, pendingTargetId]);
 
-  // A draft that goes away mid-wake (closed, launched elsewhere) gives its claim back.
-  useEffect(() => () => giveBack(), [giveBack]);
+  // A draft that goes away mid-wake (closed, launched elsewhere) stops the wake
+  // and gives its claim back, including a claim still on its way.
+  useEffect(() => () => {
+    attemptRef.current += 1;
+    giveBack();
+  }, [giveBack]);
 
   const option: DraftMachineOption | null = project
     ? {
@@ -120,8 +124,12 @@ export function useAgent37ReadyDraftMachine({
     : null;
 
   const choose = useCallback(async () => {
+    if (!originUrl || !bridge?.readyClaim || wakingName) return;
     // One claim at a time: a second pick while one is in flight would wake a second machine.
-    if (!originUrl || !bridge?.readyClaim || wakingName || unusedClaimRef.current || claimingRef.current) return;
+    if (unusedClaimRef.current || claimingRef.current) {
+      onNotice({ message: "Still handing back the last ready machine. Pick it again in a moment.", kind: "hint" });
+      return;
+    }
     const attempt = ++attemptRef.current;
     const startedAt = Date.now();
     const stillWanted = () => attemptRef.current === attempt;
@@ -141,7 +149,6 @@ export function useAgent37ReadyDraftMachine({
         giveBack();
         return;
       }
-      if (!claim.machineKey) throw new Error(`${claim.name} has no ADE machine recorded on it. Delete it from its row; ADE prepares another.`);
       setWakingName(claim.name);
       onNotice({ message: `${claim.name} is awake. Connecting to its ADE…`, kind: "status" });
       // Its ADE reconnects a few seconds after the wake; until then a pair or connect fails.
@@ -172,13 +179,18 @@ export function useAgent37ReadyDraftMachine({
     }
   }, [bridge, giveBack, onNotice, originUrl, wakingName]);
 
-  /** The person picked another machine: stop following this one and give an unselected claim back. */
+  /** The person picked another machine (or the draft launched): stop following this one and give an unselected claim back. */
   const abandon = useCallback(() => {
     attemptRef.current += 1;
     setWakingName(null);
     setPendingTargetId(null);
     giveBack();
   }, [giveBack]);
+
+  // The draft launched or closed its launch controls mid-wake: the wake is not for it anymore.
+  useEffect(() => {
+    if (!enabled) abandon();
+  }, [abandon, enabled]);
 
   return { option, choose, abandon };
 }
