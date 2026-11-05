@@ -872,6 +872,7 @@ export type FormatterId =
   | "terminal-read"
   | "project-secrets"
   | "integrations"
+  | "agent37-ready"
   | "mcp-servers"
   | "history-list"
   | "history-commits"
@@ -4320,6 +4321,20 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   When to ask: if the person named the integration ("use Linear"), raise the
   card at once. If it was your own idea, ask in words first and raise the
   card only after they say yes.
+`,
+  agent37: `${ADE_BANNER}
+  Agent 37 ready machines
+
+  A ready machine is a cloud machine ADE keeps prepared for one project (the
+  repository cloned, its setup run, its services started, signed in) and
+  asleep, so a new chat on it is working in seconds. Asleep it bills only its
+  disk. Turn it on per project in Settings › Integrations › Agent 37.
+
+    $ ade agent37 ready --text                       Projects kept ready and their machines
+    $ ade chat create --machine agent37:ready --prompt "…"
+                                                    Start the chat on this project's ready machine: ADE wakes it,
+                                                    waits until it is online, then sends. The machine is then an
+                                                    ordinary machine of yours, and ADE prepares the next one.
 `,
   "mcp servers": `${ADE_BANNER}
   ADE MCP servers (Settings › Integrations › MCP servers)
@@ -19895,6 +19910,46 @@ function buildIntegrationsPlan(args: string[]): CliPlan {
   throw new CliUsageError(`Unknown integrations command "${sub}". Use status or connect.`);
 }
 
+function buildAgent37Plan(args: string[]): CliPlan {
+  if (hasHelpFlag(args)) {
+    return { kind: "help", text: HELP_BY_COMMAND.agent37 ?? topLevelHelpText() };
+  }
+  const sub = firstPositional(args) ?? "ready";
+  if (sub === "ready" || sub === "status") {
+    return {
+      kind: "execute",
+      label: "agent37 ready",
+      formatter: "agent37-ready",
+      steps: [actionStep("result", "agent37", "ready_status", {})],
+    };
+  }
+  throw new CliUsageError(`Unknown agent37 command "${sub}". Use: ade agent37 ready.`);
+}
+
+function formatAgent37Ready(value: unknown): string {
+  const result = isRecord(value) && isRecord(value.result) ? value.result : value;
+  const projects = isRecord(result) && Array.isArray(result.projects) ? result.projects.filter(isRecord) : [];
+  if (!projects.length) {
+    return "No project keeps an Agent 37 machine ready. Turn it on in Settings › Integrations › Agent 37.";
+  }
+  const lines: string[] = [];
+  for (const project of projects) {
+    const machines = Array.isArray(project.machines) ? project.machines.filter(isRecord) : [];
+    const ready = machines.filter((machine) => machine.state === "ready").length;
+    const preparing = machines.filter((machine) => machine.state === "preparing").length;
+    const summary = ready
+      ? `${ready} ready`
+      : preparing
+        ? "being prepared"
+        : project.keptReady === true ? "none ready yet" : "turned off";
+    lines.push(`${String(project.projectName ?? project.identity)} (${String(project.identity)}): ${summary}`);
+    for (const machine of machines) {
+      lines.push(`  ${String(machine.name ?? machine.instanceId)}  ${String(machine.state)}  (${String(machine.status)}, ${String(machine.instanceId)})`);
+    }
+  }
+  return lines.join("\n");
+}
+
 /** `ade mcp servers …`: the MCP registry. `args` are the words after `servers`. */
 function buildMcpServersPlan(args: string[]): CliPlan {
   if (hasHelpFlag(args)) {
@@ -22642,6 +22697,7 @@ function buildCliPlan(
     return buildSecretsPlan(args);
   if (primary === "integrations" || primary === "integration")
     return buildIntegrationsPlan(args);
+  if (primary === "agent37") return buildAgent37Plan(args);
   if (primary === "proxy") return buildProxyPlan(args);
   if (primary === "harness" || primary === "harnesses") return buildHarnessPlan(args);
   if (primary === "providers" || primary === "provider")
@@ -36137,6 +36193,8 @@ function formatTextOutput(
       return formatProjectSecrets(value);
     case "integrations":
       return formatIntegrations(value);
+    case "agent37-ready":
+      return formatAgent37Ready(value);
     case "mcp-servers":
       return formatMcpServers(value);
     case "harness-env":

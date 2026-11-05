@@ -13,6 +13,9 @@ import {
   type Agent37MachineActionKind,
   type Agent37MachineActionResult,
   type Agent37MachinesResult,
+  type Agent37ReadyClaim,
+  type Agent37ReadyProjectSettings,
+  type Agent37ReadyStatus,
   type Agent37Status,
   type Agent37TemplateStatus,
 } from "../../../shared/agent37";
@@ -42,6 +45,14 @@ import {
 } from "./agent37MachineCreator";
 import { createAgent37Client } from "./agent37Client";
 import { createAgent37Machines } from "./agent37Machines";
+import { claimAgent37ReadyMachine, releaseAgent37ReadyMachine } from "./agent37ReadyClaim";
+import {
+  AGENT37_READY_VAULT_KEY,
+  agent37ReadyIdentity,
+  createAgent37ReadyKeeper,
+  parseAgent37ReadySettings,
+  serializeAgent37ReadySettings,
+} from "./agent37ReadyMachines";
 import {
   createAgent37PendingCreateStore,
   readAgent37BoxSignedIn,
@@ -275,11 +286,61 @@ export function registerAgent37Ipc(args: {
   }, STARTUP_CHECK_DELAY_MS);
   startupTimer.unref?.();
 
-  const machines = createAgent37Machines({
-    client: async () => {
-      const saved = await readAgent37Key(credentials);
-      return saved ? createAgent37Client({ apiKey: saved.key }) : null;
+  const machineCreatorDeps: Parameters<typeof createAgent37Machine>[0] = {
+    client: () => requireAgent37Client(credentials),
+    getAccountToken,
+    directoryBaseUrl,
+    listAccountMachines: args.listAccountMachines,
+    renameMachine: args.renameMachine,
+    approveInWindow: (window) => openAgent37ApprovalWindow(window, logger),
+    templateName,
+    templateNotReady: () => {
+      const template = builder.status();
+      if (template.template !== templateName() || template.usable) return null;
+      if (template.state === "building" || template.state === "failed") return describeAgent37TemplateStatus(template);
+      return null;
     },
+    onTemplateMissing: () => void builder.ensure(),
+    pendingCreates,
+    logger,
+  };
+
+  const savedClient = async () => {
+    const saved = await readAgent37Key(credentials);
+    return saved ? createAgent37Client({ apiKey: saved.key }) : null;
+  };
+
+  // Ready machines: prepared here (the sign-in needs this app's window),
+  // claimed here or by any brain. The choice is the account's.
+  const readySettingsVault = () => {
+    if (!credentials.signedIn()) throw new Error("Sign in to ADE first. A ready machine joins your account.");
+    return agent37VaultFromBridge(args.vaultBridge, AGENT37_READY_VAULT_KEY);
+  };
+  const readyKeeper = createAgent37ReadyKeeper({
+    client: savedClient,
+    settings: {
+      async read() {
+        const got = await readySettingsVault().get();
+        if (!got.ok) throw new Error("your ADE account couldn't be reached");
+        return parseAgent37ReadySettings(got.value, logger);
+      },
+      async write(projects) {
+        if (!(await readySettingsVault().set(serializeAgent37ReadySettings(projects)))) {
+          throw new Error("ADE couldn't save that to your account. Try again.");
+        }
+      },
+    },
+    createMachine: (requestId, machine, onProgress, signal, metadata) =>
+      createAgent37Machine(machineCreatorDeps, requestId, machine, onProgress, signal, metadata),
+    removeAccountMachine: args.removeAccountMachine,
+    onStatus: (status) => sendToAllWindows(IPC.agent37ReadyStatusChanged, status),
+    logger,
+  });
+  // After the template check, off the boot path; it reads every couple of minutes only while a project is on.
+  readyKeeper.start(STARTUP_CHECK_DELAY_MS + 10_000);
+
+  const machines = createAgent37Machines({
+    client: savedClient,
     removeAccountMachine: args.removeAccountMachine,
     logger,
   });
@@ -345,6 +406,48 @@ export function registerAgent37Ipc(args: {
     return result;
   });
 
+  ipcMain.handle(IPC.agent37ReadyStatus, async (event): Promise<Agent37ReadyStatus | null> => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.agent37ReadyStatus)) return null;
+    return await readyKeeper.refresh();
+  });
+
+  ipcMain.handle(IPC.agent37ReadySetProject, async (event, arg: { settings?: Partial<Agent37ReadyProjectSettings> }): Promise<Agent37ReadyStatus | null> => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.agent37ReadySetProject)) return null;
+    return await readyKeeper.setProject(arg?.settings ?? {});
+  });
+
+  ipcMain.handle(IPC.agent37ReadyRemoveProject, async (event, arg: { identity?: unknown }): Promise<Agent37ReadyStatus | null> => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.agent37ReadyRemoveProject)) return null;
+    if (typeof arg?.identity !== "string" || !arg.identity.trim()) throw new Error("Which project?");
+    return await readyKeeper.removeProject(arg.identity.trim());
+  });
+
+  ipcMain.handle(IPC.agent37ReadyRetry, async (event, arg: { identity?: unknown }): Promise<Agent37ReadyStatus | null> => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.agent37ReadyRetry)) return null;
+    if (typeof arg?.identity !== "string" || !arg.identity.trim()) throw new Error("Which project?");
+    return await readyKeeper.retry(arg.identity.trim());
+  });
+
+  ipcMain.handle(IPC.agent37ReadyClaim, async (event, arg: { originUrl?: unknown }): Promise<Agent37ReadyClaim | null> => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.agent37ReadyClaim)) return null;
+    const identity = agent37ReadyIdentity(typeof arg?.originUrl === "string" ? arg.originUrl : null);
+    if (!identity) throw new Error("This project has no git origin, so it has no ready machine.");
+    const claim = await claimAgent37ReadyMachine(await requireAgent37Client(credentials), identity, { logger });
+    // The pool is one short: make the next one.
+    void readyKeeper.refresh();
+    sendToAllWindows(IPC.agent37StatusChanged);
+    return claim;
+  });
+
+  ipcMain.handle(IPC.agent37ReadyRelease, async (event, arg: { instanceId?: unknown }): Promise<{ released: boolean } | null> => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.agent37ReadyRelease)) return null;
+    const instanceId = typeof arg?.instanceId === "string" ? arg.instanceId.trim() : "";
+    if (!/^[a-z0-9]{4,40}$/.test(instanceId)) return { released: false };
+    const released = await releaseAgent37ReadyMachine(await requireAgent37Client(credentials), instanceId, { logger });
+    if (released) void readyKeeper.refresh();
+    return { released };
+  });
+
   const creates = new Map<string, AbortController>();
 
   ipcMain.handle(IPC.agent37CancelCreate, async (event, arg: { requestId?: unknown }): Promise<{ cancelled: boolean }> => {
@@ -377,24 +480,7 @@ export function registerAgent37Ipc(args: {
         }
       };
       void createAgent37Machine(
-        {
-          client: () => requireAgent37Client(credentials),
-          getAccountToken,
-          directoryBaseUrl,
-          listAccountMachines: args.listAccountMachines,
-          renameMachine: args.renameMachine,
-          approveInWindow: (window) => openAgent37ApprovalWindow(window, logger),
-          templateName,
-          templateNotReady: () => {
-            const template = builder.status();
-            if (template.template !== templateName() || template.usable) return null;
-            if (template.state === "building" || template.state === "failed") return describeAgent37TemplateStatus(template);
-            return null;
-          },
-          onTemplateMissing: () => void builder.ensure(),
-          pendingCreates,
-          logger,
-        },
+        machineCreatorDeps,
         requestId,
         arg?.machine as Agent37CreateMachineArgs,
         send,

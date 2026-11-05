@@ -239,6 +239,15 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
       return AGENT37_MACHINE_ACTION_IPC_TIMEOUT_MS;
     case IPC.agent37ListMachines:
       return AGENT37_LIST_MACHINES_IPC_TIMEOUT_MS;
+    // A claim reads the pool, tags the machine and waits for its wake; a
+    // project change runs one pool pass (which may delete a machine).
+    case IPC.agent37ReadyClaim:
+    case IPC.agent37ReadyRelease:
+    case IPC.agent37ReadySetProject:
+    case IPC.agent37ReadyRemoveProject:
+    case IPC.agent37ReadyRetry:
+    case IPC.agent37ReadyStatus:
+      return AGENT37_MACHINE_ACTION_IPC_TIMEOUT_MS;
     case IPC.filesDelete:
       return localRuntimeActionIpcTimeoutMs("file", "deletePath");
     // Checkout, `worktree add` and `worktree remove`; see

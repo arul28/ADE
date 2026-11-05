@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { withRemoteAndroidArgs, withRemoteAppleArgs, withRemoteShellArgs } from "./cliRemoteWork";
 import { THIS_MACHINE_NAME } from "../../desktop/src/shared/machineIdentity";
+import { isAgent37ReadyMachineSelector } from "../../desktop/src/shared/agent37";
 import { pickLiveCheckout } from "../../desktop/src/shared/crossMachineHandoff";
 import { gitRemoteIdentity } from "../../desktop/src/main/services/github/githubSshAlias";
 import { samePathOnPlatform } from "../../desktop/src/shared/pathContainment";
@@ -874,6 +875,84 @@ async function executePlanOnMachines(
 }
 
 /**
+ * How long `--machine agent37:ready` waits, from the claim, for the woken
+ * machine's ADE to come online and take the chat. Agent 37 answers a wake in
+ * about a second; ADE's own reconnect after a long sleep takes longer.
+ */
+const READY_MACHINE_WAIT_MS = 120_000;
+const READY_MACHINE_POLL_MS = 1_000;
+
+/** An error that left the request unsent (the machine offline, or not reachable yet), so sending again is safe. */
+function nothingWasSent(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /Nothing was sent/.test(message) || /^Couldn't reach /.test(message) || /\bis offline\b/.test(message);
+}
+
+/**
+ * `ade chat create --machine agent37:ready`: take this project's ready Agent 37
+ * machine (prepared and asleep), wake it, wait until ADE shows it online, then
+ * start the chat there like on any machine. A machine ADE still shows offline
+ * refuses work at once ("Nothing was sent"), so the wait comes before the send,
+ * and a send that left nothing sent is tried again until the deadline.
+ */
+async function executePlanOnAgent37ReadyMachine(
+  plan: CliPlan & { kind: "execute" },
+  options: GlobalOptions,
+): Promise<unknown> {
+  if (!plan.machineFanOut) {
+    throw new CliUsageError("--machine agent37:ready starts a new chat: use it with `ade chat create`.");
+  }
+  const roots = resolveRoots(options);
+  const originUrl = getGitRemote(roots.projectRoot);
+  if (!originUrl) {
+    throw new CliUsageError("--machine agent37:ready needs a project with a git origin: the ready machine is the one kept for that repository.");
+  }
+  const startedAt = Date.now();
+  const claim = await withMachineBrain(options, async (client) => {
+    const registered = await client.request("projects.add", automaticProjectRegistrationParams(roots.projectRoot));
+    const projectId = isRecord(registered) ? asString(registered.projectId) : null;
+    if (!projectId) throw new Error("This machine's brain did not register the project.");
+    return unwrapToolResult(await client.request("ade/actions/call", withProjectId({
+      name: "run_ade_action",
+      arguments: { domain: "agent37", action: "claim_ready", args: { originUrl } },
+    }, projectId)));
+  });
+  const machineKey = isRecord(claim) ? asString(claim.machineKey) : null;
+  const name = (isRecord(claim) ? asString(claim.name) : null) ?? "the ready machine";
+  if (!machineKey) {
+    throw new CliExecutionError(`${name} has no ADE machine recorded on it, so ADE can't tell which computer it is. Delete it from its row and let ADE prepare another.`, {});
+  }
+  const say = (line: string) => {
+    if (!options.json) process.stderr.write(`ade: ${line}\n`);
+  };
+  say(`Woke ${name} on Agent 37 (${Math.round(Number(isRecord(claim) ? claim.wakeMs : 0) || 0)} ms). Waiting for its ADE…`);
+  const deadline = startedAt + READY_MACHINE_WAIT_MS;
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+  // Online in the account first: the send below would otherwise be refused at once.
+  for (;;) {
+    const roster = await withMachineBrain(options, (client) => client.request("machines.list", { includeProjects: false }))
+      .catch(() => null);
+    const row = isRecord(roster) && Array.isArray(roster.machines)
+      ? roster.machines.find((machine) => isRecord(machine) && machine.machineKey === machineKey)
+      : null;
+    if (isRecord(row) && row.online === true) break;
+    if (Date.now() > deadline) {
+      throw new CliExecutionError(`${name} woke on Agent 37 but its ADE didn't come online within ${READY_MACHINE_WAIT_MS / 1000} s. Nothing was sent; try again, or check it under Your computers.`, {});
+    }
+    await sleep(READY_MACHINE_POLL_MS);
+  }
+  say(`${name} is online (${((Date.now() - startedAt) / 1000).toFixed(1)} s). Starting the chat…`);
+  for (;;) {
+    try {
+      return await executePlan(plan, { ...options, machine: machineKey });
+    } catch (error) {
+      if (!nothingWasSent(error) || Date.now() > deadline) throw error;
+      await sleep(READY_MACHINE_POLL_MS);
+    }
+  }
+}
+
+/**
  * The machine routing `executePlan` applies first: `--all-machines`, or a
  * comma list of machines. Null for a plan that runs once, here or on one
  * machine through the connection.
@@ -883,6 +962,7 @@ export async function executePlanAcrossMachines(
   options: GlobalOptions,
 ): Promise<{ value: unknown } | null> {
   if (options.allMachines) return { value: await executePlanOnAllMachines(plan, options) };
+  if (isAgent37ReadyMachineSelector(options.machine)) return { value: await executePlanOnAgent37ReadyMachine(plan, options) };
   const machineList = [...new Set((options.machine ?? "").split(",").map((entry) => entry.trim()).filter(Boolean))];
   if (machineList.length > 1) return { value: await executePlanOnMachines(plan, options, machineList) };
   if (options.machine && plan.steps.some((step) => step.injectProjectRootIntoArgs)) {

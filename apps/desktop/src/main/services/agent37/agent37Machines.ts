@@ -9,6 +9,8 @@
  */
 
 import {
+  AGENT37_READY_METADATA,
+  readAgent37ReadyMachineState,
   agent37IdleHourlyUsd,
   agent37MachineLimitMessage,
   agent37MachineState,
@@ -95,6 +97,17 @@ export function toAgent37Machine(
     machineKey: instance.metadata[AGENT37_MACHINE_KEY_METADATA] ?? null,
     createdAtMs,
     madeByAde: agent37InstanceMadeByAde(instance),
+    ready: readyOf(instance),
+  };
+}
+
+/** A project's ready machine (see agent37ReadyMachines.ts), or null for any other box. */
+function readyOf(instance: Agent37Instance): Agent37Machine["ready"] {
+  const state = readAgent37ReadyMachineState(instance.metadata[AGENT37_READY_METADATA.state]);
+  if (!state || !instance.metadata[AGENT37_READY_METADATA.project]) return null;
+  return {
+    projectName: instance.metadata[AGENT37_READY_METADATA.projectName] || instance.metadata[AGENT37_READY_METADATA.project]!,
+    state,
   };
 }
 

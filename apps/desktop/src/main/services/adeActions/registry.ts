@@ -299,7 +299,10 @@ import { createSessionBoardMoveActions } from "./sessionBoardMove";
 import { noteSessionInputOrigin } from "../chat/sessionInputOrigins";
 import { requestProjectSecretFromUser } from "../secrets/projectSecretRequest";
 import { buildIntegrationConnectAdapters } from "../integrations/integrationConnectAdapters";
-import { agent37VaultFromStore, buildAgent37ConnectAdapter } from "../agent37/agent37Credential";
+import { agent37VaultFromStore, buildAgent37ConnectAdapter, type Agent37CredentialDeps } from "../agent37/agent37Credential";
+import { buildAgent37ReadyActions } from "../agent37/agent37ReadyActions";
+import { AGENT37_READY_VAULT_KEY, parseAgent37ReadySettings } from "../agent37/agent37ReadyMachines";
+import { ACCOUNT_SCOPE_ALL } from "../../../shared/accountSettingsScope";
 import { EncryptedFileCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
 import { listIntegrationConnections, requestIntegrationConnect } from "../integrations/integrationConnectRequest";
 import { createMcpRegistryService } from "../mcp/mcpRegistryService";
@@ -4010,18 +4013,37 @@ function agent37MachineStore(): EncryptedFileCredentialStore {
  * chat to connect one, and saves what they give into the integration here, on
  * the machine that runs the chat.
  */
+function agent37CredentialDeps(runtime: AdeRuntime): Agent37CredentialDeps {
+  return {
+    vault: () => (runtime.accountVaultStore ? agent37VaultFromStore(runtime.accountVaultStore) : null),
+    machineStore: () => agent37MachineStore(),
+    signedIn: () => runtime.accountAuthService?.getStatus().signedIn === true,
+    logger: runtime.logger,
+  };
+}
+
 function integrationConnectAdapters(runtime: AdeRuntime) {
   return buildIntegrationConnectAdapters({
     githubService: runtime.githubService ?? null,
     linearCredentialService: runtime.linearCredentialService ?? null,
     linearStatus: runtime.linearCredentialService ? () => buildRuntimeLinearConnectionStatus(runtime) : null,
     jiraService: runtime.jiraService ?? null,
-    agent37: buildAgent37ConnectAdapter({
-      vault: () => (runtime.accountVaultStore ? agent37VaultFromStore(runtime.accountVaultStore) : null),
-      machineStore: () => agent37MachineStore(),
-      signedIn: () => runtime.accountAuthService?.getStatus().signedIn === true,
-      logger: runtime.logger,
-    }),
+    agent37: buildAgent37ConnectAdapter(agent37CredentialDeps(runtime)),
+  });
+}
+
+/** Ready machines for the CLI and agents; the account's choice is read from this brain's vault. */
+function buildAgent37DomainService(runtime: AdeRuntime): OpaqueService {
+  return buildAgent37ReadyActions({
+    credentials: agent37CredentialDeps(runtime),
+    readSettings: () => {
+      if (runtime.accountAuthService?.getStatus().signedIn !== true) return [];
+      return parseAgent37ReadySettings(
+        runtime.accountVaultStore?.get(ACCOUNT_SCOPE_ALL, "integration", AGENT37_READY_VAULT_KEY) ?? null,
+        runtime.logger,
+      );
+    },
+    logger: runtime.logger,
   });
 }
 
@@ -4225,6 +4247,7 @@ export function getAdeActionDomainServices(
     project_config: toService(runtime.projectConfigService),
     project_secret: toService(buildProjectSecretDomainService(runtime)),
     integration_connect: buildIntegrationConnectDomainService(runtime),
+    agent37: buildAgent37DomainService(runtime),
     mcp_registry: buildMcpRegistryDomainService(runtime),
     account_settings: buildAccountSettingsDomainService(runtime),
     account_vault: buildAccountVaultDomainService(runtime),

@@ -193,6 +193,23 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "ade integrations status --text",
     },
   },
+  agent37: {
+    ready_status: {
+      description: "List the account's Agent 37 ready machines: per project kept ready (its git identity and name), whether a machine is ready (prepared and asleep), being prepared, or failed, with machine names and states. Reads Agent 37 with the account's key; never returns the key.",
+      input: "no input",
+      example: "ade agent37 ready --text",
+    },
+    claim_ready: {
+      description: "Take this project's ready Agent 37 machine for a new chat: marks it claimed and wakes it (about 1-2 s), then returns {instanceId, machineKey, name, projectPath, wakeMs}. Its ADE comes online a few seconds later; wait for it before sending work there. `ade chat create --machine agent37:ready` does all of this. Throws when there is no ready machine (with whether one is being prepared). A claimed machine bills while awake.",
+      input: "object { originUrl: string }",
+      example: "ade chat create --machine agent37:ready --prompt \"…\"",
+    },
+    release_ready: {
+      description: "Give back a ready machine claimed in the last 30 minutes that no chat used: it is tagged ready again and put back to sleep. Returns {released: boolean}.",
+      input: "object { instanceId: string }",
+      example: "ade --role agent actions run agent37.release_ready --input-json '{\"instanceId\":\"o2m461src2\"}' --json",
+    },
+  },
   mcp_registry: {
     list: {
       description: "Read the person's MCP setup on this machine: every server in ADE's MCP registry (name, transport, the command and args or the URL, the env variable and header NAMES, on or off for the account / this machine / this project, and whether each value is set here), plus the servers other tools' configs on this machine have that the registry does not, with the tools they come from. Never returns a value.",

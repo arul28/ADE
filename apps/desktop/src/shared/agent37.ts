@@ -332,6 +332,11 @@ export type Agent37Machine = {
    */
   madeByAde: boolean;
   createdAtMs: number | null;
+  /**
+   * Set when this is a project's ready machine (prepared and kept asleep for
+   * the next chat): the project it is for, and where it is in that life.
+   */
+  ready: { projectName: string; state: Agent37ReadyMachineState } | null;
 };
 
 export type Agent37MachinesResult = {
@@ -455,4 +460,110 @@ export function describeAgent37TemplateStatus(status: Agent37TemplateStatus): st
     default:
       return "ADE's machine template isn't set up yet.";
   }
+}
+
+/*
+ * Ready machines: a machine prepared for one project (repository cloned, its
+ * setup run, its services started, signed in) and kept asleep, so a new chat
+ * on it starts in seconds. Asleep it bills only its disk. Starting a chat
+ * claims it (wakes it and makes it an ordinary machine of the person's), and
+ * ADE prepares the next one.
+ *
+ * The pool lives on Agent37 itself, in each machine's metadata, so every
+ * computer on the account, the brain and the CLI read the same answer.
+ */
+
+/** `ade chat create --machine agent37:ready`: start the chat on this project's ready machine. */
+export const AGENT37_READY_MACHINE_SELECTOR = "agent37:ready";
+
+export function isAgent37ReadyMachineSelector(value: string | null | undefined): boolean {
+  return value?.trim().toLowerCase() === AGENT37_READY_MACHINE_SELECTOR;
+}
+
+/** Metadata keys on a ready machine. Agent37 replaces metadata on write, so every write keeps the rest. */
+export const AGENT37_READY_METADATA = {
+  /** The project's git identity (`github.com/owner/repo`). */
+  project: "ade_ready_for",
+  /** `preparing` → `ready` → `claimed`; or `failed`. */
+  state: "ade_ready",
+  /** The project's display name, for the machine list. */
+  projectName: "ade_ready_name",
+  /** Where the project is on the machine. */
+  path: "ade_ready_path",
+  /** Epoch ms of the claim. */
+  claimedAt: "ade_ready_claimed_at",
+} as const;
+
+export type Agent37ReadyMachineState = "preparing" | "ready" | "claimed" | "failed";
+
+export function readAgent37ReadyMachineState(value: string | null | undefined): Agent37ReadyMachineState | null {
+  return value === "preparing" || value === "ready" || value === "claimed" || value === "failed" ? value : null;
+}
+
+/** What the person chose for one project, kept in the account vault so every computer agrees. */
+export type Agent37ReadyProjectSettings = {
+  /** The project's git identity; the key everything else matches on. */
+  identity: string;
+  /** What the machine clones. */
+  originUrl: string;
+  projectName: string;
+  kind: Agent37MachineKind;
+  shape: Agent37ShapeId;
+  /**
+   * Shell commands run once in the clone before the machine sleeps: install,
+   * then start what the project needs (a `docker compose up -d`, a dev
+   * server in the background). Empty means clone only.
+   */
+  setup: string;
+};
+
+/**
+ * One project's ready machine, as Settings shows it.
+ *
+ * - `preparing`: being made and set up (`message` says which step).
+ * - `ready`: prepared and asleep; the next chat takes it.
+ * - `failed`: the last prepare failed; nothing is billing, Retry starts again.
+ * - `waiting`: none yet and none being made (this computer will start one).
+ */
+export type Agent37ReadyProjectState = "preparing" | "ready" | "failed" | "waiting";
+
+export type Agent37ReadyProjectStatus = {
+  settings: Agent37ReadyProjectSettings;
+  state: Agent37ReadyProjectState;
+  /** One plain line. */
+  message: string;
+  instanceId: string | null;
+  machineName: string | null;
+  /** When the prepare began, epoch ms, while preparing. */
+  startedAt: number | null;
+  error: string | null;
+};
+
+export type Agent37ReadyStatus = {
+  projects: Agent37ReadyProjectStatus[];
+  /** Why the list could not be read, or null. */
+  error: string | null;
+};
+
+/** What claiming a project's ready machine hands back: the machine to start the chat on. */
+export type Agent37ReadyClaim = {
+  instanceId: string;
+  /** Its ADE machine (account row), recorded on it when it joined. */
+  machineKey: string | null;
+  name: string;
+  /** Where the project is on it. */
+  projectPath: string | null;
+  /** How long Agent37 took to answer the wake. */
+  wakeMs: number;
+};
+
+/** What a ready machine costs a month asleep: its disk. */
+export function agent37ReadyIdleMonthlyUsd(shape: Agent37Shape): number {
+  return shape.diskGb * DISK_GB_MONTH_USD;
+}
+
+/** "Asleep it costs about $1.80 a month (its disk). A chat on it costs 3.3¢ an hour while it's awake." */
+export function describeAgent37ReadyCost(kind: Agent37MachineKind, shape: Agent37Shape): string {
+  return `Asleep it costs about ${formatAgent37Usd(agent37ReadyIdleMonthlyUsd(shape))} a month (its disk). `
+    + `A chat on it costs ${formatAgent37HourlyPrice(agent37HourlyUsd(kind, shape))} while it's awake.`;
 }

@@ -1,5 +1,5 @@
-# ADE's machine template on Agent37: a Debian 12 box whose main process is the
-# ADE brain. Built by Agent37's cloud build (see ../build-template.sh); runs as
+# ADE's machine template on Agent37: a Debian 12 box (or VM) whose main process
+# is the ADE brain. Built by Agent37's cloud build (see ../build-template.sh); runs as
 # the default `node` user with /home/node on the box's persistent disk.
 FROM node:24-bookworm-slim
 
@@ -25,6 +25,24 @@ RUN curl -fsSL https://ade-app.dev/install.sh -o /tmp/install.sh \
  && chmod -R a+rX /opt/ade && rm /tmp/install.sh \
  && ln -s /opt/ade/bin/ade /usr/local/bin/ade \
  && ade --version
+
+# Docker, for projects whose setup starts a stack (docker compose, Supabase).
+# Only a VM's own kernel runs it; on a sandboxed box the entrypoint skips it.
+# dockerd needs root, and the brain runs as `node`: the one thing `node` may
+# run as root is the entrypoint's own `--start-dockerd` step (sudoers below).
+# Docker access is root-equivalent anyway, and the machine is the person's.
+RUN install -m 0755 -d /etc/apt/keyrings \
+ && curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc \
+ && chmod a+r /etc/apt/keyrings/docker.asc \
+ && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian bookworm stable" \
+      > /etc/apt/sources.list.d/docker.list \
+ && apt-get update && apt-get install -y --no-install-recommends \
+      docker-ce docker-ce-cli containerd.io docker-compose-plugin docker-buildx-plugin \
+      iptables sudo \
+ && rm -rf /var/lib/apt/lists/* \
+ && usermod -aG docker node \
+ && echo 'node ALL=(root) NOPASSWD: /usr/local/bin/ade-entrypoint.sh --start-dockerd' > /etc/sudoers.d/ade-dockerd \
+ && chmod 440 /etc/sudoers.d/ade-dockerd
 
 COPY ade-entrypoint.sh /usr/local/bin/ade-entrypoint.sh
 RUN chmod 755 /usr/local/bin/ade-entrypoint.sh

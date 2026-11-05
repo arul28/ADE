@@ -186,6 +186,8 @@ export async function createAgent37Machine(
   rawArgs: Agent37CreateMachineArgs,
   onProgress: (progress: Agent37CreateProgress) => void,
   signal?: AbortSignal,
+  /** More tags for the box (a ready machine's project and state); ADE's own tags win. */
+  extraMetadata?: Record<string, string>,
 ): Promise<Agent37CreateMachineResult> {
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const fetcher: FetchLike = deps.fetch ?? ((input, init) => fetch(input, init));
@@ -233,7 +235,7 @@ export async function createAgent37Machine(
       name,
       type: agent37InstanceType(rawArgs.kind),
       resources: { cpu: shape.cpu, memory: shape.memoryGb, disk: shape.diskGb },
-      metadata: { created_by: "ade", ade_request_id: requestId },
+      metadata: { ...extraMetadata, created_by: "ade", ade_request_id: requestId },
     }, signal);
   } catch (error) {
     // A create that timed out or broke mid-way may still have made a box.
