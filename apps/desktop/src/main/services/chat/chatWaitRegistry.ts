@@ -46,6 +46,11 @@ export function isChatWakeDeferredError(error: unknown): error is ChatWakeDeferr
   return error instanceof ChatWakeDeferredError;
 }
 
+/** Whether a wake held for a session that cannot take it is past saving (see `CHAT_WAIT_UNDELIVERED_GRACE_MS`). */
+function pastUndeliveredGrace(expiresAt: string, nowMs: number): boolean {
+  return Date.parse(expiresAt) + CHAT_WAIT_UNDELIVERED_GRACE_MS <= nowMs;
+}
+
 export type ChatWaitRegistryDeps = {
   logger: Logger;
   db: { getJson: (key: string) => unknown; setJson: (key: string, value: unknown) => void } | null;
@@ -279,15 +284,19 @@ export function createChatWaitRegistry(deps: ChatWaitRegistryDeps) {
       if (deliverTo && deps.getMovedAwayTarget?.(deliverTo)) continue;
       if (deliverTo && deps.ownedByAnotherBrain(deliverTo)) continue;
       const results = await Promise.all(waiter.targetSessionIds.map((target) => readTarget(target, waiter)));
-      const matched = waiter.mode === "all"
+      const matched = waiter.matchedWhileDeferred === true || (waiter.mode === "all"
         ? results.every((result) => result.matches)
-        : results.some((result) => result.matches);
+        : results.some((result) => result.matches));
       const expired = Date.parse(waiter.expiresAt) <= nowMs;
       const deferred = Boolean(deliverTo && deps.wakeDeferred?.(deliverTo));
       if (deferred && (matched || expired)) {
+        if (matched && !waiter.matchedWhileDeferred) {
+          waiter.matchedWhileDeferred = true;
+          persist();
+        }
         // Held for the session's next turn boundary, within a grace past the
         // wait's own deadline; after that it can never be delivered.
-        if (Date.parse(waiter.expiresAt) + CHAT_WAIT_UNDELIVERED_GRACE_MS <= nowMs) {
+        if (pastUndeliveredGrace(waiter.expiresAt, nowMs)) {
           waiters = waiters.filter((candidate) => candidate.id !== waiter.id);
           persist();
           syncBackstop();
@@ -325,11 +334,12 @@ export function createChatWaitRegistry(deps: ChatWaitRegistryDeps) {
         } catch (error) {
           if (isMovedAwayChatError(error) || isChatWakeDeferredError(error)) {
             if (isChatWakeDeferredError(error)) {
-              if (Date.parse(waiter.expiresAt) + CHAT_WAIT_UNDELIVERED_GRACE_MS <= Date.now()) {
+              if (pastUndeliveredGrace(waiter.expiresAt, Date.now())) {
                 logger.warn("agent_chat.wait_undeliverable_dropped", { waiterId: waiter.id, outcome });
                 continue;
               }
               logger.info("agent_chat.wait_fire_deferred", { waiterId: waiter.id, outcome });
+              if (outcome === "matched") waiter.matchedWhileDeferred = true;
             }
             if (!waiters.some((candidate) => candidate.id === waiter.id)) {
               waiters.push(waiter);

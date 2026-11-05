@@ -8436,11 +8436,22 @@ export function createPtyService({
       const limit = typeof args.limit === "number" && Number.isFinite(args.limit)
         ? Math.max(1, Math.min(500, Math.floor(args.limit)))
         : 200;
-      const summaries = service.enrichSessions(sessionService.list({
-        ...(laneId ? { laneId } : {}),
-        limit,
-      }));
       const includeArchived = args.includeArchived === true;
+      // Archived rows (a lane's old shells, another machine's background work)
+      // never take a live row's place in the window. A chat's own shells are
+      // also read by their stored owner, so newer rows of other chats cannot
+      // push them out of it.
+      const windowArgs = {
+        ...(laneId ? { laneId } : {}),
+        ...(includeArchived ? {} : { includeArchived: false }),
+        limit,
+      };
+      const windowRows = sessionService.list(windowArgs);
+      const inWindow = new Set(windowRows.map((row) => row.id));
+      const ownRows = chatSessionId
+        ? sessionService.list({ ...windowArgs, chatSessionId }).filter((row) => !inWindow.has(row.id))
+        : [];
+      const summaries = service.enrichSessions([...windowRows, ...ownRows]);
       return summaries
         .filter((summary) => !isPersistedChatToolType(summary.toolType))
         .filter((summary) => includeArchived || !summary.archivedAt)
@@ -8459,7 +8470,8 @@ export function createPtyService({
           const bRunning = b.status === "running";
           if (aRunning !== bRunning) return aRunning ? -1 : 1;
           return Date.parse(b.startedAt) - Date.parse(a.startedAt);
-        });
+        })
+        .slice(0, limit);
     },
 
     activeForChat(args?: Partial<ChatTerminalActiveForChatArgs> | null): ChatTerminalSession | null {

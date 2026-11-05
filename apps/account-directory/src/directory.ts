@@ -606,6 +606,14 @@ async function enforceRevocationGate(
       revokedAt: revocation.revoked_at,
     }, { status: 403 });
   }
+  // A removed machine is off the roster, so on a full account the write below
+  // would refuse it. Refuse it here, before the proof is spent or the
+  // revocation is cleared: a key the cap refused must stay revoked. The write
+  // keeps its own atomic check.
+  if (!(await accountHasRoomFor(env, userId, input.machineKey))) {
+    refuse("directory.register_refused", "too_many_machines", "account machine cap reached");
+    return tooManyMachinesResponse();
+  }
   // Two independent proofs, either of which is sufficient, neither of which a
   // removed machine can produce from the token it is still holding.
   //
@@ -717,10 +725,29 @@ async function touchUnchangedMachine(
   return (result.meta?.changes ?? 0) > 0;
 }
 
+/** Whether the account can take this machine key: it is on the roster, or there is room. */
+async function accountHasRoomFor(env: Env, userId: string, machineKey: string): Promise<boolean> {
+  const roster = await env.DB.prepare(`
+    select count(*) as total, coalesce(max(machine_key = ?), 0) as mine
+      from machines
+     where user_id = ?
+  `).bind(machineKey, userId).first<{ total: number; mine: number }>();
+  return Boolean(Number(roster?.mine)) || Number(roster?.total ?? 0) < MAX_MACHINES_PER_ACCOUNT;
+}
+
+function tooManyMachinesResponse(): Response {
+  return json({
+    error: "too many machines on this account",
+    code: "too_many_machines",
+    recovery: "Remove computers you no longer use from the account, then try again.",
+  }, { status: 409 });
+}
+
 /**
  * Step two: write the row. The only unconditional write a heartbeat makes.
  * Returns false, and writes nothing, for a NEW machine key on an account that
- * is already at the cap. An unchanged heartbeat returns before the count.
+ * is already at the cap. The cap is part of the write, so two registrations
+ * at once cannot both pass it. An unchanged heartbeat returns before it.
  */
 async function upsertMachine(
   env: Env,
@@ -728,18 +755,15 @@ async function upsertMachine(
 ): Promise<boolean> {
   const { input } = args;
   if (await touchUnchangedMachine(env, args)) return true;
-  const roster = await env.DB.prepare(`
-    select count(*) as total, coalesce(max(machine_key = ?), 0) as mine
-      from machines
-     where user_id = ?
-  `).bind(input.machineKey, args.userId).first<{ total: number; mine: number }>();
-  if (!Number(roster?.mine) && Number(roster?.total ?? 0) >= MAX_MACHINES_PER_ACCOUNT) return false;
-  await env.DB.prepare(`
+  const result = await env.DB.prepare(`
     insert into machines (
       user_id, machine_key, device_id, name, platform, device_type, pubkey,
       reachable_endpoints, power, sleep_state, sleep_state_at,
       last_seen_at, created_at, hardware_id, channel, ade_home
-    ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    )
+    select ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+     where exists (select 1 from machines where user_id = ? and machine_key = ?)
+        or (select count(*) from machines where user_id = ?) < ?
     on conflict(user_id, machine_key) do update set
       device_id = excluded.device_id,
       -- coalesce, and not excluded.hardware_id: an anchor is optional on every
@@ -804,9 +828,13 @@ async function upsertMachine(
     input.hardwareId,
     input.channel,
     input.adeHome,
+    args.userId,
+    input.machineKey,
+    args.userId,
+    MAX_MACHINES_PER_ACCOUNT,
     input.retainRelayEndpoints ? 1 : 0,
   ).run();
-  return true;
+  return (result.meta?.changes ?? 0) > 0;
 }
 
 /**
@@ -935,10 +963,11 @@ async function handleRegister(
   freshInteractiveAuthentication: boolean,
 ): Promise<Response> {
   if (request.method !== "POST") return text("method not allowed", 405);
-  const body = await readBoundedBody(request, MAX_REGISTER_BODY_BYTES);
-  if (!body.ok) return json({ error: "request body too large" }, { status: 413 });
   let raw: unknown;
   try {
+    // Inside the try: a body stream that breaks while it is read is an invalid body, not a 500.
+    const body = await readBoundedBody(request, MAX_REGISTER_BODY_BYTES);
+    if (!body.ok) return json({ error: "request body too large" }, { status: 413 });
     raw = JSON.parse(body.text);
   } catch {
     return json({ error: "invalid request body" }, { status: 400 });
@@ -979,11 +1008,7 @@ async function handleRegister(
 
   if (!(await upsertMachine(env, { userId, input, nowMs }))) {
     refuse("directory.register_refused", "too_many_machines", "account machine cap reached");
-    return json({
-      error: "too many machines on this account",
-      code: "too_many_machines",
-      recovery: "Remove computers you no longer use from the account, then try again.",
-    }, { status: 409 });
+    return tooManyMachinesResponse();
   }
 
   const supersededMachineKeys = await supersedePhantomDuplicates(env, {
@@ -1127,10 +1152,11 @@ async function handleRename(
   machineKey: string,
 ): Promise<Response> {
   if (request.method !== "PATCH") return text("method not allowed", 405);
-  const body = await readBoundedBody(request, MAX_REGISTER_BODY_BYTES);
-  if (!body.ok) return json({ error: "request body too large" }, { status: 413 });
   let raw: unknown;
   try {
+    // Inside the try: a body stream that breaks while it is read is an invalid body, not a 500.
+    const body = await readBoundedBody(request, MAX_REGISTER_BODY_BYTES);
+    if (!body.ok) return json({ error: "request body too large" }, { status: 413 });
     raw = JSON.parse(body.text);
   } catch {
     return json({ error: "invalid request body" }, { status: 400 });

@@ -6594,20 +6594,17 @@ async function runTool(args: {
       if (action === "list") {
         // A lane-wide list leaves out shells a chat on another machine owns here.
         const caller = asOptionalTrimmedString(session.identity.chatSessionId);
-        // That chat's own shells here are archived from the start (see
-        // `pty.create` above), so it asks for archived rows and keeps only its own.
-        const callerIsForeign = Boolean(caller && parseForeignCallerSessionId(caller));
-        if (callerIsForeign) scopedObjectArgs = { ...scopedObjectArgs, includeArchived: true };
+        // A chat on another machine lists only its own shells here (the scope
+        // above pins `chatSessionId`), and those are archived from the start
+        // (see `pty.create` above), so it asks for archived rows too.
+        if (caller && parseForeignCallerSessionId(caller)) {
+          scopedObjectArgs = { ...scopedObjectArgs, includeArchived: true };
+        }
         transformScopedResult = (value) => (Array.isArray(value)
-          ? value.filter((row) => {
-            if (!isRecord(row)) return true;
-            const owner = typeof row.chatSessionId === "string" ? row.chatSessionId : null;
-            if (callerIsForeign && owner !== caller) {
-              const id = typeof row.terminalId === "string" ? row.terminalId : null;
-              if (!id || runtime.sessionService.get(id)?.archivedAt) return false;
-            }
-            return !owner || owner === caller || !parseForeignCallerSessionId(owner);
-          })
+          ? value.filter((row) => !isRecord(row)
+            || typeof row.chatSessionId !== "string"
+            || row.chatSessionId === caller
+            || !parseForeignCallerSessionId(row.chatSessionId))
           : value);
       }
     } else if (

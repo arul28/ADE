@@ -1263,6 +1263,7 @@ import {
 import type { MachinePowerSource } from "../../../../../ade-cli/src/services/power/machinePowerMonitor";
 import { createHostSleepChipTracker, sessionTurnInFlight } from "./hostSleepChipTracker";
 import { ChatWakeDeferredError, createChatWaitRegistry, type ChatWaitRegistry } from "./chatWaitRegistry";
+import { createAgentCliWakes } from "./agentCliWakes";
 import { GOAL_BLOCKED_NOTICE_STATUS, GOAL_REACHED_NOTICE_STATUS, parseClaudeGoalCommand } from "../../../shared/chatGoals";
 import {
   CHAT_EVENT_HISTORY_PAGE_DEFAULT_BYTES,
@@ -49302,119 +49303,24 @@ export function createAgentChatService(args: {
     onDelivered?: () => void;
   };
 
-  // --- Wakes for tracked agent CLIs -----------------------------------------
-  //
-  // A tracked agent CLI (Claude Code, Codex, ... in a terminal) starts child
-  // chats and arms waits as a chat does, but it has no chat to message. Its
-  // wakes are typed at its prompt instead, the way scheduled work reaches it,
-  // and only at a turn boundary: never into a turn that is still running.
-
-  const CLI_PARENT_WAKE_RETRY_MS = 5_000;
-  const CLI_PARENT_WAKE_GIVE_UP_MS = 24 * 60 * 60_000;
-
-  /** True while a tracked agent CLI cannot take a wake: mid-turn, or run by another live ADE runtime. */
-  const agentCliWakeDeferred = (sessionId: string): boolean =>
-    isTrackedAgentCliSession(sessionId) && ptyService?.canAcceptScheduledTurn(sessionId.trim()) !== true;
-
-  /** Whether another live ADE runtime runs this tracked agent CLI's terminal. */
-  const agentCliOwnedByAnotherRuntime = (sessionId: string): boolean => {
-    const row = sessionService.get(sessionId.trim());
-    return Boolean(
-      row?.tracked
-        && isTrackedAgentCliToolType(row.toolType)
-        && ptyService?.isSessionOwnedByLivePeerRuntime?.(row),
-    );
-  };
-
-  const typeWakeIntoAgentCli = async (sessionId: string, text: string): Promise<"delivered" | "deferred"> => {
-    if (sessionService.get(sessionId)?.archivedAt) {
-      throw new Error(`Terminal session '${sessionId}' is archived, so it cannot be woken.`);
-    }
-    // Checked again here, inside the per-CLI queue: an earlier wake may have
-    // just started a turn.
-    if (!ptyService || ptyService.canAcceptScheduledTurn(sessionId) !== true) return "deferred";
-    try {
-      const sent = await ptyService.sendToSession({ sessionId, text });
-      // sendToSession relaunches an ended CLI, as for scheduled work; its own
-      // parent's card closed when that process exited and reopens here.
-      if (sent.resumed) {
-        try {
-          notifyParentOfCliChildSpawn(sent.sessionId, { resumed: true });
-        } catch (notifyError) {
-          logger.warn("agent_chat.cli_wake_resume_parent_notify_failed", {
-            sessionId: sent.sessionId,
-            error: notifyError instanceof Error ? notifyError.message : String(notifyError),
-          });
-        }
-      }
-      return "delivered";
-    } catch (error) {
-      // Nothing was typed. Keep the wake only while the CLI still cannot take
-      // a turn (it started one, or another runtime took it). An ended CLI
-      // that cannot be reopened (no resume target) fails now instead of
-      // retrying a resume that cannot work.
-      if (isPtySendPreDeliveryError(error) && ptyService.canAcceptScheduledTurn(sessionId) !== true) {
-        logger.info("agent_chat.cli_wake_deferred", {
-          sessionId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-        return "deferred";
-      }
-      throw error;
-    }
-  };
-
-  const cliWakeFlights = new Map<string, Promise<"delivered" | "deferred">>();
-
-  /**
-   * Deliver a wake ADE wrote (a finished wait, a subagent's report, a queued
-   * prompt) to the session it is for. An agent chat takes it as a message. A
-   * tracked agent CLI gets the text typed at its prompt once it can take a
-   * turn; "deferred" means nothing was typed and the caller keeps the wake.
-   * Wakes to one CLI run one at a time, so two never land in one turn.
-   */
-  const deliverWakeToSession = async (
-    args: AgentChatMessageSessionArgs,
-    options?: { trustedSpawnCompletion?: boolean },
-  ): Promise<"delivered" | "deferred"> => {
-    const sessionId = args.sessionId.trim();
-    if (!isTrackedAgentCliSession(sessionId)) {
-      await messageSession(args, options);
-      return "delivered";
-    }
-    const previous = cliWakeFlights.get(sessionId) ?? Promise.resolve("delivered" as const);
-    const flight = previous
-      .catch(() => "deferred" as const)
-      .then(() => typeWakeIntoAgentCli(sessionId, args.text));
-    cliWakeFlights.set(sessionId, flight);
-    try {
-      return await flight;
-    } finally {
-      if (cliWakeFlights.get(sessionId) === flight) cliWakeFlights.delete(sessionId);
-    }
-  };
-
-  /**
-   * Wake a tracked agent CLI parent with a subagent's report, retrying until
-   * the CLI reaches a turn boundary. Gives up after a day, when the CLI is
-   * gone, or when the service shuts down. Nothing here is durable: like a
-   * chat parent's held wake, a brain restart drops it, and never repeats it.
-   */
-  const wakeAgentCliParent = async (parentSessionId: string, text: string): Promise<void> => {
-    const giveUpAt = Date.now() + CLI_PARENT_WAKE_GIVE_UP_MS;
-    for (;;) {
-      if (serviceDisposed) throw new Error("Chat service is shutting down.");
-      if (!isTrackedAgentCliSession(parentSessionId)) throw new Error("Parent session was deleted.");
-      if (await deliverWakeToSession({ sessionId: parentSessionId, kind: "wake", text }) === "delivered") return;
-      if (Date.now() >= giveUpAt) {
-        throw new Error(`Agent CLI session '${parentSessionId}' did not reach a turn boundary within a day.`);
-      }
-      await new Promise<void>((resolve) => {
-        const timer = setTimeout(resolve, CLI_PARENT_WAKE_RETRY_MS);
-        timer.unref?.();
-      });
-    }
-  };
+  // Wakes for tracked agent CLIs: typed at the CLI's prompt at a turn
+  // boundary (`agentCliWakes.ts`). The later helpers are read at call time.
+  const {
+    agentCliWakeDeferred,
+    agentCliOwnedByAnotherRuntime,
+    deliverWakeToSession,
+    wakeAgentCliParent,
+  } = createAgentCliWakes({
+    logger,
+    sessionService,
+    ptyService: ptyService ?? null,
+    isTrackedAgentCliSession,
+    messageSession: (wakeArgs, options) => messageSession(wakeArgs, options),
+    notifyParentOfCliChildSpawn: (terminalSessionId, options) => {
+      notifyParentOfCliChildSpawn(terminalSessionId, options);
+    },
+    isDisposed: () => serviceDisposed,
+  });
 
   const parentWakes = createParentWakeBatcher({
     isParentBusy: (parentSessionId) => {
@@ -68459,8 +68365,19 @@ export function createAgentChatService(args: {
    * stop in the last few hours. A CLI whose turn was running gets the same
    * durable "continue" row a chat does, which reopens it with that prompt; any
    * other reopens at its prompt. One already open (a person or another
-   * runtime got there first) is left alone.
+   * runtime got there first) is left alone. As for a chat, a CLI is continued
+   * at most `MAX_CONSECUTIVE_RESTART_RESUMES` restarts in a row; after that it
+   * only reopens.
    */
+  const cliContinueStreakFor = (sessionId: string): number => {
+    const previous = (scheduledWorkScheduler?.list(sessionId) ?? [])
+      .find((schedule) => schedule.id === updateResumeScheduleId(sessionId));
+    // A CLI keeps no record of when its turns end, so a restart long after its
+    // last continue starts a new streak.
+    const firedAt = previous?.lastFiredAt ?? previous?.terminalAt ?? null;
+    if (firedAt == null || Date.now() - firedAt > RESTART_RESUME_MAX_AGE_MS) return 1;
+    return nextRestartResumeStreak(previous, null);
+  };
   const reopenCliSessionsAfterRestart = async (): Promise<void> => {
     await scheduledWorkReady;
     if (serviceDisposed || !ptyService?.resumeSession) return;
@@ -68483,7 +68400,11 @@ export function createAgentChatService(args: {
       if (!row?.tracked || !isTrackedAgentCliToolType(row.toolType) || row.archivedAt) continue;
       if (ptyService.hasLivePty?.(row.id) || ptyService.isSessionOwnedByLivePeerRuntime?.(row)) continue;
       try {
-        if (entry.midTurn && scheduledWorkScheduler) {
+        const streak = entry.midTurn && scheduledWorkScheduler ? cliContinueStreakFor(row.id) : 0;
+        if (entry.midTurn && streak > MAX_CONSECUTIVE_RESTART_RESUMES) {
+          logger.info("agent_chat.cli_reopen_continue_capped", { sessionId: row.id, streak: streak - 1 });
+        }
+        if (entry.midTurn && scheduledWorkScheduler && streak <= MAX_CONSECUTIVE_RESTART_RESUMES) {
           const createdAt = Date.now();
           await scheduledWorkScheduler.upsert({
             id: updateResumeScheduleId(row.id),
@@ -68497,9 +68418,9 @@ export function createAgentChatService(args: {
             lateFlag: false,
             durable: true,
             source: UPDATE_RESUME_SCHEDULED_WORK_SOURCE,
-            restartResumeStreak: 0,
+            restartResumeStreak: streak,
           });
-          logger.info("agent_chat.cli_reopen_armed", { sessionId: row.id, midTurn: true });
+          logger.info("agent_chat.cli_reopen_armed", { sessionId: row.id, midTurn: true, streak });
           continue;
         }
         const reopened = await ptyService.resumeSession({ sessionId: row.id });

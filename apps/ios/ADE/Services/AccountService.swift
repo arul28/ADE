@@ -2002,9 +2002,12 @@ final class AccountService: ObservableObject {
           }
         )
         // Save it before any account check: Relay already stored its hash for
-        // this device id, whichever account is signed in now.
-        if let issuedDeviceKey {
-          self.deviceKeychain.saveAccountDeviceKey(issuedDeviceKey, deviceId: request.deviceId)
+        // this device id, whichever account is signed in now. A key the
+        // Keychain did not store is never confirmed: Relay keeps it pending,
+        // so the APNs token still proves this install.
+        guard let issuedDeviceKey,
+              self.deviceKeychain.saveAccountDeviceKey(issuedDeviceKey, deviceId: request.deviceId) else {
+          return nil
         }
         return issuedDeviceKey
       }

@@ -290,8 +290,9 @@ async function refundGlobalBudget(env: DiagnosticsEnv, dayKey: string): Promise<
  * Cron sweep: budget rows are write-once-a-day and read only for today.
  *
  * Lexicographic comparison is correct here because the key starts with a
- * fixed-width ISO date (the legacy row adds a `:legacy` suffix, which sorts
- * after its own day and before the next). Today's rows are never in range, so a
+ * fixed-width ISO date (the legacy row adds a `:legacy` suffix and a caller's
+ * row a `:caller:<identity>` one; both sort after their own day and before the
+ * next). Today's rows are never in range, so a
  * sweep can never free budget the running day has already spent.
  */
 export async function cleanupDiagnosticsUploadDays(
@@ -545,7 +546,7 @@ export async function handleDiagnosticsRequest(
     });
     return json({ error: "diagnostics upload unavailable" }, { status: 503 });
   }
-  if (spent >= perDayLimit) {
+  const rateLimited = (): Response => {
     logDiagnosticsUpload({
       outcome: "rejected",
       status: 429,
@@ -560,7 +561,8 @@ export async function handleDiagnosticsRequest(
       status: 429,
       headers: { "retry-after": "86400" },
     });
-  }
+  };
+  if (spent >= perDayLimit) return rateLimited();
 
   // The fleet ceiling is claimed AFTER the per-caller quota and BEFORE the put.
   //
@@ -577,8 +579,16 @@ export async function handleDiagnosticsRequest(
   const budgetLimit = legacy
     ? Math.min(LEGACY_DIAGNOSTICS_DAILY_GLOBAL_LIMIT, dailyGlobalLimit(env))
     : dailyGlobalLimit(env);
-  const budget = await claimGlobalBudget(env, budgetDay, budgetLimit);
+  // The stored count above cannot see uploads still in flight, so a burst
+  // all reads the same number. The caller's own day row is the atomic part of
+  // its limit, claimed first, so one caller's burst cannot spend the fleet's
+  // budget. A kill switch writes neither row.
+  const callerDay = `${dayKey}:caller:${identity}`;
+  const callerSlot = budgetLimit > 0 ? await claimGlobalBudget(env, callerDay, perDayLimit) : null;
+  if (callerSlot && !callerSlot.ok && callerSlot.reason === "exhausted") return rateLimited();
+  const budget = callerSlot && !callerSlot.ok ? callerSlot : await claimGlobalBudget(env, budgetDay, budgetLimit);
   if (!budget.ok) {
+    if (callerSlot?.ok) await refundGlobalBudget(env, callerDay);
     const exhausted = budget.reason === "exhausted";
     logDiagnosticsUpload({
       outcome: "rejected",
@@ -631,6 +641,7 @@ export async function handleDiagnosticsRequest(
     // so nothing should have been spent, and a bucket having a bad hour must
     // not quietly consume the day's ceiling for reports that do not exist.
     await refundGlobalBudget(env, budgetDay);
+    await refundGlobalBudget(env, callerDay);
     logDiagnosticsUpload({
       outcome: "rejected",
       status: 502,

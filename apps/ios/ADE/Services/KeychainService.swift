@@ -43,7 +43,9 @@ final class KeychainService {
     return "\(tokenAccount).\(trimmed)"
   }
 
-  private func saveString(_ value: String, account: String) {
+  /// Returns whether the Keychain stored the value.
+  @discardableResult
+  private func saveString(_ value: String, account: String) -> Bool {
     let cacheKey = self.cacheKey(account)
     // After the write, so a read racing it cannot cache the old value.
     defer { Self.invalidate(cacheKey) }
@@ -59,8 +61,9 @@ final class KeychainService {
       var addQuery = query
       addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
       addQuery[kSecValueData as String] = data
-      SecItemAdd(addQuery as CFDictionary, nil)
+      return SecItemAdd(addQuery as CFDictionary, nil) == errSecSuccess
     }
+    return updateStatus == errSecSuccess
   }
 
   private func cacheKey(_ account: String) -> String {
@@ -174,11 +177,13 @@ final class KeychainService {
   /// The secret Relay issued to this installation's device id. It proves to
   /// Relay that a later account on this phone is the same install, so it lives
   /// exactly as long as the device id and its ownership epoch.
-  func saveAccountDeviceKey(_ key: String, deviceId: String) {
+  /// Returns whether the key was stored.
+  @discardableResult
+  func saveAccountDeviceKey(_ key: String, deviceId: String) -> Bool {
     guard !key.isEmpty, let account = accountDeviceKeyAccount(deviceId: deviceId) else {
-      return
+      return false
     }
-    saveString(key, account: account)
+    return saveString(key, account: account)
   }
 
   func loadAccountDeviceKey(deviceId: String) -> String? {

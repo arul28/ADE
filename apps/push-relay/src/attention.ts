@@ -15,6 +15,7 @@ import {
   accountChangeMarks,
   apnsConfig,
   boundedText,
+  constantTimeEqual,
   decodePathSegment,
   isActivityBoardColumn,
   isActivityWaitingReason,
@@ -26,6 +27,7 @@ import {
   preferenceNumber,
   readPreferences,
   requiredString,
+  sha256Hex,
   MAX_DETAIL_LENGTH,
   MAX_PREVIEW_LENGTH,
   MAX_TITLE_LENGTH,
@@ -2059,20 +2061,6 @@ function attentionDeviceOwnershipConflict(ownershipEpoch: number): Response {
  */
 function attentionDeviceOwnershipUnproven(): Response {
   return json({ ok: false, error: "stale device ownership" }, { status: 409 });
-}
-
-function constantTimeEqual(left: string, right: string): boolean {
-  if (left.length !== right.length) return false;
-  let difference = 0;
-  for (let index = 0; index < left.length; index += 1) {
-    difference |= left.charCodeAt(index) ^ right.charCodeAt(index);
-  }
-  return difference === 0;
-}
-
-async function sha256Hex(value: string): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
-  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 function mintDeviceKey(): string {

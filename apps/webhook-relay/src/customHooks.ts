@@ -138,8 +138,19 @@ async function pruneExpiredHookEvents(env: RelayEnv): Promise<void> {
   // At most once per isolate every ten minutes, like the other event sweeps: a
   // delivery is a public request, and each one must not cost a table sweep.
   if (!claimPeriodicRun(env.DB, "prune-hook-events", 10 * 60 * 1000)) return;
-  const cutoff = new Date(Date.now() - HOOK_HOLD_DAYS * 24 * 60 * 60 * 1000).toISOString();
-  await env.DB.prepare("delete from custom_hook_events where received_at < ?").bind(cutoff).run();
+  await env.DB.prepare("delete from custom_hook_events where received_at < ?").bind(hookHoldCutoff()).run();
+}
+
+function hookHoldCutoff(): string {
+  return new Date(Date.now() - HOOK_HOLD_DAYS * 24 * 60 * 60 * 1000).toISOString();
+}
+
+async function heldHookRequests(env: RelayEnv, hookId: string): Promise<number> {
+  const held = await env.DB
+    .prepare("select count(*) as held from custom_hook_events where hook_id = ?")
+    .bind(hookId)
+    .first<{ held: number }>();
+  return Number(held?.held ?? 0);
 }
 
 /**
@@ -171,11 +182,18 @@ export async function handleCustomHookDelivery(
     return json({ ok: false, error: "payload_too_large" }, { status: 413 });
   }
 
-  const held = await env.DB
-    .prepare("select count(*) as held from custom_hook_events where hook_id = ?")
-    .bind(hook.hook_id)
-    .first<{ held: number }>();
-  if (Number(held?.held ?? 0) >= MAX_HELD_REQUESTS_PER_HOOK) {
+  let held = await heldHookRequests(env, hook.hook_id);
+  if (held >= MAX_HELD_REQUESTS_PER_HOOK) {
+    // Expired requests count until a sweep removes them, and the sweep runs
+    // after a stored delivery. Clear this hook's own before refusing, so an
+    // inbox full of expired requests does not stay full.
+    await env.DB
+      .prepare("delete from custom_hook_events where hook_id = ? and received_at < ?")
+      .bind(hook.hook_id, hookHoldCutoff())
+      .run();
+    held = await heldHookRequests(env, hook.hook_id);
+  }
+  if (held >= MAX_HELD_REQUESTS_PER_HOOK) {
     return json({ ok: false, error: "inbox_full" }, { status: 503, headers: { "retry-after": "300" } });
   }
 
@@ -309,27 +327,58 @@ export async function handleListCustomHookEvents(request: Request, env: RelayEnv
   if (!hookIds.length) return json({ events: [], hasMore: false });
   // D1 binds at most 100 values per statement, so a long hook list is read in
   // groups. Each group returns its own first `limit + 1` rows in `seq` order, so
-  // the merged first `limit + 1` are exactly what one query would return.
-  const groups = await Promise.all(chunk(hookIds, MAX_BOUND_IDS_PER_STATEMENT).map(async (group) => {
+  // the merged first `limit + 1` are exactly what one query would return. This
+  // read takes only the ids and body sizes: bodies can be 1 MiB each, and D1
+  // refuses a result past its size limit.
+  const refGroups = await Promise.all(chunk(hookIds, MAX_BOUND_IDS_PER_STATEMENT).map(async (group) => {
     const placeholders = group.map(() => "?").join(", ");
     return (await env.DB
       .prepare(`
-        select seq as event_seq, event_id, hook_id, method, query, headers_json, body, body_encoding, received_at
+        select seq as event_seq, event_id, length(body) as body_length
           from custom_hook_events
          where account_id = ? and hook_id in (${placeholders})
          order by seq asc
          limit ?
       `)
       .bind(accountId, ...group, limit + 1)
-      .all<CustomHookEventRow>()).results ?? [];
+      .all<{ event_seq: number; event_id: string; body_length: number }>()).results ?? [];
   }));
-  const rows = groups.flat()
+  const refs = refGroups.flat()
     .sort((left, right) => Number(left.event_seq) - Number(right.event_seq))
     .slice(0, limit + 1);
-  return json({ events: rows.slice(0, limit).map(hookRowToEvent), hasMore: rows.length > limit });
+  // The page ends at `limit` rows or at the body budget, whichever comes
+  // first. It always holds the oldest row, so one large request never blocks
+  // the rest.
+  const page: typeof refs = [];
+  let bodyLength = 0;
+  for (const ref of refs.slice(0, limit)) {
+    if (page.length > 0 && bodyLength + Number(ref.body_length) > MAX_LISTED_BODY_LENGTH) break;
+    page.push(ref);
+    bodyLength += Number(ref.body_length);
+  }
+  const bodyGroups = await Promise.all(chunk(page.map((ref) => ref.event_id), MAX_BOUND_IDS_PER_STATEMENT).map(async (group) => {
+    const placeholders = group.map(() => "?").join(", ");
+    return (await env.DB
+      .prepare(`
+        select seq as event_seq, event_id, hook_id, method, query, headers_json, body, body_encoding, received_at
+          from custom_hook_events
+         where account_id = ? and event_id in (${placeholders})
+      `)
+      .bind(accountId, ...group)
+      .all<CustomHookEventRow>()).results ?? [];
+  }));
+  const rowsById = new Map(bodyGroups.flat().map((row) => [row.event_id, row]));
+  // A row acknowledged between the two reads is gone; it was delivered.
+  const events = page.flatMap((ref) => {
+    const row = rowsById.get(ref.event_id);
+    return row ? [hookRowToEvent(row)] : [];
+  });
+  return json({ events, hasMore: refs.length > page.length });
 }
 
 const MAX_ACK_IDS = 500;
+/** Body characters in one page of held requests, well under D1's result limit. */
+const MAX_LISTED_BODY_LENGTH = 16 * 1024 * 1024;
 /** D1 allows 100 bound values per statement; the account id takes one more. */
 const MAX_BOUND_IDS_PER_STATEMENT = 90;
 

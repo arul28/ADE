@@ -30,7 +30,7 @@ import {
   retryD1Reads,
   transientUnavailableResponse,
 } from "./cloudflareTransient";
-import { boundedText, decodePathSegment } from "./attentionShared";
+import { boundedText, constantTimeEqual, decodePathSegment, sha256Hex, toHex } from "./attentionShared";
 import { scrubString } from "./sentryScrub";
 
 export { resetSpendGuardsForTests } from "./spendGuards";
@@ -244,26 +244,6 @@ function readNumber(source: Record<string, unknown> | null | undefined, key: str
   if (raw === null || raw === undefined) return null;
   const value = Number(raw);
   return Number.isFinite(value) ? value : null;
-}
-
-function toHex(bytes: ArrayBuffer): string {
-  return Array.from(new Uint8Array(bytes), (byte) => byte.toString(16).padStart(2, "0")).join("");
-}
-
-function constantTimeEqual(left: string, right: string): boolean {
-  const a = encoder.encode(left);
-  const b = encoder.encode(right);
-  let diff = a.length ^ b.length;
-  const length = Math.max(a.length, b.length);
-  for (let index = 0; index < length; index += 1) {
-    diff |= (a[index] ?? 0) ^ (b[index] ?? 0);
-  }
-  return diff === 0;
-}
-
-async function sha256Hex(value: string | ArrayBuffer): Promise<string> {
-  const data = typeof value === "string" ? encoder.encode(value) : value;
-  return toHex(await crypto.subtle.digest("SHA-256", data));
 }
 
 async function hmacSha256Hex(secret: string, message: string): Promise<string> {
