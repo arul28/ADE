@@ -195,7 +195,8 @@ function withCanonicalOrigin(record: ProjectRecord): ProjectRecord {
 export class ProjectRegistry {
   private readonly layout: MachineAdeLayout;
   private readonly legacyRecentProjectRoots: Set<string>;
-  private readCache: { identity: string; at: number; file: ProjectRegistryFile } | null = null;
+  /** `raw` is the file's text, normalized again without another read while `identity` holds. */
+  private readCache: { identity: string; at: number; raw: string | null; file: ProjectRegistryFile } | null = null;
 
   constructor(
     layout: MachineAdeLayout = resolveMachineAdeLayout(),
@@ -558,20 +559,24 @@ export class ProjectRegistry {
       throw error;
     }
     const now = Date.now();
-    const cached = this.readCache;
-    if (cached && cached.identity === identity && now - cached.at < REGISTRY_READ_CACHE_MS) {
+    const cached = this.readCache?.identity === identity ? this.readCache : null;
+    if (cached && now - cached.at < REGISTRY_READ_CACHE_MS) {
       return cloneRegistryFile(cached.file);
     }
-    const file = this.readUncached();
-    this.readCache = { identity, at: now, file: cloneRegistryFile(file) };
-    return file;
+    // An unchanged file holds the same text, so only the roots are normalized
+    // again. Reading it again on the event loop held a Windows brain 2.7 s
+    // while its disk stalled (2026-11-04).
+    const read = this.readUncached(cached?.raw ?? undefined);
+    this.readCache = { identity, at: now, raw: read.raw, file: cloneRegistryFile(read.file) };
+    return read.file;
   }
 
-  private readUncached(): ProjectRegistryFile {
-    const read = this.readFromDisk();
+  /** `raw` is null after a legacy upgrade (the file was rewritten, so its text is not the one parsed) or a missing file. */
+  private readUncached(raw?: string): { raw: string | null; file: ProjectRegistryFile } {
+    const read = this.readFromDisk(raw);
     this.noteReadFindings(read);
-    if (read.isLegacy) return this.mutate("migrate_v1", {}, (fresh) => ({ file: fresh, result: fresh }));
-    return read.file;
+    if (read.isLegacy) return { raw: null, file: this.mutate("migrate_v1", {}, (fresh) => ({ file: fresh, result: fresh })) };
+    return { raw: read.raw, file: read.file };
   }
 
   /**
@@ -580,7 +585,9 @@ export class ProjectRegistry {
    * lists records whose stored id differs from that, and `dropped` the ones
    * this read could not keep; `noteReadFindings` reports both.
    */
-  private readFromDisk(): {
+  private readFromDisk(knownRaw?: string): {
+    /** Null when the file was missing. */
+    raw: string | null;
     file: ProjectRegistryFile;
     isLegacy: boolean;
     changedIds: ChangedProjectId[];
@@ -589,15 +596,19 @@ export class ProjectRegistry {
     const changedIds: ChangedProjectId[] = [];
     const dropped: DroppedProjectRecord[] = [];
     let raw: string;
-    try {
-      raw = fs.readFileSync(this.layout.projectsPath, "utf8");
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return { file: emptyFile(), isLegacy: false, changedIds, dropped };
-      throw error;
+    if (knownRaw !== undefined) {
+      raw = knownRaw;
+    } else {
+      try {
+        raw = fs.readFileSync(this.layout.projectsPath, "utf8");
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return { raw: null, file: emptyFile(), isLegacy: false, changedIds, dropped };
+        throw error;
+      }
     }
     const parsed = JSON.parse(raw) as unknown;
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      return { file: emptyFile(), isLegacy: false, changedIds, dropped };
+      return { raw, file: emptyFile(), isLegacy: false, changedIds, dropped };
     }
     const rawFile = parsed as { version?: unknown; projects?: unknown };
     const isLegacy = rawFile.version === 1;
@@ -641,7 +652,7 @@ export class ProjectRegistry {
         return false;
       }),
     };
-    return { file, isLegacy, changedIds, dropped };
+    return { raw, file, isLegacy, changedIds, dropped };
   }
 
   /** How a v1 record is classified while upgrading it: recent when the desktop listed it or it is a git checkout. */

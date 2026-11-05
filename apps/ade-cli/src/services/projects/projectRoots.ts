@@ -9,13 +9,70 @@ export type ProjectRootResolution = {
   workspaceRoot: string;
 };
 
+type RealpathEntry = { value: string; checkedAt: number; checking: boolean };
+
+/**
+ * Real paths of existing files and folders, kept for the life of the process
+ * and checked again off the event loop. The project registry normalizes every
+ * root every few seconds, and on Windows one `realpathSync` of a project root
+ * held the brain 19.7 s while the disk stalled (2026-11-04). Only the first lookup
+ * of a path is synchronous. Later ones answer from memory and start one
+ * asynchronous `realpath` (one per path, at most two at once, at most every
+ * `REALPATH_RECHECK_MS` per path), which the next lookup then uses. A path
+ * that does not exist is never kept, so a folder created later resolves at
+ * once; one that disappears is dropped. Any other failure (a file held by a
+ * scan) keeps the last good answer and checks again later.
+ */
+const realpathMemo = new Map<string, RealpathEntry>();
+const REALPATH_RECHECK_MS = 2_000;
+const REALPATH_MEMO_LIMIT = 1_024;
+const REALPATH_MAX_CHECKS = 2;
+let realpathChecksInFlight = 0;
+
 export function realpathIfExists(value: string): string {
   const resolved = path.resolve(value);
+  const remembered = realpathMemo.get(resolved);
+  if (remembered) {
+    // Most recently used last, so a scan of many paths evicts the cold ones.
+    realpathMemo.delete(resolved);
+    realpathMemo.set(resolved, remembered);
+    recheckRealpath(resolved, remembered);
+    return remembered.value;
+  }
+  let real: string;
   try {
-    return fs.realpathSync.native(resolved);
+    real = fs.realpathSync.native(resolved);
   } catch {
     return resolved;
   }
+  if (realpathMemo.size >= REALPATH_MEMO_LIMIT) {
+    const oldest = realpathMemo.keys().next().value;
+    if (oldest !== undefined) realpathMemo.delete(oldest);
+  }
+  realpathMemo.set(resolved, { value: real, checkedAt: Date.now(), checking: false });
+  return real;
+}
+
+function recheckRealpath(resolved: string, entry: RealpathEntry): void {
+  if (entry.checking || realpathChecksInFlight >= REALPATH_MAX_CHECKS) return;
+  if (Date.now() - entry.checkedAt < REALPATH_RECHECK_MS) return;
+  entry.checking = true;
+  realpathChecksInFlight += 1;
+  // `fs.promises.realpath` is the native call, the same answer as `realpathSync.native`.
+  fs.promises.realpath(resolved).then(
+    (real) => {
+      entry.value = real;
+    },
+    (error: NodeJS.ErrnoException) => {
+      if ((error.code === "ENOENT" || error.code === "ENOTDIR") && realpathMemo.get(resolved) === entry) {
+        realpathMemo.delete(resolved);
+      }
+    },
+  ).finally(() => {
+    entry.checking = false;
+    entry.checkedAt = Date.now();
+    realpathChecksInFlight -= 1;
+  });
 }
 
 export function findAdeManagedWorktreeRoot(startDir: string): ProjectRootResolution | null {

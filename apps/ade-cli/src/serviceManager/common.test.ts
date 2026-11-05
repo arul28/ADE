@@ -5,7 +5,7 @@ import { createHash } from "node:crypto";
 import { spawn, spawnSync as spawnChildSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   ADE_RUNTIME_SERVICE_NAME,
   buildWindowsParentPidQueryArgs,
@@ -75,6 +75,7 @@ import {
   watchdogLaunchAgentPath,
 } from "./installLaunchdWatchdog";
 import { isWindowsTaskStateRunning } from "./installWindows";
+import { serviceBrainPidBesideHandRunBrain } from "./index";
 
 const originalArgv = [...process.argv];
 const originalNodePath = process.env.NODE_PATH;
@@ -2091,5 +2092,69 @@ describe("requestAdeRuntimeShutdown", () => {
       },
     });
     expect(result.requested).toBe(false);
+  });
+});
+
+// A brain a person or an agent starts by hand leaves phone sync to the
+// installed service brain, and the service brain keeps it. On 2026-11-04 four
+// hand-run brains took the sync lock in turn and the phone dropped each time.
+// Fake `systemctl` and `launchctl` on PATH answer as the service manager, so
+// the guard runs its own lookups.
+describe.skipIf(process.platform === "win32")("serviceBrainPidBesideHandRunBrain", () => {
+  const DEAD_PID = 99_999_901;
+  const realPlatform = Object.getOwnPropertyDescriptor(process, "platform")!;
+  const realPpid = Object.getOwnPropertyDescriptor(process, "ppid")!;
+  let binDir = "";
+  let adeHome = "";
+  let otherBrain: ReturnType<typeof spawn> | null = null;
+
+  beforeAll(async () => {
+    binDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-service-bin-"));
+    adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-service-home-"));
+    // Each exits non-zero when no service runs, as the real tools do.
+    fs.writeFileSync(path.join(binDir, "systemctl"), '#!/bin/sh\n[ -n "$FAKE_SERVICE_PID" ] || exit 1\necho "$FAKE_SERVICE_PID"\n', { mode: 0o755 });
+    fs.writeFileSync(path.join(binDir, "launchctl"), '#!/bin/sh\n[ -n "$FAKE_SERVICE_PID" ] || exit 113\nprintf "state = running\\n\\tpid = %s\\n" "$FAKE_SERVICE_PID"\n', { mode: 0o755 });
+    otherBrain = spawn(process.execPath, ["-e", "setTimeout(() => {}, 120_000)"], { stdio: "ignore" });
+    await once(otherBrain, "spawn");
+  });
+
+  afterEach(() => {
+    Object.defineProperty(process, "platform", realPlatform);
+    Object.defineProperty(process, "ppid", realPpid);
+    vi.unstubAllEnvs();
+  });
+
+  afterAll(() => {
+    otherBrain?.kill("SIGKILL");
+    fs.rmSync(binDir, { recursive: true, force: true });
+    fs.rmSync(adeHome, { recursive: true, force: true });
+  });
+
+  it.each([
+    { name: "the Linux service brain keeps sync", platform: "linux", service: "self", leavesSyncToOther: false },
+    { name: "the Linux service brain started through a wrapper keeps sync", platform: "linux", service: "parent", leavesSyncToOther: false },
+    { name: "a hand-run Linux brain leaves sync to the service brain", platform: "linux", service: "other", leavesSyncToOther: true },
+    { name: "a hand-run Linux brain keeps sync when the service brain is gone", platform: "linux", service: "dead", leavesSyncToOther: false },
+    { name: "a hand-run Linux brain keeps sync where no service is installed", platform: "linux", service: "none", leavesSyncToOther: false },
+    { name: "the brain launchd started keeps sync", platform: "darwin", service: "self", startedByLaunchd: true, leavesSyncToOther: false },
+    { name: "a hand-run macOS brain leaves sync to the service brain", platform: "darwin", service: "other", leavesSyncToOther: true },
+    // launchd adopts an orphan: a detached `ade serve` whose shell exited.
+    { name: "a hand-run macOS brain that launchd adopted leaves sync to the service brain", platform: "darwin", service: "other", startedByLaunchd: true, leavesSyncToOther: true },
+  ] as const)("$name", ({ platform, service, leavesSyncToOther, ...row }) => {
+    const servicePid = {
+      self: process.pid,
+      parent: process.ppid,
+      other: otherBrain!.pid!,
+      dead: DEAD_PID,
+      none: null,
+    }[service];
+    vi.stubEnv("PATH", `${binDir}${path.delimiter}${process.env.PATH ?? ""}`);
+    vi.stubEnv("FAKE_SERVICE_PID", servicePid == null ? "" : String(servicePid));
+    // An empty home: no brain supervised without systemd either.
+    vi.stubEnv("ADE_HOME", adeHome);
+    Object.defineProperty(process, "platform", { ...realPlatform, value: platform });
+    if ("startedByLaunchd" in row) Object.defineProperty(process, "ppid", { ...realPpid, value: 1 });
+
+    expect(serviceBrainPidBesideHandRunBrain()).toBe(leavesSyncToOther ? otherBrain!.pid : null);
   });
 });

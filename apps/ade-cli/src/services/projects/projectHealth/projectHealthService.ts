@@ -152,6 +152,40 @@ function exists(target: string): boolean {
   }
 }
 
+const SHARE_LOOKUP_TIMEOUT_MS = 2_000;
+
+/**
+ * A Windows project root reached over a share: `\\wsl.localhost\…` or
+ * `\\wsl$\…` (a WSL distro), or any other `\\server\share`. SQLite's
+ * file locks are unreliable there; on 2026-11-04 a WSL project's desktop and
+ * brain both hit "database is locked" opening its database together. A mapped
+ * drive (`Z:\…`) is a share too: its real path is the `\\server\share` path.
+ */
+async function windowsNetworkShareKind(root: string): Promise<"wsl" | "network" | null> {
+  if (process.platform !== "win32") return null;
+  const written = uncShareKind(root);
+  if (written) return written;
+  // A stalled share must not hold the whole report, so the real path has a
+  // time limit. A root that does not resolve in time, or at all (moved,
+  // unmounted), is not reported here; other checks report a missing root.
+  let timer: NodeJS.Timeout | undefined;
+  const real = await Promise.race([
+    fs.promises.realpath(root).catch(() => null),
+    new Promise<null>((resolve) => {
+      timer = setTimeout(() => resolve(null), SHARE_LOOKUP_TIMEOUT_MS);
+      timer.unref();
+    }),
+  ]);
+  clearTimeout(timer);
+  return real ? uncShareKind(real) : null;
+}
+
+function uncShareKind(root: string): "wsl" | "network" | null {
+  const unc = root.replace(/\//g, "\\").replace(/^\\\\\?\\UNC\\/i, "\\\\");
+  if (!unc.startsWith("\\\\") || unc.startsWith("\\\\?\\") || unc.startsWith("\\\\.\\")) return null;
+  return /^\\\\wsl(?:\.localhost|\$)\\/i.test(unc) ? "wsl" : "network";
+}
+
 function isWithinPath(root: string, target: string, allowEqual = false): boolean {
   const relative = path.relative(path.resolve(root), path.resolve(target));
   if (!relative) return allowEqual;
@@ -871,6 +905,17 @@ export function createProjectHealthService(deps: ProjectHealthServiceDeps) {
           title: `The old copy is still at ${record.originalParkedAt}`,
           detail: `${record.originalBytes ? `${formatBytes(record.originalBytes)} you can free. ` : ""}Delete it from Settings → Location once the project works here.`,
         }));
+      }),
+      run("network-share", "The project is on this computer's own drive", async () => {
+        const share = await windowsNetworkShareKind(projectRoot);
+        if (!share) return [];
+        return [{
+          id: "network-share",
+          area: "drive" as const,
+          severity: "warning" as const,
+          title: share === "wsl" ? "This project is on a WSL share" : "This project is on a network share",
+          detail: "ADE can stop with \"database is locked\" here — keep projects on this computer's own drive.",
+        }];
       }),
       run("drive", "The drive is the one ADE expects", async () => {
         const volume = await readMoveVolume(projectRoot);

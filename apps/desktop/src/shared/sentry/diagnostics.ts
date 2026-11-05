@@ -73,6 +73,8 @@ let tailCount = 0;
 /** The parts of an event the providers may read and this module writes. */
 export type DiagnosticEvent = {
   message?: string;
+  /** Set when the capture chose its own grouping (`CaptureContext.fingerprint`). */
+  fingerprint?: string[];
   tags?: Record<string, unknown>;
   contexts?: Record<string, unknown>;
   exception?: { values?: Array<{ type?: string; value?: string }> };

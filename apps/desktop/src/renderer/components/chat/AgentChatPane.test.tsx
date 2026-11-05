@@ -1521,6 +1521,21 @@ function draftLaunchJobsScopeKeyForTest(args: {
   ].map(encodeURIComponent).join(":");
 }
 
+/**
+ * Retry refuses while the chat's turn reads as active: the button is
+ * disabled, so a click does nothing. Otherwise the click calls `send` at
+ * once. A test that clicks before the pane has settled its turn state waits
+ * on a `send` that never comes, which failed CI on 2026-11-05.
+ */
+async function clickRetryWhenEnabled(): Promise<void> {
+  const retry = await waitFor(() => {
+    const button = screen.getByRole("button", { name: "Retry" }) as HTMLButtonElement;
+    expect(button.disabled).toBe(false);
+    return button;
+  });
+  fireEvent.click(retry);
+}
+
 async function clickEnabledModelOption(name: RegExp | string) {
   const options = await screen.findAllByRole("option", { name });
   const enabledOption = options.find((option) => option.getAttribute("aria-disabled") !== "true");
@@ -5460,7 +5475,7 @@ describe("AgentChatPane submit recovery", () => {
 
     renderPane(session);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Retry" }));
+    await clickRetryWhenEnabled();
     await waitFor(() => {
       expect(send).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: session.sessionId,
@@ -5519,7 +5534,7 @@ describe("AgentChatPane submit recovery", () => {
 
     renderPane(session);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Retry" }));
+    await clickRetryWhenEnabled();
     await waitFor(() => expect(send).toHaveBeenCalled());
     const sent = send.mock.calls[0]![0] as { metadata?: Record<string, unknown> };
     expect(sent.metadata).toEqual({ hostContinuation: { reason: "provider_schedule_cleanup" } });
@@ -5577,7 +5592,7 @@ describe("AgentChatPane submit recovery", () => {
 
     renderPane(session);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Retry" }));
+    await clickRetryWhenEnabled();
     await waitFor(() => {
       expect(send).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: session.sessionId,

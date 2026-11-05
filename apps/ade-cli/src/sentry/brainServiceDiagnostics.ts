@@ -12,7 +12,9 @@
  *
  * Main and the brain both register it (`shared/sentry/diagnostics.ts`): the
  * `brain_service` context on every event (a few small file reads), and the
- * service's logs as `brain-service-logs.txt` on the events that get files.
+ * service's logs as `brain-service-logs.txt` on the events that get files. The
+ * desktop app's logs (`desktopLogsAttachment`) go only on a restart loop
+ * report (`brainRestartLoop.ts`).
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -22,6 +24,7 @@ import {
   type DiagnosticAttachment,
   type DiagnosticEvent,
 } from "../../../desktop/src/shared/sentry/diagnostics";
+import { MACHINE_MAIN_LOG_FILE_NAME } from "../../../desktop/src/main/services/logging/machineLogger";
 import { isPidAlive, resolveRuntimeServiceName } from "../serviceManager/common";
 import {
   resolveWindowsBrainOutputLogPath,
@@ -84,10 +87,12 @@ function brainServiceContext(env: NodeJS.ProcessEnv = process.env, nowMs = Date.
   return context;
 }
 
+type LogTailFile = { label: string; filePath: string; maxBytes: number };
+
 /** The service's own logs, newest part of each, as one file. Null when there are none. */
 function brainServiceLogsAttachment(env: NodeJS.ProcessEnv = process.env): DiagnosticAttachment | null {
   const { runtimeDir } = resolveMachineAdeLayout(env);
-  const files: Array<{ label: string; filePath: string; maxBytes: number }> = [];
+  const files: LogTailFile[] = [];
   if (process.platform === "win32") {
     files.push(
       { label: "Supervisor", filePath: resolveWindowsSupervisorLogPath({ env }), maxBytes: 32_000 },
@@ -105,11 +110,37 @@ function brainServiceLogsAttachment(env: NodeJS.ProcessEnv = process.env): Diagn
   }
   // Each install, update and service removal, with how long it took.
   files.push({ label: "Install steps", filePath: path.join(runtimeDir, "install-steps.log"), maxBytes: 16_000 });
+  return logTailsAttachment("brain-service-logs.txt", files);
+}
+
+/**
+ * The desktop app's side of a brain that keeps restarting: its runtime log
+ * (`local-runtime.jsonl`: every brain it started, replaced, repaired or
+ * stopped) and its machine log (`desktop-main.jsonl`: each launch and quit).
+ * On 2026-11-05 a Windows report showed two brains killed 3 s and 9 s after
+ * they started, and nothing in it said by what. The runtime log is in
+ * Electron's `userData`, which the app records in `desktop-app.json`; a
+ * machine without the app (or with an app older than that record) sends the
+ * machine log alone. Null when there is neither.
+ */
+export function desktopLogsAttachment(env: NodeJS.ProcessEnv = process.env): DiagnosticAttachment | null {
+  const { runtimeDir } = resolveMachineAdeLayout(env);
+  const userDataPath = readStateFile(path.join(runtimeDir, "desktop-app.json"))?.userDataPath;
+  const files: LogTailFile[] = [];
+  if (typeof userDataPath === "string" && userDataPath) {
+    files.push({ label: "Desktop runtime log", filePath: path.join(userDataPath, "local-runtime.jsonl"), maxBytes: 128_000 });
+  }
+  files.push({ label: "Desktop machine log", filePath: path.join(runtimeDir, MACHINE_MAIN_LOG_FILE_NAME), maxBytes: 64_000 });
+  return logTailsAttachment("desktop-logs.txt", files);
+}
+
+/** The newest part of each file under its own heading, as one file. Null when every file is absent or empty. */
+function logTailsAttachment(filename: string, files: readonly LogTailFile[]): DiagnosticAttachment | null {
   const sections = files.flatMap(({ label, filePath, maxBytes }) => {
     const tail = readFileTail(filePath, maxBytes);
     return tail ? [`===== ${label} (${filePath}) =====\n${tail}`] : [];
   });
-  return sections.length > 0 ? { filename: "brain-service-logs.txt", data: sections.join("\n\n") } : null;
+  return sections.length > 0 ? { filename, data: sections.join("\n\n") } : null;
 }
 
 /**

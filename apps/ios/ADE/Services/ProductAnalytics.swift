@@ -804,6 +804,8 @@ final class ProductAnalytics {
   }
 
   func captureScreen(_ screen: ADEAnalyticsScreen) {
+    // With analytics off too: a crash report names its screen either way.
+    CrashReporting.setScreen(screen.rawValue)
     capture(
       .screenViewed,
       properties: ["screen": screen.rawValue],

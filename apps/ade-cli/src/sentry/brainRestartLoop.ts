@@ -11,7 +11,8 @@
  * goes back to one an earlier brain in the window already left (two installs
  * replacing each other, 2026-10-19). An update replacing the brain counts for
  * nothing. The report carries the service's state and logs
- * (`brainServiceDiagnostics.ts`) like every brain report.
+ * (`brainServiceDiagnostics.ts`) like every brain report, and the desktop
+ * app's logs, which say whether the app stopped or replaced the brain.
  *
  * Kept from spamming Sentry by construction:
  *   - a loop is at least `RESTART_LOOP_THRESHOLD` counted starts within
@@ -31,7 +32,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { captureProblem, flushSentry, isSentryActive } from "../../../desktop/src/shared/sentry/capture";
+import { registerSentryDiagnosticAttachment, type DiagnosticEvent } from "../../../desktop/src/shared/sentry/diagnostics";
 import { isPidAlive } from "../serviceManager/common";
+import { desktopLogsAttachment } from "./brainServiceDiagnostics";
 import { writeJsonAtomic } from "../services/runtime/atomicJson";
 
 const RESTART_LOOP_THRESHOLD = 3;
@@ -41,6 +44,8 @@ const LOOP_REPORT_MAX_DELAY_MS = 5 * 60_000;
 const RESTART_LOOP_REPORT_COOLDOWN_MS = 24 * 60 * 60_000;
 const STARTS_KEPT = 20;
 const BRAIN_STARTS_FILE = "brain-starts.json";
+/** One issue per platform: the platform is appended. */
+const RESTART_LOOP_FINGERPRINT = ["brain", "restart_loop"] as const;
 
 type BrainStart = {
   pid: number;
@@ -80,10 +85,15 @@ export function startBrainRestartLoopWatch(options: { runtimeDir: string; build:
   current = { startsPath, pid: process.pid, at: new Date(nowMs).toISOString() };
   writeStartsFile(startsPath, state);
   if (loopFoundAtMs === null) return;
+  registerSentryDiagnosticAttachment("desktop-logs", (event) => (isRestartLoopEvent(event) ? desktopLogsAttachment() : null));
   // This brain sends the report if it lives long enough; if it dies first,
   // the next one finds `loopFoundAt` and takes over.
   const delayMs = Math.max(0, Math.min(LOOP_QUIET_MS, loopFoundAtMs + LOOP_REPORT_MAX_DELAY_MS - nowMs));
   setTimeout(() => sendLoopReport(startsPath), delayMs).unref();
+}
+
+function isRestartLoopEvent(event: DiagnosticEvent): boolean {
+  return RESTART_LOOP_FINGERPRINT.every((part, index) => event.fingerprint?.[index] === part);
 }
 
 /** This brain is stopping in an orderly way: its start does not count as a crash for the next one. */
@@ -168,7 +178,7 @@ function sendLoopReport(startsPath: string): void {
   try {
     captureProblem("The brain kept restarting", {
       level: "warning",
-      fingerprint: ["brain", "restart_loop", process.platform],
+      fingerprint: [...RESTART_LOOP_FINGERPRINT, process.platform],
       tags: { "brain.restart_loop.flip_flop": counted.some((start) => start.buildFlipFlop) },
       extra: { restartCount: counted.length, foundAt, starts },
     });
