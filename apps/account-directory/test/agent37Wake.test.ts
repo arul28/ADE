@@ -18,7 +18,10 @@ const URL_ = "https://directory.test/agent37/wake";
 const WAKE = "https://wake-abc123.agent37.app";
 
 // Loaded at run time: this Vitest's resolver doesn't know `node:sqlite`.
-const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite") as typeof import("node:sqlite");
+type SqliteStatement = { run(...params: unknown[]): unknown; get(...params: unknown[]): unknown; all(...params: unknown[]): unknown[] };
+const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite") as {
+  DatabaseSync: new (path: string) => { exec(sql: string): void; prepare(sql: string): SqliteStatement };
+};
 
 /** D1's statement surface over node:sqlite, with the real migration applied. */
 function sqliteD1(): D1Database {

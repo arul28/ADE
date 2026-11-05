@@ -178,7 +178,9 @@ export function buildAgent37AgentActions(deps: Agent37AgentActionDeps) {
   };
 
   /**
-   * Asks before spending or deleting. Resolves when it may go ahead; throws
+   * Asks before spending or deleting. Resolves when it may go ahead, with what
+   * to call once a new machine really exists (it counts toward an unattended
+   * agent's daily limit then, so a make that failed costs no slot); throws
    * `Agent37Declined` (with why) when not.
    */
   const approve = async (
@@ -199,8 +201,9 @@ export function buildAgent37AgentActions(deps: Agent37AgentActionDeps) {
       /** The size it picks (make, copy, move, resize): within the largest allowed. */
       shape?: Agent37ShapeId | null;
     },
-  ): Promise<void> => {
-    if (approval.by === "person") return;
+  ): Promise<() => void> => {
+    const nothing = () => undefined;
+    if (approval.by === "person") return nothing;
     const chatSessionId = approval.chatSessionId;
     if (!chatSessionId || !deps.approvals) {
       throw new Agent37Declined(`${card.title} costs money or deletes something, so it needs your yes, and ADE has no chat to ask you in. Run it from an ADE chat, or use the machine's card in ADE (Your computers).`);
@@ -240,10 +243,9 @@ export function buildAgent37AgentActions(deps: Agent37AgentActionDeps) {
         if (made >= limits.machinesPerDay) {
           refuse(`agents already started ${made} new machine${made === 1 ? "" : "s"} today, your daily limit.`);
         }
-        countMadeHere();
       }
       approvals.notice(chatSessionId, `ADE approved "${card.title}" for ${where}, within what you let agents spend.`);
-      return;
+      return card.newMachine ? countMadeHere : nothing;
     }
     let response: Awaited<ReturnType<Agent37ChatApprovals["requestChatInput"]>>;
     try {
@@ -269,7 +271,7 @@ export function buildAgent37AgentActions(deps: Agent37AgentActionDeps) {
       throw new Agent37Declined(`${card.title}: ADE couldn't ask in this chat (${getErrorMessage(error)}), so nothing was done.`);
     }
     const answer = response.answers.decision?.[0] ?? "";
-    if (response.decision === "accept" && answer === "yes") return;
+    if (response.decision === "accept" && answer === "yes") return nothing;
     throw new Agent37Declined(response.timedOut
       ? `${card.title}: nobody answered in 5 minutes, so nothing was done.`
       : `${card.title}: the person said no, so nothing was done.`);
@@ -358,7 +360,7 @@ export function buildAgent37AgentActions(deps: Agent37AgentActionDeps) {
       await capCheck();
       if (cannotMake()) throw new Error(NO_DESKTOP);
       const approval = readApproval(args);
-      await approve(approval, {
+      const madeIt = await approve(approval, {
         action: "spend",
         title: `Make "${name}" on Agent 37`,
         body: `A ${kind === "vm" ? "VM" : "box"} with ${shape.cpu} vCPU and ${shape.memoryGb} GB, about ${formatAgent37HourlyPrice(agent37HourlyUsd(kind, shape))} while awake. It sleeps when idle and then bills only its disk.`,
@@ -366,7 +368,9 @@ export function buildAgent37AgentActions(deps: Agent37AgentActionDeps) {
         newMachine: true,
         shape: shapeId,
       });
-      return await make(approval, { kind: "create", machine: { kind, shape: shapeId, name }, madeByChat: madeByChat(approval) }, args.background === true);
+      const made = await make(approval, { kind: "create", machine: { kind, shape: shapeId, name }, madeByChat: madeByChat(approval) }, args.background === true);
+      madeIt();
+      return made;
     },
 
     async sleep(rawArgs?: unknown) {
@@ -406,7 +410,7 @@ export function buildAgent37AgentActions(deps: Agent37AgentActionDeps) {
       if (cannotMake()) throw new Error(NO_DESKTOP);
       const rate = box.runningHourlyUsd != null ? formatAgent37HourlyPrice(box.runningHourlyUsd) : null;
       const approval = readApproval(args);
-      await approve(approval, {
+      const madeIt = await approve(approval, {
         action: "spend",
         title: `Copy "${box.name ?? box.instanceId}" into a new machine`,
         body: `"${name}" gets the same files (repos, lanes, installed dependencies) and signs in as a new machine${rate ? `, about ${rate} while awake` : ""}. A big disk takes a few minutes to copy.`,
@@ -414,7 +418,9 @@ export function buildAgent37AgentActions(deps: Agent37AgentActionDeps) {
         newMachine: true,
         shape: shapeId ?? box.shapeId,
       });
-      return await make(approval, { kind: "copy", instanceId: box.instanceId, name, shape: shapeId, madeByChat: madeByChat(approval) }, args.background === true);
+      const made = await make(approval, { kind: "copy", instanceId: box.instanceId, name, shape: shapeId, madeByChat: madeByChat(approval) }, args.background === true);
+      madeIt();
+      return made;
     },
 
     async move(rawArgs?: unknown) {
@@ -427,7 +433,7 @@ export function buildAgent37AgentActions(deps: Agent37AgentActionDeps) {
       if (cannotMake()) throw new Error(NO_DESKTOP);
       const name = box.name ?? box.instanceId;
       const approval = readApproval(args);
-      await approve(approval, {
+      const madeIt = await approve(approval, {
         action: "delete",
         title: `Move "${name}" to a ${to === "vm" ? "VM" : "box"}`,
         body: `ADE makes a new ${to === "vm" ? "VM" : "box"}, copies every repo, lane and chat on "${name}" into it, then deletes "${name}". Running processes stop${box.type === "vm" ? ", and Docker images and volumes stay behind" : ""}.`,
@@ -437,7 +443,9 @@ export function buildAgent37AgentActions(deps: Agent37AgentActionDeps) {
         madeByThisChat: approval.by === "agent" && approval.chatSessionId != null
           && (await deps.machines.instanceMetadata(box.instanceId).catch(() => null))?.[AGENT37_MADE_BY_CHAT_METADATA] === approval.chatSessionId,
       });
-      return await make(approval, { kind: "move", instanceId: box.instanceId, machineKey: box.machineKey, to, shape: shapeId, madeByChat: madeByChat(approval) }, args.background === true);
+      const made = await make(approval, { kind: "move", instanceId: box.instanceId, machineKey: box.machineKey, to, shape: shapeId, madeByChat: madeByChat(approval) }, args.background === true);
+      madeIt();
+      return made;
     },
 
     /** A make started with `background`: its stage, the approval link while it waits, then its result. */
@@ -568,11 +576,14 @@ export function buildAgent37AgentActions(deps: Agent37AgentActionDeps) {
         failure: null,
       } as Partial<Agent37ReadyProjectSettings>);
       if (!next) throw new Error("That isn't a project ADE can keep a machine ready for.");
-      if (!existing) {
+      // Turning it on, or a bigger or other kind of machine, asks (and is held to the agent limits).
+      if (!existing || existing.shape !== next.shape || existing.kind !== next.kind) {
         await capCheck();
         const shape = agent37Shape(next.shape)!;
         await approve(readApproval(args), {
           action: "spend",
+          newMachine: true,
+          shape: next.shape,
           title: `Keep a cloud machine ready for ${next.projectName}`,
           body: `ADE prepares a ${next.kind === "vm" ? "VM" : "box"} (${shape.cpu} vCPU · ${shape.memoryGb} GB) with the repository cloned and setup run, then keeps it asleep (about ${formatAgent37Usd(shape.diskGb * 0.09)} a month for its disk). A chat on it bills ${formatAgent37HourlyPrice(agent37HourlyUsd(next.kind, shape))} while awake.`,
           confirm: "Keep one ready",

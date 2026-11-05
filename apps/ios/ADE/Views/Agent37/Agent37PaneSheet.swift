@@ -268,9 +268,24 @@ final class Agent37PaneStore: ObservableObject {
   private func follow(requestId: String) {
     pollTask?.cancel()
     pollTask = Task { @MainActor [weak self] in
+      // A make takes minutes; a status that can't be read for a minute (the
+      // machine restarted and forgot the make, or the link dropped) ends the wait.
+      var unreadable = 0
       while !Task.isCancelled {
         guard let self else { return }
-        if let job = try? await self.syncService.agent37Read("make_status", args: ["requestId": requestId], as: Agent37PhoneMakeJob.self) {
+        let read = try? await self.syncService.agent37Read("make_status", args: ["requestId": requestId], as: Agent37PhoneMakeJob.self)
+        if read == nil {
+          unreadable += 1
+          if unreadable >= 30 {
+            self.makeJob = nil
+            self.actionError = "ADE lost track of the new machine. Pull to refresh: if it joined, it's in the list."
+            await self.reload()
+            return
+          }
+        } else {
+          unreadable = 0
+        }
+        if let job = read {
           self.makeJob = job
           if let request = job.approvalRequest, self.approvalShownFor != requestId {
             self.approvalShownFor = requestId
