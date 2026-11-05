@@ -400,13 +400,53 @@ export function isAgent37SleepAfterMinutes(value: unknown): value is number {
 }
 
 /**
- * The monthly spending cap for every Agent 37 machine on the account. At the
- * cap ADE makes, wakes, resizes and copies nothing (running work carries on,
- * and boxes still sleep when idle); 80% shows a warning. Null: no cap.
+ * What an unattended agent (a full-auto chat, an automation run) may spend
+ * without asking. An agent the person is watching always asks.
  */
-export type Agent37Budget = { monthlyCapUsd: number | null };
-export const AGENT37_DEFAULT_MONTHLY_CAP_USD = 20;
-export const AGENT37_CAP_CHOICES_USD = [5, 10, 20, 50, 100] as const;
+export type Agent37AgentLimits = {
+  /** False: an unattended agent may not make, copy, move or resize anything. */
+  unattendedSpend: boolean;
+  /** New machines (made, copied or moved) unattended agents may start in a UTC day. */
+  machinesPerDay: number;
+  /** The largest size an unattended agent may pick. */
+  maxShape: Agent37ShapeId;
+};
+
+export type Agent37LimitsPreset = "ask" | "balanced" | "hands_off";
+export const AGENT37_LIMITS_PRESETS: Readonly<Record<Agent37LimitsPreset, Agent37AgentLimits>> = {
+  ask: { unattendedSpend: false, machinesPerDay: 1, maxShape: "4x8" },
+  balanced: { unattendedSpend: true, machinesPerDay: 3, maxShape: "4x16" },
+  hands_off: { unattendedSpend: true, machinesPerDay: 10, maxShape: "4x32" },
+};
+export const AGENT37_DEFAULT_AGENT_LIMITS: Agent37AgentLimits = AGENT37_LIMITS_PRESETS.balanced;
+export const AGENT37_MACHINES_PER_DAY_CHOICES = [1, 3, 5, 10] as const;
+
+/** The preset these limits match, or null (Custom). */
+export function agent37LimitsPresetOf(limits: Agent37AgentLimits): Agent37LimitsPreset | null {
+  for (const [id, preset] of Object.entries(AGENT37_LIMITS_PRESETS) as Array<[Agent37LimitsPreset, Agent37AgentLimits]>) {
+    if (preset.unattendedSpend === limits.unattendedSpend && preset.machinesPerDay === limits.machinesPerDay && preset.maxShape === limits.maxShape) {
+      return id;
+    }
+  }
+  return null;
+}
+
+/** Bigger sizes later: whether `shape` is within `max`. */
+export function agent37ShapeWithin(shape: Agent37ShapeId, max: Agent37ShapeId): boolean {
+  const order = AGENT37_SHAPES.map((entry) => entry.id);
+  return order.indexOf(shape) <= order.indexOf(max);
+}
+
+/**
+ * The account's Agent 37 spending choices: an optional monthly cap for every
+ * machine (at the cap ADE makes, wakes, resizes and copies nothing; running
+ * work carries on, and boxes still sleep when idle; 80% shows a warning) and
+ * what unattended agents may do. No cap by default: the Agent 37 wallet is
+ * prepaid, so it already bounds what can be spent.
+ */
+export type Agent37Budget = { monthlyCapUsd: number | null; agents: Agent37AgentLimits };
+export const AGENT37_DEFAULT_MONTHLY_CAP_USD: number | null = null;
+export const AGENT37_CAP_CHOICES_USD = [10, 25, 50, 100] as const;
 
 /** What this month cost against the cap, for Settings, the group head and the refusals. */
 export type Agent37Spending = {
@@ -419,7 +459,7 @@ export type Agent37Spending = {
   capNear: boolean;
 };
 
-export function agent37SpendingFor(budget: Agent37Budget, monthSpentUsd: number | null): Agent37Spending {
+export function agent37SpendingFor(budget: Pick<Agent37Budget, "monthlyCapUsd">, monthSpentUsd: number | null): Agent37Spending {
   const cap = budget.monthlyCapUsd;
   const reached = cap != null && monthSpentUsd != null && monthSpentUsd >= cap;
   return {

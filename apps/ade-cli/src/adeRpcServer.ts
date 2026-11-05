@@ -3870,7 +3870,7 @@ const REQUEST_CARD_COMMAND: Readonly<Record<string, string>> = {
  * unless a person's own client is asking.
  */
 const AGENT37_APPROVED_ACTIONS = new Set([
-  "create", "resize", "copy", "move", "delete", "set_sleep", "set_cap", "ready_set", "ready_retry",
+  "create", "resize", "copy", "move", "delete", "set_sleep", "set_cap", "ready_set", "ready_retry", "set_limits",
 ]);
 
 /**

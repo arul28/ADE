@@ -219,6 +219,16 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       input: "object { kind?: \"box\" | \"vm\", shape?: \"2x4\" | \"4x8\" | \"4x16\" | \"4x32\", name?: string, background?: boolean }",
       example: "ade agent37 create --kind vm --shape 4x8 --name \"android vm\"",
     },
+    limits: {
+      description: "What unattended agents (full-auto chats, automation runs) may spend on Agent 37 alone: {unattendedSpend, machinesPerDay, maxShape, preset: ask | balanced | hands_off | custom}. Attended agents always ask in their chat.",
+      input: "none",
+      example: "ade agent37 limits --text",
+    },
+    set_limits: {
+      description: "Change what unattended agents may spend: a preset, or single limits. Loosening any limit asks the person; an unattended agent is refused.",
+      input: "object { preset?: \"ask\" | \"balanced\" | \"hands_off\", unattendedSpend?: boolean, machinesPerDay?: number (0-100), maxShape?: \"2x4\" | \"4x8\" | \"4x16\" | \"4x32\" }",
+      example: "ade agent37 limits balanced",
+    },
     make_status: {
       description: "A create, copy or move started with background: true: {stage, message, approvalUrl (the sign-in link to open while it waits for the person), done, result, error}.",
       input: "object { requestId: string }",

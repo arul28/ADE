@@ -79,7 +79,7 @@ const READ_ONLY_COMMANDS: ReadonlyMap<string, ReadonlySet<string> | true> = new 
   ["integration", new Set(["status"])],
   // Agent 37 machines and the ready pool: names, states, prices, never the key.
   // Nothing that spends money or deletes is reachable from here.
-  ["agent37", new Set(["ready", "status", "list", "ls", "machines", "spending"])],
+  ["agent37", new Set(["ready", "status", "list", "ls", "machines", "spending", "limits"])],
   ["machines", new Set(["list", "show"])],
   ["projects", new Set(["list"])],
   // `defaults` reads the new-lane defaults; `defaults set` is refused below.

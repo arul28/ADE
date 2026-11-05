@@ -24,6 +24,12 @@ import {
   agent37CapReachedMessage,
   agent37HourlyUsd,
   agent37Shape,
+  agent37ShapeWithin,
+  agent37LimitsPresetOf,
+  AGENT37_DEFAULT_AGENT_LIMITS,
+  AGENT37_LIMITS_PRESETS,
+  type Agent37AgentLimits,
+  type Agent37LimitsPreset,
   describeAgent37MachineSize,
   formatAgent37HourlyPrice,
   formatAgent37Usd,
@@ -128,6 +134,19 @@ function readApproval(args: Record<string, unknown>): Agent37Approval {
 
 const NO_DESKTOP = "This ADE can't make Agent 37 machines: it isn't signed in to your ADE account.";
 
+/**
+ * New machines unattended agents started from this brain today, kept for the
+ * process (the actions are rebuilt per call). The account list counts the ones
+ * still there; this also counts ones since deleted, so a make-and-delete loop
+ * can't step around the day's limit.
+ */
+let madeHere = { day: "", count: 0 };
+const today = () => new Date().toISOString().slice(0, 10);
+const madeHereToday = () => (madeHere.day === today() ? madeHere.count : 0);
+const countMadeHere = () => {
+  madeHere = { day: today(), count: madeHereToday() + 1 };
+};
+
 export function buildAgent37AgentActions(deps: Agent37AgentActionDeps) {
   const logger = deps.logger ?? {};
 
@@ -175,6 +194,10 @@ export function buildAgent37AgentActions(deps: Agent37AgentActionDeps) {
       body: string;
       confirm: string;
       madeByThisChat?: boolean;
+      /** Starts a new machine (make, copy, move): counts against the day's limit. */
+      newMachine?: boolean;
+      /** The size it picks (make, copy, move, resize): within the largest allowed. */
+      shape?: Agent37ShapeId | null;
     },
   ): Promise<void> => {
     if (approval.by === "person") return;
@@ -199,7 +222,27 @@ export function buildAgent37AgentActions(deps: Agent37AgentActionDeps) {
         approvals.notice(chatSessionId, `ADE said no to "${card.title}" in ${where}: nobody is here to approve deleting a machine this chat didn't make.`);
         throw new Agent37Declined(`${card.title}: declined. Nobody is watching ${where} to approve deleting a machine it didn't make; ask the person to delete it from its card.`);
       }
-      approvals.notice(chatSessionId, `ADE approved "${card.title}" for ${where}, within your monthly Agent 37 cap.`);
+      // What the person chose agents may do alone (Settings › Integrations › Agent 37).
+      const costs = card.action === "spend" || card.newMachine === true;
+      const limits = costs ? (await deps.budget.read().catch(() => null))?.agents ?? AGENT37_DEFAULT_AGENT_LIMITS : null;
+      const refuse = (why: string): never => {
+        approvals.notice(chatSessionId, `ADE said no to "${card.title}" in ${where}: ${why}`);
+        throw new Agent37Declined(`${card.title}: declined. ${why} The person can change what agents may spend in Settings › Integrations › Agent 37.`);
+      };
+      if (limits && !limits.unattendedSpend) refuse("your settings say unattended agents ask before anything that costs money.");
+      if (limits && card.shape && !agent37ShapeWithin(card.shape, limits.maxShape)) {
+        const max = agent37Shape(limits.maxShape)!;
+        refuse(`agents may pick up to ${max.cpu} vCPU · ${max.memoryGb} GB on their own.`);
+      }
+      if (limits && card.newMachine) {
+        const listed = await deps.machines.agentMadeToday().catch(() => 0);
+        const made = Math.max(listed, madeHereToday());
+        if (made >= limits.machinesPerDay) {
+          refuse(`agents already started ${made} new machine${made === 1 ? "" : "s"} today, your daily limit.`);
+        }
+        countMadeHere();
+      }
+      approvals.notice(chatSessionId, `ADE approved "${card.title}" for ${where}, within what you let agents spend.`);
       return;
     }
     let response: Awaited<ReturnType<Agent37ChatApprovals["requestChatInput"]>>;
@@ -320,6 +363,8 @@ export function buildAgent37AgentActions(deps: Agent37AgentActionDeps) {
         title: `Make "${name}" on Agent 37`,
         body: `A ${kind === "vm" ? "VM" : "box"} with ${shape.cpu} vCPU and ${shape.memoryGb} GB, about ${formatAgent37HourlyPrice(agent37HourlyUsd(kind, shape))} while awake. It sleeps when idle and then bills only its disk.`,
         confirm: "Make it",
+        newMachine: true,
+        shape: shapeId,
       });
       return await make(approval, { kind: "create", machine: { kind, shape: shapeId, name }, madeByChat: madeByChat(approval) }, args.background === true);
     },
@@ -347,6 +392,7 @@ export function buildAgent37AgentActions(deps: Agent37AgentActionDeps) {
         title: `Resize "${box.name ?? box.instanceId}" to ${shape.cpu} vCPU · ${shape.memoryGb} GB`,
         body: `It restarts to change size: files stay, running chats, terminals and processes stop. Awake it then costs about ${formatAgent37HourlyPrice(agent37HourlyUsd(box.type === "vm" ? "vm" : "box", shape))}.`,
         confirm: "Resize",
+        shape: shapeId,
       });
       return await runAction(box, { instanceId: box.instanceId, action: "resize", shape: shapeId });
     },
@@ -365,6 +411,8 @@ export function buildAgent37AgentActions(deps: Agent37AgentActionDeps) {
         title: `Copy "${box.name ?? box.instanceId}" into a new machine`,
         body: `"${name}" gets the same files (repos, lanes, installed dependencies) and signs in as a new machine${rate ? `, about ${rate} while awake` : ""}. A big disk takes a few minutes to copy.`,
         confirm: "Copy it",
+        newMachine: true,
+        shape: shapeId ?? box.shapeId,
       });
       return await make(approval, { kind: "copy", instanceId: box.instanceId, name, shape: shapeId, madeByChat: madeByChat(approval) }, args.background === true);
     },
@@ -384,6 +432,8 @@ export function buildAgent37AgentActions(deps: Agent37AgentActionDeps) {
         title: `Move "${name}" to a ${to === "vm" ? "VM" : "box"}`,
         body: `ADE makes a new ${to === "vm" ? "VM" : "box"}, copies every repo, lane and chat on "${name}" into it, then deletes "${name}". Running processes stop${box.type === "vm" ? ", and Docker images and volumes stay behind" : ""}.`,
         confirm: "Move it",
+        newMachine: true,
+        shape: shapeId ?? box.shapeId,
         madeByThisChat: approval.by === "agent" && approval.chatSessionId != null
           && (await deps.machines.instanceMetadata(box.instanceId).catch(() => null))?.[AGENT37_MADE_BY_CHAT_METADATA] === approval.chatSessionId,
       });
@@ -460,7 +510,44 @@ export function buildAgent37AgentActions(deps: Agent37AgentActionDeps) {
           confirm: cap === null ? "Turn it off" : "Raise it",
         });
       }
-      return await deps.budget.write({ monthlyCapUsd: cap });
+      return await deps.budget.write({ ...current, monthlyCapUsd: cap });
+    },
+
+    /** What agents may spend alone: a preset (ask, balanced, hands_off) or single limits. Loosening asks the person. */
+    async limits() {
+      const current = await deps.budget.read();
+      return { ...current.agents, preset: agent37LimitsPresetOf(current.agents) ?? "custom" };
+    },
+
+    async set_limits(rawArgs?: unknown) {
+      const args = record(rawArgs);
+      const current = await deps.budget.read();
+      const presetName = text(args, "preset")?.replace("-", "_") ?? null;
+      const preset = presetName ? AGENT37_LIMITS_PRESETS[presetName as Agent37LimitsPreset] ?? null : null;
+      if (presetName && !preset) throw new Error("Pick a preset: ask, balanced or hands-off.");
+      const next: Agent37AgentLimits = { ...current.agents, ...(preset ?? {}) };
+      if (typeof args.unattendedSpend === "boolean") next.unattendedSpend = args.unattendedSpend;
+      if (args.machinesPerDay != null) {
+        const perDay = Number(args.machinesPerDay);
+        if (!Number.isInteger(perDay) || perDay < 0 || perDay > 100) throw new Error("Machines a day is a whole number from 0 to 100.");
+        next.machinesPerDay = perDay;
+      }
+      const maxShape = typeof args.maxShape === "string" ? shapeArg({ shape: args.maxShape }) : null;
+      if (maxShape) next.maxShape = maxShape;
+      const was = current.agents;
+      const looser = (next.unattendedSpend && !was.unattendedSpend)
+        || next.machinesPerDay > was.machinesPerDay
+        || !agent37ShapeWithin(next.maxShape, was.maxShape);
+      if (looser) {
+        const max = agent37Shape(next.maxShape)!;
+        await approve(readApproval(args), {
+          action: "uncapped",
+          title: "Let agents spend more on Agent 37",
+          body: `Unattended agents could then ${next.unattendedSpend ? `start ${next.machinesPerDay} new machine${next.machinesPerDay === 1 ? "" : "s"} a day, up to ${max.cpu} vCPU · ${max.memoryGb} GB` : "spend nothing"}.`,
+          confirm: "Allow it",
+        });
+      }
+      return (await deps.budget.write({ ...current, agents: next })).agents;
     },
 
     async ready_set(rawArgs?: unknown) {

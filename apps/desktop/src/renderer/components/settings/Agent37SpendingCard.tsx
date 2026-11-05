@@ -2,7 +2,6 @@ import { useCallback, useEffect, useState } from "react";
 import { Wallet } from "@phosphor-icons/react";
 import {
   AGENT37_BILLING_URL,
-  AGENT37_CAP_CHOICES_USD,
   formatAgent37Usd,
   type Agent37Budget,
   type Agent37MachinesResult,
@@ -30,7 +29,6 @@ export function Agent37SpendingCard() {
   const bridge = window.ade.agent37;
   const [machines, setMachines] = useState<Agent37MachinesResult | null>(null);
   const [budget, setBudget] = useState<Agent37Budget | null>(null);
-  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -50,22 +48,7 @@ export function Agent37SpendingCard() {
     return () => off?.();
   }, [bridge, load]);
 
-  if (!bridge?.listMachines || !bridge.getBudget || !bridge.setBudget) return null;
-  const setCap = bridge.setBudget;
-
-  const save = async (monthlyCapUsd: number | null) => {
-    setBusy(true);
-    setError(null);
-    try {
-      const next = await setCap({ monthlyCapUsd });
-      if (next) setBudget(next);
-      void load();
-    } catch (saveError) {
-      setError(ipcErrorMessage(saveError) || "Couldn't save the cap.");
-    } finally {
-      setBusy(false);
-    }
-  };
+  if (!bridge?.listMachines || !bridge.getBudget) return null;
 
   const spending = machines?.state === "ok" ? machines.spending : null;
   const totals = machines?.state === "ok" ? agent37GroupTotals(machines.machines) : null;
@@ -78,10 +61,6 @@ export function Agent37SpendingCard() {
         ? { label: `${formatAgent37Usd(cap)} a month`, tone: undefined }
         : { label: "No cap", tone: undefined };
   const runway = totals ? walletRunway(machines?.balanceUsd ?? null, totals.hourlyUsd) : null;
-  const choices: Array<{ value: number | null; label: string }> = [
-    ...AGENT37_CAP_CHOICES_USD.map((usd) => ({ value: usd as number | null, label: `$${usd}` })),
-    { value: null, label: "Off" },
-  ];
 
   return (
     <IntegrationCard
@@ -90,7 +69,7 @@ export function Agent37SpendingCard() {
       icon={<Wallet size={15} weight="fill" />}
       title="Spending"
       badge={<span className="kit-tag" data-tone={tag.tone}>{tag.label}</span>}
-      hint="Machines sleep after a few idle minutes and bill only their disk. At the cap ADE makes and wakes nothing new."
+      hint="Machines sleep after a few idle minutes and bill only their disk. The cap and what agents may spend are below."
     >
       <div className="ade-ig-figures">
         <div className="ade-ig-figure">
@@ -107,26 +86,6 @@ export function Agent37SpendingCard() {
         <div className="ade-ig-figure">
           <span className="kit-eyebrow">Wallet lasts</span>
           <b>{runway ?? "—"}<small>{runway ? "at this rate" : "nothing billing"}</small></b>
-        </div>
-      </div>
-
-      <div className="ade-ig-field">
-        <span className="ade-ig-field-label">Monthly cap</span>
-        <div className="ade-ig-field-controls">
-          <div className="kit-seg" data-case="sentence" role="radiogroup" aria-label="Monthly cap" aria-disabled={busy || undefined}>
-            {choices.map((choice) => (
-              <button
-                key={choice.label}
-                type="button"
-                role="radio"
-                aria-checked={choice.value === cap}
-                disabled={busy || budget == null}
-                onClick={() => { if (choice.value !== cap) void save(choice.value); }}
-              >
-                {choice.label}
-              </button>
-            ))}
-          </div>
         </div>
       </div>
 

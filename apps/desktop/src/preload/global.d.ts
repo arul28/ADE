@@ -4713,7 +4713,7 @@ declare global {
          */
         copyMachine?: (args: { requestId: string; instanceId: string; name?: string | null; shape?: string | null }) => Promise<{ started: boolean }>;
         moveMachine?: (args: { requestId: string; instanceId: string; machineKey?: string | null; to: "box" | "vm"; shape?: string | null }) => Promise<{ started: boolean }>;
-        setBudget?: (budget: Agent37Budget) => Promise<Agent37Budget | null>;
+        setBudget?: (budget: Partial<Agent37Budget>) => Promise<Agent37Budget | null>;
         /**
          * Wakes the Agent 37 box behind an account machine because the person
          * is about to use it (opening one of its lanes). It acts on the Agent

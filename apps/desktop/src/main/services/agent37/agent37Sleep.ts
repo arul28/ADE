@@ -15,14 +15,17 @@
  */
 
 import {
+  AGENT37_DEFAULT_AGENT_LIMITS,
   AGENT37_DEFAULT_MONTHLY_CAP_USD,
   AGENT37_DEFAULT_SLEEP_AFTER_MINUTES,
   AGENT37_SLEEP_METADATA,
   AGENT37_WAKE_PORT,
   AGENT37_WAKE_PORT_LABEL,
   agent37CapReachedMessage,
+  agent37Shape,
   agent37SpendingFor,
   isAgent37SleepAfterMinutes,
+  type Agent37AgentLimits,
   type Agent37Budget,
   type Agent37SleepPolicy,
   type Agent37Spending,
@@ -212,14 +215,27 @@ const WAKE_LOOKUP_TIMEOUT_MS = 5_000;
 export const AGENT37_BUDGET_VAULT_KEY = "agent37-budget";
 export const AGENT37_BUDGET_MACHINE_CREDENTIAL_KEY = "agent37.budget.v1";
 
+function parseAgentLimits(raw: unknown): Agent37AgentLimits {
+  const value = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
+  const fallback = AGENT37_DEFAULT_AGENT_LIMITS;
+  const perDay = value.machinesPerDay;
+  return {
+    unattendedSpend: typeof value.unattendedSpend === "boolean" ? value.unattendedSpend : fallback.unattendedSpend,
+    machinesPerDay: typeof perDay === "number" && Number.isInteger(perDay) && perDay >= 0 && perDay <= 100 ? perDay : fallback.machinesPerDay,
+    maxShape: agent37Shape(typeof value.maxShape === "string" ? value.maxShape : null)?.id ?? fallback.maxShape,
+  };
+}
+
+/** v1 held the cap alone (set by the person); v2 adds what unattended agents may do. */
 function parseBudget(raw: string | null | undefined): Agent37Budget | null {
   if (!raw) return null;
   try {
-    const parsed = JSON.parse(raw) as { v?: unknown; monthlyCapUsd?: unknown };
-    if (parsed?.v !== 1) return null;
+    const parsed = JSON.parse(raw) as { v?: unknown; monthlyCapUsd?: unknown; agents?: unknown };
+    if (parsed?.v !== 1 && parsed?.v !== 2) return null;
     const cap = parsed.monthlyCapUsd;
-    if (cap === null) return { monthlyCapUsd: null };
-    return typeof cap === "number" && Number.isFinite(cap) && cap > 0 ? { monthlyCapUsd: Math.round(cap * 100) / 100 } : null;
+    const agents = parseAgentLimits(parsed.agents);
+    if (cap === null) return { monthlyCapUsd: null, agents };
+    return typeof cap === "number" && Number.isFinite(cap) && cap > 0 ? { monthlyCapUsd: Math.round(cap * 100) / 100, agents } : null;
   } catch {
     return null;
   }
@@ -256,15 +272,16 @@ export function createAgent37BudgetStore(deps: {
         : { ok: false as const };
       const fromAccount = got.ok ? parseBudget(got.value) : null;
       if (fromAccount) return fromAccount;
-      return parseBudget(local()?.getSync(AGENT37_BUDGET_MACHINE_CREDENTIAL_KEY)) ?? { monthlyCapUsd: AGENT37_DEFAULT_MONTHLY_CAP_USD };
+      return parseBudget(local()?.getSync(AGENT37_BUDGET_MACHINE_CREDENTIAL_KEY))
+        ?? { monthlyCapUsd: AGENT37_DEFAULT_MONTHLY_CAP_USD, agents: AGENT37_DEFAULT_AGENT_LIMITS };
     },
     async write(budget) {
       const cap = budget.monthlyCapUsd;
       if (cap !== null && !(typeof cap === "number" && Number.isFinite(cap) && cap > 0 && cap <= 100_000)) {
         throw new Error("Set the cap to a dollar amount above zero, or turn it off.");
       }
-      const next: Agent37Budget = { monthlyCapUsd: cap === null ? null : Math.round(cap * 100) / 100 };
-      const raw = JSON.stringify({ v: 1, ...next });
+      const next: Agent37Budget = { monthlyCapUsd: cap === null ? null : Math.round(cap * 100) / 100, agents: parseAgentLimits(budget.agents) };
+      const raw = JSON.stringify({ v: 2, ...next });
       let savedHere = false;
       try {
         const store = local();

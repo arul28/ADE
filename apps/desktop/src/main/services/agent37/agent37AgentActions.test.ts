@@ -12,7 +12,7 @@ describe("Agent 37 agent actions: approvals", () => {
   function setup(options: { level?: PermissionLevel | null; automation?: boolean; madeBy?: string; answer?: "yes" | "no" } = {}) {
     const ran: string[] = [];
     const cards: string[] = [];
-    let budget: Agent37Budget = { monthlyCapUsd: 20 };
+    let budget: Agent37Budget = { monthlyCapUsd: 20, agents: { unattendedSpend: true, machinesPerDay: 3, maxShape: "4x16" } };
     const box = { instanceId: "inst_1", name: "lane box", machineKey: "mk_1", type: "box", runningHourlyUsd: 0.008 };
     const deps = {
       machines: {
