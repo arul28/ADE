@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
+import http from "node:http";
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { MUSIC_SPOTIFY_REDIRECT_URI, type MusicState } from "../../../shared/types/music";
+import { MUSIC_SPOTIFY_CALLBACK_PORT, MUSIC_SPOTIFY_REDIRECT_URI, type MusicState } from "../../../shared/types/music";
 import type { MusicHost, MusicHostEvent } from "./musicHostProcess";
 import { startSpotifySignIn } from "./spotifyAuth";
 import type { MusicVolumeMemory } from "./musicVolume";
@@ -132,7 +133,31 @@ vi.mock("./musicHostProcess", async (importOriginal) => ({
   },
 }));
 
+// Sign-in must listen on the registered port. On a Linux CI runner that port
+// is inside the range the kernel gives outgoing connections, so a busy runner
+// can already hold it (EADDRINUSE on 2026-11-05). Each test records the port
+// sign-in asks for and binds a free one instead; the HTTP is still real.
+const requestedSignInPorts: unknown[] = [];
+const realListen = http.Server.prototype.listen;
+let listenSpy: { mockRestore: () => void } | null = null;
+
+beforeEach(() => {
+  requestedSignInPorts.length = 0;
+  listenSpy = vi.spyOn(http.Server.prototype, "listen").mockImplementation(function (
+    this: http.Server,
+    ...listenArgs: unknown[]
+  ) {
+    if (listenArgs[0] !== MUSIC_SPOTIFY_CALLBACK_PORT) {
+      return realListen.apply(this, listenArgs as Parameters<typeof realListen>);
+    }
+    requestedSignInPorts.push(listenArgs[0]);
+    return realListen.apply(this, [0, ...listenArgs.slice(1)] as Parameters<typeof realListen>);
+  });
+});
+
 afterEach(() => {
+  listenSpy?.mockRestore();
+  listenSpy = null;
   vi.useRealTimers();
   hosts.length = 0;
   hostStarted = deferred<FakeHost>();
@@ -241,8 +266,12 @@ describe("spotify sign-in callback", () => {
     const consent = new URL(signIn.authorizeUrl);
     expect(consent.searchParams.get("code_challenge_method")).toBe("S256");
     const callback = new URL(consent.searchParams.get("redirect_uri")!);
-    // Exactly the URI the setup guide has the user register: Spotify refuses any other.
-    expect(callback.toString()).toBe(MUSIC_SPOTIFY_REDIRECT_URI);
+    // The URI the setup guide has the user register (Spotify refuses any
+    // other), on the port the server is really bound to.
+    expect(requestedSignInPorts).toEqual([MUSIC_SPOTIFY_CALLBACK_PORT]);
+    expect(callback.toString()).toBe(
+      MUSIC_SPOTIFY_REDIRECT_URI.replace(`:${MUSIC_SPOTIFY_CALLBACK_PORT}/`, `:${callback.port}/`),
+    );
 
     const stale = new URL(callback);
     stale.searchParams.set("code", "x");

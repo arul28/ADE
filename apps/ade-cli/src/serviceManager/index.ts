@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import type { ServiceManagerResult, ServiceManagerStatusResult } from "./common";
-import { ADE_RUNTIME_SERVICE_NAME } from "./common";
+import { ADE_RUNTIME_SERVICE_NAME, isPidAlive } from "./common";
 import { getLaunchdServiceMainPid, getLaunchdServiceStatus, installLaunchdService, uninstallLaunchdService } from "./installLaunchd";
 import { getSystemdServiceStatus, installSystemdService, uninstallSystemdService } from "./installSystemd";
 import { readDetachedSupervisedBrainPid } from "./detachedSupervisor";
@@ -59,6 +59,21 @@ export function isStartedByRuntimeService(): boolean | null {
     default:
       return null;
   }
+}
+
+/**
+ * The pid of the channel's running service brain when this process is a brain
+ * the service did not start (an agent's or a test's `ade serve`), else null.
+ * Such a brain leaves phone sync to the service brain: on 2026-11-04 four of
+ * them took the machine-wide sync lock in turn, and the phone dropped each
+ * time the installed brain took it back. Null where the service cannot tell
+ * (Linux), when no service brain runs, and in the service brain itself.
+ */
+export function serviceBrainPidBesideHandRunBrain(): number | null {
+  if (isStartedByRuntimeService() !== false) return null;
+  const servicePid = getRuntimeServiceMainPid();
+  if (servicePid == null || servicePid === process.pid || !isPidAlive(servicePid)) return null;
+  return servicePid;
 }
 
 export async function installRuntimeService(): Promise<ServiceManagerResult> {

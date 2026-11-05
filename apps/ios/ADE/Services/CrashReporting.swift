@@ -139,6 +139,22 @@ enum CrashReporting {
     breadcrumb("layout", message: "\(family) fold=\(fold) edgeBar=\(edgeBar)")
   }
 
+  private static var lastScreen: String?
+
+  /// The ADE screen shown last, as a tag on every later event plus one
+  /// breadcrumb when it changes. An app hang's stack names only system code:
+  /// in the 13 hangs of ADE-IOS-1B (2026-10-23 to 2026-11-05) no main thread
+  /// held an ADE function, so the screen is what tells which view was
+  /// updating. Like the layout, it sends nothing of its own.
+  static func setScreen(_ screen: String) {
+    guard didStart, screen != lastScreen else { return }
+    lastScreen = screen
+    SentrySDK.configureScope { scope in
+      scope.setTag(value: screen, key: "screen")
+    }
+    breadcrumb("screen", message: screen)
+  }
+
   /// Sets the Sentry user. A non-empty `accountId` (the Clerk user id) is hashed
   /// the same way PostHog hashes it. `nil` falls back to the anonymous install
   /// id that PostHog already uses, so sign-out never keeps the old account.

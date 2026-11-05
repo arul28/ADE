@@ -28208,10 +28208,18 @@ async function runServe(
   }
   const port = parseOptionalPort(readValue(args, ["--port"]), "--port");
   const syncCapableHome = isSyncCapableAdeHome(path.dirname(layout.secretsDir));
-  const syncEnabled = !readFlag(args, ["--no-sync"]) && syncCapableHome;
-  if (!syncCapableHome && !readFlag(args, ["--no-sync"])) {
+  const syncRequested = !readFlag(args, ["--no-sync"]);
+  if (!syncCapableHome && syncRequested) {
     process.stderr.write("ADE: sync disabled because ADE_HOME is neither the machine's default home nor a packaged channel's home.\n");
   }
+  const serviceBrainPid = syncRequested && syncCapableHome
+    ? (await import("./serviceManager")).serviceBrainPidBesideHandRunBrain()
+    : null;
+  if (serviceBrainPid != null) {
+    process.stderr.write(`ADE: sync disabled because the installed ADE brain (pid ${serviceBrainPid}) hosts phone sync on this computer. Pass --no-sync to silence this.\n`);
+    headlessProjectLogger.info("sync.host_left_to_service_brain", { servicePid: serviceBrainPid });
+  }
+  const syncEnabled = syncRequested && syncCapableHome && serviceBrainPid == null;
   const localDeviceIdPath = path.join(layout.secretsDir, "sync-device-id");
   // `--profile` was read at the top of the function, before the identity notes.
   const projectRegistry = new ProjectRegistry(layout);

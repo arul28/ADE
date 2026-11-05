@@ -175,6 +175,8 @@ type DesktopAppRecord = {
   resourcesPath: string;
   /** The app's executable (`ADE.exe` on Windows); absent in older records. */
   executablePath?: string | null;
+  /** Electron's `userData`, where the app's own logs live; absent in older records. */
+  userDataPath?: string | null;
   version: string | null;
 };
 
@@ -198,6 +200,8 @@ export function recordInstalledDesktopApp(input: {
   resourcesPath: string | null | undefined;
   /** The running app's executable (`process.execPath` in Electron main). */
   executablePath: string | null | undefined;
+  /** `app.getPath("userData")`: a brain restart report reads the app's logs there. */
+  userDataPath: string | null | undefined;
   version: string | null;
   platform?: NodeJS.Platform;
   env?: NodeJS.ProcessEnv;
@@ -214,6 +218,7 @@ export function recordInstalledDesktopApp(input: {
     appPath,
     resourcesPath,
     executablePath: input.executablePath ? path.resolve(input.executablePath) : null,
+    userDataPath: input.userDataPath ? path.resolve(input.userDataPath) : null,
     version: input.version?.trim() || null,
   };
   const body = `${JSON.stringify(record, null, 2)}\n`;

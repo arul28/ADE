@@ -152,6 +152,19 @@ function exists(target: string): boolean {
   }
 }
 
+/**
+ * A Windows project root reached over a share: `\\wsl.localhost\…` or
+ * `\\wsl$\…` (a WSL distro), or any other `\\server\share`. SQLite's
+ * file locks are unreliable there; on 2026-11-04 a WSL project's desktop and
+ * brain both hit "database is locked" opening its database together.
+ */
+function windowsNetworkShareKind(root: string): "wsl" | "network" | null {
+  if (process.platform !== "win32") return null;
+  const unc = root.replace(/\//g, "\\").replace(/^\\\\\?\\UNC\\/i, "\\\\");
+  if (!unc.startsWith("\\\\") || unc.startsWith("\\\\?\\") || unc.startsWith("\\\\.\\")) return null;
+  return /^\\\\wsl(?:\.localhost|\$)\\/i.test(unc) ? "wsl" : "network";
+}
+
 function isWithinPath(root: string, target: string, allowEqual = false): boolean {
   const relative = path.relative(path.resolve(root), path.resolve(target));
   if (!relative) return allowEqual;
@@ -871,6 +884,17 @@ export function createProjectHealthService(deps: ProjectHealthServiceDeps) {
           title: `The old copy is still at ${record.originalParkedAt}`,
           detail: `${record.originalBytes ? `${formatBytes(record.originalBytes)} you can free. ` : ""}Delete it from Settings → Location once the project works here.`,
         }));
+      }),
+      run("network-share", "The project is on this computer's own drive", () => {
+        const share = windowsNetworkShareKind(projectRoot);
+        if (!share) return [];
+        return [{
+          id: "network-share",
+          area: "drive" as const,
+          severity: "warning" as const,
+          title: share === "wsl" ? "This project is on a WSL share" : "This project is on a network share",
+          detail: "ADE keeps its database in the project's .ade folder, and file locks don't work reliably over a share, so ADE can stop with \"database is locked\". Clone the project to a folder on this computer's own drive and open that copy.",
+        }];
       }),
       run("drive", "The drive is the one ADE expects", async () => {
         const volume = await readMoveVolume(projectRoot);

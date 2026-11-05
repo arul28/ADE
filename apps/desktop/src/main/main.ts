@@ -1720,11 +1720,13 @@ app.whenReady().then(async () => {
     return;
   }
   // A standalone brain (`ade brain update`) has no app resources: this record
-  // is how it finds this app, its version and its signed native helpers.
+  // is how it finds this app, its version and its signed native helpers, and
+  // how a brain restart report finds this app's logs.
   recordInstalledDesktopApp({
     isPackaged: app.isPackaged,
     resourcesPath: process.resourcesPath,
     executablePath: process.execPath,
+    userDataPath: app.getPath("userData"),
     version: app.getVersion(),
     logger: getMachineMainLogger(),
   });

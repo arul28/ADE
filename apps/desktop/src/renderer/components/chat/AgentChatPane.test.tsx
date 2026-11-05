@@ -3,8 +3,8 @@
 import { mergeAgentChatLiveEvents } from "../../../shared/chatHistoryMerge";
 import React from "react";
 import { encodeRoutePresetId } from "../../../shared/harnessRoutes";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { act, cleanup, configure, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import type {
   AgentChatEventEnvelope,
@@ -1067,6 +1067,19 @@ function installStorageMocks(): void {
     });
   }
 }
+
+// Every test here renders the whole chat pane. A CI shard runs this file
+// about 1.7x slower than a laptop (119 s against 70 s on 2026-11-05), and
+// Testing Library's 1 s default for findBy/waitFor then expired on two waits
+// that pass locally. The file's slow waits already pass `{ timeout: 3_000 }`;
+// this makes that the default. A passing wait still returns at once.
+beforeAll(() => {
+  configure({ asyncUtilTimeout: 3_000 });
+});
+
+afterAll(() => {
+  configure({ asyncUtilTimeout: 1_000 });
+});
 
 beforeEach(() => {
   installMatchMediaMock();
