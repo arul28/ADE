@@ -1459,6 +1459,15 @@ export class RemoteConnectionService {
     // it first, and waits for it to come back.
     if (!this.pool.hasEntry(targetId) && adeActionAccess(request.domain, request.action) === "write") {
       const sleeping = this.registry.get(targetId);
+      // The same guards as any implicit use, but for the reconnect backoff a
+      // sleeping box has run up: nothing is woken that the call may not reach.
+      if (sleeping) {
+        await this.assertAccountOwnershipAuthorized(sleeping);
+        if (this.options.explicitConnectOnly && !this.explicitlyConnectedTargetIds.has(targetId)) {
+          throw new Error(EXPLICIT_CONNECT_ONLY_MESSAGE);
+        }
+        if (this.isManuallyDisconnected(sleeping)) throw new Error(REMOTE_RUNTIME_MANUALLY_DISCONNECTED_MESSAGE);
+      }
       if (sleeping && await this.wakeForUse(sleeping)) {
         this.clearAutomaticReconnectState(targetId);
         await this.connectWokenMachine(sleeping);

@@ -294,8 +294,12 @@ endpoints. `shared/harnessRoutes.ts` decides, per harness + source + model:
   upstream, so its secret does not outlive it there. The proxy speaks to the
   source in OpenAI chat when it can, except OpenAI itself, which goes through
   its Responses API: gpt-5.x refuses the `max_tokens` the chat translation
-  sends ("Unsupported parameter: 'max_tokens'"), while Responses takes the
-  limit its own way (measured against a stand-in, 2026-11-05).
+  sends ("Unsupported parameter: 'max_tokens'"). The Responses translation
+  (CLIProxyAPI 8.0.48) sends no output limit at all, so the model's own limit
+  applies; that runs, where chat fails every request (both measured against a
+  stand-in, 2026-11-05). A source whose protocol changes keeps the models
+  earlier launches added, and the launch waits until the proxy serves the
+  model on the new protocol (`owned_by` changes with the section).
 - **impossible** — with the reason (Cursor, Copilot, Kimi and Pi only run on
   their own sign-in; OpenCode Zen's free models only answer inside OpenCode;
   an OpenAI sign-in inside OpenCode is a ChatGPT subscription whose token

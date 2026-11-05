@@ -6522,9 +6522,11 @@ async function runTool(args: {
       }
       // Who may say yes to spending or deleting: a person's own client (the
       // desktop, the CTO thread) already decided; anyone else is an agent and
-      // is asked in its own chat. Never taken from the arguments.
+      // is asked in its own chat. Never taken from the arguments. A chatless
+      // `ade --role cto` is not a person: an agent's shell can claim that role
+      // (the same rule as answering a card, above).
       const callerIsPerson = mayUseUserOnlyActions(session)
-        || (callerIsCto && await callerIsTrustedCto(runtime, session));
+        || (callerIsCto && !isTrustedChatlessAdeCliCaller(session) && await callerIsTrustedCto(runtime, session));
       const { approval: _ignoredApproval, ...agent37Args } = rawObjectArgs;
       scopedObjectArgs = {
         ...agent37Args,

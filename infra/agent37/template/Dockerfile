@@ -60,6 +60,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
  && mv "$sdk/cmdline-tools/cmdline-tools" "$sdk/cmdline-tools/latest" && rm /tmp/clt.zip \
  && yes | ANDROID_HOME="$sdk" "$sdk/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null \
  && ANDROID_HOME="$sdk" "$sdk/cmdline-tools/latest/bin/sdkmanager" --install "platform-tools" "emulator" "$ANDROID_SYSTEM_IMAGE" > /dev/null \
+ # Java only runs sdkmanager here: ADE writes AVDs and reads hardware profiles
+ # itself (androidAvds.ts), so the image doesn't carry a JRE.
  && apt-get purge -y default-jre-headless && apt-get autoremove -y --purge \
  && { rm -rf /var/lib/apt/lists/* /root/.android "$sdk/.temp" || true; } \
  && chmod -R a+rX "$sdk"

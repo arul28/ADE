@@ -83,8 +83,13 @@ log="$ADE_HOME/logs/brain-entrypoint.log"
 delay=2
 while true; do
   # A move to another machine holds the brain while its files are copied, so
-  # every database is copied whole (agent37MachineCopy.ts).
-  while [ -f "$ADE_HOME/brain.paused" ]; do sleep 1; done
+  # every database is copied whole (agent37MachineCopy.ts). A move ends within
+  # its hour-long download link; a pause older than two hours is one whose
+  # desktop quit mid-move, so the brain comes back.
+  while [ -f "$ADE_HOME/brain.paused" ]; do
+    find "$ADE_HOME/brain.paused" -mmin +120 -delete 2>/dev/null
+    sleep 5
+  done
   start=$(date +%s)
   ade --role cto serve --socket "$ADE_HOME/sock/ade.sock" >> "$log" 2>&1
   # A brain that ran for a minute crashed for a new reason; start over at 2 s.

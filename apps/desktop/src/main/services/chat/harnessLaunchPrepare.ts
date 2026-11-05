@@ -17,6 +17,7 @@
 
 import { captureError } from "../../../shared/sentry/capture";
 import { resolveLaunchBrain } from "./harnessPresetLaunch";
+import type { RouteProtocol } from "../../../shared/harnessRoutes";
 
 type ProxyStarter = () => Promise<unknown>;
 
@@ -84,7 +85,11 @@ export async function prepareHarnessLaunch(args: {
   // write the upstream now and wait until the proxy lists the model.
   try {
     const plan = resolveLaunchBrain({ provider: args.provider, presetId, credentialId });
-    if (plan?.status === "ready") await waitForProxyModel(plan.env, plan.env.ANTHROPIC_MODEL ?? plan.model);
+    if (plan?.status === "ready") {
+      const upstream = plan.route?.kind === "proxy" ? plan.route.upstreamProtocol : null;
+      await waitForProxyModel(plan.env, plan.env.ANTHROPIC_MODEL ?? plan.model, upstream);
+      if (plan.subagentModel) await waitForProxyModel(plan.env, plan.subagentModel, upstream);
+    }
   } catch (error) {
     captureError(error, { tags: { feature: "proxy", stage: "launch_model_wait" }, fingerprint: ["proxy.launch_model_wait"] });
   }
@@ -96,10 +101,17 @@ const PROXY_MODEL_WAIT_MS = 5_000;
 const PROXY_MODEL_POLL_MS = 200;
 
 /**
- * Waits until ADE's local proxy lists `model` (a prefixed `ade-…/<id>`), when
- * the launch points the harness at the proxy. Anything else returns at once.
+ * Waits until ADE's local proxy lists `model` (a prefixed `ade-…/<id>`) on the
+ * upstream protocol just written, when the launch points the harness at the
+ * proxy. Anything else returns at once. A model the proxy already had under
+ * the other protocol is listed before the reload too; its `owned_by` tells
+ * them apart (an OpenAI-compatible entry's own name, else the provider).
  */
-async function waitForProxyModel(env: Record<string, string>, model: string | undefined): Promise<void> {
+async function waitForProxyModel(
+  env: Record<string, string>,
+  model: string | undefined,
+  upstream: RouteProtocol | null,
+): Promise<void> {
   const base = (env.ANTHROPIC_BASE_URL ?? env.OPENAI_BASE_URL ?? "").replace(/\/v1\/?$/, "").replace(/\/$/, "");
   const token = env.ANTHROPIC_AUTH_TOKEN ?? env.OPENAI_API_KEY ?? "";
   if (!model || !model.startsWith("ade-") || !/^http:\/\/127\.0\.0\.1:\d+$/.test(base) || !token) return;
@@ -111,8 +123,11 @@ async function waitForProxyModel(env: Record<string, string>, model: string | un
         signal: AbortSignal.timeout(2_000),
       });
       if (response.ok) {
-        const body = await response.json() as { data?: Array<{ id?: unknown }> };
-        if (Array.isArray(body.data) && body.data.some((entry) => entry?.id === model)) return;
+        const body = await response.json() as { data?: Array<{ id?: unknown; owned_by?: unknown }> };
+        const prefix = model.slice(0, model.indexOf("/"));
+        const loaded = (ownedBy: unknown) => upstream == null
+          || (upstream === "openai-chat" ? ownedBy === prefix : ownedBy !== prefix);
+        if (Array.isArray(body.data) && body.data.some((entry) => entry?.id === model && loaded(entry.owned_by))) return;
       }
     } catch {
       // The proxy is still starting; ask again.
