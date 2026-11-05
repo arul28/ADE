@@ -229,6 +229,15 @@ const identityMemo = new FileStampedMemo<SyncCloudRelayState>();
 const preferenceMemo = new FileStampedMemo<SyncRelayPreference>();
 /** Secrets directories this process has already created. */
 const ensuredDirs = new Set<string>();
+/**
+ * Per identity file, the machine key whose backup this process has confirmed
+ * or written. Process-wide like the memo: a store that answers from the memo
+ * never reaches the synchronous `ensureBackup`, so the retry after a failed
+ * backup write has to be visible to every store.
+ */
+const backupVerifiedFor = new Map<string, string>();
+/** After a failed backup write, how long until the background check writes again. */
+const BACKUP_RETRY_INTERVAL_MS = 30_000;
 
 function emptyBudget(): SyncCloudRelayBudget {
   return { count: 0, windowStartedAt: null, lastAt: null };
@@ -376,12 +385,10 @@ export function createSyncCloudRelayStore(args: {
   const lockWaiter = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
   const now = args.now ?? Date.now;
   const log = args.logger;
-  /**
-   * The machine key whose backup this process has already reconciled. Purely an
-   * optimisation: `load()` runs on every identity read, and re-statting the
-   * backup each time would put a syscall on the relay hot path.
-   */
-  let backupVerifiedFor: string | null = null;
+  /** This store has checked the backup once (each new store does, as before). */
+  let backupCheckedHere = false;
+  let backupCheckInFlight = false;
+  let lastBackupWriteFailureAt = Number.NEGATIVE_INFINITY;
 
   const logIdentityEvent = (event: SyncCloudRelayIdentityEvent): void => {
     // One event name for every identity transition, matching the tunnel
@@ -477,9 +484,9 @@ export function createSyncCloudRelayStore(args: {
     // to the backup must find the last identity that was actually in force.
     try {
       writeIdentityFile(backupPath, text);
-      backupVerifiedFor = state.config.machineKey;
+      backupVerifiedFor.set(identityKey, state.config.machineKey);
     } catch (error) {
-      backupVerifiedFor = null;
+      backupVerifiedFor.delete(identityKey);
       log?.warn?.("sync_cloud_relay.identity_backup_write_failed", {
         error: error instanceof Error ? error.message : String(error),
       });
@@ -824,22 +831,64 @@ export function createSyncCloudRelayStore(args: {
    * Cheap and idempotent; the in-process guard keeps it off the hot path after
    * the first read.
    */
-  const ensureBackup = (state: SyncCloudRelayState): void => {
-    if (backupVerifiedFor === state.config.machineKey) return;
-    const existing = readFileAt(backupPath);
-    if (existing.parsed && existing.raw.machineKey === state.config.machineKey
-      && existing.raw.secret === state.config.secret) {
-      backupVerifiedFor = state.config.machineKey;
-      return;
-    }
+  const backupMatches = (existing: IdentityFileRead, state: SyncCloudRelayState): boolean =>
+    existing.parsed && existing.raw.machineKey === state.config.machineKey
+      && existing.raw.secret === state.config.secret;
+
+  const writeBackup = (state: SyncCloudRelayState): void => {
     try {
       writeIdentityFile(backupPath, serialize(state));
-      backupVerifiedFor = state.config.machineKey;
+      backupVerifiedFor.set(identityKey, state.config.machineKey);
     } catch (error) {
+      // Not recorded as verified, so the next read tries again.
+      lastBackupWriteFailureAt = now();
       log?.warn?.("sync_cloud_relay.identity_backup_write_failed", {
         error: error instanceof Error ? error.message : String(error),
       });
     }
+  };
+
+  const ensureBackup = (state: SyncCloudRelayState): void => {
+    backupCheckedHere = true;
+    if (backupVerifiedFor.get(identityKey) === state.config.machineKey) return;
+    if (backupMatches(readFileAt(backupPath), state)) {
+      backupVerifiedFor.set(identityKey, state.config.machineKey);
+      return;
+    }
+    writeBackup(state);
+  };
+
+  /**
+   * {@link ensureBackup} for a read the memo answered. The backup is read on
+   * the thread pool; only a missing or stale backup costs a (synchronous,
+   * durable) write, and after a failed one the next write waits
+   * {@link BACKUP_RETRY_INTERVAL_MS}, so a file a scan keeps holding does not
+   * put a write on every read.
+   */
+  const ensureBackupInBackground = (state: SyncCloudRelayState): void => {
+    const verified = backupVerifiedFor.get(identityKey) === state.config.machineKey;
+    if ((verified && backupCheckedHere) || backupCheckInFlight) return;
+    if (!verified && now() - lastBackupWriteFailureAt < BACKUP_RETRY_INTERVAL_MS) return;
+    backupCheckInFlight = true;
+    backupCheckedHere = true;
+    void readFileAtAsync(backupPath)
+      .then((existing) => {
+        if (backupMatches(existing, state)) {
+          backupVerifiedFor.set(identityKey, state.config.machineKey);
+          return;
+        }
+        // Only for the identity still in force: a rotation since this check
+        // began wrote its own backup.
+        if (identityMemo.peek(identityKey) !== state) return;
+        writeBackup(state);
+      })
+      .catch(() => {
+        // Unreadable now (a scan): forget that this store looked, so it looks again.
+        backupCheckedHere = false;
+      })
+      .finally(() => {
+        backupCheckInFlight = false;
+      });
   };
 
   // Reads the file and fills in a freshly generated identity when absent,
@@ -854,7 +903,10 @@ export function createSyncCloudRelayStore(args: {
         return latest.needsWrite ? null : latest.state;
       },
     });
-    if (remembered) return remembered;
+    if (remembered) {
+      ensureBackupInBackground(remembered);
+      return remembered;
+    }
     const current = resolve();
     if (!current.needsWrite) {
       ensureBackup(current.state);

@@ -237,6 +237,31 @@ describe("syncCloudRelayStore", () => {
     },
   );
 
+  it("retries a failed backup write from reads the memo answers", async () => {
+    const identity = { machineKey: "f".repeat(32), secret: "1".repeat(48) };
+    fs.writeFileSync(filePath, `${JSON.stringify(identity)}\n`);
+    // The backup cannot be written: a directory holds its name.
+    fs.mkdirSync(`${filePath}.bak`);
+    fs.writeFileSync(path.join(`${filePath}.bak`, "held"), "");
+    let clock = 1_000;
+    const warnings: string[] = [];
+    const store = await storeInNewProcess({
+      filePath,
+      now: () => clock,
+      logger: { warn: (event) => warnings.push(event) },
+    });
+    expect(store.getMachineIdentity()).toEqual(identity);
+    expect(warnings).toContain("sync_cloud_relay.identity_backup_write_failed");
+
+    // The hold clears; later reads (from memory) write the backup again.
+    fs.rmSync(`${filePath}.bak`, { recursive: true });
+    clock += 60_000;
+    await vi.waitFor(() => {
+      expect(store.getMachineIdentity()).toEqual(identity);
+      expect(JSON.parse(fs.readFileSync(`${filePath}.bak`, "utf8"))).toMatchObject(identity);
+    });
+  });
+
   it("rotates the full identity only when the expected key still matches", () => {
     const store = createSyncCloudRelayStore({ filePath });
     store.setRelayUrl("https://relay.example.com");

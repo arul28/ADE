@@ -68,6 +68,11 @@ export class FileStampedMemo<T> {
     return entry.value;
   }
 
+  /** The remembered value without starting a check. */
+  peek(key: string): T | undefined {
+    return this.entries.get(key)?.value;
+  }
+
   remember(key: string, value: T): void {
     this.entries.set(key, { value, stamp: null, checking: false });
   }
