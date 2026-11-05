@@ -452,7 +452,7 @@ describe("Claude query lifecycle", () => {
       }),
     };
     const restartNotices = () => events.filter((envelope) =>
-      envelope.event.type === "system_notice" && /Agent session restarted/.test(envelope.event.message));
+      envelope.event.type === "system_notice" && /\bsession restarted\b/i.test(envelope.event.message));
     const turn = service.runSessionTurn({ sessionId: session.id, text: "Restart yourself when done." });
     await parked;
 

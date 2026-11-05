@@ -3,14 +3,16 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { ACCOUNT_SCOPE_ALL } from "../../../shared/accountSettingsScope";
-import { MCP_SERVERS_SETTING_KEY, normalizeMcpRegistry } from "../../../shared/mcpRegistry";
+import { MCP_SECRET_VAULT_KIND, MCP_SERVERS_SETTING_KEY, mcpSecretVaultKey, normalizeMcpRegistry } from "../../../shared/mcpRegistry";
 import { MCP_SERVER_APPROVE_QUESTION_ID, MCP_SERVER_APPROVE_VALUE } from "../../../shared/mcpServerRequest";
+import { isUserOnlyConsentCard } from "../../../shared/types/macDesktop";
 import type { CardRequestChatInput } from "../chat/chatCardRequest";
 import { createMcpRegistryService } from "./mcpRegistryService";
 import {
   listMcpRegistry,
   mcpRegistryVaultFromStore,
   requestMcpServer,
+  requestMcpServerRemoval,
   type McpRegistrySettingsStore,
   type McpRegistryVaultStore,
 } from "./mcpServerRequest";
@@ -152,5 +154,57 @@ describe("mcp_registry for agents", () => {
     expect(refusals).toHaveLength(1);
     expect(String(refusals[0])).toMatch(/could not load your MCP servers/);
     expect(rows.has(LIST_KEY)).toBe(false);
+  });
+
+  describe("removal", () => {
+    const stripe = { name: "stripe", transport: "http", url: "https://mcp.stripe.com/", envNames: [], headerNames: ["Authorization"], enabled: true };
+    const keyId = mcpSecretVaultKey("stripe", "header", "Authorization");
+
+    /** The person presses Remove on the card; `cards` records what each card carried. */
+    function personRemoves(cards: Array<Parameters<CardRequestChatInput>[0]>, beforeAnswer?: () => void): CardRequestChatInput {
+      return async (input) => {
+        cards.push(input);
+        beforeAnswer?.();
+        const answers = { [input.questions?.[0]?.id ?? ""]: [input.questions?.[0]?.options?.[0]?.value ?? ""] };
+        await input.beforeAccept?.(answers);
+        return { decision: "accept", answers, responseText: null };
+      };
+    }
+
+    it("removes the server and its saved values on the person's yes, on a card only the person can answer", async () => {
+      const { rows, store } = accountSettings(async () => "ready");
+      rows.set(LIST_KEY, [stripe, otherMachineServer]);
+      const base = deps(store);
+      base.vault.set(ACCOUNT_SCOPE_ALL, MCP_SECRET_VAULT_KIND, keyId, "Bearer sk_live_x");
+      const cards: Array<Parameters<CardRequestChatInput>[0]> = [];
+
+      const result = await requestMcpServerRemoval(
+        { ...base, requestChatInput: personRemoves(cards) },
+        { chatSessionId: "chat-remove", name: "stripe" },
+      );
+
+      expect(result).toMatchObject({ name: "stripe", removed: true });
+      expect(normalizeMcpRegistry(rows.get(LIST_KEY)).map((server) => server.name)).toEqual(["other"]);
+      expect(base.vault.get(ACCOUNT_SCOPE_ALL, MCP_SECRET_VAULT_KIND, keyId)).toBeNull();
+      // An agent answering its own removal card is refused by this check (`chat.respondToInput`).
+      expect(cards).toHaveLength(1);
+      expect(isUserOnlyConsentCard(cards[0]!.providerMetadata ?? null)).toBe(true);
+    });
+
+    it("removes nothing when another machine put a different server under the name while the card was open", async () => {
+      const { rows, store } = accountSettings(async () => "ready");
+      rows.set(LIST_KEY, [stripe]);
+      const base = deps(store);
+      base.vault.set(ACCOUNT_SCOPE_ALL, MCP_SECRET_VAULT_KIND, keyId, "Bearer sk_live_x");
+      const replaced = { ...stripe, url: "https://stripe.internal.example.com/mcp" };
+
+      await expect(requestMcpServerRemoval(
+        { ...base, requestChatInput: personRemoves([], () => rows.set(LIST_KEY, [replaced])) },
+        { chatSessionId: "chat-raced", name: "stripe" },
+      )).rejects.toThrow(/changed on another machine/);
+
+      expect(normalizeMcpRegistry(rows.get(LIST_KEY))).toEqual([expect.objectContaining({ url: replaced.url })]);
+      expect(base.vault.get(ACCOUNT_SCOPE_ALL, MCP_SECRET_VAULT_KIND, keyId)).toBe("Bearer sk_live_x");
+    });
   });
 });

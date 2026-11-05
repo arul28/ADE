@@ -490,7 +490,7 @@ that grants access, or cut the connection:
   Jira credential actions (`github.setToken|clearToken|*AppUser*Auth`,
   `linear_credentials.*`, `linear_oauth.*`, `linear_agent.startInstall|uninstall`,
   `jira.connect|disconnect`, `integration_connect.request`,
-  `mcp_registry.request`, and the AI provider sign-in and API-key actions in
+  `mcp_registry.request|remove`, and the AI provider sign-in and API-key actions in
   `ai`), in both the
   `<domain.action>` and `<domain> <action>` spellings, and the raw tool doors
   `actions call|direct|tool`;

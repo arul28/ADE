@@ -516,6 +516,7 @@ ade mcp remove <connection-id>            # disconnect an app or revoke a token
 ade mcp activity --text                   # what connected apps ran here
 ade mcp servers --text                    # the MCP servers your agents get, where each is on, which values are set
 ade mcp servers add notion --reason "…"   # MCP server card in the chat; the person approves it, then presses Refresh chat
+ade mcp servers remove stripe             # a card asks the person; on yes the server and its saved values leave the account
 ade machines list --text                           # includes presence: asleep/online + battery or wall power
 ade machines rename <machine-key> "Build Mac"      # or --clear to fall back to the hostname
 ade machines remove <machine-key> --confirm REMOVE # revoke a machine and clear its Activity

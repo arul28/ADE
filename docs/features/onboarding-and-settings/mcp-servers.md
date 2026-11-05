@@ -46,6 +46,39 @@ Where the catalogue is used:
   **Add any MCP server** button and a last **Not listed?** tile. A tile's
   dialog works the same way as the card: an `oauth` server signs in first, and
   a sign-in that fails or is cancelled adds nothing.
+- Settings search, Cmd-K and `ade settings find`: each entry that is not
+  `native` is a settings entry, `integrations.mcp-<id>`, labelled by its brand
+  alone (so "MCP servers" itself still ranks first for "mcp server") and
+  owner-only like `mcp.servers`. Its anchor is the tile, `#add-mcp-<id>`
+  (`mcpCatalogueAnchor`). Landing on it opens the entry's add dialog on the
+  Integrations home, or its row on the MCP servers page once a server is that
+  entry. The MCP server card's settings button links there for a server under
+  the entry's own name; a second one (`posthog-2`) and a custom server link to
+  `mcp.servers`.
+- Brand marks: Simple Icons paths where one exists, otherwise the vendor's own
+  mark redrawn as one 24×24 path (`brand.fillRule` for marks with cut-outs).
+  No entry falls back to its letter.
+
+## Agents adding and removing servers
+
+An agent asks; the person answers on a card in the agent's own chat, in every
+permission mode. Both cards are user-only (`isUserOnlyConsentCard`): an agent
+that tries to answer one is refused. Both run on the machine that runs the chat
+and write the account-wide list (`main/services/mcp/mcpServerRequest.ts`).
+
+- `ade mcp servers add <name>` (`mcp_registry.request`): a catalogue name, a
+  server another tool has (`--import`), or one the agent describes (`--url`,
+  or the command after `--`). An agent never guesses an address: a URL whose
+  host is one word with no port (`https://blurb/mcp`) is refused, and the agent
+  is told to ask for the link or offer to search.
+- `ade mcp servers remove <name>` (`mcp_registry.remove`): only when the person
+  asked. On Remove, the server leaves the list and both off lists, and its
+  saved values and sign-in leave the vault; a refused vault cleanup is reported
+  in the receipt. If another machine put a different server under the name
+  while the card was open, nothing is removed. GitHub, Linear and Jira are
+  integrations, not servers: the agent links their settings page instead.
+
+Either way the chat keeps its tools until the person presses **Refresh chat**.
 
 ## The data
 
@@ -288,7 +321,13 @@ Decided at launch by `resolveMcpRegistryForLaunch`
 | Personal chats, side jobs, SDK chats | None. The light session profile and strict MCP chats decide their own servers. |
 
 A change reaches chats started after it. A running chat keeps what it started
-with.
+with. Its composer then shows the **Refresh chat** chip
+(`McpRefreshChip.tsx`, from `mcp_registry.chatStatus` on the chat's machine):
+"New MCP server added" when every difference is an addition, otherwise "MCP
+server(s) changed", with a "?" naming the new, changed, and removed or turned
+off servers. A server the chat's caller names itself is the caller's and is
+never reported. Pressing it restarts the agent session and keeps the
+conversation; nothing restarts on its own.
 
 A registry server whose name the provider's own config also declares is left
 to that config (`providerOwnMcpServerNames`) for Droid, Muse, Qwen, Kimi, Grok,

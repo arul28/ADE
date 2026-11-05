@@ -705,8 +705,9 @@ the URL is made: the desktop's IPC handler (`desktop`) or the
 (`api`, the CLI and agents). An agent's private secret card records
 `chat/secret_requested` once, when `project_secret.request` returns or fails,
 at the brain action that owns it. The connect card and the MCP server card do
-the same: `chat/connect_requested` at `integration_connect.request`, and
-`chat/mcp_server_requested` at `mcp_registry.request`. When an MCP server name
+the same: `chat/connect_requested` at `integration_connect.request`,
+`chat/mcp_server_requested` at `mcp_registry.request`, and
+`chat/mcp_server_remove_requested` at `mcp_registry.remove`. When an MCP server name
 is a built-in integration, the connect card runs instead and records only
 `connect_requested`. Neither carries a name, URL, value, or id;
 both are rare user decisions inside the existing `ade_feature_used` 140-per-day
