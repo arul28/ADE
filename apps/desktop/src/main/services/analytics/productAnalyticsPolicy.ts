@@ -9,6 +9,7 @@ import type { ToolErrorKind } from "../../../shared/types";
 import { JEV_FEATURES, JEV_KEY_SKIP_REASONS } from "../../../shared/types/jev";
 import { ADE_ACTION_DOMAIN_NAMES } from "../adeActions/domains";
 import { APPLE_DEVICE_ANALYTICS_OUTCOMES } from "../../../shared/types/iosSimulator";
+import { ANDROID_DEVICE_ANALYTICS_OUTCOMES } from "../../../shared/types/androidEmulator";
 import { scrubFreeText } from "../../../shared/sentry/scrub";
 import {
   PRODUCT_SURVEY_EVENTS,
@@ -291,6 +292,10 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // a 3D render filed, Apple's Duo skill added. Never the runtime, device,
   // lane, pose, angle, or image.
   "apple_device",
+  // The same for the Android panel: an SDK installed by the guided card, an
+  // app installed, a 3D render filed, an agent lease taken. Never the SDK
+  // path, AVD, package, APK, angle, lane, or image.
+  "android_device",
   // One coarse fact per capture-gesture press: whether the shot reached the
   // composer. Never the window, its title, the app it belonged to, the path the
   // PNG passed through, or the image.
@@ -623,6 +628,9 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     // The Apple panel's facts (`apple_device`), closed in
     // `APPLE_DEVICE_ANALYTICS_OUTCOMES`.
     ...APPLE_DEVICE_ANALYTICS_OUTCOMES,
+    // The Android panel's facts (`android_device`), closed in
+    // `ANDROID_DEVICE_ANALYTICS_OUTCOMES`.
+    ...ANDROID_DEVICE_ANALYTICS_OUTCOMES,
     // The three auto-resume transitions. `cancelled` above is deliberately NOT
     // reused for the fourth one: cancellation fires on ordinary user activity,
     // so it would be a typing signal rather than a workflow outcome, and it is

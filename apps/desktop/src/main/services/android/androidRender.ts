@@ -57,6 +57,8 @@ export type AndroidRenderBrokerDeps = {
   /** The lane's folder, for the proof row. */
   resolveLaneWorktreePath?: (laneId: string) => string | null;
   onFileError?: (error: unknown) => void;
+  /** A render filed as proof. */
+  onFiled?: () => void;
 };
 
 /** The spec a caller sent, checked: known angles only, at least one, no duplicates. */
@@ -188,6 +190,7 @@ export function createAndroidRenderBroker(deps: AndroidRenderBrokerDeps) {
         entry.paths.push(filePath);
         if (proofArtifactId) entry.proofArtifactIds.push(proofArtifactId);
       }
+      if (proofArtifactId) deps.onFiled?.();
       return { path: filePath, proofArtifactId };
     },
 

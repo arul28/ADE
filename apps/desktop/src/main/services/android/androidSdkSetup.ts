@@ -64,6 +64,8 @@ export type AndroidSdkSetupDeps = {
   home: string;
   /** Test seam for the repository and download; production uses `fetch`. */
   fetchImpl?: typeof fetch;
+  /** An install finished and put at least one part in place. */
+  onInstalled?: () => void;
 };
 
 /** The words the consent record keeps for where the user accepted the licences. */
@@ -164,6 +166,7 @@ export function createAndroidSdkSetup(deps: AndroidSdkSetupDeps): AndroidEmulato
         onFinished: (state: AndroidSdkInstallState) => {
           if (!started) finishedEarly = state;
           deps.logger?.info("android.sdk_install.end", { state: state.state });
+          if (state.state === "done" && state.installed.length > 0) deps.onInstalled?.();
           // An install that put nothing in place leaves the machine's SDK choice as it was.
           if (wroteSetting && installedNothing(state) && deps.settings.read() === plan.sdkRoot) deps.settings.write(previousSetting);
           // A fresh SDK changes the status every window shows (the card becomes the picker).

@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import { APPLE_DEVICE_ANALYTICS_OUTCOMES } from "../../../shared/types/iosSimulator";
+import { ANDROID_DEVICE_ANALYTICS_OUTCOMES } from "../../../shared/types/androidEmulator";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -2274,6 +2275,23 @@ describe("product analytics producers", () => {
       feature: "work",
       action: "apple_device",
       outcome: "duo_unfolded_to_135",
+    })).not.toHaveProperty("outcome");
+    // The Android panel's facts, the same way: no SDK path, AVD, package or lane.
+    for (const outcome of ANDROID_DEVICE_ANALYTICS_OUTCOMES) {
+      expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
+        feature: "work",
+        action: "android_device",
+        outcome,
+        sdk_root: "/Volumes/Dev/Android/Sdk",
+        avd_name: "ade_2b899d04_medium_phone",
+        package_name: "com.example.app",
+        lane_id: "lane-1",
+      })).toEqual({ feature: "work", action: "android_device", outcome });
+    }
+    expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
+      feature: "work",
+      action: "android_device",
+      outcome: "apk_com.example.app",
     })).not.toHaveProperty("outcome");
 
     expect(sanitizeProductAnalyticsProperties("ade_feature_used", {

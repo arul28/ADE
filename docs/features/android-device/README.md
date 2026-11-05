@@ -633,6 +633,14 @@ A stream that ends by itself (the server crashed, the system UI restarted)
 starts again on the same transport, so a viewer keeps its URL. After 3
 restarts in 60 s it stays down, and `status` says why.
 
+## Product analytics
+
+The emulator service in the brain records one coarse `ade_feature_used` fact
+(`action: "android_device"`) when the guided SDK install puts parts in place,
+an app installs, a 3D render files as proof, or an agent takes a new lease.
+Each outcome counts at most once a day. No path, AVD, package, lane or image
+goes with it. `docs/logging.md` holds the contract.
+
 ## Source file map
 
 | Path | Role |

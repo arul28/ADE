@@ -95,6 +95,8 @@ export type AndroidAgentSuiteDeps = {
   now: () => Date;
   /** A recording started or ended (by anyone): the panes read their Record button again. */
   onRecordingChanged?: (laneId: string, recording: AndroidRecording) => void;
+  /** One coarse product fact for an app installed or a new lease. */
+  captureAnalytics?: (outcome: "app_installed" | "device_leased") => void;
 };
 
 function finiteNumber(value: unknown, name: string): number {
@@ -225,6 +227,7 @@ export function createAndroidAgentSuite(deps: AndroidAgentSuiteDeps) {
       deps.assertWorkCopyLive(laneId);
       const result = await apps.install(laneId, { apkPath: args.apkPath ?? null, gradle: args.gradle ?? null });
       ui.invalidate(laneId);
+      deps.captureAnalytics?.("app_installed");
       return result;
     },
 
@@ -233,6 +236,7 @@ export function createAndroidAgentSuite(deps: AndroidAgentSuiteDeps) {
       deps.assertWorkCopyLive(laneId);
       const wantsInstall = Boolean(args.apkPath?.trim() || args.gradle);
       const install = wantsInstall ? await apps.install(laneId, { apkPath: args.apkPath ?? null, gradle: args.gradle ?? null }) : null;
+      if (install) deps.captureAnalytics?.("app_installed");
       const named = args.packageName?.trim() || null;
       const packageName = named ? assertPackageName(named) : install?.packageName ?? null;
       if (!packageName) {
@@ -497,6 +501,8 @@ export function createAndroidAgentSuite(deps: AndroidAgentSuiteDeps) {
         leases.release({ key: laneId, token: result.token });
         return { acquired: false, current: null, queued: 0, device: { avdName } };
       }
+      // A renewal or a busy answer is not a new lease.
+      if (result.acquired && !result.renewed) deps.captureAnalytics?.("device_leased");
       return { ...result, device: { avdName } };
     },
 
@@ -678,7 +684,10 @@ export function createAndroidAgentSuite(deps: AndroidAgentSuiteDeps) {
       ui.invalidate(laneId);
       const device = deps.laneDevices.get(laneId);
       if (!device || device.origin !== "attached" || device.adeInstalledPackages.length === 0) return;
-      const removed = await apps.uninstallAdePackages(laneId, device.adeInstalledPackages).catch(() => [] as string[]);
+      const removed = await apps.uninstallAdePackages(laneId, device.adeInstalledPackages).catch((error: unknown) => {
+        logger?.warn("android.release_uninstall_failed", { laneId, error: getErrorMessage(error) });
+        return [] as string[];
+      });
       logger?.info("android.release_uninstalled", { laneId, avdName: device.avdName, removed, asked: device.adeInstalledPackages.length });
     },
 

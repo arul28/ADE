@@ -564,8 +564,9 @@ class AndroidSdkInstaller {
         this.job = null;
         try {
           args.onFinished(this.state);
-        } catch {
+        } catch (error) {
           // The caller's follow-up (events, status) must not break the job's end.
+          args.deps.logger?.warn("android.sdk_install.on_finished_failed", { error: getErrorMessage(error) });
         }
       }
     };

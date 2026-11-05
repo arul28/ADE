@@ -149,12 +149,23 @@ describe("isAllowedAdeAction", () => {
     }
   });
 
-  it("allows deleting an installed simulator on the bus but never to an automation", () => {
-    expect(isAllowedAdeAction("ios_simulator", "deviceDeleteInstalled")).toBe(true);
-    expect(isUserOnlyAdeAction("ios_simulator", "deviceDeleteInstalled")).toBe(true);
-    expect(isAutomationAllowedAdeAction("ios_simulator", "deviceDeleteInstalled")).toBe(false);
+  it("allows the person's device calls on the bus but never to an agent or an automation", () => {
+    // Deleting an installed simulator, and the Android SDK install and folder
+    // (Google's licences): only the person, from the desktop app.
+    for (const [domain, action] of [
+      ["ios_simulator", "deviceDeleteInstalled"],
+      ["android_emulator", "installSdk"],
+      ["android_emulator", "cancelSdkInstall"],
+      ["android_emulator", "setSdkPath"],
+    ] as const) {
+      expect(isAllowedAdeAction(domain, action), action).toBe(true);
+      expect(isUserOnlyAdeAction(domain, action), action).toBe(true);
+      expect(isAutomationAllowedAdeAction(domain, action), action).toBe(false);
+    }
     expect(isUserOnlyAdeAction("ios_simulator", "deviceDelete")).toBe(false);
     expect(isAutomationAllowedAdeAction("ios_simulator", "deviceDelete")).toBe(true);
+    // Reading the setup plan stays open to agents.
+    expect(isUserOnlyAdeAction("android_emulator", "getSdkSetupPlan")).toBe(false);
   });
 
   it("exposes snooze/wake/settle-override and lane branch drift to generic actions", () => {

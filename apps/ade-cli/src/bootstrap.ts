@@ -191,6 +191,7 @@ import {
   captureAppControlAnalytics,
   captureMacDesktopAnalytics,
   captureAppleDeviceAnalytics,
+  captureAndroidDeviceAnalytics,
   captureUserBrowserAnalytics,
   captureChatMentionsExpandedAnalytics,
   captureClaudeHooksIgnoredAnalytics,
@@ -2305,6 +2306,7 @@ export async function createAdeRuntime(args: {
         // P1: screenshots, recordings, proof bundles and renders file
         // themselves into the calling chat's proof drawer.
         artifactFiler: computerUseArtifactBrokerService,
+        captureAnalytics: (outcome) => captureAndroidDeviceAnalytics({ analytics: productAnalyticsService, outcome }),
         logger,
         onEvent: (event) => pushEvent("runtime", { type: "android_emulator_event", event }),
       });

@@ -1,5 +1,6 @@
 import type { AgentChatTurnSettledEvent, ChatHandoffReplayOutcome } from "../chat/agentChatService";
 import type { AppleDeviceAnalyticsOutcome } from "../../../shared/types/iosSimulator";
+import type { AndroidDeviceAnalyticsOutcome } from "../../../shared/types/androidEmulator";
 import type { ChatAutoResumeAnalyticsProperties } from "../chat/chatAutoResumeCoordinator";
 import type { CrossMachineMoveOutcome } from "../chat/crossMachineHandoffOrchestrator";
 import type { MacDesktopAnalyticsProperties } from "../macDesktop/macDesktopService";
@@ -295,6 +296,24 @@ export function captureAppleDeviceAnalytics(args: {
     dedupeKey: `work_apple_device:${args.outcome}`,
     minimumIntervalMs: MAC_DESKTOP_ANALYTICS_MIN_INTERVAL_MS,
     properties: { feature: "work", action: "apple_device", outcome: args.outcome },
+  });
+}
+
+/**
+ * One coarse fact for the Android panel (`ANDROID_DEVICE_ANALYTICS_OUTCOMES`),
+ * per outcome per installation per UTC day, the same way as the Apple panel.
+ * Worst case four accepted events a day. No ceiling was raised.
+ */
+export function captureAndroidDeviceAnalytics(args: {
+  analytics: AgentTurnAnalytics;
+  outcome: AndroidDeviceAnalyticsOutcome;
+}): void {
+  args.analytics.captureInternal({
+    event: "ade_feature_used",
+    surface: "api",
+    dedupeKey: `work_android_device:${args.outcome}`,
+    minimumIntervalMs: MAC_DESKTOP_ANALYTICS_MIN_INTERVAL_MS,
+    properties: { feature: "work", action: "android_device", outcome: args.outcome },
   });
 }
 

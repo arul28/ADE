@@ -14,6 +14,19 @@ import type { AndroidEmulatorLookPreloadApi, AndroidEmulatorLookServiceApi, Andr
 import type { AndroidEmulatorSetupPreloadApi, AndroidEmulatorSetupServiceApi, AndroidSdkInstallState } from "./androidEmulatorSetup";
 import type { RuntimeDisposeReason } from "./runtimeLifecycle";
 
+/**
+ * The Android panel's product facts (`ade_feature_used`, `action: "android_device"`):
+ * whether the guided SDK install, app installs, renders and agent leases are used at all.
+ * Closed: a spelling not listed here is dropped by the analytics policy, not widened.
+ */
+export const ANDROID_DEVICE_ANALYTICS_OUTCOMES = [
+  "sdk_installed",
+  "app_installed",
+  "device_rendered",
+  "device_leased",
+] as const;
+export type AndroidDeviceAnalyticsOutcome = (typeof ANDROID_DEVICE_ANALYTICS_OUTCOMES)[number];
+
 /** Where an SDK path came from, in the order the brain tries them. */
 export type AndroidSdkSource = "ANDROID_HOME" | "ANDROID_SDK_ROOT" | "default" | "setting";
 

@@ -31,6 +31,8 @@ describe("checkRemoteAdeCommand", () => {
     ["write", "installing the ADE agent in Linear through actions", ["actions", "run", "linear_agent.startInstall"]],
     ["write", "an AI provider sign-in through actions", ["actions", "run", "ai", "cursorAuthLogin"]],
     ["write", "signing OpenCode out", ["providers", "opencode", "accounts", "rm", "acct"]],
+    ["write", "installing the Android SDK", ["android", "sdk", "install", "--folder", "/x"]],
+    ["write", "the Android SDK folder behind a flag and its value", ["android", "sdk", "--folder", "/x", "use"]],
     ["read", "creating a lane", ["lanes", "create", "--name", "x"]],
     ["read", "a flag before the subcommand", ["lanes", "--text", "create"]],
     ["read", "a write action through actions", ["actions", "run", "lane", "create"]],
@@ -62,6 +64,7 @@ describe("checkRemoteAdeCommand", () => {
     ["read", ["integrations", "status", "--text"], ["integrations", "status", "--text"]],
     ["read", ["settings", "find", "providers"], ["settings", "find", "providers"]],
     ["write", ["lanes", "create", "--name", "fix-login"], ["lanes", "create", "--name", "fix-login"]],
+    ["write", ["android", "sdk", "status"], ["android", "sdk", "status"]],
     ["write", ["action", "run", "lane.create", "--arg", "name=x"], ["action", "run", "lane.create", "--arg", "name=x"]],
   ] as const)("%s access runs %j", (scope, input, expected) => {
     const verdict = checkRemoteAdeCommand([...input], scope);

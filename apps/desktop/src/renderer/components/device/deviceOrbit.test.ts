@@ -5,7 +5,7 @@ import {
   createDeviceOrbit,
   nearestScreenFacingRotation,
   quatRotationVector,
-} from "../device/deviceOrbit";
+} from "./deviceOrbit";
 
 function axisAngle(x: number, y: number, z = 0): Quaternion {
   const axis = new Vector3(x, y, z);

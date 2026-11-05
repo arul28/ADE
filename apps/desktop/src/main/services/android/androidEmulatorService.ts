@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import type {
   AndroidAvd,
+  AndroidDeviceAnalyticsOutcome,
   AndroidEmulatorError,
   AndroidEmulatorEvent,
   AndroidEmulatorServiceApi,
@@ -132,6 +133,12 @@ type AndroidEmulatorServiceDeps = {
    * files only.
    */
   artifactFiler?: AndroidArtifactFiler | null;
+  /**
+   * One coarse product fact when a guided SDK install puts parts in place, an
+   * app installs, a render files as proof, or an agent takes a new lease
+   * (`captureAndroidDeviceAnalytics`). A failed or refused call sends nothing.
+   */
+  captureAnalytics?: (outcome: AndroidDeviceAnalyticsOutcome) => void;
 };
 
 type LaneState = {
@@ -399,6 +406,7 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
     artifactFiler: deps.artifactFiler ?? null,
     ...(deps.resolveLaneWorktreePath ? { resolveLaneWorktreePath: deps.resolveLaneWorktreePath } : {}),
     onFileError: (error) => logger?.warn("android.render_proof_failed", { error: getErrorMessage(error) }),
+    onFiled: () => deps.captureAnalytics?.("device_rendered"),
   });
 
   const emitDeviceState = async (laneId: string): Promise<AndroidLaneDeviceStatus> => {
@@ -635,6 +643,7 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
   /* ---------- P1 agent suite (`androidAgentSuite.ts`) ---------- */
 
   const agent = createAndroidAgentSuite({
+    captureAnalytics: deps.captureAnalytics,
     laneDevices: deps.laneDevices,
     requireBooted,
     readSdk: () => readSdk(),
@@ -795,6 +804,7 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
     platform,
     env,
     home,
+    onInstalled: () => deps.captureAnalytics?.("sdk_installed"),
   });
 
   const service: AndroidEmulatorServiceApi = {
