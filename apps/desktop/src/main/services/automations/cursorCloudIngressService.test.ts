@@ -227,17 +227,22 @@ describe("cursorCloudIngressService", () => {
     );
   });
 
-  it("re-registers its stored secret when the relay no longer knows it", async () => {
+  it("re-registers its stored secret once when the relay no longer knows it, then asks again", async () => {
     const calls: Array<{ path: string; secret: string | null }> = [];
+    let registered = false;
     const fetchImpl = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = new URL(String(input)).pathname;
       calls.push({
         path,
         secret: path === "/cursor/register" ? String((JSON.parse(String(init?.body)) as { secret: string }).secret) : null,
       });
-      return path === "/cursor/events"
-        ? new Response(JSON.stringify({ ok: false, error: "unauthorized" }), { status: 401 })
-        : new Response(JSON.stringify({ ok: true }), { status: 200 });
+      if (path === "/cursor/register") {
+        registered = true;
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      }
+      return registered
+        ? new Response(JSON.stringify({ events: [], nextCursor: null, cursorExpired: false }), { status: 200 })
+        : new Response(JSON.stringify({ ok: false, error: "unauthorized" }), { status: 401 });
     }) as unknown as typeof fetch;
     const harness = createHarness({ fetchImpl, wantsEvents: () => true });
     configureReady(harness, "stored-webhook-secret-of-32-chars-x");
@@ -247,9 +252,36 @@ describe("cursorCloudIngressService", () => {
     expect(calls).toEqual([
       { path: "/cursor/events", secret: null },
       { path: "/cursor/register", secret: "stored-webhook-secret-of-32-chars-x" },
+      { path: "/cursor/events", secret: null },
     ]);
     expect(harness.deps.logger.warn).not.toHaveBeenCalled();
     expect(harness.service.getStatus()).toEqual(expect.objectContaining({ state: "ready", lastError: null }));
+  });
+
+  it("stops polling with an error when the relay still refuses after re-registering", async () => {
+    const paths: string[] = [];
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      const path = new URL(String(input)).pathname;
+      paths.push(path);
+      return path === "/cursor/events"
+        ? new Response(JSON.stringify({ ok: false, error: "unauthorized" }), { status: 401 })
+        : new Response(JSON.stringify({ ok: true }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const harness = createHarness({ fetchImpl, wantsEvents: () => true });
+    configureReady(harness, "stored-webhook-secret-of-32-chars-x");
+
+    await harness.service.pollNow();
+    expect(paths).toEqual(["/cursor/events", "/cursor/register", "/cursor/events"]);
+    expect(harness.service.getStatus()).toEqual(expect.objectContaining({
+      state: "error",
+      lastError: expect.any(String),
+    }));
+
+    // Paused: later polls send nothing and the error stays visible.
+    await harness.service.pollNow();
+    await harness.service.pollNow();
+    expect(paths).toHaveLength(3);
+    expect(harness.service.getStatus().state).toBe("error");
     expect(harness.dispatched).toHaveLength(0);
   });
 
