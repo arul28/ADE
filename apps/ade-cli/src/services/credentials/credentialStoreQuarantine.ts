@@ -88,6 +88,20 @@ export function readCredentialStoreQuarantine(
   }
 }
 
+/** {@link readCredentialStoreQuarantine} without blocking the event loop. */
+export async function readCredentialStoreQuarantineAsync(
+  credentialsPath: string,
+): Promise<CredentialStoreQuarantineRecord | null> {
+  try {
+    const parsed = JSON.parse(
+      await fs.promises.readFile(quarantineMarkerPath(credentialsPath), "utf8"),
+    ) as unknown;
+    return isQuarantineRecord(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Copies the unreadable ciphertext to a timestamped sibling and records a marker
  * beside it. The caller holds the store's lock and is expected to replace the

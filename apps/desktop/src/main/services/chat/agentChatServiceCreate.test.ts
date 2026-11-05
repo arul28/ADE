@@ -402,10 +402,12 @@ describe("createAgentChatService", () => {
       usage: expect.objectContaining({ inputTokens: expect.any(Number), outputTokens: expect.any(Number) }),
       costUsd: null,
       durationMs: expect.any(Number),
+      errorCategory: null,
     });
     expect(Object.keys(settled).sort()).toEqual([
       "costUsd",
       "durationMs",
+      "errorCategory",
       "model",
       "provider",
       "sessionId",
@@ -1622,8 +1624,10 @@ describe("createAgentChatService", () => {
         setPermissionMode: vi.fn().mockResolvedValue(undefined),
       } as any);
 
+      const onTurnSettled = vi.fn();
       const { service } = createService({
         onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+        onTurnSettled,
       });
       const session = await service.createSession({
         laneId: "lane-1",
@@ -1657,6 +1661,8 @@ describe("createAgentChatService", () => {
 
       const failedDone = events.filter((event) => event.event.type === "done").at(-1);
       expect((failedDone!.event as any).status).toBe("failed");
+      // Analytics learn the sign-in cause, not the raw error's category.
+      expect(onTurnSettled.mock.calls.at(-1)?.[0]).toMatchObject({ status: "failed", errorCategory: "agent_cli_auth" });
     });
 
     // A sign-in read that hit a keychain that did not answer is not a sign-out.

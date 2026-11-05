@@ -21,6 +21,13 @@ import path from "node:path";
 import type { AdeAccountLocalMachineIdentity } from "../../../shared/types";
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import { createSyncCloudRelayStore } from "../../../../../ade-cli/src/services/sync/syncCloudRelayStore";
+import {
+  readMachineIdFile,
+  rememberMachineIdFile,
+} from "../../../../../ade-cli/src/services/sync/machineIdFile";
+
+/** Secrets directories whose device id this process has already made owner-only. */
+const preparedSecretsDirs = new Set<string>();
 
 /**
  * "Someone else created this file first" — the outcome that means re-read, not
@@ -55,37 +62,47 @@ export function getOrCreateLocalAccountMachineIdentity(args: {
   const platform = args.platform ?? process.platform;
   const secretsDir = args.secretsDir ?? resolveMachineAdeLayout().secretsDir;
   const deviceIdPath = path.join(secretsDir, "sync-device-id");
-  // Owner-only: this directory holds the sync device id and the cloud relay
-  // machine identity. `mode` applies only to directories this call creates, so
-  // an existing directory keeps whatever mode it already had, and `recursive`
-  // still makes a repeat call a no-op.
-  fs.mkdirSync(secretsDir, { recursive: true, mode: 0o700 });
+  // The brain asks for this identity on hot paths, so after the first call in
+  // a process both halves come from memory (see `FileStampedMemo`) and the
+  // directory and mode fix-ups below are not repeated.
+  const prepared = preparedSecretsDirs.has(secretsDir);
+  if (!prepared) {
+    // Owner-only: this directory holds the sync device id and the cloud relay
+    // machine identity. `mode` applies only to directories this call creates, so
+    // an existing directory keeps whatever mode it already had, and `recursive`
+    // still makes a repeat call a no-op.
+    fs.mkdirSync(secretsDir, { recursive: true, mode: 0o700 });
+  }
 
-  const readDeviceId = (): string | null => {
-    try {
-      const value = fs.readFileSync(deviceIdPath, "utf8").trim();
-      return value || null;
-    } catch {
-      return null;
-    }
-  };
-
-  let deviceId = readDeviceId();
+  let deviceId = readMachineIdFile(deviceIdPath);
   if (!deviceId) {
     const candidate = (args.randomUUID ?? nodeRandomUUID)();
+    // The folder may have been removed since this process first made it.
+    fs.mkdirSync(secretsDir, { recursive: true, mode: 0o700 });
     try {
       fs.writeFileSync(deviceIdPath, `${candidate}\n`, { flag: "wx", mode: 0o600 });
+      rememberMachineIdFile(deviceIdPath, candidate);
       deviceId = candidate;
     } catch (error) {
       if (!isCreateContention(error, platform)) throw error;
-      deviceId = readDeviceId();
+      // Another process created it first: read its id from the file, not the
+      // memo, which still holds "missing".
+      try {
+        deviceId = fs.readFileSync(deviceIdPath, "utf8").trim() || null;
+      } catch {
+        deviceId = null;
+      }
+      if (deviceId) rememberMachineIdFile(deviceIdPath, deviceId);
     }
   }
   if (!deviceId) throw new Error("Local ADE device identity is unavailable.");
-  try {
-    fs.chmodSync(deviceIdPath, 0o600);
-  } catch {
-    // Best-effort on filesystems without POSIX mode support.
+  if (!prepared) {
+    try {
+      fs.chmodSync(deviceIdPath, 0o600);
+    } catch {
+      // Best-effort on filesystems without POSIX mode support.
+    }
+    preparedSecretsDirs.add(secretsDir);
   }
 
   const machineCloudRelayStore = createSyncCloudRelayStore({

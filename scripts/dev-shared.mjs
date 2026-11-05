@@ -330,6 +330,8 @@ export async function buildRuntimeCli(skipRuntimeBuild = false) {
   process.stdout.write("[ade] building runtime CLI\n");
   await runNpm(["--prefix", "apps/ade-cli", "run", "build"], {
     ADE_CLI_VERSION: resolveDevAppVersion(),
+    // Keeps this bundle's Sentry client off, wherever it is copied to (`apps/ade-cli/tsup.config.ts`).
+    ADE_CLI_DEV_BUILD: "1",
   });
 }
 

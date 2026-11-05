@@ -24,6 +24,13 @@ export type SyncHostStartupLoopDeps = {
   // same-channel sibling; everything else waits, so two recovering brains can
   // never kill each other in a loop.
   getServiceMainPid?: () => number | null;
+  /**
+   * Forget the failures `startSyncHost` is holding back, so the attempt after
+   * a takeover runs for real. The project scope registry answers a backed-off
+   * attempt with the failure it recorded, at once and without waiting on
+   * anything; after a takeover that failure names the brain just stopped.
+   */
+  clearHeldFailures?: () => void;
   kill?: (pid: number, signal: NodeJS.Signals | number) => void;
   pidAlive?: (pid: number) => boolean;
   sleep?: (ms: number) => Promise<void>;
@@ -357,6 +364,12 @@ export async function runSyncHostStartupLoop(deps: SyncHostStartupLoopDeps): Pro
       logEvent("sync.host_start_failed", { ...meta, message });
     },
   });
+  // The owner the previous pass took over from. The same owner again on the
+  // very next pass gets the ordinary wait, never a second takeover at once:
+  // retrying straight after a takeover with nothing to wait on spun this
+  // loop 19,503 times in 58s on 2026-11-04 and stalled the brain's event
+  // loop for up to 27s.
+  let tookOverPid: number | null = null;
   // The attempt that is still running, when the previous wait on it timed out.
   // Awaited again rather than replaced, so two starts never race for the lease.
   let pendingAttempt: Promise<{ ok: true } | { ok: false; error: unknown }> | null = null;
@@ -404,6 +417,8 @@ export async function runSyncHostStartupLoop(deps: SyncHostStartupLoopDeps): Pro
       return;
     } catch (error) {
       attempt += 1;
+      const justTookOverPid: number | null = tookOverPid;
+      tookOverPid = null;
       if (error instanceof SyncHostStartTimeoutError) {
         // Still running: no sleep, the next pass waits on the same attempt.
         lastFailureSignature = error.name;
@@ -486,6 +501,7 @@ export async function runSyncHostStartupLoop(deps: SyncHostStartupLoopDeps): Pro
         const serviceMainPid = deps.getServiceMainPid?.() ?? null;
         if (
           owner.pid !== process.pid
+          && owner.pid !== justTookOverPid
           && serviceMainPid === process.pid
           && sameChannelOwner
         ) {
@@ -507,11 +523,15 @@ export async function runSyncHostStartupLoop(deps: SyncHostStartupLoopDeps): Pro
           });
           if (outcome === "not-proven" || outcome === "failed") {
             // The stale owner is still running and was not proven to be the brain
-            // recorded in the lock. Retry on the next attempt; do not claim the takeover.
+            // recorded in the lock. Do not claim the takeover: the held failure
+            // still describes a live owner, so keep it and wait like any failure.
             deps.log(`ADE brain could not verify the stale ${owner.appName ?? "ADE"} brain (pid ${owner.pid}); it was left running.`);
             logEvent("sync.host_takeover_unverified", { attempt, ownerPid: owner.pid });
+          } else {
+            tookOverPid = owner.pid;
+            deps.clearHeldFailures?.();
+            continue;
           }
-          continue;
         }
       }
       if (deps.maxAttempts != null && attempt >= deps.maxAttempts) return;

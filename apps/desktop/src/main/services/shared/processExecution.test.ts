@@ -313,6 +313,7 @@ function setPlatform(value: NodeJS.Platform): void {
 describe("terminateProcessTree", () => {
   afterEach(() => {
     spawnSyncMock.mockReset();
+    execFileMock.mockReset();
     setPlatform(originalPlatform);
   });
 
@@ -338,64 +339,32 @@ describe("terminateProcessTree", () => {
 
   // A zero exit from taskkill means the kill was dispatched, not that every
   // descendant is gone, so it must not stand in for signaling the child we
-  // hold. Both run: the tree kill reaches grandchildren that child.kill (a
-  // TerminateProcess on the leader alone) never would, and the direct kill
-  // covers a taskkill that reported success without acting.
-  it("on Windows, calls taskkill for a live child and still calls child.kill on success", () => {
+  // hold. Both run, in order: once the leader is gone `taskkill /T` can no
+  // longer find its descendants, so child.kill waits for taskkill to finish.
+  // The wait is asynchronous (a synchronous taskkill froze the brain for
+  // seconds), so the call answers "under way" for a live child.
+  it.each([
+    { outcome: "succeeds", error: null, failureReports: 0 },
+    { outcome: "fails", error: Object.assign(new Error("Command failed"), { code: 128 }), failureReports: 1 },
+  ])("on Windows, kills the tree first and the leader only after taskkill $outcome", async ({ error, failureReports }) => {
     setPlatform("win32");
-    spawnSyncMock.mockReturnValueOnce({ status: 0, stdout: "", stderr: "", error: null });
-    const child = fakeChild();
-
-    expect(terminateProcessTree(child)).toBe(true);
-    expect(spawnSyncMock).toHaveBeenCalledTimes(1);
-    expect(spawnSyncMock.mock.calls[0]![1]).toEqual(["/PID", "4321", "/T", "/F"]);
-    expect(child.kill).toHaveBeenCalledWith("SIGTERM");
-  });
-
-  it("on Windows, reports success when taskkill worked even if child.kill finds it already gone", () => {
-    setPlatform("win32");
-    spawnSyncMock.mockReturnValueOnce({ status: 0, stdout: "", stderr: "", error: null });
-    // taskkill /T /F already reaped the tree, so the leader is gone by now.
-    const child = fakeChild({ kill: vi.fn(() => false) });
-
-    expect(terminateProcessTree(child)).toBe(true);
-  });
-
-  it("on Windows, reports success when taskkill fails but child.kill throws nothing", () => {
-    setPlatform("win32");
-    // taskkill without /F exits 128 against a windowless console process.
-    spawnSyncMock.mockReturnValueOnce({ status: 128, stdout: "", stderr: "", error: null });
-    const child = fakeChild({ kill: vi.fn(() => true) });
-
-    expect(terminateProcessTree(child, "SIGTERM")).toBe(true);
-  });
-
-  it("on Windows, reports failure only when both the tree kill and child.kill fail", () => {
-    setPlatform("win32");
-    spawnSyncMock.mockReturnValueOnce({ status: 128, stdout: "", stderr: "", error: null });
-    const child = fakeChild({
-      kill: vi.fn(() => {
-        throw new Error("ESRCH");
-      }),
-    });
-
-    expect(terminateProcessTree(child, "SIGTERM")).toBe(false);
-  });
-
-  it("on Windows, falls back to child.kill when taskkill fails", () => {
-    setPlatform("win32");
-    spawnSyncMock.mockReturnValueOnce({
-      status: 1,
-      stdout: "",
-      stderr: Buffer.from("err", "utf8"),
-      error: null,
+    let finishTaskkill: (() => void) | null = null;
+    execFileMock.mockImplementationOnce((...args: unknown[]) => {
+      const done = args.at(-1) as (error: Error | null, stdout: string, stderr: string) => void;
+      finishTaskkill = () => done(error, "", "");
     });
     const child = fakeChild();
     const failure = vi.fn();
 
     expect(terminateProcessTree(child, "SIGTERM", failure)).toBe(true);
-    expect(failure).toHaveBeenCalledTimes(1);
-    expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+    expect(execFileMock.mock.calls[0]![1]).toEqual(["/PID", "4321", "/T", "/F"]);
+    expect(spawnSyncMock).not.toHaveBeenCalled();
+    expect(child.kill).not.toHaveBeenCalled();
+
+    expect(finishTaskkill, "taskkill was started").not.toBeNull();
+    finishTaskkill!();
+    await vi.waitFor(() => expect(child.kill).toHaveBeenCalledWith("SIGTERM"));
+    expect(failure).toHaveBeenCalledTimes(failureReports);
   });
 
   it("on Windows, skips taskkill entirely when the child has already exited", () => {
@@ -403,7 +372,7 @@ describe("terminateProcessTree", () => {
     const child = fakeChild({ exitCode: 0 });
 
     expect(terminateProcessTree(child)).toBe(false);
-    expect(spawnSyncMock).not.toHaveBeenCalled();
+    expect(execFileMock).not.toHaveBeenCalled();
     expect(child.kill).not.toHaveBeenCalled();
   });
 
@@ -412,7 +381,7 @@ describe("terminateProcessTree", () => {
     const child = fakeChild({ signalCode: "SIGTERM" });
 
     expect(terminateProcessTree(child)).toBe(false);
-    expect(spawnSyncMock).not.toHaveBeenCalled();
+    expect(execFileMock).not.toHaveBeenCalled();
     expect(child.kill).not.toHaveBeenCalled();
   });
 
@@ -421,7 +390,7 @@ describe("terminateProcessTree", () => {
     const child = fakeChild({ pid: undefined });
 
     expect(terminateProcessTree(child, "SIGKILL")).toBe(true);
-    expect(spawnSyncMock).not.toHaveBeenCalled();
+    expect(execFileMock).not.toHaveBeenCalled();
     expect(child.kill).toHaveBeenCalledWith("SIGKILL");
   });
 });

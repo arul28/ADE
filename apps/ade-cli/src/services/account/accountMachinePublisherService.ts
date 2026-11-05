@@ -1720,8 +1720,10 @@ export function createAccountMachinePublisherService(options: {
       const slow = Object.values(legDurations).some(
         (duration) => duration != null && duration > SLOW_PUBLISH_LEG_MS,
       );
+      // A publish that went through is a success however slow; the leg times
+      // are in the local log, never a Sentry Log of their own.
       if (slow) {
-        options.logger?.warn("account.machine_publish_ok", logMeta);
+        options.logger?.info?.("account.machine_publish_ok", { ...logMeta, slow: true });
       } else if (successfulPublishCount === 1 || successfulPublishCount % PUBLISH_INFO_INTERVAL === 0) {
         options.logger?.info?.("account.machine_publish_ok", logMeta);
       } else {

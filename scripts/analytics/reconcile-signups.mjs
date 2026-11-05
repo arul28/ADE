@@ -13,8 +13,17 @@
 // Reads only ids, created_at, the OAuth provider name and the `ade_internal`
 // metadata flag from Clerk. Never prints a secret, an email, or a Clerk user id.
 //
+// `--sync-internal` keeps ADE's own accounts out of the numbers instead: it
+// adds every distinct id of each `ade_internal` account (the account id and
+// each install that signed in to it) to the "Mark ADE team accounts internal"
+// transformation, and flags their persons `is_internal`. A transformation
+// marks events as PostHog ingests them, so it cannot mark what came in before
+// an id was on its list. The sync only adds ids; take an account off the list
+// in PostHog by hand.
+//
 // Exit codes: 0 ok; 1 a check run found more missing sign-ups than
-// --max-missing; 2 a request or argument failed.
+// --max-missing, or internal ids or persons not marked yet; 2 a request or
+// argument failed.
 import { createHash } from "node:crypto";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
@@ -28,17 +37,24 @@ const POSTHOG_PAGE_SIZE = 5_000;
 const CAPTURE_BATCH_SIZE = 100;
 const REQUEST_TIMEOUT_MS = 30_000;
 const SIGNUP_METHODS = new Set(["google", "github", "apple", "microsoft", "gitlab", "discord", "linear"]);
+const INTERNAL_TRANSFORMATION_NAME = "Mark ADE team accounts internal";
+const INTERNAL_INPUT = "internal_distinct_ids";
+// Account ids are `ade_user_<hex>`, installs `ade_<hex>` or an iOS UUID.
+const SAFE_DISTINCT_ID = /^[A-Za-z0-9_-]+$/;
 
 function usage() {
   process.stdout.write(
     [
       "Usage: node scripts/analytics/reconcile-signups.mjs [--apply] [--since <ISO date>] [--json] [--max-missing <n>]",
+      "       node scripts/analytics/reconcile-signups.mjs --sync-internal [--apply] [--json]",
       "",
-      "Compares Clerk accounts with PostHog `ade_signed_up` events.",
+      "Compares Clerk accounts with PostHog `ade_signed_up` events. With --sync-internal,",
+      "checks that every distinct id of an `ade_internal` account is marked internal.",
       "",
       "Environment:",
       "  CLERK_SECRET_KEY           Clerk Backend API key of the production instance (sk_live_...).",
-      "  POSTHOG_PERSONAL_API_KEY   PostHog personal API key with query:read.",
+      "  POSTHOG_PERSONAL_API_KEY   PostHog personal API key with query:read (and hog_function:read",
+      "                             and hog_function:write for --sync-internal).",
       "  POSTHOG_PROJECT_TOKEN      Public project token (phc_...), needed only with --apply.",
       `  POSTHOG_PROJECT_ID         Default ${DEFAULT_PROJECT_ID}.`,
       `  POSTHOG_HOST               Query origin, default ${DEFAULT_QUERY_HOST}.`,
@@ -49,6 +65,8 @@ function usage() {
       "  --since <ISO>      Only accounts created (and events timestamped) at or after this time.",
       "  --json             Print the report as JSON.",
       "  --max-missing <n>  A check run exits 1 when more than n sign-ups are missing (default 0).",
+      "  --sync-internal    Check, and with --apply add, internal accounts' ids in the transformation",
+      "                     and the `is_internal` flag on their persons.",
       "",
     ].join("\n"),
   );
@@ -57,7 +75,7 @@ function usage() {
 class UsageError extends Error {}
 
 export function parseArgs(argv) {
-  const options = { apply: false, json: false, since: null, maxMissing: 0, help: false };
+  const options = { apply: false, json: false, since: null, maxMissing: 0, syncInternal: false, help: false };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     const value = () => {
@@ -69,6 +87,7 @@ export function parseArgs(argv) {
     if (arg === "--help" || arg === "-h") options.help = true;
     else if (arg === "--apply") options.apply = true;
     else if (arg === "--json") options.json = true;
+    else if (arg === "--sync-internal") options.syncInternal = true;
     else if (arg === "--since") {
       const raw = value();
       const ms = Date.parse(raw);
@@ -80,6 +99,9 @@ export function parseArgs(argv) {
       if (!Number.isInteger(count) || count < 0) throw new UsageError(`--max-missing must be a whole number: ${raw}`);
       options.maxMissing = count;
     } else throw new UsageError(`Unknown argument: ${arg}`);
+  }
+  if (options.syncInternal && (options.since || options.maxMissing !== 0)) {
+    throw new UsageError("--sync-internal takes only --apply and --json");
   }
   return options;
 }
@@ -234,7 +256,7 @@ export function backfillEvent(user) {
   };
 }
 
-async function sendBackfill(env, events) {
+async function sendBackfill(env, events, { historical = true } = {}) {
   let sent = 0;
   for (let index = 0; index < events.length; index += CAPTURE_BATCH_SIZE) {
     const batch = events.slice(index, index + CAPTURE_BATCH_SIZE);
@@ -244,7 +266,7 @@ async function sendBackfill(env, events) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         // `historical_migration` routes old timestamps through PostHog's import path.
-        body: JSON.stringify({ api_key: env.projectToken, historical_migration: true, batch }),
+        body: JSON.stringify({ api_key: env.projectToken, ...(historical ? { historical_migration: true } : {}), batch }),
       },
       "PostHog capture",
     );
@@ -254,6 +276,122 @@ async function sendBackfill(env, events) {
     sent += batch.length;
   }
   return sent;
+}
+
+const posthogHeaders = (env) => ({ Authorization: `Bearer ${env.personalKey}`, "Content-Type": "application/json" });
+
+/**
+ * Every distinct id PostHog has merged into the persons of these accounts,
+ * and the accounts whose person is not flagged `is_internal` (or has no
+ * person yet).
+ */
+async function internalPersonIds(env, accountIds) {
+  if (accountIds.length === 0) return { distinctIds: [], unflagged: [] };
+  const list = accountIds.map((id) => `'${id}'`).join(", ");
+  const rows = await hogql(
+    env,
+    "SELECT pdi.distinct_id, any(toString(p.properties.is_internal)) FROM person_distinct_ids AS pdi "
+      + "JOIN persons AS p ON p.id = pdi.person_id "
+      + `WHERE pdi.person_id IN (SELECT person_id FROM person_distinct_ids WHERE distinct_id IN (${list})) `
+      + `GROUP BY pdi.distinct_id ORDER BY pdi.distinct_id LIMIT ${POSTHOG_PAGE_SIZE}`,
+  );
+  if (rows.length >= POSTHOG_PAGE_SIZE) throw new Error("PostHog query: too many internal distinct ids for one page");
+  const flagged = new Map(rows.map(([distinctId, value]) => [String(distinctId), String(value).toLowerCase() === "true"]));
+  const distinctIds = [...flagged.keys()];
+  if (!distinctIds.every((id) => SAFE_DISTINCT_ID.test(id))) throw new Error("PostHog query: unexpected distinct id");
+  return { distinctIds, unflagged: accountIds.filter((id) => flagged.get(id) !== true) };
+}
+
+async function internalTransformation(env) {
+  const base = `${env.queryHost}/api/projects/${env.projectId}/hog_functions/`;
+  const page = await request(`${base}?type=transformation&limit=100`, { headers: posthogHeaders(env) }, "PostHog transformations");
+  const found = (Array.isArray(page?.results) ? page.results : [])
+    .find((item) => item?.name === INTERNAL_TRANSFORMATION_NAME && item.deleted !== true);
+  if (!found || !/^[0-9a-f-]{36}$/i.test(String(found.id))) {
+    throw new Error(`PostHog transformations: "${INTERNAL_TRANSFORMATION_NAME}" not found`);
+  }
+  const detail = await request(`${base}${found.id}/`, { headers: posthogHeaders(env) }, "PostHog transformation");
+  const value = detail?.inputs?.[INTERNAL_INPUT]?.value;
+  // A missing list would read as empty, and an --apply would then drop the ids already on it.
+  if (!Array.isArray(value)) throw new Error(`PostHog transformation: "${INTERNAL_INPUT}" is not a list`);
+  return { url: `${base}${found.id}/`, enabled: detail?.enabled === true, listed: value.map(String) };
+}
+
+/** A `$set` from each account, so its person says `is_internal` too (person filters, replay). */
+export function internalFlagEvent(distinctId) {
+  return {
+    event: "$set",
+    distinct_id: distinctId,
+    properties: { is_internal: true, $set: { is_internal: true }, $geoip_disable: true },
+  };
+}
+
+export function buildInternalReport({ accountIds, distinctIds, unflagged, transformation }) {
+  const listed = new Set(transformation.listed);
+  return {
+    accounts: accountIds.length,
+    distinctIds: distinctIds.length,
+    listed: listed.size,
+    transformationEnabled: transformation.enabled,
+    notListed: distinctIds.filter((id) => !listed.has(id)),
+    unflagged,
+  };
+}
+
+export function formatInternalReport(report, { applied }) {
+  const lines = [
+    "## Internal accounts",
+    "",
+    "| | Count |",
+    "|---|---:|",
+    `| Accounts flagged \`ade_internal\` in Clerk | ${report.accounts} |`,
+    `| Their distinct ids (accounts and the installs signed in to them) | ${report.distinctIds} |`,
+    `| Ids on the transformation's list | ${report.listed} |`,
+    `| Ids not on the list | ${report.notListed.length} |`,
+    `| Persons without \`is_internal\` | ${report.unflagged.length} |`,
+    `| Transformation enabled | ${report.transformationEnabled ? "yes" : "**no**"} |`,
+  ];
+  if (applied) lines.push(`| Added to the list this run | ${applied.listed} |`, `| Persons flagged this run | ${applied.flagged} |`);
+  lines.push("");
+  return lines.join("\n");
+}
+
+async function syncInternal(env, users, options) {
+  const accountIds = users.filter((user) => user.internal).map((user) => accountDistinctId(user.id));
+  const [{ distinctIds, unflagged }, transformation] = await Promise.all([
+    internalPersonIds(env, accountIds),
+    internalTransformation(env),
+  ]);
+  // An account with no person yet still goes on the list, so its first events are marked.
+  const known = [...new Set([...accountIds, ...distinctIds])].sort();
+  const report = buildInternalReport({ accountIds, distinctIds: known, unflagged, transformation });
+
+  let applied = null;
+  if (options.apply) {
+    applied = { listed: 0, flagged: 0 };
+    if (report.notListed.length > 0) {
+      const value = [...new Set([...transformation.listed, ...report.notListed])].sort();
+      await request(
+        transformation.url,
+        { method: "PATCH", headers: posthogHeaders(env), body: JSON.stringify({ inputs: { [INTERNAL_INPUT]: { value } } }) },
+        "PostHog transformation update",
+      );
+      applied.listed = report.notListed.length;
+    }
+    if (report.unflagged.length > 0) applied.flagged = await sendBackfill(env, report.unflagged.map(internalFlagEvent), { historical: false });
+  }
+
+  if (options.json) process.stdout.write(`${JSON.stringify({ ...report, applied }, null, 2)}\n`);
+  else process.stdout.write(formatInternalReport(report, { applied }));
+  if (!report.transformationEnabled) {
+    process.stderr.write(`The "${INTERNAL_TRANSFORMATION_NAME}" transformation is disabled.\n`);
+    return 1;
+  }
+  if (!options.apply && (report.notListed.length > 0 || report.unflagged.length > 0)) {
+    process.stderr.write(`${report.notListed.length} internal id(s) not on the list, ${report.unflagged.length} person(s) not flagged.\n`);
+    return 1;
+  }
+  return 0;
 }
 
 const monthOf = (ms) => new Date(ms).toISOString().slice(0, 7);
@@ -342,6 +480,7 @@ export async function main(argv = process.argv.slice(2)) {
   if (!/^\d+$/.test(env.projectId)) throw new UsageError("POSTHOG_PROJECT_ID must be numeric");
 
   const users = await listClerkUsers(env.clerkKey);
+  if (options.syncInternal) return syncInternal(env, users, options);
   const [signups, deletions] = await Promise.all([
     eventCountsByDistinctId(env, "ade_signed_up", options.since),
     eventCountsByDistinctId(env, "ade_account_deleted", null),

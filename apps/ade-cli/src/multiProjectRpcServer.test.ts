@@ -26,6 +26,7 @@ import {
 } from "./services/sync/brainMachineSyncStores";
 import { createSyncCloudRelayStore } from "./services/sync/syncCloudRelayStore";
 import { createSyncPinStore } from "./services/sync/syncPinStore";
+import { SyncHostSingletonConflictError } from "./services/sync/syncHostSingleton";
 import {
   createSyncAccountDirectoryHealth,
   type SyncRoleSnapshot,
@@ -2712,6 +2713,56 @@ describe("multi-project RPC server", () => {
     expect(scopeRegistry.resolveActiveSyncHost).toHaveBeenCalledTimes(1);
     expect(scopeRegistry.switchSyncHost).not.toHaveBeenCalled();
     expect(scopeRegistry.ensureSyncHost).not.toHaveBeenCalled();
+
+    handler.dispose();
+  });
+
+  // ADE-DESKTOP-8: the Phone tab got "Another ADE brain is already hosting mobile sync" back
+  // from a read, because the read re-entered host activation that another brain blocked.
+  it.each([
+    ["sync.listDevices", [{ deviceId: "iphone" }]],
+    ["sync.getPin", { pin: "123456" }],
+    ["sync.getRuntimeName", { runtimeName: "Studio Mac" }],
+    ["sync.getCloudRelayStatus", { state: "connected" }],
+    ["sync.getRequireDpop", { requireDpop: true }],
+  ])("answers %s from the scope that last tried to host while activation is blocked", async (method, expected) => {
+    const { registry, projectRoot } = createRegistry();
+    const project = registry.add(projectRoot);
+    const syncService = {
+      listDevices: vi.fn(async () => [{ deviceId: "iphone" }]),
+      getPin: vi.fn(() => "123456"),
+      getRuntimeName: vi.fn(() => "Studio Mac"),
+      getCloudRelayStatus: vi.fn(async () => ({ state: "connected" })),
+      getRequireDpop: vi.fn(async () => ({ requireDpop: true })),
+    };
+    const scope = { registryProjectId: project.projectId, record: project, runtime: { ...makeRuntime("failing"), syncService }, dispose: vi.fn() };
+    const blocked = new SyncHostSingletonConflictError({
+      reason: "lock",
+      owner: {
+        id: "stray", pid: 68222, port: 8801, appName: "ADE", packageChannel: null, adeHome: null,
+        serviceName: null, socketPath: null, projectRoot: null, commandLine: null,
+        quitCommand: "/bin/kill 68222", createdAt: "2026-11-04T22:34:00.000Z", updatedAt: "2026-11-04T22:34:00.000Z",
+      },
+    });
+    const scopeRegistry = {
+      get: vi.fn(),
+      getActiveSyncHostProjectId: vi.fn(() => null),
+      getMostRecentFailingSyncHostProjectId: vi.fn(() => project.projectId),
+      getIfReady: vi.fn((id: string) => id === project.projectId ? scope : null),
+      ensureSyncHost: vi.fn(async () => { throw blocked; }),
+      switchSyncHost: vi.fn(async () => { throw blocked; }),
+      resolveActiveSyncHost: vi.fn(async () => { throw blocked; }),
+      dispose: vi.fn(),
+      disposeAll: vi.fn(),
+    } as unknown as ProjectScopeRegistry;
+    const handler = createMultiProjectRpcRequestHandler({
+      serverVersion: "test",
+      projectRegistry: registry,
+      scopeRegistry,
+    });
+    await handler({ jsonrpc: "2.0", id: 1, method: "ade/initialize", params: {} });
+
+    expect(await handler({ jsonrpc: "2.0", id: 2, method, params: {} })).toEqual(expected);
 
     handler.dispose();
   });

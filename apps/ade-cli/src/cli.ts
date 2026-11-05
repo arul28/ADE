@@ -27975,8 +27975,16 @@ async function runServe(
   // not this machine's brain, a runtime on another endpoint is someone's
   // manual run, and a brain the desktop app started is killed outright each
   // time the app quits (`taskkill /F` on Windows), which would read as a
-  // crash; the app records its own brain's exits.
-  if (!embedded && readRuntimeParentPid() == null && isMachineEndpointName(serveSocketPath, machineRuntimeNames)) {
+  // crash; the app records its own brain's exits. A hand-run `ade serve` on
+  // the machine endpoint is not the service either: on 2026-11-04 five of
+  // them, started minutes apart while no supervisor ran, were reported as a
+  // restart loop.
+  if (
+    !embedded
+    && readRuntimeParentPid() == null
+    && isMachineEndpointName(serveSocketPath, machineRuntimeNames)
+    && (await import("./serviceManager")).isStartedByRuntimeService() !== false
+  ) {
     const bundlePath = typeof __filename === "string" ? __filename : process.argv[1] ?? "";
     startBrainRestartLoopWatch({
       runtimeDir: path.dirname(lastFailurePathForMachine()),
@@ -28716,6 +28724,8 @@ async function runServe(
   // Wired inside the `syncEnabled` block below (that is where the singleton
   // module is imported); absent means "unknown owner", never a guessed one.
   let readCompetingSyncHostOwner: (() => CompetingSyncHostOwner | null) | null = null;
+  /** The owner read fresh, for an answer a person acts on (reconnect). */
+  let readCompetingSyncHostOwnerFresh: (() => Promise<CompetingSyncHostOwner | null>) | null = null;
   // When this brain first found no sync host on the machine. Carried as
   // `failingSinceMs` on the synthesized health so the desktop can tell a
   // boot-time blip (quiet) from a host that never came back (Start sync).
@@ -28881,7 +28891,7 @@ async function runServe(
           ensureAccountMachinePublisher?.("reconnect_started_sync_host");
         }
         if (!accountMachinePublisher) {
-          const owner = readCompetingSyncHostOwner?.() ?? null;
+          const owner = (await readCompetingSyncHostOwnerFresh?.()) ?? null;
           const why = owner
             ? `${owner.appName ?? "Another ADE app"} (pid ${owner.pid}) is hosting sync on this computer, so this ADE can't put it on your account.`
             : `No ADE on this computer is hosting sync right now, so it can't be put on your account.${
@@ -29796,6 +29806,8 @@ async function runServe(
           });
         },
         getServiceMainPid: getRuntimeServiceMainPid,
+        // A takeover just stopped the brain the held failure names.
+        clearHeldFailures: () => scopeRegistry.clearSyncHostPhaseBackoff(),
         // Auto-diagnostics driven off the FAILURE rather than off the account
         // publisher. The publisher only exists once this brain holds the
         // sync-host lease, which it only takes once the sync host starts — so
@@ -29992,7 +30004,7 @@ async function runServe(
     // here", so like the relay tunnel it belongs to whichever brain actually
     // holds the machine-wide sync host lease. A second brain publishing its own
     // endpoints points phones at a runtime that does not host sync.
-    const [{ holdsSyncHostSingleton, onSyncHostSingletonAuthorityChanged, detectSyncHostSingletonConflict }, { SYNC_HOST_AUTHORITY_RELEASE_GRACE_MS }] =
+    const [{ holdsSyncHostSingleton, onSyncHostSingletonAuthorityChanged, detectSyncHostSingletonConflict, detectSyncHostSingletonConflictAsync }, { SYNC_HOST_AUTHORITY_RELEASE_GRACE_MS }] =
       await Promise.all([
         import("./services/sync/syncHostSingleton"),
         import("./services/sync/relayTunnelAuthorityGate"),
@@ -30007,20 +30019,50 @@ async function runServe(
       value: null,
       at: 0,
     };
+    const ownerOf = (conflict: { owner: { appName: string | null; pid: number } } | null): CompetingSyncHostOwner | null =>
+      conflict ? { appName: conflict.owner.appName, pid: conflict.owner.pid } : null;
+    let competingSyncHostOwnerRefresh: Promise<void> | null = null;
     readCompetingSyncHostOwner = (): CompetingSyncHostOwner | null => {
       const at = Date.now();
       if (competingSyncHostOwnerCache.at > 0 && at - competingSyncHostOwnerCache.at < 10_000) {
         return competingSyncHostOwnerCache.value;
       }
+      if (process.platform === "win32") {
+        // There the owner's identity is a PowerShell start (up to 2 s), so it
+        // is refreshed in the background and this read answers with the last
+        // known owner.
+        competingSyncHostOwnerRefresh ??= detectSyncHostSingletonConflictAsync({ skipListenerScan: true })
+          .then(ownerOf, () => null)
+          .then((owner) => {
+            competingSyncHostOwnerCache.value = owner;
+            competingSyncHostOwnerCache.at = Date.now();
+          })
+          .finally(() => {
+            competingSyncHostOwnerRefresh = null;
+          });
+        return competingSyncHostOwnerCache.value;
+      }
       let owner: CompetingSyncHostOwner | null = null;
       try {
-        const conflict = detectSyncHostSingletonConflict({ skipListenerScan: true });
-        owner = conflict ? { appName: conflict.owner.appName, pid: conflict.owner.pid } : null;
+        owner = ownerOf(detectSyncHostSingletonConflict({ skipListenerScan: true }));
       } catch {
         owner = null;
       }
       competingSyncHostOwnerCache.value = owner;
       competingSyncHostOwnerCache.at = at;
+      return owner;
+    };
+    // Primed now, so the first status read on Windows names a competing owner
+    // instead of answering before the probe has run.
+    if (process.platform === "win32") readCompetingSyncHostOwner();
+    readCompetingSyncHostOwnerFresh = async () => {
+      if (process.platform !== "win32") {
+        competingSyncHostOwnerCache.at = 0;
+        return readCompetingSyncHostOwner?.() ?? null;
+      }
+      const owner = await detectSyncHostSingletonConflictAsync({ skipListenerScan: true }).then(ownerOf, () => null);
+      competingSyncHostOwnerCache.value = owner;
+      competingSyncHostOwnerCache.at = Date.now();
       return owner;
     };
     const activeSyncHostScopeWithoutBooting = async () => {

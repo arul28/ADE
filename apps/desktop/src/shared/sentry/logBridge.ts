@@ -28,10 +28,11 @@ const SKIPPED_EVENTS = new Set<string>([
 ]);
 
 /**
- * Error lines kept as Sentry Logs and breadcrumbs but never turned into an
- * issue. `window.console` is every renderer `console.error`, all under one
- * event name: the renderer SDK already reports the real errors behind them
- * with their stacks, and a library's console noise is not a bug in ADE.
+ * Error lines kept as warn-level Sentry Logs and breadcrumbs, never an issue.
+ * `window.console` is every renderer `console.error`, all under one event
+ * name: the renderer SDK already reports the real errors behind them with
+ * their stacks, and a library's console noise is not a bug in ADE. Sent as
+ * warn so the error-level log lines the beta gate reads stay ADE's own.
  */
 const LOG_ONLY_EVENTS = new Set<string>([
   "window.console",
@@ -119,9 +120,11 @@ export function forwardLogToSentry(level: Level, event: string, meta?: Record<st
   if (!isSentryActive()) return;
   if (SKIPPED_EVENTS.has(event)) return;
   const attributes = scrubRecord(meta) ?? {};
-  if (logLimiter.admit(event)) sendSentryLog(level, event, attributes);
-  addSentryBreadcrumb("log", event, attributes, level === "warn" ? "warning" : "error");
-  if (level !== "error" || LOG_ONLY_EVENTS.has(event)) return;
+  const logOnly = LOG_ONLY_EVENTS.has(event);
+  const sentLevel = logOnly ? "warn" : level;
+  if (logLimiter.admit(event)) sendSentryLog(sentLevel, event, attributes);
+  addSentryBreadcrumb("log", event, attributes, sentLevel === "warn" ? "warning" : "error");
+  if (level !== "error" || logOnly) return;
   const error = errorFromMeta(meta);
   // An error line about an answer (a folder that is not a repository, a path
   // the user picked): the line and the Sentry Log above are the record of it.

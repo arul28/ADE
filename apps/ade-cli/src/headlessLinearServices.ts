@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { createGithubIssueOps } from "../../desktop/src/main/services/github/githubIssueOps";
+import { createRepeatedFailureGate } from "../../desktop/src/main/services/logging/repeatedFailure";
 import { resolveGithubRepoRef } from "../../desktop/src/main/services/github/githubSshAlias";
 import { gitPushError } from "../../desktop/src/main/services/git/gitPushFailure";
 import { githubRepoRefFromRemoteUrl } from "../../desktop/src/shared/githubRemote";
@@ -1968,6 +1969,10 @@ export function createHeadlessGitHubService(
     },
   });
 
+  // One warn per credential source and cause; a status read probes every
+  // credential, so a repeat would otherwise warn on every read.
+  const tokenValidationFailures = createRepeatedFailureGate();
+
   const performStatusLookup = async (
     forceRefresh: boolean,
     generation: number,
@@ -2108,6 +2113,7 @@ export function createHeadlessGitHubService(
           registerGithubCredentialIdentity(candidate, value.validated.userLogin);
         },
         onUsableProbe: (candidate, value) => {
+          tokenValidationFailures.clear(candidate.source);
           recordGithubCredentialProbeSuccess(
             candidate,
             value.validated.rateLimit,
@@ -2119,7 +2125,8 @@ export function createHeadlessGitHubService(
             recordGithubCredentialFailure(candidate, result.authFailure, result.rateLimit);
           }
           if (context.phase === "read") {
-            logger.warn("github.token_validation_failed", {
+            const repeated = tokenValidationFailures.repeated(`${result.authFailure.kind}:${result.error ?? ""}`, candidate.source);
+            logger[repeated ? "info" : "warn"]("github.token_validation_failed", {
               source: candidate.source,
               error: result.error,
               kind: result.authFailure.kind,

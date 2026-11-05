@@ -75,6 +75,16 @@ every platform; `terminateProcessTree` applies it on the win32 branch, where the
 leader (`services/pty/ptyService.ts`); afterwards `taskkill /PID <leader> /T`
 can no longer discover the orphans.
 
+Never wait on `taskkill` synchronously on the brain's event loop: a
+`spawnSync` `taskkill` held it up to 10.8 s per kill. Both helpers above run
+`killWindowsProcessTreeAsync` (`execFile`, so the process starts before the
+call returns and still runs if the brain exits) and call `child.kill()` only
+after it finishes, then answer "the kill is under way". The same goes for a
+synchronous read of a small file under `~/.ade/secrets` on a hot path: on
+Windows it can wait seconds behind an antivirus scan, so keep the value in
+memory with `FileStampedMemo` (`apps/ade-cli/src/lib/fileStampedMemo.ts`). A
+`stat` is not scanned and stays cheap.
+
 Related: pass `windowsHide: true` on **every** `spawn` / `spawnSync` /
 `execFile`, including short status polls. Omitting it caused the host-loss
 incident in `WINDOWS_PORT.md` — visible PowerShell console windows piling up and

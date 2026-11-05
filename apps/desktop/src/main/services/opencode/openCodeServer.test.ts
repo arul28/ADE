@@ -21,6 +21,12 @@ const spawnSyncMock = vi.hoisted(() => vi.fn());
 vi.mock("node:child_process", () => ({
   spawn: vi.fn(),
   spawnSync: spawnSyncMock,
+  // The Windows tree kill (`taskkill`) runs through execFile; answer it from the same fake.
+  execFile: (command: string, args: readonly string[], options: object, done: (error: Error | null, stdout: string, stderr: string) => void) => {
+    const result = spawnSyncMock(command, args, options);
+    const failed = result.error || (result.status ?? 0) !== 0;
+    queueMicrotask(() => done(failed ? Object.assign(new Error("Command failed"), { code: result.status ?? null }) : null, String(result.stdout ?? ""), ""));
+  },
 }));
 // The Windows listing runs on a worker thread, which the node:child_process mock above does not reach.
 // Answer it from the same fake, as the worker's child process would.
