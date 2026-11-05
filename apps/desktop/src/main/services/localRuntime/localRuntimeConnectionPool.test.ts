@@ -2718,7 +2718,8 @@ describe("local runtime connection pool", () => {
       await Promise.resolve();
 
       expect(client.close).toHaveBeenCalledTimes(1);
-      expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+      // On Windows the direct kill follows the (asynchronous) taskkill of the tree.
+      await vi.waitFor(() => expect(child.kill).toHaveBeenCalledWith("SIGTERM"));
     } finally {
       vi.clearAllTimers();
       vi.useRealTimers();
