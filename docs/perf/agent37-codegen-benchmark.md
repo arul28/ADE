@@ -44,10 +44,32 @@ ADE end to end, prompt → probe result (event time; client-seen time is
 |---|---|---|
 | Local Mac lane, Claude Code + Sonnet 5.5 low (fake `/health`) | 5.28 s median (2 runs) | 2.47 s |
 | Agent 37 VM awake, Codex + gpt-5.6-luna (via the account's OpenAI key) | 2.47 s median (3 runs) | 1.75 s |
-| Agent 37 VM **asleep**, woken inside the clock, Codex + gpt-5.6-luna | 4.41 s median (4.00–4.47, 3 runs) | 1.78 s |
+| Agent 37 VM **asleep** 20 s, woken inside the clock, Codex + gpt-5.6-luna | 4.41 s median (4.00–4.47, 3 runs) | 1.78 s |
+| Agent 37 VM **asleep 100 s** (directory shows it offline), released brains | first remote call 13–30 s after the wake | |
+| Same, with this branch's fixes on both ends | **6.06 s median (5.71–7.50, 5 runs)** | **2.09 s (1.85–2.25)** |
 
 Codex stands in for Claude until the VM has a Claude sign-in (agents can't
 add one). The official run uses Claude Code + Sonnet 5.5 low.
+
+### Why a long sleep cost 13–30 s, and the fixes
+
+Short sleeps hide it: the machine is still "online" in the account directory.
+After about a minute it is not, and three things stacked up:
+
+1. The brain noticed the wake only on its next 15 s check, and the relay
+   control socket only on its next 30 s ping (10 s deadline). Now a wake
+   pings the control socket at once with a 3 s deadline (a miss reconnects),
+   and `ADE_SUSPEND_GAP_TICK_MS=1000` makes the wake check run every second
+   on cloud machines. Wake → "online" in the directory went 13 s → ~6 s.
+2. The Mac refused from its 15 s directory cache ("is offline. Nothing was
+   sent") even after the directory said online. A cached offline entry is now
+   re-read once before refusing.
+3. The CLI/agent connector tried the box's private address (`10.90.0.17`)
+   first, for 10 s, on every new connection, and never learned it was dead.
+   It now caps LAN/tailnet at 3/5 s when a relay is behind them and demotes
+   a route after two silent failures, as the desktop connector already did.
+
+Wake → first successful remote call: 13.1 / 29.0 s before, 4.9 s after.
 
 ## How ADE wins, and what it needs
 
