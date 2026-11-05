@@ -3615,6 +3615,16 @@ export function createMultiProjectRpcRequestHandler(
     }
 
     if (method === "sync.listDevices") {
+      // A read. The scope that hosts sync, or last tried to, lists its devices
+      // as it is; re-entering host activation here answered the Phone tab
+      // with "Another ADE brain is already hosting mobile sync" whenever
+      // activation was blocked or backed off.
+      const hostProjectId = scopeRegistry.getActiveSyncHostProjectId?.()
+        ?? scopeRegistry.getMostRecentFailingSyncHostProjectId?.();
+      const readySyncService = hostProjectId
+        ? scopeRegistry.getIfReady?.(hostProjectId)?.runtime.syncService ?? null
+        : null;
+      if (readySyncService) return await readySyncService.listDevices();
       return await withSyncService(
         (syncService) => syncService.listDevices(),
         // The machine pairing file is keyed by device id with no listing API,

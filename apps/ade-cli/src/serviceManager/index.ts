@@ -41,6 +41,23 @@ export function getRuntimeServiceMainPid(): number | null {
   }
 }
 
+/**
+ * Whether this process was started by the channel's installed service, read
+ * without spawning anything: launchd is the parent of a LaunchAgent's process,
+ * and the Windows supervisor records its own pid before it starts the brain.
+ * `null` where that cannot be told cheaply (systemd's user manager is not pid 1).
+ */
+export function isStartedByRuntimeService(): boolean | null {
+  switch (process.platform) {
+    case "darwin":
+      return process.ppid === 1;
+    case "win32":
+      return readWindowsServicePidRecord()?.supervisorPid === process.ppid;
+    default:
+      return null;
+  }
+}
+
 export async function installRuntimeService(): Promise<ServiceManagerResult> {
   switch (process.platform) {
     case "darwin":
