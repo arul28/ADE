@@ -783,7 +783,7 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
     record.messageSent = true;
     record.snapshot.agentStarted = true;
     record.snapshot.error = null;
-    setStage(record, "agent", "done");
+    setStage(record, "agent", "done", { error: null });
     record.snapshot.phase = "completed";
     record.snapshot.endedAt = nowIso();
     logger.info("chat_launch.adopted_started_chat", {
@@ -1155,6 +1155,8 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
     if (record.snapshot.phase === "cancelled") throw new Error("This launch was cancelled.");
     // A client that still sees the failed launch routes the chat's sends here.
     await adoptIfChatStarted(record);
+    // A cancel can land during that transcript read.
+    if (record.snapshot.phase === "cancelled") throw new Error("This launch was cancelled.");
     const delivering = record.snapshot.agentStarted && Boolean(record.snapshot.sessionId);
     if (delivering && record.snapshot.queuedMessages.length === 0) {
       // Too late to queue here and nothing waits ahead of it: a normal send.
