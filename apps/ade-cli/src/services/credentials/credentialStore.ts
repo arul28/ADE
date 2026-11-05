@@ -14,7 +14,6 @@ import {
   isSameCredentialFileStat,
   isSamePath,
   readCredentialFileStatSnapshot,
-  readCredentialFileStatSnapshotAsync,
   readJsonObject,
   readJsonObjectAsync,
   unlinkIfExists,
@@ -782,8 +781,8 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
   private lastReadSettled = false;
   /** See {@link readSettledCache}. */
   private settledRead: SettledCredentialRead | null = null;
-  /** The background check of {@link settledRead}; at most one at a time. */
-  private settledRefresh: Promise<void> | null = null;
+  /** See {@link probeQuarantineInBackground}. */
+  private quarantineProbe: Promise<void> | null = null;
 
   constructor(args: {
     secretsDir?: string;
@@ -899,7 +898,7 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
   }
 
   /**
-   * The values of the last settled read, re-checked off the event loop.
+   * The values of the last settled read, while the file is provably unchanged.
    *
    * Every locked read creates, writes and deletes a lock file, re-reads the
    * machine key and decrypts the whole store. On Windows, where file creation
@@ -911,82 +910,49 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
    * store, the store was already sealed to the machine key (no rebind owed),
    * and no quarantined store was merged in. Any write by any process replaces
    * the file by rename, which changes its `ino`/`mtime`/`size` — the same
-   * signal {@link CredentialFileStatWatcher} relies on.
+   * signal {@link CredentialFileStatWatcher} relies on — so one `stat` proves
+   * the values current. That `stat` stays synchronous on purpose: this file
+   * holds rotating tokens several processes coordinate through (the account
+   * session and its rotation journal, the GitHub App refresh ledger), and a
+   * peer's write must be visible to the very next read. A `stat` opens no file
+   * data, so antivirus does not scan it; field logs from a Windows PC show the
+   * watcher's stat of this file never slow while reads beside it waited 7-31 s.
    *
-   * That check used to be a synchronous `stat` on every call, and on expiry a
-   * synchronous read of the machine key, the store and the quarantine marker.
-   * On Windows any of those can wait 7-31 s while antivirus scans the file,
-   * and the whole brain waited with it. Now each call answers from memory and
-   * starts one asynchronous check: a changed file (or an expired entry, so a
-   * quarantine is still looked for as often as before) is read again on the
-   * thread pool. Writes through this store drop the entry at once; a write by
-   * another process is seen as soon as that check lands, normally by the next
-   * call.
+   * The entry also expires with the quarantine probe interval, so a
+   * quarantined store is still looked for as often as before. That probe is a
+   * file read, so it runs off the event loop and this call keeps answering.
    */
   private readSettledCache(): Record<string, string> | null {
     const entry = this.settledRead;
     if (!entry) return null;
-    this.refreshSettledReadInBackground(entry);
+    const stat = readCredentialFileStatSnapshot(this.credentialsPath);
+    if (stat === undefined || !isSameCredentialFileStat(stat, entry.stat)) {
+      this.settledRead = null;
+      return null;
+    }
+    if (Date.now() >= entry.expiresAt) this.probeQuarantineInBackground(entry);
     this.lastReadState = entry.state;
     this.lastReadFailureReason = null;
     return entry.values;
   }
 
-  private refreshSettledReadInBackground(entry: SettledCredentialRead): void {
-    if (this.settledRefresh) return;
-    this.settledRefresh = (async () => {
-      const stat = await readCredentialFileStatSnapshotAsync(this.credentialsPath);
-      if (this.settledRead !== entry) return;
-      if (stat === undefined) {
-        this.settledRead = null;
-        return;
-      }
-      const unchanged = isSameCredentialFileStat(stat, entry.stat);
-      if (unchanged && Date.now() < entry.expiresAt) return;
-      const next = await this.readSettledEntryAsync(stat, entry);
-      // A write through this store (or a sync read) replaced the entry while
-      // this ran; its answer is newer than ours.
-      if (this.settledRead === entry) this.settledRead = next;
-    })()
-      .catch(() => {
-        if (this.settledRead === entry) this.settledRead = null;
+  /**
+   * The expired entry's quarantine probe. A quarantine record drops the entry,
+   * so the next `getSync` takes the locked path that merges it back in; none
+   * keeps the entry for another interval. One probe at a time.
+   */
+  private probeQuarantineInBackground(entry: SettledCredentialRead): void {
+    if (this.quarantineProbe) return;
+    this.quarantineProbe = readCredentialStoreQuarantineAsync(this.credentialsPath)
+      .then((quarantine) => {
+        if (this.settledRead !== entry) return;
+        this.settledRead = quarantine
+          ? null
+          : { ...entry, expiresAt: Date.now() + QUARANTINE_PROBE_INTERVAL_MS };
       })
       .finally(() => {
-        this.settledRefresh = null;
+        this.quarantineProbe = null;
       });
-  }
-
-  /**
-   * {@link readSettledUnlocked} on the thread pool, for the background check.
-   * Null means the store is not settled (or changed mid-read): the next
-   * `getSync` takes the locked path, as it always did for such a store.
-   */
-  private async readSettledEntryAsync(
-    before: CredentialFileStatSnapshot,
-    previous: SettledCredentialRead,
-  ): Promise<SettledCredentialRead | null> {
-    if (await readCredentialStoreQuarantineAsync(this.credentialsPath)) return null;
-    if (before === null) {
-      // Still no store. A missing file owes no write, so the cached answer
-      // stands for another interval.
-      return previous.state === "missing"
-        ? { ...previous, expiresAt: Date.now() + QUARANTINE_PROBE_INTERVAL_MS }
-        : null;
-    }
-    const machineKey = await readMachineKeyIfExistsAsync(this.machineKeyPath);
-    if (!machineKey) return null;
-    const { value: raw } = await readJsonObjectAsync(this.credentialsPath);
-    if (raw == null || Object.keys(raw).length === 0) return null;
-    const attempt = decodeMachineSealedStore(raw, machineKey);
-    if (!attempt?.ok || attempt.sealedBinding !== "machine") return null;
-    const after = await readCredentialFileStatSnapshotAsync(this.credentialsPath);
-    if (!after || !isSameCredentialFileStat(before, after)) return null;
-    return {
-      stat: after,
-      state: "available",
-      values: attempt.values,
-      expiresAt: Date.now() + QUARANTINE_PROBE_INTERVAL_MS,
-    };
   }
 
   /**

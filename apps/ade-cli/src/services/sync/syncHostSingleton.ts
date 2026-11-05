@@ -655,15 +655,24 @@ function defaultScanText(command: string, args: string[]): string {
 function scanWindowsSyncHostListeners(
   readText: (command: string, args: string[]) => string,
 ): SyncHostSingletonOwner[] {
-  let powershell: string;
-  let args: string[];
+  const scan = windowsListenerScanCommand();
+  return scan ? windowsSyncHostOwnersFromScan(readText(scan.command, scan.args)) : [];
+}
+
+/** The PowerShell command line of the listener scan; null when PowerShell cannot be resolved. */
+function windowsListenerScanCommand(): { command: string; args: string[] } | null {
   try {
-    powershell = resolveTrustedWindowsTool("powershell");
-    args = buildWindowsListeningPortHolderQueryArgs(DEFAULT_SYNC_HOST_PORT, SYNC_HOST_MAX_PORT);
+    return {
+      command: resolveTrustedWindowsTool("powershell"),
+      args: buildWindowsListeningPortHolderQueryArgs(DEFAULT_SYNC_HOST_PORT, SYNC_HOST_MAX_PORT),
+    };
   } catch {
-    return [];
+    return null;
   }
-  const holders = parseWindowsPortHolders(readText(powershell, args));
+}
+
+function windowsSyncHostOwnersFromScan(output: string): SyncHostSingletonOwner[] {
+  const holders = parseWindowsPortHolders(output);
   const owners: SyncHostSingletonOwner[] = [];
   for (const holder of holders) {
     if (holder.pid === process.pid) continue;
@@ -844,18 +853,12 @@ export async function detectSyncHostSingletonConflictAsync(
 async function scanWindowsSyncHostListenersAsync(
   runProbe: SyncHostProbeRunner,
 ): Promise<SyncHostSingletonOwner[]> {
-  let powershell: string;
-  let args: string[];
-  try {
-    powershell = resolveTrustedWindowsTool("powershell");
-    args = buildWindowsListeningPortHolderQueryArgs(DEFAULT_SYNC_HOST_PORT, SYNC_HOST_MAX_PORT);
-  } catch {
-    return [];
-  }
-  const output = await runProbe(powershell, args, WINDOWS_LISTENER_SCAN_TIMEOUT_MS, 4 * 1024 * 1024)
+  const scan = windowsListenerScanCommand();
+  if (!scan) return [];
+  const output = await runProbe(scan.command, scan.args, WINDOWS_LISTENER_SCAN_TIMEOUT_MS, 4 * 1024 * 1024)
     .then((result) => result.stdout)
     .catch(() => "");
-  return scanWindowsSyncHostListeners(() => output);
+  return windowsSyncHostOwnersFromScan(output);
 }
 
 /** The owner's identity from one PowerShell probe; `null` when unknown. Never throws. */
@@ -1068,7 +1071,7 @@ export async function acquireSyncHostSingletonAsync(
     processMatchesOwner: (owner) => checkOwner && owner.id === checkOwner.id && owner.pid === checkOwner.pid
       ? ownerVerdict
       : defaultProcessMatchesOwner(owner, platform),
-    ...(scanOutput ? { scanListeners: () => scanWindowsSyncHostListeners(() => scanOutput.stdout) } : {}),
+    ...(scanOutput ? { scanListeners: () => windowsSyncHostOwnersFromScan(scanOutput.stdout) } : {}),
     readOwnProcessStartTimeMs: () => startedAtMs,
   });
 }

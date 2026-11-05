@@ -792,6 +792,9 @@ export function createSyncCloudRelayStore(args: {
     onLocked?: () => { state: SyncCloudRelayState; result?: T },
     waitMs = lockWaitMs,
   ): { state: SyncCloudRelayState; result?: T } => {
+    // The constructor makes the folder once per process; a write must not
+    // fail because something removed it since.
+    fs.mkdirSync(secretsDir, { recursive: true });
     const lease = acquireRotationLockWithWait(waitMs);
     if (!lease) {
       if (onLocked) return onLocked();

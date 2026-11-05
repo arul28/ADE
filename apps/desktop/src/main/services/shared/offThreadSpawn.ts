@@ -1,20 +1,6 @@
 import { EventEmitter } from "node:events";
 import { SHARE_ENV, Worker } from "node:worker_threads";
-import { resolveTrustedWindowsTool } from "../../../../../ade-cli/src/lib/trustedWindowsTools";
-
-/**
- * The System32 `taskkill`, resolved here rather than through
- * `processExecution.windowsTaskkillCommand` because that module runs its tree
- * kills through this one. Same fallback as there.
- */
-function trustedTaskkillCommand(): string {
-  if (process.platform !== "win32") return "taskkill.exe";
-  try {
-    return resolveTrustedWindowsTool("taskkill");
-  } catch {
-    return "taskkill.exe";
-  }
-}
+import { windowsTaskkillCommand } from "./processExecution";
 
 /**
  * Spawn short-lived child processes from a worker thread.
@@ -331,7 +317,7 @@ class OffThreadSpawner {
         // passes no env gets exactly what a direct spawn would (including PATH
         // augmented after start-up) without cloning it into every request.
         env: SHARE_ENV,
-        workerData: { taskkill: trustedTaskkillCommand() },
+        workerData: { taskkill: windowsTaskkillCommand() },
       });
     } catch {
       return null;

@@ -29893,6 +29893,9 @@ async function runServe(
       competingSyncHostOwnerCache.at = at;
       return owner;
     };
+    // Primed now, so the first status read or reconnect tap on Windows names
+    // a competing owner instead of answering before the probe has run.
+    if (process.platform === "win32") readCompetingSyncHostOwner();
     const activeSyncHostScopeWithoutBooting = async () => {
       const activeProjectId = scopeRegistry.getActiveSyncHostProjectId();
       if (!activeProjectId) return null;

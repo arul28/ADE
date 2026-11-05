@@ -10,7 +10,7 @@ import fs from "node:fs";
 import { nonAsarFs } from "./nonAsarFs";
 import path from "node:path";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { isWindowsCmdCommandNotFound, killWindowsProcessTreeAsync, resolveCliSpawnInvocation } from "./processExecution";
+import { isWindowsCmdCommandNotFound, resolveCliSpawnInvocation, terminateProcessTree } from "./processExecution";
 import { AdeExpectedError } from "../../../shared/expectedError";
 import { containsSecretToken, redactSecretTokens } from "../../../shared/secretTokenShapes";
 import { writeFileAtomic } from "../state/durableFile";
@@ -176,24 +176,10 @@ export function signalChildProcessTree(child: KillableChildProcess, signal: Node
   // cannot police, so only an explicit non-null value counts as proof the pid
   // was reaped.
   if ((child.exitCode ?? null) !== null || (child.signalCode ?? null) !== null) return false;
+  // The tree first, the child once `taskkill` is done, without blocking the
+  // event loop: the same Windows kill as `terminateProcessTree`.
+  if (process.platform === "win32") return terminateProcessTree(child, signal);
   const pid = child.pid ?? null;
-
-  if (process.platform === "win32") {
-    const signalChild = (): boolean => {
-      try {
-        return child.kill(signal);
-      } catch {
-        return false;
-      }
-    };
-    if (!isValidPid(pid)) return signalChild();
-    // The tree first, the child once `taskkill` is done (it cannot find the
-    // descendants after the leader is gone), and without blocking the event
-    // loop: the synchronous `taskkill` held the brain for seconds per kill. A
-    // `taskkill` that could not run still ends with the direct child signal.
-    void killWindowsProcessTreeAsync(pid).then(signalChild);
-    return true;
-  }
 
   if (isValidPid(pid)) {
     try {

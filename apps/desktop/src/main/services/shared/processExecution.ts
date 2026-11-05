@@ -1,7 +1,6 @@
 import { execFile, spawnSync, type ChildProcess } from "node:child_process";
 import path from "node:path";
 import { resolveTrustedWindowsTool } from "../../../../../ade-cli/src/lib/trustedWindowsTools";
-import { execFileOffThread, offThreadSpawnEnabled } from "./offThreadSpawn";
 
 /**
  * True inside the standalone `ade` runtime: one Node SEA executable, where
@@ -335,36 +334,19 @@ const WINDOWS_TASKKILL_TIMEOUT_MS = 15_000;
  *
  * Same trusted `taskkill /T /F` invocation and `windowsHide`. A synchronous
  * `taskkill` held the brain for up to 10.8 s per kill on Windows (61 of them in
- * three days of one PC's logs), so every kill the brain makes runs here: on the
- * off-thread spawner where it is on (`CreateProcess` itself can take a second
- * on a busy PC), else through `execFile`. Resolves true when `taskkill` exits 0.
+ * three days of one PC's logs), so the brain's kills wait here instead.
+ * Resolves true when `taskkill` exits 0.
+ *
+ * `execFile`, not the off-thread spawner, on purpose: `execFile` starts the
+ * process before it returns, so a kill issued as the brain shuts down still
+ * runs to the end after the brain exits. The spawner would start it on a
+ * later turn of the event loop that an exiting process never reaches.
  */
 export function killWindowsProcessTreeAsync(
   pid: number,
   onFailure?: (detail: ProcessTreeFailureDetail) => void,
 ): Promise<boolean> {
   if (!Number.isInteger(pid) || pid <= 0) return Promise.resolve(false);
-  if (offThreadSpawnEnabled()) {
-    let invocation: SpawnInvocation;
-    try {
-      invocation = windowsTaskkillInvocation(pid, { force: true });
-    } catch (error) {
-      onFailure?.({ pid, status: null, stdout: "", stderr: "", error });
-      return Promise.resolve(false);
-    }
-    return execFileOffThread(invocation.command, invocation.args, { timeoutMs: WINDOWS_TASKKILL_TIMEOUT_MS })
-      .then((result) => {
-        if (!result.error && result.exitCode === 0) return true;
-        onFailure?.({
-          pid,
-          status: result.exitCode,
-          stdout: result.stdout,
-          stderr: result.stderr,
-          error: result.error,
-        });
-        return false;
-      });
-  }
   return new Promise((resolve) => {
     const fail = (detail: Omit<ProcessTreeFailureDetail, "pid">): void => {
       onFailure?.({ pid, ...detail });

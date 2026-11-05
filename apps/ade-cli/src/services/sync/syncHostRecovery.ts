@@ -355,7 +355,11 @@ function raceWithDeadline(
   let deadlineTimer: NodeJS.Timeout | null = null;
   const deadline = new Promise<SyncHostRecoveryResult>((resolve) => {
     deadlineTimer = setTimeout(() => {
-      void diagnoseSyncHostReadinessAsync({ ...configured, ...args }).then((snapshot) => resolve({
+      const deps = { ...configured, ...args };
+      void diagnoseSyncHostReadinessAsync(deps)
+        // A probe that throws still ends the race: report it without a conflict.
+        .catch(() => diagnoseSyncHostReadiness({ ...deps, detectConflict: () => null }))
+        .then((snapshot) => resolve({
         operationId: "",
         ok: false,
         status: "failed",

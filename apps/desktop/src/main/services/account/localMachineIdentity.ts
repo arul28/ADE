@@ -77,6 +77,8 @@ export function getOrCreateLocalAccountMachineIdentity(args: {
   let deviceId = readMachineIdFile(deviceIdPath);
   if (!deviceId) {
     const candidate = (args.randomUUID ?? nodeRandomUUID)();
+    // The folder may have been removed since this process first made it.
+    fs.mkdirSync(secretsDir, { recursive: true, mode: 0o700 });
     try {
       fs.writeFileSync(deviceIdPath, `${candidate}\n`, { flag: "wx", mode: 0o600 });
       rememberMachineIdFile(deviceIdPath, candidate);
