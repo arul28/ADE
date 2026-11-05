@@ -249,7 +249,11 @@ does nothing, so a renamed laptop is never mistaken for a copy.
   sign-in (§4.2).
 - **A2 — machine cards + lifecycle.** Cards, Sleep/Wake/Resize/Back up,
   Remove from ADE / Delete box, spending, Agent37 error states (box limit,
-  empty wallet, suspended).
+  empty wallet, suspended). Built on `ade/agent37-a2-machine-cards`: see
+  "The machine cards" in
+  [docs/features/remote-runtime/agent37.md](../features/remote-runtime/agent37.md).
+  A box finds its account row by the `ade_machine_key` metadata the creator
+  writes at join, else by hostname (= instance id).
 - **A3 — ADE-owned sleep.** Idle detection, wake on use, caps, savings.
 - **A4 — fork and move.** Warm box per lane; box ↔ VM move.
 - **A5 — agent primitives.** `ade` verbs, runtime actions, skill, approval

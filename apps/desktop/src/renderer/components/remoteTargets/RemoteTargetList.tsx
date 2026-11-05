@@ -82,6 +82,8 @@ import {
   panelStyle,
 } from "./remoteTargetListStyles";
 import { Agent37Mark, AGENT37_NAME } from "./agent37Brand";
+import { useAgent37MachineGroup, type RowExtras } from "./useAgent37MachineGroup";
+import type { MachineRow } from "./remoteMachineModel";
 
 type RemoteTargetListProps = {
   onConnected?: (result: RemoteRuntimeConnectResult) => void;
@@ -104,7 +106,10 @@ type RemoteTargetListProps = {
    * not on the account. The add sheet shows them under "Use a pairing code".
    */
   thisComputerCode?: ReactNode;
+  /** Opens Settings › Integrations › Agent 37 (a refused key is fixed there). */
+  onOpenAgent37Settings?: (() => void) | null;
 };
+
 
 type ConnectTargetOptions = {
   skipHostKeyTrustCheck?: boolean;
@@ -220,6 +225,7 @@ export function RemoteTargetList({
   onAccountMachinesChanged,
   accountEmail = null,
   thisComputerCode = null,
+  onOpenAgent37Settings = null,
 }: RemoteTargetListProps) {
   const [targets, setTargets] = useState<RemoteRuntimeTarget[]>([]);
   const [connectionSnapshot, setConnectionSnapshot] =
@@ -1241,8 +1247,210 @@ export function RemoteTargetList({
   // gets none, rather than a build from the other track.
   const knownVersions = useKnownAdeVersions();
 
+  // ── Agent 37 ────────────────────────────────────────────────────────────
+  const forgetTarget = useCallback(async (targetId: string) => {
+    abandonConnectAttempts(targetId, null);
+    await window.ade.remoteRuntime.removeTarget(targetId);
+    setTargets((current) => current.filter((entry) => entry.id !== targetId));
+    setConnected((current) => (current?.target.id === targetId ? null : current));
+    setSelectedId((current) => (current === targetId ? null : current));
+  }, [abandonConnectAttempts]);
+
+  const setAccountRowError = useCallback((machineKey: string, message: string) => {
+    setAccountRowErrors((current) => ({ ...current, [machineKey]: message }));
+  }, []);
+
+  const agent37Group = useAgent37MachineGroup({
+    enabled: accountMachines !== undefined,
+    accountMachines: visibleAccountMachines,
+    accountKnown: accountMachinesState === "ok",
+    sections,
+    accountMachineForTarget,
+    forgetTarget,
+    setAccountRowError,
+    onAccountMachinesChanged,
+    onOpenSettings: onOpenAgent37Settings,
+  });
+  const { listedSections, showGroup: showAgent37Group } = agent37Group;
+
+  function renderRow(row: MachineRow, section: MachineSection, extras: RowExtras = agent37Group.rowExtrasFor(row)): ReactNode {
+    if (row.kind === "saved") {
+      const pairAgainMachine = accountMachineForTarget(row.target);
+      const pairedMachineKey = row.target.pairedMachine?.machineKey ?? null;
+      const rowAction = busyById[row.target.id] ?? null;
+      // An account pairing for this machine ("Pair again") counts too.
+      const pairingThisMachine =
+        pairedMachineKey != null &&
+        busyById[accountRowKey(pairedMachineKey)] === "connect";
+      const rowConnecting = rowAction === "connect" || pairingThisMachine;
+      // A cancelled pairing still finishing in main locks Connect and
+      // "Pair again" here too; either would race it.
+      const pairingStopping =
+        pairedMachineKey != null &&
+        busyById[accountRowKey(pairedMachineKey)] === "stopping";
+      const updateAttempt = updateResultByTargetId[row.target.id] ?? null;
+      const updateStatus = updateAttempt
+        ? describeMachineUpdateAttempt(updateAttempt, row, updateClockMs)
+        : null;
+      const updatePhase = machineUpdatePhase({
+        checking: machineUpdates.checkingIds.has(row.target.id),
+        sending: machineUpdates.updatingIds.has(row.target.id),
+        status: updateStatus,
+      });
+      return (
+        <SavedMachineRow
+          key={row.id}
+          row={row}
+          section={section}
+          selected={selectedId === row.target.id}
+          connected={connected}
+          connecting={rowConnecting}
+          busy={
+            (rowAction != null && rowAction !== "connect") ||
+            pairingStopping
+          }
+          saving={saving}
+          formPrefill={formPrefill}
+          testOpen={testingId === row.target.id}
+          error={
+            (row.target.pairedMachine?.machineKey
+              ? accountRowErrors[
+                  row.target.pairedMachine.machineKey
+                ] ?? null
+              : null) ?? error
+          }
+          stageLabel={
+            pairedMachineKey && pairingThisMachine
+              ? accountRowStages[pairedMachineKey] ?? null
+              : null
+          }
+          transientStatus={
+            accountToastByTargetId.get(row.target.id) ?? null
+          }
+          updateTargetVersion={
+            updatePhase && updateAttempt?.pendingVersion
+              ? updateAttempt.pendingVersion
+              : row.connected
+                ? machineUpdateTargetVersion({ version: row.version }, knownVersions)
+                : null
+          }
+          updatePhase={updatePhase}
+          power={pairAgainMachine?.power ?? null}
+          updating={machineUpdates.updatingIds.has(row.target.id) || updateStatus?.inFlight === true}
+          checkingUpdate={machineUpdates.checkingIds.has(row.target.id)}
+          updateStatus={updateStatus ? { ok: updateStatus.ok, message: updateStatus.message } : null}
+          onUpdateAndRestart={(targetVersion) =>
+            void requestMachineUpdates(
+              [{ id: row.target.id, name: row.target.name, version: row.version, versionLabel: row.versionLabel, targetVersion }],
+            )
+          }
+          hostKeyTrust={
+            selectedId === row.target.id ? selectedHostKeyTrust : null
+          }
+          trustingHostKey={trustingHostKey}
+          onConnect={(targetId) => {
+            const machineKey = row.target.pairedMachine?.machineKey;
+            if (machineKey) {
+              setAccountRowErrors((current) => {
+                if (!(machineKey in current)) return current;
+                const next = { ...current };
+                delete next[machineKey];
+                return next;
+              });
+            }
+            void connectTarget(targetId);
+          }}
+          onDisconnect={(targetId) => void disconnectTarget(targetId)}
+          onToggleTest={toggleTest}
+          onToggleEdit={toggleEditForm}
+          onRemove={(targetId) => void removeTarget(targetId)}
+          onCancelConnect={(targetId) =>
+            void cancelConnect(targetId, pairedMachineKey)
+          }
+          onSaveAndConnect={saveAndConnect}
+          onAutoConnectChange={(targetId, enabled) => {
+            void setTargetAutoConnect(targetId, enabled);
+          }}
+          onTrustAndConnect={() => void trustAndConnect()}
+          onCancelHostKeyTrust={() => setHostKeyTrust(null)}
+          onPairAgain={pairAgainMachine
+            ? () => void connectAccountMachine(pairAgainMachine)
+            : null}
+          extraActions={extras.extraActions}
+          hideLocalRemove={extras.hideLocalRemove}
+          footer={extras.footer}
+          parked={extras.parked}
+        />
+      );
+    }
+    if (row.kind === "account") {
+      return (
+        <AccountMachineRow
+          key={row.id}
+          row={row}
+          section={section}
+          busy={busyById[accountRowKey(row.machine.machineKey)] != null}
+          connecting={
+            busyById[accountRowKey(row.machine.machineKey)] === "connect"
+          }
+          connected={isMachineConnected(row.machine, connectedIds)}
+          error={accountRowErrors[row.machine.machineKey] ?? null}
+          errorInfo={
+            row.matchedTargetId
+              ? statusById.get(row.matchedTargetId)?.lastErrorInfo ?? null
+              : null
+          }
+          stageLabel={accountRowStages[row.machine.machineKey] ?? null}
+          successLabel={
+            accountConnectionToasts[row.machine.machineKey]?.label ?? null
+          }
+          onPairNearby={
+            nearbyPairingByAccountMachineKey.has(row.machine.machineKey)
+              ? () => {
+                  const machine = nearbyPairingByAccountMachineKey.get(
+                    row.machine.machineKey,
+                  );
+                  if (!machine) return;
+                  setAccountRowErrors((current) => {
+                    if (!(row.machine.machineKey in current)) {
+                      return current;
+                    }
+                    const next = { ...current };
+                    delete next[row.machine.machineKey];
+                    return next;
+                  });
+                  openNearbyPairing(machine);
+                }
+              : null
+          }
+          detailOpen={testingId === row.id}
+          onToggleDetail={toggleTest}
+          onConnect={(machine) => void connectAccountMachine(machine)}
+          onCancelConnect={(machine) =>
+            void cancelConnect(row.matchedTargetId, machine.machineKey)
+          }
+          onRenamed={onAccountMachinesChanged}
+          extraActions={extras.extraActions}
+          footer={extras.footer}
+          parked={extras.parked}
+        />
+      );
+    }
+    return (
+      <DiscoveredMachineRow
+        key={row.id}
+        machine={row.machine}
+        section={section}
+        busy={busyById[row.machine.id] != null}
+        testOpen={testingId === row.machine.id}
+        onConnect={(machine) => void connectDiscoveredMachine(machine)}
+        onToggleTest={toggleTest}
+      />
+    );
+  }
+
   function renderSection(section: MachineSection) {
-    const rows = sections[section];
+    const rows = listedSections[section];
     if (rows.length === 0) return null;
     // Connected machines behind the newest ADE this computer knows on their track.
     const behindMachines = section === "connected"
@@ -1272,174 +1480,7 @@ export function RemoteTargetList({
           <span className="ade-cx-count">{rows.length}</span>
         </div>
         <div className="ade-cx-list">
-        {rows.map((row) => {
-          if (row.kind === "saved") {
-            const pairAgainMachine = accountMachineForTarget(row.target);
-            const pairedMachineKey = row.target.pairedMachine?.machineKey ?? null;
-            const rowAction = busyById[row.target.id] ?? null;
-            // An account pairing for this machine ("Pair again") counts too.
-            const pairingThisMachine =
-              pairedMachineKey != null &&
-              busyById[accountRowKey(pairedMachineKey)] === "connect";
-            const rowConnecting = rowAction === "connect" || pairingThisMachine;
-            // A cancelled pairing still finishing in main locks Connect and
-            // "Pair again" here too; either would race it.
-            const pairingStopping =
-              pairedMachineKey != null &&
-              busyById[accountRowKey(pairedMachineKey)] === "stopping";
-            const updateAttempt = updateResultByTargetId[row.target.id] ?? null;
-            const updateStatus = updateAttempt
-              ? describeMachineUpdateAttempt(updateAttempt, row, updateClockMs)
-              : null;
-            const updatePhase = machineUpdatePhase({
-              checking: machineUpdates.checkingIds.has(row.target.id),
-              sending: machineUpdates.updatingIds.has(row.target.id),
-              status: updateStatus,
-            });
-            return (
-              <SavedMachineRow
-                key={row.id}
-                row={row}
-                section={section}
-                selected={selectedId === row.target.id}
-                connected={connected}
-                connecting={rowConnecting}
-                busy={
-                  (rowAction != null && rowAction !== "connect") ||
-                  pairingStopping
-                }
-                saving={saving}
-                formPrefill={formPrefill}
-                testOpen={testingId === row.target.id}
-                error={
-                  (row.target.pairedMachine?.machineKey
-                    ? accountRowErrors[
-                        row.target.pairedMachine.machineKey
-                      ] ?? null
-                    : null) ?? error
-                }
-                stageLabel={
-                  pairedMachineKey && pairingThisMachine
-                    ? accountRowStages[pairedMachineKey] ?? null
-                    : null
-                }
-                transientStatus={
-                  accountToastByTargetId.get(row.target.id) ?? null
-                }
-                updateTargetVersion={
-                  updatePhase && updateAttempt?.pendingVersion
-                    ? updateAttempt.pendingVersion
-                    : row.connected
-                      ? machineUpdateTargetVersion({ version: row.version }, knownVersions)
-                      : null
-                }
-                updatePhase={updatePhase}
-                power={pairAgainMachine?.power ?? null}
-                updating={machineUpdates.updatingIds.has(row.target.id) || updateStatus?.inFlight === true}
-                checkingUpdate={machineUpdates.checkingIds.has(row.target.id)}
-                updateStatus={updateStatus ? { ok: updateStatus.ok, message: updateStatus.message } : null}
-                onUpdateAndRestart={(targetVersion) =>
-                  void requestMachineUpdates(
-                    [{ id: row.target.id, name: row.target.name, version: row.version, versionLabel: row.versionLabel, targetVersion }],
-                  )
-                }
-                hostKeyTrust={
-                  selectedId === row.target.id ? selectedHostKeyTrust : null
-                }
-                trustingHostKey={trustingHostKey}
-                onConnect={(targetId) => {
-                  const machineKey = row.target.pairedMachine?.machineKey;
-                  if (machineKey) {
-                    setAccountRowErrors((current) => {
-                      if (!(machineKey in current)) return current;
-                      const next = { ...current };
-                      delete next[machineKey];
-                      return next;
-                    });
-                  }
-                  void connectTarget(targetId);
-                }}
-                onDisconnect={(targetId) => void disconnectTarget(targetId)}
-                onToggleTest={toggleTest}
-                onToggleEdit={toggleEditForm}
-                onRemove={(targetId) => void removeTarget(targetId)}
-                onCancelConnect={(targetId) =>
-                  void cancelConnect(targetId, pairedMachineKey)
-                }
-                onSaveAndConnect={saveAndConnect}
-                onAutoConnectChange={(targetId, enabled) => {
-                  void setTargetAutoConnect(targetId, enabled);
-                }}
-                onTrustAndConnect={() => void trustAndConnect()}
-                onCancelHostKeyTrust={() => setHostKeyTrust(null)}
-                onPairAgain={pairAgainMachine
-                  ? () => void connectAccountMachine(pairAgainMachine)
-                  : null}
-              />
-            );
-          }
-          if (row.kind === "account") {
-            return (
-              <AccountMachineRow
-                key={row.id}
-                row={row}
-                section={section}
-                busy={busyById[accountRowKey(row.machine.machineKey)] != null}
-                connecting={
-                  busyById[accountRowKey(row.machine.machineKey)] === "connect"
-                }
-                connected={isMachineConnected(row.machine, connectedIds)}
-                error={accountRowErrors[row.machine.machineKey] ?? null}
-                errorInfo={
-                  row.matchedTargetId
-                    ? statusById.get(row.matchedTargetId)?.lastErrorInfo ?? null
-                    : null
-                }
-                stageLabel={accountRowStages[row.machine.machineKey] ?? null}
-                successLabel={
-                  accountConnectionToasts[row.machine.machineKey]?.label ?? null
-                }
-                onPairNearby={
-                  nearbyPairingByAccountMachineKey.has(row.machine.machineKey)
-                    ? () => {
-                        const machine = nearbyPairingByAccountMachineKey.get(
-                          row.machine.machineKey,
-                        );
-                        if (!machine) return;
-                        setAccountRowErrors((current) => {
-                          if (!(row.machine.machineKey in current)) {
-                            return current;
-                          }
-                          const next = { ...current };
-                          delete next[row.machine.machineKey];
-                          return next;
-                        });
-                        openNearbyPairing(machine);
-                      }
-                    : null
-                }
-                detailOpen={testingId === row.id}
-                onToggleDetail={toggleTest}
-                onConnect={(machine) => void connectAccountMachine(machine)}
-                onCancelConnect={(machine) =>
-                  void cancelConnect(row.matchedTargetId, machine.machineKey)
-                }
-                onRenamed={onAccountMachinesChanged}
-              />
-            );
-          }
-          return (
-            <DiscoveredMachineRow
-              key={row.id}
-              machine={row.machine}
-              section={section}
-              busy={busyById[row.machine.id] != null}
-              testOpen={testingId === row.machine.id}
-              onConnect={(machine) => void connectDiscoveredMachine(machine)}
-              onToggleTest={toggleTest}
-            />
-          );
-        })}
+        {rows.map((row) => renderRow(row, section))}
         </div>
       </div>
     );
@@ -1524,6 +1565,7 @@ export function RemoteTargetList({
   const showEmptyState = !loading
     && !loadingDiscovered
     && totalRows === 0
+    && !showAgent37Group
     && !accountMachinesLoadFailed
     && !addMode;
 
@@ -1748,6 +1790,7 @@ export function RemoteTargetList({
         {renderSection("connected")}
         {renderSection("available")}
         {renderSection("unavailable")}
+        {agent37Group.renderGroup(renderRow)}
 
         {accountMachinesLoadFailed ? (
           <div style={helperTextStyle}>

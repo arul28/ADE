@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import {
   ArrowClockwise,
   PencilSimple,
@@ -37,7 +37,7 @@ import {
   type SavedMachineRow as SavedMachineRowModel,
 } from "./remoteMachineModel";
 import { RemoteErrorCard } from "./RemoteErrorCard";
-import { MachineActionsMenu } from "./MachineActionsMenu";
+import { MachineActionsMenu, type MachineAction } from "./MachineActionsMenu";
 import { Banner } from "../ui/notice";
 import {
   RemoteTargetForm,
@@ -123,6 +123,18 @@ type SavedMachineRowProps = {
   /** Re-runs account adoption for this machine. Offered only when the host
    * rejected the saved pairing and the machine is on this ADE account. */
   onPairAgain?: (() => void) | null;
+  /** More ⋯ items after the row's own: Remove from ADE, a cloud box's lifecycle. */
+  extraActions?: MachineAction[];
+  /** Hides "Remove from this computer" where an extra action already removes it (Remove from ADE). */
+  hideLocalRemove?: boolean;
+  /** A line under the row, inside it: a cloud box's state, size and price. */
+  footer?: ReactNode;
+  /**
+   * A cloud box that is asleep or stopped: the line that replaces the row's
+   * presence ("Asleep on Agent 37") and the button that replaces Connect
+   * (Wake). A sleeping box can't take a connection, so the row never offers one.
+   */
+  parked?: { label: string; action: ReactNode } | null;
 };
 
 export function SavedMachineRow({
@@ -158,6 +170,10 @@ export function SavedMachineRow({
   onTrustAndConnect,
   onCancelHostKeyTrust,
   onPairAgain = null,
+  extraActions = [],
+  hideLocalRemove = false,
+  footer = null,
+  parked = null,
 }: SavedMachineRowProps) {
   const { target, status } = row;
   // Covers this computer's own connect and main's automatic reconnect.
@@ -204,9 +220,12 @@ export function SavedMachineRow({
   const pairAgain = errorCard?.failure === "pairing" ? onPairAgain : null;
   const formOpen = formPrefill?.targetId === target.id;
 
+  const parkedLine = parked && !row.connected && !updatePhase ? parked : null;
   const presence: "online" | "busy" | "offline" | "error" = updatePhase
     ? "busy"
-    : row.connected
+    : parkedLine
+      ? "offline"
+      : row.connected
       ? "online"
       : errorCard && section !== "unavailable"
         ? "error"
@@ -221,7 +240,9 @@ export function SavedMachineRow({
       ? "Sending the update…"
       : updatePhase === "restarting"
         ? `Restarting on ${updateTargetVersion ?? "the new version"}…`
-        : section === "unavailable" && row.unavailableReason
+        : parkedLine
+          ? parkedLine.label
+          : section === "unavailable" && row.unavailableReason
           ? row.unavailableReason
           : row.connected
             ? [routeLabel ?? "Online", latency].filter(Boolean).join(" · ")
@@ -314,7 +335,8 @@ export function SavedMachineRow({
                 Cancel
               </button>
             ) : null}
-            {!row.connected && section !== "unavailable" && !updatePhase && (!targetConnecting || connectingStale) ? (
+            {parkedLine ? parkedLine.action : null}
+            {!parkedLine && !row.connected && section !== "unavailable" && !updatePhase && (!targetConnecting || connectingStale) ? (
               <button
                 type="button"
                 disabled={locked}
@@ -354,19 +376,24 @@ export function SavedMachineRow({
                       onSelect: () => onDisconnect(target.id),
                     }]
                   : []),
-                {
-                  key: "remove",
-                  label: "Remove from this computer",
-                  ariaLabel: `Remove ${target.name}`,
-                  icon: <Trash size={14} />,
-                  danger: true,
-                  disabled: busy,
-                  onSelect: () => onRemove(target.id),
-                },
+                ...extraActions,
+                ...(hideLocalRemove
+                  ? []
+                  : [{
+                      key: "remove",
+                      label: "Remove from this computer",
+                      ariaLabel: `Remove ${target.name}`,
+                      icon: <Trash size={14} />,
+                      danger: true,
+                      disabled: busy,
+                      onSelect: () => onRemove(target.id),
+                    }]),
               ]}
             />
           </div>
         </div>
+
+        {footer}
 
         {updatePhase === "sending" || updatePhase === "restarting" ? (
           <UpdateSteps phase={updatePhase} targetVersion={updateTargetVersion} />

@@ -9,6 +9,10 @@ import {
   describeAgent37TemplateStatus,
   type Agent37CreateMachineArgs,
   type Agent37CreateProgress,
+  type Agent37MachineActionArgs,
+  type Agent37MachineActionKind,
+  type Agent37MachineActionResult,
+  type Agent37MachinesResult,
   type Agent37Status,
   type Agent37TemplateStatus,
 } from "../../../shared/agent37";
@@ -37,6 +41,7 @@ import {
   type Agent37ApprovalWindowResult,
 } from "./agent37MachineCreator";
 import { createAgent37Client } from "./agent37Client";
+import { createAgent37Machines } from "./agent37Machines";
 import {
   createAgent37PendingCreateStore,
   readAgent37BoxSignedIn,
@@ -204,8 +209,12 @@ export function registerAgent37Ipc(args: {
   vaultBridge: Parameters<typeof agent37VaultFromBridge>[0];
   listAccountMachines: () => Promise<AdeAccountMachinesResult>;
   renameMachine: (machineKey: string, name: string) => Promise<unknown>;
+  /** Takes a machine off the ADE account (what Delete box does once the box is gone). */
+  removeAccountMachine: (machineKey: string) => Promise<unknown>;
   /** One coarse product fact per finished create (analytics; never the box or the error). */
   recordMachineCreate?: (outcome: "completed" | "partial" | "cancelled" | "failed") => void;
+  /** One coarse product fact per box action that worked (analytics; never the box). */
+  recordMachineAction?: (action: Agent37MachineActionKind) => void;
   logger: Logger;
 }): void {
   const { logger } = args;
@@ -266,6 +275,15 @@ export function registerAgent37Ipc(args: {
   }, STARTUP_CHECK_DELAY_MS);
   startupTimer.unref?.();
 
+  const machines = createAgent37Machines({
+    client: async () => {
+      const saved = await readAgent37Key(credentials);
+      return saved ? createAgent37Client({ apiKey: saved.key }) : null;
+    },
+    removeAccountMachine: args.removeAccountMachine,
+    logger,
+  });
+
   ipcMain.handle(IPC.agent37GetStatus, async (event): Promise<Agent37Status | null> => {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.agent37GetStatus)) return null;
     return await readAgent37Status(credentials);
@@ -276,6 +294,7 @@ export function registerAgent37Ipc(args: {
     const status = await saveAgent37Key(credentials, typeof arg?.apiKey === "string" ? arg.apiKey : "");
     // A new key may be a new workspace: forget what the old one said, then check.
     builder.reset();
+    machines.resetUsage();
     void builder.ensure();
     sendToAllWindows(IPC.agent37StatusChanged);
     return status;
@@ -292,6 +311,7 @@ export function registerAgent37Ipc(args: {
       throw error;
     }
     builder.reset();
+    machines.resetUsage();
     sendToAllWindows(IPC.agent37StatusChanged);
     return status;
   });
@@ -307,6 +327,22 @@ export function registerAgent37Ipc(args: {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.agent37RetryTemplate)) return null;
     void builder.retry();
     return builder.status();
+  });
+
+  ipcMain.handle(IPC.agent37ListMachines, async (event): Promise<Agent37MachinesResult | null> => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.agent37ListMachines)) return null;
+    return await machines.list();
+  });
+
+  ipcMain.handle(IPC.agent37MachineAction, async (event, arg: Agent37MachineActionArgs): Promise<Agent37MachineActionResult | null> => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.agent37MachineAction)) return null;
+    const result = await machines.run(arg);
+    if (result.ok) {
+      args.recordMachineAction?.(arg.action);
+      // The wallet and the box count moved: Settings and the picker read again.
+      sendToAllWindows(IPC.agent37StatusChanged);
+    }
+    return result;
   });
 
   const creates = new Map<string, AbortController>();
@@ -389,6 +425,9 @@ export function registerAgent37Ipc(args: {
       ).finally(() => {
         creates.delete(requestId);
         if (!sender.isDestroyed()) sender.removeListener("destroyed", onSenderGone);
+        // A box was made (or made and deleted): the machine list and the
+        // wallet read again.
+        sendToAllWindows(IPC.agent37StatusChanged);
       });
       return { started: true };
     },

@@ -23,8 +23,22 @@ export type Agent37Instance = {
   url: string | null;
   pastDue: boolean;
   created: number | null;
-  /** What ADE (or anyone) set at create; ADE tags its creates with `ade_request_id`. */
+  /** Why the last lifecycle action failed, in Agent37's words; null when nothing failed. */
+  statusReason: { code: string | null; message: string | null } | null;
+  /**
+   * What ADE (or anyone) set at create; ADE tags its creates with
+   * `ade_request_id`, and with `ade_machine_key` once the box joins.
+   */
   metadata: Record<string, string>;
+};
+
+/** What the workspace spent per instance over a window (compute and managed calls). */
+export type Agent37Usage = {
+  /** First and last UTC day covered, `YYYY-MM-DD`. */
+  from: string | null;
+  to: string | null;
+  /** US dollars per instance id. Instances that spent nothing are absent. */
+  byInstance: Record<string, number>;
 };
 
 export type Agent37Billing = {
@@ -82,6 +96,23 @@ export class Agent37Error extends Error {
 const REQUEST_TIMEOUT_MS = 20_000;
 /** A create returns once the box is running, which takes tens of seconds. */
 const CREATE_TIMEOUT_MS = 5 * 60_000;
+/**
+ * Lifecycle calls answer once the box reached its new state: sleep and wake in
+ * seconds, a resize that moves hosts in minutes (it answers 202 past its own
+ * limit and finishes on its own). A backup returns when it is written, minutes
+ * on a big disk; giving up does not cancel it.
+ */
+const LIFECYCLE_TIMEOUT_MS = 3 * 60_000;
+const BACKUP_TIMEOUT_MS = 15 * 60_000;
+
+/**
+ * How long the renderer waits for one box action: the longest call (a backup)
+ * plus a minute for the reads around it. On the 30 s IPC default a resize or
+ * backup showed a timeout while Agent37 was still doing it.
+ */
+export const AGENT37_MACHINE_ACTION_IPC_TIMEOUT_MS = BACKUP_TIMEOUT_MS + 60_000;
+/** The machine list reads billing and the boxes together, then the usage: two request budgets. */
+export const AGENT37_LIST_MACHINES_IPC_TIMEOUT_MS = 2 * REQUEST_TIMEOUT_MS + 10_000;
 /** The template context is a few kilobytes; this only bounds a stalled upload. */
 const UPLOAD_TIMEOUT_MS = 2 * 60_000;
 
@@ -97,7 +128,7 @@ export function agent37ErrorMessage(code: string, status: number, upstream: stri
     case "instance_suspended":
       return "Your Agent 37 wallet is past due, so its machines are suspended. Top it up to use them again.";
     case "instance_limit_reached":
-      return "Your Agent 37 workspace is at its machine limit, sleeping ones included. Delete one, or top up to raise the limit.";
+      return "Your Agent 37 workspace is at its machine limit. Delete a machine, or top up to raise the limit. After the first top-up, sleeping machines no longer count.";
     case "tier_limit":
       return "Agent 37 unlocks VMs and bigger sizes after your first top-up.";
     case "no_capacity":
@@ -176,8 +207,22 @@ function toInstance(raw: unknown): Agent37Instance | null {
     url: str(record.url),
     pastDue: record.past_due === true,
     created: num(record.created),
+    statusReason: readStatusReason(record.status_reason),
     metadata: readMetadata(record.metadata),
   };
+}
+
+function readStatusReason(value: unknown): Agent37Instance["statusReason"] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const code = str(record.code);
+  const message = str(record.message);
+  return code || message ? { code, message } : null;
+}
+
+/** `YYYY-MM-DD` in UTC, the form Agent37's usage window takes. */
+export function agent37UsageDay(ms: number): string {
+  return new Date(ms).toISOString().slice(0, 10);
 }
 
 export function createAgent37Client(args: { apiKey: string; fetch?: FetchLike }) {
@@ -296,6 +341,52 @@ export function createAgent37Client(args: { apiKey: string; fetch?: FetchLike })
 
     async deleteInstance(id: string): Promise<void> {
       await api("DELETE", `/instances/${encodeURIComponent(id)}`);
+    },
+
+    /** Checkpoints a running box: memory and processes kept, only the disk bills. */
+    async sleepInstance(id: string): Promise<string> {
+      const body = await api("POST", `/instances/${encodeURIComponent(id)}/sleep`, undefined, LIFECYCLE_TIMEOUT_MS) as Record<string, unknown> | null;
+      return str(body?.status) ?? "sleeping";
+    },
+
+    /** Wakes a sleeping box or starts a stopped one. Answers with the new status. */
+    async startInstance(id: string): Promise<string> {
+      const body = await api("POST", `/instances/${encodeURIComponent(id)}/start`, undefined, LIFECYCLE_TIMEOUT_MS) as Record<string, unknown> | null;
+      return str(body?.status) ?? "running";
+    },
+
+    /**
+     * Changes the shape in place: the box restarts (in-memory state is lost,
+     * files stay). Omitted fields keep their value; disk only grows.
+     */
+    async resizeInstance(id: string, resources: { cpu: number; memory: number; disk?: number }): Promise<string> {
+      const body = await api("POST", `/instances/${encodeURIComponent(id)}/resize`, resources, LIFECYCLE_TIMEOUT_MS) as Record<string, unknown> | null;
+      return str(body?.status) ?? "updating";
+    },
+
+    /** An on-demand backup, taken live. Once per box every 15 minutes (429 otherwise). */
+    async createBackup(id: string): Promise<{ id: string | null; created: number | null; sizeBytes: number | null }> {
+      const body = await api("POST", `/instances/${encodeURIComponent(id)}/backups`, undefined, BACKUP_TIMEOUT_MS) as Record<string, unknown> | null;
+      return { id: str(body?.id), created: num(body?.created), sizeBytes: num(body?.size_bytes) };
+    },
+
+    /** Replaces the box's metadata (Agent37 does not merge it). */
+    async setInstanceMetadata(id: string, metadata: Record<string, string>): Promise<void> {
+      await api("PATCH", `/instances/${encodeURIComponent(id)}`, { metadata });
+    },
+
+    /** What each instance spent in the window (at most 90 days). Compute lands within the hour. */
+    async usage(window: { from: string; to?: string }): Promise<Agent37Usage> {
+      const query = new URLSearchParams({ from: window.from, ...(window.to ? { to: window.to } : {}) });
+      const body = await api("GET", `/usage?${query.toString()}`) as Record<string, unknown> | null;
+      const byInstance: Record<string, number> = {};
+      for (const entry of Array.isArray(body?.instances) ? body.instances : []) {
+        const record = entry && typeof entry === "object" ? entry as Record<string, unknown> : null;
+        const id = str(record?.id);
+        const micros = num(record?.total_micros);
+        if (id && micros != null) byInstance[id] = micros / 1_000_000;
+      }
+      return { from: str(body?.from), to: str(body?.to), byInstance };
     },
 
     /** Whether the workspace has this template; false on 404, throws on anything else. */

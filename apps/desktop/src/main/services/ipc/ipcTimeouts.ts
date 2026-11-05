@@ -21,6 +21,7 @@ import {
   REMOTE_MACHINE_UPDATE_IPC_TIMEOUT_MS,
   ANDROID_EMULATOR_LIFECYCLE_TIMEOUT_MS,
 } from "../localRuntime/localRuntimeTimeoutPolicy";
+import { AGENT37_LIST_MACHINES_IPC_TIMEOUT_MS, AGENT37_MACHINE_ACTION_IPC_TIMEOUT_MS } from "../agent37/agent37Client";
 import { DEMO_RECORDING_STOP_TIMEOUT_MS } from "../../../shared/demoVideo/demoContract";
 import { builtInBrowserRemoteCallDoneTimeoutMs } from "../../../shared/types/builtInBrowserRemote";
 import { PROJECT_REPAIR_IPC_TIMEOUT_MS } from "../../../../../ade-cli/src/serviceManager/runtimeServiceBudgets";
@@ -233,6 +234,11 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
       return REMOTE_RUNTIME_BOOTSTRAP_TIMEOUT_MS;
     case IPC.lanesArchive:
       return 4 * 60_000;
+    // A box's sleep, wake, resize, backup or delete answers once Agent37 is done.
+    case IPC.agent37MachineAction:
+      return AGENT37_MACHINE_ACTION_IPC_TIMEOUT_MS;
+    case IPC.agent37ListMachines:
+      return AGENT37_LIST_MACHINES_IPC_TIMEOUT_MS;
     case IPC.filesDelete:
       return localRuntimeActionIpcTimeoutMs("file", "deletePath");
     // Checkout, `worktree add` and `worktree remove`; see

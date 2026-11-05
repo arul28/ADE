@@ -12369,6 +12369,7 @@ export function registerIpc({
     vaultBridge: accountVaultBridge,
     listAccountMachines: () => accountBridge.listMachines(),
     renameMachine: (machineKey, name) => accountBridge.renameMachine(machineKey, name),
+    removeAccountMachine: (machineKey) => accountBridge.removeMachine(machineKey),
     // Where the create's outcome is known. Coarse outcome only; a six-hour
     // dedupe per outcome bounds it to 16 accepted events a day.
     recordMachineCreate: (outcome) => {
@@ -12378,6 +12379,19 @@ export function registerIpc({
         properties: { feature: "connections", action: "agent37_machine_create", outcome },
         projectId: null,
         dedupeKey: `agent37_machine_create:${outcome}`,
+        minimumIntervalMs: 6 * 60 * 60 * 1_000,
+      });
+    },
+    // Which box actions people take from ADE. One prefixed outcome per action
+    // and a six-hour dedupe each: at most 20 accepted events a day.
+    recordMachineAction: (action) => {
+      const outcome = `box_${action}`;
+      productAnalyticsService?.capture({
+        event: "ade_feature_used",
+        surface: "desktop",
+        properties: { feature: "connections", action: "agent37_machine_action", outcome },
+        projectId: null,
+        dedupeKey: `agent37_machine_action:${outcome}`,
         minimumIntervalMs: 6 * 60 * 60 * 1_000,
       });
     },

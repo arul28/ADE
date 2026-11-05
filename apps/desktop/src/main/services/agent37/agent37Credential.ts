@@ -16,7 +16,7 @@
 
 import type { SyncCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
 import { ACCOUNT_SCOPE_ALL } from "../../../shared/accountSettingsScope";
-import type { Agent37Status } from "../../../shared/agent37";
+import { agent37StatusAwake, type Agent37Status } from "../../../shared/agent37";
 import { CONNECT_FIELD_IDS } from "../../../shared/integrationConnect";
 import type { AccountVaultResult } from "../../../shared/types/accountVault";
 import { describeIntegrationCredentialStorage, type IntegrationCredentialStorage } from "../account/integrationCredentialStorage";
@@ -271,6 +271,7 @@ export async function readAgent37Status(deps: Agent37CredentialDeps): Promise<Ag
     tier: null,
     instanceLimit: null,
     instanceCount: null,
+    runningCount: null,
     pastDue: false,
     error: null,
   };
@@ -285,6 +286,7 @@ export async function readAgent37Status(deps: Agent37CredentialDeps): Promise<Ag
       tier: billing.tier,
       instanceLimit: billing.instanceLimit,
       instanceCount: instances.filter((instance) => instance.status !== "deleted" && instance.status !== "failed").length,
+      runningCount: instances.filter((instance) => agent37StatusAwake(instance.status)).length,
       pastDue: billing.pastDue,
       error: null,
     };

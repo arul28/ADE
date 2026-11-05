@@ -80,7 +80,7 @@ import { machineNameForBinding } from "../shared/machineIdentity";
 import type { DeeplinkOwnership } from "../shared/deeplinks";
 import type { MachineInventoryDetail } from "../shared/types/machineInventory";
 import type { MachineConnectionRoutes } from "../shared/types/account";
-import type { Agent37CreateMachineArgs, Agent37CreateProgress, Agent37Status, Agent37TemplateStatus } from "../shared/agent37";
+import type { Agent37CreateMachineArgs, Agent37CreateProgress, Agent37MachineActionArgs, Agent37MachineActionResult, Agent37MachinesResult, Agent37Status, Agent37TemplateStatus } from "../shared/agent37";
 import {
   loopbackOriginLabel,
   parseLoopbackUrl,
@@ -12938,6 +12938,9 @@ const adeBridge = {
       ipcRenderer.invoke(IPC.agent37CancelCreate, { requestId }),
     getTemplateStatus: (): Promise<Agent37TemplateStatus | null> => ipcRenderer.invoke(IPC.agent37GetTemplateStatus),
     retryTemplate: (): Promise<Agent37TemplateStatus | null> => ipcRenderer.invoke(IPC.agent37RetryTemplate),
+    listMachines: (): Promise<Agent37MachinesResult | null> => ipcRenderer.invoke(IPC.agent37ListMachines),
+    machineAction: (args: Agent37MachineActionArgs): Promise<Agent37MachineActionResult | null> =>
+      ipcRenderer.invoke(IPC.agent37MachineAction, args),
     /** The key was saved or removed in this app; read the status again. */
     onStatusChanged: (cb: () => void): (() => void) => {
       const listener = () => cb();
