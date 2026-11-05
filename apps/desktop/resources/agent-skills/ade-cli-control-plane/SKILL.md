@@ -392,9 +392,11 @@ needs a sign-in, tell them to press **Sign in** on its row at
 ade://settings/mcp.servers, then **Refresh chat**.
 
 To remove a server the user asks to drop, run
-`ade mcp servers remove <name> --reason "…"`: a card asks them, and on yes it
-leaves their account with its saved values. Its tools stay in this chat until
-they press **Refresh chat**. (`ade mcp remove` is for apps connected to ADE,
+`ade mcp servers remove <name> --reason "…"`: a card asks them, and on yes the
+server, its saved values and its sign-in are removed from their account. If
+the receipt says the values were not removed, tell them and link
+ade://settings/mcp.servers. Its tools stay in this chat until they press
+**Refresh chat**. (`ade mcp remove` is for apps connected to ADE,
 not these servers.) GitHub, Linear and Jira are ADE integrations: to
 disconnect one, link ade://settings/integrations.github (or `.linear`,
 `.jira`); the user presses Disconnect there.

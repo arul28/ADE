@@ -32,6 +32,7 @@ export function HelpHint({
   tooltipStyle?: CSSProperties;
 }) {
   const id = useId();
+  const descriptionId = useId();
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -63,7 +64,7 @@ export function HelpHint({
         ref={triggerRef}
         type="button"
         aria-label={label}
-        aria-describedby={open ? id : undefined}
+        aria-describedby={descriptionId}
         aria-expanded={open}
         onMouseEnter={show}
         onMouseLeave={hideSoon}
@@ -75,6 +76,8 @@ export function HelpHint({
       >
         ?
       </button>
+      {/* Always there for assistive tech; the tooltip is for the eye. */}
+      <span id={descriptionId} className="sr-only">{text}</span>
       {open ? (
         <AnchoredTooltip
           open

@@ -14,16 +14,16 @@ const BARE_ADE_LINK = /(?<![A-Za-z0-9+.-])ade:\/\/[^\s<>"'`]+/gi;
  * (`ade://file/src/app/(auth)/page.tsx`).
  */
 function trimLinkEnd(candidate: string): string {
+  // Counted once, then kept current as the end moves: linear in the address.
+  const count = (char: string) => candidate.split(char).length - 1;
+  let parens = count(")") - count("(");
+  let brackets = count("]") - count("[");
   let end = candidate.length;
-  const unopened = (close: string, open: string) => {
-    const head = candidate.slice(0, end);
-    return head.split(close).length > head.split(open).length;
-  };
   for (;;) {
     const last = candidate[end - 1];
     if (last && ".,:;!?'\"".includes(last)) end -= 1;
-    else if (last === ")" && unopened(")", "(")) end -= 1;
-    else if (last === "]" && unopened("]", "[")) end -= 1;
+    else if (last === ")" && parens > 0) { end -= 1; parens -= 1; }
+    else if (last === "]" && brackets > 0) { end -= 1; brackets -= 1; }
     else break;
   }
   return candidate.slice(0, end);
