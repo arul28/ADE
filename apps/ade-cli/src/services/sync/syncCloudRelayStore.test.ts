@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   buildHostSignatureBase,
   buildPipeSignatureBase,
@@ -11,6 +11,19 @@ import {
   httpToWsUrl,
   signRelayHmacHex,
 } from "./syncCloudRelayStore";
+
+/**
+ * A store as a freshly started process builds it. Each process remembers the
+ * identity it read (see `FileStampedMemo`), so a file another process damaged
+ * or rewrote is resolved from disk only by a process that has not read it yet.
+ */
+async function storeInNewProcess(
+  args: Parameters<typeof createSyncCloudRelayStore>[0],
+): Promise<ReturnType<typeof createSyncCloudRelayStore>> {
+  vi.resetModules();
+  const fresh = await import("./syncCloudRelayStore");
+  return fresh.createSyncCloudRelayStore(args);
+}
 
 describe("syncCloudRelayStore", () => {
   let dir: string;
@@ -41,7 +54,7 @@ describe("syncCloudRelayStore", () => {
     expect(store.getMachineIdentity().machineKey).toBe(machineKey);
   });
 
-  it("ignores and drops legacy kill-switch fields", () => {
+  it("ignores and drops legacy kill-switch fields", async () => {
     const seeded = createSyncCloudRelayStore({ filePath });
     const { machineKey, secret } = seeded.getMachineIdentity();
     fs.writeFileSync(filePath, `${JSON.stringify({
@@ -52,7 +65,7 @@ describe("syncCloudRelayStore", () => {
       relayUrl: "https://relay.example.com",
     })}\n`);
 
-    const config = createSyncCloudRelayStore({ filePath }).getConfig();
+    const config = (await storeInNewProcess({ filePath })).getConfig();
     expect(config).toEqual({
       machineKey,
       secret,
@@ -90,30 +103,30 @@ describe("syncCloudRelayStore", () => {
     ]);
   });
 
-  it("never mints a new identity out of an unparsable file", () => {
+  it("never mints a new identity out of an unparsable file", async () => {
     const seeded = createSyncCloudRelayStore({ filePath });
     const first = seeded.getMachineIdentity();
     // Exactly what a truncated write leaves behind — and what used to be read
     // as "this machine has no identity", minting a brand new one.
     fs.writeFileSync(filePath, '{"machineKey": "');
 
-    const recovered = createSyncCloudRelayStore({ filePath }).getMachineIdentity();
+    const recovered = (await storeInNewProcess({ filePath })).getMachineIdentity();
 
     expect(recovered).toEqual(first);
     expect(JSON.parse(fs.readFileSync(filePath, "utf8"))).toMatchObject(first);
   });
 
-  it("falls back to the .bak sibling when the primary file is destroyed", () => {
+  it("falls back to the .bak sibling when the primary file is destroyed", async () => {
     const seeded = createSyncCloudRelayStore({ filePath });
     const first = seeded.getMachineIdentity();
     expect(fs.existsSync(`${filePath}.bak`)).toBe(true);
     fs.writeFileSync(filePath, "not json at all");
     const events: Array<[string, Record<string, unknown> | undefined]> = [];
 
-    const recovered = createSyncCloudRelayStore({
+    const recovered = (await storeInNewProcess({
       filePath,
       logger: { info: (event, data) => events.push([event, data]) },
-    }).getMachineIdentity();
+    })).getMachineIdentity();
 
     expect(recovered).toEqual(first);
     expect(events).toContainEqual([
@@ -126,17 +139,17 @@ describe("syncCloudRelayStore", () => {
     ]);
   });
 
-  it("mints a fresh identity only when neither file yields one", () => {
+  it("mints a fresh identity only when neither file yields one", async () => {
     const seeded = createSyncCloudRelayStore({ filePath });
     const first = seeded.getMachineIdentity();
     fs.writeFileSync(filePath, "{}");
     fs.writeFileSync(`${filePath}.bak`, "{}");
     const events: Array<[string, Record<string, unknown> | undefined]> = [];
 
-    const minted = createSyncCloudRelayStore({
+    const minted = (await storeInNewProcess({
       filePath,
       logger: { info: (event, data) => events.push([event, data]) },
-    }).getMachineIdentity();
+    })).getMachineIdentity();
 
     expect(minted.machineKey).not.toBe(first.machineKey);
     expect(events).toContainEqual([
@@ -173,6 +186,26 @@ describe("syncCloudRelayStore", () => {
     store.setRelayUrl("http://127.0.0.1:8787");
     const { machineKey } = store.getMachineIdentity();
     expect(store.getRelayWssUrl()).toBe(`ws://127.0.0.1:8787/connect/${machineKey}`);
+  });
+
+  it("keeps every reader on the identity in force, whichever process changed it", async () => {
+    const perRequest = () => createSyncCloudRelayStore({ filePath });
+    perRequest().getMachineIdentity(); // the identity already exists on disk
+    const brain = createSyncCloudRelayStore({ filePath });
+    const first = brain.getMachineIdentity();
+
+    // A rotation in this process is what every store over the file reads next.
+    const rotated = perRequest().rotateMachineIdentity(first.machineKey);
+    expect(rotated.rotated).toBe(true);
+    expect(brain.getMachineIdentity().machineKey).toBe(rotated.config.machineKey);
+
+    // Another process rewrites the file: a long-lived reader moves to it once
+    // its background check has seen the change, without a restart.
+    const peer = { machineKey: "b".repeat(32), secret: "c".repeat(48) };
+    fs.writeFileSync(filePath, `${JSON.stringify(peer)}\n`);
+    fs.writeFileSync(`${filePath}.bak`, `${JSON.stringify(peer)}\n`);
+    await vi.waitFor(() => expect(brain.getMachineIdentity()).toEqual(peer));
+    expect(perRequest().getMachineIdentity()).toEqual(peer);
   });
 
   it("rotates the full identity only when the expected key still matches", () => {
@@ -351,7 +384,7 @@ describe("syncCloudRelayStore", () => {
     expect(createSyncCloudRelayStore({ filePath }).getConfig()).toEqual(first);
   });
 
-  it("serves a .bak-recovered identity while another process owns the lock", () => {
+  it("serves a .bak-recovered identity while another process owns the lock", async () => {
     const seeded = createSyncCloudRelayStore({ filePath });
     const first = seeded.getConfig();
     fs.writeFileSync(filePath, "not json at all");
@@ -366,7 +399,7 @@ describe("syncCloudRelayStore", () => {
     // Every field of this identity is already on disk in the sibling, so a
     // reader that cannot take the lock has nothing to be unsure about — the
     // rewrite of the primary simply waits for an uncontended read.
-    const store = createSyncCloudRelayStore({ filePath, lockWaitMs: 0 });
+    const store = await storeInNewProcess({ filePath, lockWaitMs: 0 });
     expect(store.getConfig()).toEqual(first);
     expect(store.getRelayWssUrl()).toContain(first.machineKey);
 
@@ -375,7 +408,7 @@ describe("syncCloudRelayStore", () => {
     expect(JSON.parse(fs.readFileSync(filePath, "utf8"))).toEqual(first);
   });
 
-  it("still refuses to hand out an identity that exists on no file", () => {
+  it("still refuses to hand out an identity that exists on no file", async () => {
     createSyncCloudRelayStore({ filePath }).getConfig();
     // Neither copy yields a machine key, so the only answer this process has is
     // one it minted in memory — and the lock holder may be minting a different
@@ -390,7 +423,8 @@ describe("syncCloudRelayStore", () => {
       createdAt: new Date().toISOString(),
     })}\n`, { flag: "wx", mode: 0o600 });
 
-    expect(() => createSyncCloudRelayStore({ filePath, lockWaitMs: 0 }).getConfig())
+    const store = await storeInNewProcess({ filePath, lockWaitMs: 0 });
+    expect(() => store.getConfig())
       .toThrow("configuration is being updated by another live ADE process");
   });
 

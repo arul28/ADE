@@ -1,5 +1,6 @@
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { captureError } from "../../../../desktop/src/shared/sentry/capture";
 import { terminatePidGracefullyAsync, type WindowsProcessFacts } from "../../serviceManager/common";
 import type {
   SyncHostConflictPublic,
@@ -358,7 +359,10 @@ function raceWithDeadline(
       const deps = { ...configured, ...args };
       void diagnoseSyncHostReadinessAsync(deps)
         // A probe that throws still ends the race: report it without a conflict.
-        .catch(() => diagnoseSyncHostReadiness({ ...deps, detectConflict: () => null }))
+        .catch((error: unknown) => {
+          captureError(error, { fingerprint: ["sync_host", "deadline_diagnose_failed"] });
+          return diagnoseSyncHostReadiness({ ...deps, detectConflict: () => null });
+        })
         .then((snapshot) => resolve({
         operationId: "",
         ok: false,

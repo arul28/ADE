@@ -2372,6 +2372,7 @@ describe("local account machine identity", () => {
 
   it("recovers from a Windows delete-pending create race instead of throwing", () => {
     const secretsDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-machine-identity-race-"));
+    const posixSecretsDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-machine-identity-posix-"));
     const deviceIdPath = path.join(secretsDir, "sync-device-id");
     // The real race: this process finds no id, and its exclusive create loses
     // to a sibling that wrote the file a moment earlier. On Windows that
@@ -2393,19 +2394,20 @@ describe("local account machine identity", () => {
       expect(identity.deviceId).toBe("winner-device-id");
 
       // The same failure on a POSIX platform is a genuine error, not a race,
-      // and must surface rather than be swallowed.
-      fs.rmSync(deviceIdPath, { force: true });
+      // and must surface rather than be swallowed. A machine with no id yet:
+      // this process already remembers the id above for its own folder.
       writeFileSync.mockImplementationOnce(() => {
         throw Object.assign(new Error("EPERM"), { code: "EPERM" });
       });
       expect(() => getOrCreateLocalAccountMachineIdentity({
-        secretsDir,
+        secretsDir: posixSecretsDir,
         randomUUID: () => "loser-device-id",
         platform: "darwin",
       })).toThrow(/EPERM/);
     } finally {
       writeFileSync.mockRestore();
       fs.rmSync(secretsDir, { recursive: true, force: true });
+      fs.rmSync(posixSecretsDir, { recursive: true, force: true });
     }
   });
 });
