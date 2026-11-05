@@ -464,7 +464,7 @@ const EVENT_PROPERTY_KEYS: Record<ProductAnalyticsEventName, ReadonlySet<string>
   ade_tool_fetched: new Set(["provider", "outcome", "duration_bucket", "tool_error_kind"]),
   // Exactly two keys, and deliberately NOT folded into `ade_error`. That event
   // is keyed by `action` (a usage-ledger action name) and coarsens its failure
-  // to `error_kind`'s eight buckets, which is precisely the information this
+  // to `error_kind`'s closed buckets, which is precisely the information this
   // event exists to keep: which brain domain, and the structured code the brain
   // attached. Reusing it would also put a new high-volume emitter inside
   // `ade_error`'s 20/day cap and dilute the one signal that already works.
@@ -737,10 +737,17 @@ export function safeProductAnalyticsString(value: ProductAnalyticsPropertyValue)
   return trimmed && trimmed.length <= 80 && SLUG_VALUE.test(trimmed) ? trimmed : null;
 }
 
+/** The `error_kind` buckets. A sender that already names one keeps it. */
+const ERROR_KIND_BUCKETS = new Set([
+  "timeout", "expired", "cancelled", "permission", "network", "type_error", "range_error", "syntax_error",
+  "rate_limit", "budget", "busy", "cli_missing", "other",
+]);
+
 function coarseErrorKind(value: ProductAnalyticsPropertyValue): string | null {
   if (typeof value !== "string" || value.length > 256) return null;
   const normalized = value.trim().toLowerCase();
   if (!normalized) return null;
+  if (ERROR_KIND_BUCKETS.has(normalized)) return normalized;
   if (normalized.includes("timeout")) return "timeout";
   if (normalized.includes("expired")) return "expired";
   if (normalized.includes("abort") || normalized.includes("cancel")) return "cancelled";

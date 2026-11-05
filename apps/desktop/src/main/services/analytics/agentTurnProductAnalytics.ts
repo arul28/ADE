@@ -1,4 +1,8 @@
-import type { AgentChatTurnSettledEvent, ChatHandoffReplayOutcome } from "../chat/agentChatService";
+import type {
+  AgentChatTurnErrorCategory,
+  AgentChatTurnSettledEvent,
+  ChatHandoffReplayOutcome,
+} from "../chat/agentChatService";
 import type { AppleDeviceAnalyticsOutcome } from "../../../shared/types/iosSimulator";
 import type { ChatAutoResumeAnalyticsProperties } from "../chat/chatAutoResumeCoordinator";
 import type { CrossMachineMoveOutcome } from "../chat/crossMachineHandoffOrchestrator";
@@ -9,6 +13,11 @@ import { detectInstallSource } from "./installSource";
 
 type AgentTurnAnalytics = Pick<ProductAnalyticsService, "captureInternal">;
 
+/**
+ * One fact per outcome per installation an hour. A title is regenerated after
+ * most turns, so without the limit this was a quarter of the events of the
+ * installs that reached their daily budget, and pushed out what people did.
+ */
 export function captureSessionMetadataRegeneratedAnalytics(args: {
   analytics: AgentTurnAnalytics;
   projectId: string;
@@ -19,6 +28,8 @@ export function captureSessionMetadataRegeneratedAnalytics(args: {
     surface: "api",
     projectId: args.projectId,
     sessionId: args.event.sessionId,
+    dedupeKey: `chat_metadata_regenerated:${args.event.outcome}`,
+    minimumIntervalMs: 60 * 60_000,
     properties: {
       feature: "chat",
       action: "metadata_regenerated",
@@ -248,7 +259,8 @@ export function captureChatAutoResumeAnalytics(args: {
   args.analytics.captureInternal({
     event: "ade_feature_used",
     surface: "api",
-    properties: { feature: "work", ...args.properties },
+    // Arming, resuming and pausing all happen with nobody at the keyboard.
+    properties: { feature: "work", mode: "automatic", ...args.properties },
   });
 }
 
@@ -419,6 +431,18 @@ export function captureClaudePluginsIgnoredAnalytics(args: {
   });
 }
 
+/** A failed turn's `error_kind`: its error's category, in the policy's buckets. */
+const TURN_ERROR_KIND: Readonly<Record<AgentChatTurnErrorCategory, string>> = {
+  auth: "permission",
+  agent_cli_auth: "permission",
+  rate_limit: "rate_limit",
+  budget: "budget",
+  network: "network",
+  busy: "busy",
+  agent_cli_missing: "cli_missing",
+  unknown: "other",
+};
+
 export function captureAgentTurnSettledAnalytics(args: {
   analytics: AgentTurnAnalytics;
   projectId: string;
@@ -507,7 +531,7 @@ export function captureAgentTurnSettledAnalytics(args: {
     minimumIntervalMs: 24 * 60 * 60_000,
     properties: {
       feature,
-      error_kind: "other",
+      error_kind: event.errorCategory ? TURN_ERROR_KIND[event.errorCategory] : "other",
       outcome: "failure",
       recoverable: true,
       source: "runtime",

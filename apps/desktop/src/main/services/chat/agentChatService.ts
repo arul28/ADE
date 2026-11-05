@@ -5350,6 +5350,12 @@ type ManagedChatSession = {
    */
   turnReasoningEffort?: string | null;
   /**
+   * Why the running turn failed, from its last error event that said
+   * (`errorInfo.category`). Cleared when a turn starts and read once by its
+   * settle, for the `ade_error` event's `error_kind`. In memory only.
+   */
+  turnErrorCategory?: AgentChatTurnErrorCategory | null;
+  /**
    * The chat's personal profile changed while its provider process was
    * mid-turn (`adoptLegacyPersonalSessionAsAssistant`). That process was built
    * for the old profile (prompt, skills, settings), so the next fresh turn
@@ -11359,6 +11365,12 @@ function personalChatUserPromptFallback(
  */
 export type ChatHandoffReplayOutcome = "fit" | "truncated" | "refused" | "retried" | "gave_up";
 
+/** How a provider error event categorized a failure. */
+export type AgentChatTurnErrorCategory = Extract<
+  NonNullable<Extract<AgentChatEvent, { type: "error" }>["errorInfo"]>,
+  { category: string }
+>["category"];
+
 export type AgentChatTurnSettledEvent = Readonly<{
   sessionId: string;
   turnId: string;
@@ -11371,6 +11383,8 @@ export type AgentChatTurnSettledEvent = Readonly<{
   costUsd?: number | null;
   /** Wall time from the turn's start to its done event. */
   durationMs?: number | null;
+  /** On a failed turn, why, when its error event said; otherwise null. */
+  errorCategory?: AgentChatTurnErrorCategory | null;
 }>;
 
 type AgentChatAutomationService = {
@@ -22176,6 +22190,7 @@ export function createAgentChatService(args: {
       // before this turn's first event is placed by its time instead.
       lastTurnIdBySession.delete(managed.session.id);
       managed.turnReasoningEffort = managed.session.reasoningEffort ?? null;
+      managed.turnErrorCategory = null;
     }
     managed.session.status = "active";
     managed.session.idleSinceAt = null;
@@ -24169,6 +24184,8 @@ export function createAgentChatService(args: {
       // The model that answered: a reroute's served model when it is a catalog
       // model, else the requested one. Non-catalog names report as `other`.
       const servedModelId = event.servedModel ? getModelById(event.servedModel)?.id : undefined;
+      const errorCategory = event.status === "failed" ? managed.turnErrorCategory ?? null : null;
+      managed.turnErrorCategory = null;
       onTurnSettled({
         sessionId: managed.session.id,
         turnId: event.turnId,
@@ -24179,6 +24196,7 @@ export function createAgentChatService(args: {
         usage: event.usage,
         costUsd: event.costUsd ?? null,
         durationMs: turnStartedMs === undefined ? null : Math.max(0, Date.now() - turnStartedMs),
+        errorCategory,
       });
     } catch (error) {
       logger.warn("agent_chat.turn_settled_callback_failed", {
@@ -24979,6 +24997,10 @@ export function createAgentChatService(args: {
       || normalizedEvent.type === "error"
     ) {
       managed.lastActivitySignature = null;
+    }
+
+    if (normalizedEvent.type === "error" && typeof normalizedEvent.errorInfo === "object" && normalizedEvent.errorInfo) {
+      managed.turnErrorCategory = normalizedEvent.errorInfo.category;
     }
 
     if (normalizedEvent.type === "done") {

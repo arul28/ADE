@@ -57,16 +57,19 @@ jobs:
           ADE_POSTHOG_HOST: ${{ secrets.ADE_POSTHOG_HOST }}
         run: bash ./.github/scripts/ios-testflight-internal-build-bump-asc.sh
 
-      # Symbolication for the crash reports Sentry receives. Runs only after the
-      # archive exists; a missing token or a failed upload warns and never fails
-      # the TestFlight release.
-      - name: Upload dSYMs to Sentry
+      # Symbolication for the crash reports Sentry and PostHog receive. Runs
+      # only after the archive exists; a missing token or a failed upload warns
+      # and never fails the TestFlight release.
+      - name: Upload dSYMs to Sentry and PostHog
         env:
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          POSTHOG_PERSONAL_API_KEY: ${{ secrets.POSTHOG_PERSONAL_API_KEY }}
+          POSTHOG_PROJECT_ID: ${{ secrets.POSTHOG_PROJECT_ID }}
+          POSTHOG_HOST: ${{ secrets.POSTHOG_HOST }}
         # An older git_ref may not have the script yet; that must not fail the run.
         run: |
           bash scripts/release-tools/upload-ios-dsyms.sh "${RUNNER_TEMP}/ade-ios-internal-bump-${ADE_IOS_BUILD_NUMBER}/ADE.xcarchive" \
-            || echo "::warning::Sentry dSYM upload did not run; this build will not be symbolicated."
+            || echo "::warning::The dSYM upload did not run; this build will not be symbolicated."
 
       # "iOS 1.1.10 (10008) · TestFlight" on PostHog's charts, for the App Store
       # app (the ADE Beta app is marked by ios-testflight.yml). Skips without
