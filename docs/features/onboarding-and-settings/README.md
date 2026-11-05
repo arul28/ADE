@@ -2194,7 +2194,12 @@ due, a pager.
 
 To add one: create `pages/<Name>.tsx` exporting a default component that
 takes `{ close }` (call it before navigating from a "Try it" button), then add
-its entry at the top of `ANNOUNCEMENT_PAGES`.
+its entry at the top of `ANNOUNCEMENT_PAGES`. Most pages are a
+`WhatsNewFeature` (`pages/WhatsNewFeature.tsx`): a place, a headline, one
+short sentence that says where to try it, and an `action` that runs an ADE
+Tips entry, beside a looping recording (muted, autoplays), a crossfade of
+screenshots (`holdMs` per slide, and an optional step `caption` under each)
+or phones.
 
 The account management page introduces provider accounts, usage, settings and
 the initial context inventory, and links to AI connections.
@@ -2240,8 +2245,9 @@ tip goes Home and rings the projects ("Open a project first"). All of it is
 navigation in the front window: no call reaches a machine.
 
 Tips also come to the user now and then (`useFeatureTipCard`): a while into a
-project session, one tip they have not tried shows as the corner card ("Tip",
-Try it, Not now), in this computer's own random order. It shares the corner
+project session, one tip they have not tried shows as the corner card (its icon and
+title on one row, Try it, Not now, and its screenshot: a full-width one for a
+tip that is a large tile in ADE Tips), in this computer's own random order. It shares the corner
 with situational suggestions (one card at a time, never during onboarding,
 and not within half an hour of a suggestion) but keeps its own pace: up to
 three a day, two hours apart, each tip once, and trying a tip from ADE Tips or

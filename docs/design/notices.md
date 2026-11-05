@@ -132,7 +132,8 @@ event, and it is never urgent, so it has its own quiet presentation:
   or composer and pushes nothing, and it is where ADE already puts things you
   may glance at and ignore. One suggestion shows at a time; the rest wait. It
   also waits while a modal or a first-chat onboarding hint is up.
-- **What it says.** A quiet eyebrow (`eyebrow`, default "Suggestion"), a title
+- **What it says.** A quiet eyebrow (`eyebrow`, default "Suggestion"; `null`
+  drops it and puts the title beside the icon, as tip cards do), a title
   that says what the feature **is** ("Lane templates make new lanes ready to
   work"), one "why now" line in `detail`, then two actions: the primary
   (`variant: "solid"`) and "Not now" (`variant: "secondary"`). No ×: "Not now"
@@ -142,7 +143,9 @@ event, and it is never urgent, so it has its own quiet presentation:
   its hue glowing from a corner, a big tinted icon (pass the glyph at 21px,
   `weight="duotone"`), the eyebrow in the serif italic. `hue` sets the colour
   (a tip card wears its ADE Tips group's; default ADE violet) and `art` puts a
-  screenshot in the bottom-right corner beside the actions. Only this layout
+  screenshot in the bottom-right corner beside the actions; `art.large` gives it
+  a full-width row under the actions instead, for tips that are large tiles in
+  ADE Tips. Only this layout
   looks like this; the other banners keep the banner look.
 - **The signal.** Show it only when the user can already understand it. The
   lane template suggestion waits until the project has a lane besides the main
