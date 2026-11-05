@@ -1,4 +1,5 @@
 import type { Logger } from "../logging/logger";
+import { createRepeatedFailureGate } from "../logging/repeatedFailure";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { createPrService } from "./prService";
 import type { AdeDb } from "../state/kvDb";
@@ -209,7 +210,7 @@ export function createPrPollingService({
   const RELAY_SAFETY_SWEEP_INTERVAL_MS = 15 * 60_000;
   // Epoch (not "never") so the first tick after start still discovers.
   let lastDiscoveryAtMs = 0;
-  let lastDiscoveryFailure: string | null = null;
+  const discoveryFailures = createRepeatedFailureGate();
 
   const readIntervalMs = (): number => {
     const seconds = projectConfigService.get().effective.github?.prPollingIntervalSeconds;
@@ -340,15 +341,13 @@ export function createPrPollingService({
         lastDiscoveryAtMs = Date.now();
         try {
           existing = await prService.discoverLanePullRequests();
-          lastDiscoveryFailure = null;
+          discoveryFailures.clear();
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           // A sweep that keeps failing the same way (a repository GitHub
           // answers 404 for, a credential without access) warns once; the
           // repeats stay in the local log.
-          const repeated = message === lastDiscoveryFailure;
-          lastDiscoveryFailure = message;
-          logger[repeated ? "info" : "warn"]("prs.discovery_failed", { error: message });
+          logger[discoveryFailures.repeated(message) ? "info" : "warn"]("prs.discovery_failed", { error: message });
         }
       }
       if (existing.length === 0) {

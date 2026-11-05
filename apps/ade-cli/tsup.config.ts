@@ -40,9 +40,14 @@ const version = process.env.ADE_CLI_VERSION?.trim() || packageJson.version || "0
 // A bundle that kept a source placeholder (this package's `0.0.0`, or the
 // desktop package.json version a dev launcher passes) was never released, so
 // its Sentry client stays off wherever the bundle is copied to.
-const desktopSourceVersion = (JSON.parse(
-  readFileSync(path.join(packageRoot, "..", "desktop", "package.json"), "utf8"),
-) as { version?: string }).version?.trim();
+const desktopSourceVersion = (() => {
+  try {
+    const desktop = JSON.parse(readFileSync(path.join(packageRoot, "..", "desktop", "package.json"), "utf8")) as { version?: string };
+    return desktop.version?.trim() || null;
+  } catch {
+    return null;
+  }
+})();
 const unreleasedVersion = version === "0.0.0" || version === desktopSourceVersion;
 const posthogProjectToken = process.env.ADE_POSTHOG_PROJECT_TOKEN?.trim() ?? "";
 if (posthogProjectToken && !/^phc_[A-Za-z0-9_-]{8,}$/.test(posthogProjectToken)) {

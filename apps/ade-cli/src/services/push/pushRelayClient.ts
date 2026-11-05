@@ -223,8 +223,13 @@ export class PushRelayUnreachableError extends Error {
   }
 }
 
-/** The answer this client gives itself when the signed-in account changed under a request. */
-const ACCOUNT_CHANGED_REASON = "ADE account changed before the request was authorized";
+/** The answers this client gives itself when the signed-in account changed under a request. */
+const ACCOUNT_CHANGED_REASONS = {
+  beforeAuthorize: "ADE account changed before the request was authorized",
+  whileAuthorizing: "ADE account changed while the request was authorized",
+  inFlight: "ADE account changed while the relay response was in flight",
+} as const;
+const ACCOUNT_CHANGED_REASON_SET: ReadonlySet<string> = new Set(Object.values(ACCOUNT_CHANGED_REASONS));
 
 export class PushRelayRequestError extends Error {
   constructor(
@@ -239,7 +244,7 @@ export class PushRelayRequestError extends Error {
     if (status === 429 || status >= 500) markExpected(this, "environment");
     // The user signed out or switched accounts while the call was on its way;
     // the next call goes out as the new account.
-    else if (status === 409 && reason === ACCOUNT_CHANGED_REASON) markExpected(this, "user");
+    else if (status === 409 && ACCOUNT_CHANGED_REASON_SET.has(reason)) markExpected(this, "user");
   }
 }
 
@@ -401,7 +406,7 @@ export function createPushRelayClient(args: {
           return {
             ok: false,
             status: 409,
-            body: { error: ACCOUNT_CHANGED_REASON },
+            body: { error: ACCOUNT_CHANGED_REASONS.beforeAuthorize },
           };
         }
         // The deadline is the only clock on the token wait. A token
@@ -432,7 +437,7 @@ export function createPushRelayClient(args: {
           return {
             ok: false,
             status: 409,
-            body: { error: "ADE account changed while the request was authorized" },
+            body: { error: ACCOUNT_CHANGED_REASONS.whileAuthorizing },
           };
         }
         headers.authorization = `Bearer ${token}`;
@@ -476,7 +481,7 @@ export function createPushRelayClient(args: {
           return {
             ok: false,
             status: 409,
-            body: { error: "ADE account changed while the relay response was in flight" },
+            body: { error: ACCOUNT_CHANGED_REASONS.inFlight },
           };
         }
         return { ok: response.ok, status: response.status, body: parsed };

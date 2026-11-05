@@ -4,6 +4,7 @@ import { URL } from "node:url";
 import { WebSocket, type ClientOptions, type RawData } from "ws";
 import type { AutomationIngressEventRecord, AutomationIngressSource, AutomationIngressStatus, AutomationRule, AutomationTriggerType, GitHubRepoRef } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
+import { createRepeatedFailureGate } from "../logging/repeatedFailure";
 import type { AdeDb } from "../state/kvDb";
 import type { createAutomationService } from "./automationService";
 import type { AutomationSecretService } from "./automationSecretService";
@@ -492,8 +493,8 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
   let lastRelayActivityAtMs = Date.now();
   let relayPollCooldownUntilMs = 0;
   let relayPollFailureCount = 0;
-  /** The last failed poll's message, so a failure that repeats logs once. Cleared by a good poll. */
-  let lastRelayPollFailureMessage: string | null = null;
+  /** A poll failing on the same cause as the last one logs at info. */
+  const relayPollFailures = createRepeatedFailureGate();
   let subscriptionLoggedState: "connected" | "disconnected" | null = null;
   // When the hosted relay needs a GitHub App user token that the user has not
   // granted yet, that is an idle state, not an error: skip polling for a
@@ -1412,7 +1413,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
       if (lastDeliveryAt) noteRelayActivity();
       relayPollFailureCount = 0;
       relayPollCooldownUntilMs = 0;
-      lastRelayPollFailureMessage = null;
+      relayPollFailures.clear();
       clearRelayPollRetryTimer();
       updateGithubRelayStatus({
         healthy: true,
@@ -1453,9 +1454,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
       const failureMessage = error instanceof Error ? error.message : String(error);
       // A poll that keeps failing on the same cause (no GitHub auth, a paused
       // project database) warns once; the repeats stay in the local log.
-      const repeated = failureMessage === lastRelayPollFailureMessage;
-      lastRelayPollFailureMessage = failureMessage;
-      args.logger[repeated ? "info" : "warn"]("automations.github_relay_poll_failed", {
+      args.logger[relayPollFailures.repeated(failureMessage) ? "info" : "warn"]("automations.github_relay_poll_failed", {
         error: failureMessage,
         retryAt: new Date(relayPollCooldownUntilMs).toISOString(),
         rateLimited,

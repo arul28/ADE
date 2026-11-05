@@ -1,5 +1,6 @@
 import type { AdeDb } from "../state/kvDb";
 import type { Logger } from "../logging/logger";
+import { createRepeatedFailureGate } from "../logging/repeatedFailure";
 
 export type RuntimeProcessRole =
   | "desktop-main"
@@ -70,7 +71,7 @@ export function createProcessRegistryService(options: ProcessRegistryServiceOpti
   let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   let started = false;
   let ownStartedAt: string | null = nowIso();
-  let lastHeartbeatFailure: string | null = null;
+  const heartbeatFailures = createRepeatedFailureGate();
 
   const writeOwnRow = (startedAtIso: string | null): void => {
     const lastSeen = nowIso();
@@ -91,13 +92,12 @@ export function createProcessRegistryService(options: ProcessRegistryServiceOpti
   const heartbeatOnce = (): void => {
     try {
       writeOwnRow(null);
-      lastHeartbeatFailure = null;
+      heartbeatFailures.clear();
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       // The tick runs every 5 s; a database that stays paused (its folder
       // moved) would log the same line forever. Log each new failure once.
-      if (message === lastHeartbeatFailure) return;
-      lastHeartbeatFailure = message;
+      if (heartbeatFailures.repeated(message)) return;
       logger.warn("process_registry.heartbeat_failed", { pid, role, error: message });
     }
   };

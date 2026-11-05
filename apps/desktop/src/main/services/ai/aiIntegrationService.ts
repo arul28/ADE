@@ -133,8 +133,8 @@ import {
 import { recordCursorBilledUsage } from "../usage/cursorBilledUsageStore";
 import { pinnedToolInstallGeneration } from "../../../../../ade-cli/src/services/tools/onDemand";
 import { startDemandedAgentToolFetches } from "../tools/agentToolDemand";
-import {
 import { AdeExpectedError } from "../../../shared/expectedError";
+import {
   openCursorCloudCredentialStore,
   readCursorCloudLaneSecretNames,
   resolveCursorCloudCreateCloudExtras,

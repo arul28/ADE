@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import { createGithubIssueOps } from "./githubIssueOps";
-import { createTokenValidationFailureLog } from "./githubTokenValidationLog";
+import { createRepeatedFailureGate } from "../logging/repeatedFailure";
 import { issueWriteCandidates } from "./githubIssueWriteAccess";
 import type { GitHubIssueLike, GitHubIssuePatch } from "../../../shared/laneGitHubIssue";
 import path from "node:path";
@@ -1875,7 +1875,9 @@ export function createGithubService({
     repositoryReadValidated: value.repoAccessOk,
   });
 
-  const tokenValidationLog = createTokenValidationFailureLog(logger);
+  // One warn per credential source and cause; a status read probes every
+  // credential, so a repeat would otherwise warn on every read.
+  const tokenValidationFailures = createRepeatedFailureGate();
 
   const computeStatus = async (opts: { forceRefresh?: boolean } = {}): Promise<GitHubStatus> => {
     if (opts.forceRefresh) {
@@ -2011,7 +2013,7 @@ export function createGithubService({
         registerGithubCredentialIdentity(candidate, value.validated.userLogin);
       },
       onUsableProbe: (candidate, value) => {
-        tokenValidationLog.validated(candidate.source);
+        tokenValidationFailures.clear(candidate.source);
         recordGithubCredentialProbeSuccess(
           candidate,
           value.validated.rateLimit,
@@ -2023,7 +2025,8 @@ export function createGithubService({
           recordGithubCredentialFailure(candidate, result.authFailure, result.rateLimit);
         }
         if (context.phase === "read") {
-          tokenValidationLog.failed({
+          const repeated = tokenValidationFailures.repeated(`${result.authFailure.kind}:${result.error ?? ""}`, candidate.source);
+          logger[repeated ? "info" : "warn"]("github.token_validation_failed", {
             source: candidate.source,
             error: result.error,
             kind: result.authFailure.kind,

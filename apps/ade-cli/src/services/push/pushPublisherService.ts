@@ -1,6 +1,7 @@
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
+import { createRepeatedFailureGate } from "../../../../desktop/src/main/services/logging/repeatedFailure";
 import { GOAL_BLOCKED_NOTICE_STATUS, GOAL_REACHED_NOTICE_STATUS } from "../../../../desktop/src/shared/chatGoals";
 import type { AgentChatEventEnvelope, AgentChatSessionSummary } from "../../../../desktop/src/shared/types/chat";
 import { approvalRequestKind, isQuestionKind } from "../../../../desktop/src/shared/pendingInputAnswers";
@@ -654,10 +655,9 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
    * `push.publish_undelivered`: a warn when the failure is new or alerts were
    * given up, info for the same failure on its next retry.
    */
-  let lastUndelivered: string | null = null;
+  const undeliveredFailures = createRepeatedFailureGate();
   const logUndelivered = (error: string, dropped: number): void => {
-    const repeated = dropped === 0 && error === lastUndelivered;
-    lastUndelivered = error;
+    const repeated = undeliveredFailures.repeated(error) && dropped === 0;
     deps.logger[repeated ? "info" : "warn"]("push.publish_undelivered", {
       error,
       ...(dropped > 0 ? { droppedAlerts: dropped } : {}),
@@ -1943,7 +1943,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         logUndelivered(`${failedAlertCount} alert target${failedAlertCount === 1 ? "" : "s"} failed`, retries.dropped);
         if (retries.kept.length > 0) scheduleRetry();
       } else {
-        lastUndelivered = null;
+        undeliveredFailures.clear();
       }
       for (const [index, attempt] of alertAttempts.entries()) {
         const outcome = alertVerdicts?.[index];
