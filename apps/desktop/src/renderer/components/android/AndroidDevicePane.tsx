@@ -40,6 +40,7 @@ import { DEVICE_RAIL_WIDTH } from "../device/DeviceRail";
 import { DeviceErrorStrip } from "../device/DeviceStatusStrip";
 import { AndroidDeviceStage } from "./AndroidDeviceStage";
 import { AndroidSetupCard } from "./AndroidSetupCard";
+import { DEVICE_DRAWER_DOCK_CLASS } from "../device/DeviceToolsDrawerShell";
 import {
   AndroidDeviceLoadingCard,
   AndroidDeviceNoticeStrip,
@@ -48,9 +49,9 @@ import {
 } from "./AndroidDeviceStatus";
 import { useAndroidDeviceInput } from "./useAndroidDeviceInput";
 import { useAndroidDeviceStream } from "./useAndroidDeviceStream";
-import { androidCatalogEntryForAvd, type AndroidCatalogEntry } from "../../../shared/androidDeviceCatalog";
+import { androidCatalogColor, androidCatalogEntry, androidCatalogEntryForAvd, type AndroidCatalogEntry } from "../../../shared/androidDeviceCatalog";
 import type { Device3DFailure } from "../device/Device3DView";
-import { androidBodyColor, type AndroidBodySpec } from "./androidDeviceBody";
+import { ANDROID_DEFAULT_BODY_COLOR, androidBodyColor, type AndroidBodySpec } from "./androidDeviceBody";
 import {
   androidScreenAspect,
   readAndroidViewMode,
@@ -89,8 +90,6 @@ export type AndroidDevicePaneProps = {
   runtimePin: OpenProjectBinding | null;
   /** The emulator's machine, named when it is not this one. */
   machineName: string | null;
-  /** The lane host's OS when known. The setup card reads the real folder from the machine's plan since P1. */
-  hostPlatform: string | null;
   /**
    * Set for a lane this pane must not change, such as a chat's work copy on
    * another machine, where the agent picks the device. The picker is never
@@ -422,8 +421,8 @@ export function AndroidDevicePane({
   const create = useCallback((choice: AndroidCreateChoice) => {
     if (!api) return;
     const catalog = "catalogId" in choice ? choice : null;
-    const entry = catalog ? androidCatalogEntryForAvd({ catalogId: catalog.catalogId }) : null;
-    const look = entry && catalog ? { entry, colorId: catalog.colorId ?? entry.colors[0]!.id } : null;
+    const entry = catalog ? androidCatalogEntry(catalog.catalogId) : null;
+    const look = entry && catalog ? { entry, colorId: androidCatalogColor(entry, catalog.colorId).id } : null;
     void runStart({ kind: "create", look }, async () => {
       await releaseCurrent();
       return api.createDevice(catalog
@@ -596,7 +595,7 @@ export function AndroidDevicePane({
     active: bootOnModel,
     hidden,
     screenAspect: screenAspect || 9 / 20,
-    tint: bodySpec ? androidBodyColor(bodySpec).body : "#3a3d42",
+    tint: (bodySpec ? androidBodyColor(bodySpec) : ANDROID_DEFAULT_BODY_COLOR).body,
     label: pendingLook ? `Making ${pendingLook.entry.name}` : `Starting ${deviceName}`,
   });
 
@@ -916,12 +915,7 @@ export function AndroidDevicePane({
         {toolsOpen && androidRailVisible(paneState) ? (
           <div
             data-android-drawer=""
-            className={cn(
-              /* Narrow: an opaque overlay just left of the rail (w-14), so
-                 the rail stays usable. Wide: docked beside the picture. */
-              "absolute inset-y-0 right-14 z-20 w-[min(18rem,calc(100%-3.5rem))] shadow-lg",
-              "@[700px]:static @[700px]:w-72 @[700px]:shrink-0 @[700px]:shadow-none",
-            )}
+            className={DEVICE_DRAWER_DOCK_CLASS}
           >
             <Suspense fallback={null}>
               <AndroidToolsDrawer

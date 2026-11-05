@@ -9,6 +9,7 @@ import type {
   IosSimulatorStatus,
 } from "../../../shared/types/iosSimulator";
 import { commandFor } from "./appleInspectGeometry";
+import { createDeviceViewModeStore, DEVICE_DEFAULT_VIEW_MODE, type DeviceViewMode } from "../device/deviceViewMode";
 
 /**
  * The Apple pane's one state value.
@@ -295,59 +296,15 @@ export function appleRecordingProofArtifactId(
 /* ── The view toggle (round 4 §A2) ────────────────────────────────────────── */
 
 /** 3D or flat. ONE rail button switches between them; 3D is the default. */
-export type AppleViewMode = "flat" | "3d";
+export type AppleViewMode = DeviceViewMode;
 
 export const APPLE_VIEW_MODE_STORAGE_KEY = "ade.apple.viewMode.v1";
 
-/**
- * The default is 3D, per round 4's first owner decision.
- *
- * APPENDED, not edited: the pane's view mode is a preference, and a preference
- * that resets to flat on every project switch is the same as no preference.
- * Keyed by project root because a device in one project has nothing to say
- * about how you like to look at another.
- */
-export const APPLE_DEFAULT_VIEW_MODE: AppleViewMode = "3d";
+export const APPLE_DEFAULT_VIEW_MODE: AppleViewMode = DEVICE_DEFAULT_VIEW_MODE;
 
-function viewModeKey(projectRoot: string | null | undefined): string {
-  const root = typeof projectRoot === "string" ? projectRoot.trim() : "";
-  return root.length > 0 ? root : "(no project)";
-}
-
-function readViewModeMap(): Record<string, AppleViewMode> {
-  try {
-    const raw = globalThis.localStorage?.getItem(APPLE_VIEW_MODE_STORAGE_KEY);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw) as unknown;
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-    const out: Record<string, AppleViewMode> = {};
-    for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
-      if (value === "flat" || value === "3d") out[key] = value;
-    }
-    return out;
-  } catch {
-    // Storage can be absent (tests, the browser-mock renderer) or full.
-    return {};
-  }
-}
-
-export function readAppleViewMode(projectRoot: string | null | undefined): AppleViewMode {
-  return readViewModeMap()[viewModeKey(projectRoot)] ?? APPLE_DEFAULT_VIEW_MODE;
-}
-
-export function writeAppleViewMode(
-  projectRoot: string | null | undefined,
-  mode: AppleViewMode,
-): void {
-  try {
-    const map = readViewModeMap();
-    map[viewModeKey(projectRoot)] = mode;
-    globalThis.localStorage?.setItem(APPLE_VIEW_MODE_STORAGE_KEY, JSON.stringify(map));
-  } catch {
-    // Best effort: a preference that cannot be stored is still honoured for
-    // the life of this pane.
-  }
-}
+const appleViewModeStore = createDeviceViewModeStore(APPLE_VIEW_MODE_STORAGE_KEY);
+export const readAppleViewMode = appleViewModeStore.read;
+export const writeAppleViewMode = appleViewModeStore.write;
 
 /* ── Inspect → chat (round 4 §A4) ─────────────────────────────────────────── */
 

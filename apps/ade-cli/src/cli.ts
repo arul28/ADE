@@ -489,6 +489,8 @@ import {
 import {
   androidEmulatorErrorHint,
   buildAndroidPlan,
+} from "./cliAndroid";
+import {
   formatAndroidAction,
   formatAndroidSettings,
   formatAndroidRender,
@@ -510,7 +512,7 @@ import {
   formatAndroidSdkLicenses,
   formatAndroidSdkStatus,
   formatAndroidSnapshot,
-} from "./cliAndroid";
+} from "./cliAndroidFormat";
 import {
   appleLeaseAnswer,
   appleLeaseNotAcquired,
@@ -3617,20 +3619,20 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                                                    --battery <0-100> [--charging on|off], --wifi,
                                                    --data, --airplane (on | off)
     $ ade android permission grant camera --package <name> --text
-                                                   grant | revoke: camera, microphone, location,
-                                                   contacts, notifications, or android.permission.X
+                                                   grant | revoke: camera, location, microphone,
+                                                   notifications, contacts, photos, calendar,
+                                                   or android.permission.X
 
   Android SDK (this machine):
     $ ade android sdk status --text                What is installed, what is missing, the sizes,
                                                    the free space and the licences
                                                    (--folder <path>, --with-cli)
     $ ade android sdk licenses --text              Read the licences (--id <id> for one)
-    $ ade android sdk install --accept-license <id> --wait --text
-                                                   Install the missing parts. Only a person may
-                                                   accept a licence; ADE never accepts one.
-                                                   (--folder <path>, --with-cli)
-    $ ade android sdk use <path> --text            Use this SDK folder (--clear: the one ADE finds)
-    $ ade android sdk cancel --text                Stop the running install; finished parts stay
+
+  Only the user installs the SDK, accepts Google's licences, stops an
+  install or picks the SDK folder, in the ADE desktop app: the setup card in
+  the Android tool, or Settings › Android devices. ADE never accepts a
+  licence. \`sdk install\`, \`sdk use\` and \`sdk cancel\` refuse a terminal.
 
   The verbs and flags are the ones \`ade apple\` uses for the same job (tap
   also takes --x/--y, button --name, type --value). Any other flag is refused.

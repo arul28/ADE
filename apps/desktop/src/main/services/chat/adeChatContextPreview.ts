@@ -68,7 +68,8 @@ export function assembleAdeChatContextParts(input: {
   launchDirective: string | null;
   computerUse: string | null;
   laneScreen: string | null;
-  appleDevice: string | null;
+  /** The lane device hint: the Apple device, the Android emulator, or both. */
+  laneDevices: string | null;
 }): AdeChatContextPart[] {
   const { main } = input;
   const inMain = (text: string | null | undefined): text is string => Boolean(text?.trim() && main.text.includes(text.trim()));
@@ -124,6 +125,6 @@ export function assembleAdeChatContextParts(input: {
   directive("ade-launch-directive", "ADE launch directive", input.launchDirective, "chat-start", "Names the lane and its folder, on the first message.");
   directive("ade-computer-use", "ADE computer-use rules", input.computerUse, "chat-start", "Screen, browser and proof rules, on the first message.");
   directive("ade-lane-screen", "ADE lane screen", input.laneScreen, "chat-start");
-  directive("ade-apple-device", "ADE Apple device", input.appleDevice, "chat-start");
+  directive("ade-apple-device", "ADE lane devices", input.laneDevices, "chat-start");
   return parts;
 }

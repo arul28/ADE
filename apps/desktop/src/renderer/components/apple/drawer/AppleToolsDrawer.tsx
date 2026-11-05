@@ -1,22 +1,16 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { SpinnerGap, X } from "@phosphor-icons/react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { AppleLaneDevice, OpenProjectBinding } from "../../../../shared/types";
-import { cn } from "../../ui/cn";
-import { PaneTooltip } from "../../ui/PaneTooltip";
 import { describeAppleError } from "../appleErrors";
-import { Banner } from "../../ui/notice";
-import { DRAWER_ICON_BUTTON, Group } from "../../ui/drawerPrimitives";
-import { isAppleDrawerGroupId, type AppleDrawerGroupId } from "./appleDrawerGroups";
+import { Group } from "../../ui/drawerPrimitives";
+import { DeviceToolsDrawerShell } from "../../device/DeviceToolsDrawerShell";
+import { resetDeviceDrawerGroupsForTests, useDeviceDrawerGroup } from "../../device/deviceDrawerState";
+import { APPLE_DRAWER_GROUPS, type AppleDrawerGroupId } from "./appleDrawerGroups";
 import { useAppleDrawerActions, type AppleDrawerScope } from "./useAppleDrawerActions";
 import type { AppleDrawerContext } from "./drawerContext";
 import { AppSection } from "./sections/AppSection";
 import { DeviceSection } from "./sections/DeviceSection";
 import { CaptureSection } from "./sections/CaptureSection";
 import { PreviewLabSection, type AppleRenderedPreview } from "./sections/PreviewLabSection";
-import {
-  patchChatCompanionUiState,
-  readChatCompanionUiState,
-} from "../../chat/chatCompanionUiState";
 
 /**
  * The Tools drawer (round 4 §B1/§B2). The pane owns the device and mounts this
@@ -83,52 +77,17 @@ const GROUP_TITLES: Record<AppleDrawerGroupId, string> = {
 
 const DEFAULT_GROUP: AppleDrawerGroupId = "device";
 
-/**
- * The open group for a chatless surface.
- *
- * Module-level rather than component state because the drawer is mounted lazily
- * and unmounted with the pane; a `useState` here would reopen on Device every
- * time the tools pane is toggled. Not persisted: with no chat there is no key
- * to persist it under, and inventing one would be the parallel store round 3
- * banned.
- */
-let sessionGroup: AppleDrawerGroupId | null = DEFAULT_GROUP;
-
-/**
- * Which group is open, and the writer that remembers it.
- *
- * Per chat, in the same `chatCompanionUiState` record every other per-chat
- * drawer/pane flag lives in — one store, so a chat's UI state is one row rather
- * than one row plus an Apple-shaped satellite.
- */
+/** Which group is open: per chat, or for the session on a chatless surface. */
 export function useAppleDrawerGroup(chatSessionId: string | null): {
   open: AppleDrawerGroupId | null;
   toggle: (id: AppleDrawerGroupId) => void;
 } {
-  const [open, setOpen] = useState<AppleDrawerGroupId | null>(() => {
-    if (!chatSessionId) return sessionGroup;
-    const stored = readChatCompanionUiState(chatSessionId).appleToolsGroup;
-    if (stored === null) return null;
-    return isAppleDrawerGroupId(stored) ? stored : DEFAULT_GROUP;
-  });
-
-  const toggle = useCallback((id: AppleDrawerGroupId) => {
-    setOpen((current) => {
-      // Clicking the open card's header closes it — a drawer you can collapse
-      // to four headers is how you get the device back at a narrow width.
-      const next = current === id ? null : id;
-      if (chatSessionId) patchChatCompanionUiState(chatSessionId, { appleToolsGroup: next });
-      else sessionGroup = next;
-      return next;
-    });
-  }, [chatSessionId]);
-
-  return { open, toggle };
+  return useDeviceDrawerGroup({ chatSessionId, groups: APPLE_DRAWER_GROUPS, defaultGroup: DEFAULT_GROUP, storageKey: "appleToolsGroup" });
 }
 
 /** Test seam: the chatless surface's remembered group must not leak between tests. */
 export function resetAppleDrawerGroupForTests(): void {
-  sessionGroup = DEFAULT_GROUP;
+  resetDeviceDrawerGroupsForTests();
 }
 
 export function AppleToolsDrawer({
@@ -201,81 +160,51 @@ export function AppleToolsDrawer({
   const described = actions.error != null ? describeAppleError(actions.error) : null;
 
   return (
-    /* §B4: opaque `bg-surface` and its own `border-l`. Round 2 painted the
-       drawer `bg-bg` at pane opacity over a LIVE device, so the simulator was
-       legible through the switches. */
-    <div
-      className={cn("flex h-full min-h-0 w-full min-w-0 flex-col border-l border-border bg-surface text-sm", className)}
-      data-testid="apple-tools-drawer"
+    <DeviceToolsDrawerShell
+      tool="apple"
+      pending={actions.pending}
+      error={described}
+      onDismissError={actions.clearError}
+      reading={actions.settings === null && visible}
+      onClose={onClose}
+      className={className}
     >
-      <div className="flex h-9 min-w-0 shrink-0 flex-nowrap items-center gap-2 border-b border-border px-3">
-        <span className="min-w-0 flex-1 truncate text-xs font-medium text-fg">Tools</span>
-        {actions.pending ? <SpinnerGap size={14} className="shrink-0 animate-spin text-muted-fg" aria-label="Working" /> : null}
-        <PaneTooltip label="Close tools" side="bottom">
-          <button type="button" className={cn(DRAWER_ICON_BUTTON, "shrink-0")} aria-label="Close tools" onClick={onClose}>
-            <X size={14} aria-hidden="true" />
-          </button>
-        </PaneTooltip>
-      </div>
-      <div className="min-h-0 min-w-0 flex-1 overflow-y-auto">
-        {described ? (
-          <Banner
-            layout="inline"
-            testId="apple-drawer-error"
-            style={{ margin: 8 }}
-            model={{
-              id: "apple-drawer-error",
-              tone: "error",
-              title: described.sentence,
-              report: { surface: "apple_tools_drawer", technicalDetail: described.detail ?? null },
-              dismiss: { label: "Dismiss", onDismiss: actions.clearError },
-            }}
-          />
-        ) : null}
-        {actions.settings === null && !described && visible ? (
-          <div className="flex items-center gap-2 px-3 py-3 text-xs text-muted-fg">
-            <SpinnerGap size={14} className="animate-spin" aria-hidden="true" /> Reading device settings…
-          </div>
-        ) : null}
-        <div className="flex min-w-0 flex-col gap-2 p-2.5">
-          <Group
-            id="device"
-            title={GROUP_TITLES.device}
-            open={group.open === "device"}
-            onToggle={group.toggle}
-            testId="apple-drawer-device"
-          >
-            <DeviceSection ctx={ctx} />
-          </Group>
-          <Group
-            id="app"
-            title={GROUP_TITLES.app}
-            open={group.open === "app"}
-            onToggle={group.toggle}
-            testId="apple-drawer-app"
-          >
-            <AppSection ctx={ctx} />
-          </Group>
-          <Group
-            id="capture"
-            title={GROUP_TITLES.capture}
-            open={group.open === "capture"}
-            onToggle={group.toggle}
-            testId="apple-drawer-capture"
-          >
-            <CaptureSection ctx={ctx} activeRecordingId={activeRecordingId} onOpenProof={onOpenProof} />
-          </Group>
-          <Group
-            id="preview-lab"
-            title={GROUP_TITLES["preview-lab"]}
-            open={group.open === "preview-lab"}
-            onToggle={group.toggle}
-            testId="apple-drawer-preview-lab"
-          >
-            <PreviewLabSection ctx={ctx} onPreviewRendered={onPreviewRendered} />
-          </Group>
-        </div>
-      </div>
-    </div>
+      <Group
+        id="device"
+        title={GROUP_TITLES.device}
+        open={group.open === "device"}
+        onToggle={group.toggle}
+        testId="apple-drawer-device"
+      >
+        <DeviceSection ctx={ctx} />
+      </Group>
+      <Group
+        id="app"
+        title={GROUP_TITLES.app}
+        open={group.open === "app"}
+        onToggle={group.toggle}
+        testId="apple-drawer-app"
+      >
+        <AppSection ctx={ctx} />
+      </Group>
+      <Group
+        id="capture"
+        title={GROUP_TITLES.capture}
+        open={group.open === "capture"}
+        onToggle={group.toggle}
+        testId="apple-drawer-capture"
+      >
+        <CaptureSection ctx={ctx} activeRecordingId={activeRecordingId} onOpenProof={onOpenProof} />
+      </Group>
+      <Group
+        id="preview-lab"
+        title={GROUP_TITLES["preview-lab"]}
+        open={group.open === "preview-lab"}
+        onToggle={group.toggle}
+        testId="apple-drawer-preview-lab"
+      >
+        <PreviewLabSection ctx={ctx} onPreviewRendered={onPreviewRendered} />
+      </Group>
+    </DeviceToolsDrawerShell>
   );
 }

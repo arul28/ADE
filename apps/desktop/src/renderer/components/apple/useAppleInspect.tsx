@@ -1,5 +1,6 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
+import React, { useCallback, useMemo, type MutableRefObject } from "react";
 import type { IosElementContextItem, OpenProjectBinding } from "../../../shared/types";
+import { useDeviceInspect } from "../device/useDeviceInspect";
 import { AppleInspectOverlay } from "./AppleInspectOverlay";
 import { appleCommandForElement, appleElementContextItem } from "./appleDeviceState";
 import { inspectContextFor, type IosSimulatorSnapshotElement } from "./appleInspectGeometry";
@@ -7,8 +8,8 @@ import { inspectContextFor, type IosSimulatorSnapshotElement } from "./appleInsp
 type DeviceToView = ((point: { x: number; y: number }) => { x: number; y: number }) | null;
 
 /**
- * Inspect (§A4) for the Apple pane: one screen snapshot per switch-on, the
- * hovered and selected element, and the overlay drawn over the picture.
+ * Inspect (§A4) for the Apple pane: the shared Inspect state, reading the
+ * simulator's screen snapshot, and the Apple overlay over the picture.
  */
 export function useAppleInspect({
   deviceUdid,
@@ -37,58 +38,26 @@ export function useAppleInspect({
   toggleInspect: () => void;
   renderInspectOverlay: (deviceToView: DeviceToView) => React.ReactNode;
 } {
-  const [inspectOn, setInspectOn] = useState(false);
-  const [inspectElements, setInspectElements] = useState<IosSimulatorSnapshotElement[]>([]);
-  const [inspectHovered, setInspectHovered] = useState<string | null>(null);
-  const [inspectSelected, setInspectSelected] = useState<string | null>(null);
-  // Read through refs so a new closure from the pane never re-takes a snapshot.
-  const onElementsRef = useRef(onElements);
-  onElementsRef.current = onElements;
-  const onErrorRef = useRef(onError);
-  onErrorRef.current = onError;
-
-  const toggleInspect = useCallback(() => {
-    setInspectOn((on) => !on);
-    setInspectSelected(null);
-    setInspectHovered(null);
-  }, []);
-
-  /**
-   * One snapshot per switch-on. The frames describe the screen as it was when
-   * Inspect was turned on; driving the device is off while it is on, so they
-   * cannot go stale underneath the pointer.
-   */
-  useEffect(() => {
-    if (!inspectOn || !deviceUdid || !live) {
-      if (!inspectOn) setInspectElements([]);
-      return undefined;
-    }
-    let cancelled = false;
-    void window.ade.iosSimulator
-      .getScreenSnapshot({ deviceUdid, laneId, projectRoot }, runtimePinRef.current)
-      .then((snapshot) => {
-        if (cancelled) return;
-        const elements = snapshot.elements ?? [];
-        setInspectElements(elements);
-        onElementsRef.current(elements);
-      })
-      .catch((cause: unknown) => {
-        if (!cancelled) onErrorRef.current(cause);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [deviceUdid, inspectOn, laneId, live, projectRoot, runtimePinRef]);
-
-  // Escape closes the card wherever the focus happens to be (§A4).
-  useEffect(() => {
-    if (!inspectSelected) return undefined;
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setInspectSelected(null);
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [inspectSelected]);
+  const takeSnapshot = useCallback(async (): Promise<IosSimulatorSnapshotElement[]> => {
+    if (!deviceUdid) return [];
+    const snapshot = await window.ade.iosSimulator.getScreenSnapshot({ deviceUdid, laneId, projectRoot }, runtimePinRef.current);
+    return snapshot.elements ?? [];
+  }, [deviceUdid, laneId, projectRoot, runtimePinRef]);
+  const {
+    inspectOn,
+    toggleInspect,
+    elements: inspectElements,
+    hovered: inspectHovered,
+    setHovered: setInspectHovered,
+    selected: inspectSelected,
+    setSelected: setInspectSelected,
+    onErrorRef,
+  } = useDeviceInspect<IosSimulatorSnapshotElement>({
+    live: live && Boolean(deviceUdid),
+    takeSnapshot,
+    onSnapshot: onElements,
+    onError,
+  });
 
   const insertInspectElement = useMemo(() => {
     if (!onAddContext && !onInsertDraft) return undefined;
@@ -102,7 +71,7 @@ export function useAppleInspect({
         onErrorRef.current(cause);
       }
     };
-  }, [inspectElements, onAddContext, onInsertDraft]);
+  }, [inspectElements, onAddContext, onErrorRef, onInsertDraft]);
 
   const copyInspectElement = useCallback((element: IosSimulatorSnapshotElement) => {
     void window.ade.app.writeClipboardText(appleCommandForElement(element)).catch(() => {});
@@ -129,6 +98,8 @@ export function useAppleInspect({
     inspectHovered,
     inspectOn,
     inspectSelected,
+    setInspectHovered,
+    setInspectSelected,
   ]);
 
   return { inspectOn, toggleInspect, renderInspectOverlay };

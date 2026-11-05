@@ -10,9 +10,9 @@ import {
   type AppleDevice3DFailure,
   type AppleDevice3DViewProps,
   type AppleDeviceDuoProps,
-  type AppleDeviceRenderer,
   type AppleDeviceFamily,
 } from "./AppleDevice3DView";
+import type { DeviceRenderer } from "../device/deviceRenderPass";
 import {
   DeviceFlatView,
   flatDeviceToView,
@@ -63,7 +63,7 @@ export type AppleDeviceStageProps = {
    */
   duo?: AppleDeviceDuoProps | undefined;
   /** The 3D view's render methods, for the Render sheet. */
-  rendererRef?: { current: AppleDeviceRenderer | null } | undefined;
+  rendererRef?: { current: DeviceRenderer | null } | undefined;
   onDeviceInput: (input: DeviceInput) => void;
   onDeviceScroll?: (delta: { x: number; y: number; deltaX: number; deltaY: number }) => void;
   /** A key pressed while the flat screen holds focus. True = forwarded. */

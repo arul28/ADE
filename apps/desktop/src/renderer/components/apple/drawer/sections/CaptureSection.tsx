@@ -1,9 +1,4 @@
 import { useEffect, useRef } from "react";
-import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
-import { DotsThree } from "@phosphor-icons/react";
-import type { SimRecording } from "../../../../../main/services/ios/recording/simRecordingService";
-import { cn } from "../../../ui/cn";
-import { MENU_CONTENT_CLASS, MENU_ITEM_CLASS } from "../../../ui/paneMenuTokens";
 import {
   canDeleteRecording,
   describeRecording,
@@ -12,21 +7,12 @@ import {
   isRecordingActive,
   useAppleRecordings,
 } from "../../appleRecording";
-import { PaneTooltip } from "../../../ui/PaneTooltip";
 import { appleRecordingProofArtifactId } from "../../appleDeviceState";
-import { DRAWER_BUTTON, DRAWER_ICON_BUTTON } from "../../../ui/drawerPrimitives";
+import { RecordingRow, recordingDisplayName } from "../../../shared/RecordingRow";
 import type { AppleDrawerContext } from "../drawerContext";
 
 /** How often the open Capture card re-reads the lane's recordings. */
 export const CAPTURE_POLL_MS = 5_000;
-
-/** "signup", else the start time as `HH:MM:SS`. */
-export function recordingName(recording: SimRecording): string {
-  if (recording.label?.trim()) return recording.label.trim();
-  const at = new Date(recording.startedAt);
-  if (Number.isNaN(at.getTime())) return recording.id;
-  return `Recording ${at.toLocaleTimeString([], { hour12: false })}`;
-}
 
 /**
  * §B1's **Capture** group: what this lane has recorded, and nothing else.
@@ -111,61 +97,19 @@ export function CaptureSection({
   }
   return (
     <ul className="flex min-w-0 flex-col" aria-label="Recordings">
-      {finished.map((recording) => {
-        const name = recordingName(recording);
-        const artifactId = appleRecordingProofArtifactId(recording);
-        const canOpenProof = Boolean(visible && artifactId);
-        return (
-          <li key={recording.id} className="flex min-h-7 min-w-0 flex-nowrap items-center justify-between gap-2">
-            <div className="min-w-0 flex-1">
-              <div className="truncate text-xs text-fg/85" title={name}>{name}</div>
-              <div className="truncate text-[11px] text-muted-fg">
-                {formatRecordingElapsed(recording.durationMs ?? 0)} · {formatRecordingBytes(recording.bytes)}
-                {" · "}{describeRecording(recording)}
-              </div>
-            </div>
-            <PaneTooltip
-              label={canOpenProof ? `Open ${name} in proof` : "This recording is not in proof yet"}
-              side="left"
-            >
-              <button
-                type="button"
-                className={cn(DRAWER_BUTTON, "shrink-0")}
-                disabled={!canOpenProof}
-                onClick={() => { if (artifactId) open(artifactId); }}
-              >
-                Open in proof
-              </button>
-            </PaneTooltip>
-            <DropdownMenu.Root>
-              <PaneTooltip label={`More for ${name}`} side="left">
-                <DropdownMenu.Trigger asChild>
-                  <button type="button" className={DRAWER_ICON_BUTTON} aria-label={`More for ${name}`} disabled={!visible}>
-                    <DotsThree size={14} weight="bold" />
-                  </button>
-                </DropdownMenu.Trigger>
-              </PaneTooltip>
-              <DropdownMenu.Portal>
-                <DropdownMenu.Content align="end" sideOffset={4} className={MENU_CONTENT_CLASS}>
-                  <DropdownMenu.Item
-                    className={cn(MENU_ITEM_CLASS, "text-[12px]")}
-                    onSelect={() => recordings.reveal(recording)}
-                  >
-                    Reveal in Finder
-                  </DropdownMenu.Item>
-                  <DropdownMenu.Item
-                    className={cn(MENU_ITEM_CLASS, "text-[12px] text-[var(--color-error)]")}
-                    disabled={!canDeleteRecording(recording)}
-                    onSelect={() => recordings.remove(recording.id)}
-                  >
-                    Delete
-                  </DropdownMenu.Item>
-                </DropdownMenu.Content>
-              </DropdownMenu.Portal>
-            </DropdownMenu.Root>
-          </li>
-        );
-      })}
+      {finished.map((recording) => (
+        <RecordingRow
+          key={recording.id}
+          name={recordingDisplayName(recording)}
+          detail={<>{formatRecordingElapsed(recording.durationMs ?? 0)} · {formatRecordingBytes(recording.bytes)}{" · "}{describeRecording(recording)}</>}
+          artifactId={appleRecordingProofArtifactId(recording)}
+          enabled={visible}
+          onOpenProof={open}
+          onReveal={() => recordings.reveal(recording)}
+          onDelete={() => recordings.remove(recording.id)}
+          deleteDisabled={!canDeleteRecording(recording)}
+        />
+      ))}
     </ul>
   );
 }

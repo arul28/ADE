@@ -59,6 +59,7 @@
     "@types/ws": "^8.18.1",
     "esbuild": "0.27.3",
     "jpeg-js": "^0.4.4",
+    "mp4-muxer": "^5.2.2",
     "pngjs": "^7.0.0",
     "postject": "^1.0.0-alpha.6",
     "tsup": "^8.3.5",

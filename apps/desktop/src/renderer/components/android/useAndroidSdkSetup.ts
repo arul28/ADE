@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { OpenProjectBinding } from "../../../shared/types";
 import type {
+  AndroidSdkConsentSurface,
   AndroidSdkInstallState,
   AndroidSdkSetupPlan,
 } from "../../../shared/types/androidEmulator";
@@ -36,7 +37,11 @@ export type AndroidSdkSetup = {
   clearActionError: () => void;
 };
 
-export function useAndroidSdkSetup(pin: OpenProjectBinding | null): AndroidSdkSetup {
+export function useAndroidSdkSetup(
+  pin: OpenProjectBinding | null,
+  /** Where the person accepts the licences; kept in the consent record. */
+  surface: AndroidSdkConsentSurface,
+): AndroidSdkSetup {
   const api = window.ade?.androidEmulator ?? null;
   const pinRef = useRef(pin);
   pinRef.current = pin;
@@ -109,7 +114,7 @@ export function useAndroidSdkSetup(pin: OpenProjectBinding | null): AndroidSdkSe
     setActionError(null);
     try {
       const next = await api.installSdk(
-        { sdkRoot: choicesRef.current.chosenRoot, includeAndroidCli: choicesRef.current.includeAndroidCli, acceptedLicenseIds },
+        { sdkRoot: choicesRef.current.chosenRoot, includeAndroidCli: choicesRef.current.includeAndroidCli, acceptedLicenseIds, surface },
         pinRef.current,
       );
       setInstall(next);
@@ -120,7 +125,7 @@ export function useAndroidSdkSetup(pin: OpenProjectBinding | null): AndroidSdkSe
     } finally {
       setStarting(false);
     }
-  }, [api]);
+  }, [api, surface]);
 
   const cancelInstall = useCallback(() => {
     if (!api) return;

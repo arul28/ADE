@@ -8,7 +8,12 @@ import type {
   AndroidRenderProofResult,
   AndroidSetDeviceColorArgs,
 } from "../shared/types/androidEmulator";
-import type { AndroidEmulatorToolsPreloadApi } from "../shared/types/androidEmulator";
+import type {
+  AndroidEmulatorServiceApi,
+  AndroidServiceResult,
+  AndroidToolsPreloadAction,
+  AndroidToolsPreloadMethod,
+} from "../shared/types/androidEmulator";
 import type {
   AndroidSdkInstallArgs,
   AndroidSdkInstallState,
@@ -78,11 +83,11 @@ export function createAndroidEmulatorBridge(deps: AndroidEmulatorBridgeDeps): An
    * A routed method with no IPC channel behind it (the Tools drawer's agent
    * verbs). Without a runtime there is nothing to answer, so it says why.
    */
-  const runtimeOnly = <K extends keyof AndroidEmulatorToolsPreloadApi>(action: K): AndroidEmulatorToolsPreloadApi[K] =>
-    ((args: Record<string, unknown>, pin?: OpenProjectBinding | null) =>
-      deps.callAction(pin, action, { args }, () =>
+  const runtimeOnly = <K extends AndroidToolsPreloadAction>(action: K): AndroidToolsPreloadMethod<K> =>
+    (args: Parameters<AndroidEmulatorServiceApi[K]>[0], pin?: OpenProjectBinding | null) =>
+      deps.callAction<AndroidServiceResult<K>>(pin, action, { args: args as Record<string, unknown> }, () =>
         Promise.reject(new Error(`Android ${action} needs an open project. Open a project so ADE can reach its Android service.`)),
-      )) as unknown as AndroidEmulatorToolsPreloadApi[K];
+      );
 
   /** The same routed method, for the reads whose argument is optional. */
   const callOptional = <A, R>(action: string, channel: string) => {

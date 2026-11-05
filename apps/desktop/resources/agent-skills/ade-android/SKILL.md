@@ -44,10 +44,10 @@ Plain `adb shell …` reads (`dumpsys`, `getprop`, `pm list`) are fine, with
 ```
 
 - `sdk: not found`, or a tool that is not available: the SDK is not set up.
-  Run `android sdk status --text` and tell the user what it says. Only a
-  person can accept Google's licences, so only the user can install it (with
-  the setup card, or `ade android sdk install`). Never accept a licence for
-  them.
+  Run `android sdk status --text` and tell the user what it says. Only the
+  user can accept Google's licences, so only the user can install it, in the
+  ADE desktop app: the setup card in the Android tool, or Settings › Android
+  devices. Never accept a licence for them.
 - `state: none`: the lane has no emulator yet. Make one:
   `android device-create --profile medium_phone --text`
   (`android devices --profiles --text` lists the profiles), or hold one of
@@ -84,7 +84,7 @@ screenshot and the snapshot.
 | Drag and drop | `"$A" android drag 200 900 800 900 --duration-ms 800 --text` |
 | Back, home, recents | `"$A" android button back --text` |
 | Logs of the app | `"$A" android log --package <name> --level warn --text` (then `--since <cursor>` for newer lines) |
-| Dark mode, location, a permission | `"$A" android appearance dark`, `android location 37.77 -122.42`, `android permission grant camera --package <name>` |
+| Dark mode, location, a permission | `"$A" android appearance dark`, `android location 37.77 -122.42`, `android permission grant camera --package <name>` (camera, location, microphone, notifications, contacts, photos, calendar, or `android.permission.<NAME>`) |
 | Offline, low battery, big text, no animations | `"$A" android settings --airplane on` (one change per call: `--wifi`, `--data`, `--battery 5`, `--charging off`, `--text-size largest`, `--display-size large`, `--animations off`, `--show-taps on`, `--layout-bounds on`); `"$A" android settings` reads them all |
 | Screenshot (filed as proof) | `"$A" android screenshot --caption "<what it shows>" --text` |
 | Video proof | `"$A" android record-start --label "<what>" --text`, do the steps, then `"$A" android record-stop --text` |
@@ -166,9 +166,10 @@ chat's proof drawer.
 `android sdk status --text` shows each part (found, or missing and its
 size), the folder, the free space and the licences a missing part needs.
 `android sdk licenses --text` prints the licence text. An agent may read
-both. Installing (`sdk install --accept-license <id> ...`), cancelling and
-choosing the SDK folder (`sdk use`) are the user's: ask them to run it, or to
-use the setup card in the Android tool.
+both. Installing, cancelling an install and choosing the SDK folder are the
+user's, in the ADE desktop app: the setup card in the Android tool, or
+Settings › Android devices. `sdk install`, `sdk use` and `sdk cancel` refuse
+every terminal, yours too, so ask the user.
 
 ## Errors
 

@@ -3,9 +3,6 @@ import os from "node:os";
 import path from "node:path";
 import type {
   AndroidAvd,
-  AndroidAvdListing,
-  AndroidCreateDeviceArgs,
-  AndroidDeviceInventory,
   AndroidEmulatorError,
   AndroidEmulatorEvent,
   AndroidEmulatorServiceApi,
@@ -14,22 +11,10 @@ import type {
   AndroidLaneDeviceStatus,
   AndroidRunningEmulator,
   AndroidSdkStatus,
-  AndroidStreamStatus,
-  AndroidSystemImage,
 } from "../../../shared/types/androidEmulator";
 import type { Logger } from "../logging/logger";
 import { getErrorMessage } from "../shared/utils";
-import {
-  createAndroidAvd,
-  deleteAdeAndroidAvd,
-  listAndroidAvds,
-  measureAndroidAvdBytes,
-  pickAndroidSystemImage,
-  readAdeAvdLaneId,
-  readAndroidAvd,
-  sameAvdName,
-  setAndroidAvdColor,
-} from "./androidAvds";
+import { readAndroidAvd, sameAvdName } from "./androidAvds";
 import { AndroidEmulatorFailure, requireLaneId } from "./androidEmulatorErrors";
 import {
   AdeStartedEmulators,
@@ -43,30 +28,27 @@ import {
   type AndroidDiscoveredEmulator,
   type AndroidEmulatorLaunch,
 } from "./androidEmulatorProcess";
-import { listAndroidDeviceDefinitions } from "./androidHardwareProfiles";
 import { createAndroidAgentSuite } from "./androidAgentSuite";
+import { createAndroidDeviceInventory } from "./androidDeviceInventory";
 import { createAndroidDeviceSettings } from "./androidDeviceSettings";
 import { createAndroidInput } from "./androidInput";
-import { releaseAndroidLaneDevice, type AndroidLaneDeviceRepo } from "./androidLaneRelease";
+import { createAndroidLaneStreams } from "./androidLaneStreams";
+import type { AndroidLaneDeviceRepo } from "./androidLaneRelease";
 import { takeAndroidScreenshot } from "./androidScreenshot";
 import type { AndroidArtifactFiler } from "./androidProof";
-import { androidCatalogColor, androidCatalogEntry, type AndroidCatalogEntry } from "../../../shared/androidDeviceCatalog";
-import { resolveAndroidCatalogDefinition, writeAndroidAdeProfile } from "./androidCatalogProfiles";
 import { createAndroidRenderBroker } from "./androidRender";
 import { createAndroidSdkSetup, createAndroidSdkSettingStore } from "./androidSdkSetup";
 import {
   androidSdkPaths,
-  androidUserHome,
-  listAndroidSystemImages,
   locateAndroidSdk,
   readAndroidSdkStatus,
   requireAndroidSdkTools,
   type AndroidEnv,
   type ReadyAndroidSdk,
 } from "./androidSdk";
-import { asStreamFailure, createAndroidStreamHub, type AndroidStreamHub } from "./androidStream";
+import { createAndroidStreamHub, type AndroidStreamHub } from "./androidStream";
 import { isRemoteWorkLaneId } from "../remoteWork/remoteWorkCopyService";
-import { createAndroidLaneScope, pickWorkCopyAvd } from "./androidWorkCopy";
+import { createAndroidLaneScope } from "./androidWorkCopy";
 
 /*
  * The lane's Android emulator: one per brain, composing the phase A modules
@@ -92,8 +74,6 @@ import { createAndroidLaneScope, pickWorkCopyAvd } from "./androidWorkCopy";
 
 /** A first boot of a new AVD measured 54 s on Windows; slower hosts need more. */
 const ANDROID_BOOT_TIMEOUT_MS = 180_000;
-/** The profile a chat's work copy gets when no AVD here is free. */
-const WORK_COPY_PROFILE_ID = "medium_phone";
 
 type AndroidEmulatorServiceDeps = {
   /** The lane rows (`lane_android_devices`); `sqlAndroidLaneDeviceRepo(db)` in the app. */
@@ -349,20 +329,20 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
 
   /* ---------- streams ---------- */
 
-  const stopLaneStream = async (state: LaneState): Promise<void> => {
-    // A recording on this stream ends first, so its last frames reach the file.
-    await agent.onStreamEnding(state.laneId);
-    const serial = state.streamSerial;
-    state.streamViewer = false;
-    if (!serial) return;
-    state.streamSerial = null;
-    try {
-      await streams.stopStream(serial);
-    } catch (error) {
-      logger?.warn("android.stream_stop_failed", { laneId: state.laneId, serial, error: getErrorMessage(error) });
-    }
-    emit({ type: "android.stream.state", laneId: state.laneId, running: false });
-  };
+  const laneStreams = createAndroidLaneStreams<LaneState>({
+    streams,
+    peekLane: (laneId) => lanes.get(laneId),
+    laneState,
+    requireBooted: (laneId) => requireBooted(laneId),
+    assertLive,
+    assertWorkCopyLive: (laneId) => assertWorkCopyLive(laneId),
+    serverJarPath: deps.serverJarPath,
+    emit,
+    logger,
+    onStreamEnding: (laneId) => agent.onStreamEnding(laneId),
+    isRecording: (laneId) => agent.isRecording(laneId),
+  });
+  const { stopLaneStream, liveStreamSerial } = laneStreams;
 
   /* ---------- stop ---------- */
 
@@ -543,35 +523,6 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
     }
   };
 
-  /* ---------- devices ---------- */
-
-  const assertLaneFree = (laneId: string, avdName: string | null) => {
-    const held = deps.laneDevices.get(laneId);
-    if (held && !(avdName && sameAvdName(held.avdName, avdName))) {
-      throw new AndroidEmulatorFailure(
-        "ANDROID_LANE_HAS_DEVICE",
-        `This lane already has ${held.avdName}. Release it before adding another device.`,
-      );
-    }
-  };
-
-  const assertNotHeldElsewhere = (laneId: string | null, avdName: string) => {
-    const holder = deps.laneDevices.holder(avdName, laneId);
-    if (holder) {
-      throw new AndroidEmulatorFailure("ANDROID_AVD_HELD_BY_OTHER_LANE", `${avdName} belongs to another lane (${holder}).`);
-    }
-  };
-
-  const definitionsFor = (root: string, images: readonly AndroidSystemImage[]) =>
-    listAndroidDeviceDefinitions({
-      sdkRoot: root,
-      systemImageDirs: images.map((image) => image.path),
-      platform,
-      env,
-      home,
-      onUnreadable: (filePath, error) => logger?.warn("android.profile_file_unreadable", { filePath, error: getErrorMessage(error) }),
-    });
-
   /* ---------- input ---------- */
 
   /** The lane's booted emulator, or `ANDROID_NOT_RUNNING`. */
@@ -586,29 +537,20 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
     return { serial: emulator.serial, adbPath };
   };
 
-  /** The serial of the lane's live stream, when one runs (input then goes through scrcpy). */
-  const liveStreamSerial = (laneId: string): string | null => {
-    const serial = lanes.get(laneId)?.streamSerial ?? null;
-    return serial && streams.status(serial, laneId).running ? serial : null;
-  };
-
   const rawInput = createAndroidInput({ streams, requireBooted, liveStreamSerial, signal: lifetime.signal });
 
-  /** Starts the lane's stream, or joins the one running; answers its serial and transport. */
-  const startLaneStream = async (
-    laneId: string,
-    options: { maxSize?: number; bitRate?: number; maxFps?: number } = {},
-  ) => {
-    const { serial, adbPath } = await requireBooted(laneId);
-    const state = laneState(laneId);
-    if (state.streamSerial && state.streamSerial !== serial) await stopLaneStream(state);
-    const transport = await streams.startStream({ adbPath, serial, serverJarPath: deps.serverJarPath, laneId, ...options, logger })
-      .catch(asStreamFailure);
-    const fresh = state.streamSerial !== serial;
-    state.streamSerial = serial;
-    if (fresh) emit({ type: "android.stream.state", laneId, running: true });
-    return { serial, transport, state };
-  };
+  /** The lane's screen as a PNG, with no proof filing; `outPath` is checked against the lane's folder. */
+  const captureLaneScreen = (laneId: string, outPath: string | null) => takeAndroidScreenshot({
+    laneId,
+    outPath,
+    laneRoot: () => laneRoot(laneId),
+    workCopy: isRemoteWorkLaneId(laneId),
+    requireBooted: () => requireBooted(laneId),
+    dataDir: deps.dataDir,
+    platform,
+    signal: lifetime.signal,
+    now,
+  });
 
   /* ---------- P1 agent suite (`androidAgentSuite.ts`) ---------- */
 
@@ -622,29 +564,9 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
     input: rawInput,
     streams,
     liveStreamSerial,
-    holdStreamForRecording: async (laneId) => (await startLaneStream(laneId)).serial,
-    releaseStreamForRecording: async (laneId) => {
-      const state = lanes.get(laneId);
-      // A viewer still watching keeps the stream.
-      if (!state || state.streamViewer || !state.streamSerial) return;
-      const serial = state.streamSerial;
-      state.streamSerial = null;
-      await streams.stopStream(serial).catch((error: unknown) => {
-        logger?.warn("android.stream_stop_failed", { laneId, serial, error: getErrorMessage(error) });
-      });
-      emit({ type: "android.stream.state", laneId, running: false });
-    },
-    captureScreen: (laneId, outPath) => takeAndroidScreenshot({
-      laneId,
-      outPath,
-      laneRoot: () => laneRoot(laneId),
-      workCopy: isRemoteWorkLaneId(laneId),
-      requireBooted: () => requireBooted(laneId),
-      dataDir: deps.dataDir,
-      platform,
-      signal: lifetime.signal,
-      now,
-    }),
+    holdStreamForRecording: laneStreams.holdForRecording,
+    releaseStreamForRecording: laneStreams.releaseForRecording,
+    captureScreen: captureLaneScreen,
     artifactFiler: deps.artifactFiler ?? null,
     callerRoot: deps.projectRoot ?? null,
     dataDir: deps.dataDir,
@@ -675,130 +597,35 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
     rotate: async (args) => { agent.invalidateUi(args.laneId); await rawInput.rotate(args); },
   };
 
-  /** A new row for the lane's AVD. */
-  const newLaneDevice = (
-    laneId: string,
-    avdName: string,
-    origin: AndroidLaneDevice["origin"],
-    profileId: string | null,
-    systemImage: string | null,
-  ): AndroidLaneDevice => ({ laneId, avdName, origin, profileId, systemImage, createdAt: now().toISOString(), adeInstalledPackages: [] });
+  /* ---------- devices (`androidDeviceInventory.ts`) ---------- */
 
-  /** How the lane release reads this machine's disks. */
-  const releaseOptions = (deleteCreated?: boolean) => ({
-    env,
+  const inventory = createAndroidDeviceInventory<LaneState>({
+    laneDevices: deps.laneDevices,
+    readSdk: () => readSdk(),
+    requireSdk,
     platform,
+    env,
     home,
     discoveryDirs,
     logger,
-    ...(deleteCreated === undefined ? {} : { deleteCreated }),
+    now,
+    emit,
+    assertLive,
+    assertWorkCopyLive,
+    laneLiveness,
+    serialize,
+    laneState,
+    forgetLane: (laneId) => { lanes.delete(laneId); },
+    startLocked,
+    stopLocked,
+    emitDeviceState,
+    discovered,
+    ownsEmulator,
+    asRunning,
+    runningFor,
+    beforeRelease: (laneId) => agent.beforeRelease(laneId),
   });
-
-  /**
-   * Makes a new AVD for the lane and records it as the lane's own (deleted
-   * with the lane). The caller holds the lane's queue and checked the lane
-   * is free.
-   */
-  const createLocked = async (
-    laneId: string,
-    profileId: string,
-    wanted: string | null,
-    displayName: string | null,
-    // P1 look: a brand catalog entry picks the profile and records its colour.
-    look: { entry: AndroidCatalogEntry; colorId: string } | null = null,
-  ): Promise<void> => {
-    const ready = await requireSdk({ emulator: true });
-    const images = listAndroidSystemImages(ready.root);
-    const definitions = definitionsFor(ready.root, images);
-    if (definitions.length === 0) {
-      // The profiles come from the SDK's Command-line Tools (or Android
-      // Studio). An SDK made of zips has neither, and then nothing can be made.
-      throw new AndroidEmulatorFailure(
-        "ANDROID_TOOL_MISSING",
-        "This machine's Android SDK has no hardware profiles, so ADE cannot make a device. Install the Android SDK Command-line Tools (`sdkmanager \"cmdline-tools;latest\"`, or Android Studio's SDK Manager), then try again. `device-attach` still works with an AVD you already have.",
-      );
-    }
-    const catalogChoice = look ? resolveAndroidCatalogDefinition(look.entry, definitions) : null;
-    if (look && !catalogChoice) {
-      throw new AndroidEmulatorFailure(
-        "ANDROID_AVD_NOT_FOUND",
-        `This SDK has no hardware profile for ${look.entry.name} (tried ${look.entry.sdkProfileIds.join(", ")}). Update the Android SDK Command-line Tools, then try again.`,
-      );
-    }
-    if (look?.entry.adeProfile) {
-      // Best effort: the AVD is made from the in-memory profile either way.
-      const skipped = writeAndroidAdeProfile(androidUserHome(env, home), look.entry.adeProfile);
-      if (skipped) logger?.warn("android.ade_profile_not_written", { profileId: look.entry.adeProfile.id, reason: skipped });
-    }
-    const definition = catalogChoice?.definition ?? definitions.find((entry) => entry.profile.id === profileId);
-    if (!definition) {
-      throw new AndroidEmulatorFailure("ANDROID_AVD_NOT_FOUND", `No hardware profile named ${profileId} is on this machine.`);
-    }
-    const image = wanted
-      ? images.find((entry) => entry.packageId === wanted) ?? null
-      : pickAndroidSystemImage(images, ready.sdk.hostAbi, definition);
-    if (!image) {
-      throw new AndroidEmulatorFailure(
-        "ANDROID_NO_SYSTEM_IMAGE",
-        wanted
-          ? `The system image ${wanted} is not installed.`
-          : `No ${ready.sdk.hostAbi} system image is installed. Install one with the SDK Manager.`,
-      );
-    }
-    const avd = createAndroidAvd({
-      sdkRoot: ready.root,
-      avdHome: ready.avdHome,
-      userHome: androidUserHome(env, home),
-      laneId,
-      definition,
-      image,
-      displayName: displayName ?? look?.entry.name ?? null,
-      catalogId: look?.entry.id ?? null,
-      colorId: look?.colorId ?? null,
-    });
-    deps.laneDevices.set(newLaneDevice(laneId, avd.name, "created", definition.profile.id, image.packageId));
-    logger?.info("android.device_created", {
-      laneId,
-      avdName: avd.name,
-      profileId: definition.profile.id,
-      systemImage: image.packageId,
-      ...(look ? { catalogId: look.entry.id, colorId: look.colorId, profileFallback: catalogChoice?.fallback ?? false } : {}),
-    });
-    emit({ type: "android.inventory.changed" });
-  };
-
-  /**
-   * A chat's work copy gets its first device: a free AVD this machine already
-   * has before a new one, since a new one costs gigabytes and a first boot.
-   * The borrowed AVD is attached, so releasing it never deletes it. The caller
-   * holds the lane's queue.
-   */
-  const ensureWorkCopyDeviceLocked = async (laneId: string): Promise<void> => {
-    const ready = await requireSdk({ emulator: true });
-    // No await from here to the row write: two lanes asking at once cannot
-    // both take one AVD.
-    const borrowed = pickWorkCopyAvd(listAndroidAvds(ready.avdHome), discovered(), { ...deps.laneDevices, owns: ownsEmulator });
-    if (borrowed) {
-      deps.laneDevices.set(newLaneDevice(laneId, borrowed.name, "attached", borrowed.profileId, null));
-      logger?.info("android.work_copy_borrowed", { laneId, avdName: borrowed.name, adeCreated: borrowed.adeCreated });
-      emit({ type: "android.inventory.changed" });
-      return;
-    }
-    await createLocked(laneId, WORK_COPY_PROFILE_ID, null, null);
-  };
-
-  /**
-   * Stops the lane's emulator and releases its AVD by the normal rules (an
-   * attached AVD stays). The caller holds the lane's queue.
-   */
-  const endLaneLocked = async (device: AndroidLaneDevice) => {
-    // While it still runs: the packages ADE put on an attached AVD come off.
-    await agent.beforeRelease(device.laneId);
-    await stopLocked(laneState(device.laneId), device, { refuseForeign: false });
-    const result = await releaseAndroidLaneDevice(device.laneId, deps.laneDevices, releaseOptions());
-    lanes.delete(device.laneId);
-    return result;
-  };
+  const { endLaneLocked } = inventory;
 
   /** A chat's work copy here was deleted: give its device back. */
   const releaseGoneWorkCopy = (laneId: string) => {
@@ -901,80 +728,7 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
       return status;
     },
 
-    async listDevices(args) {
-      const sdk = await readSdk();
-      if (!sdk.found || !sdk.root || !sdk.avdHome) return { avds: [], profiles: [], images: [] };
-      const adbPath = androidSdkPaths(sdk.root, platform).adb;
-      const running = await Promise.all(discovered().map((emulator) => asRunning(adbPath, emulator)));
-      const avds: AndroidAvdListing[] = listAndroidAvds(sdk.avdHome, { running }).map((avd) => {
-        const madeFor = avd.adeCreated ? readAdeAvdLaneId(avd) : null;
-        return {
-          ...avd,
-          running: running.find((emulator) => sameAvdName(emulator.avdName, avd.name)) ?? null,
-          heldByLaneId: deps.laneDevices.holder(avd.name),
-          madeForOtherLane: madeFor !== null && laneLiveness(madeFor) === "missing",
-        };
-      });
-      // Storage: sizes only when asked (the picker's Storage section), never on every read.
-      if (args?.measureSizes === true) {
-        await Promise.all(avds.map(async (avd) => { avd.sizeBytes = await measureAndroidAvdBytes(avd.path); }));
-      }
-      const images = listAndroidSystemImages(sdk.root);
-      const profiles = definitionsFor(sdk.root, images).map((definition) => definition.profile);
-      const inventory: AndroidDeviceInventory = { avds, profiles, images };
-      return inventory;
-    },
-
-    createDevice(args: AndroidCreateDeviceArgs) {
-      assertLive();
-      const laneId = requireLaneId(args.laneId);
-      const profileId = typeof args.profileId === "string" ? args.profileId.trim() : "";
-      const catalogId = typeof args.catalogId === "string" ? args.catalogId.trim() : "";
-      const entry = catalogId ? androidCatalogEntry(catalogId) : null;
-      if (catalogId && !entry) throw new Error(`No catalog device named ${catalogId}.`);
-      if (!profileId && !entry) throw new Error("profileId or catalogId is required.");
-      const colorId = typeof args.colorId === "string" ? args.colorId.trim() : "";
-      if (entry && colorId && !entry.colors.some((color) => color.id === colorId)) {
-        throw new Error(`${entry.name} has no colour ${colorId}. Colours: ${entry.colors.map((color) => color.id).join(", ")}.`);
-      }
-      const look = entry ? { entry, colorId: androidCatalogColor(entry, colorId || null).id } : null;
-      return serialize(laneId, async () => {
-        assertWorkCopyLive(laneId);
-        assertLaneFree(laneId, null);
-        await createLocked(laneId, profileId, args.systemImage?.trim() || null, args.displayName ?? null, look);
-        if (args.start === false) return emitDeviceState(laneId);
-        return startLocked(laneState(laneId));
-      });
-    },
-
-    attachDevice(args) {
-      assertLive();
-      const laneId = requireLaneId(args.laneId);
-      const avdName = typeof args.avdName === "string" ? args.avdName.trim() : "";
-      if (!avdName) throw new Error("avdName is required.");
-      return serialize(laneId, async () => {
-        assertWorkCopyLive(laneId);
-        assertLaneFree(laneId, avdName);
-        assertNotHeldElsewhere(laneId, avdName);
-        const ready = await requireSdk({ emulator: false });
-        const avd = readAndroidAvd(ready.avdHome, avdName);
-        if (!avd) throw new AndroidEmulatorFailure("ANDROID_AVD_NOT_FOUND", `No AVD named ${avdName} is on this machine.`);
-        if (!deps.laneDevices.get(laneId)) {
-          // Again after the await: another lane's queue may have taken it meanwhile.
-          // No await from here to the row write.
-          assertNotHeldElsewhere(laneId, avdName);
-          // Only the lane an AVD was made for deletes it with the lane. An
-          // ADE AVD made for another lane may belong to a lane of another
-          // project (this lane table cannot see it), so it is attached:
-          // never deleted on release, like the user's own AVDs.
-          const origin = avd.adeCreated && readAdeAvdLaneId(avd) === laneId ? "created" : "attached";
-          deps.laneDevices.set(newLaneDevice(laneId, avd.name, origin, avd.profileId, null));
-          emit({ type: "android.inventory.changed" });
-        }
-        if (args.start === false) return emitDeviceState(laneId);
-        return startLocked(laneState(laneId));
-      });
-    },
+    ...inventory.api,
 
     start(args) {
       assertLive();
@@ -982,7 +736,7 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
       return serialize(laneId, async () => {
         assertWorkCopyLive(laneId);
         // A chat's work copy has no device until its first start asks for one.
-        if (isRemoteWorkLaneId(laneId) && !deps.laneDevices.get(laneId)) await ensureWorkCopyDeviceLocked(laneId);
+        if (isRemoteWorkLaneId(laneId) && !deps.laneDevices.get(laneId)) await inventory.ensureWorkCopyDeviceLocked(laneId);
         return startLocked(laneState(laneId));
       });
     },
@@ -1007,94 +761,13 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
       });
     },
 
-    releaseDevice(args) {
-      const laneId = requireLaneId(args.laneId);
-      return serialize(laneId, async () => {
-        const state = laneState(laneId);
-        const device = deps.laneDevices.get(laneId);
-        if (!device) return { released: false, deletedAvd: null };
-        await agent.beforeRelease(laneId);
-        await stopLocked(state, device, { refuseForeign: false });
-        const result = await releaseAndroidLaneDevice(laneId, deps.laneDevices, releaseOptions(args.deleteCreated !== false));
-        if (!result.released) {
-          throw new AndroidEmulatorFailure("ANDROID_AVD_RUNNING", result.reason ?? `${device.avdName} could not be released.`);
-        }
-        state.error = null;
-        emit({ type: "android.inventory.changed" });
-        emit({ type: "android.device.state", laneId, state: "none" });
-        return { released: true, deletedAvd: result.deletedAvd };
-      });
-    },
-
-    deleteDevice(args) {
-      assertLive();
-      const avdName = typeof args.avdName === "string" ? args.avdName.trim() : "";
-      if (!avdName) throw new Error("avdName is required.");
-      return serialize(`avd:${avdName.toLowerCase()}`, async () => {
-        assertNotHeldElsewhere(null, avdName);
-        const ready = await requireSdk({ emulator: false });
-        const running = runningFor(avdName);
-        if (running) throw new AndroidEmulatorFailure("ANDROID_AVD_RUNNING", `${avdName} is running. Stop it before deleting it.`);
-        // Again after the await: a lane may have attached it meanwhile.
-        assertNotHeldElsewhere(null, avdName);
-        deleteAdeAndroidAvd(ready.avdHome, avdName, []);
-        logger?.info("android.device_deleted", { avdName });
-        emit({ type: "android.inventory.changed" });
-        return { deleted: true };
-      });
-    },
-
-    async startStream(args) {
-      assertLive();
-      const laneId = requireLaneId(args.laneId);
-      assertWorkCopyLive(laneId);
-      const { serial, transport, state } = await startLaneStream(laneId, {
-        ...(typeof args.maxSize === "number" ? { maxSize: args.maxSize } : {}),
-        ...(typeof args.bitRateBps === "number" ? { bitRate: args.bitRateBps } : {}),
-        ...(typeof args.maxFps === "number" ? { maxFps: args.maxFps } : {}),
-      });
-      state.streamViewer = true;
-      const status = streams.status(serial, laneId);
-      return { ...status, laneId, running: true, backend: "scrcpy", transport };
-    },
-
-    async stopStream(args) {
-      const laneId = requireLaneId(args.laneId);
-      const state = laneState(laneId);
-      if (agent.isRecording(laneId)) {
-        // A recording still reads the stream: the viewer goes, the stream stays.
-        state.streamViewer = false;
-        return { laneId, running: false, backend: null, transport: null, fps: null };
-      }
-      await stopLaneStream(state);
-      return { laneId, running: false, backend: null, transport: null, fps: null };
-    },
-
-    async getStreamStatus(args) {
-      const laneId = requireLaneId(args.laneId);
-      const serial = lanes.get(laneId)?.streamSerial ?? null;
-      const status: AndroidStreamStatus = serial
-        ? streams.status(serial, laneId)
-        : { laneId, running: false, backend: null, transport: null, fps: null };
-      // Redacted: the token is only for the viewer that started the stream.
-      return { ...status, laneId, transport: null };
-    },
+    ...laneStreams.api,
 
     ...input,
 
     async screenshot(args) {
       const laneId = requireLaneId(args.laneId);
-      const shot = await takeAndroidScreenshot({
-        laneId,
-        outPath: args.outPath?.trim() || null,
-        laneRoot: () => laneRoot(laneId),
-        workCopy: isRemoteWorkLaneId(laneId),
-        requireBooted: () => requireBooted(laneId),
-        dataDir: deps.dataDir,
-        platform,
-        signal: lifetime.signal,
-        now,
-      });
+      const shot = await captureLaneScreen(laneId, args.outPath?.trim() || null);
       // Default on, as Apple's. `proof: false`: a caller on another machine
       // files it there (`cliMachineTargeting.ts`), or one that files its own.
       if (args.proof === false) return shot;
@@ -1102,6 +775,7 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
     },
 
     ...agent.api,
+    ...deviceSettings.verbs,
     getDeviceSettings: (args) => deviceSettings.getDeviceSettings(requireLaneId(args.laneId), args.fields === "foreground" ? "foreground" : "all"),
     setDeviceSetting: async (args) => {
       const laneId = requireLaneId(args.laneId);
@@ -1133,29 +807,7 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
       if (hadDevice || hadState) emit({ type: "android.device.state", laneId: id, state: hadDevice ? "off" : "none" });
     },
 
-    /* ---------- P1 look: the body colour and the render ---------- */
-
-    setDeviceColor(args) {
-      assertLive();
-      const laneId = requireLaneId(args.laneId);
-      const colorId = typeof args.colorId === "string" ? args.colorId.trim() : "";
-      if (!colorId) throw new Error("colorId is required.");
-      return serialize(laneId, async () => {
-        const device = deps.laneDevices.get(laneId);
-        if (!device) throw new AndroidEmulatorFailure("ANDROID_NOT_RUNNING", "This lane has no Android device.");
-        const ready = await requireSdk({ emulator: false });
-        const avd = readAndroidAvd(ready.avdHome, device.avdName);
-        if (!avd) throw new AndroidEmulatorFailure("ANDROID_AVD_NOT_FOUND", `No AVD named ${device.avdName} is on this machine.`);
-        const entry = androidCatalogEntry(avd.catalogId ?? null);
-        if (!entry) throw new Error(`${device.avdName} was not made from a catalog device, so it has no colours.`);
-        if (!entry.colors.some((color) => color.id === colorId)) {
-          throw new Error(`${entry.name} has no colour ${colorId}. Colours: ${entry.colors.map((color) => color.id).join(", ")}.`);
-        }
-        setAndroidAvdColor(avd, colorId);
-        emit({ type: "android.inventory.changed" });
-        return emitDeviceState(laneId);
-      });
-    },
+    /* ---------- P1 look: the render ---------- */
 
     requestRender(args) {
       assertLive();

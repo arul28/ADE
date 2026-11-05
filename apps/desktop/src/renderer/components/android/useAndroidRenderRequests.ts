@@ -3,7 +3,7 @@ import type { OpenProjectBinding } from "../../../shared/types";
 import type { AndroidRenderRequestEvent, AndroidRenderRequestSpec } from "../../../shared/types/androidEmulator";
 import { READABLE_TOAST_DURATION_MS, showToast } from "../app/toast/toastStore";
 import { logRendererDebugEvent } from "../../lib/debugLog";
-import type { DeviceRenderer } from "../device/Device3DView";
+import type { DeviceRenderer } from "../device/deviceRenderPass";
 import { renderAndroidDeviceToProof, type AndroidRenderFiled } from "./androidRender";
 
 /** Wait for a condition the pane flips (the 3D body landing). */
@@ -43,6 +43,8 @@ export function useAndroidRenderRequests({
   const rendererRef = useRef<DeviceRenderer | null>(null);
   const [renderOpen, setRenderOpen] = useState(false);
   const [rendering, setRendering] = useState(false);
+  /** One render at a time: a second one is refused before it touches `rendering`. */
+  const busyRef = useRef(false);
   const stateRef = useRef({ laneId, deviceName, live, threeD });
   stateRef.current = { laneId, deviceName, live, threeD };
   const onErrorRef = useRef(onError);
@@ -56,6 +58,8 @@ export function useAndroidRenderRequests({
   }, []);
 
   const run = useCallback(async (request: AndroidRenderRequestSpec, requestId: string | null): Promise<AndroidRenderFiled> => {
+    if (busyRef.current) throw new Error("Another render of this device is still running. Try again when it ends.");
+    busyRef.current = true;
     setRendering(true);
     try {
       if (!(await waitFor(() => rendererRef.current !== null, 10_000))) throw new Error("The 3D view is still loading.");
@@ -68,6 +72,7 @@ export function useAndroidRenderRequests({
         pin: runtimePinRef.current,
       });
     } finally {
+      busyRef.current = false;
       setRendering(false);
     }
   }, [runtimePinRef]);

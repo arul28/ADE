@@ -1,9 +1,9 @@
-import type {
-  AndroidDeviceSetting,
-  AndroidDisplaySize,
-  AndroidTextSize,
+import {
+  ANDROID_DISPLAY_SIZES,
+  ANDROID_TEXT_SIZES,
+  type AndroidDeviceSetting,
 } from "../../../../shared/types/androidEmulator";
-import { DrawerMenu, Row, Subhead, SwitchRow, type DrawerMenuOption } from "../../ui/drawerPrimitives";
+import { DrawerMenu, Row, Subhead, SwitchRow } from "../../ui/drawerPrimitives";
 import type { AndroidDrawerContext } from "./androidDrawerState";
 
 /*
@@ -12,25 +12,11 @@ import type { AndroidDrawerContext } from "./androidDrawerState";
  * switches are the developer options an Android developer turns on most.
  */
 
-export const ANDROID_TEXT_SIZES: readonly DrawerMenuOption<AndroidTextSize>[] = [
-  { value: "small", label: "Small" },
-  { value: "default", label: "Default" },
-  { value: "large", label: "Large" },
-  { value: "largest", label: "Largest" },
-];
-
-export const ANDROID_DISPLAY_SIZES: readonly DrawerMenuOption<AndroidDisplaySize>[] = [
-  { value: "small", label: "Small" },
-  { value: "default", label: "Default" },
-  { value: "large", label: "Large" },
-  { value: "larger", label: "Larger" },
-];
-
 /** Sends one setting through the drawer's serialized `act`. */
 export function deviceSettingSetter(ctx: AndroidDrawerContext) {
   const { laneId, pinRef, actions } = ctx;
   return (setting: AndroidDeviceSetting) =>
-    actions.act(() => window.ade.androidEmulator.setDeviceSetting({ laneId, setting }, pinRef.current));
+    actions.actWithSettings(() => window.ade.androidEmulator.setDeviceSetting({ laneId, setting }, pinRef.current));
 }
 
 export function AndroidDeviceSection({ ctx }: { ctx: AndroidDrawerContext }) {

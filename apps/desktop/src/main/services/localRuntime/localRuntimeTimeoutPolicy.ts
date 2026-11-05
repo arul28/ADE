@@ -92,6 +92,8 @@ export const ANDROID_EMULATOR_UI_REMOTE_TRANSPORT_TIMEOUT_MS = ANDROID_EMULATOR_
 /** `ade android lease --wait`: a waiter stands in line up to 9 minutes (`DEVICE_LEASE_MAX_WAIT_MS`). */
 export const ANDROID_EMULATOR_LEASE_TIMEOUT_MS = 10 * 60_000;
 export const ANDROID_EMULATOR_LEASE_REMOTE_TRANSPORT_TIMEOUT_MS = ANDROID_EMULATOR_LEASE_TIMEOUT_MS + 15_000;
+/** `ade android record-stop` on another machine: the MP4 is finished and filed there first. */
+export const ANDROID_EMULATOR_RECORD_STOP_REMOTE_TRANSPORT_TIMEOUT_MS = DEMO_RECORDING_STOP_TIMEOUT_MS + 15_000;
 
 /**
  * The innermost budgets on the remote path: the JSON-RPC transport carrying
@@ -444,6 +446,10 @@ const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = 
   ["android_emulator.captureProofBundle", ANDROID_EMULATOR_UI_TIMEOUT_MS],
   ["android_emulator.deviceLease", ANDROID_EMULATOR_LEASE_TIMEOUT_MS],
   ["android_emulator.recordStop", DEMO_RECORDING_STOP_TIMEOUT_MS],
+  // A start waits for the stream's first picture; a log read runs pidof,
+  // then a logcat dump of up to 30 s.
+  ["android_emulator.recordStart", ANDROID_EMULATOR_UI_TIMEOUT_MS],
+  ["android_emulator.readLog", ANDROID_EMULATOR_UI_TIMEOUT_MS],
 ]);
 
 export function longRunningLocalRuntimeActionTimeoutMs(

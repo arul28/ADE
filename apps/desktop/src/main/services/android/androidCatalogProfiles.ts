@@ -40,7 +40,7 @@ function screenSizeBucket(diagonalInches: number): string {
  * to the catalog phone's inner screen; with no such profile on this SDK it
  * is made as a large phone with no hinge.
  */
-export function androidAdeProfileDefinition(
+function androidAdeProfileDefinition(
   spec: AndroidAdeProfileSpec,
   sdkDefinitions: readonly AndroidDeviceDefinition[] = [],
 ): AndroidDeviceDefinition {
@@ -139,7 +139,7 @@ const SCHEMA_DENSITIES: ReadonlyArray<[number, string]> = [
   [640, "xxxhdpi"],
 ];
 
-export function androidDensityToken(dpi: number): string {
+function androidDensityToken(dpi: number): string {
   let best = SCHEMA_DENSITIES[0]!;
   for (const entry of SCHEMA_DENSITIES) {
     if (Math.abs(entry[0] - dpi) < Math.abs(best[0] - dpi)) best = entry;
@@ -153,7 +153,7 @@ export function androidDensityToken(dpi: number): string {
  * elements differ between Studio versions); the AVD's `config.ini` carries
  * the hinge, so the emulator still folds.
  */
-export function androidAdeDeviceXml(spec: AndroidAdeProfileSpec, prefix: string, indent: string, eol: string): string {
+function androidAdeDeviceXml(spec: AndroidAdeProfileSpec, prefix: string, indent: string, eol: string): string {
   const p = prefix ? `${prefix}:` : "";
   const xdpi = Math.hypot(spec.widthPx, spec.heightPx) / spec.diagonalInches;
   const long = Math.max(spec.widthPx, spec.heightPx);
@@ -250,7 +250,7 @@ export type AndroidDevicesXmlMerge =
  * The user's `devices.xml` text with ADE's profile added, or its own old
  * block for the same id replaced. Every other byte stays as it was.
  */
-export function mergeAndroidDevicesXml(existing: string | null, spec: AndroidAdeProfileSpec): AndroidDevicesXmlMerge {
+function mergeAndroidDevicesXml(existing: string | null, spec: AndroidAdeProfileSpec): AndroidDevicesXmlMerge {
   if (existing === null || existing.trim() === "") {
     const block = androidAdeDeviceXml(spec, "d", "  ", "\n");
     const text = [

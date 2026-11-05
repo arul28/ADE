@@ -1,7 +1,12 @@
 import type { SyncRemoteCommandAction, SyncRemoteCommandPolicy } from "../../../../desktop/src/shared/types/sync";
 import { isAllowedAdeAction, isSecretBearingAdeAction } from "../../../../desktop/src/main/services/adeActions/actionPolicy";
-import type { AndroidHardwareKey } from "../../../../desktop/src/shared/types/androidEmulator";
-import { ANDROID_HARDWARE_KEYS } from "../../../../desktop/src/shared/types/androidEmulator";
+import { buildAndroidDomainService } from "../../../../desktop/src/main/services/android/androidActionDomain";
+import type { AndroidEmulatorServiceApi, AndroidHardwareKey } from "../../../../desktop/src/shared/types/androidEmulator";
+import {
+  ANDROID_HARDWARE_KEYS,
+  ANDROID_LANE_FREE_ACTIONS,
+  ANDROID_SDK_PERSON_ONLY_ACTIONS,
+} from "../../../../desktop/src/shared/types/androidEmulator";
 
 /**
  * `android.*` remote commands: the lane's Android emulator, as a phone or a
@@ -22,24 +27,12 @@ import { ANDROID_HARDWARE_KEYS } from "../../../../desktop/src/shared/types/andr
  *   person reads and accepts Google's licences.
  */
 
-/** The slice of the Android emulator service these commands need. */
-export type AndroidDeviceRemoteService = {
-  getStatus(args: { laneId?: string | null }): Promise<unknown>;
-  getStreamStatus(args: { laneId: string }): Promise<unknown>;
-  listDevices(args: { laneId?: string | null }): Promise<unknown>;
-  tap(args: { laneId: string; x: number; y: number }): Promise<unknown>;
-  swipe(args: { laneId: string; fromX: number; fromY: number; toX: number; toY: number; durationMs?: number | null }): Promise<unknown>;
-  sendKey(args: { laneId: string; key: AndroidHardwareKey }): Promise<unknown>;
-  sendText(args: { laneId: string; text: string }): Promise<unknown>;
-  longPress(args: { laneId: string; x: number; y: number; durationMs?: number | null }): Promise<unknown>;
-  drag(args: { laneId: string; fromX: number; fromY: number; toX: number; toY: number; durationMs?: number | null }): Promise<unknown>;
-  scroll(args: { laneId: string; direction: "up" | "down" | "left" | "right"; amount?: number | null; anchorX?: number | null; anchorY?: number | null }): Promise<unknown>;
-  tapElement(args: { laneId: string; query: { ref?: string | null; label?: string | null; text?: string | null } }): Promise<unknown>;
-  openUrl(args: { laneId: string; url: string }): Promise<unknown>;
-  recordStart(args: { laneId: string; chatSessionId?: string | null; label?: string | null }): Promise<unknown>;
-  recordStop(args: { laneId: string; chatSessionId?: string | null; discard?: boolean }): Promise<unknown>;
-  recordList(args: { laneId: string }): Promise<unknown>;
-} & Record<string, unknown>;
+/**
+ * The Android emulator service these commands reach. `android.invoke` goes
+ * through the `android_emulator` action domain (`buildAndroidDomainService`),
+ * which reads every method, so this is the whole service and not a slice.
+ */
+export type AndroidDeviceRemoteService = AndroidEmulatorServiceApi;
 
 /** The per-lane snapshot a phone or a web tab renders. */
 export type AndroidStatusPayload = {
@@ -125,9 +118,7 @@ export function buildAndroidStatusPayload(laneId: string, status: unknown): Andr
  * answer carries a secret (the stream token), and the SDK setup writes.
  */
 const ANDROID_INVOKE_REFUSED: ReadonlySet<string> = new Set([
-  "installSdk",
-  "cancelSdkInstall",
-  "setSdkPath",
+  ...ANDROID_SDK_PERSON_ONLY_ACTIONS,
   // P2: the remote live view goes through a relay ticket, never the local token.
   "startStream",
   "stopStream",
@@ -135,7 +126,7 @@ const ANDROID_INVOKE_REFUSED: ReadonlySet<string> = new Set([
 ]);
 
 /** `android.invoke` methods that need no lane (the machine's AVDs, its SDK plan). */
-const ANDROID_INVOKE_LANE_FREE: ReadonlySet<string> = new Set(["getStatus", "listDevices", "getSdkSetupPlan", "getSdkInstallState"]);
+const ANDROID_INVOKE_LANE_FREE: ReadonlySet<string> = new Set(ANDROID_LANE_FREE_ACTIONS);
 
 const ANDROID_BUTTONS: ReadonlySet<string> = new Set(ANDROID_HARDWARE_KEYS);
 
@@ -149,6 +140,8 @@ export type AndroidRemoteCommandEntry = {
 
 export function createAndroidRemoteCommandHandlers(deps: { service: AndroidDeviceRemoteService }): AndroidRemoteCommandEntry[] {
   const { service } = deps;
+  // The same argument readers as `ade actions run android_emulator.*`.
+  const domain = buildAndroidDomainService({ androidEmulatorService: service });
   const laneOf = (payload: Record<string, unknown>, action: string): string =>
     requireString(payload.laneId, `${action} requires laneId.`);
   const direction = (value: unknown): "up" | "down" | "left" | "right" => {
@@ -161,7 +154,7 @@ export function createAndroidRemoteCommandHandlers(deps: { service: AndroidDevic
 
   return [
     {
-      action: "android.status" as SyncRemoteCommandAction,
+      action: "android.status",
       policy: { viewerAllowed: true },
       handler: async (payload) => {
         const laneId = laneOf(payload, "android.status");
@@ -171,7 +164,7 @@ export function createAndroidRemoteCommandHandlers(deps: { service: AndroidDevic
       },
     },
     {
-      action: "android.input" as SyncRemoteCommandAction,
+      action: "android.input",
       policy: { viewerAllowed: false, controllerAllowed: true },
       handler: async (payload) => {
         const laneId = laneOf(payload, "android.input");
@@ -241,7 +234,7 @@ export function createAndroidRemoteCommandHandlers(deps: { service: AndroidDevic
       // The rest of `androidEmulator.*`, behind the same allowlist as the
       // `android_emulator` ADE action domain, so the allowlist (not this file)
       // stays the one place that says what a remote caller may reach.
-      action: "android.invoke" as SyncRemoteCommandAction,
+      action: "android.invoke",
       policy: { viewerAllowed: false, controllerAllowed: true },
       handler: async (payload) => {
         const method = requireString(payload.method, "android.invoke requires a method.");
@@ -252,14 +245,14 @@ export function createAndroidRemoteCommandHandlers(deps: { service: AndroidDevic
         ) {
           throw new Error(`android.invoke does not allow '${method}'.`);
         }
-        const call = service[method];
+        const call = domain?.[method];
         if (typeof call !== "function") throw new Error(`android.invoke: '${method}' is not available in this runtime.`);
         const laneId = ANDROID_INVOKE_LANE_FREE.has(method)
           ? asString(payload.laneId)
           : requireString(payload.laneId, `android.invoke '${method}' requires laneId.`);
         const chatSessionId = asString(payload.chatSessionId);
         const methodArgs = isRecord(payload.args) ? payload.args : {};
-        return (call as (args: Record<string, unknown>) => Promise<unknown>).call(service, {
+        return call({
           ...methodArgs,
           ...(laneId ? { laneId } : {}),
           ...(chatSessionId ? { chatSessionId } : {}),
@@ -267,17 +260,17 @@ export function createAndroidRemoteCommandHandlers(deps: { service: AndroidDevic
       },
     },
     {
-      action: "android.deviceList" as SyncRemoteCommandAction,
+      action: "android.deviceList",
       policy: { viewerAllowed: true },
       handler: async (payload) => service.listDevices({ laneId: asString(payload.laneId) }),
     },
     {
-      action: "android.recordList" as SyncRemoteCommandAction,
+      action: "android.recordList",
       policy: { viewerAllowed: true },
       handler: async (payload) => service.recordList({ laneId: laneOf(payload, "android.recordList") }),
     },
     {
-      action: "android.recordStart" as SyncRemoteCommandAction,
+      action: "android.recordStart",
       policy: { viewerAllowed: false, controllerAllowed: true },
       handler: async (payload) => service.recordStart({
         laneId: laneOf(payload, "android.recordStart"),
@@ -286,7 +279,7 @@ export function createAndroidRemoteCommandHandlers(deps: { service: AndroidDevic
       }),
     },
     {
-      action: "android.recordStop" as SyncRemoteCommandAction,
+      action: "android.recordStop",
       policy: { viewerAllowed: false, controllerAllowed: true },
       handler: async (payload) => service.recordStop({
         laneId: laneOf(payload, "android.recordStop"),
@@ -297,12 +290,3 @@ export function createAndroidRemoteCommandHandlers(deps: { service: AndroidDevic
   ];
 }
 
-export const ANDROID_REMOTE_COMMAND_ACTIONS = [
-  "android.status",
-  "android.input",
-  "android.invoke",
-  "android.deviceList",
-  "android.recordList",
-  "android.recordStart",
-  "android.recordStop",
-] as const;

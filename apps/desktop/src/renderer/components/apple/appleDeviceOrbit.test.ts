@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { Quaternion, Vector3 } from "three";
 import {
-  APPLE_DEVICE_ORBIT,
-  createAppleDeviceOrbit,
+  DEVICE_ORBIT,
+  createDeviceOrbit,
   nearestScreenFacingRotation,
   quatRotationVector,
-} from "./appleDeviceOrbit";
+} from "../device/deviceOrbit";
 
 function axisAngle(x: number, y: number, z = 0): Quaternion {
   const axis = new Vector3(x, y, z);
@@ -26,14 +26,14 @@ describe("nearestScreenFacingRotation", () => {
   it("clamps yaw to the screen-facing window", () => {
     const spun = axisAngle(0, 3);
     const latched = nearestScreenFacingRotation(spun);
-    expect(latched.angleTo(new Quaternion())).toBeLessThanOrEqual(APPLE_DEVICE_ORBIT.yawLimit + 1e-6);
+    expect(latched.angleTo(new Quaternion())).toBeLessThanOrEqual(DEVICE_ORBIT.yawLimit + 1e-6);
   });
 });
 
-describe("createAppleDeviceOrbit", () => {
+describe("createDeviceOrbit", () => {
   it("follows a cumulative drag without teleporting, independent of event partitioning", () => {
     const run = (parts: number) => {
-      const motion = createAppleDeviceOrbit({ choose: (q) => q });
+      const motion = createDeviceOrbit({ choose: (q) => q });
       motion.dragActive(true, 0);
       for (let part = 0; part < parts; part++) motion.orbit(160 / parts, 80 / parts, 0);
       expect(motion.rotation.angleTo(new Quaternion())).toBeLessThan(1e-6);
@@ -48,19 +48,19 @@ describe("createAppleDeviceOrbit", () => {
   });
 
   it("latches the predicted nearest screen-facing view on release", () => {
-    const motion = createAppleDeviceOrbit();
+    const motion = createDeviceOrbit();
     motion.dragActive(true, 0);
     motion.orbit(0, 240, 0);
     motion.orbit(0, 20, 20);
     motion.dragActive(false, 40);
     for (let time = 56; time <= 2500; time += 16) motion.advance(time);
     expect(motion.needsFrame()).toBe(false);
-    expect(motion.rotation.angleTo(new Quaternion())).toBeLessThanOrEqual(APPLE_DEVICE_ORBIT.yawLimit + 1e-5);
+    expect(motion.rotation.angleTo(new Quaternion())).toBeLessThanOrEqual(DEVICE_ORBIT.yawLimit + 1e-5);
   });
 
   it("advances at the same pose across refresh rates", () => {
     const run = (step: number) => {
-      const motion = createAppleDeviceOrbit({ choose: () => new Quaternion() });
+      const motion = createDeviceOrbit({ choose: () => new Quaternion() });
       motion.dragActive(true, 0);
       motion.orbit(160, 80, 0);
       motion.advance(50);
@@ -77,10 +77,10 @@ describe("createAppleDeviceOrbit", () => {
   });
 
   it("keeps release angular speed within the spring limit", () => {
-    const motion = createAppleDeviceOrbit({ choose: () => axisAngle(0, Math.PI) });
+    const motion = createDeviceOrbit({ choose: () => axisAngle(0, Math.PI) });
     motion.setPose(axisAngle(0, Math.PI), 0);
     let previous = motion.rotation.clone();
-    const maxStep = APPLE_DEVICE_ORBIT.springSpeedLimit * 0.008 + 1e-5;
+    const maxStep = DEVICE_ORBIT.springSpeedLimit * 0.008 + 1e-5;
     for (let time = 8; time <= 1600; time += 8) {
       motion.advance(time);
       expect(motion.rotation.angleTo(previous)).toBeLessThanOrEqual(maxStep);
@@ -91,7 +91,7 @@ describe("createAppleDeviceOrbit", () => {
   });
 
   it("a click with no drag returns to the previous rest pose", () => {
-    const motion = createAppleDeviceOrbit({ choose: () => new Quaternion() });
+    const motion = createDeviceOrbit({ choose: () => new Quaternion() });
     const rest = axisAngle(0, 0.8);
     motion.setPose(rest, 0);
     motion.advance(50);
@@ -104,7 +104,7 @@ describe("createAppleDeviceOrbit", () => {
   });
 
   it("ignores invalid deltas and freezes while a screen contact is held", () => {
-    const motion = createAppleDeviceOrbit({ choose: () => new Quaternion() });
+    const motion = createDeviceOrbit({ choose: () => new Quaternion() });
     motion.orbit(NaN, 0, 0);
     expect(motion.needsFrame()).toBe(false);
     motion.orbit(200, 100, 0);

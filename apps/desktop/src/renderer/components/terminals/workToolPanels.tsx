@@ -698,7 +698,6 @@ function RemoteWorkAndroid(props: WorkToolPanelProps & {
       runtimePin={remotePin}
       laneName={null}
       pinnedMachineName={use.machineName}
-      hostPlatform={use.machinePlatform}
       noPicker={`No Android emulator on ${use.machineName} for this chat right now`}
     />
   );
@@ -708,14 +707,12 @@ function WorkAndroidDevice({
   laneId,
   laneName,
   runtimePin,
-  toolContext,
   pinnedMachineName,
-  hostPlatform,
   noPicker,
   panelSessionId,
   canInsertContext,
   onInsertDraft,
-}: WorkToolPanelProps & { laneName: string | null; hostPlatform?: string | null; noPicker?: string | null }) {
+}: WorkToolPanelProps & { laneName: string | null; noPicker?: string | null }) {
   const mountScope = useWorkToolMountScope(runtimePin);
   if (!laneId) return <NoLaneEmptyLine />;
   return (
@@ -725,7 +722,6 @@ function WorkAndroidDevice({
       laneName={laneName}
       runtimePin={runtimePin}
       machineName={runtimePin ? pinnedMachineName : null}
-      hostPlatform={hostPlatform !== undefined ? hostPlatform : toolContext.hostPlatform ?? null}
       noPicker={noPicker ?? null}
       sessionId={panelSessionId}
       onInsertDraft={canInsertContext ? onInsertDraft : undefined}

@@ -1,13 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
-import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
-import { DotsThree } from "@phosphor-icons/react";
 import type { AndroidRecording } from "../../../../shared/types/androidEmulator";
-import { cn } from "../../ui/cn";
-import { MENU_CONTENT_CLASS, MENU_ITEM_CLASS } from "../../ui/paneMenuTokens";
-import { PaneTooltip } from "../../ui/PaneTooltip";
-import { DRAWER_BUTTON, DRAWER_ICON_BUTTON } from "../../ui/drawerPrimitives";
 import { formatRecordingBytes, formatRecordingElapsed, revealProofArtifactRow } from "../../shared/recordingFormat";
-import { revealLabel } from "../../../lib/platform";
+import { RecordingRow, recordingDisplayName } from "../../shared/RecordingRow";
 import type { AndroidDrawerContext } from "./androidDrawerState";
 
 /*
@@ -16,14 +10,6 @@ import type { AndroidDrawerContext } from "./androidDrawerState";
  * card only lists, opens and deletes. Every stopped recording is filed to
  * proof, so "Open in proof" is the main action.
  */
-
-/** The label, else "Recording HH:MM:SS". */
-export function androidRecordingName(recording: AndroidRecording): string {
-  if (recording.label?.trim()) return recording.label.trim();
-  const at = new Date(recording.startedAt);
-  if (Number.isNaN(at.getTime())) return recording.id;
-  return `Recording ${at.toLocaleTimeString([], { hour12: false })}`;
-}
 
 export function AndroidCaptureSection({
   ctx,
@@ -88,56 +74,21 @@ export function AndroidCaptureSection({
     {runningLine}
     <ul className="flex min-w-0 flex-col gap-1.5" aria-label="Recordings">
       {finished.map((recording) => {
-        const name = androidRecordingName(recording);
-        const artifactId = recording.proofArtifactIds[0] ?? null;
         const parts = recording.segments.length > 1 ? ` · ${recording.segments.length} parts` : "";
         return (
-          <li key={recording.id} className="flex min-h-7 min-w-0 flex-nowrap items-center justify-between gap-2">
-            <div className="min-w-0 flex-1">
-              <div className="truncate text-xs text-fg/85" title={name}>{name}</div>
-              <div className="truncate text-[11px] text-muted-fg">
-                {recording.lastError
-                  ? <span className="text-[var(--color-error)]">{recording.lastError}</span>
-                  : <>{formatRecordingElapsed(recording.durationMs ?? 0)} · {formatRecordingBytes(recording.bytes)}{parts}</>}
-              </div>
-            </div>
-            <PaneTooltip label={artifactId ? `Open ${name} in proof` : "This recording is not in proof"} side="left">
-              <button
-                type="button"
-                className={cn(DRAWER_BUTTON, "shrink-0")}
-                disabled={!visible || !artifactId}
-                onClick={() => { if (artifactId) openProof(recording, artifactId); }}
-              >
-                Open in proof
-              </button>
-            </PaneTooltip>
-            <DropdownMenu.Root>
-              <PaneTooltip label={`More for ${name}`} side="left">
-                <DropdownMenu.Trigger asChild>
-                  <button type="button" className={DRAWER_ICON_BUTTON} aria-label={`More for ${name}`} disabled={!visible}>
-                    <DotsThree size={14} weight="bold" />
-                  </button>
-                </DropdownMenu.Trigger>
-              </PaneTooltip>
-              <DropdownMenu.Portal>
-                <DropdownMenu.Content align="end" sideOffset={4} className={MENU_CONTENT_CLASS}>
-                  <DropdownMenu.Item
-                    className={cn(MENU_ITEM_CLASS, "text-[12px]")}
-                    disabled={Boolean(remoteMachineName)}
-                    onSelect={() => { void window.ade.app.revealPath(recording.path).catch((cause: unknown) => reportError(cause)); }}
-                  >
-                    {remoteMachineName ? `On ${remoteMachineName}` : revealLabel}
-                  </DropdownMenu.Item>
-                  <DropdownMenu.Item
-                    className={cn(MENU_ITEM_CLASS, "text-[12px] text-[var(--color-error)]")}
-                    onSelect={() => remove(recording)}
-                  >
-                    Delete
-                  </DropdownMenu.Item>
-                </DropdownMenu.Content>
-              </DropdownMenu.Portal>
-            </DropdownMenu.Root>
-          </li>
+          <RecordingRow
+            key={recording.id}
+            name={recordingDisplayName(recording)}
+            detail={recording.lastError
+              ? <span className="text-[var(--color-error)]">{recording.lastError}</span>
+              : <>{formatRecordingElapsed(recording.durationMs ?? 0)} · {formatRecordingBytes(recording.bytes)}{parts}</>}
+            artifactId={recording.proofArtifactIds[0] ?? null}
+            enabled={visible}
+            onOpenProof={(artifactId) => openProof(recording, artifactId)}
+            onReveal={() => { void window.ade.app.revealPath(recording.path).catch((cause: unknown) => reportError(cause)); }}
+            revealUnavailable={remoteMachineName ? `On ${remoteMachineName}` : null}
+            onDelete={() => remove(recording)}
+          />
         );
       })}
     </ul>

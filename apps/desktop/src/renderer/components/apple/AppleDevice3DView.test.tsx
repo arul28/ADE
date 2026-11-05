@@ -3,8 +3,8 @@
 import { describe, expect, it } from "vitest";
 import type { AppleDeviceOrientation } from "../../../shared/types";
 import { appleDragIntent, appleWheelIntent } from "./AppleDevice3DView";
-import { appleCanvasHasDecoded, appleDeviceInputSize, orientedToPortrait, portraitUvToTextureUv } from "./appleDeviceScene";
-import { createDeviceModelLoader } from "./appleDeviceModelLoader";
+import { canvasHasDecoded, deviceInputSize, orientedToPortrait, portraitUvToTextureUv } from "../device/deviceScene";
+import { createDeviceModelLoader } from "../device/deviceModelLoader";
 
 describe("appleDragIntent (round 4 §A3)", () => {
   it("drives the device when the drag starts on the glass", () => {
@@ -104,23 +104,23 @@ describe("portraitUvToTextureUv (shared by the flat display and the Duo halves)"
   });
 });
 
-describe("appleDeviceInputSize (round 4 §A3/§A4)", () => {
+describe("deviceInputSize (round 4 §A3/§A4)", () => {
   const PIXELS = { width: 1_179, height: 2_556 };
   const POINTS = { width: 393, height: 852 };
 
   it("answers in POINTS — the space the device and its frames speak", () => {
-    expect(appleDeviceInputSize(POINTS, PIXELS)).toEqual(POINTS);
+    expect(deviceInputSize(POINTS, PIXELS)).toEqual(POINTS);
   });
 
   it("falls back to pixels only when the host never said what the points are", () => {
-    expect(appleDeviceInputSize(null, PIXELS)).toEqual(PIXELS);
-    expect(appleDeviceInputSize(undefined, PIXELS)).toEqual(PIXELS);
-    expect(appleDeviceInputSize({ width: 0, height: 0 }, PIXELS)).toEqual(PIXELS);
+    expect(deviceInputSize(null, PIXELS)).toEqual(PIXELS);
+    expect(deviceInputSize(undefined, PIXELS)).toEqual(PIXELS);
+    expect(deviceInputSize({ width: 0, height: 0 }, PIXELS)).toEqual(PIXELS);
   });
 });
 
 
-describe("appleCanvasHasDecoded", () => {
+describe("canvasHasDecoded", () => {
   function canvas(width: number, height: number): HTMLCanvasElement {
     const node = document.createElement("canvas");
     node.width = width;
@@ -132,20 +132,20 @@ describe("appleCanvasHasDecoded", () => {
     // The placeholder is LANDSCAPE, so a layout measured from it comes back
     // rotated — and the body writes its UVs once, at install. A device that
     // goes idle at that moment keeps a sideways screen forever.
-    expect(appleCanvasHasDecoded(document.createElement("canvas"))).toBe(false);
-    expect(appleCanvasHasDecoded(canvas(300, 150))).toBe(false);
+    expect(canvasHasDecoded(document.createElement("canvas"))).toBe(false);
+    expect(canvasHasDecoded(canvas(300, 150))).toBe(false);
   });
 
   it("refuses a canvas with no size, and no canvas at all", () => {
-    expect(appleCanvasHasDecoded(canvas(0, 0))).toBe(false);
-    expect(appleCanvasHasDecoded(null)).toBe(false);
+    expect(canvasHasDecoded(canvas(0, 0))).toBe(false);
+    expect(canvasHasDecoded(null)).toBe(false);
   });
 
   it("accepts a real decoded frame, portrait or landscape", () => {
-    expect(appleCanvasHasDecoded(canvas(1_179, 2_556))).toBe(true);
-    expect(appleCanvasHasDecoded(canvas(2_556, 1_179))).toBe(true);
+    expect(canvasHasDecoded(canvas(1_179, 2_556))).toBe(true);
+    expect(canvasHasDecoded(canvas(2_556, 1_179))).toBe(true);
     // 300 wide is fine as long as it is not the 300×150 pair.
-    expect(appleCanvasHasDecoded(canvas(300, 650))).toBe(true);
+    expect(canvasHasDecoded(canvas(300, 650))).toBe(true);
   });
 });
 

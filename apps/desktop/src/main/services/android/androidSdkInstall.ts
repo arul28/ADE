@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
+import type { ReadableStream as WebReadableStream } from "node:stream/web";
 import type {
   AndroidAcceleration,
   AndroidSdkInstallState,
@@ -13,6 +14,7 @@ import type {
   AndroidSdkStatus,
 } from "../../../shared/types/androidEmulator";
 import { androidCliArgs, androidCliDownloadUrl, androidCliInstallPath, locateAndroidCli, readAndroidCliVersion } from "./androidCli";
+import { getErrorMessage } from "../shared/utils";
 import { AndroidEmulatorFailure } from "./androidEmulatorErrors";
 import {
   androidLicenseText,
@@ -117,14 +119,14 @@ export type AndroidSdkInstallDeps = {
 };
 
 /** The platform's default SDK folder, the one Android Studio installs to. */
-export function androidDefaultInstallRoot(platform: NodeJS.Platform, env: Readonly<Record<string, string | undefined>>, home: string): string {
+function androidDefaultInstallRoot(platform: NodeJS.Platform, env: Readonly<Record<string, string | undefined>>, home: string): string {
   if (platform === "darwin") return path.join(home, "Library", "Android", "sdk");
   if (platform === "win32") return path.join(env.LOCALAPPDATA || path.join(home, "AppData", "Local"), "Android", "Sdk");
   return path.join(home, "Android", "Sdk");
 }
 
 /** `system-images;android-36;google_apis_playstore;arm64-v8a` → `<root>/system-images/android-36/…`. */
-export function androidPackageDir(sdkRoot: string, packagePath: string): string {
+function androidPackageDir(sdkRoot: string, packagePath: string): string {
   return path.join(sdkRoot, ...packagePath.split(";"));
 }
 
@@ -143,7 +145,7 @@ function nearestExistingDir(target: string): string | null {
   }
 }
 
-export function freeBytesAt(target: string | null): number | null {
+function freeBytesAt(target: string | null): number | null {
   if (!target) return null;
   const dir = nearestExistingDir(target);
   if (!dir) return null;
@@ -194,7 +196,7 @@ function licenseAccepted(sdkRoot: string, licenseId: string, text: string): bool
 }
 
 /** Appends the acceptance hashes and records who accepted what and when. */
-function writeLicenseAcceptance(sdkRoot: string, license: { id: string; text: string }, now: Date): void {
+function writeLicenseAcceptance(sdkRoot: string, license: { id: string; text: string }, now: Date, acceptedIn: string): void {
   const dir = path.join(sdkRoot, "licenses");
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, license.id);
@@ -210,7 +212,7 @@ function writeLicenseAcceptance(sdkRoot: string, license: { id: string; text: st
   } catch {
     // First record, or an unreadable file: start a new list.
   }
-  records.push({ licenseId: license.id, textSha1: sha1Hex(license.text), acceptedAt: now.toISOString(), acceptedIn: "ADE setup card" });
+  records.push({ licenseId: license.id, textSha1: sha1Hex(license.text), acceptedAt: now.toISOString(), acceptedIn });
   fs.writeFileSync(consentFile, `${JSON.stringify(records, null, 2)}\n`, "utf8");
 }
 
@@ -467,6 +469,8 @@ class AndroidSdkInstaller {
     planned: PlannedPart[];
     manifests: AndroidRepoManifest[];
     acceptedLicenseIds: readonly string[];
+    /** Where the user accepted the licences ("ADE setup card"), for the consent record. */
+    acceptedIn: string;
     deps: AndroidSdkInstallDeps;
     onFinished: (state: AndroidSdkInstallState) => void;
   }): AndroidSdkInstallState {
@@ -513,7 +517,7 @@ class AndroidSdkInstaller {
       try {
         for (const licenseId of new Set(missing.map((entry) => entry.part.licenseId).filter((value): value is string => Boolean(value)))) {
           const text = androidLicenseText(args.manifests, licenseId);
-          if (text) writeLicenseAcceptance(args.sdkRoot, { id: licenseId, text }, new Date());
+          if (text) writeLicenseAcceptance(args.sdkRoot, { id: licenseId, text }, new Date(), args.acceptedIn);
         }
         for (const [index, entry] of missing.entries()) {
           current = entry;
@@ -701,7 +705,7 @@ async function downloadVerified(args: {
         const sink = fs.createWriteStream(part, { flags: have > 0 ? "a" : "w" });
         let done = have;
         try {
-          for await (const chunk of Readable.fromWeb(response.body as import("node:stream/web").ReadableStream<Uint8Array>, { signal: args.signal })) {
+          for await (const chunk of Readable.fromWeb(response.body as WebReadableStream<Uint8Array>, { signal: args.signal })) {
             const buffer = chunk as Buffer;
             hash.update(buffer);
             done += buffer.length;
@@ -770,8 +774,29 @@ async function installPackage(
     fs.mkdirSync(path.dirname(finalDir), { recursive: true });
     if (fs.existsSync(finalDir)) {
       // An older or broken copy (no `source.properties`, or an emulator too old for the image).
-      movedAside = `${finalDir}.ade-old-${Date.now()}`;
-      fs.renameSync(finalDir, movedAside);
+      const aside = `${finalDir}.ade-old-${Date.now()}`;
+      try {
+        await renameWithRetry(finalDir, aside, deps.platform ?? process.platform);
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        // Windows says EPERM or EACCES for a folder a program holds open; on
+        // macOS and Linux those mean a permission problem.
+        const heldOpen = code === "EBUSY" || ((code === "EPERM" || code === "EACCES") && (deps.platform ?? process.platform) === "win32");
+        if (heldOpen) {
+          throw new AndroidEmulatorFailure(
+            "ANDROID_SDK_INSTALL_FAILED",
+            `ADE could not replace ${finalDir}: a program holds it open. Close the emulator and adb first, then install again.`,
+          );
+        }
+        if (code === "EPERM" || code === "EACCES") {
+          throw new AndroidEmulatorFailure(
+            "ANDROID_SDK_INSTALL_FAILED",
+            `ADE could not replace ${finalDir}: this account may not change that folder. Check its permissions, then install again.`,
+          );
+        }
+        throw error;
+      }
+      movedAside = aside;
     }
     await renameWithRetry(unpacked, finalDir, deps.platform ?? process.platform);
     if (movedAside) {
@@ -783,8 +808,9 @@ async function installPackage(
     if (movedAside && !fs.existsSync(finalDir)) {
       try {
         fs.renameSync(movedAside, finalDir);
-      } catch {
+      } catch (restoreError) {
         // Leave it; the next plan reads the part as missing and installs it again.
+        deps.logger?.warn("android.sdk_install.restore_failed", { finalDir, error: getErrorMessage(restoreError) });
       }
     }
     throw error;

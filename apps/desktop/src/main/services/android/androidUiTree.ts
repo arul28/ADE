@@ -47,7 +47,7 @@ function readAttributes(tag: string): Map<string, string> {
 }
 
 /** `[0,63][1080,210]` into a box; null when it does not parse or has no area. */
-export function parseUiautomatorBounds(value: string | null | undefined): AndroidUiBounds | null {
+function parseUiautomatorBounds(value: string | null | undefined): AndroidUiBounds | null {
   const match = /^\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]$/u.exec(value?.trim() ?? "");
   if (!match) return null;
   const [left, top, right, bottom] = match.slice(1, 5).map(Number) as [number, number, number, number];

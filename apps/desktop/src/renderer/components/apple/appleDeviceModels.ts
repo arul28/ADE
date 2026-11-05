@@ -4,6 +4,9 @@ import ipadPro13M5Url from "../../assets/apple-device-models/ipad-pro-13-m5.glb?
 
 export type AppleDeviceModelId = "iphone-18-pro" | "iphone-18-pro-max" | "ipad-pro-13-m5";
 
+/** A body that is not a bundled GLB — today only the procedural Duo. */
+export type AppleDeviceBodyModelId = AppleDeviceModelId | "duo-procedural" | "duo-v68";
+
 export type AppleDeviceModelFamily = "iphone" | "ipad";
 
 export type AppleDeviceModelSource = {

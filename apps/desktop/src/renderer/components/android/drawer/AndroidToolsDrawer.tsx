@@ -1,10 +1,7 @@
 import { useRef } from "react";
-import { SpinnerGap, X } from "@phosphor-icons/react";
 import type { OpenProjectBinding } from "../../../../shared/types";
-import { cn } from "../../ui/cn";
-import { PaneTooltip } from "../../ui/PaneTooltip";
-import { Banner } from "../../ui/notice";
-import { DRAWER_ICON_BUTTON, Group } from "../../ui/drawerPrimitives";
+import { Group } from "../../ui/drawerPrimitives";
+import { DeviceToolsDrawerShell } from "../../device/DeviceToolsDrawerShell";
 import { describeAndroidError } from "../androidDeviceState";
 import { useAndroidDrawerActions, useAndroidDrawerGroup, type AndroidDrawerContext, type AndroidDrawerGroupId } from "./androidDrawerState";
 import { AndroidDeviceSection } from "./AndroidDeviceSection";
@@ -69,46 +66,19 @@ export function AndroidToolsDrawer({
   );
 
   return (
-    <div
-      className={cn("flex h-full min-h-0 w-full min-w-0 flex-col border-l border-border bg-surface text-sm", className)}
-      data-testid="android-tools-drawer"
+    <DeviceToolsDrawerShell
+      tool="android"
+      pending={actions.pending}
+      error={described}
+      onDismissError={actions.clearError}
+      reading={actions.settings === null && visible}
+      onClose={onClose}
+      className={className}
     >
-      <div className="flex h-9 min-w-0 shrink-0 flex-nowrap items-center gap-2 border-b border-border px-3">
-        <span className="min-w-0 flex-1 truncate text-xs font-medium text-fg">Tools</span>
-        {actions.pending ? <SpinnerGap size={14} className="shrink-0 animate-spin text-muted-fg" aria-label="Working" /> : null}
-        <PaneTooltip label="Close tools" side="bottom">
-          <button type="button" className={cn(DRAWER_ICON_BUTTON, "shrink-0")} aria-label="Close tools" onClick={onClose}>
-            <X size={14} aria-hidden="true" />
-          </button>
-        </PaneTooltip>
-      </div>
-      <div className="min-h-0 min-w-0 flex-1 overflow-y-auto">
-        {described ? (
-          <Banner
-            layout="inline"
-            testId="android-drawer-error"
-            style={{ margin: 8 }}
-            model={{
-              id: "android-drawer-error",
-              tone: "error",
-              title: described.sentence,
-              report: { surface: "android_tools_drawer", technicalDetail: described.detail ?? null },
-              dismiss: { label: "Dismiss", onDismiss: actions.clearError },
-            }}
-          />
-        ) : null}
-        {actions.settings === null && !described && visible ? (
-          <div className="flex items-center gap-2 px-3 py-3 text-xs text-muted-fg">
-            <SpinnerGap size={14} className="animate-spin" aria-hidden="true" /> Reading device settings…
-          </div>
-        ) : null}
-        <div className="flex min-w-0 flex-col gap-2 p-2.5">
-          {card("device", <AndroidDeviceSection ctx={ctx} />)}
-          {card("app", <AndroidAppSection ctx={ctx} />)}
-          {card("capture", <AndroidCaptureSection ctx={ctx} onOpenProof={onOpenProof} />)}
-          {card("emulator", <AndroidEmulatorSection ctx={ctx} />)}
-        </div>
-      </div>
-    </div>
+      {card("device", <AndroidDeviceSection ctx={ctx} />)}
+      {card("app", <AndroidAppSection ctx={ctx} />)}
+      {card("capture", <AndroidCaptureSection ctx={ctx} onOpenProof={onOpenProof} />)}
+      {card("emulator", <AndroidEmulatorSection ctx={ctx} />)}
+    </DeviceToolsDrawerShell>
   );
 }

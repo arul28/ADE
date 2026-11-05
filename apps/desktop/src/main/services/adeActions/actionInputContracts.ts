@@ -996,14 +996,14 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "ade android sdk status --json",
     },
     installSdk: {
-      description: "Start the guided Android SDK install. User-only: every licence the install needs must be named in acceptedLicenseIds. Progress arrives as android.sdk.install events.",
-      input: "object { acceptedLicenseIds: string[], sdkRoot?: string, includeAndroidCli?: boolean }",
-      example: "ade android sdk install --accept-license android-sdk-license --accept-license android-sdk-arm-dbt-license --json",
+      description: "Start the guided Android SDK install. User-only: the ADE desktop app sends it (the setup card, or Settings › Android devices); an agent and a terminal are refused. Every licence the install needs must be named in acceptedLicenseIds; surface names where the user accepted them. Progress arrives as android.sdk.install events.",
+      input: "object { acceptedLicenseIds: string[], sdkRoot?: string, includeAndroidCli?: boolean, surface?: \"setup-card\" | \"settings\" }",
+      example: "Desktop app only: the setup card, or Settings › Android devices. A terminal is refused.",
     },
     cancelSdkInstall: {
-      description: "Stop the running Android SDK install. Finished parts stay; the partial download is kept for the next install. User-only.",
+      description: "Stop the running Android SDK install. Finished parts stay; the partial download is kept for the next install. User-only: the ADE desktop app sends it.",
       input: "object {}",
-      example: "ade actions run android_emulator.cancelSdkInstall --json",
+      example: "Desktop app only: the setup card's Cancel. A terminal is refused.",
     },
     getSdkInstallState: {
       description: "Read the Android SDK install's state: idle, running (part, step, bytes, time left), done, failed or cancelled.",
@@ -1011,9 +1011,9 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "ade actions run android_emulator.getSdkInstallState --json",
     },
     setSdkPath: {
-      description: "Use an Android SDK that is already on this machine (\"Use mine…\"), or null to go back to detection. User-only.",
+      description: "Use an Android SDK that is already on this machine (\"Use mine…\"), or null to go back to detection. User-only: the ADE desktop app sends it.",
       input: "object { path: string | null }",
-      example: "ade actions run android_emulator.setSdkPath --input-json '{\"path\":\"/opt/android-sdk\"}' --json",
+      example: "Desktop app only: \"Use mine…\" on the setup card. A terminal is refused.",
     },
     getStatus: {
       description:
@@ -1228,6 +1228,11 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       description: "Change one emulator setting (text or display size, animations, show taps, layout bounds, battery, Wi-Fi, mobile data, airplane mode) and read the settings back.",
       input: "object { laneId: string, setting: { kind: \"text-size\", value: \"small\" | \"default\" | \"large\" | \"largest\" } | { kind: \"display-size\", value: \"small\" | \"default\" | \"large\" | \"larger\" } | { kind: \"animations\", off: boolean } | { kind: \"show-taps\" | \"layout-bounds\" | \"wifi\" | \"mobile-data\" | \"airplane\", on: boolean } | { kind: \"battery\", level?: 0-100, charging?: boolean } }",
       example: "ade actions run android_emulator.setDeviceSetting --input-json '{\"laneId\":\"<lane>\",\"setting\":{\"kind\":\"airplane\",\"on\":true}}'",
+    },
+    requestRender: {
+      description: "Ask a desktop window that shows the lane's Android device in 3D to draw stills (and, when asked, a turntable video and a contact sheet), and file them as proof in the calling chat's drawer. Fails when no window shows the device.",
+      input: "object { laneId: string, request: { angles: (\"front\" | \"three-quarter-left\" | \"three-quarter-right\" | \"back\" | \"current\")[], background: \"transparent\" | \"studio\" | \"dusk\", shadow: boolean, video: boolean, contactSheet?: boolean }, proof?: boolean }",
+      example: "ade android render --angles front,back --lighting studio --sheet --json",
     },
     captureProofBundle: {
       description: "Write a proof bundle (screen.png, elements.json, logcat.txt, meta.json) and file the screenshot in the calling chat's proof drawer.",

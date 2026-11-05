@@ -11,6 +11,7 @@ import {
 } from "../../../shared/androidDeviceCatalog";
 import type { AndroidHardwareProfile, AndroidSystemImage } from "../../../shared/types/androidEmulator";
 import { cn } from "../ui/cn";
+import { Z_LAYERS } from "../ui/zLayers";
 import { Button } from "../ui/Button";
 import { DRAWER_INPUT, DrawerMenu, type DrawerMenuOption } from "../ui/drawerPrimitives";
 import { MENU_SURFACE_CLASS } from "../ui/paneMenuTokens";
@@ -371,7 +372,8 @@ function CatalogDetails({
           align="end"
           sideOffset={6}
           collisionPadding={8}
-          className={cn(MENU_SURFACE_CLASS, "z-[140] flex w-[18rem] max-w-[calc(100vw-16px)] flex-col gap-2 p-3")}
+          className={cn(MENU_SURFACE_CLASS, "flex w-[18rem] max-w-[calc(100vw-16px)] flex-col gap-2 p-3")}
+          style={{ zIndex: Z_LAYERS.popover }}
         >
           <span className="font-sans text-[12px] font-medium text-fg">{`${entry.name} · ${colorName}`}</span>
           <label className="flex flex-col gap-1">

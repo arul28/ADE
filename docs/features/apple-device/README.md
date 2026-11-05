@@ -778,8 +778,10 @@ minimized" for that chat.
 | `apps/desktop/src/renderer/components/apple/AppleDevicePane.tsx` | The pane body. It composes the picker, stage, rail, drawer and status strip. |
 | `apps/desktop/src/renderer/components/apple/useAppleLaneDeviceList.ts` | Service status (polled while on screen) and the lane's device list for the pane. |
 | `apps/desktop/src/renderer/components/apple/useAppleDeviceStartTracker.ts` | Tracks a device start for the loading card, and re-reads the truth when the card stops moving. |
-| `apps/desktop/src/renderer/components/apple/useAppleInspect.tsx` | Inspect mode: one snapshot per switch-on, the hovered and selected element, and the overlay. |
-| `apps/desktop/src/renderer/components/apple/appleDeviceScene.ts`, `appleDeviceModelLoader.ts`, `AppleDevice3DView.tsx` | The 3D body and screen math, the GLB loader, and the 3D presenter. |
+| `apps/desktop/src/renderer/components/apple/useAppleInspect.tsx`, `components/device/useDeviceInspect.ts` | Inspect mode: one snapshot per switch-on, the hovered and selected element (shared with Android), and the Apple overlay. |
+| `apps/desktop/src/renderer/components/device/deviceScene.ts`, `deviceModelLoader.ts`, `deviceOrbit.ts`, `apple/AppleDevice3DView.tsx` | The 3D body and screen math, the GLB loader and the orbit (shared with Android), and the Apple 3D presenter. |
+| `apps/desktop/src/renderer/components/device/DeviceRenderSheet.tsx`, `deviceRenderProof.ts`, `apple/appleRenderProof.ts` | The Render sheet and the render-to-proof steps (shared with Android), and the Duo's pose passes. |
+| `apps/desktop/src/renderer/components/device/deviceDrawerState.ts`, `DeviceToolsDrawerShell.tsx`, `DeviceLocationRows.tsx`, `shared/RecordingRow.tsx` | The Tools drawer's state, frame, Location rows and recording rows, shared with Android. |
 | `apps/desktop/src/main/services/device/deviceLease.ts` | `ade apple lease`: the advisory, queued, expiring turn on a lane's device for agents that share it. |
 | `apps/desktop/src/main/services/ios/appleDuoService.ts` | The Duo's own service surface: fold and settle, posture, the live panel for screenshots, Apple's model and agent skill, the App Store set, render proofs and the `ade apple render` broker. |
 | `apps/desktop/src/shared/appleOrientation.ts` | Orientation facts the service and the pane share: an orientation's axis, the Duo's screen names, the inner panel's quarter turn, CoreDevice's pose names, and Tent. |

@@ -1,7 +1,8 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState, type MutableRefObject } from "react";
+import React, { useCallback, useMemo, type MutableRefObject } from "react";
 import type { OpenProjectBinding } from "../../../shared/types";
 import type { AndroidUiElement } from "../../../shared/types/androidEmulator";
 import { DeviceInspectOverlay, type DeviceInspectAdapter } from "../device/DeviceInspectOverlay";
+import { useDeviceInspect } from "../device/useDeviceInspect";
 
 type DeviceToView = ((point: { x: number; y: number }) => { x: number; y: number }) | null;
 
@@ -73,9 +74,8 @@ export const ANDROID_INSPECT_ADAPTER: DeviceInspectAdapter<AndroidUiElement> = {
 };
 
 /**
- * Inspect for the Android pane: one UI tree per switch-on, the hovered and
- * picked element, and the shared overlay over the picture. Driving the device
- * is off while Inspect is on, so the boxes cannot go stale under the pointer.
+ * Inspect for the Android pane: the shared Inspect state, reading a fresh UI
+ * tree, and the shared overlay over the picture. A failed read turns it off.
  */
 export function useAndroidInspect({
   laneId,
@@ -91,57 +91,15 @@ export function useAndroidInspect({
   onError: (cause: unknown) => void;
 }): {
   inspectOn: boolean;
-  inspectLoading: boolean;
   toggleInspect: () => void;
   renderInspectOverlay: (deviceToView: DeviceToView) => React.ReactNode;
 } {
-  const [inspectOn, setInspectOn] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [elements, setElements] = useState<AndroidUiElement[]>([]);
-  const [hovered, setHovered] = useState<string | null>(null);
-  const [selected, setSelected] = useState<string | null>(null);
-  const onErrorRef = useRef(onError);
-  onErrorRef.current = onError;
-
-  const toggleInspect = useCallback(() => {
-    setInspectOn((on) => !on);
-    setSelected(null);
-    setHovered(null);
-  }, []);
-
-  useEffect(() => {
-    if (!inspectOn || !live) {
-      if (!inspectOn) setElements([]);
-      return undefined;
-    }
-    let cancelled = false;
-    setLoading(true);
-    void window.ade.androidEmulator
-      .getScreenSnapshot({ laneId, fresh: true }, runtimePinRef.current)
-      .then((snapshot) => {
-        if (!cancelled) setElements(snapshot.elements);
-      })
-      .catch((cause: unknown) => {
-        if (cancelled) return;
-        onErrorRef.current(cause);
-        setInspectOn(false);
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [inspectOn, laneId, live, runtimePinRef]);
-
-  useEffect(() => {
-    if (!selected) return undefined;
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setSelected(null);
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [selected]);
+  const takeSnapshot = useCallback(
+    async () => (await window.ade.androidEmulator.getScreenSnapshot({ laneId, fresh: true }, runtimePinRef.current)).elements,
+    [laneId, runtimePinRef],
+  );
+  const { inspectOn, toggleInspect, elements, hovered, setHovered, selected, setSelected, onErrorRef } =
+    useDeviceInspect<AndroidUiElement>({ live, takeSnapshot, offOnError: true, onError });
 
   const insert = useMemo(() => {
     if (!onInsertDraft) return undefined;
@@ -153,7 +111,7 @@ export function useAndroidInspect({
         onErrorRef.current(cause);
       }
     };
-  }, [onInsertDraft]);
+  }, [onErrorRef, onInsertDraft]);
 
   const copy = useCallback((element: AndroidUiElement) => {
     void window.ade.app.writeClipboardText(androidCommandForElement(element)).catch(() => {});
@@ -175,7 +133,7 @@ export function useAndroidInspect({
         onCopy={copy}
       />
     );
-  }, [copy, elements, hovered, insert, inspectOn, selected]);
+  }, [copy, elements, hovered, insert, inspectOn, selected, setHovered, setSelected]);
 
-  return { inspectOn, inspectLoading: loading, toggleInspect, renderInspectOverlay };
+  return { inspectOn, toggleInspect, renderInspectOverlay };
 }

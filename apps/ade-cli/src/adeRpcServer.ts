@@ -193,6 +193,11 @@ import { resolveCodexComputerUseMcpConfig } from "../../desktop/src/main/utils/c
 import { resolveTrackedCliUserMcp } from "../../desktop/src/main/services/mcp/trackedCliUserMcp";
 import { parseTrackedCliLaunchConfig } from "../../desktop/src/main/utils/terminalSessionSignals";
 import { RUNTIME_COMPAT_LEVEL } from "../../desktop/src/shared/adeRuntimeProtocol";
+import {
+  ANDROID_CODE_SYNC_ACTIONS,
+  ANDROID_LANE_FREE_ACTIONS,
+  ANDROID_SDK_PERSON_ONLY_ACTIONS,
+} from "../../desktop/src/shared/types/androidEmulator";
 import { trackBrainLoopWatchdogCommand } from "./services/runtime/brainLoopWatchdog";
 import {
   AGENT_CHAT_DROID_PERMISSION_MODE_VALUES,
@@ -4745,20 +4750,11 @@ export async function scopeUnboundAppleAdeActionArgs(
   return withAppleAgentCaller(rest, laneId, null);
 }
 
-/** `android_emulator` reads an agent may make without a lane: status and the AVD list. */
-const ANDROID_LANE_FREE_ACTIONS = new Set<string>([
-  "getStatus",
-  "listDevices",
-  // P1 setup: the SDK is the machine's, so these need no lane.
-  "getSdkSetupPlan",
-  "getSdkInstallState",
-  "installSdk",
-  "cancelSdkInstall",
-  "setSdkPath",
-]);
+/** `android_emulator` actions about the machine, not a lane: status, the AVD list and the SDK setup. */
+const ANDROID_LANE_FREE = new Set<string>(ANDROID_LANE_FREE_ACTIONS);
 
 /** The SDK setup verbs only a person may run: a licence is theirs to accept, the SDK folder theirs to pick. */
-const ANDROID_PERSON_ONLY_SDK_ACTIONS = new Set<string>(["installSdk", "cancelSdkInstall", "setSdkPath"]);
+const ANDROID_SDK_PERSON_ONLY = new Set<string>(ANDROID_SDK_PERSON_ONLY_ACTIONS);
 
 /**
  * The `android_emulator` actions that may give a chat's work copy its first
@@ -4772,10 +4768,10 @@ const ANDROID_COPY_MAKING_ACTIONS = new Set<string>(["createDevice", "attachDevi
  * folder (an APK path, the Gradle wrapper): with `--machine` the work copy
  * there gets the caller's code first. Every other action uses the copy as it is.
  */
-const ANDROID_CODE_SYNC_ACTIONS = new Set<string>(["installApp", "launchApp"]);
+const ANDROID_CODE_SYNC = new Set<string>(ANDROID_CODE_SYNC_ACTIONS);
 
 function androidMissingLaneMessage(action: string): string | null {
-  return ANDROID_LANE_FREE_ACTIONS.has(action)
+  return ANDROID_LANE_FREE.has(action)
     ? null
     : `android_emulator.${action} needs a lane: run ade from a lane worktree, or pass --lane <lane-id>.`;
 }
@@ -4784,8 +4780,11 @@ function androidMissingLaneMessage(action: string): string | null {
  * `android_emulator` for an agent caller (a bound chat, run or step, or a
  * brain forwarding another machine's agent).
  *
+ * - The person's own calls (`ANDROID_PERSON_ONLY_ACTIONS`: the SDK install
+ *   and folder, deleting an AVD, filing a window's render) are refused
+ *   before this, by the user-only gate, as Apple's are.
  * - The viewing calls (`ANDROID_USER_ONLY_ACTIONS`: `startStream`,
- *   `stopStream`, `sendTouch`, `deleteDevice`) are refused by caller shape,
+ *   `stopStream`, `sendTouch`) are refused by caller shape,
  *   not role, for the reason `scopeMacDesktopAdeActionArgs` gives: a run or
  *   step identity keeps `cto` role and is still an agent, and `startStream`
  *   hands back the loopback stream token.
@@ -4804,14 +4803,6 @@ export function scopeAndroidAdeActionArgs(
   androidArgs: Record<string, unknown>,
 ): Record<string, unknown> {
   const method = `run_ade_action:android_emulator.${action}`;
-  if (ANDROID_PERSON_ONLY_SDK_ACTIONS.has(action)) {
-    scopeAccessDenied(
-      action === "installSdk"
-        ? "only a person can accept Google's licences. Ask the user to run this, or to use the setup card"
-        : "only a person can change this machine's Android SDK. Ask the user to run this, or to use the setup card",
-      method,
-    );
-  }
   if (isCtoOnlyAdeAction("android_emulator", action)) {
     scopeAccessDenied(
       "android_emulator viewing actions (the live stream, live touch, deleting an AVD) belong to user clients; "
@@ -4833,7 +4824,9 @@ export function scopeAndroidAdeActionArgs(
 /**
  * `android_emulator` for an `ade` process with no chat identity: placed by the
  * lane worktree it stands in (`callerRoot`), as for `ios_simulator`. The
- * viewing calls stay behind the CTO role gate for it, as on `mac_desktop`.
+ * person's own calls are refused before this by the user-only gate (a
+ * terminal is not the desktop app), as Apple's are; the viewing calls stay
+ * behind the CTO role gate for it, as on `mac_desktop`.
  * It speaks for no chat, so a `chatSessionId` it names is dropped.
  */
 export async function scopeUnboundAndroidAdeActionArgs(
@@ -6391,7 +6384,10 @@ async function runTool(args: {
     if (isUserOnlyAdeAction(domain, action) && !mayUseUserOnlyActions(session)) {
       // Deleting a simulator is the user's call, made from the device picker.
       scopeAccessDenied(
-        `${domain}.${action} is limited to user clients`,
+        domain === "android_emulator" && ANDROID_SDK_PERSON_ONLY.has(action)
+          ? `${domain}.${action} is limited to user clients: only the user installs the Android SDK and accepts Google's licences, `
+            + "in the ADE desktop app (the setup card in the Android tool, or Settings › Android devices)"
+          : `${domain}.${action} is limited to user clients`,
         `run_ade_action:${domain}.${action}`,
       );
     }
@@ -6829,10 +6825,10 @@ async function runTool(args: {
       if (isRecord(androidArgs.remoteWork)) {
         // Used as it is, made at the caller's commit when missing; an install
         // or launch that builds or reads an APK gets the caller's code first.
-        const remote = remoteWorkDeviceScope(runtime, session, androidArgs, ANDROID_CODE_SYNC_ACTIONS.has(action) ? undefined : "none");
+        const remote = remoteWorkDeviceScope(runtime, session, androidArgs, ANDROID_CODE_SYNC.has(action) ? undefined : "none");
         // Input actions answer nothing; the caller's machine still learns the lane.
         const answer = (value: unknown): unknown => (value == null ? { workCopy: { laneId: remote.laneId } } : remote.withWorkCopy(value));
-        if (ANDROID_LANE_FREE_ACTIONS.has(action)) {
+        if (ANDROID_LANE_FREE.has(action)) {
           // Status and the AVD list make no copy: they name this chat's
           // emulator only when its copy is here already.
           const copyExists = remote.copyExists();

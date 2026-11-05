@@ -1,5 +1,10 @@
 import { useEffect, useState } from "react";
-import type { AndroidAppInfo, AndroidInstallResult } from "../../../../shared/types/androidEmulator";
+import {
+  ANDROID_PERMISSIONS,
+  type AndroidAppInfo,
+  type AndroidInstallResult,
+  type AndroidPermissionName,
+} from "../../../../shared/types/androidEmulator";
 import { cn } from "../../ui/cn";
 import {
   DRAWER_BUTTON,
@@ -22,18 +27,6 @@ import type { AndroidDrawerContext } from "./androidDrawerState";
 /** How often the open App group asks the device which app is in front. */
 export const ANDROID_FOREGROUND_POLL_MS = 2_000;
 
-/** Full names: `pm grant` needs them, and the short form only covers some. */
-export const ANDROID_PERMISSION_OPTIONS = [
-  { value: "android.permission.CAMERA", label: "Camera" },
-  { value: "android.permission.ACCESS_FINE_LOCATION", label: "Location" },
-  { value: "android.permission.RECORD_AUDIO", label: "Microphone" },
-  { value: "android.permission.POST_NOTIFICATIONS", label: "Notifications" },
-  { value: "android.permission.READ_CONTACTS", label: "Contacts" },
-  { value: "android.permission.READ_MEDIA_IMAGES", label: "Photos" },
-  { value: "android.permission.READ_CALENDAR", label: "Calendar" },
-] as const;
-type PermissionName = (typeof ANDROID_PERMISSION_OPTIONS)[number]["value"];
-
 /** "Installed com.example in 42 s". */
 export function describeInstall(result: AndroidInstallResult): string {
   const seconds = Math.max(1, Math.round(result.durationMs / 1000));
@@ -49,7 +42,7 @@ export function AndroidAppSection({ ctx }: { ctx: AndroidDrawerContext }) {
   const [appsNonce, setAppsNonce] = useState(0);
   const [lastInstall, setLastInstall] = useState<string | null>(null);
   const [packageInput, setPackageInput] = useState("");
-  const [permission, setPermission] = useState<PermissionName>("android.permission.CAMERA");
+  const [permission, setPermission] = useState<AndroidPermissionName>("android.permission.CAMERA");
   const api = window.ade.androidEmulator;
   const target = packageInput.trim() || foreground || "";
 
@@ -191,11 +184,11 @@ export function AndroidAppSection({ ctx }: { ctx: AndroidDrawerContext }) {
         />
       </div>
       <div className="flex min-h-7 flex-wrap items-center gap-1.5">
-        <DrawerMenu<PermissionName>
+        <DrawerMenu<AndroidPermissionName>
           ariaLabel="Permission"
           value={permission}
           placeholder="Permission"
-          options={ANDROID_PERMISSION_OPTIONS}
+          options={ANDROID_PERMISSIONS}
           disabled={disabled}
           onChange={setPermission}
         />

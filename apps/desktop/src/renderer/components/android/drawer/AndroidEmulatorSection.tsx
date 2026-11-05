@@ -1,15 +1,12 @@
 import { useState } from "react";
-import { cn } from "../../ui/cn";
 import {
-  DRAWER_INPUT,
-  DRAWER_PRIMARY_BUTTON,
   DrawerMenu,
   DrawerSegmented,
   Row,
   Subhead,
   SwitchRow,
 } from "../../ui/drawerPrimitives";
-import { DEVICE_LOCATION_PRESETS, type DeviceLocationPresetLabel } from "../../device/locationPresets";
+import { DeviceLocationRows } from "../../device/DeviceLocationRows";
 import { deviceSettingSetter } from "./AndroidDeviceSection";
 import type { AndroidDrawerContext } from "./androidDrawerState";
 
@@ -27,20 +24,12 @@ export function AndroidEmulatorSection({ ctx }: { ctx: AndroidDrawerContext }) {
   const settings = actions.settings;
   const disabled = actions.disabled;
   const set = deviceSettingSetter(ctx);
-  const [latitude, setLatitude] = useState("");
-  const [longitude, setLongitude] = useState("");
   // The emulator cannot report a location it was given, so the card shows the last one it took.
   const [placed, setPlaced] = useState<{ latitude: number; longitude: number } | null>(null);
-  const parsed = { latitude: Number(latitude), longitude: Number(longitude) };
-  const valid = latitude.trim() !== "" && longitude.trim() !== ""
-    && Number.isFinite(parsed.latitude) && Number.isFinite(parsed.longitude)
-    && Math.abs(parsed.latitude) <= 90 && Math.abs(parsed.longitude) <= 180;
-  const setLocation = (lat: number, lon: number) =>
-    actions.act(() => window.ade.androidEmulator.setLocation({ laneId, latitude: lat, longitude: lon }, pinRef.current))
-      .then((accepted) => {
-        if (accepted) setPlaced({ latitude: lat, longitude: lon });
-        return accepted;
-      });
+  const setLocation = (point: { latitude: number; longitude: number }) => {
+    void actions.act(() => window.ade.androidEmulator.setLocation({ laneId, ...point }, pinRef.current))
+      .then((accepted) => { if (accepted) setPlaced(point); });
+  };
   const level = settings?.battery.level ?? null;
   const network = settings?.network;
 
@@ -59,55 +48,7 @@ export function AndroidEmulatorSection({ ctx }: { ctx: AndroidDrawerContext }) {
       </Row>
 
       <Subhead label="Location" />
-      <div className="flex min-h-7 items-center gap-1.5">
-        <input
-          className={cn(DRAWER_INPUT, "font-mono")}
-          placeholder="Latitude"
-          aria-label="Latitude"
-          inputMode="decimal"
-          value={latitude}
-          disabled={disabled}
-          onChange={(event) => setLatitude(event.target.value)}
-        />
-        <input
-          className={cn(DRAWER_INPUT, "font-mono")}
-          placeholder="Longitude"
-          aria-label="Longitude"
-          inputMode="decimal"
-          value={longitude}
-          disabled={disabled}
-          onChange={(event) => setLongitude(event.target.value)}
-        />
-      </div>
-      <div className="flex min-h-7 flex-wrap items-center gap-1.5">
-        <DrawerMenu<DeviceLocationPresetLabel>
-          ariaLabel="Preset"
-          value={null}
-          placeholder="Preset…"
-          options={DEVICE_LOCATION_PRESETS.map((preset) => ({ value: preset.label, label: preset.label }))}
-          disabled={disabled}
-          onChange={(label) => {
-            const preset = DEVICE_LOCATION_PRESETS.find((candidate) => candidate.label === label);
-            if (!preset) return;
-            setLatitude(String(preset.latitude));
-            setLongitude(String(preset.longitude));
-            void setLocation(preset.latitude, preset.longitude);
-          }}
-        />
-        <button
-          type="button"
-          className={DRAWER_PRIMARY_BUTTON}
-          disabled={disabled || !valid}
-          onClick={() => { void setLocation(parsed.latitude, parsed.longitude); }}
-        >
-          Set
-        </button>
-        {placed ? (
-          <span className="ml-auto font-mono text-[11px] text-muted-fg" data-testid="android-drawer-location-current">
-            {placed.latitude.toFixed(3)}, {placed.longitude.toFixed(3)}
-          </span>
-        ) : null}
-      </div>
+      <DeviceLocationRows tool="android" disabled={disabled} current={placed} onSet={setLocation} />
 
       <Subhead label="Battery" />
       <Row label="Level">

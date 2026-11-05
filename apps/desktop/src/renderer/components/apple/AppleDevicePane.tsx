@@ -87,6 +87,7 @@ import type { AppleRenderedPreview } from "./drawer/sections/PreviewLabSection";
 import { isInParkedSurface } from "../../lib/parkedSurface";
 import { useTicker } from "../../lib/ticker";
 import { confirmAppleDeviceRelease } from "./appleReleaseConfirm";
+import { DEVICE_DRAWER_DOCK_CLASS } from "../device/DeviceToolsDrawerShell";
 
 /**
  * The Apple device, as the body of the Work tools pane's Apple tab.
@@ -1448,14 +1449,7 @@ export function AppleDevicePane({
         {toolsOpen && laneDevice ? (
           <div
             data-apple-drawer=""
-            className={cn(
-              /* Narrow: an opaque overlay that still leaves the rail
-                 reachable. Wide: docked beside the picture. The @700px
-                 threshold is what guarantees §B4's floor — 700 − 288 = 412px
-                 of viewport, twice the 200px the spec refuses to go under. */
-              "absolute inset-y-0 right-0 z-20 w-[min(18rem,calc(100%-3.5rem))] shadow-lg",
-              "@[700px]:static @[700px]:w-72 @[700px]:shrink-0 @[700px]:shadow-none",
-            )}
+            className={DEVICE_DRAWER_DOCK_CLASS}
           >
             <Suspense fallback={null}>
               <AppleToolsDrawer

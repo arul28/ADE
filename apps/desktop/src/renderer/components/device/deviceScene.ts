@@ -12,13 +12,7 @@ import type {
   Texture,
   Vector3,
 } from "three";
-import type { AppleDeviceOrientation } from "../../../shared/types";
-
-/**
- * How the device is held. The Apple names are the shared ones: an Android
- * device in landscape is `landscape-right` (turned a quarter to the left).
- */
-export type DeviceOrientation = AppleDeviceOrientation;
+import type { DeviceOrientation } from "../../../shared/types/deviceOrientation";
 
 /** What `createImportedBody` needs of a model: its id and its screen mesh's names. */
 export type DeviceScreenModelSource = { id: string; screenNodeNames: readonly string[] };

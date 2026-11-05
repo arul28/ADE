@@ -4,6 +4,7 @@ import type {
   AndroidEmulatorEvent,
   AndroidEmulatorSetupServiceApi,
   AndroidEmulatorStatus,
+  AndroidSdkConsentSurface,
   AndroidSdkInstallState,
   AndroidSdkStatus,
 } from "../../../shared/types/androidEmulator";
@@ -65,6 +66,13 @@ export type AndroidSdkSetupDeps = {
   fetchImpl?: typeof fetch;
 };
 
+/** The words the consent record keeps for where the user accepted the licences. */
+function consentSurfaceLabel(surface: AndroidSdkConsentSurface | null | undefined): string {
+  if (surface === "setup-card") return "ADE setup card";
+  if (surface === "settings") return "Settings › Android devices";
+  return "ADE desktop app";
+}
+
 export function createAndroidSdkSetup(deps: AndroidSdkSetupDeps): AndroidEmulatorSetupServiceApi & { dispose(): void } {
   const installer = androidSdkInstaller();
   const installDeps: AndroidSdkInstallDeps = {
@@ -106,6 +114,10 @@ export function createAndroidSdkSetup(deps: AndroidSdkSetupDeps): AndroidEmulato
         throw new AndroidEmulatorFailure("ANDROID_SDK_INSTALL_BUSY", "An Android SDK install already runs on this machine.");
       }
       const { plan, planned, manifests } = await planFor(args);
+      // The plan reads the network and the disk: another install can start while it does.
+      if (installer.isRunning()) {
+        throw new AndroidEmulatorFailure("ANDROID_SDK_INSTALL_BUSY", "An Android SDK install already runs on this machine.");
+      }
       if (!plan.hostSupported) throw new AndroidEmulatorFailure("ANDROID_SDK_INSTALL_FAILED", plan.unsupportedReason ?? "This computer cannot run the Android emulator.");
       if (plan.repositoryError) throw new AndroidEmulatorFailure("ANDROID_SDK_INSTALL_FAILED", plan.repositoryError);
       if (!plan.writable) throw new AndroidEmulatorFailure("ANDROID_SDK_PATH_INVALID", plan.writableDetail ?? `ADE cannot write to ${plan.sdkRoot}.`);
@@ -126,29 +138,34 @@ export function createAndroidSdkSetup(deps: AndroidSdkSetupDeps): AndroidEmulato
           `The install needs about ${gb(plan.diskBytesNeeded)} GB, and ${gb(plan.diskBytesFree)} GB is free on that drive. Free some space or pick another folder.`,
         );
       }
-      // A folder ADE would not find by itself becomes the machine's SDK setting now, so a partial install is visible too.
+      // A folder ADE would not find by itself becomes the machine's SDK setting once the install starts,
+      // so a partial install is visible too.
       const located = locateAndroidSdk({ settingPath: deps.settings.read(), env: deps.env, platform: deps.platform, home: deps.home });
       const sameAsFound = located && path.resolve(located.root) === path.resolve(plan.sdkRoot);
       const previousSetting = deps.settings.read();
-      const wroteSetting = plan.sdkRootSource === "chosen" && !sameAsFound;
-      if (wroteSetting) deps.settings.write(plan.sdkRoot);
+      const wantSetting = plan.sdkRootSource === "chosen" && !sameAsFound;
+      let wroteSetting = false;
+      let started = false;
+      let finishedEarly: AndroidSdkInstallState | null = null;
+      const installedNothing = (state: AndroidSdkInstallState) => state.state !== "done" && "installed" in state && state.installed.length === 0;
       deps.logger?.info("android.sdk_install.start", {
         sdkRoot: plan.sdkRoot,
         parts: plan.parts.filter((part) => part.missing).map((part) => part.id),
         licenses: plan.licenses.map((license) => license.id),
         downloadBytes: plan.downloadBytes,
       });
-      return installer.start({
+      const state = installer.start({
         sdkRoot: plan.sdkRoot,
         planned,
         manifests,
         acceptedLicenseIds: [...accepted],
+        acceptedIn: consentSurfaceLabel(args?.surface),
         deps: installDeps,
         onFinished: (state: AndroidSdkInstallState) => {
+          if (!started) finishedEarly = state;
           deps.logger?.info("android.sdk_install.end", { state: state.state });
           // An install that put nothing in place leaves the machine's SDK choice as it was.
-          const nothingInstalled = state.state !== "done" && "installed" in state && state.installed.length === 0;
-          if (wroteSetting && nothingInstalled && deps.settings.read() === plan.sdkRoot) deps.settings.write(previousSetting);
+          if (wroteSetting && installedNothing(state) && deps.settings.read() === plan.sdkRoot) deps.settings.write(previousSetting);
           // A fresh SDK changes the status every window shows (the card becomes the picker).
           deps.emit({ type: "android.sdk.changed" });
           void deps.readSdk({ forceAccelCheck: true }).catch((error: unknown) => {
@@ -156,6 +173,14 @@ export function createAndroidSdkSetup(deps: AndroidSdkSetupDeps): AndroidEmulato
           });
         },
       });
+      started = true;
+      const early: AndroidSdkInstallState | null = finishedEarly;
+      if (wantSetting && !(early && installedNothing(early))) {
+        deps.settings.write(plan.sdkRoot);
+        wroteSetting = true;
+        if (early) deps.emit({ type: "android.sdk.changed" });
+      }
+      return state;
     },
 
     async cancelSdkInstall() {

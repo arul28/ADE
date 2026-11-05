@@ -12,9 +12,9 @@ import {
   Device3DView,
   type Device3DFailure,
   type DeviceFrameFeed,
-  type DeviceRenderer,
 } from "../device/Device3DView";
-import type { DeviceOrientation } from "../device/deviceScene";
+import type { DeviceRenderer } from "../device/deviceRenderPass";
+import type { DeviceOrientation } from "../../../shared/types/deviceOrientation";
 import { androidBodySource, type AndroidBodySpec } from "./androidDeviceBody";
 import type { AndroidBootScreen } from "./useAndroidBootScreen";
 

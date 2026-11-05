@@ -1,6 +1,12 @@
-import type { AppleDevicePose, AppleRenderRequestSpec, OpenProjectBinding } from "../../../shared/types";
-import type { AppleDeviceRenderer } from "./AppleDevice3DView";
-import { APPLE_RENDER_ANGLES, appleRenderContactSheet } from "./AppleRenderSheet";
+import { APPLE_RENDER_ANGLE_IDS, type AppleDevicePose, type AppleRenderRequestSpec, type OpenProjectBinding } from "../../../shared/types";
+import type { DeviceRenderer } from "../device/deviceRenderPass";
+import {
+  DEVICE_RENDER_SIZE,
+  deviceRenderAngles,
+  fileDeviceRenders,
+  renderDeviceStills,
+  type DeviceRenderImage,
+} from "../device/deviceRenderProof";
 
 /**
  * 3D renders of a lane's device filed as proof, shared by the pane (its
@@ -8,6 +14,8 @@ import { APPLE_RENDER_ANGLES, appleRenderContactSheet } from "./AppleRenderSheet
  * off-screen render host (`AppleRenderHost`). No React here: both callers
  * hold their own state.
  */
+
+export const APPLE_RENDER_ANGLES = deviceRenderAngles(APPLE_RENDER_ANGLE_IDS);
 
 /** One `ade apple render` a render host took: who asked, and where to answer. */
 export type AppleRenderJob = {
@@ -48,7 +56,7 @@ export async function renderAppleDeviceToProof({
 }: {
   request: AppleRenderRequestSpec;
   /** Read on every use: the 3D view can swap its renderer mid-render. */
-  rendererRef: { current: AppleDeviceRenderer | null };
+  rendererRef: { current: DeviceRenderer | null };
   laneId: string | null;
   chatSessionId: string | null;
   deviceName: string | null;
@@ -57,13 +65,12 @@ export async function renderAppleDeviceToProof({
 }): Promise<AppleRenderFiled> {
   if (!rendererRef.current) throw new Error("The 3D view is still loading.");
   const options = {
-    width: 1600,
-    height: 1600,
+    width: DEVICE_RENDER_SIZE,
+    height: DEVICE_RENDER_SIZE,
     lighting: request.lighting,
     shadow: request.shadow,
   };
-  const shots = APPLE_RENDER_ANGLES.filter((angle) => request.angles.includes(angle.id));
-  const images: Array<{ dataUrl: string; label: string }> = [];
+  const images: DeviceRenderImage[] = [];
   // Poses fold the real simulator; a device without a hinge has one pose.
   const passes: Array<AppleDevicePose | null> = duoCapable && request.poses.length ? request.poses : [null];
   for (const pose of passes) {
@@ -74,48 +81,31 @@ export async function renderAppleDeviceToProof({
       await window.ade.iosSimulator.setPosture({ laneId, chatSessionId, pose }, runtimePinRef.current);
       await new Promise((resolve) => setTimeout(resolve, 1_200));
     }
-    const rendered = rendererRef.current?.renderShots(shots.map((angle) => angle.shot), options) ?? [];
-    rendered.forEach((dataUrl, index) => images.push({
-      dataUrl,
-      label: [pose ? pose[0]!.toUpperCase() + pose.slice(1) : null, shots[index]!.label].filter(Boolean).join(" · "),
-    }));
+    const prefix = pose ? pose[0]!.toUpperCase() + pose.slice(1) : null;
+    images.push(...renderDeviceStills(rendererRef.current, APPLE_RENDER_ANGLES, request.angles, options, prefix));
   }
-  const name = deviceName ?? "device";
   // Filed by the device's own machine, to the chat and lane there: this
   // window may be another machine pinned to it.
   const outcome: AppleRenderFiled = { filed: 0, artifactIds: [], chatSessionId: null, filePaths: [] };
-  const attachRenderProof = async (proof: { dataUrl: string; title: string }) => {
-    const result = await window.ade.iosSimulator.attachRenderProof(
-      { laneId, chatSessionId, ...proof },
-      runtimePinRef.current,
-    );
-    if (result.filePath) outcome.filePaths.push(result.filePath);
-    if (!result.proofArtifactId) return false;
-    outcome.artifactIds.push(result.proofArtifactId);
-    outcome.chatSessionId ??= result.chatSessionId ?? null;
-    return true;
-  };
-  let filed = 0;
-  for (const image of images) {
-    if (await attachRenderProof({ dataUrl: image.dataUrl, title: `${name} · ${image.label}` })) filed++;
-  }
-  if (request.contactSheet && images.length > 1) {
-    const sheet = await appleRenderContactSheet(images);
-    if (sheet && await attachRenderProof({ dataUrl: sheet, title: `${name} · contact sheet` })) filed++;
-  }
-  if (request.video) {
-    const blob = await rendererRef.current?.renderTurntable({ ...options, width: 1280, height: 1280, seconds: 6 });
-    if (blob) {
-      const dataUrl = await new Promise<string>((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(String(reader.result).replace(/^data:video\/webm;[^,]*,/, "data:video/webm;base64,"));
-        reader.onerror = () => reject(reader.error);
-        reader.readAsDataURL(blob);
-      });
-      if (await attachRenderProof({ dataUrl, title: `${name} · turntable` })) filed++;
-    }
-  }
-  outcome.filed = filed;
+  outcome.filed = await fileDeviceRenders({
+    images,
+    contactSheet: request.contactSheet,
+    video: request.video,
+    rendererRef,
+    options,
+    deviceName: deviceName ?? "device",
+    attach: async (dataUrl, title) => {
+      const result = await window.ade.iosSimulator.attachRenderProof(
+        { laneId, chatSessionId, dataUrl, title },
+        runtimePinRef.current,
+      );
+      if (result.filePath) outcome.filePaths.push(result.filePath);
+      if (!result.proofArtifactId) return false;
+      outcome.artifactIds.push(result.proofArtifactId);
+      outcome.chatSessionId ??= result.chatSessionId ?? null;
+      return true;
+    },
+  });
   return outcome;
 }
 

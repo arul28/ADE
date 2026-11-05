@@ -73,7 +73,7 @@ function readReleaseVersion(home: string, p: path.PlatformPath): string | null {
 }
 
 /** "1.8.0_392" is 8, "21.0.13" is 21; null when unknown. */
-export function javaMajorVersion(version: string | null): number | null {
+function javaMajorVersion(version: string | null): number | null {
   if (!version) return null;
   const match = /^1\.(\d+)/u.exec(version) ?? /^(\d+)/u.exec(version);
   return match ? Number(match[1]) : null;

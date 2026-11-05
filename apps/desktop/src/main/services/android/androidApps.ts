@@ -11,7 +11,7 @@ import type { Logger } from "../logging/logger";
 import { resolveCliSpawnInvocation, terminateProcessTree } from "../shared/processExecution";
 import { getErrorMessage } from "../shared/utils";
 import { runAdb } from "./adb";
-import { runDeviceShell } from "./androidDeviceShell";
+import { runAdbOutput, runDeviceShell } from "./androidDeviceShell";
 import { AndroidEmulatorFailure } from "./androidEmulatorErrors";
 import { androidJdkMissingMessage, locateAndroidJdk } from "./androidJdk";
 import { containAndroidOutPath } from "./androidScreenshot";
@@ -76,7 +76,7 @@ function tail(text: string, lines = OUTPUT_TAIL_LINES): string[] {
 }
 
 /** `com.example/.MainActivity` lines from `cmd package query-activities --brief` / `resolve-activity --brief`. */
-export function parseComponents(text: string): string[] {
+function parseComponents(text: string): string[] {
   const out: string[] = [];
   for (const line of text.split(/\r?\n/u)) {
     const match = /^\s*([A-Za-z][\w.]*)\/([\w.$]+)\s*$/u.exec(line);
@@ -86,7 +86,7 @@ export function parseComponents(text: string): string[] {
 }
 
 /** `package:com.example` lines from `pm list packages`. */
-export function parsePackageList(text: string): string[] {
+function parsePackageList(text: string): string[] {
   return text
     .split(/\r?\n/u)
     .map((line) => /^package:(\S+)/u.exec(line.trim())?.[1] ?? null)
@@ -100,7 +100,7 @@ function parseTotalTime(text: string): number | null {
 }
 
 /** The `applicationId` and APK of a Gradle variant, from AGP's `output-metadata.json`. */
-export function readGradleOutputMetadata(moduleDir: string, variant: string): { applicationId: string | null; apkPath: string | null } {
+function readGradleOutputMetadata(moduleDir: string, variant: string): { applicationId: string | null; apkPath: string | null } {
   const apkRoot = path.join(moduleDir, "build", "outputs", "apk");
   const found: Array<{ file: string; mtimeMs: number }> = [];
   const walk = (dir: string, depth: number) => {
@@ -466,9 +466,9 @@ export function createAndroidApps(deps: AndroidAppsDeps) {
           `${device.avdName} is an AVD this lane attached, and ADE did not install ${packageName} on it, so ADE leaves it there. Remove it yourself with adb if you mean to.`,
         );
       }
-      const { adbPath, serial } = await deps.requireBooted(laneId);
-      const result = await runAdb(adbPath, ["uninstall", packageName], { serial, timeoutMs: 60_000, signal, allowFailure: true });
-      const text = `${result.stdout.toString("utf8")}${result.stderr}`;
+      const booted = await deps.requireBooted(laneId);
+      const result = await runAdbOutput(booted, ["uninstall", packageName], { timeoutMs: 60_000, signal });
+      const { text } = result;
       const removed = /\bSuccess\b/u.test(text);
       if (removed || /DELETE_FAILED_INTERNAL_ERROR|Unknown package|not installed/iu.test(text)) {
         deps.forgetInstalled(laneId, packageName);
@@ -512,4 +512,3 @@ export function createAndroidApps(deps: AndroidAppsDeps) {
   };
 }
 
-export type AndroidApps = ReturnType<typeof createAndroidApps>;

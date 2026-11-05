@@ -9,7 +9,7 @@
  * mapping, and the capability gate) lives here, away from three.js, so it can
  * be tested without a GPU or a device.
  *
- * Coordinate contract, shared with `appleDeviceScene`:
+ * Coordinate contract, shared with `device/deviceScene`:
  * - The inner display is ONE continuous portrait canvas, width × height.
  * - The hinge is a horizontal line across its middle, at portrait y = 0.
  * - The upper half samples texture v ∈ [0.5, 1]; the lower half v ∈ [0, 0.5].

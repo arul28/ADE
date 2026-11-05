@@ -10,10 +10,10 @@ import os from "node:os";
  * `package.xml` that `sdkmanager` and the Android Gradle plugin read.
  */
 
-export const ANDROID_REPOSITORY_BASE = "https://dl.google.com/android/repository/";
+const ANDROID_REPOSITORY_BASE = "https://dl.google.com/android/repository/";
 const MAIN_MANIFEST = `${ANDROID_REPOSITORY_BASE}repository2-3.xml`;
 /** The system-image tags the setup card offers, best first. */
-export const ANDROID_SETUP_IMAGE_TAGS = ["google_apis_playstore", "google_apis"] as const;
+const ANDROID_SETUP_IMAGE_TAGS = ["google_apis_playstore", "google_apis"] as const;
 const sysImgManifestUrl = (tag: string) => `${ANDROID_REPOSITORY_BASE}sys-img/${tag}/sys-img2-3.xml`;
 
 export type AndroidRepoHost = { os: "macosx" | "windows" | "linux"; arch: "aarch64" | "x64" };
@@ -68,7 +68,7 @@ export function androidRepoHost(
 
 const ENTITIES: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: "\"", apos: "'" };
 
-export function decodeXmlText(text: string): string {
+function decodeXmlText(text: string): string {
   return text.replace(/&(#x[0-9a-f]+|#\d+|amp|lt|gt|quot|apos);/giu, (match, entity: string) => {
     if (entity[0] === "#") {
       const code = entity[1]?.toLowerCase() === "x" ? Number.parseInt(entity.slice(2), 16) : Number.parseInt(entity.slice(1), 10);
@@ -104,7 +104,7 @@ export function compareRevisions(a: readonly number[], b: readonly number[]): nu
 }
 
 /** Parses one manifest. `baseUrl` resolves the archives' relative URLs. */
-export function parseAndroidRepoManifest(xml: string, baseUrl: string): AndroidRepoManifest {
+function parseAndroidRepoManifest(xml: string, baseUrl: string): AndroidRepoManifest {
   const body = xml.replace(/<!--[\s\S]*?-->/gu, "");
   const root = /<([A-Za-z][\w.-]*:)?[\w.-]+\s((?:[^>]*?\s)?xmlns[\s\S]*?)>/u.exec(body);
   const namespaces = root ? (root[2]!.match(/xmlns(?::[\w.-]+)?="[^"]*"/gu) ?? []).join(" ") : "";

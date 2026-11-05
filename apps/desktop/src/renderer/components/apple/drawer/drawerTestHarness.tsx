@@ -99,6 +99,7 @@ export function makeActions(overrides: Partial<AppleDrawerActions> = {}): AppleD
     clearError: vi.fn(),
     reportError: vi.fn(),
     act,
+    actWithSettings: act,
     refresh: vi.fn(),
     disabled: false,
     ...overrides,

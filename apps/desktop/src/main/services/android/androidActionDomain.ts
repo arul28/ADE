@@ -20,13 +20,14 @@ import {
   ANDROID_LOG_LEVELS,
   ANDROID_ORIENTATIONS,
   ANDROID_SCROLL_DIRECTIONS,
-  type AndroidDeviceSetting,
+  ANDROID_SDK_CONSENT_SURFACES,
   type AndroidElementQuery,
   type AndroidEmulatorServiceApi,
   type AndroidGradleTarget,
   type AndroidTouchEvent,
 } from "../../../shared/types/androidEmulator";
 import { createDomainArgReaders } from "../adeActions/domainArgs";
+import { readAndroidDeviceSetting } from "./androidDeviceSettings";
 
 /** What the registry passes in. Exactly the one field this domain reads. */
 export type AndroidActionRuntime = {
@@ -160,6 +161,7 @@ export function buildAndroidDomainService(runtime: AndroidActionRuntime): Opaque
     }),
     installSdk: (args?: unknown) => {
       const raw = objectArgs(args).acceptedLicenseIds;
+      const surfaceArg = optionalString(args, "surface");
       if (!Array.isArray(raw) || raw.some((id) => typeof id !== "string")) {
         throw new Error("androidEmulator.installSdk requires acceptedLicenseIds (a list of licence ids).");
       }
@@ -167,6 +169,8 @@ export function buildAndroidDomainService(runtime: AndroidActionRuntime): Opaque
         sdkRoot: optionalString(args, "sdkRoot"),
         includeAndroidCli: optionalBoolean(args, "includeAndroidCli"),
         acceptedLicenseIds: raw as string[],
+        // Where the user accepted the licences, for the licence file.
+        surface: surfaceArg == null ? null : enumOf(surfaceArg, "surface", ANDROID_SDK_CONSENT_SURFACES, "installSdk"),
       });
     },
     cancelSdkInstall: () => service.cancelSdkInstall(),
@@ -334,7 +338,7 @@ export function buildAndroidDomainService(runtime: AndroidActionRuntime): Opaque
         distinct: optionalBoolean(args, "distinct"),
         // Set by the RPC server: a waiter whose caller went away leaves the line.
         ...(signal instanceof AbortSignal ? { connectionSignal: signal } : {}),
-      } as Parameters<AndroidEmulatorServiceApi["deviceLease"]>[0]);
+      });
     },
     deviceLeaseRelease: (args?: unknown) => service.deviceLeaseRelease({
       ...laneArgs(args, "deviceLeaseRelease"),
@@ -376,8 +380,8 @@ export function buildAndroidDomainService(runtime: AndroidActionRuntime): Opaque
       if (!setting || typeof setting !== "object" || Array.isArray(setting)) {
         throw new Error("androidEmulator.setDeviceSetting setting must be an object ({kind, …}).");
       }
-      // The service checks the kind and each value; it names the bad one.
-      return service.setDeviceSetting({ ...laneArgs(args, "setDeviceSetting"), setting: setting as AndroidDeviceSetting });
+      // The kind is checked here; the service checks each value and names the bad one.
+      return service.setDeviceSetting({ ...laneArgs(args, "setDeviceSetting"), setting: readAndroidDeviceSetting(setting) });
     },
     /* ── P1 look: the body colour and the render ── */
     // User-only: what the body looks like in the user's own windows.
@@ -390,7 +394,7 @@ export function buildAndroidDomainService(runtime: AndroidActionRuntime): Opaque
       ...laneArgs(args, "requestRender"),
       chatSessionId: optionalString(args, "chatSessionId"),
       proof: optionalBoolean(args, "proof"),
-      request: objectArgs(args).request as never,
+      request: objectArgs(args).request,
     }),
     // User-only: the window side of a render.
     renderAck: (args?: unknown) => service.renderAck({ requestId: requiredString(args, "requestId", "renderAck") }),

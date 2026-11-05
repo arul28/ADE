@@ -8,14 +8,10 @@ import {
   type Device3DFailure,
   type Device3DViewProps,
   type DeviceBodySource,
-  type DeviceRenderOptions,
-  type DeviceRenderer,
-  type DeviceRenderShot,
 } from "../device/Device3DView";
 import { loadDeviceModelInstance } from "../device/deviceModelLoader";
 import { createImportedBody, disposeImportedSubtree, type DeviceBody } from "../device/deviceScene";
-import { appleDeviceModel } from "./appleDeviceModels";
-import type { AppleDeviceBodyModelId } from "./appleDeviceScene";
+import { appleDeviceModel, type AppleDeviceBodyModelId } from "./appleDeviceModels";
 import { appleDuoHingeAfterPinch } from "./appleDuo";
 import { createProceduralDuoBody } from "./appleDuoScene";
 import { createV68DuoBody } from "./appleV68DuoBody";
@@ -63,9 +59,6 @@ const DUO_MODEL_KEY = "duo-procedural" as const;
 const DUO_V68_MODEL_KEY = "duo-v68" as const;
 
 export type AppleDevice3DFailure = Device3DFailure;
-export type AppleDeviceRenderShot = DeviceRenderShot;
-export type AppleDeviceRenderOptions = DeviceRenderOptions;
-export type AppleDeviceRenderer = DeviceRenderer;
 
 /** §A3's drag rule; see `deviceDragIntent`. */
 export const appleDragIntent = deviceDragIntent;

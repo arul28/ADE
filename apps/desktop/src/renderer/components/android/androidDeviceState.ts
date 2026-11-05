@@ -1,3 +1,4 @@
+import { createDeviceViewModeStore, type DeviceViewMode } from "../device/deviceViewMode";
 import { androidCatalogColor, androidCatalogEntry } from "../../../shared/androidDeviceCatalog";
 import {
   ANDROID_EMULATOR_ERROR_CODES,
@@ -323,48 +324,13 @@ export function describeAndroidError(error: unknown): AndroidErrorDescription {
 
 /* ── P1 look: the view mode ─────────────────────────────────────────────── */
 
-export type AndroidViewMode = "flat" | "3d";
+export type AndroidViewMode = DeviceViewMode;
 
-export const ANDROID_VIEW_MODE_STORAGE_KEY = "ade.android.viewMode.v1";
+const ANDROID_VIEW_MODE_STORAGE_KEY = "ade.android.viewMode.v1";
 
-/** 3D by default, as on the Apple pane; kept per project. */
-export const ANDROID_DEFAULT_VIEW_MODE: AndroidViewMode = "3d";
-
-function androidViewModeKey(projectRoot: string | null | undefined): string {
-  const root = typeof projectRoot === "string" ? projectRoot.trim() : "";
-  return root.length > 0 ? root : "(no project)";
-}
-
-function readAndroidViewModeMap(): Record<string, AndroidViewMode> {
-  try {
-    const raw = globalThis.localStorage?.getItem(ANDROID_VIEW_MODE_STORAGE_KEY);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw) as unknown;
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
-    const out: Record<string, AndroidViewMode> = {};
-    for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
-      if (value === "flat" || value === "3d") out[key] = value;
-    }
-    return out;
-  } catch {
-    // Storage can be absent (tests, the browser mock) or full.
-    return {};
-  }
-}
-
-export function readAndroidViewMode(projectRoot: string | null | undefined): AndroidViewMode {
-  return readAndroidViewModeMap()[androidViewModeKey(projectRoot)] ?? ANDROID_DEFAULT_VIEW_MODE;
-}
-
-export function writeAndroidViewMode(projectRoot: string | null | undefined, mode: AndroidViewMode): void {
-  try {
-    const map = readAndroidViewModeMap();
-    map[androidViewModeKey(projectRoot)] = mode;
-    globalThis.localStorage?.setItem(ANDROID_VIEW_MODE_STORAGE_KEY, JSON.stringify(map));
-  } catch {
-    // Best effort: the pane still honours it for its own life.
-  }
-}
+const androidViewModeStore = createDeviceViewModeStore(ANDROID_VIEW_MODE_STORAGE_KEY);
+export const readAndroidViewMode = androidViewModeStore.read;
+export const writeAndroidViewMode = androidViewModeStore.write;
 
 /** The screen's short side over its long side, from the AVD's LCD; 0 when it does not say. */
 export function androidScreenAspect(avd: Pick<AndroidAvd, "lcdWidth" | "lcdHeight"> | null | undefined): number {

@@ -53,33 +53,6 @@ function intOrNull(value: string | undefined): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-/** Bytes under a folder; the disks of one AVD are a few large files. */
-function folderBytes(dir: string): number {
-  let total = 0;
-  const stack = [dir];
-  while (stack.length > 0) {
-    const current = stack.pop()!;
-    let entries: fs.Dirent[];
-    try {
-      entries = fs.readdirSync(current, { withFileTypes: true });
-    } catch {
-      continue;
-    }
-    for (const entry of entries) {
-      const full = path.join(current, entry.name);
-      if (entry.isDirectory()) stack.push(full);
-      else if (entry.isFile()) {
-        try {
-          total += fs.statSync(full).size;
-        } catch {
-          // Gone between the listing and the stat.
-        }
-      }
-    }
-  }
-  return total;
-}
-
 /**
  * An AVD folder's bytes on disk, without blocking: the folder can be many GB
  * on a slow drive, and the brain must keep answering while it is walked.
@@ -108,7 +81,7 @@ export async function measureAndroidAvdBytes(dir: string): Promise<number> {
 export function readAndroidAvd(
   avdHome: string,
   name: string,
-  options: { running?: readonly AndroidRunningEmulator[]; measureSize?: boolean } = {},
+  options: { running?: readonly AndroidRunningEmulator[] } = {},
 ): AndroidAvd | null {
   const ini = readAndroidIniFile(path.join(avdHome, `${name}.ini`));
   if (!ini) return null;
@@ -126,7 +99,7 @@ export function readAndroidAvd(
     lcdHeight: intOrNull(config.get("hw.lcd.height")),
     density: intOrNull(config.get("hw.lcd.density")),
     path: folder,
-    sizeBytes: options.measureSize ? folderBytes(folder) : null,
+    sizeBytes: null,
     adeCreated: config.get(ADE_AVD_CREATED_KEY) === "true",
     catalogId: config.get(ADE_AVD_CATALOG_KEY) || null,
     colorId: config.get(ADE_AVD_COLOR_KEY) || null,
@@ -146,7 +119,7 @@ export function readAdeAvdLaneId(avd: Pick<AndroidAvd, "path">): string | null {
  */
 export function listAndroidAvds(
   avdHome: string,
-  options: { running?: readonly AndroidRunningEmulator[]; measureSize?: boolean } = {},
+  options: { running?: readonly AndroidRunningEmulator[] } = {},
 ): AndroidAvd[] {
   let names: string[];
   try {

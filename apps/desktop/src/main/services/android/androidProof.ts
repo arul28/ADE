@@ -1,4 +1,4 @@
-import type { ComputerUseProofProvenanceInput } from "../../../shared/types/computerUseArtifacts";
+import type { ComputerUseArtifactIngestionResult, ComputerUseProofProvenanceInput } from "../../../shared/types/computerUseArtifacts";
 
 /*
  * Files an Android capture (a screenshot, a recording, a render) in the proof
@@ -25,11 +25,11 @@ export type AndroidArtifactFiler = {
     owners?: Array<{ kind: string; id: string }>;
     callerRoot?: string | null;
     provenance?: ComputerUseProofProvenanceInput | null;
-  }): unknown;
+  }): Pick<ComputerUseArtifactIngestionResult, "artifacts">;
 };
 
 /** The broker's backend name for everything the Android emulator files. */
-export const ANDROID_PROOF_BACKEND_NAME = "android-emulator";
+const ANDROID_PROOF_BACKEND_NAME = "android-emulator";
 
 export type AndroidCaptureProofInput = {
   laneId: string;
@@ -48,19 +48,6 @@ export type AndroidCaptureProofInput = {
   /** The lane's folder, so the broker places the row by path too. */
   callerRoot?: string | null;
 };
-
-/** The artifact id an `ingest` returned, or null. Read defensively: tests pass a two-line fake filer. */
-function readArtifactId(result: unknown): string | null {
-  if (!result || typeof result !== "object") return null;
-  const artifacts = (result as { artifacts?: unknown }).artifacts;
-  const first = Array.isArray(artifacts) ? artifacts[0] : null;
-  if (!first || typeof first !== "object") return null;
-  for (const key of ["artifactId", "id"]) {
-    const value = (first as Record<string, unknown>)[key];
-    if (typeof value === "string" && value.trim()) return value.trim();
-  }
-  return null;
-}
 
 /**
  * Files one capture and answers its artifact id, or null when there is no
@@ -92,7 +79,7 @@ export function fileAndroidCaptureAsProof(
         metadata: { laneId: input.laneId, ...(input.metadata ?? {}) },
       }],
     });
-    return readArtifactId(result);
+    return result.artifacts[0]?.id ?? null;
   } catch (error) {
     onError?.(error);
     return null;

@@ -5,10 +5,10 @@ import { Muxer, StreamTarget } from "mp4-muxer";
 import type {
   AndroidRecording,
   AndroidRecordingSegment,
-  AndroidRecordingStopReason,
 } from "../../../shared/types/androidEmulator";
 import { ANDROID_RECORDING_MAX_SECONDS } from "../../../shared/types/androidEmulator";
-import { createH264AnnexBParser } from "../media/h264AnnexB";
+import { createH264AnnexBParser, splitAnnexBNals } from "../media/h264AnnexB";
+import { androidLaneFolderName } from "./androidScreenshot";
 import type { ScrcpyVideoPacket } from "./scrcpyVideo";
 
 /*
@@ -49,30 +49,8 @@ const LAST_FRAME_US = 33_333;
 /** A frame that comes no later than the one before it gets this much after it. */
 const MIN_FRAME_STEP_US = 1_000;
 
-/** The NAL payloads (no start code) of an Annex B buffer. */
-export function splitAnnexB(data: Uint8Array): Uint8Array[] {
-  const starts: Array<{ at: number; length: number }> = [];
-  for (let i = 0; i + 2 < data.length; i += 1) {
-    if (data[i] !== 0 || data[i + 1] !== 0) continue;
-    if (data[i + 2] === 1) {
-      starts.push({ at: i, length: 3 });
-      i += 2;
-    } else if (data[i + 2] === 0 && i + 3 < data.length && data[i + 3] === 1) {
-      starts.push({ at: i, length: 4 });
-      i += 3;
-    }
-  }
-  const nals: Uint8Array[] = [];
-  starts.forEach((start, index) => {
-    const from = start.at + start.length;
-    const to = index + 1 < starts.length ? starts[index + 1]!.at : data.length;
-    if (to > from) nals.push(data.subarray(from, to));
-  });
-  return nals;
-}
-
 /** An `AVCDecoderConfigurationRecord` for one SPS and one PPS, 4-byte lengths. */
-export function buildAvcC(sps: Uint8Array, pps: Uint8Array): Uint8Array {
+function buildAvcC(sps: Uint8Array, pps: Uint8Array): Uint8Array {
   const out = new Uint8Array(11 + sps.length + pps.length);
   out[0] = 1;
   out[1] = sps[1] ?? 0x42;
@@ -93,7 +71,7 @@ export function buildAvcC(sps: Uint8Array, pps: Uint8Array): Uint8Array {
 }
 
 /** NALs as one MP4 sample: each one led by its length (4 bytes, big-endian). */
-export function toLengthPrefixed(nals: readonly Uint8Array[]): Uint8Array {
+function toLengthPrefixed(nals: readonly Uint8Array[]): Uint8Array {
   const size = nals.reduce((sum, nal) => sum + 4 + nal.length, 0);
   const out = new Uint8Array(size);
   let at = 0;
@@ -297,7 +275,7 @@ export function createAndroidMp4Recorder(input: { basePath: string }) {
       if (lastUs !== null && timeUs <= lastUs) timeUs = lastUs + MIN_FRAME_STEP_US;
       lastRawUs = raw;
       lastUs = timeUs;
-      let nals = splitAnnexB(packet.data).filter((nal) => {
+      let nals = splitAnnexBNals(packet.data).filter((nal) => {
         const type = (nal[0] ?? 0) & 0x1f;
         return type !== NAL_SPS && type !== NAL_PPS && type !== NAL_AUD;
       });
@@ -335,13 +313,8 @@ export function createAndroidMp4Recorder(input: { basePath: string }) {
 
 /* ---------- the store ---------- */
 
-/** A lane id as a folder name. */
-function laneFolder(laneId: string): string {
-  return laneId.replace(/[^A-Za-z0-9_-]+/gu, "_") || "lane";
-}
-
 export function androidRecordingsDir(dataDir: string, laneId: string): string {
-  return path.join(dataDir, "recordings", laneFolder(laneId));
+  return path.join(dataDir, "recordings", androidLaneFolderName(laneId));
 }
 
 export function newAndroidRecordingId(now: Date): string {
@@ -401,4 +374,3 @@ export function androidRecordingCapMs(maxSeconds: number | null | undefined): nu
   return Math.round(Math.min(asked, ANDROID_RECORDING_MAX_SECONDS) * 1000);
 }
 
-export type { AndroidRecordingStopReason };

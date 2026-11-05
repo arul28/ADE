@@ -61,7 +61,7 @@ export function logcatArgs(options: {
  * main` dividers, a wrapped continuation):
  * `  1730000000.123  1234  1250 I ActivityManager: Start proc …`.
  */
-export function parseLogcatLine(line: string): AndroidLogLine | null {
+function parseLogcatLine(line: string): AndroidLogLine | null {
   const match = /^\s*(\d+\.\d+)\s+(\d+)\s+(\d+)\s+([VDIWEFS])\s+(.*?)\s*:\s?(.*)$/u.exec(line);
   if (!match) return null;
   return {

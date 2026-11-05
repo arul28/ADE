@@ -1,15 +1,11 @@
-import { useState } from "react";
 import type {
   IosSimulatorAccessibilityOption,
   IosSimulatorAppearance,
   IosSimulatorContentSize,
 } from "../../../../../shared/types/iosSimulator";
-import { cn } from "../../../ui/cn";
 import {
   DRAWER_BUTTON,
   DRAWER_GHOST_BUTTON,
-  DRAWER_INPUT,
-  DRAWER_PRIMARY_BUTTON,
   DrawerMenu,
   DrawerSegmented,
   Row,
@@ -18,7 +14,7 @@ import {
   type DrawerMenuOption,
 } from "../../../ui/drawerPrimitives";
 import type { AppleDrawerContext } from "../drawerContext";
-import { DEVICE_LOCATION_PRESETS, type DeviceLocationPresetLabel } from "../../../device/locationPresets";
+import { DeviceLocationRows } from "../../../device/DeviceLocationRows";
 
 /**
  * §B1's **Device** group: everything that is true of the simulator itself
@@ -73,14 +69,6 @@ export function DeviceSection({ ctx }: { ctx: AppleDrawerContext }) {
   const textSize = APPLE_DRAWER_TEXT_SIZES.some((size) => size.value === contentSize)
     ? (contentSize as IosSimulatorContentSize)
     : null;
-  const [latitude, setLatitude] = useState("");
-  const [longitude, setLongitude] = useState("");
-  const parsed = { latitude: Number(latitude), longitude: Number(longitude) };
-  const valid = latitude.trim() !== "" && longitude.trim() !== ""
-    && Number.isFinite(parsed.latitude) && Number.isFinite(parsed.longitude)
-    && Math.abs(parsed.latitude) <= 90 && Math.abs(parsed.longitude) <= 180;
-  const setLocation = (lat: number, lon: number) =>
-    actions.act(() => window.ade.iosSimulator.setLocation({ ...scope, latitude: lat, longitude: lon }, pinRef.current));
   const current = settings?.location ?? null;
   const overridden = settings?.statusBarOverridden === true;
 
@@ -126,67 +114,15 @@ export function DeviceSection({ ctx }: { ctx: AppleDrawerContext }) {
       })}
 
       <Subhead label="Location" />
-      <div className="flex min-h-7 items-center gap-1.5">
-        <input
-          className={cn(DRAWER_INPUT, "font-mono")}
-          placeholder="Latitude"
-          aria-label="Latitude"
-          inputMode="decimal"
-          value={latitude}
-          disabled={disabled}
-          onChange={(event) => setLatitude(event.target.value)}
-        />
-        <input
-          className={cn(DRAWER_INPUT, "font-mono")}
-          placeholder="Longitude"
-          aria-label="Longitude"
-          inputMode="decimal"
-          value={longitude}
-          disabled={disabled}
-          onChange={(event) => setLongitude(event.target.value)}
-        />
-      </div>
-      <div className="flex min-h-7 flex-wrap items-center gap-1.5">
-        <DrawerMenu<DeviceLocationPresetLabel>
-          ariaLabel="Preset"
-          value={null}
-          placeholder="Preset…"
-          options={DEVICE_LOCATION_PRESETS.map((preset) => ({ value: preset.label, label: preset.label }))}
-          disabled={disabled}
-          onChange={(label) => {
-            const preset = DEVICE_LOCATION_PRESETS.find((candidate) => candidate.label === label);
-            if (!preset) return;
-            setLatitude(String(preset.latitude));
-            setLongitude(String(preset.longitude));
-            void setLocation(preset.latitude, preset.longitude);
-          }}
-        />
-        <button
-          type="button"
-          className={DRAWER_PRIMARY_BUTTON}
-          disabled={disabled || !valid}
-          onClick={() => { void setLocation(parsed.latitude, parsed.longitude); }}
-        >
-          Set
-        </button>
-        <button
-          type="button"
-          className={DRAWER_GHOST_BUTTON}
-          disabled={disabled}
-          onClick={() => {
-            setLatitude("");
-            setLongitude("");
-            void actions.act(() => window.ade.iosSimulator.clearLocation({ ...scope }, pinRef.current));
-          }}
-        >
-          Clear
-        </button>
-        {current ? (
-          <span className="ml-auto font-mono text-[11px] text-muted-fg" data-testid="apple-drawer-location-current">
-            {current.latitude.toFixed(3)}, {current.longitude.toFixed(3)}
-          </span>
-        ) : null}
-      </div>
+      <DeviceLocationRows
+        tool="apple"
+        disabled={disabled}
+        current={current}
+        onSet={({ latitude, longitude }) => {
+          void actions.act(() => window.ade.iosSimulator.setLocation({ ...scope, latitude, longitude }, pinRef.current));
+        }}
+        onClear={() => { void actions.act(() => window.ade.iosSimulator.clearLocation({ ...scope }, pinRef.current)); }}
+      />
 
       <Subhead label="Status bar" />
       <Row label={overridden ? "Overridden" : "Device's own"}>

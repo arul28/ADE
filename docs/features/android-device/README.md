@@ -103,13 +103,17 @@ How the install works (`androidSdkInstall.ts`):
   SHA-1 from the manifest before it unpacks.
 - **Unpack is atomic per part.** ADE unpacks into `<sdk>/.ade-staging/`,
   moves an old copy aside, then renames the new folder into place, and writes
-  `package.xml`. On Windows the rename retries while an antivirus holds a
-  file. A zip entry that is absolute, has a drive letter or climbs with `..`
-  stops the install.
+  `package.xml`. On Windows both renames retry while an antivirus holds a
+  file; an old copy that stays held (a running emulator or adb) stops the
+  install with "Close the emulator and adb first". A zip entry that is
+  absolute, has a drive letter or climbs with `..` stops the install, and so
+  does a link that lands outside the folder or one that a file would be
+  written through (each link is checked from the real folder it goes in).
 - **The licence record.** ADE appends the licence hashes to
   `<sdk>/licenses/<id>`, the files that `sdkmanager` and Gradle read. It also
   writes `<sdk>/.ade/license-consents.json` with each licence id, the SHA-1 of
-  the text you saw, and the time.
+  the text you saw, the time, and where you accepted it (the setup card or
+  Settings › Android devices).
 - **One install for each SDK folder.** `<sdk>/.ade-install.lock` holds the
   pid. A second ADE process gets `ANDROID_SDK_INSTALL_BUSY` while that pid
   lives. A lock older than 6 hours is stale.
@@ -424,14 +428,17 @@ any flag that a verb does not take.
 | `lease [--wait <s>] [--ttl <s>] [--holder <name>]`, `lease renew\|release --token <t>`, `lease status` | Take turns on the lane's emulator (the shared device lease). |
 | `location <lat> <lon>`, `appearance light\|dark`, `permission grant\|revoke <permission> --package <name>` | Emulator controls (`adb emu geo fix`, `cmd uimode night`, `pm grant`). |
 | `proof-bundle [--out <dir>] [--caption] [--package] [--no-elements]` | A screenshot, the elements, a log tail and a meta file, filed as proof. |
-| `sdk status\|licenses\|install\|use\|cancel` | The guided SDK install ([The setup card](#the-setup-card)). An agent may read; only a person installs, cancels or picks the folder. |
+| `sdk status\|licenses` | The guided SDK install's plan and licences ([The setup card](#the-setup-card)). Installing, cancelling and picking the folder are the user's, in the desktop app; `sdk install\|use\|cancel` refuse a terminal. |
 
 Every verb also takes `--lane` and `--machine` (see
 [Another machine](#another-machine)).
 
 ### The agent suite (P1)
 
-`androidAgentSuite.ts` holds the verbs above that P0 did not have.
+`androidAgentSuite.ts` holds the verbs above that P0 did not have, with the
+UI tree in `androidUiSnapshot.ts`, the recordings in
+`androidRecordingSession.ts`, and the device controls (location, appearance,
+permissions) in `androidDeviceSettings.ts`.
 
 - **UI tree.** The Android CLI's `layout` when the SDK has it (about 1 s),
   else `uiautomator dump` (about 2-3 s). `layout` waits for the app to go
@@ -497,10 +504,16 @@ the web and the phone) and never for a session-bound agent:
   started the stream; `getStreamStatus` always returns `transport: null`.
 - `sendTouch`, the live touch stream.
 - `deleteDevice`, which deletes an ADE AVD that no lane holds.
-- `installSdk`, `cancelSdkInstall` and `setSdkPath`: only a person accepts
-  Google's licences and picks the SDK folder. An agent gets "Only a person can
-  accept Google's licences. Ask the user to run this, or to use the setup
-  card."
+
+`ANDROID_PERSON_ONLY_ACTIONS` are the user's alone, from the desktop app, as
+Apple's `APPLE_USER_ONLY_ACTIONS` are (`ADE_ACTION_USER_ONLY`): an agent, an
+automation and a terminal are all refused.
+
+- `installSdk`, `cancelSdkInstall` and `setSdkPath`: only the user accepts
+  Google's licences and picks the SDK folder, in the setup card or Settings ›
+  Android devices. `ade android sdk install|use|cancel` print that hint, and
+  ADE MCP refuses them.
+- `deleteDevice` and `attachRenderProof`.
 
 `status` has `capabilities`: `adb`, `stream`, `record`, `uiTree` (`android-cli`
 or `uiautomator`), `logcat`, `gradle`, and the Android CLI's path and version.
@@ -512,8 +525,9 @@ The `ade-android` skill tells agents how to use the verbs.
 and `android.recordList` (viewer-allowed) and `android.input`,
 `android.invoke`, `android.recordStart` and `android.recordStop`
 (controller-only) on every host that builds the emulator service.
-`android.invoke` reaches the action allowlist, except the stream calls and
-the SDK writes. The remote live view (`android.streamTicket`) is P2.
+`android.invoke` reaches the action allowlist through the `android_emulator`
+action domain (its argument checks too), except the stream calls and the SDK
+writes. The remote live view (`android.streamTicket`) is P2.
 
 ## Another machine
 
@@ -606,8 +620,9 @@ restarts in 60 s it stays down, and `status` says why.
 
 | Path | Role |
 |---|---|
-| `apps/desktop/src/shared/types/androidEmulator.ts` | The contract: SDK, AVD and lane types, error codes, the service API, `ANDROID_AGENT_ACTIONS` and `ANDROID_USER_ONLY_ACTIONS`, and the preload API. |
-| `apps/desktop/src/main/services/android/androidEmulatorService.ts` | The service: lane queue, create, attach, start, stop, release, input, screenshot, the work-copy lanes and the borrow rule, the start-up cleanup, and the hand-off. |
+| `apps/desktop/src/shared/types/androidEmulator.ts` | The contract: SDK, AVD and lane types, error codes, the service API, the action lists (`ANDROID_AGENT_ACTIONS`, `ANDROID_USER_ONLY_ACTIONS`, `ANDROID_PERSON_ONLY_ACTIONS`, `ANDROID_LANE_FREE_ACTIONS`, `ANDROID_CODE_SYNC_ACTIONS`), and the preload API. It re-exports its siblings: `androidEmulatorAgent.ts` (the agent suite, `ANDROID_PERMISSIONS`), `androidEmulatorSetup.ts` (the SDK install), `androidEmulatorLook.ts` (colour and render) and `androidEmulatorDrawer.ts` (the Tools drawer, `ANDROID_TEXT_SIZES`, `ANDROID_DISPLAY_SIZES`). |
+| `apps/desktop/src/main/services/android/androidEmulatorService.ts` | The service: lane queue, start, stop, input, screenshot, the work-copy lanes, the start-up cleanup, and the hand-off. |
+| `apps/desktop/src/main/services/android/androidDeviceInventory.ts` | The lane's AVD: the device list, create, attach, release, delete and colour, and the work copy's borrow rule. |
 | `apps/desktop/src/main/services/android/androidSdk.ts` | SDK detection, tools and acceleration. |
 | `apps/desktop/src/main/services/android/androidSdkSetup.ts`, `androidSdkInstall.ts`, `androidSdkRepository.ts`, `androidZipExtract.ts`, `androidCli.ts` | The guided install: the plan, licence checks, the SDK setting, the installer job, Google's repository manifests, the zip reader, and the Android CLI. |
 | `apps/desktop/src/main/services/android/androidAvds.ts`, `androidHardwareProfiles.ts` | AVD list, create and delete, ADE's marker, and the hardware profiles. |
@@ -615,26 +630,30 @@ restarts in 60 s it stays down, and `status` says why.
 | `apps/desktop/src/main/services/android/androidRender.ts` | The render broker for `ade android render`: the request event, the first window's ack, the filed paths, and the time limit. |
 | `apps/desktop/src/main/services/android/androidEmulatorProcess.ts` | Boot, discovery files, boot completed, and stop. |
 | `apps/desktop/src/main/services/android/androidLaneDeviceStore.ts`, `androidLaneRelease.ts` | The `lane_android_devices` rows, and the release of a lane's AVD on disk (used by `laneService` with no service). |
-| `apps/desktop/src/main/services/android/androidStream.ts`, `androidStreamServer.ts` | Streams by adb serial, the defaults, restarts, and the loopback stream server. |
+| `apps/desktop/src/main/services/android/androidStream.ts`, `androidStreamServer.ts`, `androidLaneStreams.ts` | Streams by adb serial, the defaults, restarts, and the loopback stream server; the lane's side of its stream (a viewer, a recording). |
 | `apps/desktop/src/main/services/android/scrcpyServer.ts`, `scrcpyVideo.ts`, `scrcpyControl.ts` | The scrcpy session, video records and control messages. |
 | `apps/desktop/src/main/services/android/androidActionDomain.ts` | The `android_emulator` action domain. |
-| `apps/desktop/src/main/services/android/androidAgentSuite.ts`, `androidJdk.ts` | The agent verbs (UI tree, elements, apps, logcat, recording, proof, lease), and the JDK that Gradle runs with. |
-| `apps/desktop/src/main/services/android/androidDeviceSettings.ts` | The Tools drawer's settings read and its changes. |
+| `apps/desktop/src/main/services/android/androidAgentSuite.ts`, `androidJdk.ts` | The agent verbs (elements, apps, logcat, proof, lease), and the JDK that Gradle runs with. |
+| `apps/desktop/src/main/services/android/androidUiSnapshot.ts`, `androidUiTree.ts` | The UI tree (the Android CLI, or uiautomator), its cache, and the element queries. |
+| `apps/desktop/src/main/services/android/androidRecordingSession.ts`, `androidRecording.ts` | The lane's recording sessions, and the MP4 writer and store. |
+| `apps/desktop/src/main/services/android/androidDeviceSettings.ts` | The Tools drawer's settings read and its changes, the app in front, and location, appearance and permissions. |
+| `apps/desktop/src/main/services/android/androidDeviceShell.ts`, `androidProof.ts` | Device shell, adb and emulator console helpers, and the proof filer. |
 | `apps/desktop/src/main/services/android/adb.ts`, `androidEmulatorErrors.ts` | The adb runner and the coded errors. |
 | `apps/desktop/src/renderer/components/android/AndroidDevicePane.tsx` | The pane: picker, stage, rail, drawer, strips and live line. |
-| `apps/desktop/src/renderer/components/android/drawer/` | The Tools drawer: `AndroidToolsDrawer.tsx`, the four group sections, and `androidDrawerState.ts` (the open group, the one serialized change, the settings). |
-| `apps/desktop/src/renderer/components/android/useAndroidInspect.tsx`, `useAndroidRecording.ts` | Inspect (on the shared `device/DeviceInspectOverlay.tsx`) and the rail's Record. |
-| `apps/desktop/src/renderer/components/android/androidDeviceState.ts` | The pane state, stock profiles, menu rules and error sentences. |
+| `apps/desktop/src/renderer/components/android/drawer/` | The Tools drawer: `AndroidToolsDrawer.tsx`, the four group sections, and `androidDrawerState.ts`. The open group, the one serialized change and the settings come from the shared `device/deviceDrawerState.ts`; the frame, the Location rows and the recording rows from `device/DeviceToolsDrawerShell.tsx`, `device/DeviceLocationRows.tsx` and `shared/RecordingRow.tsx`. |
+| `apps/desktop/src/renderer/components/android/useAndroidInspect.tsx`, `useAndroidRecording.ts` | Inspect (on the shared `device/useDeviceInspect.ts` and `device/DeviceInspectOverlay.tsx`) and the rail's Record. |
+| `apps/desktop/src/renderer/components/android/androidDeviceState.ts` | The pane state, stock profiles, menu rules and error sentences. The 3D-or-flat choice is kept by the shared `device/deviceViewMode.ts`. |
 | `apps/desktop/src/renderer/components/android/AndroidDevicePicker.tsx`, `AndroidSetupCard.tsx`, `AndroidLicenseDialog.tsx`, `useAndroidSdkSetup.ts` | The picker, the setup card, the licence dialog and the card's data. |
 | `apps/desktop/src/renderer/components/settings/AndroidDevicesSection.tsx` | Settings › Android devices: the setup card for the picked machine. |
 | `apps/desktop/src/renderer/components/android/AndroidDeviceStage.tsx`, `AndroidDeviceRail.tsx`, `AndroidDeviceStatus.tsx` | The stage (on the shared `device/DeviceFlatView.tsx`), the rail (on `device/DeviceRail.tsx`), and the strips, cards and live line (on `device/DeviceStatusStrip.tsx` and `device/DeviceLoadingCard.tsx`). |
 | `apps/desktop/src/renderer/components/android/AndroidCatalogGrid.tsx`, `androidTileRenderer.ts` | The brand grid tiles and their details, and the one shared WebGL renderer for the tile stills and the hover turn. |
 | `apps/desktop/src/renderer/components/android/androidDeviceBody.ts`, `androidDeviceModels.ts`, `useAndroidBootScreen.ts` | The procedural device bodies (and any model file), and the boot screen drawn on the 3D model. |
-| `apps/desktop/src/renderer/components/android/AndroidRenderSheet.tsx`, `androidRender.ts`, `useAndroidRenderRequests.ts` | The Render sheet, the drawing and filing of renders, and the pane's answer to `ade android render`. |
+| `apps/desktop/src/renderer/components/android/AndroidRenderSheet.tsx`, `androidRender.ts`, `useAndroidRenderRequests.ts` | The Render sheet (on the shared `device/DeviceRenderSheet.tsx`), the drawing and filing of renders (on `device/deviceRenderProof.ts` and `device/deviceRenderPass.ts`), and the pane's answer to `ade android render`. |
 | `apps/desktop/src/renderer/components/android/useAndroidDeviceStream.ts`, `useAndroidDeviceInput.ts`, `androidStreamLease.ts` | The stream (on the shared `device/useStreamRecovery.ts` and `device/useGracefulStreamLease.ts`), input, and the per-lane stream lease (a `device/streamLease.ts` table of its own). |
 | `apps/desktop/src/renderer/components/terminals/workToolPanels.tsx` | The Android tool's targets (This lane, Android · `<machine>`). |
 | `apps/desktop/src/renderer/components/terminals/useRemoteDeviceTabs.ts` | The tab that joins the open pane for a remote device use (iOS and Android). |
-| `apps/ade-cli/src/cliAndroid.ts` | `ade android` plans, formatters and error hints. The help page is in `cli.ts`. |
+| `apps/ade-cli/src/cliAndroid.ts`, `cliAndroidFormat.ts` | `ade android` plans and error hints, and its text formatters. The help page is in `cli.ts`. |
+| `apps/ade-cli/src/services/sync/androidRemoteCommands.ts` | The `android.*` remote commands a phone or a web tab sends. |
 | `apps/desktop/resources/android/` | The scrcpy server jar, its licence and its README. |
 
 ## Limits and later phases

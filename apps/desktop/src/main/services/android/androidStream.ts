@@ -330,7 +330,9 @@ export function createAndroidStreamHub() {
         firstConfig: deferred(),
         lastEnd: null,
         lastConfigPacket: null,
-        packetTaps: new Set(),
+        // A stream that failed and starts again keeps its taps: a recording
+        // on it goes on with the new stream's packets.
+        packetTaps: existing?.packetTaps ?? new Set(),
       };
       devices.set(args.serial, device);
       const server = ensureStreamServer(args.logger ?? null);

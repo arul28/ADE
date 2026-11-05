@@ -27,8 +27,8 @@ const SCREEN_HEIGHT_UNITS = 2.2;
 /** How far in front of the glass the live screen sits (see `SCREEN_LIFT` in `deviceScene.ts`). */
 const SCREEN_LIFT = 0.002;
 
-/** A neutral body for a device with no catalog entry. */
-const DEFAULT_COLOR: AndroidCatalogColor = { id: "graphite", name: "Graphite", body: "#2a2c30", frame: "#3a3d42" };
+/** The neutral body of a device with no catalog entry. */
+export const ANDROID_DEFAULT_BODY_COLOR: AndroidCatalogColor = { id: "graphite", name: "Graphite", body: "#2a2c30", frame: "#3a3d42" };
 
 /** What the 3D body is drawn from: a catalog entry, or a bare hardware profile ("More…"). */
 export type AndroidBodySpec = {
@@ -40,7 +40,7 @@ export type AndroidBodySpec = {
 };
 
 export function androidBodyColor(spec: AndroidBodySpec): AndroidCatalogColor {
-  return spec.entry ? androidCatalogColor(spec.entry, spec.colorId) : DEFAULT_COLOR;
+  return spec.entry ? androidCatalogColor(spec.entry, spec.colorId) : ANDROID_DEFAULT_BODY_COLOR;
 }
 
 /**

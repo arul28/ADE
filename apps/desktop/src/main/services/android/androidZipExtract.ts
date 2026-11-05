@@ -43,7 +43,7 @@ export type ZipEntry = {
   encrypted: boolean;
 };
 
-export class ZipExtractError extends Error {
+class ZipExtractError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "ZipExtractError";
@@ -152,7 +152,7 @@ export function readZipEntries(zipPath: string): ZipEntry[] {
  * The entry's path relative to the destination, or null when it is not safe:
  * absolute, a drive letter, a `..` segment, or an empty name.
  */
-export function safeZipEntryPath(name: string): string | null {
+function safeZipEntryPath(name: string): string | null {
   const normalized = name.replace(/\\/gu, "/");
   if (!normalized || normalized.startsWith("/") || /^[A-Za-z]:/u.test(normalized)) return null;
   const segments = normalized.split("/").filter((segment) => segment && segment !== ".");
@@ -185,6 +185,43 @@ function entryDataOffset(fd: number, entry: ZipEntry): number {
   const header = readExactly(fd, 30, entry.localHeaderOffset);
   if (header.readUInt32LE(0) !== LOCAL_SIGNATURE) throw new ZipExtractError(`The archive entry ${entry.name} is damaged.`);
   return entry.localHeaderOffset + 30 + header.readUInt16LE(26) + header.readUInt16LE(28);
+}
+
+/**
+ * The entries whose names pass `wanted`, as UTF-8 text, read whole. For small
+ * archives (an SDK jar of a few MB); an entry with a method ADE cannot read
+ * is skipped.
+ */
+export function readZipTextEntries(zipPath: string, wanted: (name: string) => boolean): Map<string, string> {
+  const texts = new Map<string, string>();
+  const entries = readZipEntries(zipPath).filter((entry) => !entry.directory && !entry.encrypted && wanted(entry.name));
+  if (entries.length === 0) return texts;
+  const fd = fs.openSync(zipPath, "r");
+  try {
+    for (const entry of entries) {
+      if (entry.method !== 0 && entry.method !== 8) continue;
+      const raw = entry.compressedSize === 0 ? Buffer.alloc(0) : readExactly(fd, entry.compressedSize, entryDataOffset(fd, entry));
+      texts.set(entry.name, (entry.method === 8 ? zlib.inflateRawSync(raw) : raw).toString("utf8"));
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
+  return texts;
+}
+
+/**
+ * Resolves `target` from the real folder `base` one segment at a time, as
+ * the file system does: a segment that exists is read through its real path
+ * first, so a `..` after a link climbs from where the link points.
+ */
+function resolvePhysically(base: string, target: string): string {
+  let current = base;
+  for (const segment of target.split(/[\\/]+/u)) {
+    if (!segment || segment === ".") continue;
+    current = segment === ".." ? path.dirname(current) : path.join(current, segment);
+    if (fs.existsSync(current)) current = fs.realpathSync(current);
+  }
+  return current;
 }
 
 export type ZipExtractProgress = { entriesDone: number; entryCount: number; bytesDone: number; bytesTotal: number };
@@ -276,19 +313,43 @@ export async function extractZip(zipPath: string, destination: string, options: 
   } finally {
     fs.closeSync(fd);
   }
+  // Links are made last, so no file above was written through one. Each link
+  // is checked from the REAL folder it goes in: an earlier link in its path
+  // would make the lexical check lie about where it lands and points.
+  const realRoot = fs.realpathSync(root);
+  const outside = (linkPath: string) =>
+    new ZipExtractError(`The archive has a link that points outside its folder: ${path.relative(root, linkPath)}`);
   for (const link of symlinks) {
     options.signal?.throwIfAborted();
-    const resolvedTarget = path.resolve(path.dirname(link.linkPath), link.target);
-    if (path.isAbsolute(link.target) || !isInside(root, resolvedTarget)) {
-      throw new ZipExtractError(`The archive has a link that points outside its folder: ${path.relative(root, link.linkPath)}`);
+    const parent = path.dirname(link.linkPath);
+    const realParent = fs.realpathSync(parent);
+    if (path.relative(path.join(realRoot, path.relative(root, parent)), realParent) !== "") {
+      throw new ZipExtractError(`The archive puts a file through one of its own links: ${path.relative(root, link.linkPath)}`);
     }
+    const resolvedTarget = path.resolve(realParent, link.target);
+    if (path.isAbsolute(link.target) || !isInside(realRoot, resolvedTarget)) throw outside(link.linkPath);
     fs.rmSync(link.linkPath, { force: true });
     if (platform === "win32") {
       // Windows needs a privilege for symlinks; Google's Windows archives have none. Copy the target instead.
-      if (fs.existsSync(resolvedTarget) && fs.statSync(resolvedTarget).isFile()) fs.copyFileSync(resolvedTarget, link.linkPath);
+      const source = resolvePhysically(realParent, link.target);
+      if (!isInside(realRoot, source)) throw outside(link.linkPath);
+      if (fs.existsSync(source) && fs.statSync(source).isFile()) fs.copyFileSync(source, link.linkPath);
       continue;
     }
     fs.symlinkSync(link.target, link.linkPath);
+  }
+  if (platform !== "win32") {
+    // With every link in place, each target must still land inside: a `..`
+    // after another link climbs from where that link points.
+    for (const link of symlinks) {
+      let landed: string;
+      try {
+        landed = resolvePhysically(fs.realpathSync(path.dirname(link.linkPath)), link.target);
+      } catch {
+        throw outside(link.linkPath);
+      }
+      if (!isInside(realRoot, landed)) throw outside(link.linkPath);
+    }
   }
   for (const { filePath, mode } of fileModes) fs.chmodSync(filePath, mode);
   report(true);

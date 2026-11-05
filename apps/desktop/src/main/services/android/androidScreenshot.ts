@@ -23,6 +23,11 @@ function readPngSize(buffer: Buffer): { width: number; height: number } | null {
   return { width: buffer.readUInt32BE(16), height: buffer.readUInt32BE(20) };
 }
 
+/** A lane id as a folder or file name under ADE's data folder. */
+export function androidLaneFolderName(laneId: string): string {
+  return laneId.replace(/[^A-Za-z0-9_-]+/gu, "_") || "lane";
+}
+
 /**
  * Where an agent's screenshot may go: inside the lane's worktree, after both
  * a lexical check and a real-path check (a symlink inside the worktree can
@@ -45,6 +50,30 @@ export function containAndroidOutPath(outPath: string, root: string, platform: N
     }
   }
   return target;
+}
+
+/**
+ * Writes a file without following a link at its path. `O_NOFOLLOW` refuses a
+ * link on macOS and Linux; Windows has no such flag, so a link found by
+ * `lstat` refuses first on every host.
+ */
+export function writeAndroidFileNoFollow(target: string, data: string | Uint8Array): void {
+  let isLink = false;
+  try {
+    isLink = fs.lstatSync(target).isSymbolicLink();
+  } catch {
+    // Missing: the open below makes it.
+  }
+  if (isLink) {
+    throw new AndroidEmulatorFailure("ANDROID_PATH_OUTSIDE_LANE", `${target} is a link. ADE does not write through a link; pick another path.`);
+  }
+  const handle = fs.openSync(target, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC | (fs.constants.O_NOFOLLOW ?? 0), 0o644);
+  try {
+    if (typeof data === "string") fs.writeSync(handle, data);
+    else fs.writeSync(handle, data);
+  } finally {
+    fs.closeSync(handle);
+  }
 }
 
 type TakeAndroidScreenshotInput = {
@@ -94,7 +123,7 @@ export async function takeAndroidScreenshot(input: TakeAndroidScreenshotInput): 
   if (!size) throw new Error(`The emulator ${serial} did not return a PNG (${png.length} bytes).`);
   const capturedAt = input.now();
   const target = outPath
-    ?? path.join(input.dataDir, "screenshots", `${input.laneId.replace(/[^A-Za-z0-9_-]+/gu, "_")}-${capturedAt.toISOString().replace(/[:.]/gu, "-")}.png`);
+    ?? path.join(input.dataDir, "screenshots", `${androidLaneFolderName(input.laneId)}-${capturedAt.toISOString().replace(/[:.]/gu, "-")}.png`);
   if (outPath && outRoot) {
     // Checked again before any folder is made: the lane's folder may be gone
     // or moved, or a link swapped in, during the capture.
@@ -103,12 +132,6 @@ export async function takeAndroidScreenshot(input: TakeAndroidScreenshotInput): 
     containAndroidOutPath(outPath, outRoot, input.platform);
   }
   fs.mkdirSync(path.dirname(target), { recursive: true });
-  // Opened without following a link.
-  const handle = fs.openSync(target, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC | (fs.constants.O_NOFOLLOW ?? 0), 0o644);
-  try {
-    fs.writeSync(handle, png);
-  } finally {
-    fs.closeSync(handle);
-  }
+  writeAndroidFileNoFollow(target, png);
   return { path: target, width: size.width, height: size.height, bytes: png.length, capturedAt: capturedAt.toISOString() };
 }

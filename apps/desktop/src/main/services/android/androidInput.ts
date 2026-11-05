@@ -1,6 +1,7 @@
 import { isAndroidHardwareKey, type AndroidEmulatorServiceApi, type AndroidTouchEvent } from "../../../shared/types/androidEmulator";
 import { sleep } from "../shared/utils";
 import { runAdb } from "./adb";
+import { runAdbOutput } from "./androidDeviceShell";
 import { AndroidEmulatorFailure, requireLaneId } from "./androidEmulatorErrors";
 import { asStreamFailure, type AndroidStreamHub } from "./androidStream";
 import { ANDROID_HARDWARE_KEYCODES } from "./scrcpyControl";
@@ -140,11 +141,9 @@ export function createAndroidInput(deps: AndroidInputDeps): AndroidInputApi {
       const laneId = requireLaneId(args.laneId);
       const orientation = args.orientation;
       if (orientation !== "portrait" && orientation !== "landscape") throw new Error("orientation must be portrait or landscape.");
-      const { serial, adbPath } = await requireBooted(laneId);
-      const shell = async (command: string[]) => {
-        const result = await runAdb(adbPath, ["shell", ...command], { serial, timeoutMs: 15_000, signal, allowFailure: true });
-        return { exitCode: result.exitCode, text: `${result.stdout.toString("utf8")}${result.stderr}`.trim() };
-      };
+      const booted = await requireBooted(laneId);
+      const { serial } = booted;
+      const shell = (command: string[]) => runAdbOutput(booted, ["shell", ...command], { timeoutMs: 15_000, signal });
       // Rotation 0 is the display's natural orientation: portrait on a phone,
       // landscape on most tablets.
       const size = /Physical size:\s*(\d+)x(\d+)/u.exec((await shell(["wm", "size"])).text);

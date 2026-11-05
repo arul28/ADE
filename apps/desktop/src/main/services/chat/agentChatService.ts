@@ -1308,16 +1308,12 @@ import type { IssueTracker } from "../cto/issueTracker";
 import type { createPrService } from "../prs/prService";
 import type { ComputerUseArtifactBrokerService } from "../computerUse/computerUseArtifactBrokerService";
 import { notifySimRecordingTurnEnded } from "../ios/recording/simRecordingService";
+import { createLaneAppleDeviceLookup, type LaneAppleDeviceLookup } from "./laneAppleDeviceDirective";
 import {
-  createLaneAppleDeviceLookup,
-  resolveLaneAppleDeviceDirective,
-  type LaneAppleDeviceLookup,
-} from "./laneAppleDeviceDirective";
-import {
-  combineLaneDeviceDirectives,
   createLaneAndroidDeviceLookup,
-  resolveLaneAndroidDeviceDirective,
+  resolveLaneDeviceDirective,
   type LaneAndroidDeviceLookup,
+  type LaneDirectiveShell,
 } from "./laneAndroidDeviceDirective";
 import type { OpenCodeEvent } from "@opencode/client";
 import {
@@ -5305,8 +5301,8 @@ type ReconstructionSectionSpan = {
 type EpochDirective =
   /** The computer-use block, keyed by lane and available backends. */
   | "computerUse"
-  /** The lane Apple device hint (`<ade-lane-tools>`), keyed by its udid. */
-  | "appleDevice"
+  /** The lane device hint (`<ade-lane-tools>`), keyed by the Apple udid and the AVD name. */
+  | "laneDevices"
   /** The lane-screen line (Mac, Windows or Linux Desktop), keyed by lane and text. */
   | "laneScreen"
   /**
@@ -12054,6 +12050,8 @@ export function createAgentChatService(args: {
   const laneAndroidDeviceLookup: LaneAndroidDeviceLookup | null = injectedLaneAndroidDeviceLookup !== undefined
     ? injectedLaneAndroidDeviceLookup
     : createLaneAndroidDeviceLookup({ store: db?.get ? { get: db.get } : null });
+  /** The shell the lane device hint writes its commands for: the one the session guidance names. */
+  const laneDirectiveShell: LaneDirectiveShell = process.platform === "win32" ? "powershell" : "posix";
   /** How a launch starts the user's MCP servers (accounts, `npx` without npm, no double copies). */
   const chatUserMcp = createChatUserMcp({ projectRoot: args.projectRoot, logger });
   const chatMcpTarget = (managed: ManagedChatSession) => ({
@@ -55623,33 +55621,28 @@ export function createAgentChatService(args: {
     // Cursor's VM, which cannot reach this Mac's simulator, so it gets none.
     const cursorCloudTurn = managed.session.provider === "cursor"
       && effectiveCursorRuntime(managed, runtime) === "cloud";
-    const appleOnlyDevice = personalSession || cursorCloudTurn
+    // The lane's Android emulator goes in the same block (one hint names both
+    // devices); an Apple-only lane keeps its text and key exactly.
+    const laneDevices = personalSession || cursorCloudTurn
       ? null
-      : resolveLaneAppleDeviceDirective({
+      : resolveLaneDeviceDirective({
           laneId: executionContext.laneId,
-          lookup: laneAppleDeviceLookup,
-          onLookupError: (error) => logger.warn("agent_chat.lane_apple_device_lookup_failed", {
+          appleLookup: laneAppleDeviceLookup,
+          androidLookup: laneAndroidDeviceLookup,
+          shell: laneDirectiveShell,
+          onAppleLookupError: (error) => logger.warn("agent_chat.lane_apple_device_lookup_failed", {
+            sessionId,
+            laneId: executionContext.laneId,
+            error: error instanceof Error ? error.message : String(error),
+          }),
+          onAndroidLookupError: (error) => logger.warn("agent_chat.lane_android_device_lookup_failed", {
             sessionId,
             laneId: executionContext.laneId,
             error: error instanceof Error ? error.message : String(error),
           }),
         });
-    // The lane's Android emulator, in the same block (one hint names both
-    // devices). An Apple-only lane keeps its text and key exactly.
-    const androidDevice = personalSession || cursorCloudTurn
-      ? null
-      : resolveLaneAndroidDeviceDirective({
-          laneId: executionContext.laneId,
-          lookup: laneAndroidDeviceLookup,
-          onLookupError: (error) => logger.warn("agent_chat.lane_android_device_lookup_failed", {
-            sessionId,
-            laneId: executionContext.laneId,
-            error: error instanceof Error ? error.message : String(error),
-          }),
-        });
-    const appleDevice = combineLaneDeviceDirectives(appleOnlyDevice, androidDevice);
-    const shouldInjectAppleDeviceDirective = appleDevice != null
-      && managed.deliveredDirectiveKeys.appleDevice !== appleDevice.key;
+    const shouldInjectLaneDevicesDirective = laneDevices != null
+      && managed.deliveredDirectiveKeys.laneDevices !== laneDevices.key;
     // This is the single lane-screen delivery path. It announces the private
     // screen when the host can provide one, then changes when that screen is
     // active so the epoch key re-announces the current state. Windows uses
@@ -55704,7 +55697,7 @@ export function createAgentChatService(args: {
           // `composeLaunchDirectives` drops — so its prompt is byte-identical
           // to the pre-Mac-Desktop one.
           shouldInjectLaneScreenDirective ? laneScreenDirective : null,
-          shouldInjectAppleDeviceDirective ? appleDevice.directive : null,
+          shouldInjectLaneDevicesDirective ? laneDevices.directive : null,
           contextAttachmentPrompt || null,
         ]);
     const codexGoalTitleSeed = managed.session.provider === "codex" && isCodexGoalSlashInput(trimmed)
@@ -55753,7 +55746,7 @@ export function createAgentChatService(args: {
         ? {}
         : {
             ...(shouldInjectComputerUseDirective ? { computerUse: computerUseDirectiveKey } : {}),
-            ...(shouldInjectAppleDeviceDirective ? { appleDevice: appleDevice.key } : {}),
+            ...(shouldInjectLaneDevicesDirective ? { laneDevices: laneDevices.key } : {}),
             ...(shouldInjectLaneScreenDirective ? { laneScreen: laneScreenDirectiveKey } : {}),
           },
       providerSlashCommand: personalSession ? false : providerSlashCommand === true,
@@ -77200,18 +77193,14 @@ export function createAgentChatService(args: {
       launchDirective: laneId ? buildLaneWorktreeDirective({ laneId, laneWorktreePath: cwd }) : null,
       computerUse: currentComputerUseDirective(),
       laneScreen: currentLaneScreenDirective(laneId),
-      appleDevice: combineLaneDeviceDirectives(
-        resolveLaneAppleDeviceDirective({
-          laneId,
-          lookup: laneAppleDeviceLookup,
-          onLookupError: (error) => logger.warn("agent_chat.context_preview_apple_device_failed", { laneId, error: getErrorMessage(error) }),
-        }),
-        resolveLaneAndroidDeviceDirective({
-          laneId,
-          lookup: laneAndroidDeviceLookup,
-          onLookupError: (error) => logger.warn("agent_chat.context_preview_android_device_failed", { laneId, error: getErrorMessage(error) }),
-        }),
-      )?.directive ?? null,
+      laneDevices: resolveLaneDeviceDirective({
+        laneId,
+        appleLookup: laneAppleDeviceLookup,
+        androidLookup: laneAndroidDeviceLookup,
+        shell: laneDirectiveShell,
+        onAppleLookupError: (error) => logger.warn("agent_chat.context_preview_apple_device_failed", { laneId, error: getErrorMessage(error) }),
+        onAndroidLookupError: (error) => logger.warn("agent_chat.context_preview_android_device_failed", { laneId, error: getErrorMessage(error) }),
+      })?.directive ?? null,
     });
 
     // The registry servers ADE hands this provider (names and transport; no

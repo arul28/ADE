@@ -146,7 +146,7 @@ export function AndroidSetupCard({
   /** `settings` drops the centring wrapper for Settings › Android devices. */
   variant?: "pane" | "settings";
 }) {
-  const setup = useAndroidSdkSetup(pin);
+  const setup = useAndroidSdkSetup(pin, variant === "settings" ? "settings" : "setup-card");
   const { plan, install } = setup;
   const [reviewing, setReviewing] = useState(false);
   const running = install.state === "running";
@@ -204,7 +204,7 @@ export function AndroidSetupCard({
     if (folder) setup.setChosenRoot(folder);
   };
 
-  const useMine = async () => {
+  const pickOwnSdk = async () => {
     const folder = await pickFolder("existing");
     if (!folder) return;
     if (await setup.useExistingSdk(folder)) onRefresh();
@@ -414,7 +414,7 @@ export function AndroidSetupCard({
               Review licences & install
             </Button>
           ) : null}
-          <Button variant="outline" size="sm" onClick={() => void useMine()} data-android-setup-use-mine="">
+          <Button variant="outline" size="sm" onClick={() => void pickOwnSdk()} data-android-setup-use-mine="">
             {sdk.found && plan && !somethingMissing ? "Use another SDK…" : "Use mine…"}
           </Button>
           <Button

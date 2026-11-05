@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { ANDROID_CODE_SYNC_ACTIONS, ANDROID_LANE_FREE_ACTIONS } from "../../desktop/src/shared/types/androidEmulator";
 import { REMOTE_WORK_MAX_PATCH_BYTES } from "../../desktop/src/shared/types/remoteWork";
 import { CliUsageError, asString, isRecord, type JsonObject } from "./cli";
 
@@ -90,16 +91,8 @@ export function withRemoteAppleArgs(params: JsonObject, cwd: string, workCopy: M
  * Android reads about the machine. They never make a work copy: the other
  * machine reports this chat's emulator only when the copy already exists.
  */
-const ANDROID_MACHINE_ACTIONS: ReadonlySet<string> = new Set([
-  "getStatus",
-  "listDevices",
-  // The SDK setup is the machine's, not a lane's.
-  "getSdkSetupPlan",
-  "getSdkInstallState",
-  "installSdk",
-  "cancelSdkInstall",
-  "setSdkPath",
-]);
+const ANDROID_MACHINE_ACTIONS: ReadonlySet<string> = new Set(ANDROID_LANE_FREE_ACTIONS);
+const ANDROID_CODE_SYNC: ReadonlySet<string> = new Set(ANDROID_CODE_SYNC_ACTIONS);
 
 /**
  * `ade android … --machine` with no `--lane`: the emulator there works for
@@ -115,7 +108,7 @@ export function withRemoteAndroidArgs(params: JsonObject, cwd: string): JsonObje
   if (!isRecord(toolArgs.args) || asString(toolArgs.args.laneId)) return params;
   const action = asString(toolArgs.action) ?? "";
   const { chatSessionId: _chatSessionId, ...args } = toolArgs.args;
-  const builds = (action === "installApp" || action === "launchApp") && (asString(args.apkPath) != null || args.gradle != null);
+  const builds = ANDROID_CODE_SYNC.has(action) && (asString(args.apkPath) != null || args.gradle != null);
   const apkPath = builds ? asString(args.apkPath) : null;
   return {
     ...params,
