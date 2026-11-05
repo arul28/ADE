@@ -343,7 +343,7 @@ export function formatInternalReport(report, { applied }) {
     "| | Count |",
     "|---|---:|",
     `| Accounts flagged \`ade_internal\` in Clerk | ${report.accounts} |`,
-    `| Their distinct ids in PostHog | ${report.distinctIds} |`,
+    `| Their distinct ids (accounts and the installs signed in to them) | ${report.distinctIds} |`,
     `| Ids on the transformation's list | ${report.listed} |`,
     `| Ids not on the list | ${report.notListed.length} |`,
     `| Persons without \`is_internal\` | ${report.unflagged.length} |`,

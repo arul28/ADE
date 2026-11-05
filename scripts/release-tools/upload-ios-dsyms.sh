@@ -72,9 +72,8 @@ upload_posthog() {
   local log
   log="$(mktemp)"
   # PostHog finds a symbol set by its dSYM's debug id, so no release is named.
-  if POSTHOG_CLI_API_KEY="$key" POSTHOG_CLI_PROJECT_ID="$project" \
-      npx --yes "@posthog/cli@$POSTHOG_CLI_VERSION" --host "${POSTHOG_HOST:-https://us.posthog.com}" \
-      dsym upload --directory "$DSYMS" --skip-on-conflict > "$log" 2>&1; then
+  if POSTHOG_CLI_API_KEY="$key" POSTHOG_CLI_PROJECT_ID="$project" POSTHOG_CLI_HOST="${POSTHOG_HOST:-https://us.posthog.com}" \
+      npx --yes "@posthog/cli@$POSTHOG_CLI_VERSION" dsym upload --directory "$DSYMS" --skip-on-conflict > "$log" 2>&1; then
     say "dSYMs uploaded to PostHog"
   else
     warn "PostHog dSYM upload FAILED; this build stays unsymbolicated in PostHog until it is rerun: $(tail -1 "$log")"

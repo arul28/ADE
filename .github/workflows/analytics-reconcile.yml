@@ -79,7 +79,7 @@ jobs:
       - name: Sync internal accounts
         if: steps.key.outputs.present == 'true'
         env:
-          POSTHOG_PERSONAL_API_KEY: ${{ secrets.POSTHOG_INTERNAL_SYNC_API_KEY }}
+          POSTHOG_PERSONAL_API_KEY: ${{ env.INTERNAL_SYNC_KEY }}
         run: |
           if [ -z "$INTERNAL_SYNC_KEY" ]; then
             echo "internal sync skipped: add POSTHOG_INTERNAL_SYNC_API_KEY (query:read, hog_function:read, hog_function:write) to enable" >> "$GITHUB_STEP_SUMMARY"

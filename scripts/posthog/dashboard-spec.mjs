@@ -154,6 +154,9 @@ const AUTOMATIC_FEATURE_ACTIONS = Object.freeze([
   "maintenance_run", "metadata_regenerated", "auto_sent", "auto_resume", "settle_teardown_residue",
 ]);
 
+/** Events an automation run sends with `feature: automations` and no person behind it. */
+const AUTOMATION_RUN_EVENTS = Object.freeze([EVENTS.WORK_SESSION_STARTED, EVENTS.WORK_SESSION_COMPLETED, EVENTS.AI_GENERATION]);
+
 const hogqlList = (values) => values.map((value) => `'${value}'`).join(", ");
 
 /**
@@ -168,6 +171,8 @@ const PERSON_ACTIVITY = Object.freeze({
     `ifNull(toString(properties.${PROPERTIES.INTERACTIVE}), '') != 'false'`,
     `event not in (${hogqlList(BACKGROUND_EVENT_NAMES)})`,
     `not (event = '${EVENTS.FEATURE_USED}' and (ifNull(properties.${PROPERTIES.MODE}, '') = 'automatic' or properties.${PROPERTIES.ACTION} in (${hogqlList(AUTOMATIC_FEATURE_ACTIONS)})))`,
+    // An automation's own sessions and model turns, as the policy's `automationRun`.
+    `not (ifNull(properties.${PROPERTIES.FEATURE}, '') = 'automations' and event in (${hogqlList(AUTOMATION_RUN_EVENTS)}))`,
   ].join(" and "),
   value: null,
 });
@@ -330,13 +335,7 @@ const RETURNING_APP_USE = Object.freeze({
   id: null,
   name: "All events",
   type: "events",
-  properties: [
-    // `is_not false`, not `exact true`: builds before 2026-10-29 send no
-    // `interactive` property, and their app use must still count.
-    eventProperty(PROPERTIES.INTERACTIVE, ["false"], "is_not"),
-    eventProperty(PROPERTIES.CLIENT, ["account"], "is_not"),
-    PERSON_ACTIVITY,
-  ],
+  properties: [eventProperty(PROPERTIES.CLIENT, ["account"], "is_not"), PERSON_ACTIVITY],
 });
 
 const PMF_SURVEY = eventProperty(PROPERTIES.SURVEY_NAME, "[ade:pmf]", "icontains");

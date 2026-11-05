@@ -23,7 +23,7 @@ concurrency:
 jobs:
   health:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     env:
       POSTHOG_PERSONAL_API_KEY: ${{ secrets.POSTHOG_RECONCILE_API_KEY }}
     steps:
