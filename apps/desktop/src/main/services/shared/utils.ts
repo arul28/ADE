@@ -562,6 +562,15 @@ export function isPathEscapeError(error: unknown): boolean {
   return error instanceof Error && error.message === PATH_ESCAPES_ROOT_MESSAGE;
 }
 
+const PATH_NOT_A_DIRECTORY_PREFIX = "Path is not a directory: ";
+
+/** The path a folder walk stopped at because a step there is a file, or null for any other error. */
+export function notADirectoryPath(error: unknown): string | null {
+  return error instanceof Error && error.message.startsWith(PATH_NOT_A_DIRECTORY_PREFIX)
+    ? error.message.slice(PATH_NOT_A_DIRECTORY_PREFIX.length)
+    : null;
+}
+
 /**
  * Resolve `candidate` against the real filesystem layout and ensure it stays
  * inside `root`, even when symlinks are involved.
@@ -798,7 +807,7 @@ function ensureDirectoryChainWithinRoot(
         throw new Error(PATH_ESCAPES_ROOT_MESSAGE);
       }
       if (!nonAsarFs.statSync(resolvedPath).isDirectory()) {
-        throw new Error(`Path is not a directory: ${nextPath}`);
+        throw new Error(`${PATH_NOT_A_DIRECTORY_PREFIX}${nextPath}`);
       }
       cursor = resolvedPath;
     } catch (error) {

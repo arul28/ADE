@@ -892,6 +892,8 @@ const PROJECT_ICON_ANSWER_TTL_MS = 5 * 60_000;
  * another worker.
  */
 const PROJECT_ICON_WORKER_TIMEOUT_MS = 15_000;
+/** How long a failed worker's "no icon" stands before a list re-checks it in the background. */
+const PROJECT_ICON_FAILURE_TTL_MS = 60_000;
 const PROJECT_ICON_ANSWERS_MAX = 256;
 const projectIconAnswers = new Map<string, { signature: string; icon: ResolvedProjectIcon; expiresAtMs: number }>();
 const projectIconResolves = new Map<string, Promise<ResolvedProjectIcon | null>>();
@@ -943,12 +945,20 @@ function startProjectIconResolve(rootPath: string, timeoutMs: number): Promise<R
     // Taken before the worker reads, so a change while it runs is not hidden.
     const folders = await projectIconSignature(rootPath, null);
     const icon = await runProjectIconWorker(rootPath, Math.max(timeoutMs, PROJECT_ICON_WORKER_TIMEOUT_MS));
-    if (!icon) return null;
-    const signature = icon.sourcePath ? `${folders}|${await statStamp(icon.sourcePath)}` : folders;
+    // A worker that failed (it crashed, ran out of time, or printed more than
+    // it may) is kept as "no icon" for a minute. Not keeping it made every
+    // list wait out its whole budget for a worker that fails again: measured
+    // on Windows, `projects.list` took 751 ms on every call.
+    const kept = icon ?? EMPTY_PROJECT_ICON;
+    const signature = icon?.sourcePath ? `${folders}|${await statStamp(icon.sourcePath)}` : folders;
     // A resolve that an icon write superseded keeps its answer to itself.
     if (projectIconResolves.get(rootPath) !== self.promise) return icon;
     projectIconAnswers.delete(rootPath);
-    projectIconAnswers.set(rootPath, { signature, icon, expiresAtMs: Date.now() + PROJECT_ICON_ANSWER_TTL_MS });
+    projectIconAnswers.set(rootPath, {
+      signature,
+      icon: kept,
+      expiresAtMs: Date.now() + (icon ? PROJECT_ICON_ANSWER_TTL_MS : PROJECT_ICON_FAILURE_TTL_MS),
+    });
     if (projectIconAnswers.size > PROJECT_ICON_ANSWERS_MAX) {
       const oldest = projectIconAnswers.keys().next().value;
       if (oldest !== undefined) projectIconAnswers.delete(oldest);
@@ -1399,7 +1409,8 @@ export function createMultiProjectRpcRequestHandler(
   /** Forgets a project: its booted scope, this connection's handler, then its registry entry. Never its folder. */
   const removeProject = async (projectId: ProjectId): Promise<boolean> => {
     const rootPath = projectRegistry.get(projectId)?.rootPath ?? null;
-    await scopeRegistry.dispose(projectId);
+    // Nothing will re-adopt a removed project's devices, so they stop.
+    await scopeRegistry.dispose(projectId, "unregister");
     // The stop just saved its open CLIs to reopen; a removed project keeps none.
     if (rootPath) forgetCliSessionsToReopen(rootPath);
     handlers.delete(projectId);

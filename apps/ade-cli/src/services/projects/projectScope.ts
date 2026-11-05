@@ -4,6 +4,7 @@ import type { SyncCommandPayload, SyncFileRequest } from "../../../../desktop/sr
 import type { SyncRemoteCommandExecutionContext } from "../sync/syncRemoteCommandService";
 import type { SyncHostBlocker } from "../sync/syncService";
 import type { BrainKeepAwakeService } from "../power/brainKeepAwakeService";
+import type { RuntimeDisposeReason } from "../runtime/startupTeardown";
 import type { ProjectId, ProjectRecord, ProjectRegistry } from "./projectRegistry";
 import { captureProblem, sendSentryLog } from "../../../../desktop/src/shared/sentry/capture";
 import { DIAGNOSTIC_ATTACH_TAG } from "../../../../desktop/src/shared/sentry/diagnostics";
@@ -148,17 +149,42 @@ export class ProjectScope {
     this.runtime = args.runtime;
   }
 
-  dispose(): void {
-    this.runtime.dispose();
+  /**
+   * Tear the runtime down and wait for it (each async disposer is capped).
+   * `reason` tells the device services whether to hand their devices to the
+   * next brain (`"exit"`, `"close"`) or stop them (`"unregister"`).
+   */
+  async dispose(reason?: RuntimeDisposeReason): Promise<void> {
+    await this.runtime.dispose(reason);
   }
 }
+
+/** One project's teardown while it runs, so a later caller can join or strengthen it. */
+type InFlightDisposal = {
+  /** The strongest reason asked for so far. */
+  reason: RuntimeDisposeReason;
+  /** The scope, once its boot settled (null if it failed or has not yet). */
+  scope: ProjectScope | null;
+  /** The reason the runtime's teardown started with; null before it starts or without a scope. */
+  runtimeReason: RuntimeDisposeReason | null;
+  /** The runtime's teardown has finished. */
+  runtimeDone: boolean;
+  /** The whole disposal, listeners included. */
+  done: Promise<void>;
+  /** A removal that joined it: the disposal, then the hand-off clean-up. */
+  upgrade: Promise<void> | null;
+  /** The project's folder, for the clean-up when no scope booted. */
+  rootPath: string | null;
+  /** The hand-off clean-up ran (it runs at most once per disposal). */
+  devicesCleaned: boolean;
+};
 
 export class ProjectScopeRegistry {
   private readonly scopes = new Map<ProjectId, Promise<ProjectScope>>();
   private readonly readyScopes = new Map<ProjectId, ProjectScope>();
   private readonly failedScopes = new Map<ProjectId, FailedAttempt>();
   /** Disposals still waiting on a booting scope, so a second caller waits too. */
-  private readonly disposals = new Map<ProjectId, Promise<void>>();
+  private readonly disposals = new Map<ProjectId, InFlightDisposal>();
   /**
    * Failed sync-host phases, keyed by {@link syncHostPhaseKey}. Same shape and
    * same windows as {@link failedScopes}: a phase that just failed is very
@@ -213,6 +239,13 @@ export class ProjectScopeRegistry {
       /** One machine service shared by all scopes hosted by this brain. */
       keepAwakeService?: BrainKeepAwakeService | null;
       onDisposeProject?: (projectId: ProjectId) => void;
+      /**
+       * Stops the devices a removed project's earlier teardown handed off:
+       * one that a removal joined while it ran, or a brain exit's, when the
+       * project is not loaded now (see {@link dispose}). Never throws.
+       * Injected so this module does not depend on device code.
+       */
+      onUnregisterAfterHandOff?: (projectRoot: string) => Promise<void>;
       /** Injectable clock for the failed-boot backoff. Tests only. */
       now?: () => number;
     } = {},
@@ -409,6 +442,14 @@ export class ProjectScopeRegistry {
 
     this.projectRegistry.assertProjectDataAvailable(record);
     const pending = (async () => {
+      // A teardown of this project's previous scope may still be waiting on
+      // its disposers (up to the drain's cap); its database closes last, so
+      // the new runtime opens the project only after the old one let go.
+      // A removal's device clean-up runs after the teardown; wait for it too,
+      // or the new runtime adopts emulators the clean-up is stopping.
+      const prior = this.disposals.get(projectId);
+      const priorDisposal = prior ? (prior.upgrade ?? prior.done) : undefined;
+      if (priorDisposal) await priorDisposal.catch(() => undefined);
       if (options.touch ?? true) {
         this.projectRegistry.touch(projectId);
       }
@@ -433,7 +474,7 @@ export class ProjectScopeRegistry {
       try {
         this.projectRegistry.recordDatabaseIdentity(projectId);
       } catch (error) {
-        runtime.dispose();
+        await runtime.dispose("close");
         throw error;
       }
       return new ProjectScope({
@@ -472,7 +513,23 @@ export class ProjectScopeRegistry {
     }
   }
 
-  async dispose(projectId: ProjectId): Promise<void> {
+  /**
+   * Drop a project's scope and wait for its runtime to tear down.
+   *
+   * `reason` defaults to `"close"` (a repair or a re-boot: the next scope for
+   * the project re-adopts what this one hands off). Pass `"unregister"` when
+   * the project is leaving this machine, and `"exit"` when the brain is.
+   */
+  /**
+   * `options.rootPath` names the project's folder for a removal whose caller
+   * already took it out of the registry; the device clean-up needs it.
+   */
+  async dispose(
+    projectId: ProjectId,
+    reason: RuntimeDisposeReason = "close",
+    options: { rootPath?: string | null } = {},
+  ): Promise<void> {
+    const rootPath = options.rootPath ?? this.projectRegistry.get(projectId)?.rootPath ?? null;
     // Disposing is how a repair asks for a clean slate, so it also drops the
     // failed-boot backoff: the next `get` must boot rather than replay the
     // failure the repair was meant to fix. The sync-host phases go with it, for
@@ -483,19 +540,101 @@ export class ProjectScopeRegistry {
     const cached = this.scopes.get(projectId);
     // Another caller already took the scope and waits for its boot: wait for
     // the same disposal, so "disposed" means its teardown ran.
-    if (!cached) return await this.disposals.get(projectId);
+    if (!cached) {
+      const inFlight = this.disposals.get(projectId);
+      if (!inFlight) {
+        // Not loaded: an earlier brain exit may have handed its devices off
+        // for a next runtime, which a removed project will never boot.
+        if (reason === "unregister" && rootPath) {
+          await this.options.onUnregisterAfterHandOff?.(rootPath).catch(() => undefined);
+        }
+        return;
+      }
+      if (reason === "unregister" && inFlight.reason !== "unregister") {
+        inFlight.rootPath ??= rootPath;
+        inFlight.upgrade = this.upgradeToUnregister(projectId, inFlight);
+      }
+      // A later removal waits for the clean-up too, not only the teardown.
+      return await (inFlight.upgrade ?? inFlight.done);
+    }
     this.scopes.delete(projectId);
     this.readyScopes.delete(projectId);
-    const disposal = this.disposeCached(projectId, cached).finally(() => {
-      if (this.disposals.get(projectId) === disposal) this.disposals.delete(projectId);
+    const entry: InFlightDisposal = {
+      reason,
+      scope: null,
+      runtimeReason: null,
+      runtimeDone: false,
+      done: Promise.resolve(),
+      upgrade: null,
+      rootPath,
+      devicesCleaned: false,
+    };
+    const disposal = this.disposeCached(projectId, cached, entry).finally(() => {
+      // A removal that joined keeps the entry until its clean-up is done too.
+      if (this.disposals.get(projectId) === entry && !entry.upgrade) this.disposals.delete(projectId);
     });
-    this.disposals.set(projectId, disposal);
+    entry.done = disposal;
+    this.disposals.set(projectId, entry);
     await disposal;
   }
 
-  private async disposeCached(projectId: ProjectId, cached: Promise<ProjectScope>): Promise<void> {
+  /**
+   * A project removed while a weaker teardown of it runs (a repair's
+   * `"close"`). Joining alone would drop the removal: that teardown hands the
+   * project's devices off for a next runtime that will never come, so they
+   * keep running. The releases not yet run get `"unregister"` through the
+   * runtime's drain; the device releases have usually run already (they are
+   * registered late, so they come off the stack early), so whatever they
+   * handed off is stopped afterwards.
+   */
+  private async upgradeToUnregister(projectId: ProjectId, inFlight: InFlightDisposal): Promise<void> {
+    try {
+      await this.finishAsUnregister(inFlight);
+    } finally {
+      if (this.disposals.get(projectId) === inFlight) this.disposals.delete(projectId);
+    }
+  }
+
+  private async finishAsUnregister(inFlight: InFlightDisposal): Promise<void> {
+    // A scope still booting reads this when its teardown starts.
+    inFlight.reason = "unregister";
+    if (inFlight.scope && !inFlight.runtimeDone) {
+      // Joins the running drain; the teardown stack keeps the stronger reason.
+      void inFlight.scope.dispose("unregister");
+    }
+    await inFlight.done;
+    // A scope torn down for "unregister" stopped its own devices; any other
+    // teardown, or a failed boot, may have left handed-off ones.
+    if (inFlight.runtimeReason !== "unregister") {
+      // Mac Desktop has the same race, but whether its apps were handed off is
+      // the native driver's decision, so only Android is cleaned up here.
+      await this.cleanUpHandedOffDevices(inFlight, inFlight.scope?.record.rootPath ?? inFlight.rootPath);
+    }
+  }
+
+  private async cleanUpHandedOffDevices(entry: InFlightDisposal, rootPath: string | null): Promise<void> {
+    if (entry.devicesCleaned || !rootPath) return;
+    entry.devicesCleaned = true;
+    await this.options.onUnregisterAfterHandOff?.(rootPath).catch(() => undefined);
+  }
+
+  private async disposeCached(
+    projectId: ProjectId,
+    cached: Promise<ProjectScope>,
+    entry: InFlightDisposal,
+  ): Promise<void> {
     const scope = await cached.catch(() => null);
-    scope?.dispose();
+    entry.scope = scope;
+    // Read after the boot: a removal that arrived meanwhile upgraded it.
+    entry.runtimeReason = scope ? entry.reason : null;
+    // Never throws: each teardown step reports its own failure.
+    await scope?.dispose(entry.reason);
+    entry.runtimeDone = true;
+    if (!scope && entry.reason === "unregister") {
+      // The boot failed, so no device service ran this time; an earlier brain
+      // exit may still have handed devices off, as for a project not loaded.
+      await this.cleanUpHandedOffDevices(entry, entry.rootPath);
+    }
     if (this.syncHostProjectId === projectId) {
       this.syncHostProjectId = null;
     }
@@ -505,9 +644,10 @@ export class ProjectScopeRegistry {
     }
   }
 
-  async disposeAll(): Promise<void> {
+  /** Every scope at once; `reason` as {@link dispose}, usually `"exit"`. */
+  async disposeAll(reason: RuntimeDisposeReason = "close"): Promise<void> {
     const projectIds = [...this.scopes.keys()];
-    await Promise.all(projectIds.map((projectId) => this.dispose(projectId)));
+    await Promise.all(projectIds.map((projectId) => this.dispose(projectId, reason)));
     // Projects that only ever failed to boot hold no scope, so the loop above
     // never reaches them.
     this.failedScopes.clear();
@@ -863,7 +1003,7 @@ export class ProjectScopeRegistry {
     // clears them.
     this.clearSyncHostPhaseBackoff(projectId);
     void pending.then(
-      (scope) => scope.dispose(),
+      (scope) => scope.dispose("close"),
       () => undefined,
     );
   }

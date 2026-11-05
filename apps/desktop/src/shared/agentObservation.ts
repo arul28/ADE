@@ -292,6 +292,24 @@ function(inputArg) {
     if (!rect) return false;
     return rect.right >= 0 && rect.bottom >= 0 && rect.left <= window.innerWidth && rect.top <= window.innerHeight;
   };
+  // Whether input sent at the element's center lands on it: the center is in
+  // the window, and the topmost element there is this one or inside it. An
+  // element can intersect the window and still miss this: only its edge shows,
+  // or a scrolling list clips it, or something covers it. A click at its
+  // center then hits whatever is there instead.
+  const centerReachable = (node, ctx) => {
+    const rect = rectFor(node, ctx);
+    if (!rect || rect.width <= 0 || rect.height <= 0) return false;
+    const cx = rect.x + rect.width / 2;
+    const cy = rect.y + rect.height / 2;
+    if (cx < 0 || cy < 0 || cx > window.innerWidth || cy > window.innerHeight) return false;
+    const local = node.getBoundingClientRect();
+    const root = typeof node.getRootNode === "function" ? node.getRootNode() : null;
+    const hitter = root && typeof root.elementFromPoint === "function" ? root : node.ownerDocument;
+    if (!hitter || typeof hitter.elementFromPoint !== "function") return true;
+    const hit = hitter.elementFromPoint(local.x + local.width / 2, local.y + local.height / 2);
+    return Boolean(hit) && (hit === node || node.contains(hit));
+  };
   const labelledByText = (node) => {
     const ids = normalizeText(node.getAttribute("aria-labelledby"));
     if (!ids) return "";
@@ -654,8 +672,16 @@ function(inputArg) {
   let target = rawTarget && rawTarget.node && rawTarget.node.nodeType === Node.ELEMENT_NODE ? rawTarget.node : null;
   const targetContext = rawTarget && rawTarget.ctx ? rawTarget.ctx : contexts[0];
   let scrolledIntoView = false;
-  if (target && typeof target.scrollIntoView === "function" && !intersectsViewport(target, targetContext)) {
-    target.scrollIntoView({ block: "center", inline: "center", behavior: "auto" });
+  // An action (a locate that focuses) also scrolls a target whose center it
+  // cannot reach; a wait or an assert only reads, so only a target fully out
+  // of the window moves for it, as before. "instant", because a smooth-scroll
+  // container would still be moving when the point is read below.
+  if (
+    target
+    && typeof target.scrollIntoView === "function"
+    && (!intersectsViewport(target, targetContext) || (shouldFocus && !centerReachable(target, targetContext)))
+  ) {
+    target.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
     scrolledIntoView = true;
   }
   if (target && !isDisplayed(target, targetContext)) target = null;
@@ -693,6 +719,9 @@ function(inputArg) {
     // reads these so neither counts as the action's effect.
     focusKeyAfterLocate: locate ? focusKeyNow() : undefined,
     scrolledIntoView,
+    // After any scroll: false when input at the target's center would still
+    // miss it, so a click there cannot be called a hit.
+    targetReachable: describedTarget ? centerReachable(target, targetContext) : undefined,
     error: locate && !describedTarget ? "No matching element was found." : null
   };
 }

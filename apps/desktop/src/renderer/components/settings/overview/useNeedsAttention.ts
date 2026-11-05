@@ -6,6 +6,7 @@ import type { UsageSnapshot } from "../../../../shared/types/usage";
 import type { AiProviderConnectionStatus } from "../../../../shared/types/config";
 import { isBackgroundItemBlocked } from "../../../../shared/types/core";
 import { THIS_MACHINE_NAME } from "../../../../shared/machineIdentity";
+import { RELAY_HELD_BY_OTHER_ADE_APP } from "../../../../shared/connectionDiagnosis";
 import { ACCOUNT_SCOPE_ALL } from "../../../../shared/accountSettingsScope";
 import { MCP_SERVERS_SETTING_KEY, normalizeMcpRegistry } from "../../../../shared/mcpRegistry";
 import { humanizeProvider } from "../../usage/usageProviderNames";
@@ -306,7 +307,7 @@ function syncItems(status: Awaited<ReturnType<typeof window.ade.sync.getStatus>>
     return [{
       id: "sync-relay",
       severity: "warning",
-      title: "Another ADE on this computer took over syncing",
+      title: RELAY_HELD_BY_OTHER_ADE_APP.title,
       detail: health.relay.relayControlSuppressedReason ?? "Phones and other machines may reach the other one instead.",
       where: "Sync",
       route,

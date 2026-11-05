@@ -622,6 +622,9 @@ class SupervisedPtyHost {
           });
         });
       }
+      // The terminal's own program did not end: the host serving it (up to
+      // MAX_PTYS_PER_HOST terminals) did. Say so where the person looks.
+      remote?.emitData(`\r\n[ADE] This terminal ended because its terminal host process stopped (${signal ? `signal ${signal}` : `exit code ${code ?? "unknown"}`}).\r\n`);
       remote?.markHostExited(exitCode);
     }
     childState.ptyIds.clear();

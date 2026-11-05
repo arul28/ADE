@@ -17,6 +17,7 @@ import type {
   AndroidStreamStatus,
   AndroidSystemImage,
 } from "../../../shared/types/androidEmulator";
+import { resolveAdeLayout } from "../../../shared/adeLayout";
 import type { Logger } from "../logging/logger";
 import { getErrorMessage } from "../shared/utils";
 import {
@@ -148,6 +149,92 @@ type LaneState = {
   streamSerial: string | null;
 };
 
+/** The started-emulators state file in a service's data folder, warning once per kind of file failure. */
+function openStartedEmulators(dataDir: string, logger: Logger | null): AdeStartedEmulators {
+  const warned = new Set<string>();
+  const file = path.join(dataDir, "started-emulators.json");
+  return new AdeStartedEmulators(file, (op, error) => {
+    const code = (error as NodeJS.ErrnoException)?.code ?? "parse";
+    if (warned.has(`${op}:${code}`)) return;
+    warned.add(`${op}:${code}`);
+    logger?.warn("android.started_emulators_file_failed", { op, file, error: getErrorMessage(error) });
+  });
+}
+
+/**
+ * Stops every running emulator the state file lists as ADE's, and nothing
+ * else; each stop forgets its emulator in the file. A failed stop is logged
+ * and the rest still run.
+ */
+async function stopAdeStartedEmulators(args: {
+  registry: AdeStartedEmulators;
+  adbPath: string;
+  discoveryDirs: readonly string[];
+  logger: Logger | null;
+  /** The launcher process this run kept for an emulator, if any. */
+  launcherPidFor?: (emulator: AndroidDiscoveredEmulator) => number | null;
+}): Promise<void> {
+  for (const emulator of readAndroidDiscoveryFiles(args.discoveryDirs)) {
+    if (!args.registry.owns(emulator)) continue;
+    await stopAndroidEmulator({
+      adbPath: args.adbPath,
+      serial: emulator.serial,
+      consolePort: emulator.consolePort,
+      avdName: emulator.avdName,
+      pid: emulator.pid,
+      launcherPid: args.launcherPidFor?.(emulator) ?? null,
+      registry: args.registry,
+      discoveryDirs: args.discoveryDirs,
+    }).catch((error: unknown) => {
+      args.logger?.warn("android.dispose_stop_failed", { serial: emulator.serial, error: getErrorMessage(error) });
+    });
+  }
+}
+
+/**
+ * Stops the emulators a project's service handed off, once the project is
+ * removed from this machine and no next service will re-adopt them.
+ *
+ * The brain calls it when a removal joined a teardown that had already handed
+ * the devices off (a repair's `"close"` drain). It reads the same state file
+ * the project's service uses (`<project>/.ade/android`), stops only the
+ * emulators listed there, and does nothing without an SDK or a state file.
+ * It never throws.
+ */
+export async function stopHandedOffAndroidEmulators(args: {
+  projectRoot: string;
+  logger?: Logger | null;
+  env?: AndroidEnv;
+  platform?: NodeJS.Platform;
+  home?: string;
+}): Promise<void> {
+  const logger = args.logger ?? null;
+  try {
+    const platform = args.platform ?? process.platform;
+    if (platform !== "darwin" && platform !== "win32" && platform !== "linux") return;
+    const dataDir = path.join(resolveAdeLayout(args.projectRoot).adeDir, "android");
+    if (!fs.existsSync(path.join(dataDir, "started-emulators.json"))) return;
+    const env = args.env ?? process.env;
+    const home = args.home ?? os.homedir();
+    const sdk = await readAndroidSdkStatus({ settingPath: null, env, platform, home });
+    let adbPath: string;
+    try {
+      adbPath = requireAndroidSdkTools(sdk, platform, { emulator: false }).adbPath;
+    } catch {
+      // No SDK or no adb: nothing ADE could have started is reachable here.
+      return;
+    }
+    await stopAdeStartedEmulators({
+      registry: openStartedEmulators(dataDir, logger),
+      adbPath,
+      discoveryDirs: androidDiscoveryDirs(platform, env, home),
+      logger,
+    });
+  } catch (error) {
+    logger?.warn("android.unregister_stop_failed", { projectRoot: args.projectRoot, error: getErrorMessage(error) });
+  }
+}
+
 export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): AndroidEmulatorServiceApi {
   const logger = deps.logger ?? null;
   const env = deps.env ?? process.env;
@@ -157,14 +244,7 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
   const bootTimeoutMs = Math.max(deps.bootTimeoutMs ?? ANDROID_BOOT_TIMEOUT_MS, 120_000);
   const now = deps.now ?? (() => new Date());
   /** One warning per kind of failure: the file is read on every call. */
-  const registryWarned = new Set<string>();
-  const registryFile = path.join(deps.dataDir, "started-emulators.json");
-  const registry = new AdeStartedEmulators(registryFile, (op, error) => {
-    const code = (error as NodeJS.ErrnoException)?.code ?? "parse";
-    if (registryWarned.has(`${op}:${code}`)) return;
-    registryWarned.add(`${op}:${code}`);
-    logger?.warn("android.started_emulators_file_failed", { op, file: registryFile, error: getErrorMessage(error) });
-  });
+  const registry = openStartedEmulators(deps.dataDir, logger);
   const streams = deps.streamHub ?? createAndroidStreamHub();
   const releaseStreams = streams.retain();
   const listeners = new Set<(event: AndroidEmulatorEvent) => void>();
@@ -228,7 +308,7 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
 
   /* ---------- lanes and work copies ---------- */
 
-  const { laneRoot, laneLiveness, assertWorkCopyLive, onWorkCopyReleased } = createAndroidLaneScope({
+  const { laneRoot, laneLiveness, assertWorkCopyLive, onWorkCopyReleased, registerWorkCopyDeviceCheck } = createAndroidLaneScope({
     projectRoot: deps.projectRoot,
     resolveLaneWorktreePath: deps.resolveLaneWorktreePath,
     laneDevices: deps.laneDevices,
@@ -669,6 +749,15 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
     });
   };
   const offCopyReleased = onWorkCopyReleased(releaseGoneWorkCopy);
+  // A work copy's emulator in use (starting, stopping, streaming, or running
+  // for its lane) keeps the copy through the idle and low-disk cleanups.
+  const offDeviceCheck = registerWorkCopyDeviceCheck((laneId) => {
+    if (disposed || !isRemoteWorkLaneId(laneId)) return false;
+    const state = lanes.get(laneId);
+    if (state?.transient || state?.launch || state?.streamSerial) return true;
+    const device = deps.laneDevices.get(laneId);
+    return Boolean(device && runningFor(device.avdName));
+  });
 
   /* ---------- start-up reconcile ---------- */
 
@@ -942,13 +1031,17 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
       if (hadDevice || hadState) emit({ type: "android.device.state", laneId: id, state: hadDevice ? "off" : "none" });
     },
 
-    async dispose() {
+    async dispose(options) {
       if (disposed) return;
       disposed = true;
       lifetime.abort();
       offCopyReleased();
+      offDeviceCheck();
       const sdk = await requireSdk({ emulator: false }).catch(() => null);
-      const handOff = deps.handOffOnDispose === true;
+      // A removed project has no next service to re-adopt its emulators, so
+      // even a hand-off service stops them; every other teardown keeps the
+      // configured default.
+      const handOff = deps.handOffOnDispose === true && options?.reason !== "unregister";
       await Promise.all([...lanes.values()].map(async (state) => {
         await stopLaneStream(state);
         if (!handOff && state.transient === "starting" && state.launch && sdk) await abortBoot(state, async () => sdk.adbPath);
@@ -963,13 +1056,14 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
       } else if (sdk) {
         // Every emulator ADE started for this project, this run or an earlier
         // one (the state file), and nothing else.
-        for (const emulator of discovered()) {
-          if (!registry.owns(emulator)) continue;
-          const launcherPid = [...lanes.values()].find((state) => state.launch?.consolePort === emulator.consolePort)?.launch?.launcherPid ?? null;
-          await stopEmulator(emulator, sdk.adbPath, launcherPid).catch((error: unknown) => {
-            logger?.warn("android.dispose_stop_failed", { serial: emulator.serial, error: getErrorMessage(error) });
-          });
-        }
+        await stopAdeStartedEmulators({
+          registry,
+          adbPath: sdk.adbPath,
+          discoveryDirs,
+          logger,
+          launcherPidFor: (emulator) =>
+            [...lanes.values()].find((state) => state.launch?.consolePort === emulator.consolePort)?.launch?.launcherPid ?? null,
+        });
       }
       lanes.clear();
       listeners.clear();

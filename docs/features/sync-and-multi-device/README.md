@@ -665,7 +665,12 @@ Runtime support files outside `services/sync/`:
   work copy a chat on another machine runs commands in here: a hidden git
   worktree per chat, its guarded sync, and its cleanups (see
   [cross-machine agents](cross-machine-agents.md)). `apps/ade-cli/src/cliRemoteWork.ts`
-  builds what a `--machine` call sends for it.
+  builds what a `--machine` call sends for it, and moves `ade files push|pull`
+  chunks; `remoteWork/remoteWorkFiles.ts` is the host side of those transfers.
+- `apps/desktop/src/shared/rpcLiveness.ts` — whether a connection that went
+  quiet still answers (`probeRpcLiveness`), shared by the desktop's
+  `remoteConnectionPool.ts` and the brains' machine link pool
+  (`apps/ade-cli/src/services/account/machineBridge.ts`).
 - `apps/desktop/src/main/services/state/crsqliteExtension.ts` and
   `apps/ade-cli/scripts/package-native-deps.mjs` — loadable cr-sqlite for every
   published runtime (`darwin-*`, `linux-*`, `win32-x64`). The packager copies the
@@ -1823,6 +1828,21 @@ Cross-machine Work chat handoff:
   `connection.hello.features` is the host's capability advertisement and
   `connection.endpoint` is the only place its address and port exist on this
   side — both are needed by `getAttachmentUploadRoute`.
+  When a link this app had open drops because ADE on the machine went away
+  (relay "host unavailable", the host's socket closed), the status carries
+  `recovery`: `reconnecting` when the installed app's 30 s maintenance owns
+  the redial, or when `RemoteConnectionService` runs its bounded redials (1 s,
+  then the automatic-reconnect backoff, for at most 10 min) for a dev app's
+  connected-in-this-run machine or a build without maintenance;
+  `waiting_for_user` when "Reconnect automatically" is off or the redials ran
+  out, and the row says the app waits for Reconnect. A manual Disconnect,
+  Cancel, Remove, a superseded close, or quitting ends the redials. A
+  superseded close (another ADE app on this computer took the shared device
+  link) is `held_elsewhere`, never redialed, with "Use it here" on the button.
+  Its words, and the relay-takeover words, come from `connectionDiagnosis.ts`
+  (`describeLinkHeldByOtherAdeApp`, `RELAY_HELD_BY_OTHER_ADE_APP`,
+  `describeHostWentAway`). The host's close does not say which app took the
+  link, so the text names the likely ones.
 - `apps/desktop/src/main/services/remoteRuntime/attachmentUploadRoute.ts`
   and `attachmentUploadClient.ts` — the desktop client half of streamed
   attachment upload. `resolveRemoteAttachmentUploadRoute` composes the route

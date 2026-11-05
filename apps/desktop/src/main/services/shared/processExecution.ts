@@ -246,6 +246,52 @@ export function resolveCliSpawnInvocation(
   };
 }
 
+/** Windows' limit on one process's command line, in UTF-16 characters (CreateProcessW). */
+const WINDOWS_COMMAND_LINE_MAX_CHARS = 32_767;
+
+/**
+ * The length of the command line Windows gets for `file` and `args`, built
+ * the way node-pty builds it (`argsToCommandLine`: MSVCRT quoting, so quotes
+ * and the backslashes before them are escaped). A string `args` is used as
+ * written (verbatim arguments).
+ */
+function windowsCommandLineLength(file: string, args: readonly string[] | string): number {
+  const quotedLength = (arg: string): number => {
+    const enclosed = arg.length > 1 && arg.startsWith('"') && arg.endsWith('"');
+    const quote = arg === "" || (/[ \t]/.test(arg) && !enclosed);
+    let length = quote ? 2 : 0;
+    let backslashes = 0;
+    for (const char of arg) {
+      if (char === "\\") {
+        backslashes += 1;
+      } else if (char === '"') {
+        length += backslashes * 2 + 2;
+        backslashes = 0;
+      } else {
+        length += backslashes + char.length;
+        backslashes = 0;
+      }
+    }
+    return length + (quote ? backslashes * 2 : backslashes);
+  };
+  if (typeof args === "string") return quotedLength(file) + (args.length ? 1 + args.length : 0);
+  return [file, ...args].reduce((total, arg, index) => total + (index > 0 ? 1 : 0) + quotedLength(arg), 0);
+}
+
+/**
+ * Why Windows cannot start this command line, or null when it fits. A bare
+ * program name leaves room for the full path the spawn resolves it to.
+ * Checked before spawning: an over-long line never errors there, it hangs.
+ */
+export function windowsCommandLineOverLimitMessage(file: string, args: readonly string[] | string): string | null {
+  const length = windowsCommandLineLength(file, args) + (path.win32.isAbsolute(file) ? 0 : 260);
+  if (length <= WINDOWS_COMMAND_LINE_MAX_CHARS) return null;
+  return `This command is about ${length.toLocaleString("en-US")} characters as Windows builds its command line, `
+    + `over Windows' limit of ${WINDOWS_COMMAND_LINE_MAX_CHARS.toLocaleString("en-US")}. A PowerShell command run once is sent `
+    + "as -EncodedCommand, which takes about 2.7 times the script's length. Put the script in a file in the work copy "
+    + "and run that file (for example `powershell -NoProfile -File script.ps1`), or pipe it to the command on stdin.";
+}
+
 export function windowsTaskkillInvocation(pid: number, options: { force?: boolean } = {}): SpawnInvocation {
   return {
     command: windowsTaskkillCommand(),

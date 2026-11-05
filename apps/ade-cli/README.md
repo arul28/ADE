@@ -284,7 +284,7 @@ projects.remove { projectId } -> { removed }
 projects.touch  { projectId } -> ProjectRecord
 ```
 
-`projects.list` stamps each returned record with an `icon: { dataUrl, sourcePath, mimeType }` resolved on the host (`resolveRemoteProjectIcon` in `src/services/projects/projectIconResolver.ts`) — a best-effort, electron-free icon lookup (`.ade/local.yaml` override, conventional icon/logo files, `index.html` `<link rel="icon">`, capped at 2 MB) so a desktop connected over the remote runtime can show the real project logo in its tab instead of a blank folder. A per-project resolution failure degrades to a null icon and never breaks the list.
+`projects.list` stamps each returned record with an `icon: { dataUrl, sourcePath, mimeType }` resolved on the host (`resolveRemoteProjectIcon` in `src/services/projects/projectIconResolver.ts`) — a best-effort, electron-free icon lookup (`.ade/local.yaml` override, conventional icon/logo files, `index.html` `<link rel="icon">`, capped at 2 MB) so a desktop connected over the remote runtime can show the real project logo in its tab instead of a blank folder. A per-project resolution failure degrades to a null icon and never breaks the list. A failed icon lookup is remembered as "no icon" for 60 s, so later lists answer at once instead of waiting out the 750 ms icon budget again.
 
 Adding a project creates `<rootPath>/.ade/` if needed but does not run any heavy onboarding. The first project-scoped JSON-RPC call lazily builds an `AdeRuntime` for that root via `ProjectScopeRegistry`.
 
@@ -638,6 +638,9 @@ ade prs cleanup-branch pr-id --delete-remote-branch         # delete a merged/cl
 ade prs land 'gh:owner/repo#42' --method squash             # id form for a PR ADE has no row for; quote it, '#' starts a shell comment
                                                             # works for land/close/reopen/cleanup-branch/checks/comments/review; threads and deployments still need an ADE row
 ade shell start --lane lane-id -- npm test
+ade shell start --machine windows --wait -- bash ./scripts/check.sh   # run once in this chat's work copy on another machine; put every step in one call
+ade files push --machine windows ./build/app.apk dist/app.apk      # copy one file into this chat's work copy there (chunked, sha256-checked, 256 MiB max)
+ade files pull --machine windows logs/run.log ./run.log            # copy one file back from that work copy
 ade terminal list --lane lane-id --text
 ade terminal resume --terminal session-id --text
 ade new chat --mode chat --lane lane-id --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --no-fast --permissions full-auto --prompt "fix failing tests"

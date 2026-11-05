@@ -3,6 +3,7 @@ import type {
   SyncHostStorageWait,
   SyncRouteHealth,
 } from "./types/sync";
+import type { RemoteRuntimeConnectionRecovery } from "./types/remoteRuntime";
 
 /**
  * Plain-language answers to "why can't my devices reach that computer?".
@@ -137,6 +138,60 @@ export function hostStorageWaitFromHealth(
 }
 
 // ---------------------------------------------------------------------------
+// A link that dropped, or that another ADE app on this computer holds
+// ---------------------------------------------------------------------------
+
+/**
+ * Every ADE app on one computer (Stable, Beta, a dev build) shares this
+ * computer's device pairing, and a machine keeps one link per device, so one
+ * app can take a link from another. The host's close does not say which app
+ * took it, so this names the likely ones instead of guessing.
+ */
+export const OTHER_ADE_APP_ON_THIS_COMPUTER =
+  "Another ADE app on this computer (for example ADE Beta or a dev build)";
+
+/**
+ * Another ADE app on this computer took this app's link to `machineName`.
+ * `holderAppName` ("ADE Beta") when it is known. The question pairs with the
+ * Connect button, which takes the link back.
+ */
+export function describeLinkHeldByOtherAdeApp(
+  machineName: string | null | undefined,
+  holderAppName?: string | null,
+): string {
+  const holder = holderAppName?.trim()
+    ? `${holderAppName.trim()} on this computer`
+    : OTHER_ADE_APP_ON_THIS_COMPUTER;
+  return `${holder} is using the link to ${machineLabel(machineName, "that machine")}. Use it here instead?`;
+}
+
+/** Another ADE app on this computer holds this computer's own relay connection. */
+export const RELAY_HELD_BY_OTHER_ADE_APP = {
+  title: "Another ADE app on this computer took over syncing",
+  detail: `${OTHER_ADE_APP_ON_THIS_COMPUTER} took over the relay connection.`,
+  fix: "Quit the other ADE app on this computer (a beta, alpha or dev build), then restart ADE.",
+} as const;
+
+/** What a link that dropped because its host went away is waiting on. */
+export type HostWentAwayRecovery = Exclude<RemoteRuntimeConnectionRecovery, "held_elsewhere">;
+
+/**
+ * A link this app had open dropped because ADE on that machine went away (it
+ * restarted, quit, or lost its network). `reconnecting` when this app brings
+ * it back on its own; `waiting_for_user` when it waits for the person to press
+ * Reconnect, which the text has to say, or the row reads as stuck.
+ */
+export function describeHostWentAway(
+  machineName: string | null | undefined,
+  recovery: HostWentAwayRecovery,
+): string {
+  const machine = machineLabel(machineName, "that machine");
+  return recovery === "reconnecting"
+    ? `Lost the link to ${machine}. ADE there may be restarting, and this app reconnects on its own when it is back.`
+    : `ADE on ${machine} restarted or went away. This app is waiting for you: press Reconnect when it is back.`;
+}
+
+// ---------------------------------------------------------------------------
 // Host self-check: can other devices reach this computer?
 // ---------------------------------------------------------------------------
 
@@ -229,8 +284,8 @@ function relayCheck(facts: HostReachabilityFacts): HostReachabilityCheck {
       id: "relay",
       label: "Relay",
       state: "failed",
-      detail: "Another ADE on this computer took over the relay connection.",
-      fix: "Quit the other ADE app on this computer (a beta, alpha or dev build), then restart ADE.",
+      detail: RELAY_HELD_BY_OTHER_ADE_APP.detail,
+      fix: RELAY_HELD_BY_OTHER_ADE_APP.fix,
     };
   }
   if (!relay.relayControlConnected) {

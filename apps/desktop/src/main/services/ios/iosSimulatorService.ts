@@ -1,4 +1,4 @@
-import { findRemoteWorkCopyForLane, isRemoteWorkLaneId } from "../remoteWork/remoteWorkCopyService";
+import { findRemoteWorkCopyForLane, isRemoteWorkLaneId, registerRemoteWorkDeviceCheck } from "../remoteWork/remoteWorkCopyService";
 import { parseForeignCallerSessionId } from "../../../shared/runtimeClientNames";
 import { externalChatContext } from "../chat/externalChats";
 import { randomUUID } from "node:crypto";
@@ -2582,6 +2582,26 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       computedAt: 0,
       inflight: null,
     },
+  });
+
+  // A work copy's simulator in use keeps the copy through the idle and
+  // low-disk cleanups. Only live activity counts: an app session, an open
+  // device session, a launch, a live view, or a recording. The hub itself does
+  // not: any hub call (one screenshot) creates it and only dispose clears it,
+  // so counting it would pin the copy for the brain's whole life. An event log
+  // is not counted on its own (the hub keeps it private); it normally runs
+  // beside the app or device session that started it.
+  const offWorkCopyDeviceCheck = registerRemoteWorkDeviceCheck(args.projectRoot, (laneId) => {
+    if (!isRemoteWorkLaneId(laneId)) return false;
+    const runtime = runtimes.get(laneKey(laneId));
+    if (!runtime) return false;
+    return Boolean(
+      runtime.activeSession
+      || runtime.activeLaunchId
+      || runtime.hub?.getDeviceSession()
+      || runtime.streamStatus.running
+      || recordings.active({ laneId: runtime.key }),
+    );
   });
 
   const runtimeForKey = (key: string): LaneRuntime => {
@@ -8353,6 +8373,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     isBuildPathActive: (candidatePath: string) => activeBuildDataPaths.has(path.resolve(candidatePath)),
     dispose: () => {
       disposed = true;
+      offWorkCopyDeviceCheck();
       deviceLeases.dispose();
       maintenance?.stop();
       runtimeManagerInstance?.dispose();

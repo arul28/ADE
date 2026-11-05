@@ -66,6 +66,10 @@ export function AndroidDeviceLoadingCard({
 /**
  * The foot of the picture: `● Live · 58 fps · lane checkout-flow · windows`.
  * The machine is named only when the emulator runs on another one.
+ *
+ * `reconnecting` is an open stream whose frames stopped arriving while the
+ * link looks at fault: the picture is the last frame, not the device now. Its
+ * dot is neutral, because nothing has failed yet.
  */
 export function AndroidLiveLine({
   state,
@@ -73,12 +77,12 @@ export function AndroidLiveLine({
   laneName,
   machineName,
 }: {
-  state: "live" | "lost";
+  state: "live" | "reconnecting" | "lost";
   fps: number | null;
   laneName: string | null;
   machineName: string | null;
 }) {
-  const label = state === "live" ? "Live" : "Video stopped";
+  const label = state === "live" ? "Live" : state === "reconnecting" ? "Reconnecting…" : "Video stopped";
   const parts = [
     label,
     state === "live" && fps != null && fps > 0 ? `${Math.round(fps)} fps` : null,
@@ -94,7 +98,7 @@ export function AndroidLiveLine({
         aria-hidden="true"
         className={cn(
           "h-1.5 w-1.5 shrink-0 rounded-full",
-          state === "live" ? "bg-success" : "bg-[var(--color-error)]",
+          state === "live" ? "bg-success" : state === "reconnecting" ? "bg-muted-fg/50" : "bg-[var(--color-error)]",
         )}
       />
       <span className="min-w-0 truncate">{parts.join(" · ")}</span>

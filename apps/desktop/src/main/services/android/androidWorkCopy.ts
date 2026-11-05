@@ -3,6 +3,7 @@ import {
   findRemoteWorkCopyForLane,
   isRemoteWorkLaneId,
   onRemoteWorkCopyReleased,
+  registerRemoteWorkDeviceCheck,
   remoteWorkLaneState,
 } from "../remoteWork/remoteWorkCopyService";
 import { readAdeAvdLaneId, sameAvdName } from "./androidAvds";
@@ -59,6 +60,13 @@ export function createAndroidLaneScope(input: {
     /** Calls `listener` with the lane id of each work copy deleted here. */
     onWorkCopyReleased: (listener: (laneId: string) => void): (() => void) =>
       projectRoot ? onRemoteWorkCopyReleased(projectRoot, listener) : () => undefined,
+
+    /**
+     * Tells the work-copy cleanups whether a copy's emulator is in use, so an
+     * idle or low-disk sweep keeps the copy (and its device) while it is.
+     */
+    registerWorkCopyDeviceCheck: (deviceInUse: (laneId: string) => boolean): (() => void) =>
+      projectRoot ? registerRemoteWorkDeviceCheck(projectRoot, deviceInUse) : () => undefined,
   };
 }
 
