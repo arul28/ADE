@@ -587,9 +587,9 @@ export function createMachineConnectionPool(options: MachineConnectionPoolOption
   const selectMachine = async (query: string): Promise<AdeAccountMachine> => {
     const trimmed = query.trim();
     if (!trimmed) throw new Error("machine must be a machine id or name.");
-    const pick = (machines: AdeAccountMachine[]): AdeAccountMachine | null => {
+    const pick = (machines: AdeAccountMachine[], exactOnly = false): AdeAccountMachine | null => {
       try {
-        return selectAccountMachine(machines, trimmed);
+        return selectAccountMachine(machines, trimmed, { exactOnly });
       } catch (error) {
         if (error instanceof AmbiguousAccountMachineError) {
           throw new Error(`${errorMessage(error)} Pass the machine id from listMachines.`);
@@ -597,7 +597,10 @@ export function createMachineConnectionPool(options: MachineConnectionPoolOption
         return null;
       }
     };
-    const cached = pick(await listAccountMachines());
+    // An exact name on the cached read, then on a fresh one, before a loose
+    // match: a machine renamed "Mac Studio" since the cache was read beats the
+    // cached "Arul’s Mac Studio" that "mac studio" only resembles.
+    const cached = pick(await listAccountMachines(), true);
     if (cached?.online) return cached;
     let machines: AdeAccountMachine[];
     try {
@@ -608,7 +611,9 @@ export function createMachineConnectionPool(options: MachineConnectionPoolOption
       // On a miss, the fresh read's own failure (signed out, directory down) is the answer.
       throw error;
     }
-    const fresh = pick(machines);
+    // An offline exact hit is rechecked exactly: a loose match on the fresh
+    // list could name another machine than the one the cache found.
+    const fresh = pick(machines, cached !== null);
     if (fresh) return fresh;
     if (cached) return cached;
     const known = machines.map((candidate) => `${machineName(candidate)} (${candidate.machineKey})`);

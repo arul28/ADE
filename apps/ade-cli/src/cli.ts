@@ -24,6 +24,7 @@ import {
   createMachineRemoteConnection,
   executePlanAcrossMachines,
   extractMachineTargeting,
+  FREE_TEXT_VALUE_FLAGS,
   flagNamesOutsideFreeText,
   formatMachineFanOut,
   formatMachinesRoster,
@@ -500,6 +501,7 @@ import {
 import {
   appleLeaseAnswer,
   appleLeaseNotAcquired,
+  formatAppleDeviceDelete,
   formatAppleInstall,
   formatAppleLease,
   formatAppleTests,
@@ -821,6 +823,7 @@ export type FormatterId =
   | "apple-posture"
   | "apple-render"
   | "apple-device-detach"
+  | "apple-device-delete"
   | "apple-device-promote"
   | "apple-tests"
   | "apple-lease"
@@ -6131,10 +6134,43 @@ function parseCliArgs(argv: string[]): ParsedCli {
       options.json = true;
       continue;
     }
+    assertNotFusedTargetFlag(token, argv[index - 1]);
     command.push(token);
   }
 
   return { options, command };
+}
+
+// The space form only: `--machine=Arul’s Mac Studio` is one valid word.
+const FUSED_TARGET_FLAG = /^--(machine|lane|project|project-root|workspace-root|device|session)\s+\S/;
+/**
+ * Switches `parseCliArgs` takes for itself: never a flag the next word is the
+ * value of. Wins over FREE_TEXT_VALUE_FLAGS: `--text` before a word that starts
+ * with `-` is the output switch, not text.
+ */
+const PARSED_SWITCHES: ReadonlySet<string> = new Set(["--text", "--json", "--compact", "--pretty", "--headless", "--no-socket"]);
+
+/**
+ * `"--machine X --lane Y"` or `"--device iPhone 17 Pro"` quoted as one word (a
+ * script building its flags in one variable) is no flag any command knows, so
+ * commands skipped it and ran on this machine, this lane and this device: the
+ * wrong target with no error, and for `device-delete` the lane's own device.
+ * Only the value of a flag known to take one (`--prompt "--lane …"`) is left
+ * alone; a sentence that starts with a target flag is refused too, since
+ * nothing tells it from flags.
+ */
+function assertNotFusedTargetFlag(token: string, previous: string | undefined): void {
+  if (!FUSED_TARGET_FLAG.test(token)) return;
+  const isValue = previous !== undefined
+    && !previous.includes("=")
+    && !PARSED_SWITCHES.has(previous)
+    && (FREE_TEXT_VALUE_FLAGS.has(previous) || VALUE_CARRIER_FLAGS.has(previous));
+  if (isValue) return;
+  throw new CliUsageError(
+    `"${token}" reached ade as one argument, so its flags would be ignored and the command would run here. `
+      + `Pass each flag and value as its own word: ${token.trim().split(/\s+/).join(" ")}`
+      + ` (in a script, use an array, not one quoted string). Text that starts with a flag goes in a text flag, such as --prompt.`,
+  );
 }
 
 /**
@@ -16079,13 +16115,16 @@ function buildIosSimulatorPlan(
     }
     // Same single-owner rule as `stop`: the chat id is what lets a chat delete
     // its own device and not another chat's.
-    return iosAction("Apple device delete", "deviceDelete", {
-      ...(laneId ? { laneId } : {}),
-      ...(udid ? { udid } : {}),
-      ...(claimArgs.chatSessionId ? { chatSessionId: claimArgs.chatSessionId } : {}),
-      ...(force ? { force: true } : {}),
-      ...readIgnoreOwnershipArg(args),
-    });
+    return {
+      ...iosAction("Apple device delete", "deviceDelete", {
+        ...(laneId ? { laneId } : {}),
+        ...(udid ? { udid } : {}),
+        ...(claimArgs.chatSessionId ? { chatSessionId: claimArgs.chatSessionId } : {}),
+        ...(force ? { force: true } : {}),
+        ...readIgnoreOwnershipArg(args),
+      }),
+      formatter: "apple-device-delete" as const,
+    };
   }
   if (sub === "device-promote") {
     // One of the lane's extras becomes the lane's device, in the lane's queue.
@@ -33816,7 +33855,10 @@ function formatApplePosture(value: unknown): string {
     ["held", appleDuoHeldOrientation(posture) ?? posture.orientation],
     ["table mode", posture.tableMode],
     ...appleDuoPictureRows(posture),
-  ]);
+    ["note", result.settled === false
+      ? "Still turning when the wait ran out, so the picture above may be the old one. Run `ade apple posture` in a moment."
+      : null],
+  ], ["note"]);
 }
 
 /**
@@ -36091,6 +36133,8 @@ function formatTextOutput(
       return formatAppleRender(value);
     case "apple-device-detach":
       return formatAppleDeviceDetach(value);
+    case "apple-device-delete":
+      return formatAppleDeviceDelete(value);
     case "apple-tests":
       return formatAppleTests(value);
     case "apple-lease":

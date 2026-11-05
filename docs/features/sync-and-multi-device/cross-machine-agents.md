@@ -28,7 +28,15 @@ ade usage limits --machine "Mac mini" --text      # that machine's accounts and 
 ade usage limits --all-machines --text            # every machine's accounts in one table
 ```
 
-`--machine` takes a machine key or an unambiguous display name. On the other
+`--machine` takes a machine key or an unambiguous display name. A name that
+matches no machine exactly is tried again with case, accents and apostrophes
+folded ("Arul's Mac Studio" finds "Arul’s Mac Studio"), then, for two words or
+more, as whole words inside a name ("mac studio"); only a unique match counts,
+and an exact name on a fresh directory read wins over a loose one on the
+cache (`selectAccountMachine`, `machineBridge.selectMachine`). A target flag
+quoted into one word with its value (`"--machine X --lane Y"`, built in one
+shell variable) is refused before anything runs, since it would otherwise be
+ignored and the command would run here. On the other
 machine the project is, in order: `--project <name|path|id>` (`--machine-project`
 for commands that already use `--project`, such as `ade apple`), else the
 checkout of this repository matched by normalized git origin. `--personal`

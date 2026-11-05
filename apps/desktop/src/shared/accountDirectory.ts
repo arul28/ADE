@@ -853,33 +853,77 @@ export class AmbiguousAccountMachineError extends Error {
 export function selectAccountMachine(
   machines: AdeAccountMachine[],
   query: string,
+  options: { exactOnly?: boolean } = {},
 ): AdeAccountMachine {
   const needle = query.trim().toLowerCase();
   if (!needle) throw new Error("Machine selection is required.");
-  const byStableId = machines.filter((machine) =>
+  // One machine, or none; more than one is the caller's to choose between.
+  const unique = (hits: AdeAccountMachine[], what: string): AdeAccountMachine | null => {
+    if (hits.length > 1) {
+      const choices = hits.map(
+        (machine) => `${accountMachineDisplayName(machine) ?? "Unnamed machine"} (${machine.machineKey})`,
+      );
+      throw new AmbiguousAccountMachineError(`Machine ${what} '${query}' is ambiguous. Choose one of: ${choices.join(", ")}.`);
+    }
+    return hits[0] ?? null;
+  };
+  const byStableId = unique(machines.filter((machine) =>
     machine.machineKey.toLowerCase() === needle
     || machine.deviceId?.toLowerCase() === needle
-  );
-  const stableMatch = byStableId[0];
-  if (stableMatch && byStableId.length === 1) return stableMatch;
-  if (byStableId.length > 1) {
-    const choices = byStableId.map(
-      (machine) => `${accountMachineDisplayName(machine) ?? "Unnamed machine"} (${machine.machineKey})`,
-    );
-    throw new AmbiguousAccountMachineError(`Machine identifier '${query}' is ambiguous. Choose one of: ${choices.join(", ")}.`);
-  }
-
-  const byName = machines.filter((machine) =>
+  ), "identifier");
+  if (byStableId) return byStableId;
+  const byName = unique(machines.filter((machine) =>
     machine.customName?.trim().toLowerCase() === needle
     || machine.name?.trim().toLowerCase() === needle
-  );
-  const nameMatch = byName[0];
-  if (nameMatch && byName.length === 1) return nameMatch;
-  if (byName.length > 1) {
-    const choices = byName.map(
-      (machine) => `${accountMachineDisplayName(machine) ?? "Unnamed machine"} (${machine.machineKey})`,
-    );
-    throw new AmbiguousAccountMachineError(`Machine name '${query}' is ambiguous. Choose one of: ${choices.join(", ")}.`);
+  ), "name");
+  if (byName) return byName;
+
+  // No exact name: try again with typing differences folded away (macOS names
+  // carry a curly apostrophe, "Arul’s Mac Studio", that nobody types), then as
+  // whole words inside a name, so a saved `--machine "mac studio"` still finds
+  // the machine after it was renamed "Arul’s Mac Studio". Only a unique hit
+  // counts, and words inside a name need two of them: one word ("mac") names
+  // too many machines to route a command on. `exactOnly` stops before this,
+  // for a caller that tries a fresh list before a loose match.
+  if (!options.exactOnly) {
+    const hit = unique(looseMachineNameMatches(machines, query, (machine) => [machine.customName, machine.name]), "name");
+    if (hit) return hit;
   }
   throw new Error(`Account machine not found: ${query}`);
+}
+
+/**
+ * The machines a name matches once typing differences are folded away: the
+ * whole name, else (two words or more) whole words inside it. The first pass
+ * with any hit answers; the caller decides what more than one hit means.
+ */
+export function looseMachineNameMatches<T>(
+  items: readonly T[],
+  query: string,
+  namesOf: (item: T) => ReadonlyArray<string | null | undefined>,
+): T[] {
+  const folded = foldMachineName(query);
+  if (!folded) return [];
+  const names = (item: T) => namesOf(item).map((name) => foldMachineName(name ?? "")).filter(Boolean);
+  const passes = [(name: string) => name === folded];
+  if (folded.includes(" ")) passes.push((name: string) => ` ${name} `.includes(` ${folded} `));
+  for (const matches of passes) {
+    const hits = items.filter((item) => names(item).some(matches));
+    if (hits.length) return hits;
+  }
+  return [];
+}
+
+/** A machine name as words: lowercase, no accents, any quote or punctuation run as one space. */
+function foldMachineName(value: string): string {
+  return value
+    // Before NFKD, which turns ´ into a space and a combining accent, and
+    // after it, which turns the fullwidth ＇ and ｀ into plain ones.
+    .replace(/['‘’`´ʼ]/g, "")
+    .normalize("NFKD")
+    .replace(/\p{M}+/gu, "")
+    .replace(/['`]/g, "")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .trim();
 }

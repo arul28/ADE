@@ -771,6 +771,12 @@ export type MacDesktopActionResult = {
    * was resolved against and the one taken after the action.
    */
   effect: ComputerUseActionEffect;
+  /**
+   * A bare Escape or Return on a lane dialog presses the dialog's own Cancel
+   * or default button (a key posted to the app never reaches some panels);
+   * this is that button's title. Absent when the key was posted.
+   */
+  pressedButton?: string;
 };
 
 /**

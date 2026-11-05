@@ -412,7 +412,8 @@ final class WindowControl {
                     axKnown: state != nil,
                     isAXWindow: isAXWindow,
                     sheetParent: sheetParent,
-                    ownerIsLaneApp: lanePids.contains(ownerPid)
+                    ownerIsLaneApp: lanePids.contains(ownerPid),
+                    isPanelSized: WindowLayerPolicy.isPanelSized(frame)
                 ) {
                 case .window: break
                 case .sheet(let parent): sheetOf = parent
@@ -686,6 +687,24 @@ final class WindowControl {
         return application?.activationPolicy == .regular
     }
 
+    /// Why `park` found no window. A window id the window server still lists
+    /// is a panel the driver cannot take (a floating palette or panel above
+    /// layer 0 that its app does not publish through Accessibility, such as
+    /// a frameless Electron window); "No window" for it read as a stale id.
+    private static func windowNotFoundMessage(_ windowId: CGWindowID) -> String {
+        let listed = (CGWindowListCopyWindowInfo([.optionIncludingWindow], windowId) as? [[String: Any]])?.first
+        // On screen only: a hidden app's palette is dropped for being hidden.
+        guard let listed, let layer = listed[kCGWindowLayer as String] as? Int,
+              layer > 0, layer < WindowLayerPolicy.menuBand,
+              (listed[kCGWindowIsOnscreen as String] as? Bool) == true else {
+            return "No window \(windowId) on this Mac. Window ids die with their process; list again."
+        }
+        let app = (listed[kCGWindowOwnerName as String] as? String) ?? "its app"
+        return "Window \(windowId) is a panel of \(app) at window layer \(layer) that \(app) does not publish through "
+            + "Accessibility, so ADE cannot claim or move it. Move it from the app itself, or open it while the "
+            + "app runs on the lane's screen."
+    }
+
     /// One window by id. Scoped to that id, so the lookup reads only its
     /// own app through Accessibility, and only when it is off screen.
     func window(withId windowId: CGWindowID) -> DesktopWindow? {
@@ -858,7 +877,7 @@ final class WindowControl {
         guard let window = window(withId: windowId) else {
             throw DriverError(
                 code: DriverErrorCode.windowNotFound,
-                message: "No window \(windowId) on this Mac. Window ids die with their process; list again."
+                message: Self.windowNotFoundMessage(windowId)
             )
         }
         // A sheet goes where its window goes, and cannot be moved alone: the

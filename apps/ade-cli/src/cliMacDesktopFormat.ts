@@ -728,6 +728,9 @@ export function formatMacDesktopAction(value: unknown): string {
       ["ok", result.ok ?? true],
       ["action", result.action],
       ["mode", result.mode],
+      // A bare Escape or Return on a dialog presses its button rather than
+      // posting the key: name the button, so the agent knows what it chose.
+      ["pressed", typeof result.pressedButton === "string" ? `${result.pressedButton} (the dialog's button for this key)` : null],
       ["waited", typeof result.waitedMs === "number" ? `${result.waitedMs}ms` : null],
     ]),
   ].join("\n");

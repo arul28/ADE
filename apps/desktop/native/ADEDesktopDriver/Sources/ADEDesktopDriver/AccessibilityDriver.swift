@@ -632,12 +632,102 @@ final class AccessibilityDriver {
     /// Presses a window's own close button. The way ⌘W reaches a lane window:
     /// a key posted to an app that is not active never runs its menu shortcut.
     func closeWindow(_ window: AXUIElement) -> Bool {
-        var value: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(window, kAXCloseButtonAttribute as CFString, &value) == .success,
-              let value, CFGetTypeID(value) == AXUIElementGetTypeID()
-        else { return false }
-        let button = value as! AXUIElement
+        guard let button = Self.elementAttribute(window, kAXCloseButtonAttribute) else { return false }
         return Self.perform(button, kAXPressAction)
+    }
+
+    /// An attribute whose value is another element (a window's close button,
+    /// an app's focused window), or nil when it is unset or not an element.
+    private static func elementAttribute(_ element: AXUIElement, _ attribute: String) -> AXUIElement? {
+        var value: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &value) == .success,
+              let value, CFGetTypeID(value) == AXUIElementGetTypeID()
+        else { return nil }
+        return (value as! AXUIElement)
+    }
+
+    /// The app's focused window, through Accessibility.
+    func focusedWindow(pid: pid_t) -> AXUIElement? {
+        Self.elementAttribute(Self.shortReadApp(pid), kAXFocusedWindowAttribute)
+    }
+
+    /// The app's element with a walk's short read timeout: the reads behind a
+    /// key press must not stack the 2-second global timeout on a slow app.
+    private static func shortReadApp(_ pid: pid_t) -> AXUIElement {
+        let app = AXUIElementCreateApplication(pid)
+        AXUIElementSetMessagingTimeout(app, AXTimeouts.walkRead)
+        return app
+    }
+
+    /// Escape and Return on a dialog, worked the way a person's key works
+    /// them: the dialog's Cancel or default button, pressed. A key posted to
+    /// the app never reaches a panel whose content another process draws
+    /// (the Open and Save panels on macOS 27), so Escape left the panel up and
+    /// the app modal behind it. A sheet on the window ("Replace?" on a Save
+    /// panel) takes the key first, as it does for a person: while it is up
+    /// the window under it answers nothing. Answers the button's title, or nil
+    /// when there is no such enabled button and the key is posted.
+    func pressDialogButton(in window: AXUIElement, pid: pid_t, key: String) -> String? {
+        let name = key.lowercased()
+        let cancel = name == "escape" || name == "esc"
+        guard cancel || name == "return" || name == "enter" else { return nil }
+        // Return in a multi-line text view is a new line, as it is for a person.
+        if !cancel, Self.focusedRole(pid: pid) == kAXTextAreaRole { return nil }
+        AXUIElementSetMessagingTimeout(window, AXTimeouts.walkRead)
+        let sheets = Self.children(of: window).filter {
+            WindowControl.stringAttribute($0, kAXRoleAttribute) == "AXSheet"
+        }
+        // The newest sheet is the one on top.
+        let dialog = sheets.last ?? window
+        guard let button = Self.dialogButton(in: dialog, cancel: cancel, isSheet: !sheets.isEmpty) else { return nil }
+        var enabled: CFTypeRef?
+        if AXUIElementCopyAttributeValue(button, kAXEnabledAttribute as CFString, &enabled) == .success,
+           (enabled as? NSNumber)?.boolValue == false {
+            return nil
+        }
+        guard Self.perform(button, kAXPressAction) else { return nil }
+        return WindowControl.stringAttribute(button, kAXTitleAttribute) ?? (cancel ? "Cancel" : "OK")
+    }
+
+    /// The role of the app's focused element, through Accessibility.
+    private static func focusedRole(pid: pid_t) -> String? {
+        elementAttribute(shortReadApp(pid), kAXFocusedUIElementAttribute)
+            .flatMap { WindowControl.stringAttribute($0, kAXRoleAttribute) }
+    }
+
+    /// The dialog's button for Escape (cancel) or Return (default): its own
+    /// attribute (an alert, a sheet), then the Open and Save panels' fixed
+    /// identifiers, `CancelButton` and `OKButton`, which hold in every
+    /// language. An alert sheet's Cancel has neither, so on a sheet Escape
+    /// also takes a button titled Cancel.
+    private static func dialogButton(in dialog: AXUIElement, cancel: Bool, isSheet: Bool) -> AXUIElement? {
+        if let button = elementAttribute(dialog, cancel ? kAXCancelButtonAttribute : kAXDefaultButtonAttribute) {
+            return button
+        }
+        let identifier = cancel ? "CancelButton" : "OKButton"
+        // The panels keep their buttons near the top of the tree, before
+        // the file browser's hundreds of rows: a shallow walk, capped in
+        // elements and in time, with short reads.
+        var reader = AXWalkReader(deadline: Date().addingTimeInterval(AXTimeouts.dialogButtonSearch))
+        var queue: [(AXUIElement, Int)] = [(dialog, 0)]
+        var visited = 0
+        var titled: AXUIElement?
+        while !queue.isEmpty, visited < 200, !reader.timedOut, !reader.outOfTime {
+            let (element, depth) = queue.removeFirst()
+            visited += 1
+            AXUIElementSetMessagingTimeout(element, AXTimeouts.walkRead)
+            if reader.string(element, kAXRoleAttribute) == kAXButtonRole {
+                if reader.string(element, "AXIdentifier") == identifier { return element }
+                if cancel, isSheet, titled == nil,
+                   reader.string(element, kAXTitleAttribute)?.lowercased() == "cancel" {
+                    titled = element
+                }
+            }
+            guard depth < 3 else { continue }
+            let children = reader.copy(element, kAXChildrenAttribute) as? [AXUIElement] ?? []
+            queue.append(contentsOf: children.map { ($0, depth + 1) })
+        }
+        return titled
     }
 
     /// One key, by name, to one process.
@@ -673,12 +763,7 @@ final class AccessibilityDriver {
     /// window stands in for the element, and the wheel fallback below is the
     /// same process-targeted post the element path ends in.
     func scroll(pid: pid_t, direction: String, amount: Int) throws {
-        let app = AXUIElementCreateApplication(pid)
-        var focused: CFTypeRef?
-        let root: AXUIElement =
-            AXUIElementCopyAttributeValue(app, kAXFocusedWindowAttribute as CFString, &focused) == .success
-            ? unsafeBitCast(focused, to: AXUIElement.self)
-            : app
+        let root = focusedWindow(pid: pid) ?? AXUIElementCreateApplication(pid)
         try scrollNearest(from: root, pid: pid, direction: direction, amount: amount)
     }
 

@@ -49,16 +49,21 @@ final class WindowListScopeTests: XCTestCase {
     /// A "Replace?" sheet on a Save panel is no Accessibility window of its
     /// own, and was dropped with every way to see or answer it.
     func testPanelAdmission() {
-        let cases: [(layer: Int, axKnown: Bool, isAXWindow: Bool, sheetParent: UInt32?, laneApp: Bool, expected: WindowLayerPolicy.PanelAdmission)] = [
-            (8, true, true, nil, true, .window),
-            (8, true, false, 77, true, .sheet(parent: 77)),
-            (3, true, false, 77, false, .sheet(parent: 77)),
+        let cases: [(layer: Int, axKnown: Bool, isAXWindow: Bool, sheetParent: UInt32?, laneApp: Bool, panelSized: Bool, expected: WindowLayerPolicy.PanelAdmission)] = [
+            (8, true, true, nil, true, false, .window),
+            (8, true, false, 77, true, false, .sheet(parent: 77)),
+            (3, true, false, 77, false, false, .sheet(parent: 77)),
             // Not a window and not a sheet: a tooltip, popover chrome.
-            (8, true, false, nil, true, .none),
-            (3, false, false, nil, true, .none),
+            (8, true, false, nil, true, false, .none),
+            (3, false, false, nil, true, false, .none),
             // An unreadable lane app's modal panel still shows it is blocked.
-            (8, false, false, nil, true, .window),
-            (8, false, false, nil, false, .none),
+            (8, false, false, nil, true, false, .window),
+            (8, false, false, nil, false, false, .none),
+            // A readable app's layer-8 panel its tree leaves out (FL Studio's
+            // Save panel): listed when it is panel-sized and the lane's own.
+            (8, true, false, nil, true, true, .window),
+            (8, true, false, nil, false, true, .none),
+            (3, true, false, nil, true, true, .none),
         ]
         for row in cases {
             XCTAssertEqual(
@@ -67,7 +72,8 @@ final class WindowListScopeTests: XCTestCase {
                     axKnown: row.axKnown,
                     isAXWindow: row.isAXWindow,
                     sheetParent: row.sheetParent,
-                    ownerIsLaneApp: row.laneApp
+                    ownerIsLaneApp: row.laneApp,
+                    isPanelSized: row.panelSized
                 ),
                 row.expected
             )

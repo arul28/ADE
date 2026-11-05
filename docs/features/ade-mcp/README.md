@@ -144,7 +144,9 @@ with the per-machine URL keep working: that URL is still served, and it is the
 forwarding target.
 
 **Another computer.** Every tool takes an optional `machine` (a name or key
-from `machines_list`). With none, or this computer, the call runs here; on the
+from `machines_list`; a name matches as the CLI's `--machine` does, with case,
+accents and apostrophes folded and, for two words or more, whole words inside
+a name, and only a unique match counts). With none, or this computer, the call runs here; on the
 account URL the result still starts with `[machine: <name>]`, because any
 computer may have answered. Another computer gets the same `tools/call`
 (with `machine` removed) at `https://<relay>/m/<its endpointKey>/mcp`, with the

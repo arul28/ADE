@@ -909,7 +909,8 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
     $ ade --socket apple device-create --extra --device-type "iPad Air 11-inch (M4)" --text
 
   --extra makes a SECOND device beside the lane's own (an iPad next to an
-  iPhone Duo; at most 2, APPLE_EXTRA_DEVICE_LIMIT). It comes up booted, and
+  iPhone Duo; at most 2, APPLE_EXTRA_DEVICE_LIMIT, or ADE_APPLE_LANE_EXTRA_DEVICES
+  in ADE's environment, up to 8). It comes up booted, and
   any command reaches it with --device <udid|name>; without --device every
   command still drives the lane's own device. It is deleted with the lane,
   or now with "device-delete --device <udid>".

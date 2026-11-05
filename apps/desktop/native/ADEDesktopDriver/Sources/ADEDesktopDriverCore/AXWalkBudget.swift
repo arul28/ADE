@@ -46,6 +46,11 @@ public enum AXTimeouts {
     /// timeout so that one stuck call can never by itself make `ping` late.
     public static let global: Float = 2.0
 
+    /// The search for a dialog's Cancel or default button behind a bare
+    /// Escape or Return: a few dozen reads near the top of one dialog, so a
+    /// slow app costs the key press at most this long before the key is posted.
+    public static let dialogButtonSearch: TimeInterval = 1.5
+
     /// The whole element walk of one `observe`.
     ///
     /// The driver's watchdog answers at 15 seconds and the service gives up at

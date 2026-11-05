@@ -1009,6 +1009,7 @@ import type {
   AppleScrollResult,
   AppleDeviceCreateArgs,
   AppleDeviceDeleteArgs,
+  AppleDeviceDeleteResult,
   AppleDeviceDetachArgs,
   AppleDeviceCleanupArgs,
   AppleDeviceCleanupResult,
@@ -9756,7 +9757,7 @@ const adeBridge = {
     deviceDelete: (
       args: AppleDeviceDeleteArgs = {},
       pin?: OpenProjectBinding | null,
-    ): Promise<void> =>
+    ): Promise<AppleDeviceDeleteResult> =>
       callIosSimulatorMutation(pin, "deviceDelete", args, IPC.iosSimulatorDeviceDelete),
 
     /** The lane gives up its device; the simulator stays installed. */

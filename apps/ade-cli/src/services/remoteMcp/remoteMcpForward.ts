@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { getErrorMessage } from "../../../../desktop/src/main/services/shared/utils";
+import { looseMachineNameMatches } from "../../../../desktop/src/shared/accountDirectory";
 import type { RemoteMcpMachine, RemoteMcpNotServingReason } from "../../../../desktop/src/shared/types/remoteMcp";
 import {
   isRemoteMcpEnabledForAccount,
@@ -291,7 +292,9 @@ export function createRemoteMcpMachineRouter(deps: {
     if (wanted === self.key || lower === self.name.toLowerCase()) return { kind: "here", machine: self };
     const machines = await roster();
     const byKey = machines.filter((machine) => machine.machineKey === lower);
-    const matches = byKey.length ? byKey : machines.filter((machine) => machine.name.toLowerCase() === lower);
+    const byName = byKey.length ? byKey : machines.filter((machine) => machine.name.toLowerCase() === lower);
+    // As the CLI's `--machine` does: "aruls mac studio" finds "Arul’s Mac Studio".
+    const matches = byName.length ? byName : looseMachineNameMatches(machines, wanted, (machine) => [machine.name]);
     const names = machines.map((machine) => machine.name).join(", ") || "none";
     if (matches.length > 1) {
       return { kind: "error", message: `More than one computer is called "${wanted}". Pass its key from machines_list instead.` };

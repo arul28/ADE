@@ -285,6 +285,21 @@ describe("shared account directory trust boundary", () => {
     ];
     expect(() => selectAccountMachine(collidingStableIds, "shared"))
       .toThrow(/identifier.*ambiguous.*shared.*mk-b/i);
+
+    // A typed name finds the macOS one, curly apostrophe and all; whole words
+    // inside a name need two of them, since one word routes too loosely.
+    const named = [
+      machine({ machineKey: "mk-studio", deviceId: "dev-s", name: "Arul’s Mac Studio" }),
+      machine({ machineKey: "mk-book", deviceId: "dev-m", name: "Arul’s MacBook Pro" }),
+    ];
+    for (const typed of ["Arul's Mac Studio", "aruls mac studio", "ARUL´S MAC STUDIO", "mac studio"]) {
+      expect(selectAccountMachine(named, typed).machineKey).toBe("mk-studio");
+    }
+    expect(() => selectAccountMachine(named, "mac")).toThrow(/not found/i);
+    expect(() => selectAccountMachine(named, "mac studio", { exactOnly: true })).toThrow(/not found/i);
+    expect(() => selectAccountMachine(named, "arul’s")).toThrow(/not found/i);
+    const twins = [...named, machine({ machineKey: "mk-studio-2", deviceId: "dev-t", name: "Mac Studio (2)" })];
+    expect(() => selectAccountMachine(twins, "mac studio")).toThrow(/ambiguous.*mk-studio.*mk-studio-2/i);
   });
 
   it("never mixes a partial account pairing response with stored credentials", () => {

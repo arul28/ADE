@@ -553,6 +553,7 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
     // index is gone from the new tree, or names a different element in it.
     const resolvedAgainst = observations.latest(laneId);
     let resolvedIndex: number | null = null;
+    let pressedButton: string | null = null;
     // The path the driver actually took. An accessibility click on an element
     // with no press action, or a right or double click, is delivered as
     // background input at the element's centre and says so.
@@ -578,6 +579,7 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
         ...(args.timeoutMs ? { timeoutMs: args.timeoutMs } : {}),
       });
       resolvedIndex = typeof reply.resolvedIndex === "number" ? reply.resolvedIndex : null;
+      pressedButton = typeof reply.pressedButton === "string" && reply.pressedButton ? reply.pressedButton : null;
       if (isMacDesktopInputMode(reply.deliveredMode)) deliveredMode = reply.deliveredMode;
     } catch (error) {
       failure = args.timeoutError && isDriverRequestTimeout(error)
@@ -677,6 +679,7 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
       resolved,
       observation,
       effect: next ? { ...compared, next } : compared,
+      ...(pressedButton ? { pressedButton } : {}),
       trace: {
         id: `${observation.id}:${args.action}`,
         sessionId: args.chatSessionId?.trim() || null,

@@ -159,7 +159,7 @@ import { commandExistsCached } from "../ai/utils";
 import type { Logger } from "../logging/logger";
 import { pngDimensions } from "../shared/imageDimensions";
 import { isPathInside } from "../shared/pathCompare";
-import { isPathEscapeError, isRecord, resolvePathWithinRoot, signalChildProcessTree } from "../shared/utils";
+import { getErrorMessage, isPathEscapeError, isRecord, resolvePathWithinRoot, signalChildProcessTree } from "../shared/utils";
 import { createIosDeviceHub, type IosDeviceHub } from "./iosDeviceHub";
 import { buildElementRef, describeElement } from "./iosSemanticActions";
 import { AppleDeviceExistsError, AppleDeviceNotLaneOwnedError, AppleLaneDeviceReleasedError } from "./appleDeviceErrors";
@@ -212,7 +212,7 @@ import { appleDeviceTypeSupportsDuo, appleOrientationFamily, isAppleDeviceOrient
 import { createSimulatorPower } from "./simulatorPower";
 import type { AppleRemoteViewerProbe } from "./appleStreamRelayForService";
 import { SIMCTL_MISSING } from "../../../shared/xcodeToolchain";
-import { AdeExpectedError } from "../../../shared/expectedError";
+import { AdeExpectedError, carryExpected } from "../../../shared/expectedError";
 
 const execFile = promisify(execFileCallback);
 
@@ -7100,7 +7100,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     // so the next `--device` command finds it ready.
     if (device.extra) {
       args.captureAnalytics?.("extra_device_created");
-      await bootExtraDevice(device);
+      await bootExtraDevice(device, { created: true });
     }
     return device;
   };
@@ -7113,18 +7113,39 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
    * off has to learn why, or it blames its own last command. A boot is only
    * reported once `simctl` lists the device as Booted, after `bootstatus`.
    */
-  const bootExtraDevice = async (device: AppleLaneDevice): Promise<{ bootedNow: boolean; notice: string | null }> => {
+  const bootExtraDevice = async (
+    device: AppleLaneDevice,
+    context: { created?: boolean } = {},
+  ): Promise<{ bootedNow: boolean; notice: string | null }> => {
     const listed = (await listDevices().catch(() => [])).find((entry) => entry.udid === device.udid);
     let bootedNow = false;
     let notice: string | null = null;
     if (listed?.state !== "Booted") {
       const poweredOff = laneMaintenance().readPowerOff(device.udid);
-      bootedNow = await power.bootDevice({ udid: device.udid, name: device.name, state: listed?.state ?? "Shutdown" });
+      // A device `device-create` just made holds an extra slot whether or not
+      // it boots, so its failure names it: otherwise the agent tries again,
+      // meets the limit, and cannot tell which device to delete.
+      const failed = context.created
+        ? `Made the extra device ${device.name} (${device.udid}), but it did not boot`
+        : `${device.name} did not boot`;
+      const keepsSlot = context.created ? " It still counts toward the lane's extras." : "";
+      bootedNow = await power.bootDevice({ udid: device.udid, name: device.name, state: listed?.state ?? "Shutdown" })
+        .catch((error: unknown) => {
+          if (!context.created) throw error;
+          const reason = getErrorMessage(error).trim().replace(/[.\s]+$/, "") || "no reason given";
+          // Keeps the boot failure's own mark: a simctl that broke is still reported.
+          throw carryExpected(error, new Error(
+            `${failed}: ${reason}.${keepsSlot} Any command with --device ${device.udid} boots it again; `
+              + `device-delete --device ${device.udid} removes it.`,
+            { cause: error },
+          ));
+        });
       invalidateDeviceList();
       const after = (await listDevices().catch(() => [])).find((entry) => entry.udid === device.udid);
       if (after && after.state !== "Booted") {
         throw new AdeExpectedError(
-          `${device.name} did not boot: simctl lists it as ${after.state}. Try again in a few seconds, or delete it with device-delete --device ${device.udid}.`,
+          `${failed}: simctl lists it as ${after.state}. Try again in a few seconds, `
+            + `or delete it with device-delete --device ${device.udid}.${keepsSlot}`,
           "user",
         );
       }
@@ -7931,7 +7952,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
           if (AGENT_EXTRA_DEVICE_REFUSED_ACTIONS.has(action)) {
             throw new AdeExpectedError(
               `${APPLE_DEVICE_IS_EXTRA_CODE}: ios_simulator.${action} runs on the lane's own device (its live view, claim, `
-              + `recordings and builds), not on the extra device ${extra.name}. On an extra, use screenshot, snapshot, tap, `
+              + `recordings, app log and builds), not on the extra device ${extra.name}. On an extra, use screenshot, snapshot, tap, `
               + "rotate, relaunch and the other per-device commands with --device; delete it with device-delete --device <udid>. "
               + (action === "launch"
                 ? `To build and install the lane's app on ${extra.name} (and start it), run: ade apple install --device ${extra.udid} --launch. `
