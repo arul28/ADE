@@ -120,9 +120,13 @@ def wait_for_ready_machine(limit=900):
     started = time.time()
     while time.time() - started < limit:
         state = json.loads(ade('agent37', 'ready', '--json'))
-        projects = state.get('projects') or []
-        if any(project.get('failed') for project in projects):
-            raise SystemExit(f'a ready-machine prepare failed: {[p.get("failure") for p in projects if p.get("failed")]}')
+        # Only this checkout's pool counts (--project names it), however many projects are kept ready.
+        projects = [project for project in state.get('projects') or [] if project.get('projectName') == args.project]
+        if not projects:
+            raise SystemExit(f'no project named {args.project!r} is kept ready')
+        # A failed prepare usually deletes its box and leaves only `failure`.
+        if any(project.get('failed') or project.get('failure') for project in projects):
+            raise SystemExit(f'a ready-machine prepare failed: {[p.get("failure") for p in projects]}')
         if any((project.get('ready') or 0) >= 1 for project in projects):
             print(f'  pool ready after {time.time() - started:.0f}s', flush=True)
             return
