@@ -243,6 +243,8 @@ import {
 import { createAppControlRecorderBridgeClient } from "./services/builtInBrowser/appControlRecorderBridgeClient";
 import { createDemoEngineBridgeClient } from "./services/builtInBrowser/demoEngineBridgeClient";
 import { createScenePreviewBridgeClient, type ScenePreviewer } from "./services/builtInBrowser/scenePreviewBridgeClient";
+import { createAgent37DesktopBridgeClient } from "./services/builtInBrowser/agent37DesktopBridgeClient";
+import type { Agent37DesktopBridge } from "../../desktop/src/main/services/agent37/agent37AgentActions";
 import { createDemoEngineSet } from "../../desktop/src/main/services/demoVideo/demoEngines";
 import type { BuiltInBrowserDesktopBridgeClient } from "./services/builtInBrowser/desktopBridgeMethods";
 import {
@@ -524,6 +526,8 @@ export type AdeRuntime = {
    * desktop bridge. Null while no desktop has attached to this brain.
    */
   getScenePreviewer?: () => ScenePreviewer | null;
+  /** The attached desktop's Agent 37 machine making (create, copy, move), or null with no desktop. */
+  getAgent37Desktop?: () => Agent37DesktopBridge | null;
   macDesktopService?: MacDesktopService | null;
   /**
    * One Android emulator per lane (`android_emulator` domain, `ade android`).
@@ -2107,7 +2111,9 @@ export async function createAdeRuntime(args: {
       demoEngine: ReturnType<typeof createDemoEngineBridgeClient> | null;
       /** The desktop's scene previewer, over the same bridge. */
       scenePreview: ScenePreviewer | null;
-    } = { current: null, demoEngine: null, scenePreview: null };
+      /** The desktop's Agent 37 machine making, over the same bridge. */
+      agent37: (Agent37DesktopBridge & { dispose(): void }) | null;
+    } = { current: null, demoEngine: null, scenePreview: null, agent37: null };
     const appControlService = chatOnlyRuntime
       ? null
       : createAppControlService({
@@ -2173,6 +2179,9 @@ export async function createAdeRuntime(args: {
       const scenePreview = desktopBridgeHolder.scenePreview;
       desktopBridgeHolder.scenePreview = null;
       scenePreview?.dispose();
+      const agent37 = desktopBridgeHolder.agent37;
+      desktopBridgeHolder.agent37 = null;
+      agent37?.dispose();
     });
     teardown.push(() => appControlService?.dispose());
     if (appControlService) {
@@ -2416,6 +2425,9 @@ export async function createAdeRuntime(args: {
         logger,
       });
       desktopBridgeHolder.scenePreview = createScenePreviewBridgeClient({
+        socketPath: builtInBrowserBridgeSocketPath,
+      });
+      desktopBridgeHolder.agent37 = createAgent37DesktopBridgeClient({
         socketPath: builtInBrowserBridgeSocketPath,
       });
       void refreshDesktopBridgeProbe();
@@ -4043,6 +4055,7 @@ export async function createAdeRuntime(args: {
       iosSimulatorService,
       appControlService,
       getScenePreviewer: () => (desktopBridgeAttached() ? desktopBridgeHolder.scenePreview : null),
+      getAgent37Desktop: () => (desktopBridgeAttached() ? desktopBridgeHolder.agent37 : null),
       macDesktopService,
       androidEmulatorService,
       builtInBrowserService: builtInBrowserBridge,

@@ -204,6 +204,76 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       input: "object { originUrl: string }",
       example: "ade chat create --machine agent37:ready --prompt \"…\"",
     },
+    list: {
+      description: "List the account's Agent 37 machines: name, Agent 37 id, ADE machine key, state (running, asleep…), type and size, what an hour costs awake and asleep, spend, what sleeping saved, how it sleeps, plus the wallet and this month against the cap. Reads Agent 37 with the account's key; never returns the key.",
+      input: "no input",
+      example: "ade agent37 list --text",
+    },
+    spending: {
+      description: "This month's Agent 37 spend against the account's monthly cap, the wallet, and what sleeping saved. Returns {monthlyCapUsd, monthSpentUsd, capReached, capNear, balanceUsd, savedUsd}.",
+      input: "no input",
+      example: "ade agent37 spending --text",
+    },
+    create: {
+      description: "Make an Agent 37 machine from ADE's template, signed in to the account (through the ADE desktop app on this computer). Costs money: asks the person in your chat first (a full-auto chat is answered by ADE within the monthly cap). Refused at the cap. Returns the machine {instanceId, machineKey, name, joined}.",
+      input: "object { kind?: \"box\" | \"vm\", shape?: \"2x4\" | \"4x8\" | \"4x16\" | \"4x32\", name?: string }",
+      example: "ade agent37 create --kind vm --shape 4x8 --name \"android vm\"",
+    },
+    sleep: {
+      description: "Put an Agent 37 machine to sleep now: memory kept, only its disk bills. Free.",
+      input: "object { machine: string (name, Agent 37 id or machine key) }",
+      example: "ade agent37 sleep \"android vm\"",
+    },
+    wake: {
+      description: "Wake an asleep Agent 37 machine (about a second; ADE on it is online a few seconds later). Bounded by the monthly cap. A --machine call to an asleep machine wakes it on its own.",
+      input: "object { machine: string }",
+      example: "ade agent37 wake \"android vm\"",
+    },
+    resize: {
+      description: "Change an Agent 37 machine's size (same type). It restarts: files stay, running work stops. Asks the person first.",
+      input: "object { machine: string, shape: \"2x4\" | \"4x8\" | \"4x16\" | \"4x32\" }",
+      example: "ade agent37 resize \"android vm\" --shape 4x16",
+    },
+    copy: {
+      description: "Copy an Agent 37 machine into a new one with the same files (repos, lanes, installed dependencies), signed in as a new machine: a fresh machine for a lane, from a warm one. A big disk takes minutes. Asks the person first.",
+      input: "object { machine: string, name?: string, shape?: string }",
+      example: "ade agent37 copy \"supabase-stack 9d77\" --name \"lane copy\"",
+    },
+    move: {
+      description: "Move an Agent 37 machine to the other type (box to VM or back), keeping every repo, lane and chat: makes the new machine, copies the home folder, deletes the old one. Docker data and running processes don't move. Asks the person first. To move one chat and its lane to another computer, use ade chat move.",
+      input: "object { machine: string, to: \"box\" | \"vm\", shape?: string }",
+      example: "ade agent37 move \"my box\" --to vm",
+    },
+    delete: {
+      description: "Delete an Agent 37 machine and remove it from the account. Its files are gone for good. Asks the person first; a full-auto chat may delete only a machine it made itself.",
+      input: "object { machine: string }",
+      example: "ade agent37 delete \"lane copy\"",
+    },
+    set_sleep: {
+      description: "How long an Agent 37 machine waits with nothing running before it sleeps (5 to 1440 minutes), or never. Never asks first: it bills around the clock.",
+      input: "object { machine: string, minutes: number | \"never\" }",
+      example: "ade agent37 sleep-after \"my box\" 30",
+    },
+    set_cap: {
+      description: "Set the account's monthly cap for every Agent 37 machine (dollars), or off. Raising or removing it asks the person first; lowering never does. At the cap ADE makes and wakes nothing.",
+      input: "object { monthlyCapUsd: number | \"off\" }",
+      example: "ade agent37 cap 50",
+    },
+    ready_set: {
+      description: "Turn on (or change) \"Keep a cloud machine ready\" for this project: a machine kept prepared and asleep for the next chat. Turning it on asks the person first. A desktop on the account prepares it.",
+      input: "object { originUrl?: string, kind?: \"box\" | \"vm\", shape?: string, setup?: string, projectName?: string }",
+      example: "ade agent37 ready on --kind vm --setup \"npm ci\"",
+    },
+    ready_off: {
+      description: "Turn off \"Keep a cloud machine ready\" for this project; its unclaimed machine is deleted on the next pass.",
+      input: "object { originUrl?: string }",
+      example: "ade agent37 ready off",
+    },
+    ready_retry: {
+      description: "Prepare this project's ready machine again after a failure.",
+      input: "object { originUrl?: string }",
+      example: "ade agent37 ready retry",
+    },
     release_ready: {
       description: "Give back a ready machine you claimed in the last 30 minutes and no chat used: it is tagged ready again and put back to sleep. Needs the claimToken claim_ready returned, so it never sleeps a machine another caller claimed. Returns {released: boolean}.",
       input: "object { instanceId: string, claimToken: string }",

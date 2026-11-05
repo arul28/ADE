@@ -1,5 +1,5 @@
 import type { DeeplinkOwnership } from "../shared/deeplinks";
-import type { Agent37CreateMachineArgs, Agent37CreateProgress, Agent37MachineActionArgs, Agent37MachineActionResult, Agent37MachinesResult, Agent37ReadyClaim, Agent37ReadyProjectSettings, Agent37ReadyStatus, Agent37Status, Agent37TemplateStatus } from "../shared/agent37";
+import type { Agent37Budget, Agent37CreateMachineArgs, Agent37CreateProgress, Agent37MachineActionArgs, Agent37MachineActionResult, Agent37MachinesResult, Agent37ReadyClaim, Agent37ReadyProjectSettings, Agent37ReadyStatus, Agent37Status, Agent37TemplateStatus, Agent37WakeForUseResult } from "../shared/agent37";
 import type { RemoteWorkCopyListing } from "../shared/types/remoteWork";
 import type { MachineStats } from "../shared/types/machineStats";
 import type { NewLaneDefaults } from "../shared/laneStart";
@@ -4704,6 +4704,22 @@ declare global {
         /** Gives back a claim no chat used yet: ready again, and asleep. */
         readyRelease?: (instanceId: string, claimToken: string) => Promise<{ released: boolean } | null>;
         onReadyStatus?: (cb: (status: Agent37ReadyStatus) => void) => () => void;
+        /** The account's monthly cap for Agent 37 machines (account vault; no pin). */
+        getBudget?: () => Promise<Agent37Budget | null>;
+        /**
+         * Copy (fork) or move (box ↔ VM) one box. Both answer at once and
+         * report through `onCreateProgress` with this request id. Account
+         * level (they act on the Agent 37 workspace), so no pin.
+         */
+        copyMachine?: (args: { requestId: string; instanceId: string; name?: string | null; shape?: string | null }) => Promise<{ started: boolean }>;
+        moveMachine?: (args: { requestId: string; instanceId: string; machineKey?: string | null; to: "box" | "vm"; shape?: string | null }) => Promise<{ started: boolean }>;
+        setBudget?: (budget: Agent37Budget) => Promise<Agent37Budget | null>;
+        /**
+         * Wakes the Agent 37 box behind an account machine because the person
+         * is about to use it (opening one of its lanes). It acts on the Agent
+         * 37 workspace with the account's key, not on the machine, so no pin.
+         */
+        wakeMachine?: (machine: { machineKey: string; hostname?: string | null }) => Promise<Agent37WakeForUseResult | null>;
       };
       /**
        * The account settings store (the `account_settings` action domain),

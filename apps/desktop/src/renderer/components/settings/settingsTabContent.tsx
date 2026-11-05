@@ -534,7 +534,7 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
     { entryIds: ["integrations.linear", "integrations.linear-top-bar"], render: () => <LinearIntegrationSection />, machine: "routed", title: "Linear", group: "linear" },
     { entryIds: ["integrations.jira", "integrations.jira-projects", "integrations.jira-top-bar"], render: () => <JiraSection />, machine: "routed", title: "Jira", group: "jira" },
     // Account-wide: one workspace key in the account vault, so no machine kind and no pin.
-    { entryIds: ["integrations.agent37", "integrations.agent37-ready"], render: () => <Agent37Section />, title: AGENT37_NAME, group: "agent37" },
+    { entryIds: ["integrations.agent37", "integrations.agent37-ready", "integrations.agent37-spending"], render: () => <Agent37Section />, title: AGENT37_NAME, group: "agent37" },
     { entryIds: ["mcp.servers", "mcp.found"], render: () => <McpServersSection />, title: "MCP servers", group: "mcp" },
   ],
   notifications: [{ entryIds: "tab", render: () => <NotificationsSection /> }],

@@ -135,6 +135,9 @@ function Download-Asset(
       GetAwaiter().GetResult()
     try {
       if (-not $response.IsSuccessStatusCode) {
+        if ([int]$response.StatusCode -eq 404 -and $Version -ne "latest") {
+          Fail "could not download ADE $Version. Check that it is a published release: https://github.com/$Repo/releases"
+        }
         Fail "download failed for $Name (HTTP $([int]$response.StatusCode))"
       }
       $total = if ($response.Content.Headers.ContentLength) {
@@ -309,6 +312,8 @@ if ($Repo -notmatch '^[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*$') {
 if ($Version -ne "latest" -and $Version -notmatch '^v?[A-Za-z0-9_.-]+$') {
   Fail "ADE_VERSION must be latest or a release tag such as v1.2.13"
 }
+# Releases are tagged "v1.2.129"; a bare "1.2.129" means the same release.
+if ($Version -match '^[0-9]') { $Version = "v$Version" }
 if (-not (Get-Command tar.exe -ErrorAction SilentlyContinue)) {
   Fail "tar.exe is required; install current Windows updates and retry"
 }

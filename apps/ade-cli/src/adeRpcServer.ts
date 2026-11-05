@@ -3865,6 +3865,15 @@ const REQUEST_CARD_COMMAND: Readonly<Record<string, string>> = {
 };
 
 /**
+ * The `agent37` actions that spend money or delete something. The RPC server
+ * stamps who is asking on them (see runTool), and each asks for approval
+ * unless a person's own client is asking.
+ */
+const AGENT37_APPROVED_ACTIONS = new Set([
+  "create", "resize", "copy", "move", "delete", "set_sleep", "set_cap", "ready_set", "ready_retry",
+]);
+
+/**
  * The move actions that name a source chat (`sourceSessionId`). A chat-bound
  * agent may aim them at its own chat or descendants; a start for another chat
  * is allowed through only as an approval request. See runTool. Approval is
@@ -6535,6 +6544,30 @@ async function runTool(args: {
       }
       const { config: _ignoredDraftConfig, ...testArgs } = rawObjectArgs;
       scopedObjectArgs = testArgs;
+    }
+    if (domain === "agent37" && AGENT37_APPROVED_ACTIONS.has(action)) {
+      if (argsList || hasScalarArg) {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `agent37.${action} requires object arguments.`);
+      }
+      // Who may say yes to spending or deleting: a person's own client (the
+      // desktop, the CTO thread) already decided; anyone else is an agent and
+      // is asked in its own chat. Never taken from the arguments. A chatless
+      // `ade --role cto` is not a person: an agent's shell can claim that role
+      // (the same rule as answering a card, above).
+      const callerIsPerson = mayUseUserOnlyActions(session)
+        || (callerIsCto && !isTrustedChatlessAdeCliCaller(session) && await callerIsTrustedCto(runtime, session));
+      const { approval: _ignoredApproval, ...agent37Args } = rawObjectArgs;
+      scopedObjectArgs = {
+        ...agent37Args,
+        approval: callerIsPerson
+          ? { by: "person" }
+          : {
+              by: "agent",
+              chatSessionId: asOptionalTrimmedString(callerCtx.chatSessionId)
+                ?? asOptionalTrimmedString(session.identity.chatSessionId)
+                ?? null,
+            },
+      };
     }
     if (domain === "chat" && CROSS_MACHINE_MOVE_ACTIONS.has(action)) {
       if (argsList || hasScalarArg) {

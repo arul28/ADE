@@ -16,6 +16,7 @@ import type {
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import { mapPlatform } from "./syncProtocol";
 import { readTailscaleLocalStatus } from "./tailscaleLocalStatus";
+import { copiedProjectHostMarkerPath } from "./hostInstanceGuard";
 import type { AdeDb } from "../../../../desktop/src/main/services/state/kvDb";
 import { nowIso, safeJsonParse, toOptionalString, uniqueStrings } from "../../../../desktop/src/main/services/shared/utils";
 import { execFileOffThread, offThreadSpawnEnabled } from "../../../../desktop/src/main/services/shared/offThreadSpawn";
@@ -582,6 +583,34 @@ export function createDeviceRegistryService(args: DeviceRegistryServiceArgs) {
   };
 
   ensureLocalDevice();
+
+  /**
+   * A project the copied-home guard reset (`hostInstanceGuard.ts`) still names
+   * the machine it was copied from as its sync host, so this brain would only
+   * follow it, never host the project or publish this machine, until the
+   * original had been silent for minutes. The guard's marker says the project
+   * now belongs to this machine: take its host role at once, one epoch on.
+   */
+  const adoptCopiedProjectHost = (): boolean => {
+    const marker = copiedProjectHostMarkerPath(args.projectRoot);
+    if (!fs.existsSync(marker)) return false;
+    let adopted = false;
+    try {
+      ensureLocalDevice();
+      const existing = getClusterState();
+      if (existing && existing.brainDeviceId !== localDeviceId) {
+        setClusterState({ brainDeviceId: localDeviceId, brainEpoch: existing.brainEpoch + 1 });
+        adopted = true;
+        args.logger.info("sync.copied_project_host_adopted", { previousBrainDeviceId: existing.brainDeviceId });
+      }
+      fs.rmSync(marker, { force: true });
+    } catch (error) {
+      // Kept for the next start; meanwhile the old wait-for-silence rule applies.
+      args.logger.warn("sync.copied_project_host_adopt_failed", { error: error instanceof Error ? error.message : String(error) });
+    }
+    return adopted;
+  };
+  adoptCopiedProjectHost();
 
   return {
     getLocalDeviceId(): string {

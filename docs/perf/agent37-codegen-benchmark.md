@@ -121,12 +121,36 @@ E-2388G / E-2386G. 20.58 runs/s beats Replicas and Conductor but not a Ryzen
   on a VM, `gpt-5.6-luna` gets `400 Unsupported parameter: 'max_tokens'` and
   `gpt-5.5` gets `400 unknown provider for model ade-openai-default/gpt-5.5`;
   on the Mac the chat errors with "could not authenticate" Claude Code.
+  Fixed (2026-11-05): OpenAI goes through the proxy's Responses translation,
+  which sends no `max_tokens`; a launch waits until the proxy has loaded a
+  model it just wrote (its first request 0.2 s after the write was the
+  "unknown provider"); and the Mac's stored OpenAI key is revoked (OpenAI
+  answers "Incorrect API key"), which is its "could not authenticate".
 - A ready machine claimed in the seconds after the pool marked it ready
   (still going to sleep) failed with "The Agent 37 machine is busy changing
   state". The claim now retries the wake through Agent 37's transient answers
   for up to 15 s.
 - The installer needs the `v` prefix in `ADE_VERSION` (`v1.2.129-beta.7`); a
-  bare version 404s with no hint.
+  bare version 404s with no hint. Fixed: a bare version means the same tag,
+  and a missing release names itself and links the releases page.
+
+### Wake after a long sleep, with #2055 on the machine (2026-11-05)
+
+A 2/4 box from a template of 1.2.129-beta.8 (which carries #2055) with this
+branch's brain on it, asleep 150 s (shown offline) each time:
+
+| Run | Wake call | Shown online | First `--machine` call (CLI, end to end) |
+|---|---|---|---|
+| 0 | 0.75 s | 0.82 s | 7.07 s |
+| 1 | 2.24 s | 2.31 s | 7.32 s |
+| 2 | 0.92 s | 0.97 s | (desktop Connect: 6.37 s) |
+
+Online now follows the wake by under 0.1 s (beta.7: about 11 s; the target was
+5 s). The first call still takes 6 to 7 s: the box's relay control socket is
+ready about 7.7 s after the wake (zombie control detected at once, reopened
+at 2.7 s, ready at 7.7 s), and a connect in between used to fail into a
+re-pair (one 23 s failure in three); a just-woken machine's connect now
+retries for up to 45 s instead.
 
 ## Reproduce
 

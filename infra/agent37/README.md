@@ -16,11 +16,19 @@ the ADE brain.
   instance id), so a forked box starts signed out as a new machine.
 - Docker (`docker-ce`, compose, buildx) for VMs. The entrypoint starts
   dockerd as root through a single sudoers rule (`ade-entrypoint.sh
-  --start-dockerd`), after loading the netfilter modules the VM kernel ships
+  --root-setup`), after loading the netfilter modules the VM kernel ships
   unloaded; a sandboxed box (gVisor) skips it. It also sets `IS_SANDBOX=1`
   and `ADE_SUSPEND_GAP_TICK_MS=1000`, and runs a ready machine's setup job
   (`$ADE_HOME/ready/job.sh`) inside its own process tree so what the setup
-  starts survives sleep.
+  starts survives sleep. The root step also keeps Supabase's ports
+  (54320-54329) out of the kernel's range for outgoing connections: a busy
+  setup used to take one as an outgoing port right before Docker bound it.
+- The Android SDK for the Android tool on a VM (`/opt/android-sdk`:
+  platform-tools, emulator, cmdline-tools, the API 34 x86_64 image). The
+  entrypoint sets `ANDROID_HOME`, and the root step gives `/dev/kvm` to group
+  `node`. A box has no `/dev/kvm` and never uses it.
+- A move to another machine pauses the brain while its home is copied: the
+  entrypoint's loop waits while `$ADE_HOME/brain.paused` exists.
 - `/etc/machine-id` and `/var/lib/dbus/machine-id` are deleted in the image.
   ADE's hardware anchor hashes them; one baked value would make the account
   directory merge every box into one row.

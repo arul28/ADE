@@ -77,8 +77,9 @@ const READ_ONLY_COMMANDS: ReadonlyMap<string, ReadonlySet<string> | true> = new 
   // Connected or not, and as whom; never a credential.
   ["integrations", new Set(["status"])],
   ["integration", new Set(["status"])],
-  // The ready-machine pool: names and states, never the key.
-  ["agent37", new Set(["ready", "status"])],
+  // Agent 37 machines and the ready pool: names, states, prices, never the key.
+  // Nothing that spends money or deletes is reachable from here.
+  ["agent37", new Set(["ready", "status", "list", "ls", "machines", "spending"])],
   ["machines", new Set(["list", "show"])],
   ["projects", new Set(["list"])],
   // `defaults` reads the new-lane defaults; `defaults set` is refused below.
@@ -414,6 +415,12 @@ function checkReadOnly(args: string[], words: readonly string[]): RemoteCommandV
   // `lanes defaults set` changes the project's new-lane defaults. Look past
   // the global flags (`--json`, `--pretty`) the CLI strips before it parses.
   if ((command === "lanes" || command === "lane") && sub === "defaults" && args.slice(2).includes("set")) return refuse();
+  // `agent37 ready` alone, `status` or `list` reads the pool; `on`, `off` and
+  // `retry` make or delete a billed machine.
+  if (command === "agent37" && sub === "ready") {
+    const verb = args.slice(2).find((word) => !word.startsWith("-"));
+    if (verb && verb !== "status" && verb !== "list") return refuse();
+  }
   // `actions run` passed checkActionsCommand's read-only test before getting here.
   if (command === "actions" && sub === "run" && words[0] === "run") return { ok: true, args };
   if (sub && allowed.has(sub)) return { ok: true, args };
