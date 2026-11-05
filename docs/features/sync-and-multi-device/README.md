@@ -2422,6 +2422,23 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   permanently giving up and stranding paired phones on the ingress
   fallback.
 
+  A takeover is followed by one immediate attempt, and the brain first drops
+  the failures the project scope registry is holding back
+  (`clearHeldFailures` → `clearSyncHostPhaseBackoff`), because a backed-off
+  attempt is answered at once with the recorded conflict, which names the
+  brain just stopped. If that attempt meets the same owner again, the loop
+  waits its normal retry delay before it acts on that owner again. Without
+  both rules, on 2026-11-04 a run of short-lived stray brains on one Mac sent
+  the re-host into 19,503 attempts in 58 s with nothing to wait on: the
+  brain's event loop stalled for up to 27 s and the phone dropped three times.
+
+  The brain's sync reads (`sync.listDevices`, `getPin`, `getRuntimeName`,
+  `getCloudRelayStatus`, `getRequireDpop`) go through `readSyncService` in
+  `multiProjectRpcServer.ts`. When the scope that hosts sync, or most recently
+  tried to, is ready, it answers as it is and host activation is not re-entered.
+  A blocked or backed-off activation therefore no longer turns the Phone tab
+  into "Another ADE brain is already hosting mobile sync".
+
   The loop also classifies what it caught rather than retrying everything the
   same way. Each failure goes through `classifyStorageFault`
   (`storage/storageErrnoClassifier.ts`, shared with the database open — see
@@ -3465,6 +3482,19 @@ install. Three mechanisms, each in a different layer, keep that from happening:
   mirrored to a `.bak` sibling, an unreadable file is distinguished from an
   absent one, and a machine key is preserved from whichever copy still holds it.
   A new identity is minted only when both copies yield nothing.
+- **Reading it never blocks the brain.** The brain reads the identity, the
+  relay preference and `sync-device-id` on hot paths (every Attention build,
+  every account-directory publish), and on Windows one synchronous read of a
+  file under `~/.ade/secrets` waited up to 22 s behind an antivirus scan. Each
+  process reads them once and keeps them in memory (`FileStampedMemo`,
+  `apps/ade-cli/src/lib/fileStampedMemo.ts`; `machineIdFile.ts` for the id
+  files), re-checking with one async `stat` per read. A write in the process
+  (a rotation, a repair, a relay toggle) is what every store reads next; a
+  write by another process is seen once that check lands, normally the next
+  read. The credential store is the exception: it holds rotating tokens
+  several processes coordinate through, so `getSync` keeps a synchronous
+  `stat` per call (a `stat` is not scanned) and only moves its expiry re-read
+  off the event loop.
 - **Rotations are budgeted and the budget is persisted.** Two per rolling 24
   hours, counted in the identity file itself so a crash loop cannot mint one row
   per boot. A machine that spends the budget stops minting and says so — "This

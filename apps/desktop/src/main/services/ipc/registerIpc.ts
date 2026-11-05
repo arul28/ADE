@@ -190,6 +190,8 @@ import {
 import type { ProductAnalyticsService } from "../analytics/productAnalyticsService";
 import { createAccountSignInAnalytics } from "../analytics/accountSignInAnalytics";
 import { sendSentryUserFeedback } from "../../sentry/userFeedback";
+import { IpcHandlerTimeoutError } from "../../sentry/ipcHandlerTimeout";
+import { armDeadline } from "../../../shared/deadlineTimer";
 import {
   brainActionErrorCode,
   createMachineRegisterRefusalObserver,
@@ -2509,21 +2511,19 @@ export function registerIpc({
           });
         }
         const IPC_TIMEOUT_MS = ipcInvokeTimeoutMs(channel, args);
-        let timeoutHandle: NodeJS.Timeout | null = null;
         let didTimeout = false;
+        let rejectTimedOut: (error: Error) => void = () => {};
+        const timedOut = new Promise<never>((_, reject) => {
+          rejectTimedOut = reject;
+        });
+        // A timer that fires late (the Mac slept) gets one short grace, so a
+        // reply already waiting on the brain's socket still lands.
+        const deadline = armDeadline(IPC_TIMEOUT_MS, (expiry) => {
+          didTimeout = true;
+          rejectTimedOut(new IpcHandlerTimeoutError(channel, IPC_TIMEOUT_MS, callId, expiry));
+        });
         try {
-          const result = await Promise.race([
-            listener(event, ...args),
-            new Promise<never>((_, reject) => {
-              timeoutHandle = setTimeout(
-                () => {
-                  didTimeout = true;
-                  reject(new Error(`IPC handler for '${channel}' timed out after ${IPC_TIMEOUT_MS}ms (callId=${callId})`));
-                },
-                IPC_TIMEOUT_MS,
-              );
-            }),
-          ]);
+          const result = await Promise.race([listener(event, ...args), timedOut]);
           const durationMs = Date.now() - startedAt;
           recordIpcInvokeAggregate({ channel: perfChannelLabel(channel, args), winId, durationMs, failed: false });
           const usageAction = usageActionFromIpcChannel(channel);
@@ -2639,7 +2639,7 @@ export function registerIpc({
           }
           throw error;
         } finally {
-          if (timeoutHandle) clearTimeout(timeoutHandle);
+          deadline.cancel();
         }
       })) as typeof ipcMain.handle;
     tracedIpcMain.__adeTraceWrapped = true;
@@ -12255,7 +12255,9 @@ export function registerIpc({
     callLocalMachineMethod: async (machineKey) => {
       if (!localRuntimeConnectionPool) throw new Error("The local runtime is unavailable.");
       const rootPath = getCtx().project?.rootPath?.trim();
-      if (!rootPath) throw new Error("The local project runtime is unavailable.");
+      // A window with no project open (Settings › Account on the welcome
+      // screen) has no local runtime to ask; the row shows that state.
+      if (!rootPath) throw new AdeExpectedError("The local project runtime is unavailable.", "environment");
       return await readLocalMachineInventoryDetail({
         machineKey,
         providerInstanceStore: getMachineProviderInstanceStore(),
@@ -12413,7 +12415,7 @@ export function registerIpc({
       });
     },
     // Which box actions people take from ADE. One prefixed outcome per action
-    // and a six-hour dedupe each: at most 20 accepted events a day.
+    // and a six-hour dedupe each: at most 32 accepted events a day.
     recordMachineAction: (action) => {
       const outcome = `box_${action}`;
       productAnalyticsService?.capture({
@@ -12866,7 +12868,13 @@ export function registerIpc({
   };
   const ensurePrReadContext = (): AppContextWith<"prService" | "prPollingService"> => {
     const ctx = ensurePrPolling();
-    if (!ctx) throw new Error("PR service is not available for this project window.");
+    if (!ctx) {
+      const message = "PR service is not available for this project window.";
+      // Expected in the no-project window, as for terminals above; a project
+      // context without one is a wiring bug.
+      if (!getCtx().projectId) throw new AdeExpectedError(message, "environment");
+      throw new Error(message);
+    }
     return ctx;
   };
 

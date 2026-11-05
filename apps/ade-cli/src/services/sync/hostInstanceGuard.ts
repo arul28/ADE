@@ -231,6 +231,13 @@ export function guardAgainstCopiedAdeHome(args: {
       if (!pathPresent(siteIdPath)) continue;
       fs.renameSync(siteIdPath, retiredPath);
       retiredProjectSiteIds.push(rootPath);
+      // The project's own database still names the original as its sync host;
+      // this tells the project's next open to take that role here.
+      try {
+        fs.writeFileSync(copiedProjectHostMarkerPath(rootPath), `${instanceId}\n`, { mode: 0o600 });
+      } catch (error) {
+        args.logger?.warn?.("host_instance.copied_project_marker_failed", { rootPath, error: errorText(error) });
+      }
     } catch (error) {
       failures.push({ path: rootPath, error: errorText(error) });
     }
@@ -272,4 +279,9 @@ export function guardAgainstCopiedAdeHome(args: {
     retiredProjectSiteIds: retiredProjectSiteIds.length,
   });
   return { action: "reset", instanceId, previousInstanceId: record.instanceId, movedTo, retiredProjectSiteIds };
+}
+
+/** Left beside a copied project's retired site id: this machine now hosts the project (deviceRegistryService.ts). */
+export function copiedProjectHostMarkerPath(projectRoot: string): string {
+  return path.join(projectRoot, ".ade", "secrets", "sync-host-copied");
 }

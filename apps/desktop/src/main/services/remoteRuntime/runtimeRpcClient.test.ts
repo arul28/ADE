@@ -7,6 +7,7 @@ import {
   type RuntimeRpcTransportCloseInfo,
 } from "./runtimeRpcClient";
 import { expectedErrorKind } from "../../../shared/expectedError";
+import { LATE_TIMER_GRACE_MS } from "../../../shared/deadlineTimer";
 
 class MockTransport implements RuntimeRpcTransport {
   readonly writes: string[] = [];
@@ -290,6 +291,32 @@ describe("RuntimeRpcClient", () => {
         result: { version: "1.0.0" },
       });
       await expect(subsequent).resolves.toEqual({ version: "1.0.0" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("lets a reply waiting behind a timer that fired after a sleep land, and still fails a call nobody answers", async () => {
+    vi.useFakeTimers();
+    try {
+      const transport = new MockTransport();
+      const client = new RuntimeRpcClient(transport, 60_000);
+      const answered = client.call("projects.list", {}, { timeoutMs: 30_000 });
+      const unanswered = client.call("runtime/info", {}, { timeoutMs: 30_000 });
+      const unansweredOutcome = unanswered.then(() => "resolved", (error: Error) => error.message);
+
+      // The Mac sleeps four minutes: the wall clock moves on, and on wake the
+      // overdue timers fire before the socket's waiting reply is read.
+      vi.setSystemTime(Date.now() + 240_000);
+      await vi.advanceTimersByTimeAsync(30_000);
+      transport.emitData({ jsonrpc: "2.0", id: requestId(transport.writes[0]!), result: ["project"] });
+      await expect(answered).resolves.toEqual(["project"]);
+
+      await vi.advanceTimersByTimeAsync(LATE_TIMER_GRACE_MS - 1);
+      await expect(Promise.race([unansweredOutcome, Promise.resolve("pending")])).resolves.toBe("pending");
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(unansweredOutcome).resolves.toMatch(/timed out waiting for method runtime\/info \(30000ms\)/);
+      expect(client.isClosed()).toBe(false);
     } finally {
       vi.useRealTimers();
     }

@@ -28,6 +28,7 @@ import {
   quarantineCredentialFile,
   quarantineHasExpired,
   readCredentialStoreQuarantine,
+  readCredentialStoreQuarantineAsync,
   readQuarantinedStoreFile,
   writeQuarantineRecord,
   type CredentialStoreQuarantineRecord,
@@ -751,6 +752,15 @@ export function inspectCredentialStoreHealth(args: {
     };
 }
 
+/** A credential read that owes no write, reusable while the file is unchanged. */
+type SettledCredentialRead = {
+  /** `null` when the credential file did not exist at read time. */
+  stat: CredentialFileStatSnapshot;
+  state: CredentialStoreReadState;
+  values: Record<string, string>;
+  expiresAt: number;
+};
+
 export class EncryptedFileCredentialStore implements SyncCredentialStore {
   private readonly credentialsPath: string;
   private readonly machineKeyPath: string;
@@ -770,13 +780,9 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
   /** Whether the latest synchronous read had nothing left to write. */
   private lastReadSettled = false;
   /** See {@link readSettledCache}. */
-  private settledRead: {
-    /** `null` when the credential file did not exist at read time. */
-    stat: CredentialFileStatSnapshot;
-    state: CredentialStoreReadState;
-    values: Record<string, string>;
-    expiresAt: number;
-  } | null = null;
+  private settledRead: SettledCredentialRead | null = null;
+  /** See {@link recheckExpiredInBackground}. */
+  private expiryRecheck: Promise<void> | null = null;
 
   constructor(args: {
     secretsDir?: string;
@@ -892,7 +898,7 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
   }
 
   /**
-   * The values of the last locked read, while the file is provably unchanged.
+   * The values of the last settled read, while the file is provably unchanged.
    *
    * Every locked read creates, writes and deletes a lock file, re-reads the
    * machine key and decrypts the whole store. On Windows, where file creation
@@ -905,22 +911,65 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
    * and no quarantined store was merged in. Any write by any process replaces
    * the file by rename, which changes its `ino`/`mtime`/`size` — the same
    * signal {@link CredentialFileStatWatcher} relies on — so one `stat` proves
-   * the values current. The entry also expires with the quarantine probe
-   * interval, so a quarantined store is still looked for as often as before.
+   * the values current. That `stat` stays synchronous on purpose: this file
+   * holds rotating tokens several processes coordinate through (the account
+   * session and its rotation journal, the GitHub App refresh ledger), and a
+   * peer's write must be visible to the very next read. A `stat` opens no file
+   * data, so antivirus does not scan it; field logs from a Windows PC show the
+   * watcher's stat of this file never slow while reads beside it waited 7-31 s.
+   *
+   * The entry also expires with the quarantine probe interval, so a
+   * quarantined store is still looked for, and the machine key re-read, as
+   * often as before. Those are file reads, so they run off the event loop and
+   * this call keeps answering.
    */
   private readSettledCache(): Record<string, string> | null {
     const entry = this.settledRead;
     if (!entry) return null;
-    const stat = Date.now() < entry.expiresAt
-      ? readCredentialFileStatSnapshot(this.credentialsPath)
-      : undefined;
+    const stat = readCredentialFileStatSnapshot(this.credentialsPath);
     if (stat === undefined || !isSameCredentialFileStat(stat, entry.stat)) {
       this.settledRead = null;
       return null;
     }
+    if (Date.now() >= entry.expiresAt) this.recheckExpiredInBackground(entry);
     this.lastReadState = entry.state;
     this.lastReadFailureReason = null;
     return entry.values;
+  }
+
+  /**
+   * The expired entry's re-check, on the thread pool: what
+   * {@link readSettledUnlocked} proves, minus the per-call `stat`. A quarantine
+   * record, a replaced or missing machine key, or a store that no longer opens
+   * with it drops the entry, so the next `getSync` takes the locked path that
+   * handles each; otherwise the entry stands for another interval. A read that
+   * fails keeps the entry, and the next call tries again. One at a time.
+   */
+  private recheckExpiredInBackground(entry: SettledCredentialRead): void {
+    if (this.expiryRecheck) return;
+    this.expiryRecheck = (async () => {
+      const stillSettled = await this.isStillSettledAsync(entry);
+      if (this.settledRead !== entry) return;
+      this.settledRead = stillSettled
+        ? { ...entry, expiresAt: Date.now() + QUARANTINE_PROBE_INTERVAL_MS }
+        : null;
+    })()
+      .catch(() => undefined)
+      .finally(() => {
+        this.expiryRecheck = null;
+      });
+  }
+
+  private async isStillSettledAsync(entry: SettledCredentialRead): Promise<boolean> {
+    if (await readCredentialStoreQuarantineAsync(this.credentialsPath)) return false;
+    // A missing store owes no write and has nothing to decrypt.
+    if (entry.stat === null) return true;
+    const machineKey = await readMachineKeyIfExistsAsync(this.machineKeyPath);
+    if (!machineKey) return false;
+    const { value: raw } = await readJsonObjectAsync(this.credentialsPath);
+    if (raw == null || Object.keys(raw).length === 0) return false;
+    const attempt = decodeMachineSealedStore(raw, machineKey);
+    return attempt?.ok === true && attempt.sealedBinding === "machine";
   }
 
   /**

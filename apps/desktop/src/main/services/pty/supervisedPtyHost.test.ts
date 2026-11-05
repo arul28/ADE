@@ -7,12 +7,14 @@ const mocks = vi.hoisted(() => ({
   fork: vi.fn(),
   spawn: vi.fn(),
   spawnSync: vi.fn(),
+  execFile: vi.fn(),
 }));
 
 vi.mock("node:child_process", () => ({
   fork: mocks.fork,
   spawn: mocks.spawn,
   spawnSync: mocks.spawnSync,
+  execFile: mocks.execFile,
 }));
 
 type FakeChild = EventEmitter & {
@@ -380,10 +382,11 @@ describe("createSupervisedPtyLoader", () => {
 
       child.emit("exit", 1, null);
 
-      expect(mocks.spawnSync).toHaveBeenCalledWith(
+      expect(mocks.execFile).toHaveBeenCalledWith(
         "taskkill.exe",
         ["/PID", "789", "/T", "/F"],
-        { windowsHide: true },
+        expect.objectContaining({ windowsHide: true }),
+        expect.any(Function),
       );
     } finally {
       Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });

@@ -12,7 +12,7 @@
 # ios-testflight.sh from the release skill. See docs/plans/ios-beta-app.md.
 #
 # Steps: API key → signing → build number → archive → export → check the IPA →
-# validate → upload → dSYMs to Sentry → wait for processing → What to Test →
+# validate → upload → dSYMs to Sentry and PostHog → wait for processing → What to Test →
 # Internal Testers (and the public group, after Apple's beta review) → tag
 # ios-beta-v<mv>-build<n>.
 #

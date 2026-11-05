@@ -23,18 +23,15 @@ const rmSyncMock = vi.fn();
 /** Identity by default: no symlinks in the fixture paths the other tests use. */
 const realpathSyncMock = vi.fn((filePath: unknown) => filePath as string);
 const mkdirSyncMock = vi.fn();
-const spawnSyncMock = vi.fn((_command: string, _args: string[], _options: object) => ({
-  error: undefined,
-  status: 0,
-}));
+const execFileMock = vi.fn((_command: string, _args: string[], _options: object, _done: unknown) => undefined);
 
 vi.mock("node:child_process", () => ({
   spawn: (command: string, args: string[], options: object) =>
     spawnMock(command, args, options),
-  // The real `terminateChildProcessTree` is used, so its Windows branch needs a
-  // `spawnSync` to reach for; the test asserts the `taskkill` it builds.
-  spawnSync: (command: string, args: string[], options: object) =>
-    spawnSyncMock(command, args, options),
+  // The real `terminateChildProcessTree` is used, so its Windows branch needs an
+  // `execFile` to reach for; the test asserts the `taskkill` it builds.
+  execFile: (command: string, args: string[], options: object, done: unknown) =>
+    execFileMock(command, args, options, done),
 }));
 
 vi.mock("node:fs", () => ({
@@ -492,7 +489,7 @@ describe("CaptureHelper", () => {
       };
       helper.dispose();
 
-      const [command, args] = spawnSyncMock.mock.calls[0] as unknown as [string, string[]];
+      const [command, args] = execFileMock.mock.calls[0] as unknown as [string, string[]];
       expect(command.toLowerCase()).toContain("taskkill");
       expect(args).toEqual(["/PID", "4242", "/T", "/F"]);
     } finally {

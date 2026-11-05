@@ -21,6 +21,8 @@
 
 import {
   AGENT37_DEFAULT_TEMPLATE,
+  AGENT37_WAKE_PORT,
+  AGENT37_WAKE_PORT_LABEL,
   agent37InstanceType,
   agent37Shape,
   isAgent37MachineKind,
@@ -29,9 +31,10 @@ import {
   type Agent37CreateProgress,
 } from "../../../shared/agent37";
 import { accountMachineConnectionState } from "../../../shared/accountDirectory";
-import type { AdeAccountMachine, AdeAccountMachinesResult } from "../../../shared/types/account";
+import type { AdeAccountMachinesResult } from "../../../shared/types/account";
 import type { Agent37Client, Agent37Instance } from "./agent37Client";
 import { recordAgent37MachineKey } from "./agent37Machines";
+import { enableAgent37Sleep } from "./agent37Sleep";
 import {
   deleteAgent37InstanceConfirmed,
   readAgent37BoxSignedIn,
@@ -92,6 +95,8 @@ export type Agent37MachineCreatorDeps = {
    * found by its request id and deleted at the next start.
    */
   pendingCreates?: Agent37PendingCreateStore;
+  /** Minutes of nothing running before a new box sleeps (Agent 37's idle timer). */
+  sleepAfterMinutes?: () => number | null;
 };
 
 /** The person cancelled (closed the dialog or pressed Cancel). */
@@ -130,7 +135,9 @@ const AUTH_STATUS_COMMAND = "timeout 20 ade auth status --json 2>/dev/null";
 const START_SIGN_IN_COMMAND = [
   'log="$ADE_HOME/logs/agent37-sign-in.log"; pidf="$ADE_HOME/logs/agent37-sign-in.pid"',
   'mkdir -p "$ADE_HOME/logs"',
-  'if ! { [ -f "$pidf" ] && kill -0 "$(cat "$pidf")" 2>/dev/null; }; then',
+  // A pid only counts while it is still an `ade login`: a copied disk (a fork)
+  // carries its source's pid file, and the number can belong to anything here.
+  'if ! { [ -f "$pidf" ] && kill -0 "$(cat "$pidf")" 2>/dev/null && grep -q login "/proc/$(cat "$pidf")/cmdline" 2>/dev/null; }; then',
   '  : > "$log"',
   '  nohup setsid ade login --headless --max-wait 900 > "$log" 2>&1 < /dev/null &',
   '  echo $! > "$pidf"',
@@ -194,7 +201,6 @@ export async function createAgent37Machine(
 ): Promise<Agent37CreateMachineResult> {
   const { signal } = options;
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
-  const fetcher: FetchLike = deps.fetch ?? ((input, init) => fetch(input, init));
   if (!isAgent37MachineKind(rawArgs?.kind)) throw new Error("Pick a box or a VM.");
   const shape = agent37Shape(rawArgs?.shape);
   if (!shape) throw new Error("Pick a size.");
@@ -240,6 +246,9 @@ export async function createAgent37Machine(
       type: agent37InstanceType(rawArgs.kind),
       resources: { cpu: shape.cpu, memory: shape.memoryGb, disk: shape.diskGb },
       metadata: { ...options.metadata, created_by: "ade", ade_request_id: requestId },
+      // The box's wake URL: its brain requests it while it works, which keeps
+      // Agent 37's idle sleep off it (agent37Sleep.ts).
+      publicPorts: [{ port: AGENT37_WAKE_PORT, label: AGENT37_WAKE_PORT_LABEL }],
     }, signal);
   } catch (error) {
     // A create that timed out or broke mid-way may still have made a box.
@@ -295,7 +304,36 @@ export async function createAgent37Machine(
   }
   deps.pendingCreates?.attach(requestId, instance.id);
   logger.info?.("agent37.machine_created", { instanceId: instance.id, kind: rawArgs.kind, shape: shape.id });
+  return await bringAgent37BoxIntoAde(deps, { client, instance, name, requestId, signal, progress, directory });
+}
 
+/**
+ * Steps 2 to 6 for a box that exists on Agent 37 and runs ADE's template:
+ * wait for its brain, sign it in with this computer's account, wait for its
+ * row, name it, and turn its sleep on. A new box and a copy (a fork, which
+ * comes up signed out by design) both end here. A box that never signed in is
+ * deleted on any failure; one that did is kept.
+ */
+export async function bringAgent37BoxIntoAde(
+  deps: Agent37MachineCreatorDeps,
+  args: {
+    client: Agent37Client;
+    instance: Agent37Instance;
+    name: string;
+    requestId: string;
+    signal?: AbortSignal;
+    progress: (stage: Agent37CreateProgress["stage"], message: string, instanceId?: string) => void;
+    directory: string;
+  },
+): Promise<Agent37CreateMachineResult> {
+  const { client, instance, name, requestId, signal, progress, directory } = args;
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const fetcher: FetchLike = deps.fetch ?? ((input, init) => fetch(input, init));
+  const logger = deps.logger ?? {};
+  const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
+  const checkCancelled = () => {
+    if (signal?.aborted) throw new Agent37CreateCancelled();
+  };
   // Set once ADE asks the account to approve the box's sign-in. Before that the
   // box cannot be signed in to this account, so a failure may delete it
   // outright; after it, only the box's own answer decides.
@@ -522,5 +560,11 @@ export async function createAgent37Machine(
   }
   if (!renamed) logger.warn?.("agent37.machine_rename_gave_up", { instanceId: instance.id, joined, hasMachineKey: machineKey != null });
   if (!joined) logger.warn?.("agent37.machine_join_pending", { instanceId: instance.id, hasMachineKey: machineKey != null });
+  // Signed in, so its brain is up: hand it its wake URL and let Agent 37 sleep
+  // it when nothing runs. A brain too old to keep itself awake stays awake;
+  // the next pass (registerAgent37Ipc) tries again once it updates.
+  if (machineKey) {
+    await enableAgent37Sleep(client, instance.id, { afterMinutes: deps.sleepAfterMinutes?.() ?? undefined, logger });
+  }
   return { instanceId: instance.id, machineKey, name, joined, renamed };
 }

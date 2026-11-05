@@ -182,6 +182,10 @@ jobs:
           ADE_POSTHOG_PROJECT_TOKEN: ${{ secrets.ADE_POSTHOG_PROJECT_TOKEN }}
           ADE_POSTHOG_HOST: ${{ secrets.ADE_POSTHOG_HOST }}
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          # For the PostHog dSYM upload (upload-ios-dsyms.sh).
+          POSTHOG_PERSONAL_API_KEY: ${{ secrets.POSTHOG_PERSONAL_API_KEY }}
+          POSTHOG_PROJECT_ID: ${{ secrets.POSTHOG_PROJECT_ID }}
+          POSTHOG_HOST: ${{ secrets.POSTHOG_HOST }}
           LABEL: ${{ needs.gate.outputs.label }}
           SHA: ${{ needs.gate.outputs.sha }}
           DRY_RUN: ${{ inputs.dry_run && 'true' || '' }}

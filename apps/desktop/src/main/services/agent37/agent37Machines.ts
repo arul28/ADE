@@ -21,6 +21,10 @@ import {
   agent37Shape,
   agent37ShapeFor,
   agent37StatusAwake,
+  agent37CapReachedMessage,
+  agent37SavedUsd,
+  agent37SpendingFor,
+  type Agent37Budget,
   type Agent37Machine,
   type Agent37MachineActionArgs,
   type Agent37MachineActionResult,
@@ -29,6 +33,7 @@ import {
 } from "../../../shared/agent37";
 import { agent37UsageDay, Agent37Error, type Agent37Client, type Agent37Instance, type Agent37Usage } from "./agent37Client";
 import { deleteAgent37InstanceConfirmed } from "./agent37PendingCreates";
+import { agent37MonthSpentUsd, agent37SleepPolicyOf, setAgent37SleepAfter } from "./agent37Sleep";
 
 type Logger = {
   info?(event: string, meta?: Record<string, unknown>): void;
@@ -49,6 +54,8 @@ export type Agent37MachinesDeps = {
   client: () => Promise<Agent37Client | null>;
   /** Removes a machine from the ADE account directory (the "Remove from ADE" half of a delete). */
   removeAccountMachine: (machineKey: string) => Promise<unknown>;
+  /** The account's monthly cap; absent reads as no cap. */
+  readBudget?: () => Promise<Agent37Budget>;
   logger?: Logger;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
@@ -78,6 +85,8 @@ export function toAgent37Machine(
   const createdAtMs = instance.created != null ? instance.created * 1000 : null;
   const windowStartMs = nowMs - (USAGE_WINDOW_DAYS - 1) * DAY_MS;
   const spentIsLifetime = createdAtMs != null && createdAtMs >= windowStartMs;
+  const runningHourlyUsd = resources ? agent37RunningHourlyUsd(instance.type, resources) : null;
+  const spentUsd = usage ? usage.byInstance[instance.id] ?? 0 : null;
   return {
     instanceId: instance.id,
     name: instance.name,
@@ -87,10 +96,10 @@ export function toAgent37Machine(
     resources,
     shapeId: agent37ShapeFor(resources)?.id ?? null,
     region: instance.region,
-    runningHourlyUsd: resources ? agent37RunningHourlyUsd(instance.type, resources) : null,
+    runningHourlyUsd,
     idleHourlyUsd: resources ? agent37IdleHourlyUsd(resources) : null,
     // A box absent from a usage read has spent nothing billed yet.
-    spentUsd: usage ? usage.byInstance[instance.id] ?? 0 : null,
+    spentUsd,
     spentSinceMs: usage ? (spentIsLifetime ? createdAtMs : windowStartMs) : null,
     spentIsLifetime,
     pastDue: instance.pastDue,
@@ -99,6 +108,15 @@ export function toAgent37Machine(
     createdAtMs,
     madeByAde: agent37InstanceMadeByAde(instance),
     ready: readyOf(instance),
+    sleep: agent37SleepPolicyOf(instance),
+    // Agent 37 settles compute hourly, so the newest hour reads as saved
+    // until it lands; the window stops an hour back to stay honest.
+    savedUsd: agent37SavedUsd({
+      runningHourlyUsd,
+      spentUsd,
+      windowStartMs: usage ? (spentIsLifetime ? createdAtMs : windowStartMs) : null,
+      nowMs: nowMs - 60 * 60_000,
+    }),
   };
 }
 
@@ -123,6 +141,7 @@ function emptyResult(state: Agent37MachinesResult["state"], message: string | nu
     runningCount: null,
     pastDue: false,
     usageAvailable: false,
+    spending: agent37SpendingFor({ monthlyCapUsd: null }, null),
     message,
   };
 }
@@ -132,6 +151,8 @@ export function createAgent37Machines(deps: Agent37MachinesDeps) {
   const now = deps.now ?? (() => Date.now());
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   let usageCache: { at: number; usage: Agent37Usage } | null = null;
+  /** The ADE machines the last good list showed as Agent 37 boxes: only those are worth a wake lookup. */
+  let knownMachineKeys = new Set<string>();
   // Bumped by a key change, so a read under the old key can't refill the cache.
   let usageGeneration = 0;
 
@@ -166,9 +187,10 @@ export function createAgent37Machines(deps: Agent37MachinesDeps) {
       logger.warn?.("agent37.machines_read_failed", { error: errorText(error), refused });
       return emptyResult(refused ? "key_refused" : "unreachable", errorText(error));
     }
-    const usage = await readUsage(client);
+    const [usage, budget] = await Promise.all([readUsage(client), readBudget()]);
     const at = now();
     const live = instances.filter((instance) => instance.status !== "deleted");
+    knownMachineKeys = new Set(live.map((instance) => instance.metadata[AGENT37_MACHINE_KEY_METADATA]).filter((key): key is string => Boolean(key)));
     return {
       state: "ok",
       machines: live.map((instance) => toAgent37Machine(instance, usage, at)),
@@ -179,8 +201,23 @@ export function createAgent37Machines(deps: Agent37MachinesDeps) {
       runningCount: live.filter((instance) => agent37StatusAwake(instance.status)).length,
       pastDue: billing.pastDue,
       usageAvailable: usage != null,
+      spending: agent37SpendingFor(budget, agent37MonthSpentUsd(usage, at)),
       message: null,
     };
+  }
+
+  const readBudget = async (): Promise<Agent37Budget> => {
+    if (!deps.readBudget) return { monthlyCapUsd: null };
+    return await deps.readBudget().catch((error: unknown) => {
+      logger.warn?.("agent37.budget_read_failed", { error: errorText(error) });
+      return { monthlyCapUsd: null };
+    });
+  };
+
+  /** This month against the cap, for a costly action. Unknown spend is not "over". */
+  async function spending(client: Agent37Client) {
+    const [usage, budget] = await Promise.all([readUsage(client), readBudget()]);
+    return agent37SpendingFor(budget, agent37MonthSpentUsd(usage, now()));
   }
 
   /** The sentence and the way out for an Agent37 refusal of a lifecycle action. */
@@ -236,6 +273,11 @@ export function createAgent37Machines(deps: Agent37MachinesDeps) {
     const action = args.action;
     logger.info?.("agent37.machine_action", { instanceId, action, shape: args.shape ?? null });
     try {
+      // What adds to the bill stops at the cap; sleeping, backing up and deleting never do.
+      if (action === "wake" || action === "resize") {
+        const month = await spending(client);
+        if (month.capReached) return { ok: false, blocker: "cap", message: agent37CapReachedMessage(month) };
+      }
       switch (action) {
         case "sleep": {
           await client.sleepInstance(instanceId);
@@ -306,6 +348,25 @@ export function createAgent37Machines(deps: Agent37MachinesDeps) {
           }
           return { ok: true, blocker: null, message: "Deleted on Agent 37 and removed from ADE. It no longer bills." };
         }
+        case "set_sleep": {
+          const minutes = args.sleepAfterMinutes ?? null;
+          if (minutes != null && !(Number.isInteger(minutes) && minutes >= 5 && minutes <= 24 * 60)) {
+            return { ok: false, blocker: null, message: "Pick 5 minutes to a day, or never." };
+          }
+          const result = await setAgent37SleepAfter(client, instanceId, minutes, logger);
+          switch (result.state) {
+            case "never":
+              return { ok: true, blocker: null, message: "It won't sleep on its own. It bills its full rate until you sleep it." };
+            case "on":
+              return { ok: true, blocker: null, message: `It sleeps after ${result.afterMinutes} minutes with nothing running on it.` };
+            case "brain_too_old":
+              return { ok: false, blocker: null, message: "The ADE on this box is too old to keep it awake while it works, so it can't sleep on its own yet. Update ADE on it, then try again." };
+            case "not_running":
+              return { ok: false, blocker: null, message: "Wake the box first." };
+            default:
+              return { ok: false, blocker: null, message: `ADE couldn't change how it sleeps: ${result.error}` };
+          }
+        }
         default:
           return { ok: false, blocker: null, message: "ADE can't do that to a box." };
       }
@@ -318,6 +379,18 @@ export function createAgent37Machines(deps: Agent37MachinesDeps) {
   return {
     list,
     run,
+    /** Whether the last list showed this ADE machine as an Agent 37 box. */
+    isKnownBox: (machineKey: string): boolean => knownMachineKeys.has(machineKey),
+    /** One box's metadata, read fresh. */
+    instanceMetadata: async (instanceId: string): Promise<Record<string, string> | null> => {
+      const client = await deps.client();
+      return client ? (await client.getInstance(instanceId)).metadata : null;
+    },
+    /** This month against the cap (a costly action from elsewhere checks it). */
+    spending: async () => {
+      const client = await deps.client();
+      return client ? await spending(client) : null;
+    },
     /** Forgets the spend read with the last key; a new key may be another workspace. */
     resetUsage: () => {
       usageCache = null;

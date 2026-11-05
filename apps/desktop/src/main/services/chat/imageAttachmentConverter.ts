@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
+import { AdeExpectedError } from "../../../shared/expectedError";
 import { sniffImageMimeType } from "../../../shared/imageSniff";
 import { isHeicAttachment, type HeicConversionErrorCode } from "../../../shared/types/chat";
 import {
@@ -195,11 +196,11 @@ export async function readImageFile(
   maxBytes: number = MAX_CONVERSION_BYTES,
 ): Promise<{ data: Buffer; mimeType: string }> {
   const stat = await fs.promises.stat(filePath);
-  if (!stat.isFile()) throw new Error("Path is not a file.");
+  if (!stat.isFile()) throw new AdeExpectedError("Path is not a file.", "user");
   if (stat.size > maxBytes) throw new Error(legacyAttachmentCapMessage("Image"));
   const data = await fs.promises.readFile(filePath);
   const mimeType = sniffImageMimeType(data);
-  if (!mimeType) throw new Error("Path is not an image.");
+  if (!mimeType) throw new AdeExpectedError("Path is not an image.", "user");
   return { data, mimeType };
 }
 

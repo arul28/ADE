@@ -337,7 +337,116 @@ export type Agent37Machine = {
    * the next chat): the project it is for, and where it is in that life.
    */
   ready: { projectName: string; state: Agent37ReadyMachineState } | null;
+  /** How the box sleeps when nothing runs on it (see `Agent37SleepPolicy`). */
+  sleep: Agent37SleepPolicy;
+  /**
+   * What sleeping saved over the spend window: the hours in it at the running
+   * rate, less what it actually spent. Null without a spend read.
+   */
+  savedUsd: number | null;
 };
+
+/*
+ * Sleep. Agent 37 puts a box to sleep once nothing has reached its URLs for
+ * the idle timeout; ADE's brain on the box requests the box's own wake URL
+ * while a chat, a command or a setup runs, so a working box never sleeps
+ * (apps/ade-cli/src/services/power/agent37KeepAwake.ts). ADE turns Agent 37's
+ * sleep on only once that brain is there.
+ */
+
+/** The port ADE's wake URL routes to. Nothing listens on it: Agent 37 answers 502, which still counts as traffic and wakes the box. */
+export const AGENT37_WAKE_PORT = 7337;
+export const AGENT37_WAKE_PORT_LABEL = "ADE wake";
+/** Minutes of nothing running before a box sleeps, as ADE offers them (Agent 37 allows 5 minutes to a day). */
+export const AGENT37_SLEEP_AFTER_CHOICES = [5, 10, 30, 60] as const;
+export const AGENT37_DEFAULT_SLEEP_AFTER_MINUTES = 10;
+/** The chat whose agent made a machine (create, copy, move): only that chat's unattended agent may delete it. */
+export const AGENT37_MADE_BY_CHAT_METADATA = "ade_made_by_chat";
+
+/** Where ADE notes a person's "Never sleep" on the box, so turning sleep on for older boxes leaves it alone. */
+export const AGENT37_SLEEP_METADATA = "ade_sleep";
+
+/**
+ * - `auto`: sleeps after `afterMinutes` with nothing running.
+ * - `never`: the person turned sleep off for this box.
+ * - `pending`: ADE has not turned sleep on yet: the box's ADE predates it, or
+ *   ADE has not reached the box since. It sleeps only when someone sleeps it.
+ */
+export type Agent37SleepPolicy =
+  | { state: "auto"; afterMinutes: number }
+  | { state: "never" }
+  | { state: "pending" };
+
+/** Waking the box behind an account machine for use (`wakeAgent37MachineForUse`). */
+export type Agent37WakeForUseResult =
+  | { state: "woken"; instanceId: string; wakeMs: number }
+  | { state: "awake"; instanceId: string }
+  | { state: "not_agent37" }
+  | { state: "refused"; message: string };
+
+/** "Sleeps after 10 min idle" / "Never sleeps" / "Sleeps when ADE on it updates". */
+export function describeAgent37SleepPolicy(policy: Agent37SleepPolicy): string {
+  if (policy.state === "auto") return `Sleeps after ${policy.afterMinutes} min idle`;
+  if (policy.state === "never") return "Never sleeps";
+  return "Sleeps once ADE on it updates";
+}
+
+export function isAgent37SleepAfterMinutes(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 5 && value <= 24 * 60;
+}
+
+/**
+ * The monthly spending cap for every Agent 37 machine on the account. At the
+ * cap ADE makes, wakes, resizes and copies nothing (running work carries on,
+ * and boxes still sleep when idle); 80% shows a warning. Null: no cap.
+ */
+export type Agent37Budget = { monthlyCapUsd: number | null };
+export const AGENT37_DEFAULT_MONTHLY_CAP_USD = 20;
+export const AGENT37_CAP_CHOICES_USD = [5, 10, 20, 50, 100] as const;
+
+/** What this month cost against the cap, for Settings, the group head and the refusals. */
+export type Agent37Spending = {
+  monthlyCapUsd: number | null;
+  /** This UTC month so far, the whole workspace (Agent 37 settles compute hourly). */
+  monthSpentUsd: number | null;
+  /** True at or past the cap: costly actions are refused. */
+  capReached: boolean;
+  /** True from 80% of the cap. */
+  capNear: boolean;
+};
+
+export function agent37SpendingFor(budget: Agent37Budget, monthSpentUsd: number | null): Agent37Spending {
+  const cap = budget.monthlyCapUsd;
+  const reached = cap != null && monthSpentUsd != null && monthSpentUsd >= cap;
+  return {
+    monthlyCapUsd: cap,
+    monthSpentUsd,
+    capReached: reached,
+    capNear: !reached && cap != null && monthSpentUsd != null && monthSpentUsd >= cap * 0.8,
+  };
+}
+
+/** The refusal for a costly action at the cap. */
+export function agent37CapReachedMessage(spending: Pick<Agent37Spending, "monthlyCapUsd" | "monthSpentUsd">): string {
+  const cap = spending.monthlyCapUsd != null ? formatAgent37Usd(spending.monthlyCapUsd) : "your cap";
+  return `Your Agent 37 machines reached this month's ${cap} cap. Raise it in Settings › Integrations › Agent 37 to make, wake or resize machines.`;
+}
+
+/**
+ * What sleeping saved a box over a window: the window at its running rate,
+ * less what it spent. Agent 37 bills an awake hour at the running rate and an
+ * asleep one at the disk alone, so this is the asleep hours' compute.
+ */
+export function agent37SavedUsd(args: {
+  runningHourlyUsd: number | null;
+  spentUsd: number | null;
+  windowStartMs: number | null;
+  nowMs: number;
+}): number | null {
+  if (args.runningHourlyUsd == null || args.spentUsd == null || args.windowStartMs == null) return null;
+  const hours = Math.max(0, args.nowMs - args.windowStartMs) / 3_600_000;
+  return Math.max(0, hours * args.runningHourlyUsd - args.spentUsd);
+}
 
 export type Agent37MachinesResult = {
   /**
@@ -354,11 +463,13 @@ export type Agent37MachinesResult = {
   pastDue: boolean;
   /** False when the spend could not be read; the boxes still show. */
   usageAvailable: boolean;
+  /** This month against the cap. */
+  spending: Agent37Spending;
   /** A plain sentence for `key_refused` and `unreachable`. */
   message: string | null;
 };
 
-export type Agent37MachineActionKind = "sleep" | "wake" | "resize" | "backup" | "delete";
+export type Agent37MachineActionKind = "sleep" | "wake" | "resize" | "backup" | "delete" | "set_sleep";
 
 export type Agent37MachineActionArgs = {
   instanceId: string;
@@ -367,6 +478,8 @@ export type Agent37MachineActionArgs = {
   shape?: Agent37ShapeId;
   /** For `delete`: the box's ADE machine, removed from the account once the box is gone. */
   machineKey?: string | null;
+  /** For `set_sleep`: minutes of nothing running before it sleeps, or null for never. */
+  sleepAfterMinutes?: number | null;
 };
 
 export type Agent37MachineActionResult = {
@@ -377,7 +490,7 @@ export type Agent37MachineActionResult = {
    * What stops the action, so the card can offer the way out: top up the
    * wallet, raise the limit, fix the key, or wait for a backup window.
    */
-  blocker: "wallet" | "limit" | "suspended" | "key" | "rate_limited" | null;
+  blocker: "wallet" | "limit" | "suspended" | "key" | "rate_limited" | "cap" | null;
   /** For `delete`: the box is gone but its account row could not be removed. */
   accountRowLeft?: boolean;
 };
@@ -541,8 +654,31 @@ export type Agent37ReadyProjectSettings = {
    * choice so no computer, and no app restart, pays to try again on its own;
    * Retry or a new choice clears it.
    */
-  failure: { error: string; at: number } | null;
+  failure: Agent37ReadyFailure | null;
 };
+
+/**
+ * A failed prepare. ADE tries again on its own a bounded number of times
+ * (`AGENT37_READY_AUTO_RETRY_DELAYS_MS`), then waits for Retry.
+ */
+export type Agent37ReadyFailure = {
+  error: string;
+  at: number;
+  /** Prepares that failed in a row; 1 for the first. */
+  attempts?: number;
+  /** When ADE tries again on its own, epoch ms; absent once it stopped trying. */
+  retryAt?: number | null;
+};
+
+/** The waits before each automatic retry of a failed prepare; after the last, Retry is the person's. */
+export const AGENT37_READY_AUTO_RETRY_DELAYS_MS = [60_000, 5 * 60_000] as const;
+
+/** When a prepare that failed for the `attempts`-th time in a row is tried again, or null for "wait for Retry". */
+export function agent37ReadyRetryAt(attempts: number, at: number, retriable: boolean): number | null {
+  if (!retriable) return null;
+  const delay = AGENT37_READY_AUTO_RETRY_DELAYS_MS[attempts - 1];
+  return delay == null ? null : at + delay;
+}
 
 /**
  * One project's ready machine, as Settings shows it.

@@ -41,6 +41,8 @@ import {
   SCENE_PREVIEW_BRIDGE_PREFIX,
   isScenePreviewBridgeMethod,
 } from "../../../../../ade-cli/src/services/builtInBrowser/scenePreviewBridgeClient";
+import { AGENT37_BRIDGE_PREFIX, isAgent37BridgeMethod } from "../../../../../ade-cli/src/services/builtInBrowser/agent37DesktopBridgeClient";
+import { agent37DesktopActions } from "../agent37/agent37DesktopActions";
 import {
   SCENE_PREVIEW_MAX_SOURCE_BYTES,
   type ScenePreviewRequest,
@@ -403,6 +405,7 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
     { prefix: APP_CONTROL_RECORDER_BRIDGE_PREFIX, handle: (name, params, connection) => handleAppControlRecorder(name, params, connection) },
     { prefix: DEMO_ENGINE_BRIDGE_PREFIX, handle: (name, params, connection) => handleDemoEngine(name, params, connection) },
     { prefix: SCENE_PREVIEW_BRIDGE_PREFIX, handle: (name, params) => handleScenePreview(name, params) },
+    { prefix: AGENT37_BRIDGE_PREFIX, handle: (name, params) => handleAgent37(name, params) },
   ];
 
   async function handleRequest(request: JsonRpcRequest, connection: BridgeConnectionState): Promise<unknown> {
@@ -576,6 +579,32 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
    * The scene source is the only input: no path is read or written here, and
    * the screenshot comes back in the answer for the daemon to file.
    */
+  /**
+   * Agent 37 machine making, for the runtime daemon: the brain decided and
+   * asked for approval; this app signs the new machine in through its window.
+   */
+  async function handleAgent37(name: string, params: Record<string, unknown>): Promise<unknown> {
+    const actions = agent37DesktopActions();
+    if (!actions || !isAgent37BridgeMethod(name)) {
+      throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Action '${AGENT37_BRIDGE_PREFIX}${name}' is not exposed by the desktop bridge.`);
+    }
+    const input = isRecord(params.input) ? params.input : {};
+    try {
+      switch (name) {
+        case "create":
+          return await actions.create(input as Parameters<typeof actions.create>[0]);
+        case "copy":
+          return await actions.copy(input as Parameters<typeof actions.copy>[0]);
+        case "move":
+          return await actions.move(input as Parameters<typeof actions.move>[0]);
+        case "ready_refresh":
+          return await actions.readyRefresh();
+      }
+    } catch (error) {
+      throw new JsonRpcError(JsonRpcErrorCode.internalError, error instanceof Error ? error.message : String(error));
+    }
+  }
+
   async function handleScenePreview(name: string, params: Record<string, unknown>): Promise<unknown> {
     const preview = args.scenePreview ?? null;
     if (!preview || !isScenePreviewBridgeMethod(name)) {

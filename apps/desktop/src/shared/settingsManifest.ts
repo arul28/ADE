@@ -1490,6 +1490,17 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "Agent37",
   },
   {
+    id: "integrations.agent37-spending",
+    label: "Agent 37 spending cap",
+    keywords: ["spending cap", "monthly cap", "budget", "limit spend", "saved", "sleep", "auto-sleep", "idle", "wallet", "low balance", "cost"],
+    tab: "integrations",
+    anchor: "agent37-spending",
+    // The monthly cap for every Agent 37 machine, in the account vault.
+    scope: "account",
+    web: "hidden",
+    group: "Agent37",
+  },
+  {
     id: "integrations.jira-projects",
     label: "Jira projects for this project",
     keywords: ["jira", "project", "issue tracker", "binding", "default"],

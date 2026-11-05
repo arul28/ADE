@@ -32,6 +32,8 @@ import { hasPriorTelemetryOptOut } from "../../../desktop/src/main/sentry/priorO
 import { registerBrainServiceSentryDiagnostics } from "./brainServiceDiagnostics";
 
 declare const __ADE_VERSION__: string | undefined;
+/** True when the bundle kept a source placeholder version (`tsup.config.ts`). */
+declare const __ADE_UNRELEASED_VERSION__: boolean | undefined;
 
 function currentModulePath(): string {
   return typeof __filename === "string" ? __filename : process.argv[1] ?? "";
@@ -46,8 +48,11 @@ export function initBrainSentry(args: { mode: "serve" | "service" }): boolean {
   if (started) return true;
   // Decided from where this bundle runs, not from ADE_RUNTIME_PACKAGED: a dev
   // brain started from an installed ADE's terminal inherits that variable and
-  // would otherwise report as production.
-  const packaged = !isSourceCheckoutRuntimeModule(currentModulePath());
+  // would otherwise report as production. A bundle built from source and
+  // copied elsewhere (`/opt/ade-dev`) keeps a placeholder version, and is a
+  // dev build wherever it runs.
+  const unreleased = typeof __ADE_UNRELEASED_VERSION__ === "boolean" && __ADE_UNRELEASED_VERSION__;
+  const packaged = !unreleased && !isSourceCheckoutRuntimeModule(currentModulePath());
   if (!shouldEnableSentry({ env: process.env, packaged, priorOptOut: hasPriorTelemetryOptOut() })) return false;
   started = true;
   const version = typeof __ADE_VERSION__ === "string" ? __ADE_VERSION__ : null;

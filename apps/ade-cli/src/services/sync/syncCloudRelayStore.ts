@@ -4,6 +4,7 @@ import { createHmac, randomBytes } from "node:crypto";
 import { safeJsonParse } from "../../../../desktop/src/main/services/shared/utils";
 import { writeFileAtomic } from "../../../../desktop/src/main/services/state/durableFile";
 import { DEFAULT_ADE_TUNNEL_RELAY_URL } from "../../../../desktop/src/shared/accountDirectory";
+import { FileStampedMemo, readTextIfExists } from "../../lib/fileStampedMemo";
 
 const DEFAULT_RELAY_URL = DEFAULT_ADE_TUNNEL_RELAY_URL;
 
@@ -151,6 +152,12 @@ type ResolvedState = {
   event: SyncCloudRelayIdentityEvent | null;
 };
 
+type IdentityFileRead = {
+  raw: SyncCloudRelayFile;
+  present: boolean;
+  parsed: boolean;
+};
+
 type SyncCloudRelayStoreLogger = {
   info?: (event: string, data?: Record<string, unknown>) => void;
   warn?: (event: string, data?: Record<string, unknown>) => void;
@@ -210,6 +217,27 @@ export function signRelayHmacHex(secret: string, base: string): string {
 }
 
 export type SyncCloudRelayStore = ReturnType<typeof createSyncCloudRelayStore>;
+
+/**
+ * The identity and preference each file resolved to, shared by every store
+ * over that file in this process. The brain reads the identity for every
+ * Attention build and account-directory publish, and several callers build a
+ * fresh store per request; each of those used to read the file (and its
+ * backup) synchronously. On Windows one such read held the brain 22 s.
+ */
+const identityMemo = new FileStampedMemo<SyncCloudRelayState>();
+const preferenceMemo = new FileStampedMemo<SyncRelayPreference>();
+/** Secrets directories this process has already created. */
+const ensuredDirs = new Set<string>();
+/**
+ * Per identity file, the machine key whose backup this process has confirmed
+ * or written. Process-wide like the memo: a store that answers from the memo
+ * never reaches the synchronous `ensureBackup`, so the retry after a failed
+ * backup write has to be visible to every store.
+ */
+const backupVerifiedFor = new Map<string, string>();
+/** After a failed backup write, how long until the background check writes again. */
+const BACKUP_RETRY_INTERVAL_MS = 30_000;
 
 function emptyBudget(): SyncCloudRelayBudget {
   return { count: 0, windowStartedAt: null, lastAt: null };
@@ -316,42 +344,39 @@ export function createSyncCloudRelayStore(args: {
   /** Test seam for the rotation/auto-repair windows. */
   now?: () => number;
 }) {
-  fs.mkdirSync(path.dirname(args.filePath), { recursive: true });
-  const preferencePath = path.join(path.dirname(args.filePath), SYNC_RELAY_PREFERENCE_FILE_NAME);
-  /**
-   * Keyed on mtime and size: the preference is read on every relay
-   * eligibility check, and the on and off files differ in size, so a flip
-   * inside one coarse timestamp tick still reads fresh.
-   */
-  let preferenceCache: { stamp: string; value: SyncRelayPreference } | null = null;
-  const readRelayPreference = (): SyncRelayPreference => {
-    let stamp: string;
-    try {
-      const stat = fs.statSync(preferencePath);
-      stamp = `${stat.mtimeMs}:${stat.size}`;
-    } catch {
-      preferenceCache = null;
-      return { enabled: true, changedAt: null };
-    }
-    if (preferenceCache && preferenceCache.stamp === stamp) return preferenceCache.value;
-    const parsed = safeJsonParse<{ enabled?: unknown; changedAt?: unknown } | null>(
-      (() => {
-        try {
-          return fs.readFileSync(preferencePath, "utf8");
-        } catch {
-          return "";
-        }
-      })(),
-      {},
-    );
-    // Anything but an explicit `false` reads as on: a damaged file (or valid
-    // JSON that isn't an object) must not quietly cut a computer off.
+  const secretsDir = path.dirname(args.filePath);
+  if (!ensuredDirs.has(secretsDir)) {
+    fs.mkdirSync(secretsDir, { recursive: true });
+    ensuredDirs.add(secretsDir);
+  }
+  const identityKey = path.resolve(args.filePath);
+  const preferencePath = path.join(secretsDir, SYNC_RELAY_PREFERENCE_FILE_NAME);
+  const preferenceKey = path.resolve(preferencePath);
+  // Anything but an explicit `false` reads as on: a missing or damaged file
+  // (or valid JSON that isn't an object) must not quietly cut a computer off.
+  const parseRelayPreference = (text: string): SyncRelayPreference => {
+    const parsed = safeJsonParse<{ enabled?: unknown; changedAt?: unknown } | null>(text, {});
     const raw = parsed && typeof parsed === "object" ? parsed : {};
-    const value: SyncRelayPreference = {
+    return {
       enabled: raw.enabled !== false,
       changedAt: typeof raw.changedAt === "string" ? raw.changedAt : null,
     };
-    preferenceCache = { stamp, value };
+  };
+  /** Read on every relay eligibility check, so it is served from memory. */
+  const readRelayPreference = (): SyncRelayPreference => {
+    const remembered = preferenceMemo.read(preferenceKey, {
+      filePath: preferencePath,
+      reload: async () => parseRelayPreference((await readTextIfExists(preferencePath)) ?? ""),
+    });
+    if (remembered) return remembered;
+    let text = "";
+    try {
+      text = fs.readFileSync(preferencePath, "utf8");
+    } catch {
+      // Missing reads as the default.
+    }
+    const value = parseRelayPreference(text);
+    preferenceMemo.remember(preferenceKey, value);
     return value;
   };
   const rotationLockPath = `${args.filePath}.rotate.lock`;
@@ -360,12 +385,10 @@ export function createSyncCloudRelayStore(args: {
   const lockWaiter = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
   const now = args.now ?? Date.now;
   const log = args.logger;
-  /**
-   * The machine key whose backup this process has already reconciled. Purely an
-   * optimisation: `load()` runs on every identity read, and re-statting the
-   * backup each time would put a syscall on the relay hot path.
-   */
-  let backupVerifiedFor: string | null = null;
+  /** This store has checked the backup once (each new store does, as before). */
+  let backupCheckedHere = false;
+  let backupCheckInFlight = false;
+  let lastBackupWriteFailureAt = Number.NEGATIVE_INFINITY;
 
   const logIdentityEvent = (event: SyncCloudRelayIdentityEvent): void => {
     // One event name for every identity transition, matching the tunnel
@@ -385,17 +408,27 @@ export function createSyncCloudRelayStore(args: {
    * identity is temporarily unreadable", and conflating them is what minted a
    * whole new machine out of one corrupt file.
    */
-  const readFileAt = (target: string): {
-    raw: SyncCloudRelayFile;
-    present: boolean;
-    parsed: boolean;
-  } => {
+  const readFileAt = (target: string): IdentityFileRead => {
     let text: string;
     try {
       text = fs.readFileSync(target, "utf8");
     } catch {
       return { raw: {}, present: false, parsed: false };
     }
+    return parseIdentityText(target, text);
+  };
+
+  /**
+   * {@link readFileAt} for the memo's background check. Only a missing file
+   * reads as absent; any other failure throws, so the memo keeps the identity
+   * it has instead of resolving from a file it could not read.
+   */
+  const readFileAtAsync = async (target: string): Promise<IdentityFileRead> => {
+    const text = await readTextIfExists(target);
+    return text === null ? { raw: {}, present: false, parsed: false } : parseIdentityText(target, text);
+  };
+
+  const parseIdentityText = (target: string, text: string): IdentityFileRead => {
     let value: unknown;
     try {
       value = JSON.parse(text);
@@ -451,9 +484,9 @@ export function createSyncCloudRelayStore(args: {
     // to the backup must find the last identity that was actually in force.
     try {
       writeIdentityFile(backupPath, text);
-      backupVerifiedFor = state.config.machineKey;
+      backupVerifiedFor.set(identityKey, state.config.machineKey);
     } catch (error) {
-      backupVerifiedFor = null;
+      backupVerifiedFor.delete(identityKey);
       log?.warn?.("sync_cloud_relay.identity_backup_write_failed", {
         error: error instanceof Error ? error.message : String(error),
       });
@@ -477,15 +510,26 @@ export function createSyncCloudRelayStore(args: {
    * from whichever file still holds one, and only a file pair that yields none
    * at all may mint a new one. A broken secret costs a secret, never a machine.
    */
+  const primaryNeedsBackup = (primary: IdentityFileRead): boolean =>
+    !isValidMachineKey(primary.raw.machineKey) || !isValidSecret(primary.raw.secret);
+
   const resolve = (): ResolvedState => {
     const primary = readFileAt(args.filePath);
+    return resolveFrom(primary, primaryNeedsBackup(primary) ? readFileAt(backupPath) : null);
+  };
+
+  /** {@link resolve} on the thread pool, for the background check of the memo. */
+  const resolveAsync = async (): Promise<ResolvedState> => {
+    const primary = await readFileAtAsync(args.filePath);
+    return resolveFrom(primary, primaryNeedsBackup(primary) ? await readFileAtAsync(backupPath) : null);
+  };
+
+  const resolveFrom = (primary: IdentityFileRead, backup: IdentityFileRead | null): ResolvedState => {
     const primaryMachineKey = isValidMachineKey(primary.raw.machineKey)
       ? primary.raw.machineKey
       : null;
     const primarySecret = isValidSecret(primary.raw.secret) ? primary.raw.secret : null;
 
-    const needsBackup = !primaryMachineKey || !primarySecret;
-    const backup = needsBackup ? readFileAt(backupPath) : null;
     const backupMachineKey = backup && isValidMachineKey(backup.raw.machineKey)
       ? backup.raw.machineKey
       : null;
@@ -753,6 +797,9 @@ export function createSyncCloudRelayStore(args: {
     onLocked?: () => { state: SyncCloudRelayState; result?: T },
     waitMs = lockWaitMs,
   ): { state: SyncCloudRelayState; result?: T } => {
+    // The constructor makes the folder once per process; a write must not
+    // fail because something removed it since.
+    fs.mkdirSync(secretsDir, { recursive: true });
     const lease = acquireRotationLockWithWait(waitMs);
     if (!lease) {
       if (onLocked) return onLocked();
@@ -770,6 +817,9 @@ export function createSyncCloudRelayStore(args: {
         if (current.event) logIdentityEvent(current.event);
         if (outcome.event) logIdentityEvent(outcome.event);
       }
+      // What the file now holds, so every store in this process sees a
+      // rotation or a repair on its very next read.
+      identityMemo.remember(identityKey, outcome.state);
       return { state: outcome.state, result: outcome.result };
     } finally {
       releaseRotationLock(lease);
@@ -781,30 +831,86 @@ export function createSyncCloudRelayStore(args: {
    * Cheap and idempotent; the in-process guard keeps it off the hot path after
    * the first read.
    */
-  const ensureBackup = (state: SyncCloudRelayState): void => {
-    if (backupVerifiedFor === state.config.machineKey) return;
-    const existing = readFileAt(backupPath);
-    if (existing.parsed && existing.raw.machineKey === state.config.machineKey
-      && existing.raw.secret === state.config.secret) {
-      backupVerifiedFor = state.config.machineKey;
-      return;
-    }
+  const backupMatches = (existing: IdentityFileRead, state: SyncCloudRelayState): boolean =>
+    existing.parsed && existing.raw.machineKey === state.config.machineKey
+      && existing.raw.secret === state.config.secret;
+
+  const writeBackup = (state: SyncCloudRelayState): void => {
     try {
       writeIdentityFile(backupPath, serialize(state));
-      backupVerifiedFor = state.config.machineKey;
+      backupVerifiedFor.set(identityKey, state.config.machineKey);
     } catch (error) {
+      // Not recorded as verified, so the next read tries again.
+      lastBackupWriteFailureAt = now();
       log?.warn?.("sync_cloud_relay.identity_backup_write_failed", {
         error: error instanceof Error ? error.message : String(error),
       });
     }
   };
 
+  const ensureBackup = (state: SyncCloudRelayState): void => {
+    backupCheckedHere = true;
+    if (backupVerifiedFor.get(identityKey) === state.config.machineKey) return;
+    if (backupMatches(readFileAt(backupPath), state)) {
+      backupVerifiedFor.set(identityKey, state.config.machineKey);
+      return;
+    }
+    writeBackup(state);
+  };
+
+  /**
+   * {@link ensureBackup} for a read the memo answered. The backup is read on
+   * the thread pool; only a missing or stale backup costs a (synchronous,
+   * durable) write, and after a failed one the next write waits
+   * {@link BACKUP_RETRY_INTERVAL_MS}, so a file a scan keeps holding does not
+   * put a write on every read.
+   */
+  const ensureBackupInBackground = (state: SyncCloudRelayState): void => {
+    const verified = backupVerifiedFor.get(identityKey) === state.config.machineKey;
+    if ((verified && backupCheckedHere) || backupCheckInFlight) return;
+    if (!verified && now() - lastBackupWriteFailureAt < BACKUP_RETRY_INTERVAL_MS) return;
+    backupCheckInFlight = true;
+    backupCheckedHere = true;
+    void readFileAtAsync(backupPath)
+      .then((existing) => {
+        if (backupMatches(existing, state)) {
+          backupVerifiedFor.set(identityKey, state.config.machineKey);
+          return;
+        }
+        // Only for the identity still in force: a rotation since this check
+        // began wrote its own backup.
+        if (identityMemo.peek(identityKey) !== state) return;
+        writeBackup(state);
+      })
+      .catch(() => {
+        // Unreadable now (a scan): forget that this store looked, so it looks again.
+        backupCheckedHere = false;
+      })
+      .finally(() => {
+        backupCheckInFlight = false;
+      });
+  };
+
   // Reads the file and fills in a freshly generated identity when absent,
   // persisting it so the machineKey stays stable across restarts.
   const load = (): SyncCloudRelayState => {
+    const remembered = identityMemo.read(identityKey, {
+      filePath: args.filePath,
+      // A file that now needs a write (damaged, or minted elsewhere and not
+      // yet whole) drops the memo; the next read repairs it under the lock.
+      reload: async () => {
+        const latest = await resolveAsync();
+        return latest.needsWrite ? null : latest.state;
+      },
+    });
+    if (remembered) {
+      ensureBackupInBackground(remembered);
+      return remembered;
+    }
     const current = resolve();
     if (!current.needsWrite) {
       ensureBackup(current.state);
+      identityMemo.remember(identityKey, current.state);
       return current.state;
     }
     return updateState<never>(
@@ -815,7 +921,8 @@ export function createSyncCloudRelayStore(args: {
 
   return {
     getConfig(): SyncCloudRelayConfig {
-      return load().config;
+      // A copy: the state is shared by every store over this file.
+      return { ...load().config };
     },
 
     getMachineIdentity(): { machineKey: string; secret: string } {
@@ -1016,7 +1123,7 @@ export function createSyncCloudRelayStore(args: {
     setRelayEnabled(enabled: boolean): SyncRelayPreference {
       const value: SyncRelayPreference = { enabled, changedAt: new Date(now()).toISOString() };
       writeFileAtomic(preferencePath, `${JSON.stringify(value, null, 2)}\n`, { fsync: true, mode: 0o600 });
-      preferenceCache = null;
+      preferenceMemo.remember(preferenceKey, value);
       return value;
     },
 

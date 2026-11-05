@@ -80,7 +80,7 @@ import { machineNameForBinding } from "../shared/machineIdentity";
 import type { DeeplinkOwnership } from "../shared/deeplinks";
 import type { MachineInventoryDetail } from "../shared/types/machineInventory";
 import type { MachineConnectionRoutes } from "../shared/types/account";
-import type { Agent37CreateMachineArgs, Agent37CreateProgress, Agent37MachineActionArgs, Agent37MachineActionResult, Agent37MachinesResult, Agent37ReadyClaim, Agent37ReadyProjectSettings, Agent37ReadyStatus, Agent37Status, Agent37TemplateStatus } from "../shared/agent37";
+import type { Agent37Budget, Agent37CreateMachineArgs, Agent37CreateProgress, Agent37MachineActionArgs, Agent37MachineActionResult, Agent37MachinesResult, Agent37ReadyClaim, Agent37ReadyProjectSettings, Agent37ReadyStatus, Agent37Status, Agent37TemplateStatus, Agent37WakeForUseResult } from "../shared/agent37";
 import {
   loopbackOriginLabel,
   parseLoopbackUrl,
@@ -12966,6 +12966,14 @@ const adeBridge = {
     listMachines: (): Promise<Agent37MachinesResult | null> => ipcRenderer.invoke(IPC.agent37ListMachines),
     machineAction: (args: Agent37MachineActionArgs): Promise<Agent37MachineActionResult | null> =>
       ipcRenderer.invoke(IPC.agent37MachineAction, args),
+    getBudget: (): Promise<Agent37Budget | null> => ipcRenderer.invoke(IPC.agent37GetBudget),
+    copyMachine: (args: { requestId: string; instanceId: string; name?: string | null; shape?: string | null }): Promise<{ started: boolean }> =>
+      ipcRenderer.invoke(IPC.agent37CopyMachine, args),
+    moveMachine: (args: { requestId: string; instanceId: string; machineKey?: string | null; to: "box" | "vm"; shape?: string | null }): Promise<{ started: boolean }> =>
+      ipcRenderer.invoke(IPC.agent37MoveMachine, args),
+    setBudget: (budget: Agent37Budget): Promise<Agent37Budget | null> => ipcRenderer.invoke(IPC.agent37SetBudget, { budget }),
+    wakeMachine: (machine: { machineKey: string; hostname?: string | null }): Promise<Agent37WakeForUseResult | null> =>
+      ipcRenderer.invoke(IPC.agent37WakeMachine, machine),
     /** The key was saved or removed in this app; read the status again. */
     onStatusChanged: (cb: () => void): (() => void) => {
       const listener = () => cb();

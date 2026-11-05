@@ -524,29 +524,38 @@ describe("productAnalyticsService", () => {
     fs.rmSync(harness.root, { recursive: true, force: true });
   });
 
-  it("records metadata regeneration as a coarse chat fact", () => {
+  it("records metadata regeneration as a coarse chat fact, an hour apart per mode", () => {
     const captures: ProductAnalyticsCapture[] = [];
     const analytics = settledAnalytics(captures);
 
     captureSessionMetadataRegeneratedAnalytics({
       analytics,
       projectId: "project-1",
-      event: { sessionId: "session-1", outcome: "completed" },
+      event: { sessionId: "session-1", outcome: "completed", automatic: true },
+    });
+    captureSessionMetadataRegeneratedAnalytics({
+      analytics,
+      projectId: "project-1",
+      event: { sessionId: "session-1", outcome: "completed", automatic: false },
     });
 
-    expect(captures).toEqual([{
+    expect(captures.map((capture) => capture.properties?.mode)).toEqual(["automatic", "manual"]);
+    expect(captures[0]).toMatchObject({
       event: "ade_feature_used",
       surface: "api",
       projectId: "project-1",
       sessionId: "session-1",
+      minimumIntervalMs: 60 * 60_000,
       properties: {
         feature: "chat",
         action: "metadata_regenerated",
         outcome: "completed",
-        mode: "automatic",
         source: "runtime",
       },
-    }]);
+    });
+    // A refresh ADE ran after a turn must not hide one a person asked for.
+    expect(captures[0]?.dedupeKey).toBeTruthy();
+    expect(captures[1]?.dedupeKey).not.toBe(captures[0]?.dedupeKey);
 
     expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
       feature: "chat",
@@ -2331,7 +2340,7 @@ describe("product analytics producers", () => {
   });
 
   it("keeps the Agent 37 box actions and ready-machine outcomes through the sanitizer and nothing about the box", () => {
-    for (const outcome of ["box_sleep", "box_wake", "box_resize", "box_backup", "box_delete"]) {
+    for (const outcome of ["box_sleep", "box_wake", "box_resize", "box_backup", "box_delete", "box_set_sleep", "box_copy", "box_move"]) {
       expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
         feature: "connections",
         action: "agent37_machine_action",
@@ -2580,7 +2589,7 @@ describe("product analytics producers", () => {
     captureAgentTurnSettledAnalytics({
       analytics,
       projectId: "project-1",
-      event: settledEvent({ status: "failed", sessionId: "session-2" }),
+      event: settledEvent({ status: "failed", sessionId: "session-2", errorCategory: "rate_limit" }),
     });
 
     // Each turn also sends one content-free `$ai_generation`; the session
@@ -2620,8 +2629,10 @@ describe("product analytics producers", () => {
     expect(captures[4]).toMatchObject({
       event: "ade_error",
       sessionId: "session-2",
-      properties: { feature: "chat", error_kind: "other", recoverable: true },
+      properties: { feature: "chat", error_kind: "rate_limit", recoverable: true },
     });
+    // The bucket survives the sanitizer instead of becoming `other`.
+    expect(sanitizeProductAnalyticsProperties("ade_error", captures[4]!.properties).error_kind).toBe("rate_limit");
   });
 
   it("emits bounded daily aggregates without operational identifiers", () => {

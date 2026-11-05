@@ -2718,7 +2718,8 @@ describe("local runtime connection pool", () => {
       await Promise.resolve();
 
       expect(client.close).toHaveBeenCalledTimes(1);
-      expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+      // On Windows the direct kill follows the (asynchronous) taskkill of the tree.
+      await vi.waitFor(() => expect(child.kill).toHaveBeenCalledWith("SIGTERM"));
     } finally {
       vi.clearAllTimers();
       vi.useRealTimers();
@@ -2902,7 +2903,8 @@ setInterval(() => {}, 1000);
           await vi.advanceTimersByTimeAsync(1);
           await stopped;
         });
-        expect(kill).toHaveBeenCalledWith("SIGTERM");
+        // The direct kill follows the (asynchronous) taskkill of the tree.
+        await vi.waitFor(() => expect(kill).toHaveBeenCalledWith("SIGTERM"));
         await exited;
       } finally {
         vi.useRealTimers();
@@ -2931,7 +2933,8 @@ setInterval(() => {}, 1000);
         await service.saw("runtime-info");
         expect(service.output()).not.toContain("shutdown-requested");
         expect(service.child.exitCode).toBeNull();
-        expect(kill).toHaveBeenCalledWith("SIGTERM");
+        // The direct kill follows the (asynchronous) taskkill of the tree.
+        await vi.waitFor(() => expect(kill).toHaveBeenCalledWith("SIGTERM"));
         await exited;
       } finally {
         pool.dispose();

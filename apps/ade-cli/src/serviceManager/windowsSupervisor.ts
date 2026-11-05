@@ -513,6 +513,10 @@ export function renderWindowsServiceLauncher(
     "}",
     "Write-SupervisorLog \"supervisor started sessionBound=$sessionBound\"",
     "if ($sessionBound -eq $true) { Write-SupervisorLog 'WARNING: this supervisor is inside a kill-on-job-close job object; Windows will terminate it with the session that started it.' }",
+    // Before the first brain starts, so the brain can find its supervisor in
+    // the record (`isStartedByRuntimeService`); a record still naming the
+    // previous supervisor would read as a hand-run brain.
+    "Write-PidRecord -runtimePid $null -runtimeStartedAtMs $null",
     "try {",
     "  while ($true) {",
     "    $runtimeStartedAt = [DateTimeOffset]::UtcNow",

@@ -245,7 +245,8 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   "agent37_machine_create",
   // The box actions on an Agent 37 card (feature "connections"): which ones
   // people take from ADE. Outcome is the action, prefixed (box_sleep |
-  // box_wake | box_resize | box_backup | box_delete), only when it worked.
+  // box_wake | box_resize | box_backup | box_delete | box_set_sleep |
+  // box_copy | box_move), only when it worked.
   // Never the box, its size, price, workspace, or a refusal.
   "agent37_machine_action",
   // Ready machines (feature "connections"): whether people keep a cloud
@@ -470,7 +471,7 @@ const EVENT_PROPERTY_KEYS: Record<ProductAnalyticsEventName, ReadonlySet<string>
   ade_tool_fetched: new Set(["provider", "outcome", "duration_bucket", "tool_error_kind"]),
   // Exactly two keys, and deliberately NOT folded into `ade_error`. That event
   // is keyed by `action` (a usage-ledger action name) and coarsens its failure
-  // to `error_kind`'s eight buckets, which is precisely the information this
+  // to `error_kind`'s closed buckets, which is precisely the information this
   // event exists to keep: which brain domain, and the structured code the brain
   // attached. Reusing it would also put a new high-volume emitter inside
   // `ade_error`'s 20/day cap and dilute the one signal that already works.
@@ -612,7 +613,7 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     // confused with another action's outcome.
     "mode_focus", "mode_focus_grid",
     // The Agent 37 box actions, prefixed like the tool ids.
-    "box_sleep", "box_wake", "box_resize", "box_backup", "box_delete",
+    "box_sleep", "box_wake", "box_resize", "box_backup", "box_delete", "box_set_sleep", "box_copy", "box_move",
     // Where a chat that took a ready machine started, prefixed the same way.
     "ready_picker", "ready_cli",
     // The two iOS live-view backends, prefixed for the same reason the tool ids
@@ -746,10 +747,17 @@ export function safeProductAnalyticsString(value: ProductAnalyticsPropertyValue)
   return trimmed && trimmed.length <= 80 && SLUG_VALUE.test(trimmed) ? trimmed : null;
 }
 
+/** The `error_kind` buckets. A sender that already names one keeps it. */
+const ERROR_KIND_BUCKETS = new Set([
+  "timeout", "expired", "cancelled", "permission", "network", "type_error", "range_error", "syntax_error",
+  "rate_limit", "budget", "busy", "cli_missing", "other",
+]);
+
 function coarseErrorKind(value: ProductAnalyticsPropertyValue): string | null {
   if (typeof value !== "string" || value.length > 256) return null;
   const normalized = value.trim().toLowerCase();
   if (!normalized) return null;
+  if (ERROR_KIND_BUCKETS.has(normalized)) return normalized;
   if (normalized.includes("timeout")) return "timeout";
   if (normalized.includes("expired")) return "expired";
   if (normalized.includes("abort") || normalized.includes("cancel")) return "cancelled";

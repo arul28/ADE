@@ -100,6 +100,7 @@ export const PROPERTIES = Object.freeze({
   SOURCE: "source",
   CLIENT: "client",
   INTERACTIVE: "interactive",
+  MODE: "mode",
   IS_INTERNAL: "is_internal",
   SIGNUP_METHOD: "signup_method",
   SURVEY_NAME: "$survey_name",
@@ -129,6 +130,54 @@ const EXCLUDE_INTERNAL = Object.freeze({
   type: "event",
 });
 
+/**
+ * Events no person caused, as `BACKGROUND_EVENTS` in
+ * `productAnalyticsPolicy.ts` lists them, and feature uses the app ran on its
+ * own. Builds from 1.2.128 mark both with `interactive: false`; older builds,
+ * which most installs still ran in November 2026, send no `interactive`, so
+ * these names are matched too. Keep them equal to the policy.
+ */
+const BACKGROUND_EVENT_NAMES = Object.freeze([
+  EVENTS.DAILY_USAGE_SUMMARY, EVENTS.ANALYTICS_BUDGET, EVENTS.MOBILE_ANALYTICS_BUDGET, EVENTS.MARKETING_ANALYTICS_BUDGET,
+  EVENTS.UPDATE_INSTALL_ABORTED, EVENTS.UPDATE_QUIT_ESCALATED, EVENTS.UPDATE_INSTALL_DID_NOT_LAND,
+  EVENTS.UPDATE_AUTO_APPLIED, EVENTS.UPDATE_AUTO_APPLY_CANCELLED, EVENTS.UPDATE_PROMPTED,
+  EVENTS.BRAIN_RECOVERED, EVENTS.RENDERER_RECOVERED, EVENTS.PUBLISH_FAILING, EVENTS.RELAY_SUPPRESSED,
+  EVENTS.ACCOUNT_SESSION_UNREADABLE, EVENTS.TOOL_FETCHED, EVENTS.BRAIN_ACTION_FAILED,
+  EVENTS.MOBILE_ERROR, EVENTS.EXCEPTION, "$identify",
+]);
+/**
+ * Feature uses that older builds sent with no `mode`, when the app ran them on
+ * its own (a status line refresh after a turn, for one). An event that has a
+ * `mode` is judged by it, so a requested regeneration still counts. A
+ * compaction is left out: it has always said `mode: manual` or `automatic`.
+ */
+const AUTOMATIC_FEATURE_ACTIONS = Object.freeze([
+  "maintenance_run", "metadata_regenerated", "auto_sent", "auto_resume", "settle_teardown_residue",
+]);
+
+/** Events an automation run sends with `feature: automations` and no person behind it. */
+const AUTOMATION_RUN_EVENTS = Object.freeze([EVENTS.WORK_SESSION_STARTED, EVENTS.WORK_SESSION_COMPLETED, EVENTS.AI_GENERATION]);
+
+const hogqlList = (values) => values.map((value) => `'${value}'`).join(", ");
+
+/**
+ * Something a person did. A storage sweep, a regenerated chat title or a
+ * daily rollup is sent by an install nobody opened, so counting it made
+ * idle installs look active (208 "feature-active" installs in the week to
+ * 2026-11-05, 104 of them from a person).
+ */
+const PERSON_ACTIVITY = Object.freeze({
+  type: "hogql",
+  key: [
+    `ifNull(toString(properties.${PROPERTIES.INTERACTIVE}), '') != 'false'`,
+    `event not in (${hogqlList(BACKGROUND_EVENT_NAMES)})`,
+    `not (event = '${EVENTS.FEATURE_USED}' and (ifNull(properties.${PROPERTIES.MODE}, '') = 'automatic' or (ifNull(properties.${PROPERTIES.MODE}, '') = '' and properties.${PROPERTIES.ACTION} in (${hogqlList(AUTOMATIC_FEATURE_ACTIONS)}))))`,
+    // An automation's own sessions and model turns, as the policy's `automationRun`.
+    `not (ifNull(properties.${PROPERTIES.FEATURE}, '') = 'automations' and event in (${hogqlList(AUTOMATION_RUN_EVENTS)}))`,
+  ].join(" and "),
+  value: null,
+});
+
 const dateRange = (dateFrom) => ({ date_from: dateFrom, explicitDate: false });
 
 const eventNode = (event, customName, options = {}) => ({
@@ -153,6 +202,14 @@ const eventProperty = (key, value, operator = "exact") => ({
   operator,
   type: "event",
 });
+
+/**
+ * Leaves out the `/open` link page. Link-preview and link-safety scanners
+ * load it far more than people do, and they press every footer link once:
+ * in the 30 days to 2026-11-05 it sent 730 iPhone "download" clicks, the
+ * homepage 42.
+ */
+const NOT_OPEN_LINK = eventProperty(PROPERTIES.SCREEN, ["open_link"], "is_not");
 
 /** The desktop "Star ADE on GitHub" pill's facts. */
 const STAR_PROMPT = eventProperty(PROPERTIES.FEATURE, "star_prompt");
@@ -223,6 +280,7 @@ function funnel({ series, dateFrom = "-90d", windowInterval = 7, windowUnit = "d
 
 function retention({
   event,
+  entityProperties = [],
   returning = null,
   dateFrom = "-12w",
   period = "Week",
@@ -234,7 +292,7 @@ function retention({
     id: event,
     name: event,
     type: "events",
-    properties: [],
+    properties: entityProperties,
   };
 
   return {
@@ -272,18 +330,13 @@ function eventsTable({ event, select, properties = [], dateFrom = "-90d", limit 
   };
 }
 
-/** Any interactive event from an ADE app: no marketing-site visits, no account webhooks. */
+/** Anything a person did in an ADE app: no marketing-site visits, no account webhooks. */
 const RETURNING_APP_USE = Object.freeze({
   kind: "EventsNode",
   id: null,
   name: "All events",
   type: "events",
-  properties: [
-    // `is_not false`, not `exact true`: builds before 2026-10-29 send no
-    // `interactive` property, and their app use must still count.
-    eventProperty(PROPERTIES.INTERACTIVE, ["false"], "is_not"),
-    eventProperty(PROPERTIES.CLIENT, ["account"], "is_not"),
-  ],
+  properties: [eventProperty(PROPERTIES.CLIENT, ["account"], "is_not"), PERSON_ACTIVITY],
 });
 
 const PMF_SURVEY = eventProperty(PROPERTIES.SURVEY_NAME, "[ade:pmf]", "icontains");
@@ -337,9 +390,9 @@ export const dashboardSpec = Object.freeze({
         insight(
           "weekly-active-installations",
           "Weekly active installations",
-          "Unique installations that used an ADE feature in each week.",
+          "Unique installations where a person used an ADE feature in each week. Work the app did on its own (storage sweeps, regenerated titles, automatic diagnostics) does not count.",
           trends({
-            series: [eventNode(EVENTS.FEATURE_USED, "Active installations", { math: "dau" })],
+            series: [eventNode(EVENTS.FEATURE_USED, "Active installations", { math: "dau", properties: [PERSON_ACTIVITY] })],
           }),
         ),
         insight(
@@ -369,8 +422,8 @@ export const dashboardSpec = Object.freeze({
         insight(
           "weekly-feature-retention",
           "Weekly feature-use retention",
-          "Installations that use a feature and return to use any feature in a later week.",
-          retention({ event: EVENTS.FEATURE_USED }),
+          "Installations where a person used a feature and came back to use one in a later week. Work the app did on its own does not count.",
+          retention({ event: EVENTS.FEATURE_USED, entityProperties: [PERSON_ACTIVITY] }),
         ),
         insight(
           "completed-work-sessions",
@@ -400,9 +453,9 @@ export const dashboardSpec = Object.freeze({
         insight(
           "active-installations-by-surface",
           "Feature-active installations by surface",
-          "Unique installations with successful feature activity on desktop, mobile, CLI, web, or API surfaces.",
+          "Unique installations where a person used a feature, on desktop, mobile, CLI, web, or API surfaces. Work the app did on its own does not count.",
           trends({
-            series: [eventNode(EVENTS.FEATURE_USED, "Feature-active installations", { math: "dau" })],
+            series: [eventNode(EVENTS.FEATURE_USED, "Feature-active installations", { math: "dau", properties: [PERSON_ACTIVITY] })],
             breakdown: PROPERTIES.SURFACE,
           }),
         ),
@@ -421,9 +474,9 @@ export const dashboardSpec = Object.freeze({
         insight(
           "feature-adoption",
           "Feature adoption",
-          "Unique installations using each allowlisted ADE feature over the last 30 days.",
+          "Unique installations where a person used each allowlisted ADE feature over the last 30 days. Work the app did on its own does not count.",
           trends({
-            series: [eventNode(EVENTS.FEATURE_USED, "Feature users", { math: "dau" })],
+            series: [eventNode(EVENTS.FEATURE_USED, "Feature users", { math: "dau", properties: [PERSON_ACTIVITY] })],
             dateFrom: "-30d",
             interval: "month",
             display: "ActionsBarValue",
@@ -582,7 +635,7 @@ export const dashboardSpec = Object.freeze({
             series: [eventNode(EVENTS.MARKETING_SCREEN_VIEWED, "Real visitors", {
               math: "dau",
               properties: [
-                eventProperty(PROPERTIES.SCREEN, ["open_link"], "is_not"),
+                NOT_OPEN_LINK,
                 eventProperty(PROPERTIES.IS_BOT, ["false"]),
               ],
             })],
@@ -592,16 +645,16 @@ export const dashboardSpec = Object.freeze({
         ),
         insight(
           "homepage-get-started-funnel",
-          "Homepage to get-started funnel",
-          "Public-site visit → homepage view → Get started click within seven days. Marketing identities never enter product-retention metrics.",
+          "Homepage to download funnel",
+          "Public-site visit → homepage view → a button that starts a download, opens TestFlight or opens the web app, within seven days. Marketing identities never enter product-retention metrics.",
           funnel({
             series: [
               eventNode(EVENTS.MARKETING_APP_OPENED, "Visited the site"),
               eventNode(EVENTS.MARKETING_SCREEN_VIEWED, "Viewed the homepage", {
                 properties: [eventProperty(PROPERTIES.SCREEN, "home")],
               }),
-              eventNode(EVENTS.MARKETING_CTA_CLICKED, "Clicked Get started", {
-                properties: [eventProperty(PROPERTIES.CTA_LABEL, "get_started_free")],
+              eventNode(EVENTS.MARKETING_CTA_CLICKED, "Started a download or opened the web app", {
+                properties: [eventProperty(PROPERTIES.CTA_LABEL, [...DOWNLOAD_CTA_LABELS, "open_web_client"])],
               }),
             ],
           }),
@@ -637,7 +690,7 @@ export const dashboardSpec = Object.freeze({
           trends({
             series: [eventNode(EVENTS.MARKETING_CTA_CLICKED, "Download clickers", {
               math: "dau",
-              properties: [eventProperty(PROPERTIES.CTA_LABEL, DOWNLOAD_CTA_LABELS)],
+              properties: [eventProperty(PROPERTIES.CTA_LABEL, DOWNLOAD_CTA_LABELS), NOT_OPEN_LINK],
             })],
             breakdown: PROPERTIES.REFERRING_DOMAIN,
             breakdownLimit: 10,
@@ -650,7 +703,7 @@ export const dashboardSpec = Object.freeze({
           trends({
             series: [eventNode(EVENTS.MARKETING_CTA_CLICKED, "Download clickers", {
               math: "dau",
-              properties: [eventProperty(PROPERTIES.CTA_LABEL, DOWNLOAD_CTA_LABELS)],
+              properties: [eventProperty(PROPERTIES.CTA_LABEL, DOWNLOAD_CTA_LABELS), NOT_OPEN_LINK],
             })],
             breakdown: PROPERTIES.UTM_SOURCE,
             breakdownLimit: 10,
@@ -664,7 +717,7 @@ export const dashboardSpec = Object.freeze({
             series: [
               eventNode(EVENTS.MARKETING_CTA_CLICKED, "Download clickers", {
                 math: "dau",
-                properties: [eventProperty(PROPERTIES.CTA_LABEL, DOWNLOAD_CTA_LABELS)],
+                properties: [eventProperty(PROPERTIES.CTA_LABEL, DOWNLOAD_CTA_LABELS), NOT_OPEN_LINK],
               }),
               eventNode(EVENTS.APP_INSTALLED, "New installs", {
                 properties: [eventProperty(PROPERTIES.INSTALL_SOURCE, "development", "is_not")],
@@ -945,7 +998,7 @@ export const dashboardSpec = Object.freeze({
         ),
         insight(
           "weekly-active-installs",
-          "Weekly active installs",
+          "Weekly installs that opened ADE",
           "Installs that opened ADE in each week. PostHog's lifecycle chart cannot be used here: it needs person profiles, and ADE's ordinary events have person processing off. Pair this with the retention card above; the in-app `[ade:returning]` survey asks people who come back what pulled them away.",
           trends({
             series: [eventNode(EVENTS.APP_OPENED, "Active installs", { math: "dau" })],
@@ -1044,11 +1097,11 @@ export const dashboardSpec = Object.freeze({
         insight(
           "star-prompt-funnel",
           "Star prompt funnel",
-          "People who saw the pill → clicked through to GitHub → were detected as having starred, within 14 days. Either showing counts.",
+          "People who saw the pill → clicked through to GitHub → were detected as having starred, within 14 days. Either showing counts. The click step is optional: a person can star the repository without the pill's link.",
           funnel({
             series: [
               eventNode(EVENTS.FEATURE_USED, "Saw the pill", { properties: [STAR_PROMPT, eventProperty(PROPERTIES.ACTION, "star_prompt_shown")] }),
-              eventNode(EVENTS.FEATURE_USED, "Clicked to GitHub", { properties: [STAR_PROMPT, eventProperty(PROPERTIES.ACTION, "star_prompt_clicked")] }),
+              { ...eventNode(EVENTS.FEATURE_USED, "Clicked to GitHub", { properties: [STAR_PROMPT, eventProperty(PROPERTIES.ACTION, "star_prompt_clicked")] }), optionalInFunnel: true },
               eventNode(EVENTS.FEATURE_USED, "Starred", { properties: [STAR_PROMPT, eventProperty(PROPERTIES.ACTION, "repo_starred")] }),
             ],
             windowInterval: 14,

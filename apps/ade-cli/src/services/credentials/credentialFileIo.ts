@@ -122,6 +122,23 @@ export function readCredentialFileStatSnapshot(filePath: string): CredentialFile
   }
 }
 
+/**
+ * {@link readCredentialFileStatSnapshot} on the thread pool. On Windows a
+ * synchronous stat of a file under `~/.ade/secrets` can wait seconds while an
+ * antivirus scan holds it, and the brain's event loop waits with it.
+ */
+export async function readCredentialFileStatSnapshotAsync(
+  filePath: string,
+): Promise<CredentialFileStatSnapshot | undefined> {
+  try {
+    const stat = await fs.promises.stat(filePath);
+    return { ino: stat.ino, mtimeMs: stat.mtimeMs, size: stat.size };
+  } catch (error: unknown) {
+    if (isEnoent(error)) return null;
+    return undefined;
+  }
+}
+
 export function isSameCredentialFileStat(
   left: CredentialFileStatSnapshot,
   right: CredentialFileStatSnapshot,
@@ -135,6 +152,8 @@ export function isSameCredentialFileStat(
 export class CredentialFileStatWatcher {
   private previous: CredentialFileStatSnapshot | undefined;
   private timer: NodeJS.Timeout | null = null;
+  /** One poll at a time: a stat stalled by a scan must not pile up behind itself. */
+  private polling = false;
 
   constructor(
     private readonly filePath: string,
@@ -145,12 +164,27 @@ export class CredentialFileStatWatcher {
   start(): void {
     this.previous = readCredentialFileStatSnapshot(this.filePath);
     if (this.intervalMs === null) return;
-    this.timer = setInterval(() => this.checkNow(), this.intervalMs);
+    // The poll stats off the event loop; it runs four times a second for the
+    // life of the brain.
+    this.timer = setInterval(() => {
+      if (this.polling) return;
+      this.polling = true;
+      void readCredentialFileStatSnapshotAsync(this.filePath)
+        .then((current) => {
+          if (this.timer) this.compare(current);
+        })
+        .finally(() => {
+          this.polling = false;
+        });
+    }, this.intervalMs);
     this.timer.unref();
   }
 
   checkNow(): void {
-    const current = readCredentialFileStatSnapshot(this.filePath);
+    this.compare(readCredentialFileStatSnapshot(this.filePath));
+  }
+
+  private compare(current: CredentialFileStatSnapshot | undefined): void {
     if (current === undefined) return;
     if (this.previous === undefined) {
       this.previous = current;

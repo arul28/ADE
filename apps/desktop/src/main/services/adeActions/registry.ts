@@ -301,6 +301,13 @@ import { requestProjectSecretFromUser } from "../secrets/projectSecretRequest";
 import { buildIntegrationConnectAdapters } from "../integrations/integrationConnectAdapters";
 import { agent37VaultFromStore, buildAgent37ConnectAdapter, type Agent37CredentialDeps } from "../agent37/agent37Credential";
 import { buildAgent37ReadyActions } from "../agent37/agent37ReadyActions";
+import { buildAgent37AgentActions } from "../agent37/agent37AgentActions";
+import { createAgent37Machines } from "../agent37/agent37Machines";
+import { AGENT37_BUDGET_VAULT_KEY, createAgent37BudgetStore } from "../agent37/agent37Sleep";
+import { readAgent37Key } from "../agent37/agent37Credential";
+import { createAgent37Client } from "../agent37/agent37Client";
+import { AccountMachineDirectoryService } from "../../../../../ade-cli/src/services/account/accountMachineDirectoryService";
+import { getSharedAccountDirectoryBaseUrl } from "../../../../../ade-cli/src/services/account/sharedAccountAuthService";
 import { AGENT37_READY_VAULT_KEY, createAgent37ReadySettingsStore } from "../agent37/agent37ReadySettings";
 import { EncryptedFileCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
 import { listIntegrationConnections, requestIntegrationConnect } from "../integrations/integrationConnectRequest";
@@ -1887,7 +1894,7 @@ function buildSessionDomainService(runtime: AdeRuntime): OpaqueService | null {
         agentChatService: runtime.agentChatService,
         ptyService: runtime.ptyService,
       })) {
-        throw new Error(`Session '${sessionId}' was not found.`);
+        throw new AdeExpectedError(`Session '${sessionId}' was not found.`, "user");
       }
       return { ok: true, sessionId };
     },
@@ -1899,7 +1906,7 @@ function buildSessionDomainService(runtime: AdeRuntime): OpaqueService | null {
       const record = readObjectActionArg(args, "session.unsettleSession");
       const sessionId = requireNonEmptyString(record.sessionId, "sessionId");
       if (!sessionService.unsettleSession(sessionId)) {
-        throw new Error(`Session '${sessionId}' was not found.`);
+        throw new AdeExpectedError(`Session '${sessionId}' was not found.`, "user");
       }
       return { ok: true, sessionId };
     },
@@ -1948,7 +1955,7 @@ function buildSessionDomainService(runtime: AdeRuntime): OpaqueService | null {
       const sessionId = requireNonEmptyString(record.sessionId, "sessionId");
       const untilIso = requireSnoozeDeadline(record.untilIso);
       if (!sessionService.snoozeSession(sessionId, untilIso)) {
-        throw new Error(`Session '${sessionId}' was not found.`);
+        throw new AdeExpectedError(`Session '${sessionId}' was not found.`, "user");
       }
       return { ok: true, sessionId, snoozedUntil: untilIso };
     },
@@ -1975,7 +1982,7 @@ function buildSessionDomainService(runtime: AdeRuntime): OpaqueService | null {
       const sessionId = requireNonEmptyString(record.sessionId, "sessionId");
       const override = readSettleOverride(record.override, "session.setSettleOverride");
       if (!sessionService.setSettleOverride(sessionId, override)) {
-        throw new Error(`Session '${sessionId}' was not found.`);
+        throw new AdeExpectedError(`Session '${sessionId}' was not found.`, "user");
       }
       return { ok: true, sessionId, settleOverride: override };
     },
@@ -1988,7 +1995,7 @@ function buildSessionDomainService(runtime: AdeRuntime): OpaqueService | null {
       const record = readObjectActionArg(args, "session.clearWokeMarker");
       const sessionId = requireNonEmptyString(record.sessionId, "sessionId");
       if (!sessionService.clearWokeMarker(sessionId)) {
-        throw new Error(`Session '${sessionId}' was not found.`);
+        throw new AdeExpectedError(`Session '${sessionId}' was not found.`, "user");
       }
       return { ok: true, sessionId };
     },
@@ -4033,18 +4040,47 @@ function integrationConnectAdapters(runtime: AdeRuntime) {
   });
 }
 
-/** Ready machines for the CLI and agents; the choice is read through the same store the desktop writes. */
+/**
+ * The `agent37` domain for the CLI and agents: ready machines (read through
+ * the same store the desktop writes) and the machine verbs. The key, the cap
+ * and the choice are the account's, so every brain answers the same; making a
+ * machine goes to the desktop attached to this brain.
+ */
 function buildAgent37DomainService(runtime: AdeRuntime): OpaqueService {
+  const signedIn = () => runtime.accountAuthService?.getStatus().signedIn === true;
   const settings = createAgent37ReadySettingsStore({
-    vault: () => (runtime.accountAuthService?.getStatus().signedIn === true && runtime.accountVaultStore
+    vault: () => (signedIn() && runtime.accountVaultStore
       ? agent37VaultFromStore(runtime.accountVaultStore, AGENT37_READY_VAULT_KEY)
       : null),
     machineStore: () => agent37MachineStore(),
     logger: runtime.logger,
   });
-  return buildAgent37ReadyActions({
-    credentials: agent37CredentialDeps(runtime),
+  const credentials = agent37CredentialDeps(runtime);
+  const budget = createAgent37BudgetStore({
+    vault: () => (signedIn() && runtime.accountVaultStore ? agent37VaultFromStore(runtime.accountVaultStore, AGENT37_BUDGET_VAULT_KEY) : null),
+    machineStore: () => agent37MachineStore(),
+    logger: runtime.logger,
+  });
+  const machines = createAgent37Machines({
+    client: async () => {
+      const saved = await readAgent37Key(credentials);
+      return saved ? createAgent37Client({ apiKey: saved.key }) : null;
+    },
+    removeAccountMachine: async (machineKey) => {
+      if (!runtime.accountAuthService) throw new Error("This ADE isn't signed in to your account.");
+      return await new AccountMachineDirectoryService(runtime.accountAuthService, {
+        appVersion: process.env.ADE_CLI_VERSION?.trim() || "0.0.0",
+        directoryBaseUrl: () => getSharedAccountDirectoryBaseUrl({ projectRoots: () => (runtime.projectRoot ? [runtime.projectRoot] : []) }),
+      }).deleteMachine(machineKey);
+    },
+    readBudget: () => budget.read(),
+    logger: runtime.logger,
+  });
+  const agentChatService = runtime.agentChatService ?? null;
+  const ready = buildAgent37ReadyActions({
+    credentials,
     readSettings: async () => (await settings.read()).projects,
+    spending: () => machines.spending(),
     // A six-hour dedupe, as on the desktop: claims are frequent in a benchmark loop.
     onClaimed: () => runtime.productAnalyticsService?.capture({
       event: "ade_feature_used",
@@ -4056,6 +4092,30 @@ function buildAgent37DomainService(runtime: AdeRuntime): OpaqueService {
     }),
     logger: runtime.logger,
   });
+  const verbs = buildAgent37AgentActions({
+    machines,
+    budget,
+    readySettings: settings,
+    desktop: () => runtime.getAgent37Desktop?.() ?? null,
+    // A runtime with no chat service of its own (the CLI's in-process
+    // fallback) has no chat to ask in; costly actions are then refused.
+    approvals: agentChatService && typeof agentChatService.requestChatInput === "function"
+      ? {
+          requestChatInput: (input) => agentChatService.requestChatInput(input),
+          permissionLevel: (chatSessionId) => agentChatService.getPermissionCeiling?.({ actor: { kind: "agent", chatSessionId } }) ?? null,
+          isAutomationRun: async (chatSessionId) => Boolean((await agentChatService.getSessionSummary(chatSessionId).catch(() => null))?.automationRunId),
+          notice: (chatSessionId, message) => {
+            try {
+              agentChatService.recordSystemNotice({ sessionId: chatSessionId, message });
+            } catch (error) {
+              runtime.logger.warn("agent37.approval_notice_failed", { error: error instanceof Error ? error.message : String(error) });
+            }
+          },
+        }
+      : null,
+    logger: runtime.logger,
+  });
+  return { ...ready, ...verbs };
 }
 
 /**

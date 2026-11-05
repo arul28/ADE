@@ -1,6 +1,6 @@
 import { githubExtraHeaderGitEnv, runGitWithGithubAuthFallback } from "../git/gitTransportAuth";
 import { COMPACT_FIRST_MIN_TOKENS, compactFirstIdleMs, compactFirstIdleMsFromEnv, compactFirstMinTokensFromEnv, compactFirstOffer, compactFirstSupportedProvider, warmIdleCompactAtMs } from "../../../shared/compactFirst";
-import { AdeExpectedError } from "../../../shared/expectedError";
+import { AdeExpectedError, markExpected } from "../../../shared/expectedError";
 import { createWarmIdleCompactionScheduler } from "./warmIdleCompactionScheduler";
 import { formatContinuityConversation } from "./continuityConversation";
 import { probeClaudeKeychainLogin } from "../ai/providerCredentialSources";
@@ -1537,7 +1537,7 @@ import {
   runNamingAcrossProviders,
   type SessionMetadataConversationEntry,
 } from "./sessionNaming";
-import { createSessionMetadataRegenerator } from "./sessionMetadataService";
+import { createSessionMetadataRegenerator, type SessionMetadataRunOptions } from "./sessionMetadataService";
 import { createStatusLineStaleRegen } from "./statusLineStaleCheck";
 import {
   createCursorSdkEventMapperState,
@@ -5365,6 +5365,12 @@ type ManagedChatSession = {
    * query instead (`claudeReasoningEffortChange`). In memory only.
    */
   turnReasoningEffort?: string | null;
+  /**
+   * Why the running turn failed, from its last error event that said
+   * (`errorInfo.category`). Cleared when a turn starts and read once by its
+   * settle, for the `ade_error` event's `error_kind`. In memory only.
+   */
+  turnErrorCategory?: AgentChatTurnErrorCategory | null;
   /**
    * The chat's personal profile changed while its provider process was
    * mid-turn (`adoptLegacyPersonalSessionAsAssistant`). That process was built
@@ -10924,7 +10930,7 @@ function assertCursorChatModelCanUseSdk(args: {
     ?? resolveCachedCursorModelAvailability(args.modelRef, getCursorSdkApiKey());
   if (!availability || availability.sdk !== false) return;
   const label = args.descriptor?.displayName?.trim() || args.modelRef;
-  throw new Error(cursorChatModelUnavailableMessage(label));
+  throw new AdeExpectedError(cursorChatModelUnavailableMessage(label), "user");
 }
 
 function normalizeCursorConfigValueRecord(
@@ -11375,6 +11381,12 @@ function personalChatUserPromptFallback(
  */
 export type ChatHandoffReplayOutcome = "fit" | "truncated" | "refused" | "retried" | "gave_up";
 
+/** How a provider error event categorized a failure. */
+export type AgentChatTurnErrorCategory = Extract<
+  NonNullable<Extract<AgentChatEvent, { type: "error" }>["errorInfo"]>,
+  { category: string }
+>["category"];
+
 export type AgentChatTurnSettledEvent = Readonly<{
   sessionId: string;
   turnId: string;
@@ -11387,6 +11399,8 @@ export type AgentChatTurnSettledEvent = Readonly<{
   costUsd?: number | null;
   /** Wall time from the turn's start to its done event. */
   durationMs?: number | null;
+  /** On a failed turn, why, when its error event said; otherwise null. */
+  errorCategory?: AgentChatTurnErrorCategory | null;
 }>;
 
 type AgentChatAutomationService = {
@@ -11909,10 +11923,14 @@ export function createAgentChatService(args: {
    * command or a simulator there). Never the machine, the command, or the path.
    */
   onRemoteWorkStarted?: (event: { sessionId: string; machineKey: string }) => void;
-  /** Content-free hook fired after an explicit session-metadata generation request. */
+  /**
+   * Content-free hook fired after a session-metadata generation: on request,
+   * or `automatic` when ADE refreshed the status line after a turn.
+   */
   onSessionMetadataRegenerated?: (event: {
     sessionId: string;
     outcome: "completed" | "partial" | "failed";
+    automatic: boolean;
   }) => void;
   /**
    * Content-free hook fired once per auto-resume transition (armed, resumed,
@@ -18781,6 +18799,7 @@ export function createAgentChatService(args: {
   let sessionMetadataRegenerator: ReturnType<typeof createSessionMetadataRegenerator> | null = null;
   const regenerateSessionMetadata = async (
     args: AgentChatRegenerateSessionMetadataArgs,
+    options: SessionMetadataRunOptions = {},
   ): Promise<AgentChatRegenerateSessionMetadataResult> => {
     // `async`, so `ensureManagedSession` rejects for an unknown session id like
     // every other failure here rather than throwing at the call site.
@@ -18865,7 +18884,7 @@ export function createAgentChatService(args: {
       onRegenerated: onSessionMetadataRegenerated,
       logger,
     });
-    return sessionMetadataRegenerator(args);
+    return sessionMetadataRegenerator(args, options);
   };
 
   // OpenCode handles API-key and local-model chats.
@@ -19545,7 +19564,7 @@ export function createAgentChatService(args: {
         directory: handle.directory,
         emit: (event) => emitChatEvent(managed, event),
         currentTurnId: () => runtime.activeTurnId,
-        killProcessTree: (pid) => { killOpenCodeShellProcessTree(pid); },
+        killProcessTree: (pid) => killOpenCodeShellProcessTree(pid),
         isProcessAlive: isOpenCodeProcessAlive,
         onKillUnconfirmed: (shellId, reason) => {
           logger.warn("agent_chat.opencode_stop_shell_unconfirmed", { sessionId: managed.session.id, shellId, reason });
@@ -20012,6 +20031,41 @@ export function createAgentChatService(args: {
    * applies — a person, the CTO, or an unparented chat from an agent that has
    * no chat of its own. A parent or caller chat ADE cannot load caps at `ask`.
    */
+  /**
+   * A chat's permission level as this brain knows it, and whether it knows the
+   * chat at all. An unknown chat reads as `ask`, the safe level.
+   */
+  const readChatPermissionLevel = (
+    sessionId: string,
+    trackedCliLevel: (sessionId: string) => PermissionLevel | null,
+  ): { level: PermissionLevel; known: boolean } => {
+    try {
+      return { level: sessionPermissionLevel(ensureManagedSession(sessionId).session, "ask"), known: true };
+    } catch {
+      // A chat in another project, the personal scope, or on another
+      // machine: the brain recorded its level when it asked for this child.
+      const recorded = externalChatContext(sessionId)?.permissionLevel ?? trackedCliLevel(sessionId);
+      return recorded ? { level: recorded, known: true } : { level: "ask", known: false };
+    }
+  };
+
+  /**
+   * Whether the agent that started a chat named a calling chat this brain
+   * can't find (it lives on another ADE on this computer, say a dev brain
+   * beside the installed one). Its level then reads as `ask`, and the notice
+   * says why instead of blaming the agent's own access.
+   */
+  const callerChatUnknown = (actor: AgentChatRuntimeActor | null | undefined): boolean => {
+    const callerId = actor?.kind === "agent" ? actor.chatSessionId?.trim() : null;
+    if (!callerId) return false;
+    try {
+      ensureManagedSession(callerId);
+      return false;
+    } catch {
+      return externalChatContext(callerId)?.permissionLevel == null && sessionService.get(callerId) == null;
+    }
+  };
+
   const resolvePermissionCeiling = (args: {
     parentSessionId?: string | null;
     actor?: AgentChatRuntimeActor | null;
@@ -20035,17 +20089,7 @@ export function createAgentChatService(args: {
       if (!resume?.launch) return null;
       return sessionPermissionLevel({ provider: resume.provider, ...resume.launch }, "ask");
     };
-    const levelOf = (sessionId: string): PermissionLevel => {
-      try {
-        return sessionPermissionLevel(ensureManagedSession(sessionId).session, "ask");
-      } catch {
-        // A chat in another project, the personal scope, or on another
-        // machine: the brain recorded its level when it asked for this child.
-        return externalChatContext(sessionId)?.permissionLevel
-          ?? trackedCliLevel(sessionId)
-          ?? "ask";
-      }
-    };
+    const levelOf = (sessionId: string): PermissionLevel => readChatPermissionLevel(sessionId, trackedCliLevel).level;
     const parentId = args.parentSessionId?.trim();
     const callerId = args.actor?.kind === "agent" ? args.actor.chatSessionId?.trim() : null;
     return lowerPermissionCeiling(parentId ? levelOf(parentId) : null, callerId ? levelOf(callerId) : null);
@@ -22218,6 +22262,7 @@ export function createAgentChatService(args: {
       // before this turn's first event is placed by its time instead.
       lastTurnIdBySession.delete(managed.session.id);
       managed.turnReasoningEffort = managed.session.reasoningEffort ?? null;
+      managed.turnErrorCategory = null;
     }
     managed.session.status = "active";
     managed.session.idleSinceAt = null;
@@ -22256,7 +22301,7 @@ export function createAgentChatService(args: {
     decide: jevDecide,
     logger,
     readStatusLine: (sessionId) => sessionService.get(sessionId)?.statusNote,
-    regenerate: (sessionId) => regenerateSessionMetadata({ sessionId, fields: ["statusLine"] }),
+    regenerate: (sessionId) => regenerateSessionMetadata({ sessionId, fields: ["statusLine"] }, { automatic: true }),
   });
 
   /** An agent-written status line is kept unless Jev reads the final reply as past it. */
@@ -22296,7 +22341,7 @@ export function createAgentChatService(args: {
     void regenerateSessionMetadata({
       sessionId: managed.session.id,
       fields: ["statusLine"],
-    }).catch((error) => {
+    }, { automatic: true }).catch((error) => {
       logger.warn("agent_chat.idle_status_line_failed", {
         sessionId: managed.session.id,
         error: error instanceof Error ? error.message : String(error),
@@ -23843,6 +23888,9 @@ export function createAgentChatService(args: {
       // not every provider logs it on its way: an OpenCode turn that failed in
       // a second ("Command not found: ship") left no line in the brain log.
       const errorInfo = typeof decoratedEvent.errorInfo === "object" ? decoratedEvent.errorInfo : null;
+      // After the decoration, so a CLI sign-in or missing-CLI failure settles
+      // with that category, not the raw error's.
+      if (errorInfo?.category) managed.turnErrorCategory = errorInfo.category;
       logger.warn("agent_chat.turn_error", {
         sessionId: managed.session.id,
         provider: managed.session.provider,
@@ -24211,6 +24259,8 @@ export function createAgentChatService(args: {
       // The model that answered: a reroute's served model when it is a catalog
       // model, else the requested one. Non-catalog names report as `other`.
       const servedModelId = event.servedModel ? getModelById(event.servedModel)?.id : undefined;
+      const errorCategory = event.status === "failed" ? managed.turnErrorCategory ?? null : null;
+      managed.turnErrorCategory = null;
       onTurnSettled({
         sessionId: managed.session.id,
         turnId: event.turnId,
@@ -24221,6 +24271,7 @@ export function createAgentChatService(args: {
         usage: event.usage,
         costUsd: event.costUsd ?? null,
         durationMs: turnStartedMs === undefined ? null : Math.max(0, Date.now() - turnStartedMs),
+        errorCategory,
       });
     } catch (error) {
       logger.warn("agent_chat.turn_settled_callback_failed", {
@@ -51178,12 +51229,16 @@ export function createAgentChatService(args: {
       // name whichever one set it.
       const cappedByParent = normalizedParentSessionId != null
         && resolvePermissionCeiling({ parentSessionId: normalizedParentSessionId }) === parentPermissionCeiling.level;
+      const unknownCaller = !cappedByParent && callerChatUnknown(runtimeActor);
+      const label = permissionLevelLabel(parentPermissionCeiling.level);
       emitChatEvent(managed, {
         type: "system_notice",
         noticeKind: "info",
         message: cappedByParent
-          ? `Permissions capped at "${permissionLevelLabel(parentPermissionCeiling.level)}" to match the chat that started this one.`
-          : `Permissions capped at "${permissionLevelLabel(parentPermissionCeiling.level)}": an agent can't start a chat with more access than its own.`,
+          ? `Permissions capped at "${label}" to match the chat that started this one.`
+          : unknownCaller
+            ? `Permissions capped at "${label}": the chat that ran this command isn't on this ADE, so ADE can't tell how much access it has. Start the chat from the desktop, or from a chat on the same ADE as the command.`
+            : `Permissions capped at "${label}": an agent can't start a chat with more access than its own.`,
       });
       logger.info("agent_chat.parent_permission_ceiling", {
         sessionId,
@@ -56088,8 +56143,12 @@ export function createAgentChatService(args: {
         emitContinuityRecoveryNotice(managed, recovery);
       }
     }
+    const failure = new Error(`Could not resume the original Codex thread: ${classification.detail}`);
+    // A thread the user archived in Codex ("session … is archived. Run `codex
+    // unarchive …`") is their choice; the message says how to undo it.
+    if (/\bis archived\b/i.test(classification.detail)) markExpected(failure, "user");
     return Object.assign(
-      new Error(`Could not resume the original Codex thread: ${classification.detail}`),
+      failure,
       {
         code: "provider_thread_resume_failed" as const,
         resumeFailureClassification: classification,
@@ -77684,6 +77743,20 @@ export function createAgentChatService(args: {
         ...(body ? { detail: body } : {}),
       });
     },
+    /**
+     * A plain info line in a chat's transcript, for something ADE did on the
+     * chat's behalf (an approval it answered itself in a full-auto chat).
+     */
+    recordSystemNotice(args: { sessionId: string; message: string; detail?: string | null }): void {
+      const managed = ensureManagedSession(args.sessionId);
+      const detail = args.detail?.trim() || null;
+      emitChatEvent(managed, {
+        type: "system_notice",
+        noticeKind: "info",
+        message: args.message.trim(),
+        ...(detail ? { detail } : {}),
+      });
+    },
     getSessionIdentityKey,
     getSessionSideChatParentId,
     /** The current turn's start, or the latest one's. Null when none ran in this process. */
@@ -77763,7 +77836,8 @@ export function createAgentChatService(args: {
     getLaunchDefaults,
     applyFastModePolicy,
     getPermissionCeiling: resolvePermissionCeiling,
-    regenerateSessionMetadata,
+    // A caller's request, never `automatic`: only this service starts those.
+    regenerateSessionMetadata: (args: AgentChatRegenerateSessionMetadataArgs) => regenerateSessionMetadata(args),
     setSpawnKind,
     setParent,
     dismissSubagentTakeoverPrompt,

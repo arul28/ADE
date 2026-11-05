@@ -16,9 +16,11 @@ import type {
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import { mapPlatform } from "./syncProtocol";
 import { readTailscaleLocalStatus } from "./tailscaleLocalStatus";
+import { copiedProjectHostMarkerPath } from "./hostInstanceGuard";
 import type { AdeDb } from "../../../../desktop/src/main/services/state/kvDb";
 import { nowIso, safeJsonParse, toOptionalString, uniqueStrings } from "../../../../desktop/src/main/services/shared/utils";
 import { execFileOffThread, offThreadSpawnEnabled } from "../../../../desktop/src/main/services/shared/offThreadSpawn";
+import { rememberMachineIdFile } from "./machineIdFile";
 
 type DeviceRegistryServiceArgs = {
   db: AdeDb;
@@ -68,17 +70,23 @@ let networkInterfacesCache: { expiresAt: number; value: ReturnType<typeof os.net
 export function readOrCreateLocalDeviceId(deviceIdPath: string, legacyPath?: string): string {
   fs.mkdirSync(path.dirname(deviceIdPath), { recursive: true });
   const shared = fs.existsSync(deviceIdPath) ? fs.readFileSync(deviceIdPath, "utf8").trim() : "";
-  if (shared) return shared;
+  if (shared) {
+    rememberMachineIdFile(deviceIdPath, shared);
+    return shared;
+  }
   const legacy = legacyPath && legacyPath !== deviceIdPath && fs.existsSync(legacyPath)
     ? fs.readFileSync(legacyPath, "utf8").trim()
     : "";
   const candidate = legacy || randomUUID();
   try {
     fs.writeFileSync(deviceIdPath, `${candidate}\n`, { flag: "wx" });
+    rememberMachineIdFile(deviceIdPath, candidate);
     return candidate;
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
-    return fs.readFileSync(deviceIdPath, "utf8").trim();
+    const winner = fs.readFileSync(deviceIdPath, "utf8").trim();
+    rememberMachineIdFile(deviceIdPath, winner);
+    return winner;
   }
 }
 
@@ -582,6 +590,34 @@ export function createDeviceRegistryService(args: DeviceRegistryServiceArgs) {
   };
 
   ensureLocalDevice();
+
+  /**
+   * A project the copied-home guard reset (`hostInstanceGuard.ts`) still names
+   * the machine it was copied from as its sync host, so this brain would only
+   * follow it, never host the project or publish this machine, until the
+   * original had been silent for minutes. The guard's marker says the project
+   * now belongs to this machine: take its host role at once, one epoch on.
+   */
+  const adoptCopiedProjectHost = (): boolean => {
+    const marker = copiedProjectHostMarkerPath(args.projectRoot);
+    if (!fs.existsSync(marker)) return false;
+    let adopted = false;
+    try {
+      ensureLocalDevice();
+      const existing = getClusterState();
+      if (existing && existing.brainDeviceId !== localDeviceId) {
+        setClusterState({ brainDeviceId: localDeviceId, brainEpoch: existing.brainEpoch + 1 });
+        adopted = true;
+        args.logger.info("sync.copied_project_host_adopted", { previousBrainDeviceId: existing.brainDeviceId });
+      }
+      fs.rmSync(marker, { force: true });
+    } catch (error) {
+      // Kept for the next start; meanwhile the old wait-for-silence rule applies.
+      args.logger.warn("sync.copied_project_host_adopt_failed", { error: error instanceof Error ? error.message : String(error) });
+    }
+    return adopted;
+  };
+  adoptCopiedProjectHost();
 
   return {
     getLocalDeviceId(): string {

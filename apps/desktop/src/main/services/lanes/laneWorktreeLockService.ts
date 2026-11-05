@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { markExpected } from "../../../shared/expectedError";
 import type { AdeDb } from "../state/kvDb";
 import type { Logger } from "../logging/logger";
 import type {
@@ -54,6 +55,8 @@ export class LaneWorktreeLockedError extends Error {
     super(blocker.message);
     this.name = "LaneWorktreeLockedError";
     this.blocker = blocker;
+    // Another task holds the lane (a delete, a PR task); the message says to wait for it.
+    markExpected(this, "user");
   }
 }
 

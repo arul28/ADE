@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { AdeExpectedError } from "../../../shared/expectedError";
 import { runGit } from "../git/git";
 import { fetchRemoteTrackingBranch } from "../shared/remoteTrackingBranch";
 import {
@@ -41,12 +42,18 @@ async function verifyCommit(ref: string, cwd: string): Promise<string | null> {
  * commit at all (a fresh `git init`) has no branch to start from yet, and
  * "wasn't found" would send the user looking for a branch that cannot exist.
  */
-async function missingStartBranchError(projectRoot: string, message: string): Promise<Error> {
+async function missingStartBranchError(projectRoot: string, refs: readonly string[], message: string): Promise<Error> {
   const anyRef = await runGit(["for-each-ref", "--count=1", "--format=%(refname)"], { cwd: projectRoot, timeoutMs: 10_000 });
-  if (anyRef.exitCode === 0 && !anyRef.stdout.trim()) {
-    return new Error("This repository has no commits yet. Make a first commit, then create a lane.");
+  // A branch the user named that is not there, or a repository with no
+  // commits, is their answer. A failed listing is ADE's and stays an issue,
+  // and so does a `rev-parse` that timed out on a branch that is there.
+  if (anyRef.exitCode !== 0) return new Error(message);
+  if (!anyRef.stdout.trim()) {
+    return new AdeExpectedError("This repository has no commits yet. Make a first commit, then create a lane.", "user");
   }
-  return new Error(message);
+  const named = await runGit(["for-each-ref", "--format=%(refname)", ...refs], { cwd: projectRoot, timeoutMs: 10_000 });
+  const confirmedMissing = named.exitCode === 0 && !named.stdout.trim();
+  return confirmedMissing ? new AdeExpectedError(message, "user") : new Error(message);
 }
 
 /**
@@ -95,14 +102,24 @@ export async function resolveLaneStart(args: {
       notes.push(`${sourceBranch} isn't on the remote yet; started from your local ${sourceBranch}.`);
       return { start, sourceBranch, startRef: sourceBranch, startSha: localSha, copyFrom: null, notes };
     }
-    throw await missingStartBranchError(projectRoot, `Branch ${sourceBranch} wasn't found on the remote or locally.`);
+    throw await missingStartBranchError(
+      projectRoot,
+      [`refs/remotes/${remoteRef}`, `refs/heads/${sourceBranch}`],
+      `Branch ${sourceBranch} wasn't found on the remote or locally.`,
+    );
   }
 
   let startRef = laneStartRefLabel(start, sourceBranch);
   let startSha = await verifyCommit(`refs/heads/${sourceBranch}`, projectRoot);
   if (!startSha) {
     startSha = await verifyCommit(`refs/remotes/${remoteRef}`, projectRoot);
-    if (!startSha) throw await missingStartBranchError(projectRoot, `Branch ${sourceBranch} wasn't found locally or on the remote.`);
+    if (!startSha) {
+      throw await missingStartBranchError(
+        projectRoot,
+        [`refs/heads/${sourceBranch}`, `refs/remotes/${remoteRef}`],
+        `Branch ${sourceBranch} wasn't found locally or on the remote.`,
+      );
+    }
     startRef = remoteRef;
     notes.push(`There's no local ${sourceBranch}; started from ${remoteRef}.`);
   }

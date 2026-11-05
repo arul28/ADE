@@ -117,6 +117,45 @@ describe("runSyncHostStartupLoop", () => {
     expect(logs.some((line) => line.includes("taking over mobile sync"))).toBe(true);
   });
 
+  // The scope registry answers a backed-off attempt with the conflict it recorded, at once. After
+  // a takeover that conflict names the brain just stopped, and retrying it with nothing to wait on
+  // spun 19,503 times in 58s on 2026-11-04.
+  it.each([
+    ["clears the held failure so the next attempt is real", true, ["takeover 4242"]],
+    ["waits before acting on the same owner again", false, ["takeover 4242", "sleep 2000"]],
+  ])("after a takeover, %s", async (_, canClear, expected) => {
+    const events: string[] = [];
+    let held = false;
+    let starts = 0;
+    await runSyncHostStartupLoop({
+      startSyncHost: () => {
+        starts += 1;
+        if (starts === 1 || held) {
+          held = true;
+          return Promise.reject(conflictError(makeOwner()));
+        }
+        return Promise.resolve();
+      },
+      // Bounded, so a loop that never waits fails instead of hanging the run.
+      isDone: () => starts > 50,
+      log: () => {},
+      logEvent: (event, meta) => {
+        if (event === "sync.host_takeover_stale_owner") events.push(`takeover ${String(meta.ownerPid)}`);
+      },
+      getServiceMainPid: () => process.pid,
+      ...(canClear ? { clearHeldFailures: () => { held = false; } } : {}),
+      // The owner is already gone, as it was in the incident.
+      kill: () => { throw Object.assign(new Error("kill ESRCH"), { code: "ESRCH" }); },
+      pidAlive: () => false,
+      sleep: async (ms) => {
+        events.push(`sleep ${ms}`);
+        held = false;
+      },
+      env: betaEnv,
+    });
+    expect(events).toEqual(expected);
+  });
+
   // On Windows `kill(pid, "SIGTERM")` is TerminateProcess, so the stale brain never flushes. The
   // takeover asks it to leave over RPC first and force-kills only when that request is refused.
   it.each([
