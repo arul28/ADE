@@ -9,17 +9,17 @@
 
 namespace ade {
 
+std::wstring className(HWND hwnd) {
+  wchar_t buf[256];
+  int n = GetClassNameW(hwnd, buf, 256);
+  return std::wstring(buf, n > 0 ? n : 0);
+}
+
 namespace {
 
 bool isCloaked(HWND hwnd) {
   DWORD cloaked = 0;
   return SUCCEEDED(DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, &cloaked, sizeof(cloaked))) && cloaked != 0;
-}
-
-std::wstring className(HWND hwnd) {
-  wchar_t buf[256];
-  int n = GetClassNameW(hwnd, buf, 256);
-  return std::wstring(buf, n > 0 ? n : 0);
 }
 
 bool isShellClass(const std::wstring& cls) {
@@ -440,6 +440,16 @@ WORD virtualKeyForName(const std::string& raw, bool* needsShift) {
   return 0;
 }
 
+bool isExtendedKey(WORD vk) {
+  switch (vk) {
+    case VK_LEFT: case VK_RIGHT: case VK_UP: case VK_DOWN: case VK_HOME: case VK_END:
+    case VK_PRIOR: case VK_NEXT: case VK_INSERT: case VK_DELETE: case VK_APPS:
+      return true;
+    default:
+      return false;
+  }
+}
+
 namespace {
 
 INPUT keyInput(WORD vk, bool up) {
@@ -447,14 +457,7 @@ INPUT keyInput(WORD vk, bool up) {
   in.type = INPUT_KEYBOARD;
   in.ki.wVk = vk;
   in.ki.dwFlags = up ? KEYEVENTF_KEYUP : 0;
-  switch (vk) {
-    case VK_LEFT: case VK_RIGHT: case VK_UP: case VK_DOWN: case VK_HOME: case VK_END:
-    case VK_PRIOR: case VK_NEXT: case VK_INSERT: case VK_DELETE:
-      in.ki.dwFlags |= KEYEVENTF_EXTENDEDKEY;
-      break;
-    default:
-      break;
-  }
+  if (isExtendedKey(vk)) in.ki.dwFlags |= KEYEVENTF_EXTENDEDKEY;
   return in;
 }
 
@@ -605,71 +608,6 @@ void releaseAllButtons() {
     if (GetAsyncKeyState(m) & 0x8000) in.push_back(keyInput(m, true));
   }
   sendAll(in);
-}
-
-namespace {
-
-// The deepest child window under a screen point, for posted mouse messages.
-HWND childAt(HWND top, POINT screen) {
-  HWND current = top;
-  for (int depth = 0; depth < 16; ++depth) {
-    POINT client = screen;
-    ScreenToClient(current, &client);
-    HWND child = ChildWindowFromPointEx(current, client, CWP_SKIPINVISIBLE | CWP_SKIPTRANSPARENT);
-    if (!child || child == current) break;
-    current = child;
-  }
-  return current;
-}
-
-}  // namespace
-
-bool postClick(HWND hwnd, int screenX, int screenY, const std::string& button, int count) {
-  POINT p = {screenX, screenY};
-  HWND target = childAt(hwnd, p);
-  POINT client = p;
-  ScreenToClient(target, &client);
-  LPARAM lp = MAKELPARAM(client.x, client.y);
-  UINT down = WM_LBUTTONDOWN, up = WM_LBUTTONUP, dbl = WM_LBUTTONDBLCLK;
-  WPARAM mk = MK_LBUTTON;
-  if (button == "right") {
-    down = WM_RBUTTONDOWN;
-    up = WM_RBUTTONUP;
-    dbl = WM_RBUTTONDBLCLK;
-    mk = MK_RBUTTON;
-  }
-  PostMessageW(target, WM_MOUSEMOVE, 0, lp);
-  for (int i = 0; i < std::max(1, std::min(count, 3)); ++i) {
-    PostMessageW(target, i == 1 ? dbl : down, mk, lp);
-    PostMessageW(target, up, 0, lp);
-  }
-  return true;
-}
-
-bool postScroll(HWND hwnd, int screenX, int screenY, const std::string& direction, int amount) {
-  POINT p = {screenX, screenY};
-  HWND target = childAt(hwnd, p);
-  bool horizontal = direction == "left" || direction == "right";
-  int sign = (direction == "down" || direction == "left") ? -1 : 1;
-  for (int i = 0; i < std::max(1, std::min(amount, 50)); ++i) {
-    PostMessageW(target, horizontal ? WM_MOUSEHWHEEL : WM_MOUSEWHEEL, MAKEWPARAM(0, sign * WHEEL_DELTA),
-                 MAKELPARAM(screenX, screenY));
-  }
-  return true;
-}
-
-bool postText(HWND hwnd, const std::wstring& text) {
-  HWND target = hwnd;
-  GUITHREADINFO gti = {sizeof(gti)};
-  if (!GetGUIThreadInfo(GetWindowThreadProcessId(hwnd, nullptr), &gti) || !gti.hwndFocus) return false;
-  target = gti.hwndFocus;
-  if (target != hwnd && !IsChild(hwnd, target)) return false;
-  for (size_t i = 0; i < text.size(); ++i) {
-    wchar_t c = text[i];
-    if (c == L'\r' && i + 1 < text.size() && text[i + 1] == L'\n') ++i;
-    if (!PostMessageW(target, WM_CHAR, c == L'\n' ? L'\r' : c, 1)) return false;
-  }
-  return true;
 }
 
 HWND currentForeground() { return GetForegroundWindow(); }

@@ -1,5 +1,6 @@
 // Console-session lifecycle and the NDJSON bridge. The RDP control lives on
 // the STA thread; pipe I/O and engine requests never block its message pump.
+#include "background.h"
 #include "engine.h"
 #include "modes.h"
 #include "rdp.h"
@@ -78,6 +79,7 @@ class Host {
     // Windows a driver that died left parked off-screen go back first.
     parked_.restoreAll(false);
     shared_.setParkedRecord(&parked_);
+    setShieldRecord(&parked_);
     refreshStatus();
   }
 

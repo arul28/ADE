@@ -29,6 +29,7 @@ struct WinInfo {
 // windows (taskbar, desktop, Start) are left out.
 std::vector<WinInfo> listAppWindows();
 bool describeWindow(HWND hwnd, WinInfo& out);
+std::wstring className(HWND hwnd);
 bool isAppWindow(HWND hwnd);
 
 std::wstring processImagePath(DWORD pid);
@@ -66,6 +67,8 @@ bool terminatePid(DWORD pid, const FILETIME& expectedCreation);
 // `left`, `f5`, a single character). Modifiers: `cmd`/`command` and
 // `ctrl`/`control` both mean Ctrl, `alt`/`option` Alt, `shift`, `win`.
 WORD virtualKeyForName(const std::string& name, bool* needsShift);
+// Whether a key carries the extended-key flag (arrows, the navigation block, Menu).
+bool isExtendedKey(WORD vk);
 
 // Real input through SendInput. Coordinates are virtual-screen pixels.
 bool sendMove(int x, int y);
@@ -81,11 +84,6 @@ constexpr size_t kMaxTypedChars = 4'000;
 // its video shows typing; 0 keeps the 12 ms the editors need.
 bool sendText(const std::wstring& text, DWORD paceMs = 0);
 void releaseAllButtons();
-
-// Quiet input for the shared desktop: posted to one window, no pointer.
-bool postClick(HWND hwnd, int screenX, int screenY, const std::string& button, int count);
-bool postScroll(HWND hwnd, int screenX, int screenY, const std::string& direction, int amount);
-bool postText(HWND hwnd, const std::wstring& text);
 
 // The foreground dance for the shared desktop: bring a lane window forward
 // for real keys, then hand the user's window back.

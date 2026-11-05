@@ -64,9 +64,14 @@ Recent `main` work that is **not** inherently macOS-only but can surface path/sh
 
 ## Intentionally not Windows-complete (product reality)
 
-- **Local computer use** (screenshot, video, Apple GUI automation) remains **macOS-first**; other platforms are `blocked_by_capability` by design — do not block the Windows port on this.
-- **Windows OS control** — App Control/CDP and proof ingestion work; native
-  Windows Graphics Capture/UI Automation is not implemented.
+- **Local computer use fallback** (the ADE local screenshot/video/Apple GUI
+  backend) remains macOS-only; other platforms report `blocked_by_capability`.
+- **Windows OS control** — ships as Windows Desktop (`ade screen`, aliases
+  `windows-desktop`/`windows-desk`): a private RDP child session per PC plus a
+  consent-gated shared seat on the user's own session, driven by the native
+  `ade-desktop-driver.exe` (UI Automation, `SendInput`, background
+  `PostMessage` delivery, PrintWindow/BitBlt capture). See
+  [`../features/windows-desktop/README.md`](../features/windows-desktop/README.md).
 - **iOS Simulator** — hidden on Windows by capability. It remains a
   macOS-only product surface.
 - **Releases** — pull-request CI may publish an unsigned Windows preview artifact for internal testing. Release builds fail unless the installer, packaged app, and standalone runtime are Authenticode signed, timestamped, and match the pinned publisher subject; the installer and packaged app must also share one certificate. Signing runs on Azure Artifact Signing, whose certificate rotates daily, so the pin is the certificate Subject and thumbprint pinning is refused outright. Windows builds fresh on the release tag behind the single `ADE_WINDOWS_PUBLIC_RELEASE_ENABLED` gate; disabled Windows publication does not block the macOS release path. SmartScreen reputation remains a release-engineering concern, not only app code.

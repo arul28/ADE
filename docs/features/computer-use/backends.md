@@ -58,8 +58,12 @@ itself is owned by `macDesktopDriverLifecycle.ts`. No external CLI, no
 code-signature negotiation with another vendor — the binary is built and bundled
 by ADE (`apps/desktop/scripts/build-mac-desktop-driver.mjs`).
 
-**Platform:** macOS runtime hosts only. Elsewhere the service reports
-`supported: false` and every method rejects with `MAC_DESKTOP_UNSUPPORTED_PLATFORM`.
+**Platform:** macOS and Windows runtime hosts. On Windows the same service and
+action domain drive `ade-desktop-driver.exe` (a private RDP child session per
+PC, plus the consent-gated shared seat); see
+[`../windows-desktop/README.md`](../windows-desktop/README.md). Elsewhere the
+service reports `supported: false` and every method rejects with
+`MAC_DESKTOP_UNSUPPORTED_PLATFORM`.
 
 **Scope:** a per-lane virtual display. The driver parks the lane's windows on it
 and acts through the Accessibility API; global `CGEvent` posts are the one
@@ -72,7 +76,8 @@ never screen-scoped.
 `ade browser proof` and `ade ios-sim proof`. `ade mac-desktop screenshot` and
 `record start` without a `--caption` file nothing.
 
-**Surface:** `ade mac-desktop …` (aliases `desk`, `mac-desk`), the `mac_desktop`
+**Surface:** `ade screen …` (aliases `mac-desktop`, `desk`, `mac-desk`,
+`windows-desktop`, `windows-desk`), the `mac_desktop`
 action domain, and the Work tools pane tool. Full model in
 [`../mac-desktop/README.md`](../mac-desktop/README.md).
 
@@ -212,4 +217,5 @@ To register a new external backend:
 - `README.md` — control-plane role and proof kinds.
 - `artifact-broker.md` — how ingested artifacts are stored and routed.
 - `../mac-desktop/README.md` — the `ade-mac-desktop` backend in full.
+- `../windows-desktop/README.md` — the same backend on Windows.
 - `settings-and-readiness.md` — the Settings surface.
