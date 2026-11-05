@@ -1403,20 +1403,14 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
   {
     id: "integrations.agent37",
     label: "Agent 37",
-    keywords: ["cloud", "machine", "box", "vm", "linux", "sandbox", "api key", "agent37", "agent 37", "template"],
+    keywords: [
+      "cloud", "machine", "box", "vm", "linux", "sandbox", "api key", "agent37", "agent 37", "template",
+      // The machines themselves live in Your computers; the page header opens it.
+      "sleep", "wake", "resize", "back up", "backup", "delete box", "spending", "cost", "price", "wallet", "box limit", "suspended",
+    ],
     tab: "integrations",
     anchor: "agent37-connection",
     // One workspace key for the account, kept in the account vault.
-    scope: "account",
-    web: "hidden",
-    group: "Agent37",
-  },
-  {
-    id: "integrations.agent37-machines",
-    label: "Agent 37 machines",
-    keywords: ["sleep", "wake", "resize", "back up", "backup", "delete box", "remove from ade", "spending", "cost", "price", "wallet", "box limit", "suspended"],
-    tab: "integrations",
-    anchor: "agent37-machines",
     scope: "account",
     web: "hidden",
     group: "Agent37",
