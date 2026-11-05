@@ -385,7 +385,10 @@ export function createCursorCloudIngressService(deps: CursorCloudIngressServiceD
   const poll = async (): Promise<void> => {
     if (deps.wantsEvents && !deps.wantsEvents()) return;
     if (Date.now() < unauthorizedPausedUntil) {
-      if (accountTokenSubject(await readAccountAccessToken()) === unauthorizedPausedAccount) return;
+      // No subject is a failed token read as often as a sign-out; only a
+      // signed-in account other than the paused one ends the pause.
+      const account = accountTokenSubject(await readAccountAccessToken());
+      if (account === null || account === unauthorizedPausedAccount) return;
       clearUnauthorizedPause();
     }
     let status = getStatus();
