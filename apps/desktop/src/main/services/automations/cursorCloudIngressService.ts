@@ -262,7 +262,11 @@ export function createCursorCloudIngressService(deps: CursorCloudIngressServiceD
 
   /** Registers the stored secret again and keeps the id the relay answers. */
   const reregisterSecret = async (args: { relayBaseUrl: string; secret: string }): Promise<void> => {
-    persistCursorCloudWebhookSecretId(deps.credentialStore, await registerSecret(args));
+    const secretId = await registerSecret(args);
+    // A setup or teardown while the call was out replaced the secret, and this
+    // id names the old one. `setup` writes a secret and its id together.
+    if (readCursorCloudWebhookSecret(deps.db, deps.credentialStore) !== args.secret) return;
+    persistCursorCloudWebhookSecretId(deps.credentialStore, secretId);
   };
 
   const setup = async (): Promise<CursorCloudIngressStatus> => {

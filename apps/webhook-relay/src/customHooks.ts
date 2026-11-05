@@ -334,14 +334,14 @@ export async function handleListCustomHookEvents(request: Request, env: RelayEnv
     const placeholders = group.map(() => "?").join(", ");
     return (await env.DB
       .prepare(`
-        select seq as event_seq, event_id, length(body) as body_length
+        select seq as event_seq, event_id, length(cast(body as blob)) as body_bytes
           from custom_hook_events
          where account_id = ? and hook_id in (${placeholders})
          order by seq asc
          limit ?
       `)
       .bind(accountId, ...group, limit + 1)
-      .all<{ event_seq: number; event_id: string; body_length: number }>()).results ?? [];
+      .all<{ event_seq: number; event_id: string; body_bytes: number }>()).results ?? [];
   }));
   const refs = refGroups.flat()
     .sort((left, right) => Number(left.event_seq) - Number(right.event_seq))
@@ -350,11 +350,11 @@ export async function handleListCustomHookEvents(request: Request, env: RelayEnv
   // first. It always holds the oldest row, so one large request never blocks
   // the rest.
   const page: typeof refs = [];
-  let bodyLength = 0;
+  let bodyBytes = 0;
   for (const ref of refs.slice(0, limit)) {
-    if (page.length > 0 && bodyLength + Number(ref.body_length) > MAX_LISTED_BODY_LENGTH) break;
+    if (page.length > 0 && bodyBytes + Number(ref.body_bytes) > MAX_LISTED_BODY_BYTES) break;
     page.push(ref);
-    bodyLength += Number(ref.body_length);
+    bodyBytes += Number(ref.body_bytes);
   }
   const bodyGroups = await Promise.all(chunk(page.map((ref) => ref.event_id), MAX_BOUND_IDS_PER_STATEMENT).map(async (group) => {
     const placeholders = group.map(() => "?").join(", ");
@@ -377,8 +377,12 @@ export async function handleListCustomHookEvents(request: Request, env: RelayEnv
 }
 
 const MAX_ACK_IDS = 500;
-/** Body characters in one page of held requests, well under D1's result limit. */
-const MAX_LISTED_BODY_LENGTH = 16 * 1024 * 1024;
+/**
+ * Body bytes in one page of held requests, well under D1's result limit. The
+ * size is read as a blob: `length` of TEXT counts characters, and a multibyte
+ * body is larger than its character count.
+ */
+const MAX_LISTED_BODY_BYTES = 16 * 1024 * 1024;
 /** D1 allows 100 bound values per statement; the account id takes one more. */
 const MAX_BOUND_IDS_PER_STATEMENT = 90;
 

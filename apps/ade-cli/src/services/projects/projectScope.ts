@@ -157,6 +157,8 @@ export class ProjectScopeRegistry {
   private readonly scopes = new Map<ProjectId, Promise<ProjectScope>>();
   private readonly readyScopes = new Map<ProjectId, ProjectScope>();
   private readonly failedScopes = new Map<ProjectId, FailedAttempt>();
+  /** Disposals still waiting on a booting scope, so a second caller waits too. */
+  private readonly disposals = new Map<ProjectId, Promise<void>>();
   /**
    * Failed sync-host phases, keyed by {@link syncHostPhaseKey}. Same shape and
    * same windows as {@link failedScopes}: a phase that just failed is very
@@ -479,9 +481,19 @@ export class ProjectScopeRegistry {
     this.failedScopes.delete(projectId);
     this.clearSyncHostPhaseBackoff(projectId);
     const cached = this.scopes.get(projectId);
-    if (!cached) return;
+    // Another caller already took the scope and waits for its boot: wait for
+    // the same disposal, so "disposed" means its teardown ran.
+    if (!cached) return await this.disposals.get(projectId);
     this.scopes.delete(projectId);
     this.readyScopes.delete(projectId);
+    const disposal = this.disposeCached(projectId, cached).finally(() => {
+      if (this.disposals.get(projectId) === disposal) this.disposals.delete(projectId);
+    });
+    this.disposals.set(projectId, disposal);
+    await disposal;
+  }
+
+  private async disposeCached(projectId: ProjectId, cached: Promise<ProjectScope>): Promise<void> {
     const scope = await cached.catch(() => null);
     scope?.dispose();
     if (this.syncHostProjectId === projectId) {

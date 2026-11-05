@@ -5,6 +5,7 @@ import {
   clientIdentity,
   DAY_MS,
   dailyLimitVar,
+  quotaAddress,
   readBoundedBody,
   secondsUntilNextUtcDay,
   sha256Hex,
@@ -216,7 +217,8 @@ async function uploadIdentity(request: Request, userId: string | null, legacy: b
     const safe = userId.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 80);
     if (safe) return `u-${safe}`;
   }
-  return `${legacy ? "legacy-anon" : "anon"}-${(await sha256Hex(clientIdentity(request))).slice(0, 16)}`;
+  // One IPv6 /64 is one caller: a host can rotate addresses inside it freely.
+  return `${legacy ? "legacy-anon" : "anon"}-${(await sha256Hex(quotaAddress(clientIdentity(request)))).slice(0, 16)}`;
 }
 
 /**
@@ -443,12 +445,27 @@ function rememberStored(identity: string, dayKey: string, spentBefore: number): 
 export type DiagnosticsRequestOptions = {
   now?: () => number;
   randomId?: () => string;
+  /** The invocation's `waitUntil`, so a client that disconnects cannot cut off a refund. */
+  waitUntil?: (promise: Promise<unknown>) => void;
 };
 
-export async function handleDiagnosticsRequest(
+export function handleDiagnosticsRequest(
   request: Request,
   env: DiagnosticsEnv,
   options: DiagnosticsRequestOptions = {},
+): Promise<Response> {
+  // A budget slot is claimed before the put and refunded when nothing was
+  // stored. If the client hangs up between the two, the runtime may cancel the
+  // request: hold the invocation open until the handler settles.
+  const handled = handleDiagnosticsUpload(request, env, options);
+  options.waitUntil?.(handled.catch(() => undefined));
+  return handled;
+}
+
+async function handleDiagnosticsUpload(
+  request: Request,
+  env: DiagnosticsEnv,
+  options: DiagnosticsRequestOptions,
 ): Promise<Response> {
   if (request.method === "OPTIONS") {
     return new Response(null, {

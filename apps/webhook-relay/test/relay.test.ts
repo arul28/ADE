@@ -197,7 +197,7 @@ class FakeD1Database {
         .sort((left, right) => left.event_seq - right.event_seq)
         .slice(0, limit)
         .map((entry) => ({
-          body_length: entry.body.length,
+          body_bytes: new TextEncoder().encode(entry.body).length,
           event_seq: entry.event_seq,
           event_id: entry.event_id,
           hook_id: entry.hook_id,

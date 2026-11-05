@@ -573,20 +573,19 @@ async function machineRevocation(
  * Removal is only durable if the removed machine cannot re-register itself. Its
  * heartbeat carries a valid account token for as long as it stays signed in, so
  * the revocation — not the token — is what decides. Returns the response to
- * send when the answer is no, and `null` when registration may proceed.
+ * send when the answer is no, `"repair"` when a removed machine proved a fresh
+ * sign-in (its proof is reserved and the revocation still stands until
+ * `completeRepair` runs after the write), and `null` when it was never removed.
  */
 async function enforceRevocationGate(
-  request: Request,
   env: Env,
   args: {
     userId: string;
     input: RegisterInput;
-    correlationId: string;
-    relayOptions: ActivityRelayOptions;
     pairingProof: PairingProofBroker;
     refuse: RefusalLogger;
   },
-): Promise<Response | null> {
+): Promise<Response | "repair" | null> {
   const { userId, input, refuse } = args;
   const revocation = await machineRevocation(env, userId, input.machineKey);
   if (!revocation) return null;
@@ -606,10 +605,9 @@ async function enforceRevocationGate(
       revokedAt: revocation.revoked_at,
     }, { status: 403 });
   }
-  // A removed machine is off the roster, so on a full account the write below
-  // would refuse it. Refuse it here, before the proof is spent or the
-  // revocation is cleared: a key the cap refused must stay revoked. The write
-  // keeps its own atomic check.
+  // A removed machine is off the roster, so on a full account the write would
+  // refuse it. Refuse it here, before a grant is reserved. The write keeps its
+  // own atomic check, and the revocation is cleared only after that write.
   if (!(await accountHasRoomFor(env, userId, input.machineKey))) {
     refuse("directory.register_refused", "too_many_machines", "account machine cap reached");
     return tooManyMachinesResponse();
@@ -640,16 +638,39 @@ async function enforceRevocationGate(
       revokedAt: revocation.revoked_at,
     }, { status: 403 });
   }
-  // A grant is RESERVED above, not destroyed, and the reservation is what makes
-  // the next few lines recoverable. Reserving is one atomic statement, so
+  return "repair";
+}
+
+/**
+ * Step three of a register call that re-pairs a removed machine, after the
+ * capacity-checked write put it back on the roster. Returns the response to
+ * send when the repair failed (the write is undone), and `null` when the
+ * machine is back.
+ */
+async function completeRepair(
+  request: Request,
+  env: Env,
+  args: {
+    userId: string;
+    input: RegisterInput;
+    correlationId: string;
+    relayOptions: ActivityRelayOptions;
+    pairingProof: PairingProofBroker;
+    refuse: RefusalLogger;
+  },
+): Promise<Response | null> {
+  const { userId, input, refuse } = args;
+  // A grant is RESERVED by the gate, not destroyed, and the reservation is what
+  // makes the next few lines recoverable. Reserving is one atomic statement, so
   // single-use is enforced exactly as strictly as the old delete enforced it —
   // two concurrent registrations still cannot both hold it — but a relay outage
   // no longer burns the user's only credential. On failure it goes back with its
   // ORIGINAL expiry, so forcing relay failures buys nothing: the grant still
   // dies at the moment it was always going to die.
   //
-  // Clear the relay's revocation first: a machine back on the roster but unable
-  // to publish is a worse state than one that retries the re-pair.
+  // Clear the relay's revocation before the directory's: a machine back on the
+  // roster but unable to publish is a worse state than one that retries the
+  // re-pair, so a relay failure undoes the write.
   const restored = await callActivityRelay(request, env, {
     operation: "restore",
     machineKey: input.machineKey,
@@ -657,7 +678,11 @@ async function enforceRevocationGate(
     options: args.relayOptions,
   });
   if (!restored.ok) {
-    // Nothing is proven any more: the credential is back in circulation.
+    // Nothing is proven any more: the credential is back in circulation, and
+    // the machine goes back off the roster. Its revocation never left.
+    await env.DB.prepare("delete from machines where user_id = ? and machine_key = ?")
+      .bind(userId, input.machineKey)
+      .run();
     await args.pairingProof.release();
     refuse("directory.register_refused", "activity_relay_unavailable", restored.reason);
     return json({
@@ -996,19 +1021,26 @@ async function handleRegister(
     nowMs,
   });
 
-  const refusal = await enforceRevocationGate(request, env, {
-    userId,
-    input,
-    correlationId,
-    relayOptions,
-    pairingProof,
-    refuse,
-  });
-  if (refusal) return refusal;
+  const gate = await enforceRevocationGate(env, { userId, input, pairingProof, refuse });
+  if (gate instanceof Response) return gate;
 
   if (!(await upsertMachine(env, { userId, input, nowMs }))) {
+    // Another machine took the last slot after the gate looked. The revocation
+    // still stands, and the grant goes back for the retry.
+    if (gate === "repair") await pairingProof.release();
     refuse("directory.register_refused", "too_many_machines", "account machine cap reached");
     return tooManyMachinesResponse();
+  }
+  if (gate === "repair") {
+    const failed = await completeRepair(request, env, {
+      userId,
+      input,
+      correlationId,
+      relayOptions,
+      pairingProof,
+      refuse,
+    });
+    if (failed) return failed;
   }
 
   const supersededMachineKeys = await supersedePhantomDuplicates(env, {
@@ -1108,10 +1140,10 @@ async function handleDelete(
         device_id = coalesce(excluded.device_id, revoked_machines.device_id),
         revoked_at = excluded.revoked_at
     `).bind(userId, machineKey, existing?.device_id ?? null, Date.now()).run();
+    await env.DB.prepare("delete from machines where user_id = ? and machine_key = ?")
+      .bind(userId, machineKey)
+      .run();
   }
-  await env.DB.prepare("delete from machines where user_id = ? and machine_key = ?")
-    .bind(userId, machineKey)
-    .run();
 
   const purged = await callActivityRelay(request, env, {
     operation: "purge",
