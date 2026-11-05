@@ -420,12 +420,13 @@ export function buildAgent37AgentActions(deps: Agent37AgentActionDeps) {
       const { projects } = await deps.readySettings.read();
       const existing = projects.find((entry) => entry.identity === identity) ?? null;
       const kind = text(args, "kind") as Agent37MachineKind | null;
+      const shape = shapeArg(args);
       const next = normalizeAgent37ReadySettings({
         ...(existing ?? {}),
         identity,
         projectName: text(args, "projectName") ?? existing?.projectName ?? undefined,
         ...(kind ? { kind } : {}),
-        ...(shapeArg(args) ? { shape: shapeArg(args)! } : {}),
+        ...(shape ? { shape } : {}),
         ...(typeof args.setup === "string" ? { setup: args.setup } : {}),
         failure: null,
       } as Partial<Agent37ReadyProjectSettings>);

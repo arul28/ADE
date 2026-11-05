@@ -10,7 +10,8 @@
  * - **Move** (`moveAgent37Machine`): Agent 37 can't change a box's type, and a
  *   fork keeps it. So moving a box to a VM (or back) makes a new machine of
  *   the other type, streams the old one's home folder into it (every repo,
- *   lane worktree with its uncommitted work, chat and provider sign-in; never
+ *   lane worktree with its uncommitted work, project chat and provider
+ *   sign-in; never
  *   ADE's own identity or Docker's data), registers the projects there, gives
  *   it the old name, and deletes the old box.
  *
@@ -46,6 +47,7 @@ import {
 } from "./agent37MachineCreator";
 import { AGENT37_MACHINE_KEY_METADATA } from "./agent37Machines";
 import { deleteAgent37InstanceConfirmed } from "./agent37PendingCreates";
+import { wakeThroughTransition } from "./agent37ReadyClaim";
 
 export type Agent37CopyDeps = Agent37MachineCreatorDeps & {
   spending?: () => Promise<Agent37Spending | null>;
@@ -253,7 +255,7 @@ export async function moveAgent37Machine(
   // The old box must be awake to hand its files over.
   if (source.status !== "running") {
     progress("creating", `Waking ${sourceName}…`);
-    await client.startInstance(source.id);
+    await wakeThroughTransition(client, source.id);
   }
   const listed = await client.exec(source.id, "cd \"$HOME\" && ade projects list --json 2>/dev/null", { timeoutMs: 60_000 });
   const projectRoots = readProjectRoots(listed.stdout);
@@ -313,7 +315,8 @@ export async function moveAgent37Machine(
     // The old machine is untouched but for the pause: let its ADE start again,
     // and take the half-made new one away.
     logger.warn?.("agent37.machine_move_failed", { sourceId: source.id, instanceId: target.instanceId, error: getErrorMessage(error) });
-    await client.exec(source.id, 'rm -f "$ADE_HOME/brain.paused"', { timeoutMs: 30_000 }).catch(() => null);
+    // The brackets keep pkill from matching this command's own shell.
+    await client.exec(source.id, 'pkill -f "python3 /tmp/ade-move-serve[.]py"; rm -f "$ADE_HOME/brain.paused"', { timeoutMs: 30_000 }).catch(() => null);
     await deleteAgent37InstanceConfirmed(client, target.instanceId, { logger, sleep });
     if (target.machineKey) await deps.removeAccountMachine(target.machineKey).catch(() => null);
     throw new Error(`ADE couldn't move ${sourceName}: ${getErrorMessage(error)} ${sourceName} is as it was, and the new machine was deleted.`);

@@ -151,6 +151,8 @@ export function createAgent37Machines(deps: Agent37MachinesDeps) {
   const now = deps.now ?? (() => Date.now());
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   let usageCache: { at: number; usage: Agent37Usage } | null = null;
+  /** The ADE machines the last good list showed as Agent 37 boxes: only those are worth a wake lookup. */
+  let knownMachineKeys = new Set<string>();
   // Bumped by a key change, so a read under the old key can't refill the cache.
   let usageGeneration = 0;
 
@@ -188,6 +190,7 @@ export function createAgent37Machines(deps: Agent37MachinesDeps) {
     const [usage, budget] = await Promise.all([readUsage(client), readBudget()]);
     const at = now();
     const live = instances.filter((instance) => instance.status !== "deleted");
+    knownMachineKeys = new Set(live.map((instance) => instance.metadata[AGENT37_MACHINE_KEY_METADATA]).filter((key): key is string => Boolean(key)));
     return {
       state: "ok",
       machines: live.map((instance) => toAgent37Machine(instance, usage, at)),
@@ -376,6 +379,8 @@ export function createAgent37Machines(deps: Agent37MachinesDeps) {
   return {
     list,
     run,
+    /** Whether the last list showed this ADE machine as an Agent 37 box. */
+    isKnownBox: (machineKey: string): boolean => knownMachineKeys.has(machineKey),
     /** One box's metadata, read fresh. */
     instanceMetadata: async (instanceId: string): Promise<Record<string, string> | null> => {
       const client = await deps.client();

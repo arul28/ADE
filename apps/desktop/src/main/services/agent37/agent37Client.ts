@@ -582,14 +582,11 @@ export function createAgent37Client(args: { apiKey: string; fetch?: FetchLike })
       }
     },
 
-    /**
-     * Runs `sh -c command` on the box as its default user (or root). A
-     * non-zero exit is a result, not an error. Exec wakes a sleeping box.
-     */
-    async exec(id: string, command: string, options?: { timeoutMs?: number; signal?: AbortSignal; user?: "root" }): Promise<Agent37ExecResult> {
+    /** Runs `sh -c command` on the box as its default user. A non-zero exit is a result, not an error. Exec wakes a sleeping box. */
+    async exec(id: string, command: string, options?: { timeoutMs?: number; signal?: AbortSignal }): Promise<Agent37ExecResult> {
       const body = await request(`${AGENT37_SANDBOX_BASE_URL}/instances/${encodeURIComponent(id)}/exec`, {
         method: "POST",
-        body: { command, ...(options?.user ? { user: options.user } : {}) },
+        body: { command },
         timeoutMs: options?.timeoutMs,
         signal: options?.signal,
         headers: { "x-agent37-key": apiKey },

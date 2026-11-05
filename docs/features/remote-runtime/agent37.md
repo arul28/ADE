@@ -333,7 +333,7 @@ awake). A big disk takes minutes: a warm VM with an 8 GB Supabase stack took
    holds the brain, so every database is copied whole) and has it serve its
    home folder once, gzipped, behind a one-hour signed Agent 37 URL.
 3. The new machine pulls it into its home folder: every repo, lane worktree
-   with its uncommitted work, chat history, and provider sign-in. Not ADE's
+   with its uncommitted work, the projects' chats, and provider sign-ins. Not ADE's
    own home (`~/.ade`, which holds the machine's identity), Docker's data,
    or the projects' cr-sqlite site ids.
 4. It registers the old machine's projects with its ADE, takes the old name,

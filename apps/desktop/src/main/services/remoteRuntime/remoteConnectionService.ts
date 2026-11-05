@@ -980,7 +980,7 @@ export class RemoteConnectionService {
     try {
       // Asked even with a pool entry: a sleeping box's relay tunnel can look
       // open until a call times out. Only Agent 37 boxes cost a lookup.
-      const woke = explicit ? await this.wakeForUse(target) : false;
+      const woke = explicit && this.options.wakeForUse ? await this.options.wakeForUse(target) : false;
       const result = woke
         ? await this.connectWokenMachine(target)
         : explicit

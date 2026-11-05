@@ -175,7 +175,16 @@ export async function wakeAgent37MachineForUse(
   options: { spending?: () => Promise<Agent37Spending | null>; logger?: Agent37Logger; now?: () => number } = {},
 ): Promise<Agent37WakeForUseResult> {
   const now = options.now ?? (() => Date.now());
-  const instance = agent37InstanceForMachine(await client.listInstances(), machine.machineKey, machine.hostname);
+  // Bounded: this sits in front of a connect, which must not wait on a slow Agent 37.
+  const instances = await Promise.race([
+    client.listInstances(),
+    new Promise<null>((resolve) => setTimeout(() => resolve(null), WAKE_LOOKUP_TIMEOUT_MS).unref?.()),
+  ]);
+  if (!instances) {
+    options.logger?.warn?.("agent37.wake_lookup_timed_out", { timeoutMs: WAKE_LOOKUP_TIMEOUT_MS });
+    return { state: "not_agent37" };
+  }
+  const instance = agent37InstanceForMachine(instances, machine.machineKey, machine.hostname);
   if (!instance) return { state: "not_agent37" };
   if (instance.status === "running" || instance.status === "starting" || instance.status === "waking") {
     return { state: "awake", instanceId: instance.id };
@@ -190,6 +199,9 @@ export async function wakeAgent37MachineForUse(
   options.logger?.info?.("agent37.machine_woken_for_use", { instanceId: instance.id, wakeMs: now() - started });
   return { state: "woken", instanceId: instance.id, wakeMs: now() - started };
 }
+
+/** How long a wake for use may spend finding the box before the connect goes ahead as usual. */
+const WAKE_LOOKUP_TIMEOUT_MS = 5_000;
 
 /* The monthly cap. */
 

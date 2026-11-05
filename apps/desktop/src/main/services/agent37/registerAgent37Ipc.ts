@@ -2,12 +2,11 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { app, BrowserWindow, ipcMain, Notification } from "electron";
+import { app, BrowserWindow, ipcMain } from "electron";
 import {
   AGENT37_DEFAULT_TEMPLATE,
   agent37StillStartingMessage,
   describeAgent37TemplateStatus,
-  formatAgent37Usd,
   agent37CapReachedMessage,
   type Agent37Budget,
   type Agent37ShapeId,
@@ -53,12 +52,12 @@ import { createAgent37Machines } from "./agent37Machines";
 import { claimAgent37ReadyMachine, releaseAgent37ReadyMachine } from "./agent37ReadyClaim";
 import { createAgent37ReadyKeeper } from "./agent37ReadyMachines";
 import { setAgent37WakeForUse } from "./agent37WakeHook";
+import { startAgent37MoneyWatch } from "./agent37MoneyWatch";
 import { setAgent37DesktopActions } from "./agent37DesktopActions";
 import { copyAgent37Machine, moveAgent37Machine, type Agent37CopyDeps } from "./agent37MachineCopy";
 import {
   AGENT37_BUDGET_VAULT_KEY,
   createAgent37BudgetStore,
-  enableAgent37SleepWherePending,
   wakeAgent37MachineForUse,
 } from "./agent37Sleep";
 import { AGENT37_READY_VAULT_KEY, createAgent37ReadySettingsStore } from "./agent37ReadySettings";
@@ -362,14 +361,13 @@ export function registerAgent37Ipc(args: {
     readBudget: () => budget.read(),
     logger,
   });
-  startAgent37MoneyWatch({ client: savedClient, machines, logger });
-  // Remote connections wake a sleeping box the person is about to use. A
-  // machine that isn't an Agent 37 box is remembered for a minute, so calls
-  // to a laptop that is simply offline don't list the workspace each time.
-  const notAgent37Until = new Map<string, number>();
+  startAgent37MoneyWatch({ client: savedClient, machines, logger, firstPassDelayMs: STARTUP_CHECK_DELAY_MS + 30_000 });
+  // Remote connections wake a sleeping box the person is about to use. Only a
+  // machine the machine list showed as an Agent 37 box is looked up, so a
+  // Connect to a laptop never waits on Agent 37.
   setAgent37WakeForUse(async (target) => {
     const machineKey = target.pairedMachine?.machineKey?.trim();
-    if (!machineKey || (notAgent37Until.get(machineKey) ?? 0) > Date.now()) return false;
+    if (!machineKey || !machines.isKnownBox(machineKey)) return false;
     const client = await savedClient().catch(() => null);
     if (!client) return false;
     const result = await wakeAgent37MachineForUse(client, { machineKey, hostname: target.hostname }, {
@@ -380,7 +378,6 @@ export function registerAgent37Ipc(args: {
       return null;
     });
     if (!result) return false;
-    if (result.state === "not_agent37") notAgent37Until.set(machineKey, Date.now() + 60_000);
     if (result.state === "refused") throw new Error(result.message);
     if (result.state === "woken") sendToAllWindows(IPC.agent37StatusChanged);
     return result.state === "woken";
@@ -710,82 +707,6 @@ export function registerAgent37Ipc(args: {
       return { started: true };
     },
   );
-}
-
-/** How often the money watch reads the workspace: Agent 37 settles compute hourly, so more often shows nothing new. */
-const MONEY_WATCH_MS = 10 * 60_000;
-/** A wallet that runs out within this, at the current rate, is worth a notification. */
-const WALLET_NOTIFY_HOURS = 24;
-
-/**
- * Every ten minutes while a key is saved: turn sleep on for awake ADE boxes
- * still waiting for it (made before ADE managed sleep, or whose ADE just
- * updated), and tell the person once when the wallet is about to run dry or
- * the monthly cap is near or reached. Nothing here wakes a box.
- */
-function startAgent37MoneyWatch(deps: {
-  client: () => Promise<ReturnType<typeof createAgent37Client> | null>;
-  machines: ReturnType<typeof createAgent37Machines>;
-  logger: Logger;
-}): void {
-  /** Boxes whose ADE was too old to keep itself awake: asked again after an hour, not every pass. */
-  const tooOldUntil = new Map<string, number>();
-  const notified = new Set<string>();
-  const notifyOnce = (key: string, title: string, body: string) => {
-    if (notified.has(key)) return;
-    notified.add(key);
-    if (!Notification.isSupported()) return;
-    try {
-      new Notification({ title, body }).show();
-    } catch (error) {
-      deps.logger.warn("agent37.money_notification_failed", { error: error instanceof Error ? error.message : String(error) });
-    }
-  };
-  const pass = async () => {
-    const client = await deps.client().catch(() => null);
-    if (!client) return;
-    const result = await deps.machines.list();
-    if (result.state !== "ok") return;
-    const now = Date.now();
-    const instances = await client.listInstances().catch(() => []);
-    const enabled = await enableAgent37SleepWherePending(client, instances.filter((instance) => {
-      const box = result.machines.find((machine) => machine.instanceId === instance.id);
-      return box?.madeByAde === true;
-    }), {
-      logger: deps.logger,
-      skip: (instance) => (tooOldUntil.get(instance.id) ?? 0) > now,
-    }).catch((error: unknown) => {
-      deps.logger.warn("agent37.sleep_pass_failed", { error: error instanceof Error ? error.message : String(error) });
-      return [];
-    });
-    for (const { instanceId, result: outcome } of enabled) {
-      if (outcome.state === "brain_too_old") tooOldUntil.set(instanceId, now + 60 * 60_000);
-    }
-    const month = new Date(now).toISOString().slice(0, 7);
-    const { spending } = result;
-    if (spending.capReached && spending.monthlyCapUsd != null) {
-      notifyOnce(`cap:${month}`, "Agent 37 cap reached", `Your machines spent this month's ${formatAgent37Usd(spending.monthlyCapUsd)}. ADE won't make or wake machines until you raise the cap or the month ends.`);
-    } else if (spending.capNear && spending.monthlyCapUsd != null && spending.monthSpentUsd != null) {
-      notifyOnce(`near:${month}`, "Close to your Agent 37 cap", `${formatAgent37Usd(spending.monthSpentUsd)} of ${formatAgent37Usd(spending.monthlyCapUsd)} spent this month.`);
-    }
-    const hourly = result.machines.reduce((total, box) => total + ((box.state === "running" || box.state === "starting") ? box.runningHourlyUsd ?? 0 : box.idleHourlyUsd ?? 0), 0);
-    if (result.balanceUsd != null && hourly > 0 && result.balanceUsd / hourly < WALLET_NOTIFY_HOURS) {
-      notifyOnce(`wallet:${new Date(now).toISOString().slice(0, 10)}`, "Agent 37 wallet is running low",
-        `${formatAgent37Usd(result.balanceUsd)} left lasts under a day at this rate. Top it up, or Agent 37 suspends your machines.`);
-    }
-  };
-  const run = () => {
-    void pass().catch((error: unknown) => deps.logger.warn("agent37.money_watch_failed", { error: error instanceof Error ? error.message : String(error) }));
-  };
-  // After the startup check, off the boot path.
-  const first = setTimeout(run, STARTUP_CHECK_DELAY_MS + 30_000);
-  first.unref?.();
-  const timer = setInterval(run, MONEY_WATCH_MS);
-  timer.unref?.();
-  app.once("will-quit", () => {
-    clearTimeout(first);
-    clearInterval(timer);
-  });
 }
 
 /**

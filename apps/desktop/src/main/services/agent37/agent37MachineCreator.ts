@@ -31,7 +31,7 @@ import {
   type Agent37CreateProgress,
 } from "../../../shared/agent37";
 import { accountMachineConnectionState } from "../../../shared/accountDirectory";
-import type { AdeAccountMachine, AdeAccountMachinesResult } from "../../../shared/types/account";
+import type { AdeAccountMachinesResult } from "../../../shared/types/account";
 import type { Agent37Client, Agent37Instance } from "./agent37Client";
 import { recordAgent37MachineKey } from "./agent37Machines";
 import { enableAgent37Sleep } from "./agent37Sleep";
@@ -201,7 +201,6 @@ export async function createAgent37Machine(
 ): Promise<Agent37CreateMachineResult> {
   const { signal } = options;
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
-  const fetcher: FetchLike = deps.fetch ?? ((input, init) => fetch(input, init));
   if (!isAgent37MachineKind(rawArgs?.kind)) throw new Error("Pick a box or a VM.");
   const shape = agent37Shape(rawArgs?.shape);
   if (!shape) throw new Error("Pick a size.");
