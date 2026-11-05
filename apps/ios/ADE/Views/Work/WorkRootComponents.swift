@@ -1845,6 +1845,7 @@ struct WorkRootHeaderActions {
   var onOpenActivity: () -> Void = {}
   var onOpenLinear: () -> Void = {}
   var onOpenCursorCloud: () -> Void = {}
+  var onOpenAgent37: () -> Void = {}
   var onOpenGitHubIssues: () -> Void = {}
   var onOpenSettings: () -> Void = {}
 }
@@ -1866,6 +1867,7 @@ struct WorkRootHeader: View {
   let showsLinear: Bool
   let showsCursorCloud: Bool
   var showsGitHubIssues = false
+  var showsAgent37 = false
   /// Non-nil while multi-select is on; the row becomes "N selected · Cancel".
   let selectionCount: Int?
   let actions: WorkRootHeaderActions
@@ -1911,6 +1913,7 @@ struct WorkRootHeader: View {
         showsLinear: showsLinear,
         showsCursorCloud: showsCursorCloud,
         showsGitHubIssues: showsGitHubIssues,
+        showsAgent37: showsAgent37,
         actions: actions
       )
     }
@@ -2120,6 +2123,8 @@ struct WorkHeaderOverflowMenu: View {
   let showsLinear: Bool
   let showsCursorCloud: Bool
   var showsGitHubIssues = false
+  /// Agent 37 is set up on the account and this machine can run the page.
+  var showsAgent37 = false
   let actions: WorkRootHeaderActions
   /// In a system toolbar: a plain symbol label (with the unread count as the
   /// item's badge), which the toolbar styles and lays out itself.
@@ -2182,6 +2187,14 @@ struct WorkHeaderOverflowMenu: View {
           Label { Text("Cursor Cloud") } icon: { Image("CursorCloudLogo") }
         }
       }
+      if showsAgent37 {
+        Button {
+          ADEHaptics.light()
+          actions.onOpenAgent37()
+        } label: {
+          Label("Agent 37", systemImage: "cloud")
+        }
+      }
       Divider()
       Button(action: actions.onOpenSettings) {
         Label("Settings", systemImage: "gearshape")
@@ -2195,7 +2208,7 @@ struct WorkHeaderOverflowMenu: View {
     }
     .animation(.snappy(duration: 0.2), value: unread > 0)
     .accessibilityLabel(unread > 0 ? "More, \(unread) activity \(unread == 1 ? "item needs" : "items need") you" : "More")
-    .accessibilityHint("Activity, Linear, GitHub Issues, Cursor Cloud and Settings")
+    .accessibilityHint("Activity, Linear, GitHub Issues, Cursor Cloud, Agent 37 and Settings")
   }
 
   private var phoneLabel: some View {
