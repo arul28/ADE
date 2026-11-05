@@ -1,7 +1,8 @@
 # ADE's Agent37 machine template
 
-The image ADE creates Agent37 boxes from ("New Agent37 machine" in Add a
-computer). It is a Debian 12 box whose main process is the ADE brain.
+The image ADE creates Agent37 boxes and VMs from ("New Agent37 machine" in
+Add a computer, and ready machines). It is Debian 12 whose main process is
+the ADE brain.
 
 - `template/Dockerfile`: `node:24-bookworm-slim`, git/gawk/tini, the Linux
   Desktop lane screen packages (xvfb, openbox, dbus, at-spi2-core, ffmpeg,
@@ -13,6 +14,13 @@ computer). It is a Debian 12 box whose main process is the ADE brain.
   backoff. Being the entrypoint is what lets the brain survive an Agent37
   sleep. It sets `ADE_HOST_INSTANCE_ID=agent37:<hostname>` (the hostname is the
   instance id), so a forked box starts signed out as a new machine.
+- Docker (`docker-ce`, compose, buildx) for VMs. The entrypoint starts
+  dockerd as root through a single sudoers rule (`ade-entrypoint.sh
+  --start-dockerd`), after loading the netfilter modules the VM kernel ships
+  unloaded; a sandboxed box (gVisor) skips it. It also sets `IS_SANDBOX=1`
+  and `ADE_SUSPEND_GAP_TICK_MS=1000`, and runs a ready machine's setup job
+  (`$ADE_HOME/ready/job.sh`) inside its own process tree so what the setup
+  starts survives sleep.
 - `/etc/machine-id` and `/var/lib/dbus/machine-id` are deleted in the image.
   ADE's hardware anchor hashes them; one baked value would make the account
   directory merge every box into one row.

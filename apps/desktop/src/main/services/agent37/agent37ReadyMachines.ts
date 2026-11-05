@@ -143,6 +143,9 @@ export function buildAgent37ReadySetupScript(settings: Pick<Agent37ReadyProjectS
     "fi",
     'cd "$dir"',
     'ade projects add "$dir" >/dev/null',
+    // The primary lane's id, so a chat that names no lane starts there.
+    'lane=$(ade lanes list --json 2>/dev/null | node -e \'let s="";process.stdin.on("data",(d)=>{s+=d}).on("end",()=>{try{const l=JSON.parse(s).lanes||[];const p=l.find((x)=>x.laneType==="primary");process.stdout.write(p?p.id:"")}catch{}})\' || true)',
+    'echo "ADE_READY_LANE=$lane"',
     // Docker starts in the background at boot (VMs only); give it a moment before the setup needs it.
     'if command -v docker >/dev/null 2>&1 && [ "$(uname -r)" != "4.4.0" ]; then',
     '  i=0; until docker info >/dev/null 2>&1 || [ $i -ge 30 ]; do sleep 1; i=$((i+1)); done',
@@ -336,9 +339,10 @@ export function createAgent37ReadyKeeper(deps: Agent37ReadyKeeperDeps) {
       const tail = read.tail.filter((line) => !line.startsWith("ADE_READY_")).slice(-3).join(" · ");
       throw new Error(`the setup stopped with exit ${read.exitCode}${tail ? `: ${tail.slice(0, 300)}` : "."}`);
     }
-    const pathAnswer = await client.exec(instanceId, 'sed -n "s/^ADE_READY_PATH=//p" "$ADE_HOME/ready/job.log" | head -n 1', { timeoutMs: 20_000, signal })
+    const answer = await client.exec(instanceId, 'grep -E "^ADE_READY_(PATH|LANE)=" "$ADE_HOME/ready/job.log"', { timeoutMs: 20_000, signal })
       .catch(() => null);
-    return pathAnswer?.stdout.trim() || null;
+    const value = (key: string) => new RegExp(`^ADE_READY_${key}=(.+)$`, "m").exec(answer?.stdout ?? "")?.[1]?.trim() || null;
+    return { projectPath: value("PATH"), laneId: value("LANE") };
   };
 
   const prepare = async (settings: Agent37ReadyProjectSettings): Promise<void> => {
@@ -375,12 +379,13 @@ export function createAgent37ReadyKeeper(deps: Agent37ReadyKeeperDeps) {
       entry.machineKey = created.machineKey;
       if (signal.aborted) throw new Agent37ReadyPrepareCancelled();
       setLocalMessage(settings.identity, `Cloning ${settings.identity}…`, created.instanceId);
-      const projectPath = await runSetup(client, settings, created.instanceId, signal);
+      const { projectPath, laneId } = await runSetup(client, settings, created.instanceId, signal);
       if (signal.aborted) throw new Agent37ReadyPrepareCancelled();
       setLocalMessage(settings.identity, "Set up. Putting it to sleep…");
       await patchAgent37Metadata(client, created.instanceId, {
         [AGENT37_READY_METADATA.state]: "ready",
         ...(projectPath ? { [AGENT37_READY_METADATA.path]: projectPath } : {}),
+        ...(laneId ? { [AGENT37_READY_METADATA.lane]: laneId } : {}),
         ...(created.machineKey ? { [AGENT37_MACHINE_KEY_METADATA]: created.machineKey } : {}),
       });
       try {

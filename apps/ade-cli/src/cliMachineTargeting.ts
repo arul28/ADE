@@ -891,6 +891,24 @@ function nothingWasSent(error: unknown): boolean {
 }
 
 /**
+ * The plan with `laneId` in its chat create when the command named no lane:
+ * lane ids are per machine, so a ready machine says which lane is its
+ * project's primary one.
+ */
+function withDefaultChatLane<T extends CliPlan & { kind: "execute" }>(plan: T, laneId: string): T {
+  return {
+    ...plan,
+    steps: plan.steps.map((step) => {
+      const params = step.params;
+      if (!isRecord(params) || params.name !== "run_ade_action" || !isRecord(params.arguments)) return step;
+      const call = params.arguments;
+      if (call.domain !== "chat" || call.action !== "createSession" || !isRecord(call.args) || asString(call.args.laneId)) return step;
+      return { ...step, params: { ...params, arguments: { ...call, args: { ...call.args, laneId } } } };
+    }),
+  };
+}
+
+/**
  * `ade chat create --machine agent37:ready`: take this project's ready Agent 37
  * machine (prepared and asleep), wake it, wait until ADE shows it online, then
  * start the chat there like on any machine. A machine ADE still shows offline
@@ -950,9 +968,11 @@ async function executePlanOnAgent37ReadyMachine(
       await sleep(READY_MACHINE_POLL_MS);
     }
     say(`${name} is online (${((Date.now() - startedAt) / 1000).toFixed(1)} s). Starting the chat…`);
+    const laneId = isRecord(claim) ? asString(claim.laneId) : null;
+    const planThere = laneId ? withDefaultChatLane(plan, laneId) : plan;
     for (;;) {
       try {
-        const result = await executePlan(plan, { ...options, machine: machineKey });
+        const result = await executePlan(planThere, { ...options, machine: machineKey });
         sent = true;
         return result;
       } catch (error) {

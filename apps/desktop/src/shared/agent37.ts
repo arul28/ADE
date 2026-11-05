@@ -490,6 +490,8 @@ export const AGENT37_READY_METADATA = {
   projectName: "ade_ready_name",
   /** Where the project is on the machine. */
   path: "ade_ready_path",
+  /** The project's primary lane there: a chat with no lane named starts in it. */
+  lane: "ade_ready_lane",
   /** Epoch ms of the claim. */
   claimedAt: "ade_ready_claimed_at",
   /** Which copy of ADE is preparing it, so that copy knows its own leftovers after a restart. */
@@ -561,6 +563,8 @@ export type Agent37ReadyClaim = {
   name: string;
   /** Where the project is on it. */
   projectPath: string | null;
+  /** The project's primary lane on it, for a chat that names no lane. */
+  laneId: string | null;
   /** How long Agent37 took to answer the wake. */
   wakeMs: number;
 };

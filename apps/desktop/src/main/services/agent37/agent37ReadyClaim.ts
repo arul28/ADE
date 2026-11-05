@@ -125,6 +125,7 @@ export async function claimAgent37ReadyMachine(
     machineKey: metadata[AGENT37_MACHINE_KEY_METADATA] ?? null,
     name: pick.name ?? pick.id,
     projectPath: metadata[AGENT37_READY_METADATA.path] ?? null,
+    laneId: metadata[AGENT37_READY_METADATA.lane] ?? null,
     wakeMs,
   };
 }
