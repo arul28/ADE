@@ -345,7 +345,7 @@ export function recoverSyncHostConnection(
   return raceWithDeadline(inFlight, Math.max(1_000, args.maxRepairMs ?? DEFAULT_MAX_REPAIR_MS), args);
 }
 
-function raceWithDeadline(
+async function raceWithDeadline(
   work: Promise<SyncHostRecoveryResult>,
   deadlineMs: number,
   args: SyncHostRecoveryDeps,
@@ -354,29 +354,33 @@ function raceWithDeadline(
   // and tests stub it to resolve immediately, which would make every repair
   // report a timeout. Unref'd so a pending deadline cannot hold the brain open.
   let deadlineTimer: NodeJS.Timeout | null = null;
-  const deadline = new Promise<SyncHostRecoveryResult>((resolve) => {
-    deadlineTimer = setTimeout(() => {
-      const deps = { ...configured, ...args };
-      void diagnoseSyncHostReadinessAsync(deps)
-        // A probe that throws still ends the race: report it without a conflict.
-        .catch((error: unknown) => {
-          captureError(error, { fingerprint: ["sync_host", "deadline_diagnose_failed"] });
-          return diagnoseSyncHostReadiness({ ...deps, detectConflict: () => null });
-        })
-        .then((snapshot) => resolve({
-        operationId: "",
-        ok: false,
-        status: "failed",
-        snapshot,
-        steps: [],
-        message: "Fixing the connection took too long. Try again.",
-      }));
-    }, deadlineMs);
+  const timedOut = Symbol("timedOut");
+  // The race is decided when the timer fires; the snapshot that describes the
+  // timeout (a Windows probe of up to 15 s) is built after, so a repair that
+  // ends during that probe cannot win a race it already lost.
+  const deadline = new Promise<typeof timedOut>((resolve) => {
+    deadlineTimer = setTimeout(() => resolve(timedOut), deadlineMs);
     deadlineTimer.unref?.();
   });
-  return Promise.race([work, deadline]).finally(() => {
+  const outcome = await Promise.race([work, deadline]).finally(() => {
     if (deadlineTimer) clearTimeout(deadlineTimer);
   });
+  if (outcome !== timedOut) return outcome;
+  const deps = { ...configured, ...args };
+  const snapshot = await diagnoseSyncHostReadinessAsync(deps)
+    // A probe that throws still reports the timeout, without a conflict.
+    .catch((error: unknown) => {
+      captureError(error, { fingerprint: ["sync_host", "deadline_diagnose_failed"] });
+      return diagnoseSyncHostReadiness({ ...deps, detectConflict: () => null });
+    });
+  return {
+    operationId: "",
+    ok: false,
+    status: "failed",
+    snapshot,
+    steps: [],
+    message: "Fixing the connection took too long. Try again.",
+  };
 }
 
 async function runSyncHostRecovery(

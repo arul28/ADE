@@ -19551,7 +19551,7 @@ export function createAgentChatService(args: {
         directory: handle.directory,
         emit: (event) => emitChatEvent(managed, event),
         currentTurnId: () => runtime.activeTurnId,
-        killProcessTree: (pid) => { void killOpenCodeShellProcessTree(pid); },
+        killProcessTree: (pid) => killOpenCodeShellProcessTree(pid),
         isProcessAlive: isOpenCodeProcessAlive,
         onKillUnconfirmed: (shellId, reason) => {
           logger.warn("agent_chat.opencode_stop_shell_unconfirmed", { sessionId: managed.session.id, shellId, reason });

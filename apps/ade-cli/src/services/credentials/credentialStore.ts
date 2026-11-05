@@ -781,8 +781,8 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
   private lastReadSettled = false;
   /** See {@link readSettledCache}. */
   private settledRead: SettledCredentialRead | null = null;
-  /** See {@link probeQuarantineInBackground}. */
-  private quarantineProbe: Promise<void> | null = null;
+  /** See {@link recheckExpiredInBackground}. */
+  private expiryRecheck: Promise<void> | null = null;
 
   constructor(args: {
     secretsDir?: string;
@@ -919,8 +919,9 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
    * watcher's stat of this file never slow while reads beside it waited 7-31 s.
    *
    * The entry also expires with the quarantine probe interval, so a
-   * quarantined store is still looked for as often as before. That probe is a
-   * file read, so it runs off the event loop and this call keeps answering.
+   * quarantined store is still looked for, and the machine key re-read, as
+   * often as before. Those are file reads, so they run off the event loop and
+   * this call keeps answering.
    */
   private readSettledCache(): Record<string, string> | null {
     const entry = this.settledRead;
@@ -930,29 +931,45 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
       this.settledRead = null;
       return null;
     }
-    if (Date.now() >= entry.expiresAt) this.probeQuarantineInBackground(entry);
+    if (Date.now() >= entry.expiresAt) this.recheckExpiredInBackground(entry);
     this.lastReadState = entry.state;
     this.lastReadFailureReason = null;
     return entry.values;
   }
 
   /**
-   * The expired entry's quarantine probe. A quarantine record drops the entry,
-   * so the next `getSync` takes the locked path that merges it back in; none
-   * keeps the entry for another interval. One probe at a time.
+   * The expired entry's re-check, on the thread pool: what
+   * {@link readSettledUnlocked} proves, minus the per-call `stat`. A quarantine
+   * record, a replaced or missing machine key, or a store that no longer opens
+   * with it drops the entry, so the next `getSync` takes the locked path that
+   * handles each; otherwise the entry stands for another interval. A read that
+   * fails keeps the entry, and the next call tries again. One at a time.
    */
-  private probeQuarantineInBackground(entry: SettledCredentialRead): void {
-    if (this.quarantineProbe) return;
-    this.quarantineProbe = readCredentialStoreQuarantineAsync(this.credentialsPath)
-      .then((quarantine) => {
-        if (this.settledRead !== entry) return;
-        this.settledRead = quarantine
-          ? null
-          : { ...entry, expiresAt: Date.now() + QUARANTINE_PROBE_INTERVAL_MS };
-      })
+  private recheckExpiredInBackground(entry: SettledCredentialRead): void {
+    if (this.expiryRecheck) return;
+    this.expiryRecheck = (async () => {
+      const stillSettled = await this.isStillSettledAsync(entry);
+      if (this.settledRead !== entry) return;
+      this.settledRead = stillSettled
+        ? { ...entry, expiresAt: Date.now() + QUARANTINE_PROBE_INTERVAL_MS }
+        : null;
+    })()
+      .catch(() => undefined)
       .finally(() => {
-        this.quarantineProbe = null;
+        this.expiryRecheck = null;
       });
+  }
+
+  private async isStillSettledAsync(entry: SettledCredentialRead): Promise<boolean> {
+    if (await readCredentialStoreQuarantineAsync(this.credentialsPath)) return false;
+    // A missing store owes no write and has nothing to decrypt.
+    if (entry.stat === null) return true;
+    const machineKey = await readMachineKeyIfExistsAsync(this.machineKeyPath);
+    if (!machineKey) return false;
+    const { value: raw } = await readJsonObjectAsync(this.credentialsPath);
+    if (raw == null || Object.keys(raw).length === 0) return false;
+    const attempt = decodeMachineSealedStore(raw, machineKey);
+    return attempt?.ok === true && attempt.sealedBinding === "machine";
   }
 
   /**

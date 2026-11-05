@@ -9,6 +9,7 @@ import { app } from "electron";
 import { isAdeRuntimeNamedPipePath } from "../../../shared/adeRuntimeIpc";
 import { DESKTOP_CLIENT_NAMES } from "../../../shared/runtimeClientNames";
 import { signalChildProcessTree } from "../shared/utils";
+import { terminateProcessTreeAsync } from "../shared/processExecution";
 import {
   isRuntimeProtocolCompatible,
   parseRuntimeLastWedge,
@@ -2869,6 +2870,13 @@ export class LocalRuntimeConnectionPool {
       if (this.ownedRuntimeChild === child) {
         this.ownedRuntimeChild = null;
         this.ownedRuntimeSocketPath = null;
+      }
+      if (process.platform === "win32") {
+        // Quit exits right after this resolves. On Windows the tree kill is
+        // asynchronous and the direct kill follows it, so wait for both
+        // (and briefly for the exit) before the app may leave.
+        await terminateProcessTreeAsync(child, "SIGTERM");
+        await waitForChildExit(child, 1_000);
       }
       disposeOwnedRuntimeChild(child, socketPath);
     } catch (error) {

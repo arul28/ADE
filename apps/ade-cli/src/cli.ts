@@ -28569,6 +28569,8 @@ async function runServe(
   // Wired inside the `syncEnabled` block below (that is where the singleton
   // module is imported); absent means "unknown owner", never a guessed one.
   let readCompetingSyncHostOwner: (() => CompetingSyncHostOwner | null) | null = null;
+  /** The owner read fresh, for an answer a person acts on (reconnect). */
+  let readCompetingSyncHostOwnerFresh: (() => Promise<CompetingSyncHostOwner | null>) | null = null;
   // When this brain first found no sync host on the machine. Carried as
   // `failingSinceMs` on the synthesized health so the desktop can tell a
   // boot-time blip (quiet) from a host that never came back (Start sync).
@@ -28734,7 +28736,7 @@ async function runServe(
           ensureAccountMachinePublisher?.("reconnect_started_sync_host");
         }
         if (!accountMachinePublisher) {
-          const owner = readCompetingSyncHostOwner?.() ?? null;
+          const owner = (await readCompetingSyncHostOwnerFresh?.()) ?? null;
           const why = owner
             ? `${owner.appName ?? "Another ADE app"} (pid ${owner.pid}) is hosting sync on this computer, so this ADE can't put it on your account.`
             : `No ADE on this computer is hosting sync right now, so it can't be put on your account.${
@@ -29893,9 +29895,19 @@ async function runServe(
       competingSyncHostOwnerCache.at = at;
       return owner;
     };
-    // Primed now, so the first status read or reconnect tap on Windows names
-    // a competing owner instead of answering before the probe has run.
+    // Primed now, so the first status read on Windows names a competing owner
+    // instead of answering before the probe has run.
     if (process.platform === "win32") readCompetingSyncHostOwner();
+    readCompetingSyncHostOwnerFresh = async () => {
+      if (process.platform !== "win32") {
+        competingSyncHostOwnerCache.at = 0;
+        return readCompetingSyncHostOwner?.() ?? null;
+      }
+      const owner = await detectSyncHostSingletonConflictAsync({ skipListenerScan: true }).then(ownerOf, () => null);
+      competingSyncHostOwnerCache.value = owner;
+      competingSyncHostOwnerCache.at = Date.now();
+      return owner;
+    };
     const activeSyncHostScopeWithoutBooting = async () => {
       const activeProjectId = scopeRegistry.getActiveSyncHostProjectId();
       if (!activeProjectId) return null;

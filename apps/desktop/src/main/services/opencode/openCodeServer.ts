@@ -513,7 +513,9 @@ async function launchOpenCodeServer(args: OpenCodeServerLaunchArgs): Promise<Ope
 
     // A failed attempt keeps the config file: the port-conflict retry launches
     // with the same one, and startEntry removes it when every attempt fails.
+    let failed = false;
     const fail = (error: Error): void => {
+      failed = true;
       cleanupStartup();
       stopChildProcess(proc);
       if (proc.pid) removeManagedServerRecord(proc.pid, { keepConfig: true });
@@ -535,16 +537,22 @@ async function launchOpenCodeServer(args: OpenCodeServerLaunchArgs): Promise<Ope
         const url = parseOpenCodeServerListenUrl(line);
         if (!url) continue;
         resolved = true;
-        cleanupStartup();
+        // Stop reading output; the startup deadline stays armed until the
+        // listener lookup below settles.
+        proc.stdout?.off("data", onStdout);
+        proc.stderr?.off("data", onStderr);
         // Keep draining the pipes: a full stdout buffer blocks the server.
         proc.stdout?.resume();
         proc.stderr?.resume();
         // On Windows the listener lookup is a full process listing, run off
         // the event loop; the server can exit meanwhile, which `onExit`
-        // then reports to a handler added after the fact.
+        // then reports to a handler added after the fact. A lookup that
+        // outlasts the deadline loses to it, like a slow start does.
         void resolveOpenCodeListenerPidAsync(args.port)
           .catch(() => null)
           .then((found) => {
+            if (failed) return;
+            cleanupStartup();
             const listenerPid = found ?? proc.pid ?? null;
             resolve({
               url,

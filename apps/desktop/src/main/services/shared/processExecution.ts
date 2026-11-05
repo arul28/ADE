@@ -407,9 +407,7 @@ export function terminateProcessTree(
     // wait is asynchronous (it used to be a `spawnSync` that held the event
     // loop for up to 10.8 s), so the answer is "the kill is under way": true
     // for a live child, as `child.kill()` answered before for one.
-    void killWindowsProcessTreeAsync(child.pid, onWindowsTaskkillFailure).then(() => {
-      killChildDirectly(child, signal);
-    });
+    void terminateProcessTreeAsync(child, signal, onWindowsTaskkillFailure);
     return true;
   }
   try {
@@ -417,4 +415,23 @@ export function terminateProcessTree(
   } catch {
     return false;
   }
+}
+
+/**
+ * {@link terminateProcessTree} for a caller that must not move on until both
+ * kills ran, such as a process about to exit (an exit before the direct kill
+ * would skip it). Resolves to whether either kill reported success; on POSIX
+ * it is the same single `child.kill()`.
+ */
+export async function terminateProcessTreeAsync(
+  child: Pick<ChildProcess, "kill" | "pid" | "exitCode" | "signalCode">,
+  signal: NodeJS.Signals = "SIGTERM",
+  onWindowsTaskkillFailure?: (detail: ProcessTreeFailureDetail) => void,
+): Promise<boolean> {
+  if (process.platform !== "win32" || typeof child.pid !== "number") {
+    return terminateProcessTree(child, signal, onWindowsTaskkillFailure);
+  }
+  if ((child.exitCode ?? null) !== null || (child.signalCode ?? null) !== null) return false;
+  const treeKilled = await killWindowsProcessTreeAsync(child.pid, onWindowsTaskkillFailure);
+  return killChildDirectly(child, signal) || treeKilled;
 }

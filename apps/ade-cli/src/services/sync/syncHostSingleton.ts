@@ -831,10 +831,12 @@ export async function detectSyncHostSingletonConflictAsync(
     void recheckIgnoredOwner(lockPath, checkOwner, platform, runProbe);
     return null;
   }
-  const [ownerVerdict, listeners] = await Promise.all([
-    checkOwner ? probeWindowsOwnerIdentity(checkOwner, runProbe) : null,
-    scanWanted ? scanWindowsSyncHostListenersAsync(runProbe) : null,
-  ]);
+  // Both start now; the scan is awaited only when the lock does not already
+  // settle it, as the synchronous detector returns at a lock conflict.
+  const scan = scanWanted ? scanWindowsSyncHostListenersAsync(runProbe) : null;
+  const ownerVerdict = checkOwner ? await probeWindowsOwnerIdentity(checkOwner, runProbe) : null;
+  const lockStands = checkOwner !== null && ownerVerdict !== false;
+  const listeners = scan && !lockStands ? await scan : null;
   return detectSyncHostSingletonConflict({
     ...deps,
     // The lock may have changed hands while the probe ran; any other owner gets
