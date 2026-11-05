@@ -2194,17 +2194,19 @@ export function createMultiProjectRpcRequestHandler(
 
   /**
    * `withSyncService` for a read. The scope that hosts sync, or most recently
-   * tried to, answers as it is when it is ready; only with no such scope does
-   * the read go through `withSyncService`. Re-entering host activation for a
-   * read answered the Phone tab with "Another ADE brain is already hosting
-   * mobile sync" whenever activation was blocked or backed off.
+   * tried to (a held failure, else the last requested switch, which outlives
+   * the backoff), answers as it is when it is ready; only with no such scope
+   * does the read go through `withSyncService`. Re-entering host activation
+   * for a read answered the Phone tab with "Another ADE brain is already
+   * hosting mobile sync" whenever activation was blocked or backed off.
    */
   const readSyncService = async <TService, TFallback>(
     run: (syncService: ActiveSyncService) => TService | Promise<TService>,
     machineFallback: (controls: ProjectlessSyncControls) => TFallback | Promise<TFallback>,
   ): Promise<TFallback | TService> => {
     const hostProjectId = scopeRegistry.getActiveSyncHostProjectId?.()
-      ?? scopeRegistry.getMostRecentFailingSyncHostProjectId?.();
+      ?? scopeRegistry.getMostRecentFailingSyncHostProjectId?.()
+      ?? scopeRegistry.getRequestedSyncHostProjectId?.();
     const readySyncService = hostProjectId
       ? scopeRegistry.getIfReady?.(hostProjectId)?.runtime.syncService ?? null
       : null;

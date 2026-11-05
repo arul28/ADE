@@ -523,13 +523,15 @@ export async function runSyncHostStartupLoop(deps: SyncHostStartupLoopDeps): Pro
           });
           if (outcome === "not-proven" || outcome === "failed") {
             // The stale owner is still running and was not proven to be the brain
-            // recorded in the lock. Retry on the next attempt; do not claim the takeover.
+            // recorded in the lock. Do not claim the takeover: the held failure
+            // still describes a live owner, so keep it and wait like any failure.
             deps.log(`ADE brain could not verify the stale ${owner.appName ?? "ADE"} brain (pid ${owner.pid}); it was left running.`);
             logEvent("sync.host_takeover_unverified", { attempt, ownerPid: owner.pid });
+          } else {
+            tookOverPid = owner.pid;
+            deps.clearHeldFailures?.();
+            continue;
           }
-          tookOverPid = owner.pid;
-          deps.clearHeldFailures?.();
-          continue;
         }
       }
       if (deps.maxAttempts != null && attempt >= deps.maxAttempts) return;

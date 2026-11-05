@@ -51,8 +51,11 @@ export function isStartedByRuntimeService(): boolean | null {
   switch (process.platform) {
     case "darwin":
       return process.ppid === 1;
-    case "win32":
-      return readWindowsServicePidRecord()?.supervisorPid === process.ppid;
+    case "win32": {
+      // No readable record (an older supervisor, a write in progress) is unknown, not "no".
+      const record = readWindowsServicePidRecord();
+      return record ? record.supervisorPid === process.ppid : null;
+    }
     default:
       return null;
   }
