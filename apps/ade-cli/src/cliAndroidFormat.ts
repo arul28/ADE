@@ -50,6 +50,13 @@ function laneDeviceLines(lane: JsonObject): string[] {
     const logPath = asString(error.logPath);
     if (logPath) lines.push(`log: ${logPath}`);
   }
+  // P2 crash pin: the lane's app crashed while the emulator runs.
+  const crash = isRecord(lane.appCrash) ? lane.appCrash : null;
+  if (crash) {
+    const app = asString(crash.packageName) ?? "the app";
+    lines.push("", `app crash: ${app}: ${asString(crash.summary) ?? ""}`.trimEnd());
+    lines.push(`next: ade android log${asString(crash.packageName) ? ` --package ${asString(crash.packageName)}` : ""} --level error`);
+  }
   if (!device) {
     lines.push("", "next: ade android device-create --profile <id> (ade android devices --profiles lists them), or ade android device-attach --avd <name>");
   } else if (lane.state === "off" || lane.state === "crashed") {

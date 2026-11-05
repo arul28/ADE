@@ -274,6 +274,7 @@ const ANDROID_ERROR_SENTENCE: Record<AndroidEmulatorErrorCode, string> = {
   ANDROID_SDK_INSTALL_BUSY: "An Android SDK install already runs on this machine.",
   ANDROID_SDK_INSTALL_FAILED: "The Android SDK install failed.",
   ANDROID_SDK_PATH_INVALID: "That folder cannot be used for the Android SDK.",
+  ANDROID_LOW_MEMORY: "This machine has too little free memory to start the device.",
 };
 
 const IPC_PREFIX = /^Error invoking remote method '[^']*':\s*(?:[A-Za-z]*Error:\s*)?/;

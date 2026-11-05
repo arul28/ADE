@@ -2311,6 +2311,24 @@ export async function createAdeRuntime(args: {
         onEvent: (event) => pushEvent("runtime", { type: "android_emulator_event", event }),
       });
     teardown.push((reason) => androidEmulatorService?.dispose({ reason }));
+    // The phone's and the web tab's live view of a lane's emulator: the same
+    // relay as Apple's, over the Android service's lane streams. Each project's
+    // relay registers with the listener's router, which sends a socket to the
+    // relay that issued its ticket.
+    const androidStreamRelay = androidEmulatorService
+      ? createAppleStreamRelayForService({
+        service: androidEmulatorService.streamRelaySource,
+        remoteBitrateKbpsCap: () => null,
+        logger,
+      })
+      : null;
+    if (androidStreamRelay) {
+      const detachAndroidStreamRoute = setActiveAppleStreamRouter(androidStreamRelay);
+      teardown.push(() => {
+        detachAndroidStreamRoute();
+        androidStreamRelay.dispose();
+      });
+    }
     // A chat-only runtime has no browser surface: no forwarder, no user-browser
     // attachments, no bridge. Everything else has all three. That includes the
     // machine's personal-chat runtime: nothing reaches its action registry
@@ -3857,6 +3875,7 @@ export async function createAdeRuntime(args: {
           : null,
         appleDeviceService: iosSimulatorService,
         androidDeviceService: androidEmulatorService,
+        androidStreamRelay,
         getWebhookAutomations: () => createWebhookRemoteSource({
           automationService,
           webhooks: automationIngressService?.webhooks,

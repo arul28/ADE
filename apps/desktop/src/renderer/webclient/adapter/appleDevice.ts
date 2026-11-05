@@ -31,7 +31,8 @@ type AppleCall = <T>(
   idempotent?: boolean,
 ) => Promise<T>;
 
-type AppleStreamTicketResult = {
+/** A relay ticket as `apple.streamTicket` and `android.streamTicket` answer it. */
+export type StreamTicket = {
   url: string | null;
   path: string;
   token: string;
@@ -90,12 +91,33 @@ export function resolveAppleStreamUrl(
   return { url: direct.toString(), forwarded: false, error: null };
 }
 
+/**
+ * Puts the ticket's token on a resolved stream URL.
+ *
+ * The token cannot ride a WebSocket header from a browser, so it rides the
+ * query the brain also accepts. `H264StreamView` still passes the token
+ * separately for the loopback transport; this is the other one.
+ */
+export function withStreamTicketToken(
+  resolved: { url: string | null; forwarded: boolean; error: string | null },
+  ticket: StreamTicket | null,
+): { url: string | null; forwarded: boolean; error: string | null } {
+  if (!resolved.url || !ticket) return resolved;
+  const withToken = new URL(resolved.url);
+  if (!withToken.searchParams.get("kind")) {
+    withToken.searchParams.set("token", ticket.token);
+  } else {
+    withToken.searchParams.set("path", `${ticket.path}?token=${ticket.token}`);
+  }
+  return { ...resolved, url: withToken.toString() };
+}
+
 export function createAppleDeviceNamespace(
   call: AppleCall,
   getEndpoint: () => string | null,
 ): AdeNamespace<"iosSimulator"> {
   /** The most recent ticket, so `resolveStreamUrl` can find its path again. */
-  let lastTicket: AppleStreamTicketResult | null = null;
+  let lastTicket: StreamTicket | null = null;
 
   const laneOf = (args: unknown): string | null => {
     const record = (args ?? {}) as { laneId?: unknown };
@@ -135,7 +157,7 @@ export function createAppleDeviceNamespace(
     startStream: (async (args?: unknown) => {
       const laneId = laneOf(args);
       if (!laneId) throw new Error("The Apple live view needs a lane on the web client.");
-      const ticket = await call<AppleStreamTicketResult>(
+      const ticket = await call<StreamTicket>(
         "apple.streamTicket",
         { laneId, chatSessionId: chatOf(args) },
         unavailable(NO_HOST),
@@ -169,18 +191,7 @@ export function createAppleDeviceNamespace(
     resolveStreamUrl: (async (streamUrl: string | null) => {
       const ticketPath = lastTicket?.path
         ?? (typeof streamUrl === "string" ? streamUrl : "");
-      const resolved = resolveAppleStreamUrl(getEndpoint(), ticketPath);
-      if (!resolved.url || !lastTicket) return resolved;
-      // The token cannot ride a WebSocket header from a browser, so it rides
-      // the query the brain also accepts. `H264StreamView` still passes the
-      // token separately for the loopback transport; this is the other one.
-      const withToken = new URL(resolved.url);
-      if (!withToken.searchParams.get("kind")) {
-        withToken.searchParams.set("token", lastTicket.token);
-      } else {
-        withToken.searchParams.set("path", `${lastTicket.path}?token=${lastTicket.token}`);
-      }
-      return { ...resolved, url: withToken.toString() };
+      return withStreamTicketToken(resolveAppleStreamUrl(getEndpoint(), ticketPath), lastTicket);
     }) as never,
 
     deviceList: (async (args?: unknown) => call(

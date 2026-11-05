@@ -44,6 +44,7 @@ import { createBackoffPoller } from "../../lib/backoffPoller";
 import { forwardLogToSentry } from "../../../shared/sentry/logBridge";
 import { isPageHidden, observePageVisibility } from "../../lib/pageVisibility";
 import { appleEndpointReader, createAppleDeviceNamespace } from "./appleDevice";
+import { createAndroidDeviceNamespace } from "./androidDevice";
 import { createComputerUseNamespace } from "./computerUse";
 import { createGithubNamespace, githubDisconnectedStatus } from "./githubStub";
 import { createProviderAccountsNamespace } from "./providerAccounts";
@@ -78,6 +79,7 @@ export type MiscNamespaces = {
   tests: AdeNamespace<"tests">;
   computerUse: AdeNamespace<"computerUse">;
   iosSimulator: AdeNamespace<"iosSimulator">;
+  androidEmulator: AdeNamespace<"androidEmulator">;
   builtInBrowser: AdeNamespace<"builtInBrowser">;
   usage: Partial<Window["ade"]["usage"]>;
   providerInstances: AdeNamespace<"providerInstances">;
@@ -1091,6 +1093,7 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     tests: createTestStubs() as AdeNamespace<"tests">,
     computerUse: createComputerUseNamespace(infra),
     iosSimulator: createAppleDeviceNamespace(call, appleEndpointReader(client)),
+    androidEmulator: createAndroidDeviceNamespace(call, appleEndpointReader(client)),
     builtInBrowser: {
       ...createNativeUnavailableNamespace(),
       // `getStatus` is the one member of this namespace whose *shape* is load

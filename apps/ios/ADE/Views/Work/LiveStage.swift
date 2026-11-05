@@ -229,6 +229,7 @@ enum LiveStagePreview {
   case simulator(AppleDeviceViewerPreview)
   case macDesktop(MacDesktopViewerPreview)
   case appControl(AppControlViewerPreview)
+  case android(AndroidDeviceViewerPreview)
 }
 #else
 /// Release builds have no fixtures, so no preview can be made.
@@ -244,6 +245,8 @@ final class LiveStage: ObservableObject {
     case simulator
     case macDesktop
     case appControl
+    /// The lane's Android emulator.
+    case android
   }
 
   /// What a stream is opened with: its kind and the opener's last snapshot,
@@ -252,12 +255,15 @@ final class LiveStage: ObservableObject {
     case simulator(AppleDeviceStatus?)
     case macDesktop(WorkToolsMacDesktopState?)
     case appControl(WorkToolsAppControlState?)
+    /// Seeded with the lane's Android device status (`android.status`).
+    case android(AndroidDeviceStatus?)
 
     var kind: Kind {
       switch self {
       case .simulator: return .simulator
       case .macDesktop: return .macDesktop
       case .appControl: return .appControl
+      case .android: return .android
       }
     }
   }
@@ -638,6 +644,8 @@ private struct LiveStageSessionView: View {
       macDesktop(state)
     case .appControl(let state):
       appControl(state)
+    case .android(let status):
+      android(status)
     }
   }
 
@@ -701,6 +709,28 @@ private struct LiveStageSessionView: View {
       laneId: session.laneId,
       initialState: state,
       chatSessionId: session.chatSessionId,
+      presentation: presentation,
+      chromeInsets: chromeInsets
+    )
+    #endif
+  }
+
+  @ViewBuilder
+  private func android(_ status: AndroidDeviceStatus?) -> some View {
+    #if DEBUG
+    AndroidDeviceViewer(
+      laneId: session.laneId,
+      chatSessionId: session.chatSessionId,
+      initialStatus: status,
+      presentation: presentation,
+      chromeInsets: chromeInsets,
+      preview: { if case .android(let preview)? = session.preview { return preview } else { return nil } }()
+    )
+    #else
+    AndroidDeviceViewer(
+      laneId: session.laneId,
+      chatSessionId: session.chatSessionId,
+      initialStatus: status,
       presentation: presentation,
       chromeInsets: chromeInsets
     )

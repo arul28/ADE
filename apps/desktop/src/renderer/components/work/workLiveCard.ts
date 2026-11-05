@@ -496,6 +496,9 @@ export const WORK_LIVE_SOURCES: Record<
     // this display is replaced (or the user floats it back).
     sessionKey: macDesktopFrame?.displayKey ?? macDesktopFrame?.laneId ?? null,
   }),
+  // The emulator floats in its own player (`AndroidDeviceMiniPlayer`); this
+  // card never pictures it.
+  android: () => ({ live: false, ownerLabel: null, caption: null, handoff: null, recording: null, sessionKey: null }),
   ios: ({ iosSession }) => ({
     live: Boolean(iosSession),
     ownerLabel: iosSession?.chatSessionId ? AGENT_OWNER_LABEL : null,
@@ -760,6 +763,7 @@ export const WORK_LIVE_TOOL_ASPECT: Record<WorkLiveScreenTool, number> = {
   "app-control": WORK_LIVE_CARD_DEFAULT_ASPECT,
   "mac-desktop": WORK_LIVE_CARD_DEFAULT_ASPECT,
   ios: WORK_LIVE_CARD_IOS_ASPECT,
+  android: WORK_LIVE_CARD_IOS_ASPECT,
 };
 
 /**

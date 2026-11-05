@@ -380,8 +380,6 @@ export function isReadOnlyWorkTool(id: WorkSidebarTab, context: WorkToolContext)
 
 const CLOUD_MACHINE_TOOLS = new Set<WorkSidebarTab>(["ios", "android", "mac-desktop", "windows-desktop", "app-control"]);
 
-/** The hosted web client has no Android viewer yet (plan P2). */
-export const ANDROID_WEB_CLIENT_UNAVAILABLE_REASON = "Android Development needs the ADE desktop app for now.";
 /** Shown when the host answers `platformSupported: false` without a reason. */
 export const ANDROID_HOST_UNSUPPORTED_REASON = "This lane's host can't run the Android emulator.";
 
@@ -413,8 +411,9 @@ export function workToolAvailability(
     const reason = context.macDesktopUnsupportedReason?.trim();
     return { available: false, reason: reason || "This lane's host isn't a Mac" };
   }
+  // The web client drives Android too: `android.*` commands and the relay's
+  // live view, like Apple's. Availability follows the host alone.
   if (id === "android") {
-    if (context.isWebClient) return { available: false, reason: ANDROID_WEB_CLIENT_UNAVAILABLE_REASON };
     if (context.hasRemoteAndroidEmulator) return AVAILABLE;
     if (context.supportsAndroidEmulator === false) {
       const reason = context.androidEmulatorUnsupportedReason?.trim();

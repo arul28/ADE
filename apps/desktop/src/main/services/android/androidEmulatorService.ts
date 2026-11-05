@@ -34,7 +34,15 @@ import { createAndroidAgentSuite } from "./androidAgentSuite";
 import { createAndroidDeviceInventory } from "./androidDeviceInventory";
 import { createAndroidDeviceSettings } from "./androidDeviceSettings";
 import { createAndroidInput } from "./androidInput";
+import { createAndroidCrashWatch } from "./androidCrashWatch";
 import { createAndroidLaneStreams } from "./androidLaneStreams";
+import {
+  androidEmulatorMemoryNeedMb,
+  androidMemoryShortfall,
+  formatAndroidMemoryGb,
+  readHostAvailableMemoryMb,
+} from "./androidMemoryGuard";
+import type { AppleStreamOwningService } from "../ios/appleStreamRelayForService";
 import type { AndroidLaneDeviceRepo } from "./androidLaneRelease";
 import { takeAndroidScreenshot } from "./androidScreenshot";
 import type { AndroidArtifactFiler } from "./androidProof";
@@ -246,7 +254,12 @@ export async function stopHandedOffAndroidEmulators(args: {
   }
 }
 
-export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): AndroidEmulatorServiceApi {
+/** The service, plus the lane streams as the brain's stream relay drives them (phone and web viewers). */
+export type AndroidEmulatorService = AndroidEmulatorServiceApi & {
+  streamRelaySource: AppleStreamOwningService;
+};
+
+export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): AndroidEmulatorService {
   const logger = deps.logger ?? null;
   const env = deps.env ?? process.env;
   const platform = deps.platform ?? process.platform;
@@ -286,6 +299,15 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
       }
     }
   };
+
+  /* ---------- P2 crash pin (`androidCrashWatch.ts`) ---------- */
+
+  const crashWatch = createAndroidCrashWatch({
+    lanePackages: (laneId) => deps.laneDevices.get(laneId)?.adeInstalledPackages ?? [],
+    onCrash: (laneId, crash) => emit({ type: "android.app.crashed", laneId, crash }),
+    logger,
+    signal: lifetime.signal,
+  });
 
   const laneState = (laneId: string): LaneState => {
     let state = lanes.get(laneId);
@@ -396,7 +418,16 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
     const avdWithRunning: AndroidAvd | null = avd ? { ...avd, running } : null;
     const derived: AndroidLaneDeviceStatus["state"] = state?.transient
       ?? (running ? (running.booted ? "booted" : "starting") : error ? "crashed" : "off");
-    return { laneId, device, avd: avdWithRunning, state: derived, error: derived === "crashed" || derived === "off" ? error : null };
+    // A booted emulator is watched for crashes of the lane's app, once.
+    if (derived === "booted" && running && adbPath) crashWatch.ensure(laneId, { serial: running.serial, adbPath });
+    return {
+      laneId,
+      device,
+      avd: avdWithRunning,
+      state: derived,
+      error: derived === "crashed" || derived === "off" ? error : null,
+      appCrash: derived === "booted" ? crashWatch.latest(laneId) : null,
+    };
   };
 
   /** P1 look: `ade android render`, drawn by a desktop window (`androidRender.ts`). */
@@ -474,6 +505,7 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
 
   /** Stops the lane's emulator if ADE started it. The caller holds the lane's queue. */
   const stopLocked = async (state: LaneState, device: AndroidLaneDevice, options: { refuseForeign: boolean }): Promise<void> => {
+    crashWatch.stop(state.laneId);
     const emulator = runningFor(device.avdName);
     if (!emulator) {
       await stopLaneStream(state);
@@ -515,12 +547,27 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
         logPath: launch.logPath,
       };
       logger?.warn("android.emulator_exited", { laneId: state.laneId, avdName: launch.avdName, how });
+      crashWatch.stop(state.laneId);
       await stopLaneStream(state);
       emit({ type: "android.device.state", laneId: state.laneId, state: "crashed" });
     });
   };
 
-  const startLocked = async (state: LaneState): Promise<AndroidLaneDeviceStatus> => {
+  /** The RAM guard (plan §5): refuse a boot that would push the machine into swap. */
+  const assertMemoryForStart = async (laneId: string, avd: AndroidAvd): Promise<void> => {
+    const needMb = androidEmulatorMemoryNeedMb(avd.ramMb);
+    const availableMb = await readHostAvailableMemoryMb({ platform });
+    const shortfall = androidMemoryShortfall({ needMb, availableMb });
+    if (!shortfall) return;
+    logger?.info("android.start_low_memory", { laneId, needMb, availableMb });
+    throw new AndroidEmulatorFailure(
+      "ANDROID_LOW_MEMORY",
+      // One short sentence: the pane shows it whole only up to 140 characters.
+      `${avd.displayName ?? avd.name} needs about ${formatAndroidMemoryGb(needMb)} of memory, and this machine has ${formatAndroidMemoryGb(availableMb)} free.`,
+    );
+  };
+
+  const startLocked = async (state: LaneState, options: { force?: boolean } = {}): Promise<AndroidLaneDeviceStatus> => {
     const laneId = state.laneId;
     const device = deps.laneDevices.get(laneId);
     if (!device) {
@@ -533,12 +580,14 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
         ready.sdk.acceleration.detail ?? "Hardware acceleration is not available, so the emulator cannot run here.",
       );
     }
-    if (!readAndroidAvd(ready.avdHome, device.avdName)) {
+    const avd = readAndroidAvd(ready.avdHome, device.avdName);
+    if (!avd) {
       throw new AndroidEmulatorFailure("ANDROID_AVD_NOT_FOUND", `The lane's AVD ${device.avdName} is no longer on this machine.`);
     }
     // Already running (a start from before a brain restart, or the user's own
     // emulator for an attached AVD): use it as it is.
     if (runningFor(device.avdName)) return laneStatus(laneId, ready.sdk);
+    if (!options.force) await assertMemoryForStart(laneId, avd);
 
     const logPath = path.join(deps.dataDir, "logs", `${device.avdName}.log`);
     fs.mkdirSync(path.dirname(logPath), { recursive: true });
@@ -712,7 +761,10 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
     ownsEmulator,
     asRunning,
     runningFor,
-    beforeRelease: (laneId) => agent.beforeRelease(laneId),
+    beforeRelease: (laneId) => {
+      crashWatch.stop(laneId);
+      return agent.beforeRelease(laneId);
+    },
   });
   const { endLaneLocked } = inventory;
 
@@ -807,7 +859,9 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
     onInstalled: () => deps.captureAnalytics?.("sdk_installed"),
   });
 
-  const service: AndroidEmulatorServiceApi = {
+  const service: AndroidEmulatorService = {
+    streamRelaySource: laneStreams.relaySource,
+
     getSdkSetupPlan: setup.getSdkSetupPlan,
     installSdk: setup.installSdk,
     cancelSdkInstall: setup.cancelSdkInstall,
@@ -836,7 +890,7 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
         assertWorkCopyLive(laneId);
         // A chat's work copy has no device until its first start asks for one.
         if (isRemoteWorkLaneId(laneId) && !deps.laneDevices.get(laneId)) await inventory.ensureWorkCopyDeviceLocked(laneId);
-        return startLocked(laneState(laneId));
+        return startLocked(laneState(laneId), { force: args.force === true });
       });
     },
 
@@ -935,6 +989,7 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
       disposed = true;
       renders.dispose();
       setup.dispose();
+      crashWatch.dispose();
       // Recordings end (and are filed) while their stream still runs.
       await agent.dispose().catch((error: unknown) => {
         logger?.warn("android.agent_dispose_failed", { error: getErrorMessage(error) });

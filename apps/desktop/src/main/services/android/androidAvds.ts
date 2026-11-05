@@ -3,6 +3,7 @@ import path from "node:path";
 import type { AndroidAvd, AndroidRunningEmulator, AndroidSystemImage } from "../../../shared/types/androidEmulator";
 import { AndroidEmulatorFailure } from "./androidEmulatorErrors";
 import { androidHardwareConfig, type AndroidDeviceDefinition } from "./androidHardwareProfiles";
+import { parseAndroidRamSizeMb } from "./androidMemoryGuard";
 import { readAndroidIniFile } from "./androidSdk";
 import { REMOTE_WORK_LANE_PREFIX } from "../remoteWork/remoteWorkCopyService";
 
@@ -98,6 +99,7 @@ export function readAndroidAvd(
     lcdWidth: intOrNull(config.get("hw.lcd.width")),
     lcdHeight: intOrNull(config.get("hw.lcd.height")),
     density: intOrNull(config.get("hw.lcd.density")),
+    ramMb: parseAndroidRamSizeMb(config.get("hw.ramSize")),
     path: folder,
     sizeBytes: null,
     adeCreated: config.get(ADE_AVD_CREATED_KEY) === "true",

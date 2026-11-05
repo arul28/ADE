@@ -263,6 +263,8 @@ export type WorkToolsStateService = {
   noteAgentMacDesktopActivity(args: AgentDeviceActivity): boolean;
   /** An agent drove this chat's lane App Control app; see `WorkToolShowRequests`. */
   noteAgentAppControlActivity(args: AgentDeviceActivity): boolean;
+  /** An agent drove this chat's lane Android emulator; see `WorkToolShowRequests`. */
+  noteAgentAndroidActivity(args: AgentDeviceActivity): boolean;
   /** Test/diagnostic hook: flushes a pending debounced event immediately. */
   flushPendingEvents(): void;
   dispose(): void;
@@ -1025,6 +1027,10 @@ export function createWorkToolsStateService(
 
     noteAgentAppControlActivity(input) {
       return args.showRequests?.noteAgentAppControlActivity(input) ?? false;
+    },
+
+    noteAgentAndroidActivity(input) {
+      return args.showRequests?.noteAgentAndroidActivity(input) ?? false;
     },
 
     flushPendingEvents() {

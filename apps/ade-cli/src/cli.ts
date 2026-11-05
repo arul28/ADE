@@ -1501,7 +1501,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade browser attach | detach                  The user's own browser, only when they ask
     $ ade work-tools state | actions               Read the desktop Work tools pane for a lane
     $ ade ui show apple | floating-apple | browser | proof | mac-desktop | floating-mac-desktop
-        | app-control | floating-app-control | android
+        | app-control | floating-app-control | android | floating-android
                                                     Show a surface of this chat to the user
     $ ade usage limits --text                       What's left of each subscription, per account
     $ ade usage snapshot | stats | refresh | budget Read provider quota, token/cost stats, and budget guardrails
@@ -3548,7 +3548,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   the same pixels as the screenshot.
 
   Setup and the lane's device:
-    $ ade android status --text                    SDK, acceleration, the lane's emulator
+    $ ade android status --text                    SDK, acceleration, the lane's emulator, and the
+                                                   lane's app's last crash while it runs
     $ ade android devices --text                   AVDs (and the lane holding each), system images
     $ ade android devices --profiles --text        Also list the hardware profiles
     $ ade android device-create --profile medium_phone --text
@@ -3560,7 +3561,9 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                                                    galaxy-z-fold7, oneplus-13, nothing-phone-3 (stock Android)
     $ ade android device-attach --avd <name> --text
                                                    Hold an existing AVD no other lane holds (--no-start)
-    $ ade android start --text                     Boot the lane's AVD (waits for boot completed)
+    $ ade android start --text                     Boot the lane's AVD (waits for boot completed).
+                                                   Refused with ANDROID_LOW_MEMORY when the machine
+                                                   would swap; --force boots anyway (ask the user first)
     $ ade android stop --text                      Stop it; the lane keeps its AVD
     $ ade android device-detach --text             Stop it and let the AVD go. An AVD ADE made
                                                    for the lane is deleted; --keep keeps it.
@@ -3581,7 +3584,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                                                    proof (needs ADE open on the lane's Android tool).
                                                    Angles: front, three-quarter-left, three-quarter-right,
                                                    back, current. --video adds a 6 s turntable; --no-shadow
-    $ ade android show --text                      Show the emulator to the user (tools pane)
+    $ ade android show --text                      Show the emulator to the user (tools pane;
+                                                   --floating: the floating player over the chat)
     $ ade android actions --text                   List the android_emulator actions
     $ ade android long-press 540 1200 --duration-ms 1500 --text
     $ ade android drag 200 800 800 800 --duration-ms 600 --text
@@ -3687,6 +3691,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     ANDROID_AVD_RUNNING              that AVD already runs outside this lane
     ANDROID_BOOT_TIMEOUT / ANDROID_EMULATOR_EXITED   read the log the error names
     ANDROID_NOT_RUNNING              ade android start first
+    ANDROID_LOW_MEMORY               free memory, or ask the user, then start --force
     ANDROID_ELEMENT_NOT_FOUND        ade android snapshot, then aim again
     ANDROID_BUILD_FAILED             read the Gradle output, fix the build
     ANDROID_PACKAGE_NOT_ADE_INSTALLED   ADE did not install it on this AVD
@@ -4110,6 +4115,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade ui show floating-app-control
                                    The floating App Control card over the chat
     $ ade ui show android          The lane's Android emulator, in the tools pane
+    $ ade ui show floating-android The floating Android player over the chat
 
   Results:
     shown       The surface is on screen now.
@@ -4130,7 +4136,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   "ade apple show" is the same as "ade ui show apple"; "apple show --floating"
   is "ui show floating-apple". "ade mac-desktop show [--floating]" is the same
   for the Mac Desktop, "ade app-control show [--floating]" for App Control, and
-  "ade android show" for the Android emulator.
+  "ade android show [--floating]" for the Android emulator.
 `,
   "work-tools": `${ADE_BANNER}
   ADE work tools
@@ -17695,6 +17701,9 @@ const WORK_TOOL_SHOW_SURFACE_ALIASES: Record<string, WorkToolShowSurface> = {
   "floating-app-control": "floating-app-control",
   "floating-app": "floating-app-control",
   android: "android",
+  emulator: "android",
+  "floating-android": "floating-android",
+  "floating-emulator": "floating-android",
 };
 
 /**

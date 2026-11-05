@@ -12,6 +12,7 @@ import {
   DeviceMobile,
   DotsThree,
   Palette,
+  PictureInPicture,
   Power,
   Record,
   SlidersHorizontal,
@@ -46,6 +47,8 @@ export type AndroidDeviceRailProps = {
   /** Absent when the lane's device is not this pane's to change. */
   onSwitchDevice?: (() => void) | undefined;
   onPowerOff: () => void;
+  /** Floats the emulator over the chat; absent for another machine's work copy. */
+  onFloat?: (() => void) | undefined;
   /** The shared preview / maximize controls every screen tool carries. */
   extraControls?: ReactNode;
   /* P1 look. Each is absent where it does not apply. */
@@ -91,6 +94,7 @@ export function AndroidDeviceRail({
   onScreenshot,
   onSwitchDevice,
   onPowerOff,
+  onFloat,
   extraControls,
   mode = "flat",
   onMode,
@@ -229,6 +233,12 @@ export function AndroidDeviceRail({
           <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={onResetView}>
             <ArrowsOut size={14} />
             Reset view
+          </DropdownMenu.Item>
+        ) : null}
+        {onFloat ? (
+          <DropdownMenu.Item className={MENU_ITEM_CLASS} onSelect={onFloat}>
+            <PictureInPicture size={14} />
+            Float over chat
           </DropdownMenu.Item>
         ) : null}
         {colors && colors.length > 1 && onColor ? (

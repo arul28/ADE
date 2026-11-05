@@ -1,5 +1,4 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowsInSimple, ArrowsOutSimple } from "@phosphor-icons/react";
 import type { OpenProjectBinding } from "../../../shared/types";
 import type {
   AndroidDeviceInventory,
@@ -19,9 +18,7 @@ import { Button } from "../ui/Button";
 import { RecordingPill, RecordingSavedRow } from "../shared/RecordingReceipt";
 import { revealProofArtifactRow } from "../shared/recordingFormat";
 import { useTicker } from "../../lib/ticker";
-import { WorkToolChromeButton } from "../terminals/workToolChrome";
-import { useWorkToolsMaximize } from "../terminals/workToolsMaximize";
-import { WORK_TOOL_MAXIMIZE_PANE_LABEL, WORK_TOOL_RESTORE_PANE_LABEL } from "../terminals/workToolPreviewControls";
+import { WorkToolPreviewControls } from "../terminals/workToolPreviewControls";
 import {
   androidAvdSpecLine,
   androidDevicePixelSize,
@@ -63,6 +60,14 @@ import { useAndroidBootScreen } from "./useAndroidBootScreen";
 import { useAndroidRenderRequests } from "./useAndroidRenderRequests";
 import { useAndroidInspect } from "./useAndroidInspect";
 import { useAndroidRecording } from "./useAndroidRecording";
+import { noteAndroidMiniPlayerLaneDevice, openAndroidMiniPlayer } from "./androidMiniPlayerStore";
+import { AndroidQuickChips } from "./AndroidQuickChips";
+import { AndroidCrashPin } from "./AndroidCrashPin";
+import type { AndroidDrawerGroupId } from "./drawer/androidDrawerState";
+import { presetDeviceDrawerGroup } from "../device/deviceDrawerState";
+
+/** Below this pane width the chips would crowd the picture; the drawer still has every control. */
+const ANDROID_QUICK_CHIPS_MIN_WIDTH = 420;
 
 /** The drawer loads on first open: most sessions never open it. */
 const AndroidToolsDrawer = lazy(async () => {
@@ -267,6 +272,21 @@ export function AndroidDevicePane({
   }, [laneId, pinKey, readStatus]);
 
   const laneState = status?.lane?.state ?? "none";
+  // The floating player's cache: the handoff on unmount is synchronous, so the
+  // emulator's name and size have to be here before the pane goes.
+  const cachedLane = status?.lane ?? null;
+  useEffect(() => {
+    const avdName = cachedLane?.device?.avdName ?? null;
+    noteAndroidMiniPlayerLaneDevice({ laneId, runtimePin: runtimePinRef.current }, avdName && cachedLane
+      ? {
+        avdName,
+        deviceName: androidLaneDeviceName(cachedLane),
+        lcdWidth: cachedLane.avd?.lcdWidth ?? null,
+        lcdHeight: cachedLane.avd?.lcdHeight ?? null,
+        booted: cachedLane.state === "booted",
+      }
+      : null);
+  }, [cachedLane, laneId]);
   const pickerShownRef = useRef(false);
   /** `ade android render` events go to the render hook (set below, read through this ref). */
   const renderRequestRef = useRef<(event: AndroidRenderRequestEvent) => void>(() => undefined);
@@ -469,9 +489,10 @@ export function AndroidDevicePane({
     });
   }, [api, laneId, releaseCurrent, runStart]);
 
-  const start = useCallback(() => {
+  const start = useCallback((options?: { force?: boolean }) => {
     if (!api) return;
-    void runStart({ kind: "start" }, () => api.start({ laneId }, runtimePinRef.current));
+    const force = options?.force === true;
+    void runStart({ kind: "start" }, () => api.start({ laneId, ...(force ? { force } : {}) }, runtimePinRef.current));
   }, [api, laneId, runStart]);
 
   const powerOff = useCallback(() => {
@@ -593,7 +614,23 @@ export function AndroidDevicePane({
 
   const deviceName = androidLaneDeviceName(lane);
   const deviceSpec = lane?.avd ? androidAvdSpecLine(lane.avd, inventory?.profiles ?? []) : null;
-  const maximize = useWorkToolsMaximize();
+  /*
+   * "Float over chat": the Android slot of the floating players. Only for this
+   * window's own lanes; another machine's work copy shows in the pane only.
+   */
+  const floatOverChat = useMemo(() => {
+    const avdName = lane?.device?.avdName ?? null;
+    if (machineName || !avdName) return undefined;
+    return () => openAndroidMiniPlayer({
+      laneId,
+      chatSessionId: sessionId,
+      avdName,
+      deviceName,
+      lcdWidth: lane?.avd?.lcdWidth ?? null,
+      lcdHeight: lane?.avd?.lcdHeight ?? null,
+      runtimePin: runtimePinRef.current,
+    });
+  }, [deviceName, lane?.avd?.lcdHeight, lane?.avd?.lcdWidth, lane?.device?.avdName, laneId, machineName, sessionId]);
   const accel = status?.sdk.acceleration ?? null;
 
   /* ── P1 look: the body, the colour, boot on the model, renders ─────────── */
@@ -651,7 +688,24 @@ export function AndroidDevicePane({
       });
   }, [api, applyLane, laneId]);
 
+  /** Opens the Tools drawer at one group: the chips' "More in Tools", the crash pin's "Open Logs". */
+  const openToolsAt = (group: AndroidDrawerGroupId) => {
+    presetDeviceDrawerGroup("androidToolsGroup", sessionId, group);
+    setToolsOpen(true);
+  };
+
   const strip = (() => {
+    if (error?.code === "ANDROID_LOW_MEMORY") {
+      // The RAM guard: a warning with the numbers, and the person's way past it.
+      return (
+        <AndroidDeviceNoticeStrip
+          tone="warning"
+          sentence={`${error.sentence} A start now can slow the machine down while it swaps.`}
+          actions={[{ label: "Start anyway", onClick: () => start({ force: true }) }]}
+          onDismiss={() => setError(null)}
+        />
+      );
+    }
     if (error) {
       return <DeviceErrorStrip tool="android" sentence={error.sentence} detail={error.detail} onDismiss={() => setError(null)} />;
     }
@@ -901,17 +955,25 @@ export function AndroidDevicePane({
                 onToggleRecording={recording.toggleRecording}
                 toolsOpen={toolsOpen}
                 onToggleTools={() => setToolsOpen((open) => !open)}
-                extraControls={maximize ? (
-                  <WorkToolChromeButton
-                    label={maximize.maximized ? WORK_TOOL_RESTORE_PANE_LABEL : WORK_TOOL_MAXIMIZE_PANE_LABEL}
-                    onClick={() => maximize.setMaximized(!maximize.maximized)}
-                    active={maximize.maximized}
-                    testId="work-tool-maximize"
-                  >
-                    {maximize.maximized ? <ArrowsInSimple size={16} /> : <ArrowsOutSimple size={16} />}
-                  </WorkToolChromeButton>
-                ) : null}
+                onFloat={floatOverChat}
+                // The per-chat "Show preview when minimized" toggle and
+                // Maximize, shared with every screen tool.
+                extraControls={<WorkToolPreviewControls tool="android" chatSessionId={sessionId} />}
               />
+              <div className="pointer-events-none absolute left-3 top-3 z-[3] flex flex-col items-start gap-1.5">
+                {/* Quick chips: shortcuts to the drawer's Emulator group, hidden while the drawer itself shows. */}
+                {deviceLive && !toolsOpen && !inspect.inspectOn && bodyWidth >= ANDROID_QUICK_CHIPS_MIN_WIDTH ? (
+                  <AndroidQuickChips
+                    laneId={laneId}
+                    pinRef={runtimePinRef}
+                    visible={!hidden}
+                    onOpenTools={() => openToolsAt("emulator")}
+                  />
+                ) : null}
+                {deviceLive ? (
+                  <AndroidCrashPin crash={lane?.appCrash ?? null} onSendToChat={onInsertDraft} onOpenLogs={() => openToolsAt("logs")} />
+                ) : null}
+              </div>
               {/* The recording pill takes the live line's place at the bottom while the picture is live. */}
               {recording.active && deviceLive ? null : (
                 <AndroidLiveLine
@@ -955,6 +1017,8 @@ export function AndroidDevicePane({
                 visible={toolsOpen && !hidden}
                 onClose={() => setToolsOpen(false)}
                 remoteMachineName={remoteMachine ? machineName : null}
+                lanePackages={lane?.device?.adeInstalledPackages}
+                onInsertDraft={onInsertDraft}
               />
             </Suspense>
           </div>

@@ -68,10 +68,11 @@ export type AppleMiniPlayerSurface = {
  * means to the stream as well.
  *
  * A lane-less target (a projectless chat's device) belongs only on lane-less
- * surfaces, by the same rule: null lane equals null lane.
+ * surfaces, by the same rule: null lane equals null lane. The Android player
+ * (`androidMiniPlayerStore.ts`) uses the same rule.
  */
 export function appleMiniPlayerBelongsToSurface(
-  target: AppleMiniPlayerTarget,
+  target: Pick<AppleMiniPlayerTarget, "laneId" | "runtimePin">,
   surface: AppleMiniPlayerSurface | null,
 ): boolean {
   if (!surface) return false;

@@ -6,7 +6,7 @@ import SwiftUI
 
 /// One surface the Work tools pane can show for a chat.
 ///
-/// Two kinds. The four lane **tools** mirror the composer's lane tool chips
+/// Two kinds. The five lane **tools** mirror the composer's lane tool chips
 /// exactly (the Tools menu lists them). The **pages** are Chat info (desktop's
 /// chat actions drawer), its Proof, and the chat's Pull Request. A tab exists
 /// only while its surface exists, the same availability the pills and menu
@@ -15,6 +15,8 @@ import SwiftUI
 /// Declaration order is the order the tools appear in the Tools menu.
 enum DuoToolTab: String, CaseIterable, Identifiable, Hashable {
   case simulator
+  /// The lane's Android emulator.
+  case android
   case macDesktop
   case appControl
   case browser
@@ -33,6 +35,7 @@ enum DuoToolTab: String, CaseIterable, Identifiable, Hashable {
   var title: String {
     switch self {
     case .simulator: return "Simulator"
+    case .android: return "Android"
     case .macDesktop: return "Desktop"
     case .appControl: return "App Control"
     case .browser: return "Browser"
@@ -47,6 +50,7 @@ enum DuoToolTab: String, CaseIterable, Identifiable, Hashable {
   var symbolName: String {
     switch self {
     case .simulator: return "iphone"
+    case .android: return "smartphone"
     case .macDesktop: return "desktopcomputer"
     case .appControl: return "macwindow"
     case .browser: return "globe"
@@ -62,7 +66,7 @@ enum DuoToolTab: String, CaseIterable, Identifiable, Hashable {
   /// A lane tool, switched in the pane header, as opposed to a chat page.
   var isTool: Bool {
     switch self {
-    case .simulator, .macDesktop, .appControl, .browser: return true
+    case .simulator, .android, .macDesktop, .appControl, .browser: return true
     case .chatInfo, .proof, .pr, .createPr, .ctoSettings: return false
     }
   }
@@ -72,7 +76,7 @@ enum DuoToolTab: String, CaseIterable, Identifiable, Hashable {
   /// otherwise the pane shows their sheet, with its header.
   func isLiveStage(seed: DuoToolSeed) -> Bool {
     switch self {
-    case .simulator: return true
+    case .simulator, .android: return true
     case .macDesktop: return seed.macDesktopStream
     case .appControl: return seed.appControlStream
     default: return false
@@ -86,6 +90,7 @@ extension WorkToolChip {
   var duoToolTab: DuoToolTab {
     switch kind {
     case .simulator: return .simulator
+    case .android: return .android
     case .macDesktop: return .macDesktop
     case .browser: return .browser
     case .appControl: return .appControl
@@ -103,6 +108,7 @@ struct DuoToolSeed: Equatable {
   var appControl: WorkToolsAppControlState?
   var appControlStream = false
   var macDesktopStream = false
+  var androidStatus: AndroidDeviceStatus?
 }
 
 /// What the Work tab's tools pane is showing, and whether it is up.
@@ -155,7 +161,8 @@ final class DuoWorkPaneModel: ObservableObject {
       macDesktop: tools.macDesktopState,
       appControl: tools.appControlState,
       appControlStream: tools.appControlStream,
-      macDesktopStream: macDesktopStream
+      macDesktopStream: macDesktopStream,
+      androidStatus: tools.androidStatus
     ), origin: origin)
   }
 

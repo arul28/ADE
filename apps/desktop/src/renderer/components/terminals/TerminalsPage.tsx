@@ -22,6 +22,7 @@ import { PROJECT_SIDEBAR_DEFAULT_WIDTH, useProjectSidebarHidden } from "../app/p
 import type { WorkSidebarContextTarget } from "./workToolContextInsertion";
 import { cn } from "../ui/cn";
 import { AppleDeviceMiniPlayer } from "../apple/AppleDeviceMiniPlayer";
+import { AndroidDeviceMiniPlayer } from "../android/AndroidDeviceMiniPlayer";
 import { useWorkShowRequests } from "./useWorkShowRequests";
 import { AppleShutdownConfirmHost } from "../apple/AppleShutdownConfirm";
 import { MacDesktopStopConfirmHost } from "../chat/MacDesktopStopConfirm";
@@ -1336,6 +1337,9 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   const openAppleTool = useCallback(() => {
     setWorkSidebarTool("ios");
   }, [setWorkSidebarTool]);
+  const openAndroidTool = useCallback(() => {
+    setWorkSidebarTool("android");
+  }, [setWorkSidebarTool]);
 
   const appleMiniPlayerSurface = useWorkShowRequests({
     active,
@@ -1856,6 +1860,8 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
               point of it — and it is opened by the rail, never by ADE.
             */}
             <AppleDeviceMiniPlayer onOpenInPane={openAppleTool} surface={appleMiniPlayerSurface} />
+            {/* The Android slot: one emulator floats beside the Apple device. */}
+            <AndroidDeviceMiniPlayer onOpenInPane={openAndroidTool} surface={appleMiniPlayerSurface} />
             {/*
               §B3's "Shut down {device}?" — mounted beside the player because
               they are the same story: one asks before the tab close powers the
@@ -1960,6 +1966,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       workViewArea,
       activeLaneDeleteProgress,
       openAppleTool,
+      openAndroidTool,
       appleMiniPlayerSurface,
     ],
   );

@@ -1257,6 +1257,7 @@ type SyncHostServiceArgs = {
   appleStreamRelay?: AppleStreamTicketIssuer | null;
   getAppleRemoteBitrateKbpsCap?: () => number | null;
   androidDeviceService?: AndroidDeviceRemoteService | null;
+  androidStreamRelay?: AppleStreamTicketIssuer | null;
   linearCredentialService?: ReturnType<typeof createLinearCredentialService> | null;
   getLinearIssueTracker?: () => ReturnType<typeof createLinearIssueTracker> | null;
   projectConfigService?: ReturnType<typeof createProjectConfigService>;
@@ -2501,6 +2502,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     appleStreamRelay: args.appleStreamRelay,
     getAppleRemoteBitrateKbpsCap: args.getAppleRemoteBitrateKbpsCap,
     androidDeviceService: args.androidDeviceService,
+    androidStreamRelay: args.androidStreamRelay,
     linearCredentialService: args.linearCredentialService,
     getLinearIssueTracker: args.getLinearIssueTracker,
     projectConfigService: args.projectConfigService,

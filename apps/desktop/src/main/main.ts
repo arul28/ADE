@@ -5850,6 +5850,20 @@ app.whenReady().then(async () => {
         stopForLane: (laneId: string) => androidEmulatorService.stopForLane(laneId),
       };
     }
+    // The desktop-embedded sync host's live view for a phone or a web tab, as
+    // Apple's relay above: only beside an in-process Android service.
+    const androidStreamRelay = androidEmulatorService ? createAppleStreamRelayForService({
+      service: androidEmulatorService.streamRelaySource,
+      remoteBitrateKbpsCap: () => null,
+      logger,
+    }) : null;
+    if (androidStreamRelay) {
+      const detachAndroidStreamRoute = setActiveAppleStreamRouter(androidStreamRelay);
+      app.on("will-quit", () => {
+        detachAndroidStreamRoute();
+        androidStreamRelay.dispose();
+      });
+    }
     // A chat that ends stops its Android recordings and passes on its emulator leases.
     if (androidEmulatorService) {
       agentChatService.registerChatSessionEndedListener((sessionId) => {
@@ -6060,6 +6074,7 @@ app.whenReady().then(async () => {
       computerUseArtifactBrokerService,
       appleDeviceService: iosSimulatorService,
       androidDeviceService: androidEmulatorService,
+      androidStreamRelay,
       getWebhookAutomations: () => createWebhookRemoteSource({
         automationService,
         webhooks: automationIngressService?.webhooks,

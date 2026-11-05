@@ -316,6 +316,32 @@ export type AndroidLogResult = {
   cursor: string | null;
 };
 
+/**
+ * P2 crash pin: an app crash on the lane's emulator, from the device's crash
+ * buffer (`logcat -b crash`, `androidCrashWatch.ts`). Only the lane's app
+ * counts: the packages ADE installed for the lane, or, when it installed
+ * none, any app that is not part of Android.
+ */
+export type AndroidAppCrash = {
+  /** Unique per crash: `<time>:<pid>`. */
+  id: string;
+  /** The crashed app; null when the crash lines did not name it. */
+  packageName: string | null;
+  /** The crashed process. */
+  pid: number | null;
+  /** The crash's first line, as logcat printed it (epoch seconds, `1730000000.123`). */
+  time: string;
+  /** `java`: an uncaught exception. `native`: a signal in native code (a tombstone). */
+  kind: "java" | "native";
+  /** One line: the exception and its message, or the signal. */
+  summary: string;
+  /** The crash lines as text, at most `ANDROID_CRASH_STACK_MAX_CHARS`. */
+  stack: string;
+};
+
+/** The longest crash text the pin carries; the rest stays in `ade android log`. */
+export const ANDROID_CRASH_STACK_MAX_CHARS = 12_000;
+
 /* ---------- recordings ---------- */
 
 /**

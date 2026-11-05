@@ -82,7 +82,9 @@ export type AndroidToolsPreloadAction =
   | "setAppearance"
   | "setPermission"
   | "getDeviceSettings"
-  | "setDeviceSetting";
+  | "setDeviceSetting"
+  // P2: the Logs group.
+  | "readLog";
 
 /** What one service method answers, without the promise. */
 export type AndroidServiceResult<K extends keyof AndroidEmulatorServiceApi> = Awaited<ReturnType<AndroidEmulatorServiceApi[K]>>;
