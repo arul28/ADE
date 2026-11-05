@@ -175,7 +175,8 @@ export function createAgent37KeepAwake(options: Agent37KeepAwakeOptions): Agent3
         state = { busy: true, reasons: ["unknown"] };
       }
       const nextWakeAt = state.nextWakeAt ?? null;
-      const serverHolds = await syncTimedWake(url, nextWakeAt);
+      // An overdue timer fires on this awake machine on its own; only a future one is sent.
+      const serverHolds = await syncTimedWake(url, nextWakeAt != null && nextWakeAt > now() ? nextWakeAt : null);
       if (nextWakeAt != null) {
         const window = serverHolds ? AGENT37_KEEP_AWAKE_SCHEDULE_WINDOW_MS : AGENT37_KEEP_AWAKE_UNSENT_SCHEDULE_WINDOW_MS;
         if (nextWakeAt - now() < window && !state.reasons.includes("schedule")) {
