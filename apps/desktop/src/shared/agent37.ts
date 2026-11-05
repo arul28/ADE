@@ -24,6 +24,9 @@ export type Agent37MachineKind = "box" | "vm";
 
 export type Agent37ShapeId = "2x4" | "4x8" | "4x16" | "4x32";
 
+/** A box's size as Agent37 reports it: vCPUs, and memory and disk in GB. */
+export type Agent37Resources = { cpu: number; memoryGb: number; diskGb: number };
+
 export type Agent37Shape = {
   id: Agent37ShapeId;
   cpu: number;
@@ -64,9 +67,31 @@ const HOURS_PER_MONTH = 730;
 
 /** What one running hour costs, in US dollars. Asleep or stopped, only the disk bills. */
 export function agent37HourlyUsd(kind: Agent37MachineKind, shape: Agent37Shape): number {
-  const compute = shape.cpu * VCPU_MONTH_USD + shape.memoryGb * MEMORY_GB_MONTH_USD;
-  const monthly = compute * (kind === "vm" ? 2.5 : 1) + shape.diskGb * DISK_GB_MONTH_USD;
-  return monthly / HOURS_PER_MONTH;
+  return agent37RunningHourlyUsd(agent37InstanceType(kind), { cpu: shape.cpu, memoryGb: shape.memoryGb, diskGb: shape.diskGb });
+}
+
+/** How Agent37's compute multiplier reads each instance type: a VM 2.5x, a performance box 4x. */
+function computeMultiplier(type: string | null): number {
+  if (type === "vm") return 2.5;
+  if (type === "performance") return 4;
+  return 1;
+}
+
+/** A running hour of any shape, in US dollars. */
+export function agent37RunningHourlyUsd(type: string | null, resources: Agent37Resources): number {
+  const compute = resources.cpu * VCPU_MONTH_USD + resources.memoryGb * MEMORY_GB_MONTH_USD;
+  return (compute * computeMultiplier(type) + resources.diskGb * DISK_GB_MONTH_USD) / HOURS_PER_MONTH;
+}
+
+/** An hour asleep or stopped: the disk alone. */
+export function agent37IdleHourlyUsd(resources: Agent37Resources): number {
+  return (resources.diskGb * DISK_GB_MONTH_USD) / HOURS_PER_MONTH;
+}
+
+/** "$0.06", "$1.20", "$12". Under a cent reads "under 1¢". */
+export function formatAgent37Usd(usd: number): string {
+  if (usd > 0 && usd < 0.01) return "under 1¢";
+  return usd >= 10 ? `$${Math.round(usd)}` : `$${usd.toFixed(2)}`;
 }
 
 /** "0.7¢ an hour" / "3.4¢ an hour". */
@@ -115,7 +140,10 @@ export type Agent37Status = {
   /** 0 before the first top-up: one box, the smallest shape, no VMs. */
   tier: number | null;
   instanceLimit: number | null;
+  /** Every machine the workspace holds, asleep and stopped ones included. */
   instanceCount: number | null;
+  /** The machines awake right now: after the first top-up, only these count toward the limit. */
+  runningCount: number | null;
   pastDue: boolean;
   /** Set when a key is saved but Agent37 refused it or could not be reached. */
   error: string | null;
@@ -176,20 +204,197 @@ export type Agent37CreateProgress = {
   error?: string;
 };
 
+/**
+ * Whether the workspace is at its machine limit. Before the first top-up
+ * (tier 0) the limit is one machine in total, asleep or not; after it, only
+ * awake machines count, so sleeping one makes room.
+ */
+export function agent37AtMachineLimit(
+  status: Pick<Agent37Status, "tier" | "instanceLimit" | "instanceCount" | "runningCount">,
+): boolean {
+  if (status.instanceLimit == null) return false;
+  const counted = status.tier === 0 ? status.instanceCount : status.runningCount ?? status.instanceCount;
+  return counted != null && counted >= status.instanceLimit;
+}
+
+/** The sentence for a workspace at its limit, with the way out that applies to its tier. */
+export function agent37MachineLimitMessage(
+  status: Pick<Agent37Status, "tier" | "instanceLimit">,
+  doing: "make" | "wake" = "make",
+): string {
+  if (status.tier === 0) {
+    return "Your free Agent 37 workspace holds one machine. Delete it, or top up once to run up to 10 at a time.";
+  }
+  const limit = status.instanceLimit;
+  const many = limit != null ? `${limit} machine${limit === 1 ? "" : "s"}` : "as many machines as it can";
+  return doing === "wake"
+    ? `Your Agent 37 workspace already has ${many} awake, its limit. Put one to sleep, then wake this one.`
+    : `Your Agent 37 workspace already has ${many} awake, its limit. Put one to sleep, or top up more to raise the limit.`;
+}
+
 /** Why a shape or kind cannot be made on this workspace right now, or null. */
 export function agent37ChoiceBlocker(
-  status: Pick<Agent37Status, "tier" | "instanceLimit" | "instanceCount" | "pastDue">,
+  status: Pick<Agent37Status, "tier" | "instanceLimit" | "instanceCount" | "runningCount" | "pastDue">,
   kind: Agent37MachineKind,
   shape: Agent37Shape,
 ): string | null {
   if (status.pastDue) return "Your Agent 37 wallet is past due. Top it up to make machines.";
-  if (status.instanceLimit != null && status.instanceCount != null && status.instanceCount >= status.instanceLimit) {
-    return `Your Agent 37 workspace holds ${status.instanceLimit} machine${status.instanceLimit === 1 ? "" : "s"} at most, sleeping ones included. Delete one or top up to raise the limit.`;
-  }
+  if (agent37AtMachineLimit(status)) return agent37MachineLimitMessage(status, "make");
   if (status.tier === 0 && (kind === "vm" || shape.id !== "2x4")) {
     return "Agent 37 unlocks VMs and bigger sizes after your first top-up.";
   }
   return null;
+}
+
+/**
+ * A box as the machine list shows it. `asleep` and `stopped` bill the disk
+ * only; `starting` covers provisioning, waking, restarting and a resize or
+ * update in flight.
+ */
+export type Agent37MachineState = "running" | "asleep" | "starting" | "stopping" | "stopped" | "deleting" | "error";
+
+export function agent37MachineState(status: string): Agent37MachineState {
+  switch (status) {
+    case "running":
+      return "running";
+    case "sleeping":
+      return "asleep";
+    case "provisioning":
+    case "starting":
+    case "waking":
+    case "restarting":
+    case "updating":
+      return "starting";
+    case "stopping":
+      return "stopping";
+    case "stopped":
+      return "stopped";
+    case "deleting":
+    case "deleted":
+      return "deleting";
+    default:
+      return "error";
+  }
+}
+
+/** Whether Agent37 is moving the box between states (worth a quick re-read). */
+export function agent37MachineSettling(state: Agent37MachineState): boolean {
+  return state === "starting" || state === "stopping" || state === "deleting";
+}
+
+/** What the person calls the instance type. */
+export type Agent37MachineType = "box" | "vm" | "performance";
+
+export function agent37MachineType(type: string | null): Agent37MachineType {
+  if (type === "vm") return "vm";
+  if (type === "performance") return "performance";
+  return "box";
+}
+
+/** One Agent37 box that ADE made (or that is signed in to the account), for the machine list. */
+export type Agent37Machine = {
+  instanceId: string;
+  /** Agent37's label; ADE sets it to the machine's name at create. */
+  name: string | null;
+  /** Agent37's own status word, for logs and the tooltip. */
+  status: string;
+  state: Agent37MachineState;
+  type: Agent37MachineType;
+  resources: Agent37Resources | null;
+  /** The size ADE offers this shape as, when it is one of them. */
+  shapeId: Agent37ShapeId | null;
+  region: string | null;
+  /** What an hour costs awake, and asleep or stopped (disk only). Null without resources. */
+  runningHourlyUsd: number | null;
+  idleHourlyUsd: number | null;
+  /** What it spent in `spentSinceMs`..now (Agent37 settles compute hourly), or null when unknown. */
+  spentUsd: number | null;
+  /** Where `spentUsd` starts: the box's creation, or 90 days back for an older box. */
+  spentSinceMs: number | null;
+  /** True when that window starts at the box's creation: the figure is everything it cost. */
+  spentIsLifetime: boolean;
+  /** Suspended for non-payment (Agent37's `past_due`). */
+  pastDue: boolean;
+  /** Agent37's reason for the last failed lifecycle action. */
+  failure: string | null;
+  /** The box's ADE machine (account row), when ADE recorded it on the box. */
+  machineKey: string | null;
+  /**
+   * ADE made it (its create tags, or a recorded machine key). The list shows
+   * these, and any other box only when an account row matches it.
+   */
+  madeByAde: boolean;
+  createdAtMs: number | null;
+};
+
+export type Agent37MachinesResult = {
+  /**
+   * `ok`: read. `not_connected`: no key saved. `key_refused`: Agent37 refused
+   * the saved key (revoked or rotated). `unreachable`: Agent37 did not answer.
+   */
+  state: "ok" | "not_connected" | "key_refused" | "unreachable";
+  machines: Agent37Machine[];
+  balanceUsd: number | null;
+  tier: number | null;
+  instanceLimit: number | null;
+  instanceCount: number | null;
+  runningCount: number | null;
+  pastDue: boolean;
+  /** False when the spend could not be read; the boxes still show. */
+  usageAvailable: boolean;
+  /** A plain sentence for `key_refused` and `unreachable`. */
+  message: string | null;
+};
+
+export type Agent37MachineActionKind = "sleep" | "wake" | "resize" | "backup" | "delete";
+
+export type Agent37MachineActionArgs = {
+  instanceId: string;
+  action: Agent37MachineActionKind;
+  /** The new size, for `resize`. */
+  shape?: Agent37ShapeId;
+  /** For `delete`: the box's ADE machine, removed from the account once the box is gone. */
+  machineKey?: string | null;
+};
+
+export type Agent37MachineActionResult = {
+  ok: boolean;
+  /** One plain line: what happened, or why it didn't. */
+  message: string;
+  /**
+   * What stops the action, so the card can offer the way out: top up the
+   * wallet, raise the limit, fix the key, or wait for a backup window.
+   */
+  blocker: "wallet" | "limit" | "suspended" | "key" | "rate_limited" | null;
+  /** For `delete`: the box is gone but its account row could not be removed. */
+  accountRowLeft?: boolean;
+};
+
+/** "Box · 2 vCPU · 4 GB". */
+export function describeAgent37MachineSize(machine: Pick<Agent37Machine, "type" | "resources">): string {
+  const kind = machine.type === "vm" ? "VM" : machine.type === "performance" ? "Performance box" : "Box";
+  if (!machine.resources) return kind;
+  return `${kind} · ${machine.resources.cpu} vCPU · ${machine.resources.memoryGb} GB`;
+}
+
+/** The shape ADE offers for these resources (cpu and memory decide it), or null. */
+export function agent37ShapeFor(resources: Pick<Agent37Resources, "cpu" | "memoryGb"> | null): Agent37Shape | null {
+  if (!resources) return null;
+  return AGENT37_SHAPES.find((shape) => shape.cpu === resources.cpu && shape.memoryGb === resources.memoryGb) ?? null;
+}
+
+/**
+ * The resize body for a target shape. Disk only grows on Agent37, so a
+ * smaller shape keeps the disk it has, and a bigger one grows it to the
+ * shape's disk when that is larger.
+ */
+export function agent37ResizeBody(
+  current: Agent37Resources,
+  target: Agent37Shape,
+): { cpu: number; memory: number; disk?: number } {
+  const body: { cpu: number; memory: number; disk?: number } = { cpu: target.cpu, memory: target.memoryGb };
+  if (target.diskGb > current.diskGb) body.disk = target.diskGb;
+  return body;
 }
 
 /**

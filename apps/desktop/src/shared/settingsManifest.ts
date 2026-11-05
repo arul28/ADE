@@ -1412,6 +1412,16 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "Agent37",
   },
   {
+    id: "integrations.agent37-machines",
+    label: "Agent 37 machines",
+    keywords: ["sleep", "wake", "resize", "back up", "backup", "delete box", "remove from ade", "spending", "cost", "price", "wallet", "box limit", "suspended"],
+    tab: "integrations",
+    anchor: "agent37-machines",
+    scope: "account",
+    web: "hidden",
+    group: "Agent37",
+  },
+  {
     id: "integrations.jira-projects",
     label: "Jira projects for this project",
     keywords: ["jira", "project", "issue tracker", "binding", "default"],

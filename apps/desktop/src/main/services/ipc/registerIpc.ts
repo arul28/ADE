@@ -12369,6 +12369,7 @@ export function registerIpc({
     vaultBridge: accountVaultBridge,
     listAccountMachines: () => accountBridge.listMachines(),
     renameMachine: (machineKey, name) => accountBridge.renameMachine(machineKey, name),
+    removeAccountMachine: (machineKey) => accountBridge.removeMachine(machineKey),
     // Where the create's outcome is known. Coarse outcome only; a six-hour
     // dedupe per outcome bounds it to 16 accepted events a day.
     recordMachineCreate: (outcome) => {

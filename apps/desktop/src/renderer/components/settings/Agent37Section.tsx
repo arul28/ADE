@@ -19,6 +19,7 @@ import {
 import { Banner } from "../ui/notice";
 import { Agent37Mark, AGENT37_NAME } from "../remoteTargets/agent37Brand";
 import { agent37RetryLabel, useAgent37Template } from "../remoteTargets/useAgent37Template";
+import { openConnectionsPanel } from "../../lib/connectionsPanel";
 import "./IntegrationsSettings.css";
 
 function errorText(error: unknown, fallback: string): string {
@@ -170,13 +171,23 @@ export function Agent37Section() {
   const facts: IntegrationFact[] = connected && !status?.error
     ? [
         { label: "Wallet", value: status?.balanceUsd != null ? `$${status.balanceUsd.toFixed(2)}` : "—", mono: true },
-        {
-          label: "Machines",
-          value: status?.instanceCount != null && status.instanceLimit != null
-            ? `${status.instanceCount} of ${status.instanceLimit}`
-            : "—",
-          title: `${AGENT37_NAME} counts sleeping and stopped machines toward the limit.`,
-        },
+        status?.tier === 0
+          ? {
+              label: "Machines",
+              value: status.instanceCount != null && status.instanceLimit != null
+                ? `${status.instanceCount} of ${status.instanceLimit}`
+                : "—",
+              title: `Until your first top-up, ${AGENT37_NAME} counts sleeping and stopped machines toward the limit.`,
+            }
+          : {
+              label: "Awake",
+              value: status?.runningCount != null && status.instanceLimit != null
+                ? `${status.runningCount} of ${status.instanceLimit}`
+                : "—",
+              title: status?.instanceCount != null
+                ? `${AGENT37_NAME} counts only awake machines toward the limit. You have ${status.instanceCount} in all.`
+                : `${AGENT37_NAME} counts only awake machines toward the limit.`,
+            },
         {
           label: "Sizes",
           value: status?.tier === 0 ? "Smallest box only" : "All sizes and VMs",
@@ -230,13 +241,16 @@ export function Agent37Section() {
             <IntegrationCard
               anchor="agent37-machines"
               icon={<Plus size={15} weight="bold" />}
-              title="Make a machine"
-              hint={`Open your computers (the machine list), choose Add computer, then New ${AGENT37_NAME} machine. It signs in to your account on its own and shows up ready to connect.`}
+              title="Your machines"
+              hint={`Your ${AGENT37_NAME} machines have their own group in your computers. Each one shows its state, size, price and spend, and its menu has Sleep, Resize, Back up and Delete box.`}
             >
               <p className="ade-ig-note">
-                Boxes run lanes, agents and a Linux Desktop screen. VMs add the Android emulator and Docker. {AGENT37_NAME} bills each running minute; asleep, only the disk.
+                To make one, choose Add computer, then New {AGENT37_NAME} machine. It signs in to your account on its own and shows up ready to connect. Boxes run lanes, agents and a Linux Desktop screen. VMs add the Android emulator and Docker. {AGENT37_NAME} bills each running minute; asleep, only the disk.
               </p>
               <div className="ade-ig-step-actions">
+                <button type="button" className="ade-modern-btn" onClick={() => openConnectionsPanel("machines")}>
+                  Open your computers
+                </button>
                 <a className="ade-modern-btn" href={AGENT37_BILLING_URL} target="_blank" rel="noreferrer" style={{ textDecoration: "none" }}>
                   <ArrowSquareOut size={12} /> {AGENT37_NAME} wallet
                 </a>

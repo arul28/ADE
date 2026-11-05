@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { MachineAvatar, machineFormFactor, machinePlatform } from "./MachineIdentity";
 import {
   ArrowCounterClockwise,
@@ -30,7 +30,7 @@ import { COLORS, SANS_FONT, outlineButton } from "../lanes/laneDesignTokens";
 import { ConnectionDoctorPanel } from "./ConnectionDoctorPanel";
 import { ConnectionRouteDetails } from "./ConnectionRouteDetails";
 import { Banner } from "../ui/notice";
-import { MachineActionsMenu } from "./MachineActionsMenu";
+import { MachineActionsMenu, type MachineAction } from "./MachineActionsMenu";
 import {
   formatMachineEndpoint,
   isMachineStateConnectError,
@@ -81,6 +81,16 @@ type AccountMachineRowProps = {
   /** Stops this row's connect while it is in progress. */
   onCancelConnect: (machine: AdeAccountMachine) => void;
   onRenamed?: () => void;
+  /** More ⋯ items after Rename: Remove from ADE, a cloud box's lifecycle. */
+  extraActions?: MachineAction[];
+  /** A line under the row, inside it: a cloud box's state, size and price. */
+  footer?: ReactNode;
+  /**
+   * A cloud box that is asleep or stopped: the line that replaces the row's
+   * presence ("Asleep on Agent 37") and the button that replaces Connect
+   * (Wake). A sleeping box can't take a connection, so the row never offers one.
+   */
+  parked?: { label: string; action: ReactNode } | null;
 };
 
 function relativeLastSeen(lastSeenAt: number | null): string {
@@ -135,6 +145,9 @@ export function AccountMachineRow({
   onConnect,
   onCancelConnect,
   onRenamed,
+  extraActions = [],
+  footer = null,
+  parked = null,
 }: AccountMachineRowProps) {
   const { machine } = row;
   const displayName = accountMachineDisplayName(machine) ?? "Unnamed machine";
@@ -153,13 +166,14 @@ export function AccountMachineRow({
   // exists to prevent.
   const presence = accountMachinePresence(machine, { connected });
   const available = connectionState === "available";
-  const awake = machineIsAwake(presence);
+  const parkedLine = parked && !connected && !connecting ? parked : null;
+  const awake = !parkedLine && machineIsAwake(presence);
   // "Why offline?" is offered about an OFFLINE machine, not a sleeping one:
   // the row that says "Asleep · 82% battery" and offers to explain why the
   // machine is offline is the same one-row contradiction as the green dot.
   const offline = presence === "offline";
   const needsSetup = connectionState === "unreachable";
-  const canExplain = offline || needsSetup;
+  const canExplain = !parkedLine && (offline || needsSetup);
 
   const saveRename = async (customName?: string | null) => {
     const api = window.ade.account;
@@ -265,7 +279,7 @@ export function AccountMachineRow({
                 {...(presence === "connected"
                   ? { role: "img", "aria-label": "Connected" }
                   : { "aria-hidden": true })}
-                data-machine-presence={presence}
+                data-machine-presence={parkedLine ? "asleep" : presence}
                 style={{
                   width: 7,
                   height: 7,
@@ -276,7 +290,7 @@ export function AccountMachineRow({
               />
             </div>
             <div style={helperTextStyle}>
-              {accountMachineStatusLabel(machine, connectionState, presence)}
+              {parkedLine ? parkedLine.label : accountMachineStatusLabel(machine, connectionState, presence)}
             </div>
           </div>
 
@@ -292,6 +306,8 @@ export function AccountMachineRow({
                 <X size={13} weight="bold" />
                 Cancel
               </button>
+            ) : parkedLine ? (
+              parkedLine.action
             ) : available ? (
               <button
                 type="button"
@@ -337,11 +353,14 @@ export function AccountMachineRow({
                         onSelect: () => void saveRename(null),
                       }]
                     : []),
+                  ...extraActions,
                 ]}
               />
             ) : null}
           </div>
         </div>
+
+        {footer}
 
         {connecting && stageLabel ? (
           <div role="status" style={helperTextStyle}>

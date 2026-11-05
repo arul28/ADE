@@ -1,0 +1,83 @@
+import { useCallback, useEffect, useRef, useState } from "react";
+import { agent37MachineSettling, type Agent37MachinesResult } from "../../../shared/agent37";
+import { extractError } from "../../lib/format";
+
+/** While a box is waking, sleeping or resizing, how often its state is read again. */
+const SETTLING_POLL_MS = 4_000;
+/** A box that never settles stops the quick re-reads after this; focus reads again. */
+const SETTLING_POLL_LIMIT_MS = 5 * 60_000;
+
+export type Agent37MachinesState = {
+  /** The last answer; it stays while a refresh runs, so the cards never flicker. */
+  result: Agent37MachinesResult | null;
+  loading: boolean;
+  /** ADE could not ask at all (the call threw). */
+  loadError: string | null;
+  refresh: () => void;
+};
+
+/**
+ * The Agent37 workspace's boxes for the machine list. Account-level: it asks
+ * this desktop's main process with no pin (the key is the account's).
+ *
+ * Read when the list opens, on window focus and when the integration changes,
+ * never on a standing poll; only while a box is moving between states does it
+ * read again every few seconds, until the box settles.
+ */
+export function useAgent37Machines(enabled: boolean): Agent37MachinesState {
+  const bridge = window.ade?.agent37;
+  const [result, setResult] = useState<Agent37MachinesResult | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const generation = useRef(0);
+  const settlingSince = useRef<number | null>(null);
+
+  const load = useCallback(() => {
+    const listMachines = bridge?.listMachines;
+    if (!enabled || !listMachines) return;
+    const current = ++generation.current;
+    setLoading(true);
+    void listMachines().then(
+      (next) => {
+        if (current !== generation.current) return;
+        setResult(next);
+        setLoadError(null);
+      },
+      (error: unknown) => {
+        if (current !== generation.current) return;
+        setLoadError(extractError(error));
+      },
+    ).finally(() => {
+      if (current === generation.current) setLoading(false);
+    });
+  }, [bridge, enabled]);
+
+  useEffect(() => {
+    if (!enabled) {
+      generation.current += 1;
+      setResult(null);
+      return;
+    }
+    load();
+    const off = bridge?.onStatusChanged?.(load);
+    window.addEventListener("focus", load);
+    return () => {
+      off?.();
+      window.removeEventListener("focus", load);
+    };
+  }, [bridge, enabled, load]);
+
+  const settling = Boolean(result?.machines.some((machine) => agent37MachineSettling(machine.state)));
+  useEffect(() => {
+    if (!settling) {
+      settlingSince.current = null;
+      return;
+    }
+    settlingSince.current ??= Date.now();
+    if (Date.now() - settlingSince.current > SETTLING_POLL_LIMIT_MS) return;
+    const timer = window.setTimeout(load, SETTLING_POLL_MS);
+    return () => window.clearTimeout(timer);
+  }, [load, result, settling]);
+
+  return { result, loading, loadError, refresh: load };
+}

@@ -9,6 +9,9 @@ import {
   describeAgent37TemplateStatus,
   type Agent37CreateMachineArgs,
   type Agent37CreateProgress,
+  type Agent37MachineActionArgs,
+  type Agent37MachineActionResult,
+  type Agent37MachinesResult,
   type Agent37Status,
   type Agent37TemplateStatus,
 } from "../../../shared/agent37";
@@ -37,6 +40,7 @@ import {
   type Agent37ApprovalWindowResult,
 } from "./agent37MachineCreator";
 import { createAgent37Client } from "./agent37Client";
+import { createAgent37Machines } from "./agent37Machines";
 import {
   createAgent37PendingCreateStore,
   readAgent37BoxSignedIn,
@@ -204,6 +208,8 @@ export function registerAgent37Ipc(args: {
   vaultBridge: Parameters<typeof agent37VaultFromBridge>[0];
   listAccountMachines: () => Promise<AdeAccountMachinesResult>;
   renameMachine: (machineKey: string, name: string) => Promise<unknown>;
+  /** Takes a machine off the ADE account (what Delete box does once the box is gone). */
+  removeAccountMachine: (machineKey: string) => Promise<unknown>;
   /** One coarse product fact per finished create (analytics; never the box or the error). */
   recordMachineCreate?: (outcome: "completed" | "partial" | "cancelled" | "failed") => void;
   logger: Logger;
@@ -309,6 +315,28 @@ export function registerAgent37Ipc(args: {
     return builder.status();
   });
 
+  const machines = createAgent37Machines({
+    client: async () => {
+      const saved = await readAgent37Key(credentials);
+      return saved ? createAgent37Client({ apiKey: saved.key }) : null;
+    },
+    removeAccountMachine: args.removeAccountMachine,
+    logger,
+  });
+
+  ipcMain.handle(IPC.agent37ListMachines, async (event): Promise<Agent37MachinesResult | null> => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.agent37ListMachines)) return null;
+    return await machines.list();
+  });
+
+  ipcMain.handle(IPC.agent37MachineAction, async (event, arg: Agent37MachineActionArgs): Promise<Agent37MachineActionResult | null> => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.agent37MachineAction)) return null;
+    const result = await machines.run(arg);
+    // The wallet and the box count moved: Settings and the picker read again.
+    if (result.ok) sendToAllWindows(IPC.agent37StatusChanged);
+    return result;
+  });
+
   const creates = new Map<string, AbortController>();
 
   ipcMain.handle(IPC.agent37CancelCreate, async (event, arg: { requestId?: unknown }): Promise<{ cancelled: boolean }> => {
@@ -389,6 +417,9 @@ export function registerAgent37Ipc(args: {
       ).finally(() => {
         creates.delete(requestId);
         if (!sender.isDestroyed()) sender.removeListener("destroyed", onSenderGone);
+        // A box was made (or made and deleted): the machine list and the
+        // wallet read again.
+        sendToAllWindows(IPC.agent37StatusChanged);
       });
       return { started: true };
     },

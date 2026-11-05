@@ -1,5 +1,5 @@
 import type { DeeplinkOwnership } from "../shared/deeplinks";
-import type { Agent37CreateMachineArgs, Agent37CreateProgress, Agent37Status, Agent37TemplateStatus } from "../shared/agent37";
+import type { Agent37CreateMachineArgs, Agent37CreateProgress, Agent37MachineActionArgs, Agent37MachineActionResult, Agent37MachinesResult, Agent37Status, Agent37TemplateStatus } from "../shared/agent37";
 import type { RemoteWorkCopyListing } from "../shared/types/remoteWork";
 import type { MachineStats } from "../shared/types/machineStats";
 import type { NewLaneDefaults } from "../shared/laneStart";
@@ -4668,6 +4668,14 @@ declare global {
         /** ADE's template in the Agent37 workspace; asking also starts a check when none ran yet. */
         getTemplateStatus: () => Promise<Agent37TemplateStatus | null>;
         retryTemplate: () => Promise<Agent37TemplateStatus | null>;
+        /**
+         * The workspace's boxes with state, size, price and spend. Account-level
+         * (the Agent37 key is the account's), so no pin: it answers the same on
+         * every computer.
+         */
+        listMachines?: () => Promise<Agent37MachinesResult | null>;
+        /** Sleep, wake, resize, back up or delete one box, on Agent37. No pin, as above. */
+        machineAction?: (args: Agent37MachineActionArgs) => Promise<Agent37MachineActionResult | null>;
         onStatusChanged?: (cb: () => void) => () => void;
         onTemplateStatus: (cb: (status: Agent37TemplateStatus) => void) => () => void;
       };

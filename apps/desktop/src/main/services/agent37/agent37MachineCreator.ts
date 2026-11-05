@@ -31,6 +31,7 @@ import {
 import { accountMachineConnectionState } from "../../../shared/accountDirectory";
 import type { AdeAccountMachine, AdeAccountMachinesResult } from "../../../shared/types/account";
 import type { Agent37Client, Agent37Instance } from "./agent37Client";
+import { recordAgent37MachineKey } from "./agent37Machines";
 import {
   deleteAgent37InstanceConfirmed,
   readAgent37BoxSignedIn,
@@ -487,6 +488,9 @@ export async function createAgent37Machine(
         return null;
       });
       machineKey = read?.stdout.trim() || null;
+      // On the box itself, so every computer on the account can tell which
+      // row is this box, whatever it is named later.
+      if (machineKey) await recordAgent37MachineKey(client, instance.id, machineKey, logger);
     }
     if (machineKey) {
       const listed = await deps.listAccountMachines().catch((error: unknown) => {

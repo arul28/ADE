@@ -7,8 +7,8 @@ Add a computer makes a box that runs ADE's brain, signs in to the person's ADE
 account with nothing to type, and appears under Your computers. From then on
 it is an ordinary remote machine (relay, LAN or tailnet; see
 [README](README.md)). The product plan, the measurements behind it and the
-phases still to build (machine cards, ADE-owned sleep, fork and move, `ade`
-verbs for agents) are in
+phases still to build (ADE-owned sleep, fork and move, `ade` verbs for
+agents) are in
 [docs/plans/agent37-integration.md](../../plans/agent37-integration.md).
 
 Everything here is account-level: it acts on the Agent 37 workspace and the
@@ -38,6 +38,11 @@ person is using.
   machine flow.
 - `agent37PendingCreates.ts` — the on-disk record of creates not yet
   resolved, the startup reconcile, and `readAgent37BoxSignedIn`.
+- `agent37Machines.ts` — the machine list (`listMachines`: every box in the
+  workspace with its state, size, prices and spend) and the box actions
+  (`machineAction`: Sleep, Wake, Resize, Back up, Delete box), each refusal
+  mapped to a sentence and a blocker. Also `recordAgent37MachineKey`, which
+  tags a box with its ADE machine key when it joins.
 - `registerAgent37Ipc.ts` — the `ade.agent37.*` IPC handlers, the hidden
   approval window, the template-build record store (account vault with a
   per-computer fallback), and the startup check 20 s after boot.
@@ -50,6 +55,11 @@ person is using.
   `useAgent37Template.ts`, `agent37Brand.tsx` — the create form in Add a
   computer, its template status, and Agent 37's real logo (monochrome; never
   invented art).
+- `Agent37MachineGroup.tsx`, `agent37MachineModel.ts`, `useAgent37Machines.ts`,
+  `useAgent37BoxActions.tsx` — the Agent 37 group in the machine list
+  (`RemoteTargetList.tsx`): its head and banners, the fact line on each card,
+  which account row is which box, and the box menu with its confirmations and
+  the resize picker.
 - `infra/agent37/` — the template's Dockerfile and entrypoint (shipped in the
   app as the `agent37-template` resource) and a manual build script.
 - `apps/ade-cli/src/services/sync/hostInstanceGuard.ts` — the copied-home
@@ -129,6 +139,69 @@ each one asks the box `ade auth status`:
 A record that matches no box is kept for a day, in case Agent 37 still had
 the create in flight, then dropped. Boxes made by another request id (another
 computer's create, or not ADE's) are never touched.
+
+## The machine cards
+
+In the machine list (Your computers), every Agent 37 box leaves its usual
+section for an **Agent 37** group below them. The group's head shows the
+number of boxes, what they cost per hour now, what they spent, and the wallet.
+Each card keeps its ordinary row (connect, rename, update) and adds a fact
+line: the state (Running, Asleep, Starting, Stopping, Stopped, Error,
+Suspended), the type and size, the price in that state (asleep and stopped
+pay only the disk), the spend, the lanes on the box and the chats running
+there. Lanes and chats come from account Activity, so ADE never wakes a box
+to read them.
+
+**Which row is which box.** When a box joins, the creator writes the
+machine's ADE key into the box's metadata as `ade_machine_key` (Agent 37
+replaces metadata on PATCH, so ADE merges first). A box without the tag
+matches the account row whose hostname is the instance id (Agent 37 sets the
+hostname to the instance id). A box ADE made that matches no row (still
+joining, removed from ADE, never signed in) gets a row of its own, because it
+still bills. It reads "Setting up…" only while it is new and has no machine
+key yet; a box with a key has joined, so it reads "Not in ADE". Boxes ADE did not make stay out of the list unless a row matches
+them.
+
+**A sleeping box's row.** A box that is asleep, stopped or suspended can't
+take a connection, so its row says so ("Asleep on Agent 37") with a dim dot,
+and Wake (or Top up) takes the place of Connect. The account's own presence
+lags the box by up to a minute either way; after a wake, while Agent 37 says
+the box runs but its row still says asleep, the list reads the account again
+every 15 s for at most 3 minutes.
+
+**Reads.** The list asks when it opens, on window focus and when the
+integration changes (a box action, a finished create, a new key). Only while
+a box moves between states does it ask again, every 4 s for at most 5
+minutes. Spend comes from `GET /usage` over the last
+90 days (cached for 5 minutes); Agent 37 settles it once an hour, so the
+newest minutes show later. A box newer than 90 days shows "so far", an older
+one "in 90 days".
+
+**Actions** (the card's menu; a sleeping box also gets Wake on its card):
+
+| Action | What happens | Asks first when |
+| --- | --- | --- |
+| Sleep | `POST /instances/{id}/sleep`; only the disk bills | chats run on it |
+| Wake / Start | `POST /instances/{id}/start` | never; at the limit, says what to do |
+| Resize | `POST /instances/{id}/resize`; the box restarts and running work stops; the disk only grows | always (the size picker); it names the running chats |
+| Back up | `POST /instances/{id}/backups`; Agent 37 allows one in 15 minutes | never |
+| Remove from ADE | the account row goes (and this computer's saved connection); a box keeps running and billing | always |
+| Delete box | deletes on Agent 37, waits until it is gone, then removes the account row | always; names the box and says its files are gone |
+
+Every machine on the account, Agent 37 or not, has **Remove from ADE**. ADE
+never calls it "sign out". When the box is gone but the account row can't be
+removed, the card says so and offers Remove from ADE.
+
+**Agent 37's refusals** become a sentence and a next step: the machine limit
+(on tier 0 every box counts; after the first top-up only awake ones), an empty
+wallet or one that can't pay for the change (Top up), a suspended workspace
+(every box asleep and not billing; deleted after 30 days), a revoked key
+(Connect a new key), and the backup rate limit. A wallet that lasts under
+three days at the current rate shows a warning in the group.
+
+None of these calls take a pin: the key is the account's, and the calls go
+from this desktop's main process to Agent 37. The settings search finds the
+card as **Agent 37 machines** (Settings › Integrations › Agent 37).
 
 ## The copied-home guard
 
