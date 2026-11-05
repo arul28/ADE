@@ -239,11 +239,17 @@ extension DriverRuntime {
                 // A bare Escape or Return on a lane dialog presses its button;
                 // see `pressDialogButton`. Only when the app's focused window
                 // is one of this lane's: never a dialog on the user's screen.
+                // By window id, else as `axWindow` matches one, by title and frame.
+                func isLaneWindow(_ focused: AXUIElement) -> Bool {
+                    AXWindowBridge.windowId(of: focused).map(laneWindowIds.contains) == true
+                        || laneWindows.contains { window in
+                            windows.axWindow(for: window).map { CFEqual($0, focused) } ?? false
+                        }
+                }
                 if resolvedIndex == .null, modifiers.isEmpty,
+                   !windows.stalls.isStalled(pid: pid),
                    let focused = accessibility.focusedWindow(pid: pid),
-                   laneWindows.contains(where: { window in
-                       windows.axWindow(for: window).map { CFEqual($0, focused) } ?? false
-                   }),
+                   isLaneWindow(focused),
                    let pressed = accessibility.pressDialogButton(in: focused, pid: pid, key: key) {
                     return ["resolvedIndex": resolvedIndex, "pressedButton": .string(pressed)]
                 }

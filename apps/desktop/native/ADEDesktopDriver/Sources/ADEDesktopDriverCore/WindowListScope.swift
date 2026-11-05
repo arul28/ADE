@@ -120,7 +120,7 @@ public enum WindowLayerPolicy {
         isAXWindow: Bool,
         sheetParent: UInt32?,
         ownerIsLaneApp: Bool,
-        isPanelSized: Bool = false
+        isPanelSized: Bool
     ) -> PanelAdmission {
         if isAXWindow { return .window }
         if let sheetParent { return .sheet(parent: sheetParent) }

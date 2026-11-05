@@ -240,20 +240,22 @@ export function createAppleDuoService<Runtime extends { key: string | null }>(de
     let previous: AppleDevicePosture | null = null;
     let posture = await readPosture(deviceUdid);
     const deadline = Date.now() + settleMs;
-    while (applied && posture.supported && !settled(posture, previous) && Date.now() < deadline) {
+    const turning = () => applied && posture.supported && !settled(posture, previous);
+    while (turning() && Date.now() < deadline) {
       await sleep(200);
       previous = posture;
       posture = await readPosture(deviceUdid);
     }
     // Read before the fallback below fills in the panel: a fold that ran out
-    // of time answers with what it last saw, and says so.
-    const done = !applied || !posture.supported || settled(posture, previous);
+    // of time answers with what it last saw, and says so. A guest that never
+    // names its panel is not "still turning": the fallback below answers it.
+    const stillTurning = turning() && typeof posture.activeScreenId === "number";
     // A fold whose reads never named the panel it lands on: the panel the
     // pose lights is the best fallback for the screenshots that follow.
     if (applied && expected?.screenId != null && typeof posture.activeScreenId !== "number") {
       notePosture(deviceUdid, { ...posture, supported: true, activeScreenId: expected.screenId });
     }
-    return { applied, posture, settled: done };
+    return { applied, posture, settled: !stillTurning };
   };
 
   /**

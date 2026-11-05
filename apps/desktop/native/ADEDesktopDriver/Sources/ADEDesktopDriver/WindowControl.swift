@@ -691,10 +691,12 @@ final class WindowControl {
     /// is a panel the driver cannot take (a floating palette or panel above
     /// layer 0 that its app does not publish through Accessibility, such as
     /// a frameless Electron window); "No window" for it read as a stale id.
-    static func windowNotFoundMessage(_ windowId: CGWindowID) -> String {
+    private static func windowNotFoundMessage(_ windowId: CGWindowID) -> String {
         let listed = (CGWindowListCopyWindowInfo([.optionIncludingWindow], windowId) as? [[String: Any]])?.first
+        // On screen only: a hidden app's palette is dropped for being hidden.
         guard let listed, let layer = listed[kCGWindowLayer as String] as? Int,
-              layer > 0, layer < WindowLayerPolicy.menuBand else {
+              layer > 0, layer < WindowLayerPolicy.menuBand,
+              (listed[kCGWindowIsOnscreen as String] as? Bool) == true else {
             return "No window \(windowId) on this Mac. Window ids die with their process; list again."
         }
         let app = (listed[kCGWindowOwnerName as String] as? String) ?? "its app"

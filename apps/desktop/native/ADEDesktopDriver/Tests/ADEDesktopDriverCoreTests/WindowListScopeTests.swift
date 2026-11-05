@@ -67,7 +67,8 @@ final class WindowListScopeTests: XCTestCase {
                     axKnown: row.axKnown,
                     isAXWindow: row.isAXWindow,
                     sheetParent: row.sheetParent,
-                    ownerIsLaneApp: row.laneApp
+                    ownerIsLaneApp: row.laneApp,
+                    isPanelSized: false
                 ),
                 row.expected
             )

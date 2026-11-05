@@ -222,7 +222,10 @@ export function createLaneDeviceLifecycle<R extends LifecycleLaneRuntime>(deps: 
         return { deleted: { udid: extra.udid, name: extra.name, extra: true } };
       }
       const laneDevice = deps.laneDevices.get(runtime.key);
-      if (!laneDevice) return { deleted: null };
+      if (!laneDevice) {
+        const asked = deleteArgs.udid?.trim();
+        return asked ? { deleted: null, notFound: asked } : { deleted: null };
+      }
       const deleted = { udid: laneDevice.udid, name: laneDevice.name, extra: false };
       assertExpectedDevice(laneDevice, deleteArgs.udid);
       deps.assertSessionOwner(runtime, { chatSessionId: deleteArgs.chatSessionId, ignoreOwnership: deleteArgs.ignoreOwnership });

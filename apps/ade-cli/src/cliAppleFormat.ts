@@ -1,6 +1,6 @@
 /**
- * `ade apple` text output: the window, install, lease and test formatters,
- * and the lease answer shapers the plan builder uses.
+ * `ade apple` text output: the window, install, lease, test and
+ * device-delete formatters, and the lease answer shapers the plan builder uses.
  *
  * Split from `cli.ts`, which keeps the plan builder and the formatter switch.
  * The import cycle rule of `cliMacDesktopFormat.ts` applies to `./cli`:
@@ -262,4 +262,32 @@ export function formatAppleTests(value: unknown): string {
   if (asString(result.logPath)) lines.push(`log: ${asString(result.logPath)}`);
   if (asString(result.resultBundlePath)) lines.push(`result bundle: ${asString(result.resultBundlePath)}`);
   return lines.join("\n");
+}
+
+/** `device-delete`: which device went, or that the lane had none. */
+export function formatAppleDeviceDelete(value: unknown): string {
+  // An ADE from before the answer named the device sends nothing back.
+  if (!isRecord(value)) return "Done. Run ade apple device-list --text to see the devices this lane holds now.";
+  const deleted = isRecord(value.deleted) ? value.deleted : null;
+  if (!deleted) {
+    const notFound = asString(value.notFound);
+    return notFound
+      ? `This lane holds no device ${notFound}, so nothing was deleted. ade apple device-list --text shows the ones it holds.`
+      : "This lane had no Apple device, so nothing was deleted.";
+  }
+  const name = asString(deleted.name) ?? asString(deleted.udid) ?? "The device";
+  const summary = value.detached === true
+    ? `Released ${name} from this lane; the user attached it, so the simulator stays installed.`
+    : deleted.extra === true
+    ? `Deleted the extra device ${name}; the lane's own device is unchanged.`
+    : `Deleted ${name}, this lane's device; the lane has no device now. ade apple start gives it a new one.`;
+  return [
+    summary,
+    "",
+    renderKeyValues("ADE Apple device delete", [
+      ["udid", deleted.udid],
+      ["device", deleted.name],
+      ["extra", deleted.extra === true],
+    ]),
+  ].join("\n");
 }
