@@ -1230,11 +1230,14 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
   }
 
   // Reply text in a stranded launch's chat proves its agent runs (a plain send started it).
-  const unsubscribeChatEvents = deps.agentChatService.subscribeToEvents((envelope) => {
-    if (envelope.event.type !== "text") return;
-    const record = records.get(envelope.sessionId);
-    if (record?.snapshot.sessionId === envelope.sessionId) adoptStartedChat(record);
-  });
+  // A brain without the agent chat runtime passes a stand-in chat service with no event stream.
+  const unsubscribeChatEvents = typeof deps.agentChatService.subscribeToEvents === "function"
+    ? deps.agentChatService.subscribeToEvents((envelope) => {
+      if (envelope.event.type !== "text") return;
+      const record = records.get(envelope.sessionId);
+      if (record?.snapshot.sessionId === envelope.sessionId) adoptStartedChat(record);
+    })
+    : () => {};
 
   const subscribe = (listener: (event: ChatLaunchEvent) => void): (() => void) => {
     listeners.add(listener);
