@@ -1,4 +1,4 @@
-import { Desktop, Laptop, WindowsLogo } from "@phosphor-icons/react";
+import { Desktop } from "@phosphor-icons/react";
 import type { AnnouncementPageProps } from "../announcementPages";
 import { WhatsNewFeature } from "./WhatsNewFeature";
 import chats from "./assets/chats-every-machine.webp";
@@ -9,13 +9,9 @@ export default function ChatsEveryMachineAnnouncement({ close }: AnnouncementPag
     <WhatsNewFeature
       close={close}
       place={{ icon: <Desktop size={17} weight="fill" />, name: "Chats" }}
-      headline="All your chats, from every computer."
-      sentence="Chats lists the chats on every computer you've connected. Open one and keep going; it still runs on the computer it lives on."
-      marks={[
-        { icon: <Desktop size={14} weight="fill" />, label: "Desktop" },
-        { icon: <Laptop size={14} weight="fill" />, label: "Laptop" },
-        { icon: <WindowsLogo size={14} weight="fill" color="#0078d4" />, label: "Windows PC" },
-      ]}
+      headline="Every chat, from every computer."
+      sentence="Chats lists every machine you connect. Open any chat and keep going."
+      action={{ tipId: "connect-machine", label: "Connect a computer" }}
       media={{
         kind: "images",
         width: 1460,

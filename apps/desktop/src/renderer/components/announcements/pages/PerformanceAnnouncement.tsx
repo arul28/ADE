@@ -1,4 +1,4 @@
-import { Cpu, Gauge, Lightning, Timer } from "@phosphor-icons/react";
+import { Lightning } from "@phosphor-icons/react";
 import type { AnnouncementPageProps } from "../announcementPages";
 import { WhatsNewFeature } from "./WhatsNewFeature";
 import mainThread from "./assets/perf-t3-1.webp";
@@ -11,13 +11,8 @@ export default function PerformanceAnnouncement({ close }: AnnouncementPageProps
     <WhatsNewFeature
       close={close}
       place={{ icon: <Lightning size={17} weight="fill" />, name: "Performance" }}
-      headline="Faster than T3 Code."
-      sentence="Streaming the same 50 KB reply, ADE uses half of T3 Code's main-thread time and app CPU, and shows the last line first."
-      marks={[
-        { icon: <Gauge size={14} weight="fill" />, label: "Main thread" },
-        { icon: <Timer size={14} weight="fill" />, label: "Keeping up" },
-        { icon: <Cpu size={14} weight="fill" />, label: "CPU and memory" },
-      ]}
+      headline="Half the CPU of T3 Code."
+      sentence="Streaming the same reply, ADE uses half the main-thread time and CPU, and shows the last line sooner."
       media={{
         kind: "images",
         width: 1568,

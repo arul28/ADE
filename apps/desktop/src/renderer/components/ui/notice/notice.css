@@ -164,6 +164,13 @@
   color: var(--suggest-ink);
 }
 
+/* A card with no eyebrow: its title beside the icon, on one or two lines. */
+.ade-suggest-title[data-in-head="true"] {
+  min-width: 0;
+  font-size: 15.5px;
+  line-height: 1.25;
+}
+
 .ade-suggest-text {
   display: flex;
   flex-direction: column;
@@ -217,6 +224,15 @@
   height: auto;
   user-select: none;
 }
+/* A large tip's screenshot: its own row under the buttons, as wide as the
+   card from a little in from the left, running off the bottom-right corner. */
+.ade-suggest-art[data-size="large"] {
+  flex: none;
+  height: 150px;
+  min-width: 0;
+  margin: 2px -18px -16px 22px;
+}
+.ade-suggest-art[data-size="large"] img { width: max(100%, 380px); }
 
 @keyframes ade-suggest-art-in {
   from { opacity: 0; transform: translate(8px, 8px); }

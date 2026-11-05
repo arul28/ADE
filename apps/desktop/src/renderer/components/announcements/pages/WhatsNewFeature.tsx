@@ -24,8 +24,11 @@ import "./whatsNewFeature.css";
 
 /** A looping screen recording; `still` is its poster and what reduce motion shows. */
 type RecordingMedia = { kind?: "recording"; video: string; still: string; width: number; height: number; alt: string };
-/** `src` is the picture; with `video`, it is the still shown under reduce motion. */
-type Shot = { src: string; alt: string; video?: string };
+/**
+ * `src` is the picture; with `video`, it is the still shown under reduce
+ * motion. `caption` is a short step line shown under the picture while it is up.
+ */
+type Shot = { src: string; alt: string; video?: string; caption?: string };
 /** `holdMs` sets how long each screenshot stays, for ones with more to read. */
 type ImagesMedia = { kind: "images"; images: readonly Shot[]; width: number; height: number; holdMs?: number };
 type PhonesMedia = { kind: "phones"; images: readonly Shot[]; width: number; height: number };
@@ -36,8 +39,6 @@ export type WhatsNewFeatureProps = {
   place: { icon: ReactNode; name: string };
   headline: string;
   sentence: string;
-  /** Small chips under the sentence: what it works with, each with its own mark. */
-  marks?: readonly { icon: ReactNode; label: string }[];
   media: RecordingMedia | ImagesMedia | PhonesMedia;
   /** An ADE Tips entry whose action the button runs, and the button's label. */
   action?: { tipId: string; label: string };
@@ -53,7 +54,7 @@ function useReduceMotion(): boolean {
   return appReduceMotion || systemReduceMotion;
 }
 
-export function WhatsNewFeature({ close, place, headline, sentence, marks, media, action }: WhatsNewFeatureProps) {
+export function WhatsNewFeature({ close, place, headline, sentence, media, action }: WhatsNewFeatureProps) {
   const goTo = useGoTo();
   const hasProject = useAppStore((state) => state.project != null);
   const tip = action ? ADE_TIPS.find((entry) => entry.id === action.tipId) : undefined;
@@ -74,16 +75,6 @@ export function WhatsNewFeature({ close, place, headline, sentence, marks, media
         </p>
         <h2 className="ade-wnf-headline">{headline}</h2>
         <p className="ade-wnf-sentence">{sentence}</p>
-        {marks && marks.length > 0 ? (
-          <ul className="ade-wnf-marks">
-            {marks.map((mark) => (
-              <li key={mark.label} className="ade-wnf-mark">
-                <span className="ade-wnf-mark-icon" aria-hidden>{mark.icon}</span>
-                {mark.label}
-              </li>
-            ))}
-          </ul>
-        ) : null}
         {action && canRun ? (
           <button type="button" className="kit-btn ade-wnf-action" onClick={run}>
             {action.label}
@@ -185,6 +176,10 @@ function Crossfade({ media }: { media: ImagesMedia }) {
           );
         })}
       </div>
+      {media.images.some((shot) => shot.caption) ? (
+        // Not a live region: the slides move on by themselves, so it would announce every few seconds.
+        <p className="ade-wnf-shot-caption">{media.images[index]?.caption}</p>
+      ) : null}
       {count > 1 ? (
         <div className="ade-wnf-shots" role="group" aria-label="Screenshots">
           {media.images.map((shot, shotIndex) => (

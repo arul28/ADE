@@ -1,4 +1,4 @@
-import { ChatsCircle, Eye, PaperPlaneTilt, TerminalWindow } from "@phosphor-icons/react";
+import { ChatsCircle } from "@phosphor-icons/react";
 import type { AnnouncementPageProps } from "../announcementPages";
 import { WhatsNewFeature } from "./WhatsNewFeature";
 import video from "./assets/side-chat.mp4";
@@ -10,13 +10,8 @@ export default function SideChatsAnnouncement({ close }: AnnouncementPageProps) 
     <WhatsNewFeature
       close={close}
       place={{ icon: <ChatsCircle size={17} weight="fill" />, name: "Chat" }}
-      headline="Ask a side question without derailing the chat."
-      sentence="Type /side and your question. The side chat already knows the conversation, can't change anything, and passes a note back when you ask."
-      marks={[
-        { icon: <TerminalWindow size={14} weight="fill" />, label: "/side" },
-        { icon: <Eye size={13} weight="bold" />, label: "Read-only" },
-        { icon: <PaperPlaneTilt size={13} weight="fill" />, label: "Sends notes back" },
-      ]}
+      headline="Ask aside, without derailing the chat."
+      sentence="Type /side and a question. The side chat knows the conversation and changes nothing."
       action={{ tipId: "side-chats", label: "Try /side" }}
       media={{
         video,

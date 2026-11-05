@@ -1,22 +1,18 @@
-import { AppleLogo, Camera, VideoCamera, WindowsLogo } from "@phosphor-icons/react";
+import { WindowsLogo } from "@phosphor-icons/react";
 import type { AnnouncementPageProps } from "../announcementPages";
 import { WhatsNewFeature } from "./WhatsNewFeature";
 import video from "./assets/windows-desktop.mp4";
 import still from "./assets/windows-desktop-still.webp";
 
-/** Agents drive a private Windows desktop from any computer and send proof back. */
+/** Agents drive a private Windows or Linux desktop from any computer and send proof back. */
 export default function WindowsDesktopAnnouncement({ close }: AnnouncementPageProps) {
   return (
     <WhatsNewFeature
       close={close}
-      place={{ icon: <WindowsLogo size={17} weight="fill" color="#0078d4" />, name: "Windows desktop" }}
-      headline="Agents can now use Windows."
-      sentence="From any computer, even a Mac, an agent can drive its own Windows desktop and send back screenshots and videos of what it did."
-      marks={[
-        { icon: <AppleLogo size={14} weight="fill" />, label: "Works from a Mac" },
-        { icon: <Camera size={14} weight="fill" />, label: "Screenshots" },
-        { icon: <VideoCamera size={14} weight="fill" />, label: "Videos" },
-      ]}
+      place={{ icon: <WindowsLogo size={17} weight="fill" color="#0078d4" />, name: "Windows and Linux" }}
+      headline="Agents can use Windows and Linux."
+      sentence="From any computer, an agent drives its own Windows or Linux desktop and sends back proof."
+      action={{ tipId: "private-desktop", label: "See where" }}
       media={{
         video,
         still,
