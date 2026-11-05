@@ -2364,6 +2364,8 @@ type PersistedChatState = {
    * once per runtime start.
    */
   acpSupervisionNoticeShown?: boolean;
+  /** True once ADE told this chat that Claude Code refused Full access as root. */
+  claudeRootBypassNoticeShown?: boolean;
   /**
    * Which provider ACCOUNT this chat runs as, when it is not the provider's
    * default. Persisted next to the provider thread pointer because the two are
@@ -4336,6 +4338,8 @@ function isNonBlockingApprovalRequestEvent(
   return (request as Record<string, unknown>).blocking === false;
 }
 
+const TURN_ALREADY_ACTIVE_REASON = "Turn already active";
+
 function validateSessionReadyForTurn(managed: ManagedChatSession): { ready: true } | { ready: false; reason: string } {
   if (managed.closed) return { ready: false, reason: "Session is disposed" };
   if (!managed.runtime) return { ready: false, reason: "No runtime initialized" };
@@ -4346,7 +4350,7 @@ function validateSessionReadyForTurn(managed: ManagedChatSession): { ready: true
       || rt.kind === "pi" || rt.kind === "acp")
     && rt.busy
   ) {
-    return { ready: false, reason: "Turn already active" };
+    return { ready: false, reason: TURN_ALREADY_ACTIVE_REASON };
   }
   if (rt.kind === "opencode" && rt.pendingApprovals.size > 0) return { ready: false, reason: "Pending approvals not resolved" };
   if ((rt.kind === "cursor" || rt.kind === "droid") && rt.permissionWaiters.size > 0) {
@@ -10379,6 +10383,17 @@ function hydrateNativePermissionControls(
   }
 
   session.permissionMode = syncLegacyPermissionMode(session);
+}
+
+/**
+ * Claude Code exits at startup when asked to skip permissions as root, unless
+ * it is told it runs in a sandbox. Its rule, read in the CLI (SDK 0.3.310):
+ * `getuid() === 0 && IS_SANDBOX !== "1" && !CLAUDE_CODE_BUBBLEWRAP`. Windows
+ * has no `getuid`, so it never applies there.
+ */
+function claudeCodeRefusesBypassHere(env: NodeJS.ProcessEnv): boolean {
+  if (typeof process.getuid !== "function" || process.getuid() !== 0) return false;
+  return env.IS_SANDBOX !== "1" && !env.CLAUDE_CODE_BUBBLEWRAP;
 }
 
 function resolveSessionClaudePermissionMode(
@@ -36656,7 +36671,30 @@ export function createAgentChatService(args: {
     try {
       runtime = await ensureAcpSessionRuntime(managed);
       const validation = validateSessionReadyForTurn(managed);
-      if (!validation.ready) throw new Error(validation.reason);
+      if (!validation.ready) {
+        // Another send started a turn while this one waited for the runtime.
+        // ACP takes no mid-turn message, so this one runs next, from the
+        // queue the running turn drains when it ends. Failed here, it was lost,
+        // and the setup failure below marked the running turn's chat idle.
+        if (validation.reason === TURN_ALREADY_ACTIVE_REASON && runtime.busy && managed.runtime === runtime) {
+          const queued = enqueueSteerOrDrop(
+            managed,
+            runtime,
+            managed.session.id,
+            randomUUID(),
+            args.userText?.trim() || args.promptText,
+            args.attachments ?? [],
+            args.contextAttachments ?? [],
+            args.resolvedAttachments ?? [],
+            args.metadata,
+            args.displayText !== undefined ? { displayText: args.displayText } : undefined,
+          );
+          if (!queued) throw new Error("The message queue is full. Wait for the current turn to finish.");
+          args.onDispatched?.();
+          return;
+        }
+        throw new Error(validation.reason);
+      }
     } catch (error) {
       // Setup failure. One visible error, then the terminal markers that
       // release the composer — a chat that never reaches `done` stays stuck
@@ -46867,10 +46905,26 @@ export function createAgentChatService(args: {
     // normalization below clears the raw fields.
     const hadPlanIntentAtOptionBuildStart = isSessionInPlanMode(managed.session);
     const chatConfig = resolveChatConfig();
-    const claudePermissionMode = resolveSessionClaudePermissionMode(
+    const requestedClaudePermissionMode = resolveSessionClaudePermissionMode(
       managed.session,
       chatConfig.claudePermissionMode,
     );
+    // Asked for Full access as root, Claude Code exits before the first turn
+    // and every chat on the machine fails. Accept edits is the next mode down
+    // that it starts with, and the chat shows the mode it really runs in.
+    const claudePermissionMode = requestedClaudePermissionMode === "bypassPermissions"
+      && claudeCodeRefusesBypassHere(process.env)
+      ? "acceptEdits"
+      : requestedClaudePermissionMode;
+    if (claudePermissionMode !== requestedClaudePermissionMode && !managed.claudeRootBypassNoticeShown) {
+      managed.claudeRootBypassNoticeShown = true;
+      logger.warn("agent_chat.claude_bypass_refused_as_root", { sessionId: managed.session.id });
+      emitChatEvent(managed, {
+        type: "system_notice",
+        noticeKind: "info",
+        message: "Claude Code does not allow Full access when ADE runs as root, so this chat uses Accept edits: Claude asks before it runs commands. Run ADE as a normal user to use Full access.",
+      });
+    }
     managed.session.claudePermissionMode = claudePermissionMode;
     managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? managed.session.permissionMode;
     const lightweight = isLightweightSession(managed.session);
@@ -64246,6 +64300,33 @@ export function createAgentChatService(args: {
     }
     if (managed.session.provider === "opencode") {
       preparedSteer.onBackendDispatched = options?.onAcceptedDispatch;
+    }
+    // ACP agents (Grok, Qwen, Kimi, Antigravity, Devin) take no mid-turn
+    // message, so one sent while a turn runs is staged and runs as the next
+    // turn, drained when `runAcpTurn` ends. Sent on as a new turn, it reached a
+    // busy runtime and failed as "Turn already active".
+    if (managed.runtime?.kind === "acp" && managed.runtime.busy) {
+      const queued = enqueueSteerOrDrop(
+        managed,
+        managed.runtime,
+        sessionId,
+        steerId,
+        preparedSteer.submittedText,
+        preparedSteer.attachments,
+        preparedSteer.contextAttachments,
+        preparedSteer.resolvedAttachments,
+        preparedSteer.metadata,
+        {
+          displayText: preparedSteer.visibleText,
+          reasoningEffort,
+          executionMode,
+          interactionMode,
+          ...(sentByUser === true ? { sentByUser: true } : {}),
+        },
+      );
+      return queued
+        ? { steerId, queued: true }
+        : { steerId, queued: false, reason: "queue_full" };
     }
     if (managed.session.provider === "claude") {
       const runtime = ensureClaudeSessionRuntime(managed);
