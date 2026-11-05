@@ -52,7 +52,7 @@
   },
   "devDependencies": {
     "@muse-code/sdk": "1.4.7",
-    "@opencode/client": "2.0.29",
+    "@opencode/client": "2.2.5",
     "@sentry/node": "11.7.0",
     "@types/node": "^24.19.2",
     "@types/pngjs": "^6.0.5",
