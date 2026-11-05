@@ -147,11 +147,14 @@ export class PinnedToolNotReadyError extends Error {
     this.tool = tool;
     this.state = status.state;
     this.errorKind = status.errorKind;
-    // Not downloaded yet, still downloading, or not built for this machine:
-    // the machine's state, which the message names. A failed download stays
-    // an issue, because the download is ADE's, and so does a "ready" tool
-    // that could not start.
-    if (status.state === "missing" || status.state === "downloading" || status.state === "unavailable") {
+    // Not downloaded yet, still downloading, or not built for this machine's
+    // platform: the machine's state, which the message names. A failed
+    // download, a build with no pin for the tool (a broken manifest) and a
+    // "ready" tool that could not start stay issues: those are ADE's.
+    const machineState = status.state === "missing"
+      || status.state === "downloading"
+      || (status.state === "unavailable" && status.errorKind === "unsupported-target");
+    if (machineState) {
       markExpected(this, "environment");
     }
   }

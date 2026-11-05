@@ -175,18 +175,22 @@ enum CrashReporting {
     })
   }
 
-  /// One issue per kind of app hang, not per duration or system stack. The
-  /// SDK titles a hang with its length ("App hanging between 3.9 and 4.7
-  /// seconds") and the phone's stacks differ in system frames, so Sentry made
-  /// a new issue for nearly every hang. The kind is the exception type
-  /// (`App Hang Fully Blocked`, `Fatal App Hang Fully Blocked` for a watchdog
-  /// kill), plus the innermost ADE function when the phone named one.
+  /// One issue per kind of app hang, not per duration. The SDK titles a hang
+  /// with its length ("App hanging between 3.9 and 4.7 seconds") and the
+  /// phone's stacks differ in system frames, so Sentry made a new issue for
+  /// nearly every hang. The kind is the exception type (`App Hang Fully
+  /// Blocked`, `Fatal App Hang Fully Blocked` for a watchdog kill) plus where
+  /// the main thread was: the innermost ADE function when the phone named
+  /// one, else the library it was blocked in (SQLite, SwiftUI, …), so hangs
+  /// with different causes stay apart.
   private static func groupAppHang(_ event: Sentry.Event) {
     guard let exception = event.exceptions?.last,
           let type = exception.type, type.contains("App Hang") else { return }
     let stacktrace = exception.stacktrace
       ?? event.threads?.first(where: { $0.current?.boolValue == true })?.stacktrace
-    event.fingerprint = ["ios", "app_hang", type] + (stacktrace.flatMap { innermostAppFunction($0.frames) }.map { [$0] } ?? [])
+    let frames = stacktrace?.frames ?? []
+    let site = innermostAppFunction(frames) ?? innermostBlockingLibrary(frames)
+    event.fingerprint = ["ios", "app_hang", type] + (site.map { [$0] } ?? [])
   }
 
   /// The innermost in-app frame's function, skipping the entry point every
@@ -197,6 +201,18 @@ enum CrashReporting {
       return function != "main" && !function.hasSuffix(".$main")
     })?.function
   }
+
+  /// The library of the innermost frame that is not the kernel's or the
+  /// thread library's wait, which every blocked stack ends in.
+  private static func innermostBlockingLibrary(_ frames: [Sentry.Frame]) -> String? {
+    frames.reversed().lazy
+      .compactMap { $0.package?.split(separator: "/").last.map(String.init) }
+      .first { !waitLibraries.contains($0) }
+  }
+
+  private static let waitLibraries: Set<String> = [
+    "libsystem_kernel.dylib", "libsystem_pthread.dylib", "libsystem_platform.dylib",
+  ]
 
   /// Reads a scrubbed Sentry error event into the report PostHog's
   /// `$exception` is built from. Transactions and info/debug messages are

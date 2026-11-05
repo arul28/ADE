@@ -1391,9 +1391,14 @@ export class DesktopPairedMachineStore {
     // warning above and give the account row one target-specific next step.
     const failure = new Error(accountMachineAdoptionFailureMessage(machine, failures));
     // A computer that is asleep, offline or has ADE closed is the network's
-    // answer; the message tells the user what to do.
-    const dominant = dominantAccountMachineAdoptionFailure(failures);
-    throw dominant === "timeout" || dominant === "unreachable" ? markExpected(failure, "network") : failure;
+    // answer; the message tells the user what to do. Only when every route
+    // failed that way: one that reached the host and then failed here (a save
+    // refused, an unknown error) is still ADE's.
+    const allNetwork = failures.length > 0 && failures.every((attempt) => {
+      const kind = classifyAccountMachineAdoptionFailure(attempt);
+      return kind === "timeout" || kind === "unreachable";
+    });
+    throw allNetwork ? markExpected(failure, "network") : failure;
   }
 
   private read(): DesktopPairedMachinesFile {

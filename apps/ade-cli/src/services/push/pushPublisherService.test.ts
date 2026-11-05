@@ -597,8 +597,7 @@ describe("createPushPublisherService flush", () => {
     const sends = publish.mock.calls.filter((call) =>
       (call[0].notifications ?? []).some((item: { dedupeKey?: string }) =>
         item.dedupeKey === alertDedupeKey("alert:s-1:approval:i-1", "dev-1")));
-    expect(sends.length).toBeGreaterThan(1);
-    expect(sends.length).toBeLessThanOrEqual(20);
+    expect(sends).toHaveLength(20);
     const undelivered = publisherLogger.warn.mock.calls.filter(([event]) => event === "push.publish_undelivered");
     // The first failure and the give-up warn; the repeats in between do not.
     expect(undelivered).toHaveLength(2);
