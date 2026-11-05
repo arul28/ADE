@@ -3860,6 +3860,8 @@ export async function createAdeRuntime(args: {
         agentChatService,
         chatLaunchService,
         cursorCloudFleetService,
+        // Read when a phone asks: the runtime is built a little later.
+        agent37Actions: () => (runtimeForCtoActions ? (getAdeActionDomainServices(runtimeForCtoActions).agent37 as Record<string, unknown> | null | undefined) ?? null : null),
         cloudAgentsService,
         pushPublisherService,
         ctoStateService,

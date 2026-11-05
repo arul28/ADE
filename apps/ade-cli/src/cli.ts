@@ -616,7 +616,7 @@ import {
   shouldRejectDevelopmentEnvCredential,
   syncAccountAnalyticsIdentity,
 } from "./services/account/accountAuthService";
-import { getSharedAccountAuthService } from "./services/account/sharedAccountAuthService";
+import { getSharedAccountAuthService, getSharedAccountDirectoryBaseUrl } from "./services/account/sharedAccountAuthService";
 import {
   deviceSignInInstructions,
   readDeviceSignInPoll,
@@ -4512,17 +4512,20 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade agent37 move <machine> --to vm|box        Change type, keeping every repo, lane and chat
     $ ade agent37 delete <machine>                  Gone for good, files and all
     $ ade agent37 sleep-after <machine> 10|never    Minutes idle before it sleeps
-    $ ade agent37 cap 50|off                        The account's monthly cap
+    $ ade agent37 cap 50|off                        The account's optional monthly cap
+    $ ade agent37 limits [ask|balanced|hands-off]   What unattended agents may spend (--per-day N, --max-shape 4x16, --unattended on|off)
     $ ade agent37 ready [status|on|off|retry]       Keep a cloud machine ready for this project
                                                     on takes --kind, --shape, --setup "npm ci"
     $ ade chat create --machine agent37:ready --prompt "…"
                                                     Start the chat on this project's ready machine
 
   Asks first: create, resize, copy, move, delete, sleep-after never, raising
-  the cap, ready on. The card shows in your chat and gives up after 5 minutes.
-  In a full-auto chat or an automation ADE answers it: yes within the monthly
-  cap, no to deleting a machine that chat didn't make. create, copy and move
-  sign the new machine in through the ADE desktop app on this computer.
+  the cap or the limits, ready on. The card shows in your chat and gives up
+  after 5 minutes. In a full-auto chat or an automation ADE answers it with
+  the person's limits (balanced: 3 new machines a day, up to 4x16), and says
+  no to deleting a machine that chat didn't make. create, copy and move work
+  from any of your signed-in machines; without an ADE window there, your chat
+  gets a link to approve the new machine joining your account.
   To move one chat and its lane to another computer: ade chat move.
 `,
   "mcp servers": `${ADE_BANNER}
@@ -20317,6 +20320,19 @@ function buildAgent37Plan(args: string[]): CliPlan {
       const cap = raw === "off" ? "off" : Number(raw.replace(/^\$/, ""));
       return agent37Step("cap", "set_cap", { monthlyCapUsd: cap }, "agent37-result", true);
     }
+    case "limits": {
+      const preset = firstPositional(args);
+      const perDay = readValue(args, ["--per-day"]);
+      const maxShape = readValue(args, ["--max-shape"]);
+      const unattended = readValue(args, ["--unattended"]);
+      if (!preset && perDay == null && maxShape == null && unattended == null) return agent37Step("limits", "limits", {});
+      return agent37Step("limits", "set_limits", {
+        ...(preset ? { preset } : {}),
+        ...(perDay != null ? { machinesPerDay: Number(perDay) } : {}),
+        ...(maxShape != null ? { maxShape } : {}),
+        ...(unattended != null ? { unattendedSpend: unattended === "on" || unattended === "yes" || unattended === "true" } : {}),
+      }, "agent37-result", true);
+    }
     case "ready": {
       const verb = firstPositional(args) ?? "status";
       if (verb === "status" || verb === "list") {
@@ -20340,7 +20356,7 @@ function buildAgent37Plan(args: string[]): CliPlan {
     case "status":
       return agent37Step("ready", "ready_status", {}, "agent37-ready");
     default:
-      throw new CliUsageError(`Unknown agent37 command "${sub}". Use: list, create, sleep, wake, resize, copy, move, delete, sleep-after, cap, spending, ready.`);
+      throw new CliUsageError(`Unknown agent37 command "${sub}". Use: list, create, sleep, wake, resize, copy, move, delete, sleep-after, cap, limits, spending, ready.`);
   }
 }
 
@@ -28309,10 +28325,23 @@ async function runServe(
           if ((activity.activeAgentCliSessions ?? 0) > 0) reasons.push("agent_cli");
           if (activity.activeWorkSessions > (activity.activeAgentCliSessions ?? 0)) reasons.push("terminal");
           if (agent37KeepAwakeModule.agent37ReadySetupRunning(layout.adeDir)) reasons.push("setup");
-          if (nextWakeAt != null && nextWakeAt - Date.now() < agent37KeepAwakeModule.AGENT37_KEEP_AWAKE_SCHEDULE_WINDOW_MS) {
-            reasons.push("schedule");
-          }
-          return { busy: reasons.length > 0, reasons };
+          // A timer soon keeps it awake too (keep-awake adds "schedule"); a later
+          // one goes to the account server, which wakes the machine for it.
+          return { busy: reasons.length > 0, reasons, nextWakeAt };
+        },
+        sendTimedWake: async (wake) => {
+          const auth = brainAccountAuthService;
+          if (!auth?.getStatus().signedIn) throw new Error("not signed in to an ADE account");
+          const base = getSharedAccountDirectoryBaseUrl();
+          if (!base) throw new Error("no account directory");
+          const token = await auth.getAccessToken();
+          const response = await fetch(`${base.replace(/\/+$/, "")}/agent37/wake`, {
+            method: "clear" in wake ? "DELETE" : "PUT",
+            headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+            body: JSON.stringify("clear" in wake ? { instanceId: wake.instanceId } : wake),
+            signal: AbortSignal.timeout(15_000),
+          });
+          if (!response.ok) throw new Error(`the account server answered ${response.status}`);
         },
         logger: headlessProjectLogger,
       })

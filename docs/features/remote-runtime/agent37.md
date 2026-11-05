@@ -64,6 +64,17 @@ person is using.
 - `agent37MachineCopy.ts` — Copy (Agent 37's fork, then the new-machine
   sign-in) and Move (box ↔ VM: a new machine, the home folder streamed over,
   the old box deleted).
+- `agent37BrainMaker.ts` — create, copy and move on a brain with no desktop
+  window: the person approves the new machine from a link (the agent's chat,
+  the phone's Agent 37 page); background makes report through `make_status`.
+- `apps/account-directory/src/agent37Wake.ts` — timed wakes: a sleeping box's
+  next timer, woken by the account server's minute cron through the box's
+  wake URL.
+- `apps/ios/ADE/Views/Agent37/Agent37PaneSheet.swift`,
+  `apps/ios/ADE/Services/SyncService+Agent37.swift` — the phone's Agent 37
+  page (Work ⋯ menu), over the `agent37.read` / `agent37.write` remote commands.
+- `apps/desktop/src/renderer/components/settings/Agent37AgentLimitsCard.tsx` —
+  Settings' **What agents may spend**: presets, single limits, the optional cap.
 - `agent37AgentActions.ts` — the machine verbs of the `agent37` action domain
   (`ade agent37 list|create|sleep|wake|resize|copy|move|delete|sleep-after|cap|
   spending|ready on|off|retry`) and their approval cards.
@@ -260,8 +271,8 @@ leaves a box billing. Agent 37 counts only traffic through the box's URLs,
 and a brain works through an outgoing relay connection it doesn't count, so
 its timer alone would sleep a working box. So the brain on the box keeps it
 awake: while a chat turn, a running terminal command, an agent CLI, a ready
-machine's setup, or a scheduled wake-up due within the hour is there, it
-requests the box's **wake URL** once a minute (`agent37KeepAwake.ts`). The
+machine's setup, or a timer due within five minutes is there, it requests the
+box's **wake URL** once a minute (`agent37KeepAwake.ts`). The
 wake URL is a public port ADE makes with the box (port 7337, a random
 hostname). Nothing listens on it: Agent 37 answers 502, which still counts as
 traffic. ADE-only sleep (a desktop calling `sleep`) was rejected because it
@@ -292,12 +303,23 @@ metadata (`ade_sleep`), so ADE leaves that box alone.
 - any `--machine` call from an agent, the CLI or the CTO (the brain's
   `agentMachineBridge`, with the account's key).
 
-Agent 37's own **Wake** on the card still works. The phone has no Agent 37
-key, so it can't wake a box yet.
+Agent 37's own **Wake** on the card still works. The phone wakes a box
+through the machine it is connected to (`agent37.write` `wake`) before it
+opens that box's work, and from its Agent 37 page.
 
-**The monthly cap.** One cap for every Agent 37 machine on the account
-($20 by default; $5 to $100 or off on the Spending card), kept in the account
-vault. At the cap ADE makes, wakes, resizes and copies nothing, and says so;
+**Timers on a sleeping box.** A sleeping box is frozen, so the timers its ADE
+keeps (a chat's scheduled wake-up, an automation's cron) can't fire there.
+Before the box sleeps, its brain sends its next timer to ADE's account server
+(`PUT /agent37/wake` with the box's id, its wake URL and the time;
+`apps/account-directory/src/agent37Wake.ts`), and the server's minute cron
+requests the wake URL two minutes early. No Agent 37 key leaves the box: the
+wake URL alone wakes it. While the server can't be reached, the box stays
+awake for any timer within the hour instead.
+
+**The monthly cap.** An optional cap for every Agent 37 machine on the account
+(off by default, since the Agent 37 wallet is prepaid; $10 to $100 on the
+**What agents may spend** card), kept in the account vault with the agent
+limits below. At the cap ADE makes, wakes, resizes and copies nothing, and says so;
 running work carries on and boxes still sleep when idle. From 80% the group
 and the card warn, and the desktop notifies once per month at 80% and 100%.
 The spend is Agent 37's `GET /usage` for this UTC month, which Agent 37
@@ -354,9 +376,24 @@ on the account, so nothing Agent 37-specific is needed there.
 `ade agent37 …` reaches the `agent37` action domain of the brain the CLI talks
 to (see `ade help agent37` and the `ade-agent37` skill): `list`, `spending`,
 `create`, `sleep`, `wake`, `resize`, `copy`, `move`, `delete`, `sleep-after`,
-`cap`, and `ready on|off|retry|status`. Reads are free. `create`, `copy` and
-`move` sign the new machine in through the desktop attached to that brain
-(over the desktop bridge); a brain with no desktop says so.
+`cap`, `limits`, and `ready on|off|retry|status`. Reads are free. `create`,
+`copy` and `move` work from any signed-in brain: with a desktop attached, its
+window approves the new machine joining the account (no tap); without one
+(a cloud machine, a Mac with its window closed), the brain does the rest
+itself (`agent37BrainMaker.ts`) and the person approves from a link ADE posts
+in the agent's chat, or taps Approve on the phone's Agent 37 page, which starts
+the make in the background and follows it with `make_status`.
+
+**What agents may spend.** When nobody is watching (a full-auto chat, an
+automation run), ADE answers an agent's costly request with the person's
+limits: whether unattended agents may spend at all, how many new machines
+(made, copied or moved) they may start in a UTC day, and the largest size
+they may pick. Three presets, Ask me (no unattended spending), **Balanced**
+(the default: 3 a day, up to 4 vCPU · 16 GB) and Hands-off (10 a day, any
+size), or Custom. The day's count is the larger of the account's machines an
+agent made today (`ade_made_by_chat`, Agent 37's `created`) and what this
+brain approved today, so a make-and-delete loop can't step around it.
+Loosening a limit is the person's call only, like raising the cap.
 
 **Approvals.** What spends money or deletes asks first: create, resize, copy,
 move, delete, "never sleep", raising or removing the cap, and turning a ready
@@ -366,15 +403,27 @@ machine on. The RPC server stamps who asks (never the arguments):
 - an agent in a chat: an approval card in its own chat, which gives up after
   5 minutes ("nobody answered, so nothing was done");
 - a full-auto chat or an automation run: nobody is watching, so ADE answers
-  on the spot and leaves a line in the chat: yes to spending (the monthly cap
-  still applies), no to what can spend past the cap (raising or removing it,
-  "never sleep"), no to deleting a machine
+  on the spot and leaves a line in the chat: yes to spending within the
+  agent limits and the cap, no to what can spend past them (raising or
+  removing the cap, loosening a limit, "never sleep"), no to deleting a machine
   that chat didn't make (machines an agent makes carry `ade_made_by_chat`,
   which a copy does not inherit). Plan mode says no to everything;
 - a shell with no chat: refused, with where to do it instead.
 
 Wake is not asked: it is what using the machine does anyway, and the cap
 bounds it. At the cap ADE also prepares and hands out no ready machine. Remote MCP callers reach only the reads.
+
+**The phone.** The Work tab's ⋯ menu shows **Agent 37** once the account has
+it set up and the connected machine offers `agent37.read`
+(`apps/ios/ADE/Views/Agent37/Agent37PaneSheet.swift`): this month's spend,
+saved asleep and the wallet, every machine with the desktop card's actions,
+ready machines, a new machine (approved on the phone as it joins), and what
+agents may spend. It reaches the same `agent37` actions through the
+`agent37.read` / `agent37.write` remote commands; the phone is the person's
+own client, so nothing raises a card. On the Duo's inner display held as a
+book, the list fills the left page and the machine the right; held as a
+laptop, the machine's facts sit on the top half and its buttons and the other
+machines on the bottom half.
 
 ## Ready machines
 

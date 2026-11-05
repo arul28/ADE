@@ -30,7 +30,8 @@ ade agent37 copy <machine> --name "lane box"  # same files, a new machine
 ade agent37 move <machine> --to vm            # change type, keep repos, lanes, chats
 ade agent37 delete <machine>
 ade agent37 sleep-after <machine> 10          # or never
-ade agent37 cap 50                            # or off
+ade agent37 cap 50                            # or off (no cap by default)
+ade agent37 limits                            # what unattended agents may spend
 ade agent37 ready on --kind vm --setup "npm ci && docker compose up -d"
 ade agent37 ready status|off|retry
 ade chat create --machine agent37:ready --prompt "…"
@@ -57,11 +58,12 @@ These ask the person in your chat first: `create`, `resize`, `copy`, `move`,
 - The command waits for the answer; the card gives up after 5 minutes and the
   command then fails with "nobody answered". Don't retry it in a loop: say what
   you wanted and why, and let the person decide.
-- In a full-auto chat or an automation run, ADE answers for the person: yes to
-  spending within the monthly cap, no to raising or removing the cap or
-  keeping a machine awake for good, no to deleting a machine your chat didn't
-  make. A line in the chat records the
-  answer.
+- In a full-auto chat or an automation run, ADE answers for the person with
+  their limits (`ade agent37 limits`; by default 3 new machines a day, up to
+  4 vCPU · 16 GB): yes within them, no past them, no to raising the cap or a
+  limit, keeping a machine awake for good, or deleting a machine your chat
+  didn't make. A line in the chat records the answer. At the daily limit,
+  reuse a machine instead of making another.
 - At the monthly cap ADE makes, wakes and resizes nothing. Running work carries
   on. Don't look for a way around the cap; tell the person.
 - Asked from a shell with no chat (no `ADE_CHAT_SESSION_ID`), costly commands
@@ -82,9 +84,10 @@ These ask the person in your chat first: `create`, `resize`, `copy`, `move`,
 
 ## Making machines
 
-`create`, `copy` and `move` sign the new machine in through the ADE desktop
-app on this computer. On a cloud machine with no desktop app, run them on the
-person's computer: `ade agent37 create … --machine "<their Mac>"`.
+`create`, `copy` and `move` work from any of the person's signed-in machines.
+With the ADE desktop app open there, the new machine joins on its own; without
+it, your chat gets a link the person opens on their phone or in a browser to
+approve it joining, and the command waits up to 10 minutes for that.
 
 ## Don'ts
 

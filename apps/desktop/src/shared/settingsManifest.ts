@@ -1491,11 +1491,22 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
   },
   {
     id: "integrations.agent37-spending",
-    label: "Agent 37 spending cap",
+    label: "Agent 37 spending",
     keywords: ["spending cap", "monthly cap", "budget", "limit spend", "saved", "sleep", "auto-sleep", "idle", "wallet", "low balance", "cost"],
     tab: "integrations",
     anchor: "agent37-spending",
-    // The monthly cap for every Agent 37 machine, in the account vault.
+    // This month's spend, saved asleep, the wallet; read from Agent 37.
+    scope: "account",
+    web: "hidden",
+    group: "Agent37",
+  },
+  {
+    id: "integrations.agent37-agent-limits",
+    label: "What agents may spend on Agent 37",
+    keywords: ["agent limits", "unattended", "full-auto", "automation", "machines a day", "largest size", "monthly cap", "spending cap", "budget", "ask me", "balanced", "hands-off"],
+    tab: "integrations",
+    anchor: "agent37-agent-limits",
+    // What unattended agents may spend alone, and the optional cap, in the account vault.
     scope: "account",
     web: "hidden",
     group: "Agent37",

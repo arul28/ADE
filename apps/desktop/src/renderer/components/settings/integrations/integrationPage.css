@@ -830,3 +830,56 @@
 .ade-ix-group {
   display: contents;
 }
+
+/* Agent 37 › What agents may spend: three presets, then the single limits. */
+.ade-ig-presets { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; }
+.ade-ig-preset {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 14px;
+  text-align: left;
+  font: inherit;
+  color: var(--color-fg);
+  border-radius: 12px;
+  border: 1px solid var(--kit-panel-edge, var(--color-border));
+  background: var(--kit-panel-bg, transparent);
+  cursor: pointer;
+}
+.ade-ig-preset:hover:not(:disabled) { border-color: color-mix(in srgb, var(--ig-accent) 35%, var(--color-border)); }
+.ade-ig-preset:focus-visible { outline: 2px solid var(--ig-accent); outline-offset: 2px; }
+.ade-ig-preset[data-on="true"] {
+  border-color: var(--ig-accent);
+  box-shadow: inset 0 0 0 1px var(--ig-accent);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--ig-accent) 9%, transparent), transparent 80%);
+}
+.ade-ig-preset:disabled { cursor: default; }
+.ade-ig-preset > svg { color: var(--ig-accent); }
+.ade-ig-preset > b { font-size: 13px; font-weight: 600; margin-top: 4px; }
+.ade-ig-preset > span { font-size: 12px; line-height: 1.45; color: var(--kit-text-3, var(--color-muted-fg)); }
+.ade-ig-preset > ul { margin: 6px 0 0; padding-left: 16px; font-size: 11.5px; line-height: 1.6; color: var(--kit-text-3, var(--color-muted-fg)); }
+.ade-ig-preset-tag {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  font-size: 10px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  color: var(--ig-accent);
+  background: color-mix(in srgb, var(--ig-accent) 16%, transparent);
+}
+.ade-ig-limit-rows { display: flex; flex-direction: column; border-top: 1px solid var(--kit-rule, var(--color-border)); }
+.ade-ig-limit-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--kit-rule, var(--color-border));
+}
+.ade-ig-limit-row > div:first-child { flex: 1 1 260px; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.ade-ig-limit-row b { font-size: 12.5px; font-weight: 500; }
+.ade-ig-limit-row small { font-size: 11.5px; color: var(--kit-text-3, var(--color-muted-fg)); }

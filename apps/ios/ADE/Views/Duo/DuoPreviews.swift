@@ -30,6 +30,7 @@ enum DuoPreviewRouter {
       DuoSplitPreviews.view,
       DuoFoldPreviews.view,
       LiveInspectMarkupPreviews.view,
+      Agent37Previews.view,
     ]
     for provider in providers {
       if let view = provider(name) { return view }

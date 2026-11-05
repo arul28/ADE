@@ -452,11 +452,17 @@ export function registerAgent37Ipc(args: {
     return await budget.read();
   });
 
-  ipcMain.handle(IPC.agent37SetBudget, async (event, arg: { budget?: Agent37Budget }): Promise<Agent37Budget | null> => {
+  ipcMain.handle(IPC.agent37SetBudget, async (event, arg: { budget?: Partial<Agent37Budget> }): Promise<Agent37Budget | null> => {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.agent37SetBudget)) return null;
-    const raw = arg?.budget?.monthlyCapUsd;
-    const saved = await budget.write({ monthlyCapUsd: typeof raw === "number" ? raw : null });
-    logger.info("agent37.budget_set", { capped: saved.monthlyCapUsd != null });
+    // Either part may come alone: the cap, or what agents may spend.
+    const current = await budget.read();
+    const next = arg?.budget ?? {};
+    const raw = "monthlyCapUsd" in next ? next.monthlyCapUsd : current.monthlyCapUsd;
+    const saved = await budget.write({
+      monthlyCapUsd: typeof raw === "number" ? raw : null,
+      agents: next.agents ? { ...current.agents, ...next.agents } : current.agents,
+    });
+    logger.info("agent37.budget_set", { capped: saved.monthlyCapUsd != null, unattendedSpend: saved.agents.unattendedSpend, machinesPerDay: saved.agents.machinesPerDay });
     sendToAllWindows(IPC.agent37StatusChanged);
     return saved;
   });

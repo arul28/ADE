@@ -9,6 +9,8 @@
  */
 
 import {
+  AGENT37_DEFAULT_AGENT_LIMITS,
+  AGENT37_MADE_BY_CHAT_METADATA,
   AGENT37_READY_METADATA,
   isAgent37InstanceId,
   readAgent37ReadyMachineState,
@@ -207,10 +209,10 @@ export function createAgent37Machines(deps: Agent37MachinesDeps) {
   }
 
   const readBudget = async (): Promise<Agent37Budget> => {
-    if (!deps.readBudget) return { monthlyCapUsd: null };
+    if (!deps.readBudget) return { monthlyCapUsd: null, agents: AGENT37_DEFAULT_AGENT_LIMITS };
     return await deps.readBudget().catch((error: unknown) => {
       logger.warn?.("agent37.budget_read_failed", { error: errorText(error) });
-      return { monthlyCapUsd: null };
+      return { monthlyCapUsd: null, agents: AGENT37_DEFAULT_AGENT_LIMITS };
     });
   };
 
@@ -385,6 +387,19 @@ export function createAgent37Machines(deps: Agent37MachinesDeps) {
     instanceMetadata: async (instanceId: string): Promise<Record<string, string> | null> => {
       const client = await deps.client();
       return client ? (await client.getInstance(instanceId)).metadata : null;
+    },
+    /** Machines an agent made, copied or moved since UTC midnight that still exist (they carry `ade_made_by_chat`). */
+    agentMadeToday: async (): Promise<number> => {
+      const client = await deps.client();
+      if (!client) return 0;
+      const midnight = new Date(now());
+      midnight.setUTCHours(0, 0, 0, 0);
+      return (await client.listInstances()).filter((instance) => {
+        if (!instance.metadata[AGENT37_MADE_BY_CHAT_METADATA] || instance.created == null) return false;
+        // Agent 37 answers epoch seconds; milliseconds are accepted too.
+        const createdMs = instance.created < 1e12 ? instance.created * 1000 : instance.created;
+        return createdMs >= midnight.getTime();
+      }).length;
     },
     /** This month against the cap (a costly action from elsewhere checks it). */
     spending: async () => {

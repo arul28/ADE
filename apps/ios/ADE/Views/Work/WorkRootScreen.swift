@@ -193,6 +193,7 @@ struct WorkRootSyncInputs: Equatable {
   var showsLinear = false
   var showsCursorCloud = false
   var showsGitHubIssues = false
+  var showsAgent37 = false
   var laneColorAvailable = false
   var laneManageAvailable = false
   var lifecycleAvailable = false
@@ -249,6 +250,7 @@ struct WorkRootSyncInputs: Equatable {
       && sync.cursorCloudConnected
       && sync.supportsRemoteAction("ai.cursorCloudFleet")
     showsGitHubIssues = sync.activeProjectId.map { sync.githubIssuesMenuProjectIds.contains($0) } ?? false
+    showsAgent37 = sync.agent37Available && sync.agent37Supported
     laneColorAvailable = sync.canInvokeRemoteAction("lanes.updateAppearance")
     laneManageAvailable = sync.canInvokeRemoteAction("lanes.rename")
     lifecycleAvailable = sync.supportsSessionLifecycleActions
@@ -1570,6 +1572,7 @@ struct WorkRootListScreen: View, Equatable {
         showsLinear: inputs.showsLinear,
         showsCursorCloud: inputs.showsCursorCloud,
         showsGitHubIssues: inputs.showsGitHubIssues,
+        showsAgent37: inputs.showsAgent37,
         actions: workHeaderActions,
         viewMode: duoViewModeBinding
       )
@@ -1957,6 +1960,7 @@ struct WorkRootListScreen: View, Equatable {
       .task(id: "\(inputs.activeProjectId ?? ""):\(inputs.activeProjectHostIdentity ?? ""):\(inputs.isAttached)") {
         await syncService.refreshLinearConnection()
         await syncService.refreshCursorCloudConnection()
+        await syncService.refreshAgent37Availability()
         GitHubIssuesMenuAvailability.shared.refresh(sync: syncService, projectId: inputs.activeProjectId)
       }
       .task(id: workProjectionReloadKey) {
@@ -2103,6 +2107,7 @@ struct WorkRootListScreen: View, Equatable {
             showsLinear: inputs.showsLinear,
             showsCursorCloud: inputs.showsCursorCloud,
             showsGitHubIssues: inputs.showsGitHubIssues,
+            showsAgent37: inputs.showsAgent37,
             selectionCount: isSelecting ? selectedSessionIds.count : nil,
             actions: workHeaderActions
           )
@@ -2563,6 +2568,7 @@ struct WorkRootListScreen: View, Equatable {
         syncService.linearPanePresented = true
       },
       onOpenCursorCloud: { syncService.cursorCloudPanePresented = true },
+      onOpenAgent37: { syncService.agent37PanePresented = true },
       onOpenGitHubIssues: { syncService.githubIssuesPanePresented = true },
       onOpenSettings: { syncService.settingsPresented = true }
     )

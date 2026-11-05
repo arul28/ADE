@@ -67,7 +67,7 @@ export type Agent37MachineCreatorDeps = {
    * lands on `/device/callback`. `onNeedsPerson` fires when the page stopped
    * on something the person has to confirm and the window was shown.
    */
-  approveInWindow: (args: {
+  approveInWindow?: (args: {
     url: string;
     mode: Agent37ApprovalMode;
     title: string;
@@ -75,6 +75,12 @@ export type Agent37MachineCreatorDeps = {
     signal: AbortSignal;
     onNeedsPerson: () => void;
   }) => Promise<Agent37ApprovalWindowResult>;
+  /**
+   * With no window to open (a brain on its own): the sign-in link for the
+   * person to approve wherever they are signed in to ADE (the phone opens it
+   * natively, any browser works). Used only when `approveInWindow` is unset.
+   */
+  handOffApproval?: (args: { url: string; userCode: string; name: string }) => void;
   templateName?: () => string;
   fetch?: FetchLike;
   logger?: {
@@ -113,6 +119,8 @@ const JOIN_TIMEOUT_MS = 2 * 60_000;
 const POLL_MS = 2_000;
 /** `/device/approve` answers in a second; this bounds a stalled account service. */
 const APPROVE_TIMEOUT_MS = 20_000;
+/** As long as the account keeps a sign-in code (DEVICE_CODE_TTL_SECONDS). */
+const APPROVE_ELSEWHERE_TIMEOUT_MS = 10 * 60_000;
 /** How long a cancelled create keeps looking for a box Agent 37 still made. */
 const CANCELLED_CREATE_LOOK_MS = 90_000;
 /**
@@ -206,8 +214,8 @@ export async function createAgent37Machine(
   if (!shape) throw new Error("Pick a size.");
   const name = normalizeAgent37MachineName(rawArgs?.name ?? "");
   const template = deps.templateName?.() || AGENT37_DEFAULT_TEMPLATE;
-  const progress = (stage: Agent37CreateProgress["stage"], message: string, instanceId?: string) =>
-    onProgress({ requestId, stage, message, ...(instanceId ? { instanceId } : {}) });
+  const progress = (stage: Agent37CreateProgress["stage"], message: string, instanceId?: string, approvalUrl?: string) =>
+    onProgress({ requestId, stage, message, ...(instanceId ? { instanceId } : {}), ...(approvalUrl ? { approvalUrl } : {}) });
   const checkCancelled = () => {
     if (signal?.aborted) throw new Agent37CreateCancelled();
   };
@@ -322,7 +330,7 @@ export async function bringAgent37BoxIntoAde(
     name: string;
     requestId: string;
     signal?: AbortSignal;
-    progress: (stage: Agent37CreateProgress["stage"], message: string, instanceId?: string) => void;
+    progress: (stage: Agent37CreateProgress["stage"], message: string, instanceId?: string, approvalUrl?: string) => void;
     directory: string;
   },
 ): Promise<Agent37CreateMachineResult> {
@@ -370,6 +378,23 @@ export async function bringAgent37BoxIntoAde(
         throw new Error("The new machine didn't start its sign-in.");
       }
 
+      if (!deps.approveInWindow) {
+        // Nobody here to approve: the person does, from the link. The code is
+        // left pending (not claimed by /device/approve), so the phone's own
+        // approval flow can take it.
+        if (!deps.handOffApproval) throw new Error("ADE has no window here to approve the new machine's sign-in.");
+        approvalSent = true;
+        const url = `${directory.replace(/\/+$/, "")}/device?user_code=${encodeURIComponent(userCode)}`;
+        deps.handOffApproval({ url, userCode, name });
+        progress("approve_elsewhere", `Approve ${name} joining your account: open the link on your phone or in a browser signed in to ADE.`, instance.id, url);
+        const approveDeadline = Date.now() + APPROVE_ELSEWHERE_TIMEOUT_MS;
+        for (;;) {
+          checkCancelled();
+          if ((await readAuth())?.signedIn === true) break;
+          if (Date.now() > approveDeadline) throw new Error(`Nobody approved ${name} joining your account in 10 minutes.`);
+          await sleep(POLL_MS);
+        }
+      } else {
       const token = await deps.getAccountToken();
       if (!token) throw new Error("Sign in to ADE on this computer first. The new machine joins your account.");
       // Bounded, and cancelled with the create: a stalled account service must
@@ -466,6 +491,7 @@ export async function bringAgent37BoxIntoAde(
       } finally {
         stopWatching.abort();
         signal?.removeEventListener("abort", onCancelWatch);
+      }
       }
     }
     // Signed in: a real machine, kept from here on.

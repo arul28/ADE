@@ -342,10 +342,10 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
     write: ["request"],
   },
   agent37: {
-    read: ["ready_status", "list", "spending"],
+    read: ["ready_status", "list", "spending", "make_status", "limits"],
     write: [
       "claim_ready", "release_ready", "create", "sleep", "wake", "resize", "copy", "move", "delete",
-      "set_sleep", "set_cap", "ready_set", "ready_off", "ready_retry",
+      "set_sleep", "set_cap", "ready_set", "ready_off", "ready_retry", "set_limits",
     ],
   },
   mcp_registry: {
