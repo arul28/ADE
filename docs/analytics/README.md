@@ -199,9 +199,12 @@ them in PostHog and update this list in the same branch.
   `ade_brain_action_failed` carries `brain_action` and `expected_kind` from
   1.2.129-beta.6; on older builds most of its `error_code` values are
   `unknown`.
-- **`metadata_regenerated`** is sent at most once per outcome per install an
-  hour from the first desktop release after 1.2.129-beta.8. Before, it was a
-  quarter of the events of the installs that reached their daily budget.
+- **`metadata_regenerated`** is sent at most once per mode and outcome per
+  install an hour from the first desktop release after 1.2.129-beta.8. Before,
+  it was a quarter of the events of the installs that reached their daily
+  budget. From that release a regeneration someone asked for says
+  `mode: "manual"` and counts as a person's use; before, every one said
+  `automatic`.
 - **Automatic feature uses are non-interactive** from the first desktop release
   after 1.2.128: a scheduled storage sweep and a chat title regenerated after a
   turn now carry `mode: "automatic"` and `interactive: false`. Charts filtered

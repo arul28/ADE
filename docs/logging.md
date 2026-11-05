@@ -116,7 +116,7 @@ The log tails go as ADE wrote them, on purpose: they hold paths, action argument
 
 **Alerts and monitors (Sentry account, not code).** Every project keeps Sentry's default "high priority issue" email. On top of it, three org alerts email the owner: `ADE · Regressions in production (all projects)` (a resolved issue comes back), `ADE · Issue hitting 5+ users in an hour (production)`, and `ADE · Uptime: account directory down`. The plan's one uptime monitor checks `GET /health` on `ade-account-directory-production` every five minutes (`ade-workers`, three failures open an issue), and its one cron monitor is `account-directory-cleanup`, the Worker's scheduled sweep. The sweep sends one closing check-in with `Sentry.captureCheckIn` from the handler's own scope (a tick that hangs shows as missed); never wrap it in `Sentry.withMonitor`, whose isolation-scope fork loses the invocation's `waitUntil`, so Cloudflare cancels the closing check-in and every tick reads as a timeout that reopens the issue. Spike protection is on for every project. Nothing paid is enabled: pay-as-you-go stays at $0, so data over a quota is dropped, never billed, and Seer, profiling and extra monitors stay off. Check the settings with `GET /api/0/organizations/ade-app/workflows/`, `/detectors/` and `GET /api/0/customers/ade-app/` (plan, trial end, on-demand budget).
 
-**Readable stack traces.** Release builds set `ADE_BUILD_SOURCEMAPS=1`, inject Sentry debug ids into the shipped bundles, upload the maps and delete them before packaging or deploy, so no map reaches a user. Releases are named `ade@<version>` from the `v*` tag (deploys from `main` between releases use `git describe`, for example `1.2.102-4-g3137fc9b9`), with a `dist` per artifact (`win-x64`, `mac-arm64`, `linux-x64`, `web`, `worker-<name>`). The standalone runtime (the brain on Linux, and `ade` installs without the desktop app) is a Node SEA: `build-static.mjs` stamps the bundle's debug id and writes a map for the SEA entry, moved down by the require shim's lines, to `dist-static/.sentry/<target>/` (outside the SEA work folder the build removes), and the runtime build job uploads that pair to `ade-brain` with `sentry-release.mjs upload --dir`. Uploads cost storage, not event quota. iOS keeps `<bundle id>@<version>+<build>`, and `scripts/release-tools/upload-ios-dsyms.sh` uploads each archive's dSYMs (run by `ios-testflight.sh` and the TestFlight workflow). Uploads need the `SENTRY_AUTH_TOKEN` repository secret and are skipped, never failed, without it. A release's commits are read from the checkout's git history (`set-commits --local`), because the `arul28` GitHub account is linked to another Sentry organization and sharing it needs a Business plan.
+**Readable stack traces.** Release builds set `ADE_BUILD_SOURCEMAPS=1`, inject Sentry debug ids into the shipped bundles, upload the maps and delete them before packaging or deploy, so no map reaches a user. Releases are named `ade@<version>` from the `v*` tag (deploys from `main` between releases use `git describe`, for example `1.2.102-4-g3137fc9b9`), with a `dist` per artifact (`win-x64`, `mac-arm64`, `linux-x64`, `web`, `worker-<name>`). The standalone runtime (the brain on Linux, and `ade` installs without the desktop app) is a Node SEA: `build-static.mjs` stamps the bundle's debug id and writes a map for the SEA entry, moved down by the require shim's lines, to `dist-static/.sentry/<target>/` (outside the SEA work folder the build removes), and the runtime build job uploads that pair to `ade-brain` with `sentry-release.mjs upload --dir`. Uploads cost storage, not event quota. iOS keeps `<bundle id>@<version>+<build>`, and `scripts/release-tools/upload-ios-dsyms.sh` uploads each archive's dSYMs to Sentry and to PostHog (run by `ios-testflight.sh` and the TestFlight workflows). Uploads need the `SENTRY_AUTH_TOKEN` repository secret and are skipped, never failed, without it. A release's commits are read from the checkout's git history (`set-commits --local`), because the `arul28` GitHub account is linked to another Sentry organization and sharing it needs a Business plan.
 
 **Tags on every event.** Each client sets the same scope tags (`sentryCommonTags` in `shared/sentry/config.ts`; Swift in `CrashReporting.start`): `surface` (`desktop`, `brain`, `web`, `ios`), `client` (`desktop`, `runtime` for the brain, `web`, `ios`), `release_channel` (`stable`, `beta`, `alpha`, `development`; on iOS the ADE Beta app (`com.ade.ios.beta`) is `beta` and the normal app is `stable` on TestFlight and the App Store alike), `is_internal` (`true`/`false`, desktop and brain only, from the same marker PostHog reads; a browser and a phone cannot know) and `arch` (desktop and brain). The OS is Sentry's own `os` tag from each event's OS context. Renderer events carry main's tags, because they travel through main's client. Desktop and brain keep `process`, `os.release` and `package.channel`; the web client keeps `process: web-client` (its `surface` tag was `web-client` before 2026-10-30). The web client's user is the same account hash, computed in the browser from the signed-in account; signed out it has none.
 
@@ -536,10 +536,14 @@ adds an event.
   `ade_analytics_budget`, the `ade_update_*` events, `ade_brain_recovered`,
   `ade_renderer_recovered`, `ade_publish_failing`, `ade_relay_suppressed`,
   `ade_account_session_unreadable`, `ade_tool_fetched`,
-  `ade_brain_action_failed`, and an automation's work session. `true`
+  `ade_brain_action_failed`, an automation's work session and model turns,
+  and an `ade_feature_used` with `mode: "automatic"` (a status line refresh
+  after a turn, an automatic diagnostic send, a chat auto-resume). `true`
   otherwise (`productAnalyticsEventContext` in `productAnalyticsPolicy.ts`).
-  A monthly-active count filters `interactive != false` (events sent before
-  this property existed have none).
+  The dashboards count a person as active only on `PERSON_ACTIVITY`
+  (`scripts/posthog/dashboard-spec.mjs`): `interactive != false`, and, for
+  builds before 1.2.128 that send no `interactive`, none of those event
+  names, automation runs or automatic feature uses either.
 - `is_internal` — `true` on an ADE team install, marked with
   `ADE_ANALYTICS_INTERNAL=1` in the environment or an empty
   `secrets/product-analytics.json.internal` file beside the state file. Read
@@ -627,6 +631,23 @@ timestamp is the account's Clerk `created_at`.
   anything is still missing), with the secrets `CLERK_PROD_SECRET_KEY`,
   `POSTHOG_RECONCILE_API_KEY` (a personal key with query read only) and
   `ADE_POSTHOG_PROJECT_TOKEN`.
+- **Internal accounts.** The PostHog transformation `Mark ADE team accounts
+  internal` sets `is_internal: true` on every event whose distinct id is in its
+  `internal_distinct_ids` list, so the team's accounts and the installs signed
+  in to them stay out of every dashboard. `reconcile-signups.mjs
+  --sync-internal [--apply]` adds the distinct ids of persons with
+  `is_internal = true` to that list (it never removes one) and exits 1 when the
+  transformation is off or, without `--apply`, when the list is behind. The
+  Monday run applies it before the backfill, with its own key
+  `POSTHOG_INTERNAL_SYNC_API_KEY` (query read, hog function read and write),
+  and skips with a notice without it.
+- **Health.** `.github/workflows/analytics-health.yml` runs
+  `scripts/analytics/data-health.mjs` every six hours. It checks that the
+  site's `/_t/` proxy answers as PostHog for capture, flags, replay and the
+  script, and, with `POSTHOG_RECONCILE_API_KEY`, that the last 24 hours have
+  at least 100 site events and 3 desktop app opens. Each probe and query gets
+  three tries. Exit 1 means analytics are not arriving; exit 2 means the check
+  could not ask PostHog.
 
 It needs `CLERK_WEBHOOK_SIGNING_SECRET` and `POSTHOG_PROJECT_TOKEN` set on the
 Worker and a Clerk webhook subscribed to `user.created` and `user.deleted`;
@@ -1756,12 +1777,16 @@ one-hour minimum interval bounds it to at most 24 accepted events per UTC day,
 inside the existing `ade_feature_used` and shared ceilings. The keystroke-rate
 `chat.listMentionSuggestions` read stays untracked by design.
 
-Explicitly regenerating a chat's visible metadata records the existing coarse
+Regenerating a chat's visible metadata records the existing coarse
 `ade_feature_used` event at the chat service boundary via
 `captureSessionMetadataRegeneratedAnalytics`, with `feature: "chat"`,
 `action: "metadata_regenerated"`, `outcome` (`completed`, `partial`, or
-`failed`), and `source: "runtime"`. This measures the user's explicit choice,
-not menu opens or model attempts. It carries no generated title, lane name,
+`failed`), `mode` (`manual` when a person or an agent asked for it,
+`automatic` when ADE refreshed the status line after a turn), and
+`source: "runtime"`. It counts results, not menu opens or model attempts. It
+is one fact per mode and outcome per installation an hour: the automatic
+refresh follows most turns and once took a quarter of a busy install's daily
+budget. It carries no generated title, lane name,
 status line, prompt, response, model identifier, or raw session/project
 identifier; the normal analytics sanitizer and existing `ade_feature_used`
 limits apply.
@@ -1947,14 +1972,15 @@ The desktop and runtime bundlers accept empty values so ordinary local builds re
 
 The full-access personal key belongs only in encrypted ADE secrets. When running the dashboard provisioner, map it to `POSTHOG_PERSONAL_API_KEY` for that process together with `POSTHOG_PROJECT_ID` and `POSTHOG_HOST`. Never put the full-access key in GitHub Actions release secrets, Vercel, an app bundle, an `.env` file, source control, logs, screenshots, test fixtures, or a command argument that may be recorded.
 
-Release workflows use a second personal key of their own, limited to the ADE project and to the scopes `annotation:read`, `annotation:write`, `error_tracking:write` and `organization:read`, stored as the GitHub Actions secrets `POSTHOG_PERSONAL_API_KEY`, `POSTHOG_PROJECT_ID` and `POSTHOG_HOST` (optional; defaults to `https://us.posthog.com`). It does two things, and both skip with a notice when the secrets are empty and never fail a run:
+Release workflows use a second personal key of their own, limited to the ADE project and to the scopes `annotation:read`, `annotation:write`, `error_tracking:write` and `organization:read`, stored as the GitHub Actions secrets `POSTHOG_PERSONAL_API_KEY`, `POSTHOG_PROJECT_ID` and `POSTHOG_HOST` (optional; defaults to `https://us.posthog.com`). It does three things, and each skips with a notice when the secrets are empty and never fails a run:
 
 - **Release annotations** (`scripts/posthog/annotate-release.mjs`): `Desktop 1.2.130-beta.3 · beta` when the beta feed serves a beta (`beta.yml`), `Desktop 1.2.130 · stable` when `/release` publishes a stable (`release-annotation.yml`), `iOS Beta 1.4 (212) · TestFlight` after an ADE Beta upload (`ios-testflight.yml`), and `Web deploy abc1234 (webclient, push-relay)` after a web or Worker deploy (`deploy-web.yml`). Previews are not marked. A re-run finds the identical annotation and adds none.
 - **Source maps** (`scripts/posthog/upload-sourcemaps.mjs`), described under [PostHog error tracking](#posthog-error-tracking).
+- **iOS dSYMs** (`scripts/release-tools/upload-ios-dsyms.sh`, from `ios-testflight.yml` and `ios-testflight-internal-build-bump-self-hosted.yml`): each archive's dSYMs go to PostHog beside Sentry, so iOS `$exception` frames get function names. PostHog finds them by debug id, so no release is named.
 
 ## PostHog dashboards
 
-`scripts/posthog/dashboard-spec.mjs` is the declarative source of truth. `scripts/posthog/provision.mjs` validates and idempotently upserts the managed objects. The project currently has nine managed dashboards and fifty-seven managed insights:
+`scripts/posthog/dashboard-spec.mjs` is the declarative source of truth. `scripts/posthog/provision.mjs` validates and idempotently upserts the managed objects. The project currently has ten managed dashboards and sixty-three managed insights:
 
 - ADE · Growth and retention
 - ADE · Surface and feature adoption
@@ -1963,6 +1989,7 @@ Release workflows use a second personal key of their own, limited to the ADE pro
 - ADE · Reliability and analytics budget
 - ADE · Sign-ups & activation
 - ADE · Retention & churn
+- ADE · Agent turns (LLM analytics)
 - ADE · GitHub star prompt
 - ADE · Feedback (in-app survey answers)
 

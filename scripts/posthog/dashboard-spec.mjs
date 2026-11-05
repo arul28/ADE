@@ -146,9 +146,10 @@ const BACKGROUND_EVENT_NAMES = Object.freeze([
   EVENTS.MOBILE_ERROR, EVENTS.EXCEPTION, "$identify",
 ]);
 /**
- * Feature uses the app always runs on its own. Builds before 1.2.128 send them
- * with no `mode`, so the action names count too. A compaction is left out: it
- * has always said `mode: manual` or `mode: automatic`.
+ * Feature uses that older builds sent with no `mode`, when the app ran them on
+ * its own (a status line refresh after a turn, for one). An event that has a
+ * `mode` is judged by it, so a requested regeneration still counts. A
+ * compaction is left out: it has always said `mode: manual` or `automatic`.
  */
 const AUTOMATIC_FEATURE_ACTIONS = Object.freeze([
   "maintenance_run", "metadata_regenerated", "auto_sent", "auto_resume", "settle_teardown_residue",
@@ -170,7 +171,7 @@ const PERSON_ACTIVITY = Object.freeze({
   key: [
     `ifNull(toString(properties.${PROPERTIES.INTERACTIVE}), '') != 'false'`,
     `event not in (${hogqlList(BACKGROUND_EVENT_NAMES)})`,
-    `not (event = '${EVENTS.FEATURE_USED}' and (ifNull(properties.${PROPERTIES.MODE}, '') = 'automatic' or properties.${PROPERTIES.ACTION} in (${hogqlList(AUTOMATIC_FEATURE_ACTIONS)})))`,
+    `not (event = '${EVENTS.FEATURE_USED}' and (ifNull(properties.${PROPERTIES.MODE}, '') = 'automatic' or (ifNull(properties.${PROPERTIES.MODE}, '') = '' and properties.${PROPERTIES.ACTION} in (${hogqlList(AUTOMATIC_FEATURE_ACTIONS)}))))`,
     // An automation's own sessions and model turns, as the policy's `automationRun`.
     `not (ifNull(properties.${PROPERTIES.FEATURE}, '') = 'automations' and event in (${hogqlList(AUTOMATION_RUN_EVENTS)}))`,
   ].join(" and "),

@@ -402,10 +402,12 @@ describe("createAgentChatService", () => {
       usage: expect.objectContaining({ inputTokens: expect.any(Number), outputTokens: expect.any(Number) }),
       costUsd: null,
       durationMs: expect.any(Number),
+      errorCategory: null,
     });
     expect(Object.keys(settled).sort()).toEqual([
       "costUsd",
       "durationMs",
+      "errorCategory",
       "model",
       "provider",
       "sessionId",

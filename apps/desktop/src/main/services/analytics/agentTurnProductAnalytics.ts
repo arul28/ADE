@@ -14,28 +14,29 @@ import { detectInstallSource } from "./installSource";
 type AgentTurnAnalytics = Pick<ProductAnalyticsService, "captureInternal">;
 
 /**
- * One fact per outcome per installation an hour. A title is regenerated after
- * most turns, so without the limit this was a quarter of the events of the
- * installs that reached their daily budget, and pushed out what people did.
+ * One fact per mode and outcome per installation an hour. The status line is
+ * regenerated after most turns, so without the limit this was a quarter of the
+ * events of the installs that reached their daily budget, and pushed out what
+ * people did.
  */
 export function captureSessionMetadataRegeneratedAnalytics(args: {
   analytics: AgentTurnAnalytics;
   projectId: string;
-  event: { sessionId: string; outcome: "completed" | "partial" | "failed" };
+  event: { sessionId: string; outcome: "completed" | "partial" | "failed"; automatic: boolean };
 }): void {
+  const mode = args.event.automatic ? "automatic" : "manual";
   args.analytics.captureInternal({
     event: "ade_feature_used",
     surface: "api",
     projectId: args.projectId,
     sessionId: args.event.sessionId,
-    dedupeKey: `chat_metadata_regenerated:${args.event.outcome}`,
+    dedupeKey: `chat_metadata_regenerated:${mode}:${args.event.outcome}`,
     minimumIntervalMs: 60 * 60_000,
     properties: {
       feature: "chat",
       action: "metadata_regenerated",
       outcome: args.event.outcome,
-      // Regenerated after a turn, never on request: not a person's use.
-      mode: "automatic",
+      mode,
       source: "runtime",
     },
   });

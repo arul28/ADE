@@ -1521,7 +1521,7 @@ import {
   runNamingAcrossProviders,
   type SessionMetadataConversationEntry,
 } from "./sessionNaming";
-import { createSessionMetadataRegenerator } from "./sessionMetadataService";
+import { createSessionMetadataRegenerator, type SessionMetadataRunOptions } from "./sessionMetadataService";
 import { createStatusLineStaleRegen } from "./statusLineStaleCheck";
 import {
   createCursorSdkEventMapperState,
@@ -11902,10 +11902,14 @@ export function createAgentChatService(args: {
    * command or a simulator there). Never the machine, the command, or the path.
    */
   onRemoteWorkStarted?: (event: { sessionId: string; machineKey: string }) => void;
-  /** Content-free hook fired after an explicit session-metadata generation request. */
+  /**
+   * Content-free hook fired after a session-metadata generation: on request,
+   * or `automatic` when ADE refreshed the status line after a turn.
+   */
   onSessionMetadataRegenerated?: (event: {
     sessionId: string;
     outcome: "completed" | "partial" | "failed";
+    automatic: boolean;
   }) => void;
   /**
    * Content-free hook fired once per auto-resume transition (armed, resumed,
@@ -18753,6 +18757,7 @@ export function createAgentChatService(args: {
   let sessionMetadataRegenerator: ReturnType<typeof createSessionMetadataRegenerator> | null = null;
   const regenerateSessionMetadata = async (
     args: AgentChatRegenerateSessionMetadataArgs,
+    options: SessionMetadataRunOptions = {},
   ): Promise<AgentChatRegenerateSessionMetadataResult> => {
     // `async`, so `ensureManagedSession` rejects for an unknown session id like
     // every other failure here rather than throwing at the call site.
@@ -18837,7 +18842,7 @@ export function createAgentChatService(args: {
       onRegenerated: onSessionMetadataRegenerated,
       logger,
     });
-    return sessionMetadataRegenerator(args);
+    return sessionMetadataRegenerator(args, options);
   };
 
   // OpenCode handles API-key and local-model chats.
@@ -22229,7 +22234,7 @@ export function createAgentChatService(args: {
     decide: jevDecide,
     logger,
     readStatusLine: (sessionId) => sessionService.get(sessionId)?.statusNote,
-    regenerate: (sessionId) => regenerateSessionMetadata({ sessionId, fields: ["statusLine"] }),
+    regenerate: (sessionId) => regenerateSessionMetadata({ sessionId, fields: ["statusLine"] }, { automatic: true }),
   });
 
   /** An agent-written status line is kept unless Jev reads the final reply as past it. */
@@ -22269,7 +22274,7 @@ export function createAgentChatService(args: {
     void regenerateSessionMetadata({
       sessionId: managed.session.id,
       fields: ["statusLine"],
-    }).catch((error) => {
+    }, { automatic: true }).catch((error) => {
       logger.warn("agent_chat.idle_status_line_failed", {
         sessionId: managed.session.id,
         error: error instanceof Error ? error.message : String(error),
@@ -77617,7 +77622,8 @@ export function createAgentChatService(args: {
     getLaunchDefaults,
     applyFastModePolicy,
     getPermissionCeiling: resolvePermissionCeiling,
-    regenerateSessionMetadata,
+    // A caller's request, never `automatic`: only this service starts those.
+    regenerateSessionMetadata: (args: AgentChatRegenerateSessionMetadataArgs) => regenerateSessionMetadata(args),
     setSpawnKind,
     setParent,
     dismissSubagentTakeoverPrompt,
