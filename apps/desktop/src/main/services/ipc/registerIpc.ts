@@ -190,6 +190,8 @@ import {
 import type { ProductAnalyticsService } from "../analytics/productAnalyticsService";
 import { createAccountSignInAnalytics } from "../analytics/accountSignInAnalytics";
 import { sendSentryUserFeedback } from "../../sentry/userFeedback";
+import { IpcHandlerTimeoutError } from "../../sentry/ipcHandlerTimeout";
+import { armDeadline } from "../../../shared/deadlineTimer";
 import {
   brainActionErrorCode,
   createMachineRegisterRefusalObserver,
@@ -2509,21 +2511,19 @@ export function registerIpc({
           });
         }
         const IPC_TIMEOUT_MS = ipcInvokeTimeoutMs(channel, args);
-        let timeoutHandle: NodeJS.Timeout | null = null;
         let didTimeout = false;
+        let rejectTimedOut: (error: Error) => void = () => {};
+        const timedOut = new Promise<never>((_, reject) => {
+          rejectTimedOut = reject;
+        });
+        // A timer that fires late (the Mac slept) gets one short grace, so a
+        // reply already waiting on the brain's socket still lands.
+        const deadline = armDeadline(IPC_TIMEOUT_MS, (expiry) => {
+          didTimeout = true;
+          rejectTimedOut(new IpcHandlerTimeoutError(channel, IPC_TIMEOUT_MS, callId, expiry));
+        });
         try {
-          const result = await Promise.race([
-            listener(event, ...args),
-            new Promise<never>((_, reject) => {
-              timeoutHandle = setTimeout(
-                () => {
-                  didTimeout = true;
-                  reject(new Error(`IPC handler for '${channel}' timed out after ${IPC_TIMEOUT_MS}ms (callId=${callId})`));
-                },
-                IPC_TIMEOUT_MS,
-              );
-            }),
-          ]);
+          const result = await Promise.race([listener(event, ...args), timedOut]);
           const durationMs = Date.now() - startedAt;
           recordIpcInvokeAggregate({ channel: perfChannelLabel(channel, args), winId, durationMs, failed: false });
           const usageAction = usageActionFromIpcChannel(channel);
@@ -2639,7 +2639,7 @@ export function registerIpc({
           }
           throw error;
         } finally {
-          if (timeoutHandle) clearTimeout(timeoutHandle);
+          deadline.cancel();
         }
       })) as typeof ipcMain.handle;
     tracedIpcMain.__adeTraceWrapped = true;

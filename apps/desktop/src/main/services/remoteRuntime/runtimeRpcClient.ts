@@ -2,6 +2,7 @@ import { StringDecoder } from "node:string_decoder";
 import { PairedRuntimeSupersededError } from "./pairedRuntimeErrors";
 import { syntheticCallerId } from "../../../shared/syntheticCallerId";
 import { markExpectedFromWire } from "../../../shared/expectedError";
+import { armDeadline, type DeadlineTimer } from "../../../shared/deadlineTimer";
 import type { JsonRpcId, JsonRpcRequest, JsonRpcTransport } from "../../../../../ade-cli/src/jsonrpc";
 
 export type RuntimeRpcTransportCloseInfo = {
@@ -29,7 +30,7 @@ type PendingRequest = {
   label: string;
   resolve: (value: unknown) => void;
   reject: (error: Error) => void;
-  timer: ReturnType<typeof setTimeout>;
+  deadline: DeadlineTimer;
 };
 
 const MAX_RPC_BUFFER_CHARS = 16 * 1024 * 1024;
@@ -170,14 +171,16 @@ export class RuntimeRpcClient {
     }
     const label = describeRuntimeRpcCall(method, params);
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => {
+      // A timer that fires late (the Mac slept) gets one short grace, so a
+      // reply that is already waiting on the socket is read before it fails.
+      const deadline = armDeadline(timeoutMs, () => {
         const pending = this.takePending(id);
         if (!pending) return;
         pending.reject(
           new Error(`Remote ADE service timed out waiting for method ${pending.label} (${timeoutMs}ms).`),
         );
-      }, timeoutMs);
-      this.pending.set(id, { method, label, resolve, reject, timer });
+      });
+      this.pending.set(id, { method, label, resolve, reject, deadline });
       try {
         this.transport.write(`${JSON.stringify(payload)}\n`);
       } catch (error) {
@@ -280,7 +283,7 @@ export class RuntimeRpcClient {
     const pending = this.pending.get(id);
     if (!pending) return undefined;
     this.pending.delete(id);
-    clearTimeout(pending.timer);
+    pending.deadline.cancel();
     return pending;
   }
 
@@ -373,7 +376,7 @@ export class RuntimeRpcClient {
   private rejectAll(error: Error): void {
     for (const [id, pending] of this.pending) {
       this.pending.delete(id);
-      clearTimeout(pending.timer);
+      pending.deadline.cancel();
       pending.reject(error);
     }
   }

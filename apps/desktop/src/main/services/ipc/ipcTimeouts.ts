@@ -299,6 +299,14 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     // restart case above exists to prevent.
     case IPC.accountRepairSession:
       return 4 * 60_000;
+    // Restart-to-update runs one transaction before it quits: a fresh feed
+    // check, the prepare step (chat state, the service brain's uninstall),
+    // bounded by the install watchdog at 30s, and on Windows the owned brain's
+    // stop. The step answers `false` on its own watchdog, so on the 30s default
+    // the two raced and the renderer got an opaque timeout while the install
+    // carried on (ADE-DESKTOP-99: a Windows prepare ran 29.9s).
+    case IPC.updateQuitAndInstall:
+      return 2 * 60_000;
     // A project move copies the whole project before it answers; a few hundred
     // GB to a USB drive takes far more than the 30s default. Progress arrives
     // on its own channel meanwhile.
