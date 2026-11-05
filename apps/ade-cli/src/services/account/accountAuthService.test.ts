@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { hostname } from "node:os";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   DEFAULT_ADE_ACCOUNT_DIRECTORY_URL,
@@ -959,6 +960,9 @@ describe("AccountAuthService OAuth PKCE login", () => {
   });
 });
 
+// With no display name, the sign-in names the computer by its host name.
+const HOST_NAME_FIELD: Record<string, string> = hostname().trim() ? { machine_name: hostname().trim() } : {};
+
 describe("AccountAuthService device authorization", () => {
   it("starts through the bridge, polls, and stores the approved session with device source", async () => {
     const store = new MemoryCredentialStore();
@@ -969,6 +973,7 @@ describe("AccountAuthService device authorization", () => {
       if (input.endsWith("/device/code")) {
         expect(JSON.parse(String(init?.body))).toEqual({
           device_secret: Buffer.alloc(32, 0x77).toString("base64url"),
+          ...HOST_NAME_FIELD,
         });
         return jsonResponse({
           device_code: "bridge-device-code",
@@ -1105,6 +1110,7 @@ describe("AccountAuthService device authorization", () => {
       expect(deviceCodeBody).toEqual({
         device_secret: Buffer.alloc(32, 0x77).toString("base64url"),
         machine_key: "machine-a",
+        ...HOST_NAME_FIELD,
       });
     });
 
@@ -1131,7 +1137,7 @@ describe("AccountAuthService device authorization", () => {
       });
     });
 
-    it("starts the sign-in without a name when the name cannot be read", async () => {
+    it("names the computer by its host name when its display name cannot be read", async () => {
       let deviceCodeBody: Record<string, unknown> | null = null;
       const service = deviceLoginService({
         store: new MemoryCredentialStore(),
@@ -1147,6 +1153,7 @@ describe("AccountAuthService device authorization", () => {
       await expect(service.startDeviceLogin()).resolves.toMatchObject({ userCode: "GRNT-CODE" });
       expect(deviceCodeBody).toEqual({
         device_secret: Buffer.alloc(32, 0x77).toString("base64url"),
+        ...HOST_NAME_FIELD,
       });
     });
 
@@ -1167,6 +1174,7 @@ describe("AccountAuthService device authorization", () => {
       await expect(service.startDeviceLogin()).resolves.toMatchObject({ userCode: "GRNT-CODE" });
       expect(deviceCodeBody).toEqual({
         device_secret: Buffer.alloc(32, 0x77).toString("base64url"),
+        ...HOST_NAME_FIELD,
       });
     });
 

@@ -27,6 +27,7 @@ final class KeychainService {
   private let tokenAccount = "connection-token"
   private let deviceIdAccount = "device-id"
   private let accountDeviceOwnershipEpochPrefix = "attention-ownership-epoch:"
+  private let accountDeviceKeyPrefix = "attention-device-key:"
 
   private func tokenAccount(for hostKey: String?) -> String {
     guard let hostKey, !hostKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -42,7 +43,9 @@ final class KeychainService {
     return "\(tokenAccount).\(trimmed)"
   }
 
-  private func saveString(_ value: String, account: String) {
+  /// Returns whether the Keychain stored the value.
+  @discardableResult
+  private func saveString(_ value: String, account: String) -> Bool {
     let cacheKey = self.cacheKey(account)
     // After the write, so a read racing it cannot cache the old value.
     defer { Self.invalidate(cacheKey) }
@@ -58,8 +61,9 @@ final class KeychainService {
       var addQuery = query
       addQuery[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
       addQuery[kSecValueData as String] = data
-      SecItemAdd(addQuery as CFDictionary, nil)
+      return SecItemAdd(addQuery as CFDictionary, nil) == errSecSuccess
     }
+    return updateStatus == errSecSuccess
   }
 
   private func cacheKey(_ account: String) -> String {
@@ -170,8 +174,31 @@ final class KeychainService {
     return "\(accountDeviceOwnershipEpochPrefix)\(normalized)"
   }
 
+  /// The secret Relay issued to this installation's device id. It proves to
+  /// Relay that a later account on this phone is the same install, so it lives
+  /// exactly as long as the device id and its ownership epoch.
+  /// Returns whether the key was stored.
+  @discardableResult
+  func saveAccountDeviceKey(_ key: String, deviceId: String) -> Bool {
+    guard !key.isEmpty, let account = accountDeviceKeyAccount(deviceId: deviceId) else {
+      return false
+    }
+    return saveString(key, account: account)
+  }
+
+  func loadAccountDeviceKey(deviceId: String) -> String? {
+    guard let account = accountDeviceKeyAccount(deviceId: deviceId) else { return nil }
+    return loadString(account: account)
+  }
+
+  private func accountDeviceKeyAccount(deviceId: String) -> String? {
+    let normalized = deviceId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !normalized.isEmpty else { return nil }
+    return "\(accountDeviceKeyPrefix)\(normalized)"
+  }
+
   /// Removes every saved machine pairing secret while preserving this
-  /// installation's device identity and ownership epoch. Used by the versioned
+  /// installation's device identity, ownership epoch and device key. Used by the versioned
   /// trust reset: ADE must not accidentally revive a pre-reset machine through
   /// a keyed or legacy token alias.
   @discardableResult

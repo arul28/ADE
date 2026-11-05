@@ -881,6 +881,7 @@ final class AccountService: ObservableObject {
     LatestAccountRegistrationQueue<AccountAttentionDeviceRegistrationRequest>()
   private let accountPreferencesQueue =
     LatestAccountRegistrationQueue<AccountAttentionDevicePreferencesRequest>()
+  private let deviceKeychain = KeychainService()
 
   var isConfigured: Bool { phase != .unconfigured }
   var isSignedIn: Bool { phase == .signedIn }
@@ -1324,6 +1325,7 @@ final class AccountService: ObservableObject {
         token: token,
         deviceId: pending.deviceId,
         ownershipEpoch: pending.ownershipEpoch,
+        deviceKey: deviceKeychain.loadAccountDeviceKey(deviceId: pending.deviceId),
         timeoutInterval: 2
       )
       deviceRevocationStore.clear(ifMatching: pending)
@@ -1969,32 +1971,48 @@ final class AccountService: ObservableObject {
           token: initialSession.token
         )
       }
-      try await attentionRelay.registerDevice(
-        baseURL: baseURL,
-        token: initialSession.token,
-        deviceId: request.deviceId,
-        ownershipEpoch: request.ownershipEpoch,
-        apnsToken: request.apnsToken,
-        pushToStartToken: request.pushToStartToken,
-        clearPushToStartToken: request.clearPushToStartToken,
-        bundleId: request.bundleId,
-        apsEnvironment: request.apsEnvironment,
-        deviceName: UIDevice.current.name,
-        preferences: request.preferences,
-        refreshToken: { [weak self] in
-          guard let self,
-                self.isPairingCommitAuthorized(request.authorization),
-                accountDeviceMutationMatchesCurrentOwnership(
-                  ownerId: request.authorization.ownerId,
-                  ownershipEpoch: request.ownershipEpoch,
-                  state: self.deviceOwnershipStore.state
-                ) else {
-            return nil
+      let register: (String?) async throws -> String? = { [weak self] deviceKey in
+        guard let self else { return nil }
+        let issuedDeviceKey = try await self.attentionRelay.registerDevice(
+          baseURL: baseURL,
+          token: initialSession.token,
+          deviceId: request.deviceId,
+          ownershipEpoch: request.ownershipEpoch,
+          apnsToken: request.apnsToken,
+          pushToStartToken: request.pushToStartToken,
+          clearPushToStartToken: request.clearPushToStartToken,
+          bundleId: request.bundleId,
+          apsEnvironment: request.apsEnvironment,
+          deviceName: UIDevice.current.name,
+          preferences: request.preferences,
+          deviceKey: deviceKey,
+          refreshToken: { [weak self] in
+            guard let self,
+                  self.isPairingCommitAuthorized(request.authorization),
+                  accountDeviceMutationMatchesCurrentOwnership(
+                    ownerId: request.authorization.ownerId,
+                    ownershipEpoch: request.ownershipEpoch,
+                    state: self.deviceOwnershipStore.state
+                  ) else {
+              return nil
+            }
+            return try? await self.freshRelaySession(
+              expectedAuthorization: request.authorization
+            ).token
           }
-          return try? await self.freshRelaySession(
-            expectedAuthorization: request.authorization
-          ).token
+        )
+        // Save it before any account check: Relay already stored its hash for
+        // this device id, whichever account is signed in now. A key the
+        // Keychain did not store is never confirmed: Relay keeps it pending,
+        // so the APNs token still proves this install.
+        guard let issuedDeviceKey,
+              self.deviceKeychain.saveAccountDeviceKey(issuedDeviceKey, deviceId: request.deviceId) else {
+          return nil
         }
+        return issuedDeviceKey
+      }
+      let issuedDeviceKey = try await register(
+        deviceKeychain.loadAccountDeviceKey(deviceId: request.deviceId)
       )
       guard isPairingCommitAuthorized(request.authorization),
             accountDeviceMutationMatchesCurrentOwnership(
@@ -2003,6 +2021,12 @@ final class AccountService: ObservableObject {
               state: deviceOwnershipStore.state
             ) else {
         return false
+      }
+      if let issuedDeviceKey {
+        // Relay asks another account for a new key only after this install
+        // has presented it once. Present it now so it protects the device at
+        // once. If this fails, the next registration presents it instead.
+        _ = try? await register(issuedDeviceKey)
       }
       // Registration is Relay's atomic ownership-transfer boundary. Clear a
       // prior account's durable revocation only after this device is confirmed

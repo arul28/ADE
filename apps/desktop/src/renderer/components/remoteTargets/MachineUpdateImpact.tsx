@@ -53,8 +53,13 @@ export function updateImpactHeadline(impact: UpdateImpact): string {
 function impactNote(impact: UpdateImpact): string | null {
   if (!impact.checked) return "Anything running there stops when ADE restarts.";
   if (impact.busyWithoutDetail) return "That ADE is too old to list everything running.";
-  if (impact.cliSessions + impact.terminals > 0) return "CLI sessions and terminals close and don't reopen.";
-  return null;
+  if (impact.cliSessions + impact.terminals === 0) return null;
+  // A brain that reopens CLIs does so only with Continue chats after restarts on.
+  const cliReopen = impact.cliSessions > 0 && impact.cliSessionsReopen === true && impact.continueAfterRestart !== false;
+  if (!cliReopen) return "CLI sessions and terminals close and don't reopen.";
+  return impact.terminals > 0
+    ? "CLI sessions reopen after the update. Terminals close and don't reopen."
+    : "CLI sessions reopen after the update.";
 }
 
 /** Chats ADE can queue to continue after a restart: all but personal chats. */

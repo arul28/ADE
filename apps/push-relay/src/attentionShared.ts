@@ -1,7 +1,8 @@
 /**
  * The small vocabulary `attention.ts` and `liveActivity.ts` both need: the
  * environment shape, the parsed wire item, the text bounds, and the handful of
- * pure helpers that enforce them.
+ * pure helpers that enforce them. The hashing and secret-compare helpers are
+ * here too, so `relay.ts` and `attention.ts` share one copy.
  *
  * This exists so the Live Activity module could be lifted out of a 4,400-line
  * file without either half importing the other. Keep it boring: types, bounds,
@@ -128,6 +129,29 @@ export function json(value: unknown, init: ResponseInit = {}): Response {
       ...(init.headers ?? {}),
     },
   });
+}
+
+const textEncoder = new TextEncoder();
+
+export function toHex(bytes: ArrayBuffer): string {
+  return Array.from(new Uint8Array(bytes), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+/** Compares two secrets without stopping at the first different byte. */
+export function constantTimeEqual(left: string, right: string): boolean {
+  const a = textEncoder.encode(left);
+  const b = textEncoder.encode(right);
+  let diff = a.length ^ b.length;
+  const length = Math.max(a.length, b.length);
+  for (let index = 0; index < length; index += 1) {
+    diff |= (a[index] ?? 0) ^ (b[index] ?? 0);
+  }
+  return diff === 0;
+}
+
+export async function sha256Hex(value: string | ArrayBuffer): Promise<string> {
+  const data = typeof value === "string" ? textEncoder.encode(value) : value;
+  return toHex(await crypto.subtle.digest("SHA-256", data));
 }
 
 export function isRecord(value: unknown): value is Record<string, unknown> {

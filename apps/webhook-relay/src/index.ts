@@ -4,7 +4,7 @@ import { RepoEventsDurableObject as RepoEventsDurableObjectClass } from "./repoE
 import { cloudflareTransientKind, logCloudflareTransient, retryD1Reads, transientUnavailableResponse } from "./cloudflareTransient";
 import { handleRequest, type RelayEnv } from "./relay";
 import { scrubString } from "./sentryScrub";
-import { reportJobFailure, reportRequest, type PostHogLogsEnv } from "./posthogLogs";
+import { reportJobFailure, reportRequest, routeTemplate, type PostHogLogsEnv } from "./posthogLogs";
 import { sentryOptions, type SentryEnv } from "./sentry";
 
 const WORKER_NAME = "ade-github-webhook-relay";
@@ -45,7 +45,9 @@ export default Sentry.withSentry(sentryOptions, {
       // Log the cause and answer with JSON instead of Cloudflare's bare 500
       // page. The message stays in the log: it can name config or D1 details.
       const message = error instanceof Error ? error.message : String(error);
-      console.error("relay.unhandled_error", { path: new URL(request.url).pathname, message });
+      // The route template, never the raw path: a path can carry a hook token
+      // or a repository key, and an error line must not store it.
+      console.error("relay.unhandled_error", { route: routeTemplate(new URL(request.url).pathname), message: scrubString(message) });
       return new Response(JSON.stringify({ ok: false, error: "internal_error" }), {
         status: 500,
         headers: { "content-type": "application/json" },

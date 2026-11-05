@@ -1,5 +1,6 @@
 import { isLoopbackHostname, trustedHttpsOrigin } from "./trustedOrigin";
 import { boundedDisplayText } from "./displayText";
+import { readBoundedBody } from "./sinkUtils";
 
 const DEVICE_CODE_TTL_SECONDS = 10 * 60;
 const DEVICE_POLL_INTERVAL_SECONDS = 5;
@@ -227,12 +228,15 @@ function approvalForm(userCode = ""): Response {
 function confirmationPage(userCode: string, machineName: string | null): Response {
   // The name comes from the client that started the sign-in, so it is shown
   // as what that computer says it is, with a line that tells the reader to
-  // stop if they did not start this.
+  // stop if they did not start this. Anyone can start a sign-in and send the
+  // link to someone else, so the page never claims the request came from the
+  // reader's own computer.
   const name = machineName?.trim();
   const who = name
     ? `<p>A computer named <strong>${escapeHtml(name)}</strong> asked to sign in to ADE.</p>
       <p>Continue only if you started this on that computer.</p>`
-    : "<p>ADE on your computer asked to sign in.</p>";
+    : `<p>A computer that did not give its name asked to sign in to ADE as you.</p>
+      <p>Continue only if you just started this yourself.</p>`;
   return page({
     title: "Confirm this sign-in",
     body: `<h1>Confirm this sign-in</h1>
@@ -278,9 +282,18 @@ function approvalMessage(title: string, message: string, status = 200): Response
   return page({ title, status, body: `<h1>${title}</h1><p>${message}</p>` });
 }
 
+/**
+ * Every device-flow body is a handful of short fields. The cap is read as a
+ * stream, so an anonymous caller cannot make the isolate buffer and parse a
+ * body of any size; an over-cap body reads as an invalid one.
+ */
+const MAX_DEVICE_FLOW_BODY_BYTES = 8 * 1024;
+
 export async function parseJsonBody(request: Request): Promise<Record<string, unknown> | null> {
   try {
-    const value = await request.json();
+    const body = await readBoundedBody(request, MAX_DEVICE_FLOW_BODY_BYTES);
+    if (!body.ok) return null;
+    const value: unknown = JSON.parse(body.text);
     return isRecord(value) ? value : null;
   } catch {
     return null;
@@ -385,6 +398,15 @@ async function handleDeviceCode(
   options: Required<Pick<DeviceAuthorizationRequestOptions, "now" | "randomBytes">>,
 ): Promise<Response> {
   if (request.method !== "POST") return new Response("method not allowed", { status: 405 });
+  // The issuance limit runs before the body is read: a caller who is already
+  // over it costs one counter write, not a body parse.
+  const now = options.now();
+  if (!(await checkDeviceRateLimit(request, env, now, "issuance", DEVICE_CODE_RATE_LIMIT_MAX_ATTEMPTS))) {
+    return json(
+      { error: "rate_limited", error_description: "Too many device authorization requests. Try again shortly." },
+      { status: 429, headers: { "retry-after": String(DEVICE_RATE_LIMIT_WINDOW_MS / 1000) } },
+    );
+  }
   const body = await parseJsonBody(request);
   const deviceSecret = nonEmptyString(body?.device_secret);
   if (!deviceSecret || deviceSecret.length < 32 || deviceSecret.length > 512) {
@@ -402,13 +424,6 @@ async function handleDeviceCode(
 
   const machineName = boundedDisplayText(body?.machine_name, MAX_MACHINE_NAME_CHARS);
 
-  const now = options.now();
-  if (!(await checkDeviceRateLimit(request, env, now, "issuance", DEVICE_CODE_RATE_LIMIT_MAX_ATTEMPTS))) {
-    return json(
-      { error: "rate_limited", error_description: "Too many device authorization requests. Try again shortly." },
-      { status: 429, headers: { "retry-after": String(DEVICE_RATE_LIMIT_WINDOW_MS / 1000) } },
-    );
-  }
   const expiresAt = now + DEVICE_CODE_TTL_SECONDS * 1000;
   const deviceCode = bytesToBase64Url(options.randomBytes(32));
   const deviceSecretHash = await sha256(deviceSecret);

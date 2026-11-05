@@ -67,7 +67,8 @@ class FakeCursorD1Database {
         : null;
     }
     if (sql.includes("select event_id from cursor_events")) {
-      const row = this.events.find((entry) => entry.event_id === values[0]);
+      // Deduplicated per secret: `where secret_id = ? and event_id = ?`.
+      const row = this.events.find((entry) => entry.secret_id === values[0] && entry.event_id === values[1]);
       return row ? ({ event_id: row.event_id } as T) : null;
     }
     if (sql.includes("select rowid as event_seq, event_id from cursor_events")) {
@@ -80,8 +81,12 @@ class FakeCursorD1Database {
 
   all<T>(sql: string, values: unknown[]): T[] {
     if (sql.includes("from cursor_webhook_secrets") && sql.includes("select id, webhook_secret")) {
-      const activeOnly = sql.includes("last_polled_at is not null");
-      return this.secrets.filter((entry) => !activeOnly || entry.account_id != null || entry.last_polled_at != null).map((entry) => ({
+      // The legacy scan reads owned secrets and polled unowned ones apart.
+      const owned = sql.includes("account_id is not null");
+      const polledUnowned = sql.includes("account_id is null and last_polled_at is not null");
+      return this.secrets.filter((entry) => (owned && entry.account_id != null)
+        || (polledUnowned && entry.account_id == null && entry.last_polled_at != null)
+        || (!owned && !polledUnowned)).map((entry) => ({
         id: entry.id,
         webhook_secret: entry.webhook_secret,
         account_id: entry.account_id,

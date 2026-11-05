@@ -1731,7 +1731,9 @@ export async function createAdeRuntime(args: {
     teardown.push(registerRemoteWorkShellCheck(projectRoot, (owner) =>
       ptyService.list({ chatSessionId: owner, status: "running", limit: null }).some((row) => ptyService.hasLivePty(row.id))));
     ptyServiceForSessionChanges = ptyService;
-    teardown.push(() => ptyService.disposeAll());
+    // The runtime is stopping (an update, a reboot, the brain quitting): its
+    // open agent CLIs reopen when the project's next runtime starts.
+    teardown.push(() => ptyService.disposeAll({ reopenAfterRestart: true }));
 
     const testService = createTestService({
       db,

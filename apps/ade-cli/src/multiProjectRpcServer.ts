@@ -13,6 +13,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { browseProjectDirectories } from "../../desktop/src/main/services/projects/projectBrowserService";
+import { forgetCliSessionsToReopen } from "../../desktop/src/main/services/pty/cliReopenAfterRestart";
 import {
   getProjectDetail,
   getProjectWorkSummary,
@@ -512,6 +513,8 @@ export async function readMachineUpdateImpact(args: BootedRuntimeSources & {
     cliSessions: parts.reduce((total, part) => total + part.cliSessions, 0),
     terminals: parts.reduce((total, part) => total + part.terminals, 0),
     ...(typeof continueAfterRestart === "boolean" ? { continueAfterRestart } : {}),
+    // This brain reopens its agent CLIs after a restart (`cliReopenAfterRestart.ts`).
+    cliSessionsReopen: true,
   };
 }
 
@@ -1395,7 +1398,10 @@ export function createMultiProjectRpcRequestHandler(
       : null;
   /** Forgets a project: its booted scope, this connection's handler, then its registry entry. Never its folder. */
   const removeProject = async (projectId: ProjectId): Promise<boolean> => {
+    const rootPath = projectRegistry.get(projectId)?.rootPath ?? null;
     await scopeRegistry.dispose(projectId);
+    // The stop just saved its open CLIs to reopen; a removed project keeps none.
+    if (rootPath) forgetCliSessionsToReopen(rootPath);
     handlers.delete(projectId);
     return projectRegistry.remove(projectId);
   };

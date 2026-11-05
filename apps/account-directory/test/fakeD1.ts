@@ -509,6 +509,11 @@ export class FakeD1Database {
         row.user_id === userId && row.machine_key === machineKey
       ) ?? null) as T | null;
     }
+    if (normalized.includes("count(*) as total") && normalized.includes("from machines")) {
+      const [machineKey, userId] = values;
+      const roster = this.rows.filter((row) => row.user_id === userId);
+      return { total: roster.length, mine: roster.some((row) => row.machine_key === machineKey) ? 1 : 0 } as T;
+    }
     if (normalized.includes("from machines")) {
       const [userId, machineKey] = values;
       return (this.rows.find((row) => row.user_id === userId && row.machine_key === machineKey) ?? null) as T | null;
@@ -742,7 +747,11 @@ export class FakeD1Database {
       return before - this.revocations.length;
     }
     if (normalized.includes("insert into machines")) {
-      const retainRelayEndpoints = values[16] === 1;
+      // values[16..19] feed the `where`: a known key, or room under the cap.
+      const [capUserId, capMachineKey, countUserId, cap] = values.slice(16, 20);
+      const known = this.rows.some((entry) => entry.user_id === capUserId && entry.machine_key === capMachineKey);
+      if (!known && this.rows.filter((entry) => entry.user_id === countUserId).length >= Number(cap)) return 0;
+      const retainRelayEndpoints = values[20] === 1;
       const row: StoredMachine = {
         user_id: String(values[0]),
         machine_key: String(values[1]),

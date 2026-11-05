@@ -1,5 +1,6 @@
 import { createHash, randomBytes as nodeRandomBytes, randomUUID as nodeRandomUUID, timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { hostname as osHostname } from "node:os";
 import {
   DEFAULT_ADE_ACCOUNT_DIRECTORY_URL,
   DEFAULT_ADE_CLERK_ISSUER,
@@ -1015,7 +1016,7 @@ export function createAccountAuthService(args: {
   /**
    * This computer's display name, with its channel (for example "MacBook Pro ·
    * Alpha"). Sent when a device login starts so the browser page can say which
-   * computer asked. Optional: without it the page says "your computer".
+   * computer asked. When it is missing or fails, the host name is sent instead.
    */
   getMachineName?: () => Promise<string | null> | string | null;
   fetchImpl?: (input: string, init?: RequestInit) => Promise<Response>;
@@ -2071,6 +2072,15 @@ export function createAccountAuthService(args: {
     } catch {
       // The name only labels the browser page; it never blocks a sign-in.
       machineName = null;
+    }
+    // The page names the computer that asked, so a name always goes: the host
+    // name when the display name cannot be read.
+    if (!machineName) {
+      try {
+        machineName = osHostname().trim() || null;
+      } catch {
+        machineName = null;
+      }
     }
     let response: Response;
     try {

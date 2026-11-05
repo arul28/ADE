@@ -206,6 +206,7 @@ import { SEARCH_DOC_KINDS } from "../../desktop/src/shared/types/search";
 import { pathsEqual } from "../../desktop/src/main/services/shared/pathCompare";
 import { stripHostRuntimeEnv } from "../../desktop/src/main/services/shared/hostRuntimeEnv";
 import { trackPtyOutputBacklog } from "../../desktop/src/main/services/pty/ptyOutputFlowControl";
+import { forgetCliSessionsToReopen } from "../../desktop/src/main/services/pty/cliReopenAfterRestart";
 import { withTimeout } from "../../desktop/src/main/services/ai/utils";
 import { resolveClaudeCodeExecutable } from "../../desktop/src/main/services/ai/claudeCodeExecutable";
 import { resolveCodexExecutable } from "../../desktop/src/main/services/ai/codexExecutable";
@@ -2516,6 +2517,9 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade shell start --machine <name> --no-sync -- git status   Run in the copy as it is
     $ ade shell start --machine <name> --discard --wait -- npm test   Throw away unpushed work there first
     $ ade shell clean --machine <name>               Delete this chat's work copy there
+  Each call opens a new shell there and syncs the copy again, so put all the
+  steps in one call: --wait -- sh -c "npm ci && npm test", or one script.
+  The shell runs in the background there; no list on that machine shows it.
 
   Provider CLI launches accept --instance for Claude/Codex accounts and
   --preset or --credential for saved harness brains.
@@ -27877,7 +27881,10 @@ async function runServe(
     }
     projectRegistry.remove(record.projectId);
     const disposeTimer = setImmediate(() => {
-      void scopeRegistry.dispose(record.projectId).catch((error) => {
+      void scopeRegistry.dispose(record.projectId).then(() => {
+        // The stop just saved its open CLIs to reopen; a removed project keeps none.
+        forgetCliSessionsToReopen(record.rootPath);
+      }).catch((error) => {
         headlessProjectLogger.warn("headless_project_forget_dispose_failed", {
           projectId: record.projectId,
           error: error instanceof Error ? error.message : String(error),

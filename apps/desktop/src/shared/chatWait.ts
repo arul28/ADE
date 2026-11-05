@@ -84,6 +84,12 @@ export type ChatWaiter = {
    * told about, so a restart or a re-check does not tell it twice.
    */
   userWaitsNoticed?: string[];
+  /**
+   * The targets matched while the session to wake could not take a wake yet
+   * (a tracked agent CLI mid-turn). The wait fires as matched once it can,
+   * even if a target has moved on since.
+   */
+  matchedWhileDeferred?: boolean;
 };
 
 export type ArmChatWaitArgs = {

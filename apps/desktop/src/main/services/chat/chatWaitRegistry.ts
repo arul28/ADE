@@ -26,6 +26,30 @@ const CHAT_WAIT_LONG_POLL_MAX_MS = 25_000;
 const CHAT_WAIT_BACKSTOP_MS = 15_000;
 const CHAT_WAIT_CHECK_DEBOUNCE_MS = 250;
 const CHAT_WAIT_DEFAULT_TIMEOUT_MINUTES = 24 * 60;
+// A wake held for a session that cannot take it yet is dropped this long after
+// its wait's own deadline, so one that can never be delivered does not stay.
+const CHAT_WAIT_UNDELIVERED_GRACE_MS = 60 * 60_000;
+
+/**
+ * Thrown by `messageSession` when nothing was delivered because the session
+ * cannot take a wake yet (a tracked agent CLI mid-turn). The waiter stays
+ * armed and is tried again.
+ */
+export class ChatWakeDeferredError extends Error {
+  constructor(sessionId: string) {
+    super(`Session '${sessionId}' cannot take a wake yet.`);
+    this.name = "ChatWakeDeferredError";
+  }
+}
+
+export function isChatWakeDeferredError(error: unknown): error is ChatWakeDeferredError {
+  return error instanceof ChatWakeDeferredError;
+}
+
+/** Whether a wake held for a session that cannot take it is past saving (see `CHAT_WAIT_UNDELIVERED_GRACE_MS`). */
+function pastUndeliveredGrace(expiresAt: string, nowMs: number): boolean {
+  return Date.parse(expiresAt) + CHAT_WAIT_UNDELIVERED_GRACE_MS <= nowMs;
+}
 
 export type ChatWaitRegistryDeps = {
   logger: Logger;
@@ -35,7 +59,23 @@ export type ChatWaitRegistryDeps = {
   /** One line naming a target and where it is now, for the wake text. */
   describeTarget: (sessionId: string) => Promise<string>;
   sessionExists: (sessionId: string) => boolean;
+  /**
+   * Deliver a wake or a queued prompt. Throws `ChatWakeDeferredError` when
+   * the session cannot take it yet; the waiter then stays armed.
+   */
   messageSession: (args: AgentChatMessageSessionArgs) => Promise<unknown>;
+  /**
+   * Whether a wake or a queued prompt can ever reach this session: an agent
+   * chat, or a tracked agent CLI. A wait that could never be delivered is
+   * refused when it is armed, not lost when it fires.
+   */
+  canReceiveWake?: (sessionId: string) => boolean;
+  /**
+   * Whether this session cannot take a wake yet: a tracked agent CLI that is
+   * mid-turn. Its waiter stays armed until the CLI's next turn boundary, so a
+   * wake is never typed into a turn that is still running.
+   */
+  wakeDeferred?: (sessionId: string) => boolean;
   /**
    * Whether another live brain runs this chat. Waiters live in the shared
    * project database, so every brain on it loads them; only the brain that
@@ -220,6 +260,13 @@ export function createChatWaitRegistry(deps: ChatWaitRegistryDeps) {
         metadata: { hostContinuation: { reason: "chat_wait" } },
       });
     } catch (error: unknown) {
+      if (isChatWakeDeferredError(error)) {
+        // Nothing reached the caller: forget these cards so a later check tells it.
+        const untoldKeys = new Set(untold.map(({ target, itemId }) => `${target}:${itemId}`));
+        waiter.userWaitsNoticed = (waiter.userWaitsNoticed ?? []).filter((key) => !untoldKeys.has(key));
+        persist();
+        return;
+      }
       logger.warn("agent_chat.wait_user_notice_failed", {
         waiterId: waiter.id,
         error: error instanceof Error ? error.message : String(error),
@@ -237,17 +284,37 @@ export function createChatWaitRegistry(deps: ChatWaitRegistryDeps) {
       if (deliverTo && deps.getMovedAwayTarget?.(deliverTo)) continue;
       if (deliverTo && deps.ownedByAnotherBrain(deliverTo)) continue;
       const results = await Promise.all(waiter.targetSessionIds.map((target) => readTarget(target, waiter)));
-      const matched = waiter.mode === "all"
+      const matched = waiter.matchedWhileDeferred === true || (waiter.mode === "all"
         ? results.every((result) => result.matches)
-        : results.some((result) => result.matches);
+        : results.some((result) => result.matches));
+      const expired = Date.parse(waiter.expiresAt) <= nowMs;
+      const deferred = Boolean(deliverTo && deps.wakeDeferred?.(deliverTo));
+      if (deferred && (matched || expired)) {
+        if (matched && !waiter.matchedWhileDeferred) {
+          waiter.matchedWhileDeferred = true;
+          persist();
+        }
+        // Held for the session's next turn boundary, within a grace past the
+        // wait's own deadline; after that it can never be delivered.
+        if (pastUndeliveredGrace(waiter.expiresAt, nowMs)) {
+          waiters = waiters.filter((candidate) => candidate.id !== waiter.id);
+          persist();
+          syncBackstop();
+          logger.warn("agent_chat.wait_undeliverable_dropped", { waiterId: waiter.id, sessionId: deliverTo });
+        }
+        continue;
+      }
       if (matched) due.push({ waiter, outcome: "matched" });
-      else if (Date.parse(waiter.expiresAt) <= nowMs) due.push({ waiter, outcome: "expired" });
+      else if (expired) due.push({ waiter, outcome: "expired" });
       else {
         const userWaits = waiter.targetSessionIds.flatMap((target, index) => {
           const itemId = results[index]?.userWaitItemId;
           return itemId == null ? [] : [{ target, itemId }];
         });
-        const notice = userWaits.length ? collectUserWaitNotice(waiter, userWaits) : null;
+        // A caller that cannot take a message yet is told at a later check;
+        // nothing is recorded until then.
+        const callerDeferred = Boolean(waiter.callerSessionId && deps.wakeDeferred?.(waiter.callerSessionId));
+        const notice = userWaits.length && !callerDeferred ? collectUserWaitNotice(waiter, userWaits) : null;
         if (notice) notices.push(notice);
       }
     }
@@ -265,7 +332,15 @@ export function createChatWaitRegistry(deps: ChatWaitRegistryDeps) {
           await fire(waiter, outcome);
           logger.info("agent_chat.wait_fired", { waiterId: waiter.id, outcome, action: waiter.action.kind });
         } catch (error) {
-          if (isMovedAwayChatError(error)) {
+          if (isMovedAwayChatError(error) || isChatWakeDeferredError(error)) {
+            if (isChatWakeDeferredError(error)) {
+              if (pastUndeliveredGrace(waiter.expiresAt, Date.now())) {
+                logger.warn("agent_chat.wait_undeliverable_dropped", { waiterId: waiter.id, outcome });
+                continue;
+              }
+              logger.info("agent_chat.wait_fire_deferred", { waiterId: waiter.id, outcome });
+              if (outcome === "matched") waiter.matchedWhileDeferred = true;
+            }
             if (!waiters.some((candidate) => candidate.id === waiter.id)) {
               waiters.push(waiter);
               persist();
@@ -381,6 +456,17 @@ export function createChatWaitRegistry(deps: ChatWaitRegistryDeps) {
       const caller = args.callerSessionId?.trim() || null;
       if (sendTo && !text) throw new Error("A prompt is required to send once the wait is over.");
       if (!sendTo && !caller) throw new Error("A wait needs a chat to wake (run it from a chat, or pass the caller).");
+      if (deps.canReceiveWake) {
+        if (sendTo && !deps.canReceiveWake(sendTo)) {
+          throw new Error(`'${sendTo}' is not an agent chat or an agent CLI session in this project, so a prompt cannot be sent to it.`);
+        }
+        if (!sendTo && caller && !deps.canReceiveWake(caller)) {
+          throw new Error(
+            `'${caller}' cannot be woken: it is not an agent chat or an agent CLI session in this project. `
+              + "Check on the chats with `ade chat status <id>` instead.",
+          );
+        }
+      }
       deps.assertDeliverableHere((sendTo ?? caller)!);
       const minutes = Number.isFinite(args.timeoutMinutes) && (args.timeoutMinutes ?? 0) > 0
         ? Math.floor(args.timeoutMinutes!)

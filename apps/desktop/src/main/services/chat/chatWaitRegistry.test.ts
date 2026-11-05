@@ -11,7 +11,7 @@ function harness(
   ownedByAnotherBrain: Set<string> = new Set(),
   overrides: Partial<Pick<
     Parameters<typeof createChatWaitRegistry>[0],
-    "callerToldOfUserWait" | "callerIsLiveHere"
+    "callerToldOfUserWait" | "callerIsLiveHere" | "wakeDeferred"
   >> = {},
 ) {
   const summaries = new Map<string, Summary>(Object.entries(initial));
@@ -71,6 +71,30 @@ describe("chatWaitRegistry", () => {
     expect(sent).toHaveLength(1);
     // ADE wrote the wake, so it must not count as the user engaging the chat.
     expect(sent[0]).toMatchObject({ sessionId: "caller", kind: "wake", metadata: { hostContinuation: { reason: "chat_wait" } } });
+    expect(await registry.list()).toEqual([]);
+  });
+
+  it("keeps a match seen while the caller cannot take a wake, and wakes it once it can", async () => {
+    let callerMidTurn = true;
+    const { registry, arm, summaries, sent } = harness(
+      { caller: { status: "active" }, worker: { status: "active" } },
+      new Set(),
+      { wakeDeferred: (sessionId) => sessionId === "caller" && callerMidTurn },
+    );
+    await arm({ callerSessionId: "caller", targetSessionIds: ["worker"], waitFor: "idle" });
+    summaries.set("worker", { status: "idle" });
+    registry.signal("worker");
+    await vi.advanceTimersByTimeAsync(400);
+    expect(sent).toHaveLength(0);
+
+    // The target starts its next turn before the caller reaches a boundary.
+    summaries.set("worker", { status: "active" });
+    callerMidTurn = false;
+    registry.signal("worker");
+    await vi.advanceTimersByTimeAsync(400);
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({ sessionId: "caller", kind: "wake" });
     expect(await registry.list()).toEqual([]);
   });
 

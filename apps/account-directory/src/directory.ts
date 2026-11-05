@@ -15,6 +15,7 @@ import {
   type PairingProofBroker,
 } from "./pairingGrants";
 import { boundedDisplayText } from "./displayText";
+import { readBoundedBody } from "./sinkUtils";
 import { cloudflareTransientKind, logCloudflareTransient, transientUnavailableResponse } from "./cloudflareTransient";
 import { logDirectoryLifecycle, logDirectoryRefusal } from "./logging";
 import { scrubString } from "./sentryScrub";
@@ -200,6 +201,26 @@ const MAX_HARDWARE_ID_CHARS = 128;
 /** A grant is 32 random bytes in base64url (43 chars); the cap is slack, not a shape check. */
 const MAX_PAIRING_GRANT_CHARS = 256;
 const MAX_CUSTOM_NAME_CHARS = 80;
+/**
+ * A register body is a few short fields and a list of addresses; a real one is
+ * a few KB. The cap is read as a stream, before the parse.
+ */
+const MAX_REGISTER_BODY_BYTES = 64 * 1024;
+/**
+ * A real host reports a handful of addresses (one per LAN interface, a tailnet
+ * name, a relay). Above the cap, relay and tailnet entries are kept first,
+ * because they are the ones that reach the machine from away from home.
+ */
+const MAX_REACHABLE_ENDPOINTS = 32;
+const MAX_ENDPOINT_URL_CHARS = 2048;
+const MAX_ENDPOINT_HOST_CHARS = 255;
+const MAX_MACHINE_NAME_CHARS = 120;
+const MAX_MACHINE_LABEL_CHARS = 64;
+/**
+ * No person has 500 computers. The cap only stops a script that registers new
+ * machine keys in a loop; a key the account already holds always updates.
+ */
+const MAX_MACHINES_PER_ACCOUNT = 500;
 const CORRELATION_ID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -268,6 +289,9 @@ function parseReachableEndpoints(value: unknown): ReachableEndpoint[] | null {
     const url = candidate.url === undefined ? undefined : requiredString(candidate, "url") ?? null;
     const host = candidate.host === undefined ? undefined : requiredString(candidate, "host") ?? null;
     if (url === null || host === null || (!url && !host)) return null;
+    // No real address is this long. The entry is dropped and the rest of the
+    // machine still registers, so one odd interface never takes it off the roster.
+    if ((url?.length ?? 0) > MAX_ENDPOINT_URL_CHARS || (host?.length ?? 0) > MAX_ENDPOINT_HOST_CHARS) continue;
 
     const rawPort = candidate.port;
     const port = rawPort === undefined
@@ -284,7 +308,21 @@ function parseReachableEndpoints(value: unknown): ReachableEndpoint[] | null {
       ...(port !== undefined ? { port } : {}),
     });
   }
-  return endpoints;
+  return capReachableEndpoints(endpoints);
+}
+
+function capReachableEndpoints(endpoints: ReachableEndpoint[]): ReachableEndpoint[] {
+  if (endpoints.length <= MAX_REACHABLE_ENDPOINTS) return endpoints;
+  const rank = (endpoint: ReachableEndpoint) => endpoint.kind === "relay" ? 0 : endpoint.kind === "tailnet" ? 1 : 2;
+  const kept = new Set(
+    endpoints
+      .map((endpoint, index) => ({ index, rank: rank(endpoint) }))
+      .sort((left, right) => left.rank - right.rank || left.index - right.index)
+      .slice(0, MAX_REACHABLE_ENDPOINTS)
+      .map((entry) => entry.index),
+  );
+  // The client's own order is kept; it is the order the phone tries them in.
+  return endpoints.filter((_, index) => kept.has(index));
 }
 
 function optionalBoolean(value: unknown): boolean | null {
@@ -342,9 +380,11 @@ function parseRegisterInput(value: unknown): RegisterInput | null {
   const machineKey = requiredString(value, "machineKey");
   const deviceId = requiredString(value, "deviceId");
   const hardwareId = optionalString(value, "hardwareId");
-  const name = requiredString(value, "name");
-  const platform = requiredString(value, "platform");
-  const deviceType = requiredString(value, "deviceType");
+  // Shown in lists on every device of the account, so cleaned and cut rather
+  // than refused: an old client with a long host name still registers.
+  const name = boundedDisplayText(value.name, MAX_MACHINE_NAME_CHARS);
+  const platform = boundedDisplayText(value.platform, MAX_MACHINE_LABEL_CHARS);
+  const deviceType = boundedDisplayText(value.deviceType, MAX_MACHINE_LABEL_CHARS);
   const pubkey = optionalString(value, "pubkey");
   const reachableEndpoints = parseReachableEndpoints(value.reachableEndpoints);
   const power = parseMachinePower(value.power);
@@ -396,11 +436,17 @@ function parseRegisterInput(value: unknown): RegisterInput | null {
   };
 }
 
-function routeAccount(pathname: string): AccountRoute | null {
+/**
+ * `register` is the registration route only for the method that registers. A
+ * machine whose key is the word `register` can still be renamed and removed.
+ */
+function routeAccount(pathname: string, method: string): AccountRoute | null {
   const parts = pathname.split("/").filter(Boolean);
   if (parts[0] !== "account" || parts[1] !== "machines") return null;
   if (parts.length === 2) return { kind: "list" };
-  if (parts.length === 3 && parts[2] === "register") return { kind: "register" };
+  if (parts.length === 3 && parts[2] === "register" && method !== "PATCH" && method !== "DELETE") {
+    return { kind: "register" };
+  }
   if (parts.length !== 3) return null;
   try {
     const machineKey = decodeURIComponent(parts[2] ?? "").trim();
@@ -527,20 +573,19 @@ async function machineRevocation(
  * Removal is only durable if the removed machine cannot re-register itself. Its
  * heartbeat carries a valid account token for as long as it stays signed in, so
  * the revocation — not the token — is what decides. Returns the response to
- * send when the answer is no, and `null` when registration may proceed.
+ * send when the answer is no, `"repair"` when a removed machine proved a fresh
+ * sign-in (its proof is reserved and the revocation still stands until
+ * `completeRepair` runs after the write), and `null` when it was never removed.
  */
 async function enforceRevocationGate(
-  request: Request,
   env: Env,
   args: {
     userId: string;
     input: RegisterInput;
-    correlationId: string;
-    relayOptions: ActivityRelayOptions;
     pairingProof: PairingProofBroker;
     refuse: RefusalLogger;
   },
-): Promise<Response | null> {
+): Promise<Response | "repair" | null> {
   const { userId, input, refuse } = args;
   const revocation = await machineRevocation(env, userId, input.machineKey);
   if (!revocation) return null;
@@ -559,6 +604,13 @@ async function enforceRevocationGate(
       code: "machine_revoked",
       revokedAt: revocation.revoked_at,
     }, { status: 403 });
+  }
+  // A removed machine is off the roster, so on a full account the write would
+  // refuse it. Refuse it here, before a grant is reserved. The write keeps its
+  // own atomic check, and the revocation is cleared only after that write.
+  if (!(await accountHasRoomFor(env, userId, input.machineKey))) {
+    refuse("directory.register_refused", "too_many_machines", "account machine cap reached");
+    return tooManyMachinesResponse();
   }
   // Two independent proofs, either of which is sufficient, neither of which a
   // removed machine can produce from the token it is still holding.
@@ -586,16 +638,39 @@ async function enforceRevocationGate(
       revokedAt: revocation.revoked_at,
     }, { status: 403 });
   }
-  // A grant is RESERVED above, not destroyed, and the reservation is what makes
-  // the next few lines recoverable. Reserving is one atomic statement, so
+  return "repair";
+}
+
+/**
+ * Step three of a register call that re-pairs a removed machine, after the
+ * capacity-checked write put it back on the roster. Returns the response to
+ * send when the repair failed (the write is undone), and `null` when the
+ * machine is back.
+ */
+async function completeRepair(
+  request: Request,
+  env: Env,
+  args: {
+    userId: string;
+    input: RegisterInput;
+    correlationId: string;
+    relayOptions: ActivityRelayOptions;
+    pairingProof: PairingProofBroker;
+    refuse: RefusalLogger;
+  },
+): Promise<Response | null> {
+  const { userId, input, refuse } = args;
+  // A grant is RESERVED by the gate, not destroyed, and the reservation is what
+  // makes the next few lines recoverable. Reserving is one atomic statement, so
   // single-use is enforced exactly as strictly as the old delete enforced it —
   // two concurrent registrations still cannot both hold it — but a relay outage
   // no longer burns the user's only credential. On failure it goes back with its
   // ORIGINAL expiry, so forcing relay failures buys nothing: the grant still
   // dies at the moment it was always going to die.
   //
-  // Clear the relay's revocation first: a machine back on the roster but unable
-  // to publish is a worse state than one that retries the re-pair.
+  // Clear the relay's revocation before the directory's: a machine back on the
+  // roster but unable to publish is a worse state than one that retries the
+  // re-pair, so a relay failure undoes the write.
   const restored = await callActivityRelay(request, env, {
     operation: "restore",
     machineKey: input.machineKey,
@@ -603,7 +678,11 @@ async function enforceRevocationGate(
     options: args.relayOptions,
   });
   if (!restored.ok) {
-    // Nothing is proven any more: the credential is back in circulation.
+    // Nothing is proven any more: the credential is back in circulation, and
+    // the machine goes back off the roster. Its revocation never left.
+    await env.DB.prepare("delete from machines where user_id = ? and machine_key = ?")
+      .bind(userId, input.machineKey)
+      .run();
     await args.pairingProof.release();
     refuse("directory.register_refused", "activity_relay_unavailable", restored.reason);
     return json({
@@ -671,19 +750,45 @@ async function touchUnchangedMachine(
   return (result.meta?.changes ?? 0) > 0;
 }
 
-/** Step two: write the row. The only unconditional write a heartbeat makes. */
+/** Whether the account can take this machine key: it is on the roster, or there is room. */
+async function accountHasRoomFor(env: Env, userId: string, machineKey: string): Promise<boolean> {
+  const roster = await env.DB.prepare(`
+    select count(*) as total, coalesce(max(machine_key = ?), 0) as mine
+      from machines
+     where user_id = ?
+  `).bind(machineKey, userId).first<{ total: number; mine: number }>();
+  return Boolean(Number(roster?.mine)) || Number(roster?.total ?? 0) < MAX_MACHINES_PER_ACCOUNT;
+}
+
+function tooManyMachinesResponse(): Response {
+  return json({
+    error: "too many machines on this account",
+    code: "too_many_machines",
+    recovery: "Remove computers you no longer use from the account, then try again.",
+  }, { status: 409 });
+}
+
+/**
+ * Step two: write the row. The only unconditional write a heartbeat makes.
+ * Returns false, and writes nothing, for a NEW machine key on an account that
+ * is already at the cap. The cap is part of the write, so two registrations
+ * at once cannot both pass it. An unchanged heartbeat returns before it.
+ */
 async function upsertMachine(
   env: Env,
   args: { userId: string; input: RegisterInput; nowMs: number },
-): Promise<void> {
+): Promise<boolean> {
   const { input } = args;
-  if (await touchUnchangedMachine(env, args)) return;
-  await env.DB.prepare(`
+  if (await touchUnchangedMachine(env, args)) return true;
+  const result = await env.DB.prepare(`
     insert into machines (
       user_id, machine_key, device_id, name, platform, device_type, pubkey,
       reachable_endpoints, power, sleep_state, sleep_state_at,
       last_seen_at, created_at, hardware_id, channel, ade_home
-    ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    )
+    select ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+     where exists (select 1 from machines where user_id = ? and machine_key = ?)
+        or (select count(*) from machines where user_id = ?) < ?
     on conflict(user_id, machine_key) do update set
       device_id = excluded.device_id,
       -- coalesce, and not excluded.hardware_id: an anchor is optional on every
@@ -748,8 +853,13 @@ async function upsertMachine(
     input.hardwareId,
     input.channel,
     input.adeHome,
+    args.userId,
+    input.machineKey,
+    args.userId,
+    MAX_MACHINES_PER_ACCOUNT,
     input.retainRelayEndpoints ? 1 : 0,
   ).run();
+  return (result.meta?.changes ?? 0) > 0;
 }
 
 /**
@@ -880,7 +990,10 @@ async function handleRegister(
   if (request.method !== "POST") return text("method not allowed", 405);
   let raw: unknown;
   try {
-    raw = await request.json();
+    // Inside the try: a body stream that breaks while it is read is an invalid body, not a 500.
+    const body = await readBoundedBody(request, MAX_REGISTER_BODY_BYTES);
+    if (!body.ok) return json({ error: "request body too large" }, { status: 413 });
+    raw = JSON.parse(body.text);
   } catch {
     return json({ error: "invalid request body" }, { status: 400 });
   }
@@ -908,17 +1021,27 @@ async function handleRegister(
     nowMs,
   });
 
-  const refusal = await enforceRevocationGate(request, env, {
-    userId,
-    input,
-    correlationId,
-    relayOptions,
-    pairingProof,
-    refuse,
-  });
-  if (refusal) return refusal;
+  const gate = await enforceRevocationGate(env, { userId, input, pairingProof, refuse });
+  if (gate instanceof Response) return gate;
 
-  await upsertMachine(env, { userId, input, nowMs });
+  if (!(await upsertMachine(env, { userId, input, nowMs }))) {
+    // Another machine took the last slot after the gate looked. The revocation
+    // still stands, and the grant goes back for the retry.
+    if (gate === "repair") await pairingProof.release();
+    refuse("directory.register_refused", "too_many_machines", "account machine cap reached");
+    return tooManyMachinesResponse();
+  }
+  if (gate === "repair") {
+    const failed = await completeRepair(request, env, {
+      userId,
+      input,
+      correlationId,
+      relayOptions,
+      pairingProof,
+      refuse,
+    });
+    if (failed) return failed;
+  }
 
   const supersededMachineKeys = await supersedePhantomDuplicates(env, {
     userId,
@@ -1002,16 +1125,25 @@ async function handleDelete(
   // audit trail (and support) reads to identify which install was removed.
   // Nothing on the register path branches on it: `deviceId` is caller-supplied,
   // so it can never authorize anything.
-  await env.DB.prepare(`
-    insert into revoked_machines(user_id, machine_key, device_id, revoked_at)
-    values (?, ?, ?, ?)
-    on conflict(user_id, machine_key) do update set
-      device_id = coalesce(excluded.device_id, revoked_machines.device_id),
-      revoked_at = excluded.revoked_at
-  `).bind(userId, machineKey, existing?.device_id ?? null, Date.now()).run();
-  await env.DB.prepare("delete from machines where user_id = ? and machine_key = ?")
-    .bind(userId, machineKey)
-    .run();
+  //
+  // A key this account never registered and never revoked gets no row: there is
+  // nothing to block, and a row per made-up key would let any signed-in caller
+  // grow the table without bound. A retry finds the row the first pass wrote.
+  const known = existing ?? await env.DB.prepare(
+    "select 1 as found from revoked_machines where user_id = ? and machine_key = ?",
+  ).bind(userId, machineKey).first<{ found: number }>();
+  if (known) {
+    await env.DB.prepare(`
+      insert into revoked_machines(user_id, machine_key, device_id, revoked_at)
+      values (?, ?, ?, ?)
+      on conflict(user_id, machine_key) do update set
+        device_id = coalesce(excluded.device_id, revoked_machines.device_id),
+        revoked_at = excluded.revoked_at
+    `).bind(userId, machineKey, existing?.device_id ?? null, Date.now()).run();
+    await env.DB.prepare("delete from machines where user_id = ? and machine_key = ?")
+      .bind(userId, machineKey)
+      .run();
+  }
 
   const purged = await callActivityRelay(request, env, {
     operation: "purge",
@@ -1054,7 +1186,10 @@ async function handleRename(
   if (request.method !== "PATCH") return text("method not allowed", 405);
   let raw: unknown;
   try {
-    raw = await request.json();
+    // Inside the try: a body stream that breaks while it is read is an invalid body, not a 500.
+    const body = await readBoundedBody(request, MAX_REGISTER_BODY_BYTES);
+    if (!body.ok) return json({ error: "request body too large" }, { status: 413 });
+    raw = JSON.parse(body.text);
   } catch {
     return json({ error: "invalid request body" }, { status: 400 });
   }
@@ -1156,7 +1291,7 @@ async function handleRequestCore(
   });
   if (appApprovalResponse) return appApprovalResponse;
 
-  const route = routeAccount(url.pathname);
+  const route = routeAccount(url.pathname, request.method);
   if (!route) return text("not found", 404);
   const timeMachineList = route.kind === "list" && request.method === "GET";
   const authStartedAt = timeMachineList ? performance.now() : 0;
@@ -1208,7 +1343,7 @@ export async function handleRequest(
   const startedAt = performance.now();
   const correlationId = requestCorrelationId(request);
   const url = new URL(request.url);
-  const route = routeAccount(url.pathname);
+  const route = routeAccount(url.pathname, request.method);
   const requestOrigin = request.headers.get("origin");
   const allowedOrigin = trustedWebClientOrigin(env);
   const corsOrigin = requestOrigin && allowedOrigin && requestOrigin === allowedOrigin
@@ -1268,7 +1403,7 @@ export async function handleRequest(
   }
   // Daemon/native callers omit Origin. Browser callers must match the one
   // configured hosted client exactly; reject hostile origins before auth or D1.
-  if (requestOrigin && routeAccount(url.pathname) && !corsOrigin) {
+  if (requestOrigin && routeAccount(url.pathname, request.method) && !corsOrigin) {
     return finish(text("origin not allowed", 403));
   }
   let response: Response;

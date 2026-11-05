@@ -5,6 +5,7 @@ import {
   clientIdentity,
   DAY_MS,
   dailyLimitVar,
+  quotaAddress,
   readBoundedBody,
   secondsUntilNextUtcDay,
   sha256Hex,
@@ -65,6 +66,21 @@ export const MAX_DIAGNOSTIC_UPLOADS_PER_DAY = 5;
  * Raising it is a deliberate act with arithmetic attached; see the README.
  */
 export const DEFAULT_DIAGNOSTICS_DAILY_GLOBAL_LIMIT = 400;
+
+/**
+ * The small, separate budget for anonymous uploads that come from a page with
+ * an opaque (`null`) origin.
+ *
+ * Desktop builds before the upload moved to the main process sent the report
+ * from a `file://` renderer, so the browser stamped it `Origin: null` and
+ * `Sec-Fetch-Site: cross-site`. A sandboxed iframe on any web page sends the
+ * same two headers, so the server cannot tell the two apart. Those uploads still
+ * work, so an old install can still report a problem, but they draw on their
+ * own per-caller and fleet budgets. A page that sends them can use up only
+ * this small budget, never the one current clients use.
+ */
+export const MAX_LEGACY_DIAGNOSTIC_UPLOADS_PER_DAY = 2;
+export const LEGACY_DIAGNOSTICS_DAILY_GLOBAL_LIMIT = 50;
 
 /**
  * How many days of budget rows the cron sweep keeps.
@@ -159,11 +175,23 @@ export function isDiagnosticsRequest(url: URL): boolean {
  *
  * `sec-fetch-site` is attached by the browser and cannot be set by the page, so
  * it is the one honest signal here. ADE's own senders are unaffected: the CLI
- * and any non-browser fetch send no such header at all, and the desktop button
- * runs in Electron's renderer, whose two origin shapes — `null` from `file://`
- * in a packaged build and loopback in development — are exempted rather than
- * named by hostname, because that renderer is cross-site to this Worker too.
+ * and the desktop main process send no such header at all. Older desktop
+ * builds sent from the renderer, whose two origin shapes — `null` from
+ * `file://` in a packaged build and loopback in development — are exempted
+ * rather than named by hostname; the `null` shape is held to the legacy budget
+ * (`isOpaqueOriginBrowserUpload`).
  */
+/**
+ * A browser request from an opaque origin: an old desktop renderer, or a
+ * sandboxed frame on someone else's page. See
+ * `MAX_LEGACY_DIAGNOSTIC_UPLOADS_PER_DAY`.
+ */
+function isOpaqueOriginBrowserUpload(request: Request): boolean {
+  if (request.headers.get("sec-fetch-site")?.trim().toLowerCase() !== "cross-site") return false;
+  const origin = request.headers.get("origin")?.trim() ?? "";
+  return !origin || origin === "null";
+}
+
 function isCrossSiteBrowserUpload(request: Request): boolean {
   if (request.headers.get("sec-fetch-site")?.trim().toLowerCase() !== "cross-site") return false;
   const origin = request.headers.get("origin")?.trim() ?? "";
@@ -184,12 +212,13 @@ function isCrossSiteBrowserUpload(request: Request): boolean {
  * simply mint a new one per request, whereas the address is the thing the quota
  * is actually meant to bound. The install id still travels, as metadata.
  */
-async function uploadIdentity(request: Request, userId: string | null): Promise<string> {
+async function uploadIdentity(request: Request, userId: string | null, legacy: boolean): Promise<string> {
   if (userId) {
     const safe = userId.replace(/[^A-Za-z0-9_-]/g, "").slice(0, 80);
     if (safe) return `u-${safe}`;
   }
-  return `anon-${(await sha256Hex(clientIdentity(request))).slice(0, 16)}`;
+  // One IPv6 /64 is one caller: a host can rotate addresses inside it freely.
+  return `${legacy ? "legacy-anon" : "anon"}-${(await sha256Hex(quotaAddress(clientIdentity(request)))).slice(0, 16)}`;
 }
 
 /**
@@ -262,9 +291,11 @@ async function refundGlobalBudget(env: DiagnosticsEnv, dayKey: string): Promise<
 /**
  * Cron sweep: budget rows are write-once-a-day and read only for today.
  *
- * Lexicographic comparison is correct here because the key is a fixed-width
- * ISO date. Today's row is never in range, so a sweep can never free budget the
- * running day has already spent.
+ * Lexicographic comparison is correct here because the key starts with a
+ * fixed-width ISO date (the legacy row adds a `:legacy` suffix and a caller's
+ * row a `:caller:<identity>` one; both sort after their own day and before the
+ * next). Today's rows are never in range, so a
+ * sweep can never free budget the running day has already spent.
  */
 export async function cleanupDiagnosticsUploadDays(
   env: { DB: D1Database },
@@ -373,16 +404,17 @@ async function spentToday(
   identity: string,
   prefix: string,
   dayKey: string,
+  perDayLimit: number,
 ): Promise<number | null> {
   const remembered = isolateUploadCounts.get(identity);
   const rememberedCount = remembered?.dayKey === dayKey ? remembered.count : 0;
-  if (rememberedCount >= MAX_DIAGNOSTIC_UPLOADS_PER_DAY) return rememberedCount;
+  if (rememberedCount >= perDayLimit) return rememberedCount;
 
   // The durable half of the limit. `limit` stops one greedy prefix from
   // listing an unbounded page just to answer a yes/no question.
   let listed: R2Objects;
   try {
-    listed = await bucket.list({ prefix, limit: MAX_DIAGNOSTIC_UPLOADS_PER_DAY + 1 });
+    listed = await bucket.list({ prefix, limit: perDayLimit + 1 });
   } catch {
     return null;
   }
@@ -390,7 +422,7 @@ async function spentToday(
   // A caller the listing shows is already full stays full for the rest of the
   // day, so remembering that saves a listing on each further attempt. Still a
   // count of STORED objects — it is the optimistic `count + 1` that was the bug.
-  if (count >= MAX_DIAGNOSTIC_UPLOADS_PER_DAY) remember(identity, dayKey, count);
+  if (count >= perDayLimit) remember(identity, dayKey, count);
   return count;
 }
 
@@ -413,12 +445,27 @@ function rememberStored(identity: string, dayKey: string, spentBefore: number): 
 export type DiagnosticsRequestOptions = {
   now?: () => number;
   randomId?: () => string;
+  /** The invocation's `waitUntil`, so a client that disconnects cannot cut off a refund. */
+  waitUntil?: (promise: Promise<unknown>) => void;
 };
 
-export async function handleDiagnosticsRequest(
+export function handleDiagnosticsRequest(
   request: Request,
   env: DiagnosticsEnv,
   options: DiagnosticsRequestOptions = {},
+): Promise<Response> {
+  // A budget slot is claimed before the put and refunded when nothing was
+  // stored. If the client hangs up between the two, the runtime may cancel the
+  // request: hold the invocation open until the handler settles.
+  const handled = handleDiagnosticsUpload(request, env, options);
+  options.waitUntil?.(handled.catch(() => undefined));
+  return handled;
+}
+
+async function handleDiagnosticsUpload(
+  request: Request,
+  env: DiagnosticsEnv,
+  options: DiagnosticsRequestOptions,
 ): Promise<Response> {
   if (request.method === "OPTIONS") {
     return new Response(null, {
@@ -465,8 +512,12 @@ export async function handleDiagnosticsRequest(
     }
   }
 
+  // A signed-in upload carries a token no other page can read, so it keeps the
+  // main budget whatever its headers say.
+  const legacy = !userId && isOpaqueOriginBrowserUpload(request);
+  const perDayLimit = legacy ? MAX_LEGACY_DIAGNOSTIC_UPLOADS_PER_DAY : MAX_DIAGNOSTIC_UPLOADS_PER_DAY;
   const body = await readBoundedBody(request, MAX_DIAGNOSTIC_REPORT_BYTES);
-  const identity = await uploadIdentity(request, userId);
+  const identity = await uploadIdentity(request, userId, legacy);
   if (!body.ok) {
     logDiagnosticsUpload({
       outcome: "rejected",
@@ -496,7 +547,7 @@ export async function handleDiagnosticsRequest(
   const now = options.now?.() ?? Date.now();
   const dayKey = utcDayKey(now);
   const prefix = `reports/${dayKey}/${identity}/`;
-  const spent = await spentToday(bucket, identity, prefix, dayKey);
+  const spent = await spentToday(bucket, identity, prefix, dayKey, perDayLimit);
   if (spent == null) {
     // Nothing was claimed and nothing was stored — the fleet budget is not even
     // touched, because a quota this route cannot count must not spend one.
@@ -512,7 +563,7 @@ export async function handleDiagnosticsRequest(
     });
     return json({ error: "diagnostics upload unavailable" }, { status: 503 });
   }
-  if (spent >= MAX_DIAGNOSTIC_UPLOADS_PER_DAY) {
+  const rateLimited = (): Response => {
     logDiagnosticsUpload({
       outcome: "rejected",
       status: 429,
@@ -527,7 +578,8 @@ export async function handleDiagnosticsRequest(
       status: 429,
       headers: { "retry-after": "86400" },
     });
-  }
+  };
+  if (spent >= perDayLimit) return rateLimited();
 
   // The fleet ceiling is claimed AFTER the per-caller quota and BEFORE the put.
   //
@@ -537,8 +589,23 @@ export async function handleDiagnosticsRequest(
   // service. Before, because the claim is what makes the cap real: every byte
   // that reaches the bucket passes through this statement first, so the day's
   // stored count cannot exceed the day's claimed count.
-  const budget = await claimGlobalBudget(env, dayKey, dailyGlobalLimit(env));
+  // The legacy budget is its own row (`<day>:legacy` still sorts before the
+  // next day, so the cron sweep removes it with the rest), and the kill switch
+  // stops it too.
+  const budgetDay = legacy ? `${dayKey}:legacy` : dayKey;
+  const budgetLimit = legacy
+    ? Math.min(LEGACY_DIAGNOSTICS_DAILY_GLOBAL_LIMIT, dailyGlobalLimit(env))
+    : dailyGlobalLimit(env);
+  // The stored count above cannot see uploads still in flight, so a burst
+  // all reads the same number. The caller's own day row is the atomic part of
+  // its limit, claimed first, so one caller's burst cannot spend the fleet's
+  // budget. A kill switch writes neither row.
+  const callerDay = `${dayKey}:caller:${identity}`;
+  const callerSlot = budgetLimit > 0 ? await claimGlobalBudget(env, callerDay, perDayLimit) : null;
+  if (callerSlot && !callerSlot.ok && callerSlot.reason === "exhausted") return rateLimited();
+  const budget = callerSlot && !callerSlot.ok ? callerSlot : await claimGlobalBudget(env, budgetDay, budgetLimit);
   if (!budget.ok) {
+    if (callerSlot?.ok) await refundGlobalBudget(env, callerDay);
     const exhausted = budget.reason === "exhausted";
     logDiagnosticsUpload({
       outcome: "rejected",
@@ -590,7 +657,8 @@ export async function handleDiagnosticsRequest(
     // The budget slot claimed a moment ago is given back: nothing was stored,
     // so nothing should have been spent, and a bucket having a bad hour must
     // not quietly consume the day's ceiling for reports that do not exist.
-    await refundGlobalBudget(env, dayKey);
+    await refundGlobalBudget(env, budgetDay);
+    await refundGlobalBudget(env, callerDay);
     logDiagnosticsUpload({
       outcome: "rejected",
       status: 502,

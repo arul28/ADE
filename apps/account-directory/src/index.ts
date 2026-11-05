@@ -51,15 +51,16 @@ const CLEANUP_MONITOR_CONFIG = {
   recoveryThreshold: 1,
 } satisfies Parameters<typeof Sentry.captureCheckIn>[1];
 
-function route(request: Request, env: WorkerEnv): Promise<Response> {
+function route(request: Request, env: WorkerEnv, ctx?: ExecutionContext): Promise<Response> {
   // Diagnostics and usage research are matched before the directory because
   // they are the routes here that are not account-scoped: `handleRequest`
   // answers an unknown OPTIONS with 404 and applies the directory's
   // exact-origin CORS rule, neither of which fits a write-only sink that an
   // unauthenticated client has to be able to reach.
   const url = new URL(request.url);
-  if (isDiagnosticsRequest(url)) return handleDiagnosticsRequest(request, env);
-  if (isUsageResearchRequest(url)) return handleUsageResearchRequest(request, env);
+  const held = ctx ? { waitUntil: (promise: Promise<unknown>) => ctx.waitUntil(promise) } : {};
+  if (isDiagnosticsRequest(url)) return handleDiagnosticsRequest(request, env, held);
+  if (isUsageResearchRequest(url)) return handleUsageResearchRequest(request, env, held);
   // The model registry takes an account bearer but is not a directory route:
   // it answers GET and HEAD only, has no CORS (the ADE brain is the only
   // caller), and caches with an ETag.
@@ -82,7 +83,7 @@ export default Sentry.withSentry(sentryOptions, {
     const env = { ...workerEnv, DB: retryD1Reads(workerEnv.DB) };
     const startedAt = Date.now();
     try {
-      const response = await route(request, env);
+      const response = await route(request, env, ctx);
       reportRequest(workerEnv, ctx, WORKER_NAME, request, response.status, startedAt);
       return response;
     } catch (error) {

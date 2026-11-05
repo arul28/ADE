@@ -6559,7 +6559,24 @@ async function runTool(args: {
         const prepared = await prepareRemoteWorkShell(runtime, session, scopedObjectArgs);
         scopedObjectArgs = prepared.args;
         afterScopedCall = prepared.done;
-        transformScopedResult = (value) => (isRecord(value) ? { ...value, workCopy: prepared.workCopy } : value);
+        transformScopedResult = (value) => {
+          // Background work for a chat on another machine: archived from the
+          // start, so no list on this machine shows it (one row per command
+          // filled the Work tab). It still runs, and its owner still reads,
+          // lists and closes it.
+          const createdId = isRecord(value) ? asOptionalTrimmedString(value.sessionId) : null;
+          if (createdId) {
+            try {
+              runtime.sessionService.archiveSession(createdId);
+            } catch (error) {
+              runtime.logger.warn("remote_work.shell_archive_failed", {
+                sessionId: createdId,
+                error: error instanceof Error ? error.message : String(error),
+              });
+            }
+          }
+          return isRecord(value) ? { ...value, workCopy: prepared.workCopy } : value;
+        };
       } else {
         authorizePtyAdeActionInvocation(runtime, session, action, scopedObjectArgs);
       }
@@ -6577,6 +6594,12 @@ async function runTool(args: {
       if (action === "list") {
         // A lane-wide list leaves out shells a chat on another machine owns here.
         const caller = asOptionalTrimmedString(session.identity.chatSessionId);
+        // A chat on another machine lists only its own shells here (the scope
+        // above pins `chatSessionId`), and those are archived from the start
+        // (see `pty.create` above), so it asks for archived rows too.
+        if (caller && parseForeignCallerSessionId(caller)) {
+          scopedObjectArgs = { ...scopedObjectArgs, includeArchived: true };
+        }
         transformScopedResult = (value) => (Array.isArray(value)
           ? value.filter((row) => !isRecord(row)
             || typeof row.chatSessionId !== "string"

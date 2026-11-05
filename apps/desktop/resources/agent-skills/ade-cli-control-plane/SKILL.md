@@ -417,6 +417,10 @@ ade chat read <id> --machine "Mac mini" --text
 ade shell start --machine "Windows PC" --wait -- npm test   # one command there, in this chat's work copy
 ```
 
+- Put all the steps of a task in one `--machine` call (`-- sh -c "npm ci && npm test"`,
+  or a script you run once). Each call opens a new shell there and syncs the
+  work copy again. Do not run single commands one call at a time.
+
 - The project there defaults to this repository's checkout; pick another with
   `--project <name|path|id>`, add `--clone` to set a missing GitHub repo up,
   or use `--personal` for projectless chats. Your own lane is never sent: get a

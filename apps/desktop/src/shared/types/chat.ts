@@ -2868,7 +2868,8 @@ export type SpawnLineageSessionFields = {
    */
   subagentTakeoverPromptShownAt?: string | null;
   /**
-   * False when the parent chat is gone or not a chat session. Renderers hide
+   * False when the parent is gone, or is neither a chat nor a tracked agent
+   * CLI (a CLI parent is woken at its prompt). Renderers hide
    * the takeover banner instead of resurrecting it against a dead parent.
    */
   orchestrationParentReachable?: boolean;

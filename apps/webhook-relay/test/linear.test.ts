@@ -338,18 +338,25 @@ describe("Linear webhook relay", () => {
     expect(env.DB.events).toHaveLength(0);
   });
 
-  it("acknowledges an unregistered organization without storing the payload", async () => {
+  it("answers an unregistered organization as it answers a bad signature, and stores nothing", async () => {
     const env = makeEnv();
+    stubLinearViewer({ lin_api_probe: "org-1" });
+    await registerOrganization(env, { token: "lin_api_probe" });
 
-    const response = await handleRequest(
+    const unregistered = await handleRequest(
       await linearWebhookRequest(linearPayload({ organizationId: "org-unregistered" })),
       env,
     );
+    const badSignature = await handleRequest(
+      await linearWebhookRequest(linearPayload(), { secret: "wrong-secret" }),
+      env,
+    );
 
-    expect(response.status).toBe(200);
-    // Response is indistinguishable from an accepted delivery so callers
-    // cannot probe which organizations are registered.
-    expect(await response.json()).toEqual({ ok: true });
+    // The same answer either way, so a caller cannot probe which
+    // organizations are registered.
+    expect(unregistered.status).toBe(401);
+    expect(badSignature.status).toBe(unregistered.status);
+    expect(await badSignature.json()).toEqual(await unregistered.json());
     expect(env.DB.events).toHaveLength(0);
   });
 
@@ -436,13 +443,12 @@ describe("Linear webhook relay", () => {
     expect(await appSigned.json()).toEqual({ ok: true, duplicate: false, eventId: "app-delivery-1" });
     expect(env.DB.events).toHaveLength(1);
 
-    // Unregistered organization, bad signature: probe-safe acknowledgement, not stored.
+    // Unregistered organization, bad signature: refused, not stored.
     const badSignature = await handleRequest(
       await linearWebhookRequest(linearPayload(), { delivery: "app-delivery-2", secret: "wrong-secret" }),
       env,
     );
-    expect(badSignature.status).toBe(200);
-    expect(await badSignature.json()).toEqual({ ok: true });
+    expect(badSignature.status).toBe(401);
     expect(env.DB.events).toHaveLength(1);
 
     // Registered organization keeps working with its own secret AND accepts

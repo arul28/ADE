@@ -331,6 +331,13 @@ func workAttachedShellGroupsByParentId(
   var childrenByParentId: [String: [TerminalSessionSummary]] = [:]
   var filedShellIds: Set<String> = []
   for session in sessions {
+    // A shell a chat on another machine runs here (`remote:<device>:<chat>`)
+    // belongs to that chat, which lists it on its own machine; it is never a
+    // top-level row. Mirrors desktop `buildWorkNesting`.
+    if session.chatSessionId?.hasPrefix("remote:") == true {
+      filedShellIds.insert(session.id)
+      continue
+    }
     guard let parentId = workAttachedShellNestParentId(
       session: session,
       nestedChildToRootParentId: nestedChildToRootParentId

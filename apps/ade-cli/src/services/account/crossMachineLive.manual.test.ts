@@ -464,6 +464,9 @@ describe.skipIf(!LIVE)("cross-machine agents, live, two brains in one process", 
       expect(copies[0].owner.endsWith(parent.id)).toBe(true);
       const shells = B.runtime.ptyService.list({ chatSessionId: copies[0].owner });
       expect(shells.length).toBe(1);
+      // Background work: archived from the start, so B's own lists leave it out.
+      expect(B.runtime.sessionService.get(shells[0].id)?.archivedAt).toBeTruthy();
+      expect(B.runtime.sessionService.list({ includeArchived: false }).map((row: { id: string }) => row.id)).not.toContain(shells[0].id);
 
       // A's brain recorded where the chat worked, for its views.
       const parentSummary = await A.runtime.agentChatService.getSessionSummary(parent.id);

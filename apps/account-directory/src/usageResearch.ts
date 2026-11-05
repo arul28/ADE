@@ -490,6 +490,8 @@ function isSameContent(row: StoredRow, next: UsageResearchReport): boolean {
 
 export type UsageResearchRequestOptions = {
   now?: () => number;
+  /** The invocation's `waitUntil`, so a client that disconnects cannot cut off a refund. */
+  waitUntil?: (promise: Promise<unknown>) => void;
 };
 
 /**
@@ -578,10 +580,23 @@ async function writeRow(
  * - `503 usage_research_unavailable`: no D1 binding, D1 refused a statement,
  *   or a concurrent write to the same install and day won the race.
  */
-export async function handleUsageResearchRequest(
+export function handleUsageResearchRequest(
   request: Request,
   env: UsageResearchEnv,
   options: UsageResearchRequestOptions = {},
+): Promise<Response> {
+  // Slots are claimed before the write and refunded when it fails. If the
+  // client hangs up between the two, the runtime may cancel the request: hold
+  // the invocation open until the handler settles.
+  const handled = handleUsageResearchUpload(request, env, options);
+  options.waitUntil?.(handled.catch(() => undefined));
+  return handled;
+}
+
+async function handleUsageResearchUpload(
+  request: Request,
+  env: UsageResearchEnv,
+  options: UsageResearchRequestOptions,
 ): Promise<Response> {
   // Exactly one log line per request: every refusal goes through `refuse`, and
   // the three success paths log themselves.

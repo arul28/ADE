@@ -61,6 +61,7 @@ import { detectDevServersInChunk, devServerRegistry } from "../devServers/devSer
 import { noteSessionInputOrigin } from "../chat/sessionInputOrigins";
 import type { ResourceAttributionRoot, ResourceAttributionRootKind } from "./resourceUsageSampling";
 import { isPtyOutputHeld, onPtyOutputHoldChange } from "./ptyOutputFlowControl";
+import { recordCliSessionsToReopen, type CliReopenEntry } from "./cliReopenAfterRestart";
 import {
   augmentProcessPathWithShellAndKnownCliDirs,
   setPathEnvValue,
@@ -8435,11 +8436,22 @@ export function createPtyService({
       const limit = typeof args.limit === "number" && Number.isFinite(args.limit)
         ? Math.max(1, Math.min(500, Math.floor(args.limit)))
         : 200;
-      const summaries = service.enrichSessions(sessionService.list({
-        ...(laneId ? { laneId } : {}),
-        limit,
-      }));
       const includeArchived = args.includeArchived === true;
+      // Archived rows (a lane's old shells, another machine's background work)
+      // never take a live row's place in the window. A chat's own shells are
+      // also read by their stored owner, so newer rows of other chats cannot
+      // push them out of it.
+      const windowArgs = {
+        ...(laneId ? { laneId } : {}),
+        ...(includeArchived ? {} : { includeArchived: false }),
+        limit,
+      };
+      const windowRows = sessionService.list(windowArgs);
+      const inWindow = new Set(windowRows.map((row) => row.id));
+      const ownRows = chatSessionId
+        ? sessionService.list({ ...windowArgs, chatSessionId }).filter((row) => !inWindow.has(row.id))
+        : [];
+      const summaries = service.enrichSessions([...windowRows, ...ownRows]);
       return summaries
         .filter((summary) => !isPersistedChatToolType(summary.toolType))
         .filter((summary) => includeArchived || !summary.archivedAt)
@@ -8458,7 +8470,8 @@ export function createPtyService({
           const bRunning = b.status === "running";
           if (aRunning !== bRunning) return aRunning ? -1 : 1;
           return Date.parse(b.startedAt) - Date.parse(a.startedAt);
-        });
+        })
+        .slice(0, limit);
     },
 
     activeForChat(args?: Partial<ChatTerminalActiveForChatArgs> | null): ChatTerminalSession | null {
@@ -9390,7 +9403,42 @@ export function createPtyService({
       return { disposed: true, reason: "disposed" };
     },
 
-    disposeAll(): void {
+    /**
+     * Stop every terminal. With `reopenAfterRestart` (the runtime itself is
+     * stopping, as for an update) the tracked agent CLIs still open here are
+     * saved first, so the project's next runtime reopens them
+     * (`cliReopenAfterRestart.ts`). A failed save never blocks the stop.
+     */
+    disposeAll(options?: { reopenAfterRestart?: boolean }): void {
+      if (options?.reopenAfterRestart) {
+        try {
+          const entries: CliReopenEntry[] = [];
+          for (const entry of ptys.values()) {
+            if (entry.disposed || !entry.tracked || !isTrackedAgentCliToolType(entry.toolTypeHint)) continue;
+            const session = sessionService.get(entry.sessionId);
+            if (!session || session.archivedAt || !isTrackedAgentCliToolType(session.toolType)) continue;
+            const provider = session.resumeMetadata?.provider ?? providerFromTool(session.toolType);
+            // Mid-turn: still printing and not at its prompt. Waiting on the
+            // person (a permission prompt) is not a turn to continue. When in
+            // doubt it only reopens: a "continue" typed into an idle CLI would
+            // start work nobody asked for.
+            const midTurn = provider != null
+              && !session.attentionRequestedAt
+              && runtimeStates.get(entry.sessionId)?.state === "running"
+              && !agentCliInputReadyNow(entry.sessionId, provider);
+            entries.push({ sessionId: entry.sessionId, midTurn });
+          }
+          recordCliSessionsToReopen(projectRoot, entries);
+          if (entries.length > 0) {
+            logger.info("pty.cli_reopen_recorded", {
+              sessions: entries.length,
+              midTurn: entries.filter((entry) => entry.midTurn).length,
+            });
+          }
+        } catch (error) {
+          logger.warn("pty.cli_reopen_record_failed", { error: error instanceof Error ? error.message : String(error) });
+        }
+      }
       unsubscribeOutputHold();
       sessionService.agentShells.stop();
       for (const ptyId of [...ptys.keys()]) {

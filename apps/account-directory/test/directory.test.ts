@@ -674,6 +674,40 @@ describe("machine directory", () => {
     });
   });
 
+  it("holds the machine cap, and a full account keeps a removed machine revoked", async () => {
+    const env = makeEnv();
+    const token = await mintToken({ sub: "user_1" });
+    await register(env, token, "machine-a");
+    const template = { ...env.DB.rows[0]! };
+    const relay = activityRelayStub();
+    await handleRequest(request("DELETE", "/account/machines/machine-a", token), env, relay.options);
+    for (let index = 0; index < 500; index += 1) {
+      env.DB.rows.push({ ...template, machine_key: `filler-${index}`, device_id: `device-filler-${index}` });
+    }
+    relay.calls.length = 0;
+
+    const added = await register(env, token, "machine-new");
+    expect(added.status).toBe(409);
+    expect(await added.json()).toMatchObject({ code: "too_many_machines" });
+    expect(env.DB.rows).toHaveLength(500);
+
+    // A machine already on the roster still updates at the cap.
+    expect((await register(env, token, "filler-0")).status).toBe(200);
+
+    // A removed machine with a fresh sign-in is refused before the gate spends
+    // the proof or clears the revocation, so it cannot register later unpaired.
+    const repaired = await handleRequest(request(
+      "POST",
+      "/account/machines/register",
+      await mintFreshAuthToken("user_1"),
+      { ...registerBody("machine-a"), pairing: true },
+    ), env, relay.options);
+    expect(repaired.status).toBe(409);
+    expect(env.DB.revocations).toHaveLength(1);
+    expect(relay.calls).toEqual([]);
+    expect(env.DB.rows).toHaveLength(500);
+  });
+
   it.each([
     ["an auth_time older than the freshness bound", { authTime: Math.floor(Date.now() / 1000) - 11 * 60 }],
     ["a Clerk fva first factor older than the freshness bound", { fva: [11, -1] }],
