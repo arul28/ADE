@@ -697,12 +697,12 @@ describe("Windows Desktop seats, consent and window verbs", () => {
     });
     try {
       await service.start({ laneId: "shared", seatMode: "shared", sharedDesktopConsent: true });
-      await expect(service.press({ laneId: "shared", key: "s", modifiers: ["ctrl"], mode: "accessibility", chatSessionId: "chat-1" }))
+      await expect(service.press({ laneId: "shared", key: "s", modifiers: ["control"], mode: "accessibility", chatSessionId: "chat-1" }))
         .rejects.toMatchObject({ code: "WINDOWS_DESKTOP_BACKGROUND_UNAVAILABLE" });
       expect(inputOps(driver, "shared").map((call) => call.payload.mode)).toEqual(["accessibility"]);
       // With no mode named, the chord goes as real input at once.
       driver.overrides[MAC_DESKTOP_DRIVER_OPS.input] = () => ({});
-      await expect(service.press({ laneId: "shared", key: "s", modifiers: ["ctrl"], chatSessionId: "chat-1" }))
+      await expect(service.press({ laneId: "shared", key: "s", modifiers: ["control"], chatSessionId: "chat-1" }))
         .resolves.toMatchObject({ ok: true, mode: "real" });
       expect(inputOps(driver, "shared").map((call) => call.payload.mode)).toEqual(["accessibility", "real"]);
     } finally { service.dispose(); }
