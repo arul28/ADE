@@ -75,9 +75,10 @@ export type AndroidEmulatorServiceDeps = {
    */
   artifactFiler?: AndroidArtifactFiler | null;
   /**
-   * One coarse product fact when a guided SDK install puts parts in place, an
-   * app installs, a render files as proof, or an agent takes a new lease
-   * (`captureAndroidDeviceAnalytics`). A failed or refused call sends nothing.
+   * One coarse product fact for each outcome in
+   * `ANDROID_DEVICE_ANALYTICS_OUTCOMES` (an SDK or image install, an app
+   * install, a filed render, a new lease, a fold, a preview render, a test
+   * run; `captureAndroidDeviceAnalytics`). A failed or refused call sends nothing.
    */
   captureAnalytics?: (outcome: AndroidDeviceAnalyticsOutcome) => void;
 };

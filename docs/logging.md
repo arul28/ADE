@@ -1356,13 +1356,16 @@ was filed as proof), `device_leased` (an agent took a new lease with
 `start_forced` (a start past the RAM guard, "Start anyway" or
 `ade android start --force`, booted the emulator), `image_installed` (a
 system image install from the device picker finished and put the image in
-place), or `tests_run` (an instrumentation test run ran at least one test,
-passed or failed). A failed, refused
+place), `tests_run` (an instrumentation test run ran at least one test,
+passed or failed), `device_folded` (a fold of a foldable AVD that the
+emulator settled), or `previews_rendered` (a Compose preview render wrote at
+least one image). A failed, refused
 or no-op call emits nothing; the guard's own refusal is not an event. Nothing
 finer crosses: no SDK path, AVD, package, APK, angle, lane, chat, machine,
-memory size, image, test class, or test count. A per-outcome
+memory size, image, test class, test count, module, or preview name. A hinge
+drag sends one fold when it is released, never per frame. A per-outcome
 `work_android_device:<outcome>` key with a 24-hour minimum interval bounds this
-to at most eight accepted events per installation per UTC day, inside the same
+to at most ten accepted events per installation per UTC day, inside the same
 `ade_feature_used` limits; no ceiling was raised. The dashboard spec is
 untouched.
 

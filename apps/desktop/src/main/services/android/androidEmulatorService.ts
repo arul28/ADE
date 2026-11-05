@@ -555,6 +555,7 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
     requireBooted,
     onScreenChanged: (laneId) => agent.invalidateUi(laneId),
     onPostureChanged: (laneId, next) => emit({ type: "android.device.posture", laneId, posture: next }),
+    captureAnalytics: deps.captureAnalytics,
     signal: lifetime.signal,
     now: () => now().getTime(),
   });
@@ -572,6 +573,7 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
     signal: lifetime.signal,
     logger,
     now,
+    captureAnalytics: deps.captureAnalytics,
   });
 
   /** P0 input, each call also ending the lane's cached UI tree (the screen changes). */

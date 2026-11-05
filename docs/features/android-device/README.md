@@ -880,8 +880,10 @@ restarts in 60 s it stays down, and `status` says why.
 The emulator service in the brain records one coarse `ade_feature_used` fact
 (`action: "android_device"`) when the guided SDK install puts parts in place,
 an app installs, a 3D render files as proof, an agent takes a new lease, a
-system image installs (`image_installed`), or an instrumentation run runs at
-least one test (`tests_run`). Each outcome counts at most once a day. No path, AVD, package, lane or image
+system image installs (`image_installed`), an instrumentation run runs at
+least one test (`tests_run`), a fold settles (`device_folded`), or a Compose
+preview render writes an image (`previews_rendered`). Each outcome counts at
+most once a day. No path, AVD, package, lane, image, angle or preview name
 goes with it. `docs/logging.md` holds the contract.
 
 ## Source file map
@@ -889,7 +891,7 @@ goes with it. `docs/logging.md` holds the contract.
 | Path | Role |
 |---|---|
 | `apps/desktop/src/shared/types/androidEmulator.ts` | The contract: SDK, AVD and lane types, error codes, the service API, the action lists (`ANDROID_AGENT_ACTIONS`, `ANDROID_USER_ONLY_ACTIONS`, `ANDROID_PERSON_ONLY_ACTIONS`, `ANDROID_LANE_FREE_ACTIONS`, `ANDROID_CODE_SYNC_ACTIONS`), and the preload API. It re-exports its siblings: `androidEmulatorAgent.ts` (the agent suite, `ANDROID_PERMISSIONS`), `androidEmulatorSetup.ts` (the SDK install), `androidEmulatorLook.ts` (colour and render) and `androidEmulatorDrawer.ts` (the Tools drawer, `ANDROID_TEXT_SIZES`, `ANDROID_DISPLAY_SIZES`). |
-| `apps/desktop/src/main/services/android/androidEmulatorService.ts` | The service: lane queue, start, stop, input, screenshot, the work-copy lanes, the start-up cleanup, and the hand-off. |
+| `apps/desktop/src/main/services/android/androidEmulatorService.ts`, `androidEmulatorServiceDeps.ts` | The service: lane queue, start, stop, input, screenshot, the work-copy lanes, the start-up cleanup, and the hand-off. Its inputs and its state for one lane are in `androidEmulatorServiceDeps.ts`. |
 | `apps/desktop/src/main/services/android/androidHandedOffEmulators.ts` | The state file of the emulators ADE started, and the stops that use it: on dispose, and when a project is removed after a hand-off. |
 | `apps/desktop/src/main/services/android/androidDeviceInventory.ts` | The lane's AVD: the device list, create, attach, release, delete and colour, and the work copy's borrow rule. |
 | `apps/desktop/src/main/services/android/androidSdk.ts` | SDK detection, tools and acceleration. |
@@ -902,11 +904,12 @@ goes with it. `docs/logging.md` holds the contract.
 | `apps/desktop/src/main/services/android/androidStream.ts`, `androidStreamServer.ts`, `androidLaneStreams.ts` | Streams by adb serial, the defaults, restarts, and the loopback stream server; the lane's side of its stream (a viewer, a recording). |
 | `apps/desktop/src/main/services/android/scrcpyServer.ts`, `scrcpyVideo.ts`, `scrcpyControl.ts` | The scrcpy session, video records and control messages. |
 | `apps/desktop/src/main/services/android/androidActionDomain.ts` | The `android_emulator` action domain. |
-| `apps/desktop/src/main/services/android/androidMemoryGuard.ts`, `androidCrashWatch.ts` | P2: the RAM guard (with the machine-wide count of boots in flight), and the crash-buffer reader behind the crash pin. |
+| `apps/desktop/src/main/services/android/androidMemoryGuard.ts`, `androidCrashWatch.ts` | P2: the RAM guard (the check before each start, with the machine-wide count of boots in flight), and the crash-buffer reader behind the crash pin. |
 | `apps/desktop/src/main/services/android/androidAgentSuite.ts`, `androidJdk.ts` | The agent verbs (elements, apps, logcat, proof, lease), and the JDK that Gradle runs with. |
 | `apps/desktop/src/main/services/android/androidSystemImages.ts`, `apps/desktop/src/shared/types/androidEmulatorImages.ts` | P3: the system image list, install (on the guided install's job) and removal, and their types. |
 | `apps/desktop/src/main/services/android/androidInstrumentationTests.ts`, `apps/desktop/src/shared/types/androidEmulatorInstrumentation.ts` | P3: `ade android test`: the Gradle run, the JUnit XML and Gradle-output readers, and their types. |
 | `apps/desktop/src/main/services/android/androidPosture.ts`, `apps/desktop/src/shared/types/androidEmulatorPosture.ts` | P3: the hinge read and fold (the emulator console and `dumpsys device_state`), and their types. |
+| `apps/desktop/src/main/services/android/androidLaneQueue.ts` | P3: one step at a time per lane, for folds and Compose preview runs. A failed step does not stop the next one. |
 | `apps/desktop/src/main/services/android/androidComposePreviews.ts`, `apps/desktop/src/shared/types/androidEmulatorPreviews.ts` | P3: `ade android preview`: the Android CLI runs, the module check, the proof filing, and their types. |
 | `apps/desktop/src/main/services/android/androidUiSnapshot.ts`, `androidUiTree.ts` | The UI tree (the Android CLI, or uiautomator), its cache, and the element queries. |
 | `apps/desktop/src/main/services/android/androidRecordingSession.ts`, `androidRecording.ts` | The lane's recording sessions, and the MP4 writer and store. |
@@ -935,7 +938,7 @@ goes with it. `docs/logging.md` holds the contract.
 | `apps/desktop/src/renderer/webclient/adapter/androidDevice.ts`, `streamTicket.ts` | P2: the hosted web client's `androidEmulator` namespace, and the relay ticket helpers it shares with `appleDevice.ts` (one ticket for each stream URL). |
 | `apps/ios/ADE/Views/Work/AndroidDeviceViewer.swift`, `AndroidDeviceViewerModel.swift`, `apps/ios/ADE/Services/SyncService+AndroidDevice.swift` | P2: the phone viewer, its control model, and the `android.*` commands it sends. The stream itself is `AppleStreamSession.swift`, and the touch rules are `LiveStageTouch` in `LiveStageChrome.swift`, both shared with the simulator viewer. |
 | `apps/desktop/src/renderer/components/terminals/useRemoteDeviceTabs.ts` | The tab that joins the open pane for a remote device use (iOS and Android). |
-| `apps/ade-cli/src/cliAndroid.ts`, `cliAndroidFormat.ts` | `ade android` plans and error hints, and its text formatters. The help page is in `cli.ts`. |
+| `apps/ade-cli/src/cliAndroid.ts`, `cliAndroidSuite.ts`, `cliAndroidFormat.ts` | `ade android` plans and error hints (P0 verbs in `cliAndroid.ts`; the P1 agent, P3 and `sdk` verbs in `cliAndroidSuite.ts`), and its text formatters. The help page is in `cli.ts`. |
 | `apps/ade-cli/src/services/sync/androidRemoteCommands.ts` | The `android.*` remote commands a phone or a web tab sends. |
 | `apps/desktop/resources/android/` | The scrcpy server jar, its licence and its README. |
 

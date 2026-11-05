@@ -53,6 +53,8 @@ export type AndroidComposePreviewDeps = {
   signal: AbortSignal;
   logger?: Logger | null;
   now: () => Date;
+  /** One coarse fact for each render that wrote at least one image. */
+  captureAnalytics?: (outcome: "previews_rendered") => void;
 };
 
 /**
@@ -105,12 +107,13 @@ function previewError(error: unknown): string | null {
   return null;
 }
 
-function inlinePng(filePath: string): string | null {
+function inlinePng(filePath: string, logger: Logger | null | undefined): string | null {
   try {
     if (fs.statSync(filePath).size > INLINE_MAX_BYTES) return null;
     return `data:image/png;base64,${fs.readFileSync(filePath).toString("base64")}`;
-  } catch {
+  } catch (error) {
     // The path stays in the answer; the drawer shows the row with no picture.
+    logger?.warn("android.compose_preview_inline_failed", { error: getErrorMessage(error) });
     return null;
   }
 }
@@ -261,9 +264,10 @@ export function createAndroidComposePreviews(deps: AndroidComposePreviewDeps): A
               metadata: { fqn, module },
             }, (failure) => logger?.warn("android.compose_preview_proof_failed", { laneId, error: getErrorMessage(failure) }))
             : null;
-          const dataUrl = inside && args.inline === true ? inlinePng(imagePath!) : null;
+          const dataUrl = inside && args.inline === true ? inlinePng(imagePath!, logger) : null;
           return { fqn, name, path: inside ? imagePath : null, proofArtifactId, ...(args.inline === true ? { dataUrl } : {}), error };
         });
+        if (images.some((image) => image.path)) deps.captureAnalytics?.("previews_rendered");
         return { laneId, module, outDir, images, skipped: wanted.length - fqns.length, durationMs: Date.now() - startedAt };
       });
     },

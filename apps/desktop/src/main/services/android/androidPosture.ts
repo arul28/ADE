@@ -49,6 +49,8 @@ export type AndroidPostureDeps = {
   /** A fold swaps the screen: the lane's cached UI tree ends. */
   onScreenChanged: (laneId: string) => void;
   onPostureChanged: (laneId: string, posture: AndroidPosture) => void;
+  /** One coarse fact for each fold that settled; a fold that did not settle sends nothing. */
+  captureAnalytics?: (outcome: "device_folded") => void;
   signal: AbortSignal;
   now?: () => number;
 };
@@ -155,6 +157,7 @@ export function createAndroidPosture(deps: AndroidPostureDeps): AndroidEmulatorP
     const result = posture(laneId, read.sensorAngle ?? angle, read);
     deps.onScreenChanged(laneId);
     deps.onPostureChanged(laneId, result);
+    if (done) deps.captureAnalytics?.("device_folded");
     return { ...result, settled: done };
   };
 

@@ -34,6 +34,9 @@ export const ANDROID_DEVICE_ANALYTICS_OUTCOMES = [
   "start_forced",
   "image_installed",
   "tests_run",
+  // P3: a fold the emulator settled, and a Compose preview render that wrote an image.
+  "device_folded",
+  "previews_rendered",
 ] as const;
 export type AndroidDeviceAnalyticsOutcome = (typeof ANDROID_DEVICE_ANALYTICS_OUTCOMES)[number];
 
