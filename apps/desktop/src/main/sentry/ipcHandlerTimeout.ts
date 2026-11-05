@@ -3,7 +3,7 @@
  * and how to tell a hang from a process that was not running. See
  * `shared/deadlineTimer.ts` for why a late timer is the sign of the second.
  */
-import { LATE_TIMER_MS } from "../../shared/deadlineTimer";
+import { LATE_TIMER_MS, type DeadlineExpiry } from "../../shared/deadlineTimer";
 
 /**
  * The share of a timer's lateness the process may have spent on the CPU and
@@ -17,15 +17,15 @@ export const IPC_PAUSED_MAX_CPU_FRACTION = 0.25;
 /**
  * The error an IPC call rejects with when its handler did not answer in
  * time. The message is the one every IPC timeout has always had, so issue
- * titles and grouping do not change; the field says how late the timer was.
+ * titles and grouping do not change; `expiry` says how late the timer was
+ * and what the process spent on the CPU until then.
  */
 export class IpcHandlerTimeoutError extends Error {
   constructor(
     channel: string,
     limitMs: number,
     callId: number,
-    /** How late the deadline timer fired, before the grace. */
-    readonly timerLateMs: number,
+    readonly expiry: DeadlineExpiry,
   ) {
     super(`IPC handler for '${channel}' timed out after ${limitMs}ms (callId=${callId})`);
   }

@@ -61,11 +61,15 @@ type IpcTimeout = { limitMs: number; lateMs: number; cpuMs: number };
 function readIpcTimeout(error: unknown, startedAt: number, startedCpu: NodeJS.CpuUsage): IpcTimeout | null {
   const limitMs = ipcTimeoutLimitMs(error);
   if (limitMs == null) return null;
+  // The deadline's own view, from the moment its timer fired: the grace and
+  // the wake that follow it are not counted (`shared/deadlineTimer.ts`).
+  if (error instanceof IpcHandlerTimeoutError) {
+    return { limitMs, lateMs: error.expiry.timerLateMs, cpuMs: error.expiry.cpuMs };
+  }
   const used = process.cpuUsage(startedCpu);
   return {
     limitMs,
-    // The timer's own lateness, before the grace (`shared/deadlineTimer.ts`).
-    lateMs: error instanceof IpcHandlerTimeoutError ? error.timerLateMs : Date.now() - startedAt - limitMs,
+    lateMs: Date.now() - startedAt - limitMs,
     cpuMs: Math.round((used.user + used.system) / 1000),
   };
 }

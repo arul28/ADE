@@ -2511,9 +2511,9 @@ export function registerIpc({
         });
         // A timer that fires late (the Mac slept) gets one short grace, so a
         // reply already waiting on the brain's socket still lands.
-        const deadline = armDeadline(IPC_TIMEOUT_MS, (timerLateMs) => {
+        const deadline = armDeadline(IPC_TIMEOUT_MS, (expiry) => {
           didTimeout = true;
-          rejectTimedOut(new IpcHandlerTimeoutError(channel, IPC_TIMEOUT_MS, callId, timerLateMs));
+          rejectTimedOut(new IpcHandlerTimeoutError(channel, IPC_TIMEOUT_MS, callId, expiry));
         });
         try {
           const result = await Promise.race([listener(event, ...args), timedOut]);

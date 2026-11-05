@@ -31,20 +31,34 @@ export const LATE_TIMER_GRACE_MS = 10_000;
 
 export type DeadlineTimer = { cancel(): void };
 
+/** What the deadline knew when its timer fired, before any grace. */
+export type DeadlineExpiry = {
+  /** How late the timer fired. */
+  timerLateMs: number;
+  /** CPU the process spent from arming to the timer firing (all threads). */
+  cpuMs: number;
+};
+
 /**
  * Call `onExpired` once `timeoutMs` have passed. When the timer fires
  * `LATE_TIMER_MS` or more late, `onExpired` runs after one more
  * `LATE_TIMER_GRACE_MS` instead, so a reply that is already waiting can land
- * first. `timerLateMs` is how late the first timer fired.
+ * first. The expiry describes the moment the timer fired, so the CPU of the
+ * wake and the grace that follow it is not counted.
  */
-export function armDeadline(timeoutMs: number, onExpired: (timerLateMs: number) => void): DeadlineTimer {
+export function armDeadline(timeoutMs: number, onExpired: (expiry: DeadlineExpiry) => void): DeadlineTimer {
   const startedAt = Date.now();
+  const startedCpu = process.cpuUsage();
   let handle = setTimeout(() => {
-    const timerLateMs = Date.now() - startedAt - timeoutMs;
-    if (timerLateMs >= LATE_TIMER_MS) {
-      handle = setTimeout(() => onExpired(timerLateMs), LATE_TIMER_GRACE_MS);
+    const used = process.cpuUsage(startedCpu);
+    const expiry: DeadlineExpiry = {
+      timerLateMs: Date.now() - startedAt - timeoutMs,
+      cpuMs: Math.round((used.user + used.system) / 1000),
+    };
+    if (expiry.timerLateMs >= LATE_TIMER_MS) {
+      handle = setTimeout(() => onExpired(expiry), LATE_TIMER_GRACE_MS);
     } else {
-      onExpired(timerLateMs);
+      onExpired(expiry);
     }
   }, timeoutMs);
   return { cancel: () => clearTimeout(handle) };
