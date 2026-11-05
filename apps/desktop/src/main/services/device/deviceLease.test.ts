@@ -1,13 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { createAppleDeviceLeases } from "./appleDeviceLease";
+import { createDeviceLeases } from "./deviceLease";
 
 /**
  * The turn agents sharing one lane's device take. The contract callers rely
  * on: the line is first come, first served; a lease nobody renews lapses and
  * the device passes on; and only the holder ever sees its token.
  */
-describe("createAppleDeviceLeases", () => {
+describe("createDeviceLeases", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-10-22T08:00:00Z"));
@@ -17,7 +17,7 @@ describe("createAppleDeviceLeases", () => {
   });
 
   it("hands the device on in the order agents asked, and keeps each token to its holder", async () => {
-    const leases = createAppleDeviceLeases();
+    const leases = createDeviceLeases();
     const first = await leases.acquire({ key: "lane", holder: "a" });
     expect(first.acquired).toBe(true);
     if (!first.acquired || !first.token) throw new Error("setup: a should hold the device");
@@ -46,7 +46,7 @@ describe("createAppleDeviceLeases", () => {
   });
 
   it("passes a lapsed lease to the next in line, and the same holder renews instead of queueing", async () => {
-    const leases = createAppleDeviceLeases();
+    const leases = createDeviceLeases();
     const held = await leases.acquire({ key: "lane", holder: "a", ttlMs: 10_000 });
     expect(held.acquired).toBe(true);
 
@@ -69,7 +69,7 @@ describe("createAppleDeviceLeases", () => {
   });
 
   it("tells two agents of one chat apart by token: the second queues, and only each token renews or releases its own turn", async () => {
-    const leases = createAppleDeviceLeases();
+    const leases = createDeviceLeases();
     // Subagents of one chat share the chat id as their holder name.
     const first = await leases.acquire({ key: "lane", holder: "chat", distinct: true });
     if (!first.acquired || !first.token) throw new Error("setup: the first agent should hold the device");
@@ -93,7 +93,7 @@ describe("createAppleDeviceLeases", () => {
   });
 
   it("answers a waiter whose wait runs out with who still has the device", async () => {
-    const leases = createAppleDeviceLeases();
+    const leases = createDeviceLeases();
     await leases.acquire({ key: "lane", holder: "a", ttlMs: 60_000 });
     const waiting = leases.acquire({ key: "lane", holder: "b", waitMs: 5_000 });
     await vi.advanceTimersByTimeAsync(5_000);
@@ -106,7 +106,7 @@ describe("createAppleDeviceLeases", () => {
   });
 
   it("takes a waiter whose caller went away out of line, so the next caller gets the device", async () => {
-    const leases = createAppleDeviceLeases();
+    const leases = createDeviceLeases();
     const held = await leases.acquire({ key: "lane", holder: "a" });
     if (!held.acquired || !held.token) throw new Error("setup: a should hold the device");
     const killed = new AbortController();
@@ -123,7 +123,7 @@ describe("createAppleDeviceLeases", () => {
   });
 
   it("ends a chat's turns and its places in line when the chat ends, under any holder name", async () => {
-    const leases = createAppleDeviceLeases();
+    const leases = createDeviceLeases();
     await leases.acquire({ key: "lane", holder: "ui-agent", chat: "chat-1", distinct: true });
     await leases.acquire({ key: "lane\u0000ipad", holder: "chat-1", distinct: true });
     const ownWaiter = leases.acquire({ key: "lane", holder: "checker", chat: "chat-1", distinct: true, waitMs: 60_000 });
@@ -138,7 +138,7 @@ describe("createAppleDeviceLeases", () => {
   });
 
   it("answers every waiter when the brain stops", async () => {
-    const leases = createAppleDeviceLeases();
+    const leases = createDeviceLeases();
     await leases.acquire({ key: "lane", holder: "a" });
     const waiting = leases.acquire({ key: "lane", holder: "b", waitMs: 60_000 });
     leases.dispose();
@@ -146,7 +146,7 @@ describe("createAppleDeviceLeases", () => {
   });
 
   it("finds which of a lane's devices a token holds, and only within the keys asked", async () => {
-    const leases = createAppleDeviceLeases();
+    const leases = createDeviceLeases();
     const onIpad = await leases.acquire({ key: "lane\u0000ipad", holder: "a", distinct: true });
     if (!onIpad.acquired || !onIpad.token) throw new Error("setup: a should hold the iPad");
     const inLane = (key: string) => key === "lane" || key.startsWith("lane\u0000");

@@ -4746,14 +4746,33 @@ export async function scopeUnboundAppleAdeActionArgs(
 }
 
 /** `android_emulator` reads an agent may make without a lane: status and the AVD list. */
-const ANDROID_LANE_FREE_ACTIONS = new Set<string>(["getStatus", "listDevices"]);
+const ANDROID_LANE_FREE_ACTIONS = new Set<string>([
+  "getStatus",
+  "listDevices",
+  // P1 setup: the SDK is the machine's, so these need no lane.
+  "getSdkSetupPlan",
+  "getSdkInstallState",
+  "installSdk",
+  "cancelSdkInstall",
+  "setSdkPath",
+]);
+
+/** The SDK setup verbs only a person may run: a licence is theirs to accept, the SDK folder theirs to pick. */
+const ANDROID_PERSON_ONLY_SDK_ACTIONS = new Set<string>(["installSdk", "cancelSdkInstall", "setSdkPath"]);
 
 /**
  * The `android_emulator` actions that may give a chat's work copy its first
  * device, so `--machine` makes the copy for them. Every other action needs a
  * device the copy already has, so it never makes one.
  */
-const ANDROID_COPY_MAKING_ACTIONS = new Set<string>(["createDevice", "attachDevice", "start"]);
+const ANDROID_COPY_MAKING_ACTIONS = new Set<string>(["createDevice", "attachDevice", "start", "installApp", "launchApp"]);
+
+/**
+ * The `android_emulator` actions that build or install from the lane's
+ * folder (an APK path, the Gradle wrapper): with `--machine` the work copy
+ * there gets the caller's code first. Every other action uses the copy as it is.
+ */
+const ANDROID_CODE_SYNC_ACTIONS = new Set<string>(["installApp", "launchApp"]);
 
 function androidMissingLaneMessage(action: string): string | null {
   return ANDROID_LANE_FREE_ACTIONS.has(action)
@@ -4774,7 +4793,9 @@ function androidMissingLaneMessage(action: string): string | null {
  *   chat's lane, and naming another lane is refused, naming both lanes. With
  *   no lane it may only read status and the AVD list.
  *
- * The service holds no chat identity, so there is nothing else to strip.
+ * - `chatSessionId` (P1: the proof drawer a screenshot, a recording or a
+ *   bundle files into, and the chat whose end stops its recordings and
+ *   leases) is the caller's own chat, or dropped when it has none.
  */
 export function scopeAndroidAdeActionArgs(
   runtime: AdeRuntime,
@@ -4783,6 +4804,14 @@ export function scopeAndroidAdeActionArgs(
   androidArgs: Record<string, unknown>,
 ): Record<string, unknown> {
   const method = `run_ade_action:android_emulator.${action}`;
+  if (ANDROID_PERSON_ONLY_SDK_ACTIONS.has(action)) {
+    scopeAccessDenied(
+      action === "installSdk"
+        ? "only a person can accept Google's licences. Ask the user to run this, or to use the setup card"
+        : "only a person can change this machine's Android SDK. Ask the user to run this, or to use the setup card",
+      method,
+    );
+  }
   if (isCtoOnlyAdeAction("android_emulator", action)) {
     scopeAccessDenied(
       "android_emulator viewing actions (the live stream, live touch, deleting an AVD) belong to user clients; "
@@ -4796,13 +4825,16 @@ export function scopeAndroidAdeActionArgs(
     device: "Android emulator",
     missingLaneMessage: androidMissingLaneMessage(action),
   });
-  return { ...androidArgs, ...(laneId ? { laneId } : {}) };
+  const { chatSessionId: _callerChat, ...rest } = androidArgs;
+  const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
+  return { ...rest, ...(laneId ? { laneId } : {}), ...(callerChatSessionId ? { chatSessionId: callerChatSessionId } : {}) };
 }
 
 /**
  * `android_emulator` for an `ade` process with no chat identity: placed by the
  * lane worktree it stands in (`callerRoot`), as for `ios_simulator`. The
  * viewing calls stay behind the CTO role gate for it, as on `mac_desktop`.
+ * It speaks for no chat, so a `chatSessionId` it names is dropped.
  */
 export async function scopeUnboundAndroidAdeActionArgs(
   runtime: AdeRuntime,
@@ -4817,7 +4849,8 @@ export async function scopeUnboundAndroidAdeActionArgs(
     requestedLaneId: asOptionalTrimmedString(androidArgs.laneId),
     missingLaneMessage: androidMissingLaneMessage(action),
   });
-  return { ...androidArgs, ...(laneId ? { laneId } : {}) };
+  const { chatSessionId: _callerChat, ...rest } = androidArgs;
+  return { ...rest, ...(laneId ? { laneId } : {}) };
 }
 
 /**
@@ -6794,8 +6827,9 @@ async function runTool(args: {
       // A chat on another machine with no lane here: its work copy stands in
       // for the lane (the emulator's owner and the screenshot root).
       if (isRecord(androidArgs.remoteWork)) {
-        // Used as it is (P0 has no build verb), made at the caller's commit when missing.
-        const remote = remoteWorkDeviceScope(runtime, session, androidArgs, "none");
+        // Used as it is, made at the caller's commit when missing; an install
+        // or launch that builds or reads an APK gets the caller's code first.
+        const remote = remoteWorkDeviceScope(runtime, session, androidArgs, ANDROID_CODE_SYNC_ACTIONS.has(action) ? undefined : "none");
         // Input actions answer nothing; the caller's machine still learns the lane.
         const answer = (value: unknown): unknown => (value == null ? { workCopy: { laneId: remote.laneId } } : remote.withWorkCopy(value));
         if (ANDROID_LANE_FREE_ACTIONS.has(action)) {
@@ -6962,7 +6996,7 @@ async function runTool(args: {
         }
       }
     }
-    if (domain === "ios_simulator" && action === "deviceLease" && !argsList && !hasScalarArg) {
+    if ((domain === "ios_simulator" || domain === "android_emulator") && action === "deviceLease" && !argsList && !hasScalarArg) {
       // Set here, never taken from the caller: a killed `ade apple lease
       // --wait` leaves the line instead of winning a turn nobody will use.
       const { connectionSignal: _callerSupplied, ...leaseArgs } = scopedObjectArgs;

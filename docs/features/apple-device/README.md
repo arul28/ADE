@@ -126,7 +126,7 @@ extra prints the promote verb, and a refused `launch` also prints the
 One agent should drive a device: it does the taps, screenshots and
 recordings, and other agents hand it work or wait for its results. When agents
 truly must drive one device in parallel, they take turns with
-`ade apple lease` (`ios_simulator.deviceLease`, `appleDeviceLease.ts`).
+`ade apple lease` (`ios_simulator.deviceLease`, `device/deviceLease.ts`).
 
 - Each device has its own line: the lane's device, and each extra with
   `--device`. A lease waits up to `--wait` seconds (max 540) and lasts `--ttl`
@@ -780,7 +780,7 @@ minimized" for that chat.
 | `apps/desktop/src/renderer/components/apple/useAppleDeviceStartTracker.ts` | Tracks a device start for the loading card, and re-reads the truth when the card stops moving. |
 | `apps/desktop/src/renderer/components/apple/useAppleInspect.tsx` | Inspect mode: one snapshot per switch-on, the hovered and selected element, and the overlay. |
 | `apps/desktop/src/renderer/components/apple/appleDeviceScene.ts`, `appleDeviceModelLoader.ts`, `AppleDevice3DView.tsx` | The 3D body and screen math, the GLB loader, and the 3D presenter. |
-| `apps/desktop/src/main/services/ios/appleDeviceLease.ts` | `ade apple lease`: the advisory, queued, expiring turn on a lane's device for agents that share it. |
+| `apps/desktop/src/main/services/device/deviceLease.ts` | `ade apple lease`: the advisory, queued, expiring turn on a lane's device for agents that share it. |
 | `apps/desktop/src/main/services/ios/appleDuoService.ts` | The Duo's own service surface: fold and settle, posture, the live panel for screenshots, Apple's model and agent skill, the App Store set, render proofs and the `ade apple render` broker. |
 | `apps/desktop/src/shared/appleOrientation.ts` | Orientation facts the service and the pane share: an orientation's axis, the Duo's screen names, the inner panel's quarter turn, CoreDevice's pose names, and Tent. |
 | `apps/desktop/src/renderer/components/apple/useAppleDuoPosture.ts`, `AppleDuoDock.tsx`, `appleV68DuoBody.ts` | The simulator's reported posture and the fold call (pane and floating player), the Duo's dock under the device (hinge or screen, and turn), and Apple's physical Duo body. |

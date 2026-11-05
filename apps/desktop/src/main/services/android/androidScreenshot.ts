@@ -29,7 +29,7 @@ function readPngSize(buffer: Buffer): { width: number; height: number } | null {
  * point anywhere). `outPath` comes from agents and other machines, so an
  * unchecked one could overwrite any file the brain can write.
  */
-function containAndroidOutPath(outPath: string, root: string, platform: NodeJS.Platform): string {
+export function containAndroidOutPath(outPath: string, root: string, platform: NodeJS.Platform): string {
   const resolvedRoot = path.resolve(root);
   const target = path.resolve(resolvedRoot, outPath);
   const outside = () => new AndroidEmulatorFailure(

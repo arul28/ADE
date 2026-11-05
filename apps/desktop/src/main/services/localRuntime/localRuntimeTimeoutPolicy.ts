@@ -75,6 +75,23 @@ export const ANDROID_EMULATOR_LIFECYCLE_TIMEOUT_MS = 4 * 60_000;
 /** The remote transport outlives the brain's own budget, so its real reason wins. */
 export const ANDROID_EMULATOR_LIFECYCLE_REMOTE_TRANSPORT_TIMEOUT_MS =
   ANDROID_EMULATOR_LIFECYCLE_TIMEOUT_MS + 15_000;
+/**
+ * `ade android install --gradle` and `launch --gradle`: the project's own
+ * Gradle build, which the service stops after 20 minutes (a cold build
+ * downloads Gradle, the Android plugin and SDK parts), then the install.
+ */
+export const ANDROID_EMULATOR_BUILD_TIMEOUT_MS = 22 * 60_000;
+export const ANDROID_EMULATOR_BUILD_REMOTE_TRANSPORT_TIMEOUT_MS = ANDROID_EMULATOR_BUILD_TIMEOUT_MS + 15_000;
+/**
+ * The UI tree verbs: a `wait-for-element` polls for up to 120 s, and the
+ * Android CLI's first `layout` unpacks its bundle (up to 120 s) before the
+ * tree. Sized like a boot.
+ */
+export const ANDROID_EMULATOR_UI_TIMEOUT_MS = 4 * 60_000;
+export const ANDROID_EMULATOR_UI_REMOTE_TRANSPORT_TIMEOUT_MS = ANDROID_EMULATOR_UI_TIMEOUT_MS + 15_000;
+/** `ade android lease --wait`: a waiter stands in line up to 9 minutes (`DEVICE_LEASE_MAX_WAIT_MS`). */
+export const ANDROID_EMULATOR_LEASE_TIMEOUT_MS = 10 * 60_000;
+export const ANDROID_EMULATOR_LEASE_REMOTE_TRANSPORT_TIMEOUT_MS = ANDROID_EMULATOR_LEASE_TIMEOUT_MS + 15_000;
 
 /**
  * The innermost budgets on the remote path: the JSON-RPC transport carrying
@@ -409,6 +426,24 @@ const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = 
   ["android_emulator.stop", ANDROID_EMULATOR_LIFECYCLE_TIMEOUT_MS],
   ["android_emulator.releaseDevice", ANDROID_EMULATOR_LIFECYCLE_TIMEOUT_MS],
   ["android_emulator.deleteDevice", ANDROID_EMULATOR_LIFECYCLE_TIMEOUT_MS],
+  ["android_emulator.getSdkSetupPlan", ANDROID_EMULATOR_LIFECYCLE_TIMEOUT_MS],
+  // P1 look: a render waits for a desktop window to draw the stills (and a 6 s
+  // turntable); the broker answers by itself before this (RENDER_DONE_TIMEOUT_MS).
+  ["android_emulator.requestRender", ANDROID_EMULATOR_LIFECYCLE_TIMEOUT_MS],
+  // A turntable WebM can be ~10 MB over a remote link.
+  ["android_emulator.attachRenderProof", ANDROID_EMULATOR_LIFECYCLE_TIMEOUT_MS],
+  // P1 agent suite: see ANDROID_EMULATOR_BUILD_TIMEOUT_MS and its neighbours.
+  ["android_emulator.installApp", ANDROID_EMULATOR_BUILD_TIMEOUT_MS],
+  ["android_emulator.launchApp", ANDROID_EMULATOR_BUILD_TIMEOUT_MS],
+  ["android_emulator.getScreenSnapshot", ANDROID_EMULATOR_UI_TIMEOUT_MS],
+  ["android_emulator.findElement", ANDROID_EMULATOR_UI_TIMEOUT_MS],
+  ["android_emulator.tapElement", ANDROID_EMULATOR_UI_TIMEOUT_MS],
+  ["android_emulator.fillElement", ANDROID_EMULATOR_UI_TIMEOUT_MS],
+  ["android_emulator.waitForElement", ANDROID_EMULATOR_UI_TIMEOUT_MS],
+  ["android_emulator.assertVisible", ANDROID_EMULATOR_UI_TIMEOUT_MS],
+  ["android_emulator.captureProofBundle", ANDROID_EMULATOR_UI_TIMEOUT_MS],
+  ["android_emulator.deviceLease", ANDROID_EMULATOR_LEASE_TIMEOUT_MS],
+  ["android_emulator.recordStop", DEMO_RECORDING_STOP_TIMEOUT_MS],
 ]);
 
 export function longRunningLocalRuntimeActionTimeoutMs(

@@ -18,6 +18,7 @@ export const adeBundledAgentSkills = [
   "ade-cli-control-plane",
   "ade-computer-use",
   "ade-apple",
+  "ade-android",
   "ade-harnesses",
   "ade-ios-simulator",
   "ade-app-control",

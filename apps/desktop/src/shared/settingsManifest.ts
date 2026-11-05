@@ -39,6 +39,8 @@ export const SETTINGS_TAB_IDS = [
   "appearance",
   "behaviour",
   "apple",
+  // The Android SDK belongs to one machine, so the page follows `?machine=`.
+  "android",
   "keyboard",
   // Project → Lanes keeps the id `lanes-git` so every link ever shipped to it
   // still lands.
@@ -119,10 +121,11 @@ export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
 
 /**
  * Pages about one machine that another machine can be picked for, with
- * `?machine=<id>`: Providers (its picker) and Machines (a machine's own page).
+ * `?machine=<id>`: Providers and Android devices (their pickers) and Machines
+ * (a machine's own page).
  * Absent means This computer.
  */
-export const MACHINE_SETTINGS_TAB_IDS: readonly SettingsTabId[] = ["agents", "machines"];
+export const MACHINE_SETTINGS_TAB_IDS: readonly SettingsTabId[] = ["agents", "android", "machines"];
 
 export function isMachineSettingsTab(tab: SettingsTabId): boolean {
   return MACHINE_SETTINGS_TAB_IDS.includes(tab);
@@ -196,6 +199,8 @@ export const SETTINGS_TABS: readonly SettingsTab[] = [
   // network. Values are filed under this device's account scope so the brain
   // on this computer can read the remote streaming cap (see accountSettingsSync).
   { id: "apple", label: "Apple devices", description: "Simulator display, recording overlays, and remote streaming on this computer.", group: "app" },
+  // Android devices follows the picked machine: each machine has its own SDK.
+  { id: "android", label: "Android devices", description: "The Android SDK, its licences and the Android CLI, on each machine.", group: "app" },
   // Keys are read by the window you type into, and each computer has its own
   // keyboard and OS shortcuts, so the page is per computer.
   { id: "keyboard", label: "Keyboard", description: "Shortcuts and Quick slots on this computer.", group: "app" },
@@ -982,6 +987,17 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     scope: "machine",
     web: "browser",
     group: "Apple Development",
+  },
+  {
+    id: "android.sdk",
+    label: "Android SDK",
+    keywords: ["android", "emulator", "avd", "sdk", "install", "licence", "license", "android cli", "adb", "platform-tools", "system image"],
+    tab: "android",
+    anchor: "android-sdk",
+    scope: "machine",
+    // The web client gets Android in P2 (plan §6).
+    web: "hidden",
+    group: "Android devices",
   },
 
   // ── Agents & Models ──────────────────────────────────────────────────────

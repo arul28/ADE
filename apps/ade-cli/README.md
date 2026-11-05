@@ -802,11 +802,13 @@ ade screen setup --allow-prompt --text                # Windows: the user's one-
 ade android status --text                             # SDK, tools, acceleration, and this lane's emulator
 ade android devices --profiles --text                 # AVDs (and the lane holding each), system images, hardware profiles
 ade android device-create --profile medium_phone --text  # make an AVD for this lane and boot it; --image <pkg>, --no-start
+ade android device-create --catalog galaxy-s25 --color navy --text  # a brand device (stock Android): Pixel, Galaxy, OnePlus, Nothing
 ade android device-attach --avd <name> --text         # hold an AVD no other lane holds, and boot it
 ade android start --text                              # also: stop; device-detach [--keep] (an ADE-made AVD is deleted unless --keep)
 ade android screenshot --out shot.png --text          # PNG on the emulator's machine
 ade android tap 540 1200 --text                       # device pixels; also: swipe x1 y1 x2 y2 --duration-ms 300, button back, type "hi"
 ade android rotate landscape --text                   # lock the screen to portrait or landscape; apps that fix their orientation keep it
+ade android render --angles front,back --sheet --text  # 3D stills of the device with its live screen, filed as proof (ADE open on the lane's Android tool)
 ade android device-create --profile medium_phone --machine windows --text  # on another machine, for this chat's work copy there (no new lane); --lane <id> for a lane there
 ade --socket app-control launch --command "npm run dev" --text
 ade --socket app-control connect --cdp-port 9222 --text           # attach to an already-running app

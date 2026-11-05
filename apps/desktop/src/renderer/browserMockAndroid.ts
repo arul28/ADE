@@ -10,6 +10,19 @@
  * - `setup`: no SDK.  `noaccel`: the SDK, no acceleration.
  * - `starting`, `off`, `crashed`, `unsupported`.
  *
+ * P1 look (3D stage, brand grid):
+ * - `?mockAndroidCatalog=<catalog id>` makes the lane's device that catalog
+ *   device (`galaxy-s25`, `pixel-10-pro`, …), `?mockAndroidColor=<id>` its
+ *   colour. With `?mockAndroid=starting` it boots on the model for 25 s.
+ * - `?mockAndroidLandscape`: the stream starts turned to landscape.
+ * - `?mockAndroidNoImage`: no system image, so the tiles ask for setup.
+ * - `window.__adeMockAndroidRenders` keeps every render posted (titles and
+ *   sizes); with `?mockAndroidRenders`, `__adeMockAndroidRenderUrls` keeps
+ *   the data URLs too.
+ *
+ * The setup card's plan and install are in `browserMockAndroidSetup.ts`
+ * (`?mockAndroidSetup=<case>`). A finished mock install makes the SDK whole.
+ *
  * `?mockAndroidRemote` (in `browserMock.ts`) gives the Codex chat a work copy
  * on the Studio Mac that drives an emulator; `?mockAndroidRemote=none` has
  * that work copy hold no device yet.
@@ -38,6 +51,9 @@ import {
   VIDEO_RECORD_TYPE_ACCESS_UNIT,
   VIDEO_RECORD_TYPE_CONFIG,
 } from "../shared/types/videoRecords";
+import { createMockAndroidSetup } from "./browserMockAndroidSetup";
+import { createMockAndroidTools } from "./browserMockAndroidTools";
+import { androidCatalogColor, androidCatalogEntry, resolveAndroidCatalogProfile } from "../shared/androidDeviceCatalog";
 
 type Scenario = "live" | "picker" | "setup" | "noaccel" | "starting" | "off" | "crashed" | "unsupported";
 
@@ -48,8 +64,16 @@ export const MOCK_STREAM_URL = `http://127.0.0.1:9${MOCK_STREAM_PATH}`;
 const VIDEO_WIDTH = 576;
 const VIDEO_HEIGHT = 1280;
 /** What `rotate` last set; the stream turns to it ~0.9 s later, as the brain's does. */
-let mockOrientation: "portrait" | "landscape" = "portrait";
+let mockOrientation: "portrait" | "landscape" = mockParam("mockAndroidLandscape") !== null ? "landscape" : "portrait";
 const LCD = { width: 1080, height: 2400 };
+
+function mockParam(name: string): string | null {
+  try {
+    return new URLSearchParams(window.location.search).get(name);
+  } catch {
+    return null;
+  }
+}
 
 function remoteWorkCopyEmpty(): boolean {
   try {
@@ -72,6 +96,8 @@ function scenario(): Scenario {
 const PROFILES: AndroidHardwareProfile[] = [
   { id: "medium_phone", name: "Medium Phone", origin: "sdk", screenInches: 6.4, widthPx: 1080, heightPx: 2400, density: 420, formFactor: "phone" },
   { id: "small_phone", name: "Small Phone", origin: "sdk", screenInches: 4.65, widthPx: 720, heightPx: 1280, density: 320, formFactor: "phone" },
+  { id: "pixel_10", name: "Pixel 10", origin: "sdk", screenInches: 6.3, widthPx: 1080, heightPx: 2424, density: 420, formFactor: "phone" },
+  { id: "pixel_10_pro_fold", name: "Pixel 10 Pro Fold", origin: "sdk", screenInches: 8.0, widthPx: 2076, heightPx: 2152, density: 390, formFactor: "foldable" },
   { id: "pixel_9", name: "Pixel 9", origin: "sdk", screenInches: 6.3, widthPx: 1080, heightPx: 2424, density: 420, formFactor: "phone" },
   { id: "pixel_9_pro", name: "Pixel 9 Pro", origin: "sdk", screenInches: 6.3, widthPx: 1280, heightPx: 2856, density: 480, formFactor: "phone" },
   { id: "pixel_8a", name: "Pixel 8a", origin: "sdk", screenInches: 6.1, widthPx: 1080, heightPx: 2400, density: 420, formFactor: "phone" },
@@ -92,7 +118,14 @@ const IMAGE = {
   path: "/Users/mock/Library/Android/sdk/system-images/android-36/google_apis_playstore/arm64-v8a",
 };
 
+/** Set by a finished mock install or "Use mine…": the SDK is then whole at this folder. */
+let mockSdkRoot: string | null = null;
+
 function sdkStatus(which: Scenario): AndroidSdkStatus {
+  return mockSdkRoot ? wholeSdk(mockSdkRoot, which) : scenarioSdk(which);
+}
+
+function scenarioSdk(which: Scenario): AndroidSdkStatus {
   const found = which !== "setup";
   const root = found ? "/Users/mock/Library/Android/sdk" : null;
   return {
@@ -114,6 +147,17 @@ function sdkStatus(which: Scenario): AndroidSdkStatus {
   };
 }
 
+function wholeSdk(root: string, which: Scenario): AndroidSdkStatus {
+  const base = scenarioSdk(which === "setup" ? "live" : which);
+  const versions: Record<string, string> = { "platform-tools": "37.0.1", emulator: "37.2.13", "cmdline-tools": "23.0", "system-image": "API 37" };
+  return {
+    ...base,
+    root,
+    source: "setting",
+    tools: base.tools.map((tool) => ({ ...tool, available: true, version: versions[tool.id] ?? tool.version, detail: null, path: tool.path?.replace("/Users/mock/Library/Android/sdk", root) ?? `${root}/${tool.id}` })),
+  };
+}
+
 function avd(partial: Partial<AndroidAvdListing> & Pick<AndroidAvdListing, "name">): AndroidAvdListing {
   return {
     displayName: null,
@@ -131,6 +175,23 @@ function avd(partial: Partial<AndroidAvdListing> & Pick<AndroidAvdListing, "name
     heldByLaneId: null,
     madeForOtherLane: false,
     ...partial,
+  };
+}
+
+/** A catalog device's AVD fields, as the brain writes them (`ade.catalogId`, `ade.color`, the profile's screen). */
+function lookFor(catalogId: string | null, colorId: string | null): Partial<AndroidAvdListing> {
+  const entry = androidCatalogEntry(catalogId);
+  if (!entry) return {};
+  const profile = resolveAndroidCatalogProfile(entry, PROFILES.map((item) => item.id));
+  const known = PROFILES.find((item) => item.id === profile?.profileId);
+  return {
+    displayName: entry.name,
+    profileId: profile?.profileId ?? entry.adeProfile?.id ?? entry.sdkProfileIds[0] ?? null,
+    catalogId: entry.id,
+    colorId: androidCatalogColor(entry, colorId).id,
+    lcdWidth: known?.widthPx ?? entry.screen.widthPx,
+    lcdHeight: known?.heightPx ?? entry.screen.heightPx,
+    density: known?.density ?? entry.adeProfile?.density ?? 420,
   };
 }
 
@@ -162,12 +223,19 @@ export function createMockAndroidEmulator(): AndroidEmulatorPreloadApi {
         : which === "crashed" ? "crashed"
           : "booted";
   let streamRunning = false;
+  /** The lane device's catalog look (P1): which catalog device, its colour and screen. */
+  let laneLook: Partial<AndroidAvdListing> = lookFor(mockParam("mockAndroidCatalog"), mockParam("mockAndroidColor"));
+  const renders: Array<{ title: string | null; bytes: number }> = [];
+  (window as unknown as Record<string, unknown>).__adeMockAndroidRenders = renders;
+  const renderUrls: string[] = [];
+  (window as unknown as Record<string, unknown>).__adeMockAndroidRenderUrls = renderUrls;
 
   const otherAvds: AndroidAvdListing[] = [
     avd({ name: "versic_tablet", profileId: "pixel_tablet", apiLevel: 35, lcdWidth: 2560, lcdHeight: 1600, density: 320, heldByLaneId: "lane-b", running: runningOn("versic_tablet", 5554, false), sizeBytes: 6.4e9 }),
     avd({ name: "versic_fold", profileId: "pixel_9_pro_fold", lcdWidth: 2076, lcdHeight: 2152, density: 390, sizeBytes: 4.8e9 }),
     avd({ name: "vphone4", displayName: "Medium Phone API 36", sizeBytes: 3.2e9 }),
     avd({ name: "vphone3", profileId: "small_phone", apiLevel: 35, lcdWidth: 720, lcdHeight: 1280, density: 320, sizeBytes: 1.9e9 }),
+    avd({ name: "ade_4b10d2e7_galaxy_s25", ...lookFor("galaxy-s25", "mint"), adeCreated: true, sizeBytes: 2.4e9 }),
     avd({ name: "ade_9f2c71ab_pixel_9", displayName: "ADE · fix-login", profileId: "pixel_9", lcdWidth: 1080, lcdHeight: 2424, adeCreated: true, madeForOtherLane: true, sizeBytes: 1.1e9 }),
   ];
   const laneAvdRecord = (): AndroidAvdListing | null => {
@@ -177,6 +245,7 @@ export function createMockAndroidEmulator(): AndroidEmulatorPreloadApi {
     return avd({
       name: laneAvd,
       displayName: "ADE · android-emulator-suite",
+      ...laneLook,
       adeCreated: true,
       heldByLaneId: laneId,
       running: laneState === "booted" ? runningOn(laneAvd, 5556, true) : null,
@@ -230,22 +299,43 @@ export function createMockAndroidEmulator(): AndroidEmulatorPreloadApi {
     window.setTimeout(() => {
       laneState = "booted";
       if (laneId) emit({ type: "android.device.state", laneId, state: "booted" });
-    }, 1_800);
+    }, mockParam("mockAndroidCatalog") !== null && which === "starting" ? 25_000 : 1_800);
   };
   const delay = <T,>(value: T, ms = 120) => new Promise<T>((resolve) => window.setTimeout(() => resolve(value), ms));
 
   installMockStreamFetch(touches);
 
+  const setup = createMockAndroidSetup({
+    sdk: () => sdkStatus(which),
+    status: () => status(laneId),
+    emit,
+    onInstalled: (root) => {
+      mockSdkRoot = root;
+    },
+    onUseSdk: (root) => {
+      mockSdkRoot = root;
+    },
+  });
+
+  const tools = createMockAndroidTools({ fail: mockParam("mockAndroidTools") === "fail" });
+
   return {
+    ...setup,
+    ...tools,
     getStatus: async (args, pin) => delay(status(args?.laneId ?? null, pin?.kind === "remote"), 60),
     listDevices: async (args) => {
       if (args?.laneId) laneId = args.laneId;
       const lane = laneAvdRecord();
-      return delay({ avds: [...(lane ? [lane] : []), ...otherAvds], profiles: PROFILES, images: [IMAGE] }, 140);
+      const images = mockParam("mockAndroidNoImage") !== null ? [] : [IMAGE];
+      // Storage measures the folders: a slower answer, as on a real drive.
+      return delay({ avds: [...(lane ? [lane] : []), ...otherAvds], profiles: PROFILES, images }, args?.measureSizes ? 700 : 140);
     },
     createDevice: async (args) => {
       laneId = args.laneId;
-      boot(`ade_${args.laneId.slice(0, 8)}_${args.profileId}`);
+      laneLook = lookFor(args.catalogId ?? null, args.colorId ?? null);
+      if (args.displayName) laneLook.displayName = args.displayName;
+      const profile = laneLook.profileId ?? args.profileId;
+      boot(`ade_${args.laneId.slice(0, 8)}_${String(profile).replace(/^ade_/u, "")}`);
       return delay(laneStatus(), 2_000);
     },
     attachDevice: async (args) => {
@@ -322,6 +412,20 @@ export function createMockAndroidEmulator(): AndroidEmulatorPreloadApi {
       capturedAt: new Date().toISOString(),
     }, 300),
     resolveStreamUrl: async (url) => ({ url, forwarded: false, error: null }),
+    setDeviceColor: async (args) => {
+      laneId = args.laneId;
+      laneLook = { ...laneLook, colorId: args.colorId };
+      return delay(laneStatus(), 80);
+    },
+    renderAck: async () => ({ ok: true }),
+    renderComplete: async () => ({ ok: true }),
+    attachRenderProof: async (args) => {
+      renders.push({ title: args.title ?? null, bytes: Math.round((args.dataUrl.length * 3) / 4) });
+      // The pictures themselves, to look at by eye (`?mockAndroidRenders`).
+      if (mockParam("mockAndroidRenders") !== null) renderUrls.push(args.dataUrl);
+      const index = renders.length;
+      return delay({ path: `/Users/mock/.ade/android/renders/render-${index}.png`, proofArtifactId: `mock-render-${index}` }, 90);
+    },
     onEvent: (listener) => {
       listeners.add(listener);
       return () => listeners.delete(listener);

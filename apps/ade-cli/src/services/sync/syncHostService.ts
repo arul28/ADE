@@ -316,6 +316,7 @@ import {
 } from "../../../../desktop/src/main/services/macDesktop/macDesktopSyncStream";
 import type { AppControlSyncStream, AppControlSyncStreamSink } from "./appControlSyncStream";
 import type { AppleDeviceRemoteService, AppleStreamTicketIssuer } from "./appleRemoteCommands";
+import type { AndroidDeviceRemoteService } from "./androidRemoteCommands";
 import { prepareProductAnalyticsRemoteCommand } from "./productAnalyticsRemoteCommand";
 import type { WebhookRemoteSource } from "./webhookRemoteCommands";
 import type { AutomationRuleRemoteSource } from "./automationRuleRemoteCommands";
@@ -1255,6 +1256,7 @@ type SyncHostServiceArgs = {
   appleDeviceService?: AppleDeviceRemoteService | null;
   appleStreamRelay?: AppleStreamTicketIssuer | null;
   getAppleRemoteBitrateKbpsCap?: () => number | null;
+  androidDeviceService?: AndroidDeviceRemoteService | null;
   linearCredentialService?: ReturnType<typeof createLinearCredentialService> | null;
   getLinearIssueTracker?: () => ReturnType<typeof createLinearIssueTracker> | null;
   projectConfigService?: ReturnType<typeof createProjectConfigService>;
@@ -2498,6 +2500,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     appleDeviceService: args.appleDeviceService,
     appleStreamRelay: args.appleStreamRelay,
     getAppleRemoteBitrateKbpsCap: args.getAppleRemoteBitrateKbpsCap,
+    androidDeviceService: args.androidDeviceService,
     linearCredentialService: args.linearCredentialService,
     getLinearIssueTracker: args.getLinearIssueTracker,
     projectConfigService: args.projectConfigService,

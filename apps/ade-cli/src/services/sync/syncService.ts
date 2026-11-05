@@ -83,6 +83,7 @@ import type { MacDesktopService } from "../../../../desktop/src/main/services/ma
 import { createMacDesktopSyncStream } from "../../../../desktop/src/main/services/macDesktop/macDesktopSyncStream";
 import { createAppControlSyncStream, type AppControlSyncSource } from "./appControlSyncStream";
 import type { AppleDeviceRemoteService, AppleStreamTicketIssuer } from "./appleRemoteCommands";
+import type { AndroidDeviceRemoteService } from "./androidRemoteCommands";
 import {
   buildAddressCandidates,
   buildPairingConnectInfo,
@@ -182,6 +183,8 @@ type SyncServiceArgs = {
   builtInBrowserService?: SyncBrowserTabCloser | null;
   /** Apple device environment for remote surfaces; absent off macOS. */
   appleDeviceService?: AppleDeviceRemoteService | null;
+  /** The lanes' Android emulators for remote surfaces; every host. */
+  androidDeviceService?: AndroidDeviceRemoteService | null;
   /** Webhook automations for remote surfaces (read-only). */
   getWebhookAutomations?: () => WebhookRemoteSource | null;
   /** Auto-handoff rules for the phone's session menu; null when automations are off. */
@@ -998,6 +1001,7 @@ export function createSyncService(args: SyncServiceArgs) {
     appleDeviceService: args.appleDeviceService,
     appleStreamRelay: args.appleStreamRelay,
     getAppleRemoteBitrateKbpsCap: args.getAppleRemoteBitrateKbpsCap,
+    androidDeviceService: args.androidDeviceService,
     getWebhookAutomations: args.getWebhookAutomations,
     getAutomationRules: args.getAutomationRules,
     projectConfigService: args.projectConfigService,
@@ -1216,6 +1220,7 @@ export function createSyncService(args: SyncServiceArgs) {
       appleDeviceService: args.appleDeviceService,
       appleStreamRelay: args.appleStreamRelay,
       getAppleRemoteBitrateKbpsCap: args.getAppleRemoteBitrateKbpsCap,
+      androidDeviceService: args.androidDeviceService,
       projectConfigService: args.projectConfigService,
       portAllocationService: args.portAllocationService,
       laneEnvironmentService: args.laneEnvironmentService,

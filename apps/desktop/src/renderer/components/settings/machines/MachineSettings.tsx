@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import {
+  AndroidLogo,
   AppleLogo,
   ArrowClockwise,
   ArrowsClockwise,
@@ -108,6 +109,13 @@ export function MachineSettings({
             control={isThis ? <RowLink onClick={() => openTab("apple")} /> : elsewhere}
           />
         ) : null}
+        {/* Every machine can run the Android emulator, and its page follows the machine. */}
+        <MachineRow
+          icon={<AndroidLogo size={14} />}
+          title="Android devices"
+          value="SDK and emulator tools"
+          control={reach ? <RowLink onClick={() => openMachine(scope.machineId, "android")} /> : elsewhere}
+        />
         <MachineRow icon={<Cpu size={14} />} title="System" value={[os, arch].filter(Boolean).join(" · ") || "Unknown"} />
         {isThis && local.pressure && local.pressure.totalBytes > 0 ? (
           <MachineRow

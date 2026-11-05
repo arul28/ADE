@@ -90,28 +90,72 @@ export function withRemoteAppleArgs(params: JsonObject, cwd: string, workCopy: M
  * Android reads about the machine. They never make a work copy: the other
  * machine reports this chat's emulator only when the copy already exists.
  */
-const ANDROID_MACHINE_ACTIONS: ReadonlySet<string> = new Set(["getStatus", "listDevices"]);
+const ANDROID_MACHINE_ACTIONS: ReadonlySet<string> = new Set([
+  "getStatus",
+  "listDevices",
+  // The SDK setup is the machine's, not a lane's.
+  "getSdkSetupPlan",
+  "getSdkInstallState",
+  "installSdk",
+  "cancelSdkInstall",
+  "setSdkPath",
+]);
 
 /**
  * `ade android … --machine` with no `--lane`: the emulator there works for
- * this chat's work copy. P0 has no build verb, so every verb uses the copy as
- * it is, and makes it at this commit when it does not exist yet. A status or
- * device list sends no commit and makes no copy.
+ * this chat's work copy. An install or launch that builds (`--gradle`) or
+ * reads an APK (`--apk`, a path inside this checkout) syncs the copy to this
+ * checkout first, as an Apple build does; every other verb uses the copy as it
+ * is, and makes it at this commit when it does not exist yet. A status or
+ * device list sends no commit and makes no copy. The chat id is the other
+ * machine's to set, from the caller's identity.
  */
 export function withRemoteAndroidArgs(params: JsonObject, cwd: string): JsonObject {
   const toolArgs = isRecord(params.arguments) ? params.arguments : {};
   if (!isRecord(toolArgs.args) || asString(toolArgs.args.laneId)) return params;
   const action = asString(toolArgs.action) ?? "";
+  const { chatSessionId: _chatSessionId, ...args } = toolArgs.args;
+  const builds = (action === "installApp" || action === "launchApp") && (asString(args.apkPath) != null || args.gradle != null);
+  const apkPath = builds ? asString(args.apkPath) : null;
   return {
     ...params,
     arguments: {
       ...toolArgs,
       args: {
-        ...toolArgs.args,
-        remoteWork: ANDROID_MACHINE_ACTIONS.has(action) ? { sync: "none" } : { ...readLocalHead(cwd), sync: "none" },
+        ...args,
+        ...(apkPath ? { apkPath: remoteApkPath(apkPath, cwd) } : {}),
+        remoteWork: ANDROID_MACHINE_ACTIONS.has(action)
+          ? { sync: "none" }
+          : builds
+            ? readLocalWorkSource(cwd)
+            : { ...readLocalHead(cwd), sync: "none" },
       },
     },
   };
+}
+
+/**
+ * `--apk` with `--machine`: the path inside this checkout, relative to its
+ * top, which the other machine resolves inside the chat's work copy. The APK
+ * travels in the uncommitted-changes patch, so one git ignores (most build
+ * output) is refused here with the way that works.
+ */
+function remoteApkPath(apkPath: string, cwd: string): string {
+  const { top } = localCheckout(cwd);
+  // git names the top by its real path (macOS `/tmp` is `/private/tmp`).
+  const typed = path.resolve(cwd, apkPath);
+  if (!fs.existsSync(typed)) throw new CliUsageError(`--apk ${apkPath}: no such file here.`);
+  const relative = path.relative(fs.realpathSync.native(top), fs.realpathSync.native(typed));
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
+    throw new CliUsageError(`--apk ${apkPath} is outside this checkout (${top}), so it cannot go to the other machine.`);
+  }
+  const ignored = spawnSync("git", ["check-ignore", "-q", "--", relative], { cwd: top, windowsHide: true });
+  if (ignored.status === 0) {
+    throw new CliUsageError(
+      `--apk ${apkPath} is ignored by git, so it does not travel to the other machine. Pass --gradle to build the app there.`,
+    );
+  }
+  return relative.split(path.sep).join("/");
 }
 
 function patchTooLargeError(): CliUsageError {

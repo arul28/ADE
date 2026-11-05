@@ -137,8 +137,9 @@ async function endAndroidLaneDeviceOnDisk(
     return { ended: true, deletedAvd: device.avdName, reason: null };
   }
 
-  // The user's own AVD: never deleted. (P1 adds back the uninstall of the
-  // packages ADE installed on it, with the install verb.)
+  // The user's own AVD: never deleted. The packages ADE installed on it are
+  // uninstalled before this, while it still runs (the service's
+  // `agent.beforeRelease`, androidAgentSuite.ts).
   return { ended: true, deletedAvd: null, reason: null };
 }
 

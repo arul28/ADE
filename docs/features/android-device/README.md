@@ -21,10 +21,11 @@ Scope:
 The emulator runs on the machine that runs the lane's brain. That machine
 needs:
 
-- **The Android SDK.** Android Studio installs it, and so do Google's
-  command-line tools. ADE looks for it on every use, not once at start-up, so
-  an SDK installed while ADE runs is seen on the next call. The order is
-  `ANDROID_HOME`, then `ANDROID_SDK_ROOT`, then the platform default:
+- **The Android SDK.** The setup card installs it, and so do Android Studio
+  and Google's command-line tools. ADE looks for it on every use, not once at
+  start-up, so an SDK installed while ADE runs is seen on the next call. The
+  order is the machine's SDK setting ("Use mine…" or the setup card's
+  folder), then `ANDROID_HOME`, then `ANDROID_SDK_ROOT`, then the platform default:
   `~/Library/Android/sdk` (macOS), `%LOCALAPPDATA%\Android\Sdk` (Windows),
   `~/Android/Sdk` (Linux). On Linux it then tries `/opt/android-sdk` and
   `/usr/lib/android-sdk`, so a system-wide install is found even when the
@@ -50,24 +51,84 @@ Windows or Linux reports `platformSupported: false`. A missing SDK is not
 ### The setup card
 
 When the SDK or a part that a boot needs is missing, the pane shows
-**Set up Android on this machine**. It is a checklist:
+**Set up Android on this machine**. Settings › Android devices shows the same
+card for the machine in the title picker, so a Mac window can set up a
+Windows box. Every call goes to the machine that the pin names.
+
+The card is a checklist. Each row is found or missing, with its size:
 
 | Row | Found | Missing |
 |---|---|---|
-| Acceleration | `HVF on`, `WHPX on`, `KVM on` | `<kind> off` or `not available`, with the check's sentence. Before the emulator is installed the check cannot run, so the row shows a dash and `checked after setup`. |
+| Acceleration | `HVF on`, `WHPX on`, `KVM on` | `<kind> off` or `not available`, with the check's sentence and **How to fix**. Before the emulator is installed, the check cannot run: the row shows a dash and `checked after setup`. |
 | Android SDK | the SDK folder | `not found` |
-| Platform tools | the version | ~15 MB |
-| Emulator | the version | ~480 MB |
-| Phone image | the version | the host ABI and ~1.8 GB |
+| Platform tools, Command-line tools, Emulator | the version | the newest stable version and its download size |
+| Phone image | the API level and tag | the newest stable Google Play (else Google APIs) image for the host ABI that the planned emulator runs |
+| Android CLI | the version | an optional box, off by default |
 
-The card shows the SDK folder, or the default folder that ADE looks in. It
-says "Install Android Studio, or set ANDROID_HOME to your SDK folder, then
-check again." and has **Check again**.
+Under the list, the card shows the install folder with a pencil, the space
+that the install needs against the free space, and the AVD folder with its
+free space. Below 10 GB free on the AVD drive, that line turns amber. On this
+computer the pencil opens a folder picker. On another machine you type the
+path.
 
-The card is read-only in P0. ADE installs nothing. The guided install
-(licence review, "Use mine…", the optional Android CLI) is P1. P0 has no
-Settings section for the SDK path yet, so `ANDROID_HOME` or the default folder
-is the way to point ADE at an SDK.
+The buttons:
+
+- **Review licences & install** opens one dialog with each licence that a
+  missing part uses, in full, each with its own box. The install starts only
+  when you tick every box. ADE never accepts a licence by itself. The brain
+  refuses an install whose request does not name each licence
+  (`ANDROID_SDK_LICENSE_NOT_ACCEPTED`).
+- **Use mine…** points ADE at an SDK that you already have. The folder must
+  hold `platform-tools`, `emulator` or `system-images`
+  (`ANDROID_SDK_PATH_INVALID`).
+- **Check again** reads the SDK and the plan again.
+
+While the install runs, the card shows a meter, the step (`Downloading
+Emulator · 61% · 2 of 4 · 2 min left`) and **Cancel**. Progress comes as
+`android.sdk.install` events. A state read every 3 s covers a lost event, and
+only while an install runs.
+
+How the install works (`androidSdkInstall.ts`):
+
+- **The source.** Google's SDK repository (`repository2-3.xml` and the
+  `sys-img2-3.xml` manifests), stable channel only. ADE reads the manifests
+  for each plan and keeps them for 10 minutes. ADE needs no JDK and does not
+  run `sdkmanager`.
+- **The image and the emulator agree.** ADE picks the newest image whose
+  emulator dependency the planned emulator meets. An emulator that is older
+  than the image needs is planned as "Update from x".
+- **Downloads resume.** Each archive goes to `<sdk>/.ade-downloads/` with
+  `Range` requests and up to four attempts. A cancelled or failed install
+  keeps the partial file, and the next install continues it. ADE checks the
+  SHA-1 from the manifest before it unpacks.
+- **Unpack is atomic per part.** ADE unpacks into `<sdk>/.ade-staging/`,
+  moves an old copy aside, then renames the new folder into place, and writes
+  `package.xml`. On Windows the rename retries while an antivirus holds a
+  file. A zip entry that is absolute, has a drive letter or climbs with `..`
+  stops the install.
+- **The licence record.** ADE appends the licence hashes to
+  `<sdk>/licenses/<id>`, the files that `sdkmanager` and Gradle read. It also
+  writes `<sdk>/.ade/license-consents.json` with each licence id, the SHA-1 of
+  the text you saw, and the time.
+- **One install for each SDK folder.** `<sdk>/.ade-install.lock` holds the
+  pid. A second ADE process gets `ANDROID_SDK_INSTALL_BUSY` while that pid
+  lives. A lock older than 6 hours is stale.
+- **Space.** The plan adds the unpacked size of each missing part and the
+  largest zip. With less free space, the install stops before it starts
+  (`ANDROID_SDK_NO_SPACE`).
+- **The Android CLI** (optional) comes from
+  `dl.google.com/android/cli/latest/<os>_<arch>/`, checked with its `.sha256`
+  file, into `<sdk>/android-cli/`. ADE always runs it with `--no-metrics`.
+  Google publishes no build for Windows on Arm, so the row says "Not
+  available for this computer" there.
+  Its first run unpacks about 150 MB into `~/.android/cli`.
+- **Hosts.** macOS (arm64, x64), Windows x64 and Linux x64. Windows on Arm and
+  Linux arm64 have no Google emulator: the card says so and installs nothing.
+
+The default install folder is the platform default above. A folder that ADE
+would not find by itself becomes the machine's SDK setting when the install
+starts, so a partial install is visible too. The setting lives in
+`<ADE home>/android/settings.json`, and ADE reads it before `ANDROID_HOME`.
 
 ## Desktop surface
 
@@ -97,18 +158,50 @@ The picker shows when the lane holds no device, or when the user picks
    **Delete device…** (only for an AVD that ADE made, that no lane holds, that
    is off, and that ADE did not make for a lane outside this project). Delete
    asks again and says how much disk it frees.
-3. **New device.** The line "Stock Android on every device", then four stock
-   profiles from this SDK: Phone, Small phone, Tablet, Foldable. One click
-   makes an AVD with the newest installed image for the host ABI and boots it.
+3. **New device.** The line "Stock Android on every device", then the brand
+   grid: one tile per device in `shared/androidDeviceCatalog.ts` (Pixel,
+   Galaxy, OnePlus, Nothing, and others). A tile shows the brand mark, the
+   name, a 3D still of the body in the picked colour, and the colour dots. A
+   click makes an AVD with the newest installed image for the host ABI, in
+   that colour, and boots it. The ▾ button opens the details: the system
+   image, the name, and **Create and start**. A tile with no system image
+   asks for setup; a tile whose profile is missing says so.
    **More…** lists every profile the SDK has, grouped by form factor. A new
    AVD is deleted with the lane.
+4. **Storage.** A toggle that measures each AVD on the disk when it opens
+   ("ADE made" or "Yours", in use or running, size). **Clean up** asks again
+   ("Delete N — frees X") and deletes only the AVDs that the ⋯ menu could
+   delete.
 
-The brand grid with 3D tiles (Pixel, Galaxy and others) takes the place of the
-stock list in P1.
+Pixel tiles use the SDK's own hardware profiles. The other brands use ADE
+profiles (`ade_*` ids) that ADE merges into `<android user home>/devices.xml`
+(`~/.android/devices.xml`) on the first create. The merge keeps every
+profile that is not ADE's, writes the file atomically, and uses the density
+values the SDK schema allows.
+
+The tile stills come from one shared WebGL renderer. Each still is drawn
+once, then kept in memory and in `localStorage` (WebP). Hover turns the body
+slowly on the same renderer, one tile at a time; the renderer is freed after
+20 s with no use. Reduced motion stops the turn.
 
 ### The stage
 
-The stage is the flat view only in P0. The video arrives the right way up,
+The stage has a 3D view and a flat view, as on the Apple stage (the rail's
+**View** button, kept per project). The 3D view draws the device body (the
+catalog body for a catalog device, a procedural body for any other profile)
+with the live screen on it. Touch on the 3D screen maps to device pixels as
+in the flat view. The body takes the AVD's colour (More › Body colour). While
+the emulator boots, the boot ring shows on the model's screen. Rotate turns
+the body smoothly to landscape. If WebGL fails, the stage falls back to the
+flat view and says why.
+
+The rail's **Render** button opens the Render sheet: angles (front, ¾ left,
+¾ right, back, the current view), the background (transparent, studio,
+dusk), a shadow, a turntable video and a contact sheet. The renders are
+filed to the lane's proof (History). `ade android render` asks the open pane
+for the same renders, with the flags of `ade ios-sim render`.
+
+In the flat view the video arrives the right way up,
 because scrcpy turns it with the display. The screen box fits the pane and
 stays centred. While the rail shows, the box moves left (and shrinks if it
 must) only when the rail would cover its right edge, as on the Apple stage. So
@@ -126,15 +219,73 @@ The rail floats on the right edge, in Apple's place and size. The order:
 - **Power and volume** ▾: Power, Volume up, Volume down.
 - **Rotate**: toggles portrait and landscape. The home screen stays portrait;
   apps that allow rotation turn.
-- **Save screenshot**.
+- **Inspect**: boxes over every element of the screen (see
+  [Inspect](#inspect)).
+- **Save screenshot**, **Render** (the Render sheet), **Record** (red while a
+  recording runs; it is also the Stop button), and **View** (3D or flat).
 - A divider.
+- **Device tools**: opens the [Tools drawer](#the-tools-drawer).
 - **Maximize**, where the pane provides it.
-- **More** ⋯: the device name and profile, **Switch device…**, and
-  **Power off**.
+- **More** ⋯: the device name and profile, **Switch device…**, the body
+  colour, **Reset view**, and **Power off**.
 
-Below 360 px of pane width the rail keeps the navigation keys, Power, Maximize
-and More. Rotate and Save screenshot move into More. P0 has no Inspect, Record, 3D or
-Tools drawer. They come in the Apple order when they are built.
+Below 360 px of pane width the rail keeps the navigation keys, Power, Device
+tools, Maximize and More. The other controls move into More.
+
+### Inspect
+
+Inspect reads the UI tree once (`getScreenSnapshot`, fresh) and draws a box
+for each element, in 3D and in flat. Touch is off while Inspect is on, so a
+box cannot go stale under the pointer. Click an element to see its card: ref,
+role, identifier, text, what it takes, and bounds. **Insert into chat** puts
+one line in the chat's draft, with the `ade android tap-element --ref …`
+command. **Copy** copies that command. Inspect goes off when the device stops
+being live. The overlay is the shared `device/DeviceInspectOverlay.tsx`, which
+the Apple pane also uses.
+
+### Recording from the rail
+
+**Record** starts a recording of the lane's emulator. The chat that holds the
+pane owns it, so its proof goes to that chat. While it runs, a pill at the
+foot of the picture shows the time and a **Stop** button, in place of the live
+line. After the stop, a receipt says "Saved to proof", with the length, the
+size and **Open**. A recording that an agent or the CLI starts also turns the
+button red: the pane follows the `android.recording.state` event and does not
+poll.
+
+### The Tools drawer
+
+**Device tools** opens the drawer. In a pane 700 px wide or more, it docks
+beside the picture. In a narrower pane, it covers the picture to the left of
+the rail, so the rail stays usable. One group is open at a time. ADE keeps
+the open group for each chat. A closed group is unmounted, so only the open
+group reads from the device.
+
+| Group | Controls |
+|---|---|
+| Device | Text size and Display size (Small, Default, Large, Largest or Larger), Animations off, Show taps, Show layout bounds. |
+| App | The app in front (read every 2 s while the group is open), **Build & run** (Gradle), **Relaunch**, **Stop**, **Uninstall**, **Start an app**, **Open** a link, **Install** an APK, and Permissions. |
+| Capture | The lane's recordings, newest first: **Open in proof**, and a ⋯ menu with Show in Finder (not for another machine's files) and Delete. A running recording shows as one line at the top. |
+| Emulator | Appearance, Location (presets or a typed point), Battery level and Charging, Airplane mode, Wi-Fi, Mobile data. |
+
+Each change is one call to the lane's machine, and the drawer shows the value
+the device reports after the change. It never shows a value it has not read.
+A refused change shows an error banner with **Dismiss**. All drawer calls take
+the pane's `runtimePin`, so the drawer works the same for an emulator on
+another machine.
+
+The settings come from `androidDeviceSettings.ts`, in one `sh -c` read
+(about 250-480 ms; the app-in-front read alone is about 80 ms):
+
+- Battery: `adb emu power capacity|ac|status`.
+- Radios: `svc wifi`, `svc data`, and `cmd connectivity airplane-mode`.
+  `wifi_on` 1 and 2 mean on; 3 means off for airplane mode.
+- Layout bounds: `setprop debug.layout`, then a `service call activity` so
+  apps draw again.
+- Display size: `wm density`, as the physical density times the scale.
+- Text size: `font_scale`.
+- The app in front: the first `mFocusedApp` line of `dumpsys window`. The
+  home app reads as "Home screen".
 
 ### States
 
@@ -245,6 +396,8 @@ any flag that a verb does not take.
 | `status` | The SDK, acceleration, and the lane's device and state. |
 | `devices [--profiles]` | The AVDs on the machine (and the lane holding each), the system images, and with `--profiles` the hardware profiles. |
 | `device-create --profile <id> [--image <package>] [--name <shown name>] [--no-start]` | Make an AVD for the lane and boot it. With no `--image`, the image with the newest API level for the host ABI (in one level, a Play Store image first). |
+| `device-create --catalog <id> [--color <id>] [--image <package>] [--name <shown name>] [--no-start]` | Make an AVD of a brand-grid device (`pixel-10-pro`, `galaxy-s25`, …) in that colour, and boot it. |
+| `render [--angles <a,b>] [--lighting transparent\|studio\|dusk] [--no-shadow] [--video] [--sheet]` | 3D renders of the lane's live device, drawn by the open Android pane and filed as proof. It fails when no window shows the lane's device. |
 | `device-attach --avd <name> [--no-start]` | Hold an AVD that no other lane holds, and boot it. |
 | `start` | Boot the lane's AVD. It waits for boot completed. |
 | `stop` | Stop the lane's emulator. The lane keeps its AVD. |
@@ -257,9 +410,60 @@ any flag that a verb does not take.
 | `type <text>` (or `--value`) | Type into the focused field, exactly as given. |
 | `show` | Show the emulator to the user in the tools pane (also `ade ui show android`). |
 | `actions` | List the `android_emulator` actions. |
+| `long-press <x> <y> [--duration-ms <ms>]`, `drag <x1> <y1> <x2> <y2> [--duration-ms <ms>]`, `scroll --direction up\|down\|left\|right [--amount <0..1>] [--anchor-x/-y]` | A held press (default 1000 ms), a slow press-move-lift (drag and drop), and a scroll. |
+| `apps` | The apps on the emulator, each with its launch activity and whether ADE installed it. |
+| `install --apk <path>` or `install --gradle [--module <m>] [--variant <v>]` | Install an APK inside the lane worktree, or build the lane's app with its Gradle wrapper (`install<Variant>`, `ANDROID_SERIAL` set to the lane's emulator). |
+| `launch --package <name> [--activity <a>]`, or `launch --gradle` / `--apk <path>` | Open an app; with an install flag, install it first and open the package the build made. |
+| `terminate --package <name>`, `uninstall --package <name>` | Stop or remove an app. On an attached AVD, only an app ADE installed (`ANDROID_PACKAGE_NOT_ADE_INSTALLED`). |
+| `open-url <url>` | Open a URL or a deep link with `am start -a VIEW`. |
+| `snapshot [--fresh]` | The screen's element tree: ref, role, name, center and what each element takes. |
+| `find-element`, `tap-element [--hold-ms]`, `fill-element --value <text> [--no-focus]`, `wait-for-element [--timeout-ms] [--gone]`, `assert-visible` | Element verbs. The query is `--ref`, `--identifier`, `--label`, `--text`, `--role`, `--index`, as in `ade apple`. |
+| `log [--package] [--level] [--since <cursor>] [--lines <n>]` | Logcat, for one app (by pid, else by uid) or all. |
+| `record-start [--label] [--max-seconds]`, `record-stop [--discard]`, `record-list`, `record-delete --id <id>` | Record the screen to MP4, from the stream the live view uses. |
+| `settings`, or one of `--text-size`, `--display-size`, `--animations on\|off`, `--show-taps`, `--layout-bounds`, `--battery <0-100>` and `--charging on\|off`, `--wifi`, `--data`, `--airplane` | Read the emulator's settings, or change one. A change answers with a fresh read. |
+| `lease [--wait <s>] [--ttl <s>] [--holder <name>]`, `lease renew\|release --token <t>`, `lease status` | Take turns on the lane's emulator (the shared device lease). |
+| `location <lat> <lon>`, `appearance light\|dark`, `permission grant\|revoke <permission> --package <name>` | Emulator controls (`adb emu geo fix`, `cmd uimode night`, `pm grant`). |
+| `proof-bundle [--out <dir>] [--caption] [--package] [--no-elements]` | A screenshot, the elements, a log tail and a meta file, filed as proof. |
+| `sdk status\|licenses\|install\|use\|cancel` | The guided SDK install ([The setup card](#the-setup-card)). An agent may read; only a person installs, cancels or picks the folder. |
 
 Every verb also takes `--lane` and `--machine` (see
 [Another machine](#another-machine)).
+
+### The agent suite (P1)
+
+`androidAgentSuite.ts` holds the verbs above that P0 did not have.
+
+- **UI tree.** The Android CLI's `layout` when the SDK has it (about 1 s),
+  else `uiautomator dump` (about 2-3 s). `layout` waits for the app to go
+  idle and, when it cannot, ADE asks again with `--no-idle`. A CLI that fails
+  in another way is skipped for 10 minutes. A snapshot is kept for 5 s and is
+  dropped after each input, and when the focused window changes. Each element
+  gets a ref from the first name that no other element on screen shares
+  (`id:`, `label:`, `text:`), else its role and tree path.
+- **Fill.** `fill-element` taps the field, clears it (move to the end, then
+  one delete for each character), types, and reads the field back:
+  `typed: verified`, `not-seen` (the keyboard dropped characters) or
+  `unknown` (a password field).
+- **Recording.** `record-start` taps the scrcpy stream (it starts one when no
+  viewer has it open) and writes H.264 into MP4 with no re-encode. Frames
+  come only when the screen changes, so the file has a variable frame rate.
+  The last frame is held until the stop, so a still screen lasts as long as
+  it did. When the screen turns, the size changes and the recording goes on
+  in a new part (`<id>-2.mp4`). Each part is filed as proof. A recording
+  stops at `--max-seconds` (default and most 300), when the emulator stops,
+  when the lane lets the device go, and when its chat ends.
+- **Proof.** `screenshot`, `record-stop` and `proof-bundle` file proof to the
+  chat (and the lane). With `--machine`, the other machine writes the files
+  and the caller's machine reads them back and files them in the caller's
+  drawer.
+- **Lease.** The shared device lease (`services/device/deviceLease.ts`), one
+  per lane. A chat's leases end when the chat ends.
+- **Turn hint.** A lane with an emulator gets an `<ade-lane-tools>` hint that
+  names it, says to use `ade android`, and says never to run `emulator -avd`
+  or `adb kill-server` (`laneAndroidDeviceDirective.ts`). A lane with both an
+  Apple device and an emulator gets one hint that names both.
+- **Release.** On an attached AVD, the packages ADE installed are uninstalled
+  before the lane lets it go.
 
 Points are device pixels, the same pixels as the screenshot. When a viewer has
 the live stream open, `tap`, `swipe`, `button` and `type` go through the
@@ -282,10 +486,9 @@ its chat's lane.
 ### What only a viewer can do
 
 `ANDROID_AGENT_ACTIONS` in `shared/types/androidEmulator.ts` lists what an
-agent may call: `getStatus`, `listDevices`, `createDevice`, `attachDevice`,
-`start`, `stop`, `releaseDevice`, `getStreamStatus`, `tap`, `swipe`,
-`sendKey`, `sendText`, `rotate`, `screenshot`. The same list feeds the action
-allowlist.
+agent may call: the P0 verbs, `requestRender`, the SDK reads
+(`getSdkSetupPlan`, `getSdkInstallState`) and every agent-suite action
+(`ANDROID_AGENT_SUITE_ACTIONS`). The same list feeds the action allowlist.
 
 `ANDROID_USER_ONLY_ACTIONS` are for a viewing client (the desktop, and later
 the web and the phone) and never for a session-bound agent:
@@ -294,9 +497,23 @@ the web and the phone) and never for a session-bound agent:
   started the stream; `getStreamStatus` always returns `transport: null`.
 - `sendTouch`, the live touch stream.
 - `deleteDevice`, which deletes an ADE AVD that no lane holds.
+- `installSdk`, `cancelSdkInstall` and `setSdkPath`: only a person accepts
+  Google's licences and picks the SDK folder. An agent gets "Only a person can
+  accept Google's licences. Ask the user to run this, or to use the setup
+  card."
 
-P0 has no `capabilities` field in `status`, no turn-time hint and no
-`ade-android` skill. Those are P1.
+`status` has `capabilities`: `adb`, `stream`, `record`, `uiTree` (`android-cli`
+or `uiautomator`), `logcat`, `gradle`, and the Android CLI's path and version.
+The `ade-android` skill tells agents how to use the verbs.
+
+### Remote surfaces
+
+`androidRemoteCommands.ts` registers `android.status`, `android.deviceList`
+and `android.recordList` (viewer-allowed) and `android.input`,
+`android.invoke`, `android.recordStart` and `android.recordStop`
+(controller-only) on every host that builds the emulator service.
+`android.invoke` reaches the action allowlist, except the stream calls and
+the SDK writes. The remote live view (`android.streamTicket`) is P2.
 
 ## Another machine
 
@@ -392,17 +609,28 @@ restarts in 60 s it stays down, and `status` says why.
 | `apps/desktop/src/shared/types/androidEmulator.ts` | The contract: SDK, AVD and lane types, error codes, the service API, `ANDROID_AGENT_ACTIONS` and `ANDROID_USER_ONLY_ACTIONS`, and the preload API. |
 | `apps/desktop/src/main/services/android/androidEmulatorService.ts` | The service: lane queue, create, attach, start, stop, release, input, screenshot, the work-copy lanes and the borrow rule, the start-up cleanup, and the hand-off. |
 | `apps/desktop/src/main/services/android/androidSdk.ts` | SDK detection, tools and acceleration. |
+| `apps/desktop/src/main/services/android/androidSdkSetup.ts`, `androidSdkInstall.ts`, `androidSdkRepository.ts`, `androidZipExtract.ts`, `androidCli.ts` | The guided install: the plan, licence checks, the SDK setting, the installer job, Google's repository manifests, the zip reader, and the Android CLI. |
 | `apps/desktop/src/main/services/android/androidAvds.ts`, `androidHardwareProfiles.ts` | AVD list, create and delete, ADE's marker, and the hardware profiles. |
+| `apps/desktop/src/shared/androidDeviceCatalog.ts`, `apps/desktop/src/main/services/android/androidCatalogProfiles.ts` | The brand grid's devices (names, sizes, colours, bodies, profiles), and the merge of ADE's `ade_*` profiles into `devices.xml`. |
+| `apps/desktop/src/main/services/android/androidRender.ts` | The render broker for `ade android render`: the request event, the first window's ack, the filed paths, and the time limit. |
 | `apps/desktop/src/main/services/android/androidEmulatorProcess.ts` | Boot, discovery files, boot completed, and stop. |
 | `apps/desktop/src/main/services/android/androidLaneDeviceStore.ts`, `androidLaneRelease.ts` | The `lane_android_devices` rows, and the release of a lane's AVD on disk (used by `laneService` with no service). |
 | `apps/desktop/src/main/services/android/androidStream.ts`, `androidStreamServer.ts` | Streams by adb serial, the defaults, restarts, and the loopback stream server. |
 | `apps/desktop/src/main/services/android/scrcpyServer.ts`, `scrcpyVideo.ts`, `scrcpyControl.ts` | The scrcpy session, video records and control messages. |
 | `apps/desktop/src/main/services/android/androidActionDomain.ts` | The `android_emulator` action domain. |
+| `apps/desktop/src/main/services/android/androidAgentSuite.ts`, `androidJdk.ts` | The agent verbs (UI tree, elements, apps, logcat, recording, proof, lease), and the JDK that Gradle runs with. |
+| `apps/desktop/src/main/services/android/androidDeviceSettings.ts` | The Tools drawer's settings read and its changes. |
 | `apps/desktop/src/main/services/android/adb.ts`, `androidEmulatorErrors.ts` | The adb runner and the coded errors. |
-| `apps/desktop/src/renderer/components/android/AndroidDevicePane.tsx` | The pane: picker, stage, rail, strips and live line. |
+| `apps/desktop/src/renderer/components/android/AndroidDevicePane.tsx` | The pane: picker, stage, rail, drawer, strips and live line. |
+| `apps/desktop/src/renderer/components/android/drawer/` | The Tools drawer: `AndroidToolsDrawer.tsx`, the four group sections, and `androidDrawerState.ts` (the open group, the one serialized change, the settings). |
+| `apps/desktop/src/renderer/components/android/useAndroidInspect.tsx`, `useAndroidRecording.ts` | Inspect (on the shared `device/DeviceInspectOverlay.tsx`) and the rail's Record. |
 | `apps/desktop/src/renderer/components/android/androidDeviceState.ts` | The pane state, stock profiles, menu rules and error sentences. |
-| `apps/desktop/src/renderer/components/android/AndroidDevicePicker.tsx`, `AndroidSetupCard.tsx` | The picker and the setup card. |
+| `apps/desktop/src/renderer/components/android/AndroidDevicePicker.tsx`, `AndroidSetupCard.tsx`, `AndroidLicenseDialog.tsx`, `useAndroidSdkSetup.ts` | The picker, the setup card, the licence dialog and the card's data. |
+| `apps/desktop/src/renderer/components/settings/AndroidDevicesSection.tsx` | Settings › Android devices: the setup card for the picked machine. |
 | `apps/desktop/src/renderer/components/android/AndroidDeviceStage.tsx`, `AndroidDeviceRail.tsx`, `AndroidDeviceStatus.tsx` | The stage (on the shared `device/DeviceFlatView.tsx`), the rail (on `device/DeviceRail.tsx`), and the strips, cards and live line (on `device/DeviceStatusStrip.tsx` and `device/DeviceLoadingCard.tsx`). |
+| `apps/desktop/src/renderer/components/android/AndroidCatalogGrid.tsx`, `androidTileRenderer.ts` | The brand grid tiles and their details, and the one shared WebGL renderer for the tile stills and the hover turn. |
+| `apps/desktop/src/renderer/components/android/androidDeviceBody.ts`, `androidDeviceModels.ts`, `useAndroidBootScreen.ts` | The procedural device bodies (and any model file), and the boot screen drawn on the 3D model. |
+| `apps/desktop/src/renderer/components/android/AndroidRenderSheet.tsx`, `androidRender.ts`, `useAndroidRenderRequests.ts` | The Render sheet, the drawing and filing of renders, and the pane's answer to `ade android render`. |
 | `apps/desktop/src/renderer/components/android/useAndroidDeviceStream.ts`, `useAndroidDeviceInput.ts`, `androidStreamLease.ts` | The stream (on the shared `device/useStreamRecovery.ts` and `device/useGracefulStreamLease.ts`), input, and the per-lane stream lease (a `device/streamLease.ts` table of its own). |
 | `apps/desktop/src/renderer/components/terminals/workToolPanels.tsx` | The Android tool's targets (This lane, Android · `<machine>`). |
 | `apps/desktop/src/renderer/components/terminals/useRemoteDeviceTabs.ts` | The tab that joins the open pane for a remote device use (iOS and Android). |
@@ -413,11 +641,11 @@ restarts in 60 s it stays down, and `status` says why.
 
 P0 does not have:
 
-- the 3D view, device models or the brand grid (P1);
-- the guided SDK install, licence consent, "Use mine…" and the Android CLI
-  option (P1);
+- the 3D view, device models or the brand grid (P1, now built: device bodies
+  are procedural; no model files ship yet);
 - UI tree and element verbs, logcat, app install and launch, record, lease,
-  the turn hint and the `ade-android` skill (P1);
+  the turn hint and the `ade-android` skill (P1, above);
+- Inspect, Record on the rail and the Tools drawer (P1, now built);
 - phone and web viewers, the phone's full-screen view, quick chips, the Logs
   drawer, the RAM guard, and two floating players, one for each device kind
   (P2);

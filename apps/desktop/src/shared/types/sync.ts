@@ -3343,6 +3343,16 @@ export type SyncRemoteCommandAction =
   | "apple.recordList"
   | "apple.recordStart"
   | "apple.recordStop"
+  // The lane's Android emulator. `android.status`, `deviceList` and
+  // `recordList` are viewer-allowed; input, invoke and recording are
+  // controller-only. P2 adds `android.streamTicket` for the live view.
+  | "android.status"
+  | "android.input"
+  | "android.invoke"
+  | "android.deviceList"
+  | "android.recordList"
+  | "android.recordStart"
+  | "android.recordStop"
   | "deeplinks.open";
 
 export type SyncRemoteCommandPolicy = {

@@ -64,7 +64,8 @@ export function AndroidDeviceLoadingCard({
 }
 
 /**
- * The foot of the picture: `● Live · 58 fps · lane checkout-flow · windows`.
+ * The foot of the picture: `● Live · 58 fps · lane checkout-flow · windows`
+ * (`idle` in place of the fps while the screen does not change).
  * The machine is named only when the emulator runs on another one.
  */
 export function AndroidLiveLine({
@@ -81,7 +82,9 @@ export function AndroidLiveLine({
   const label = state === "live" ? "Live" : "Video stopped";
   const parts = [
     label,
-    state === "live" && fps != null && fps > 0 ? `${Math.round(fps)} fps` : null,
+    // scrcpy sends a frame only when the screen changes, so a still screen
+    // reads 0 fps: say "idle" rather than drop the value.
+    state === "live" && fps != null ? (fps > 0 ? `${Math.round(fps)} fps` : "idle") : null,
     laneName ? `lane ${laneName}` : null,
     machineName ? `on ${machineName}` : null,
   ].filter((part): part is string => Boolean(part));

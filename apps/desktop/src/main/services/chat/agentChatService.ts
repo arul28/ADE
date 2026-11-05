@@ -1313,6 +1313,12 @@ import {
   resolveLaneAppleDeviceDirective,
   type LaneAppleDeviceLookup,
 } from "./laneAppleDeviceDirective";
+import {
+  combineLaneDeviceDirectives,
+  createLaneAndroidDeviceLookup,
+  resolveLaneAndroidDeviceDirective,
+  type LaneAndroidDeviceLookup,
+} from "./laneAndroidDeviceDirective";
 import type { OpenCodeEvent } from "@opencode/client";
 import {
   buildOpenCodeConfig,
@@ -11769,6 +11775,11 @@ export function createAgentChatService(args: {
    * to a `lane_apple_devices` row read on `db` (macOS only); tests inject it.
    */
   lookupLaneAppleDevice?: LaneAppleDeviceLookup | null;
+  /**
+   * Which Android AVD a lane holds, for the same hint. Defaults to a
+   * `lane_android_devices` row read on `db` (every host); tests inject it.
+   */
+  lookupLaneAndroidDevice?: LaneAndroidDeviceLookup | null;
   aiIntegrationService: ReturnType<typeof createAiIntegrationService>;
   logger: Logger;
   /**
@@ -11981,6 +11992,7 @@ export function createAgentChatService(args: {
     projectConfigService,
     db,
     lookupLaneAppleDevice: injectedLaneAppleDeviceLookup,
+    lookupLaneAndroidDevice: injectedLaneAndroidDeviceLookup,
     aiIntegrationService,
     logger,
     appVersion,
@@ -12039,6 +12051,9 @@ export function createAgentChatService(args: {
         platform: process.platform,
         store: db?.get ? { get: db.get } : null,
       });
+  const laneAndroidDeviceLookup: LaneAndroidDeviceLookup | null = injectedLaneAndroidDeviceLookup !== undefined
+    ? injectedLaneAndroidDeviceLookup
+    : createLaneAndroidDeviceLookup({ store: db?.get ? { get: db.get } : null });
   /** How a launch starts the user's MCP servers (accounts, `npx` without npm, no double copies). */
   const chatUserMcp = createChatUserMcp({ projectRoot: args.projectRoot, logger });
   const chatMcpTarget = (managed: ManagedChatSession) => ({
@@ -55608,7 +55623,7 @@ export function createAgentChatService(args: {
     // Cursor's VM, which cannot reach this Mac's simulator, so it gets none.
     const cursorCloudTurn = managed.session.provider === "cursor"
       && effectiveCursorRuntime(managed, runtime) === "cloud";
-    const appleDevice = personalSession || cursorCloudTurn
+    const appleOnlyDevice = personalSession || cursorCloudTurn
       ? null
       : resolveLaneAppleDeviceDirective({
           laneId: executionContext.laneId,
@@ -55619,6 +55634,20 @@ export function createAgentChatService(args: {
             error: error instanceof Error ? error.message : String(error),
           }),
         });
+    // The lane's Android emulator, in the same block (one hint names both
+    // devices). An Apple-only lane keeps its text and key exactly.
+    const androidDevice = personalSession || cursorCloudTurn
+      ? null
+      : resolveLaneAndroidDeviceDirective({
+          laneId: executionContext.laneId,
+          lookup: laneAndroidDeviceLookup,
+          onLookupError: (error) => logger.warn("agent_chat.lane_android_device_lookup_failed", {
+            sessionId,
+            laneId: executionContext.laneId,
+            error: error instanceof Error ? error.message : String(error),
+          }),
+        });
+    const appleDevice = combineLaneDeviceDirectives(appleOnlyDevice, androidDevice);
     const shouldInjectAppleDeviceDirective = appleDevice != null
       && managed.deliveredDirectiveKeys.appleDevice !== appleDevice.key;
     // This is the single lane-screen delivery path. It announces the private
@@ -77171,11 +77200,18 @@ export function createAgentChatService(args: {
       launchDirective: laneId ? buildLaneWorktreeDirective({ laneId, laneWorktreePath: cwd }) : null,
       computerUse: currentComputerUseDirective(),
       laneScreen: currentLaneScreenDirective(laneId),
-      appleDevice: resolveLaneAppleDeviceDirective({
-        laneId,
-        lookup: laneAppleDeviceLookup,
-        onLookupError: (error) => logger.warn("agent_chat.context_preview_apple_device_failed", { laneId, error: getErrorMessage(error) }),
-      })?.directive ?? null,
+      appleDevice: combineLaneDeviceDirectives(
+        resolveLaneAppleDeviceDirective({
+          laneId,
+          lookup: laneAppleDeviceLookup,
+          onLookupError: (error) => logger.warn("agent_chat.context_preview_apple_device_failed", { laneId, error: getErrorMessage(error) }),
+        }),
+        resolveLaneAndroidDeviceDirective({
+          laneId,
+          lookup: laneAndroidDeviceLookup,
+          onLookupError: (error) => logger.warn("agent_chat.context_preview_android_device_failed", { laneId, error: getErrorMessage(error) }),
+        }),
+      )?.directive ?? null,
     });
 
     // The registry servers ADE hands this provider (names and transport; no

@@ -18,6 +18,7 @@ import {
   type DrawerMenuOption,
 } from "../../../ui/drawerPrimitives";
 import type { AppleDrawerContext } from "../drawerContext";
+import { DEVICE_LOCATION_PRESETS, type DeviceLocationPresetLabel } from "../../../device/locationPresets";
 
 /**
  * §B1's **Device** group: everything that is true of the simulator itself
@@ -45,15 +46,6 @@ const SWITCHES: ReadonlyArray<{ option: IosSimulatorAccessibilityOption; label: 
   { option: "voice-over", label: "VoiceOver" },
 ];
 
-export const APPLE_LOCATION_PRESETS = [
-  { label: "San Francisco", latitude: 37.7749, longitude: -122.4194 },
-  { label: "New York", latitude: 40.7128, longitude: -74.006 },
-  { label: "London", latitude: 51.5074, longitude: -0.1278 },
-  { label: "Tokyo", latitude: 35.6762, longitude: 139.6503 },
-  { label: "Sydney", latitude: -33.8688, longitude: 151.2093 },
-] as const;
-
-type PresetLabel = (typeof APPLE_LOCATION_PRESETS)[number]["label"];
 
 /**
  * Apple's own screenshot status bar: 9:41, full bars, a charged battery.
@@ -155,14 +147,14 @@ export function DeviceSection({ ctx }: { ctx: AppleDrawerContext }) {
         />
       </div>
       <div className="flex min-h-7 flex-wrap items-center gap-1.5">
-        <DrawerMenu<PresetLabel>
+        <DrawerMenu<DeviceLocationPresetLabel>
           ariaLabel="Preset"
           value={null}
           placeholder="Preset…"
-          options={APPLE_LOCATION_PRESETS.map((preset) => ({ value: preset.label, label: preset.label }))}
+          options={DEVICE_LOCATION_PRESETS.map((preset) => ({ value: preset.label, label: preset.label }))}
           disabled={disabled}
           onChange={(label) => {
-            const preset = APPLE_LOCATION_PRESETS.find((candidate) => candidate.label === label);
+            const preset = DEVICE_LOCATION_PRESETS.find((candidate) => candidate.label === label);
             if (!preset) return;
             setLatitude(String(preset.latitude));
             setLongitude(String(preset.longitude));

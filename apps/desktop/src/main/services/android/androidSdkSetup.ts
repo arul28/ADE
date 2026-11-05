@@ -1,0 +1,194 @@
+import fs from "node:fs";
+import path from "node:path";
+import type {
+  AndroidEmulatorEvent,
+  AndroidEmulatorSetupServiceApi,
+  AndroidEmulatorStatus,
+  AndroidSdkInstallState,
+  AndroidSdkStatus,
+} from "../../../shared/types/androidEmulator";
+import type { Logger } from "../logging/logger";
+import { getErrorMessage } from "../shared/utils";
+import { AndroidEmulatorFailure } from "./androidEmulatorErrors";
+import { androidSdkInstaller, buildAndroidSdkSetupPlan, type AndroidSdkInstallDeps } from "./androidSdkInstall";
+import { locateAndroidSdk, readAndroidSdkStatus } from "./androidSdk";
+
+/*
+ * The service side of the guided SDK install and of "Use mine…".
+ *
+ * The SDK choice is a machine setting (`<ADE home>/android/settings.json`),
+ * not a project one: every project on the machine uses the same SDK, and a
+ * Dock launch on macOS has no `ANDROID_HOME` to fall back on.
+ */
+
+type AndroidSettingsFile = { sdkPath?: string | null; updatedAt?: string };
+
+/** Reads and writes the machine's Android settings file; a missing or broken file reads as empty. */
+export function createAndroidSdkSettingStore(file: string | null | undefined) {
+  let cache: { mtimeMs: number; value: string | null } | null = null;
+  return {
+    read(): string | null {
+      if (!file) return null;
+      try {
+        const stat = fs.statSync(file);
+        if (cache && cache.mtimeMs === stat.mtimeMs) return cache.value;
+        const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as AndroidSettingsFile;
+        const value = typeof parsed.sdkPath === "string" && parsed.sdkPath.trim() ? parsed.sdkPath.trim() : null;
+        cache = { mtimeMs: stat.mtimeMs, value };
+        return value;
+      } catch {
+        return null;
+      }
+    },
+    write(sdkPath: string | null): void {
+      if (!file) throw new AndroidEmulatorFailure("ANDROID_SDK_PATH_INVALID", "This ADE cannot save an SDK folder.");
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      const body: AndroidSettingsFile = { sdkPath, updatedAt: new Date().toISOString() };
+      const temp = `${file}.${process.pid}.tmp`;
+      fs.writeFileSync(temp, `${JSON.stringify(body, null, 2)}\n`, "utf8");
+      fs.renameSync(temp, file);
+      cache = null;
+    },
+  };
+}
+
+export type AndroidSdkSetupDeps = {
+  readSdk: (options?: { forceAccelCheck?: boolean }) => Promise<AndroidSdkStatus>;
+  getStatus: () => Promise<AndroidEmulatorStatus>;
+  settings: ReturnType<typeof createAndroidSdkSettingStore>;
+  emit: (event: AndroidEmulatorEvent) => void;
+  logger: Logger | null;
+  platform: NodeJS.Platform;
+  env: Readonly<Record<string, string | undefined>>;
+  home: string;
+  /** Test seam for the repository and download; production uses `fetch`. */
+  fetchImpl?: typeof fetch;
+};
+
+export function createAndroidSdkSetup(deps: AndroidSdkSetupDeps): AndroidEmulatorSetupServiceApi & { dispose(): void } {
+  const installer = androidSdkInstaller();
+  const installDeps: AndroidSdkInstallDeps = {
+    platform: deps.platform,
+    env: deps.env,
+    home: deps.home,
+    fetchImpl: deps.fetchImpl,
+    logger: deps.logger,
+  };
+  // Every service on the machine hears the shared job, so each window's card moves together.
+  const unsubscribe = installer.subscribe((install) => deps.emit({ type: "android.sdk.install", install }));
+
+  const planFor = async (args: { sdkRoot?: string | null; includeAndroidCli?: boolean } | undefined) => {
+    let sdk = await deps.readSdk();
+    const chosen = args?.sdkRoot?.trim() ? path.resolve(args.sdkRoot.trim()) : null;
+    if (chosen && (!sdk.root || path.resolve(sdk.root) !== chosen)) {
+      // A chosen folder that already holds an SDK keeps its parts: plan from what IT has.
+      // Only that folder counts (no env, no default root); acceleration and the AVD folder stay the machine's.
+      const there = await readAndroidSdkStatus({ settingPath: chosen, env: {}, platform: deps.platform, home: "/nonexistent-home" });
+      sdk = there.found && there.root && path.resolve(there.root) === chosen
+        ? { ...there, acceleration: sdk.acceleration, avdHome: sdk.avdHome }
+        : { ...sdk, found: false, root: null, source: null, tools: [] };
+    }
+    return buildAndroidSdkSetupPlan(
+      { sdk, chosenRoot: args?.sdkRoot ?? null, includeAndroidCli: args?.includeAndroidCli ?? false },
+      installer.state,
+      sdk.acceleration,
+      installDeps,
+    );
+  };
+
+  return {
+    async getSdkSetupPlan(args) {
+      return (await planFor(args)).plan;
+    },
+
+    async installSdk(args) {
+      if (installer.isRunning()) {
+        throw new AndroidEmulatorFailure("ANDROID_SDK_INSTALL_BUSY", "An Android SDK install already runs on this machine.");
+      }
+      const { plan, planned, manifests } = await planFor(args);
+      if (!plan.hostSupported) throw new AndroidEmulatorFailure("ANDROID_SDK_INSTALL_FAILED", plan.unsupportedReason ?? "This computer cannot run the Android emulator.");
+      if (plan.repositoryError) throw new AndroidEmulatorFailure("ANDROID_SDK_INSTALL_FAILED", plan.repositoryError);
+      if (!plan.writable) throw new AndroidEmulatorFailure("ANDROID_SDK_PATH_INVALID", plan.writableDetail ?? `ADE cannot write to ${plan.sdkRoot}.`);
+      const accepted = new Set((Array.isArray(args?.acceptedLicenseIds) ? args.acceptedLicenseIds : []).filter((id): id is string => typeof id === "string"));
+      // Every licence a missing part uses must be accepted in THIS request, even one an earlier install recorded:
+      // the person installing now is the one agreeing.
+      const missingConsent = plan.licenses.filter((license) => !accepted.has(license.id));
+      if (missingConsent.length > 0) {
+        throw new AndroidEmulatorFailure(
+          "ANDROID_SDK_LICENSE_NOT_ACCEPTED",
+          `Accept ${missingConsent.map((license) => license.title).join(" and ")} before the install.`,
+        );
+      }
+      if (plan.diskBytesFree !== null && plan.diskBytesFree < plan.diskBytesNeeded) {
+        const gb = (bytes: number) => (bytes / 1e9).toFixed(1);
+        throw new AndroidEmulatorFailure(
+          "ANDROID_SDK_NO_SPACE",
+          `The install needs about ${gb(plan.diskBytesNeeded)} GB, and ${gb(plan.diskBytesFree)} GB is free on that drive. Free some space or pick another folder.`,
+        );
+      }
+      // A folder ADE would not find by itself becomes the machine's SDK setting now, so a partial install is visible too.
+      const located = locateAndroidSdk({ settingPath: deps.settings.read(), env: deps.env, platform: deps.platform, home: deps.home });
+      const sameAsFound = located && path.resolve(located.root) === path.resolve(plan.sdkRoot);
+      const previousSetting = deps.settings.read();
+      const wroteSetting = plan.sdkRootSource === "chosen" && !sameAsFound;
+      if (wroteSetting) deps.settings.write(plan.sdkRoot);
+      deps.logger?.info("android.sdk_install.start", {
+        sdkRoot: plan.sdkRoot,
+        parts: plan.parts.filter((part) => part.missing).map((part) => part.id),
+        licenses: plan.licenses.map((license) => license.id),
+        downloadBytes: plan.downloadBytes,
+      });
+      return installer.start({
+        sdkRoot: plan.sdkRoot,
+        planned,
+        manifests,
+        acceptedLicenseIds: [...accepted],
+        deps: installDeps,
+        onFinished: (state: AndroidSdkInstallState) => {
+          deps.logger?.info("android.sdk_install.end", { state: state.state });
+          // An install that put nothing in place leaves the machine's SDK choice as it was.
+          const nothingInstalled = state.state !== "done" && "installed" in state && state.installed.length === 0;
+          if (wroteSetting && nothingInstalled && deps.settings.read() === plan.sdkRoot) deps.settings.write(previousSetting);
+          // A fresh SDK changes the status every window shows (the card becomes the picker).
+          deps.emit({ type: "android.sdk.changed" });
+          void deps.readSdk({ forceAccelCheck: true }).catch((error: unknown) => {
+            deps.logger?.warn("android.sdk_install.status_failed", { error: getErrorMessage(error) });
+          });
+        },
+      });
+    },
+
+    async cancelSdkInstall() {
+      return installer.cancel();
+    },
+
+    async getSdkInstallState() {
+      return installer.state;
+    },
+
+    async setSdkPath(args) {
+      const raw = args && typeof args.path === "string" ? args.path.trim() : null;
+      if (!raw) {
+        deps.settings.write(null);
+        deps.emit({ type: "android.sdk.changed" });
+        return deps.getStatus();
+      }
+      if (!path.isAbsolute(raw)) throw new AndroidEmulatorFailure("ANDROID_SDK_PATH_INVALID", "Give the full path of the SDK folder.");
+      const located = locateAndroidSdk({ settingPath: raw, env: {}, platform: deps.platform, home: "/nonexistent-home" });
+      if (!located || located.source !== "setting") {
+        throw new AndroidEmulatorFailure(
+          "ANDROID_SDK_PATH_INVALID",
+          `${raw} is not an Android SDK. Pick the folder that holds platform-tools, emulator or system-images.`,
+        );
+      }
+      deps.settings.write(located.root);
+      deps.logger?.info("android.sdk_path.set", { sdkRoot: located.root });
+      deps.emit({ type: "android.sdk.changed" });
+      return deps.getStatus();
+    },
+
+    dispose() {
+      unsubscribe();
+    },
+  };
+}

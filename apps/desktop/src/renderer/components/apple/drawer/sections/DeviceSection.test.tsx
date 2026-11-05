@@ -3,10 +3,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import {
   APPLE_DRAWER_TEXT_SIZES,
-  APPLE_LOCATION_PRESETS,
   APPLE_STATUS_BAR_DEMO,
   DeviceSection,
 } from "./DeviceSection";
+import { DEVICE_LOCATION_PRESETS } from "../../../device/locationPresets";
 import { SETTINGS, controlsIn, installAdeMock, makeActions, makeCtx } from "../drawerTestHarness";
 
 afterEach(cleanup);
@@ -81,7 +81,7 @@ describe("DeviceSection", () => {
 
     fireEvent.keyDown(screen.getByRole("button", { name: "Preset" }), { key: "Enter" });
     fireEvent.click(await screen.findByRole("menuitemradio", { name: "Tokyo" }));
-    const tokyo = APPLE_LOCATION_PRESETS.find((preset) => preset.label === "Tokyo")!;
+    const tokyo = DEVICE_LOCATION_PRESETS.find((preset) => preset.label === "Tokyo")!;
     await waitFor(() => expect(iosSimulator.setLocation).toHaveBeenCalledWith(
       expect.objectContaining({ latitude: tokyo.latitude, longitude: tokyo.longitude }),
       null,

@@ -308,6 +308,15 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   "apple.recordList",
   "apple.recordStart",
   "apple.recordStop",
+  // The lane's Android emulator (P1): optional the same way, so a phone or a
+  // web tab hides the Android tool on an older brain.
+  "android.status",
+  "android.input",
+  "android.invoke",
+  "android.deviceList",
+  "android.recordList",
+  "android.recordStart",
+  "android.recordStop",
   // Draft and auto-merge toggles. The phone hides each control until the
   // host advertises the action, so an older host stays "full".
   "prs.setDraft",

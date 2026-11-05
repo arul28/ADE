@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowsInSimple, ArrowsOutSimple } from "@phosphor-icons/react";
 import type { OpenProjectBinding } from "../../../shared/types";
 import type {
@@ -7,6 +7,7 @@ import type {
   AndroidHardwareKey,
   AndroidLaneDeviceStatus,
   AndroidOrientation,
+  AndroidRenderRequestEvent,
 } from "../../../shared/types/androidEmulator";
 import { useAppStore } from "../../state/appStore";
 import { effectiveRuntimeBinding } from "../../lib/chatMachineRouting";
@@ -14,6 +15,10 @@ import { isInParkedSurface } from "../../lib/parkedSurface";
 import { cn } from "../ui/cn";
 import { Banner, type NoticeAction } from "../ui/notice";
 import { showToast } from "../app/toast/toastStore";
+import { Button } from "../ui/Button";
+import { RecordingPill, RecordingSavedRow } from "../shared/RecordingReceipt";
+import { revealProofArtifactRow } from "../shared/recordingFormat";
+import { useTicker } from "../../lib/ticker";
 import { WorkToolChromeButton } from "../terminals/workToolChrome";
 import { useWorkToolsMaximize } from "../terminals/workToolsMaximize";
 import { WORK_TOOL_MAXIMIZE_PANE_LABEL, WORK_TOOL_RESTORE_PANE_LABEL } from "../terminals/workToolPreviewControls";
@@ -29,6 +34,7 @@ import {
 } from "./androidDeviceState";
 import { androidStreamLeaseKey, androidStreamLeases } from "./androidStreamLease";
 import { AndroidDevicePicker } from "./AndroidDevicePicker";
+import type { AndroidCatalogCreateOptions } from "./AndroidCatalogGrid";
 import { AndroidDeviceRail } from "./AndroidDeviceRail";
 import { DEVICE_RAIL_WIDTH } from "../device/DeviceRail";
 import { DeviceErrorStrip } from "../device/DeviceStatusStrip";
@@ -42,6 +48,26 @@ import {
 } from "./AndroidDeviceStatus";
 import { useAndroidDeviceInput } from "./useAndroidDeviceInput";
 import { useAndroidDeviceStream } from "./useAndroidDeviceStream";
+import { androidCatalogEntryForAvd, type AndroidCatalogEntry } from "../../../shared/androidDeviceCatalog";
+import type { Device3DFailure } from "../device/Device3DView";
+import { androidBodyColor, type AndroidBodySpec } from "./androidDeviceBody";
+import {
+  androidScreenAspect,
+  readAndroidViewMode,
+  writeAndroidViewMode,
+  type AndroidViewMode,
+} from "./androidDeviceState";
+import { AndroidRenderSheet } from "./AndroidRenderSheet";
+import { useAndroidBootScreen } from "./useAndroidBootScreen";
+import { useAndroidRenderRequests } from "./useAndroidRenderRequests";
+import { useAndroidInspect } from "./useAndroidInspect";
+import { useAndroidRecording } from "./useAndroidRecording";
+
+/** The drawer loads on first open: most sessions never open it. */
+const AndroidToolsDrawer = lazy(async () => {
+  const mod = await import("./drawer/AndroidToolsDrawer");
+  return { default: mod.AndroidToolsDrawer };
+});
 
 /**
  * The Android emulator, as the body of the Work tools pane's Android tab.
@@ -49,7 +75,7 @@ import { useAndroidDeviceStream } from "./useAndroidDeviceStream";
  * The Apple pane's layout, so moving between the two is easy: an optional
  * one-line strip at the top, and a body that is the setup card, the picker,
  * the loading card or the device, with the rail floating on the right of the
- * picture. P0 is flat only and has no tools drawer.
+ * picture, and the Tools drawer docked on the right when it is open.
  *
  * Every call goes to the lane's machine: `runtimePin` is passed on every
  * `androidEmulator.*` call and read through a ref, so a rebuilt pin object
@@ -63,7 +89,7 @@ export type AndroidDevicePaneProps = {
   runtimePin: OpenProjectBinding | null;
   /** The emulator's machine, named when it is not this one. */
   machineName: string | null;
-  /** The lane host's OS when known, for the setup card's default folder. */
+  /** The lane host's OS when known. The setup card reads the real folder from the machine's plan since P1. */
   hostPlatform: string | null;
   /**
    * Set for a lane this pane must not change, such as a chat's work copy on
@@ -71,21 +97,41 @@ export type AndroidDevicePaneProps = {
    * offered, and this line takes its place when the lane holds no device.
    */
   noPicker?: string | null;
+  /**
+   * Opens the guided SDK setup (the coordinator's flow): a brand tile asks for
+   * it when no phone image is installed. Absent hides that offer.
+   */
+  onRequestSetup?: (() => void) | undefined;
+  /** The chat this pane sits in: a recording is filed to proof under it. */
+  sessionId?: string | null;
+  /** Puts an inspected element into the chat's draft. Absent hides "Insert into chat". */
+  onInsertDraft?: ((text: string) => void) | undefined;
   className?: string;
 };
 
 /** Events in a burst (a boot sends several) become one status read. */
 const EVENT_READ_DELAY_MS = 150;
 
-type PendingStart = { kind: "create" } | { kind: "attach"; avdName: string } | { kind: "start" };
+type PendingStart =
+  /** `look`: the catalog body a new device is made with, for boot on the model. */
+  | { kind: "create"; look?: { entry: AndroidCatalogEntry; colorId: string } | null }
+  | { kind: "attach"; avdName: string }
+  | { kind: "start" };
+
+/** What a picker tile or profile button asks to make. */
+export type AndroidCreateChoice =
+  | { profileId: string }
+  | { catalogId: string; colorId: string | null; systemImage?: string | null; displayName?: string | null };
 
 export function AndroidDevicePane({
   laneId,
   laneName,
   runtimePin,
   machineName,
-  hostPlatform,
   noPicker = null,
+  onRequestSetup,
+  sessionId = null,
+  onInsertDraft,
   className,
 }: AndroidDevicePaneProps) {
   const api = window.ade?.androidEmulator ?? null;
@@ -111,6 +157,33 @@ export function AndroidDevicePane({
   const [streamError, setStreamError] = useState<string | null>(null);
   const [screenshotPending, setScreenshotPending] = useState(false);
   const [noAccelDismissed, setNoAccelDismissed] = useState(false);
+  const [toolsOpen, setToolsOpen] = useState(false);
+  /** The setup card, asked for from the picker when the host has no setup flow of its own. */
+  const [setupRequested, setSetupRequested] = useState(false);
+
+  /* ── P1 look: the view mode (3D / flat), as on the Apple pane ──────────── */
+
+  const projectRoot = useAppStore((state) => state.project?.rootPath ?? null);
+  const [viewMode, setViewModeState] = useState<AndroidViewMode>(() => readAndroidViewMode(projectRoot));
+  const [threeFailure, setThreeFailure] = useState<Device3DFailure | null>(null);
+  const [viewNonce, setViewNonce] = useState(0);
+  useEffect(() => {
+    setViewModeState(readAndroidViewMode(projectRoot));
+    setThreeFailure(null);
+  }, [projectRoot]);
+  const setViewMode = useCallback((next: AndroidViewMode) => {
+    setViewModeState(next);
+    if (next === "3d") setThreeFailure(null);
+    writeAndroidViewMode(projectRoot, next);
+  }, [projectRoot]);
+  /** The 3D view cannot draw here: fall back to flat and say so once (Apple §A1). */
+  const handleThreeUnavailable = useCallback((reason: Device3DFailure) => {
+    setThreeFailure(reason);
+    setViewModeState("flat");
+  }, []);
+  const threeD = viewMode === "3d" && threeFailure === null;
+  /** A colour picked here, shown at once while the brain records it. */
+  const [colorOverride, setColorOverride] = useState<string | null>(null);
 
   /* ── size + visibility (the Apple pane's rules) ────────────────────────── */
 
@@ -190,12 +263,18 @@ export function AndroidDevicePane({
 
   const laneState = status?.lane?.state ?? "none";
   const pickerShownRef = useRef(false);
+  /** `ade android render` events go to the render hook (set below, read through this ref). */
+  const renderRequestRef = useRef<(event: AndroidRenderRequestEvent) => void>(() => undefined);
   useEffect(() => {
     if (!api?.onEvent) return undefined;
     let timer: number | null = null;
     let inventoryDirty = false;
     const unsubscribe = api.onEvent((event) => {
       if (event.type === "android.stream.state") return; // the stream hook's
+      if (event.type === "android.render.request") {
+        renderRequestRef.current(event);
+        return;
+      }
       if (event.type === "android.device.state" && event.laneId !== laneIdRef.current) {
         // Another lane's device: only the picker's badges care.
         inventoryDirty = true;
@@ -250,6 +329,34 @@ export function AndroidDevicePane({
   }, [pickerShown, readInventory, laneId, pinKey]);
 
   const onInputError = useCallback((caught: unknown) => setError(describeAndroidError(caught)), []);
+
+  /* ── P1 agent tools on the rail: Inspect, Record and the Tools drawer ──── */
+
+  const deviceLive = paneState === "live";
+  const inspect = useAndroidInspect({ laneId, live: deviceLive, runtimePinRef, onInsertDraft, onError: onInputError });
+  const recording = useAndroidRecording({ laneId, live: deviceLive, chatSessionId: sessionId, runtimePinRef, onError: onInputError });
+  const recordingTick = useTicker(1000, Boolean(recording.active));
+  const [savedDismissedId, setSavedDismissedId] = useState<string | null>(null);
+  const savedRecording = recording.saved && recording.saved.id !== savedDismissedId ? recording.saved : null;
+  const openSavedRecording = useCallback(() => {
+    const saved = recording.saved;
+    if (!saved) return;
+    setSavedDismissedId(saved.id);
+    const artifactId = saved.proofArtifactIds[0] ?? null;
+    if (artifactId && revealProofArtifactRow(artifactId)) return;
+    // No proof row in this window: the file itself, when it is on this computer.
+    if (!remoteMachine) void window.ade.app.openPath(saved.path).catch(onInputError);
+  }, [onInputError, recording.saved, remoteMachine]);
+  // Inspect boxes and the drawer go with the device: a new lane or a lost device starts them closed.
+  const { inspectOn, toggleInspect } = inspect;
+  useEffect(() => {
+    if (!androidRailVisible(paneState)) setToolsOpen(false);
+    if (!deviceLive && inspectOn) toggleInspect();
+  }, [deviceLive, inspectOn, paneState, toggleInspect]);
+  useEffect(() => {
+    setToolsOpen(false);
+    setSetupRequested(false);
+  }, [laneId, pinKey]);
   const input = useAndroidDeviceInput({
     laneId,
     enabled: androidInputAllowed(paneState),
@@ -312,11 +419,24 @@ export function AndroidDevicePane({
     });
   }, [api, laneId, releaseCurrent, runStart]);
 
-  const create = useCallback((profileId: string) => {
+  const create = useCallback((choice: AndroidCreateChoice) => {
     if (!api) return;
-    void runStart({ kind: "create" }, async () => {
+    const catalog = "catalogId" in choice ? choice : null;
+    const entry = catalog ? androidCatalogEntryForAvd({ catalogId: catalog.catalogId }) : null;
+    const look = entry && catalog ? { entry, colorId: catalog.colorId ?? entry.colors[0]!.id } : null;
+    void runStart({ kind: "create", look }, async () => {
       await releaseCurrent();
-      return api.createDevice({ laneId, profileId, start: true }, runtimePinRef.current);
+      return api.createDevice(catalog
+        ? {
+          laneId,
+          profileId: "",
+          catalogId: catalog.catalogId,
+          colorId: catalog.colorId,
+          systemImage: catalog.systemImage ?? null,
+          displayName: catalog.displayName ?? null,
+          start: true,
+        }
+        : { laneId, profileId: "profileId" in choice ? choice.profileId : "", start: true }, runtimePinRef.current);
     });
   }, [api, laneId, releaseCurrent, runStart]);
 
@@ -344,6 +464,32 @@ export function AndroidDevicePane({
         void readInventory();
       });
   }, [api, forgetStream, laneId, readInventory, readStatus]);
+
+  /** Storage: every AVD with its size on disk, on the lane's machine. */
+  const readSizes = useCallback(async () => {
+    if (!api) return [];
+    const measured = await api.listDevices({ laneId, measureSizes: true }, runtimePinRef.current);
+    return measured.avds;
+  }, [api, laneId]);
+
+  /** Storage › Clean up: one delete at a time (each takes the AVD's lock), one toast. */
+  const cleanUp = useCallback((names: string[]) => {
+    if (!api || names.length === 0) return;
+    const pin = runtimePinRef.current;
+    void (async () => {
+      let deleted = 0;
+      for (const name of names) {
+        try {
+          const result = await api.deleteDevice({ avdName: name }, pin);
+          if (result.deleted) deleted += 1;
+        } catch (caught: unknown) {
+          setError(describeAndroidError(caught));
+        }
+      }
+      if (deleted > 0) showToast({ id: "android-avd-cleanup", tone: "success", title: `Deleted ${deleted} device${deleted === 1 ? "" : "s"}` });
+      void readInventory();
+    })();
+  }, [api, readInventory]);
 
   const deleteAvd = useCallback((name: string) => {
     if (!api) return;
@@ -421,6 +567,61 @@ export function AndroidDevicePane({
   const maximize = useWorkToolsMaximize();
   const accel = status?.sdk.acceleration ?? null;
 
+  /* ── P1 look: the body, the colour, boot on the model, renders ─────────── */
+
+  const laneAvd = lane?.avd ?? null;
+  const pendingLook = pending?.kind === "create" ? pending.look ?? null : null;
+  const laneEntry = useMemo(() => androidCatalogEntryForAvd(laneAvd), [laneAvd]);
+  useEffect(() => setColorOverride(null), [laneAvd?.name, laneAvd?.colorId]);
+  const laneProfile = useMemo(
+    () => (laneAvd?.profileId ? inventory?.profiles.find((profile) => profile.id === laneAvd.profileId) ?? null : null),
+    [inventory?.profiles, laneAvd?.profileId],
+  );
+  const bodySpec = useMemo<AndroidBodySpec | null>(() => {
+    if (pendingLook) return { entry: pendingLook.entry, profile: null, colorId: pendingLook.colorId };
+    if (pending?.kind === "create") return null;
+    if (!laneAvd) return null;
+    return {
+      entry: laneEntry,
+      profile: laneProfile ?? { screenInches: null, widthPx: laneAvd.lcdWidth, heightPx: laneAvd.lcdHeight, formFactor: null },
+      colorId: colorOverride ?? laneAvd.colorId ?? null,
+    };
+  }, [colorOverride, laneAvd, laneEntry, laneProfile, pending?.kind, pendingLook]);
+  const screenAspect = pendingLook
+    ? Math.min(pendingLook.entry.screen.widthPx, pendingLook.entry.screen.heightPx) / Math.max(pendingLook.entry.screen.widthPx, pendingLook.entry.screen.heightPx)
+    : androidScreenAspect(laneAvd);
+  const booting = pending != null || laneState !== "booted";
+  const bootOnModel = threeD && bodySpec !== null && (paneState === "starting" || (booting && paneState !== "picker"));
+  const boot = useAndroidBootScreen({
+    active: bootOnModel,
+    hidden,
+    screenAspect: screenAspect || 9 / 20,
+    tint: bodySpec ? androidBodyColor(bodySpec).body : "#3a3d42",
+    label: pendingLook ? `Making ${pendingLook.entry.name}` : `Starting ${deviceName}`,
+  });
+
+  const renders = useAndroidRenderRequests({
+    laneId,
+    deviceName,
+    runtimePinRef,
+    live: paneState === "live",
+    threeD,
+    setThreeD: () => setViewMode("3d"),
+    onError: (caught) => setError(describeAndroidError(caught)),
+  });
+  renderRequestRef.current = renders.handleRequest;
+
+  const setColor = useCallback((colorId: string) => {
+    if (!api) return;
+    setColorOverride(colorId);
+    void api.setDeviceColor({ laneId, colorId }, runtimePinRef.current)
+      .then(applyLane)
+      .catch((caught: unknown) => {
+        setColorOverride(null);
+        setError(describeAndroidError(caught));
+      });
+  }, [api, applyLane, laneId]);
+
   const strip = (() => {
     if (error) {
       return <DeviceErrorStrip tool="android" sentence={error.sentence} detail={error.detail} onDismiss={() => setError(null)} />;
@@ -460,6 +661,16 @@ export function AndroidDevicePane({
         />
       );
     }
+    if (threeFailure && androidRailVisible(paneState)) {
+      // The one sentence a fallback to flat says (Apple §A1).
+      return (
+        <AndroidDeviceNoticeStrip
+          sentence={`${threeFailure} Showing the flat view.`}
+          actions={[{ label: "Try 3D again", onClick: () => { setThreeFailure(null); setViewMode("3d"); setViewNonce((nonce) => nonce + 1); } }]}
+          onDismiss={() => setThreeFailure(null)}
+        />
+      );
+    }
     if (accel && !accel.usable && !noAccelDismissed && paneState !== "setup" && paneState !== "unsupported") {
       return (
         <AndroidDeviceNoticeStrip
@@ -475,7 +686,30 @@ export function AndroidDevicePane({
     return null;
   })();
 
+  const requestSetup = onRequestSetup ?? (() => setSetupRequested(true));
+
   function renderBody() {
+    if (setupRequested && status && paneState === "picker") {
+      return (
+        <div data-android-setup-requested="" className="relative flex size-full min-h-0 flex-col">
+          <div className="flex shrink-0 items-center px-3 pt-2">
+            <Button variant="ghost" size="sm" onClick={() => setSetupRequested(false)}>
+              Back to devices
+            </Button>
+          </div>
+          <div className="min-h-0 flex-1">
+            <AndroidSetupCard
+              sdk={status.sdk}
+              pin={runtimePin}
+              machineName={machineName}
+              remoteMachine={remoteMachine}
+              refreshing={refreshing}
+              onRefresh={refreshAll}
+            />
+          </div>
+        </div>
+      );
+    }
     switch (paneState) {
       case "unavailable":
         return (
@@ -513,7 +747,14 @@ export function AndroidDevicePane({
         );
       case "setup":
         return status ? (
-          <AndroidSetupCard sdk={status.sdk} hostPlatform={hostPlatform} refreshing={refreshing} onRefresh={refreshAll} />
+          <AndroidSetupCard
+            sdk={status.sdk}
+            pin={runtimePin}
+            machineName={machineName}
+            remoteMachine={remoteMachine}
+            refreshing={refreshing}
+            onRefresh={refreshAll}
+          />
         ) : null;
       case "picker":
         if (noPicker) return <AndroidPaneMessage title={noPicker} description={null} />;
@@ -527,7 +768,11 @@ export function AndroidDevicePane({
             refreshing={refreshing}
             onOpenLaneDevice={openLaneDevice}
             onAttach={attach}
-            onCreate={create}
+            onCreate={(profileId) => create({ profileId })}
+            onCreateCatalog={(catalogId: string, options: AndroidCatalogCreateOptions) => create({ catalogId, ...options })}
+            onReadSizes={readSizes}
+            onCleanUp={cleanUp}
+            onRequestSetup={requestSetup}
             onRelease={release}
             onDelete={deleteAvd}
             onRefresh={refreshAll}
@@ -542,8 +787,7 @@ export function AndroidDevicePane({
       case "live":
       case "video-lost":
       default: {
-        const booting = pending != null || laneState !== "booted";
-        if (booting) {
+        if (booting && !bootOnModel) {
           return (
             <AndroidDeviceLoadingCard
               name={pending?.kind === "create" ? "new device" : deviceName}
@@ -558,7 +802,8 @@ export function AndroidDevicePane({
             streamToken={stream.token}
             reconnectNonce={stream.reconnectNonce}
             devicePixelSize={devicePixelSize}
-            interactive={androidInputAllowed(paneState)}
+            interactive={androidInputAllowed(paneState) && !inspect.inspectOn}
+            renderScreenOverlay={inspect.renderInspectOverlay}
             onDeviceInput={input.send}
             onDeviceScroll={input.scroll}
             onDeviceKey={input.key}
@@ -568,9 +813,16 @@ export function AndroidDevicePane({
             // The screen moves left only when the rail would cover its right
             // edge and take its taps, as on the Apple stage.
             railInset={androidRailVisible(paneState) ? DEVICE_RAIL_WIDTH : 0}
+            mode={threeD && bodySpec ? "3d" : "flat"}
+            bodySpec={bodySpec}
+            screenAspect={screenAspect}
+            boot={bootOnModel ? boot : null}
+            viewNonce={viewNonce}
+            rendererRef={renders.rendererRef}
+            onThreeUnavailable={handleThreeUnavailable}
             className={cn("bg-transparent", paneState === "video-lost" && "opacity-40")}
           >
-            {paneState === "starting" ? (
+            {paneState === "starting" && !bootOnModel ? (
               <div className="absolute inset-0 z-[1]">
                 <AndroidDeviceLoadingCard name={deviceName} spec={deviceSpec} stage="streaming" />
               </div>
@@ -604,6 +856,22 @@ export function AndroidDevicePane({
                 onScreenshot={screenshot}
                 onSwitchDevice={noPicker ? undefined : () => setPickerRequested(true)}
                 onPowerOff={powerOff}
+                mode={threeD ? "3d" : "flat"}
+                onMode={setViewMode}
+                threeDisabledReason={threeFailure}
+                onRender={renders.openRender}
+                rendering={renders.rendering}
+                onResetView={() => setViewNonce((nonce) => nonce + 1)}
+                colors={laneEntry?.colors}
+                colorId={bodySpec?.colorId ?? null}
+                onColor={noPicker ? undefined : setColor}
+                inspecting={inspect.inspectOn}
+                onToggleInspect={inspect.toggleInspect}
+                recording={Boolean(recording.active)}
+                recordingBusy={recording.busy}
+                onToggleRecording={recording.toggleRecording}
+                toolsOpen={toolsOpen}
+                onToggleTools={() => setToolsOpen((open) => !open)}
                 extraControls={maximize ? (
                   <WorkToolChromeButton
                     label={maximize.maximized ? WORK_TOOL_RESTORE_PANE_LABEL : WORK_TOOL_MAXIMIZE_PANE_LABEL}
@@ -615,16 +883,67 @@ export function AndroidDevicePane({
                   </WorkToolChromeButton>
                 ) : null}
               />
-              <AndroidLiveLine
-                state={paneState === "live" ? "live" : "lost"}
-                fps={stream.fps}
-                laneName={laneName}
-                machineName={machineName}
-              />
+              {/* The recording pill takes the live line's place at the bottom while the picture is live. */}
+              {recording.active && deviceLive ? null : (
+                <AndroidLiveLine
+                  state={paneState === "live" ? "live" : "lost"}
+                  fps={stream.fps}
+                  laneName={laneName}
+                  machineName={machineName}
+                />
+              )}
+              {recording.active ? (
+                <RecordingPill
+                  marker={{ "data-android-recording-pill": "" }}
+                  elapsedMs={Math.max(0, recordingTick - Date.parse(recording.active.startedAt)) || 0}
+                  stopDisabled={recording.busy}
+                  onStop={recording.toggleRecording}
+                />
+              ) : null}
             </>
           ) : null}
+          {savedRecording && !recording.active ? (
+            <RecordingSavedRow
+              marker={{ "data-android-recording-saved": savedRecording.id }}
+              durationMs={savedRecording.durationMs ?? 0}
+              bytes={savedRecording.bytes}
+              onOpen={openSavedRecording}
+              onDismiss={() => setSavedDismissedId(savedRecording.id)}
+            />
+          ) : null}
         </div>
+
+        {toolsOpen && androidRailVisible(paneState) ? (
+          <div
+            data-android-drawer=""
+            className={cn(
+              /* Narrow: an opaque overlay just left of the rail (w-14), so
+                 the rail stays usable. Wide: docked beside the picture. */
+              "absolute inset-y-0 right-14 z-20 w-[min(18rem,calc(100%-3.5rem))] shadow-lg",
+              "@[700px]:static @[700px]:w-72 @[700px]:shrink-0 @[700px]:shadow-none",
+            )}
+          >
+            <Suspense fallback={null}>
+              <AndroidToolsDrawer
+                pin={runtimePin}
+                laneId={laneId}
+                chatSessionId={sessionId}
+                visible={toolsOpen && !hidden}
+                onClose={() => setToolsOpen(false)}
+                remoteMachineName={remoteMachine ? machineName : null}
+              />
+            </Suspense>
+          </div>
+        ) : null}
       </div>
+      {renders.renderOpen ? (
+        <AndroidRenderSheet
+          deviceName={deviceName}
+          rendering={renders.rendering}
+          onClose={() => renders.setRenderOpen(false)}
+          onRender={(request) => void renders.runRender(request)}
+        />
+      ) : null}
     </div>
   );
 }

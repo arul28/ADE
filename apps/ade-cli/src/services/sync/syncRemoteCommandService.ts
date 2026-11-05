@@ -316,6 +316,7 @@ import {
   type AppleDeviceRemoteService,
   type AppleStreamTicketIssuer,
 } from "./appleRemoteCommands";
+import { createAndroidRemoteCommandHandlers, type AndroidDeviceRemoteService } from "./androidRemoteCommands";
 import { createProviderAccountRemoteCommandHandlers } from "./providerAccountRemoteCommands";
 import { deriveDeterministicLaneNameFromPrompt } from "../../../../desktop/src/shared/laneNameFallback";
 import type { LaneSummary } from "../../../../desktop/src/shared/types";
@@ -677,6 +678,11 @@ type SyncRemoteCommandServiceArgs = {
   appleStreamRelay?: AppleStreamTicketIssuer | null;
   /** `apple.remoteBitrateKbpsCap` from account settings. */
   getAppleRemoteBitrateKbpsCap?: () => number | null;
+  /**
+   * The lane's Android emulator. Absent on a chat-only runtime, in which case
+   * `android.*` is not registered and a remote client hides the Android tool.
+   */
+  androidDeviceService?: AndroidDeviceRemoteService | null;
   /**
    * Deterministic stamp of the sync host's in-memory lane presence
    * (`devicesOpen`). The host decorates lane list/detail payloads with
@@ -6652,6 +6658,15 @@ function registerAppleRemoteCommands({ args, register }: RemoteCommandRegistrati
   }
 }
 
+/** The lane's Android emulator for remote surfaces (`androidRemoteCommands.ts`). Every host: the emulator runs on macOS, Windows and Linux. */
+function registerAndroidRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
+  const service = args.androidDeviceService;
+  if (!service) return;
+  for (const entry of createAndroidRemoteCommandHandlers({ service })) {
+    register(entry.action, entry.policy, async (payload) => entry.handler(payload));
+  }
+}
+
 function registerModelPickerRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
   // Cross-surface ModelPicker favorites + recents — see modelPickerStore.ts.
   // Mirrors the direct JSON-RPC `modelPicker.*` methods on adeRpcServer so iOS
@@ -8304,6 +8319,7 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
   registerMacDesktopRemoteCommands({ args, register, connectionLeases: macDesktopConnectionLeases });
   registerAppControlRemoteCommands({ args, register });
   registerAppleRemoteCommands({ args, register });
+  registerAndroidRemoteCommands({ args, register });
   registerWebhookRemoteCommands({ args, register });
   registerAutomationRuleRemoteCommands({ args, register });
   registerProviderAccountRemoteCommands({ args, register });

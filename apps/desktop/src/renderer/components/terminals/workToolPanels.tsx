@@ -712,6 +712,9 @@ function WorkAndroidDevice({
   pinnedMachineName,
   hostPlatform,
   noPicker,
+  panelSessionId,
+  canInsertContext,
+  onInsertDraft,
 }: WorkToolPanelProps & { laneName: string | null; hostPlatform?: string | null; noPicker?: string | null }) {
   const mountScope = useWorkToolMountScope(runtimePin);
   if (!laneId) return <NoLaneEmptyLine />;
@@ -724,6 +727,8 @@ function WorkAndroidDevice({
       machineName={runtimePin ? pinnedMachineName : null}
       hostPlatform={hostPlatform !== undefined ? hostPlatform : toolContext.hostPlatform ?? null}
       noPicker={noPicker ?? null}
+      sessionId={panelSessionId}
+      onInsertDraft={canInsertContext ? onInsertDraft : undefined}
     />
   );
 }

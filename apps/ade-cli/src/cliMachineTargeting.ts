@@ -553,6 +553,97 @@ export async function createMachineRemoteConnection(
     return withAppleActionResult(answer, { ...record, proof: proofArtifactId != null, proofArtifactId });
   };
 
+  /**
+   * The Android verbs that file proof (`screenshot`, `captureProofBundle`,
+   * `recordStop`, `requestRender`), on the Apple rule above: run there with
+   * `proof: false`, read each file back, file it in THIS chat's drawer, and
+   * answer the ids filed here.
+   */
+  const fileRemoteAndroidProofHere = async (params: JsonObject, action: AndroidProofAction): Promise<unknown> => {
+    const toolArgs = isRecord(params.arguments) ? params.arguments : {};
+    const actionArgs = isRecord(toolArgs.args) ? toolArgs.args : {};
+    const { result: answer, machineName } = await callRemoteAnswer("ade/actions/call", {
+      ...params,
+      arguments: { ...toolArgs, args: { ...actionArgs, proof: false } },
+    });
+    if (isRecord(answer) && (answer.isError === true || answer.ok === false)) return answer;
+    const record = appleActionResult(answer);
+    if (!record) return answer;
+    const where = machineName ?? machine;
+    const caption = asString(actionArgs.caption);
+    const fileOne = async (input: { kind: "screenshot" | "video_recording"; title: string; description: string; path: string; mimeType: string; metadata: JsonObject }, toolName: string) => {
+      try {
+        const filed = unwrapToolResult(await fileRemoteCapturesHere({
+          name: "ingest_computer_use_artifacts",
+          arguments: { backendStyle: "manual", backendName: "android-emulator", toolName, inputs: [input] },
+        }));
+        return firstFiledArtifactId(filed);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const duplicateOf = message.includes(PROOF_DUPLICATE_CODE)
+          ? /ade-proof:\/\/([0-9a-f-]{36})/iu.exec(message)?.[1] ?? null
+          : null;
+        if (!duplicateOf) process.stderr.write(`Could not file the ${toolName} capture from ${where} as proof here: ${message}\n`);
+        return duplicateOf;
+      }
+    };
+    if (action === "screenshot" || action === "captureProofBundle") {
+      const filePath = asString(action === "screenshot" ? record.path : record.screenshotPath);
+      if (!filePath) return answer;
+      const capturedAt = asString(record.capturedAt);
+      const proofArtifactId = await fileOne({
+        kind: "screenshot",
+        title: caption ?? `${action === "screenshot" ? "Android emulator screenshot" : "Android emulator proof bundle"} · ${where}`,
+        description: `Screen of the Android emulator on ${where}${capturedAt ? ` at ${capturedAt}` : ""}.`,
+        path: filePath,
+        mimeType: "image/png",
+        metadata: {
+          width: typeof record.width === "number" ? record.width : null,
+          height: typeof record.height === "number" ? record.height : null,
+          capturedAt,
+          ...(action === "captureProofBundle" && asString(record.dir) ? { bundleDir: asString(record.dir) } : {}),
+        },
+      }, action === "screenshot" ? "android screenshot" : "android proof-bundle");
+      return withAppleActionResult(answer, { ...record, proofArtifactId });
+    }
+    if (action === "requestRender") {
+      const paths = Array.isArray(record.paths) ? record.paths.map(asString).filter((entry): entry is string => entry != null) : [];
+      const ids: string[] = [];
+      for (const filePath of paths) {
+        const video = /\.(mp4|webm|mov)$/iu.test(filePath);
+        const id = await fileOne({
+          kind: video ? "video_recording" : "screenshot",
+          title: `Android device render · ${where}`,
+          description: `3D render of the lane's Android device on ${where}.`,
+          path: filePath,
+          mimeType: video ? (filePath.toLowerCase().endsWith(".webm") ? "video/webm" : "video/mp4") : "image/png",
+          metadata: {},
+        }, "android render");
+        if (id) ids.push(id);
+      }
+      return withAppleActionResult(answer, { ...record, filed: ids.length, proofArtifactIds: ids });
+    }
+    // recordStop: a discarded or failed recording has no file to file; each part is one video.
+    const segments = Array.isArray(record.segments) ? record.segments.filter(isRecord) : [];
+    if (actionArgs.discard === true || segments.length === 0) return answer;
+    const ids: string[] = [];
+    for (const [index, segment] of segments.entries()) {
+      const videoPath = asString(segment.path);
+      if (!videoPath) continue;
+      const part = segments.length > 1 ? ` (part ${index + 1} of ${segments.length})` : "";
+      const id = await fileOne({
+        kind: "video_recording",
+        title: `${asString(record.label) ?? `Android emulator recording · ${where}`}${part}`,
+        description: `Screen recording of the Android emulator on ${where}.`,
+        path: videoPath,
+        mimeType: "video/mp4",
+        metadata: { recordingId: asString(record.id), durationMs: typeof segment.durationMs === "number" ? segment.durationMs : null, part: index + 1 },
+      }, "android record-stop");
+      if (id) ids.push(id);
+    }
+    return withAppleActionResult(answer, { ...record, proofArtifactIds: ids });
+  };
+
   return {
     mode: "runtime-socket",
     projectRoot: roots.projectRoot,
@@ -589,7 +680,10 @@ export async function createMachineRemoteConnection(
         return await callRemote(method, appleParams);
       }
       if (method === "ade/actions/call" && params?.name === "run_ade_action" && isRecord(params.arguments) && params.arguments.domain === "android_emulator") {
-        return await callRemote(method, withRemoteAndroidArgs(params, roots.workspaceRoot));
+        const androidParams = withRemoteAndroidArgs(params, roots.workspaceRoot);
+        const proofAction = androidActionFiledAsProof(androidParams);
+        if (proofAction) return await fileRemoteAndroidProofHere(androidParams, proofAction);
+        return await callRemote(method, androidParams);
       }
       if (method === "ade/actions/call" && (params?.name === "list_computer_use_artifacts" || params?.name === "review_computer_use_artifact")) {
         // A proof command's verify step checks the drawer it filed into, and a
@@ -621,6 +715,18 @@ function appleActionFiledAsProof(params: JsonObject): AppleProofAction | null {
   if (params.name !== "run_ade_action" || toolArgs?.domain !== "ios_simulator" || args?.proof === false) return null;
   const action = asString(toolArgs.action);
   return (APPLE_PROOF_ACTIONS as readonly string[]).includes(action ?? "") ? action as AppleProofAction : null;
+}
+
+const ANDROID_PROOF_ACTIONS = ["screenshot", "captureProofBundle", "recordStop", "requestRender"] as const;
+type AndroidProofAction = (typeof ANDROID_PROOF_ACTIONS)[number];
+
+/** An Android action the emulator's machine would file as proof; `proof: false` files nothing at all. */
+function androidActionFiledAsProof(params: JsonObject): AndroidProofAction | null {
+  const toolArgs = isRecord(params.arguments) ? params.arguments : null;
+  const args = toolArgs && isRecord(toolArgs.args) ? toolArgs.args : null;
+  if (params.name !== "run_ade_action" || toolArgs?.domain !== "android_emulator" || args?.proof === false) return null;
+  const action = asString(toolArgs.action);
+  return (ANDROID_PROOF_ACTIONS as readonly string[]).includes(action ?? "") ? action as AndroidProofAction : null;
 }
 
 /** The action's own record in an `ade/actions/call` answer: `{ structuredContent: { domain, action, result } }` or a bare one. */

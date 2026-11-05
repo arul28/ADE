@@ -11,7 +11,7 @@ export type SettingsMachinesValue = {
   /** This computer's own name ("Arul's Mac Studio"), when sync knows it. */
   thisMachineName: string | null;
   /** Opens a page about one machine: its Machines page, or Providers on it. */
-  openMachine: (machineId: string, tab?: "machines" | "agents") => void;
+  openMachine: (machineId: string, tab?: "machines" | "agents" | "android") => void;
   /** Opens another Settings page, at a card when `anchor` is given. */
   openTab: (tab: string, anchor?: string) => void;
 };

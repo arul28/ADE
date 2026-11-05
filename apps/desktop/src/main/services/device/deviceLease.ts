@@ -1,10 +1,12 @@
 import { randomUUID, timingSafeEqual } from "node:crypto";
 
 /**
- * Turns on a lane's Apple device, for agents that share it.
+ * Turns on a lane's device, for agents that share it. The Apple device
+ * (`iosSimulatorService.ts`) and the Android emulator
+ * (`androidEmulatorService.ts`) each keep one table of these.
  *
- * Several chats in one lane drive one simulator, and a build, a rotate and a
- * screenshot from three of them land on each other. A lease is the queue they
+ * Several chats in one lane drive one simulator or emulator, and a build, a
+ * rotate and a screenshot from three of them land on each other. A lease is the queue they
  * stand in: `acquire` waits its turn, the holder works, `release` hands the
  * device to the next in line. It is advisory: input from the pane, and from an
  * agent that never asked, still goes through, because a person must never be
@@ -23,16 +25,16 @@ import { randomUUID, timingSafeEqual } from "node:crypto";
  * a name is not proof of holding the turn, and the token releases it.
  *
  * A waiter whose caller went away (`signal`: its connection closed) leaves the
- * line at once, so a killed `ade apple lease --wait` never wins a turn nobody
+ * line at once, so a killed `ade apple lease --wait` (or `ade android lease --wait`) never wins a turn nobody
  * will use or release.
  */
 
-export const APPLE_DEVICE_LEASE_DEFAULT_TTL_MS = 10 * 60_000;
-export const APPLE_DEVICE_LEASE_MAX_TTL_MS = 60 * 60_000;
+export const DEVICE_LEASE_DEFAULT_TTL_MS = 10 * 60_000;
+export const DEVICE_LEASE_MAX_TTL_MS = 60 * 60_000;
 /** Under the CLI's own 10-minute call timeout, so a wait ends with an answer. */
-export const APPLE_DEVICE_LEASE_MAX_WAIT_MS = 9 * 60_000;
+export const DEVICE_LEASE_MAX_WAIT_MS = 9 * 60_000;
 
-export type AppleDeviceLeaseHolder = {
+export type DeviceLeaseHolder = {
   holder: string;
   token: string;
   acquiredAt: string;
@@ -40,15 +42,15 @@ export type AppleDeviceLeaseHolder = {
 };
 
 /** Who has the device, as anyone else is told: never the token. */
-export type AppleDeviceLeaseOther = Omit<AppleDeviceLeaseHolder, "token">;
+export type DeviceLeaseOther = Omit<DeviceLeaseHolder, "token">;
 
-export type AppleDeviceLeaseAcquireResult =
-  | (AppleDeviceLeaseHolder & { acquired: true; waitedMs: number; renewed: boolean })
+export type DeviceLeaseAcquireResult =
+  | (DeviceLeaseHolder & { acquired: true; waitedMs: number; renewed: boolean })
   /** Renewed by holder name alone (an older CLI): the token stays with whoever got it. */
-  | (AppleDeviceLeaseOther & { acquired: true; waitedMs: number; renewed: true; token: null })
+  | (DeviceLeaseOther & { acquired: true; waitedMs: number; renewed: true; token: null })
   | {
     acquired: false;
-    current: AppleDeviceLeaseOther;
+    current: DeviceLeaseOther;
     queued: number;
     /**
      * The device is held under the asker's own holder name, by another turn:
@@ -75,13 +77,13 @@ function sameToken(a: string, b: string): boolean {
   return left.length === right.length && timingSafeEqual(left, right);
 }
 
-export function createAppleDeviceLeases(options: { now?: () => number } = {}) {
+export function createDeviceLeases(options: { now?: () => number } = {}) {
   const now = options.now ?? Date.now;
   const leases = new Map<string, Lease>();
   const queues = new Map<string, Waiter[]>();
   const expiryTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
-  const describe = (lease: Lease): AppleDeviceLeaseHolder => ({
+  const describe = (lease: Lease): DeviceLeaseHolder => ({
     holder: lease.holder,
     token: lease.token,
     acquiredAt: new Date(lease.acquiredAtMs).toISOString(),
@@ -89,15 +91,15 @@ export function createAppleDeviceLeases(options: { now?: () => number } = {}) {
   });
 
   /** The token is the holder's alone: whoever has it can release the lease. */
-  const describeOther = (lease: Lease): AppleDeviceLeaseOther => {
+  const describeOther = (lease: Lease): DeviceLeaseOther => {
     const { token: _token, ...rest } = describe(lease);
     return rest;
   };
 
   const clampTtl = (ttlMs: number | null | undefined): number => {
     const value = Number(ttlMs);
-    if (!Number.isFinite(value) || value <= 0) return APPLE_DEVICE_LEASE_DEFAULT_TTL_MS;
-    return Math.min(APPLE_DEVICE_LEASE_MAX_TTL_MS, Math.max(5_000, value));
+    if (!Number.isFinite(value) || value <= 0) return DEVICE_LEASE_DEFAULT_TTL_MS;
+    return Math.min(DEVICE_LEASE_MAX_TTL_MS, Math.max(5_000, value));
   };
 
   const queueLength = (key: string) => queues.get(key)?.length ?? 0;
@@ -170,7 +172,7 @@ export function createAppleDeviceLeases(options: { now?: () => number } = {}) {
     ttlMs: number;
     waitMs: number;
     signal?: AbortSignal | null;
-  }): Promise<AppleDeviceLeaseAcquireResult> => {
+  }): Promise<DeviceLeaseAcquireResult> => {
     const startedAt = now();
     return new Promise((resolve, reject) => {
       let giveUp: ReturnType<typeof setTimeout> | null = null;
@@ -179,7 +181,7 @@ export function createAppleDeviceLeases(options: { now?: () => number } = {}) {
         giveUp = null;
         args.signal?.removeEventListener("abort", onAbort);
       };
-      const notGranted = (): AppleDeviceLeaseAcquireResult => {
+      const notGranted = (): DeviceLeaseAcquireResult => {
         const holderNow = live(args.key);
         return holderNow
           ? { acquired: false, current: describeOther(holderNow), queued: queueLength(args.key) }
@@ -238,10 +240,10 @@ export function createAppleDeviceLeases(options: { now?: () => number } = {}) {
       distinct?: boolean | null;
       /** The caller went away: leave the line. */
       signal?: AbortSignal | null;
-    }): Promise<AppleDeviceLeaseAcquireResult> {
+    }): Promise<DeviceLeaseAcquireResult> {
       const ttlMs = clampTtl(args.ttlMs);
       const chat = args.chat?.trim() || null;
-      const waitMs = Math.min(APPLE_DEVICE_LEASE_MAX_WAIT_MS, Math.max(0, Number(args.waitMs) || 0));
+      const waitMs = Math.min(DEVICE_LEASE_MAX_WAIT_MS, Math.max(0, Number(args.waitMs) || 0));
       const token = args.token?.trim() || null;
       const current = live(args.key);
       const byToken = Boolean(current && token && sameToken(current.token, token));
@@ -289,7 +291,7 @@ export function createAppleDeviceLeases(options: { now?: () => number } = {}) {
       return null;
     },
 
-    status(key: string): { held: boolean; current: AppleDeviceLeaseOther | null; queued: number } {
+    status(key: string): { held: boolean; current: DeviceLeaseOther | null; queued: number } {
       const current = live(key);
       return { held: Boolean(current), current: current ? describeOther(current) : null, queued: queueLength(key) };
     },

@@ -206,7 +206,7 @@ import {
 } from "./recording/simRecordingService";
 import { createLaneDeviceLifecycle } from "./laneDeviceLifecycle";
 import { createAppleDuoService, parseHelperPosture } from "./appleDuoService";
-import { createAppleDeviceLeases } from "./appleDeviceLease";
+import { createDeviceLeases } from "../device/deviceLease";
 import { normalizeBuildConfiguration, normalizeLaunchArguments } from "./iosLaunchArgs";
 import { appleDeviceTypeSupportsDuo, appleOrientationFamily, isAppleDeviceOrientation } from "../../../shared/appleOrientation";
 import { createSimulatorPower } from "./simulatorPower";
@@ -2619,7 +2619,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   };
 
   const resolveLaneIdForPath = args.resolveLaneIdForPath ?? null;
-  const deviceLeases = createAppleDeviceLeases();
+  const deviceLeases = createDeviceLeases();
 
   /**
    * The lane a call is about, and a note that its device was used.
@@ -8168,7 +8168,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
 
     /*
      * Turns on one of the lane's devices for the agents that share it
-     * (advisory: see `appleDeviceLease.ts`). One lease per device: the lane's
+     * (advisory: see `device/deviceLease.ts`). One lease per device: the lane's
      * own device, and each extra (`deviceUdid`) on its own, so a build on the
      * iPhone never waits on a screenshot of the iPad beside it.
      */

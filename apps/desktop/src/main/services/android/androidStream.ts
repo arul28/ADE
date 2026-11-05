@@ -36,7 +36,7 @@ import {
   SCRCPY_POINTER_ID_GENERIC_FINGER,
 } from "./scrcpyControl";
 import { startScrcpySession, type ScrcpySession, type ScrcpySessionEnd } from "./scrcpyServer";
-import { createScrcpyRecordBuilder } from "./scrcpyVideo";
+import { createScrcpyRecordBuilder, type ScrcpyVideoPacket } from "./scrcpyVideo";
 
 /*
  * Encoder defaults, measured on the Windows emulator (API 36, 4 vCPUs). The
@@ -106,6 +106,10 @@ type DeviceStream = {
   failure: AndroidStreamError | null;
   firstConfig: { promise: Promise<void>; resolve: () => void };
   lastEnd: ScrcpySessionEnd | null;
+  /** The last config packet, so a tap that joins mid-stream knows the SPS and PPS. */
+  lastConfigPacket: ScrcpyVideoPacket | null;
+  /** Readers of the raw packets (a recording). Kept across a session restart. */
+  packetTaps: Set<(packet: ScrcpyVideoPacket) => void>;
 };
 
 function deferred(): { promise: Promise<void>; resolve: () => void } {
@@ -179,6 +183,14 @@ export function createAndroidStreamHub() {
       {
         onPacket: (packet) => {
           if (devices.get(args.serial) !== device) return;
+          if (packet.config) device.lastConfigPacket = packet;
+          for (const tap of device.packetTaps) {
+            try {
+              tap(packet);
+            } catch (error) {
+              args.logger?.warn("android.stream_tap_failed", { serial: args.serial, error: getErrorMessage(error) });
+            }
+          }
           let outputs;
           try {
             outputs = device.builder.push(packet);
@@ -317,6 +329,8 @@ export function createAndroidStreamHub() {
         failure: null,
         firstConfig: deferred(),
         lastEnd: null,
+        lastConfigPacket: null,
+        packetTaps: new Set(),
       };
       devices.set(args.serial, device);
       const server = ensureStreamServer(args.logger ?? null);
@@ -354,6 +368,21 @@ export function createAndroidStreamHub() {
     },
 
     stopStream,
+
+    /**
+     * Hands every raw packet of the running stream to `tap` (a recording), first
+     * the last config packet, then a fresh keyframe (asked for here). Returns
+     * the call that stops it. The tap ends with the stream (`stopStream`).
+     */
+    subscribePackets(serial: string, tap: (packet: ScrcpyVideoPacket) => void): () => void {
+      const { device, session } = runningDevice(serial);
+      device.packetTaps.add(tap);
+      if (device.lastConfigPacket) tap(device.lastConfigPacket);
+      void session.control.send([encodeResetVideo()]).catch(() => undefined);
+      return () => {
+        device.packetTaps.delete(tap);
+      };
+    },
 
     /**
      * Sends one touch event. Coordinates are device pixels in the current

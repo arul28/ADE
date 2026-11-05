@@ -1,6 +1,22 @@
 import { IPC } from "../shared/ipc";
 import type { OpenProjectBinding } from "../shared/types";
 import type {
+  AndroidAttachRenderProofArgs,
+  AndroidListDevicesArgs,
+  AndroidRenderAckArgs,
+  AndroidRenderCompleteArgs,
+  AndroidRenderProofResult,
+  AndroidSetDeviceColorArgs,
+} from "../shared/types/androidEmulator";
+import type { AndroidEmulatorToolsPreloadApi } from "../shared/types/androidEmulator";
+import type {
+  AndroidSdkInstallArgs,
+  AndroidSdkInstallState,
+  AndroidSdkSetupArgs,
+  AndroidSdkSetupPlan,
+  AndroidSetSdkPathArgs,
+} from "../shared/types/androidEmulator";
+import type {
   AndroidAttachDeviceArgs,
   AndroidCreateDeviceArgs,
   AndroidDeviceInventory,
@@ -58,6 +74,16 @@ export function createAndroidEmulatorBridge(deps: AndroidEmulatorBridgeDeps): An
         () => deps.invoke(channel, args) as Promise<R>,
       );
 
+  /**
+   * A routed method with no IPC channel behind it (the Tools drawer's agent
+   * verbs). Without a runtime there is nothing to answer, so it says why.
+   */
+  const runtimeOnly = <K extends keyof AndroidEmulatorToolsPreloadApi>(action: K): AndroidEmulatorToolsPreloadApi[K] =>
+    ((args: Record<string, unknown>, pin?: OpenProjectBinding | null) =>
+      deps.callAction(pin, action, { args }, () =>
+        Promise.reject(new Error(`Android ${action} needs an open project. Open a project so ADE can reach its Android service.`)),
+      )) as unknown as AndroidEmulatorToolsPreloadApi[K];
+
   /** The same routed method, for the reads whose argument is optional. */
   const callOptional = <A, R>(action: string, channel: string) => {
     const routed = call<A, R>(action, channel);
@@ -69,7 +95,7 @@ export function createAndroidEmulatorBridge(deps: AndroidEmulatorBridgeDeps): An
       "getStatus",
       IPC.androidEmulatorGetStatus,
     ),
-    listDevices: callOptional<{ laneId?: string | null }, AndroidDeviceInventory>(
+    listDevices: callOptional<AndroidListDevicesArgs, AndroidDeviceInventory>(
       "listDevices",
       IPC.androidEmulatorListDevices,
     ),
@@ -91,6 +117,34 @@ export function createAndroidEmulatorBridge(deps: AndroidEmulatorBridgeDeps): An
     sendText: call<AndroidTextArgs, void>("sendText", IPC.androidEmulatorSendText),
     rotate: call<AndroidRotateArgs, void>("rotate", IPC.androidEmulatorRotate),
     screenshot: call<AndroidScreenshotArgs, AndroidScreenshot>("screenshot", IPC.androidEmulatorScreenshot),
+    // P1 look: the body colour and the window side of a render.
+    setDeviceColor: call<AndroidSetDeviceColorArgs, AndroidLaneDeviceStatus>("setDeviceColor", IPC.androidEmulatorSetDeviceColor),
+    renderAck: call<AndroidRenderAckArgs, { ok: boolean }>("renderAck", IPC.androidEmulatorRenderAck),
+    renderComplete: call<AndroidRenderCompleteArgs, { ok: boolean }>("renderComplete", IPC.androidEmulatorRenderComplete),
+    attachRenderProof: call<AndroidAttachRenderProofArgs, AndroidRenderProofResult>("attachRenderProof", IPC.androidEmulatorAttachRenderProof),
+    // P1 setup: the guided SDK install and "Use mine…", on the machine the pin names.
+    getSdkSetupPlan: callOptional<AndroidSdkSetupArgs, AndroidSdkSetupPlan>("getSdkSetupPlan", IPC.androidEmulatorGetSdkSetupPlan),
+    installSdk: call<AndroidSdkInstallArgs, AndroidSdkInstallState>("installSdk", IPC.androidEmulatorInstallSdk),
+    cancelSdkInstall: callOptional<Record<string, never>, AndroidSdkInstallState>("cancelSdkInstall", IPC.androidEmulatorCancelSdkInstall),
+    getSdkInstallState: callOptional<Record<string, never>, AndroidSdkInstallState>("getSdkInstallState", IPC.androidEmulatorGetSdkInstallState),
+    setSdkPath: call<AndroidSetSdkPathArgs, AndroidEmulatorStatus>("setSdkPath", IPC.androidEmulatorSetSdkPath),
+    // P1 tools: the drawer, Inspect and Record call the agent verbs.
+    listApps: runtimeOnly("listApps"),
+    installApp: runtimeOnly("installApp"),
+    launchApp: runtimeOnly("launchApp"),
+    terminateApp: runtimeOnly("terminateApp"),
+    uninstallApp: runtimeOnly("uninstallApp"),
+    openUrl: runtimeOnly("openUrl"),
+    getScreenSnapshot: runtimeOnly("getScreenSnapshot"),
+    recordStart: runtimeOnly("recordStart"),
+    recordStop: runtimeOnly("recordStop"),
+    recordList: runtimeOnly("recordList"),
+    recordDelete: runtimeOnly("recordDelete"),
+    setLocation: runtimeOnly("setLocation"),
+    setAppearance: runtimeOnly("setAppearance"),
+    setPermission: runtimeOnly("setPermission"),
+    getDeviceSettings: runtimeOnly("getDeviceSettings"),
+    setDeviceSetting: runtimeOnly("setDeviceSetting"),
     /**
      * Turn the host's loopback stream URL into one this desktop can open. Not a
      * routed action: the forward is built by this process.
