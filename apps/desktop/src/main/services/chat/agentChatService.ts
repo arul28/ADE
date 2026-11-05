@@ -1535,7 +1535,7 @@ import {
   runNamingAcrossProviders,
   type SessionMetadataConversationEntry,
 } from "./sessionNaming";
-import { createSessionMetadataRegenerator } from "./sessionMetadataService";
+import { createSessionMetadataRegenerator, type SessionMetadataRunOptions } from "./sessionMetadataService";
 import { createStatusLineStaleRegen } from "./statusLineStaleCheck";
 import {
   createCursorSdkEventMapperState,
@@ -5363,6 +5363,12 @@ type ManagedChatSession = {
    * query instead (`claudeReasoningEffortChange`). In memory only.
    */
   turnReasoningEffort?: string | null;
+  /**
+   * Why the running turn failed, from its last error event that said
+   * (`errorInfo.category`). Cleared when a turn starts and read once by its
+   * settle, for the `ade_error` event's `error_kind`. In memory only.
+   */
+  turnErrorCategory?: AgentChatTurnErrorCategory | null;
   /**
    * The chat's personal profile changed while its provider process was
    * mid-turn (`adoptLegacyPersonalSessionAsAssistant`). That process was built
@@ -11373,6 +11379,12 @@ function personalChatUserPromptFallback(
  */
 export type ChatHandoffReplayOutcome = "fit" | "truncated" | "refused" | "retried" | "gave_up";
 
+/** How a provider error event categorized a failure. */
+export type AgentChatTurnErrorCategory = Extract<
+  NonNullable<Extract<AgentChatEvent, { type: "error" }>["errorInfo"]>,
+  { category: string }
+>["category"];
+
 export type AgentChatTurnSettledEvent = Readonly<{
   sessionId: string;
   turnId: string;
@@ -11385,6 +11397,8 @@ export type AgentChatTurnSettledEvent = Readonly<{
   costUsd?: number | null;
   /** Wall time from the turn's start to its done event. */
   durationMs?: number | null;
+  /** On a failed turn, why, when its error event said; otherwise null. */
+  errorCategory?: AgentChatTurnErrorCategory | null;
 }>;
 
 type AgentChatAutomationService = {
@@ -11902,10 +11916,14 @@ export function createAgentChatService(args: {
    * command or a simulator there). Never the machine, the command, or the path.
    */
   onRemoteWorkStarted?: (event: { sessionId: string; machineKey: string }) => void;
-  /** Content-free hook fired after an explicit session-metadata generation request. */
+  /**
+   * Content-free hook fired after a session-metadata generation: on request,
+   * or `automatic` when ADE refreshed the status line after a turn.
+   */
   onSessionMetadataRegenerated?: (event: {
     sessionId: string;
     outcome: "completed" | "partial" | "failed";
+    automatic: boolean;
   }) => void;
   /**
    * Content-free hook fired once per auto-resume transition (armed, resumed,
@@ -18768,6 +18786,7 @@ export function createAgentChatService(args: {
   let sessionMetadataRegenerator: ReturnType<typeof createSessionMetadataRegenerator> | null = null;
   const regenerateSessionMetadata = async (
     args: AgentChatRegenerateSessionMetadataArgs,
+    options: SessionMetadataRunOptions = {},
   ): Promise<AgentChatRegenerateSessionMetadataResult> => {
     // `async`, so `ensureManagedSession` rejects for an unknown session id like
     // every other failure here rather than throwing at the call site.
@@ -18852,7 +18871,7 @@ export function createAgentChatService(args: {
       onRegenerated: onSessionMetadataRegenerated,
       logger,
     });
-    return sessionMetadataRegenerator(args);
+    return sessionMetadataRegenerator(args, options);
   };
 
   // OpenCode handles API-key and local-model chats.
@@ -22230,6 +22249,7 @@ export function createAgentChatService(args: {
       // before this turn's first event is placed by its time instead.
       lastTurnIdBySession.delete(managed.session.id);
       managed.turnReasoningEffort = managed.session.reasoningEffort ?? null;
+      managed.turnErrorCategory = null;
     }
     managed.session.status = "active";
     managed.session.idleSinceAt = null;
@@ -22268,7 +22288,7 @@ export function createAgentChatService(args: {
     decide: jevDecide,
     logger,
     readStatusLine: (sessionId) => sessionService.get(sessionId)?.statusNote,
-    regenerate: (sessionId) => regenerateSessionMetadata({ sessionId, fields: ["statusLine"] }),
+    regenerate: (sessionId) => regenerateSessionMetadata({ sessionId, fields: ["statusLine"] }, { automatic: true }),
   });
 
   /** An agent-written status line is kept unless Jev reads the final reply as past it. */
@@ -22308,7 +22328,7 @@ export function createAgentChatService(args: {
     void regenerateSessionMetadata({
       sessionId: managed.session.id,
       fields: ["statusLine"],
-    }).catch((error) => {
+    }, { automatic: true }).catch((error) => {
       logger.warn("agent_chat.idle_status_line_failed", {
         sessionId: managed.session.id,
         error: error instanceof Error ? error.message : String(error),
@@ -23855,6 +23875,9 @@ export function createAgentChatService(args: {
       // not every provider logs it on its way: an OpenCode turn that failed in
       // a second ("Command not found: ship") left no line in the brain log.
       const errorInfo = typeof decoratedEvent.errorInfo === "object" ? decoratedEvent.errorInfo : null;
+      // After the decoration, so a CLI sign-in or missing-CLI failure settles
+      // with that category, not the raw error's.
+      if (errorInfo?.category) managed.turnErrorCategory = errorInfo.category;
       logger.warn("agent_chat.turn_error", {
         sessionId: managed.session.id,
         provider: managed.session.provider,
@@ -24223,6 +24246,8 @@ export function createAgentChatService(args: {
       // The model that answered: a reroute's served model when it is a catalog
       // model, else the requested one. Non-catalog names report as `other`.
       const servedModelId = event.servedModel ? getModelById(event.servedModel)?.id : undefined;
+      const errorCategory = event.status === "failed" ? managed.turnErrorCategory ?? null : null;
+      managed.turnErrorCategory = null;
       onTurnSettled({
         sessionId: managed.session.id,
         turnId: event.turnId,
@@ -24233,6 +24258,7 @@ export function createAgentChatService(args: {
         usage: event.usage,
         costUsd: event.costUsd ?? null,
         durationMs: turnStartedMs === undefined ? null : Math.max(0, Date.now() - turnStartedMs),
+        errorCategory,
       });
     } catch (error) {
       logger.warn("agent_chat.turn_settled_callback_failed", {
@@ -77781,7 +77807,8 @@ export function createAgentChatService(args: {
     getLaunchDefaults,
     applyFastModePolicy,
     getPermissionCeiling: resolvePermissionCeiling,
-    regenerateSessionMetadata,
+    // A caller's request, never `automatic`: only this service starts those.
+    regenerateSessionMetadata: (args: AgentChatRegenerateSessionMetadataArgs) => regenerateSessionMetadata(args),
     setSpawnKind,
     setParent,
     dismissSubagentTakeoverPrompt,

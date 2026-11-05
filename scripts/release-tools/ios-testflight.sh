@@ -4,7 +4,7 @@
 #   bash scripts/release-tools/ios-testflight.sh <marketing-version> <build-number> <release-sha>
 #
 # Run from the repo root with <release-sha> checked out, on macOS. Uploads the
-# archive's dSYMs to Sentry (upload-ios-dsyms.sh says where the token comes
+# archive's dSYMs to Sentry and PostHog (upload-ios-dsyms.sh says where the tokens come
 # from). Safe to rerun:
 # an IPA already exported for this build is reused, and a build already in App
 # Store Connect is not uploaded again. App Store Connect often answers with 5xx

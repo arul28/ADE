@@ -1,0 +1,47 @@
+# Checks every six hours that analytics still arrive in PostHog: the
+# marketing site's `/_t/` proxy answers as PostHog, and the site and the
+# desktop app sent events in the last day (scripts/analytics/data-health.mjs).
+# A broken rewrite once lost 32 hours of site events before anyone looked;
+# this run goes red within six hours instead.
+#
+# Secret: POSTHOG_RECONCILE_API_KEY (PostHog personal key, query:read). When
+# it is not set, only the proxy is checked.
+name: Analytics health
+
+on:
+  schedule:
+    - cron: "23 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: analytics-health
+  cancel-in-progress: true
+
+jobs:
+  health:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      POSTHOG_PERSONAL_API_KEY: ${{ secrets.POSTHOG_RECONCILE_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: scripts/analytics
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Check analytics arrive
+        run: |
+          status=0
+          node scripts/analytics/data-health.mjs > "$RUNNER_TEMP/health.md" || status=$?
+          tee -a "$GITHUB_STEP_SUMMARY" < "$RUNNER_TEMP/health.md"
+          if [ "$status" -eq 1 ]; then
+            echo "::error::Analytics are not arriving in PostHog; see the run summary."
+          elif [ "$status" -ne 0 ]; then
+            echo "::error::The check could not reach PostHog (exit $status): the key may be expired. See the step log."
+          fi
+          exit "$status"

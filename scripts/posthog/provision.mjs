@@ -91,6 +91,18 @@ function assertUnique(items, field, label) {
   }
 }
 
+/**
+ * A HogQL filter keeps its whole expression in `key`, so the names inside it
+ * are what must be in the catalog: each `properties.<name>`, and each quoted
+ * event name (`'ade_…'` or `'$…'`).
+ */
+function hogqlFilterNames(expression) {
+  return {
+    properties: [...expression.matchAll(/\bproperties\.([A-Za-z_$][\w$]*)/g)].map((match) => match[1]),
+    events: [...expression.matchAll(/'((?:ade_|\$)[\w$]*)'/g)].map((match) => match[1]),
+  };
+}
+
 function visit(value, visitor) {
   if (Array.isArray(value)) {
     for (const item of value) visit(item, visitor);
@@ -133,6 +145,17 @@ export function validateDashboardSpec(spec = dashboardSpec) {
         }
         if (node.kind === "EventsNode" && typeof node.id === "string" && !allowedEvents.has(node.id)) {
           fail(`Insight ${item.key} references unknown retention event ${JSON.stringify(node.id)}.`);
+        }
+        if (node.type === "hogql") {
+          if (typeof node.key !== "string" || node.key.trim() === "") fail(`Insight ${item.key} has an empty HogQL filter.`);
+          const names = hogqlFilterNames(node.key);
+          for (const name of names.properties) {
+            if (!allowedProperties.has(name)) fail(`Insight ${item.key} references unknown property ${JSON.stringify(name)} in a HogQL filter.`);
+          }
+          for (const name of names.events) {
+            if (!allowedEvents.has(name)) fail(`Insight ${item.key} references unknown event ${JSON.stringify(name)} in a HogQL filter.`);
+          }
+          return;
         }
         for (const field of ["breakdown", "key", "math_property"]) {
           if (typeof node[field] === "string" && !allowedProperties.has(node[field])) {

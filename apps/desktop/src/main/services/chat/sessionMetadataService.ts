@@ -94,9 +94,14 @@ export type SessionMetadataRegeneratorDependencies<ManagedSession extends Sessio
   onRegenerated?: (event: {
     sessionId: string;
     outcome: "completed" | "partial" | "failed";
+    /** ADE started it after a turn; nobody asked. */
+    automatic: boolean;
   }) => void;
   logger: Logger;
 };
+
+/** `automatic` when ADE starts the run after a turn; a caller's request leaves it unset. */
+export type SessionMetadataRunOptions = { automatic?: boolean };
 
 /**
  * Own the explicit title/lane/status refresh workflow outside the large chat
@@ -107,9 +112,11 @@ export function createSessionMetadataRegenerator<ManagedSession extends SessionM
   dependencies: SessionMetadataRegeneratorDependencies<ManagedSession>,
 ): (
   args: AgentChatRegenerateSessionMetadataArgs,
+  options?: SessionMetadataRunOptions,
 ) => Promise<AgentChatRegenerateSessionMetadataResult> {
   return async (
     args: AgentChatRegenerateSessionMetadataArgs,
+    options: SessionMetadataRunOptions = {},
   ): Promise<AgentChatRegenerateSessionMetadataResult> => {
     const sessionId = args.sessionId.trim();
     const managed = dependencies.ensureManagedSession(sessionId);
@@ -150,7 +157,7 @@ export function createSessionMetadataRegenerator<ManagedSession extends SessionM
 
     const notifyOutcome = (outcome: "completed" | "partial" | "failed"): void => {
       try {
-        dependencies.onRegenerated?.({ sessionId, outcome });
+        dependencies.onRegenerated?.({ sessionId, outcome, automatic: options.automatic === true });
       } catch (error) {
         dependencies.logger.warn("agent_chat.session_metadata_callback_failed", {
           sessionId,

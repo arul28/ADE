@@ -97,6 +97,10 @@ Every Monday, about 20 minutes:
    PMF share answering "Very disappointed", and file what repeats.
 4. **Reliability.** `ADE · Reliability and analytics budget`: incidents, errors,
    and the 30-day volume against the free allowance.
+5. **Data health.** Check that the `Analytics health` workflow
+   (`scripts/analytics/data-health.mjs`, every six hours) stayed green. It goes
+   red when the site's `/_t/` proxy stops answering as PostHog, or when the
+   site or the desktop app sends almost nothing for a day.
 
 ## Project settings that live in PostHog, not code
 
@@ -134,18 +138,73 @@ them in PostHog and update this list in the same branch.
 - **Dashboard "ADE · Agent turns (LLM analytics)"** is managed by
   `scripts/posthog/provision.mjs` like the others; PostHog's own LLM analytics
   and Error tracking pages read `$ai_generation` and `$exception` directly.
-- **Self-driving** (reports only, PR generation off): connected to
-  `arul28/ADE`. The destination "Self-driving reports → Linear (ADE)" files
-  every surfaced `$scout_report_emitted` as a Linear issue in team ADE with
-  the `posthog` label and Linear priority (P0 Urgent, P1 High, P2 Medium,
-  P3–P4 Low). P0 and P1 also get `auto-fix`, which starts an ADE agent in a
-  new lane (automation rules `posthog-report-investigate` and
-  `linear-auto-fix-labeled`). It authenticates with the project secret
-  `LINEAR_POSTHOG_API_KEY`. Automation gaps found along the way are tracked in
-  `docs/features/automations/known-gaps.md`.
+- **Transformation "Mark ADE team accounts internal"**: sets
+  `is_internal: true` (and `is_internal_source: account`) on every event from a
+  distinct id on its list: each Clerk account flagged `ade_internal` and each
+  install that signed in to one, on every surface and build. A signed-in
+  install sends as its account, so a new machine is covered from its first
+  sign-in; its events before that are covered from the next sync. The
+  `Analytics reconcile` workflow keeps the list and the `is_internal` person
+  flag in sync (`reconcile-signups.mjs --sync-internal`, which needs the
+  `POSTHOG_INTERNAL_SYNC_API_KEY` secret). After you flag a new account in
+  Clerk, run that workflow by hand. The sync only adds; take an id off the list
+  in PostHog. Like every transformation, it does not mark events ingested
+  before an id was on the list (the owner's accounts: before 2026-11-05 07:00
+  UTC).
+- **Self-driving** (reports only, PR generation off, nothing starts on its
+  own): connected to `arul28/ADE`. The destination "Self-driving reports →
+  Linear (ADE)" files each surfaced `$scout_report_emitted` of priority P0–P2
+  as a Linear issue in team ADE with the `posthog` label and Linear priority
+  (P0 Urgent, P1 High, P2 Medium); P3, P4 and unranked reports stay in the
+  PostHog inbox. No report gets `auto-fix`, and the automation rules that
+  started an ADE agent from it (`posthog-report-investigate`,
+  `linear-auto-fix-labeled`) are off: a person decides what an agent works on.
+  It authenticates with the project secret `LINEAR_POSTHOG_API_KEY`.
+  - Scouts on (daily unless noted): General, Anomaly detection, Customer
+    analytics, Inbox validation, Product analytics (Mondays), Surveys
+    (Mondays), Data pipelines (Mondays), and ADE's own "ADE reliability" and
+    "ADE update installs" (Mondays), which feed the others and do not report
+    on their own. The rest are paused: they watch products ADE does not use
+    or repeat the Sentry and error-tracking sources.
+  - The team instructions every scout reads say who is internal, which data
+    breaks are known (the list below), and that ADE sends no autocapture.
+    Each source (Sentry, error tracking, GitHub, Linear) has steering that
+    keeps only fixable defects on current builds and skips issues labeled
+    `posthog` or `auto-fix`. Change them in PostHog and here together.
+  - Automation gaps found along the way are tracked in
+    `docs/features/automations/known-gaps.md`.
 
 ## Known breaks in the series
 
+- **Marketing site events, replay and heatmaps are missing from 2026-11-03
+  22:20 UTC to about 2026-11-05 07:00 UTC.** The `/_t/` proxy rewrite in
+  `apps/web/vercel.json` used `:path*`, which Vercel does not match against a
+  path that ends in `/`, so every capture went to the site's `index.html`
+  (PR #2066 fixed it). Do not read that window as a traffic drop.
+- **"Active" means a person did something**, on every build. The managed
+  insights that count active or retained installs (weekly active
+  installations, feature-use retention, feature adoption, sign-up retention,
+  sign-up to repeat use) leave out the background events of
+  `productAnalyticsPolicy.ts` and the feature uses the app runs on its own,
+  by event name for builds before 1.2.128, which send no `interactive`. Since
+  2026-11-05 their history reads lower than before: about half of the
+  "feature-active" installs in the week to 2026-11-05 had only automatic
+  activity.
+- **Download clicks leave out the `/open` link page** from 2026-11-05. Link
+  scanners load it and press each footer link once; they were most of the
+  iPhone "download" clicks.
+- **`error_kind` on a failed chat turn** says why it failed (`rate_limit`,
+  `permission`, `budget`, `network`, `busy`, `cli_missing`) from the first
+  desktop release after 1.2.129-beta.8; earlier it is always `other`.
+  `ade_brain_action_failed` carries `brain_action` and `expected_kind` from
+  1.2.129-beta.6; on older builds most of its `error_code` values are
+  `unknown`.
+- **`metadata_regenerated`** is sent at most once per mode and outcome per
+  install an hour from the first desktop release after 1.2.129-beta.8. Before,
+  it was a quarter of the events of the installs that reached their daily
+  budget. From that release a regeneration someone asked for says
+  `mode: "manual"` and counts as a person's use; before, every one said
+  `automatic`.
 - **Automatic feature uses are non-interactive** from the first desktop release
   after 1.2.128: a scheduled storage sweep and a chat title regenerated after a
   turn now carry `mode: "automatic"` and `interactive: false`. Charts filtered
@@ -164,7 +223,12 @@ them in PostHog and update this list in the same branch.
   `ade_account_deleted`) mirror Clerk's webhooks. When PostHog and Clerk
   disagree, Clerk is right: `scripts/analytics/reconcile-signups.mjs` compares
   them every week (`.github/workflows/analytics-reconcile.yml`) and backfills
-  missing sign-ups with the same uuid, so PostHog never counts one twice.
+  missing sign-ups with the same uuid, so PostHog never counts one twice. The
+  same run keeps ADE's own accounts marked internal (above).
+- **Which events fill a daily budget.** `ade_analytics_budget` says how many
+  events an install dropped and why, not which. Ask PostHog for the events of
+  the installs that dropped `daily_budget` on that day; most `dropped_count`
+  is `duplicate`, which is the dedupe working, not lost use.
 - **PostHog is the record of product use.** It sees only installs with
   analytics on, so treat its counts as a lower bound.
 - **This plan is the record of what is sent.** CI keeps it equal to the code.

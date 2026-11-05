@@ -7,11 +7,18 @@
 # never a second copy), then runs the check again and goes red if anything is
 # still missing. A manual run only checks unless `apply` is ticked.
 #
+# It also keeps ADE's own accounts out of the numbers: every distinct id of an
+# account flagged `ade_internal` in Clerk goes on the "Mark ADE team accounts
+# internal" transformation's list, and its person gets `is_internal`.
+#
 # Secrets: CLERK_PROD_SECRET_KEY (Clerk production Backend API key),
 # POSTHOG_RECONCILE_API_KEY (PostHog personal key, query:read only; when it is
 # not set the run is skipped with a notice and stays green),
+# POSTHOG_INTERNAL_SYNC_API_KEY (PostHog personal key with query:read,
+# hog_function:read and hog_function:write; when it is not set only the
+# internal sync is skipped, with a notice),
 # ADE_POSTHOG_PROJECT_TOKEN (the public phc_ token). The report holds counts
-# only: no email, no Clerk user id.
+# only: no email, no Clerk user id, no distinct id.
 name: Analytics reconcile
 
 on:
@@ -40,6 +47,7 @@ jobs:
       CLERK_SECRET_KEY: ${{ secrets.CLERK_PROD_SECRET_KEY }}
       POSTHOG_PERSONAL_API_KEY: ${{ secrets.POSTHOG_RECONCILE_API_KEY }}
       POSTHOG_PROJECT_TOKEN: ${{ secrets.ADE_POSTHOG_PROJECT_TOKEN }}
+      INTERNAL_SYNC_KEY: ${{ secrets.POSTHOG_INTERNAL_SYNC_API_KEY }}
       APPLY: ${{ github.event_name == 'schedule' || inputs.apply == true }}
     steps:
       # Safety net: should the PostHog query key ever be removed, the run is
@@ -66,8 +74,31 @@ jobs:
         with:
           node-version: 24
 
+      # First, so a sign-up backfilled below for an internal account lands on
+      # a person that already says so.
+      - name: Sync internal accounts
+        if: steps.key.outputs.present == 'true'
+        env:
+          POSTHOG_PERSONAL_API_KEY: ${{ env.INTERNAL_SYNC_KEY }}
+        run: |
+          if [ -z "$INTERNAL_SYNC_KEY" ]; then
+            echo "internal sync skipped: add POSTHOG_INTERNAL_SYNC_API_KEY (query:read, hog_function:read, hog_function:write) to enable" >> "$GITHUB_STEP_SUMMARY"
+            echo "::notice::Internal-account sync skipped: POSTHOG_INTERNAL_SYNC_API_KEY is not set."
+            exit 0
+          fi
+          flags=(--sync-internal)
+          if [ "$APPLY" = "true" ]; then flags+=(--apply); fi
+          status=0
+          node scripts/analytics/reconcile-signups.mjs "${flags[@]}" > "$RUNNER_TEMP/internal.md" || status=$?
+          cat "$RUNNER_TEMP/internal.md" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$status" -ne 0 ]; then
+            echo "::error::Internal accounts are not fully marked in PostHog (exit $status); see the run summary."
+            exit 1
+          fi
+
+      # `!cancelled()`: a failed internal sync must not skip the sign-up check.
       - name: Backfill missing sign-ups
-        if: steps.key.outputs.present == 'true' && env.APPLY == 'true'
+        if: ${{ !cancelled() && steps.key.outputs.present == 'true' && env.APPLY == 'true' }}
         run: |
           {
             echo "### Backfill"
@@ -75,7 +106,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Check every account has its sign-up
-        if: steps.key.outputs.present == 'true'
+        if: ${{ !cancelled() && steps.key.outputs.present == 'true' }}
         run: |
           # After a backfill PostHog needs a little while to ingest, so the
           # check is retried for a few minutes before it counts as a failure.

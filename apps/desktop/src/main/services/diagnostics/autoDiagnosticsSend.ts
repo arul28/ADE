@@ -129,7 +129,8 @@ export async function runAutoDiagnosticsSend<TBuilt>(
       args.capture?.({
         event: "ade_feature_used",
         surface: args.analyticsSurface,
-        properties: { feature: "connections", action: "auto_sent", outcome },
+        // Nobody pressed anything: the app sent the report on its own.
+        properties: { feature: "connections", action: "auto_sent", mode: "automatic", outcome },
         projectId: null,
         dedupeKey: `diagnostics_auto_sent:${outcome}`,
         minimumIntervalMs: AUTO_DIAGNOSTICS_ANALYTICS_DEDUPE_MS,
