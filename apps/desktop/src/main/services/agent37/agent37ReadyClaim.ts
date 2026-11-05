@@ -89,7 +89,39 @@ export async function claimAgent37ReadyMachine(
       logger.warn?.("agent37.ready_mark_failed_failed", { instanceId: broken.id, error: getErrorMessage(error) });
     });
   }
-  const pick = ready.find((instance) => instance.metadata[AGENT37_MACHINE_KEY_METADATA]);
+  // Agent 37 has no conditional write, so each candidate is read fresh (still
+  // ready?), tagged, and read back: a caller whose token didn't stick lost a
+  // race to another caller and moves on to the next machine.
+  let pick: Agent37Instance | null = null;
+  let claimToken = "";
+  let claimedAt = 0;
+  for (const candidate of ready.filter((instance) => instance.metadata[AGENT37_MACHINE_KEY_METADATA])) {
+    const fresh = await client.getInstance(candidate.id).catch((error: unknown) => {
+      logger.warn?.("agent37.ready_claim_read_failed", { instanceId: candidate.id, error: getErrorMessage(error) });
+      return null;
+    });
+    if (!fresh || agent37ReadyStateOf(fresh) !== "ready") continue;
+    claimToken = randomUUID();
+    claimedAt = now();
+    const written = {
+      ...fresh.metadata,
+      [AGENT37_READY_METADATA.state]: "claimed",
+      [AGENT37_READY_METADATA.claimedAt]: String(claimedAt),
+      [AGENT37_READY_METADATA.claimToken]: claimToken,
+    };
+    await client.setInstanceMetadata(fresh.id, written);
+    // Unreadable back: ours is the last write we know of, so it is taken (a
+    // claimed machine left asleep and unused would never return to the pool).
+    const check = await client.getInstance(fresh.id).catch((error: unknown) => {
+      logger.warn?.("agent37.ready_claim_read_failed", { instanceId: fresh.id, error: getErrorMessage(error) });
+      return null;
+    });
+    if (!check || check.metadata[AGENT37_READY_METADATA.claimToken] === claimToken) {
+      pick = check ?? { ...fresh, metadata: written };
+      break;
+    }
+    logger.info?.("agent37.ready_claim_lost", { instanceId: fresh.id });
+  }
   if (!pick) {
     const preparing = pool.some((instance) => agent37ReadyStateOf(instance) === "preparing");
     throw new Agent37NoReadyMachine(
@@ -98,13 +130,7 @@ export async function claimAgent37ReadyMachine(
         : "This project has no ready machine. Turn on \"Keep a cloud machine ready\" in Settings › Integrations › Agent 37.",
     );
   }
-  const claimedAt = now();
-  const claimToken = randomUUID();
-  const metadata = await patchAgent37Metadata(client, pick.id, {
-    [AGENT37_READY_METADATA.state]: "claimed",
-    [AGENT37_READY_METADATA.claimedAt]: String(claimedAt),
-    [AGENT37_READY_METADATA.claimToken]: claimToken,
-  });
+  const metadata = pick.metadata;
   const wakeStarted = now();
   try {
     // A machine that is already awake (a claim right after preparing) answers at once.
@@ -125,7 +151,7 @@ export async function claimAgent37ReadyMachine(
   logger.info?.("agent37.ready_claimed", { instanceId: pick.id, wakeMs, waitedMs: wakeStarted - claimedAt });
   return {
     instanceId: pick.id,
-    machineKey: metadata[AGENT37_MACHINE_KEY_METADATA] ?? pick.metadata[AGENT37_MACHINE_KEY_METADATA]!,
+    machineKey: metadata[AGENT37_MACHINE_KEY_METADATA]!,
     name: pick.name ?? pick.id,
     projectPath: metadata[AGENT37_READY_METADATA.path] ?? null,
     laneId: metadata[AGENT37_READY_METADATA.lane] ?? null,

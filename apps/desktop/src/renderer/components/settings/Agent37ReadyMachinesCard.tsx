@@ -110,12 +110,13 @@ export function Agent37ReadyMachinesCard({ status }: { status: Agent37Status | n
   // The form shows the saved choice once it is read, and again when it changes
   // (another window, another computer); a status update alone keeps the edit.
   const saved = mine?.settings ?? null;
+  // Another project with no choice yet starts from the defaults, never from the
+  // last project's setup commands.
   useEffect(() => {
-    if (!saved) return;
-    setKind(saved.kind);
-    setShapeId(saved.shape);
-    setSetup(saved.setup);
-  }, [saved?.identity, saved?.kind, saved?.shape, saved?.setup]); // eslint-disable-line react-hooks/exhaustive-deps
+    setKind(saved?.kind ?? "vm");
+    setShapeId(saved?.shape ?? AGENT37_READY_DEFAULT_SHAPE);
+    setSetup(saved?.setup ?? "");
+  }, [identity, saved?.identity, saved?.kind, saved?.shape, saved?.setup]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // A running prepare shows its elapsed time; one tick a second only while it runs.
   const preparing = mine?.state === "preparing" || mine?.state === "waiting";

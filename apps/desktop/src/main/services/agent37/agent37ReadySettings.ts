@@ -130,11 +130,18 @@ export function createAgent37ReadySettingsStore(deps: {
     },
     async write(projects) {
       const raw = JSON.stringify({ v: 1, projects });
-      const store = local();
-      store?.setSync(AGENT37_READY_MACHINE_CREDENTIAL_KEY, raw);
+      let savedHere = false;
+      try {
+        const store = local();
+        store?.setSync(AGENT37_READY_MACHINE_CREDENTIAL_KEY, raw);
+        savedHere = store != null;
+      } catch (error) {
+        // The account copy below still counts.
+        deps.logger?.warn?.("agent37.ready_settings_local_write_failed", { error: getErrorMessage(error) });
+      }
       const vault = deps.vault();
       const saved = vault ? await vault.set(raw).catch(() => false) : false;
-      if (!saved && !store) throw new Error("ADE couldn't save that to your account or this computer. Try again.");
+      if (!saved && !savedHere) throw new Error("ADE couldn't save that to your account or this computer. Try again.");
       if (!saved) deps.logger?.warn?.("agent37.ready_settings_saved_locally", {});
     },
   };
