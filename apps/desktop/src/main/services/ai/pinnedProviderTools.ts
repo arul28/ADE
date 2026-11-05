@@ -24,6 +24,7 @@ import {
   type PinnedToolStatus,
 } from "../../../../../ade-cli/src/services/tools/pinnedTool";
 import type { ToolErrorKind } from "../../../../../ade-cli/src/services/tools/errors";
+import { markExpected } from "../../../shared/expectedError";
 import { ACP_PROVIDER_IDS, ACP_PROVIDER_METADATA, type AcpProviderId } from "../../../shared/acpProviderMetadata";
 import type { MuseBinaryStatus } from "../../../shared/museBinary";
 import type { PinnedProviderToolStatus } from "../../../shared/types/config";
@@ -146,6 +147,13 @@ export class PinnedToolNotReadyError extends Error {
     this.tool = tool;
     this.state = status.state;
     this.errorKind = status.errorKind;
+    // Not downloaded yet, still downloading, or not built for this machine:
+    // the machine's state, which the message names. A failed download stays
+    // an issue, because the download is ADE's, and so does a "ready" tool
+    // that could not start.
+    if (status.state === "missing" || status.state === "downloading" || status.state === "unavailable") {
+      markExpected(this, "environment");
+    }
   }
 }
 

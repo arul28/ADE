@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { AdeExpectedError } from "../../../shared/expectedError";
 import { runGit } from "../git/git";
 import { fetchRemoteTrackingBranch } from "../shared/remoteTrackingBranch";
 import {
@@ -43,10 +44,13 @@ async function verifyCommit(ref: string, cwd: string): Promise<string | null> {
  */
 async function missingStartBranchError(projectRoot: string, message: string): Promise<Error> {
   const anyRef = await runGit(["for-each-ref", "--count=1", "--format=%(refname)"], { cwd: projectRoot, timeoutMs: 10_000 });
-  if (anyRef.exitCode === 0 && !anyRef.stdout.trim()) {
-    return new Error("This repository has no commits yet. Make a first commit, then create a lane.");
+  // A branch the user named that is not there, or a repository with no
+  // commits, is their answer; a failed listing is ADE's and stays an issue.
+  if (anyRef.exitCode !== 0) return new Error(message);
+  if (!anyRef.stdout.trim()) {
+    return new AdeExpectedError("This repository has no commits yet. Make a first commit, then create a lane.", "user");
   }
-  return new Error(message);
+  return new AdeExpectedError(message, "user");
 }
 
 /**

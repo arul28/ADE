@@ -146,6 +146,12 @@ const DEFAULT_FLUSH_DEBOUNCE_MS = 2_000;
 const DEFAULT_PROMPT_FLUSH_MS = 150;
 const PUBLISH_RETRY_MS = 30_000;
 /**
+ * Sends of one alert before it is dropped. A phone the relay keeps failing
+ * (a dead APNs token, a device APNs refuses) failed every 30 s retry for days,
+ * and a notification ten minutes late is no longer news.
+ */
+const MAX_ALERT_DELIVERY_ATTEMPTS = 20;
+/**
  * How long a run must have been terminal before trailing transcript activity is
  * allowed to move it back to `running`. Providers emit a little output after
  * their `done` bookend; without the window the row would flap done→working→done
@@ -273,6 +279,8 @@ type PendingAlert = {
   standalone?: boolean;
   /** Already announced to this machine's desktop; copied onto phone retries. */
   desktopAnnounced?: boolean;
+  /** Sends that did not land so far; see `MAX_ALERT_DELIVERY_ATTEMPTS`. */
+  failedDeliveries?: number;
 };
 
 type PushAgentChatService = {
@@ -630,6 +638,30 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
 
   const logWarn = (message: string, error: unknown): void => {
     deps.logger.warn(message, { error: error instanceof Error ? error.message : String(error) });
+  };
+
+  /** Counts one more failed send on each alert, and drops those out of attempts. */
+  const retainRetriableAlerts = (alerts: PendingAlert[]): { kept: PendingAlert[]; dropped: number } => {
+    const kept: PendingAlert[] = [];
+    for (const alert of alerts) {
+      const failedDeliveries = (alert.failedDeliveries ?? 0) + 1;
+      if (failedDeliveries < MAX_ALERT_DELIVERY_ATTEMPTS) kept.push({ ...alert, failedDeliveries });
+    }
+    return { kept, dropped: alerts.length - kept.length };
+  };
+
+  /**
+   * `push.publish_undelivered`: a warn when the failure is new or alerts were
+   * given up, info for the same failure on its next retry.
+   */
+  let lastUndelivered: string | null = null;
+  const logUndelivered = (error: string, dropped: number): void => {
+    const repeated = dropped === 0 && error === lastUndelivered;
+    lastUndelivered = error;
+    deps.logger[repeated ? "info" : "warn"]("push.publish_undelivered", {
+      error,
+      ...(dropped > 0 ? { droppedAlerts: dropped } : {}),
+    });
   };
 
   const persistLastPublishedRevisions = (): void => {
@@ -1820,10 +1852,12 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     // A failed publish requeues only what it carried. Alerts the account
     // Activity already published, or that had no phone to reach, were not
     // sent here; requeueing them would publish them again next flush.
-    const requeueAttemptedAlerts = (): void => {
+    const requeueAttemptedAlerts = (): number => {
       const attemptedAlerts = new Set<PendingAlert>();
       for (const attempt of alertAttempts) if (attempt.alert) attemptedAlerts.add(attempt.alert);
-      pendingAlerts = [...attemptedAlerts, ...pendingAlerts];
+      const retries = retainRetriableAlerts([...attemptedAlerts]);
+      pendingAlerts = [...retries.kept, ...pendingAlerts];
+      return retries.dropped;
     };
 
     const alertCoveredDeviceIds = new Set(alertItems.flatMap((item) => item.deviceIds ?? []));
@@ -1871,9 +1905,9 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       const failed = readOutcomeCount(result, "failed");
       const alertOutcomes = readAlertOutcomes(result);
       if (alertOutcomes == null && delivered === 0 && suppressed === 0 && failed > 0) {
-        requeueAttemptedAlerts();
+        const dropped = requeueAttemptedAlerts();
         deps.store.recordPublishResult({ at: new Date().toISOString(), error: `relay delivered 0 of ${failed} targets` });
-        logWarn("push.publish_undelivered", new Error(`0 of ${failed} targets delivered`));
+        logUndelivered(`0 of ${failed} targets delivered`, dropped);
         scheduleRetry();
         return;
       }
@@ -1902,15 +1936,14 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
           });
         }
         const newerPendingKeys = new Set(pendingAlerts.map((alert) => alert.dedupeKey));
-        const retryAlerts = [...retryByKey.values()]
+        const retries = retainRetriableAlerts([...retryByKey.values()]
           .filter(({ alert }) => !newerPendingKeys.has(alert.dedupeKey))
-          .map(({ alert, deviceIds }) => ({ ...alert, targetDeviceIds: deviceIds }));
-        pendingAlerts = [...retryAlerts, ...pendingAlerts];
-        logWarn(
-          "push.publish_undelivered",
-          new Error(`${failedAlertCount} alert target${failedAlertCount === 1 ? "" : "s"} failed`),
-        );
-        scheduleRetry();
+          .map(({ alert, deviceIds }) => ({ ...alert, targetDeviceIds: deviceIds })));
+        pendingAlerts = [...retries.kept, ...pendingAlerts];
+        logUndelivered(`${failedAlertCount} alert target${failedAlertCount === 1 ? "" : "s"} failed`, retries.dropped);
+        if (retries.kept.length > 0) scheduleRetry();
+      } else {
+        lastUndelivered = null;
       }
       for (const [index, attempt] of alertAttempts.entries()) {
         const outcome = alertVerdicts?.[index];

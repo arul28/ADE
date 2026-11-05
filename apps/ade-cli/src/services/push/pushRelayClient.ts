@@ -223,6 +223,9 @@ export class PushRelayUnreachableError extends Error {
   }
 }
 
+/** The answer this client gives itself when the signed-in account changed under a request. */
+const ACCOUNT_CHANGED_REASON = "ADE account changed before the request was authorized";
+
 export class PushRelayRequestError extends Error {
   constructor(
     readonly action: string,
@@ -234,6 +237,9 @@ export class PushRelayRequestError extends Error {
     // The relay's own outage or rate limit ("temporarily unavailable"): the
     // relay reports its failures itself, and the caller tries again later.
     if (status === 429 || status >= 500) markExpected(this, "environment");
+    // The user signed out or switched accounts while the call was on its way;
+    // the next call goes out as the new account.
+    else if (status === 409 && reason === ACCOUNT_CHANGED_REASON) markExpected(this, "user");
   }
 }
 
@@ -395,7 +401,7 @@ export function createPushRelayClient(args: {
           return {
             ok: false,
             status: 409,
-            body: { error: "ADE account changed before the request was authorized" },
+            body: { error: ACCOUNT_CHANGED_REASON },
           };
         }
         // The deadline is the only clock on the token wait. A token

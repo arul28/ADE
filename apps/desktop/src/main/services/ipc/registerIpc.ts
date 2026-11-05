@@ -12245,7 +12245,9 @@ export function registerIpc({
     callLocalMachineMethod: async (machineKey) => {
       if (!localRuntimeConnectionPool) throw new Error("The local runtime is unavailable.");
       const rootPath = getCtx().project?.rootPath?.trim();
-      if (!rootPath) throw new Error("The local project runtime is unavailable.");
+      // A window with no project open (Settings › Account on the welcome
+      // screen) has no local runtime to ask; the row shows that state.
+      if (!rootPath) throw new AdeExpectedError("The local project runtime is unavailable.", "environment");
       return await readLocalMachineInventoryDetail({
         machineKey,
         providerInstanceStore: getMachineProviderInstanceStore(),
@@ -12856,7 +12858,13 @@ export function registerIpc({
   };
   const ensurePrReadContext = (): AppContextWith<"prService" | "prPollingService"> => {
     const ctx = ensurePrPolling();
-    if (!ctx) throw new Error("PR service is not available for this project window.");
+    if (!ctx) {
+      const message = "PR service is not available for this project window.";
+      // Expected in the no-project window, as for terminals above; a project
+      // context without one is a wiring bug.
+      if (!getCtx().projectId) throw new AdeExpectedError(message, "environment");
+      throw new Error(message);
+    }
     return ctx;
   };
 

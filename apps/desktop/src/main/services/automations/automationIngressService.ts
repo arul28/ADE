@@ -492,6 +492,8 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
   let lastRelayActivityAtMs = Date.now();
   let relayPollCooldownUntilMs = 0;
   let relayPollFailureCount = 0;
+  /** The last failed poll's message, so a failure that repeats logs once. Cleared by a good poll. */
+  let lastRelayPollFailureMessage: string | null = null;
   let subscriptionLoggedState: "connected" | "disconnected" | null = null;
   // When the hosted relay needs a GitHub App user token that the user has not
   // granted yet, that is an idle state, not an error: skip polling for a
@@ -1410,6 +1412,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
       if (lastDeliveryAt) noteRelayActivity();
       relayPollFailureCount = 0;
       relayPollCooldownUntilMs = 0;
+      lastRelayPollFailureMessage = null;
       clearRelayPollRetryTimer();
       updateGithubRelayStatus({
         healthy: true,
@@ -1447,10 +1450,16 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
         : Math.min(nowMs + GITHUB_RELAY_POLL_BACKOFF_CAP_MS, retryAtMs ?? 0);
       relayPollCooldownUntilMs = Math.max(nowMs + backoffMs, retryFloorMs);
       scheduleRelayPollRetry();
-      args.logger.warn("automations.github_relay_poll_failed", {
-        error: error instanceof Error ? error.message : String(error),
+      const failureMessage = error instanceof Error ? error.message : String(error);
+      // A poll that keeps failing on the same cause (no GitHub auth, a paused
+      // project database) warns once; the repeats stay in the local log.
+      const repeated = failureMessage === lastRelayPollFailureMessage;
+      lastRelayPollFailureMessage = failureMessage;
+      args.logger[repeated ? "info" : "warn"]("automations.github_relay_poll_failed", {
+        error: failureMessage,
         retryAt: new Date(relayPollCooldownUntilMs).toISOString(),
         rateLimited,
+        failures: relayPollFailureCount,
       });
       updateGithubRelayStatus({
         healthy: false,

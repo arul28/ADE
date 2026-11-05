@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { createGithubIssueOps } from "../../desktop/src/main/services/github/githubIssueOps";
+import { createTokenValidationFailureLog } from "../../desktop/src/main/services/github/githubTokenValidationLog";
 import { resolveGithubRepoRef } from "../../desktop/src/main/services/github/githubSshAlias";
 import { gitPushError } from "../../desktop/src/main/services/git/gitPushFailure";
 import { githubRepoRefFromRemoteUrl } from "../../desktop/src/shared/githubRemote";
@@ -1968,6 +1969,8 @@ export function createHeadlessGitHubService(
     },
   });
 
+  const tokenValidationLog = createTokenValidationFailureLog(logger);
+
   const performStatusLookup = async (
     forceRefresh: boolean,
     generation: number,
@@ -2108,6 +2111,7 @@ export function createHeadlessGitHubService(
           registerGithubCredentialIdentity(candidate, value.validated.userLogin);
         },
         onUsableProbe: (candidate, value) => {
+          tokenValidationLog.validated(candidate.source);
           recordGithubCredentialProbeSuccess(
             candidate,
             value.validated.rateLimit,
@@ -2119,7 +2123,7 @@ export function createHeadlessGitHubService(
             recordGithubCredentialFailure(candidate, result.authFailure, result.rateLimit);
           }
           if (context.phase === "read") {
-            logger.warn("github.token_validation_failed", {
+            tokenValidationLog.failed({
               source: candidate.source,
               error: result.error,
               kind: result.authFailure.kind,

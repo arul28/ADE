@@ -70,6 +70,7 @@ enum CrashReporting {
       // The budget decides first, on the raw event; the scrubber only cleans.
       options.beforeSend = { event in
         if isIdleRunLoopAppHang(event) { return nil }
+        groupAppHang(event)
         guard ADECrashEventLimiter.shared.admit(ADECrashScrubber.fingerprint(for: event)) else { return nil }
         let scrubbed = ADECrashScrubber.scrub(event)
         // PostHog error tracking gets what Sentry admitted, never more.
@@ -172,6 +173,29 @@ enum CrashReporting {
     return ADEAppHangStack.isIdleRunLoop(frames.map {
       ADEAppHangStack.Frame(package: $0.package, inApp: $0.inApp?.boolValue == true)
     })
+  }
+
+  /// One issue per kind of app hang, not per duration or system stack. The
+  /// SDK titles a hang with its length ("App hanging between 3.9 and 4.7
+  /// seconds") and the phone's stacks differ in system frames, so Sentry made
+  /// a new issue for nearly every hang. The kind is the exception type
+  /// (`App Hang Fully Blocked`, `Fatal App Hang Fully Blocked` for a watchdog
+  /// kill), plus the innermost ADE function when the phone named one.
+  private static func groupAppHang(_ event: Sentry.Event) {
+    guard let exception = event.exceptions?.last,
+          let type = exception.type, type.contains("App Hang") else { return }
+    let stacktrace = exception.stacktrace
+      ?? event.threads?.first(where: { $0.current?.boolValue == true })?.stacktrace
+    event.fingerprint = ["ios", "app_hang", type] + (stacktrace.flatMap { innermostAppFunction($0.frames) }.map { [$0] } ?? [])
+  }
+
+  /// The innermost in-app frame's function, skipping the entry point every
+  /// stack has (`main`, `ADEApp.$main`). Nil when the phone sent no names.
+  private static func innermostAppFunction(_ frames: [Sentry.Frame]) -> String? {
+    frames.reversed().first(where: { frame in
+      guard frame.inApp?.boolValue == true, let function = frame.function, !function.isEmpty else { return false }
+      return function != "main" && !function.hasSuffix(".$main")
+    })?.function
   }
 
   /// Reads a scrubbed Sentry error event into the report PostHog's

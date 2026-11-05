@@ -35,6 +35,7 @@ import {
   verifyEd25519,
   type AdoptChannelAead,
 } from "../../../shared/sync/adoptChannelCrypto";
+import { markExpected } from "../../../shared/expectedError";
 import type { AdeAccountMachine } from "../../../shared/types/account";
 import type { RemoteRuntimeConnectionAttemptFailure } from "../../../shared/types/remoteRuntime";
 import {
@@ -1388,7 +1389,11 @@ export class DesktopPairedMachineStore {
     });
     // The route list is diagnostic data, not a headline. Keep it in the bounded
     // warning above and give the account row one target-specific next step.
-    throw new Error(accountMachineAdoptionFailureMessage(machine, failures));
+    const failure = new Error(accountMachineAdoptionFailureMessage(machine, failures));
+    // A computer that is asleep, offline or has ADE closed is the network's
+    // answer; the message tells the user what to do.
+    const dominant = dominantAccountMachineAdoptionFailure(failures);
+    throw dominant === "timeout" || dominant === "unreachable" ? markExpected(failure, "network") : failure;
   }
 
   private read(): DesktopPairedMachinesFile {

@@ -70,6 +70,7 @@ export function createProcessRegistryService(options: ProcessRegistryServiceOpti
   let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   let started = false;
   let ownStartedAt: string | null = nowIso();
+  let lastHeartbeatFailure: string | null = null;
 
   const writeOwnRow = (startedAtIso: string | null): void => {
     const lastSeen = nowIso();
@@ -85,6 +86,20 @@ export function createProcessRegistryService(options: ProcessRegistryServiceOpti
       `,
       [pid, role, projectRoot, rowStartedAt, lastSeen],
     );
+  };
+
+  const heartbeatOnce = (): void => {
+    try {
+      writeOwnRow(null);
+      lastHeartbeatFailure = null;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      // The tick runs every 5 s; a database that stays paused (its folder
+      // moved) would log the same line forever. Log each new failure once.
+      if (message === lastHeartbeatFailure) return;
+      lastHeartbeatFailure = message;
+      logger.warn("process_registry.heartbeat_failed", { pid, role, error: message });
+    }
   };
 
   return {
@@ -109,31 +124,13 @@ export function createProcessRegistryService(options: ProcessRegistryServiceOpti
           error: error instanceof Error ? error.message : String(error),
         });
       }
-      heartbeatTimer = setInterval(() => {
-        try {
-          writeOwnRow(null);
-        } catch (error) {
-          logger.warn("process_registry.heartbeat_failed", {
-            pid,
-            role,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
-      }, heartbeatIntervalMs);
+      heartbeatTimer = setInterval(heartbeatOnce, heartbeatIntervalMs);
       heartbeatTimer.unref?.();
     },
 
     /** Force a heartbeat write now — useful right before a long blocking op. */
     heartbeat(): void {
-      try {
-        writeOwnRow(null);
-      } catch (error) {
-        logger.warn("process_registry.heartbeat_failed", {
-          pid,
-          role,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
+      heartbeatOnce();
     },
 
     stop(): void {

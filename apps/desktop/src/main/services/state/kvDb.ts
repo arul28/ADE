@@ -5,6 +5,7 @@ import { randomBytes } from "node:crypto";
 import { createRequire } from "node:module";
 import type { DatabaseSync as DatabaseSyncType, StatementSync } from "node:sqlite";
 import { codedError, isCodedError } from "../../../shared/codedError";
+import { markExpected } from "../../../shared/expectedError";
 import type { Logger } from "../logging/logger";
 import { isSqliteBusyOrLockedError } from "./sqliteErrors";
 import { safeJsonParse } from "../shared/utils";
@@ -331,6 +332,8 @@ function reapRestoredDatabaseClosures(): void {
 // Retaining the connection lets restoring the same file resume safely.
 function guardDatabasePath(db: DatabaseSyncType, dbPath: string): void {
   const identity = fs.statSync(dbPath, { bigint: true });
+  // A folder the user moved or replaced is theirs to restore; the message says
+  // so. Marked expected, so only a caller that lets it escape is an issue.
   const assertDatabasePath = () => {
     let current: fs.BigIntStats;
     try {
@@ -338,16 +341,16 @@ function guardDatabasePath(db: DatabaseSyncType, dbPath: string): void {
     } catch (error) {
       const code = (error as NodeJS.ErrnoException)?.code;
       if (code !== "ENOENT" && code !== "ENOTDIR") throw error;
-      throw codedError(
+      throw markExpected(codedError(
         "The project database is no longer available at its original location. Restore the project's .ade folder to resume; ADE has paused database operations to protect your data.",
         "db_path_changed",
-      );
+      ), "user");
     }
     if (current.dev !== identity.dev || current.ino !== identity.ino) {
-      throw codedError(
+      throw markExpected(codedError(
         "The project database was moved or replaced. Restore the original .ade folder to resume; ADE will not write to the moved database or use its replacement.",
         "db_path_changed",
-      );
+      ), "user");
     }
   };
   databasePathGuards.set(db, assertDatabasePath);

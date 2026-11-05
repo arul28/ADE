@@ -143,6 +143,25 @@ function isTimeoutBurstRepeat(label: string, now: number): boolean {
   return false;
 }
 
+/**
+ * The same answer on the same call, again: an event pump re-asking a paired
+ * machine that is offline gets "Can't reach …" on every retry. The first is
+ * the Sentry Log; repeats within this window add nothing. Bounded, since
+ * labels and messages are few and a full map just starts over.
+ */
+const EXPECTED_REPEAT_MS = 10 * 60_000;
+const MAX_EXPECTED_REPEAT_KEYS = 200;
+const lastExpectedLogAt = new Map<string, number>();
+
+function isExpectedRepeat(label: string, message: string, now: number): boolean {
+  const key = `${label}\u0000${message}`;
+  const last = lastExpectedLogAt.get(key);
+  if (last != null && now >= last && now - last < EXPECTED_REPEAT_MS) return true;
+  if (lastExpectedLogAt.size >= MAX_EXPECTED_REPEAT_KEYS) lastExpectedLogAt.clear();
+  lastExpectedLogAt.set(key, now);
+  return false;
+}
+
 /** The channels that carry every brain action; `labelFor` names the action. */
 const RUNTIME_ACTION_CHANNELS: ReadonlySet<string> = new Set([IPC.localRuntimeCallAction, IPC.remoteRuntimeCallAction]);
 
@@ -177,11 +196,14 @@ export function installIpcErrorCapture(labelFor: (channel: string, args: readonl
         if (isExpectedOutcome(error) || sleptThroughTimeout(timeout, startedAt, startedMono)) {
           // An answer ("Lane not found", "Can't reach …"), or a timer that ran
           // out while ADE was not running: a Sentry Log, not an issue.
-          forwardLogToSentry("warn", `ipc.expected.${label}`, {
-            message: error instanceof Error ? error.message : String(error),
-            durationMs,
-            ...(timeout ? { lateMs: timeout.lateMs, cpuMs: timeout.cpuMs } : {}),
-          });
+          const message = error instanceof Error ? error.message : String(error);
+          if (!isExpectedRepeat(label, message, Date.now())) {
+            forwardLogToSentry("warn", `ipc.expected.${label}`, {
+              message,
+              durationMs,
+              ...(timeout ? { lateMs: timeout.lateMs, cpuMs: timeout.cpuMs } : {}),
+            });
+          }
           throw error;
         }
         addSentryBreadcrumb("ipc", label, { durationMs, ok: false }, "error");

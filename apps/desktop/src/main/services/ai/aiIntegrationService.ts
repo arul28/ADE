@@ -134,6 +134,7 @@ import { recordCursorBilledUsage } from "../usage/cursorBilledUsageStore";
 import { pinnedToolInstallGeneration } from "../../../../../ade-cli/src/services/tools/onDemand";
 import { startDemandedAgentToolFetches } from "../tools/agentToolDemand";
 import {
+import { AdeExpectedError } from "../../../shared/expectedError";
   openCursorCloudCredentialStore,
   readCursorCloudLaneSecretNames,
   resolveCursorCloudCreateCloudExtras,
@@ -1348,7 +1349,7 @@ export function createAiIntegrationService(args: {
   const requireCursorCloudApiKey = async (): Promise<string> => {
     const key = getCursorApiKeyFromAuth(await detectAuth());
     if (!key) {
-      throw new Error("Add a Cursor API key before using Cursor Cloud agents.");
+      throw new AdeExpectedError("Add a Cursor API key before using Cursor Cloud agents.", "user");
     }
     return key;
   };

@@ -1,11 +1,13 @@
 import fs from "node:fs";
 import { createGithubIssueOps } from "./githubIssueOps";
+import { createTokenValidationFailureLog } from "./githubTokenValidationLog";
 import { issueWriteCandidates } from "./githubIssueWriteAccess";
 import type { GitHubIssueLike, GitHubIssuePatch } from "../../../shared/laneGitHubIssue";
 import path from "node:path";
 import { safeStorage } from "electron";
 import type { Logger } from "../logging/logger";
 import { getMachineMainLogger } from "../logging/machineLogger";
+import { markExpected } from "../../../shared/expectedError";
 import { runGit } from "../git/git";
 import { gitPushError } from "../git/gitPushFailure";
 import type {
@@ -270,6 +272,12 @@ class GithubCredentialAttemptError extends Error {
   ) {
     super(message);
     this.name = "GithubCredentialAttemptError";
+    // A token GitHub refused or that cannot see the repository ("Resource not
+    // accessible by personal access token") is the user's to fix in Settings
+    // or on GitHub, not a defect in ADE.
+    if (authFailure.kind === "permission_denied" || authFailure.kind === "invalid_token") {
+      markExpected(this, "user");
+    }
   }
 }
 
@@ -1867,6 +1875,8 @@ export function createGithubService({
     repositoryReadValidated: value.repoAccessOk,
   });
 
+  const tokenValidationLog = createTokenValidationFailureLog(logger);
+
   const computeStatus = async (opts: { forceRefresh?: boolean } = {}): Promise<GitHubStatus> => {
     if (opts.forceRefresh) {
       cachedStatus = null;
@@ -2001,6 +2011,7 @@ export function createGithubService({
         registerGithubCredentialIdentity(candidate, value.validated.userLogin);
       },
       onUsableProbe: (candidate, value) => {
+        tokenValidationLog.validated(candidate.source);
         recordGithubCredentialProbeSuccess(
           candidate,
           value.validated.rateLimit,
@@ -2012,7 +2023,7 @@ export function createGithubService({
           recordGithubCredentialFailure(candidate, result.authFailure, result.rateLimit);
         }
         if (context.phase === "read") {
-          logger.warn("github.token_validation_failed", {
+          tokenValidationLog.failed({
             source: candidate.source,
             error: result.error,
             kind: result.authFailure.kind,

@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { AdeExpectedError } from "../../../shared/expectedError";
 import type { Logger } from "../logging/logger";
 import type {
   LinearIssueCreateInput,
@@ -180,7 +181,9 @@ export function createLinearClient(args: LinearClientArgs) {
 
       if (!res.ok || payload.errors?.length || !payload.data) {
         const detail = message ?? `Linear GraphQL request failed (HTTP ${res.status})`;
-        throw new Error(detail);
+        // A Linear sign-in that is gone or was revoked, even after a refresh:
+        // the user reconnects Linear in Settings.
+        throw isAuthError ? new AdeExpectedError(detail, "user") : new Error(detail);
       }
 
       return payload.data;
