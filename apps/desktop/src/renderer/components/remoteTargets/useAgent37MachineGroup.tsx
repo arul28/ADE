@@ -77,14 +77,19 @@ export function useAgent37MachineGroup(args: {
     }
     return keys.sort().join(",");
   }, [agent37ByMachineKey, accountMachines]);
-  const agent37BehindSince = useRef<number | null>(null);
+  // When the lag started, and for which rows. A newly lagging row (another
+  // box woken) starts a new window; a row that caught up does not.
+  const agent37BehindSince = useRef<{ keys: Set<string>; since: number } | null>(null);
   useEffect(() => {
     if (!agent37RowsBehind || !onAccountMachinesChanged) {
       agent37BehindSince.current = null;
       return;
     }
-    agent37BehindSince.current ??= Date.now();
-    if (Date.now() - agent37BehindSince.current > AGENT37_ROW_CATCH_UP_MS) return;
+    const keys = new Set(agent37RowsBehind.split(","));
+    const previous = agent37BehindSince.current;
+    const since = previous && [...keys].every((key) => previous.keys.has(key)) ? previous.since : Date.now();
+    agent37BehindSince.current = { keys, since };
+    if (Date.now() - since > AGENT37_ROW_CATCH_UP_MS) return;
     // Re-armed by each new account list, so one read at a time.
     const timer = window.setTimeout(() => onAccountMachinesChanged(), AGENT37_ROW_CATCH_UP_REFRESH_MS);
     return () => window.clearTimeout(timer);
