@@ -174,6 +174,26 @@ conflicts are logged once with their full quit instructions and then restated at
 most once every ten minutes as a single line with an occurrence count, so an app
 left open for days no longer floods the log.
 
+#### A brain started by hand
+
+An `ade serve` that a person, an agent or a test starts beside the installed
+brain does not host sync. Before sync starts, `runServe` asks
+`serviceBrainPidBesideHandRunBrain()` (`apps/ade-cli/src/serviceManager/index.ts`)
+for the channel's service brain: launchd on macOS, the systemd unit or the
+detached supervisor on Linux, the supervisor's pid record on Windows. When that
+brain is alive and is not this process, this brain starts with sync off. It
+prints "ADE: sync disabled because the installed ADE brain (pid …) hosts phone
+sync on this computer" and logs `sync.host_left_to_service_brain`; `--no-sync`
+silences the line. On 2026-11-04 four such brains took the lease in turn, and
+the phone dropped each time the installed brain took it back.
+
+The service brain itself always keeps sync. On macOS its parent is launchd; on
+Windows its parent is the supervisor that the pid record names. On Linux the
+parent says nothing, so the unit's MainPID must be this brain or its parent (a
+wrapper). A dead service brain does not count. A dev test machine
+(`npm run dev:machine`) is a machine of its own, with its own home and lease,
+so it keeps sync too.
+
 ### Hosting sync, and publishing, with no project
 
 A project is not a precondition for anything machine-level. A brain that holds

@@ -3,8 +3,8 @@
 import { mergeAgentChatLiveEvents } from "../../../shared/chatHistoryMerge";
 import React from "react";
 import { encodeRoutePresetId } from "../../../shared/harnessRoutes";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, configure, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import type {
   AgentChatEventEnvelope,
@@ -1068,19 +1068,6 @@ function installStorageMocks(): void {
   }
 }
 
-// Every test here renders the whole chat pane. A CI shard runs this file
-// about 1.7x slower than a laptop (119 s against 70 s on 2026-11-05), and
-// Testing Library's 1 s default for findBy/waitFor then expired on two waits
-// that pass locally. The file's slow waits already pass `{ timeout: 3_000 }`;
-// this makes that the default. A passing wait still returns at once.
-beforeAll(() => {
-  configure({ asyncUtilTimeout: 3_000 });
-});
-
-afterAll(() => {
-  configure({ asyncUtilTimeout: 1_000 });
-});
-
 beforeEach(() => {
   installMatchMediaMock();
   installStorageMocks();
@@ -1532,6 +1519,21 @@ function draftLaunchJobsScopeKeyForTest(args: {
     "standard",
     args.workDraftKind ?? "work-start",
   ].map(encodeURIComponent).join(":");
+}
+
+/**
+ * Retry refuses while the chat's turn reads as active: the button is
+ * disabled, so a click does nothing. Otherwise the click calls `send` at
+ * once. A test that clicks before the pane has settled its turn state waits
+ * on a `send` that never comes, which failed CI on 2026-11-05.
+ */
+async function clickRetryWhenEnabled(): Promise<void> {
+  const retry = await waitFor(() => {
+    const button = screen.getByRole("button", { name: "Retry" }) as HTMLButtonElement;
+    expect(button.disabled).toBe(false);
+    return button;
+  });
+  fireEvent.click(retry);
 }
 
 async function clickEnabledModelOption(name: RegExp | string) {
@@ -5473,7 +5475,7 @@ describe("AgentChatPane submit recovery", () => {
 
     renderPane(session);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Retry" }));
+    await clickRetryWhenEnabled();
     await waitFor(() => {
       expect(send).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: session.sessionId,
@@ -5532,7 +5534,7 @@ describe("AgentChatPane submit recovery", () => {
 
     renderPane(session);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Retry" }));
+    await clickRetryWhenEnabled();
     await waitFor(() => expect(send).toHaveBeenCalled());
     const sent = send.mock.calls[0]![0] as { metadata?: Record<string, unknown> };
     expect(sent.metadata).toEqual({ hostContinuation: { reason: "provider_schedule_cleanup" } });
@@ -5590,7 +5592,7 @@ describe("AgentChatPane submit recovery", () => {
 
     renderPane(session);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Retry" }));
+    await clickRetryWhenEnabled();
     await waitFor(() => {
       expect(send).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: session.sessionId,
