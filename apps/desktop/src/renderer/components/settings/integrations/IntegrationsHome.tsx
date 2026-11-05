@@ -216,9 +216,24 @@ export function IntegrationsHome({
   const location = useLocation();
   const navigate = useNavigate();
   const linkedEntry = mcpCatalogueEntry(mcpCatalogueIdFromAnchor(decodeSettingsHash(location.hash)));
+  // The entry a link opened the dialog for: the first read is this computer's
+  // copy, and the account sync after it can bring the same server from
+  // another computer. Then its row, not a second add, is the answer.
+  const [linkedDialog, setLinkedDialog] = useState<string | null>(null);
+  const addedAs = (entryId: string) => servers.find((server) => server.name === entryId || matchMcpCatalogue(server)?.id === entryId);
+  useEffect(() => {
+    if (!linkedDialog || adding?.id !== linkedDialog) return;
+    const added = addedAs(linkedDialog);
+    if (!added) return;
+    setLinkedDialog(null);
+    setAdding(null);
+    onOpen("mcp", added.name);
+    // Re-checked as the list changes; the rest is read fresh each time.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [servers, linkedDialog]);
   useEffect(() => {
     if (!linkedEntry || linkedEntry.native || !canAdd) return;
-    const added = servers.find((server) => server.name === linkedEntry.id || matchMcpCatalogue(server)?.id === linkedEntry.id);
+    const added = addedAs(linkedEntry.id);
     if (added) {
       onOpen("mcp", added.name);
       return;
@@ -230,6 +245,7 @@ export function IntegrationsHome({
     params.delete("mcpServer");
     navigate({ pathname: location.pathname, search: `?${params.toString()}`, hash: "" }, { replace: true });
     setAdding(linkedEntry);
+    setLinkedDialog(linkedEntry.id);
     // Runs when the link arrives or the registry first loads, not on every server change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [linkedEntry?.id, canAdd]);

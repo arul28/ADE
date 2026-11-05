@@ -6366,11 +6366,13 @@ async function runTool(args: {
     if (
       domain === "chat"
       && (action === "respondToInput" || action === "approveToolUse")
-      && (!isUserClient || isUnboundAdeCliCaller(session))
+      && (!isUserClient || isUnboundAdeCliCaller(session) || isTrustedChatlessAdeCliCaller(session))
     ) {
       // The Mac input-lease and Windows shared-seat cards ARE the user's
       // permission. An agent answering one would be granting itself access, so
-      // only a trusted user client (desktop, phone, web) may answer them. The
+      // only a trusted user client (desktop, phone, web) may answer them. A
+      // chatless `ade --role cto` is not one: an agent's shell can claim that
+      // role, so it gets the same check as an agent. The
       // ids are read from the argument the dispatch below will actually pass;
       // ids that cannot be read are refused rather than let through.
       const first = firstDispatchedAdeActionArg({ argsList, hasScalarArg, scalarArg: toolArgs.arg, objectArgs: rawObjectArgs });
