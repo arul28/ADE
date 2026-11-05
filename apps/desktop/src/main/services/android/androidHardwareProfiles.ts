@@ -1,9 +1,9 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import zlib from "node:zlib";
 import type { AndroidHardwareProfile } from "../../../shared/types/androidEmulator";
 import { androidCmdlineToolsDir, androidUserHome, type AndroidEnv } from "./androidSdk";
+import { readZipTextEntries } from "./androidZipExtract";
 
 /*
  * The hardware profiles an AVD can be made from (`medium_phone`,
@@ -43,49 +43,6 @@ export type AndroidDeviceDefinition = {
 };
 
 const SDKLIB_DEVICE_PREFIX = "com/android/sdklib/devices/";
-
-/* ---------- zip (jar) reading ---------- */
-
-/**
- * The entries of a zip whose names pass `wanted`, as text. Reads the central
- * directory (its sizes are right even when an entry uses a data descriptor),
- * then inflates only the wanted entries. Zip64 is not handled; an SDK jar is
- * a few MB.
- */
-function readZipTextEntries(zipPath: string, wanted: (name: string) => boolean): Map<string, string> {
-  const buffer = fs.readFileSync(zipPath);
-  const eocd = findEndOfCentralDirectory(buffer);
-  if (eocd < 0) throw new Error(`${zipPath} is not a zip file`);
-  const entryCount = buffer.readUInt16LE(eocd + 10);
-  let offset = buffer.readUInt32LE(eocd + 16);
-  const entries = new Map<string, string>();
-  for (let index = 0; index < entryCount; index += 1) {
-    if (buffer.readUInt32LE(offset) !== 0x02014b50) throw new Error(`${zipPath}: bad central directory`);
-    const method = buffer.readUInt16LE(offset + 10);
-    const compressedSize = buffer.readUInt32LE(offset + 20);
-    const nameLength = buffer.readUInt16LE(offset + 28);
-    const extraLength = buffer.readUInt16LE(offset + 30);
-    const commentLength = buffer.readUInt16LE(offset + 32);
-    const localOffset = buffer.readUInt32LE(offset + 42);
-    const name = buffer.toString("utf8", offset + 46, offset + 46 + nameLength);
-    offset += 46 + nameLength + extraLength + commentLength;
-    if (!wanted(name)) continue;
-    if (buffer.readUInt32LE(localOffset) !== 0x04034b50) throw new Error(`${zipPath}: bad local header for ${name}`);
-    const dataStart = localOffset + 30 + buffer.readUInt16LE(localOffset + 26) + buffer.readUInt16LE(localOffset + 28);
-    const data = buffer.subarray(dataStart, dataStart + compressedSize);
-    if (method === 0) entries.set(name, data.toString("utf8"));
-    else if (method === 8) entries.set(name, zlib.inflateRawSync(data).toString("utf8"));
-  }
-  return entries;
-}
-
-function findEndOfCentralDirectory(buffer: Buffer): number {
-  const lowest = Math.max(0, buffer.length - 65_557);
-  for (let offset = buffer.length - 22; offset >= lowest; offset -= 1) {
-    if (buffer.readUInt32LE(offset) === 0x06054b50) return offset;
-  }
-  return -1;
-}
 
 /* ---------- device XML ---------- */
 

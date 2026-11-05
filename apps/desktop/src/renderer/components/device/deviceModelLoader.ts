@@ -4,7 +4,8 @@
 import type * as ThreeModule from "three";
 import type { Group, Mesh } from "three";
 import type { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
-import type { AppleDeviceModelSource } from "./appleDeviceModels";
+/** What the loader needs of a model: a cache key and where its GLB is. */
+export type DeviceModelSource = { id: string; url: string };
 
 type ThreeNS = typeof ThreeModule;
 type GltfLoaderCtor = typeof GLTFLoader;
@@ -44,7 +45,7 @@ export function createDeviceModelLoader(THREE: Pick<ThreeNS, "TextureLoader">, G
 const parsedModelCache = new Map<string, Promise<Group>>();
 
 /** Reset between tests; never called in the app. */
-export function __testClearAppleModelCache(): void {
+export function __testClearDeviceModelCache(): void {
   parsedModelCache.clear();
 }
 
@@ -66,8 +67,8 @@ function instanceOfCachedScene(template: Group): Group {
  * A fresh instance of the model's body. An abandoned load still finishes and
  * fills the cache, so the mount that superseded it pays nothing.
  */
-export async function loadAppleDeviceModelInstance(
-  source: AppleDeviceModelSource,
+export async function loadDeviceModelInstance(
+  source: DeviceModelSource,
   THREE: Pick<ThreeNS, "TextureLoader">,
   GLTFLoader: GltfLoaderCtor,
 ): Promise<Group> {

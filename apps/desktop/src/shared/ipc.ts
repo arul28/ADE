@@ -683,6 +683,17 @@ export const IPC = {
   androidEmulatorSendText: "ade.androidEmulator.sendText",
   androidEmulatorRotate: "ade.androidEmulator.rotate",
   androidEmulatorScreenshot: "ade.androidEmulator.screenshot",
+  // P1 look: the body colour and the window side of a render.
+  androidEmulatorSetDeviceColor: "ade.androidEmulator.setDeviceColor",
+  androidEmulatorRenderAck: "ade.androidEmulator.renderAck",
+  androidEmulatorRenderComplete: "ade.androidEmulator.renderComplete",
+  androidEmulatorAttachRenderProof: "ade.androidEmulator.attachRenderProof",
+  // P1 setup: the guided SDK install and "Use mine…".
+  androidEmulatorGetSdkSetupPlan: "ade.androidEmulator.getSdkSetupPlan",
+  androidEmulatorInstallSdk: "ade.androidEmulator.installSdk",
+  androidEmulatorCancelSdkInstall: "ade.androidEmulator.cancelSdkInstall",
+  androidEmulatorGetSdkInstallState: "ade.androidEmulator.getSdkInstallState",
+  androidEmulatorSetSdkPath: "ade.androidEmulator.setSdkPath",
   androidEmulatorEvent: "ade.androidEmulator.event",
   appControlGetStatus: "ade.appControl.getStatus",
   appControlLaunch: "ade.appControl.launch",

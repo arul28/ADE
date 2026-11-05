@@ -1082,6 +1082,31 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
     },
   },
   android_emulator: {
+    getSdkSetupPlan: {
+      description: "Read what an Android SDK install would add on this machine: each part with its size, the licences, the free disk and acceleration. Reads Google's repository.",
+      input: "object { sdkRoot?: string, includeAndroidCli?: boolean }",
+      example: "ade android sdk status --json",
+    },
+    installSdk: {
+      description: "Start the guided Android SDK install. User-only: the ADE desktop app sends it (the setup card, or Settings › Android devices); an agent and a terminal are refused. Every licence the install needs must be named in acceptedLicenseIds; surface names where the user accepted them. Progress arrives as android.sdk.install events.",
+      input: "object { acceptedLicenseIds: string[], sdkRoot?: string, includeAndroidCli?: boolean, surface?: \"setup-card\" | \"settings\" }",
+      example: "Desktop app only: the setup card, or Settings › Android devices. A terminal is refused.",
+    },
+    cancelSdkInstall: {
+      description: "Stop the running Android SDK install. Finished parts stay; the partial download is kept for the next install. User-only: the ADE desktop app sends it.",
+      input: "object {}",
+      example: "Desktop app only: the setup card's Cancel. A terminal is refused.",
+    },
+    getSdkInstallState: {
+      description: "Read the Android SDK install's state: idle, running (part, step, bytes, time left), done, failed or cancelled.",
+      input: "object {}",
+      example: "ade actions run android_emulator.getSdkInstallState --json",
+    },
+    setSdkPath: {
+      description: "Use an Android SDK that is already on this machine (\"Use mine…\"), or null to go back to detection. User-only: the ADE desktop app sends it.",
+      input: "object { path: string | null }",
+      example: "Desktop app only: \"Use mine…\" on the setup card. A terminal is refused.",
+    },
     getStatus: {
       description:
         "Read whether this host can run the Android emulator: the SDK and its tools, hardware acceleration, and (with laneId) the lane's emulator and its state.",
@@ -1151,9 +1176,160 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "ade android type \"hello\" --json",
     },
     screenshot: {
-      description: "Write a PNG of the lane's emulator screen, on the machine that runs it. outPath defaults to a file under the ADE data folder.",
-      input: "object { laneId: string, outPath?: string }",
+      description: "Write a PNG of the lane's emulator screen, on the machine that runs it, and file it in the calling chat's proof drawer (proof false skips that). outPath defaults to a file under the ADE data folder.",
+      input: "object { laneId: string, outPath?: string, caption?: string, proof?: boolean }",
       example: "ade android screenshot --out /tmp/screen.png --json",
+    },
+    // P1 agent suite (`androidAgentSuite.ts`).
+    listApps: {
+      description: "List the apps installed on the lane's emulator (not the system ones), with each launcher activity and whether ADE installed it.",
+      input: "object { laneId: string }",
+      example: "ade android apps --json",
+    },
+    installApp: {
+      description: "Install an app on the lane's emulator: an APK inside the lane's folder, or the project's Gradle build (gradlew :<module>:install<Variant>, module app and variant debug by default). ADE remembers the package, so a lane release can remove it.",
+      input: "object { laneId: string, apkPath?: string, gradle?: { module?: string, variant?: string } }",
+      example: "ade android install --gradle --module app --variant debug --json",
+    },
+    launchApp: {
+      description: "Start an app's launcher activity (or the named one) and wait for it to draw. With apkPath or gradle it installs first.",
+      input: "object { laneId: string, packageName?: string, activity?: string, apkPath?: string, gradle?: { module?, variant? } }",
+      example: "ade android launch --package com.example.app --json",
+    },
+    terminateApp: {
+      description: "Force-stop an app on the lane's emulator.",
+      input: "object { laneId: string, packageName: string }",
+      example: "ade android terminate --package com.example.app --json",
+    },
+    uninstallApp: {
+      description: "Remove an app from the lane's emulator. On an AVD the lane attached (the user's own), only a package ADE installed there.",
+      input: "object { laneId: string, packageName: string }",
+      example: "ade android uninstall --package com.example.app --json",
+    },
+    openUrl: {
+      description: "Open a URL (https or an app's own scheme) on the lane's emulator.",
+      input: "object { laneId: string, url: string }",
+      example: "ade android open-url https://example.com --json",
+    },
+    longPress: {
+      description: "Hold one point on the lane's emulator (context menus), in device pixels. durationMs is 100 to 5000, 1000 by default.",
+      input: "object { laneId: string, x: number, y: number, durationMs?: number }",
+      example: "ade android long-press 540 1200 --duration-ms 1000 --json",
+    },
+    drag: {
+      description: "Hold a point, then move to another (a list reorder, a slider). swipe is the quick stroke.",
+      input: "object { laneId: string, fromX: number, fromY: number, toX: number, toY: number, durationMs?: number }",
+      example: "ade android drag 540 1800 540 600 --json",
+    },
+    scroll: {
+      description: "Scroll the lane's emulator: down shows what is below. amount is in device pixels (60% of the screen by default); the anchor is the screen centre unless given.",
+      input: "object { laneId: string, direction: \"up\" | \"down\" | \"left\" | \"right\", amount?: number, anchorX?: number, anchorY?: number }",
+      example: "ade android scroll --direction down --json",
+    },
+    getScreenSnapshot: {
+      description: "Read the lane's emulator screen as named elements (ref, id, label, text, role, bounds, centre). Kept for a few seconds while nothing changes; fresh reads it again.",
+      input: "object { laneId: string, fresh?: boolean }",
+      example: "ade android snapshot --json",
+    },
+    findElement: {
+      description: "Find one element on the lane's emulator screen.",
+      input: "object { laneId: string, query: { ref?, identifier?, label?, text?, role?, index? } }",
+      example: "ade android find-element --label \"Sign in\" --json",
+    },
+    tapElement: {
+      description: "Find one element and tap its centre. holdMs makes it a long press.",
+      input: "object { laneId: string, query: { ref?, identifier?, label?, text?, role?, index? }, holdMs?: number }",
+      example: "ade android tap-element --text Continue --json",
+    },
+    fillElement: {
+      description: "Find a text field, tap it, replace its text, and read it back (typed: verified, not-seen or unknown).",
+      input: "object { laneId: string, query: { ref?, identifier?, label?, text?, role?, index? }, text: string, focusFirst?: boolean }",
+      example: "ade android fill-element --identifier email --value me@example.com --json",
+    },
+    waitForElement: {
+      description: "Wait until an element is on screen (or gone). timeoutMs is up to 120000, 10000 by default.",
+      input: "object { laneId: string, query: { ref?, identifier?, label?, text?, role?, index? }, timeoutMs?: number, state?: \"visible\" | \"gone\" }",
+      example: "ade android wait-for-element --text Welcome --timeout-ms 20000 --json",
+    },
+    assertVisible: {
+      description: "Refuse (ANDROID_ELEMENT_NOT_FOUND) unless the element is on screen now.",
+      input: "object { laneId: string, query: { ref?, identifier?, label?, text?, role?, index? } }",
+      example: "ade android assert-visible --text \"Hello\" --json",
+    },
+    readLog: {
+      description: "Read the lane's emulator log (logcat) once: an app's lines (its processes, or its uid when it died), at a level and up, after a cursor. Answers a cursor for the next read.",
+      input: "object { laneId: string, packageName?: string, level?: \"verbose\" | \"debug\" | \"info\" | \"warn\" | \"error\" | \"fatal\", since?: string, lines?: number }",
+      example: "ade android log --package com.example.app --level warn --lines 100 --json",
+    },
+    recordStart: {
+      description: "Record the lane's emulator screen to MP4 from its live stream, up to maxSeconds (300 at most).",
+      input: "object { laneId: string, chatSessionId?: string, label?: string, maxSeconds?: number }",
+      example: "ade android record-start --label \"Sign-in flow\" --json",
+    },
+    recordStop: {
+      description: "Stop the lane's recording and file the video in the calling chat's proof drawer (proof false keeps it a file; discard drops it).",
+      input: "object { laneId: string, chatSessionId?: string, discard?: boolean, proof?: boolean }",
+      example: "ade android record-stop --json",
+    },
+    recordList: {
+      description: "List the lane's recordings, the running one first.",
+      input: "object { laneId: string }",
+      example: "ade android record-list --json",
+    },
+    recordDelete: {
+      description: "Delete one of the lane's finished recordings (its files; proof already filed stays).",
+      input: "object { laneId: string, id: string }",
+      example: "ade android record-delete --id <id> --json",
+    },
+    deviceLease: {
+      description: "Take turns on the lane's emulator with the other agents of the lane (advisory). Waits up to waitMs; a token renews or releases the turn.",
+      input: "object { laneId: string, holder?: string, ttlMs?: number, waitMs?: number, token?: string, distinct?: boolean }",
+      example: "ade android lease --wait 60000 --json",
+    },
+    deviceLeaseRelease: {
+      description: "Give the lane's emulator to the next in line.",
+      input: "object { laneId: string, token: string }",
+      example: "ade android lease release --token <t> --json",
+    },
+    deviceLeaseStatus: {
+      description: "Read who has the lane's emulator and how many wait.",
+      input: "object { laneId: string }",
+      example: "ade android lease status --json",
+    },
+    setLocation: {
+      description: "Set the emulator's GPS position.",
+      input: "object { laneId: string, latitude: number, longitude: number }",
+      example: "ade android location 51.5072 -0.1276 --json",
+    },
+    setAppearance: {
+      description: "Turn the emulator's dark theme on or off.",
+      input: "object { laneId: string, appearance: \"light\" | \"dark\" }",
+      example: "ade android appearance dark --json",
+    },
+    setPermission: {
+      description: "Grant or revoke a runtime permission of an app (camera, or android.permission.CAMERA).",
+      input: "object { laneId: string, action: \"grant\" | \"revoke\", packageName: string, permission: string }",
+      example: "ade android permission grant camera --package com.example.app --json",
+    },
+    getDeviceSettings: {
+      description: "Read the emulator's text and display size, developer switches, battery, radios and the app in front.",
+      input: "object { laneId: string, fields?: \"all\" | \"foreground\" }",
+      example: "ade actions run android_emulator.getDeviceSettings --input-json '{\"laneId\":\"<lane>\"}'",
+    },
+    setDeviceSetting: {
+      description: "Change one emulator setting (text or display size, animations, show taps, layout bounds, battery, Wi-Fi, mobile data, airplane mode) and read the settings back.",
+      input: "object { laneId: string, setting: { kind: \"text-size\", value: \"small\" | \"default\" | \"large\" | \"largest\" } | { kind: \"display-size\", value: \"small\" | \"default\" | \"large\" | \"larger\" } | { kind: \"animations\", off: boolean } | { kind: \"show-taps\" | \"layout-bounds\" | \"wifi\" | \"mobile-data\" | \"airplane\", on: boolean } | { kind: \"battery\", level?: 0-100, charging?: boolean } }",
+      example: "ade actions run android_emulator.setDeviceSetting --input-json '{\"laneId\":\"<lane>\",\"setting\":{\"kind\":\"airplane\",\"on\":true}}'",
+    },
+    requestRender: {
+      description: "Ask a desktop window that shows the lane's Android device in 3D to draw stills (and, when asked, a turntable video and a contact sheet), and file them as proof in the calling chat's drawer. Fails when no window shows the device.",
+      input: "object { laneId: string, request: { angles: (\"front\" | \"three-quarter-left\" | \"three-quarter-right\" | \"back\" | \"current\")[], background: \"transparent\" | \"studio\" | \"dusk\", shadow: boolean, video: boolean, contactSheet?: boolean }, proof?: boolean }",
+      example: "ade android render --angles front,back --lighting studio --sheet --json",
+    },
+    captureProofBundle: {
+      description: "Write a proof bundle (screen.png, elements.json, logcat.txt, meta.json) and file the screenshot in the calling chat's proof drawer.",
+      input: "object { laneId: string, outDir?: string, caption?: string, includeElements?: boolean, logLines?: number, packageName?: string, proof?: boolean }",
+      example: "ade android proof-bundle --caption \"After sign-in\" --json",
     },
   },
   app_control: {

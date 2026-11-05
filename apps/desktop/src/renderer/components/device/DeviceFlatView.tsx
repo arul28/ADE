@@ -517,3 +517,19 @@ export function DeviceFlatView({
     </div>
   );
 }
+
+/**
+ * The device→view mapping for the flat presenter, in the shape the inspect
+ * overlay takes. Null in 3D, where the presenter cannot answer mid-orbit.
+ *
+ * The points it takes are ORIENTED points (an element tree describes the
+ * app's own interface, which turns with the device), and `geometry` is the
+ * drawn box, which turns with it too. So a rotated device needs no extra
+ * term here: both sides rotated together, and the one scale still holds.
+ */
+export function flatDeviceToView(
+  geometry: DeviceGeometry | null,
+): ((point: { x: number; y: number }) => { x: number; y: number }) | null {
+  if (!geometry || geometry.scale <= 0) return null;
+  return (point) => ({ x: point.x / geometry.scale, y: point.y / geometry.scale });
+}

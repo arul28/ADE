@@ -6,7 +6,6 @@ import {
   resetAppleDrawerGroupForTests,
   type AppleToolsDrawerProps,
 } from "./AppleToolsDrawer";
-import { APPLE_DRAWER_GROUPS, isAppleDrawerGroupId } from "./appleDrawerGroups";
 import { DEVICE, installAdeMock } from "./drawerTestHarness";
 import { expectNoHorizontalOverflow } from "../testLayout";
 
@@ -34,15 +33,6 @@ function props(overrides: Partial<AppleToolsDrawerProps> = {}): AppleToolsDrawer
 function header(name: string): HTMLElement {
   return screen.getByRole("button", { name: new RegExp(`^${name}$`) });
 }
-
-describe("Apple drawer groups", () => {
-  it("names the four groups §B1 asks for, in order", () => {
-    expect(APPLE_DRAWER_GROUPS).toEqual(["device", "app", "capture", "preview-lab"]);
-    expect(isAppleDrawerGroupId("capture")).toBe(true);
-    expect(isAppleDrawerGroupId("recording")).toBe(false);
-    expect(isAppleDrawerGroupId(null)).toBe(false);
-  });
-});
 
 describe("AppleToolsDrawer", () => {
   it("renders the Tools header, the close control and exactly four groups in spec order", async () => {

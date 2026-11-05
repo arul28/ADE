@@ -127,6 +127,24 @@ function findStartCode(data: Uint8Array, from: number): StartCodeHit | null {
 }
 
 /**
+ * The NAL payloads (no start code) of one whole Annex B buffer, such as one
+ * stream packet. Unlike the parser, it keeps no state between calls and
+ * keeps each payload as it is.
+ */
+export function splitAnnexBNals(data: Uint8Array): Uint8Array[] {
+  const nals: Uint8Array[] = [];
+  let hit = findStartCode(data, 0);
+  while (hit) {
+    const from = hit.index + hit.length;
+    const next = findStartCode(data, from);
+    const to = next ? next.index : data.length;
+    if (to > from) nals.push(data.subarray(from, to));
+    hit = next;
+  }
+  return nals;
+}
+
+/**
  * Drops `trailing_zero_8bits` from the end of a NAL.
  *
  * A stream may pad between NALs with extra `0x00` bytes, and a run of them in

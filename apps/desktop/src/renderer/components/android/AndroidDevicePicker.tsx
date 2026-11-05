@@ -1,13 +1,12 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { useCallback, useMemo, useState, type ReactNode } from "react";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import {
+  CaretRight,
   Copy,
-  DeviceMobile,
-  DeviceTablet,
   DotsThree,
   SignOut,
-  type Icon,
 } from "@phosphor-icons/react";
+import { ANDROID_DEVICE_CATALOG, androidCatalogEntryForAvd } from "../../../shared/androidDeviceCatalog";
 import type {
   AndroidAvdListing,
   AndroidDeviceInventory,
@@ -33,17 +32,25 @@ import {
   androidAvdMenuActions,
   androidAvdSpecLine,
   androidProfileGroup,
-  androidStockProfiles,
+  androidScreenAspect,
 } from "./androidDeviceState";
+import {
+  AndroidCatalogGrid,
+  AndroidDevicePicture,
+  ANDROID_TILE_FOCUS_RING,
+  type AndroidCatalogCreateOptions,
+} from "./AndroidCatalogGrid";
 
 /**
  * The Android pane's front door, in the Apple picker's place and classes:
  * "This lane", "On this machine" (every other AVD, with running / off / TAKEN
- * and a ⋯ menu), and "New device" (a short list of stock profiles, one click
- * to create and boot, plus "More…" with every profile).
+ * and a ⋯ menu), "New device" (the brand grid: one click to create and boot,
+ * plus "More…" with every profile), and "Storage" (what the AVDs take on
+ * disk, and Clean up).
  *
- * The brand grid with 3D tiles (plan §7.1, P1) takes the stock list's place in
- * `NewDeviceSection`; nothing else on the page moves when it does.
+ * Every device picture comes from one shared WebGL context
+ * (`androidTileRenderer.ts`): stills, cached, and a slow turn on the tile the
+ * pointer is on.
  */
 
 export type AndroidDevicePickerProps = {
@@ -59,6 +66,14 @@ export type AndroidDevicePickerProps = {
   onOpenLaneDevice: () => void;
   onAttach: (avdName: string) => void;
   onCreate: (profileId: string) => void;
+  /** A brand-grid tile: create the catalog device in a colour and boot it. */
+  onCreateCatalog: (catalogId: string, options: AndroidCatalogCreateOptions) => void;
+  /** No image fits a tile: open SDK setup (the pane's setup card). */
+  onRequestSetup?: () => void;
+  /** Storage: read every AVD with its size on disk (slow: it walks the folders). */
+  onReadSizes?: () => Promise<AndroidAvdListing[]>;
+  /** Storage › Clean up: delete these ADE-made AVDs (each off and held by no lane). */
+  onCleanUp?: (avdNames: string[]) => void;
   onRelease: () => void;
   onDelete: (avdName: string) => void;
   onRefresh: () => void;
@@ -66,8 +81,20 @@ export type AndroidDevicePickerProps = {
   playing?: boolean;
 };
 
-function profileGlyph(profile: AndroidHardwareProfile | null | undefined): Icon {
-  return profile?.formFactor === "tablet" ? DeviceTablet : DeviceMobile;
+/** The small picture on a lane or machine card: the AVD's catalog body in its colour, else a body from its profile. */
+function AvdPicture({ avd, profile, dim = false }: { avd: AndroidAvdListing | AndroidLaneDeviceStatus["avd"]; profile: AndroidHardwareProfile | null; dim?: boolean }) {
+  const entry = androidCatalogEntryForAvd(avd);
+  return (
+    <AndroidDevicePicture
+      entry={entry}
+      profile={profile}
+      colorId={avd?.colorId ?? null}
+      aspect={androidScreenAspect(avd)}
+      width={34}
+      height={48}
+      className={cn("-my-1.5 -ml-1", dim && "opacity-60")}
+    />
+  );
 }
 
 export function AndroidDevicePicker({
@@ -80,6 +107,10 @@ export function AndroidDevicePicker({
   onOpenLaneDevice,
   onAttach,
   onCreate,
+  onCreateCatalog,
+  onRequestSetup,
+  onReadSizes,
+  onCleanUp,
   onRelease,
   onDelete,
   onRefresh,
@@ -98,7 +129,9 @@ export function AndroidDevicePicker({
     [inventory?.avds, laneAvdName],
   );
   const busy = pending !== null;
-  const hasImage = (inventory?.images.length ?? 0) > 0;
+  const inventoryImages = inventory?.images;
+  const images = useMemo(() => inventoryImages ?? [], [inventoryImages]);
+  const hasImage = images.length > 0;
 
   return (
     <DevicePickerPage tool="android" theme={theme} playing={playing}>
@@ -166,12 +199,25 @@ export function AndroidDevicePicker({
 
       <NewDeviceSection
         profiles={profiles}
+        images={images}
         hasImage={hasImage}
         loading={loadingInventory && !inventory}
         disabled={busy}
         creating={pending === "create"}
         onCreate={onCreate}
+        onCreateCatalog={onCreateCatalog}
+        onRequestSetup={onRequestSetup}
       />
+
+      {onReadSizes && (inventory?.avds.length ?? 0) > 0 ? (
+        <StorageSection
+          laneId={laneId}
+          avdCount={inventory?.avds.length ?? 0}
+          disabled={busy}
+          onReadSizes={onReadSizes}
+          onCleanUp={onCleanUp}
+        />
+      ) : null}
     </DevicePickerPage>
   );
 }
@@ -231,7 +277,6 @@ function LaneDeviceCard({
   onOpen: () => void;
   onRelease: () => void;
 }) {
-  const Glyph = profileGlyph(profile);
   const name = lane.avd ? androidAvdLabel(lane.avd) : lane.device?.avdName ?? "Android device";
   const spec = lane.avd ? androidAvdSpecLine(lane.avd, profiles) : "This AVD is not on this machine any more.";
   return (
@@ -244,9 +289,9 @@ function LaneDeviceCard({
         disabled={disabled || !lane.avd}
         aria-label={`Open ${name}`}
         onClick={onOpen}
-        className={cn("flex min-w-0 flex-1 items-start gap-2 text-left", disabled ? "cursor-not-allowed" : "cursor-pointer")}
+        className={cn("flex min-w-0 flex-1 items-start gap-2 rounded-[inherit] text-left", ANDROID_TILE_FOCUS_RING, disabled ? "cursor-not-allowed" : "cursor-pointer")}
       >
-        <Glyph size={16} aria-hidden="true" className="mt-0.5 shrink-0 text-muted-fg transition-colors duration-[160ms] ease-out group-hover:text-accent" />
+        <AvdPicture avd={lane.avd} profile={profile} />
         <span className="flex min-w-0 flex-1 flex-col gap-0.5">
           <span className="flex min-w-0 items-center gap-2">
             <span className="min-w-0 flex-1 break-words font-sans text-[13px] font-medium leading-5 text-fg">{name}</span>
@@ -294,7 +339,6 @@ function AvdCard({
   onRelease: () => void;
   onDelete: () => void;
 }) {
-  const Glyph = profileGlyph(profile);
   const name = androidAvdLabel(avd);
   const spec = androidAvdSpecLine(avd, profiles);
   if (takenByName) {
@@ -304,7 +348,7 @@ function AvdCard({
         data-android-avd-taken=""
         className="ade-tool-card ade-tool-card-solid flex min-w-0 items-start gap-2 p-3"
       >
-        <Glyph size={16} aria-hidden="true" className="mt-0.5 shrink-0 text-muted-fg/60" />
+        <AvdPicture avd={avd} profile={profile} dim />
         <div className="flex min-w-0 flex-1 flex-col gap-0.5">
           <div className="flex min-w-0 items-center gap-2">
             <span className="min-w-0 flex-1 break-words font-sans text-[13px] font-medium leading-5 text-fg/60">{name}</span>
@@ -329,9 +373,9 @@ function AvdCard({
         aria-label={`Start ${name} for this lane`}
         data-android-avd-start={avd.name}
         onClick={onStart}
-        className={cn("flex min-w-0 flex-1 items-start gap-2 text-left", disabled || runningElsewhere ? "cursor-not-allowed" : "cursor-pointer")}
+        className={cn("flex min-w-0 flex-1 items-start gap-2 rounded-[inherit] text-left", ANDROID_TILE_FOCUS_RING, disabled || runningElsewhere ? "cursor-not-allowed" : "cursor-pointer")}
       >
-        <Glyph size={16} aria-hidden="true" className="mt-0.5 shrink-0 text-muted-fg transition-colors duration-[160ms] ease-out group-hover:text-accent" />
+        <AvdPicture avd={avd} profile={profile} />
         <span className="flex min-w-0 flex-1 flex-col gap-0.5">
           <span className="flex min-w-0 items-center gap-2">
             <span className="min-w-0 flex-1 break-words font-sans text-[13px] font-medium leading-5 text-fg">{name}</span>
@@ -435,75 +479,59 @@ function AvdMenu({
 }
 
 /**
- * Make a new AVD for this lane from a stock profile, with the newest installed
- * image, and boot it: one click. "More…" opens every profile the SDK has.
+ * Make a new AVD for this lane: the brand grid (one click makes the device
+ * with the newest image that fits it, in the colour picked, and boots it),
+ * and "More…" with every profile the SDK has, on a procedural body.
  */
 function NewDeviceSection({
   profiles,
+  images,
   hasImage,
   loading,
   disabled,
   creating,
   onCreate,
+  onCreateCatalog,
+  onRequestSetup,
 }: {
   profiles: readonly AndroidHardwareProfile[];
+  images: AndroidDeviceInventory["images"];
   hasImage: boolean;
   loading: boolean;
   disabled: boolean;
   creating: boolean;
   onCreate: (profileId: string) => void;
+  onCreateCatalog: (catalogId: string, options: AndroidCatalogCreateOptions) => void;
+  onRequestSetup?: (() => void) | undefined;
 }) {
   const [moreOpen, setMoreOpen] = useState(false);
   const [moreProfileId, setMoreProfileId] = useState<string | null>(null);
-  const stock = useMemo(() => androidStockProfiles(profiles), [profiles]);
   const moreOptions = useMemo<DrawerMenuOption<string>[]>(
     () => profiles.map((profile) => ({ value: profile.id, label: profile.name, group: androidProfileGroup(profile) })),
     [profiles],
   );
   const moreProfile = profiles.find((profile) => profile.id === moreProfileId) ?? profiles.find((profile) => profile.id === "medium_phone") ?? profiles[0] ?? null;
   const createDisabled = disabled || !hasImage;
+  const moreAspect = moreProfile?.widthPx && moreProfile.heightPx
+    ? Math.min(moreProfile.widthPx, moreProfile.heightPx) / Math.max(moreProfile.widthPx, moreProfile.heightPx)
+    : 0;
   return (
     <section aria-label="New device" data-android-picker-section="New device" className="flex min-w-0 flex-col gap-2 pt-1">
       <div className="flex min-w-0 flex-wrap items-baseline justify-between gap-x-2 gap-y-0.5">
         <SectionHeading>New device</SectionHeading>
         <span className="min-w-0 px-0.5 font-sans text-[11px] leading-4 text-muted-fg">Stock Android on every device</span>
       </div>
-      {/* The brand grid (plan §7.1, P1) goes here, in place of the stock list. */}
       {loading ? (
         <p className="px-0.5 font-sans text-[11px] leading-4 text-muted-fg">Reading this SDK's hardware profiles…</p>
       ) : (
-        <div
-          data-android-stock-profiles=""
-          className="grid min-w-0 gap-2"
-          style={{ gridTemplateColumns: DEVICE_CARD_GRID_COLUMNS }}
-        >
-          {stock.map((choice) => {
-            const Glyph = profileGlyph(choice.profile);
-            const screen = choice.profile.screenInches ? `${choice.profile.screenInches.toFixed(1)}″` : null;
-            return (
-              <button
-                key={choice.profile.id}
-                type="button"
-                disabled={createDisabled}
-                data-android-create-profile={choice.profile.id}
-                aria-label={`Create a ${choice.label.toLowerCase()} for this lane (${choice.profile.name})`}
-                onClick={() => onCreate(choice.profile.id)}
-                className={cn(
-                  "ade-tool-card group flex min-w-0 items-start gap-2 p-3 text-left",
-                  createDisabled ? "cursor-not-allowed opacity-50" : "cursor-pointer",
-                )}
-              >
-                <Glyph size={16} aria-hidden="true" className="mt-0.5 shrink-0 text-muted-fg transition-colors duration-[160ms] ease-out group-hover:text-accent" />
-                <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-                  <span className="min-w-0 break-words font-sans text-[13px] font-medium leading-5 text-fg">{choice.label}</span>
-                  <span className="min-w-0 break-words font-sans text-[11px] leading-4 text-muted-fg">
-                    {[choice.profile.name, screen].filter(Boolean).join(" · ")}
-                  </span>
-                </span>
-              </button>
-            );
-          })}
-        </div>
+        <AndroidCatalogGrid
+          entries={ANDROID_DEVICE_CATALOG}
+          profiles={profiles}
+          images={images}
+          disabled={disabled}
+          onCreate={onCreateCatalog}
+          onRequestSetup={onRequestSetup}
+        />
       )}
       {!loading && profiles.length === 0 ? (
         <p data-android-no-profiles="" className="min-w-0 break-words px-0.5 font-sans text-[11px] leading-4 text-warning">
@@ -512,7 +540,7 @@ function NewDeviceSection({
       ) : null}
       {!loading && !hasImage ? (
         <p data-android-no-image="" className="min-w-0 break-words px-0.5 font-sans text-[11px] leading-4 text-warning">
-          No phone image is installed. Install one in Android Studio's SDK Manager, then refresh.
+          {onRequestSetup ? "No system image is installed. Pick a device to set one up." : "No system image is installed. Install one in Android Studio's SDK Manager, then refresh."}
         </p>
       ) : null}
       {creating ? (
@@ -523,32 +551,42 @@ function NewDeviceSection({
       ) : null}
       {profiles.length > 0 ? (
         moreOpen ? (
-          <div data-android-more-profiles="" className="ade-tool-card ade-tool-card-solid flex min-w-0 flex-col gap-2 p-3">
-            <div className="flex min-w-0 flex-wrap items-center gap-2">
-              <DrawerMenu
-                ariaLabel="Hardware profile"
-                value={moreProfile?.id ?? null}
-                placeholder="Profile"
-                options={moreOptions}
-                disabled={disabled}
-                onChange={setMoreProfileId}
-                className="max-w-[16rem]"
-              />
-              <span className="min-w-0 flex-1" />
-              <Button
-                variant="primary"
-                size="sm"
-                disabled={createDisabled || !moreProfile}
-                aria-label="Create a new Android device for this lane"
-                onClick={() => { if (moreProfile) onCreate(moreProfile.id); }}
-                className="shrink-0"
-              >
-                Create
-              </Button>
+          <div data-android-more-profiles="" className="ade-tool-card ade-tool-card-solid flex min-w-0 items-center gap-3 p-3">
+            <AndroidDevicePicture
+              entry={null}
+              profile={moreProfile}
+              colorId={null}
+              aspect={moreAspect}
+              width={44}
+              height={60}
+            />
+            <div className="flex min-w-0 flex-1 flex-col gap-2">
+              <div className="flex min-w-0 flex-wrap items-center gap-2">
+                <DrawerMenu
+                  ariaLabel="Hardware profile"
+                  value={moreProfile?.id ?? null}
+                  placeholder="Profile"
+                  options={moreOptions}
+                  disabled={disabled}
+                  onChange={setMoreProfileId}
+                  className="max-w-[16rem]"
+                />
+                <span className="min-w-0 flex-1" />
+                <Button
+                  variant="primary"
+                  size="sm"
+                  disabled={createDisabled || !moreProfile}
+                  aria-label="Create a new Android device for this lane"
+                  onClick={() => { if (moreProfile) onCreate(moreProfile.id); }}
+                  className="shrink-0"
+                >
+                  Create
+                </Button>
+              </div>
+              <p className="min-w-0 break-words font-sans text-[11px] leading-4 text-muted-fg">
+                {`${profiles.length} profiles from this SDK. New devices use the newest installed image and are deleted with the lane.`}
+              </p>
             </div>
-            <p className="min-w-0 break-words font-sans text-[11px] leading-4 text-muted-fg">
-              {`${profiles.length} profiles from this SDK. New devices use the newest installed image and are deleted with the lane.`}
-            </p>
           </div>
         ) : (
           <Button
@@ -566,3 +604,116 @@ function NewDeviceSection({
   );
 }
 
+/**
+ * Storage ▸: each AVD's size on disk (measured when opened, not on every
+ * read) and Clean up, which deletes the AVDs ADE made that are off and held
+ * by no lane. The user's own AVDs are listed but never deleted.
+ */
+function StorageSection({
+  laneId,
+  avdCount,
+  disabled,
+  onReadSizes,
+  onCleanUp,
+}: {
+  laneId: string;
+  avdCount: number;
+  disabled: boolean;
+  onReadSizes: () => Promise<AndroidAvdListing[]>;
+  onCleanUp?: ((avdNames: string[]) => void) | undefined;
+}) {
+  const [open, setOpen] = useState(false);
+  const [avds, setAvds] = useState<AndroidAvdListing[] | null>(null);
+  const [reading, setReading] = useState(false);
+  const [confirming, setConfirming] = useState(false);
+  const read = useCallback(() => {
+    setReading(true);
+    void onReadSizes()
+      .then(setAvds)
+      .catch(() => setAvds(null))
+      .finally(() => setReading(false));
+  }, [onReadSizes]);
+  const toggle = () => {
+    const next = !open;
+    setOpen(next);
+    setConfirming(false);
+    if (next) read();
+  };
+  const removable = (avds ?? []).filter((avd) => androidAvdMenuActions(avd, laneId).delete);
+  const total = (avds ?? []).reduce((sum, avd) => sum + (avd.sizeBytes ?? 0), 0);
+  const freed = removable.reduce((sum, avd) => sum + (avd.sizeBytes ?? 0), 0);
+  return (
+    <section aria-label="Storage" data-android-picker-section="Storage" className="flex min-w-0 flex-col gap-2">
+      <button
+        type="button"
+        aria-expanded={open}
+        data-android-storage-toggle=""
+        onClick={toggle}
+        className={cn(
+          "flex min-w-0 items-center gap-1 self-start rounded-[6px] px-0.5 font-sans text-[11px] font-medium uppercase tracking-[0.08em] text-muted-fg hover:text-fg",
+          ANDROID_TILE_FOCUS_RING,
+        )}
+      >
+        <span>Storage</span>
+        <CaretRight size={10} weight="bold" aria-hidden="true" className={cn("transition-transform duration-[160ms]", open && "rotate-90")} />
+        {open && avds ? (
+          <span className="pl-1 font-normal normal-case tracking-normal text-fg/60">{sizeLabel(total) ?? "—"}</span>
+        ) : (
+          <span className="pl-1 font-normal normal-case tracking-normal text-fg/60">{`${avdCount} AVD${avdCount === 1 ? "" : "s"}`}</span>
+        )}
+      </button>
+      {open ? (
+        <div data-android-storage="" className="ade-tool-card ade-tool-card-solid flex min-w-0 flex-col gap-1.5 p-3">
+          {reading && !avds ? (
+            <p className="flex items-center gap-2 font-sans text-[11px] leading-4 text-muted-fg"><Spinner />Measuring…</p>
+          ) : !avds ? (
+            <p className="font-sans text-[11px] leading-4 text-warning">Could not read the AVD sizes.</p>
+          ) : (
+            <>
+              <ul className="flex min-w-0 flex-col gap-1">
+                {avds.map((avd) => (
+                  <li key={avd.name} data-android-storage-row={avd.name} className="flex min-w-0 items-baseline gap-2 font-sans text-[11px] leading-4">
+                    <span className="min-w-0 flex-1 truncate text-fg/85">{androidAvdLabel(avd)}</span>
+                    <span className="shrink-0 text-muted-fg">
+                      {avd.adeCreated ? "ADE made" : "Yours"}
+                      {avd.heldByLaneId ? " · in use" : avd.running ? " · running" : ""}
+                    </span>
+                    <span className="w-14 shrink-0 text-right tabular-nums text-fg/70">{sizeLabel(avd.sizeBytes) ?? "—"}</span>
+                  </li>
+                ))}
+              </ul>
+              {onCleanUp ? (
+                <div className="flex min-w-0 flex-wrap items-center gap-2 pt-1">
+                  <span className="min-w-0 flex-1 font-sans text-[11px] leading-4 text-muted-fg">
+                    {removable.length > 0
+                      ? `${removable.length} ADE-made device${removable.length === 1 ? "" : "s"} no lane uses.`
+                      : "Nothing to clean up: every ADE-made device is in use or running."}
+                  </span>
+                  {removable.length > 0 ? (
+                    <Button
+                      variant={confirming ? "danger" : "outline"}
+                      size="sm"
+                      disabled={disabled}
+                      data-android-storage-cleanup={confirming ? "confirm" : ""}
+                      onClick={() => {
+                        if (!confirming) {
+                          setConfirming(true);
+                          return;
+                        }
+                        setConfirming(false);
+                        onCleanUp(removable.map((avd) => avd.name));
+                        setAvds((current) => current?.filter((avd) => !removable.includes(avd)) ?? null);
+                      }}
+                    >
+                      {confirming ? `Delete ${removable.length} — frees ${sizeLabel(freed) ?? "space"}` : "Clean up…"}
+                    </Button>
+                  ) : null}
+                </div>
+              ) : null}
+            </>
+          )}
+        </div>
+      ) : null}
+    </section>
+  );
+}

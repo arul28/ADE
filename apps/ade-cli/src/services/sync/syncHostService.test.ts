@@ -6719,9 +6719,10 @@ describe("CTO-gated Linear sync commands", () => {
       for (const action of MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS) {
         // `apple.*` is registered only by a runtime that built a simulator
         // service — which this fixture does not, and a Windows brain never
-        // will. Its absence is exactly what feature detection is for, so
-        // asserting it here would be asserting the fixture.
-        if (action.startsWith("apple.")) continue;
+        // will. `android.*` is the same: only a runtime with an emulator
+        // service registers it. Their absence is exactly what feature
+        // detection is for, so asserting them here would be asserting the fixture.
+        if (action.startsWith("apple.") || action.startsWith("android.")) continue;
         const viewerBlocked = viewerBlockedActions.has(action);
         const controllerAllowed = controllerAllowedActions.has(action);
         // Optional actions answered by the runtime's own stores rather than a

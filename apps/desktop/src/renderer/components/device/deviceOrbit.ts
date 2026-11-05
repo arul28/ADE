@@ -1,7 +1,7 @@
 import { Quaternion, Vector3 } from "three";
 
 /** The orbit feel. Keep these as the single source of orbit numbers. */
-export const APPLE_DEVICE_ORBIT = {
+export const DEVICE_ORBIT = {
   gain: 0.006,
   dragForceLimit: 1.2,
   gestureSpeedLimit: 7.5,
@@ -21,9 +21,9 @@ export const APPLE_DEVICE_ORBIT = {
   releaseQuietMs: 140,
 } as const;
 
-const TICK = 1 / APPLE_DEVICE_ORBIT.tickHz;
-const RELEASE_OMEGA = (2 * Math.PI) / APPLE_DEVICE_ORBIT.response;
-const DRAG_OMEGA = (2 * Math.PI) / APPLE_DEVICE_ORBIT.dragResponse;
+const TICK = 1 / DEVICE_ORBIT.tickHz;
+const RELEASE_OMEGA = (2 * Math.PI) / DEVICE_ORBIT.response;
+const DRAG_OMEGA = (2 * Math.PI) / DEVICE_ORBIT.dragResponse;
 const Y_AXIS = new Vector3(0, 1, 0);
 
 function quatFromRotationVector(vector: Vector3): Quaternion {
@@ -51,7 +51,7 @@ function errorToward(target: Quaternion, current: Quaternion): Vector3 {
  */
 export function nearestScreenFacingRotation(
   rotation: Quaternion,
-  yawLimit = APPLE_DEVICE_ORBIT.yawLimit,
+  yawLimit = DEVICE_ORBIT.yawLimit,
 ): Quaternion {
   const relative = rotation.clone().normalize();
   const turn = 2 * Math.atan2(relative.y, relative.w);
@@ -84,7 +84,7 @@ function integrateToward(
   rotation.premultiply(quatFromRotationVector(velocity.clone().multiplyScalar(dt))).normalize();
 }
 
-export type AppleDeviceOrbit = {
+export type DeviceOrbit = {
   readonly rotation: Quaternion;
   setPose(next: Quaternion, now: number, immediate?: boolean): void;
   dragActive(active: boolean, now: number): void;
@@ -100,9 +100,9 @@ export type AppleDeviceOrbit = {
  * ahead and latches the nearest screen-facing view. Fixed 120 Hz ticks keep
  * the catch independent of display refresh.
  */
-export function createAppleDeviceOrbit(
+export function createDeviceOrbit(
   options: { choose?: (rotation: Quaternion) => Quaternion } = {},
-): AppleDeviceOrbit {
+): DeviceOrbit {
   const choose = options.choose ?? nearestScreenFacingRotation;
   const rotation = new Quaternion();
   const target = new Quaternion();
@@ -134,14 +134,14 @@ export function createAppleDeviceOrbit(
 
   const release = (now: number) => {
     if (!drag) return;
-    if (now - lastInput > APPLE_DEVICE_ORBIT.inputPauseMs) gestureVelocity.set(0, 0, 0);
+    if (now - lastInput > DEVICE_ORBIT.inputPauseMs) gestureVelocity.set(0, 0, 0);
     const prediction = target
       .clone()
-      .premultiply(quatFromRotationVector(gestureVelocity.clone().multiplyScalar(APPLE_DEVICE_ORBIT.predictionSeconds)));
+      .premultiply(quatFromRotationVector(gestureVelocity.clone().multiplyScalar(DEVICE_ORBIT.predictionSeconds)));
     velocity
-      .multiplyScalar(APPLE_DEVICE_ORBIT.currentVelocityBlend)
-      .addScaledVector(gestureVelocity, APPLE_DEVICE_ORBIT.gestureVelocityBlend)
-      .clampLength(0, APPLE_DEVICE_ORBIT.springSpeedLimit);
+      .multiplyScalar(DEVICE_ORBIT.currentVelocityBlend)
+      .addScaledVector(gestureVelocity, DEVICE_ORBIT.gestureVelocityBlend)
+      .clampLength(0, DEVICE_ORBIT.springSpeedLimit);
     const moved = drag.x !== 0 || drag.y !== 0;
     const rest = drag.rest;
     drag = null;
@@ -167,13 +167,13 @@ export function createAppleDeviceOrbit(
 
   const advance = (now: number, reducedMotion = false): boolean => {
     if (held || !Number.isFinite(now)) return false;
-    if (drag && !pointer && now >= lastInput + APPLE_DEVICE_ORBIT.releaseQuietMs) {
-      release(lastInput + APPLE_DEVICE_ORBIT.releaseQuietMs);
+    if (drag && !pointer && now >= lastInput + DEVICE_ORBIT.releaseQuietMs) {
+      release(lastInput + DEVICE_ORBIT.releaseQuietMs);
     }
     if (drag) {
       const seconds = Math.min(0.05, Math.max(0, (now - drag.at) / 1000));
       drag.at = now;
-      const steps = Math.ceil(seconds * APPLE_DEVICE_ORBIT.tickHz);
+      const steps = Math.ceil(seconds * DEVICE_ORBIT.tickHz);
       const dt = steps ? seconds / steps : 0;
       for (let step = 0; step < steps; step++) {
         const error = errorToward(target, rotation);
@@ -183,11 +183,11 @@ export function createAppleDeviceOrbit(
           error.addScaledVector(axis, turns * 2 * Math.PI);
         }
         drag.error.copy(error);
-        error.clampLength(0, APPLE_DEVICE_ORBIT.dragForceLimit);
+        error.clampLength(0, DEVICE_ORBIT.dragForceLimit);
         const acceleration = error
           .multiplyScalar(DRAG_OMEGA * DRAG_OMEGA)
-          .addScaledVector(velocity, -2 * APPLE_DEVICE_ORBIT.dragDamping * DRAG_OMEGA);
-        velocity.addScaledVector(acceleration, dt).clampLength(0, APPLE_DEVICE_ORBIT.springSpeedLimit);
+          .addScaledVector(velocity, -2 * DEVICE_ORBIT.dragDamping * DRAG_OMEGA);
+        velocity.addScaledVector(acceleration, dt).clampLength(0, DEVICE_ORBIT.springSpeedLimit);
         rotation.premultiply(quatFromRotationVector(velocity.clone().multiplyScalar(dt))).normalize();
       }
       if (reducedMotion) rotation.copy(target);
@@ -199,8 +199,8 @@ export function createAppleDeviceOrbit(
     const tick = (q: Quaternion, speed: Vector3, dt: number) => {
       integrateToward(q, speed, target, dt, {
         omega: RELEASE_OMEGA,
-        damping: APPLE_DEVICE_ORBIT.damping,
-        speedLimit: APPLE_DEVICE_ORBIT.springSpeedLimit,
+        damping: DEVICE_ORBIT.damping,
+        speedLimit: DEVICE_ORBIT.springSpeedLimit,
       });
     };
     for (; spring.steps < steps; spring.steps++) tick(spring.rotation, spring.velocity, TICK);
@@ -215,7 +215,7 @@ export function createAppleDeviceOrbit(
     if (
       reducedMotion
       || steps === 240
-      || (rotation.angleTo(target) < APPLE_DEVICE_ORBIT.settleAngle && velocity.length() < APPLE_DEVICE_ORBIT.settleSpeed)
+      || (rotation.angleTo(target) < DEVICE_ORBIT.settleAngle && velocity.length() < DEVICE_ORBIT.settleSpeed)
     ) {
       rotation.copy(target);
       velocity.set(0, 0, 0);
@@ -256,13 +256,13 @@ export function createAppleDeviceOrbit(
       drag.x += deltaX;
       drag.y += deltaY;
       target
-        .copy(quatFromRotationVector(new Vector3(drag.y * APPLE_DEVICE_ORBIT.gain, drag.x * APPLE_DEVICE_ORBIT.gain, 0)))
+        .copy(quatFromRotationVector(new Vector3(drag.y * DEVICE_ORBIT.gain, drag.x * DEVICE_ORBIT.gain, 0)))
         .multiply(drag.start)
         .normalize();
       const seconds = (now - lastInput) / 1000;
       gestureVelocity.copy(errorToward(target, previous));
       if (seconds > 0 && seconds < 0.1) {
-        gestureVelocity.divideScalar(seconds).clampLength(0, APPLE_DEVICE_ORBIT.gestureSpeedLimit);
+        gestureVelocity.divideScalar(seconds).clampLength(0, DEVICE_ORBIT.gestureSpeedLimit);
       } else {
         gestureVelocity.set(0, 0, 0);
       }
@@ -280,7 +280,7 @@ export function createAppleDeviceOrbit(
       held = active;
       if (!active) {
         if (interruptedDrag) beginSpring(choose(target.clone()), now);
-        else if (rotation.angleTo(target) > APPLE_DEVICE_ORBIT.settleAngle) beginSpring(target, now);
+        else if (rotation.angleTo(target) > DEVICE_ORBIT.settleAngle) beginSpring(target, now);
         interruptedDrag = false;
       }
     },
@@ -291,8 +291,8 @@ export function createAppleDeviceOrbit(
         && (spring !== null
           || (drag !== null
             && (!pointer
-              || rotation.angleTo(target) > APPLE_DEVICE_ORBIT.settleAngle
-              || velocity.length() > APPLE_DEVICE_ORBIT.settleSpeed)))
+              || rotation.angleTo(target) > DEVICE_ORBIT.settleAngle
+              || velocity.length() > DEVICE_ORBIT.settleSpeed)))
       );
     },
     reset(next, now) {
@@ -310,7 +310,7 @@ export function createAppleDeviceOrbit(
  * since `lastAt` (ms; 0 for the first frame of an ease), capped at 100 ms so
  * a stalled tab does not jump the whole way at once.
  */
-export function appleEaseFactor(lastAt: number, now: number, tauSeconds: number): number {
+export function deviceEaseFactor(lastAt: number, now: number, tauSeconds: number): number {
   const dt = lastAt ? Math.min(0.1, Math.max(0, (now - lastAt) / 1000)) : 1 / 60;
   return 1 - Math.exp(-dt / tauSeconds);
 }

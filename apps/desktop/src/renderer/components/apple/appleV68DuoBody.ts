@@ -1,8 +1,8 @@
 import type { BufferGeometry, Group, Material, Mesh, Object3D, Raycaster, Texture, Vector3 } from "three";
-import { disposeImportedSubtree, type DeviceBody, type DuoBodyControls, type ThreeNS } from "./appleDeviceScene";
+import { disposeImportedSubtree, type DeviceBody, type DuoBodyControls, type ThreeNS } from "../device/deviceScene";
 import { APPLE_DUO_COVER_SCREEN_ID, APPLE_DUO_INNER_SCREEN_ID } from "../../../shared/types/iosSimulator";
 import { clampAppleDuoAngle } from "./appleDuo";
-import { appleEaseFactor } from "./appleDeviceOrbit";
+import { deviceEaseFactor } from "../device/deviceOrbit";
 
 /**
  * The iPhone Duo on Apple's own model (`V68.usdz` from the local Xcode,
@@ -284,7 +284,7 @@ export function createV68DuoBody(
 
   /** Exponential ease: ~90% of the way in 230 ms, whatever the frame rate. */
   const animate = (now: number): boolean => {
-    const k = appleEaseFactor(lastAnimateAt, now, 0.1);
+    const k = deviceEaseFactor(lastAnimateAt, now, 0.1);
     lastAnimateAt = now;
     const yawGoal = targetCoverYaw();
     const tiltGoal = targetStandTilt();

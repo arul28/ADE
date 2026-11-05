@@ -492,13 +492,30 @@ import {
 import {
   androidEmulatorErrorHint,
   buildAndroidPlan,
+} from "./cliAndroid";
+import {
   formatAndroidAction,
+  formatAndroidSettings,
+  formatAndroidRender,
   formatAndroidDevice,
   formatAndroidDevices,
   formatAndroidRelease,
   formatAndroidScreenshot,
   formatAndroidStatus,
-} from "./cliAndroid";
+  formatAndroidApps,
+  formatAndroidElement,
+  formatAndroidInstall,
+  formatAndroidLaunch,
+  formatAndroidLease,
+  formatAndroidLog,
+  formatAndroidProofBundle,
+  formatAndroidRecording,
+  formatAndroidRecordings,
+  formatAndroidSdkInstall,
+  formatAndroidSdkLicenses,
+  formatAndroidSdkStatus,
+  formatAndroidSnapshot,
+} from "./cliAndroidFormat";
 import {
   appleLeaseAnswer,
   appleLeaseNotAcquired,
@@ -853,6 +870,21 @@ export type FormatterId =
   | "android-release"
   | "android-screenshot"
   | "android-action"
+  | "android-settings"
+  | "android-render"
+  | "android-apps"
+  | "android-install"
+  | "android-launch"
+  | "android-snapshot"
+  | "android-element"
+  | "android-log"
+  | "android-recording"
+  | "android-recordings"
+  | "android-lease"
+  | "android-proof-bundle"
+  | "android-sdk-status"
+  | "android-sdk-licenses"
+  | "android-sdk-install"
   | "app-control-status"
   | "app-control-snapshot"
   | "app-control-selection"
@@ -1025,6 +1057,18 @@ export type CliPlan =
        * exits 1 when a query returns no results, so scripts can branch on it).
        */
       exitCodeFromResult?: (result: unknown) => number;
+      /**
+       * After the call, run `plan` every `intervalMs` until `done` says the
+       * result is final, and print each new `progress` line to stderr
+       * (`ade android sdk install --wait`). The last result is the command's.
+       * Each poll is a plan of its own, so `--machine` reaches the same machine.
+       */
+      followResult?: {
+        plan: CliPlan & { kind: "execute" };
+        intervalMs: number;
+        done: (result: unknown) => boolean;
+        progress?: (result: unknown) => string | null;
+      };
       /**
        * Build the command's result from every step's value. The steps before
        * `result` are lookups (a repo, an issue, a catalog); this picks what
@@ -3512,6 +3556,10 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade android device-create --profile medium_phone --text
                                                    Make an AVD for this lane and boot it
                                                    (--image <package>, --name <shown name>, --no-start)
+    $ ade android device-create --catalog galaxy-s25 --color navy --text
+                                                   A brand device: pixel-10, pixel-10-pro, pixel-10-pro-fold,
+                                                   pixel-tablet, pixel-watch, galaxy-s25, galaxy-s25-ultra,
+                                                   galaxy-z-fold7, oneplus-13, nothing-phone-3 (stock Android)
     $ ade android device-attach --avd <name> --text
                                                    Hold an existing AVD no other lane holds (--no-start)
     $ ade android start --text                     Boot the lane's AVD (waits for boot completed)
@@ -3530,23 +3578,110 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                                                    fix their orientation, such as the home screen, keep it.
     $ ade android type "hello world" --text        Type into the focused field (--value "<text>" for text
                                                    that starts with a dash)
+    $ ade android render --angles front,back --lighting studio --sheet --text
+                                                   3D renders of the device with its live screen, filed as
+                                                   proof (needs ADE open on the lane's Android tool).
+                                                   Angles: front, three-quarter-left, three-quarter-right,
+                                                   back, current. --video adds a 6 s turntable; --no-shadow
     $ ade android show --text                      Show the emulator to the user (tools pane)
     $ ade android actions --text                   List the android_emulator actions
+    $ ade android long-press 540 1200 --duration-ms 1500 --text
+    $ ade android drag 200 800 800 800 --duration-ms 600 --text
+                                                   A slow press-move-lift (drag and drop)
+    $ ade android scroll --direction down --amount 0.6 --text
+                                                   (--anchor-x/--anchor-y: where the finger starts)
+
+  Apps:
+    $ ade android apps --text                      Apps on the emulator (and which ADE installed)
+    $ ade android install --gradle --text          Build the lane's app with its Gradle wrapper and
+                                                   install it (--module app, --variant debug)
+    $ ade android install --apk build/app.apk --text
+                                                   Install an APK inside the lane worktree
+    $ ade android launch --gradle --text           Build, install and open it
+    $ ade android launch --package <name> --text   Open an installed app (--activity <name>)
+    $ ade android terminate --package <name> --text
+    $ ade android uninstall --package <name> --text
+                                                   On an AVD the lane did not make, only apps
+                                                   ADE installed
+    $ ade android open-url https://example.com --text
+                                                   Open a URL or a deep link (myapp://...)
+
+  Read the screen and act on elements:
+    $ ade android snapshot --text                  The screen's elements: ref, role, name, center
+                                                   (--fresh reads again; a read is kept 5 s)
+    $ ade android find-element --label "Sign in" --text
+    $ ade android tap-element --ref text:greet --text
+                                                   (--hold-ms <ms> for a long press)
+    $ ade android fill-element --identifier name --value "Ada" --text
+                                                   Clear the field, type, and read it back
+    $ ade android wait-for-element --text "Welcome" --timeout-ms 20000 --text
+                                                   (--gone waits for it to leave)
+    $ ade android assert-visible --text "Hello, Ada" --text
+                                                   Exits 1 when it is not on screen
+  Element queries: --ref, --identifier (the resource id), --label (content
+  description), --text (shown text, part of it is enough), --role, --index <n>.
+
+  Logs, recordings and proof:
+    $ ade android log --package <name> --level warn --lines 200 --text
+                                                   Logcat (--since <cursor> reads only newer lines)
+    $ ade android record-start --label "sign in" --text
+                                                   Record the screen (--max-seconds, up to 300)
+    $ ade android record-stop --text               Stop; the MP4 files to this chat's proof drawer
+                                                   (--discard keeps nothing)
+    $ ade android record-list --text
+    $ ade android record-delete --id <id> --text
+    $ ade android proof-bundle --caption "after sign in" --text
+                                                   Screenshot + elements + log + meta, filed as
+                                                   proof (--out <dir>, --package, --no-elements)
+
+  Take turns and set the emulator up:
+    $ ade android lease --wait 300 --holder <name> --text
+                                                   Take a turn on the lane's emulator; exits 1
+                                                   when not granted. --ttl <s>
+    $ ade android lease renew --token <t> --text   (lease release --token <t>, lease status)
+    $ ade android location 37.7749 -122.4194 --text
+    $ ade android appearance dark --text           light | dark
+    $ ade android settings --text                  Text and display size, developer switches,
+                                                   battery, radios and the app in front
+    $ ade android settings --airplane on --text    One change per call: --text-size, --display-size,
+                                                   --animations, --show-taps, --layout-bounds,
+                                                   --battery <0-100> [--charging on|off], --wifi,
+                                                   --data, --airplane (on | off)
+    $ ade android permission grant camera --package <name> --text
+                                                   grant | revoke: camera, location, microphone,
+                                                   notifications, contacts, photos, calendar,
+                                                   or android.permission.X
+
+  Android SDK (this machine):
+    $ ade android sdk status --text                What is installed, what is missing, the sizes,
+                                                   the free space and the licences
+                                                   (--folder <path>, --with-cli)
+    $ ade android sdk licenses --text              Read the licences (--id <id> for one)
+
+  Only the user installs the SDK, accepts Google's licences, stops an
+  install or picks the SDK folder, in the ADE desktop app: the setup card in
+  the Android tool, or Settings › Android devices. ADE never accepts a
+  licence. \`sdk install\`, \`sdk use\` and \`sdk cancel\` refuse a terminal.
 
   The verbs and flags are the ones \`ade apple\` uses for the same job (tap
   also takes --x/--y, button --name, type --value). Any other flag is refused.
+  Never run \`emulator -avd\`, \`adb kill-server\` or \`adb emu kill\`: they
+  start a second emulator or cut every lane's emulator off adb.
 
   Another machine: --machine <name> runs the command on that machine, with
   no new lane. Without --lane, the emulator there works for this chat's work
   copy (a hidden worktree at your commit, made on first use; the commit must
   be on origin). Every view of this chat then shows it in the Android tool.
   status and devices make no copy. --lane <id> uses a lane on that machine
-  instead. The screenshot is written there.
+  instead. Files are written there; a screenshot, a recording or a proof
+  bundle is also filed in this chat's proof drawer. install and launch with
+  --gradle or --apk send your checkout and its uncommitted changes first (an
+  APK that git ignores does not travel: use --gradle).
     $ ade android device-create --profile medium_phone --machine windows --text
     $ ade android tap 540 1200 --machine windows --text
 
   Errors (each prints its next step):
-    ANDROID_SDK_NOT_FOUND            install the SDK or set ANDROID_HOME
+    ANDROID_SDK_NOT_FOUND            install the SDK (ade android sdk status) or set ANDROID_HOME
     ANDROID_TOOL_MISSING             install the missing SDK package
     ANDROID_NO_ACCELERATION          turn on hardware acceleration
     ANDROID_NO_SYSTEM_IMAGE          install a system image, or pass --image
@@ -3554,6 +3689,9 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     ANDROID_AVD_RUNNING              that AVD already runs outside this lane
     ANDROID_BOOT_TIMEOUT / ANDROID_EMULATOR_EXITED   read the log the error names
     ANDROID_NOT_RUNNING              ade android start first
+    ANDROID_ELEMENT_NOT_FOUND        ade android snapshot, then aim again
+    ANDROID_BUILD_FAILED             read the Gradle output, fix the build
+    ANDROID_PACKAGE_NOT_ADE_INSTALLED   ADE did not install it on this AVD
   The live view (stream and live touch) and deleting an AVD no lane holds are
   the user's, in the Android panel; an agent uses tap, swipe, button and type.
 `,
@@ -36611,6 +36749,36 @@ function formatTextOutput(
       return formatAndroidScreenshot(value);
     case "android-action":
       return formatAndroidAction(value);
+    case "android-settings":
+      return formatAndroidSettings(value);
+    case "android-render":
+      return formatAndroidRender(value);
+    case "android-apps":
+      return formatAndroidApps(value);
+    case "android-install":
+      return formatAndroidInstall(value);
+    case "android-launch":
+      return formatAndroidLaunch(value);
+    case "android-snapshot":
+      return formatAndroidSnapshot(value);
+    case "android-element":
+      return formatAndroidElement(value);
+    case "android-log":
+      return formatAndroidLog(value);
+    case "android-recording":
+      return formatAndroidRecording(value);
+    case "android-recordings":
+      return formatAndroidRecordings(value);
+    case "android-lease":
+      return formatAndroidLease(value);
+    case "android-proof-bundle":
+      return formatAndroidProofBundle(value);
+    case "android-sdk-status":
+      return formatAndroidSdkStatus(value);
+    case "android-sdk-licenses":
+      return formatAndroidSdkLicenses(value);
+    case "android-sdk-install":
+      return formatAndroidSdkInstall(value);
     case "app-control-status":
       return formatAppControlStatus(value);
     case "app-control-snapshot":
@@ -39389,6 +39557,7 @@ async function runParsedCli(
     if (plan.retryAfterRecovery && await plan.retryAfterRecovery(result, parsed.options)) {
       result = await executePlan(plan, parsed.options);
     }
+    if (plan.followResult) result = await followPlanResult(plan.followResult, result, parsed.options);
     if (plan.writeResultPath) {
       const payload = JSON.stringify(
         result,
@@ -39443,6 +39612,24 @@ async function runParsedCli(
     console.log = originalConsole.log;
     console.info = originalConsole.info;
     console.warn = originalConsole.warn;
+  }
+}
+
+/** `followResult`: poll until the result is final; progress lines go to stderr unless `--json`. */
+async function followPlanResult(
+  follow: NonNullable<(CliPlan & { kind: "execute" })["followResult"]>,
+  first: unknown,
+  options: GlobalOptions,
+): Promise<unknown> {
+  let result = first;
+  let lastLine: string | null = null;
+  for (;;) {
+    const line = follow.progress?.(result) ?? null;
+    if (line && line !== lastLine && !options.json) await writeProcessOutput(process.stderr, `${line}\n`);
+    lastLine = line;
+    if (follow.done(result)) return result;
+    await sleep(follow.intervalMs);
+    result = await executePlan(follow.plan, options);
   }
 }
 

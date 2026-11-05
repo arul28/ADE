@@ -25,6 +25,9 @@ import { REMOTE_WORK_LANE_PREFIX } from "../remoteWork/remoteWorkCopyService";
 const ADE_AVD_CREATED_KEY = "ade.created";
 const ADE_AVD_LANE_KEY = "ade.laneId";
 const ADE_AVD_CREATED_AT_KEY = "ade.createdAt";
+/** P1 look: the brand catalog entry and the body colour, so any window draws the right body. */
+const ADE_AVD_CATALOG_KEY = "ade.catalogId";
+const ADE_AVD_COLOR_KEY = "ade.color";
 
 /** The AVD names the emulator accepts: letters, digits, `.`, `_`, `-`. */
 const AVD_NAME_PATTERN = /^[A-Za-z0-9._-]+$/u;
@@ -50,28 +53,25 @@ function intOrNull(value: string | undefined): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-/** Bytes under a folder; the disks of one AVD are a few large files. */
-function folderBytes(dir: string): number {
+/**
+ * An AVD folder's bytes on disk, without blocking: the folder can be many GB
+ * on a slow drive, and the brain must keep answering while it is walked.
+ */
+export async function measureAndroidAvdBytes(dir: string): Promise<number> {
   let total = 0;
   const stack = [dir];
   while (stack.length > 0) {
     const current = stack.pop()!;
     let entries: fs.Dirent[];
     try {
-      entries = fs.readdirSync(current, { withFileTypes: true });
+      entries = await fs.promises.readdir(current, { withFileTypes: true });
     } catch {
       continue;
     }
     for (const entry of entries) {
       const full = path.join(current, entry.name);
       if (entry.isDirectory()) stack.push(full);
-      else if (entry.isFile()) {
-        try {
-          total += fs.statSync(full).size;
-        } catch {
-          // Gone between the listing and the stat.
-        }
-      }
+      else if (entry.isFile()) total += await fs.promises.stat(full).then((stat) => stat.size, () => 0);
     }
   }
   return total;
@@ -81,7 +81,7 @@ function folderBytes(dir: string): number {
 export function readAndroidAvd(
   avdHome: string,
   name: string,
-  options: { running?: readonly AndroidRunningEmulator[]; measureSize?: boolean } = {},
+  options: { running?: readonly AndroidRunningEmulator[] } = {},
 ): AndroidAvd | null {
   const ini = readAndroidIniFile(path.join(avdHome, `${name}.ini`));
   if (!ini) return null;
@@ -99,8 +99,10 @@ export function readAndroidAvd(
     lcdHeight: intOrNull(config.get("hw.lcd.height")),
     density: intOrNull(config.get("hw.lcd.density")),
     path: folder,
-    sizeBytes: options.measureSize ? folderBytes(folder) : null,
+    sizeBytes: null,
     adeCreated: config.get(ADE_AVD_CREATED_KEY) === "true",
+    catalogId: config.get(ADE_AVD_CATALOG_KEY) || null,
+    colorId: config.get(ADE_AVD_COLOR_KEY) || null,
     running: options.running?.find((emulator) => emulator.avdName === name) ?? null,
   };
 }
@@ -117,7 +119,7 @@ export function readAdeAvdLaneId(avd: Pick<AndroidAvd, "path">): string | null {
  */
 export function listAndroidAvds(
   avdHome: string,
-  options: { running?: readonly AndroidRunningEmulator[]; measureSize?: boolean } = {},
+  options: { running?: readonly AndroidRunningEmulator[] } = {},
 ): AndroidAvd[] {
   let names: string[];
   try {
@@ -144,7 +146,8 @@ function adeAvdName(laneId: string, profileId: string, taken: ReadonlySet<string
   const shortLane = (laneId.startsWith(REMOTE_WORK_LANE_PREFIX)
     ? `rw${clean(laneId.slice(REMOTE_WORK_LANE_PREFIX.length)).slice(0, 6)}`
     : clean(laneId).slice(0, 8)) || "lane";
-  const base = `ade_${shortLane}_${clean(profileId) || "device"}`;
+  // An ADE catalog profile (`ade_galaxy_s25`) loses its own `ade_`: the name has one already.
+  const base = `ade_${shortLane}_${clean(profileId).replace(/^ade_/iu, "") || "device"}`;
   const lowerTaken = new Set([...taken].map((name) => name.toLowerCase()));
   if (!lowerTaken.has(base.toLowerCase())) return base;
   for (let suffix = 2; ; suffix += 1) {
@@ -213,6 +216,9 @@ export type CreateAndroidAvdInput = {
   /** What the picker shows (`ADE · checkout-flow`); defaults to the AVD name. */
   displayName?: string | null;
   ramMb?: number;
+  /** P1 look: the catalog entry and colour, written as ADE's marker keys. */
+  catalogId?: string | null;
+  colorId?: string | null;
 };
 
 /**
@@ -255,6 +261,8 @@ export function createAndroidAvd(input: CreateAndroidAvdInput): AndroidAvd {
     [ADE_AVD_CREATED_KEY]: "true",
     [ADE_AVD_LANE_KEY]: input.laneId,
     [ADE_AVD_CREATED_AT_KEY]: new Date().toISOString(),
+    ...(input.catalogId ? { [ADE_AVD_CATALOG_KEY]: input.catalogId } : {}),
+    ...(input.colorId ? { [ADE_AVD_COLOR_KEY]: input.colorId } : {}),
   };
   const relativeToUserHome = path.relative(input.userHome, folder);
   const pointer: Record<string, string> = {
@@ -328,4 +336,33 @@ export function deleteAdeAndroidAvd(
   }
   fs.rmSync(path.join(home, `${name}.ini`), { force: true });
   fs.rmSync(doomed, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 });
+}
+
+/**
+ * P1 look: records a body colour on an AVD (`ade.color` in its `config.ini`).
+ * Only that one line changes; every other line, and the file's line endings,
+ * stay as they were. The emulator ignores keys it does not know, and a
+ * running emulator does not reread `config.ini`, so this is safe at any time.
+ */
+export function setAndroidAvdColor(avd: Pick<AndroidAvd, "path">, colorId: string): void {
+  const value = colorId.replace(/[\u0000-\u001f\u007f]/g, "");
+  const filePath = path.join(avd.path, "config.ini");
+  const text = fs.readFileSync(filePath, "utf8");
+  const eol = text.includes("\r\n") ? "\r\n" : "\n";
+  const lines = text.split(/\r?\n/u);
+  const at = lines.findIndex((line) => line.split("=", 1)[0]?.trim() === ADE_AVD_COLOR_KEY);
+  if (at >= 0) lines[at] = `${ADE_AVD_COLOR_KEY}=${value}`;
+  else {
+    // Before the trailing empty line, so the file still ends with one newline.
+    const end = lines.length > 0 && lines[lines.length - 1] === "" ? lines.length - 1 : lines.length;
+    lines.splice(end, 0, `${ADE_AVD_COLOR_KEY}=${value}`);
+  }
+  const temp = `${filePath}.ade-${process.pid}.tmp`;
+  fs.writeFileSync(temp, lines.join(eol), "utf8");
+  try {
+    fs.renameSync(temp, filePath);
+  } catch (error) {
+    fs.rmSync(temp, { force: true });
+    throw error;
+  }
 }

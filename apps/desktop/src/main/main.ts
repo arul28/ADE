@@ -5837,6 +5837,10 @@ app.whenReady().then(async () => {
       },
       // Chats on other machines drive an emulator here through their work copy.
       projectRoot,
+      // The machine's SDK choice ("Use mine…", a chosen install folder), shared with the brain.
+      sdkSettingsFile: path.join(resolveMachineAdeLayout().adeDir, "android", "settings.json"),
+      // P1: captures file themselves into the calling chat's proof drawer.
+      artifactFiler: computerUseArtifactBrokerService,
       logger,
       onEvent: (event) => emitProjectEvent(projectRoot, IPC.androidEmulatorEvent, event),
     });
@@ -5846,6 +5850,17 @@ app.whenReady().then(async () => {
       laneTeardownDeps.androidEmulatorService = {
         stopForLane: (laneId: string) => androidEmulatorService.stopForLane(laneId),
       };
+    }
+    // A chat that ends stops its Android recordings and passes on its emulator leases.
+    if (androidEmulatorService) {
+      agentChatService.registerChatSessionEndedListener((sessionId) => {
+        void androidEmulatorService.releaseIfOwnedBy(sessionId).catch((error) => {
+          logger.debug("android_emulator.release_on_chat_end_failed", {
+            sessionId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+      });
     }
     // A chat that ends drops its lease on every platform — the one Mac Desktop
     // call that is not macOS-only, because a lease must never outlive its chat.
@@ -6045,6 +6060,7 @@ app.whenReady().then(async () => {
       laneTemplateService,
       computerUseArtifactBrokerService,
       appleDeviceService: iosSimulatorService,
+      androidDeviceService: androidEmulatorService,
       getWebhookAutomations: () => createWebhookRemoteSource({
         automationService,
         webhooks: automationIngressService?.webhooks,

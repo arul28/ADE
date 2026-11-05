@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { OpenProjectBinding } from "../../../shared/types";
 import { logRendererDebugEvent } from "../../lib/debugLog";
 import { appleDuoInTent } from "../../../shared/appleOrientation";
-import type { AppleDeviceRenderer } from "./AppleDevice3DView";
+import type { DeviceRenderer } from "../device/deviceRenderPass";
 import { AppleDeviceStage } from "./AppleDeviceStage";
 import { appleDeviceSupportsDuo, createAppleDuoState, reduceAppleDuoState } from "./appleDuo";
 import { laneDeviceBooted } from "./appleDeviceState";
@@ -45,7 +45,7 @@ export default function AppleRenderHostJob({
   onDone: (requestId: string) => void;
 }) {
   const pinRef = useRef<OpenProjectBinding | null>(job.pin);
-  const rendererRef = useRef<AppleDeviceRenderer | null>(null);
+  const rendererRef = useRef<DeviceRenderer | null>(null);
   const [device, setDevice] = useState<AppleRenderJobDevice | null>(null);
   const [bodyReady, setBodyReady] = useState(false);
   const [duoModelWaitOver, setDuoModelWaitOver] = useState(false);

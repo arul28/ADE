@@ -1,4 +1,8 @@
-import type { AndroidEmulatorError, AndroidEmulatorErrorCode } from "../../../shared/types/androidEmulator";
+import {
+  isAndroidEmulatorErrorCode,
+  type AndroidEmulatorError,
+  type AndroidErrorCode,
+} from "../../../shared/types/androidEmulator";
 
 /**
  * The one typed refusal of the Android backend. The code is the contract the
@@ -10,7 +14,7 @@ import type { AndroidEmulatorError, AndroidEmulatorErrorCode } from "../../../sh
  * a boot that never finished is not marked, so it still reaches Sentry.
  */
 
-const EXPECTED_KIND: Partial<Record<AndroidEmulatorErrorCode, "user" | "environment">> = {
+const EXPECTED_KIND: Partial<Record<AndroidErrorCode, "user" | "environment">> = {
   ANDROID_SDK_NOT_FOUND: "environment",
   ANDROID_TOOL_MISSING: "environment",
   ANDROID_NO_ACCELERATION: "environment",
@@ -22,13 +26,23 @@ const EXPECTED_KIND: Partial<Record<AndroidEmulatorErrorCode, "user" | "environm
   ANDROID_AVD_RUNNING: "user",
   ANDROID_NOT_RUNNING: "user",
   ANDROID_PATH_OUTSIDE_LANE: "user",
+  // P1 agent suite: a missing element, a build error in the user's code, an app
+  // that is not installed are answers about the app, not faults of ADE.
+  ANDROID_ELEMENT_NOT_FOUND: "user",
+  ANDROID_WAIT_TIMEOUT: "user",
+  ANDROID_APP_NOT_FOUND: "user",
+  ANDROID_BUILD_FAILED: "user",
+  ANDROID_INSTALL_FAILED: "user",
+  ANDROID_PACKAGE_NOT_ADE_INSTALLED: "user",
+  ANDROID_RECORDING_ACTIVE: "user",
+  ANDROID_RECORDING_NOT_FOUND: "user",
 };
 
 export class AndroidEmulatorFailure extends Error {
   readonly adeExpected: "user" | "environment" | undefined;
 
   constructor(
-    readonly code: AndroidEmulatorErrorCode,
+    readonly code: AndroidErrorCode,
     message: string,
     readonly logPath: string | null = null,
   ) {
@@ -37,11 +51,15 @@ export class AndroidEmulatorFailure extends Error {
     this.adeExpected = EXPECTED_KIND[code];
   }
 
-  /** The panel's shape: the plain sentence without the code prefix. */
+  /**
+   * The panel's shape: the plain sentence without the code prefix. The panel
+   * knows the lifecycle codes only; an agent-suite code (which the panel never
+   * shows as a device state) reads as the emulator's generic failure there.
+   */
   toAndroidEmulatorError(): AndroidEmulatorError {
     const prefix = `${this.code}: `;
     return {
-      code: this.code,
+      code: isAndroidEmulatorErrorCode(this.code) ? this.code : "ANDROID_EMULATOR_EXITED",
       message: this.message.startsWith(prefix) ? this.message.slice(prefix.length) : this.message,
       logPath: this.logPath,
     };

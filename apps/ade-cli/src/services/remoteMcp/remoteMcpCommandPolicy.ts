@@ -1,5 +1,6 @@
 import { ADE_ACTION_ACCESS } from "../../../../desktop/src/shared/adeActionAccess";
 import { isSecretBearingAdeAction } from "../../../../desktop/src/main/services/adeActions/actionPolicy";
+import { ANDROID_SDK_PERSON_ONLY_ACTIONS } from "../../../../desktop/src/shared/types/androidEmulator";
 import type { RemoteMcpScope } from "../../../../desktop/src/shared/types/remoteMcp";
 
 /**
@@ -213,6 +214,15 @@ export function checkRemoteAdeCommand(
       reason: `\`ade machines ${words[0]}\` is not available remotely. Changing the machines on your ADE account is done on a computer itself.`,
     };
   }
+  if (command === "android") {
+    const sdkAt = words.indexOf("sdk");
+    // Any write verb after `sdk`, so a flag and its value in front
+    // (`sdk --sdk-root /x install`) cannot step around the check.
+    const verb = sdkAt >= 0 ? words.slice(sdkAt + 1).find((word) => ANDROID_SDK_WRITE_VERBS.has(word)) : undefined;
+    if (verb) {
+      return { ok: false, reason: `\`ade android sdk ${verb}\` is not available remotely. ${ANDROID_SDK_REASON}` };
+    }
+  }
   if (command === "actions") {
     const actionVerdict = checkActionsCommand(words, scope);
     if (actionVerdict) return actionVerdict;
@@ -240,6 +250,12 @@ const SERVICE_SIGN_IN_REASON =
 const GITHUB_AUTH_GROUPS: ReadonlySet<string> = new Set(["app-auth", "app", "auth"]);
 /** Spellings of `ade github app-auth login` and `clear`. */
 const GITHUB_AUTH_CHANGES: ReadonlySet<string> = new Set(["login", "authorize", "start", "clear", "logout", "sign-out"]);
+/** `ade android sdk` verbs that install the SDK, stop an install, or pick the SDK folder. */
+const ANDROID_SDK_WRITE_VERBS: ReadonlySet<string> = new Set(["install", "use", "cancel"]);
+const ANDROID_SDK_PERSON_ONLY: ReadonlySet<string> = new Set(ANDROID_SDK_PERSON_ONLY_ACTIONS);
+const ANDROID_SDK_REASON =
+  "Only the user installs the Android SDK and accepts Google's licences, in the ADE desktop app on that computer: "
+  + "the setup card in the Android tool, or Settings › Android devices.";
 /**
  * Service credential actions, by domain; `true` means every action. The CLI
  * runs full access as `cto`, which these actions otherwise allow.
@@ -322,6 +338,9 @@ function checkActionsCommand(words: readonly string[], scope: RemoteMcpScope): R
   }
   if (target.domain === "account_vault") {
     return { ok: false, reason: `\`${name}\` is not available remotely. ${ACCOUNT_VAULT_REASON}` };
+  }
+  if (target.domain === "android_emulator" && ANDROID_SDK_PERSON_ONLY.has(target.action)) {
+    return { ok: false, reason: `\`${name}\` is not available remotely. ${ANDROID_SDK_REASON}` };
   }
   const signIn = SERVICE_SIGN_IN_ACTIONS.get(target.domain);
   if (signIn === true || signIn?.has(target.action)) {

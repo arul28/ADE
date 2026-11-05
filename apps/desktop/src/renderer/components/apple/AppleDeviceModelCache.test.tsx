@@ -60,7 +60,7 @@ vi.mock("three/examples/jsm/loaders/GLTFLoader.js", () => ({
 }));
 
 const { AppleDevice3DView } = await import("./AppleDevice3DView");
-const { __testClearAppleModelCache } = await import("./appleDeviceModelLoader");
+const { __testClearDeviceModelCache } = await import("../device/deviceModelLoader");
 
 function renderView(onReady: () => void) {
   return render(
@@ -85,7 +85,7 @@ describe("Apple 3D model cache", () => {
 
   beforeEach(() => {
     parses.count = 0;
-    __testClearAppleModelCache();
+    __testClearDeviceModelCache();
     fetchSpy = vi.fn(async () => ({ ok: true, arrayBuffer: async () => new ArrayBuffer(8) }));
     vi.stubGlobal("fetch", fetchSpy);
     vi.stubGlobal("ResizeObserver", class {

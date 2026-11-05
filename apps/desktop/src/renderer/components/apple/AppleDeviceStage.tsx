@@ -10,11 +10,12 @@ import {
   type AppleDevice3DFailure,
   type AppleDevice3DViewProps,
   type AppleDeviceDuoProps,
-  type AppleDeviceRenderer,
   type AppleDeviceFamily,
 } from "./AppleDevice3DView";
+import type { DeviceRenderer } from "../device/deviceRenderPass";
 import {
   DeviceFlatView,
+  flatDeviceToView,
   screenMediaRect,
   type DeviceGeometry,
   type DeviceInput,
@@ -62,7 +63,7 @@ export type AppleDeviceStageProps = {
    */
   duo?: AppleDeviceDuoProps | undefined;
   /** The 3D view's render methods, for the Render sheet. */
-  rendererRef?: { current: AppleDeviceRenderer | null } | undefined;
+  rendererRef?: { current: DeviceRenderer | null } | undefined;
   onDeviceInput: (input: DeviceInput) => void;
   onDeviceScroll?: (delta: { x: number; y: number; deltaX: number; deltaY: number }) => void;
   /** A key pressed while the flat screen holds focus. True = forwarded. */
@@ -258,22 +259,6 @@ export function AppleDeviceStage({
       {children}
     </div>
   );
-}
-
-/**
- * The device→view mapping for the flat presenter, in the shape the inspect
- * overlay takes. Null in 3D, where the presenter cannot answer mid-orbit.
- *
- * The points it takes are ORIENTED points — the accessibility tree describes
- * the app's own interface, which turns with the device — and `geometry` is the
- * drawn box, which turns with it too (§V1). So a rotated device needs no extra
- * term here: both sides rotated together, and the one scale still holds.
- */
-export function flatDeviceToView(
-  geometry: DeviceGeometry | null,
-): ((point: { x: number; y: number }) => { x: number; y: number }) | null {
-  if (!geometry || geometry.scale <= 0) return null;
-  return (point) => ({ x: point.x / geometry.scale, y: point.y / geometry.scale });
 }
 
 export { isWebCodecsAvailable };

@@ -129,6 +129,10 @@ const RUNTIME_ACTION_CHANNEL: Record<string, Record<string, string>> = {
     stop: IPC.androidEmulatorStop,
     releaseDevice: IPC.androidEmulatorReleaseDevice,
     deleteDevice: IPC.androidEmulatorDeleteDevice,
+    // Reads Google's repository and, on a fresh Android CLI, its first run.
+    getSdkSetupPlan: IPC.androidEmulatorGetSdkSetupPlan,
+    // P1 look: a render file (a turntable can be ~10 MB) over a remote link.
+    attachRenderProof: IPC.androidEmulatorAttachRenderProof,
   },
 };
 
@@ -382,6 +386,8 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     case IPC.androidEmulatorStop:
     case IPC.androidEmulatorReleaseDevice:
     case IPC.androidEmulatorDeleteDevice:
+    case IPC.androidEmulatorGetSdkSetupPlan:
+    case IPC.androidEmulatorAttachRenderProof:
       return localRuntimeCallIpcTimeoutMs(ANDROID_EMULATOR_LIFECYCLE_TIMEOUT_MS);
     case IPC.transcriptionTranscribe:
       return 6 * 60_000;

@@ -6,7 +6,7 @@ import {
   type DisplayLayout,
   type DuoBodyControls,
   type ThreeNS,
-} from "./appleDeviceScene";
+} from "../device/deviceScene";
 import { appleDuoPanelRotationsDeg, type AppleDuoPose } from "./appleDuo";
 
 /**

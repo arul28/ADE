@@ -1366,6 +1366,21 @@ existing `ade_feature_used` 140-per-day / 30-per-minute limits and the shared
 settles, never per frame. The dashboard spec is untouched: no card asks this
 yet.
 
+The Android panel records the same event the same way, at the Android emulator
+service in the brain (through an injected `captureAnalytics`), with
+`feature: "work"`, `action: "android_device"`, and a closed `outcome` from
+`ANDROID_DEVICE_ANALYTICS_OUTCOMES`: `sdk_installed` (the guided SDK install
+finished and put at least one part in place), `app_installed` (an APK or a
+Gradle build installed on a lane's emulator), `device_rendered` (a 3D render
+was filed as proof), or `device_leased` (an agent took a new lease with
+`ade android lease`; a renewal or a busy answer is not one). A failed, refused
+or no-op call emits nothing. Nothing finer crosses: no SDK path, AVD,
+package, APK, angle, lane, chat, or image. A per-outcome
+`work_android_device:<outcome>` key with a 24-hour minimum interval bounds this
+to at most four accepted events per installation per UTC day, inside the same
+`ade_feature_used` limits; no ceiling was raised. The dashboard spec is
+untouched.
+
 Whether agents use the user's own browser records the same `ade_feature_used`
 event once per successful `ade browser attach`, at the brain-side attach
 service (`createUserBrowserAttachService`, through an injected

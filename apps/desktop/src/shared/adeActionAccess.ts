@@ -614,11 +614,25 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
     live: "all",
     read: [
       "getStatus", "listDevices", "getStreamStatus",
+      // P1 agent suite: reads that change nothing on the device.
+      "listApps", "getScreenSnapshot", "findElement", "waitForElement", "assertVisible",
+      "readLog", "recordList", "deviceLeaseStatus", "getDeviceSettings",
+      // P1 setup: the plan and the install's progress.
+      "getSdkSetupPlan", "getSdkInstallState",
     ],
     write: [
       "createDevice", "attachDevice", "start", "stop", "releaseDevice", "deleteDevice",
       "startStream", "stopStream", "sendTouch", "tap", "swipe", "sendKey", "sendText",
       "rotate", "screenshot",
+      // P1 look.
+      "setDeviceColor", "requestRender", "renderAck", "renderComplete", "attachRenderProof",
+      // P1 agent suite.
+      "installApp", "launchApp", "terminateApp", "uninstallApp", "openUrl", "longPress", "drag",
+      "scroll", "tapElement", "fillElement", "recordStart", "recordStop", "recordDelete",
+      "deviceLease", "deviceLeaseRelease", "setLocation", "setAppearance", "setPermission",
+      "captureProofBundle", "setDeviceSetting",
+      // P1 setup (user-only: the licences and the SDK folder are the person's).
+      "installSdk", "cancelSdkInstall", "setSdkPath",
     ],
   },
   app_control: {

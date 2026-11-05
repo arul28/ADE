@@ -16,9 +16,9 @@ import type { AndroidStreamState } from "./androidDeviceState";
  *
  * - The brain's stream is keyed by lane, not by device, so the lease and the
  *   stop are per lane.
- * - The pane is flat only (P0), so nothing re-uploads a texture per frame and
- *   this hook does not re-render per frame: frames are counted in refs, and the
- *   state changes only when it actually changes.
+ * - This hook does not re-render per frame: frames are counted in refs, and
+ *   the state changes only when it actually changes. The 3D view takes each
+ *   frame through its own feed, not through this hook's state.
  */
 
 /** Connected, but the first access unit never arrived. */

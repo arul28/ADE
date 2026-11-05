@@ -2420,3 +2420,53 @@ lower than on 2026-11-03, and Apple flat is in the same range as after
 `734bf16ba`. The Apple 3D view dropped from 79.7–85.1 to 57.6–65.9 ms/s.
 No change in the move targets the 3D draw, so treat that drop as run-to-run
 spread until a later run confirms it.
+
+### Android P1 look: 3D stage, boot on the model, brand grid (2026-11-05)
+
+Browser mock, the same machine and method as above: the renderer's Vite dev
+server on this lane's tree (base `137005de8`, uncommitted P1 work), headless
+Chrome 155 at 1600×1000, the Codex chat open with the Tools pane beside it.
+One warm-up run, then 3 runs of 20 s after a 6 s settle. Each cell is the
+median, then the range. A scratch CDP script drove the clicks. **The load
+average was 18–31** (other agents, two other emulators), about 3× the
+earlier passes, so read small differences as noise. The mock encoder caveat
+above applies to every live column. The mock page now has more on it than on
+2026-11-03, so its element counts (about 1,030 on the stage, 1,370 on the
+picker) do not compare with the 714 above.
+
+| Metric | Android live, 3D (Galaxy S25 body) | Android live, flat | Boot on the model (3D, Pixel 10 Pro) | Picker idle (stills cached) | Ceiling |
+|---|---:|---:|---:|---:|---:|
+| Main-thread work | 34.2 (33.6–34.5) ms/s | 19.8 (19.5–21.4) ms/s | 22.1 (20.6–24.6) ms/s | 3.0 (3.0–4.0) ms/s | 30 ms/s idle (Idle table); none set for a live device |
+| Renderer JS heap | 103 MB | 101 MB | 120 MB | 102 MB | 220 MB |
+| WebGL contexts the page made | 5 (4 are the page's own backdrop and glass renderers) | 4 | 5 | 5 (none for the tiles) | one for the tiles |
+
+Android live in 3D costs about half of Apple's 3D view (57.6–65.9 ms/s
+above), and the flat view did not get worse than P0 (25.9 ms/s above).
+
+Opening the picker (6 page loads, 2 not counted, then 2 cold and 2 warm;
+the time runs from navigation start, in page time):
+
+| Metric | Cold (no stored stills) | Warm (stills in `localStorage`) | Ceiling |
+|---|---:|---:|---:|
+| All ten tile stills on screen | 4.29–4.36 s | 4.21–4.24 s | cold adds no more than ~0.2 s |
+| WebGL contexts for the tiles | 1 (one offscreen renderer draws every still) | 0 | 1 |
+| Stored stills | 16, 40 KB in all | — | 60 KB a still |
+| Hovering a tile (the turn), main thread | 30.6 (30.2–32.7) ms/s | 30.2 (28.1–30.2) ms/s | none set; only while hovered |
+
+Most of the 4.2 s is the dev page loading. Cold, the stills land about
+0.1 s after the warm case, all in the same frames as the grid. The hover
+turn reuses the one tile renderer (no second context) and stops on
+pointer leave. After that, the page goes back to its own background work.
+That work was noisy here (3–6 ms/s with spikes) because of the load.
+
+The Tools drawer (2026-11-05, head `90b615dee`, the same mock and method, a
+Work chat open with the Tools pane; load average 5–11). The App group reads
+the app in front every 2 s while it is open and the window is visible:
+
+| Metric | Live flat, drawer closed | Live flat, drawer open on App | Ceiling |
+|---|---:|---:|---:|
+| Main-thread work | 32.7 (32.3–32.8) ms/s | 34.5 (32.4–35.9) ms/s | +25% over the closed drawer |
+| Renderer JS heap | 103 MB | 104 MB | 220 MB |
+
+The open drawer adds about 1.8 ms/s. The page itself costs more than the
+flat row above (19.8 ms/s) because the mock now opens a chat beside the pane.

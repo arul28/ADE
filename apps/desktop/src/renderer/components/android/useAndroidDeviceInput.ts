@@ -76,9 +76,16 @@ export function useAndroidDeviceInput({
       .catch((error: unknown) => onErrorRef.current(error))
       .finally(() => {
         inFlightRef.current = false;
-        if (pendingRef.current.length > 0 && frameRef.current == null) {
-          frameRef.current = window.requestAnimationFrame(flush);
+        if (pendingRef.current.length === 0) return;
+        // A down or up that queued behind the last send goes now. A window
+        // that is not painting (hidden, or driven by App Control) runs no
+        // animation frames, and an up that waits for one leaves the finger down.
+        if (pendingRef.current.some((pending) => pending.action !== "move")) {
+          if (frameRef.current != null) window.cancelAnimationFrame(frameRef.current);
+          flush();
+          return;
         }
+        if (frameRef.current == null) frameRef.current = window.requestAnimationFrame(flush);
       });
   }, [runtimePinRef]);
 

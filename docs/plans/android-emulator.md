@@ -225,7 +225,7 @@ second caller exists only adds churn to the diff.
 | Relay-to-service seam | `services/ios/appleStreamRelayForService.ts` (`AppleStreamOwningService`, new in #2039) |
 | Pacing + bitrate adapter | `services/ios/appleStreamPacing.ts` |
 | Annex B parser | `services/media/h264AnnexB.ts` (moved in P0) |
-| Device lease queue | `services/ios/appleDeviceLease.ts` |
+| Device lease queue | `services/device/deviceLease.ts` (moved in P1) |
 | Lifecycle queue | `services/ios/laneDeviceLifecycle.ts` |
 | Recording rules + store | `services/ios/recording/*` (helper calls become a port) |
 | Local viewers | `services/ios/appleLocalViewers.ts` |
@@ -400,6 +400,10 @@ on 2026-11-03 (`51c6eabf6`). This lane is updated to that commit, and §4 and
   - Look: the brand catalog (§7.1) with ADE-written profiles, tile art, real
     3D models and the procedural fallback, colour choice, boot on the model,
     rotation, the render sheet.
+  - Built on 2026-11-05 as one PR (lane `ade/android-suite-p1-p3-1ed6bff1`):
+    all of the above, plus Inspect, Record on the rail and the Tools drawer
+    (Device, App, Capture, Emulator) with `ade android settings`. No GLB
+    model files ship yet: every catalog device uses the procedural body.
 - **P2 — viewers and controls.** Web and phone viewers, phone full screen
   (including the iPhone Duo inner screen), cross-machine viewing
   (Windows-hosted emulator on a Mac), two floating players (one per device

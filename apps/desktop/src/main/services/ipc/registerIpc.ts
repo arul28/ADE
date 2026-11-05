@@ -10564,6 +10564,16 @@ export function registerIpc({
   ipcMain.handle(IPC.androidEmulatorSendText, async (_event, arg) => ensureAndroidEmulator().sendText(arg));
   ipcMain.handle(IPC.androidEmulatorRotate, async (_event, arg) => ensureAndroidEmulator().rotate(arg));
   ipcMain.handle(IPC.androidEmulatorScreenshot, async (_event, arg) => ensureAndroidEmulator().screenshot(arg));
+  // P1 look.
+  ipcMain.handle(IPC.androidEmulatorSetDeviceColor, async (_event, arg) => ensureAndroidEmulator().setDeviceColor(arg));
+  ipcMain.handle(IPC.androidEmulatorRenderAck, async (_event, arg) => ensureAndroidEmulator().renderAck(arg));
+  ipcMain.handle(IPC.androidEmulatorRenderComplete, async (_event, arg) => ensureAndroidEmulator().renderComplete(arg));
+  ipcMain.handle(IPC.androidEmulatorAttachRenderProof, async (_event, arg) => ensureAndroidEmulator().attachRenderProof(arg));
+  ipcMain.handle(IPC.androidEmulatorGetSdkSetupPlan, async (_event, arg = {}) => ensureAndroidEmulator().getSdkSetupPlan(arg ?? {}));
+  ipcMain.handle(IPC.androidEmulatorInstallSdk, async (_event, arg) => ensureAndroidEmulator().installSdk(arg));
+  ipcMain.handle(IPC.androidEmulatorCancelSdkInstall, async () => ensureAndroidEmulator().cancelSdkInstall());
+  ipcMain.handle(IPC.androidEmulatorGetSdkInstallState, async () => ensureAndroidEmulator().getSdkInstallState());
+  ipcMain.handle(IPC.androidEmulatorSetSdkPath, async (_event, arg) => ensureAndroidEmulator().setSdkPath(arg));
 
   ipcMain.handle(IPC.appControlGetStatus, async (event, arg) => {
     guardAppControlIpc(event, IPC.appControlGetStatus, { windowMs: 10_000, max: 80 });

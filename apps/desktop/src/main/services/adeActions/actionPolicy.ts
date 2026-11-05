@@ -7,7 +7,7 @@ import {
 import { THREAD_COMMENT_ACTION_NAMES } from "../../../shared/threadComments";
 import { CLAUDE_PLUGIN_UI_ACTION_NAMES } from "../../../shared/claudePluginUi";
 import { APPLE_AGENT_ACTIONS, APPLE_USER_ONLY_ACTIONS } from "../../../shared/types/iosSimulator";
-import { ANDROID_AGENT_ACTIONS, ANDROID_USER_ONLY_ACTIONS } from "../../../shared/types/androidEmulator";
+import { ANDROID_AGENT_ACTIONS, ANDROID_PERSON_ONLY_ACTIONS, ANDROID_USER_ONLY_ACTIONS } from "../../../shared/types/androidEmulator";
 import type { AdeActionDomain } from "./domains";
 
 /* ──────────────────────────────────────────────────────────────────────────
@@ -354,6 +354,9 @@ const ROLE_ORDER: Record<AdeActionRole, number> = {
  */
 export const ADE_ACTION_USER_ONLY: Partial<Record<AdeActionDomain, readonly string[]>> = {
   ios_simulator: APPLE_USER_ONLY_ACTIONS,
+  // The SDK install and folder (Google's licences), deleting an AVD, and the
+  // render a window drew: the same rule as the Apple device.
+  android_emulator: ANDROID_PERSON_ONLY_ACTIONS,
   // Another machine's chat owns each copy; only a person deletes one for it.
   remote_work: ["list", "delete"],
   // ADE never deletes from the archive on its own, and no agent or automation

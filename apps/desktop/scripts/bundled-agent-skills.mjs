@@ -24,6 +24,7 @@
 // missing capability.
 export const BUNDLED_AGENT_SKILLS = Object.freeze([
   "ade-agent37",
+  "ade-android",
   "ade-app-control",
   "ade-apple",
   "ade-browser",

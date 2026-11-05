@@ -135,6 +135,41 @@ export function formatAppleInstall(value: unknown): string {
   return lines.join("\n");
 }
 
+/*
+ * The lease sentences `ade apple lease` and `ade android lease` share. Each
+ * caller passes its device's name (`deviceName` in a sentence, `DeviceName`
+ * at its start) and, for a grant, its own renew and release commands.
+ */
+
+/** `lease release`: which device was let go, or why nothing was. */
+export function leaseReleasedLine(result: Record<string, unknown>, deviceName: string): string {
+  return result.released === true
+    ? `Released the lease on ${deviceName}. The next agent in line, if any, has it now.`
+    : asString(result.reason) ?? "Nothing was released: this token holds no lease (released already, lapsed, or not this lane's).";
+}
+
+/** `lease status`: who has the device, never their token. */
+export function leaseHeldLine(result: Record<string, unknown>, DeviceName: string): string {
+  const current = isRecord(result.current) ? result.current : {};
+  return result.held === true
+    ? `${DeviceName} is leased to ${asString(current.holder) ?? "another holder"} until ${asString(current.expiresAt) ?? "?"}; ${String(result.queued ?? 0)} waiting.`
+    : `${DeviceName} is free: nobody holds its lease.`;
+}
+
+/** A granted lease: until when, the token, and the commands that renew and release it. */
+export function leaseAcquiredLines(
+  result: Record<string, unknown>,
+  deviceName: string,
+  commands: { renew: string; release: string },
+): string[] {
+  const token = asString(result.token) ?? "<token>";
+  return [
+    `${result.renewed === true ? "Renewed" : "Got"} the lease on ${deviceName} until ${asString(result.expiresAt) ?? "?"}.`,
+    `token: ${token}`,
+    `Keep the token. Renew: ${commands.renew} --token ${token}. Release: ${commands.release} --token ${token}.`,
+  ];
+}
+
 /**
  * `apple lease`: the token to keep (it alone renews and releases), or who has
  * the device. "Held under your own name" is another agent of this chat, or a
@@ -153,19 +188,12 @@ export function formatAppleLease(value: unknown): string {
       ["holder", result.holder ?? (isRecord(result.current) ? result.current.holder : null)],
     ])].join("\n");
   }
-  if (typeof result.released === "boolean") {
-    // `lease release`: which device was let go, or why nothing was.
-    return result.released
-      ? `Released the lease on ${deviceName}. The next agent in line, if any, has it now.`
-      : asString(result.reason) ?? "Nothing was released: this token holds no lease (released already, lapsed, or not this lane's).";
-  }
+  if (typeof result.released === "boolean") return leaseReleasedLine(result, deviceName);
   if (typeof result.held === "boolean") {
     // `lease status`: who has it, never their token.
     const current = isRecord(result.current) ? result.current : {};
     return [
-      result.held
-        ? `${DeviceName} is leased to ${asString(current.holder) ?? "another holder"} until ${asString(current.expiresAt) ?? "?"}; ${String(result.queued ?? 0)} waiting.`
-        : `${DeviceName} is free: nobody holds its lease.`,
+      leaseHeldLine(result, DeviceName),
       "",
       renderKeyValues("ADE Apple device lease", [
         ["held", result.held ? "yes" : "no"],
@@ -184,9 +212,7 @@ export function formatAppleLease(value: unknown): string {
   if (result.acquired === true) {
     const token = asString(result.token) ?? "<token>";
     return [
-      `${result.renewed === true ? "Renewed" : "Got"} the lease on ${deviceName} until ${asString(result.expiresAt) ?? "?"}.`,
-      `token: ${token}`,
-      `Keep the token. Renew: ade apple lease${deviceFlag} --token ${token}. Release: ade apple lease release${deviceFlag} --token ${token}.`,
+      ...leaseAcquiredLines(result, deviceName, { renew: `ade apple lease${deviceFlag}`, release: `ade apple lease release${deviceFlag}` }),
       "",
       renderKeyValues("ADE Apple device lease", [
         ["acquired", "yes"],

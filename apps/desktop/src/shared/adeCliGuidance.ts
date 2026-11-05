@@ -18,6 +18,7 @@ export const adeBundledAgentSkills = [
   "ade-cli-control-plane",
   "ade-computer-use",
   "ade-apple",
+  "ade-android",
   "ade-harnesses",
   "ade-ios-simulator",
   "ade-app-control",
@@ -302,7 +303,7 @@ export function buildAdeBootstrapGuidance(
   return [
     "## ADE",
     "ADE is a local-first dev environment for lanes, chats, terminals, PRs, proof, apps, iOS, and browsers. Its `ade` CLI controls ADE state.",
-    `Skills: for ADE tasks read the matching \`ade-*\` skill first: ${adeBundledAgentSkills.filter((name) => !adeDeprecatedAgentSkillAliases.has(name)).map((name) => `\`${name}\``).join(", ")}.`,
+    `Skills: read the matching \`ade-*\` skill first: ${adeBundledAgentSkills.filter((name) => !adeDeprecatedAgentSkillAliases.has(name)).map((name) => `\`${name}\``).join(", ")}.`,
     formatAdeAgentSkillRootsForPrompt(skillRoots),
     "No native skills? `ade skill list --text`, then `ade skill show <name> --text`.",
     // The one scene line every agent sees. Without it the skill was opened only

@@ -8,7 +8,24 @@
  */
 
 import type { OpenProjectBinding } from "./core";
+import type { AndroidCapabilities, AndroidEmulatorAgentServiceApi, AndroidRecording } from "./androidEmulatorAgent";
+import type { AndroidEmulatorToolsPreloadApi } from "./androidEmulatorDrawer";
+import type { AndroidEmulatorLookPreloadApi, AndroidEmulatorLookServiceApi, AndroidRenderRequestEvent } from "./androidEmulatorLook";
+import type { AndroidEmulatorSetupPreloadApi, AndroidEmulatorSetupServiceApi, AndroidSdkInstallState } from "./androidEmulatorSetup";
 import type { RuntimeDisposeReason } from "./runtimeLifecycle";
+
+/**
+ * The Android panel's product facts (`ade_feature_used`, `action: "android_device"`):
+ * whether the guided SDK install, app installs, renders and agent leases are used at all.
+ * Closed: a spelling not listed here is dropped by the analytics policy, not widened.
+ */
+export const ANDROID_DEVICE_ANALYTICS_OUTCOMES = [
+  "sdk_installed",
+  "app_installed",
+  "device_rendered",
+  "device_leased",
+] as const;
+export type AndroidDeviceAnalyticsOutcome = (typeof ANDROID_DEVICE_ANALYTICS_OUTCOMES)[number];
 
 /** Where an SDK path came from, in the order the brain tries them. */
 export type AndroidSdkSource = "ANDROID_HOME" | "ANDROID_SDK_ROOT" | "default" | "setting";
@@ -95,6 +112,10 @@ export type AndroidAvd = {
   sizeBytes: number | null;
   /** ADE created this AVD (it carries ADE's marker in `config.ini`). */
   adeCreated: boolean;
+  /** P1 look: the brand catalog entry it was made from (`ade.catalogId`), if any. */
+  catalogId?: string | null;
+  /** P1 look: the body colour picked for it (`ade.color`), if any. */
+  colorId?: string | null;
   /** Set while an emulator runs this AVD. */
   running: AndroidRunningEmulator | null;
 };
@@ -204,6 +225,17 @@ export const ANDROID_EMULATOR_ERROR_CODES = [
   "ANDROID_NOT_RUNNING",
   /** A screenshot `outPath` that resolves outside the lane's worktree. */
   "ANDROID_PATH_OUTSIDE_LANE",
+  // P1 setup (coordinator): the guided SDK install.
+  /** A licence the install needs was not accepted in this request. */
+  "ANDROID_SDK_LICENSE_NOT_ACCEPTED",
+  /** The install folder's disk has too little free space. */
+  "ANDROID_SDK_NO_SPACE",
+  /** Another install runs on this machine (this process or another one). */
+  "ANDROID_SDK_INSTALL_BUSY",
+  /** A download, a checksum or an unzip failed. */
+  "ANDROID_SDK_INSTALL_FAILED",
+  /** "Use mine…" named a folder that is not an Android SDK, or the install folder is not usable. */
+  "ANDROID_SDK_PATH_INVALID",
 ] as const;
 export type AndroidEmulatorErrorCode = (typeof ANDROID_EMULATOR_ERROR_CODES)[number];
 
@@ -239,6 +271,8 @@ export type AndroidEmulatorStatus = {
   sdk: AndroidSdkStatus;
   /** The lane's device, when the call named a lane. */
   lane: AndroidLaneDeviceStatus | null;
+  /** P1 agent suite: what this machine can do now. Absent from an older brain. */
+  capabilities?: AndroidCapabilities | null;
 };
 
 export type AndroidAvdListing = AndroidAvd & {
@@ -260,6 +294,9 @@ export type AndroidDeviceInventory = {
 
 export type AndroidLaneArgs = { laneId: string };
 
+/** `listDevices`. `measureSizes` (P1 look, Storage) walks each AVD folder for `sizeBytes`. */
+export type AndroidListDevicesArgs = { laneId?: string | null; measureSizes?: boolean };
+
 export type AndroidCreateDeviceArgs = AndroidLaneArgs & {
   profileId: string;
   /** A system image package id; omitted = the newest installed image for the host ABI. */
@@ -267,6 +304,14 @@ export type AndroidCreateDeviceArgs = AndroidLaneArgs & {
   displayName?: string | null;
   /** Boot it right after create (the panel's one-click create). Default true. */
   start?: boolean;
+  /**
+   * P1 look: a brand catalog entry (`shared/androidDeviceCatalog.ts`). With
+   * it, `profileId` may be empty: the brain resolves the entry's profile
+   * (and writes an `ade_*` one when the entry needs it).
+   */
+  catalogId?: string | null;
+  /** P1 look: the catalog entry's colour id, recorded on the AVD. */
+  colorId?: string | null;
 };
 
 export type AndroidAttachDeviceArgs = AndroidLaneArgs & {
@@ -309,6 +354,12 @@ export type AndroidTextArgs = AndroidLaneArgs & { text: string };
 export type AndroidScreenshotArgs = AndroidLaneArgs & {
   /** Absolute path to write the PNG to; omitted = a file under the ADE data folder. */
   outPath?: string | null;
+  /** P1 agent suite: the calling chat, set by the runtime for an agent. The proof is filed to it. */
+  chatSessionId?: string | null;
+  /** P1 agent suite: false = write the PNG but file no proof (a `--machine` caller files it itself). */
+  proof?: boolean;
+  /** P1 agent suite: the proof's title. */
+  caption?: string | null;
 };
 
 export type AndroidScreenshot = {
@@ -317,6 +368,8 @@ export type AndroidScreenshot = {
   height: number;
   bytes: number;
   capturedAt: string;
+  /** P1 agent suite: the proof drawer row it was filed as; null when not filed. */
+  proofArtifactId?: string | null;
 };
 
 /** Pushed to every viewer; the renderer re-reads status on these. */
@@ -324,11 +377,15 @@ export type AndroidEmulatorEvent =
   | { type: "android.device.state"; laneId: string; state: AndroidLaneDeviceStatus["state"] }
   | { type: "android.stream.state"; laneId: string; running: boolean }
   | { type: "android.inventory.changed" }
-  | { type: "android.sdk.changed" };
+  | { type: "android.sdk.changed" }
+  | { type: "android.sdk.install"; install: AndroidSdkInstallState }
+  /** A recording started or ended; `recording.active` says which. */
+  | { type: "android.recording.state"; laneId: string; recording: AndroidRecording }
+  | AndroidRenderRequestEvent;
 
 export type AndroidEmulatorServiceApi = {
   getStatus(args?: { laneId?: string | null }): Promise<AndroidEmulatorStatus>;
-  listDevices(args?: { laneId?: string | null }): Promise<AndroidDeviceInventory>;
+  listDevices(args?: AndroidListDevicesArgs): Promise<AndroidDeviceInventory>;
   /** Make a new AVD for the lane from a profile and hold it. */
   createDevice(args: AndroidCreateDeviceArgs): Promise<AndroidLaneDeviceStatus>;
   /** Hold an existing (user or free ADE) AVD for the lane. */
@@ -363,7 +420,45 @@ export type AndroidEmulatorServiceApi = {
    */
   dispose(options?: { reason?: RuntimeDisposeReason }): Promise<void>;
   onEvent(listener: (event: AndroidEmulatorEvent) => void): () => void;
-};
+} & AndroidEmulatorLookServiceApi & AndroidEmulatorAgentServiceApi & AndroidEmulatorSetupServiceApi;
+
+/**
+ * P1 agent suite (android-agent): the actions `ade android` adds for agents.
+ * Declared before `ANDROID_AGENT_ACTIONS`, which spreads it. Every one acts on
+ * the lane's own emulator; the types are in the "P1 AGENT SUITE" block below.
+ */
+export const ANDROID_AGENT_SUITE_ACTIONS = [
+  "listApps",
+  "installApp",
+  "launchApp",
+  "terminateApp",
+  "uninstallApp",
+  "openUrl",
+  "longPress",
+  "drag",
+  "scroll",
+  "getScreenSnapshot",
+  "findElement",
+  "tapElement",
+  "fillElement",
+  "waitForElement",
+  "assertVisible",
+  "readLog",
+  "recordStart",
+  "recordStop",
+  "recordList",
+  "recordDelete",
+  "deviceLease",
+  "deviceLeaseRelease",
+  "deviceLeaseStatus",
+  "setLocation",
+  "setAppearance",
+  "setPermission",
+  "captureProofBundle",
+  "getDeviceSettings",
+  "setDeviceSetting",
+] as const;
+export type AndroidAgentSuiteAction = (typeof ANDROID_AGENT_SUITE_ACTIONS)[number];
 
 /** Actions an agent may call (a session-bound agent, through the action bus and `ade android`). */
 export const ANDROID_AGENT_ACTIONS = [
@@ -381,19 +476,79 @@ export const ANDROID_AGENT_ACTIONS = [
   "sendText",
   "rotate",
   "screenshot",
+  // P1 look: `ade android render` (a desktop window draws it).
+  "requestRender",
+  // P1 setup: an agent may read what is missing, never install.
+  "getSdkSetupPlan",
+  "getSdkInstallState",
+  // P1 agent suite (android-agent): apps, input, UI tree, logs, record, lease, emulator controls.
+  ...ANDROID_AGENT_SUITE_ACTIONS,
 ] as const;
 export type AndroidAgentAction = (typeof ANDROID_AGENT_ACTIONS)[number];
 
+/**
+ * The SDK setup writes only a person may make: accepting Google's licences,
+ * writing gigabytes to disk, and the machine's SDK choice. The person makes
+ * them in the desktop app (the setup card, or Settings > Android devices);
+ * the RPC server, the action policy (`ADE_ACTION_USER_ONLY`), `android.invoke`
+ * and ADE MCP all refuse them to anyone else.
+ */
+export const ANDROID_SDK_PERSON_ONLY_ACTIONS = ["installSdk", "cancelSdkInstall", "setSdkPath"] as const;
+export type AndroidSdkPersonOnlyAction = (typeof ANDROID_SDK_PERSON_ONLY_ACTIONS)[number];
+
 /** Actions only a viewing client (desktop, web, phone at cto role) may call. */
-export const ANDROID_USER_ONLY_ACTIONS = ["startStream", "stopStream", "sendTouch", "deleteDevice"] as const;
+export const ANDROID_USER_ONLY_ACTIONS = [
+  "startStream",
+  "stopStream",
+  "sendTouch",
+  "deleteDevice",
+  // P1 look: the body colour, and the window side of a render.
+  "setDeviceColor",
+  "renderAck",
+  "renderComplete",
+  "attachRenderProof",
+  // P1 setup.
+  ...ANDROID_SDK_PERSON_ONLY_ACTIONS,
+] as const;
 export type AndroidUserOnlyAction = (typeof ANDROID_USER_ONLY_ACTIONS)[number];
+
+/**
+ * Actions only the person may take, from the desktop app (`ADE_ACTION_USER_ONLY`),
+ * as Apple's `APPLE_USER_ONLY_ACTIONS`: the SDK install and the SDK folder
+ * (Google's licences are theirs to accept), deleting an AVD, and filing the
+ * render a window drew. An agent and a terminal with no desktop are refused.
+ */
+export const ANDROID_PERSON_ONLY_ACTIONS = [
+  ...ANDROID_SDK_PERSON_ONLY_ACTIONS,
+  "deleteDevice",
+  "attachRenderProof",
+] as const;
+
+/**
+ * Actions about the machine, not a lane: status, the AVD list and the SDK
+ * setup. They need no lane, and with `--machine` they never make a work copy.
+ */
+export const ANDROID_LANE_FREE_ACTIONS = [
+  "getStatus",
+  "listDevices",
+  "getSdkSetupPlan",
+  "getSdkInstallState",
+  ...ANDROID_SDK_PERSON_ONLY_ACTIONS,
+] as const;
+
+/**
+ * Actions that build or install from the lane's folder (an APK path, the
+ * Gradle wrapper): with `--machine` the work copy there gets the caller's
+ * code first. Every other action uses the copy as it is.
+ */
+export const ANDROID_CODE_SYNC_ACTIONS = ["installApp", "launchApp"] as const;
 
 type Pin = OpenProjectBinding | null | undefined;
 
 /** `window.ade.androidEmulator`. Every call takes the optional machine pin last. */
 export type AndroidEmulatorPreloadApi = {
   getStatus(args?: { laneId?: string | null }, pin?: Pin): Promise<AndroidEmulatorStatus>;
-  listDevices(args?: { laneId?: string | null }, pin?: Pin): Promise<AndroidDeviceInventory>;
+  listDevices(args?: AndroidListDevicesArgs, pin?: Pin): Promise<AndroidDeviceInventory>;
   createDevice(args: AndroidCreateDeviceArgs, pin?: Pin): Promise<AndroidLaneDeviceStatus>;
   attachDevice(args: AndroidAttachDeviceArgs, pin?: Pin): Promise<AndroidLaneDeviceStatus>;
   start(args: AndroidLaneArgs, pin?: Pin): Promise<AndroidLaneDeviceStatus>;
@@ -417,4 +572,20 @@ export type AndroidEmulatorPreloadApi = {
     pin?: Pin,
   ): Promise<{ url: string | null; forwarded: boolean; error: string | null }>;
   onEvent(listener: (event: AndroidEmulatorEvent) => void, pin?: Pin): () => void;
-};
+} & AndroidEmulatorLookPreloadApi & AndroidEmulatorSetupPreloadApi & AndroidEmulatorToolsPreloadApi;
+
+export function isAndroidEmulatorErrorCode(value: unknown): value is AndroidEmulatorErrorCode {
+  return typeof value === "string" && (ANDROID_EMULATOR_ERROR_CODES as readonly string[]).includes(value);
+}
+
+/*
+ * The P1 sections live in sibling files, re-exported here so every importer
+ * keeps one path: look (`androidEmulatorLook.ts`), setup
+ * (`androidEmulatorSetup.ts`), the agent suite (`androidEmulatorAgent.ts`)
+ * and the Tools drawer (`androidEmulatorDrawer.ts`).
+ */
+export * from "./androidEmulatorLook";
+export * from "./androidEmulatorSetup";
+export * from "./androidEmulatorAgent";
+export * from "./androidEmulatorDrawer";
+

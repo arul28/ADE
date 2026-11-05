@@ -151,6 +151,7 @@ enum WorkSettingsCatalog {
     "apple.auto-record": Setting(path: "App › Apple devices › Record agent input", locked: false),
     "appearance.apple-remote-bitrate": Setting(path: "App › Apple devices › Remote viewer bitrate cap", locked: false),
     "appearance.apple-recordings-warn": Setting(path: "App › Apple devices › Recordings storage warning", locked: false),
+    "android.sdk": Setting(path: "App › Android devices › Android SDK", locked: false),
     "agents.providers": Setting(path: "App › Providers › AI connections", locked: true),
     "agents.accounts": Setting(path: "App › Providers › AI accounts", locked: true),
     "agents.provider.claude": Setting(path: "App › Providers › Claude Code", locked: true),

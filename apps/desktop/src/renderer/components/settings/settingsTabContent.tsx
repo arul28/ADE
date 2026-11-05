@@ -14,6 +14,7 @@ import {
 import { AccountPage } from "../account/AccountPage";
 import { AppearanceSection } from "./AppearanceSection";
 import { AppleDevicesSection } from "./AppleDevicesSection";
+import { AndroidDevicesSection } from "./AndroidDevicesSection";
 import { ModernPage, SettingsColumn, SettingsSectionRail, type SettingsTone } from "./primitives";
 import { ChatSection } from "./ChatSection";
 import { KeyboardPage } from "./keyboard/KeyboardPage";
@@ -491,6 +492,7 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
   ],
   appearance: [{ entryIds: "tab", render: () => <AppearanceSection /> }],
   apple: [{ entryIds: "tab", render: () => <SettingsColumn wide><AppleDevicesSection /></SettingsColumn> }],
+  android: [{ entryIds: "tab", render: () => <SettingsColumn wide><AndroidDevicesSection /></SettingsColumn>, machine: "routed", title: "Android devices" }],
   chat: [
     {
       entryIds: "tab",

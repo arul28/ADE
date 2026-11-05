@@ -40,12 +40,12 @@ function cleanDeviceField(value: string, max: number): string {
   return value.replace(/[<>`"\r\n\t]+/g, " ").replace(/\s+/g, " ").trim().slice(0, max);
 }
 
-export function buildLaneAppleDeviceDirective(device: LaneAppleDeviceRef): string | null {
+/** The hint's lines, without the `<ade-lane-tools>` tags. Null without a udid. */
+export function buildLaneAppleDeviceLines(device: LaneAppleDeviceRef): string[] | null {
   const udid = cleanDeviceField(device.udid, 64);
   if (!udid) return null;
   const name = cleanDeviceField(device.name, 80) || "Apple simulator";
   return [
-    "<ade-lane-tools>",
     `This lane's Apple device is ${name} (${udid}), shown live in the ADE tools pane. Drive it with \`"$ADE_CLI_PATH" apple <command>\` (skill \`ade-apple\`; \`"$ADE_CLI_PATH" apple --help\`); \`$ADE_CLI_PATH\` is the ADE that launched you.`,
     "Video proof: `\"$ADE_CLI_PATH\" apple record-start --text`, then `\"$ADE_CLI_PATH\" apple record-stop --text` (files to this chat's proof drawer automatically). Screenshot: `\"$ADE_CLI_PATH\" apple screenshot --out shot.png --text`.",
     "Never run `open -a Simulator`, AppleScript/System Events, or `xcrun simctl io … recordVideo`/`screenshot` for this device.",
@@ -54,8 +54,12 @@ export function buildLaneAppleDeviceDirective(device: LaneAppleDeviceRef): strin
     "Check each step before you report it: an ok result only means the input was sent. Confirm with `\"$ADE_CLI_PATH\" apple foreground`, `snapshot` or `assert-visible`, and report only what you saw. If a step did not work, say which one.",
     "Sharing this device with other agents (a coordinator and its subagents)? Take turns: `\"$ADE_CLI_PATH\" apple lease --wait 300 --holder <your name> --text` before a run of builds, folds and shots, then `\"$ADE_CLI_PATH\" apple lease release --token <t> --text`. The token is your turn: only it renews (`lease --token <t>`) or releases it.",
     "To show the device to the user, run `\"$ADE_CLI_PATH\" apple show`.",
-    "</ade-lane-tools>",
-  ].join("\n");
+  ];
+}
+
+export function buildLaneAppleDeviceDirective(device: LaneAppleDeviceRef): string | null {
+  const lines = buildLaneAppleDeviceLines(device);
+  return lines ? ["<ade-lane-tools>", ...lines, "</ade-lane-tools>"].join("\n") : null;
 }
 
 /**
@@ -68,7 +72,7 @@ export function resolveLaneAppleDeviceDirective(args: {
   laneId: string | null | undefined;
   lookup: LaneAppleDeviceLookup | null | undefined;
   onLookupError?: (error: unknown) => void;
-}): { directive: string; key: string } | null {
+}): { directive: string; key: string; lines: string[] } | null {
   const laneId = args.laneId?.trim();
   if (!laneId || !args.lookup) return null;
   let device: LaneAppleDeviceRef | null;
@@ -83,7 +87,7 @@ export function resolveLaneAppleDeviceDirective(args: {
     return null;
   }
   if (!device) return null;
-  const directive = buildLaneAppleDeviceDirective(device);
-  if (!directive) return null;
-  return { directive, key: device.udid.trim() };
+  const lines = buildLaneAppleDeviceLines(device);
+  if (!lines) return null;
+  return { directive: ["<ade-lane-tools>", ...lines, "</ade-lane-tools>"].join("\n"), key: device.udid.trim(), lines };
 }

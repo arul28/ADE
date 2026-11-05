@@ -12,11 +12,10 @@ import type {
   Texture,
   Vector3,
 } from "three";
-import type { AppleDeviceOrientation } from "../../../shared/types";
-import type { AppleDeviceModelId, AppleDeviceModelSource } from "./appleDeviceModels";
+import type { DeviceOrientation } from "../../../shared/types/deviceOrientation";
 
-/** A body that is not a bundled GLB — today only the procedural Duo. */
-export type AppleDeviceBodyModelId = AppleDeviceModelId | "duo-procedural" | "duo-v68";
+/** What `createImportedBody` needs of a model: its id and its screen mesh's names. */
+export type DeviceScreenModelSource = { id: string; screenNodeNames: readonly string[] };
 
 /**
  * The 3D device's body and screen: the three.js runtime, the imported body
@@ -75,7 +74,8 @@ export type DuoBodyControls = {
 };
 
 export type DeviceBody = {
-  modelId: AppleDeviceBodyModelId;
+  /** The model the body is (a GLB id, or a procedural body's own key). */
+  modelId: string;
   root: Group;
   orientation: Group;
   /** The primary display mesh — always `panels[0]`. */
@@ -118,7 +118,7 @@ export type DeviceBody = {
  */
 const SCREEN_LIFT = 0.002;
 
-function orientationZ(orientation: AppleDeviceOrientation): number {
+function orientationZ(orientation: DeviceOrientation): number {
   switch (orientation) {
     case "portrait":
       return 0;
@@ -135,7 +135,7 @@ function orientationZ(orientation: AppleDeviceOrientation): number {
   }
 }
 
-function isLandscape(orientation: AppleDeviceOrientation): boolean {
+function isLandscape(orientation: DeviceOrientation): boolean {
   return orientation === "landscape-left" || orientation === "landscape-right";
 }
 
@@ -149,18 +149,18 @@ function isLandscape(orientation: AppleDeviceOrientation): boolean {
  * then keeps a sideways screen with no frame coming to correct it. No Apple
  * device decodes at 300×150, which makes the default unambiguous.
  */
-export function appleCanvasHasDecoded(canvas: HTMLCanvasElement | null): boolean {
+export function canvasHasDecoded(canvas: HTMLCanvasElement | null): boolean {
   if (!canvas) return false;
   if (canvas.width <= 0 || canvas.height <= 0) return false;
   return !(canvas.width === 300 && canvas.height === 150);
 }
 
 export function displayLayout(
-  orientation: AppleDeviceOrientation,
+  orientation: DeviceOrientation,
   pixelSize: { width: number; height: number },
   canvas: HTMLCanvasElement | null,
 ): DisplayLayout {
-  const decoded = appleCanvasHasDecoded(canvas) ? canvas : null;
+  const decoded = canvasHasDecoded(canvas) ? canvas : null;
   const width = decoded?.width || pixelSize.width || 390;
   const height = decoded?.height || pixelSize.height || 844;
   const long = Math.max(width, height);
@@ -181,7 +181,7 @@ export function displayLayout(
  * down and to the right (clamped to the edge in practice), and the inspect
  * frames it projected collapsed into the top-left third of the screen.
  */
-export function appleDeviceInputSize(
+export function deviceInputSize(
   pointSize: { width: number; height: number } | null | undefined,
   pixelSize: { width: number; height: number },
 ): { width: number; height: number } {
@@ -190,7 +190,7 @@ export function appleDeviceInputSize(
 }
 
 export function orientedPointSize(
-  orientation: AppleDeviceOrientation,
+  orientation: DeviceOrientation,
   size: { width: number; height: number },
 ): { width: number; height: number } {
   const short = Math.min(size.width, size.height);
@@ -202,7 +202,7 @@ export function orientedPointSize(
 export function portraitToOriented(
   u: number,
   vFromBottom: number,
-  orientation: AppleDeviceOrientation,
+  orientation: DeviceOrientation,
 ): { x: number; y: number } {
   switch (orientation) {
     case "portrait":
@@ -224,7 +224,7 @@ export function portraitToOriented(
 export function orientedToPortrait(
   x: number,
   y: number,
-  orientation: AppleDeviceOrientation,
+  orientation: DeviceOrientation,
 ): { u: number; vFromBottom: number } {
   switch (orientation) {
     case "portrait":
@@ -327,7 +327,7 @@ function findScreenMesh(root: Object3D, names: readonly string[]): Mesh | null {
 export function createImportedBody(
   THREE: ThreeNS,
   asset: Group,
-  source: AppleDeviceModelSource,
+  source: DeviceScreenModelSource,
   texture: Texture | null,
   layout: DisplayLayout,
 ): DeviceBody | null {

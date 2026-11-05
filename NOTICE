@@ -233,10 +233,10 @@ Copyright:  Copyright (c) 2026 T3 Tools Inc.
 License:    MIT
 Ported as:  parts of the iOS device viewer in
             apps/desktop/src/renderer/components/apple/:
-            AppleDevice3DView.tsx, appleDeviceScene.ts and
-            useAppleDeviceInput.ts; the shared device flat view in
-            apps/desktop/src/renderer/components/device/DeviceFlatView.tsx;
-            and
+            AppleDevice3DView.tsx and useAppleDeviceInput.ts; the shared
+            device scene and flat view in
+            apps/desktop/src/renderer/components/device/: deviceScene.ts
+            and DeviceFlatView.tsx; and
             apps/desktop/src/renderer/components/shared/floatingPlayerLayout.ts
 
 MIT License

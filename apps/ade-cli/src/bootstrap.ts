@@ -191,6 +191,7 @@ import {
   captureAppControlAnalytics,
   captureMacDesktopAnalytics,
   captureAppleDeviceAnalytics,
+  captureAndroidDeviceAnalytics,
   captureUserBrowserAnalytics,
   captureChatMentionsExpandedAnalytics,
   captureClaudeHooksIgnoredAnalytics,
@@ -2306,6 +2307,12 @@ export async function createAdeRuntime(args: {
         // project repair): the lanes' emulators keep running and the next
         // brain re-adopts them, as Mac Desktop hands its apps off.
         handOffOnDispose: true,
+        // The machine's SDK choice ("Use mine…", a chosen install folder), shared by every project.
+        sdkSettingsFile: path.join(resolveMachineAdeLayout().adeDir, "android", "settings.json"),
+        // P1: screenshots, recordings, proof bundles and renders file
+        // themselves into the calling chat's proof drawer.
+        artifactFiler: computerUseArtifactBrokerService,
+        captureAnalytics: (outcome) => captureAndroidDeviceAnalytics({ analytics: productAnalyticsService, outcome }),
         logger,
         onEvent: (event) => pushEvent("runtime", { type: "android_emulator_event", event }),
       });
@@ -2945,6 +2952,14 @@ export async function createAdeRuntime(args: {
         ? { releaseIfOwnedBy: (sessionId: string) => appControlService.stopForChat(sessionId) }
         : null,
       logEvent: "app_control.release_on_chat_end_failed",
+      logger,
+    });
+    // A chat that ends stops the Android recordings it started (filed as
+    // proof) and passes its emulator leases to the next in line.
+    bindDeviceReleaseOnChatEnd({
+      agentChatService,
+      device: androidEmulatorService,
+      logEvent: "android_emulator.release_on_chat_end_failed",
       logger,
     });
     // An archived or deleted chat takes its temporary secret files with it.
@@ -3850,6 +3865,7 @@ export async function createAdeRuntime(args: {
             }
           : null,
         appleDeviceService: iosSimulatorService,
+        androidDeviceService: androidEmulatorService,
         getWebhookAutomations: () => createWebhookRemoteSource({
           automationService,
           webhooks: automationIngressService?.webhooks,

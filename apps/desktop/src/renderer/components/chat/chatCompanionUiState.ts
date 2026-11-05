@@ -38,6 +38,8 @@ export type ChatCompanionUiState = {
    * value it only ever round-trips. The drawer validates what it reads.
    */
   appleToolsGroup: string | null;
+  /** The same for the Android Development tools drawer. */
+  androidToolsGroup: string | null;
   /**
    * The Work corner card's "off" markers for this chat, keyed by tool id.
    *
@@ -69,6 +71,7 @@ export const DEFAULT_CHAT_COMPANION_UI_STATE: ChatCompanionUiState = {
   appControlOpen: false,
   terminalDrawerOpen: false,
   appleToolsGroup: "device",
+  androidToolsGroup: "device",
   workLiveCardClosedByTool: {},
   workLiveCardFloating: [],
   workLiveCardSeenByTool: {},
@@ -321,6 +324,9 @@ export function readChatCompanionUiState(key: string): ChatCompanionUiState {
         appleToolsGroup: parsed.appleToolsGroup === undefined
           ? DEFAULT_CHAT_COMPANION_UI_STATE.appleToolsGroup
           : (typeof parsed.appleToolsGroup === "string" ? parsed.appleToolsGroup : null),
+        androidToolsGroup: parsed.androidToolsGroup === undefined
+          ? DEFAULT_CHAT_COMPANION_UI_STATE.androidToolsGroup
+          : (typeof parsed.androidToolsGroup === "string" ? parsed.androidToolsGroup : null),
         workLiveCardClosedByTool: normalizeWorkLiveCardClosedByTool(parsed.workLiveCardClosedByTool),
         workLiveCardFloating: normalizeWorkLiveCardFloatingTools(parsed.workLiveCardFloating),
         workLiveCardSeenByTool: normalizeWorkLiveCardClosedByTool(parsed.workLiveCardSeenByTool),

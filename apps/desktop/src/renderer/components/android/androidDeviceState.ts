@@ -1,3 +1,5 @@
+import { createDeviceViewModeStore, type DeviceViewMode } from "../device/deviceViewMode";
+import { androidCatalogColor, androidCatalogEntry } from "../../../shared/androidDeviceCatalog";
 import {
   ANDROID_EMULATOR_ERROR_CODES,
   type AndroidEmulatorErrorCode,
@@ -132,9 +134,16 @@ export function androidAvdLabel(avd: Pick<AndroidAvd, "name" | "displayName"> | 
 
 /** `Medium Phone · API 36`: the profile and the Android version, with the parts that exist. */
 export function androidAvdSpecLine(
-  avd: Pick<AndroidAvd, "profileId" | "apiLevel">,
+  avd: Pick<AndroidAvd, "profileId" | "apiLevel"> & Partial<Pick<AndroidAvd, "catalogId" | "colorId">>,
   profiles: readonly AndroidHardwareProfile[],
 ): string {
+  // A brand-grid device: its colour and screen ("Navy · 6.2″ · API 36"). The
+  // device's name is already the card's title.
+  const entry = androidCatalogEntry(avd.catalogId ?? null);
+  if (entry) {
+    const color = androidCatalogColor(entry, avd.colorId ?? null);
+    return [color.name, `${entry.screen.inches}″`, avd.apiLevel ? `API ${avd.apiLevel}` : null].filter(Boolean).join(" · ");
+  }
   const profile = avd.profileId ? profiles.find((entry) => entry.id === avd.profileId) ?? null : null;
   // Before the inventory is read (it is read only for the picker), the id reads
   // as words: `medium_phone` becomes "Medium phone".
@@ -260,6 +269,11 @@ const ANDROID_ERROR_SENTENCE: Record<AndroidEmulatorErrorCode, string> = {
   ANDROID_STREAM_FAILED: "The live view could not start.",
   ANDROID_NOT_RUNNING: "The device is not running.",
   ANDROID_PATH_OUTSIDE_LANE: "That file path is outside this lane's folder.",
+  ANDROID_SDK_LICENSE_NOT_ACCEPTED: "Accept the licences before the install.",
+  ANDROID_SDK_NO_SPACE: "That drive does not have enough free space.",
+  ANDROID_SDK_INSTALL_BUSY: "An Android SDK install already runs on this machine.",
+  ANDROID_SDK_INSTALL_FAILED: "The Android SDK install failed.",
+  ANDROID_SDK_PATH_INVALID: "That folder cannot be used for the Android SDK.",
 };
 
 const IPC_PREFIX = /^Error invoking remote method '[^']*':\s*(?:[A-Za-z]*Error:\s*)?/;
@@ -306,4 +320,22 @@ export function describeAndroidError(error: unknown): AndroidErrorDescription {
       : "Something went wrong with the Android emulator.";
   const detail = raw && raw !== sentence ? raw : null;
   return { sentence, detail, code };
+}
+
+/* ── P1 look: the view mode ─────────────────────────────────────────────── */
+
+export type AndroidViewMode = DeviceViewMode;
+
+const ANDROID_VIEW_MODE_STORAGE_KEY = "ade.android.viewMode.v1";
+
+const androidViewModeStore = createDeviceViewModeStore(ANDROID_VIEW_MODE_STORAGE_KEY);
+export const readAndroidViewMode = androidViewModeStore.read;
+export const writeAndroidViewMode = androidViewModeStore.write;
+
+/** The screen's short side over its long side, from the AVD's LCD; 0 when it does not say. */
+export function androidScreenAspect(avd: Pick<AndroidAvd, "lcdWidth" | "lcdHeight"> | null | undefined): number {
+  const width = avd?.lcdWidth ?? 0;
+  const height = avd?.lcdHeight ?? 0;
+  if (width <= 0 || height <= 0) return 0;
+  return Math.min(width, height) / Math.max(width, height);
 }

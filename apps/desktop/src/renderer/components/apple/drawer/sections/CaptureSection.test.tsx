@@ -2,7 +2,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { SimRecording } from "../../../../../main/services/ios/recording/simRecordingService";
-import { CAPTURE_POLL_MS, CaptureSection, recordingName } from "./CaptureSection";
+import { CAPTURE_POLL_MS, CaptureSection } from "./CaptureSection";
+import { recordingDisplayName } from "../../../shared/RecordingRow";
+import { revealLabel } from "../../../../lib/platform";
 import { installAdeMock, makeCtx } from "../drawerTestHarness";
 
 afterEach(() => {
@@ -105,7 +107,7 @@ describe("CaptureSection", () => {
     render(<CaptureSection ctx={makeCtx()} />);
     const more = await screen.findByRole("button", { name: `More for Recording ${CLOCK}` });
     fireEvent.keyDown(more, { key: "Enter" });
-    fireEvent.click(await screen.findByRole("menuitem", { name: "Reveal in Finder" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: revealLabel }));
     await waitFor(() => expect(app.revealPath).toHaveBeenCalledWith(recording().path));
 
     fireEvent.keyDown(screen.getByRole("button", { name: `More for Recording ${CLOCK}` }), { key: "Enter" });
@@ -163,8 +165,8 @@ describe("CaptureSection", () => {
   });
 
   it("names a recording by its label, then by its clock, then by its id", () => {
-    expect(recordingName(recording({ label: "  signup  " }))).toBe("signup");
-    expect(recordingName(recording())).toBe(`Recording ${CLOCK}`);
-    expect(recordingName(recording({ startedAt: "nonsense" }))).toBe("rec-1");
+    expect(recordingDisplayName(recording({ label: "  signup  " }))).toBe("signup");
+    expect(recordingDisplayName(recording())).toBe(`Recording ${CLOCK}`);
+    expect(recordingDisplayName(recording({ startedAt: "nonsense" }))).toBe("rec-1");
   });
 });

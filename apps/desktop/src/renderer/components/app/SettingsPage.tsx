@@ -2,6 +2,7 @@ import React, { useCallback, useDeferredValue, useEffect, useMemo, useRef, useSt
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import type { Icon as PhosphorIcon } from "@phosphor-icons/react";
 import {
+  AndroidLogo,
   ArrowLeft,
   ArrowRight,
   Bell,
@@ -99,6 +100,7 @@ const TAB_ICONS: Record<SettingsTabId, PhosphorIcon> = {
   integrations: PuzzlePiece,
   agents: Brain,
   apple: DeviceMobile,
+  android: AndroidLogo,
   appearance: Palette,
   behaviour: SlidersHorizontal,
   "ade-mcp": ShareNetwork,
@@ -113,6 +115,7 @@ const CENTERED_COLUMN_TABS: ReadonlySet<SettingsTabId> = new Set<SettingsTabId>(
   "chat",
   "keyboard",
   "apple",
+  "android",
   "notifications",
   "stats",
   "secrets",
@@ -583,7 +586,8 @@ export function SettingsPage({
     const search = next.toString();
     navigate({ pathname: location.pathname, search: search ? `?${search}` : "", hash: "" }, { replace: true });
   };
-  const providersPicker = section === "agents" && machinesEnabled && !standalone
+  // Providers and Android devices name their machine in the title.
+  const titlePicker = (section === "agents" || section === "android") && machinesEnabled && !standalone
     && reachableMachines(machines).length > 1;
   // General and Machines list the machines this page already reads.
   const machinesValue = useMemo<SettingsMachinesValue>(() => ({
@@ -751,18 +755,18 @@ export function SettingsPage({
                   whiteSpace: "nowrap",
                 }}
               >
-                {providersPicker ? "Providers on" : activeTab.label}
+                {titlePicker ? `${activeTab.label} on` : activeTab.label}
               </h1>
               {/* Providers names its machine in its title: one picker for the
                   machine the providers run on, never a copy per machine. */}
-              {providersPicker ? (
+              {titlePicker ? (
                 <span style={{ marginLeft: 8 }} data-ph-mask="">
                   <MachinePicker
                     variant="title"
                     machines={machines}
                     selectedId={pageMachine?.machineId ?? THIS_MACHINE_ID}
                     thisMachineName={thisMachineDeviceName}
-                    onPick={(machineId) => navigateToTab("agents", undefined, machineId)}
+                    onPick={(machineId) => navigateToTab(section, undefined, machineId)}
                   />
                 </span>
               ) : null}

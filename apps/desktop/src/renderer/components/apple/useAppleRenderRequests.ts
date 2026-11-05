@@ -4,7 +4,7 @@ import { READABLE_TOAST_DURATION_MS, showToast, type ToastInput } from "../app/t
 import { logRendererDebugEvent } from "../../lib/debugLog";
 import { navigateToAppTarget } from "../../lib/openExternal";
 import { useAppStore } from "../../state/appStore";
-import type { AppleDeviceRenderer } from "./AppleDevice3DView";
+import type { DeviceRenderer } from "../device/deviceRenderPass";
 import { completeAppleRenderRequest, renderAppleDeviceToProof, type AppleRenderFiled } from "./appleRenderProof";
 
 /**
@@ -115,9 +115,11 @@ export function useAppleRenderRequests({
   const setModeRef = useRef(setMode);
   setModeRef.current = setMode;
 
-  const rendererRef = useRef<AppleDeviceRenderer | null>(null);
+  const rendererRef = useRef<DeviceRenderer | null>(null);
   const [renderOpen, setRenderOpen] = useState(false);
   const [rendering, setRendering] = useState(false);
+  /** One render at a time: a second one is refused before it touches `rendering`. */
+  const busyRef = useRef(false);
   const openRender = useCallback(() => {
     // Renders come from the 3D body; bring it up if the flat view is on.
     if (effectiveMode !== "3d") setModeRef.current("3d");
@@ -130,6 +132,8 @@ export function useAppleRenderRequests({
       showToast({ id: "apple-render", tone: "warning", title: "The 3D view is still loading. Try again in a moment." });
       throw new Error("The 3D view is still loading.");
     }
+    if (busyRef.current) throw new Error("Another render of this device is still running. Try again when it ends.");
+    busyRef.current = true;
     setRendering(true);
     try {
       const filed = await renderAppleDeviceToProof({
@@ -151,6 +155,7 @@ export function useAppleRenderRequests({
       onErrorRef.current?.(cause);
       throw cause;
     } finally {
+      busyRef.current = false;
       setRendering(false);
     }
   }, [deviceName, duoCapable, laneId, runtimePinRef, sessionId]);

@@ -137,4 +137,16 @@ export const ADE_CAPTURE_ACTIONS: ReadonlyMap<string, AdeCaptureAction> =
     // `ade mac-desktop proof` files the frame its own `screenshot` step wrote.
     ["mac_desktop.screenshot", resultField("filePath", "ade-capture")],
     ["android_emulator.screenshot", resultField("path", "ade-capture")],
+    // P1 agent suite: every MP4 part of a recording (a rotation starts a new one).
+    ["android_emulator.recordStop", {
+      source: "ade-recorder",
+      paths: (result) => (Array.isArray(result.segments) ? result.segments : [])
+        .map((segment) => (segment && typeof segment === "object" ? (segment as Record<string, unknown>).path : null)),
+    }],
+    ["android_emulator.captureProofBundle", resultField("screenshotPath", "ade-capture")],
+    // P1 look: `ade android render` (a desktop window draws it).
+    ["android_emulator.requestRender", {
+      source: "ade-capture",
+      paths: (result) => (Array.isArray(result.paths) ? result.paths : []),
+    }],
   ]);
