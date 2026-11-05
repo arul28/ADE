@@ -272,7 +272,16 @@ export type SettingEntry = {
 };
 
 /** A catalogue tile's anchor on the Integrations home: `#add-mcp-<entry id>`. */
-export const MCP_CATALOGUE_ANCHOR_PREFIX = "add-mcp-";
+const MCP_CATALOGUE_ANCHOR_PREFIX = "add-mcp-";
+
+export function mcpCatalogueAnchor(entryId: string): string {
+  return `${MCP_CATALOGUE_ANCHOR_PREFIX}${entryId}`;
+}
+
+/** The settings entry of a catalogue quick setup: `ade://settings/integrations.mcp-<id>`. */
+export function mcpCatalogueSettingsEntryId(entryId: string): string {
+  return `integrations.mcp-${entryId}`;
+}
 
 /** The catalogue entry id an anchor or hash names, or null. */
 export function mcpCatalogueIdFromAnchor(anchorOrHash: string): string | null {
@@ -343,12 +352,14 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
   // One per quick setup on the Integrations home, so "posthog" finds PostHog.
   // Its tile carries the anchor; landing on it opens the server's add dialog
   // (or its row, once added). GitHub, Linear and Jira are their own entries.
+  // Named only by brand: "mcp server" in 70 labels would bury MCP servers
+  // itself in `ade settings find`.
   ...MCP_CATALOGUE.filter((entry) => !entry.native).map((entry): SettingEntry => ({
-    id: `integrations.mcp-${entry.id}`,
-    label: `${entry.name} MCP server`,
-    keywords: [entry.publisher, entry.category, entry.description],
+    id: mcpCatalogueSettingsEntryId(entry.id),
+    label: entry.name,
+    keywords: [entry.publisher],
     tab: "integrations",
-    anchor: `${MCP_CATALOGUE_ANCHOR_PREFIX}${entry.id}`,
+    anchor: mcpCatalogueAnchor(entry.id),
     scope: "account",
     web: "hidden",
     group: "MCP servers",

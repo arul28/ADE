@@ -14,6 +14,7 @@ import { cardAskerFamily, providerDisplayName } from "../../../shared/pendingInp
 import { navigateToAppTarget, openExternalUrl } from "../../lib/openExternal";
 import { integrationThemeVars } from "../settings/integrations/integrationBrand";
 import { MCP_ACCENT, mcpCatalogueBrand } from "../settings/mcp/mcpCatalogueBrand";
+import { mcpCatalogueSettingsEntryId } from "../settings/settingsManifest";
 import { McpRunsLine } from "../settings/mcp/McpRunsLine";
 import { SolidLogo } from "../settings/providers/ProviderHero";
 import { ProviderLogo } from "../shared/ProviderLogos";
@@ -110,9 +111,10 @@ export function McpServerRequestComposer({
     void window.ade?.mcpRegistry?.cancelSignIn({ server: server.name });
   }, [server.name]);
 
-  // A quick setup opens its own add dialog; any other server, the MCP servers
-  // page of the machine that runs this chat.
-  const settingsEntryId = entry && !entry.native ? `integrations.mcp-${entry.id}` : "mcp.servers";
+  // A quick setup under its own name opens its add dialog; any other server
+  // (a second `posthog-2` included), the MCP servers page of the machine that
+  // runs this chat.
+  const settingsEntryId = entry && !entry.native && server.name === entry.id ? mcpCatalogueSettingsEntryId(entry.id) : "mcp.servers";
   const openSettings = useCallback(() => {
     navigateToAppTarget({ kind: "settings", entryId: settingsEntryId, machineId: chatSettingsMachineId(scope) });
   }, [scope, settingsEntryId]);

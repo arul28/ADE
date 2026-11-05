@@ -13,7 +13,7 @@
 
 import { ACCOUNT_SCOPE_ALL } from "../../../shared/accountSettingsScope";
 import { ADE_RESERVED_MCP_SERVER_NAMES } from "../../../shared/callerMcpServers";
-import type { ConnectProviderId, IntegrationConnectRequestResult } from "../../../shared/integrationConnect";
+import { isConnectProviderId, type ConnectProviderId, type IntegrationConnectRequestResult } from "../../../shared/integrationConnect";
 import {
   matchMcpCatalogue,
   mcpCatalogueEntry,
@@ -41,6 +41,7 @@ import {
   MCP_SERVER_APPROVE_QUESTION_ID,
   MCP_SERVER_APPROVE_VALUE,
   MCP_SERVER_DECLINE_VALUE,
+  MCP_SERVER_REMOVE_METADATA_KEY,
   MCP_SERVER_REQUEST_METADATA_KEY,
   MCP_SERVER_REQUEST_REASON_MAX_CHARS,
   mcpServerRunsLabel,
@@ -54,7 +55,7 @@ import {
   type McpServerRequestSource,
 } from "../../../shared/mcpServerRequest";
 import type { AccountVaultItem, AccountVaultWriteOptions } from "../../../shared/types/accountVault";
-import { captureError } from "../../../shared/sentry/capture";
+import { captureError, captureProblem } from "../../../shared/sentry/capture";
 import {
   cardTimeoutMs,
   cardWasDeclined,
@@ -145,6 +146,33 @@ export type McpServerRequestDeps = {
   scanConfigs: (projectRoot: string | null) => ProviderMcpScan;
   projectRoot: string | null;
 };
+
+/** What an ask that raises a card in the chat needs. */
+type McpCardDeps = McpServerRequestDeps & { requestChatInput: CardRequestChatInput };
+
+/**
+ * The registry, pulled fresh from the account, for a change about to be
+ * written. The local cache can lag behind the account (a runtime that just
+ * started): pull first, so the write keeps servers other machines added. With
+ * no copy of the list at all, a pull that failed or could not reach the
+ * account must not write one. `orElse` ends each error: where else to do it.
+ */
+async function readRegistryForWrite(deps: McpServerRequestDeps, orElse: string): Promise<{
+  servers: McpRegistryServer[];
+  off: { machine: string[]; project: string[] };
+  settings: McpRegistrySettingsStore;
+}> {
+  const synced = await deps.settings?.sync?.().catch((error: unknown) => {
+    captureError(error, { fingerprint: ["mcp_registry", "account_sync_before_write"] });
+    return "failed" as const;
+  });
+  if ((synced === "failed" || synced === "unavailable") && deps.settings?.get(ACCOUNT_SCOPE_ALL, MCP_SERVERS_SETTING_KEY) === undefined) {
+    throw new Error(`ADE could not load your MCP servers from your account. Try again in a moment${orElse}.`);
+  }
+  const current = readRegistry(deps);
+  if (!current.live || !deps.settings) throw new Error(`This machine lost its ADE account connection. Try again${orElse}.`);
+  return { servers: current.servers, off: current.off, settings: deps.settings };
+}
 
 /** The registry list and both off lists, as this machine's account store holds them now. */
 function readRegistry(deps: McpServerRequestDeps): {
@@ -357,20 +385,23 @@ function proposeImported(deps: McpServerRequestDeps, name: string): Proposal {
 }
 
 /**
- * A host a remote server can live at: a domain with a dot, localhost, or an IP.
+ * A host a remote server can live at: a domain with a dot, localhost, an IP,
+ * or a one-word name with a port (a tailnet or Docker name, `studio:3000`).
  * `https://blurb/mcp` is an agent's guess at an address, not one.
  */
 function isRealHost(url: string): boolean {
-  let host: string;
+  let parsed: URL;
   try {
-    host = new URL(url).hostname.toLowerCase();
+    parsed = new URL(url);
   } catch {
     return false;
   }
+  const host = parsed.hostname.toLowerCase();
   if (host === "localhost" || host.endsWith(".localhost")) return true;
   if (host.startsWith("[")) return true; // IPv6
   const labels = host.split(".");
-  return labels.length >= 2 && labels.every(Boolean);
+  if (labels.length === 1) return Boolean(host) && Boolean(parsed.port);
+  return labels.every(Boolean);
 }
 
 function proposeAgent(args: Record<string, unknown>, name: string): Proposal {
@@ -430,7 +461,7 @@ const inFlight = new Map<string, Promise<McpServerRequestResult>>();
  * declines, or the wait runs out.
  */
 export async function requestMcpServer(
-  deps: McpServerRequestDeps & { requestChatInput: CardRequestChatInput; connectIntegration?: ConnectIntegration },
+  deps: McpCardDeps & { connectIntegration?: ConnectIntegration },
   rawArgs: unknown,
 ): Promise<McpServerRequestResult> {
   const args = readCardArgs(rawArgs);
@@ -478,7 +509,7 @@ export async function requestMcpServer(
 }
 
 async function askToAdd(
-  deps: McpServerRequestDeps & { requestChatInput: CardRequestChatInput },
+  deps: McpCardDeps,
   args: Record<string, unknown>,
   chatSessionId: string,
   reason: string,
@@ -531,16 +562,7 @@ async function askToAdd(
       outcome = { name: server.name, added: false, declined: true };
       return;
     }
-    // The local cache can lag behind the account (a runtime that just
-    // started): pull first, so the write keeps servers other machines added.
-    // With no copy of the list at all, a pull that failed or could not reach
-    // the account must not write one.
-    const synced = await deps.settings?.sync?.().catch(() => "failed" as const);
-    if ((synced === "failed" || synced === "unavailable") && deps.settings?.get(ACCOUNT_SCOPE_ALL, MCP_SERVERS_SETTING_KEY) === undefined) {
-      throw new Error("ADE could not load your MCP servers from your account. Try again in a moment, or add the server at ade://settings/mcp.servers.");
-    }
-    const current = readRegistry(deps);
-    if (!current.live || !deps.settings) throw new Error("This machine lost its ADE account connection. Try again, or add the server at ade://settings/mcp.servers.");
+    const current = await readRegistryForWrite(deps, ", or add the server at ade://settings/mcp.servers");
     // Another machine may have added it while the card was open.
     const raced = findSameMcpServer(current.servers, server);
     if (raced) {
@@ -569,7 +591,7 @@ async function askToAdd(
     }
     const next = addMcpRegistryServer(current.servers, saved);
     if (typeof next === "string") throw new Error(next);
-    if (!deps.settings.set(ACCOUNT_SCOPE_ALL, MCP_SERVERS_SETTING_KEY, next)) {
+    if (!current.settings.set(ACCOUNT_SCOPE_ALL, MCP_SERVERS_SETTING_KEY, next)) {
       throw new Error("Your ADE account did not take the change. Try again, or add the server at ade://settings/mcp.servers.");
     }
     // Values the server does not name. A failure leaves an unused value, not a broken server.
@@ -618,7 +640,7 @@ async function askToAdd(
  * their settings page instead.
  */
 export async function requestMcpServerRemoval(
-  deps: McpServerRequestDeps & { requestChatInput: CardRequestChatInput },
+  deps: McpCardDeps,
   rawArgs: unknown,
 ): Promise<McpServerRemoveResult> {
   const args = readCardArgs(rawArgs);
@@ -631,10 +653,10 @@ export async function requestMcpServerRemoval(
   if (!deps.settings || !deps.vault) {
     throw new Error("This machine is not signed in to an ADE account, or its sync is off, so it cannot change MCP servers. Send the person ade://settings/mcp.servers.");
   }
-  await deps.settings.sync?.().catch(() => "failed" as const);
-  const server = readRegistry(deps).servers.find((entry) => entry.name === name);
+  const server = (await readRegistryForWrite(deps, "")).servers.find((entry) => entry.name === name);
   if (!server) {
-    const native = mcpCatalogueEntry(name)?.native;
+    // `atlassian` is the catalogue's name for Jira; `jira` is the integration's.
+    const native = mcpCatalogueEntry(name)?.native ?? (isConnectProviderId(name) ? name : undefined);
     if (native) {
       throw new Error(`${name} is an ADE integration, not an MCP server. To disconnect it, send the person ade://settings/integrations.${native} and let them press Disconnect there.`);
     }
@@ -645,11 +667,16 @@ export async function requestMcpServerRemoval(
   return await joinInFlight(removeInFlight, `${chatSessionId}\u0000${name}`, () => askToRemove(deps, args, chatSessionId, server, label, reason));
 }
 
+/** What a server reaches: its URL, or its command line. */
+function sameServerTarget(server: McpRegistryServer): string {
+  return JSON.stringify(server.transport === "stdio" ? [server.transport, server.command, server.args ?? []] : [server.transport, server.url]);
+}
+
 /** Removals still waiting on the person, by chat and server name. */
 const removeInFlight = new Map<string, Promise<McpServerRemoveResult>>();
 
 async function askToRemove(
-  deps: McpServerRequestDeps & { requestChatInput: CardRequestChatInput },
+  deps: McpCardDeps,
   args: Record<string, unknown>,
   chatSessionId: string,
   server: McpRegistryServer,
@@ -662,32 +689,45 @@ async function askToRemove(
       outcome = { name: server.name, removed: false, declined: true };
       return;
     }
-    const synced = await deps.settings?.sync?.().catch(() => "failed" as const);
-    if ((synced === "failed" || synced === "unavailable") && deps.settings?.get(ACCOUNT_SCOPE_ALL, MCP_SERVERS_SETTING_KEY) === undefined) {
-      throw new Error("ADE could not load your MCP servers from your account. Try again in a moment.");
+    const current = await readRegistryForWrite(deps, "");
+    const { settings } = current;
+    // Another machine may have removed it while the card was open, or put a
+    // different server under the name: that one was not what the person saw.
+    const now = current.servers.find((entry) => entry.name === server.name);
+    if (now && sameServerTarget(now) !== sameServerTarget(server)) {
+      throw new Error(`${server.name} was changed on another machine while this card was open. Nothing was removed; ask again.`);
     }
-    const current = readRegistry(deps);
-    if (!current.live || !deps.settings) throw new Error("This machine lost its ADE account connection. Try again in a moment.");
-    // Another machine may have removed it while the card was open.
-    if (current.servers.some((entry) => entry.name === server.name)) {
+    if (now) {
       const next = current.servers.filter((entry) => entry.name !== server.name);
-      if (!deps.settings.set(ACCOUNT_SCOPE_ALL, MCP_SERVERS_SETTING_KEY, next)) {
+      if (!settings.set(ACCOUNT_SCOPE_ALL, MCP_SERVERS_SETTING_KEY, next)) {
         throw new Error("Your ADE account did not take the change. Try again in a moment.");
       }
     }
-    // A later server of the same name must not start out switched off.
+    // A later server of the same name must not start out switched off. A
+    // name left on an off list is harmless until then: report it, do not fail.
     const context = deps.registry.context(deps.projectRoot);
-    if (context.deviceOffKey && current.off.machine.includes(server.name)) {
-      deps.settings.set(ACCOUNT_SCOPE_ALL, context.deviceOffKey, current.off.machine.filter((entry) => entry !== server.name));
+    const offWrites: Array<[string | null | undefined, string, string[]]> = [
+      [ACCOUNT_SCOPE_ALL, context.deviceOffKey ?? "", current.off.machine],
+      [context.repoScope, MCP_OFF_SETTING_KEY, current.off.project],
+    ];
+    for (const [scope, key, list] of offWrites) {
+      if (!scope || !key || !list.includes(server.name)) continue;
+      if (!settings.set(scope, key, list.filter((entry) => entry !== server.name))) {
+        captureProblem("mcp_registry_remove_off_list_not_saved", { fingerprint: ["mcp_registry", "remove_off_list"] });
+      }
     }
-    if (context.repoScope && current.off.project.includes(server.name)) {
-      deps.settings.set(context.repoScope, MCP_OFF_SETTING_KEY, current.off.project.filter((entry) => entry !== server.name));
-    }
-    // A value left behind is unused, not a broken server: report it, do not fail.
-    await deps.registry.pruneSecrets(server.name, null).catch((error: unknown) => {
+    // The server is gone either way; values left behind are unused, but the
+    // person was told they go with it, so say when they did not.
+    const pruned = await deps.registry.pruneSecrets(server.name, null).catch((error: unknown) => {
       captureError(error, { fingerprint: ["mcp_registry", "remove_prune_secrets"] });
+      return { ok: false as const, message: error instanceof Error ? error.message : String(error) };
     });
-    outcome = { name: server.name, removed: true, next: MCP_SERVER_REMOVED_NEXT };
+    if (!pruned.ok) captureProblem("mcp_registry_remove_values_not_pruned", { fingerprint: ["mcp_registry", "remove_prune_refused"] });
+    outcome = {
+      name: server.name,
+      removed: true,
+      next: pruned.ok ? MCP_SERVER_REMOVED_NEXT : `${MCP_SERVER_REMOVED_NEXT} Its saved values were not removed (${pruned.message}); the person can clear them at ade://settings/mcp.servers.`,
+    };
   };
 
   const response = await deps.requestChatInput({
@@ -698,6 +738,8 @@ async function askToRemove(
     timeoutMs: cardTimeoutMs(args),
     allowsFreeform: false,
     eventDescription: `Remove MCP server ${server.name}`,
+    // Makes the card user-only: an agent cannot answer its own removal.
+    providerMetadata: { [MCP_SERVER_REMOVE_METADATA_KEY]: { name: server.name } },
     questions: [{
       id: MCP_SERVER_REMOVE_QUESTION_ID,
       header: server.name,

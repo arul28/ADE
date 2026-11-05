@@ -29,6 +29,9 @@ import {
 /** `providerMetadata` key on the card. Its presence makes the card user-only. */
 export const MCP_SERVER_REQUEST_METADATA_KEY = "mcpServerRequest" as const;
 
+/** `providerMetadata` key on the removal card (`mcp_registry.remove`): user-only too. */
+export const MCP_SERVER_REMOVE_METADATA_KEY = "mcpServerRemove" as const;
+
 /** The yes/no question every client answers. */
 export const MCP_SERVER_APPROVE_QUESTION_ID = "mcp_server_approve" as const;
 export const MCP_SERVER_APPROVE_VALUE = "add" as const;
@@ -112,7 +115,9 @@ export type McpRegistryListing = {
 export type McpRegistryChatStatus = {
   /** Registry servers on here that this chat's running agent did not start with. */
   missing: string[];
-  /** Servers it started with that are no longer on for it. Absent from an older brain. */
+  /** Those of `missing` it started with under another URL or command. Absent from an older brain. */
+  changed?: string[];
+  /** Servers it started with that are no longer on for it (removed or turned off). Absent from an older brain. */
   removed?: string[];
 };
 

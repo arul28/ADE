@@ -878,6 +878,7 @@ export type FormatterId =
   | "integrations"
   | "agent37-ready"
   | "mcp-servers"
+  | "mcp-servers-remove"
   | "history-list"
   | "history-commits"
   | "history-show"
@@ -20087,7 +20088,7 @@ function buildMcpServersPlan(args: string[]): CliPlan {
     return {
       kind: "execute",
       label: "mcp servers remove",
-      formatter: "mcp-servers",
+      formatter: "mcp-servers-remove",
       steps: [actionStep("result", "mcp_registry", "remove", {
         name,
         ...(reason?.trim() ? { reason: reason.trim() } : {}),
@@ -35317,9 +35318,14 @@ function formatMcpServers(value: unknown): string {
   }
   if (record.already === true) return typeof record.next === "string" ? record.next : `${cell(record.name)} is already in ADE.`;
   if (typeof record.integration === "string" && typeof record.next === "string") return record.next;
-  if (record.removed === true) return typeof record.next === "string" ? record.next : `Removed ${cell(record.name)}.`;
-  if (record.declined === true && record.removed === false) return `The user kept the MCP server ${cell(record.name)}.`;
   if (record.declined === true) return `The user declined to add the MCP server ${cell(record.name)}.`;
+  return JSON.stringify(value, null, 2);
+}
+
+function formatMcpServerRemove(value: unknown): string {
+  const record = isRecord(value) ? value : {};
+  if (record.removed === true) return typeof record.next === "string" ? record.next : `Removed ${cell(record.name)}.`;
+  if (record.declined === true) return `The user kept the MCP server ${cell(record.name)}.`;
   return JSON.stringify(value, null, 2);
 }
 
@@ -36279,6 +36285,8 @@ function formatTextOutput(
       return formatAgent37Ready(value);
     case "mcp-servers":
       return formatMcpServers(value);
+    case "mcp-servers-remove":
+      return formatMcpServerRemove(value);
     case "harness-env":
       return formatHarnessEnv(value);
     case "harness-routes":

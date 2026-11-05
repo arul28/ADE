@@ -4,7 +4,7 @@ import { HighlightedCode } from "./CodeHighlighter";
 import rehypeRaw from "rehype-raw";
 import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
-import { remarkBareAdeLinks, remarkBareLinkSuffix } from "./remarkBareLinkSuffix";
+import { remarkBareLinkSuffix } from "./remarkBareLinkSuffix";
 import { openLinkFromUi } from "../../lib/openExternal";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
 import { useChatLinkContextMenu } from "./useChatLinkContextMenu";
@@ -338,7 +338,7 @@ type ChatMarkdownProps = {
 export function ChatMarkdown({ children, tone = "sky", componentOverrides }: ChatMarkdownProps): ReactNode {
   return (
     <ReactMarkdown
-      remarkPlugins={[remarkGfm, remarkBareLinkSuffix, remarkBareAdeLinks]}
+      remarkPlugins={[remarkGfm, remarkBareLinkSuffix]}
       rehypePlugins={[rehypeRaw, [rehypeSanitize, SAFE_PREVIEW_SCHEMA]]}
       // Keep `file:` and Windows drive hrefs intact — the default transform
       // drops them, which would hide exactly the paths we want to linkify.

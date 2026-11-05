@@ -12134,14 +12134,16 @@ export function createAgentChatService(args: {
   /**
    * Registry servers on for this chat now that its running agent did not
    * start with (new, or edited to reach another URL or command), minus the
-   * ones the provider's own config already runs (`missing`); and the ones ADE
-   * started it with that are no longer on for it, removed or turned off
-   * (`removed`). Empty when the chat has no live agent (its next launch gets
-   * the list as it is) or is a chat the registry does not reach. Reads files
-   * only; never restarts.
+   * ones the provider's own config already runs (`missing`; `changed` names
+   * the edited ones among them); and the ones ADE started it with that are no
+   * longer on for it, removed or turned off (`removed`). A server the caller
+   * names itself is the caller's, whatever the registry says, so it is never
+   * reported. Empty when the chat has no live agent (its next launch gets the
+   * list as it is) or is a chat the registry does not reach. Reads files only;
+   * never restarts.
    */
-  const mcpRegistryChatStatus = (sessionId: string): { missing: string[]; removed: string[] } => {
-    const none = { missing: [], removed: [] };
+  const mcpRegistryChatStatus = (sessionId: string): { missing: string[]; changed: string[]; removed: string[] } => {
+    const none = { missing: [], changed: [], removed: [] };
     const managed = managedSessions.get(sessionId);
     const adeHome = args.machineAdeHome?.trim();
     if (!managed || !managed.runtime || !adeHome) return none;
@@ -12153,14 +12155,16 @@ export function createAgentChatService(args: {
       provider: managed.session.provider,
       readSecret: () => null,
     }).servers ?? {};
-    const removed = [...launched.passed].filter((name) => !Object.hasOwn(current, name)).sort();
+    const callerOwns = (name: string) => Object.hasOwn(managed.session.mcpServers ?? {}, name);
+    const removed = [...launched.passed].filter((name) => !Object.hasOwn(current, name) && !callerOwns(name)).sort();
     const added: CallerMcpServers = {};
     for (const [name, server] of Object.entries(current)) {
-      if (launched.targets.get(name) !== mcpRegistryTarget(server)) added[name] = server;
+      if (launched.targets.get(name) !== mcpRegistryTarget(server) && !callerOwns(name)) added[name] = server;
     }
-    if (!Object.keys(added).length) return { missing: [], removed };
+    if (!Object.keys(added).length) return { missing: [], changed: [], removed };
     const leftOut = chatUserMcp.registryServersLeftToProvider(chatMcpTarget(managed), added);
-    return { missing: Object.keys(added).filter((name) => !leftOut.has(name)).sort(), removed };
+    const missing = Object.keys(added).filter((name) => !leftOut.has(name)).sort();
+    return { missing, changed: missing.filter((name) => launched.targets.has(name)), removed };
   };
 
   /** The caller's servers on top of the registry's: a caller that names a server keeps its own definition. */

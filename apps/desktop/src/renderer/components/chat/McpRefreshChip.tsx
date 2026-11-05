@@ -30,7 +30,7 @@ export function McpRefreshChip({
   turnActive: boolean;
   pendingInputItemId: string | null;
 }) {
-  const [status, setStatus] = React.useState<{ missing: string[]; removed: string[] }>(NO_CHANGES);
+  const [status, setStatus] = React.useState<ChatMcpChanges>(NO_CHANGES);
   const [settingsTick, setSettingsTick] = React.useState(0);
   const [busy, setBusy] = React.useState(false);
   const pinRef = React.useRef(runtimePin);
@@ -52,8 +52,11 @@ export function McpRefreshChip({
     void read({ chatSessionId: sessionId }, pinRef.current)
       .then((next) => {
         if (!active) return;
+        const missing = Array.isArray(next?.missing) ? next.missing : [];
+        const changed = Array.isArray(next?.changed) ? next.changed : [];
         setStatus({
-          missing: Array.isArray(next?.missing) ? next.missing : [],
+          added: missing.filter((name) => !changed.includes(name)),
+          changed,
           removed: Array.isArray(next?.removed) ? next.removed : [],
         });
       })
@@ -67,21 +70,19 @@ export function McpRefreshChip({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId, runtimePin?.key, turnActive, pendingInputItemId, settingsTick]);
 
-  const { missing, removed } = status;
-  if (!missing.length && !removed.length) return null;
-  const label = missing.length && removed.length ? "MCP servers changed"
-    : missing.length ? (missing.length === 1 ? "New MCP server added" : "New MCP servers added")
-      : removed.length === 1 ? "MCP server removed" : "MCP servers removed";
+  const { added, changed, removed } = status;
+  if (!added.length && !changed.length && !removed.length) return null;
   const help = [
-    missing.length ? `${nameList(missing)} ${missing.length === 1 ? "is" : "are"} not loaded in this chat yet.` : "",
-    removed.length ? `${nameList(removed)} ${removed.length === 1 ? "is" : "are"} still loaded in this chat.` : "",
-    "Refreshing restarts this chat's agent session so its MCP tools match your list. The conversation is kept. Nothing restarts on its own",
+    added.length ? `New: ${nameList(added)}.` : "",
+    changed.length ? `Changed: ${nameList(changed)}.` : "",
+    removed.length ? `Removed or turned off: ${nameList(removed)}.` : "",
+    "This chat still runs the MCP servers it started with. Refreshing restarts its agent session so they match your list. The conversation is kept. Nothing restarts on its own",
   ].filter(Boolean).join(" ");
   return (
     <StatusChip
       tone="accent"
       icon={<Plugs size={10} weight="bold" />}
-      label={label}
+      label={chipLabel(status)}
       actions={[{
         label: "Refresh chat",
         // A restart mid-turn would cut the agent off; it waits for the turn.
@@ -102,7 +103,17 @@ export function McpRefreshChip({
   );
 }
 
-const NO_CHANGES = { missing: [], removed: [] };
+/** How this chat's MCP servers differ from the list: new, edited, and removed or turned off. */
+type ChatMcpChanges = { added: string[]; changed: string[]; removed: string[] };
+
+const NO_CHANGES: ChatMcpChanges = { added: [], changed: [], removed: [] };
+
+/** "Added" only when that is all it is; an edit or a server turned off is a change. */
+function chipLabel({ added, changed, removed }: ChatMcpChanges): string {
+  const count = added.length + changed.length + removed.length;
+  if (added.length === count) return count === 1 ? "New MCP server added" : "New MCP servers added";
+  return count === 1 ? "MCP server changed" : "MCP servers changed";
+}
 
 function nameList(names: readonly string[]): string {
   return names.length === 1 ? names[0]! : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;

@@ -4146,14 +4146,27 @@ function buildMcpRegistryDomainService(runtime: AdeRuntime): OpaqueService {
               throw error;
             }
           },
-          remove: (args?: unknown) => requestMcpServerRemoval({
-            ...mcpRegistryDeps(runtime),
-            requestChatInput: (input) => agentChatService.requestChatInput(input),
-          }, args),
+          remove: async (args?: unknown) => {
+            const capture = (outcome: "completed" | "cancelled" | "failed") =>
+              captureAgentCardAnalytics({ analytics: runtime.productAnalyticsService, surface: "api", card: "mcp_server_remove", outcome });
+            try {
+              const result = await requestMcpServerRemoval({
+                ...mcpRegistryDeps(runtime),
+                requestChatInput: (input) => agentChatService.requestChatInput(input),
+              }, args);
+              capture(result.removed ? "completed" : "cancelled");
+              // An account-wide change on every machine: leave a trace of it.
+              if (result.removed) runtime.logger.info("mcp_registry.server_removed", { server: result.name });
+              return result;
+            } catch (error) {
+              capture("failed");
+              throw error;
+            }
+          },
           chatStatus: (args?: { chatSessionId?: unknown; sessionId?: unknown }) => {
             const raw = args?.chatSessionId ?? args?.sessionId;
             const sessionId = typeof raw === "string" ? raw.trim() : "";
-            return sessionId ? agentChatService.mcpRegistryChatStatus(sessionId) : { missing: [], removed: [] };
+            return sessionId ? agentChatService.mcpRegistryChatStatus(sessionId) : { missing: [], changed: [], removed: [] };
           },
         }
       : {}),

@@ -20,6 +20,9 @@
  * instructions are never the boundary.
  */
 
+import { MCP_CATALOGUE } from "./mcpCatalogue";
+import { mcpCatalogueSettingsEntryId } from "./settingsManifest";
+
 export type SettingOwnerOnlyReason =
   | "publishing"
   | "sign-in"
@@ -63,6 +66,8 @@ const OWNER_ONLY: Record<Exclude<SettingOwnerOnlyReason, "preference">, readonly
     "account.computers",
     "mcp.servers",
     "mcp.found",
+    // Each quick setup adds a server with its keys or sign-in.
+    ...MCP_CATALOGUE.filter((entry) => !entry.native).map((entry) => mcpCatalogueSettingsEntryId(entry.id)),
     "agents.providers",
     "agents.accounts",
     "agents.provider.claude",

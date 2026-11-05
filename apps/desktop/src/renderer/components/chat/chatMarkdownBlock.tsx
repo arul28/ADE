@@ -3,7 +3,8 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import { remarkCachedParse } from "./remarkCachedParse";
-import { remarkBareAdeLinks, remarkBareLinkSuffix } from "./remarkBareLinkSuffix";
+import { remarkBareAdeLinks } from "./remarkBareAdeLinks";
+import { remarkBareLinkSuffix } from "./remarkBareLinkSuffix";
 import { FileCode } from "@phosphor-icons/react";
 
 import { openFence, SCENE_FENCE_LANGUAGE, sceneScopeKeyFor } from "../../../shared/chatScene";

@@ -19,7 +19,7 @@ import type { OpenProjectBinding } from "../../../../shared/types";
 import { captureError } from "../../../../shared/sentry/capture";
 import { connectProviderSpec } from "../../../../shared/integrationConnect";
 import { MCP_CATALOGUE, matchMcpCatalogue, mcpCatalogueEntry, type McpCatalogueEntry } from "../../../../shared/mcpCatalogue";
-import { MCP_CATALOGUE_ANCHOR_PREFIX, mcpCatalogueIdFromAnchor } from "../../../../shared/settingsManifest";
+import { mcpCatalogueAnchor, mcpCatalogueIdFromAnchor } from "../settingsManifest";
 import { decodeSettingsHash } from "../settingsHash";
 import type { McpRegistryServer } from "../../../../shared/mcpRegistry";
 import { INTEGRATION_IDS, integrationBrand, integrationThemeVars, type IntegrationId } from "./integrationBrand";
@@ -223,7 +223,12 @@ export function IntegrationsHome({
       onOpen("mcp", added.name);
       return;
     }
-    navigate({ pathname: location.pathname, search: location.search, hash: "" }, { replace: true });
+    // Drop the link, and any page the URL had open before it: the hash alone
+    // kept the home grid up, so a stale `integration=` would replace it.
+    const params = new URLSearchParams(location.search);
+    params.delete("integration");
+    params.delete("mcpServer");
+    navigate({ pathname: location.pathname, search: `?${params.toString()}`, hash: "" }, { replace: true });
     setAdding(linkedEntry);
     // Runs when the link arrives or the registry first loads, not on every server change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -367,8 +372,8 @@ export function IntegrationsHome({
             return (
               <button
                 key={entry.id}
-                id={`${MCP_CATALOGUE_ANCHOR_PREFIX}${entry.id}`}
-                data-settings-anchor={`${MCP_CATALOGUE_ANCHOR_PREFIX}${entry.id}`}
+                id={mcpCatalogueAnchor(entry.id)}
+                data-settings-anchor={mcpCatalogueAnchor(entry.id)}
                 type="button"
                 className="ade-ix-tile"
                 style={integrationThemeVars(brand.accent)}
