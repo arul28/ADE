@@ -42,6 +42,7 @@ export * from "./linearSync";
 export * from "./search";
 export * from "./externalSessions";
 export * from "./externalSessionDetail";
+export * from "./deletedChats";
 export * from "./providerInstances";
 export * from "./agentCliLogin";
 export * from "./recovery";

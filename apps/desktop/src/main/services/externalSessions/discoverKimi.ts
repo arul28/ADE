@@ -199,6 +199,7 @@ function kimiRecordFromCandidate(
   candidate: KimiCandidate,
   indexWorkDirs: Map<string, string>,
   scopeRoots: readonly string[] | null | undefined,
+  includeAdeOwned = false,
 ): ExternalSessionDiscoveryRecord | null {
   const state = readSmallJson(path.join(candidate.sessionDir, "state.json"));
   if (state?.archived === true) return null;
@@ -220,7 +221,7 @@ function kimiRecordFromCandidate(
   // chats are recognised the same way as Qwen's: by the ADE guidance block
   // that opens their first prompt.
   const firstUser = head.find((record) => record.type === "user");
-  if (startsWithAdeGuidance(firstUser?.message.content)) return null;
+  if (!includeAdeOwned && startsWithAdeGuidance(firstUser?.message.content)) return null;
 
   const summary = summarizeNeutralRecords("kimi", {
     head,
@@ -264,6 +265,6 @@ export async function discoverKimiSessions(
     candidates: listKimiCandidates(args, home, lookupId, index.deleted),
     limit: normalizeExternalSessionLimit(args.limit),
     lookupId,
-    read: (candidate) => kimiRecordFromCandidate(candidate, index.workDirs, args.scopeRoots),
+    read: (candidate) => kimiRecordFromCandidate(candidate, index.workDirs, args.scopeRoots, args.includeAdeOwned === true),
   });
 }

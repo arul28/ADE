@@ -28,6 +28,13 @@ import {
 } from "../externalSessions/claudeSessionTransplant";
 import { findCodexRolloutPathBySessionId } from "../externalSessions/discoverCodex";
 import { loadExternalSessionEvents } from "../externalSessions/events";
+import { loadExternalSessionDetail } from "../externalSessions/externalSessionDetail";
+import {
+  createDeletedChatsService,
+  readPersistedChatRecord,
+  type DeletedChatReopenSource,
+} from "./deletedChats";
+import { chatImportedRefsProvider } from "../externalSessions/liveChatProviderRefs";
 import {
   EXTERNAL_SESSION_PROVIDER_LABELS,
   isExternalSessionProvider,
@@ -779,6 +786,13 @@ import type {
   SessionLinearIssueLink,
   CursorCloudServiceTier,
   SessionAttentionSource,
+} from "../../../shared/types";
+import type {
+  DeletedChatDetailArgs,
+  DeletedChatListArgs,
+  DeletedChatRemoveArgs,
+  DeletedChatReopenArgs,
+  TerminalSessionSummary,
 } from "../../../shared/types";
 import { PROOF_LISTING_ARTIFACT_FILTER } from "../../../shared/types";
 import {
@@ -54468,24 +54482,29 @@ export function createAgentChatService(args: {
   const findClaudeSessionTranscript = (
     sessionId: string,
     sourceCwd: string | null,
-  ): { transcriptPath: string; sourceCwd: string | null } | null => {
+    preferredRoot?: string | null,
+  ): { transcriptPath: string; sourceCwd: string | null; configRoot: string } | null => {
     const fileName = `${sessionId}.jsonl`;
     const sluggedSourceCwd = sourceCwd?.trim() ? claudeProjectSlugForCwd(sourceCwd.trim()) : null;
     const reportedSourceCwd = sourceCwd?.trim() || null;
+    const roots = preferredRoot?.trim()
+      ? [path.resolve(preferredRoot.trim()), ...claudeConfigRoots().filter((root) => !pathsEqual(root, preferredRoot.trim()))]
+      : claudeConfigRoots();
     // Search each candidate root (default home + every provider home). Within a
     // root, prefer the slug matching the source cwd, then scan the projects dir.
-    for (const root of claudeConfigRoots()) {
+    // The root goes back with the path: a copy or account move reads from it.
+    for (const root of roots) {
       const projectsDir = path.join(root, "projects");
       if (sluggedSourceCwd) {
         const candidate = path.join(projectsDir, sluggedSourceCwd, fileName);
-        if (fs.existsSync(candidate)) return { transcriptPath: candidate, sourceCwd: reportedSourceCwd };
+        if (fs.existsSync(candidate)) return { transcriptPath: candidate, sourceCwd: reportedSourceCwd, configRoot: root };
       }
       try {
         const entries = fs.readdirSync(projectsDir, { withFileTypes: true });
         for (const entry of entries) {
           if (!entry.isDirectory()) continue;
           const candidate = path.join(projectsDir, entry.name, fileName);
-          if (fs.existsSync(candidate)) return { transcriptPath: candidate, sourceCwd: reportedSourceCwd };
+          if (fs.existsSync(candidate)) return { transcriptPath: candidate, sourceCwd: reportedSourceCwd, configRoot: root };
         }
       } catch {
         // This root has no projects dir (or is unreadable); try the next one.
@@ -54612,9 +54631,25 @@ export function createAgentChatService(args: {
    * converter registry. Written under a placeholder chat id; the caller
    * re-keys the envelopes onto the chat it creates.
    */
+  /** Where Recently deleted found a deleted chat's conversation (deletedChats.ts). */
+  type ImportReopenSource = DeletedChatReopenSource;
+
+  /** A reopened chat says where it came back from, not "imported from … CLI". */
+  const labelReopenedEvents = (
+    events: AgentChatEventEnvelope[],
+    reopen: ImportReopenSource | undefined,
+  ): AgentChatEventEnvelope[] => {
+    if (!reopen) return events;
+    return events.map((envelope) => envelope.event.type === "system_notice"
+      && envelope.event.message.startsWith("Session imported from ")
+      ? { ...envelope, event: { ...envelope.event, message: "Reopened from Recently deleted" } }
+      : envelope);
+  };
+
   const loadExternalImportEvents = async (
     args: AgentChatImportExternalSessionArgs,
     importedAt: number,
+    reopen?: ImportReopenSource,
   ): Promise<AgentChatEventEnvelope[]> => {
     const page = await loadExternalSessionEvents({
       provider: args.provider,
@@ -54624,6 +54659,8 @@ export function createAgentChatService(args: {
       laneId: args.laneId,
       purpose: "import",
       importedAt,
+      ...(reopen ? { includeAdeOwned: true } : {}),
+      ...(reopen?.env ? { env: reopen.env } : {}),
     });
     return page.events;
   };
@@ -54685,12 +54722,13 @@ export function createAgentChatService(args: {
     laneWorktreePath: string,
     importedAt: number,
     targetDescriptor?: ReturnType<typeof getModelById>,
+    reopen?: ImportReopenSource,
   ): Promise<AgentChatImportExternalSessionResult> => {
     const externalSessionId = args.externalSessionId.trim();
     if (hasPathSeparator(externalSessionId)) {
       throw externalChatImportError("EXTERNAL_CHAT_SESSION_INVALID_ARGS", "Claude session id must be a file name, not a path.");
     }
-    const source = findClaudeSessionTranscript(externalSessionId, args.cwd);
+    const source = findClaudeSessionTranscript(externalSessionId, args.cwd, reopen?.configHome);
     if (!source) {
       const sourceHint = args.cwd?.trim()
         ? ` for cwd '${args.cwd.trim()}'`
@@ -54721,7 +54759,7 @@ export function createAgentChatService(args: {
         sourceCwd,
         targetCwd: laneWorktreePath,
         fork: true,
-        configDir: claudeConfigDir(),
+        configDir: source.configRoot,
       });
       targetClaudeSessionId = typeof transplant.newSessionId === "string" ? transplant.newSessionId.trim() : "";
       targetTranscriptPath = typeof transplant.targetPath === "string" ? transplant.targetPath.trim() : "";
@@ -54747,6 +54785,7 @@ export function createAgentChatService(args: {
         ...(targetDescriptor ? { modelId: targetDescriptor.id } : {}),
         ...(args.title?.trim() ? { title: args.title.trim() } : {}),
         ...(importedReasoningEffort(args, targetDescriptor) ? { reasoningEffort: importedReasoningEffort(args, targetDescriptor) } : {}),
+        ...(reopen?.instanceId ? { instanceId: reopen.instanceId } : {}),
       });
       createdSessionId = created.id;
       const managed = ensureManagedSession(created.id);
@@ -54761,7 +54800,7 @@ export function createAgentChatService(args: {
         ...(args.title?.trim() ? { title: args.title.trim() } : {}),
       });
       // The exact transcript this import read: one id can sit in several project folders.
-      await placeImportedThreadInChatAccount(managed, "claude", targetClaudeSessionId, claudeConfigDir(), targetTranscriptPath);
+      await placeImportedThreadInChatAccount(managed, "claude", targetClaudeSessionId, source.configRoot, targetTranscriptPath);
       const repair = repairClaudeResumeTranscript(targetClaudeSessionId, managed.laneWorktreePath, sessionConfigHome(managed));
       if (repair.repaired) {
         logger.warn("agent_chat.external_import_claude_thinking_transcript_repaired", {
@@ -54789,7 +54828,7 @@ export function createAgentChatService(args: {
         targetClaudeSessionId === externalSessionId ? "continue" : "fork",
       );
       persistChatState(managed);
-      await appendImportedChatEvents(managed, events);
+      await appendImportedChatEvents(managed, labelReopenedEvents(events, reopen));
       persistChatState(managed);
       return await persistedImportedChatResult(managed, "claude", targetClaudeSessionId);
     } catch (error) {
@@ -54831,6 +54870,7 @@ export function createAgentChatService(args: {
     args: AgentChatImportExternalSessionArgs,
     importedAt: number,
     targetDescriptor?: ReturnType<typeof getModelById>,
+    reopen?: ImportReopenSource,
   ): Promise<AgentChatImportExternalSessionResult> => {
     const externalThreadId = args.externalSessionId.trim();
     let createdSessionId: string | null = null;
@@ -54885,6 +54925,7 @@ export function createAgentChatService(args: {
         ...(targetDescriptor ? { modelId: targetDescriptor.id } : {}),
         ...(args.title?.trim() ? { title: args.title.trim() } : {}),
         ...(importedReasoningEffort(args, targetDescriptor) ? { reasoningEffort: importedReasoningEffort(args, targetDescriptor) } : {}),
+        ...(reopen?.instanceId ? { instanceId: reopen.instanceId } : {}),
       });
       createdSessionId = created.id;
       const managed = ensureManagedSession(created.id);
@@ -54893,7 +54934,7 @@ export function createAgentChatService(args: {
         managed,
         "codex",
         externalThreadId,
-        path.resolve(process.env.CODEX_HOME?.trim() || path.join(os.homedir(), ".codex")),
+        path.resolve(reopen?.configHome?.trim() || process.env.CODEX_HOME?.trim() || path.join(os.homedir(), ".codex")),
       );
       const runtime = await ensureCodexSessionRuntime(managed);
       forkedProviderRuntime = runtime;
@@ -54951,7 +54992,7 @@ export function createAgentChatService(args: {
       });
       applyImportedChatMetadata(managed, args, events, importedAt, args.fork ? "fork" : "continue");
       persistChatState(managed);
-      await appendImportedChatEvents(managed, events);
+      await appendImportedChatEvents(managed, labelReopenedEvents(events, reopen));
       persistChatState(managed);
       return await persistedImportedChatResult(managed, "codex", targetThreadId);
     } catch (error) {
@@ -54988,6 +55029,7 @@ export function createAgentChatService(args: {
       laneWorktreePath: string;
       importedAt: number;
     },
+    reopen?: ImportReopenSource,
   ): Promise<AgentChatImportExternalSessionResult> => {
     const externalSessionId = args.externalSessionId.trim();
     let envelopes: AgentChatEventEnvelope[] = [];
@@ -54995,7 +55037,7 @@ export function createAgentChatService(args: {
       if (hasPathSeparator(externalSessionId)) {
         throw externalChatImportError("EXTERNAL_CHAT_SESSION_INVALID_ARGS", "Claude session id must be a file name, not a path.");
       }
-      const source = findClaudeSessionTranscript(externalSessionId, args.cwd);
+      const source = findClaudeSessionTranscript(externalSessionId, args.cwd, reopen?.configHome);
       if (!source) {
         throw externalChatImportError(
           "EXTERNAL_CHAT_SESSION_NOT_FOUND",
@@ -55052,7 +55094,7 @@ export function createAgentChatService(args: {
         }
       }
     } else {
-      envelopes = await loadExternalImportEvents(args, options.importedAt);
+      envelopes = await loadExternalImportEvents(args, options.importedAt, reopen);
     }
 
     // A replay import with nothing to replay would create an empty chat and
@@ -55125,6 +55167,7 @@ export function createAgentChatService(args: {
     laneWorktreePath: string,
     importedAt: number,
     requestedDescriptor: ReturnType<typeof getModelById> | null,
+    reopen?: ImportReopenSource,
   ): Promise<AgentChatImportExternalSessionResult> => {
     const provider = args.provider;
     const label = importProviderLabel(provider);
@@ -55164,7 +55207,7 @@ export function createAgentChatService(args: {
       );
     }
     // Read before the chat exists, so an unreadable session creates nothing.
-    const loaded = await loadExternalImportEvents(args, importedAt);
+    const loaded = await loadExternalImportEvents(args, importedAt, reopen);
 
     let createdSessionId: string | null = null;
     try {
@@ -55193,7 +55236,7 @@ export function createAgentChatService(args: {
       const events = loaded.map((envelope) => ({ ...envelope, sessionId: created.id }));
       applyImportedChatMetadata(managed, args, events, importedAt, "continue");
       persistChatState(managed);
-      if (events.length) await appendImportedChatEvents(managed, events);
+      if (events.length) await appendImportedChatEvents(managed, labelReopenedEvents(events, reopen));
       persistChatState(managed);
       return await persistedImportedChatResult(managed, provider, externalSessionId);
     } catch (error) {
@@ -55211,6 +55254,7 @@ export function createAgentChatService(args: {
 
   const importExternalChatSession = async (
     args: AgentChatImportExternalSessionArgs,
+    reopen?: ImportReopenSource,
   ): Promise<AgentChatImportExternalSessionResult> => {
     const provider = args.provider;
     const externalSessionId = typeof args.externalSessionId === "string" ? args.externalSessionId.trim() : "";
@@ -55266,12 +55310,12 @@ export function createAgentChatService(args: {
           targetDescriptor: effectiveDescriptor!,
           laneWorktreePath: launchContext.laneWorktreePath,
           importedAt,
-        });
+        }, reopen);
       }
       if (provider === "claude") {
-        return importClaudeExternalChatSession(normalizedArgs, launchContext.laneWorktreePath, importedAt, effectiveDescriptor ?? undefined);
+        return importClaudeExternalChatSession(normalizedArgs, launchContext.laneWorktreePath, importedAt, effectiveDescriptor ?? undefined, reopen);
       }
-      return importCodexExternalChatSession(normalizedArgs, importedAt, effectiveDescriptor ?? undefined);
+      return importCodexExternalChatSession(normalizedArgs, importedAt, effectiveDescriptor ?? undefined, reopen);
     }
     if (!normalizedArgs.fork) {
       return importNativeContinueExternalChatSession(
@@ -55279,6 +55323,7 @@ export function createAgentChatService(args: {
         launchContext.laneWorktreePath,
         importedAt,
         targetDescriptor,
+        reopen,
       );
     }
     // Every other provider copies by replay, into the family's own model too:
@@ -55299,7 +55344,7 @@ export function createAgentChatService(args: {
       targetDescriptor: replayDescriptor,
       laneWorktreePath: launchContext.laneWorktreePath,
       importedAt,
-    });
+    }, reopen);
   };
 
   const materializePastedTextPrompt = async <T extends {
@@ -71579,7 +71624,85 @@ export function createAgentChatService(args: {
     await disposeManagedSession(args, "disposed");
   };
 
-  const deleteSession = async ({ sessionId }: AgentChatDeleteArgs): Promise<void> => {
+  // ── Recently deleted ────────────────────────────────────────────────────
+  // A deleted chat's agent keeps its own copy of the conversation; Settings ›
+  // Recently deleted reads it back and reopens it through the import. See
+  // deletedChats.ts.
+  const deletedChats = createDeletedChatsService({
+    db: () => (db?.get && db.all && db.run ? { get: db.get, all: db.all, run: db.run } : null),
+    logger,
+    getLane: (laneId) => laneService.getSummary(laneId, { includeStatus: false }),
+    // Archived chats count: reopening a session one of them holds would run it twice.
+    listLiveProviderRefs: chatImportedRefsProvider({
+      listSessions: (laneId, options) => listSessions(laneId, { ...options, includeArchived: true }),
+    }),
+    instanceIdForHome: (provider, configHome) => (isProviderInstanceProvider(provider)
+      ? getMachineProviderInstanceStore().list(provider)
+        .find((instance) => pathsEqual(instance.configHome, configHome))?.id ?? null
+      : null),
+    importSession: (importArgs, reopen) => importExternalChatSession(importArgs, reopen),
+    loadDetail: (detailArgs, options) => loadExternalSessionDetail(detailArgs, options),
+  });
+
+  /** Records a deleted chat; `remember` false keeps it hidden (ADE's own cleanups). */
+  const rememberDeletedChat = (
+    row: TerminalSessionSummary,
+    managed: ManagedChatSession | null,
+    metadataPath: string,
+    remember: boolean,
+  ): void => {
+    try {
+      recordDeletedChatFor(row, managed, metadataPath, remember);
+    } catch (error) {
+      // Remembering a chat never fails the delete the person asked for.
+      logger.warn("agent_chat.deleted_chat_record_failed", { sessionId: row.id, error: getErrorMessage(error) });
+    }
+  };
+
+  const recordDeletedChatFor = (
+    row: TerminalSessionSummary,
+    managed: ManagedChatSession | null,
+    metadataPath: string,
+    remember: boolean,
+  ): void => {
+    const fromFile = readPersistedChatRecord(metadataPath);
+    if (!fromFile && !managed) return;
+    // The file can trail the live session by a write; the live pointers fill any gap.
+    const record: Record<string, unknown> = {
+      ...(managed?.session as unknown as Record<string, unknown> | undefined),
+      ...fromFile,
+    };
+    const lane = db?.get?.<{ name: string | null; worktreePath: string | null }>(
+      "select name, worktree_path as worktreePath from lanes where id = ? limit 1",
+      [row.laneId],
+    ) ?? null;
+    deletedChats.remember({
+      id: row.id,
+      laneId: row.laneId,
+      laneName: lane?.name ?? row.laneName ?? null,
+      title: row.title?.trim() || null,
+      provider: String(record.provider ?? row.toolType ?? ""),
+      modelId: null,
+      reasoningEffort: null,
+      instanceId: null,
+      configHome: managed ? sessionConfigHome(managed) : null,
+      cwd: managed?.laneWorktreePath ?? lane?.worktreePath ?? null,
+      createdAt: row.startedAt ?? null,
+      lastActiveAt: row.lastActivityAt ?? row.endedAt ?? null,
+      origin: "delete",
+      record,
+      hidden: !remember || record.spawnKind === "subagent" || Boolean(record.sideChatParentSessionId),
+    });
+  };
+
+  /**
+   * `remember`: a person's delete, which Settings › Recently deleted can undo.
+   * ADE's own cleanups (a failed import, a closed side chat) leave it off.
+   */
+  const deleteSession = async (
+    { sessionId }: AgentChatDeleteArgs,
+    deleteOptions: { remember?: boolean } = {},
+  ): Promise<void> => {
     const trimmedSessionId = typeof sessionId === "string" ? sessionId.trim() : "";
     if (!trimmedSessionId.length) {
       throw new Error("Chat session id is required.");
@@ -71723,6 +71846,7 @@ export function createAgentChatService(args: {
     lastPersistedPointerFingerprints.delete(trimmedSessionId);
 
     const persistedMetadataPath = metadataPathFor(trimmedSessionId);
+    rememberDeletedChat(current, deletedManaged ?? null, persistedMetadataPath, deleteOptions.remember === true);
     const dedicatedTranscriptPath = path.join(chatTranscriptsDir, `${trimmedSessionId}.jsonl`);
     const transcriptPaths = new Set<string>([
       persistedMetadataPath,
@@ -77600,7 +77724,11 @@ export function createAgentChatService(args: {
     rerunLastTurn,
     codexFuzzyFileSearch,
     dispose,
-    deleteSession,
+    deleteSession: (deleteArgs: AgentChatDeleteArgs) => deleteSession(deleteArgs, { remember: true }),
+    listDeletedChats: (listArgs?: DeletedChatListArgs) => deletedChats.list(listArgs),
+    getDeletedChatDetail: (detailArgs: DeletedChatDetailArgs) => deletedChats.detail(detailArgs),
+    reopenDeletedChat: (reopenArgs: DeletedChatReopenArgs) => deletedChats.reopen(reopenArgs),
+    removeDeletedChats: (removeArgs: DeletedChatRemoveArgs) => deletedChats.remove(removeArgs),
     archiveSession,
     unarchiveSession,
     noteRemoteWork,

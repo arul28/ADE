@@ -69,16 +69,7 @@ export const ImportSessionPreview = memo(function ImportSessionPreview({
   place: SessionPlace;
   runtimePin: OpenProjectBinding | null;
 }) {
-  const chatFontSizePx = useAppStore((state) => state.chatFontSizePx);
-  const chatTranscriptDensity = useAppStore((state) => state.chatTranscriptDensity);
-  const appearanceStyle = useMemo(
-    () => buildChatAppearanceRootStyle({ chatFontSizePx, transcriptDensity: chatTranscriptDensity }),
-    [chatFontSizePx, chatTranscriptDensity],
-  );
   const transcript = useExternalSessionDetail(summary, runtimePin);
-  // Provider transcripts have no turn boundaries; the transcript shows
-  // finished tool calls only in a turn's `done` summary.
-  const transcriptEvents = useMemo(() => withImportedTurnBoundaries(transcript.events), [transcript.events]);
   const heading = sessionHeading(summary);
   const model = modelDisplayName(transcript.detail?.model ?? summary.launch?.model);
   const branch = place.kind === "lane" ? place.branch : null;
@@ -110,52 +101,82 @@ export const ImportSessionPreview = memo(function ImportSessionPreview({
           ))}
         </div>
       </header>
-      <div
-        className="import-transcript relative flex min-h-0 flex-1 flex-col"
-        role="region"
-        aria-label="Session conversation"
-        data-import-transcript=""
-        data-chat-appearance-root=""
-        style={appearanceStyle}
-      >
-        {transcript.error ? (
-          <Banner
-            layout="inline"
-            style={{ margin: "12px 20px 0", flexShrink: 0 }}
-            model={{
-              id: "import-session-preview-error",
-              tone: "warning",
-              title: transcript.error,
-              ...(transcript.events.length ? { detail: "Showing the saved message snippets instead." } : {}),
-            }}
-          />
-        ) : null}
-        {!transcript.loaded && !transcript.error ? (
-          <TranscriptSkeleton />
-        ) : transcript.events.length ? (
-          <div className="min-h-0 flex-1">
-            <AgentChatMessageList
-              key={transcript.transcriptKey}
-              events={transcriptEvents}
-              sessionEnded
-              textPacingEnabled={false}
-              laneId={null}
-              sessionId={transcript.transcriptKey}
-              scrollMemoryKey={transcript.transcriptKey}
-              transcriptCollapseCacheKey={transcript.transcriptKey}
-              hasOlderHistory={transcript.hasOlder}
-              loadingOlderHistory={transcript.loadingOlder}
-              olderHistoryError={transcript.olderError}
-              onLoadOlderHistory={transcript.loadOlder}
-              onRetryOlderHistory={transcript.loadOlder}
-            />
-          </div>
-        ) : (
-          <div className="import-center text-[12px] text-(--kit-text-3)">
-            No messages to show.
-          </div>
-        )}
-      </div>
+      <SessionTranscriptPane transcript={transcript} />
     </>
+  );
+});
+
+/** What the conversation pane reads: one loaded session's events and paging. */
+export type SessionTranscriptState = Pick<
+  ReturnType<typeof useExternalSessionDetail>,
+  "transcriptKey" | "loaded" | "events" | "hasOlder" | "loadingOlder" | "olderError" | "loadOlder" | "error"
+>;
+
+/**
+ * The read-only conversation, rendered by the real chat transcript in its own
+ * scroll box that opens at the bottom. Import's preview and Settings ›
+ * Recently deleted both draw it.
+ */
+export const SessionTranscriptPane = memo(function SessionTranscriptPane({
+  transcript,
+}: {
+  transcript: SessionTranscriptState;
+}) {
+  const chatFontSizePx = useAppStore((state) => state.chatFontSizePx);
+  const chatTranscriptDensity = useAppStore((state) => state.chatTranscriptDensity);
+  const appearanceStyle = useMemo(
+    () => buildChatAppearanceRootStyle({ chatFontSizePx, transcriptDensity: chatTranscriptDensity }),
+    [chatFontSizePx, chatTranscriptDensity],
+  );
+  // Provider transcripts have no turn boundaries; the transcript shows
+  // finished tool calls only in a turn's `done` summary.
+  const transcriptEvents = useMemo(() => withImportedTurnBoundaries(transcript.events), [transcript.events]);
+  return (
+    <div
+      className="import-transcript relative flex min-h-0 flex-1 flex-col"
+      role="region"
+      aria-label="Session conversation"
+      data-import-transcript=""
+      data-chat-appearance-root=""
+      style={appearanceStyle}
+    >
+      {transcript.error ? (
+        <Banner
+          layout="inline"
+          style={{ margin: "12px 20px 0", flexShrink: 0 }}
+          model={{
+            id: "import-session-preview-error",
+            tone: "warning",
+            title: transcript.error,
+            ...(transcript.events.length ? { detail: "Showing the saved message snippets instead." } : {}),
+          }}
+        />
+      ) : null}
+      {!transcript.loaded && !transcript.error ? (
+        <TranscriptSkeleton />
+      ) : transcript.events.length ? (
+        <div className="min-h-0 flex-1">
+          <AgentChatMessageList
+            key={transcript.transcriptKey}
+            events={transcriptEvents}
+            sessionEnded
+            textPacingEnabled={false}
+            laneId={null}
+            sessionId={transcript.transcriptKey}
+            scrollMemoryKey={transcript.transcriptKey}
+            transcriptCollapseCacheKey={transcript.transcriptKey}
+            hasOlderHistory={transcript.hasOlder}
+            loadingOlderHistory={transcript.loadingOlder}
+            olderHistoryError={transcript.olderError}
+            onLoadOlderHistory={transcript.loadOlder}
+            onRetryOlderHistory={transcript.loadOlder}
+          />
+        </div>
+      ) : (
+        <div className="import-center text-[12px] text-(--kit-text-3)">
+          No messages to show.
+        </div>
+      )}
+    </div>
   );
 });

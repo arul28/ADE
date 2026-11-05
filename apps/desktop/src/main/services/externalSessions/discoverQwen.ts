@@ -128,6 +128,7 @@ function runtimeWorkDir(sessionFile: string): string | null {
 function qwenRecordFromCandidate(
   candidate: QwenCandidate,
   scopeRoots: readonly string[] | null | undefined,
+  includeAdeOwned = false,
 ): ExternalSessionDiscoveryRecord | null {
   const window = readJsonlWindow(candidate.filePath, candidate.size);
   const head = window.head;
@@ -146,7 +147,7 @@ function qwenRecordFromCandidate(
   // chat list, not to the importer.
   const hasAttribution = head.some((record) => systemSubtype(record) === "attribution_snapshot");
   const firstPrompt = head.find(isQwenPromptRecord);
-  if (!hasAttribution && startsWithAdeGuidance(qwenPartsText(asRecord(firstPrompt?.message)))) return null;
+  if (!includeAdeOwned && !hasAttribution && startsWithAdeGuidance(qwenPartsText(asRecord(firstPrompt?.message)))) return null;
 
   const summary = summarizeNeutralRecords("qwen", {
     head: compact(head.map(neutralQwenRecord)),
@@ -198,6 +199,6 @@ export async function discoverQwenSessions(
     candidates: listQwenCandidates(projectsDir, args.scopeRoots, lookupId),
     limit: normalizeExternalSessionLimit(args.limit),
     lookupId,
-    read: (candidate) => qwenRecordFromCandidate(candidate, args.scopeRoots),
+    read: (candidate) => qwenRecordFromCandidate(candidate, args.scopeRoots, args.includeAdeOwned === true),
   });
 }

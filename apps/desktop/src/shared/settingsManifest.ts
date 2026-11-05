@@ -1320,6 +1320,19 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "Archive",
   },
   {
+    id: "storage.recentlyDeleted",
+    label: "Recently deleted chats",
+    keywords: [
+      "deleted chats", "recently deleted", "recover chat", "restore chat", "undo delete", "undelete",
+      "reopen chat", "trash", "bin", "recycle", "deleted", "lost chat", "chat history", "bring back",
+    ],
+    tab: "storage",
+    anchor: "recently-deleted",
+    scope: "machine-repo",
+    web: "machine",
+    group: "Archive",
+  },
+  {
     id: "storage.cleanups",
     label: "Cleanup history",
     keywords: ["cleanup", "freed", "maintenance", "journal", "reclaimed", "storage doctor", "search index", "vacuum", "duplicate transcripts", "database size"],
@@ -1718,6 +1731,8 @@ export const LEGACY_TAB_ALIASES: Readonly<Record<string, SettingsTabId>> = {
   diagnostics: "advanced",
   archive: "storage",
   archived: "storage",
+  "recently-deleted": "storage",
+  trash: "storage",
   // Swept into General before; now each has a real home.
   workspace: "location",
   project: "location",
@@ -1765,6 +1780,8 @@ export const LEGACY_TAB_ANCHORS: Readonly<Record<string, string>> = {
   space: "storage",
   archive: "archive",
   archived: "archive",
+  "recently-deleted": "recently-deleted",
+  trash: "recently-deleted",
   diagnostics: "diagnostics",
   "session-lifecycle": "session-lifecycle",
   "project-location": "project-location",

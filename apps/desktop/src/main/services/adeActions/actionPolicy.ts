@@ -366,6 +366,8 @@ export const ADE_ACTION_USER_ONLY: Partial<Record<AdeActionDomain, readonly stri
     "resolveCrossMachineBatchMoveApproval",
     "mcpAppRequest",
     "revokeMcpAppGrant",
+    // Taking a chat off Recently deleted means it can no longer be reopened.
+    "removeDeletedChats",
   ],
   // Granting an outside AI app this computer is the person's call. `ade mcp`
   // in their own terminal reaches the same service through `remoteMcp.call`.
@@ -720,6 +722,12 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "clearAsk",
     "createSession",
     "deleteSession",
+    // Settings › Recently deleted (`ade chat deleted`). Agents may list and
+    // reopen; removing one from the list is the person's (ADE_ACTION_USER_ONLY).
+    "listDeletedChats",
+    "getDeletedChatDetail",
+    "reopenDeletedChat",
+    "removeDeletedChats",
     "dispatchSteer",
     "editSteer",
     "ensureCtoSession",

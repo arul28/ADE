@@ -187,13 +187,16 @@ export function externalSessionPreviewChatId(provider: ExternalSessionProvider, 
  */
 export async function loadExternalSessionDetail(
   args: ExternalSessionDetailArgs,
-  options: { maxEvents?: number; homeDir?: string; env?: NodeJS.ProcessEnv } = {},
+  options: { maxEvents?: number; homeDir?: string; env?: NodeJS.ProcessEnv; includeAdeOwned?: boolean } = {},
 ): Promise<ExternalSessionDetail> {
   const home = {
     ...(options.homeDir ? { homeDir: options.homeDir } : {}),
     ...(options.env ? { env: options.env } : {}),
   };
-  const record = await discoverExternalSessionRecord(args.provider, args.sessionId, home);
+  const record = await discoverExternalSessionRecord(args.provider, args.sessionId, {
+    ...home,
+    ...(options.includeAdeOwned ? { includeAdeOwned: true } : {}),
+  });
   if (!record) return emptyDetail(args);
   const sourcePath = record.sourcePath?.trim() || null;
   // The same conversation file the converters read: a session folder or a

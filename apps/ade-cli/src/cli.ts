@@ -905,6 +905,7 @@ export type FormatterId =
   | "harness-routes"
   | "harness-test"
   | "archive-list"
+  | "deleted-chats"
   | "archive-summary"
   | "archive-action"
   | "storage-snapshot"
@@ -2721,6 +2722,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                                                     (--session <subagent>), never one the user raised.
                                                     Clear it when you asked and then kept working anyway, so the
                                                     row stops saying "Needs you" about a question nobody is on.
+    $ ade chat deleted list --text                  Recently deleted chats this machine can still reopen (--query <text>)
+    $ ade chat deleted reopen <id> [--lane <lane>]  Reopen one with its history; a chat whose lane is gone needs --lane
     $ ade chat inbox --text                         Every chat in the project that waits on you, each with its question
                                                     or approval inline and the exact 'chat respond' that answers it
                                                     (--all-machines: every machine on your account)
@@ -10984,6 +10987,39 @@ function buildChatRespondPlan(args: string[], sessionId: string): CliPlan {
 /** What `ade chat scheduled-work <operation>` can do. */
 const SCHEDULED_WORK_OPERATIONS: ReadonlySet<string> = new Set(["list", "create", "cancel", "status", "pause", "resume"]);
 
+/**
+ * `ade chat deleted`: Settings › Recently deleted. Lists deleted chats whose
+ * conversation the agent still keeps on this machine, and reopens one.
+ * Removing one from the list is the person's, in Settings.
+ */
+function buildChatDeletedPlan(args: string[]): CliPlan {
+  const verb = firstPositional(args) ?? "list";
+  if (verb === "list" || verb === "ls") {
+    const query = readValue(args, ["--query", "--search"]) ?? standalonePositionals(args).join(" ").trim();
+    return {
+      kind: "execute",
+      label: "chat deleted list",
+      formatter: "deleted-chats",
+      steps: [actionStep("result", "chat", "listDeletedChats", query ? { query } : {})],
+    };
+  }
+  if (verb === "reopen" || verb === "restore" || verb === "undo") {
+    const laneId = readLaneId(args);
+    const id = requireValue(firstPositional(args), "deleted chat id (see `ade chat deleted list`)");
+    return {
+      kind: "execute",
+      label: "chat deleted reopen",
+      steps: [actionStep("result", "chat", "reopenDeletedChat", { id, ...(laneId ? { laneId } : {}) })],
+    };
+  }
+  if (verb === "remove" || verb === "rm" || verb === "delete") {
+    throw new CliUsageError(
+      "Remove chats from the list in ADE: Settings › Storage › Recently deleted. The command line can list and reopen them.",
+    );
+  }
+  throw new CliUsageError("chat deleted supports list [--query <text>] or reopen <id> [--lane <lane-id>].");
+}
+
 function buildChatPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "list";
   if (readFlag(args, ["--personal"])) {
@@ -11003,6 +11039,7 @@ function buildChatPlan(args: string[]): CliPlan {
       steps: [listActionsStep("actions", "chat")],
     };
   if (sub === "inbox") return buildChatInboxPlan();
+  if (sub === "deleted") return buildChatDeletedPlan(args);
   if (sub === "move") {
     // `--note --no-changes` reports the missing note instead of eating
     // `--no-changes` and moving the changes the person asked to leave behind.
@@ -32112,6 +32149,24 @@ function formatBytes(bytes: unknown): string {
   return `${rounded} ${units[unitIndex]}`;
 }
 
+function formatDeletedChats(value: unknown): string {
+  if (!isRecord(value)) return JSON.stringify(value, null, 2);
+  const chats = Array.isArray(value.chats) ? value.chats.filter(isRecord) : [];
+  return renderTable(
+    ["ID", "TITLE", "AGENT", "LANE", "DELETED"],
+    chats.map((chat) => [
+      asString(chat.id) ?? "?",
+      cell(chat.title ?? "Untitled chat", 40),
+      cell(chat.provider, 10),
+      chat.laneExists === true ? cell(chat.laneName, 20) : `${cell(chat.laneName ?? "lane", 14)} (deleted)`,
+      cell(chat.deletedAt, 24),
+    ]),
+    "No recently deleted chats.",
+    // An id is pasted back into `ade chat deleted reopen`.
+    { fullColumns: ["ID"] },
+  );
+}
+
 function formatArchiveList(value: unknown): string {
   if (!isRecord(value)) return JSON.stringify(value, null, 2);
   const items = Array.isArray(value.items) ? value.items.filter(isRecord) : [];
@@ -36428,6 +36483,8 @@ function formatTextOutput(
       return formatSyncDevices(value);
     case "archive-list":
       return formatArchiveList(value);
+    case "deleted-chats":
+      return formatDeletedChats(value);
     case "archive-summary":
       return formatArchiveSummary(value);
     case "archive-action":

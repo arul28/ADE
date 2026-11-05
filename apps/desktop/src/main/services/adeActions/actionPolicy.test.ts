@@ -431,6 +431,18 @@ describe("isCtoOnlyAdeAction", () => {
     expect(isCtoOnlyAdeAction("project_secret", "list")).toBe(false);
   });
 
+  it("keeps removing a chat from Recently deleted user-only", () => {
+    // Listing and reopening are ordinary chat work agents and automations do...
+    for (const action of ["listDeletedChats", "getDeletedChatDetail", "reopenDeletedChat"]) {
+      expect(isAllowedAdeAction("chat", action)).toBe(true);
+      expect(isUserOnlyAdeAction("chat", action)).toBe(false);
+    }
+    // ...but taking one off the list destroys the only way back to it.
+    expect(isAllowedAdeAction("chat", "removeDeletedChats")).toBe(true);
+    expect(isUserOnlyAdeAction("chat", "removeDeletedChats")).toBe(true);
+    expect(isAutomationAllowedAdeAction("chat", "removeDeletedChats")).toBe(false);
+  });
+
   it("keeps archive deletion user-only and archive restore CTO-only", () => {
     // Reading the archive is open to agents and automations...
     for (const action of ["list", "summary"]) {

@@ -191,10 +191,11 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "getCrossMachineBatchMove",
       "previewCrossMachineHandoff", "resolveSmartLinkPreview", "resolveSmartLinkImage", "resolveSourceFavicons",
       "readTranscript", "readTranscriptPage", "suggestLaneNameFromPrompt",
-      "generateAutoLaneIdentity",
+      "generateAutoLaneIdentity", "listDeletedChats", "getDeletedChatDetail",
     ],
     write: [
       "archiveSession", "cancelDispatchedSteer", "cancelSteer", "createSession", "deleteSession",
+      "reopenDeletedChat", "removeDeletedChats",
       "dispatchSteer", "editSteer", "ensureCtoSession", "moveSteer", "setCodexGoal",
       "setCodexGoalStatus", "clearCodexGoal", "startCodexRealtime", "stopCodexRealtime",
       "resetCodexMemory", "terminateCodexBackgroundTerminal", "interrupt",

@@ -125,6 +125,7 @@ const OWNER_ONLY: Record<Exclude<SettingOwnerOnlyReason, "preference">, readonly
     "storage.deleted-lane-chats",
     "storage.provider-history",
     "archive.items",
+    "storage.recentlyDeleted",
     "storage.cleanups",
     "storage.lane-rules",
     "storage.lane-build-output",

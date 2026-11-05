@@ -303,6 +303,7 @@ export function findMuseSessionForCwd(args: {
 function museRecordFromCandidate(
   candidate: MuseSessionCandidate,
   scopeRoots: readonly string[] | null | undefined,
+  includeAdeOwned = false,
 ): ExternalSessionDiscoveryRecord | null {
   const window = readJsonlWindow(candidate.logPath, candidate.size);
   const headRecords = flattenMuseRecords(window.head);
@@ -310,7 +311,7 @@ function museRecordFromCandidate(
   const header = headerFromRecords(allRecords ?? headRecords);
   // ADE's own Muse chats are listed as chats already; importing one would
   // fork ownership of a session the chat runtime is driving.
-  if (header.clientInfoName === "ade") return null;
+  if (header.clientInfoName === "ade" && !includeAdeOwned) return null;
   const cwd = normalizeProviderCwd(header.workspaceRoot);
   if (!cwdIsInScope(cwd, scopeRoots)) return null;
 
@@ -355,6 +356,6 @@ export async function discoverMuseSessions(
     candidates: listMuseSessionCandidates(root, lookupId ? lookupId.toLowerCase() : null),
     limit: normalizeExternalSessionLimit(args.limit),
     lookupId: lookupId ? lookupId.toLowerCase() : null,
-    read: (candidate) => museRecordFromCandidate(candidate, args.scopeRoots),
+    read: (candidate) => museRecordFromCandidate(candidate, args.scopeRoots, args.includeAdeOwned === true),
   });
 }

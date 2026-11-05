@@ -127,6 +127,7 @@ import type {
 } from "../../../shared/types";
 import { legacyLaneEmojiIcon, legacyLaneIconEmoji, normalizeLaneEmoji } from "../../../shared/laneEmoji";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
+import { recordChatsDeletedWithLane } from "../chat/deletedChats";
 import { requireNormalizedUuid } from "../../../shared/uuid";
 import {
   classifyMissingLaneBranchDriftKind,
@@ -3453,6 +3454,8 @@ export function createLaneService({
     // Sessions and their session-scoped Linear links follow the lane.
     db.run("update claude_sessions set lane_id = ? where lane_id = ?", [keeperId, duplicateId]);
     db.run("update terminal_sessions set lane_id = ? where lane_id = ?", [keeperId, duplicateId]);
+    // A deleted chat of the absorbed lane still reopens in place, in the keeper.
+    db.run("update deleted_chats set lane_id = ? where lane_id = ?", [keeperId, duplicateId]);
     db.run("update session_linear_issues set lane_id = ? where lane_id = ? and project_id = ?", [
       keeperId,
       duplicateId,
@@ -5101,6 +5104,27 @@ export function createLaneService({
       db.all<{ id: string }>("select id from terminal_sessions where lane_id = ?", [laneId])
         .map((session) => session.id),
     );
+    // The lane's chats go without the chat delete, so Recently deleted is
+    // told here; they reopen as a copy in a lane the user picks.
+    if (tombstoneMode === "deleted") {
+      try {
+        const lane = db.get<{ name: string | null; worktreePath: string | null }>(
+          "select name, worktree_path as worktreePath from lanes where id = ? limit 1",
+          [laneId],
+        );
+        recordChatsDeletedWithLane(db, {
+          laneId,
+          laneName: lane?.name ?? null,
+          worktreePath: lane?.worktreePath ?? null,
+          chatSessionsDir: resolveAdeLayout(projectRoot).chatSessionsDir,
+        });
+      } catch (error) {
+        logger.warn("lanes.deleted_chats_record_failed", {
+          laneId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
     db.run("delete from terminal_sessions where lane_id = ?", [laneId]);
     // The settle-lifecycle token table is local-only with no foreign key, so a
     // bulk session delete would otherwise leave permanent orphans. Sweep by

@@ -7,7 +7,7 @@ import { isWellFormedExternalSessionId } from "../sessionIds";
 export async function discoverExternalSessionRecord(
   provider: ExternalSessionProvider,
   sessionId: string,
-  options: { homeDir?: string; env?: NodeJS.ProcessEnv } = {},
+  options: { homeDir?: string; env?: NodeJS.ProcessEnv; includeAdeOwned?: boolean } = {},
 ): Promise<ExternalSessionDiscoveryRecord | null> {
   // Detail and replay take the id straight from the caller (a remote viewer
   // included); refuse anything the list and import paths would refuse.
@@ -17,6 +17,7 @@ export async function discoverExternalSessionRecord(
     limit: 1,
     ...(options.homeDir ? { homeDir: options.homeDir } : {}),
     ...(options.env ? { env: options.env } : {}),
+    ...(options.includeAdeOwned ? { includeAdeOwned: true } : {}),
   });
   return record ?? null;
 }

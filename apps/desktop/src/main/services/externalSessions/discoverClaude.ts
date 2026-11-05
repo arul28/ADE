@@ -372,7 +372,7 @@ export async function discoverClaudeSessions(
     }
     const scan = claudeScanRecords(candidate.filePath);
     const jsonl = scan.combined;
-    if (isClaudeSdkOriginTranscript(scan.prefix)) continue;
+    if (!args.includeAdeOwned && isClaudeSdkOriginTranscript(scan.prefix)) continue;
     const cwd = claudeSessionCwd(jsonl, path.basename(path.dirname(candidate.filePath)));
     let createdAt: number | null = null;
     for (const item of jsonl) {

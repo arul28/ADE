@@ -496,6 +496,13 @@ import type {
   ExternalSessionDetail,
   ExternalSessionDetailArgs,
   ExternalSessionDetailUpdatedEvent,
+  DeletedChatDetailArgs,
+  DeletedChatListArgs,
+  DeletedChatListResult,
+  DeletedChatRemoveArgs,
+  DeletedChatRemoveResult,
+  DeletedChatReopenArgs,
+  DeletedChatReopenResult,
   ExternalSessionDetailWatchArgs,
   GitActionResult,
   GitCherryPickArgs,
@@ -8648,6 +8655,23 @@ const adeBridge = {
       );
       agentChatSummaryCache.clear();
     },
+    // Settings › Recently deleted. Every call goes to the machine that holds
+    // the chat's conversation: the list, its preview, reopen and remove.
+    listDeleted: async (args: DeletedChatListArgs = {}, pin?: OpenProjectBinding | null): Promise<DeletedChatListResult> =>
+      callPinnedOrBoundRuntimeActionOr<DeletedChatListResult>(pin, "chat", "listDeletedChats", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatListDeleted, args)),
+    getDeletedDetail: async (args: DeletedChatDetailArgs, pin?: OpenProjectBinding | null): Promise<ExternalSessionDetail> =>
+      callPinnedOrBoundRuntimeActionOr<ExternalSessionDetail>(pin, "chat", "getDeletedChatDetail", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatGetDeletedDetail, args)),
+    reopenDeleted: async (args: DeletedChatReopenArgs, pin?: OpenProjectBinding | null): Promise<DeletedChatReopenResult> => {
+      const result = await callPinnedOrBoundRuntimeActionOr<DeletedChatReopenResult>(pin, "chat", "reopenDeletedChat", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatReopenDeleted, args));
+      agentChatSummaryCache.clear();
+      return result;
+    },
+    removeDeleted: async (args: DeletedChatRemoveArgs, pin?: OpenProjectBinding | null): Promise<DeletedChatRemoveResult> =>
+      callPinnedOrBoundRuntimeActionOr<DeletedChatRemoveResult>(pin, "chat", "removeDeletedChats", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatRemoveDeleted, args)),
     updateSession: async (
       args: AgentChatUpdateSessionArgs,
       pin?: OpenProjectBinding | null,

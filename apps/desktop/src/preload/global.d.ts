@@ -301,6 +301,13 @@ import type {
   ExternalSessionDetail,
   ExternalSessionDetailArgs,
   ExternalSessionDetailUpdatedEvent,
+  DeletedChatDetailArgs,
+  DeletedChatListArgs,
+  DeletedChatListResult,
+  DeletedChatRemoveArgs,
+  DeletedChatRemoveResult,
+  DeletedChatReopenArgs,
+  DeletedChatReopenResult,
   ExternalSessionDetailWatchArgs,
   GetLaneConflictStatusArgs,
   GetDiffChangesArgs,
@@ -2742,6 +2749,10 @@ declare global {
           pin?: OpenProjectBinding | null,
         ) => Promise<void>;
         delete: (args: AgentChatDeleteArgs, pin?: OpenProjectBinding | null) => Promise<void>;
+        listDeleted: (args?: DeletedChatListArgs, pin?: OpenProjectBinding | null) => Promise<DeletedChatListResult>;
+        getDeletedDetail: (args: DeletedChatDetailArgs, pin?: OpenProjectBinding | null) => Promise<ExternalSessionDetail>;
+        reopenDeleted: (args: DeletedChatReopenArgs, pin?: OpenProjectBinding | null) => Promise<DeletedChatReopenResult>;
+        removeDeleted: (args: DeletedChatRemoveArgs, pin?: OpenProjectBinding | null) => Promise<DeletedChatRemoveResult>;
         updateSession: (
           args: AgentChatUpdateSessionArgs,
           pin?: OpenProjectBinding | null,
