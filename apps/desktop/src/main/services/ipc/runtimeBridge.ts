@@ -1,4 +1,5 @@
 import { app, BrowserWindow, ipcMain, powerMonitor, type WebContents } from "electron";
+import { agent37WakeForUse } from "../agent37/agent37WakeHook";
 import { showRememberedOpenDialog } from "../shared/rememberedOpenDialog";
 import { resolveMovedProjectRoot } from "../../../../../ade-cli/src/services/projects/projectMove/moveJournal";
 import { localLinkOwnership } from "../../../../../ade-cli/src/services/projects/localLinkOwnership";
@@ -575,6 +576,8 @@ export function registerRuntimeBridge({
       // ADE; reconnecting saved machines on its own would take them away from it.
       // ADE_DEV_REMOTE_AUTOCONNECT=1 opts a dev app in on purpose.
       explicitConnectOnly: !app.isPackaged && process.env.ADE_DEV_REMOTE_AUTOCONNECT !== "1",
+      // A sleeping Agent 37 box wakes when the person uses it (registerAgent37Ipc).
+      wakeForUse: agent37WakeForUse,
     },
     pairedMachineStore,
   );

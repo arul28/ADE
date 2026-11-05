@@ -17,6 +17,7 @@ import {
   type Agent37ReadyMachineState,
   type Agent37ReadyPool,
   type Agent37ReadyProjectSettings,
+  type Agent37Spending,
 } from "../../../shared/agent37";
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
 import type { Agent37Logger } from "./agent37Client";
@@ -29,6 +30,8 @@ export type Agent37ReadyActionDeps = {
   readSettings: () => Promise<Agent37ReadyProjectSettings[]>;
   /** A claim from the CLI or an agent (analytics; coarse, never the project or machine). */
   onClaimed?: () => void;
+  /** This month against the cap: a claim at the cap is refused. */
+  spending?: () => Promise<Agent37Spending | null>;
   logger?: Agent37Logger;
 };
 
@@ -78,7 +81,7 @@ export function buildAgent37ReadyActions(deps: Agent37ReadyActionDeps) {
     async claim_ready(args?: unknown): Promise<Agent37ReadyClaim> {
       const identity = normalizeGitRemoteIdentity(readString(args, "originUrl"));
       if (!identity) throw new Error("Pass the project's git origin (originUrl); a project without one has no ready machine.");
-      const claim = await claimAgent37ReadyMachine(await requireAgent37Client(deps.credentials), identity, { logger: deps.logger });
+      const claim = await claimAgent37ReadyMachine(await requireAgent37Client(deps.credentials), identity, { logger: deps.logger, spending: deps.spending });
       deps.onClaimed?.();
       return claim;
     },

@@ -32,13 +32,17 @@
 import { randomUUID } from "node:crypto";
 import {
   AGENT37_READY_METADATA,
+  agent37CapReachedMessage,
+  agent37ReadyRetryAt,
   agent37Shape,
+  type Agent37ReadyFailure,
   type Agent37CreateMachineArgs,
   type Agent37CreateMachineResult,
   type Agent37CreateProgress,
   type Agent37ReadyProjectSettings,
   type Agent37ReadyProjectStatus,
   type Agent37ReadyStatus,
+  type Agent37Spending,
 } from "../../../shared/agent37";
 import type { Agent37Client, Agent37Instance, Agent37Logger } from "./agent37Client";
 import { getErrorMessage } from "../shared/utils";
@@ -77,6 +81,8 @@ export type Agent37ReadyKeeperDeps = {
    * is replaced, so a ready machine runs the same ADE as the desktop that keeps it.
    */
   templateAdeVersion?: () => string | null;
+  /** This month against the cap: at the cap no machine is prepared. */
+  spending?: () => Promise<Agent37Spending | null>;
   onStatus?: (status: Agent37ReadyStatus) => void;
   /** A prepare ended: the machine is ready, or it failed (a cancel is neither). */
   onPrepared?: (outcome: "completed" | "failed") => void;
@@ -223,7 +229,7 @@ export function createAgent37ReadyKeeper(deps: Agent37ReadyKeeperDeps) {
    * Failed prepares, also kept here: when the choice can't be saved with the
    * failure, this still stops the next pass from paying to try again.
    */
-  const failures = new Map<string, { error: string; at: number }>();
+  const failures = new Map<string, Agent37ReadyFailure>();
   let last: Agent37ReadyStatus = { projects: [], error: null };
   let timer: NodeJS.Timeout | null = null;
   let passing: Promise<void> | null = null;
@@ -240,6 +246,11 @@ export function createAgent37ReadyKeeper(deps: Agent37ReadyKeeperDeps) {
   };
 
   const failureOf = (settings: Agent37ReadyProjectSettings) => settings.failure ?? failures.get(settings.identity) ?? null;
+  /** A failure stops new prepares until its automatic retry is due, or for good once ADE stopped retrying. */
+  const blockedByFailure = (settings: Agent37ReadyProjectSettings): boolean => {
+    const failure = failureOf(settings);
+    return failure != null && !(failure.retryAt != null && failure.retryAt <= now());
+  };
 
   const statusFor = (
     settings: Agent37ReadyProjectSettings,
@@ -273,7 +284,15 @@ export function createAgent37ReadyKeeper(deps: Agent37ReadyKeeperDeps) {
     }
     const failure = failureOf(settings);
     if (failure) {
-      return { ...base, state: "failed", message: `ADE couldn't prepare it: ${failure.error}`, error: failure.error };
+      const minutes = failure.retryAt != null ? Math.max(1, Math.ceil((failure.retryAt - now()) / 60_000)) : null;
+      return {
+        ...base,
+        state: "failed",
+        message: minutes != null
+          ? `ADE couldn't prepare it, and tries again in about ${minutes} min: ${failure.error}`
+          : `ADE couldn't prepare it: ${failure.error}`,
+        error: failure.error,
+      };
     }
     return { ...base, state: "waiting", message: "ADE will prepare one shortly." };
   };
@@ -399,6 +418,13 @@ export function createAgent37ReadyKeeper(deps: Agent37ReadyKeeperDeps) {
       }
       logger.info?.("agent37.ready_prepared", { instanceId: created.instanceId, ms: now() - entry.startedAt });
       deps.onPrepared?.("completed");
+      // A retry that worked clears the failure it retried.
+      if (failureOf(settings)) {
+        failures.delete(settings.identity);
+        await updateProject(settings.identity, (current) => ({ ...current, failure: null })).catch((writeError: unknown) => {
+          logger.warn?.("agent37.ready_failure_not_cleared", { error: getErrorMessage(writeError) });
+        });
+      }
     } catch (error) {
       const cancelled = signal.aborted || error instanceof Agent37ReadyPrepareCancelled;
       const reason = getErrorMessage(error);
@@ -414,12 +440,22 @@ export function createAgent37ReadyKeeper(deps: Agent37ReadyKeeperDeps) {
         left = !(await discard(client, entry.instanceId, entry.machineKey));
       }
       if (!cancelled) {
-        const failure = {
+        // Bounded: ADE tries a couple more times on its own (a flaky setup
+        // step, a busy host), never when a machine may still be billing or the
+        // template can't run a setup, then waits for Retry.
+        const attempts = (failureOf(settings)?.attempts ?? 0) + 1;
+        const at = now();
+        const retriable = !left && !/template is too old/.test(reason);
+        const retryAt = agent37ReadyRetryAt(attempts, at, retriable);
+        const failure: Agent37ReadyFailure = {
           error: left
             ? `${reason.replace(/\.$/, "")}. ADE couldn't confirm it deleted the machine (${entry.instanceId}); delete it in your Agent 37 dashboard if it's still there.`
             : reason,
-          at: now(),
+          at,
+          attempts,
+          retryAt,
         };
+        logger.info?.("agent37.ready_prepare_will_retry", { attempts, retrying: retryAt != null });
         failures.set(settings.identity, failure);
         deps.onPrepared?.("failed");
         await updateProject(settings.identity, (current) => ({ ...current, failure })).catch((writeError: unknown) => {
@@ -520,19 +556,22 @@ export function createAgent37ReadyKeeper(deps: Agent37ReadyKeeperDeps) {
       if (!wanted.has(identity)) entry.controller.abort();
     }
     await reconcilePool(client, instances, wanted, authoritative);
-    for (const settings of projects) {
+    const missing = projects.filter((settings) => {
       const pool = agent37ReadyMachinesFor(instances, settings.identity)
         .filter((instance) => agent37ReadyStateOf(instance) !== "claimed" && instance.status !== "failed");
-      if (!pool.length && !local.has(settings.identity) && !failureOf(settings)) {
-        void prepare(settings);
-      }
+      return !pool.length && !local.has(settings.identity) && !blockedByFailure(settings);
+    });
+    // At the monthly cap ADE makes nothing new; the next pass after it is raised prepares.
+    const month = missing.length ? await deps.spending?.().catch(() => null) ?? null : null;
+    if (!month?.capReached) {
+      for (const settings of missing) void prepare(settings);
     }
     publish({
       projects: projects.map((settings) => statusFor(
         settings,
         agent37ReadyMachinesFor(instances, settings.identity).filter((instance) => instance.status !== "failed"),
       )),
-      error: null,
+      error: month?.capReached ? agent37CapReachedMessage(month) : null,
     });
   };
 

@@ -6,6 +6,7 @@ import {
   agent37AtMachineLimit,
   agent37MachineLimitMessage,
   describeAgent37MachineSize,
+  describeAgent37SleepPolicy,
   formatAgent37HourlyPrice,
   formatAgent37Usd,
   type Agent37Machine,
@@ -50,6 +51,7 @@ export function Agent37GroupHead({
   const facts = [
     boxes.length > 0 ? `${formatAgent37HourlyPrice(totals.hourlyUsd)} now` : null,
     totals.spentUsd != null && boxes.length > 0 ? `${formatAgent37Usd(totals.spentUsd)} so far` : null,
+    totals.savedUsd != null && totals.savedUsd >= 0.01 ? `${formatAgent37Usd(totals.savedUsd)} saved asleep` : null,
     result?.balanceUsd != null ? `${formatAgent37Usd(result.balanceUsd)} left` : null,
   ].filter(Boolean);
   return (
@@ -140,6 +142,26 @@ export function Agent37GroupBanners({
         <Banner key="wallet" layout="inline" model={{ id: "agent37-wallet-low", tone: "warning", icon: <Agent37Mark size={15} />, title: result.balanceUsd != null && result.balanceUsd <= 0 ? "Your Agent 37 wallet is empty" : "Your Agent 37 wallet is running low", detail: warning, actions: [TOP_UP] }} />,
       );
     }
+    const { spending } = result;
+    if (spending.monthlyCapUsd != null && spending.monthSpentUsd != null && (spending.capReached || spending.capNear)) {
+      const capLine = `${formatAgent37Usd(spending.monthSpentUsd)} of your ${formatAgent37Usd(spending.monthlyCapUsd)} monthly cap`;
+      banners.push(
+        <Banner
+          key="cap"
+          layout="inline"
+          model={{
+            id: spending.capReached ? "agent37-cap-reached" : "agent37-cap-near",
+            tone: spending.capReached ? "warning" : "info",
+            icon: <Agent37Mark size={15} />,
+            title: spending.capReached ? "You reached this month's Agent 37 cap" : "Close to this month's Agent 37 cap",
+            detail: spending.capReached
+              ? `${capLine}. ADE makes, wakes and resizes nothing until the 1st or until you raise it. Running work carries on.`
+              : `${capLine}. At the cap ADE stops making and waking machines.`,
+            actions: onOpenSettings ? [{ label: "Change the cap", onClick: onOpenSettings }] : undefined,
+          }}
+        />,
+      );
+    }
     if (agent37AtMachineLimit(result) && boxes.some((box) => box.state === "asleep" || box.state === "stopped")) {
       banners.push(
         <Banner key="limit" layout="inline" model={{ id: "agent37-limit", tone: "info", icon: <Agent37Mark size={15} />, title: "At your Agent 37 machine limit", detail: agent37MachineLimitMessage(result, "wake"), actions: result.tier === 0 ? [TOP_UP] : undefined }} />,
@@ -159,6 +181,8 @@ function errorActions(error: Agent37BoxActionError, onOpenSettings?: (() => void
       return [{ label: `Open ${AGENT37_NAME}`, href: AGENT37_BILLING_URL, variant: "secondary" }];
     case "key":
       return onOpenSettings ? [{ label: "Connect a new key", onClick: onOpenSettings }] : undefined;
+    case "cap":
+      return onOpenSettings ? [{ label: "Change the cap", onClick: onOpenSettings }] : undefined;
     default:
       return undefined;
   }
@@ -225,6 +249,16 @@ export function Agent37BoxStrip({
                 : "What this box cost in the last 90 days, the furthest back Agent 37 reports."}
             >
               {spend}
+            </span>
+          ) : null}
+          {box.madeByAde && box.sleep.state !== "auto" ? (
+            <span
+              className="ade-cx-a37-fact"
+              title={box.sleep.state === "never"
+                ? "You turned sleep off for this box. Sleep when idle… in its menu turns it back on."
+                : "The ADE on this box is older than sleeping on its own. It sleeps when idle once ADE on it updates."}
+            >
+              {describeAgent37SleepPolicy(box.sleep)}
             </span>
           ) : null}
           {laneNames.length ? (

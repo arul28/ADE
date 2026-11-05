@@ -24,6 +24,8 @@ function box(instanceId: string, machineKey: string | null): Agent37Machine {
     madeByAde: true,
     createdAtMs: null,
     ready: null,
+    sleep: { state: "auto", afterMinutes: 10 },
+    savedUsd: null,
   };
 }
 

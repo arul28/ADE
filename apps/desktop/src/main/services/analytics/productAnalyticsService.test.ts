@@ -2331,7 +2331,7 @@ describe("product analytics producers", () => {
   });
 
   it("keeps the Agent 37 box actions and ready-machine outcomes through the sanitizer and nothing about the box", () => {
-    for (const outcome of ["box_sleep", "box_wake", "box_resize", "box_backup", "box_delete"]) {
+    for (const outcome of ["box_sleep", "box_wake", "box_resize", "box_backup", "box_delete", "box_set_sleep", "box_copy", "box_move"]) {
       expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
         feature: "connections",
         action: "agent37_machine_action",

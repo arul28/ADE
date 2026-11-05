@@ -910,6 +910,8 @@ export type FormatterId =
   | "project-secrets"
   | "integrations"
   | "agent37-ready"
+  | "agent37-list"
+  | "agent37-result"
   | "mcp-servers"
   | "mcp-servers-remove"
   | "history-list"
@@ -4493,18 +4495,35 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   card only after they say yes.
 `,
   agent37: `${ADE_BANNER}
-  Agent 37 ready machines
+  Agent 37 cloud machines
 
-  A ready machine is a cloud machine ADE keeps prepared for one project (the
-  repository cloned, its setup run, its services started, signed in) and
-  asleep, so a new chat on it is working in seconds. Asleep it bills only its
-  disk. Turn it on per project in Settings › Integrations › Agent 37.
+  Machines on the account's Agent 37 workspace: boxes (sandboxed Linux) and
+  VMs (their own kernel: Docker, Android). They sleep on their own after a few
+  idle minutes and bill only their disk; a --machine call or opening a lane
+  wakes one in about a second. <machine> is its name or Agent 37 id.
 
-    $ ade agent37 ready --text                       Projects kept ready and their machines
+    $ ade agent37 list --text                       Machines, state, size, price, spend, saved asleep
+    $ ade agent37 spending --text                   This month against the cap, wallet, saved asleep
+    $ ade agent37 create --kind vm --shape 4x8 --name "android vm"
+    $ ade agent37 sleep <machine>                   Sleep now (free)
+    $ ade agent37 wake <machine>                    Wake (bounded by the monthly cap)
+    $ ade agent37 resize <machine> --shape 4x16     Same type, new size; it restarts
+    $ ade agent37 copy <machine> --name "lane box"  A new machine with the same files (a warm copy)
+    $ ade agent37 move <machine> --to vm|box        Change type, keeping every repo, lane and chat
+    $ ade agent37 delete <machine>                  Gone for good, files and all
+    $ ade agent37 sleep-after <machine> 10|never    Minutes idle before it sleeps
+    $ ade agent37 cap 50|off                        The account's monthly cap
+    $ ade agent37 ready [status|on|off|retry]       Keep a cloud machine ready for this project
+                                                    on takes --kind, --shape, --setup "npm ci"
     $ ade chat create --machine agent37:ready --prompt "…"
-                                                    Start the chat on this project's ready machine: ADE wakes it,
-                                                    waits until it is online, then sends. The machine is then an
-                                                    ordinary machine of yours, and ADE prepares the next one.
+                                                    Start the chat on this project's ready machine
+
+  Asks first: create, resize, copy, move, delete, sleep-after never, raising
+  the cap, ready on. The card shows in your chat and gives up after 5 minutes.
+  In a full-auto chat or an automation ADE answers it: yes within the monthly
+  cap, no to deleting a machine that chat didn't make. create, copy and move
+  sign the new machine in through the ADE desktop app on this computer.
+  To move one chat and its lane to another computer: ade chat move.
 `,
   "mcp servers": `${ADE_BANNER}
   ADE MCP servers (ade://settings/mcp.servers)
@@ -20221,20 +20240,137 @@ function buildIntegrationsPlan(args: string[]): CliPlan {
   throw new CliUsageError(`Unknown integrations command "${sub}". Use status or connect.`);
 }
 
+/** One `agent37` action, run once; costly ones wait for the person's answer in the chat (5 minutes at most). */
+function agent37Step(label: string, action: string, input: JsonObject, formatter: FormatterId = "agent37-result", waitsForPerson = false): CliPlan {
+  return {
+    kind: "execute",
+    label: `agent37 ${label}`,
+    formatter,
+    steps: [actionStep("result", "agent37", action, input)],
+    ...(waitsForPerson ? { minTimeoutMs: 75 * 60_000 } : {}),
+  };
+}
+
 function buildAgent37Plan(args: string[]): CliPlan {
   if (hasHelpFlag(args)) {
     return { kind: "help", text: HELP_BY_COMMAND.agent37 ?? topLevelHelpText() };
   }
-  const sub = firstPositional(args) ?? "ready";
-  if (sub === "ready" || sub === "status") {
-    return {
-      kind: "execute",
-      label: "agent37 ready",
-      formatter: "agent37-ready",
-      steps: [actionStep("result", "agent37", "ready_status", {})],
-    };
+  // Every value flag first: positionals are what is left.
+  const kind = readValue(args, ["--kind", "--type"]);
+  const shape = readValue(args, ["--shape", "--size"]);
+  const name = readValue(args, ["--name"]);
+  const to = readValue(args, ["--to"]);
+  const setup = readValue(args, ["--setup"]);
+  const origin = readValue(args, ["--origin"]);
+  const sub = firstPositional(args) ?? "list";
+  const target = () => {
+    const machine = firstPositional(args);
+    if (!machine) throw new CliUsageError(`ade agent37 ${sub} needs the machine: its name or Agent 37 id (ade agent37 list).`);
+    return machine;
+  };
+  const originUrl = () => origin ?? getGitRemote(process.cwd());
+  switch (sub) {
+    case "list":
+    case "ls":
+    case "machines":
+      return agent37Step("list", "list", {}, "agent37-list");
+    case "spending":
+    case "spend":
+    case "cost":
+      return agent37Step("spending", "spending", {});
+    case "create":
+    case "new":
+      return agent37Step("create", "create", { ...(kind ? { kind } : {}), ...(shape ? { shape } : {}), ...(name ? { name } : {}) }, "agent37-result", true);
+    case "sleep":
+      return agent37Step("sleep", "sleep", { machine: target() });
+    case "wake":
+    case "start":
+      return agent37Step("wake", "wake", { machine: target() });
+    case "resize": {
+      const machine = target();
+      const size = shape ?? firstPositional(args);
+      if (!size) throw new CliUsageError("ade agent37 resize <machine> --shape 4x8");
+      return agent37Step("resize", "resize", { machine, shape: size }, "agent37-result", true);
+    }
+    case "copy":
+    case "fork":
+      return agent37Step("copy", "copy", { machine: target(), ...(name ? { name } : {}), ...(shape ? { shape } : {}) }, "agent37-result", true);
+    case "move": {
+      const machine = target();
+      const destination = to ?? firstPositional(args);
+      if (destination !== "vm" && destination !== "box") throw new CliUsageError("ade agent37 move <machine> --to vm|box");
+      return agent37Step("move", "move", { machine, to: destination, ...(shape ? { shape } : {}) }, "agent37-result", true);
+    }
+    case "delete":
+    case "rm":
+      return agent37Step("delete", "delete", { machine: target() }, "agent37-result", true);
+    case "sleep-after": {
+      const machine = target();
+      const raw = firstPositional(args);
+      if (!raw) throw new CliUsageError("ade agent37 sleep-after <machine> <minutes|never>");
+      const minutes = raw === "never" ? "never" : Number(raw.replace(/m(in)?$/, ""));
+      return agent37Step("sleep-after", "set_sleep", { machine, minutes }, "agent37-result", minutes === "never");
+    }
+    case "cap": {
+      const raw = firstPositional(args);
+      if (!raw) return agent37Step("spending", "spending", {});
+      const cap = raw === "off" ? "off" : Number(raw.replace(/^\$/, ""));
+      return agent37Step("cap", "set_cap", { monthlyCapUsd: cap }, "agent37-result", true);
+    }
+    case "ready": {
+      const verb = firstPositional(args) ?? "status";
+      if (verb === "status" || verb === "list") {
+        return agent37Step("ready", "ready_status", {}, "agent37-ready");
+      }
+      const url = originUrl();
+      if (!url) throw new CliUsageError("This directory has no git origin. Pass --origin <url>.");
+      if (verb === "on" || verb === "set") {
+        return agent37Step("ready on", "ready_set", {
+          originUrl: url,
+          ...(kind ? { kind } : {}),
+          ...(shape ? { shape } : {}),
+          ...(setup != null ? { setup } : {}),
+          ...(name ? { projectName: name } : {}),
+        }, "agent37-result", true);
+      }
+      if (verb === "off") return agent37Step("ready off", "ready_off", { originUrl: url });
+      if (verb === "retry") return agent37Step("ready retry", "ready_retry", { originUrl: url }, "agent37-result", true);
+      throw new CliUsageError(`Unknown agent37 ready command "${verb}". Use: status, on, off, retry.`);
+    }
+    case "status":
+      return agent37Step("ready", "ready_status", {}, "agent37-ready");
+    default:
+      throw new CliUsageError(`Unknown agent37 command "${sub}". Use: list, create, sleep, wake, resize, copy, move, delete, sleep-after, cap, spending, ready.`);
   }
-  throw new CliUsageError(`Unknown agent37 command "${sub}". Use: ade agent37 ready.`);
+}
+
+function formatAgent37List(value: unknown): string {
+  const raw = isRecord(value) && isRecord(value.result) ? value.result : value;
+  const machines = isRecord(raw) && Array.isArray(raw.machines) ? raw.machines.filter(isRecord) : [];
+  const usd = (amount: unknown) => (typeof amount === "number" ? `$${amount.toFixed(2)}` : "—");
+  const cents = (amount: unknown) => (typeof amount === "number" ? `${(amount * 100).toFixed(1)}¢/h` : "—");
+  const lines: string[] = [];
+  if (!machines.length) lines.push("No Agent 37 machines. ade agent37 create makes one.");
+  for (const box of machines) {
+    const sleep = isRecord(box.sleep)
+      ? box.sleep.state === "auto" ? `sleeps after ${box.sleep.afterMinutes} min` : box.sleep.state === "never" ? "never sleeps" : "sleep pending"
+      : "";
+    lines.push(`${String(box.name ?? box.instanceId)}  ${String(box.state)}  ${String(box.size ?? "")}  ${cents(box.state === "asleep" ? box.idleHourlyUsd : box.runningHourlyUsd)}  spent ${usd(box.spentUsd)}  saved ${usd(box.savedUsd)}  ${sleep}  (${String(box.instanceId)})`);
+  }
+  const spending = isRecord(raw) && isRecord(raw.spending) ? raw.spending : null;
+  if (spending) {
+    lines.push(`This month ${usd(spending.monthSpentUsd)} of ${spending.monthlyCapUsd == null ? "no cap" : usd(spending.monthlyCapUsd)}${spending.capReached ? " (cap reached)" : ""} · wallet ${usd(isRecord(raw) ? raw.balanceUsd : null)}`);
+  }
+  return lines.join("\n");
+}
+
+function formatAgent37Result(value: unknown): string {
+  const raw = isRecord(value) && isRecord(value.result) ? value.result : value;
+  if (isRecord(raw) && typeof raw.message === "string") return raw.message;
+  if (isRecord(raw) && typeof raw.name === "string" && typeof raw.instanceId === "string") {
+    return `${raw.name} (${raw.instanceId})${raw.joined === false ? " is signed in and still starting." : " is ready."}`;
+  }
+  return JSON.stringify(raw, null, 2);
 }
 
 function formatAgent37Ready(value: unknown): string {
@@ -27909,6 +28045,7 @@ async function runServe(
       createPersonalChatScope,
       createProviderStatusService,
       readMachineRuntimeActivitySummary,
+      readMachineNextScheduledWakeAt,
     },
     { createSharedSyncListener },
     { resolveMobileProjectIconDataUrl },
@@ -28143,6 +28280,33 @@ async function runServe(
         },
         logger: headlessProjectLogger,
         productAnalyticsService: brainProductAnalytics,
+      })
+    : null;
+  // On an Agent 37 machine: request the machine's own wake URL while work runs,
+  // so Agent 37's auto-sleep never puts it to sleep under a chat or a command.
+  const agent37KeepAwakeModule = !embedded && servesMachineEndpoint
+    ? await import("./services/power/agent37KeepAwake")
+    : null;
+  const agent37KeepAwake = agent37KeepAwakeModule?.isAgent37Machine()
+    ? agent37KeepAwakeModule.createAgent37KeepAwake({
+        adeHome: layout.adeDir,
+        readBusy: async () => {
+          const sources = { projectRegistry, scopeRegistry };
+          const [activity, nextWakeAt] = await Promise.all([
+            readMachineRuntimeActivitySummary({ ...sources, personalChatScope }),
+            readMachineNextScheduledWakeAt(sources),
+          ]);
+          const reasons: string[] = [];
+          if (activity.activeAgentTurns > 0) reasons.push("chat");
+          if ((activity.activeAgentCliSessions ?? 0) > 0) reasons.push("agent_cli");
+          if (activity.activeWorkSessions > (activity.activeAgentCliSessions ?? 0)) reasons.push("terminal");
+          if (agent37KeepAwakeModule.agent37ReadySetupRunning(layout.adeDir)) reasons.push("setup");
+          if (nextWakeAt != null && nextWakeAt - Date.now() < agent37KeepAwakeModule.AGENT37_KEEP_AWAKE_SCHEDULE_WINDOW_MS) {
+            reasons.push("schedule");
+          }
+          return { busy: reasons.length > 0, reasons };
+        },
+        logger: headlessProjectLogger,
       })
     : null;
   const createHeadlessProjectScaffoldService = () => {
@@ -28866,6 +29030,7 @@ async function runServe(
     },
   });
   keepAwakeService?.start();
+  agent37KeepAwake?.start();
   // What a brain report needs to explain a missing project or a lost scope
   // (`shared/sentry/diagnostics.ts`). Read when a report is sent; no-ops
   // when Sentry is off.
@@ -28954,6 +29119,24 @@ async function runServe(
   // This brain's agents reaching the account's other machines. One per brain
   // (it owns the agents' paired connections), built on first use; an embedded
   // guest has no machine authority and gets none.
+  let agent37BrainAccess: Promise<import("../../desktop/src/main/services/agent37/agent37BrainAccess").Agent37BrainAccess> | null = null;
+  const getAgent37BrainAccess = () => {
+    agent37BrainAccess ??= import("../../desktop/src/main/services/agent37/agent37BrainAccess").then(
+      ({ createAgent37BrainAccess }) => createAgent37BrainAccess({
+        // Any booted project's vault: the Agent 37 items are account-wide.
+        vaultStore: async () => {
+          for (const record of projectRegistry.list()) {
+            const scope = await scopeRegistry.getIfBooted(record.projectId)?.catch(() => null);
+            if (scope?.runtime.accountVaultStore) return scope.runtime.accountVaultStore;
+          }
+          return null;
+        },
+        signedIn: () => brainAccountAuthService.getStatus().signedIn === true,
+        logger: headlessProjectLogger,
+      }),
+    );
+    return agent37BrainAccess;
+  };
   let agentMachineBridge: Promise<import("./services/account/agentMachineBridge").AgentMachineBridge> | null = null;
   const getAgentMachineBridge = () => {
     agentMachineBridge ??= import("./services/account/agentMachineBridge").then(
@@ -28961,6 +29144,8 @@ async function runServe(
         appVersion: VERSION,
         projectRoots: () => projectRegistry.list().map((project) => project.rootPath),
         logger: headlessProjectLogger,
+        // A call to a sleeping Agent 37 box wakes it with the account's key.
+        wakeForUse: async (machine) => (await getAgent37BrainAccess()).wakeForUse(machine),
       }),
     );
     return agentMachineBridge;
@@ -29400,6 +29585,7 @@ async function runServe(
     // A stopped brain must not describe itself in later reports from this process.
     for (const unregister of unregisterBrainDiagnostics) unregister();
     keepAwakeService?.dispose();
+    agent37KeepAwake?.dispose();
     releaseAccountPublisherAuthoritySubscription?.();
     releaseAccountPublisherAuthoritySubscription = null;
     stopSyncHostRehostWatch?.();
@@ -36602,6 +36788,10 @@ function formatTextOutput(
       return formatIntegrations(value);
     case "agent37-ready":
       return formatAgent37Ready(value);
+    case "agent37-list":
+      return formatAgent37List(value);
+    case "agent37-result":
+      return formatAgent37Result(value);
     case "mcp-servers":
       return formatMcpServers(value);
     case "mcp-servers-remove":

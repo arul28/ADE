@@ -110,19 +110,23 @@ export type Agent37GroupTotals = {
   hourlyUsd: number;
   /** What they spent in their windows; null when Agent37's usage could not be read. */
   spentUsd: number | null;
+  /** What sleeping saved them; null when any box's spend is unknown. */
+  savedUsd: number | null;
   running: number;
 };
 
 export function agent37GroupTotals(boxes: readonly Agent37Machine[]): Agent37GroupTotals {
   let hourlyUsd = 0;
   let spentUsd: number | null = 0;
+  let savedUsd: number | null = 0;
   let running = 0;
   for (const box of boxes) {
     hourlyUsd += agent37CurrentHourlyUsd(box) ?? 0;
     if (box.state === "running" || box.state === "starting") running += 1;
     spentUsd = spentUsd == null || box.spentUsd == null ? null : spentUsd + box.spentUsd;
+    savedUsd = savedUsd == null || box.savedUsd == null ? null : savedUsd + box.savedUsd;
   }
-  return { hourlyUsd, spentUsd, running };
+  return { hourlyUsd, spentUsd, savedUsd, running };
 }
 
 /**

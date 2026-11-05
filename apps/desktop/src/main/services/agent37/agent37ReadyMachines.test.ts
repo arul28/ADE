@@ -146,4 +146,40 @@ describe("ready machine keeper", () => {
     expect(fake.boxes.get("good0001")?.metadata[AGENT37_READY_METADATA.state]).toBe("ready");
     expect(fake.slept).toEqual(["good0001"]);
   });
+
+  it("at the monthly cap makes no ready machine and hands none out, until the cap is raised", async () => {
+    const fake = fakeAgent37([readyBox("other001", { [AGENT37_READY_METADATA.project]: OTHER })]);
+    let capReached = true;
+    const spending = async () => ({ monthlyCapUsd: 20, monthSpentUsd: capReached ? 20 : 5, capNear: capReached, capReached });
+    const made: string[] = [];
+    let prepareStarted!: () => void;
+    const started = new Promise<void>((resolve) => { prepareStarted = resolve; });
+    const keeper = createAgent37ReadyKeeper({
+      client: async () => fake.client,
+      settings: { read: async () => ({ projects: [keptReady], authoritative: false }), write: async () => undefined },
+      createMachine: async (requestId) => {
+        made.push(requestId);
+        prepareStarted();
+        throw new Error("stop here: the test only needs to see the prepare start");
+      },
+      removeAccountMachine: async () => undefined,
+      preparerId: ME,
+      spending,
+      sleep: async () => undefined,
+    });
+
+    const atCap = await keeper.refresh();
+    expect(made).toEqual([]);
+    expect(atCap.error).toMatch(/cap/i);
+    await expect(claimAgent37ReadyMachine(fake.client, OTHER, { spending })).rejects.toThrow(/cap/i);
+    expect(fake.boxes.get("other001")?.status).toBe("sleeping");
+    expect(fake.boxes.get("other001")?.metadata[AGENT37_READY_METADATA.state]).toBe("ready");
+
+    capReached = false;
+    const raised = await keeper.refresh();
+    await started;
+    keeper.stop();
+    expect(made).toHaveLength(1);
+    expect(raised.error).toBeNull();
+  });
 });

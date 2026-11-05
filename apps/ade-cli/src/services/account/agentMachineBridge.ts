@@ -161,7 +161,18 @@ export type AgentMachineBridgeOptions = {
   appVersion: string;
   projectRoots: () => string[];
   logger?: MachineBridgeLogger | null;
+  /**
+   * Wakes a sleeping cloud machine (an Agent 37 box) a call names. True when
+   * it woke one; throws with the reason when it may not (the monthly cap).
+   */
+  wakeForUse?: (machine: AdeAccountMachine) => Promise<boolean>;
 };
+
+/** How long a woken machine gets to show online in the account before the call fails as offline. */
+const WOKEN_MACHINE_ONLINE_WAIT_MS = 60_000;
+const WOKEN_MACHINE_POLL_MS = 1_000;
+/** How long connects to a just-woken machine are retried. */
+const WOKEN_MACHINE_CONNECT_RETRY_MS = 45_000;
 
 export type AgentMachineBridge = ReturnType<typeof createAgentMachineBridge>;
 
@@ -246,6 +257,40 @@ export function createAgentMachineBridge(options: AgentMachineBridgeOptions) {
     );
   };
 
+  /**
+   * A call to a sleeping cloud machine wakes it, then waits for the account to
+   * show it online (its brain reconnects a few seconds after the wake). Any
+   * other offline machine, or one that never comes back in time, is answered
+   * as offline by the caller.
+   */
+  const wakeIfSleepingCloudMachine = async (machine: AdeAccountMachine): Promise<AdeAccountMachine | null> => {
+    if (!options.wakeForUse || !(await options.wakeForUse(machine))) return null;
+    const deadline = Date.now() + WOKEN_MACHINE_ONLINE_WAIT_MS;
+    while (Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, WOKEN_MACHINE_POLL_MS));
+      const fresh = (await pool.listAccountMachines(true).catch(() => [])).find((candidate) => candidate.machineKey === machine.machineKey);
+      if (fresh?.online) return fresh;
+    }
+    return machine;
+  };
+
+  /**
+   * A machine that just woke shows online when its brain reopens the relay,
+   * a few seconds before the relay carries calls (measured 5 s on a box), so
+   * the first connect can miss. Retry it for a while before failing as usual.
+   */
+  const acquireWokenMachine = async (machine: AdeAccountMachine) => {
+    const deadline = Date.now() + WOKEN_MACHINE_CONNECT_RETRY_MS;
+    for (;;) {
+      try {
+        return await pool.acquire(machine);
+      } catch (error) {
+        if (Date.now() + WOKEN_MACHINE_POLL_MS >= deadline) throw error;
+        await new Promise((resolve) => setTimeout(resolve, WOKEN_MACHINE_POLL_MS));
+      }
+    }
+  };
+
   const assertForwardable = (method: string, params: Record<string, unknown>): void => {
     if (!FORWARDABLE_METHODS.has(method)) {
       throw new Error(`${method} can't run on another machine from here.`);
@@ -268,11 +313,13 @@ export function createAgentMachineBridge(options: AgentMachineBridgeOptions) {
     const method = input.method.trim();
     const params = isRecord(input.params) ? { ...input.params } : {};
     assertForwardable(method, params);
-    const machine = await pool.selectMachine(input.machine);
+    let machine = await pool.selectMachine(input.machine);
     if (pool.isThisMachine(machine)) throw new MachineIsLocalError(machineName(machine));
+    const woke = !machine.online ? await wakeIfSleepingCloudMachine(machine) : null;
+    if (woke) machine = woke;
     if (!machine.online) throw new MachineOfflineError(machineName(machine), lastSeen(machine));
 
-    const entry = await pool.acquire(machine);
+    const entry = woke ? await acquireWokenMachine(machine) : await pool.acquire(machine);
     let project: RemoteProjectRecord | null = null;
     if (PROJECT_SCOPED_METHODS.has(method)) {
       if (input.scope.kind === "personal" || input.scope.kind === "machine") {
