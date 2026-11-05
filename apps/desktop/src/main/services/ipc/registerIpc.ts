@@ -190,6 +190,8 @@ import {
 import type { ProductAnalyticsService } from "../analytics/productAnalyticsService";
 import { createAccountSignInAnalytics } from "../analytics/accountSignInAnalytics";
 import { sendSentryUserFeedback } from "../../sentry/userFeedback";
+import { IpcHandlerTimeoutError } from "../../sentry/ipcHandlerTimeout";
+import { armDeadline, type DeadlineTimer } from "../../../shared/deadlineTimer";
 import {
   brainActionErrorCode,
   createMachineRegisterRefusalObserver,
@@ -2502,19 +2504,18 @@ export function registerIpc({
           });
         }
         const IPC_TIMEOUT_MS = ipcInvokeTimeoutMs(channel, args);
-        let timeoutHandle: NodeJS.Timeout | null = null;
+        let deadline: DeadlineTimer | null = null;
         let didTimeout = false;
         try {
           const result = await Promise.race([
             listener(event, ...args),
             new Promise<never>((_, reject) => {
-              timeoutHandle = setTimeout(
-                () => {
-                  didTimeout = true;
-                  reject(new Error(`IPC handler for '${channel}' timed out after ${IPC_TIMEOUT_MS}ms (callId=${callId})`));
-                },
-                IPC_TIMEOUT_MS,
-              );
+              // A timer that fires late (the Mac slept) gets one short grace,
+              // so a reply already waiting on the brain's socket still lands.
+              deadline = armDeadline(IPC_TIMEOUT_MS, (timerLateMs) => {
+                didTimeout = true;
+                reject(new IpcHandlerTimeoutError(channel, IPC_TIMEOUT_MS, callId, timerLateMs));
+              });
             }),
           ]);
           const durationMs = Date.now() - startedAt;
@@ -2632,7 +2633,7 @@ export function registerIpc({
           }
           throw error;
         } finally {
-          if (timeoutHandle) clearTimeout(timeoutHandle);
+          deadline?.cancel();
         }
       })) as typeof ipcMain.handle;
     tracedIpcMain.__adeTraceWrapped = true;

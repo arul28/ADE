@@ -18,6 +18,7 @@ import { runtimeActionFingerprint } from "../../shared/sentry/grouping";
 import { IPC } from "../../shared/ipc";
 import { forwardLogToSentry } from "../../shared/sentry/logBridge";
 import { runInCapturedIpcCall } from "./ipcCallScope";
+import { IpcHandlerTimeoutError, ipcTimerFiredWhilePaused } from "./ipcHandlerTimeout";
 
 const SLOW_CALL_BREADCRUMB_MS = 250;
 
@@ -54,27 +55,47 @@ function ipcTimeoutLimitMs(error: unknown): number | null {
   return limitMs > 0 ? limitMs : null;
 }
 
+/** How late a timeout's deadline timer fired, before any grace. */
+function timerLateMs(error: unknown, limitMs: number, startedAt: number): number {
+  return error instanceof IpcHandlerTimeoutError ? error.timerLateMs : Date.now() - startedAt - limitMs;
+}
+
+/** CPU this process spent since `startedCpu`, in ms (all threads). */
+function cpuMsSince(startedCpu: NodeJS.CpuUsage): number {
+  const used = process.cpuUsage(startedCpu);
+  return Math.round((used.user + used.system) / 1000);
+}
+
 /**
- * A timeout whose call straddled a sleep: nothing hung, the machine was off.
+ * A timeout whose call straddled a sleep or a pause: nothing hung, ADE was
+ * not running.
  *
- * Three signals, because the `resume` event alone misses most of them: on
- * wake, the overdue timer fires before `resume` is delivered, and a dark wake
- * (Power Nap) emits no `resume` at all. `suspend` comes before the sleep, so
- * it is already known when the timer fires (Sentry saw 10-minute timeouts
- * fire 3 to 11 minutes late with no `resume` yet). Timers and
- * `performance.now()` run on the monotonic clock, which stops while macOS
- * sleeps; the wall clock does not. A gap between the two is time spent asleep
- * (Sentry saw 30s timeouts reported 5 to 55 minutes after the call began).
- * Where the monotonic clock counts sleep, the gap stays 0 and only the event
- * checks apply.
+ * Four signals, because the power events miss most of them. On wake, the
+ * overdue timer fires before `resume` is delivered, and a dark wake (Power
+ * Nap) emits no `suspend` or `resume` at all; `suspend` comes before the
+ * sleep, so it is already known when the timer fires when it comes at all.
+ * Where the monotonic clock stops during sleep (Linux), the wall clock running
+ * ahead of it is time asleep. On macOS it does not stop: libuv reads
+ * `mach_continuous_time`, so timers and `performance.now()` count the sleep
+ * and that gap stays 0. Sentry saw 30s timeouts there 15 s to 15 min late,
+ * gap 0, no power event during the call, and the log silent from the call's
+ * start to the moment every pending timer fired at once. The fourth signal
+ * covers that and App Nap alike: the timer fired late while the process
+ * spent almost no CPU, so it was not running, not busy.
  */
-function sleptThroughTimeout(error: unknown, startedAt: number, startedMono: number): boolean {
+function sleptThroughTimeout(
+  error: unknown,
+  startedAt: number,
+  startedMono: number,
+  startedCpu: NodeJS.CpuUsage,
+): boolean {
   const limitMs = ipcTimeoutLimitMs(error);
   if (limitMs == null) return false;
   if (lastResumeAt >= startedAt + limitMs) return true;
   if (lastSuspendAt >= startedAt) return true;
   const asleepMs = (Date.now() - startedAt) - (performance.now() - startedMono);
-  return asleepMs >= SLEPT_DURING_CALL_MS;
+  if (asleepMs >= SLEPT_DURING_CALL_MS) return true;
+  return ipcTimerFiredWhilePaused(timerLateMs(error, limitMs, startedAt), cpuMsSince(startedCpu));
 }
 
 /**
@@ -83,7 +104,13 @@ function sleptThroughTimeout(error: unknown, startedAt: number, startedMono: num
  * process did not run, or its main thread was blocked), the sleep signals,
  * and whether anyone was looking at ADE (macOS throttles a hidden app).
  */
-function timeoutDiagnostics(limitMs: number, startedAt: number, startedMono: number): Record<string, unknown> {
+function timeoutDiagnostics(
+  error: unknown,
+  limitMs: number,
+  startedAt: number,
+  startedMono: number,
+  startedCpu: NodeJS.CpuUsage,
+): Record<string, unknown> {
   const now = Date.now();
   const elapsedMs = now - startedAt;
   let systemIdleSec: number | null = null;
@@ -96,7 +123,8 @@ function timeoutDiagnostics(limitMs: number, startedAt: number, startedMono: num
   }
   return {
     limitMs,
-    lateMs: elapsedMs - limitMs,
+    lateMs: timerLateMs(error, limitMs, startedAt),
+    cpuMs: cpuMsSince(startedCpu),
     monotonicGapMs: Math.round(elapsedMs - (performance.now() - startedMono)),
     sinceSuspendSec: lastSuspendAt ? Math.round((now - lastSuspendAt) / 1000) : null,
     sinceResumeSec: lastResumeAt ? Math.round((now - lastResumeAt) / 1000) : null,
@@ -139,6 +167,7 @@ export function installIpcErrorCapture(labelFor: (channel: string, args: readonl
     originalHandle(channel, async (event, ...args) => {
       const startedAt = Date.now();
       const startedMono = performance.now();
+      const startedCpu = process.cpuUsage();
       watchPowerEvents();
       try {
         const result = await runInCapturedIpcCall(() => listener(event, ...args));
@@ -150,16 +179,23 @@ export function installIpcErrorCapture(labelFor: (channel: string, args: readonl
       } catch (error) {
         const label = labelFor(channel, args);
         const durationMs = Date.now() - startedAt;
-        if (isExpectedOutcome(error) || sleptThroughTimeout(error, startedAt, startedMono)) {
-          // An answer ("Lane not found", "Can't reach …"): a Sentry Log, not an issue.
+        const timeoutLimitMs = ipcTimeoutLimitMs(error);
+        if (isExpectedOutcome(error) || sleptThroughTimeout(error, startedAt, startedMono, startedCpu)) {
+          // An answer ("Lane not found", "Can't reach …"), or a timer that ran
+          // out while ADE was not running: a Sentry Log, not an issue.
           forwardLogToSentry("warn", `ipc.expected.${label}`, {
             message: error instanceof Error ? error.message : String(error),
             durationMs,
+            ...(timeoutLimitMs != null
+              ? {
+                  lateMs: timerLateMs(error, timeoutLimitMs, startedAt),
+                  cpuMs: cpuMsSince(startedCpu),
+                }
+              : {}),
           });
           throw error;
         }
         addSentryBreadcrumb("ipc", label, { durationMs, ok: false }, "error");
-        const timeoutLimitMs = ipcTimeoutLimitMs(error);
         if (timeoutLimitMs != null && isTimeoutBurstRepeat(label, Date.now())) {
           forwardLogToSentry("warn", `ipc.timeout_repeat.${label}`, { durationMs });
           throw error;
@@ -176,7 +212,9 @@ export function installIpcErrorCapture(labelFor: (channel: string, args: readonl
             },
             extra: {
               durationMs,
-              ...(timeoutLimitMs != null ? timeoutDiagnostics(timeoutLimitMs, startedAt, startedMono) : {}),
+              ...(timeoutLimitMs != null
+                ? timeoutDiagnostics(error, timeoutLimitMs, startedAt, startedMono, startedCpu)
+                : {}),
             },
             // A runtime action's failure is rebuilt from the brain's reply and
             // has no stack of its own: group it by what failed, not by which
