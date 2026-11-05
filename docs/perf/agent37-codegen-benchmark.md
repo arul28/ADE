@@ -51,6 +51,32 @@ ADE end to end, prompt → probe result (event time; client-seen time is
 Codex stands in for Claude until the VM has a Claude sign-in (agents can't
 add one). The official run uses Claude Code + Sonnet 5.5 low.
 
+### Ready machines, as shipped (2026-11-05, main e57f594f4)
+
+The product path: "Keep a cloud machine ready" for supabase-stack (VM,
+4 CPU / 8 GB, setup `npm ci` + `sh hooks/start.sh`), then
+`ade chat create --machine agent37:ready`. Each fresh task claims a prepared
+machine that has been **asleep** with the stack running, wakes it inside the
+clock, and the pool prepares the next one (82–184 s). The VMs run ADE
+1.2.129-beta.7 from template `ade-ready-dev`, which predates the reconnect
+fixes above. Codex + gpt-5.6-luna low, 5 runs:
+
+| Run | Wake call | Machine online | Prompt sent | Fresh task | Follow-up |
+|---|---|---|---|---|---|
+| 0 | 0.91 s | 11.7 s | 12.2 s | 14.77 s | 1.75 s |
+| 1 | 0.84 s | 12.9 s | 13.4 s | 15.94 s | 1.87 s |
+| 2 | 5.15 s | 14.3 s | 14.7 s | 17.90 s | 1.71 s |
+| 3 | 5.25 s | 10.2 s | 10.5 s | 13.17 s | 1.89 s |
+| 4 | 3.26 s | 11.7 s | 12.2 s | 15.08 s | 2.01 s |
+| **Median** | | | | **15.08 s** (vs Aether 19.4) | **1.87 s** (vs Conductor 3.0) |
+
+Prompt sent → probe result is 2.6–3.2 s; the rest is the machine coming back
+online. Runs 2–4 claimed a machine that was still going to sleep; the claim
+now waits through that instead of failing (below). Most of the ~11 s from
+wake to online is beta.7's slow resume detection; with this repo's reconnect
+fixes on the VM it was ~5 s (table above), which would put the fresh task
+near 8–9 s once a beta carries them.
+
 ### Why a long sleep cost 13–30 s, and the fixes
 
 Short sleeps hide it: the machine is still "online" in the account directory.
@@ -95,10 +121,30 @@ E-2388G / E-2386G. 20.58 runs/s beats Replicas and Conductor but not a Ryzen
   on a VM, `gpt-5.6-luna` gets `400 Unsupported parameter: 'max_tokens'` and
   `gpt-5.5` gets `400 unknown provider for model ade-openai-default/gpt-5.5`;
   on the Mac the chat errors with "could not authenticate" Claude Code.
+- A ready machine claimed in the seconds after the pool marked it ready
+  (still going to sleep) failed with "The Agent 37 machine is busy changing
+  state". The claim now retries the wake through Agent 37's transient answers
+  for up to 15 s.
 - The installer needs the `v` prefix in `ADE_VERSION` (`v1.2.129-beta.7`); a
   bare version 404s with no hint.
 
 ## Reproduce
+
+Ready machines (the product path): turn on "Keep a cloud machine ready" for a
+supabase-stack checkout, then, from a full-auto chat on the same brain as the
+CLI (a caller ADE can't place gets `default` permissions, and Codex is then
+sandboxed off the network):
+
+```sh
+export AGENT37_API_KEY=$(ade secrets get AGENT37_API_KEY --text)
+python3 scripts/perf/agent37-codegen/bench.py --machine agent37:ready --runs 5 \
+  --provider codex --model openai/gpt-5.6-luna --via key:openai
+```
+
+Claimed machine ids land in `scripts/perf/agent37-codegen/.claimed-instances`;
+delete them afterwards.
+
+A hand-built VM:
 
 ```sh
 export AGENT37_API_KEY=$(ade secrets get AGENT37_API_KEY --text)
