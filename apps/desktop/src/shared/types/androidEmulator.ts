@@ -516,9 +516,6 @@ export const ANDROID_AGENT_ACTIONS = [
   // P3: the system image list (a read; install and remove are the person's), and instrumentation tests.
   "listSystemImages",
   "runInstrumentationTests",
-  // P3: Compose previews build the lane's module.
-  "listComposePreviews",
-  "renderComposePreviews",
 ] as const;
 export type AndroidAgentAction = (typeof ANDROID_AGENT_ACTIONS)[number];
 
@@ -589,8 +586,11 @@ export const ANDROID_LANE_FREE_ACTIONS = [
 export const ANDROID_CODE_SYNC_ACTIONS = [
   "installApp",
   "launchApp",
-  // P3: instrumentation tests build the lane's app and its test APK.
+  // P3: instrumentation tests build the lane's app and its test APK, and
+  // Compose previews build the lane's module.
   "runInstrumentationTests",
+  "listComposePreviews",
+  "renderComposePreviews",
 ] as const;
 
 type Pin = OpenProjectBinding | null | undefined;

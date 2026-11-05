@@ -243,11 +243,12 @@ export function createAndroidSystemImages(deps: AndroidSystemImagesDeps) {
     }
   };
 
-  const avdsUsing = (id: string, avds: readonly AndroidAvdListing[], installed: readonly AndroidSystemImage[]): AndroidAvdListing[] =>
-    avds.filter((avd) => {
-      const used = avdImageId(avd, installed);
-      return used !== null && sameId(used, id);
-    });
+  /** Each AVD with the image it boots: one `config.ini` read per AVD. */
+  const imagesOfAvds = (avds: readonly AndroidAvdListing[], installed: readonly AndroidSystemImage[]) =>
+    avds.map((avd) => ({ avd, imageId: avdImageId(avd, installed) }));
+
+  const avdsUsing = (id: string, booted: ReadonlyArray<{ avd: AndroidAvdListing; imageId: string | null }>): AndroidAvdListing[] =>
+    booted.filter((entry) => entry.imageId !== null && sameId(entry.imageId, id)).map((entry) => entry.avd);
 
   const requireSdkRoot = async (): Promise<{ sdk: AndroidSdkStatus; root: string }> => {
     const sdk = await deps.readSdk();
@@ -300,6 +301,7 @@ export function createAndroidSystemImages(deps: AndroidSystemImagesDeps) {
       ]);
       const offers = repo.host ? newestOffers(repo.manifests, repo.host) : new Map<string, Offer>();
       const newest = pickAndroidSystemImage(installed, sdk.hostAbi, { tagId: null });
+      const booted = imagesOfAvds(avds, installed);
       const entries: AndroidSystemImageEntry[] = await Promise.all(installed.map(async (image) => {
         const parts = idParts(image.packageId);
         const offer = offers.get(image.packageId.toLowerCase()) ?? null;
@@ -317,7 +319,7 @@ export function createAndroidSystemImages(deps: AndroidSystemImagesDeps) {
           path: image.path,
           installedRevision,
           sizeBytes: await measureAndroidAvdBytes(image.path),
-          avds: avdsUsing(image.packageId, avds, installed).map(avdSummary),
+          avds: avdsUsing(image.packageId, booted).map(avdSummary),
           newest: newest?.packageId === image.packageId,
           hostAbi: image.abi === sdk.hostAbi,
           available,
@@ -410,7 +412,7 @@ export function createAndroidSystemImages(deps: AndroidSystemImagesDeps) {
         }
         if (current) {
           // An update replaces the folder: no emulator may run from it meanwhile.
-          const running = avdsUsing(id, await readAvds(), installed).filter((avd) => avd.running !== null);
+          const running = avdsUsing(id, imagesOfAvds(await readAvds(), installed)).filter((avd) => avd.running !== null);
           if (running.length > 0) {
             throw new AndroidEmulatorFailure(
               "ANDROID_SYSTEM_IMAGE_IN_USE",
@@ -492,7 +494,7 @@ export function createAndroidSystemImages(deps: AndroidSystemImagesDeps) {
       if (!dir.startsWith(`${base}${path.sep}`)) {
         throw new AndroidEmulatorFailure("ANDROID_SDK_PATH_INVALID", `${image.path} is not inside ${base}, so ADE does not remove it.`);
       }
-      const users = avdsUsing(image.packageId, await readAvds(), installed);
+      const users = avdsUsing(image.packageId, imagesOfAvds(await readAvds(), installed));
       const running = users.filter((avd) => avd.running !== null);
       if (running.length > 0) {
         throw new AndroidEmulatorFailure(
@@ -519,6 +521,8 @@ export function createAndroidSystemImages(deps: AndroidSystemImagesDeps) {
         fs.renameSync(dir, aside);
       } catch (error) {
         const code = (error as NodeJS.ErrnoException).code;
+        // A removal that ran at the same time, or a folder deleted by hand.
+        if (code === "ENOENT") throw new AndroidEmulatorFailure("ANDROID_NO_SYSTEM_IMAGE", `${name} is not installed on this machine any more.`);
         if (code === "EBUSY" || ((code === "EPERM" || code === "EACCES") && platform === "win32")) {
           throw new AndroidEmulatorFailure(
             "ANDROID_SYSTEM_IMAGE_IN_USE",
@@ -536,8 +540,10 @@ export function createAndroidSystemImages(deps: AndroidSystemImagesDeps) {
         // The image is already out of the SDK; only its disk space waits for the next try.
         logger?.warn("android.system_image_remove.cleanup_failed", { id, aside, error: getErrorMessage(error) });
       }
-      // Empty parent folders go too, as sdkmanager leaves none.
-      for (const folder of [path.dirname(dir), path.dirname(path.dirname(dir)), staging]) {
+      // Empty parent folders go too, as sdkmanager leaves none. The staging
+      // folder stays while an install runs: the installer writes there.
+      const emptied = [path.dirname(dir), path.dirname(path.dirname(dir)), ...(installer.isRunning() ? [] : [staging])];
+      for (const folder of emptied) {
         try {
           if (fs.existsSync(folder) && fs.readdirSync(folder).length === 0) fs.rmdirSync(folder);
         } catch (error) {

@@ -1,5 +1,8 @@
 import { execFile } from "node:child_process";
 import os from "node:os";
+import type { AndroidAvd } from "../../../shared/types/androidEmulator";
+import type { Logger } from "../logging/logger";
+import { AndroidEmulatorFailure } from "./androidEmulatorErrors";
 
 /*
  * The RAM guard (plan §5): before a boot, compare what the emulator needs
@@ -15,7 +18,7 @@ import os from "node:os";
  * - Windows: `os.freemem()` is the available physical memory.
  * - Linux: `os.freemem()` is `MemAvailable`.
  *
- * Node built-ins only, so it runs under `tsx`.
+ * Node built-ins and relative imports only, so it runs under `tsx`.
  */
 
 /** The emulator process itself, beyond the guest's RAM (QEMU, the GPU, the snapshot). */
@@ -106,4 +109,38 @@ export function androidMemoryShortfall(args: { needMb: number; availableMb: numb
 /** `2.9 GB`, one decimal place. */
 export function formatAndroidMemoryGb(mb: number): string {
   return `${(Math.max(0, mb) / 1024).toFixed(1)} GB`;
+}
+
+/**
+ * The guard before one start: refuse a boot that would push the machine into
+ * swap, counting the boots already in flight. The answer holds this boot's
+ * memory until the caller releases it; a forced start holds it too, so the
+ * next start counts it.
+ */
+export async function reserveAndroidMemoryForStart(args: {
+  laneId: string;
+  avd: AndroidAvd;
+  force: boolean;
+  platform: NodeJS.Platform;
+  logger: Logger | null;
+}): Promise<AndroidBootReservation> {
+  const { laneId, avd, logger } = args;
+  const needMb = androidEmulatorMemoryNeedMb(avd.ramMb);
+  const reservation = reserveAndroidBootMemory(needMb);
+  if (args.force) return reservation;
+  const freeMb = await readHostAvailableMemoryMb({ platform: args.platform });
+  if (freeMb === null) {
+    logger?.warn("android.start_memory_unread", { laneId });
+    return reservation;
+  }
+  const availableMb = freeMb - reservation.earlierMb();
+  const shortfall = androidMemoryShortfall({ needMb, availableMb });
+  if (!shortfall) return reservation;
+  reservation.release();
+  logger?.info("android.start_low_memory", { laneId, needMb, availableMb });
+  throw new AndroidEmulatorFailure(
+    "ANDROID_LOW_MEMORY",
+    // One short sentence: the pane shows it whole only up to 140 characters.
+    `${avd.displayName ?? avd.name} needs about ${formatAndroidMemoryGb(needMb)} of memory, and this machine has ${formatAndroidMemoryGb(availableMb)} free.`,
+  );
 }

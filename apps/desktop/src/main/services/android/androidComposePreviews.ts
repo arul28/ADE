@@ -8,10 +8,13 @@ import {
   type AndroidEmulatorPreviewServiceApi,
 } from "../../../shared/types/androidEmulator";
 import type { Logger } from "../logging/logger";
-import { getErrorMessage, isPathEscapeError, resolvePathWithinRoot } from "../shared/utils";
+import { isPathInside } from "../shared/pathCompare";
+import { terminateProcessTree } from "../shared/processExecution";
+import { getErrorMessage, isPathEscapeError, isRecord, resolvePathWithinRoot } from "../shared/utils";
 import { androidCliArgs, locateAndroidCli } from "./androidCli";
 import { AndroidEmulatorFailure, requireLaneId } from "./androidEmulatorErrors";
 import { androidJdkMissingMessage, locateAndroidJdk } from "./androidJdk";
+import { createAndroidLaneQueue } from "./androidLaneQueue";
 import { fileAndroidCaptureAsProof, type AndroidArtifactFiler } from "./androidProof";
 import type { AndroidEnv } from "./androidSdk";
 import { androidLaneFolderName } from "./androidScreenshot";
@@ -52,27 +55,33 @@ export type AndroidComposePreviewDeps = {
   now: () => Date;
 };
 
-/** The JSON the CLI prints for `--format json`: the last top-level object on stdout. */
+/**
+ * The JSON the CLI prints for `--format json`: the last top-level object on
+ * stdout. Each line that starts with `{` is tried from the last one back, to
+ * the end of its object (the closing `}` at the start of a line).
+ */
 export function parsePreviewJson(stdout: string): Record<string, unknown> | null {
-  const start = stdout.search(/^\{/mu);
-  if (start < 0) return null;
-  try {
-    const parsed: unknown = JSON.parse(stdout.slice(start));
-    return parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : null;
-  } catch {
-    return null;
+  const starts = [...stdout.matchAll(/^\{/gmu)].map((match) => match.index ?? 0).reverse();
+  for (const start of starts) {
+    const rest = stdout.slice(start);
+    const end = rest.search(/^\}/mu);
+    try {
+      const parsed: unknown = JSON.parse(end < 0 ? rest : rest.slice(0, end + 1));
+      if (isRecord(parsed)) return parsed;
+    } catch {
+      // Not the JSON answer (a log line that starts with a brace); try the one before.
+    }
   }
+  return null;
 }
 
 /** `preview list` entries as ADE's type; entries with no name are dropped. */
 export function readPreviewList(json: Record<string, unknown>): AndroidComposePreview[] {
   const list = Array.isArray(json.previews) ? json.previews : [];
-  return list.flatMap((entry) => {
-    if (!entry || typeof entry !== "object") return [];
-    const record = entry as Record<string, unknown>;
+  return list.filter(isRecord).flatMap((record) => {
     const fqn = typeof record.methodFqn === "string" ? record.methodFqn : null;
     if (!fqn) return [];
-    const raw = record.previewParams && typeof record.previewParams === "object" ? record.previewParams as Record<string, unknown> : {};
+    const raw = isRecord(record.previewParams) ? record.previewParams : {};
     const params = Object.fromEntries(Object.entries(raw).filter(([key, value]) => key !== "name" && typeof value === "string")) as Record<string, string>;
     return [{ fqn, name: typeof record.name === "string" && record.name ? record.name : null, params }];
   });
@@ -108,18 +117,8 @@ function inlinePng(filePath: string): string | null {
 
 export function createAndroidComposePreviews(deps: AndroidComposePreviewDeps): AndroidEmulatorPreviewServiceApi {
   const { platform, signal, logger } = deps;
-  const running = new Map<string, Promise<unknown>>();
-
   /** One preview command per lane: a second waits for the first. */
-  const perLane = <T>(laneId: string, work: () => Promise<T>): Promise<T> => {
-    const previous = running.get(laneId) ?? Promise.resolve();
-    const next = previous.catch(() => undefined).then(work);
-    running.set(laneId, next);
-    void next.catch(() => undefined).finally(() => {
-      if (running.get(laneId) === next) running.delete(laneId);
-    });
-    return next;
-  };
+  const perLane = createAndroidLaneQueue();
 
   /** The lane's folder and the module in it, checked: a module is a folder inside the lane with a Gradle build file. */
   const resolveModule = (laneId: string, requested: string | null | undefined) => {
@@ -168,13 +167,37 @@ export function createAndroidComposePreviews(deps: AndroidComposePreviewDeps): A
     Object.assign(env, overrides);
     const startedAt = Date.now();
     const output = await new Promise<{ exitCode: number | null; stdout: string; stderr: string }>((resolve, reject) => {
-      const child = spawn(cli.path, androidCliArgs(sdkRoot, args), { cwd: root, env, windowsHide: true, signal, timeout: PREVIEW_TIMEOUT_MS });
+      const child = spawn(cli.path, androidCliArgs(sdkRoot, args), { cwd: root, env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
       let stdout = "";
       let stderr = "";
       child.stdout.setEncoding("utf8").on("data", (chunk: string) => { if (stdout.length < 8 * 1024 * 1024) stdout += chunk; });
       child.stderr.setEncoding("utf8").on("data", (chunk: string) => { if (stderr.length < 256 * 1024) stderr += chunk; });
-      child.on("error", reject);
-      child.on("close", (exitCode) => resolve({ exitCode, stdout, stderr }));
+      let ended = false;
+      const finish = () => {
+        ended = true;
+        clearTimeout(timer);
+        signal.removeEventListener("abort", onAbort);
+      };
+      // The CLI starts Gradle and a JVM: stop the whole tree, as the Gradle runner does.
+      const stop = (reason: string) => {
+        if (ended) return;
+        finish();
+        terminateProcessTree(child);
+        reject(new AndroidEmulatorFailure("ANDROID_BUILD_FAILED", `android preview ${args[1]} ${reason}.`));
+      };
+      const timer = setTimeout(() => stop(`ran longer than ${PREVIEW_TIMEOUT_MS / 60_000} minutes and was stopped`), PREVIEW_TIMEOUT_MS);
+      const onAbort = () => stop("was stopped because ADE is shutting down");
+      signal.addEventListener("abort", onAbort, { once: true });
+      child.on("error", (error) => {
+        if (ended) return;
+        finish();
+        reject(new AndroidEmulatorFailure("ANDROID_TOOL_MISSING", `The Android CLI could not start: ${getErrorMessage(error)}`));
+      });
+      child.on("close", (exitCode) => {
+        if (ended) return;
+        finish();
+        resolve({ exitCode, stdout, stderr });
+      });
     });
     const json = parsePreviewJson(output.stdout);
     logger?.info("android.compose_preview_ran", { laneId, command: args[1], exitCode: output.exitCode, ms: Date.now() - startedAt, ok: json?.success === true });
@@ -212,13 +235,15 @@ export function createAndroidComposePreviews(deps: AndroidComposePreviewDeps): A
         const outDir = path.join(deps.dataDir, "compose-previews", androidLaneFolderName(laneId), stamp);
         fs.mkdirSync(outDir, { recursive: true });
         const json = await runPreview(laneId, root, ["preview", "render", "--format", "json", "--output", outDir, ...fqns.flatMap((fqn) => ["--fqn", fqn]), module]);
-        const results = Array.isArray(json.results) ? json.results as Array<Record<string, unknown>> : [];
+        const results = Array.isArray(json.results) ? json.results.filter(isRecord) : [];
+        // Compared after symlinks (`/var` is `/private/var` on macOS) and by path segments.
+        const realOutDir = fs.realpathSync(outDir);
         const fileProof = args.proof !== false;
         const images: AndroidComposePreviewImage[] = fqns.map((fqn) => {
           const result = results.find((entry) => entry.methodFqn === fqn);
-          const imagePath = typeof result?.imagePath === "string" ? path.resolve(result.imagePath) : null;
+          const imagePath = typeof result?.imagePath === "string" && fs.existsSync(result.imagePath) ? fs.realpathSync(result.imagePath) : null;
           // Only a file the CLI wrote into this render's folder is filed.
-          const inside = imagePath !== null && imagePath.startsWith(path.resolve(outDir) + path.sep) && fs.existsSync(imagePath);
+          const inside = imagePath !== null && isPathInside(imagePath, realOutDir, platform);
           const name = names.get(fqn) ?? null;
           const error = inside ? null : previewError(result?.error) ?? "The CLI wrote no image for this preview.";
           const proofArtifactId = inside && fileProof

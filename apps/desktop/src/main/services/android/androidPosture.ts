@@ -7,10 +7,12 @@ import {
   type AndroidFoldState,
   type AndroidPosture,
   type AndroidSetPostureArgs,
+  type AndroidSetPostureResult,
 } from "../../../shared/types/androidEmulator";
 import { sleep } from "../shared/utils";
 import { runAdbOutput, runDeviceScript, runEmulatorConsole, type BootedDevice } from "./androidDeviceShell";
 import { requireLaneId } from "./androidEmulatorErrors";
+import { createAndroidLaneQueue } from "./androidLaneQueue";
 
 /*
  * The hinge of a foldable AVD (P3 fold).
@@ -116,6 +118,8 @@ function settled(read: AndroidDevicePostureRead, angle: number): boolean {
 export function createAndroidPosture(deps: AndroidPostureDeps): AndroidEmulatorPostureServiceApi {
   const { signal } = deps;
   const now = deps.now ?? Date.now;
+  /** One fold at a time per lane: a slider drag, a pinch and an agent can overlap. */
+  const perLane = createAndroidLaneQueue();
 
   const consoleAngle = async (booted: BootedDevice): Promise<number | null> => {
     const answer = await runAdbOutput(booted, ["emu", "sensor", "get", HINGE_SENSOR], { timeoutMs: 15_000, signal });
@@ -133,6 +137,27 @@ export function createAndroidPosture(deps: AndroidPostureDeps): AndroidEmulatorP
       : { laneId, supported: true, angle, state: read?.state ?? null, screen: read?.screen ?? null }
   );
 
+  const fold = async (laneId: string, angle: number): Promise<AndroidSetPostureResult> => {
+    const booted = await deps.requireBooted(laneId);
+    if ((await consoleAngle(booted)) === null) {
+      throw new Error("This emulator has no hinge. Fold works on a foldable AVD, such as a Pixel Fold.");
+    }
+    await runEmulatorConsole(booted, ["sensor", "set", HINGE_SENSOR, String(angle)], "The emulator did not move the hinge", { signal });
+    deps.onScreenChanged(laneId);
+    const deadline = now() + POSTURE_SETTLE_MS;
+    let read = await readDevice(booted);
+    while (!settled(read, angle) && now() < deadline && !signal.aborted) {
+      await sleep(POSTURE_POLL_MS);
+      read = await readDevice(booted);
+    }
+    const done = settled(read, angle);
+    // What the sensor reads, so a fold that did not settle never reports the angle it asked for.
+    const result = posture(laneId, read.sensorAngle ?? angle, read);
+    deps.onScreenChanged(laneId);
+    deps.onPostureChanged(laneId, result);
+    return { ...result, settled: done };
+  };
+
   return {
     async getPosture(args) {
       const laneId = requireLaneId(args?.laneId);
@@ -144,23 +169,7 @@ export function createAndroidPosture(deps: AndroidPostureDeps): AndroidEmulatorP
     async setPosture(args) {
       const laneId = requireLaneId(args?.laneId);
       const angle = requestedHingeAngle(args ?? {});
-      const booted = await deps.requireBooted(laneId);
-      if ((await consoleAngle(booted)) === null) {
-        throw new Error("This emulator has no hinge. Fold works on a foldable AVD, such as a Pixel Fold.");
-      }
-      await runEmulatorConsole(booted, ["sensor", "set", HINGE_SENSOR, String(angle)], "The emulator did not move the hinge", { signal });
-      deps.onScreenChanged(laneId);
-      const deadline = now() + POSTURE_SETTLE_MS;
-      let read = await readDevice(booted);
-      while (!settled(read, angle) && now() < deadline && !signal.aborted) {
-        await sleep(POSTURE_POLL_MS);
-        read = await readDevice(booted);
-      }
-      const done = settled(read, angle);
-      const result = posture(laneId, angle, read);
-      deps.onScreenChanged(laneId);
-      deps.onPostureChanged(laneId, result);
-      return { ...result, settled: done };
+      return perLane(laneId, () => fold(laneId, angle));
     },
   };
 }

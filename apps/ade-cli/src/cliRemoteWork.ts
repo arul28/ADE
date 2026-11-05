@@ -104,9 +104,10 @@ const ANDROID_CODE_SYNC: ReadonlySet<string> = new Set(ANDROID_CODE_SYNC_ACTIONS
 /**
  * `ade android … --machine` with no `--lane`: the emulator there works for
  * this chat's work copy. An install or launch that builds (`--gradle`) or
- * reads an APK (`--apk`, a path inside this checkout) syncs the copy to this
- * checkout first, as an Apple build does; every other verb uses the copy as it
- * is, and makes it at this commit when it does not exist yet. A status or
+ * reads an APK (`--apk`, a path inside this checkout), a test run and a
+ * Compose preview sync the copy to this checkout first, as an Apple build
+ * does; every other verb uses the copy as it is, and makes it at this commit
+ * when it does not exist yet. A status or
  * device list sends no commit and makes no copy. The chat id is the other
  * machine's to set, from the caller's identity.
  */
@@ -115,7 +116,9 @@ export function withRemoteAndroidArgs(params: JsonObject, cwd: string): JsonObje
   if (!isRecord(toolArgs.args) || asString(toolArgs.args.laneId)) return params;
   const action = asString(toolArgs.action) ?? "";
   const { chatSessionId: _chatSessionId, ...args } = toolArgs.args;
-  const builds = ANDROID_CODE_SYNC.has(action) && (asString(args.apkPath) != null || args.gradle != null);
+  // An install or launch builds only with `--gradle` or `--apk`; tests and previews always build.
+  const optionalBuild = action === "installApp" || action === "launchApp";
+  const builds = ANDROID_CODE_SYNC.has(action) && (!optionalBuild || asString(args.apkPath) != null || args.gradle != null);
   const apkPath = builds ? asString(args.apkPath) : null;
   return {
     ...params,

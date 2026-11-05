@@ -416,7 +416,6 @@ export async function buildAndroidSdkSetupPlan(
 
 /** One part the installer job takes (`androidSdkInstaller().start`). */
 export type AndroidPlannedSdkPart = PlannedPart;
-export const androidSdkPackageDir = androidPackageDir;
 export const androidFreeBytesAt = freeBytesAt;
 export const androidSdkFolderWritable = checkWritable;
 export const androidSdkLicenseAccepted = licenseAccepted;

@@ -3,8 +3,6 @@ import os from "node:os";
 import path from "node:path";
 import type {
   AndroidAvd,
-  AndroidDeviceAnalyticsOutcome,
-  AndroidEmulatorError,
   AndroidEmulatorEvent,
   AndroidEmulatorServiceApi,
   AndroidEmulatorStatus,
@@ -13,7 +11,6 @@ import type {
   AndroidRunningEmulator,
   AndroidSdkStatus,
 } from "../../../shared/types/androidEmulator";
-import type { Logger } from "../logging/logger";
 import { getErrorMessage } from "../shared/utils";
 import { readAndroidAvd, sameAvdName } from "./androidAvds";
 import { AndroidEmulatorFailure, requireLaneId } from "./androidEmulatorErrors";
@@ -35,18 +32,9 @@ import { createAndroidInput } from "./androidInput";
 import { createAndroidCrashWatch } from "./androidCrashWatch";
 import { createAndroidLaneStreams } from "./androidLaneStreams";
 import { openStartedEmulators, stopAdeStartedEmulators } from "./androidHandedOffEmulators";
-import {
-  androidEmulatorMemoryNeedMb,
-  androidMemoryShortfall,
-  formatAndroidMemoryGb,
-  readHostAvailableMemoryMb,
-  reserveAndroidBootMemory,
-  type AndroidBootReservation,
-} from "./androidMemoryGuard";
+import { reserveAndroidMemoryForStart } from "./androidMemoryGuard";
 import type { AppleStreamOwningService } from "../ios/appleStreamRelayForService";
-import type { AndroidLaneDeviceRepo } from "./androidLaneRelease";
 import { takeAndroidScreenshot } from "./androidScreenshot";
-import type { AndroidArtifactFiler } from "./androidProof";
 import { createAndroidRenderBroker } from "./androidRender";
 import { createAndroidSdkSetup, createAndroidSdkSettingStore } from "./androidSdkSetup";
 import { createAndroidSystemImages } from "./androidSystemImages";
@@ -55,14 +43,14 @@ import {
   locateAndroidSdk,
   readAndroidSdkStatus,
   requireAndroidSdkTools,
-  type AndroidEnv,
   type ReadyAndroidSdk,
 } from "./androidSdk";
 import { createAndroidPosture } from "./androidPosture";
 import { createAndroidComposePreviews } from "./androidComposePreviews";
-import { createAndroidStreamHub, type AndroidStreamHub } from "./androidStream";
+import { createAndroidStreamHub } from "./androidStream";
 import { isRemoteWorkLaneId } from "../remoteWork/remoteWorkCopyService";
 import { createAndroidLaneScope } from "./androidWorkCopy";
+import { ANDROID_BOOT_TIMEOUT_MS, type AndroidEmulatorServiceDeps, type AndroidLaneState as LaneState } from "./androidEmulatorServiceDeps";
 
 /** The project-removal stop moved with the state file; the CLI keeps importing it from here. */
 export { stopHandedOffAndroidEmulators } from "./androidHandedOffEmulators";
@@ -88,92 +76,6 @@ export { stopHandedOffAndroidEmulators } from "./androidHandedOffEmulators";
  * Node built-ins and relative imports only, so the service also runs under a
  * plain `tsx` harness with an in-memory lane store.
  */
-
-/** A first boot of a new AVD measured 54 s on Windows; slower hosts need more. */
-const ANDROID_BOOT_TIMEOUT_MS = 180_000;
-
-type AndroidEmulatorServiceDeps = {
-  /** The lane rows (`lane_android_devices`); `sqlAndroidLaneDeviceRepo(db)` in the app. */
-  laneDevices: AndroidLaneDeviceRepo;
-  /**
-   * ADE's folder for this service's own files: the started-emulators state
-   * file, the emulator logs, default screenshots.
-   */
-  dataDir: string;
-  /** The bundled scrcpy server (`resolveScrcpyServerJarPath`). */
-  serverJarPath: string;
-  /**
-   * The process's streams (`createAndroidStreamHub`), shared by every service
-   * the process builds. Absent = a hub of this service's own.
-   */
-  streamHub?: AndroidStreamHub;
-  /**
-   * The lane's worktree. A screenshot `outPath` resolves against it and must
-   * stay inside it; without one, a call that names an `outPath` is refused.
-   */
-  resolveLaneWorktreePath?: (laneId: string) => string | null;
-  /**
-   * The project's root, where chats on other machines keep their work copies
-   * (`remoteWorkCopyService`). Without it a `remote-work-…` lane is refused.
-   */
-  projectRoot?: string | null;
-  logger?: Logger | null;
-  /** The SDK the user picked in Settings, read on every use. */
-  readSdkSettingPath?: () => string | null;
-  /**
-   * P1 setup: the machine's Android settings file (`<ADE home>/android/settings.json`),
-   * where "Use mine…" and a chosen install folder are kept. Also read for the SDK
-   * when `readSdkSettingPath` is absent.
-   */
-  sdkSettingsFile?: string | null;
-  env?: AndroidEnv;
-  platform?: NodeJS.Platform;
-  home?: string;
-  discoveryDirs?: readonly string[];
-  bootTimeoutMs?: number;
-  /**
-   * The brain sets this. Its exits are restarts (an update, a service
-   * restart, a crash), so `dispose` leaves ADE's emulators running, they
-   * start in their own process group, and the next service re-adopts them
-   * through the state file. An in-process runtime leaves it off: closing the
-   * project there stops every emulator ADE started for it.
-   */
-  handOffOnDispose?: boolean;
-  now?: () => Date;
-  onEvent?: (event: AndroidEmulatorEvent) => void;
-  /**
-   * P1 agent suite: the proof drawer (`computerUseArtifactBrokerService`). A
-   * screenshot and a stopped recording file themselves into it under the
-   * calling chat and the lane (`androidProof.ts`). Absent = captures stay
-   * files only.
-   */
-  artifactFiler?: AndroidArtifactFiler | null;
-  /**
-   * One coarse product fact when a guided SDK install puts parts in place, an
-   * app installs, a render files as proof, or an agent takes a new lease
-   * (`captureAndroidDeviceAnalytics`). A failed or refused call sends nothing.
-   */
-  captureAnalytics?: (outcome: AndroidDeviceAnalyticsOutcome) => void;
-};
-
-type LaneState = {
-  laneId: string;
-  /** The tail of this lane's lifecycle queue. */
-  queue: Promise<unknown>;
-  transient: "starting" | "stopping" | null;
-  /** The last start that failed or the emulator that died; cleared by a start or stop. */
-  error: AndroidEmulatorError | null;
-  /** The emulator this process launched for the lane, while it runs. */
-  launch: AndroidEmulatorLaunch | null;
-  /** Set by a stop that arrived while the start was booting. */
-  stopRequested: boolean;
-  /** That stop's end of the booting emulator, so the failing start does not stop it twice. */
-  launchStop: Promise<void> | null;
-  /** The serial the lane's stream runs on, while it runs. */
-  streamSerial: string | null;
-  /** A viewer asked for the stream (`startStream`); a recording may hold it too. */
-  streamViewer: boolean;
-};
 
 /** The service, plus the lane streams as the brain's stream relay drives them (phone and web viewers). */
 export type AndroidEmulatorService = AndroidEmulatorServiceApi & {
@@ -475,33 +377,6 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
     });
   };
 
-  /**
-   * The RAM guard (plan §5): refuse a boot that would push the machine into
-   * swap, counting the boots already in flight. The answer holds this boot's
-   * memory until the caller releases it; a forced start holds it too, so the
-   * next start counts it.
-   */
-  const reserveMemoryForStart = async (laneId: string, avd: AndroidAvd, force: boolean): Promise<AndroidBootReservation> => {
-    const needMb = androidEmulatorMemoryNeedMb(avd.ramMb);
-    const reservation = reserveAndroidBootMemory(needMb);
-    if (force) return reservation;
-    const freeMb = await readHostAvailableMemoryMb({ platform });
-    if (freeMb === null) {
-      logger?.warn("android.start_memory_unread", { laneId });
-      return reservation;
-    }
-    const availableMb = freeMb - reservation.earlierMb();
-    const shortfall = androidMemoryShortfall({ needMb, availableMb });
-    if (!shortfall) return reservation;
-    reservation.release();
-    logger?.info("android.start_low_memory", { laneId, needMb, availableMb });
-    throw new AndroidEmulatorFailure(
-      "ANDROID_LOW_MEMORY",
-      // One short sentence: the pane shows it whole only up to 140 characters.
-      `${avd.displayName ?? avd.name} needs about ${formatAndroidMemoryGb(needMb)} of memory, and this machine has ${formatAndroidMemoryGb(availableMb)} free.`,
-    );
-  };
-
   const startLocked = async (state: LaneState, options: { force?: boolean } = {}): Promise<AndroidLaneDeviceStatus> => {
     const laneId = state.laneId;
     const device = deps.laneDevices.get(laneId);
@@ -523,7 +398,7 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
     // emulator for an attached AVD): use it as it is.
     if (runningFor(device.avdName)) return laneStatus(laneId, ready.sdk);
     const force = options.force === true;
-    const reservation = await reserveMemoryForStart(laneId, avd, force);
+    const reservation = await reserveAndroidMemoryForStart({ laneId, avd, force, platform, logger });
     try {
       const status = await bootLocked(state, device, ready);
       // Started past the RAM guard: how often the guard's answer is overruled.

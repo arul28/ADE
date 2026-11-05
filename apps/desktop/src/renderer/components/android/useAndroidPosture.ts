@@ -8,11 +8,15 @@ import type { AndroidStageFold } from "./AndroidDeviceStage";
  * The hinge of the lane's foldable emulator (P3 fold), as the Duo's
  * `useAppleDuoPosture` does for the iPhone Duo.
  *
- * One read when the device goes live, then the brain's `android.device.posture`
- * events: an agent or another viewer can fold it at any time. A drag on the
- * hinge previews the angle on the 3D body only; the release folds the
- * emulator, and the drawn angle holds there until Android answers.
+ * One read when the device goes live (read again twice if it fails), then the
+ * brain's `android.device.posture` events: an agent or another viewer can
+ * fold it at any time. A drag on the hinge previews the angle on the 3D body
+ * only; the release folds the emulator, and the drawn angle holds there until
+ * Android answers.
  */
+/** The waits before a second and a third read when the first fails (a slow console just after boot). */
+const POSTURE_READ_RETRIES_MS = [2_000, 6_000] as const;
+
 export function useAndroidPosture({
   laneId,
   enabled,
@@ -51,21 +55,32 @@ export function useAndroidPosture({
       return undefined;
     }
     let cancelled = false;
+    let retryTimer: number | null = null;
     const api = window.ade.androidEmulator;
-    const readAt = sequenceRef.current;
-    api.getPosture({ laneId }, runtimePinRef.current)
-      .then((read) => {
-        if (!cancelled && sequenceRef.current === readAt) setPosture(read.supported ? read : null);
-      })
-      .catch((cause: unknown) => {
-        // No read: the hinge shows open, and the next event corrects it.
-        logRendererDebugEvent("android.posture_read_failed", { error: cause instanceof Error ? cause.message : String(cause) });
-      });
+    const read = (attempt: number) => {
+      const readAt = sequenceRef.current;
+      api.getPosture({ laneId }, runtimePinRef.current)
+        .then((next) => {
+          if (!cancelled && sequenceRef.current === readAt) setPosture(next.supported ? next : null);
+        })
+        .catch((cause: unknown) => {
+          logRendererDebugEvent("android.posture_read_failed", { attempt, error: cause instanceof Error ? cause.message : String(cause) });
+          // Until a read answers, the pane has no hinge controls: read again a little later.
+          if (!cancelled && attempt < POSTURE_READ_RETRIES_MS.length) {
+            retryTimer = window.setTimeout(() => read(attempt + 1), POSTURE_READ_RETRIES_MS[attempt]);
+          }
+        });
+    };
+    read(0);
     const unsubscribe = api.onEvent((event) => {
       if (event.type !== "android.device.posture" || event.laneId !== laneId) return;
       setPosture(event.posture.supported ? event.posture : null);
     }, runtimePinRef.current);
-    return () => { cancelled = true; unsubscribe(); };
+    return () => {
+      cancelled = true;
+      if (retryTimer !== null) window.clearTimeout(retryTimer);
+      unsubscribe();
+    };
   }, [enabled, laneId, pinKey, runtimePinRef]);
 
   const commit = useCallback((angle: number) => {

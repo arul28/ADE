@@ -92,11 +92,12 @@ export function AndroidPreviewsSection({
       .then((result) => {
         update(key, (current) => ({ ...current, busy: null, render: result }));
         const drawn = result.images.filter((image) => image.path).length;
+        const filed = result.images.filter((image) => image.proofArtifactId).length;
         showToast({
           id: `android-previews-${laneId}`,
           tone: drawn === result.images.length ? "success" : "warning",
           title: `${drawn} of ${result.images.length} previews rendered`,
-          message: drawn ? "Filed as proof." : undefined,
+          message: filed ? `${filed === drawn ? "Filed" : `${filed} filed`} as proof.` : undefined,
         });
       })
       .catch((cause: unknown) => update(key, (current) => ({ ...current, busy: null, error: cause })));
@@ -193,7 +194,7 @@ export function AndroidPreviewsSection({
                     <img src={image.dataUrl} alt={label} className="block h-auto w-full" draggable={false} />
                   </button>
                 ) : (
-                  <div className="flex min-h-16 items-center rounded-md border border-dashed border-[color:var(--kit-rule)] p-2 text-[11px] text-[var(--color-error)]">
+                  <div className="flex min-h-16 items-center rounded-md border border-dashed border-[color:var(--kit-rule)] p-2 text-[11px] text-muted-fg">
                     {image.error ?? (image.path ? "Too large to show here; open it in proof." : "No image")}
                   </div>
                 )}
