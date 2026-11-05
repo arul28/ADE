@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { withRemoteAndroidArgs, withRemoteAppleArgs, withRemoteShellArgs } from "./cliRemoteWork";
+import { pullFileFromWorkCopy, pushFileToWorkCopy, withRemoteAndroidArgs, withRemoteAppleArgs, withRemoteShellArgs } from "./cliRemoteWork";
 import { THIS_MACHINE_NAME } from "../../desktop/src/shared/machineIdentity";
 import { AGENT37_READY_WAKE_WAIT_MS, isAgent37ReadyMachineSelector } from "../../desktop/src/shared/agent37";
 import { pickLiveCheckout } from "../../desktop/src/shared/crossMachineHandoff";
@@ -71,6 +71,8 @@ const MACHINE_TARGETABLE_PRIMARIES: ReadonlySet<string> = new Set([
   // The lane's Android emulator runs where that machine's brain runs.
   "android",
   "usage",
+  // Only `ade files push|pull` (this chat's work copy there); see below.
+  "files",
 ]);
 /**
  * Commands whose own `--machine` flag means something else (a draft's sending
@@ -122,7 +124,7 @@ export function extractMachineTargeting(parsed: ParsedCli): ParsedCli {
       }
       throw new CliUsageError(
         `ade ${typed} runs on this machine only; --machine and --all-machines don't apply to it. `
-        + "Commands that run on another machine: chat, lanes, shell, terminal, projects, usage, apple, android, screen (mac-desktop, windows-desktop), app-control.",
+        + "Commands that run on another machine: chat, lanes, shell, terminal, projects, usage, apple, android, screen (mac-desktop, windows-desktop), app-control, files push|pull.",
       );
     }
     return parsed;
@@ -137,6 +139,19 @@ export function extractMachineTargeting(parsed: ParsedCli): ParsedCli {
       throw new CliUsageError("--machine names the destination of a move; drop it for --cancel/--retry/--options.");
     }
     return parsed;
+  }
+  if (primary === "files") {
+    // The other `ade files` verbs act on a workspace (a lane) here; with
+    // --machine they would name a lane the other machine has never heard of.
+    const flags = flagNamesOutsideFreeText(parsed.command);
+    const verb = firstStandalonePositional(parsed.command.slice(1))?.toLowerCase() ?? "";
+    if ((flags.has("--machine") || flags.has("--all-machines")) && verb !== "push" && verb !== "pull") {
+      throw new CliUsageError(
+        "On another machine, ade files only copies files: ade files push --machine <name> <local> <remote>, "
+        + "or ade files pull --machine <name> <remote> <local>. Other file commands run on this machine.",
+      );
+    }
+    if (flags.has("--all-machines")) throw new CliUsageError("ade files push and pull copy to one machine: use --machine <name>.");
   }
   const kept: string[] = [];
   let machine: string | null = null;
@@ -570,6 +585,34 @@ export async function createMachineRemoteConnection(
       }
       if (method === "ade/actions/call" && params && isAppControlCaptureProof(params)) {
         return await fileRemoteAppControlProofHere(params);
+      }
+      if (method === "ade/actions/call" && params?.name === "work_copy_file" && isRecord(params.arguments)
+        && (params.arguments.op === "push" || params.arguments.op === "pull")) {
+        // `ade files push|pull`: run here as a series of chunk steps there.
+        const transfer = params.arguments;
+        let machineName: string | null = null;
+        const call = async (args: JsonObject): Promise<unknown> => {
+          const answer = await callRemoteAnswer(method, { name: "work_copy_file", arguments: args });
+          machineName ??= answer.machineName;
+          return unwrapToolResult(answer.result);
+        };
+        try {
+          const result = transfer.op === "push"
+            ? await pushFileToWorkCopy(call, {
+              localPath: asString(transfer.localPath) ?? "",
+              remotePath: asString(transfer.remotePath) ?? "",
+              // The checkout whose commit makes the copy there, as for a shell.
+              checkout: roots.workspaceRoot,
+            })
+            : await pullFileFromWorkCopy(call, {
+              remotePath: asString(transfer.remotePath) ?? "",
+              localPath: asString(transfer.localPath) ?? "",
+            });
+          return { ...result, machine: machineName ?? machine };
+        } catch (error) {
+          if (error instanceof CliUsageError || error instanceof CliToolError) throw error;
+          throw new CliToolError(error instanceof Error ? error.message : String(error), { machine });
+        }
       }
       if (method === "ade/actions/call" && params && isShellOrTerminalAction(params)) {
         // The checkout the command runs from: the lane worktree, or the project

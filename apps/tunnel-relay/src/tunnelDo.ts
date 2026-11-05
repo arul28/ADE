@@ -148,6 +148,8 @@ type SocketAttachment = {
   mcpAccountWant?: string | null;
   /** Control sockets only: a join or leave failed and is retried by the alarm. */
   mcpAccountRetry?: true;
+  /** When the socket was accepted; absent on sockets that predate the field. */
+  openedAt?: number;
   ts: number;
 };
 
@@ -665,7 +667,8 @@ export class TunnelDurableObject implements DurableObject {
     if (attachment.id) tags.push(`conn:${attachment.id}`);
     tags.push(`epoch:${epoch}`);
     this.state.acceptWebSocket(server, tags);
-    this.writeAttachment(server, { ...attachment, epoch, ts: Date.now() } satisfies SocketAttachment);
+    const now = Date.now();
+    this.writeAttachment(server, { ...attachment, epoch, ts: now, openedAt: now } satisfies SocketAttachment);
     if (afterAccept) afterAccept(server);
     return new Response(null, { status: 101, webSocket: client });
   }
@@ -846,6 +849,10 @@ export class TunnelDurableObject implements DurableObject {
           // ignore malformed control frames
         }
       }
+      // Native pings never reach this object, so this marks the last JSON
+      // frame (the host's JSON ping comes every few minutes); the close log
+      // reads it to show whether a drop followed a quiet socket.
+      this.touch(ws, att);
       return;
     }
 
@@ -1004,12 +1011,29 @@ export class TunnelDurableObject implements DurableObject {
     if (this.terminalSocketLogs.has(ws)) return;
     this.terminalSocketLogs.add(ws);
     const attachment = this.normalizedAttachment(ws);
+    const role = attachment?.role ?? null;
+    const now = Date.now();
     logTunnel(kind, {
-      role: attachment?.role ?? null,
+      role,
       connectionId: attachment?.id ?? null,
       epochMode: this.epochOf(attachment) === LEGACY_CONTROL_EPOCH ? "legacy" : "epoch",
       code,
-      established: attachment?.established === true,
+      // Only client and pipe sockets carry a handshake result; a control socket
+      // used to report "established": false on every close, which misled triage.
+      ...(role === "client" || role === "pipe"
+        ? { established: attachment?.established === true }
+        : {}),
+      ...(role === "control"
+        ? {
+            // Same short form as host_registered, so a relay close can be
+            // matched to that machine's brain log.
+            machineKey: attachment?.machineKey?.slice(0, 8) ?? null,
+            openMs: attachment?.openedAt == null ? null : now - attachment.openedAt,
+            // Since the last JSON frame. ts is refreshed by touch() at most
+            // once per ACTIVITY_WRITE_THROTTLE_MS, so this is approximate to that.
+            idleMs: attachment ? now - attachment.ts : null,
+          }
+        : {}),
       correlationId: attachment?.correlationId ?? null,
     });
   }

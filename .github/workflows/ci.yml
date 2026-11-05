@@ -466,6 +466,11 @@ jobs:
           key: nm-web-v1-${{ runner.os }}-${{ hashFiles('apps/web/package-lock.json') }}
       - run: cd apps/desktop && npm run build
       - run: cd apps/ade-cli && npm run build
+      # The desktop app ships the CLI help digest to agents. This job already
+      # has the built CLI, so the check costs one script run rather than a
+      # separate build.
+      - name: Check the ADE CLI help digest is current
+        run: cd apps/desktop && npm run regen-cli-help -- --check
       - run: cd apps/web && npm run build
 
   build-runtime-binaries:

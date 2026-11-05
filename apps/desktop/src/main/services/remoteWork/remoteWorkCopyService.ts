@@ -195,13 +195,15 @@ export type RemoteWorkLogger = {
 /**
  * What every service for one project shares, whoever made it: one lock per
  * copy, the copies whose command has not started yet, the newest way to
- * ask whether a shell still runs in a copy (from the project's runtime), and
+ * ask whether a shell still runs in a copy (from the project's runtime), the
+ * device services that can say a copy's simulator or emulator is in use, and
  * who wants to hear that a copy is gone (the Android device service).
  */
 type ProjectState = {
   locks: Map<string, Promise<unknown>>;
   starting: Map<string, number>;
   shellRunsIn: ((owner: string) => boolean) | null;
+  deviceInUse: Set<(laneId: string) => boolean>;
   released: Set<(laneId: string) => void>;
 };
 const projectStates = new Map<string, ProjectState>();
@@ -211,7 +213,7 @@ function projectStateFor(projectRoot: string): ProjectState {
   const key = pathComparisonKey(path.resolve(projectRoot));
   let state = projectStates.get(key);
   if (!state) {
-    state = { locks: new Map(), starting: new Map(), shellRunsIn: null, released: new Set() };
+    state = { locks: new Map(), starting: new Map(), shellRunsIn: null, deviceInUse: new Set(), released: new Set() };
     projectStates.set(key, state);
   }
   return state;
@@ -345,6 +347,7 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
   };
 
   const inUse = (owner: string): boolean => isRemoteWorkCopyInUse(projectRoot, owner);
+  const drivesDevice = (owner: string): boolean => remoteWorkCopyDrivesDevice(projectRoot, owner);
 
   const markStarting = (owner: string): (() => void) => {
     state.starting.set(owner, (state.starting.get(owner) ?? 0) + 1);
@@ -456,12 +459,63 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
       const patchFile = path.join(os.tmpdir(), `ade-remote-work-patch-${randomUUID()}.patch`);
       try {
         fs.writeFileSync(patchFile, patch);
+        await removeIgnoredLeftoversThePatchCreates(copyPath, patchFile);
         await gitOrThrow(["apply", "--binary", "--whitespace=nowarn", "--", patchFile], copyPath, "Could not apply the chat's uncommitted changes");
       } finally {
         fs.rmSync(patchFile, { force: true });
       }
     }
     return await workingTree(copyPath);
+  };
+
+  /**
+   * A file the chat's patch creates (untracked on the chat's machine) can be
+   * ignored HERE, by this machine's global excludes or `.git/info/exclude`.
+   * `clean -fd` keeps ignored files, so the copy of it from the last sync is
+   * still there and `git apply` refuses it ("already exists in working
+   * directory"). Only the patch's own new files are removed, and only plain
+   * files or links that resolve inside the copy; ignored build output
+   * elsewhere stays (no `clean -x`).
+   */
+  const removeIgnoredLeftoversThePatchCreates = async (copyPath: string, patchFile: string): Promise<void> => {
+    // `-z` prints names as they are (unquoted), one `create mode` line each.
+    const summary = await git(["apply", "--summary", "-z", "--", patchFile], copyPath);
+    if (summary.exitCode !== 0) return; // `git apply` itself reports a bad patch next.
+    const root = fs.realpathSync(copyPath);
+    for (const line of summary.stdout.split("\n")) {
+      const match = /^ create mode \d{6} (.+)$/.exec(line);
+      if (!match) continue;
+      const relative = match[1]!;
+      const target = path.resolve(root, relative);
+      const inside = (candidate: string) => {
+        const rel = path.relative(root, candidate);
+        return rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel);
+      };
+      if (!inside(target)) {
+        logger?.warn("remote_work.patch_path_outside_copy", { path: relative });
+        continue;
+      }
+      let stat: fs.Stats;
+      try {
+        stat = fs.lstatSync(target);
+      } catch {
+        continue; // Not there: nothing in the way.
+      }
+      if (!stat.isFile() && !stat.isSymbolicLink()) continue;
+      // A linked parent folder could point outside the copy.
+      let parent: string;
+      try {
+        parent = fs.realpathSync(path.dirname(target));
+      } catch {
+        continue;
+      }
+      if (parent !== root && !inside(parent)) {
+        logger?.warn("remote_work.patch_path_outside_copy", { path: relative });
+        continue;
+      }
+      fs.rmSync(path.join(parent, path.basename(target)), { force: true });
+      logger?.info("remote_work.removed_ignored_leftover", { path: relative });
+    }
   };
 
   const removeCopyFiles = async (copyPath: string): Promise<void> => {
@@ -486,14 +540,22 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
   /**
    * Delete the copy for `owner`. True when one existed. Refused while it is in
    * use. With `keepUnsynced` (the automatic cleanups that run on a guess), a
-   * copy holding work nobody pushed is kept: false.
+   * copy holding work nobody pushed is kept: false. With `keepDeviceInUse`
+   * (the idle and low-disk cleanups), so is a copy whose simulator or
+   * emulator is booted, streaming or claimed: a chat can drive a device for
+   * days without a shell. A person's delete, or the chat being gone, still
+   * releases the copy and with it the device.
    */
   const release = async (
     owner: string,
-    releaseOptions: { keepUnsynced?: boolean; onlyIfUnusedBefore?: number } = {},
+    releaseOptions: { keepUnsynced?: boolean; keepDeviceInUse?: boolean; onlyIfUnusedBefore?: number } = {},
   ): Promise<boolean> =>
     await withLock(owner, async () => {
       if (inUse(owner)) throw busyError();
+      if (releaseOptions.keepDeviceInUse && drivesDevice(owner)) {
+        logger?.info("remote_work.kept_device_in_use", { owner });
+        return false;
+      }
       const copy = get(owner);
       // Re-read in the lock: a command may have used the copy since the sweep chose it.
       if (copy && releaseOptions.onlyIfUnusedBefore != null && Date.parse(copy.lastUsedAt) >= releaseOptions.onlyIfUnusedBefore) {
@@ -540,7 +602,7 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
       .filter((copy) => copy.owner !== owner && !state.locks.has(copy.owner))
       .sort((a, b) => Date.parse(a.lastUsedAt) - Date.parse(b.lastUsedAt));
     for (const copy of oldestFirst) {
-      await releaseIfIdle(copy.owner, { keepUnsynced: true });
+      await releaseIfIdle(copy.owner, { keepUnsynced: true, keepDeviceInUse: true });
       free = freeBytes();
       if (free == null || free >= REMOTE_WORK_RECLAIM_FREE_BYTES) return;
     }
@@ -681,7 +743,7 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
       for (const copy of readRegistry().copies) {
         if (inUse(copy.owner)) continue;
         if (Date.parse(copy.lastUsedAt) < cutoff) {
-          if (await releaseIfIdle(copy.owner, { keepUnsynced: true, onlyIfUnusedBefore: cutoff })) released += 1;
+          if (await releaseIfIdle(copy.owner, { keepUnsynced: true, keepDeviceInUse: true, onlyIfUnusedBefore: cutoff })) released += 1;
           continue;
         }
         const answer = sweepOptions.ownerGone
@@ -714,6 +776,20 @@ export function registerRemoteWorkShellCheck(projectRoot: string, shellRunsIn: (
   state.shellRunsIn = shellRunsIn;
   return () => {
     if (state.shellRunsIn === shellRunsIn) state.shellRunsIn = null;
+  };
+}
+
+/**
+ * How a device service (the iOS simulator, the Android emulator) tells the
+ * idle and low-disk cleanups that a copy's device is in use: booted,
+ * streaming or claimed for the copy's lane id (`remote-work-…`). Registered
+ * by each service when it starts; the returned function removes it.
+ */
+export function registerRemoteWorkDeviceCheck(projectRoot: string, deviceInUse: (laneId: string) => boolean): () => void {
+  const state = projectStateFor(projectRoot);
+  state.deviceInUse.add(deviceInUse);
+  return () => {
+    state.deviceInUse.delete(deviceInUse);
   };
 }
 
@@ -754,6 +830,20 @@ export function isRemoteWorkCopyInUse(projectRoot: string, owner: string): boole
     console.warn(`[remote_work] could not tell whether a shell runs in ${owner}'s work copy`, error);
     return true;
   }
+}
+
+/** A device service says this copy's simulator or emulator is in use. An answer that cannot be read counts as in use. */
+export function remoteWorkCopyDrivesDevice(projectRoot: string, owner: string): boolean {
+  const laneId = remoteWorkLaneIdFor(owner);
+  for (const deviceInUse of projectStateFor(projectRoot).deviceInUse) {
+    try {
+      if (deviceInUse(laneId)) return true;
+    } catch (error) {
+      console.warn(`[remote_work] could not tell whether ${owner}'s work copy drives a device`, error);
+      return true;
+    }
+  }
+  return false;
 }
 
 /**

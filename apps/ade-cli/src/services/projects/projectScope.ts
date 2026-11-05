@@ -4,6 +4,7 @@ import type { SyncCommandPayload, SyncFileRequest } from "../../../../desktop/sr
 import type { SyncRemoteCommandExecutionContext } from "../sync/syncRemoteCommandService";
 import type { SyncHostBlocker } from "../sync/syncService";
 import type { BrainKeepAwakeService } from "../power/brainKeepAwakeService";
+import type { RuntimeDisposeReason } from "../runtime/startupTeardown";
 import type { ProjectId, ProjectRecord, ProjectRegistry } from "./projectRegistry";
 import { captureProblem, sendSentryLog } from "../../../../desktop/src/shared/sentry/capture";
 import { DIAGNOSTIC_ATTACH_TAG } from "../../../../desktop/src/shared/sentry/diagnostics";
@@ -148,8 +149,13 @@ export class ProjectScope {
     this.runtime = args.runtime;
   }
 
-  dispose(): void {
-    this.runtime.dispose();
+  /**
+   * Tear the runtime down and wait for it (each async disposer is capped).
+   * `reason` tells the device services whether to hand their devices to the
+   * next brain (`"exit"`, `"close"`) or stop them (`"unregister"`).
+   */
+  async dispose(reason?: RuntimeDisposeReason): Promise<void> {
+    await this.runtime.dispose(reason);
   }
 }
 
@@ -409,6 +415,11 @@ export class ProjectScopeRegistry {
 
     this.projectRegistry.assertProjectDataAvailable(record);
     const pending = (async () => {
+      // A teardown of this project's previous scope may still be waiting on
+      // its disposers (up to the drain's cap); its database closes last, so
+      // the new runtime opens the project only after the old one let go.
+      const priorDisposal = this.disposals.get(projectId);
+      if (priorDisposal) await priorDisposal.catch(() => undefined);
       if (options.touch ?? true) {
         this.projectRegistry.touch(projectId);
       }
@@ -433,7 +444,7 @@ export class ProjectScopeRegistry {
       try {
         this.projectRegistry.recordDatabaseIdentity(projectId);
       } catch (error) {
-        runtime.dispose();
+        await runtime.dispose("close");
         throw error;
       }
       return new ProjectScope({
@@ -472,7 +483,14 @@ export class ProjectScopeRegistry {
     }
   }
 
-  async dispose(projectId: ProjectId): Promise<void> {
+  /**
+   * Drop a project's scope and wait for its runtime to tear down.
+   *
+   * `reason` defaults to `"close"` (a repair or a re-boot: the next scope for
+   * the project re-adopts what this one hands off). Pass `"unregister"` when
+   * the project is leaving this machine, and `"exit"` when the brain is.
+   */
+  async dispose(projectId: ProjectId, reason: RuntimeDisposeReason = "close"): Promise<void> {
     // Disposing is how a repair asks for a clean slate, so it also drops the
     // failed-boot backoff: the next `get` must boot rather than replay the
     // failure the repair was meant to fix. The sync-host phases go with it, for
@@ -486,16 +504,21 @@ export class ProjectScopeRegistry {
     if (!cached) return await this.disposals.get(projectId);
     this.scopes.delete(projectId);
     this.readyScopes.delete(projectId);
-    const disposal = this.disposeCached(projectId, cached).finally(() => {
+    const disposal = this.disposeCached(projectId, cached, reason).finally(() => {
       if (this.disposals.get(projectId) === disposal) this.disposals.delete(projectId);
     });
     this.disposals.set(projectId, disposal);
     await disposal;
   }
 
-  private async disposeCached(projectId: ProjectId, cached: Promise<ProjectScope>): Promise<void> {
+  private async disposeCached(
+    projectId: ProjectId,
+    cached: Promise<ProjectScope>,
+    reason: RuntimeDisposeReason,
+  ): Promise<void> {
     const scope = await cached.catch(() => null);
-    scope?.dispose();
+    // Never throws: each teardown step reports its own failure.
+    await scope?.dispose(reason);
     if (this.syncHostProjectId === projectId) {
       this.syncHostProjectId = null;
     }
@@ -505,9 +528,10 @@ export class ProjectScopeRegistry {
     }
   }
 
-  async disposeAll(): Promise<void> {
+  /** Every scope at once; `reason` as {@link dispose}, usually `"exit"`. */
+  async disposeAll(reason: RuntimeDisposeReason = "close"): Promise<void> {
     const projectIds = [...this.scopes.keys()];
-    await Promise.all(projectIds.map((projectId) => this.dispose(projectId)));
+    await Promise.all(projectIds.map((projectId) => this.dispose(projectId, reason)));
     // Projects that only ever failed to boot hold no scope, so the loop above
     // never reaches them.
     this.failedScopes.clear();
@@ -863,7 +887,7 @@ export class ProjectScopeRegistry {
     // clears them.
     this.clearSyncHostPhaseBackoff(projectId);
     void pending.then(
-      (scope) => scope.dispose(),
+      (scope) => scope.dispose("close"),
       () => undefined,
     );
   }

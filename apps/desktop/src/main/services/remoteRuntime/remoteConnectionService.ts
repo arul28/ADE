@@ -14,6 +14,7 @@ import type {
   RemoteRuntimeProjectIconUpload,
   RemoteRuntimeProjectWorkSummary,
   RemoteRuntimeConnectionSnapshot,
+  RemoteRuntimeConnectionRecovery,
   RemoteRuntimeConnectionState,
   RemoteRuntimeConnectionStatus,
   RemoteRuntimeConnectErrorInfo,
@@ -88,6 +89,10 @@ import {
   trustSshHostKeyForTarget,
 } from "./sshTransport";
 import { decodeRemoteRuntimeHandoffStoragePreflightResult } from "../../../shared/crossMachineHandoff";
+import {
+  describeHostWentAway,
+  describeLinkHeldByOtherAdeApp,
+} from "../../../shared/connectionDiagnosis";
 
 type StatusPatch = Partial<Omit<RemoteRuntimeConnectionStatus, "target">>;
 
@@ -144,6 +149,13 @@ type RemoteConnectionConnectOptions = {
   explicit?: boolean;
 };
 
+/** Redials for one dropped link, until the machine is back or the time is up. */
+type HostReturnWatch = {
+  startedAt: number;
+  attempts: number;
+  timer: NodeJS.Timeout | null;
+};
+
 // A machine that restarts for an update is back in one to two minutes; a
 // 30 s base doubling to 5 min left it showing as offline for several minutes
 // after it was up. One dial every 2 min to a machine that stays off costs little.
@@ -152,6 +164,15 @@ const AUTOMATIC_RECONNECT_MAX_BACKOFF_MS = 2 * 60_000;
 /** Failed reconnects in a row (about 70 s of them) before one Sentry signal. */
 const RECONNECT_FAILURES_BEFORE_SIGNAL = 4;
 const MAX_LAST_ERROR_CHARS = 500;
+/**
+ * A link this app had open dropped because the machine went away. A brain
+ * restart is back in 5 to 30 s, so the first redial comes almost at once and
+ * the rest follow the automatic-reconnect backoff above. After this long the
+ * app stops and waits for the person, so a dev app never keeps dialing a
+ * machine that is off for good.
+ */
+const HOST_RETURN_FIRST_ATTEMPT_MS = 1_000;
+const HOST_RETURN_WATCH_MS = 10 * 60_000;
 const DISCOVERED_ENDPOINT_REFRESH_INTERVAL_MS = 60_000;
 
 function errorMessage(error: unknown): string {
@@ -308,6 +329,7 @@ export class RemoteConnectionService {
   private readonly automaticReconnectRetryAtByTargetId = new Map<string, number>();
   private readonly disconnectGenerationByTargetId = new Map<string, number>();
   private readonly latencyProbeTargetIds = new Set<string>();
+  private readonly hostReturnWatchByTargetId = new Map<string, HostReturnWatch>();
   private readonly pairedFallbackSshTrustByTargetId = new Map<
     string,
     Extract<RemoteRuntimeSshHostKeyTrustStatus, { state: "needs_trust" | "changed" }>
@@ -335,6 +357,8 @@ export class RemoteConnectionService {
     // the last explicit Connect. Without this the list kept the old version
     // and called a finished update "didn't apply".
     this.pool.onEntryConnected((targetId, result) => {
+      // The machine is back, whoever dialed it.
+      this.stopHostReturnWatch(targetId);
       // A connect that finishes after the machine was removed or disconnected
       // by hand must not write it back.
       if (!this.registry.get(targetId) || this.manuallyDisconnectedTargetIds.has(targetId)) return;
@@ -375,21 +399,40 @@ export class RemoteConnectionService {
         // machine every few seconds. Held in memory only: nothing is written
         // to the saved machine, and Connect takes the connection back.
         this.manuallyDisconnectedTargetIds.add(targetId);
-        const name = this.registry.get(targetId)?.name ?? "this machine";
+        this.stopHostReturnWatch(targetId);
         this.mergeStatus(targetId, {
           state: "error",
           ...errorStatusPatch(
             error,
-            `Another ADE on this computer is using the connection to ${name}. Connect to use it here.`,
+            describeLinkHeldByOtherAdeApp(this.registry.get(targetId)?.name),
           ),
+          lastAttemptedAt: Date.now(),
+          recovery: "held_elsewhere",
+        });
+        return;
+      }
+      const target = this.registry.get(targetId);
+      if (!target || !isImplicitConnectionFailure(error)) {
+        this.mergeStatus(targetId, {
+          state: "error",
+          ...errorStatusPatch(error),
           lastAttemptedAt: Date.now(),
         });
         return;
       }
+      // ADE on that machine went away: it restarted, quit, or its network
+      // dropped (relay "host unavailable", the host's socket closed). The
+      // link was open in this app, so bring it back when the machine is back,
+      // unless the person turned that off. A dev app does it only for a
+      // machine it was told to connect in this run (see `explicitConnectOnly`).
+      const reconnects = this.savedConnectionMaintenanceOwns(target)
+        || (this.canWatchForHostReturn(target) && this.startHostReturnWatch(targetId));
+      const recovery = reconnects ? "reconnecting" : "waiting_for_user";
       this.mergeStatus(targetId, {
         state: "error",
-        ...errorStatusPatch(error),
+        ...errorStatusPatch(error, describeHostWentAway(target.name, recovery)),
         lastAttemptedAt: Date.now(),
+        recovery,
       });
     });
   }
@@ -842,6 +885,7 @@ export class RemoteConnectionService {
           // Live state, so only while connected: an old wait must not linger on a dropped machine.
           ...(status.hostStorageWait && status.state === "connected" ? { hostStorageWait: status.hostStorageWait } : {}),
           reconnectBlocked: this.isManuallyDisconnected(target) ? "disconnected" : null,
+          ...(status.recovery && status.state === "error" ? { recovery: status.recovery } : {}),
         };
       });
     this.lastSnapshotAt = Math.max(Date.now(), this.lastSnapshotAt + 1);
@@ -881,6 +925,13 @@ export class RemoteConnectionService {
     if (!this.autoconnectTimer) return;
     clearInterval(this.autoconnectTimer);
     this.autoconnectTimer = null;
+  }
+
+  /** Ends every redial for a dropped link at once (the app is quitting). */
+  stopHostReturnWatches(): void {
+    for (const targetId of [...this.hostReturnWatchByTargetId.keys()]) {
+      this.stopHostReturnWatch(targetId);
+    }
   }
 
   async connect(
@@ -953,6 +1004,7 @@ export class RemoteConnectionService {
         lastError: null,
       });
       this.clearAutomaticReconnectState(connectedResult.target.id);
+      this.stopHostReturnWatch(connectedResult.target.id);
       this.pairedFallbackSshTrustByTargetId.delete(connectedResult.target.id);
       if (explicit) this.explicitlyConnectedTargetIds.add(connectedResult.target.id);
       return connectedResult;
@@ -980,6 +1032,7 @@ export class RemoteConnectionService {
         state: "error",
         ...errorStatusPatch(error, this.withRetryNotice(target.id, lastError)),
         lastAttemptedAt: Date.now(),
+        recovery: this.recoveryAfterFailure(target.id),
       });
       throw error;
     }
@@ -1005,6 +1058,8 @@ export class RemoteConnectionService {
       }
     }
     this.bumpDisconnectGeneration(targetId);
+    // Disconnect, Cancel and Remove all end the redials for a dropped link.
+    this.stopHostReturnWatch(targetId);
     this.pool.disconnect(targetId);
     this.mergeStatus(targetId, { state: "idle", lastError: null });
     // Windows stop calling a machine they see as disconnected. The status may
@@ -1545,6 +1600,7 @@ export class RemoteConnectionService {
 
   dispose(): void {
     this.stopAutoconnect();
+    this.stopHostReturnWatches();
     this.pool.dispose();
     this.latencyProbeTargetIds.clear();
     this.automaticReconnectFailuresByTargetId.clear();
@@ -1589,10 +1645,20 @@ export class RemoteConnectionService {
         } catch (error) {
           if (!isImplicitConnectionFailure(error)) continue;
           this.pool.disconnect(target.id);
+          // Without the 30 s maintenance (a dev app, after a wake) the
+          // redials for a dropped link bring it back instead of one dial.
+          const watching = !this.savedConnectionMaintenanceOwns(target)
+            && this.canWatchForHostReturn(target)
+            && this.startHostReturnWatch(target.id);
+          const recovery = watching || this.savedConnectionMaintenanceOwns(target)
+            ? "reconnecting"
+            : "waiting_for_user";
           this.mergeStatus(target.id, {
             state: "error",
-            lastError: "Remote ADE service connection was interrupted.",
+            ...errorStatusPatch(error, describeHostWentAway(target.name, recovery)),
+            recovery,
           });
+          if (watching) continue;
         } finally {
           this.latencyProbeTargetIds.delete(target.id);
         }
@@ -1705,6 +1771,126 @@ export class RemoteConnectionService {
     return this.isHeldForUserAction(targetId) ? `${message} ${REMOTE_CONNECT_STOPPED_NOTICE}` : message;
   }
 
+  /**
+   * The 30 s saved-connection maintenance redials this machine on its own
+   * (installed apps), with the automatic-reconnect backoff and no time limit.
+   */
+  private savedConnectionMaintenanceOwns(target: RemoteRuntimeTarget): boolean {
+    return !this.options.explicitConnectOnly
+      && this.autoconnectTimer != null
+      && shouldAutoconnectTarget(target)
+      && !this.isManuallyDisconnected(target);
+  }
+
+  /**
+   * Whether this app may redial a link it had open that dropped: the person
+   * did not disconnect it or turn "Reconnect automatically" off, and a dev
+   * app connected it in this run (it never takes a machine on its own).
+   */
+  private canWatchForHostReturn(target: RemoteRuntimeTarget): boolean {
+    if (this.isManuallyDisconnected(target) || !shouldAutoconnectTarget(target)) return false;
+    return !this.options.explicitConnectOnly || this.explicitlyConnectedTargetIds.has(target.id);
+  }
+
+  /** Starts (or restarts) the redials for a dropped link. Returns true. */
+  private startHostReturnWatch(targetId: string): true {
+    this.stopHostReturnWatch(targetId);
+    const watch: HostReturnWatch = { startedAt: Date.now(), attempts: 0, timer: null };
+    this.hostReturnWatchByTargetId.set(targetId, watch);
+    this.scheduleHostReturnAttempt(targetId, watch, HOST_RETURN_FIRST_ATTEMPT_MS);
+    return true;
+  }
+
+  private stopHostReturnWatch(targetId: string): void {
+    const watch = this.hostReturnWatchByTargetId.get(targetId);
+    if (!watch) return;
+    this.hostReturnWatchByTargetId.delete(targetId);
+    if (watch.timer) clearTimeout(watch.timer);
+    watch.timer = null;
+  }
+
+  private scheduleHostReturnAttempt(targetId: string, watch: HostReturnWatch, delayMs: number): void {
+    if (this.hostReturnWatchByTargetId.get(targetId) !== watch) return;
+    const remainingMs = watch.startedAt + HOST_RETURN_WATCH_MS - Date.now();
+    if (remainingMs <= 0) {
+      // Out of time: say that the app now waits for the person.
+      this.stopHostReturnWatch(targetId);
+      const target = this.registry.get(targetId);
+      const status = this.statusById.get(targetId);
+      if (!target || status?.state !== "error") return;
+      const waiting = describeHostWentAway(target.name, "waiting_for_user");
+      this.mergeStatus(targetId, {
+        lastError: waiting,
+        lastErrorInfo: { ...(status.lastErrorInfo ?? { kind: "generic" as const }), message: waiting },
+        recovery: "waiting_for_user",
+      });
+      return;
+    }
+    watch.timer = setTimeout(() => {
+      watch.timer = null;
+      void this.runHostReturnAttempt(targetId, watch);
+    }, Math.max(0, Math.min(delayMs, remainingMs)));
+    // Never keeps the app alive on its way out.
+    watch.timer.unref?.();
+  }
+
+  private async runHostReturnAttempt(targetId: string, watch: HostReturnWatch): Promise<void> {
+    if (this.hostReturnWatchByTargetId.get(targetId) !== watch) return;
+    watch.attempts += 1;
+    try {
+      // Implicit, so it keeps every guard a call has: a dev app's
+      // connected-in-this-run rule, a manual disconnect, the dial backoff.
+      await this.connect(targetId);
+      this.stopHostReturnWatch(targetId);
+    } catch (error) {
+      // Disconnected, removed or already reconnected meanwhile.
+      if (this.hostReturnWatchByTargetId.get(targetId) !== watch) return;
+      if (!this.hostReturnCanContinue(targetId, error)) {
+        // The person has to fix something; the status already says what.
+        this.stopHostReturnWatch(targetId);
+        const status = this.statusById.get(targetId);
+        if (status?.recovery === "reconnecting") this.mergeStatus(targetId, { recovery: null });
+        return;
+      }
+      const target = this.registry.get(targetId);
+      if (target && !isConnectionBackoffThrottle(error)) {
+        // The dial's own failure stays as the detail; the headline says the
+        // app keeps trying.
+        this.mergeStatus(targetId, {
+          state: "error",
+          ...errorStatusPatch(error, describeHostWentAway(target.name, "reconnecting")),
+          recovery: "reconnecting",
+        });
+      }
+      const retryAt = this.automaticReconnectRetryAtByTargetId.get(targetId);
+      const now = Date.now();
+      this.scheduleHostReturnAttempt(
+        targetId,
+        watch,
+        retryAt != null && retryAt > now ? retryAt - now : automaticReconnectBackoffMs(watch.attempts),
+      );
+    }
+  }
+
+  /** A failure the machine coming back can fix, as opposed to one only the person can. */
+  private hostReturnCanContinue(targetId: string, error: unknown): boolean {
+    if (isConnectionBackoffThrottle(error)) return !this.pool.needsUserAction(targetId);
+    if (error instanceof PairedRuntimeRelayAuthRequiredError) return false;
+    if (!this.isConnectionFailure(targetId, error) || this.pool.needsUserAction(targetId)) return false;
+    const failure = this.statusById.get(targetId)?.lastErrorInfo?.failure;
+    return failure !== "pairing" && failure !== "authentication" && failure !== "identity";
+  }
+
+  /** What a failed call or connect leaves in `recovery`. */
+  private recoveryAfterFailure(targetId: string): RemoteRuntimeConnectionRecovery | null {
+    const target = this.registry.get(targetId);
+    if (!target || this.isHeldForUserAction(targetId) || this.isManuallyDisconnected(target)) return null;
+    if (this.hostReturnWatchByTargetId.has(targetId) || this.savedConnectionMaintenanceOwns(target)) {
+      return "reconnecting";
+    }
+    return this.statusById.get(targetId)?.recovery === "waiting_for_user" ? "waiting_for_user" : null;
+  }
+
   private clearAutomaticReconnectState(targetId: string): void {
     this.automaticReconnectFailuresByTargetId.delete(targetId);
     this.automaticReconnectRetryAtByTargetId.delete(targetId);
@@ -1741,6 +1927,7 @@ export class RemoteConnectionService {
         this.withRetryNotice(targetId, this.noteAutomaticReconnectFailure(targetId, error)),
       ),
       lastAttemptedAt: Date.now(),
+      recovery: this.recoveryAfterFailure(targetId),
     });
   }
 
@@ -1832,6 +2019,9 @@ export class RemoteConnectionService {
         current.state ??
         "idle") as RemoteRuntimeConnectionState,
     };
+    // Who brings a failed link back means nothing once it is up or idle, and
+    // must not come back with a later, unrelated failure.
+    if (next.state === "connected" || next.state === "idle") next.recovery = null;
     this.statusById.set(targetId, next);
     // Every successful call re-stamps `lastAttemptedAt` on a healthy machine.
     // Broadcasting that told every window "the connections changed", and the

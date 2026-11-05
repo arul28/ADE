@@ -1,4 +1,4 @@
-import { findRemoteWorkCopyForLane, isRemoteWorkLaneId } from "../remoteWork/remoteWorkCopyService";
+import { findRemoteWorkCopyForLane, isRemoteWorkLaneId, registerRemoteWorkDeviceCheck } from "../remoteWork/remoteWorkCopyService";
 import { parseForeignCallerSessionId } from "../../../shared/runtimeClientNames";
 import { externalChatContext } from "../chat/externalChats";
 import { randomUUID } from "node:crypto";
@@ -2582,6 +2582,14 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       computedAt: 0,
       inflight: null,
     },
+  });
+
+  // A work copy's simulator in use (an app session, a launch, a stream, a
+  // device hub) keeps the copy through the idle and low-disk cleanups.
+  const offWorkCopyDeviceCheck = registerRemoteWorkDeviceCheck(args.projectRoot, (laneId) => {
+    if (!isRemoteWorkLaneId(laneId)) return false;
+    const runtime = runtimes.get(laneKey(laneId));
+    return Boolean(runtime && (runtime.activeSession || runtime.activeLaunchId || runtime.hub || runtime.streamStatus.running));
   });
 
   const runtimeForKey = (key: string): LaneRuntime => {
@@ -8353,6 +8361,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     isBuildPathActive: (candidatePath: string) => activeBuildDataPaths.has(path.resolve(candidatePath)),
     dispose: () => {
       disposed = true;
+      offWorkCopyDeviceCheck();
       deviceLeases.dispose();
       maintenance?.stop();
       runtimeManagerInstance?.dispose();

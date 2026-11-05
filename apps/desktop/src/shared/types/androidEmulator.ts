@@ -356,9 +356,11 @@ export type AndroidEmulatorServiceApi = {
   /**
    * Stop every stream. A service built to hand off (the brain) leaves ADE's
    * emulators running for the next brain to re-adopt; otherwise every
-   * emulator ADE started is stopped too. Not an action.
+   * emulator ADE started is stopped too. `reason: "unregister"` (the project
+   * was removed from this machine, so nothing will re-adopt them) stops them
+   * even on a hand-off service. Not an action.
    */
-  dispose(): Promise<void>;
+  dispose(options?: { reason?: "exit" | "close" | "unregister" }): Promise<void>;
   onEvent(listener: (event: AndroidEmulatorEvent) => void): () => void;
 };
 

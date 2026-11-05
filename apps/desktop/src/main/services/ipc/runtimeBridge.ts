@@ -674,6 +674,8 @@ export function registerRuntimeBridge({
     remoteConnectionService.probeSavedConnections();
     void refreshLanDiscovery().catch(logLanDiscoveryFailure);
   };
+  // A quit that goes through must not redial a dropped machine on the way out.
+  app.once?.("will-quit", () => remoteConnectionService.stopHostReturnWatches());
   powerMonitor?.on?.("resume", probeRemoteConnectionsAfterWake);
   powerMonitor?.on?.("unlock-screen", probeRemoteConnectionsAfterWake);
 

@@ -435,6 +435,7 @@ export function SavedMachineRow({
             card={shownErrorCard}
             onRetry={!locked ? () => onConnect(target.id) : undefined}
             retrying={connecting}
+            recovery={status?.state === "error" ? status.recovery ?? null : null}
             action={pairAgain && !locked
               ? { label: "Pair again", onClick: pairAgain }
               : null}

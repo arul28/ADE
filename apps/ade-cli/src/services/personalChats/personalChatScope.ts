@@ -978,7 +978,7 @@ export class PersonalChatScope {
     this.runtimePromise = null;
     const runtime = await pending?.catch(() => null);
     this.personalTerminalSessions.clear();
-    runtime?.dispose();
+    await runtime?.dispose();
   }
 
   /**

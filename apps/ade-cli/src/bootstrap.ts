@@ -341,7 +341,7 @@ import {
 } from "./services/account/sharedAccountAuthService";
 import { attachSharedModelRouter, createModelRouterService } from "../../desktop/src/main/services/router/modelRouterService";
 import { createModelRegistryStore, createWorkerRegistryFetcher } from "../../desktop/src/main/services/router/modelRegistryStore";
-import { createTeardownStack } from "./services/runtime/startupTeardown";
+import { createTeardownStack, type RuntimeDisposeReason } from "./services/runtime/startupTeardown";
 import {
   installAdeCliShim,
   packagedCliNodeModulePaths,
@@ -568,7 +568,15 @@ export type AdeRuntime = {
   } | null;
   eventBuffer: EventBuffer;
   isPackaged?: boolean;
-  dispose: () => void;
+  /**
+   * Stop every service and close the database, in reverse construction order.
+   * `reason` reaches the services whose teardown depends on it (a device
+   * service hands its devices to the next brain on `"exit"` and stops them on
+   * `"unregister"`); without one each keeps its configured default. Await it
+   * before the process exits or the project database is opened again: the
+   * database closes only after the async disposers settle (each capped).
+   */
+  dispose: (reason?: RuntimeDisposeReason) => void | Promise<void>;
 };
 
 export function ensureAdePaths(projectRoot: string): AdeRuntimePaths {
@@ -2295,7 +2303,7 @@ export async function createAdeRuntime(args: {
         logger,
         onEvent: (event) => pushEvent("runtime", { type: "android_emulator_event", event }),
       });
-    teardown.push(() => androidEmulatorService?.dispose());
+    teardown.push((reason) => androidEmulatorService?.dispose({ reason }));
     // A chat-only runtime has no browser surface: no forwarder, no user-browser
     // attachments, no bridge. Everything else has all three. That includes the
     // machine's personal-chat runtime: nothing reaches its action registry
@@ -4034,10 +4042,10 @@ export async function createAdeRuntime(args: {
       // Shutdown drains the same stack the construction path filled, in reverse
       // acquisition order: a service is always stopped before the services it was
       // built from, and the database closes last. Keeping one list means the
-      // failure path and the shutdown path cannot drift apart.
-      dispose: () => {
-        teardown.drain();
-      }
+      // failure path and the shutdown path cannot drift apart. Unlike the
+      // failure path it waits for each async disposer (capped per step and in
+      // total), so a device stop or a final write lands before the store closes.
+      dispose: (reason?: RuntimeDisposeReason) => teardown.drainAsync({ reason }),
     };
 
     automationService?.bindAdeActionRegistry(

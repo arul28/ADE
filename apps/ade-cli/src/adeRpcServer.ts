@@ -34,7 +34,12 @@ import {
   RemoteWorkError,
   type RemoteWorkPrepareResult,
 } from "../../desktop/src/main/services/remoteWork/remoteWorkCopyService";
-import { remoteRunOnceShellLaunch } from "../../desktop/src/main/services/pty/ptyService";
+import {
+  createRemoteWorkFiles,
+  RemoteWorkFileError,
+  type RemoteWorkFiles,
+} from "../../desktop/src/main/services/remoteWork/remoteWorkFiles";
+import { remoteRunOnceShellLaunch, windowsCommandLineOverLimitMessage } from "../../desktop/src/main/services/pty/ptyService";
 import { externalChatContext } from "../../desktop/src/main/services/chat/externalChats";
 import path from "node:path";
 import { EXTERNAL_SESSION_PROVIDERS } from "../../desktop/src/shared/types/externalSessions";
@@ -1714,6 +1719,8 @@ const MUTATION_TOOLS = new Set([
   "saveMemory",
   // A chat on another machine deleting its own work copy here.
   "release_remote_work_copy",
+  // A chat on another machine copying a file into or out of its own work copy here.
+  "work_copy_file",
   "create_lane",
   "delete_computer_use_artifacts",
   "link_computer_use_artifacts_to_pr",
@@ -2993,9 +3000,39 @@ function workCopyOwner(session: SessionState): string {
 }
 
 /**
+ * How long a call waits for a NEW work copy before it answers "still being
+ * made". The first copy is a git fetch plus a worktree (minutes on Windows),
+ * and the caller's machine gives a call 30 s by default; an answer has to get
+ * back before that, or the caller only sees a timeout.
+ */
+const FIRST_WORK_COPY_ANSWER_MS = 20_000;
+
+/**
+ * Work copies being made for a call that already answered "still being made",
+ * by project and owner. The make goes on under its own git budgets; the next
+ * call waits for it (again within FIRST_WORK_COPY_ANSWER_MS). A make that
+ * failed after its call answered keeps its error for the next call.
+ */
+const workCopiesBeingMade = new Map<string, { done: Promise<void>; failure: unknown | null }>();
+
+function workCopyPreparingError(machineName: string | null): JsonRpcError {
+  return new JsonRpcError(
+    JsonRpcErrorCode.invalidRequest,
+    `This chat's work copy on ${machineName?.trim() || "this machine"} is still being made (the first command `
+    + "fetches the commit and checks it out, which can take a few minutes). It goes on there; run the command again in a minute.",
+    { code: "work_copy_preparing", retryable: true },
+  );
+}
+
+/**
  * Ready the calling chat's work copy here for one call (`ade shell start
  * --machine`, a lane-less `ade apple … --machine`). Only a chat on another
  * machine has one. The copy stays busy until `done` is called.
+ *
+ * A copy that does not exist yet is made under its own budget: when it takes
+ * longer than FIRST_WORK_COPY_ANSWER_MS, the call answers `work_copy_preparing`
+ * (retryable) and the copy is finished in the background, so the next call
+ * finds it.
  */
 async function prepareCallerWorkCopy(
   runtime: AdeRuntime,
@@ -3003,21 +3040,83 @@ async function prepareCallerWorkCopy(
   remoteWork: Record<string, unknown>,
 ): Promise<{ owner: string; laneId: string; prepared: RemoteWorkPrepareResult }> {
   const owner = workCopyOwner(session);
-  try {
-    const prepared = await workCopiesFor(runtime).prepare(owner, {
-      head: asOptionalTrimmedString(remoteWork.head) ?? "",
-      fetchRef: asOptionalTrimmedString(remoteWork.fetchRef),
-      patchBase64: typeof remoteWork.patchBase64 === "string" ? remoteWork.patchBase64 : null,
-      branch: asOptionalTrimmedString(remoteWork.branch),
-      machineName: externalChatContext(owner)?.machineName ?? null,
-    }, isRemoteWorkSyncMode(remoteWork.sync) ? remoteWork.sync : "sync");
-    return { owner, laneId: remoteWorkLaneIdFor(owner), prepared };
-  } catch (error) {
-    if (error instanceof RemoteWorkError) {
-      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, error.message, { code: error.code });
+  const laneId = remoteWorkLaneIdFor(owner);
+  const machineName = externalChatContext(owner)?.machineName ?? null;
+  const makingKey = `${runtime.projectRoot}\u0000${owner}`;
+  const asRpcError = (error: unknown): unknown => (error instanceof RemoteWorkError
+    ? new JsonRpcError(JsonRpcErrorCode.invalidParams, error.message, { code: error.code })
+    : error);
+  const prepare = () => workCopiesFor(runtime).prepare(owner, {
+    head: asOptionalTrimmedString(remoteWork.head) ?? "",
+    fetchRef: asOptionalTrimmedString(remoteWork.fetchRef),
+    patchBase64: typeof remoteWork.patchBase64 === "string" ? remoteWork.patchBase64 : null,
+    branch: asOptionalTrimmedString(remoteWork.branch),
+    machineName,
+  }, isRemoteWorkSyncMode(remoteWork.sync) ? remoteWork.sync : "sync");
+  const waitAtMost = async <T>(work: Promise<T>): Promise<{ value: T } | null> => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    try {
+      return await Promise.race([
+        work.then((value) => ({ value })),
+        new Promise<null>((resolve) => {
+          timer = setTimeout(() => resolve(null), FIRST_WORK_COPY_ANSWER_MS);
+          timer.unref?.();
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
     }
-    throw error;
+  };
+
+  // A make an earlier call left running: wait for it, then sync as usual.
+  const making = workCopiesBeingMade.get(makingKey);
+  if (making) {
+    if (!(await waitAtMost(making.done))) throw workCopyPreparingError(machineName);
+    if (workCopiesBeingMade.get(makingKey) === making) workCopiesBeingMade.delete(makingKey);
+    if (making.failure) throw asRpcError(making.failure);
   }
+
+  if (findRemoteWorkCopyForLane(runtime.projectRoot, laneId) !== null) {
+    try {
+      return { owner, laneId, prepared: await prepare() };
+    } catch (error) {
+      throw asRpcError(error);
+    }
+  }
+
+  // No copy yet: make it, and answer in time either way.
+  const work = prepare();
+  let answered: { value: RemoteWorkPrepareResult } | null;
+  try {
+    answered = await waitAtMost(work);
+  } catch (error) {
+    throw asRpcError(error);
+  }
+  if (answered) return { owner, laneId, prepared: answered.value };
+  const entry: { done: Promise<void>; failure: unknown | null } = { done: Promise.resolve(), failure: null };
+  entry.done = work.then(
+    (prepared) => {
+      // Nobody runs a command for this make: the copy is not busy.
+      prepared.done();
+      runtime.logger.info("remote_work.copy_made_after_answer", { owner, laneId });
+      if (workCopiesBeingMade.get(makingKey) === entry) workCopiesBeingMade.delete(makingKey);
+    },
+    (error: unknown) => {
+      entry.failure = error;
+      runtime.logger.warn("remote_work.copy_make_failed_after_answer", {
+        owner,
+        laneId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      // Kept for the next call for a while, then forgotten so a later call tries again.
+      setTimeout(() => {
+        if (workCopiesBeingMade.get(makingKey) === entry) workCopiesBeingMade.delete(makingKey);
+      }, 10 * 60_000).unref?.();
+    },
+  );
+  workCopiesBeingMade.set(makingKey, entry);
+  runtime.logger.info("remote_work.copy_still_being_made", { owner, laneId, waitedMs: FIRST_WORK_COPY_ANSWER_MS });
+  throw workCopyPreparingError(machineName);
 }
 
 /**
@@ -3063,7 +3162,6 @@ async function prepareRemoteWorkShell(
     throw new JsonRpcError(JsonRpcErrorCode.invalidRequest, "This project has no primary lane here to run the command in.");
   }
   const remoteWork = ptyArgs.remoteWork as Record<string, unknown>;
-  const { owner, laneId, prepared } = await prepareCallerWorkCopy(runtime, session, remoteWork);
   const command = typeof ptyArgs.startupCommand === "string" ? ptyArgs.startupCommand.trim() : "";
   // The command's argv when the caller had one (`-- npm test`): rendered here,
   // for this machine's shell.
@@ -3083,8 +3181,13 @@ async function prepareRemoteWorkShell(
       runtime.logger.warn("remote_work.shell_settings_unread", { error: error instanceof Error ? error.message : String(error) });
     }
     const runOnce = remoteRunOnceShellLaunch(argv ? { argv } : { line: command }, preferredShellPath);
+    // Refused before the copy is synced: Windows cannot start a command line
+    // this long, and the spawn never says so (it hung the brain).
+    const tooLong = process.platform === "win32" ? windowsCommandLineOverLimitMessage(runOnce.command, runOnce.args) : null;
+    if (tooLong) throw new JsonRpcError(JsonRpcErrorCode.invalidParams, tooLong, { code: "command_too_long" });
     launch = { command: runOnce.command, args: runOnce.args, ...(runOnce.env ? { env: runOnce.env } : {}) };
   }
+  const { owner, laneId, prepared } = await prepareCallerWorkCopy(runtime, session, remoteWork);
   const cols = typeof ptyArgs.cols === "number" ? ptyArgs.cols : 120;
   const rows = typeof ptyArgs.rows === "number" ? ptyArgs.rows : 36;
   return {
@@ -3107,6 +3210,30 @@ async function prepareRemoteWorkShell(
 }
 
 const remoteCallerCaptureRegistries = new WeakMap<AdeRuntime, RemoteCallerCaptures>();
+const remoteWorkFileRegistries = new WeakMap<AdeRuntime, RemoteWorkFiles>();
+
+/** Open pushes into work copies (`ade files push --machine`), one set per project runtime. */
+function remoteWorkFilesFor(runtime: AdeRuntime): RemoteWorkFiles {
+  let files = remoteWorkFileRegistries.get(runtime);
+  if (!files) {
+    files = createRemoteWorkFiles();
+    remoteWorkFileRegistries.set(runtime, files);
+  }
+  return files;
+}
+
+/** The calling chat's existing work copy here, for a read; a missing one is said, never made. */
+function existingCallerWorkCopyPath(runtime: AdeRuntime, owner: string): string {
+  const copy = workCopiesFor(runtime).get(owner);
+  if (!copy || !fs.existsSync(copy.path)) {
+    throw new JsonRpcError(
+      JsonRpcErrorCode.invalidParams,
+      "This chat has no work copy on this machine yet. `ade shell start --machine <this machine>` or `ade files push --machine <this machine>` makes it.",
+      { code: "copy_missing" },
+    );
+  }
+  return copy.path;
+}
 
 function remoteCallerCapturesFor(runtime: AdeRuntime): RemoteCallerCaptures {
   let registry = remoteCallerCaptureRegistries.get(runtime);
@@ -3293,11 +3420,14 @@ function scopeAccessDenied(
     callerChatSessionId?: string | null;
     requestedSessionId?: string | null;
     alternativeAction?: string | null;
+    /** A sentence naming the way through, when the boundary alone does not. */
+    nextStep?: string | null;
   },
 ): never {
   const caller = asOptionalTrimmedString(detail?.callerChatSessionId);
   const requested = asOptionalTrimmedString(detail?.requestedSessionId);
   const alternativeAction = asOptionalTrimmedString(detail?.alternativeAction);
+  const nextStep = asOptionalTrimmedString(detail?.nextStep);
   const parts = [`${method} is not permitted for this caller: ${scopeDescription}.`];
   if (caller && requested) {
     parts.push(`Caller session is ${caller}; requested session was ${requested}.`);
@@ -3309,6 +3439,7 @@ function scopeAccessDenied(
   if (alternativeAction) {
     parts.push(`To message another session, use ${alternativeAction}.`);
   }
+  if (nextStep) parts.push(nextStep);
   throw new JsonRpcError(JsonRpcErrorCode.policyDenied, parts.join(" "), {
     kind: "session_scope_denied",
     method,
@@ -3319,8 +3450,18 @@ function scopeAccessDenied(
 }
 
 function ptyAccessDenied(method: string, session?: SessionState): never {
+  const callerChatSessionId = session?.identity.chatSessionId ?? null;
+  // A chat on another machine has no lane here (lanes record no creator, so
+  // one it made with `ade lanes create --machine` is not its own either). Its
+  // terminals here run in its work copy, or belong to a chat started there.
+  const foreignCaller = parseForeignCallerSessionId(callerChatSessionId);
   scopeAccessDenied("PTY access is limited to the caller's own terminal session and lane", method, {
-    callerChatSessionId: session?.identity.chatSessionId ?? null,
+    callerChatSessionId,
+    nextStep: foreignCaller
+      ? "A caller on another machine owns no lane here, including a lane it created. "
+        + "Run `ade shell start --machine <this machine>` without --lane to use this chat's work copy, "
+        + "or start a chat in that lane with `ade chat create --machine <this machine> --lane <lane>` and open the terminal from it."
+      : null,
   });
 }
 
@@ -7960,6 +8101,51 @@ async function runTool(args: {
     } catch (error) {
       if (error instanceof RemoteWorkError) throw new JsonRpcError(JsonRpcErrorCode.invalidRequest, error.message, { code: error.code });
       throw error;
+    }
+  }
+
+  if (name === "work_copy_file") {
+    // `ade files push|pull --machine <this machine>`: one file into or out of
+    // the calling chat's own work copy here. The copy is the one its foreign
+    // session id owns; the caller names only a path inside it.
+    const owner = asOptionalTrimmedString(session.identity.chatSessionId);
+    if (!owner || !parseForeignCallerSessionId(owner)) {
+      throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported tool: ${name}`);
+    }
+    const files = remoteWorkFilesFor(runtime);
+    const op = asOptionalTrimmedString(toolArgs.op);
+    try {
+      switch (op) {
+        case "push_begin": {
+          // Made at the caller's commit when missing, used as it is otherwise
+          // (as a lane-less Android call does): a push never syncs the copy.
+          const remoteWork = isRecord(toolArgs.remoteWork) ? toolArgs.remoteWork : {};
+          const { owner: copyOwner, prepared } = await prepareCallerWorkCopy(runtime, session, { ...remoteWork, sync: "none" });
+          try {
+            return files.beginPush({ owner: copyOwner, copyRoot: prepared.path, path: toolArgs.path, size: toolArgs.size, sha256: toolArgs.sha256 });
+          } finally {
+            prepared.done();
+          }
+        }
+        case "push_chunk":
+          return files.writeChunk(owner, toolArgs.transferId, toolArgs.offset, toolArgs.dataBase64);
+        case "push_commit":
+          return files.commitPush(owner, toolArgs.transferId);
+        case "push_abort":
+          return files.abortPush(owner, toolArgs.transferId);
+        case "pull_stat":
+          return await files.statForPull(existingCallerWorkCopyPath(runtime, owner), toolArgs.path);
+        case "pull_chunk":
+          return files.readChunk(existingCallerWorkCopyPath(runtime, owner), toolArgs.path, toolArgs.offset);
+        default:
+          throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `work_copy_file has no step '${op ?? ""}'.`);
+      }
+    } catch (error) {
+      if (error instanceof RemoteWorkFileError) {
+        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, error.message, { code: error.code });
+      }
+      if (error instanceof JsonRpcError) throw error;
+      throw new JsonRpcError(JsonRpcErrorCode.invalidRequest, error instanceof Error ? error.message : String(error));
     }
   }
 

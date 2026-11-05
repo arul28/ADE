@@ -228,7 +228,7 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
 
   /* ---------- lanes and work copies ---------- */
 
-  const { laneRoot, laneLiveness, assertWorkCopyLive, onWorkCopyReleased } = createAndroidLaneScope({
+  const { laneRoot, laneLiveness, assertWorkCopyLive, onWorkCopyReleased, registerWorkCopyDeviceCheck } = createAndroidLaneScope({
     projectRoot: deps.projectRoot,
     resolveLaneWorktreePath: deps.resolveLaneWorktreePath,
     laneDevices: deps.laneDevices,
@@ -669,6 +669,15 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
     });
   };
   const offCopyReleased = onWorkCopyReleased(releaseGoneWorkCopy);
+  // A work copy's emulator in use (starting, stopping, streaming, or running
+  // for its lane) keeps the copy through the idle and low-disk cleanups.
+  const offDeviceCheck = registerWorkCopyDeviceCheck((laneId) => {
+    if (disposed || !isRemoteWorkLaneId(laneId)) return false;
+    const state = lanes.get(laneId);
+    if (state?.transient || state?.launch || state?.streamSerial) return true;
+    const device = deps.laneDevices.get(laneId);
+    return Boolean(device && runningFor(device.avdName));
+  });
 
   /* ---------- start-up reconcile ---------- */
 
@@ -942,13 +951,17 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
       if (hadDevice || hadState) emit({ type: "android.device.state", laneId: id, state: hadDevice ? "off" : "none" });
     },
 
-    async dispose() {
+    async dispose(options) {
       if (disposed) return;
       disposed = true;
       lifetime.abort();
       offCopyReleased();
+      offDeviceCheck();
       const sdk = await requireSdk({ emulator: false }).catch(() => null);
-      const handOff = deps.handOffOnDispose === true;
+      // A removed project has no next service to re-adopt its emulators, so
+      // even a hand-off service stops them; every other teardown keeps the
+      // configured default.
+      const handOff = deps.handOffOnDispose === true && options?.reason !== "unregister";
       await Promise.all([...lanes.values()].map(async (state) => {
         await stopLaneStream(state);
         if (!handOff && state.transient === "starting" && state.launch && sdk) await abortBoot(state, async () => sdk.adbPath);

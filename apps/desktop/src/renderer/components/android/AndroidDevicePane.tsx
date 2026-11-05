@@ -76,6 +76,8 @@ export type AndroidDevicePaneProps = {
 
 /** Events in a burst (a boot sends several) become one status read. */
 const EVENT_READ_DELAY_MS = 150;
+/** Input failures this close together are one burst, so one notice (the toast's own 6 s). */
+const INPUT_FAILED_NOTICE_GAP_MS = 6_000;
 
 type PendingStart = { kind: "create" } | { kind: "attach"; avdName: string } | { kind: "start" };
 
@@ -249,7 +251,21 @@ export function AndroidDevicePane({
     if (pickerShown) void readInventory();
   }, [pickerShown, readInventory, laneId, pinKey]);
 
-  const onInputError = useCallback((caught: unknown) => setError(describeAndroidError(caught)), []);
+  // A failed tap, key or swipe is an event, so a toast, and one per burst: a
+  // stalled link fails every queued input, and one notice says it. The stable
+  // id replaces the card in place; the gap keeps a long burst from re-raising it.
+  const inputFailedAtRef = useRef(0);
+  const onInputError = useCallback((caught: unknown) => {
+    const now = Date.now();
+    if (now - inputFailedAtRef.current < INPUT_FAILED_NOTICE_GAP_MS) return;
+    inputFailedAtRef.current = now;
+    showToast({
+      id: "android-input-failed",
+      tone: "warning",
+      title: "Input didn't reach the device",
+      message: describeAndroidError(caught).sentence,
+    });
+  }, []);
   const input = useAndroidDeviceInput({
     laneId,
     enabled: androidInputAllowed(paneState),
@@ -616,7 +632,7 @@ export function AndroidDevicePane({
                 ) : null}
               />
               <AndroidLiveLine
-                state={paneState === "live" ? "live" : "lost"}
+                state={paneState !== "live" ? "lost" : stream.reconnecting ? "reconnecting" : "live"}
                 fps={stream.fps}
                 laneName={laneName}
                 machineName={machineName}

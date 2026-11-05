@@ -1823,6 +1823,21 @@ Cross-machine Work chat handoff:
   `connection.hello.features` is the host's capability advertisement and
   `connection.endpoint` is the only place its address and port exist on this
   side — both are needed by `getAttachmentUploadRoute`.
+  When a link this app had open drops because ADE on the machine went away
+  (relay "host unavailable", the host's socket closed), the status carries
+  `recovery`: `reconnecting` when the installed app's 30 s maintenance owns
+  the redial, or when `RemoteConnectionService` runs its bounded redials (1 s,
+  then the automatic-reconnect backoff, for at most 10 min) for a dev app's
+  connected-in-this-run machine or a build without maintenance;
+  `waiting_for_user` when "Reconnect automatically" is off or the redials ran
+  out, and the row says the app waits for Reconnect. A manual Disconnect,
+  Cancel, Remove, a superseded close, or quitting ends the redials. A
+  superseded close (another ADE app on this computer took the shared device
+  link) is `held_elsewhere`, never redialed, with "Use it here" on the button.
+  Its words, and the relay-takeover words, come from `connectionDiagnosis.ts`
+  (`describeLinkHeldByOtherAdeApp`, `RELAY_HELD_BY_OTHER_ADE_APP`,
+  `describeHostWentAway`). The host's close does not say which app took the
+  link, so the text names the likely ones.
 - `apps/desktop/src/main/services/remoteRuntime/attachmentUploadRoute.ts`
   and `attachmentUploadClient.ts` — the desktop client half of streamed
   attachment upload. `resolveRemoteAttachmentUploadRoute` composes the route

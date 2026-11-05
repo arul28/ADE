@@ -2179,6 +2179,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
 
   Internal/debug command that runs the brain process in the foreground. Most
   users should use "ade brain start", "ade brain stop", and "ade brain status".
+  A brain started by hand serves only agents unless it is started with
+  "ade --role cto serve"; desktops, phones and the web need that role.
 
   Flags:
     --socket <path>         Local RPC endpoint to listen on.
@@ -2525,6 +2527,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   Each call opens a new shell there and syncs the copy again, so put all the
   steps in one call: --wait -- sh -c "npm ci && npm test", or one script.
   The shell runs in the background there; no list on that machine shows it.
+  To move a file, use ade files push|pull --machine <name> (see ade files
+  --help), never base64 or echo inside a shell command.
 
   Provider CLI launches accept --instance for Claude/Codex accounts and
   --preset or --credential for saved harness brains.
@@ -2584,6 +2588,14 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade files quick-open --workspace <lane> -q app
     $ ade files quick-open --workspace <lane> -q src --include-directories
                                                     Also offer folders; they print with a trailing slash
+
+  On another machine (this chat's work copy there, the one ade shell start
+  --machine uses; paths there are relative to it, / or \\ both work):
+    $ ade files push --machine <name> ./fixture.bin test/fixtures/   Copy a file there (made at your commit if missing)
+    $ ade files pull --machine <name> build/out.log ./logs/          Copy a file back here
+  Up to 256 MiB per file, sent in chunks and checked by sha256. Use these, not
+  base64 in shell commands. A pushed file is a change made there, so the next
+  ade shell start --machine needs --no-sync (keep it) or --discard (drop it).
 `,
   session: `${ADE_BANNER}
   Session lifecycle
@@ -9677,7 +9689,7 @@ function buildPrPlan(args: string[], explicitProjectRoot: string | null = null):
   return refuseUnknownSubcommand("prs", "pr", sub);
 }
 
-function buildShellPlan(args: string[]): CliPlan {
+function buildShellPlan(args: string[], inWorkCopy = false): CliPlan {
   const sub = firstPositional(args) ?? "start";
   if (sub === "actions")
     return {
@@ -9759,6 +9771,12 @@ function buildShellPlan(args: string[]): CliPlan {
     const shellStart = { kind: "execute", label: "shell start", formatter: "pty-create", ...followPlan } as const;
     if (ownLane) {
       return { ...shellStart, steps: [actionStep("result", "pty", "create", { ...input, laneId: ownLane })] };
+    }
+    if (inWorkCopy) {
+      // The other machine picks the lane for its work copy, so its lane list
+      // is not read: that round trip was thrown away, and was one more call
+      // that could fail on a flaky link before the shell was even asked for.
+      return { ...shellStart, steps: [actionStep("result", "pty", "create", input)] };
     }
     return {
       ...shellStart,
@@ -13818,8 +13836,40 @@ function promptPasswordSync(prompt: string): string {
   }
 }
 
-function buildFilesPlan(args: string[]): CliPlan {
+function buildFilesPlan(args: string[], machine: string | null = null): CliPlan {
   const sub = firstPositional(args) ?? "workspaces";
+  if (sub === "push" || sub === "pull") {
+    // One file into or out of this chat's work copy on another machine
+    // (cliRemoteWork.ts sends it in chunks); there is no local form.
+    const usage = sub === "push"
+      ? "ade files push --machine <name> <local file> <path in the work copy there>"
+      : "ade files pull --machine <name> <path in the work copy there> <local file or folder>";
+    if (!machine) {
+      throw new CliUsageError(`ade files ${sub} copies a file ${sub === "push" ? "to" : "from"} another machine: ${usage}. Here, use cp.`);
+    }
+    const first = firstPositional(args);
+    const second = firstPositional(args);
+    if (!first || !second) throw new CliUsageError(`Usage: ${usage}`);
+    const [localPath, remotePath] = sub === "push" ? [path.resolve(first), second] : [path.resolve(second), first];
+    return {
+      kind: "execute",
+      label: `files ${sub}`,
+      steps: [actionCallStep("result", "work_copy_file", {
+        op: sub,
+        // A trailing separator ("out/") is kept: it means "into that folder".
+        localPath: sub === "pull" && /[\\/]$/.test(second) ? `${localPath}${path.sep}` : localPath,
+        remotePath,
+      })],
+      formatText: (result: unknown) => {
+        const record = isRecord(result) ? result : {};
+        const where = asString(record.machine) ?? machine;
+        const bytes = typeof record.bytes === "number" ? record.bytes : 0;
+        return sub === "push"
+          ? `pushed ${bytes} bytes to ${asString(record.remotePath) ?? remotePath} on ${where} · sha256 ${asString(record.sha256) ?? "?"}`
+          : `pulled ${bytes} bytes from ${asString(record.remotePath) ?? remotePath} on ${where} to ${asString(record.localPath) ?? localPath} · sha256 ${asString(record.sha256) ?? "?"}`;
+      },
+    };
+  }
   if (sub === "actions")
     return {
       kind: "execute",
@@ -22294,7 +22344,7 @@ function hasHelpFlag(
 
 function buildCliPlan(
   command: string[],
-  options: Pick<GlobalOptions, "socketPath" | "projectRoot"> & Partial<Pick<GlobalOptions, "json" | "machine">> = {
+  options: Pick<GlobalOptions, "socketPath" | "projectRoot"> & Partial<Pick<GlobalOptions, "json" | "machine" | "machineWorkCopy">> = {
     socketPath: null,
     projectRoot: null,
   },
@@ -22653,10 +22703,10 @@ function buildCliPlan(
   if (primary === "lanes" || primary === "lane") return buildLanePlan(args);
   if (primary === "git") return buildGitPlan(args);
   if (primary === "diff" || primary === "diffs") return buildDiffPlan(args);
-  if (primary === "files" || primary === "file") return buildFilesPlan(args);
+  if (primary === "files" || primary === "file") return buildFilesPlan(args, options.machine ?? null);
   if (primary === "search") return buildSearchPlan(args);
   if (primary === "prs" || primary === "pr") return buildPrPlan(args, options.projectRoot ?? null);
-  if (primary === "shell" || primary === "pty") return buildShellPlan(args);
+  if (primary === "shell" || primary === "pty") return buildShellPlan(args, options.machineWorkCopy != null);
   if (primary === "terminal" || primary === "term")
     return buildTerminalPlan(args);
   if (primary === "history") return buildHistoryPlan(args);
@@ -22889,11 +22939,18 @@ function resolveRoots(options: GlobalOptions): {
     options.projectRoot ?? projectFromEnv ?? discovered.projectRoot;
   const projectExplicitlyOverridden =
     options.projectRoot != null || projectFromEnv != null;
+  // A lane terminal carries ADE_PROJECT_ROOT (the main checkout) but no
+  // ADE_WORKSPACE_ROOT, while its cwd is the lane worktree. When the cwd is a
+  // checkout of that same project, the cwd is the workspace: otherwise
+  // `ade shell --machine` read the main checkout's commit and changes. A cwd
+  // in another project never overrides the named one.
+  const cwdIsSameProject = projectExplicitlyOverridden
+    && pathsEqual(realpathIfExists(discovered.projectRoot), realpathIfExists(projectRoot));
 
   const workspaceRoot =
     options.workspaceRoot ??
     workspaceFromEnv ??
-    (projectExplicitlyOverridden ? projectRoot : discovered.workspaceRoot);
+    (projectExplicitlyOverridden && !cwdIsSameProject ? projectRoot : discovered.workspaceRoot);
 
   return { projectRoot, workspaceRoot };
 }
@@ -23900,7 +23957,7 @@ class InProcessJsonRpcClient {
 
   constructor(
     private readonly handler: JsonRpcHandler & { dispose?: () => void },
-    private readonly runtime: { dispose: () => void },
+    private readonly runtime: { dispose: () => void | Promise<void> },
     private readonly previousRole: string | undefined,
   ) {}
 
@@ -23915,15 +23972,18 @@ class InProcessJsonRpcClient {
     return await this.handler(request);
   }
 
-  close(): void {
+  /** Settles once the runtime's teardown (and its final database flush) is done. */
+  close(): Promise<void> {
     try {
       this.handler.dispose?.();
     } catch {}
+    let disposed: Promise<void> = Promise.resolve();
     try {
-      this.runtime.dispose();
+      disposed = Promise.resolve(this.runtime.dispose()).catch(() => undefined);
     } catch {}
     if (this.previousRole == null) delete process.env.ADE_DEFAULT_ROLE;
     else process.env.ADE_DEFAULT_ROLE = this.previousRole;
+    return disposed;
   }
 }
 
@@ -25297,7 +25357,7 @@ async function createConnection(
           stopHeadlessTcp?.();
         } catch {}
         restoreRpcUrl();
-        inProcess.close();
+        return inProcess.close();
       },
     };
     roleOwnedByConnection = true;
@@ -25319,7 +25379,7 @@ async function createConnection(
       handler?.dispose?.();
     } catch {}
     try {
-      runtime?.dispose();
+      await runtime?.dispose();
     } catch {}
     restoreRpcUrl();
     restoreRole();
@@ -27978,7 +28038,7 @@ async function runServe(
     }
     projectRegistry.remove(record.projectId);
     const disposeTimer = setImmediate(() => {
-      void scopeRegistry.dispose(record.projectId).then(() => {
+      void scopeRegistry.dispose(record.projectId, "unregister").then(() => {
         // The stop just saved its open CLIs to reopen; a removed project keeps none.
         forgetCliSessionsToReopen(record.rootPath);
       }).catch((error) => {
@@ -29136,7 +29196,9 @@ async function runServe(
     } catch {
       // Best-effort tunnel teardown; the process exit closes sockets anyway.
     }
-    await scopeRegistry.disposeAll();
+    // An exit: each device service hands its devices to the next brain, and
+    // this waits (capped per scope) for the teardowns before the process goes.
+    await scopeRegistry.disposeAll("exit");
     await personalChatScope.dispose();
     try {
       // Scope disposal ends chat sessions, but the shared Cursor one-shot

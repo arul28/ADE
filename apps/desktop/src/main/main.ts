@@ -5062,8 +5062,8 @@ app.whenReady().then(async () => {
       // Lazy like the rest: `macDesktopService` is constructed further down
       // this same bootstrap, and every call here is read per-turn.
       macDesktopRuntime: {
-        hasDisplaySync: (laneId) => macDesktopService.hasDisplaySync(laneId),
-        supportsLaneDisplaySync: () => macDesktopService.supportsLaneDisplaySync(),
+        hasDisplaySync: (laneId) => macDesktopService?.hasDisplaySync(laneId) ?? false,
+        supportsLaneDisplaySync: () => macDesktopService?.supportsLaneDisplaySync() ?? false,
       },
       getAppControlService: () => appControlService,
       getBuiltInBrowserService: () => builtInBrowserService,
@@ -5625,7 +5625,17 @@ app.whenReady().then(async () => {
         provider,
       }),
     });
-    const iosSimulatorService = createIosSimulatorService({
+    /**
+     * The lane's Apple simulators, only when THIS process is the project's
+     * runtime (tests). Otherwise the brain (`bootstrap.ts`) owns them, for the
+     * same reason as Android below: this context then exists only to host
+     * mobile sync while the brain runs the same project, and a second service
+     * would run its own lane-device sweep and idle power-off over the brain's
+     * devices and `lane_apple_devices` rows. One owner per project: the brain.
+     * The renderer reaches the brain's service through the `ios_simulator`
+     * action domain either way.
+     */
+    const iosSimulatorService = !shouldUseInProcessProjectRuntime() ? null : createIosSimulatorService({
       projectRoot,
       logger,
       captureAnalytics: (outcome) => captureAppleDeviceAnalytics({ analytics: productAnalyticsService, outcome }),
@@ -5661,9 +5671,11 @@ app.whenReady().then(async () => {
     });
     // An archived or deleted lane lets go of its Apple device session here;
     // the device itself goes in `releaseLaneAppleDevice`.
-    laneTeardownDeps.iosSimulatorService = {
-      stopForLane: (laneId: string) => iosSimulatorService.stopForLane(laneId),
-    };
+    if (iosSimulatorService) {
+      laneTeardownDeps.iosSimulatorService = {
+        stopForLane: (laneId: string) => iosSimulatorService.stopForLane(laneId),
+      };
+    }
     /**
      * Brain-side video forwarder for this embedded host.
      *
@@ -5672,7 +5684,10 @@ app.whenReady().then(async () => {
      * phone or a web tab when the desktop is the one hosting. Without an
      * account settings store here the remote cap is the shipped default.
      */
-    const appleStreamRelay = createAppleStreamRelayForService({
+    // Only beside an in-process simulator service: without one the brain's
+    // relay is the stream route, and registering this one would take the
+    // process-wide router from it.
+    const appleStreamRelay = iosSimulatorService ? createAppleStreamRelayForService({
       service: iosSimulatorService,
       remoteBitrateKbpsCap: () => DEFAULT_APPLE_REMOTE_BITRATE_KBPS,
       // This host has a renderer, so the last phone or web viewer leaving must
@@ -5682,20 +5697,24 @@ app.whenReady().then(async () => {
       hasLocalViewer: (laneId) =>
         hasAppleLocalViewer(laneId) || (iosSimulatorService.hasLocalViewer?.(laneId) ?? false),
       logger,
-    });
-    const detachAppleStreamRoute = setActiveAppleStreamRouter(appleStreamRelay);
-    app.on("will-quit", () => {
-      detachAppleStreamRoute();
-      appleStreamRelay.dispose();
-    });
-    agentChatService.registerChatSessionEndedListener((sessionId) => {
-      void iosSimulatorService.releaseIfOwnedBy(sessionId).catch((error) => {
-        logger.debug("ios_simulator.release_on_chat_end_failed", {
-          sessionId,
-          error: error instanceof Error ? error.message : String(error),
+    }) : null;
+    if (appleStreamRelay) {
+      const detachAppleStreamRoute = setActiveAppleStreamRouter(appleStreamRelay);
+      app.on("will-quit", () => {
+        detachAppleStreamRoute();
+        appleStreamRelay.dispose();
+      });
+    }
+    if (iosSimulatorService) {
+      agentChatService.registerChatSessionEndedListener((sessionId) => {
+        void iosSimulatorService.releaseIfOwnedBy(sessionId).catch((error) => {
+          logger.debug("ios_simulator.release_on_chat_end_failed", {
+            sessionId,
+            error: error instanceof Error ? error.message : String(error),
+          });
         });
       });
-    });
+    }
 
     /**
      * The lane's private macOS screen.
@@ -5709,9 +5728,16 @@ app.whenReady().then(async () => {
      * `onEvent` is the half the renderer's local event fan-out depends on: the
      * service's own `subscribe` is for in-process readers constructed after it
      * (the Work tools mirror), while this is what reaches a window.
+     *
+     * Only when THIS process is the project's runtime (tests), like the
+     * simulator above and Android below. Otherwise the brain owns the lane
+     * screens: a second service here would start its own driver, sweep and
+     * adopt the brain's handed-off apps, and its dispose would destroy
+     * displays on the project the brain still runs. The renderer reaches the
+     * brain's service through the `mac_desktop` action domain.
      */
     const macDesktopLogger = createMacDesktopLogger(logger, getMachineMainLogger());
-    const macDesktopService = createMacDesktopService({
+    const macDesktopService = !shouldUseInProcessProjectRuntime() ? null : createMacDesktopService({
       projectRoot,
       // Also `desktop-main.jsonl`: see `macDesktopLogger.ts`.
       logger: macDesktopLogger,
@@ -5771,9 +5797,11 @@ app.whenReady().then(async () => {
     // teardown step never has to know what host it is on. Without this wiring a
     // deleted lane left its display, its parked windows and its encoder behind
     // on the desktop host — the CLI brain has had it since the feature landed.
-    laneTeardownDeps.macDesktopService = {
-      destroyForLane: (laneId: string) => macDesktopService.destroyForLane(laneId),
-    };
+    if (macDesktopService) {
+      laneTeardownDeps.macDesktopService = {
+        destroyForLane: (laneId: string) => macDesktopService.destroyForLane(laneId),
+      };
+    }
     /**
      * The lane's Android emulator, only when THIS process is the project's
      * runtime (tests). Otherwise the brain (`bootstrap.ts`) owns it: this
@@ -5818,14 +5846,16 @@ app.whenReady().then(async () => {
     }
     // A chat that ends drops its lease on every platform — the one Mac Desktop
     // call that is not macOS-only, because a lease must never outlive its chat.
-    agentChatService.registerChatSessionEndedListener((sessionId) => {
-      void macDesktopService.releaseIfOwnedBy(sessionId).catch((error) => {
-        logger.debug("mac_desktop.release_on_chat_end_failed", {
-          sessionId,
-          error: error instanceof Error ? error.message : String(error),
+    if (macDesktopService) {
+      agentChatService.registerChatSessionEndedListener((sessionId) => {
+        void macDesktopService.releaseIfOwnedBy(sessionId).catch((error) => {
+          logger.debug("mac_desktop.release_on_chat_end_failed", {
+            sessionId,
+            error: error instanceof Error ? error.message : String(error),
+          });
         });
       });
-    });
+    }
     // `drawer-open-requested` is emitted by the service itself, not wrapped on
     // here: production launches go to the brain daemon, which has no wrapper, so
     // a wrapper-only emitter made `--open-drawer` and an agent's inspect/select
@@ -5875,7 +5905,7 @@ app.whenReady().then(async () => {
       getScreencastRecorder: () => appControlScreencastRecorder,
       getChromiumDemoEngine: () => chromiumDemoEngine,
       // A lane may not attach to an app another lane's Mac Desktop holds.
-      macDesktopLaneForProcess: (pid: number) => macDesktopService.laneForProcess(pid),
+      macDesktopLaneForProcess: (pid: number) => macDesktopService?.laneForProcess(pid) ?? null,
       ingestArtifacts: (request) => computerUseArtifactBrokerService.ingest(request),
       resolvePrimaryPrUrl: (laneId: string): string | null =>
         prService?.getForLane(laneId)?.githubUrl ?? null,
@@ -5941,7 +5971,7 @@ app.whenReady().then(async () => {
       isPathActive: (filePath) =>
         agentChatService.isTranscriptPathActive(filePath)
         || ptyService.isTranscriptPathActive(filePath)
-        || iosSimulatorService.isBuildPathActive(filePath),
+        || (iosSimulatorService?.isBuildPathActive(filePath) ?? false),
       projectId,
       // The index file is held open by the search service; it compacts on request.
       compactSearchIndex: () =>
