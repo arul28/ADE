@@ -46930,7 +46930,9 @@ export function createAgentChatService(args: {
       emitChatEvent(managed, {
         type: "system_notice",
         noticeKind: "info",
-        message: "Claude Code does not allow Full access when ADE runs as root, so this chat uses Accept edits: Claude asks before it runs commands. Run ADE as a normal user to use Full access.",
+        // Each ask waits for an answer: it reads "Needs you" on every connected
+        // window and phone, so a headless machine is never silently stuck.
+        message: "Claude Code does not allow Full access when ADE runs as root, so this chat uses Accept edits. Before it runs a command, Claude waits for you to allow it here, in any ADE window, or on your phone. Run ADE as a normal user to use Full access.",
       });
     }
     managed.session.claudePermissionMode = claudePermissionMode;
