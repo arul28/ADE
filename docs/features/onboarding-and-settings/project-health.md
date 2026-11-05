@@ -40,7 +40,7 @@ Most checks matter after a project moves (see
 | `mentions` | Files that name the old folder (git grep + common untracked config) | none; an agent goes through them with the person |
 | `old-copy` | The parked original still on disk | delete from Settings → Location |
 | `drive` | A different drive mounted under the project's drive name; no Time Machine backup | none |
-| `network-share` | On Windows, a project root on a WSL share (`\\wsl.localhost\…`, `\\wsl$\…`) or another network share (`\\server\share`, or a mapped drive that resolves to one). SQLite there can stop with "database is locked" | none; the warning says to copy the whole folder to this computer's own drive and open the copy, so local work and ADE's chats come with it |
+| `network-share` | On Windows, a project root on a WSL share (`\\wsl.localhost\…`, `\\wsl$\…`) or another network share (`\\server\share`, or a mapped drive that resolves to one). SQLite there can stop with "database is locked". A mapped drive's real path has a 2 s limit, so a stalled share does not hold the report | none; the warning says to keep projects on this computer's own drive. It names no way to get there: a copied folder's lanes still point at the original repository (`moveGitLinks.ts`), and project move is macOS-only |
 | `stale-lanes` | Lanes whose PR is merged or closed, or with no activity for 14 days (no open PR) | archive from Settings → Project → Lanes, one by one or in bulk (only lanes that are safe) |
 | `stuck-sessions` | Chats or terminals marked running whose owning process is gone | none; open each and stop or resume it |
 | `git-leftovers` | Lock files older than 10 minutes, a rebase/merge/cherry-pick stopped halfway | none; finish or abort it, remove the lock |

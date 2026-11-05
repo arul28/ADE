@@ -2138,6 +2138,8 @@ describe.skipIf(process.platform === "win32")("serviceBrainPidBesideHandRunBrain
     { name: "a hand-run Linux brain keeps sync where no service is installed", platform: "linux", service: "none", leavesSyncToOther: false },
     { name: "the brain launchd started keeps sync", platform: "darwin", service: "self", startedByLaunchd: true, leavesSyncToOther: false },
     { name: "a hand-run macOS brain leaves sync to the service brain", platform: "darwin", service: "other", leavesSyncToOther: true },
+    // launchd adopts an orphan: a detached `ade serve` whose shell exited.
+    { name: "a hand-run macOS brain that launchd adopted leaves sync to the service brain", platform: "darwin", service: "other", startedByLaunchd: true, leavesSyncToOther: true },
   ] as const)("$name", ({ platform, service, leavesSyncToOther, ...row }) => {
     const servicePid = {
       self: process.pid,

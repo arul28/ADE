@@ -187,12 +187,15 @@ sync on this computer" and logs `sync.host_left_to_service_brain`; `--no-sync`
 silences the line. On 2026-11-04 four such brains took the lease in turn, and
 the phone dropped each time the installed brain took it back.
 
-The service brain itself always keeps sync. On macOS its parent is launchd; on
-Windows its parent is the supervisor that the pid record names. On Linux the
-parent says nothing, so the unit's MainPID must be this brain or its parent (a
-wrapper). A dead service brain does not count. A dev test machine
-(`npm run dev:machine`) is a machine of its own, with its own home and lease,
-so it keeps sync too.
+The service brain itself always keeps sync. On Windows its parent is the
+supervisor that the pid record names. On macOS the pid that launchd reports for
+the job must be this brain; a parent of pid 1 proves nothing, because launchd
+adopts every orphan, such as a detached `ade serve` whose shell exited. On
+Linux the unit's MainPID must be this brain or its parent (a wrapper). A dead
+service brain does not count. Each `systemctl` or `launchctl` lookup has a 2 s
+limit, and a lookup that does not answer leaves sync on, because the service
+brain asks too. A dev test machine (`npm run dev:machine`) is a machine of its
+own, with its own home and lease, so it keeps sync too.
 
 ### Hosting sync, and publishing, with no project
 

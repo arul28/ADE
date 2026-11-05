@@ -152,6 +152,8 @@ function exists(target: string): boolean {
   }
 }
 
+const SHARE_LOOKUP_TIMEOUT_MS = 2_000;
+
 /**
  * A Windows project root reached over a share: `\\wsl.localhost\…` or
  * `\\wsl$\…` (a WSL distro), or any other `\\server\share`. SQLite's
@@ -161,10 +163,21 @@ function exists(target: string): boolean {
  */
 async function windowsNetworkShareKind(root: string): Promise<"wsl" | "network" | null> {
   if (process.platform !== "win32") return null;
-  // A root that does not resolve (moved, unmounted) is classified as written;
-  // other checks report a missing root.
-  const real = await fs.promises.realpath(root).catch(() => root);
-  return uncShareKind(real) ?? uncShareKind(root);
+  const written = uncShareKind(root);
+  if (written) return written;
+  // A stalled share must not hold the whole report, so the real path has a
+  // time limit. A root that does not resolve in time, or at all (moved,
+  // unmounted), is not reported here; other checks report a missing root.
+  let timer: NodeJS.Timeout | undefined;
+  const real = await Promise.race([
+    fs.promises.realpath(root).catch(() => null),
+    new Promise<null>((resolve) => {
+      timer = setTimeout(() => resolve(null), SHARE_LOOKUP_TIMEOUT_MS);
+      timer.unref();
+    }),
+  ]);
+  clearTimeout(timer);
+  return real ? uncShareKind(real) : null;
 }
 
 function uncShareKind(root: string): "wsl" | "network" | null {
@@ -901,7 +914,7 @@ export function createProjectHealthService(deps: ProjectHealthServiceDeps) {
           area: "drive" as const,
           severity: "warning" as const,
           title: share === "wsl" ? "This project is on a WSL share" : "This project is on a network share",
-          detail: "ADE can stop with \"database is locked\" here. Close the project, copy its whole folder to this computer's own drive, and open the copy — your changes and ADE's chats come with it.",
+          detail: "ADE can stop with \"database is locked\" here — keep projects on this computer's own drive.",
         }];
       }),
       run("drive", "The drive is the one ADE expects", async () => {
