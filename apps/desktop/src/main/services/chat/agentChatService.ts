@@ -23821,6 +23821,9 @@ export function createAgentChatService(args: {
       // not every provider logs it on its way: an OpenCode turn that failed in
       // a second ("Command not found: ship") left no line in the brain log.
       const errorInfo = typeof decoratedEvent.errorInfo === "object" ? decoratedEvent.errorInfo : null;
+      // After the decoration, so a CLI sign-in or missing-CLI failure settles
+      // with that category, not the raw error's.
+      if (errorInfo?.category) managed.turnErrorCategory = errorInfo.category;
       logger.warn("agent_chat.turn_error", {
         sessionId: managed.session.id,
         provider: managed.session.provider,
@@ -25002,10 +25005,6 @@ export function createAgentChatService(args: {
       || normalizedEvent.type === "error"
     ) {
       managed.lastActivitySignature = null;
-    }
-
-    if (normalizedEvent.type === "error" && typeof normalizedEvent.errorInfo === "object" && normalizedEvent.errorInfo) {
-      managed.turnErrorCategory = normalizedEvent.errorInfo.category;
     }
 
     if (normalizedEvent.type === "done") {

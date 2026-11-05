@@ -312,7 +312,9 @@ async function internalTransformation(env) {
   }
   const detail = await request(`${base}${found.id}/`, { headers: posthogHeaders(env) }, "PostHog transformation");
   const value = detail?.inputs?.[INTERNAL_INPUT]?.value;
-  return { url: `${base}${found.id}/`, enabled: detail?.enabled === true, listed: Array.isArray(value) ? value.map(String) : [] };
+  // A missing list would read as empty, and an --apply would then drop the ids already on it.
+  if (!Array.isArray(value)) throw new Error(`PostHog transformation: "${INTERNAL_INPUT}" is not a list`);
+  return { url: `${base}${found.id}/`, enabled: detail?.enabled === true, listed: value.map(String) };
 }
 
 /** A `$set` from each account, so its person says `is_internal` too (person filters, replay). */
