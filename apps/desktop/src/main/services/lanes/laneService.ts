@@ -3454,6 +3454,8 @@ export function createLaneService({
     // Sessions and their session-scoped Linear links follow the lane.
     db.run("update claude_sessions set lane_id = ? where lane_id = ?", [keeperId, duplicateId]);
     db.run("update terminal_sessions set lane_id = ? where lane_id = ?", [keeperId, duplicateId]);
+    // A deleted chat of the absorbed lane still reopens in place, in the keeper.
+    db.run("update deleted_chats set lane_id = ? where lane_id = ?", [keeperId, duplicateId]);
     db.run("update session_linear_issues set lane_id = ? where lane_id = ? and project_id = ?", [
       keeperId,
       duplicateId,

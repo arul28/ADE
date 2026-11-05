@@ -104,6 +104,7 @@ enum WorkSettingsCatalog {
     "storage.deleted-lane-chats": Setting(path: "Project › Storage & cleanup › Chats from deleted lanes", locked: true),
     "storage.provider-history": Setting(path: "Project › Storage & cleanup › Provider history on this machine", locked: true),
     "archive.items": Setting(path: "Project › Storage & cleanup › Archived lanes, chats, and shells", locked: true),
+    "storage.recentlyDeleted": Setting(path: "Project › Storage & cleanup › Recently deleted chats", locked: true),
     "storage.cleanups": Setting(path: "Project › Storage & cleanup › Cleanup history", locked: true),
     "storage.lane-rules": Setting(path: "Project › Storage & cleanup › Archive idle lanes", locked: true),
     "storage.lane-build-output": Setting(path: "Project › Storage & cleanup › Clean build output from idle lanes", locked: true),
