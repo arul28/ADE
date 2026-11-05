@@ -182,6 +182,9 @@ function createHarness(options: {
     service,
     deps,
     events,
+    emitChat: (event: AgentChatEventEnvelope["event"]) => {
+      for (const subscriber of chatSubscribers) subscriber({ sessionId: LAUNCH_ID, timestamp: new Date().toISOString(), event });
+    },
     cards,
     calls,
     laneCreate,
@@ -637,6 +640,30 @@ describe("chatLaunchService", () => {
       "chat.send:also check CI",
       "chat.send:and the docs",
     ]);
+  });
+
+  it.each([
+    ["its reply streams in", (h: Harness) => h.emitChat({ type: "text", text: "on it" })],
+    ["its transcript already has a reply", (h: Harness) => {
+      h.deps.agentChatService.getChatTranscript = vi.fn(async () => ({ entries: [{ role: "user" }, { role: "assistant" }] }));
+    }],
+  ])("a failed launch whose chat started another way completes and delivers what waited (%s)", async (_label, agentReplied) => {
+    const h = harness();
+    vi.mocked(h.deps.agentChatService.sendMessage).mockRejectedValueOnce(new Error("could not authenticate"));
+    await h.service.start(chatArgs());
+    await vi.waitFor(() => expect(h.laneCreateOptions).toBeDefined());
+    h.laneCreate.resolve(laneSummary());
+    await h.waitFor((snapshot) => snapshot.phase === "failed" && snapshot.sessionCreated);
+
+    // No sign the agent runs yet: a client's send waits in the launch.
+    await h.service.queueMessage({ launchId: LAUNCH_ID, text: "first" });
+    expect(h.latest().queuedMessages.map((message) => message.text)).toEqual(["first"]);
+
+    // A plain send to the chat started the agent after all.
+    agentReplied(h);
+    await h.service.queueMessage({ launchId: LAUNCH_ID, text: "second" });
+    await h.waitFor((snapshot) => snapshot.phase === "completed" && snapshot.agentStarted && snapshot.queuedMessages.length === 0);
+    expect(h.calls.filter((call) => call.startsWith("chat.send:")).slice(-2)).toEqual(["chat.send:first", "chat.send:second"]);
   });
 
   it("reports each outcome once per launch for analytics (failed, then completed after retry)", async () => {
