@@ -1633,6 +1633,20 @@ per installation per UTC day, inside the existing `ade_feature_used` ceilings.
 The machine list's reads (open, focus, the short settling poll) are not
 analytics.
 
+Ready machines record `feature: "connections"`, `action: "agent37_ready"`.
+The desktop records `enabled` and `disabled` when a project is turned on or
+off on the Agent 37 page, `completed` or `failed` when a prepare ends (a
+cancel is neither), and `ready_picker` when the new-chat picker claims one;
+the brain records `ready_cli` when `ade chat create --machine agent37:ready`
+or an agent claims one (`agent37.claim_ready`). The product question is
+whether people keep machines ready, how often preparing one fails, and where
+the chats that take one start. No project, repository, machine, size, setup
+command or error travels; the setup's output stays out of the local log too
+(`agent37.ready_prepare_failed` carries its exit code only). A six-hour key
+per outcome bounds it to 24 accepted events per installation per UTC day,
+inside the existing `ade_feature_used` ceilings. The keeper's pool reads are
+not analytics.
+
 `ade_brain_action_failed` is the one new event. Every brain action the desktop
 performs goes through the single `ade.localRuntime.callAction` IPC channel, and
 that channel is not a meaningful usage action, so the existing `ade_error`

@@ -4043,6 +4043,15 @@ function buildAgent37DomainService(runtime: AdeRuntime): OpaqueService {
   return buildAgent37ReadyActions({
     credentials: agent37CredentialDeps(runtime),
     readSettings: async () => (await settings.read()).projects,
+    // A six-hour dedupe, as on the desktop: claims are frequent in a benchmark loop.
+    onClaimed: () => runtime.productAnalyticsService?.capture({
+      event: "ade_feature_used",
+      surface: "api",
+      properties: { feature: "connections", action: "agent37_ready", outcome: "ready_cli" },
+      projectId: null,
+      dedupeKey: "agent37_ready:ready_cli",
+      minimumIntervalMs: 6 * 60 * 60 * 1_000,
+    }),
     logger: runtime.logger,
   });
 }

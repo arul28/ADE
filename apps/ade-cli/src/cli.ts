@@ -2639,6 +2639,10 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                                                     Start a child on another machine; it wakes you when done.
                                                     --project <name|path|id> picks the project there, --clone
                                                     sets a missing GitHub repo up, "a,b" starts one per machine.
+    $ ade chat create --machine agent37:ready --prompt "…"
+                                                    Start on this project's ready Agent 37 machine (prepared and
+                                                    asleep): ADE wakes it, waits until it is online, then sends.
+                                                    No --lane needed; --json adds readyMachine. See ade agent37 ready.
     $ ade chat actions --personal --text            List machine personal-chat actions
     $ ade chat action --personal models --input-json '{"provider":"codex"}'
     $ ade chat list --include-automation --text

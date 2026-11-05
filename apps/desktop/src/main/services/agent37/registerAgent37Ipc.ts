@@ -219,6 +219,8 @@ export function registerAgent37Ipc(args: {
   renameMachine: (machineKey: string, name: string) => Promise<unknown>;
   /** Takes a machine off the ADE account (what Delete box does once the box is gone). */
   removeAccountMachine: (machineKey: string) => Promise<unknown>;
+  /** Ready machines: the per-project switch, each prepare's outcome, picker claims (analytics; coarse outcome only). */
+  recordReady?: (outcome: "enabled" | "disabled" | "completed" | "failed" | "ready_picker") => void;
   /** One coarse product fact per finished create (analytics; never the box or the error). */
   recordMachineCreate?: (outcome: "completed" | "partial" | "cancelled" | "failed") => void;
   /** One coarse product fact per box action that worked (analytics; never the box). */
@@ -326,6 +328,7 @@ export function registerAgent37Ipc(args: {
       return template.template === templateName() && template.state === "ready" ? template.adeVersion : null;
     },
     onStatus: (status) => sendToAllWindows(IPC.agent37ReadyStatusChanged, status),
+    onPrepared: (outcome) => args.recordReady?.(outcome),
     logger,
   });
   // After the template check, off the boot path; it reads every couple of minutes only while a project is on.
@@ -415,12 +418,17 @@ export function registerAgent37Ipc(args: {
 
   ipcMain.handle(IPC.agent37ReadySetProject, async (event, arg: { settings?: Partial<Agent37ReadyProjectSettings> }): Promise<Agent37ReadyStatus | null> => {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.agent37ReadySetProject)) return null;
-    return await readyKeeper.setProject(arg?.settings ?? {});
+    const wasOn = readyKeeper.status().projects.some((project) => project.settings.identity === normalizeGitRemoteIdentity(arg?.settings?.identity));
+    const status = await readyKeeper.setProject(arg?.settings ?? {});
+    if (!wasOn) args.recordReady?.("enabled");
+    return status;
   });
 
   ipcMain.handle(IPC.agent37ReadyRemoveProject, async (event, arg: { identity?: unknown }): Promise<Agent37ReadyStatus | null> => {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.agent37ReadyRemoveProject)) return null;
-    return await readyKeeper.removeProject(requireReadyIdentity(arg?.identity));
+    const status = await readyKeeper.removeProject(requireReadyIdentity(arg?.identity));
+    args.recordReady?.("disabled");
+    return status;
   });
 
   ipcMain.handle(IPC.agent37ReadyRetry, async (event, arg: { identity?: unknown }): Promise<Agent37ReadyStatus | null> => {
@@ -433,6 +441,7 @@ export function registerAgent37Ipc(args: {
     const identity = normalizeGitRemoteIdentity(typeof arg?.originUrl === "string" ? arg.originUrl : null);
     if (!identity) throw new Error("This project has no git origin, so it has no ready machine.");
     const claim = await claimAgent37ReadyMachine(await requireAgent37Client(credentials), identity, { logger });
+    args.recordReady?.("ready_picker");
     // The pool is one short: make the next one.
     void readyKeeper.refresh();
     sendToAllWindows(IPC.agent37StatusChanged);

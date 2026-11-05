@@ -84,7 +84,10 @@ export async function claimAgent37ReadyMachine(
   // tagged failed (the keeper deletes it and prepares another), never handed out.
   for (const broken of ready.filter((instance) => !instance.metadata[AGENT37_MACHINE_KEY_METADATA])) {
     logger.warn?.("agent37.ready_machine_without_key", { instanceId: broken.id });
-    await patchAgent37Metadata(client, broken.id, { [AGENT37_READY_METADATA.state]: "failed" }).catch(() => undefined);
+    await patchAgent37Metadata(client, broken.id, { [AGENT37_READY_METADATA.state]: "failed" }).catch((error: unknown) => {
+      // Still skipped here; the next claim tries the tag again.
+      logger.warn?.("agent37.ready_mark_failed_failed", { instanceId: broken.id, error: getErrorMessage(error) });
+    });
   }
   const pick = ready.find((instance) => instance.metadata[AGENT37_MACHINE_KEY_METADATA]);
   if (!pick) {

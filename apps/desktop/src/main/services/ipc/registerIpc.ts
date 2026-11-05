@@ -12395,6 +12395,18 @@ export function registerIpc({
         minimumIntervalMs: 6 * 60 * 60 * 1_000,
       });
     },
+    // Ready machines: the switch, each prepare's outcome, picker claims. A
+    // six-hour dedupe per outcome: at most 20 accepted events a day.
+    recordReady: (outcome) => {
+      productAnalyticsService?.capture({
+        event: "ade_feature_used",
+        surface: "desktop",
+        properties: { feature: "connections", action: "agent37_ready", outcome },
+        projectId: null,
+        dedupeKey: `agent37_ready:${outcome}`,
+        minimumIntervalMs: 6 * 60 * 60 * 1_000,
+      });
+    },
     logger: { info: (event, meta) => getCtx().logger.info(event, meta), warn: (event, meta) => getCtx().logger.warn(event, meta) },
   });
 

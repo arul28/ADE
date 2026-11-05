@@ -78,6 +78,8 @@ export type Agent37ReadyKeeperDeps = {
    */
   templateAdeVersion?: () => string | null;
   onStatus?: (status: Agent37ReadyStatus) => void;
+  /** A prepare ended: the machine is ready, or it failed (a cancel is neither). */
+  onPrepared?: (outcome: "completed" | "failed") => void;
   logger?: Agent37Logger;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
@@ -162,17 +164,28 @@ function parseJobRead(stdout: string): JobRead {
   };
 }
 
-/** The primary lane on the machine, read from its ADE once the project is registered. */
-async function readPrimaryLaneId(client: Agent37Client, instanceId: string, projectPath: string, signal: AbortSignal): Promise<string | null> {
-  const answer = await client.exec(instanceId, `cd ${shellQuote(projectPath)} && ade lanes list --json`, { timeoutMs: 30_000, signal })
-    .catch(() => null);
+/**
+ * The primary lane on the machine, read from its ADE once the project is
+ * registered. Without it a chat there needs `--lane`, so a miss is logged,
+ * never fatal.
+ */
+async function readPrimaryLaneId(
+  client: Agent37Client,
+  instanceId: string,
+  projectPath: string,
+  signal: AbortSignal,
+  logger: Agent37Logger,
+): Promise<string | null> {
   try {
-    const lanes = (JSON.parse(answer?.stdout ?? "") as { lanes?: Array<{ id?: unknown; laneType?: unknown }> }).lanes ?? [];
+    const answer = await client.exec(instanceId, `cd ${shellQuote(projectPath)} && ade lanes list --json`, { timeoutMs: 30_000, signal });
+    const lanes = (JSON.parse(answer.stdout) as { lanes?: Array<{ id?: unknown; laneType?: unknown }> }).lanes ?? [];
     const primary = lanes.find((lane) => lane.laneType === "primary");
-    return typeof primary?.id === "string" ? primary.id : null;
-  } catch {
-    return null;
+    if (typeof primary?.id === "string") return primary.id;
+    logger.warn?.("agent37.ready_primary_lane_missing", { instanceId });
+  } catch (error) {
+    logger.warn?.("agent37.ready_primary_lane_unread", { instanceId, error: getErrorMessage(error) });
   }
+  return null;
 }
 
 export class Agent37ReadyPrepareCancelled extends Error {
@@ -324,7 +337,7 @@ export function createAgent37ReadyKeeper(deps: Agent37ReadyKeeperDeps) {
     const answer = await client.exec(instanceId, `grep -m 1 "^${READY_PATH_MARKER}" "$ADE_HOME/ready/job.log"`, { timeoutMs: 20_000, signal })
       .catch(() => null);
     const projectPath = answer?.stdout.trim().slice(READY_PATH_MARKER.length) || null;
-    const laneId = projectPath ? await readPrimaryLaneId(client, instanceId, projectPath, signal) : null;
+    const laneId = projectPath ? await readPrimaryLaneId(client, instanceId, projectPath, signal, logger) : null;
     return { projectPath, laneId };
   };
 
@@ -385,6 +398,7 @@ export function createAgent37ReadyKeeper(deps: Agent37ReadyKeeperDeps) {
         logger.warn?.("agent37.ready_sleep_failed", { instanceId: created.instanceId, error: getErrorMessage(error) });
       }
       logger.info?.("agent37.ready_prepared", { instanceId: created.instanceId, ms: now() - entry.startedAt });
+      deps.onPrepared?.("completed");
     } catch (error) {
       const cancelled = signal.aborted || error instanceof Agent37ReadyPrepareCancelled;
       const reason = getErrorMessage(error);
@@ -407,6 +421,7 @@ export function createAgent37ReadyKeeper(deps: Agent37ReadyKeeperDeps) {
           at: now(),
         };
         failures.set(settings.identity, failure);
+        deps.onPrepared?.("failed");
         await updateProject(settings.identity, (current) => ({ ...current, failure })).catch((writeError: unknown) => {
           logger.warn?.("agent37.ready_failure_not_saved", { error: getErrorMessage(writeError) });
         });
@@ -456,7 +471,11 @@ export function createAgent37ReadyKeeper(deps: Agent37ReadyKeeperDeps) {
     for (const listed of instances) {
       // The list is only a first sieve: what is done is decided on a fresh read.
       if (!discardReason(listed, pool) && (agent37ReadyStateOf(listed) !== "ready" || listed.status !== "running")) continue;
-      const instance = await client.getInstance(listed.id).catch(() => null);
+      const instance = await client.getInstance(listed.id).catch((error: unknown) => {
+        // Unknown is never acted on; the next pass reads it again.
+        logger.warn?.("agent37.ready_reread_failed", { instanceId: listed.id, error: getErrorMessage(error) });
+        return null;
+      });
       if (!instance) continue;
       const reason = discardReason(instance, pool);
       if (reason) {

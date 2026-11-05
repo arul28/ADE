@@ -871,6 +871,8 @@ ade secrets delete STRIPE_API_KEY
 ade secrets request WEBHOOK_SECRET --reason "Signs deliveries" --generate  # private secret card in the chat; prints the outcome, never the value
 ade integrations status --text                    # GitHub, Linear, Jira, Agent 37: connected here or not, and as whom; never a credential
 ade integrations connect linear --reason "…"      # connect card in the chat (browser sign-in or key); saved for the project on your machines, prints the outcome
+ade agent37 ready --json                          # Agent 37 ready machines per project: ready / preparing / in use / failed
+ade chat create --machine agent37:ready --prompt "…"  # start on this project's ready Agent 37 machine: wakes it, waits until it is online, then sends
 ade usage snapshot --text                          # live quota headroom per window, the account it belongs to, and the provider limits link
 ade usage stats --preset 7d --text                 # tokens, cost, and activity for a range
 ade usage stats --scope account --text             # merged across every machine on the account

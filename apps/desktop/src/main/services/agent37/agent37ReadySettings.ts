@@ -106,7 +106,12 @@ export function createAgent37ReadySettingsStore(deps: {
   return {
     async read() {
       const vault = deps.vault();
-      const got = vault ? await vault.get().catch(() => ({ ok: false as const })) : { ok: false as const };
+      const got = vault
+        ? await vault.get().catch((error: unknown) => {
+          deps.logger?.warn?.("agent37.ready_settings_vault_read_failed", { error: getErrorMessage(error) });
+          return { ok: false as const };
+        })
+        : { ok: false as const };
       const fromAccount = got.ok && got.value != null ? parseAgent37ReadySettings(got.value, deps.logger) : null;
       if (got.ok && got.value != null && fromAccount) {
         // Kept here too, so a vault that stops answering falls back to the account's last answer.

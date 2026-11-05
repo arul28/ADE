@@ -1422,6 +1422,17 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "Agent37",
   },
   {
+    id: "integrations.agent37-ready",
+    label: "Agent 37 ready machine",
+    keywords: ["ready machine", "keep a machine ready", "warm", "prepared", "seed", "setup", "docker", "fast start", "cloud chat"],
+    tab: "integrations",
+    anchor: "agent37-ready",
+    // Which projects keep a machine ready, in the account vault.
+    scope: "account",
+    web: "hidden",
+    group: "Agent37",
+  },
+  {
     id: "integrations.jira-projects",
     label: "Jira projects for this project",
     keywords: ["jira", "project", "issue tracker", "binding", "default"],
