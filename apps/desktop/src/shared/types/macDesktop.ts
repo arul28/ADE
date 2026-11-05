@@ -82,9 +82,9 @@ export const WINDOWS_DESKTOP_WINDOW_ACTION_FAILED_CODE = "WINDOWS_DESKTOP_WINDOW
  * The main desktop posts input to a parked lane window in the background, and
  * the window's app is known to ignore that kind of posted input (Chromium and
  * Electron, WPF, WinUI, Tk, GTK, LibreOffice), or a key needs a modifier. The
- * service answers it for keys and text by sending them as real input, and for
- * a click, scroll or drag (no real path on a parked window) by posting it
- * anyway, as before the table existed.
+ * service answers it for keys and text by sending them as real input; a
+ * click, scroll or drag (no real path on a parked window) is sent with
+ * `forceBackground` and posted anyway (`macDesktopBackgroundInput.ts`).
  */
 export const WINDOWS_DESKTOP_BACKGROUND_UNAVAILABLE_CODE = "WINDOWS_DESKTOP_BACKGROUND_UNAVAILABLE" as const;
 /**

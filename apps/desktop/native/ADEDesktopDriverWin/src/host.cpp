@@ -79,6 +79,7 @@ class Host {
     // Windows a driver that died left parked off-screen go back first.
     parked_.restoreAll(false);
     shared_.setParkedRecord(&parked_);
+    setShieldRecord(&parked_);
     refreshStatus();
   }
 
@@ -398,9 +399,6 @@ class Host {
       const DWORD child = cleanupSession_.load();
       if (child) spawnCleanupHelper(child);
       setSignInWaiting(false);
-      // A UI Automation call stuck inside a foreground shield would leave
-      // that app disabled once this process ends.
-      releaseForegroundShields();
       // A shared seat's parked windows (the user's own among them) go back
       // before the process ends: only if the record is free right now, never
       // by waiting on the stuck worker. Otherwise the next host puts them back.

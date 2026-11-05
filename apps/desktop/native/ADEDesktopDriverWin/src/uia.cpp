@@ -325,27 +325,41 @@ bool Uia::newestFocused(const std::string& laneId, UiaElement& out, HWND preferW
   return true;
 }
 
+#ifndef UIA_E_TIMEOUT
+#define UIA_E_TIMEOUT static_cast<HRESULT>(0x80131505L)
+#endif
+
+// A pattern call that timed out may still have landed: the provider applied
+// it and answered late. Falling through to another delivery (a posted or real
+// click, typed text) would then do it twice, so the action stops here.
+static HRESULT settled(HRESULT hr) {
+  if (hr == UIA_E_TIMEOUT) {
+    fail(code::kWindowActionFailed, "The app did not answer UI Automation in time, and the action may have landed. Observe before trying again.");
+  }
+  return hr;
+}
+
 bool Uia::invoke(const UiaElement& e) {
   if (!e.element) return false;
   ForegroundShield shield(shieldForeground_ ? e.window : nullptr);
   if (e.hasInvoke) {
     ComPtr<IUIAutomationInvokePattern> p;
     if (SUCCEEDED(e.element->GetCurrentPatternAs(UIA_InvokePatternId, IID_PPV_ARGS(&p))) && p &&
-        SUCCEEDED(p->Invoke())) {
+        SUCCEEDED(settled(p->Invoke()))) {
       return true;
     }
   }
   if (e.hasToggle) {
     ComPtr<IUIAutomationTogglePattern> p;
     if (SUCCEEDED(e.element->GetCurrentPatternAs(UIA_TogglePatternId, IID_PPV_ARGS(&p))) && p &&
-        SUCCEEDED(p->Toggle())) {
+        SUCCEEDED(settled(p->Toggle()))) {
       return true;
     }
   }
   if (e.hasSelect) {
     ComPtr<IUIAutomationSelectionItemPattern> p;
     if (SUCCEEDED(e.element->GetCurrentPatternAs(UIA_SelectionItemPatternId, IID_PPV_ARGS(&p))) && p &&
-        SUCCEEDED(p->Select())) {
+        SUCCEEDED(settled(p->Select()))) {
       return true;
     }
   }
@@ -354,7 +368,7 @@ bool Uia::invoke(const UiaElement& e) {
     if (SUCCEEDED(e.element->GetCurrentPatternAs(UIA_ExpandCollapsePatternId, IID_PPV_ARGS(&p))) && p) {
       ExpandCollapseState state = ExpandCollapseState_Collapsed;
       p->get_CurrentExpandCollapseState(&state);
-      HRESULT hr = state == ExpandCollapseState_Expanded ? p->Collapse() : p->Expand();
+      HRESULT hr = settled(state == ExpandCollapseState_Expanded ? p->Collapse() : p->Expand());
       if (SUCCEEDED(hr)) return true;
     }
   }
@@ -369,6 +383,7 @@ bool Uia::setValue(const UiaElement& e, const std::wstring& value) {
   BSTR b = SysAllocStringLen(value.data(), static_cast<UINT>(value.size()));
   HRESULT hr = p->SetValue(b);
   SysFreeString(b);
+  settled(hr);
   return SUCCEEDED(hr);
 }
 
@@ -388,10 +403,14 @@ bool Uia::appendValue(const UiaElement& e, const std::wstring& text, bool clear)
   BSTR b = SysAllocStringLen(next.data(), static_cast<UINT>(next.size()));
   HRESULT hr = p->SetValue(b);
   SysFreeString(b);
+  settled(hr);
   return SUCCEEDED(hr);
 }
 
 size_t Uia::appendValuePaced(const UiaElement& e, const std::wstring& text, bool clear, DWORD paceMs) {
+  // One shield for the whole text: the app stays disabled through the pauses,
+  // when it could otherwise activate itself after a character.
+  ForegroundShield shield(shieldForeground_ ? e.window : nullptr);
   size_t at = 0;
   while (at < text.size()) {
     const size_t n = (IS_HIGH_SURROGATE(text[at]) && at + 1 < text.size()) ? 2 : 1;

@@ -25,7 +25,8 @@ streaming and proof files are in the [Mac Desktop map](../mac-desktop/README.md#
 | `.../src/engine.cpp/.h`, `engineLane.h`, `engineInput.cpp`, `engineLaunch.cpp`, `engineMedia.cpp` | The per-lane op table for one session (Mode A private, Mode B shared): lifecycle, input, app launch (including apps that hand a second launch to a running instance), and capture/recording. |
 | `.../src/desk.cpp/.h` | Top-level windows, processes, app launch and `SendInput` for the session the process runs in. |
 | `.../src/uia.cpp/.h` | UI Automation: the cached element walk behind `observe`, and element actions. |
-| `.../src/background.cpp/.h` | Background input on the shared seat: which app frameworks drop posted input (refused with `WINDOWS_DESKTOP_BACKGROUND_UNAVAILABLE`), the focused-control walk, posted keys, and the foreground shield around UI Automation actions. Follows trycua/cua's cua-driver (MIT). |
+| `.../src/background.cpp/.h` | Background input on the shared seat: which app frameworks drop posted input (`backgroundDrop`), the posted click, drag, scroll, key and text, the focused-control walk, and the foreground shield around UI Automation actions. Follows trycua/cua's cua-driver (MIT). |
+| `apps/desktop/src/main/services/macDesktop/macDesktopBackgroundInput.ts` | What the service does with a background row: real-input retry for keys and text, `forceBackground` for the rest, and the rate-limited report. |
 | `.../src/capture.cpp/.h`, `video.cpp/.h` | GDI `BitBlt` (private) and `PrintWindow` (shared) frames; Media Foundation H.264 for the live view and the MP4 recording. |
 | `.../src/credentials.cpp/.h`, `setup.cpp` | The saved Windows password in Credential Manager (never on the wire), and the bounded admin prompt that starts `setup-elevated`. |
 | `.../src/common.cpp/.h`, `json.cpp/.h` | Error codes, logging, the line writer, and the JSON value. |
@@ -123,12 +124,17 @@ A caller with no chat is refused with `WINDOWS_DESKTOP_CONSENT_REQUIRED`.
 The shared seat acts on a parked window without bringing it forward wherever
 it can:
 
-- **Element actions** (click, set value, toggle, select, expand, scroll by
-  handle) go through UI Automation. UWP, WinUI and Chromium/Electron apps
-  activate themselves while handling one, so the driver disables the window's
-  root for the call (`ForegroundShield`); the pattern still lands and the
-  user's window stays in front. A host that hits its hard deadline re-enables
-  any shielded window before it ends.
+- **Element actions** (click, set value, toggle, select, expand, focus,
+  scroll by handle) go through UI Automation. UWP, WinUI and
+  Chromium/Electron apps activate themselves while handling one, so the
+  driver disables the window's root for the call (`ForegroundShield`); the
+  pattern still lands and the user's window stays in front. A hung window is
+  not shielded (disabling it would wait on it). The shielded window is marked
+  in `parked-windows.json`, so a driver that dies inside the call does not
+  leave the app disabled: the next host re-enables it when it puts the parked
+  windows back. A UI Automation call that times out stops the action
+  (`WINDOWS_DESKTOP_WINDOW_ACTION_FAILED`, observe first) rather than falling
+  through to a second delivery that could repeat it.
 - **Clicks, scrolls and drags at a point**, and the fallback for an element
   with no pattern, are posted to the window (`WM_*BUTTON*`, `WM_MOUSEWHEEL`).
 - **Keys** (`press`, `type --submit`) are posted (`WM_KEYDOWN`/`WM_KEYUP`) to
@@ -136,27 +142,31 @@ it can:
   characters, with a line break sent as an Enter key. The focused control is
   found across every UI thread of the window, so a WebView2 editor is reached.
 - Posting reports success whether or not the app acts on it, so the driver
-  refuses, with `WINDOWS_DESKTOP_BACKGROUND_UNAVAILABLE`, input that the
-  window's framework is known to drop: everything for Chromium and Electron;
-  clicks, drags and (when not in front) keys for WPF; clicks and drags for
-  WinUI 3; keys and text for UWP/XAML hosts (Windows 11 Notepad among them);
-  clicks, keys and text for Tk; clicks for GTK; keys for LibreOffice; and the
-  wheel and drags for a WebView2 inside a native frame. A key chord or a key
-  that needs Shift cannot be posted either. An administrator window is refused
-  with `WINDOWS_DESKTOP_ELEVATED_WINDOW`.
-- The service answers every refusal so nothing that worked before stops
-  working. With no mode named, a refused key or text is sent again as real
-  input (the window comes forward for it and the user's goes back). A refused
-  click, scroll or drag has no real path on a parked window, and an explicit
-  mode is kept as asked, so those are posted anyway (`forceBackground`), as
-  before the table existed. Only a chord or a Shift key under an explicit
-  accessibility mode stays refused.
-- The table comes from cua's measurements, not this PC's, so every refusal is
-  reported: a `windows_desktop.background_unavailable` log line and a Sentry
-  Log on the signal budget (`forwardSignalToSentry`, a couple per app, input
-  and fallback an hour), with the exe and window class, the fallback taken and
-  whether the screen then changed. A `posted` row whose outcome is `changed`
-  is a row that refuses input the app takes.
+  knows which frameworks drop which posted input
+  (`backgroundDrop`, after cua): everything for Chromium and Electron; clicks,
+  drags and (when not in front) keys for WPF; clicks and drags for WinUI 3;
+  keys and text for UWP/XAML hosts (Windows 11 Notepad among them, not the
+  Windows 10 one); clicks, keys and text for Tk; clicks for GTK; keys for
+  LibreOffice; and the wheel and drags for a WebView2 inside a native frame.
+  An administrator window is refused with `WINDOWS_DESKTOP_ELEVATED_WINDOW`.
+- What the service does with a row (`macDesktopBackgroundInput.ts`), so
+  nothing that worked before stops working:
+  - **Keys and text with no mode named**: the driver refuses with
+    `WINDOWS_DESKTOP_BACKGROUND_UNAVAILABLE` and the service sends them again
+    as real input (the window comes forward for it and the user's goes back).
+  - **Everything else** (a click, scroll or drag, which have no real path on a
+    parked window; an explicit mode; a person's own takeover input): the
+    request carries `forceBackground`, the driver posts as before, and its
+    reply names the row (`backgroundRow`). When nothing then changes,
+    the action's next step says the app usually ignores that input.
+  - A key chord, or a key that needs Shift, cannot be posted at all; with an
+    explicit accessibility mode it stays refused.
+- The table comes from cua's measurements, not this PC's, so each delivery it
+  touches is reported: a `windows_desktop.background_unavailable` log line and
+  a Sentry Log on the signal budget (`forwardSignalToSentry`: a couple per
+  app, input and fallback an hour, 10 an hour in all), with the exe and window
+  class, the fallback taken and whether the screen then changed. A `posted`
+  row whose outcome is `observed` is a row that refuses input the app takes.
 
 ## Setup (once per PC, by the user)
 
@@ -227,12 +237,14 @@ CLI and the pane unchanged:
   the input target. Windows blocks an un-elevated driver from controlling it;
   the user resolves it on the lane screen.
 - `WINDOWS_DESKTOP_WINDOW_ACTION_FAILED` — Windows could not focus or minimize
-  the requested window, and it is not known to be elevated.
+  the requested window, and it is not known to be elevated; or an app did not
+  answer a UI Automation action in time, which may still have landed (observe
+  before trying again).
 - `WINDOWS_DESKTOP_BACKGROUND_UNAVAILABLE` — the shared seat would post input
   that the window's app ignores (see [Background input](#background-input-on-the-shared-seat)).
-  The service retries keys and text as real input, and posts a click, scroll
-  or drag anyway, on its own; a caller sees it only for a key chord or a Shift
-  key sent with an explicit accessibility mode.
+  The service retries keys and text as real input on its own; a caller sees
+  it only for a key chord or a Shift key sent with an explicit accessibility
+  mode.
 
 Each code prints a one-line next step in the CLI (`macDesktopErrorHint`). The
 private-seat availability and consent next steps come from

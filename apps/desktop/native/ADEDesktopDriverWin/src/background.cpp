@@ -1,21 +1,15 @@
 #include "background.h"
 
 #include "desk.h"
+#include "parkedwindows.h"
 
 #include <algorithm>
-#include <mutex>
-#include <set>
+#include <thread>
 #include <vector>
 
 namespace ade {
 
 namespace {
-
-std::wstring classOf(HWND hwnd) {
-  wchar_t buf[256];
-  int n = GetClassNameW(hwnd, buf, 256);
-  return std::wstring(buf, n > 0 ? n : 0);
-}
 
 bool startsWith(const std::wstring& s, const wchar_t* prefix) { return s.rfind(prefix, 0) == 0; }
 
@@ -27,40 +21,43 @@ HWND rootOf(HWND hwnd) {
 std::wstring exeNameOf(HWND hwnd) {
   DWORD pid = 0;
   GetWindowThreadProcessId(hwnd, &pid);
-  std::wstring path = pid ? processImagePath(pid) : L"";
-  size_t slash = path.find_last_of(L"\\/");
-  std::wstring name = slash == std::wstring::npos ? path : path.substr(slash + 1);
-  std::transform(name.begin(), name.end(), name.begin(), [](wchar_t c) { return static_cast<wchar_t>(towlower(c)); });
-  return name;
+  return pid ? lower(baseName(processImagePath(pid))) : L"";
 }
 
 bool isChromiumClass(const std::wstring& cls) {
   return startsWith(cls, L"Chrome_WidgetWin_") || startsWith(cls, L"CefBrowser");
 }
 
-bool hasChromiumChild(HWND top) {
-  bool found = false;
+// Whether any descendant of `top` has a class `match` accepts.
+bool hasChild(HWND top, bool (*match)(const std::wstring&)) {
+  struct Search {
+    bool (*match)(const std::wstring&);
+    bool found;
+  } search{match, false};
   EnumChildWindows(
       top,
       [](HWND child, LPARAM param) -> BOOL {
-        if (!isChromiumClass(classOf(child))) return TRUE;
-        *reinterpret_cast<bool*>(param) = true;
+        auto& s = *reinterpret_cast<Search*>(param);
+        if (!s.match(className(child))) return TRUE;
+        s.found = true;
         return FALSE;
       },
-      reinterpret_cast<LPARAM>(&found));
-  return found;
+      reinterpret_cast<LPARAM>(&search));
+  return search.found;
 }
 
 // UWP and WinUI hosts. Windows 11 Notepad keeps the classic "Notepad" class
-// while rendering XAML, so the process name is the steadier signal.
+// while rendering XAML, so the process name is the steadier signal; the
+// Windows 10 Notepad of the same name is a classic Edit control.
 bool isXamlHost(HWND root) {
   static const wchar_t* classes[] = {L"ApplicationFrameWindow", L"WinUIDesktopWin32WindowClass",
                                      L"Windows.UI.Core.CoreWindow", L"Microsoft.UI.Content.DesktopChildSiteBridge"};
-  static const wchar_t* exes[] = {L"notepad.exe", L"calculatorapp.exe", L"calc.exe", L"applicationframehost.exe",
+  static const wchar_t* exes[] = {L"calculatorapp.exe", L"calc.exe", L"applicationframehost.exe",
                                   L"photos.exe", L"systemsettings.exe"};
-  const std::wstring cls = classOf(root);
+  const std::wstring cls = className(root);
   for (auto c : classes) if (cls == c) return true;
   const std::wstring exe = exeNameOf(root);
+  if (exe == L"notepad.exe") return !hasChild(root, [](const std::wstring& c) { return c == L"Edit"; });
   for (auto e : exes) if (exe == e) return true;
   return false;
 }
@@ -79,7 +76,7 @@ const char* kindName(PostedInput kind) {
 // Which posted input each framework drops while PostMessage reports success.
 bool drops(HWND root, PostedInput kind) {
   using K = PostedInput;
-  const std::wstring cls = classOf(root);
+  const std::wstring cls = className(root);
   // Chromium and Electron take pointer and key input only from the system
   // input queue.
   if (isChromiumClass(cls)) return true;
@@ -104,71 +101,47 @@ bool drops(HWND root, PostedInput kind) {
   if ((kind == K::Key || kind == K::Text) && isXamlHost(root)) return true;
   // A WebView2 inside a native frame takes posted clicks and text, but not
   // the wheel or drags.
-  if ((kind == K::Scroll || kind == K::Drag) && hasChromiumChild(root)) return true;
+  if ((kind == K::Scroll || kind == K::Drag) && hasChild(root, isChromiumClass)) return true;
   return false;
 }
 
-bool isExtendedKey(WORD vk) {
-  switch (vk) {
-    case VK_LEFT: case VK_RIGHT: case VK_UP: case VK_DOWN:
-    case VK_PRIOR: case VK_NEXT: case VK_HOME: case VK_END:
-    case VK_INSERT: case VK_DELETE: case VK_APPS:
-      return true;
-    default:
-      return false;
+bool shieldApplies(HWND root) { return isChromiumClass(className(root)) || isXamlHost(root); }
+
+ParkedWindowsRecord* shieldRecord = nullptr;
+
+// The deepest child window under a screen point, for posted mouse messages.
+HWND childAt(HWND top, POINT screen) {
+  HWND current = top;
+  for (int depth = 0; depth < 16; ++depth) {
+    POINT client = screen;
+    ScreenToClient(current, &client);
+    HWND child = ChildWindowFromPointEx(current, client, CWP_SKIPINVISIBLE | CWP_SKIPTRANSPARENT);
+    if (!child || child == current) break;
+    current = child;
   }
+  return current;
 }
-
-std::mutex& shieldMutex() {
-  static std::mutex m;
-  return m;
-}
-
-std::multiset<HWND>& shielded() {
-  static std::multiset<HWND> windows;
-  return windows;
-}
-
-bool shieldApplies(HWND root) { return isChromiumClass(classOf(root)) || isXamlHost(root); }
 
 }  // namespace
 
-namespace {
-thread_local bool overrideOn = false;
-thread_local bool overrideUsed = false;
-}  // namespace
-
-BackgroundOverride::BackgroundOverride(bool on) : previous_(overrideOn) {
-  overrideOn = on;
-  overrideUsed = false;
-}
-
-BackgroundOverride::~BackgroundOverride() { overrideOn = previous_; }
-
-bool BackgroundOverride::used() const { return overrideUsed; }
-
-void failIfBackgroundDropped(HWND window, PostedInput kind) {
+Json backgroundDrop(HWND window, PostedInput kind) {
   HWND root = rootOf(window);
-  if (!root) return;
+  if (!root) return Json();
   failIfElevatedWindow(root, false);
-  if (!drops(root, kind)) return;
-  if (overrideOn) {
-    overrideUsed = true;
-    return;
-  }
-  WinInfo info;
-  std::string app = describeWindow(root, info) && !info.appName.empty() ? narrow(info.appName) : "This app";
-  std::string message = app + " (" + narrow(classOf(root)) + ") ignores background " + kindName(kind) + " on the main desktop.";
-  if (kind == PostedInput::Key || kind == PostedInput::Text) {
-    message += " Send it as real input (--real); the main desktop brings the window forward for it and hands yours back.";
-  } else {
-    message += " Act on an element by handle instead (observe, then click or scroll --handle), or use the private screen.";
-  }
-  Json details = Json::object();
-  details["app"] = narrow(exeNameOf(root));
-  details["windowClass"] = narrow(classOf(root));
-  details["input"] = std::string(kindName(kind));
-  throw DriverError{code::kBackgroundUnavailable, message, details};
+  if (!drops(root, kind)) return Json();
+  Json row = Json::object();
+  row["app"] = narrow(exeNameOf(root));
+  row["windowClass"] = narrow(className(root));
+  row["input"] = std::string(kindName(kind));
+  return row;
+}
+
+void failBackgroundDropped(const Json& row) {
+  const std::string app = row["app"].str();
+  throw DriverError{code::kBackgroundUnavailable,
+                    (app.empty() ? std::string("This app") : app) + " ignores background " + row["input"].str() +
+                        " on the main desktop.",
+                    row};
 }
 
 HWND focusedTarget(HWND top) {
@@ -200,6 +173,53 @@ HWND focusedTarget(HWND top) {
   return best;
 }
 
+void postClick(HWND hwnd, int screenX, int screenY, const std::string& button, int count) {
+  POINT p = {screenX, screenY};
+  HWND target = childAt(hwnd, p);
+  POINT client = p;
+  ScreenToClient(target, &client);
+  LPARAM lp = MAKELPARAM(client.x, client.y);
+  UINT down = WM_LBUTTONDOWN, up = WM_LBUTTONUP, dbl = WM_LBUTTONDBLCLK;
+  WPARAM mk = MK_LBUTTON;
+  if (button == "right") {
+    down = WM_RBUTTONDOWN;
+    up = WM_RBUTTONUP;
+    dbl = WM_RBUTTONDBLCLK;
+    mk = MK_RBUTTON;
+  }
+  PostMessageW(target, WM_MOUSEMOVE, 0, lp);
+  for (int i = 0; i < std::max(1, std::min(count, 3)); ++i) {
+    PostMessageW(target, i == 1 ? dbl : down, mk, lp);
+    PostMessageW(target, up, 0, lp);
+  }
+}
+
+void postDrag(HWND hwnd, POINT from, POINT to, int durationMs) {
+  POINT c = from;
+  ScreenToClient(hwnd, &c);
+  PostMessageW(hwnd, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(c.x, c.y));
+  for (int i = 1; i <= 12; ++i) {
+    POINT s = {from.x + (to.x - from.x) * i / 12, from.y + (to.y - from.y) * i / 12};
+    ScreenToClient(hwnd, &s);
+    PostMessageW(hwnd, WM_MOUSEMOVE, MK_LBUTTON, MAKELPARAM(s.x, s.y));
+    Sleep(std::max(1, durationMs / 12));
+  }
+  POINT e = to;
+  ScreenToClient(hwnd, &e);
+  PostMessageW(hwnd, WM_LBUTTONUP, 0, MAKELPARAM(e.x, e.y));
+}
+
+void postScroll(HWND hwnd, int screenX, int screenY, const std::string& direction, int amount) {
+  POINT p = {screenX, screenY};
+  HWND target = childAt(hwnd, p);
+  bool horizontal = direction == "left" || direction == "right";
+  int sign = (direction == "down" || direction == "left") ? -1 : 1;
+  for (int i = 0; i < std::max(1, std::min(amount, 50)); ++i) {
+    PostMessageW(target, horizontal ? WM_MOUSEHWHEEL : WM_MOUSEWHEEL, MAKEWPARAM(0, sign * WHEEL_DELTA),
+                 MAKELPARAM(screenX, screenY));
+  }
+}
+
 void postKey(HWND window, const std::string& key) {
   bool needsShift = false;
   WORD vk = virtualKeyForName(key, &needsShift);
@@ -219,32 +239,53 @@ void postKey(HWND window, const std::string& key) {
   PostMessageW(target, WM_KEYUP, vk, up);
 }
 
+bool postText(HWND hwnd, const std::wstring& text) {
+  // The focused control may sit on another UI thread than the frame (a
+  // WebView2 does), so look across all of them.
+  HWND target = focusedTarget(hwnd);
+  if (!target) return false;
+  for (size_t i = 0; i < text.size(); ++i) {
+    wchar_t c = text[i];
+    if (c == L'\r' || c == L'\n') {
+      if (c == L'\r' && i + 1 < text.size() && text[i + 1] == L'\n') ++i;
+      // A line break is an Enter key, not a character: rich editors
+      // (RichEdit, Scintilla, LibreOffice) drop WM_CHAR 0x0A and some drop
+      // 0x0D, but every one takes VK_RETURN. Give the new paragraph a moment.
+      postKey(target, "return");
+      Sleep(20);
+      continue;
+    }
+    if (!PostMessageW(target, WM_CHAR, c, 1)) return false;
+  }
+  return true;
+}
+
 ForegroundShield::ForegroundShield(HWND window) {
   HWND root = rootOf(window);
-  if (!root || !IsWindow(root) || !shieldApplies(root)) return;
-  std::lock_guard<std::mutex> lock(shieldMutex());
+  if (!root || !IsWindow(root) || IsHungAppWindow(root) || !shieldApplies(root)) return;
   // EnableWindow returns nonzero when the window was already disabled (a
-  // modal dialog's owner): leave that one as it is.
+  // modal dialog's owner, or a shield further up this call): leave that one
+  // as it is.
   if (EnableWindow(root, FALSE)) return;
   root_ = root;
-  shielded().insert(root);
+  if (shieldRecord) shieldRecord->setShielded(root, true);
 }
 
 ForegroundShield::~ForegroundShield() {
   if (!root_) return;
-  std::lock_guard<std::mutex> lock(shieldMutex());
-  auto it = shielded().find(root_);
-  // Already released by releaseForegroundShields.
-  if (it == shielded().end()) return;
-  shielded().erase(it);
+  // An app that hung inside the call would hold the input worker in
+  // EnableWindow until it answers, so a thread of its own waits instead. The
+  // mark stays (the thread may outlive the record at exit), and the next host
+  // re-enables a window that is enabled already, which does nothing.
+  if (IsHungAppWindow(root_)) {
+    logLine("foreground-shield: the window stopped responding; re-enabling it in the background");
+    std::thread([root = root_] { EnableWindow(root, TRUE); }).detach();
+    return;
+  }
   EnableWindow(root_, TRUE);
+  if (shieldRecord) shieldRecord->setShielded(root_, false);
 }
 
-void releaseForegroundShields() {
-  std::unique_lock<std::mutex> lock(shieldMutex(), std::try_to_lock);
-  if (!lock.owns_lock()) return;
-  for (HWND w : shielded()) EnableWindow(w, TRUE);
-  shielded().clear();
-}
+void setShieldRecord(ParkedWindowsRecord* record) { shieldRecord = record; }
 
 }  // namespace ade
