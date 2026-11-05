@@ -885,7 +885,9 @@ const READY_MACHINE_POLL_MS = 1_000;
 /** An error that left the request unsent (the machine offline, or not reachable yet), so sending again is safe. */
 function nothingWasSent(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
-  return /Nothing was sent/.test(message) || /^Couldn't reach /.test(message) || /\bis offline\b/.test(message);
+  // The connection layer wraps the bridge's refusal; its words are in `cause`.
+  return [message, failureCause(error)].some((text) =>
+    /Nothing was sent/.test(text) || /^Couldn't reach /.test(text) || /\bis offline\b/.test(text));
 }
 
 /**
@@ -908,46 +910,66 @@ async function executePlanOnAgent37ReadyMachine(
     throw new CliUsageError("--machine agent37:ready needs a project with a git origin: the ready machine is the one kept for that repository.");
   }
   const startedAt = Date.now();
-  const claim = await withMachineBrain(options, async (client) => {
+  /** An `agent37` action on this machine's brain, in the project the CLI runs in. */
+  const runAgent37Action = (action: string, args: JsonObject) => withMachineBrain(options, async (client) => {
     const registered = await client.request("projects.add", automaticProjectRegistrationParams(roots.projectRoot));
     const projectId = isRecord(registered) ? asString(registered.projectId) : null;
     if (!projectId) throw new Error("This machine's brain did not register the project.");
-    return unwrapToolResult(await client.request("ade/actions/call", withProjectId({
+    const answer = unwrapToolResult(await client.request("ade/actions/call", withProjectId({
       name: "run_ade_action",
-      arguments: { domain: "agent37", action: "claim_ready", args: { originUrl } },
+      arguments: { domain: "agent37", action, args },
     }, projectId)));
+    return isRecord(answer) && isRecord(answer.result) ? answer.result : answer;
   });
+  const claim = await runAgent37Action("claim_ready", { originUrl });
+  const instanceId = isRecord(claim) ? asString(claim.instanceId) : null;
   const machineKey = isRecord(claim) ? asString(claim.machineKey) : null;
   const name = (isRecord(claim) ? asString(claim.name) : null) ?? "the ready machine";
-  if (!machineKey) {
-    throw new CliExecutionError(`${name} has no ADE machine recorded on it, so ADE can't tell which computer it is. Delete it from its row and let ADE prepare another.`, {});
-  }
   const say = (line: string) => {
     if (!options.json) process.stderr.write(`ade: ${line}\n`);
   };
-  say(`Woke ${name} on Agent 37 (${Math.round(Number(isRecord(claim) ? claim.wakeMs : 0) || 0)} ms). Waiting for its ADE…`);
-  const deadline = startedAt + READY_MACHINE_WAIT_MS;
-  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-  // Online in the account first: the send below would otherwise be refused at once.
-  for (;;) {
-    const roster = await withMachineBrain(options, (client) => client.request("machines.list", { includeProjects: false }))
-      .catch(() => null);
-    const row = isRecord(roster) && Array.isArray(roster.machines)
-      ? roster.machines.find((machine) => isRecord(machine) && machine.machineKey === machineKey)
-      : null;
-    if (isRecord(row) && row.online === true) break;
-    if (Date.now() > deadline) {
-      throw new CliExecutionError(`${name} woke on Agent 37 but its ADE didn't come online within ${READY_MACHINE_WAIT_MS / 1000} s. Nothing was sent; try again, or check it under Your computers.`, {});
+  let sent = false;
+  try {
+    if (!machineKey) {
+      throw new CliExecutionError(`${name} has no ADE machine recorded on it, so ADE can't tell which computer it is. Delete it from its row and let ADE prepare another.`, {});
     }
-    await sleep(READY_MACHINE_POLL_MS);
-  }
-  say(`${name} is online (${((Date.now() - startedAt) / 1000).toFixed(1)} s). Starting the chat…`);
-  for (;;) {
-    try {
-      return await executePlan(plan, { ...options, machine: machineKey });
-    } catch (error) {
-      if (!nothingWasSent(error) || Date.now() > deadline) throw error;
+    say(`Woke ${name} on Agent 37 (${Math.round(Number(isRecord(claim) ? claim.wakeMs : 0) || 0)} ms). Waiting for its ADE…`);
+    const deadline = startedAt + READY_MACHINE_WAIT_MS;
+    const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+    // Online in the account first: the send below would otherwise be refused at once.
+    for (;;) {
+      const roster = await withMachineBrain(options, (client) => client.request("machines.list", { includeProjects: false }))
+        .catch(() => null);
+      const row = isRecord(roster) && Array.isArray(roster.machines)
+        ? roster.machines.find((machine) => isRecord(machine) && machine.machineKey === machineKey)
+        : null;
+      if (isRecord(row) && row.online === true) break;
+      if (Date.now() > deadline) {
+        throw new CliExecutionError(`${name} woke on Agent 37 but its ADE didn't come online within ${READY_MACHINE_WAIT_MS / 1000} s. Nothing was sent; try again, or check it under Your computers.`, {});
+      }
       await sleep(READY_MACHINE_POLL_MS);
+    }
+    say(`${name} is online (${((Date.now() - startedAt) / 1000).toFixed(1)} s). Starting the chat…`);
+    for (;;) {
+      try {
+        const result = await executePlan(plan, { ...options, machine: machineKey });
+        sent = true;
+        return result;
+      } catch (error) {
+        if (!nothingWasSent(error) || Date.now() > deadline) {
+          // Anything but "not sent" may have reached the machine: it is in use now.
+          if (!nothingWasSent(error)) sent = true;
+          throw error;
+        }
+        await sleep(READY_MACHINE_POLL_MS);
+      }
+    }
+  } finally {
+    // Nothing reached it: give it back (ready again, asleep) rather than leave it awake and billing.
+    if (!sent && instanceId) {
+      await runAgent37Action("release_ready", { instanceId }).catch((error: unknown) => {
+        say(`couldn't put ${name} back to sleep (${error instanceof Error ? error.message : String(error)}). Sleep it from its row under Your computers.`);
+      });
     }
   }
 }

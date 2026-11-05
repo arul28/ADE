@@ -492,6 +492,8 @@ export const AGENT37_READY_METADATA = {
   path: "ade_ready_path",
   /** Epoch ms of the claim. */
   claimedAt: "ade_ready_claimed_at",
+  /** Which copy of ADE is preparing it, so that copy knows its own leftovers after a restart. */
+  preparedBy: "ade_ready_by",
 } as const;
 
 export type Agent37ReadyMachineState = "preparing" | "ready" | "claimed" | "failed";
@@ -515,6 +517,12 @@ export type Agent37ReadyProjectSettings = {
    * server in the background). Empty means clone only.
    */
   setup: string;
+  /**
+   * The last prepare failed, and nothing is billing for it. Kept with the
+   * choice so no computer, and no app restart, pays to try again on its own;
+   * Retry or a new choice clears it.
+   */
+  failure?: { error: string; at: number } | null;
 };
 
 /**

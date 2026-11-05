@@ -200,6 +200,15 @@ export function Agent37BoxStrip({
           <span className="kit-tag" data-tone={tone ?? undefined} title={`Agent 37 status: ${box.status}`}>
             {stateLabel}
           </span>
+          {box.ready && box.ready.state !== "claimed" ? (
+            <span
+              className="kit-tag"
+              data-tone={box.ready.state === "failed" ? "crit" : undefined}
+              title={`ADE keeps this machine ready for ${box.ready.projectName}: the next chat there starts on it. Settings › Integrations › Agent 37.`}
+            >
+              {box.ready.state === "ready" ? `Ready for ${box.ready.projectName}` : box.ready.state === "preparing" ? "Being prepared" : "Prepare failed"}
+            </span>
+          ) : null}
           <span className="ade-cx-a37-fact">{describeAgent37MachineSize(box)}</span>
           {rate ? <span className="ade-cx-a37-fact kit-num">{rate}</span> : null}
           {spend ? (

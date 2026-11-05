@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -321,6 +321,8 @@ export function registerAgent37Ipc(args: {
     createMachine: (requestId, machine, onProgress, signal, metadata) =>
       createAgent37Machine(machineCreatorDeps, requestId, machine, onProgress, signal, metadata),
     removeAccountMachine: args.removeAccountMachine,
+    // This computer and this app's data folder: a development copy beside the installed one is another preparer.
+    preparerId: `${os.hostname()}:${createHash("sha256").update(app.getPath("userData")).digest("hex").slice(0, 8)}`,
     onStatus: (status) => sendToAllWindows(IPC.agent37ReadyStatusChanged, status),
     logger,
   });

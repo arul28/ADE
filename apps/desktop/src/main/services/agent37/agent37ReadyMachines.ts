@@ -75,6 +75,12 @@ export type Agent37ReadyKeeperDeps = {
   ) => Promise<Agent37CreateMachineResult>;
   /** Takes a deleted machine's row off the ADE account. */
   removeAccountMachine: (machineKey: string) => Promise<unknown>;
+  /**
+   * This copy of ADE, stable across restarts and distinct from another copy
+   * on the same computer. A machine it was preparing when it quit is its own
+   * leftover, deleted on the next pass instead of billing until it goes stale.
+   */
+  preparerId: string;
   onStatus?: (status: Agent37ReadyStatus) => void;
   logger?: Logger;
   now?: () => number;
@@ -207,6 +213,9 @@ export function normalizeAgent37ReadySettings(raw: Partial<Agent37ReadyProjectSe
     kind,
     shape,
     setup: typeof raw.setup === "string" ? raw.setup.replace(/\r\n/g, "\n").slice(0, 8_000) : "",
+    failure: raw.failure && typeof raw.failure.error === "string" && typeof raw.failure.at === "number"
+      ? { error: raw.failure.error.slice(0, 600), at: raw.failure.at }
+      : null,
   };
 }
 
@@ -223,8 +232,6 @@ export function createAgent37ReadyKeeper(deps: Agent37ReadyKeeperDeps) {
   const now = deps.now ?? (() => Date.now());
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const local = new Map<string, LocalPrepare>();
-  /** The last failed prepare per project; cleared by Retry or new settings. Never retried on its own. */
-  const failures = new Map<string, { error: string; at: number }>();
   let last: Agent37ReadyStatus = { projects: [], error: null };
   let timer: NodeJS.Timeout | null = null;
   let passing: Promise<void> | null = null;
@@ -266,9 +273,8 @@ export function createAgent37ReadyKeeper(deps: Agent37ReadyKeeperDeps) {
         startedAt: elsewhere.created != null ? elsewhere.created * 1000 : null,
       };
     }
-    const failure = failures.get(settings.identity);
-    if (failure) {
-      return { ...base, state: "failed", message: `ADE couldn't prepare it: ${failure.error}`, error: failure.error };
+    if (settings.failure) {
+      return { ...base, state: "failed", message: `ADE couldn't prepare it: ${settings.failure.error}`, error: settings.failure.error };
     }
     return { ...base, state: "waiting", message: "ADE will prepare one shortly." };
   };
@@ -348,7 +354,6 @@ export function createAgent37ReadyKeeper(deps: Agent37ReadyKeeperDeps) {
       machineKey: null,
     };
     local.set(settings.identity, entry);
-    failures.delete(settings.identity);
     const { signal } = entry.controller;
     const requestId = randomUUID();
     const suffix = requestId.replace(/-/g, "").slice(0, 4);
@@ -363,6 +368,7 @@ export function createAgent37ReadyKeeper(deps: Agent37ReadyKeeperDeps) {
           [AGENT37_READY_METADATA.project]: settings.identity,
           [AGENT37_READY_METADATA.state]: "preparing",
           [AGENT37_READY_METADATA.projectName]: settings.projectName,
+          [AGENT37_READY_METADATA.preparedBy]: deps.preparerId,
         },
       );
       entry.instanceId = created.instanceId;
@@ -395,11 +401,14 @@ export function createAgent37ReadyKeeper(deps: Agent37ReadyKeeperDeps) {
         left = !(await discard(client, entry.instanceId, entry.machineKey));
       }
       if (!cancelled) {
-        failures.set(settings.identity, {
+        const failure = {
           error: left
             ? `${reason.replace(/\.$/, "")}. ADE couldn't confirm it deleted the machine (${entry.instanceId}); delete it in your Agent 37 dashboard if it's still there.`
             : reason,
           at: now(),
+        };
+        await updateProject(settings.identity, (current) => ({ ...current, failure })).catch((writeError: unknown) => {
+          logger.warn?.("agent37.ready_failure_not_saved", { error: errorText(writeError) });
         });
       }
     } finally {
@@ -439,8 +448,12 @@ export function createAgent37ReadyKeeper(deps: Agent37ReadyKeeperDeps) {
       const identity = instance.metadata[AGENT37_READY_METADATA.project];
       const state = agent37ReadyStateOf(instance);
       if (!identity || !state || state === "claimed" || instance.status === "deleted") continue;
-      const stale = state === "preparing" && !local.has(identity)
-        && instance.created != null && now() - instance.created * 1000 > PREPARING_STALE_MS;
+      const notPreparingHere = state === "preparing" && ![...local.values()].some((entry) => entry.instanceId === instance.id);
+      // Ours from before a restart (nothing here is finishing it), or anyone's long past any setup.
+      const orphaned = notPreparingHere && !local.has(identity)
+        && instance.metadata[AGENT37_READY_METADATA.preparedBy] === deps.preparerId;
+      const stale = orphaned || (notPreparingHere && !local.has(identity)
+        && instance.created != null && now() - instance.created * 1000 > PREPARING_STALE_MS);
       if (!wanted.has(identity) || state === "failed" || stale) {
         if (local.get(identity)?.instanceId === instance.id) continue;
         logger.info?.("agent37.ready_machine_discarded", { instanceId: instance.id, state, wanted: wanted.has(identity), stale });
@@ -458,7 +471,7 @@ export function createAgent37ReadyKeeper(deps: Agent37ReadyKeeperDeps) {
     for (const settings of projects) {
       const pool = agent37ReadyMachinesFor(instances, settings.identity)
         .filter((instance) => agent37ReadyStateOf(instance) !== "claimed");
-      if (!pool.length && !local.has(settings.identity) && !failures.has(settings.identity)) {
+      if (!pool.length && !local.has(settings.identity) && !settings.failure) {
         void prepare(settings);
       }
     }
@@ -501,6 +514,16 @@ export function createAgent37ReadyKeeper(deps: Agent37ReadyKeeperDeps) {
     timer.unref?.();
   }
 
+  /** Rewrites one project's entry, if it is still on. */
+  const updateProject = async (
+    identity: string,
+    update: (current: Agent37ReadyProjectSettings) => Agent37ReadyProjectSettings,
+  ) => {
+    const current = await deps.settings.read();
+    if (!current.some((entry) => entry.identity === identity)) return;
+    await deps.settings.write(current.map((entry) => (entry.identity === identity ? update(entry) : entry)));
+  };
+
   const writeSettings = async (update: (current: Agent37ReadyProjectSettings[]) => Agent37ReadyProjectSettings[]) => {
     const current = await deps.settings.read();
     await deps.settings.write(update(current));
@@ -532,20 +555,19 @@ export function createAgent37ReadyKeeper(deps: Agent37ReadyKeeperDeps) {
     setProject: async (raw: Partial<Agent37ReadyProjectSettings>) => {
       const settings = normalizeAgent37ReadySettings(raw);
       if (!settings) throw new Error("This project has no git origin, so a cloud machine can't clone it.");
-      failures.delete(settings.identity);
+      // A new choice is a fresh start: any earlier failure is cleared with it.
       return await writeSettings((current) => [
         ...current.filter((entry) => entry.identity !== settings.identity),
-        settings,
+        { ...settings, failure: null },
       ]);
     },
     /** Turns it off: an unclaimed machine for the project is deleted on the pass that follows. */
     removeProject: async (identity: string) => {
-      failures.delete(identity);
       return await writeSettings((current) => current.filter((entry) => entry.identity !== identity));
     },
     /** After a failure: prepare again now. */
     retry: async (identity: string) => {
-      failures.delete(identity);
+      await updateProject(identity, (current) => ({ ...current, failure: null }));
       await runPass();
       return last;
     },
