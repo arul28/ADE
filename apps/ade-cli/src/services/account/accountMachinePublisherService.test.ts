@@ -358,7 +358,7 @@ describe("account machine publisher health", () => {
     expect(service.getPublisherHealth().state).toBe("published");
   });
 
-  it("samples successful leg durations and escalates slow legs to warn", async () => {
+  it("samples successful leg durations and logs a slow success at info, never warn", async () => {
     let clock = 0;
     let tokenDelayMs = 2;
     const debug = vi.fn();
@@ -397,9 +397,11 @@ describe("account machine publisher health", () => {
     });
     tokenDelayMs = 2_001;
     await service.publishNow();
-    expect(warn).toHaveBeenCalledWith("account.machine_publish_ok", {
+    expect(info).toHaveBeenLastCalledWith("account.machine_publish_ok", {
       legDurationsMs: { snapshot: 1, token: 2_001, http: 3 },
+      slow: true,
     });
+    expect(warn).not.toHaveBeenCalled();
   });
 
   it("includes the machine Ed25519 signing key in the registration payload", async () => {

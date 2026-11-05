@@ -243,7 +243,7 @@ export function isExpectedOutcomeText(text: string): boolean {
  * same expected states the text patterns name once the code crosses the wire
  * as a `code: message` prefix.
  */
-const EXPECTED_OUTCOME_CODES: ReadonlySet<string> = new Set(["project_data_missing", "project_moving"]);
+const EXPECTED_OUTCOME_CODES: ReadonlySet<string> = new Set(["project_data_missing", "project_moving", "db_path_changed", "git_untrusted_folder"]);
 
 /**
  * An answer the caller gets, worth a Sentry Log but not an issue. The throw

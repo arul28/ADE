@@ -211,6 +211,7 @@ import {
   trustGitSafeDirectory,
 } from "./services/git/git";
 import { ACTION_NOT_CALLABLE_CODE, codedError, GIT_UNTRUSTED_FOLDER_CODE, isCodedError, isUnsupportedAdeActionError } from "../shared/codedError";
+import { markExpected } from "../shared/expectedError";
 import { createJobEngine } from "./services/jobs/jobEngine";
 import { createTranscriptionService } from "./services/transcription/transcriptionService";
 import { installEditableContextMenu } from "./editorContextMenu";
@@ -8171,7 +8172,8 @@ app.whenReady().then(async () => {
             expiresAt: Date.now() + GIT_TRUST_PROMPT_TTL_MS,
           });
         }
-        throw codedError(gitOwnershipReason(problem), GIT_UNTRUSTED_FOLDER_CODE);
+        // The renderer answers it with a "Trust this folder?" prompt.
+        throw markExpected(codedError(gitOwnershipReason(problem), GIT_UNTRUSTED_FOLDER_CODE), "user");
       }
       const trusted = await trustGitSafeDirectory(problem.path);
       projectOpenLogger.info("project.open.git_folder_trusted", {

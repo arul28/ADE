@@ -81,6 +81,12 @@ import { addSentryBreadcrumb } from "../../../shared/sentry/capture";
 import { forwardSignalToSentry } from "../../../shared/sentry/logBridge";
 
 const SLOW_ACTION_THRESHOLD_MS = 500;
+/**
+ * A slow action that keeps being slow (a status poll every few seconds) says
+ * everything the first time: it is a warn once per action in this window,
+ * with how many it left at info since, which stay in the local log.
+ */
+const SLOW_ACTION_WARN_INTERVAL_MS = 10 * 60_000;
 const RUNTIME_HEALTH_WINDOW_MS = 24 * 60 * 60_000;
 // Disk scans and project-health checks are slow by design, and Settings →
 // Health runs them when it opens. Counting them made the page report its own
@@ -1332,6 +1338,8 @@ export class LocalRuntimeConnectionPool {
   // Rolling 24 h aggregate of slow (>500 ms) and of failed daemon action calls.
   // Feeds the machine-level runtime-health diagnostic surfaced in Settings.
   private slowActionSamples: SlowActionSample[] = [];
+  /** `domain.action` → when it last logged slow at warn, and how many it logged at info since. */
+  private readonly slowActionWarns = new Map<string, { at: number; quieted: number }>();
   /** Lanes whose App Control frames this desktop's windows show. */
   private appControlFrameLanes: AppControlFrameDemand = [];
   /**
@@ -1506,6 +1514,18 @@ export class LocalRuntimeConnectionPool {
       typeof pid === "number" && Number.isFinite(pid) && pid > 0 && pid !== process.pid
     ));
     return Array.from(new Set(pids));
+  }
+
+  /** Whether this slow call warns, and how many slow calls of it were logged at info since the last warn. */
+  private quietRepeatedSlowAction(key: string, atMs: number): { warn: boolean; since: number } {
+    const last = this.slowActionWarns.get(key);
+    if (last && atMs - last.at < SLOW_ACTION_WARN_INTERVAL_MS) {
+      last.quieted += 1;
+      return { warn: false, since: 0 };
+    }
+    // Action names are fixed in code, so the map stays small.
+    this.slowActionWarns.set(key, { at: atMs, quieted: 0 });
+    return { warn: true, since: last?.quieted ?? 0 };
   }
 
   private recordSlowAction(atMs: number, totalMs: number, failed = false): void {
@@ -2510,7 +2530,7 @@ export class LocalRuntimeConnectionPool {
           if (!RUNTIME_HEALTH_EXCLUDED_DOMAINS.has(request.domain)) {
             this.recordSlowAction(tCall, totalMs, Boolean(callError));
           }
-          this.logger.warn("local_runtime.action_slow", {
+          const slowMeta = {
             domain: request.domain,
             action: request.action,
             totalMs,
@@ -2520,7 +2540,15 @@ export class LocalRuntimeConnectionPool {
             timeoutMs: actionCallOptions?.timeoutMs ?? null,
             error: callError?.message ?? null,
             attempt,
-          });
+          };
+          // A failed call always warns; a call that was only slow warns once
+          // per action per window.
+          const quieted = callError ? null : this.quietRepeatedSlowAction(`${request.domain}.${request.action}`, tCall);
+          if (quieted === null || quieted.warn) {
+            this.logger.warn("local_runtime.action_slow", quieted?.since ? { ...slowMeta, quietedSince: quieted.since } : slowMeta);
+          } else {
+            this.logger.info("local_runtime.action_slow", slowMeta);
+          }
         }
         if (callError && isLocalRuntimeConnectionDropped(callError)) {
           this.logger.warn("local_runtime.action_connection_dropped", {

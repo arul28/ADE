@@ -1,6 +1,6 @@
 import { githubExtraHeaderGitEnv, runGitWithGithubAuthFallback } from "../git/gitTransportAuth";
 import { COMPACT_FIRST_MIN_TOKENS, compactFirstIdleMs, compactFirstIdleMsFromEnv, compactFirstMinTokensFromEnv, compactFirstOffer, compactFirstSupportedProvider, warmIdleCompactAtMs } from "../../../shared/compactFirst";
-import { AdeExpectedError } from "../../../shared/expectedError";
+import { AdeExpectedError, markExpected } from "../../../shared/expectedError";
 import { createWarmIdleCompactionScheduler } from "./warmIdleCompactionScheduler";
 import { formatContinuityConversation } from "./continuityConversation";
 import { probeClaudeKeychainLogin } from "../ai/providerCredentialSources";
@@ -10928,7 +10928,7 @@ function assertCursorChatModelCanUseSdk(args: {
     ?? resolveCachedCursorModelAvailability(args.modelRef, getCursorSdkApiKey());
   if (!availability || availability.sdk !== false) return;
   const label = args.descriptor?.displayName?.trim() || args.modelRef;
-  throw new Error(cursorChatModelUnavailableMessage(label));
+  throw new AdeExpectedError(cursorChatModelUnavailableMessage(label), "user");
 }
 
 function normalizeCursorConfigValueRecord(
@@ -56121,8 +56121,12 @@ export function createAgentChatService(args: {
         emitContinuityRecoveryNotice(managed, recovery);
       }
     }
+    const failure = new Error(`Could not resume the original Codex thread: ${classification.detail}`);
+    // A thread the user archived in Codex ("session … is archived. Run `codex
+    // unarchive …`") is their choice; the message says how to undo it.
+    if (/\bis archived\b/i.test(classification.detail)) markExpected(failure, "user");
     return Object.assign(
-      new Error(`Could not resume the original Codex thread: ${classification.detail}`),
+      failure,
       {
         code: "provider_thread_resume_failed" as const,
         resumeFailureClassification: classification,

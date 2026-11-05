@@ -14,7 +14,9 @@
 const TRANSIENT_KINDS: ReadonlyArray<[RegExp, string]> = [
   [/Durable Object reset because its code was updated/, "durable-object-code-updated"],
   [/D1 DB is overloaded/, "d1-overloaded"],
-  [/D1 DB storage caused object to be reset/, "d1-storage-reset"],
+  // Both wordings Cloudflare uses: "storage caused object to be reset" and
+  // "storage operation exceeded timeout which caused object to be reset".
+  [/D1 DB storage (?:operation exceeded timeout which )?caused object to be reset/, "d1-storage-reset"],
   [/D1_ERROR: internal error/, "d1-internal-error"],
   [/D1_ERROR:[^\n]*Durable Object instance is no longer active/, "d1-connection-closed"],
   [/Cannot resolve D1 DB due to transient issue/, "d1-transient"],
