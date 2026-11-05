@@ -23,20 +23,33 @@ import path from "node:path";
 
 /** One ping a minute: a 5-minute timeout (Agent 37's shortest) survives four missed pings. */
 export const AGENT37_KEEP_AWAKE_INTERVAL_MS = 60_000;
-/** A scheduled wake-up this close stays awake for; a later one fires when the machine next wakes. */
-export const AGENT37_KEEP_AWAKE_SCHEDULE_WINDOW_MS = 60 * 60_000;
+/**
+ * A timer (a scheduled wake-up, an automation) this close keeps the machine
+ * awake. A later one is sent to ADE's account server, which wakes the machine
+ * two minutes before it; while that can't be sent, the machine stays awake for
+ * any timer within the hour instead.
+ */
+export const AGENT37_KEEP_AWAKE_SCHEDULE_WINDOW_MS = 5 * 60_000;
+export const AGENT37_KEEP_AWAKE_UNSENT_SCHEDULE_WINDOW_MS = 60 * 60_000;
 const PING_TIMEOUT_MS = 10_000;
 
 export type Agent37KeepAwakeBusy = {
   busy: boolean;
   /** What is running, for the state file and logs: "chat", "terminal", "agent_cli", "setup", "schedule". */
   reasons: string[];
+  /** When the machine's next timer is due (a scheduled wake-up, an automation), or null. */
+  nextWakeAt?: number | null;
 };
+
+/** What the account server is asked to do: wake this machine at `at`, or nothing. */
+export type Agent37TimedWake = { instanceId: string; url: string; at: number } | { instanceId: string; clear: true };
 
 export type Agent37KeepAwakeOptions = {
   env?: NodeJS.ProcessEnv;
   adeHome: string;
   readBusy: () => Promise<Agent37KeepAwakeBusy>;
+  /** Sends the next timer to ADE's account server (it wakes the machine then). Rejects when it couldn't. */
+  sendTimedWake?: (wake: Agent37TimedWake) => Promise<void>;
   fetch?: (url: string, init: { method: string; signal: AbortSignal }) => Promise<{ status: number }>;
   logger?: {
     info(event: string, data?: unknown): void;
@@ -91,6 +104,24 @@ export function createAgent37KeepAwake(options: Agent37KeepAwakeOptions): Agent3
   let lastPingAt: number | null = null;
   let lastPingOk: boolean | null = null;
   let warnedNoUrl = false;
+  /** What the account server holds for this machine, as last sent: `none`, `<url>|<at>`, or null before the first send. */
+  let sentWake: string | null = null;
+
+  /** Sends the next timer when it changed; true when the server holds it. */
+  const syncTimedWake = async (url: string | null, nextWakeAt: number | null): Promise<boolean> => {
+    if (!options.sendTimedWake) return false;
+    const wanted = url && nextWakeAt != null ? `${url}|${nextWakeAt}` : "none";
+    if (wanted === sentWake) return wanted !== "none";
+    try {
+      await options.sendTimedWake(url && nextWakeAt != null ? { instanceId, url, at: nextWakeAt } : { instanceId, clear: true });
+      sentWake = wanted;
+      return wanted !== "none";
+    } catch (error) {
+      // Tried again next tick; meanwhile the machine stays awake for it (the hour window).
+      options.logger?.warn("agent37.timed_wake_send_failed", { error: error instanceof Error ? error.message : String(error) });
+      return false;
+    }
+  };
 
   /** Written on every change, so ADE (and a person on the box) can read why it is awake. */
   const writeState = (busy: boolean, reasons: string[], hasWakeUrl: boolean) => {
@@ -142,6 +173,14 @@ export function createAgent37KeepAwake(options: Agent37KeepAwakeOptions): Agent3
         // Unknown is busy: a failed read must never let the machine sleep under its work.
         options.logger?.warn("agent37.keep_awake_read_failed", { error: error instanceof Error ? error.message : String(error) });
         state = { busy: true, reasons: ["unknown"] };
+      }
+      const nextWakeAt = state.nextWakeAt ?? null;
+      const serverHolds = await syncTimedWake(url, nextWakeAt);
+      if (nextWakeAt != null) {
+        const window = serverHolds ? AGENT37_KEEP_AWAKE_SCHEDULE_WINDOW_MS : AGENT37_KEEP_AWAKE_UNSENT_SCHEDULE_WINDOW_MS;
+        if (nextWakeAt - now() < window && !state.reasons.includes("schedule")) {
+          state = { ...state, busy: true, reasons: [...state.reasons, "schedule"] };
+        }
       }
       if (state.busy && url) {
         lastPingOk = await ping(url);

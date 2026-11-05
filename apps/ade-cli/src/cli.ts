@@ -616,7 +616,7 @@ import {
   shouldRejectDevelopmentEnvCredential,
   syncAccountAnalyticsIdentity,
 } from "./services/account/accountAuthService";
-import { getSharedAccountAuthService } from "./services/account/sharedAccountAuthService";
+import { getSharedAccountAuthService, getSharedAccountDirectoryBaseUrl } from "./services/account/sharedAccountAuthService";
 import {
   deviceSignInInstructions,
   readDeviceSignInPoll,
@@ -28300,10 +28300,23 @@ async function runServe(
           if ((activity.activeAgentCliSessions ?? 0) > 0) reasons.push("agent_cli");
           if (activity.activeWorkSessions > (activity.activeAgentCliSessions ?? 0)) reasons.push("terminal");
           if (agent37KeepAwakeModule.agent37ReadySetupRunning(layout.adeDir)) reasons.push("setup");
-          if (nextWakeAt != null && nextWakeAt - Date.now() < agent37KeepAwakeModule.AGENT37_KEEP_AWAKE_SCHEDULE_WINDOW_MS) {
-            reasons.push("schedule");
-          }
-          return { busy: reasons.length > 0, reasons };
+          // A timer soon keeps it awake too (keep-awake adds "schedule"); a later
+          // one goes to the account server, which wakes the machine for it.
+          return { busy: reasons.length > 0, reasons, nextWakeAt };
+        },
+        sendTimedWake: async (wake) => {
+          const auth = brainAccountAuthService;
+          if (!auth?.getStatus().signedIn) throw new Error("not signed in to an ADE account");
+          const base = getSharedAccountDirectoryBaseUrl();
+          if (!base) throw new Error("no account directory");
+          const token = await auth.getAccessToken();
+          const response = await fetch(`${base.replace(/\/+$/, "")}/agent37/wake`, {
+            method: "clear" in wake ? "DELETE" : "PUT",
+            headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+            body: JSON.stringify("clear" in wake ? { instanceId: wake.instanceId } : wake),
+            signal: AbortSignal.timeout(15_000),
+          });
+          if (!response.ok) throw new Error(`the account server answered ${response.status}`);
         },
         logger: headlessProjectLogger,
       })

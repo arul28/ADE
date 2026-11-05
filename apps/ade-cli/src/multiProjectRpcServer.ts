@@ -496,9 +496,18 @@ export async function readMachineRuntimeActivitySummary(args: BootedRuntimeSourc
 export async function readMachineNextScheduledWakeAt(args: BootedRuntimeSources): Promise<number | null> {
   const times = await mapBootedProjectRuntimes(args, async (runtime) => {
     const items = await runtime.agentChatService?.listScheduledWork?.({}).catch(() => []) ?? [];
-    return items
-      .filter((item) => item.status === "scheduled")
-      .map((item) => (item.nextRunAt ? Date.parse(item.nextRunAt) : Number.NaN))
+    // Automations on a cron fire on this machine too.
+    let rules: Array<{ enabled?: boolean; nextRunAt?: string | null }> = [];
+    try {
+      rules = runtime.automationService?.list?.() ?? [];
+    } catch {
+      rules = [];
+    }
+    return [
+      ...items.filter((item) => item.status === "scheduled").map((item) => item.nextRunAt),
+      ...rules.filter((rule) => rule.enabled !== false).map((rule) => rule.nextRunAt),
+    ]
+      .map((at) => (at ? Date.parse(at) : Number.NaN))
       .filter((at) => Number.isFinite(at));
   });
   const all = times.flat();
