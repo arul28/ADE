@@ -115,6 +115,8 @@ export function useAgent37BoxActions(args: {
         ...(action === "delete" ? { machineKey: ctx.accountMachine?.machineKey ?? null } : {}),
       });
     } catch (error) {
+      // Agent 37's refusals come back as results; a throw is the IPC itself.
+      captureError(error, { fingerprint: ["agent37", "machine_action_ipc"], handled: true });
       result = { ok: false, blocker: null, message: extractError(error) };
     } finally {
       setPending(instanceId, null);
@@ -203,6 +205,7 @@ export function useAgent37BoxActions(args: {
         replayMask: { title: true },
       });
     } catch (error) {
+      captureError(error, { fingerprint: ["agent37", "remove_from_ade"], handled: true });
       input.onError(extractError(error));
     } finally {
       if (input.box) setPending(input.box.instanceId, null);

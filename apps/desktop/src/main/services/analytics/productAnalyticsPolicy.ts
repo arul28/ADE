@@ -242,6 +242,11 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // joined) | partial (signed in, still starting) | cancelled | failed. Never
   // the box, its size, name, price, workspace, or the error.
   "agent37_machine_create",
+  // The box actions on an Agent 37 card (feature "connections"): which ones
+  // people take from ADE. Outcome is the action, prefixed (box_sleep |
+  // box_wake | box_resize | box_backup | box_delete), only when it worked.
+  // Never the box, its size, price, workspace, or a refusal.
+  "agent37_machine_action",
   // One coarse fact per automatic diagnostic send: whether it went, was refused
   // by the client budget, or failed. Never the failure code that triggered it,
   // never the surface, never the report or its upload reference — those are the
@@ -594,6 +599,8 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     // The two Work Focus modes, prefixed like the tool ids so they cannot be
     // confused with another action's outcome.
     "mode_focus", "mode_focus_grid",
+    // The Agent 37 box actions, prefixed like the tool ids.
+    "box_sleep", "box_wake", "box_resize", "box_backup", "box_delete",
     // The two iOS live-view backends, prefixed for the same reason the tool ids
     // are. `backend_window` captures the Simulator window on this Mac;
     // `backend_host_encoded` encodes on the machine that owns the simulator and

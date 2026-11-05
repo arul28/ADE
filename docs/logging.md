@@ -1621,6 +1621,18 @@ Connecting the key, the template build and the startup cleanup of half-made
 boxes are not analytics: the first is a one-time setting, the other two run
 without a person deciding anything.
 
+The box actions on an Agent 37 card record `feature: "connections"`, `action:
+"agent37_machine_action"` when Agent 37 confirms the action, in the same IPC
+handler (`registerAgent37Ipc.ts`). The outcome is the action, prefixed:
+`box_sleep`, `box_wake`, `box_resize`, `box_backup` or `box_delete`. The
+product question is which parts of the box lifecycle people run from ADE. A
+refusal (limit, wallet, key) is not an event; it stays in the local
+`agent37.machine_action_failed` log line. Remove from ADE is already
+`machine_removed`. A six-hour key per outcome bounds this to 20 accepted events
+per installation per UTC day, inside the existing `ade_feature_used` ceilings.
+The machine list's reads (open, focus, the short settling poll) are not
+analytics.
+
 `ade_brain_action_failed` is the one new event. Every brain action the desktop
 performs goes through the single `ade.localRuntime.callAction` IPC channel, and
 that channel is not a meaningful usage action, so the existing `ade_error`

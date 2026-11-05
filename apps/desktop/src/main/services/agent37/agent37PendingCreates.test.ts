@@ -3,6 +3,7 @@ import type { SyncCredentialStore } from "../../../../../ade-cli/src/services/cr
 import { AGENT37_API_BASE_URL, AGENT37_SANDBOX_BASE_URL } from "../../../shared/agent37";
 import { createAgent37Client } from "./agent37Client";
 import { createAgent37Machine, type Agent37MachineCreatorDeps } from "./agent37MachineCreator";
+import { createAgent37Machines } from "./agent37Machines";
 import {
   createAgent37PendingCreateStore,
   readAgent37BoxSignedIn,
@@ -177,5 +178,34 @@ describe("Agent 37 half-made boxes", () => {
     expect(fake.calls.filter((call) => call === "POST /instances")).toEqual([]);
     expect(Object.fromEntries(file.values)).toEqual(raw);
     expect(() => store.begin("req-new", Date.now())).toThrow();
+  });
+
+  it.each([
+    { box: "goes", present: true, rowRemoval: "works" as const, ok: true, boxRemains: false, rowsRemoved: ["key-1"], rowLeft: undefined },
+    { box: "was already gone", present: false, rowRemoval: "works" as const, ok: true, boxRemains: false, rowsRemoved: ["key-1"], rowLeft: undefined },
+    { box: "goes but its account row can't be removed", present: true, rowRemoval: "throws" as const, ok: true, boxRemains: false, rowsRemoved: [], rowLeft: true },
+    { box: "never goes", present: true, deleteNeverLands: true, rowRemoval: "works" as const, ok: false, boxRemains: true, rowsRemoved: [], rowLeft: undefined },
+  ])("Delete box removes the account row only once the box is gone: a box that $box", async ({ present, deleteNeverLands, rowRemoval, ok, boxRemains, rowsRemoved, rowLeft }) => {
+    const fake = fakeAgent37(present
+      ? [{ id: "box4ours", status: "running", metadata: { created_by: "ade", ade_machine_key: "key-1" }, auth: "unreachable", deleteNeverLands }]
+      : []);
+    const removed: string[] = [];
+    const machines = createAgent37Machines({
+      client: async () => createAgent37Client({ apiKey: "sk_test_fixture", fetch: fake.fetch }),
+      removeAccountMachine: async (machineKey) => {
+        if (rowRemoval === "throws") throw new Error("The account directory refused the removal.");
+        removed.push(machineKey);
+      },
+      logger: quiet,
+      sleep: noWait,
+    });
+
+    const result = await machines.run({ instanceId: "box4ours", action: "delete", machineKey: "key-1" });
+
+    expect(result.ok).toBe(ok);
+    expect(result.accountRowLeft).toBe(rowLeft);
+    expect(fake.boxes.has("box4ours")).toBe(boxRemains);
+    // A box that still bills keeps its row, so it never drops out of sight.
+    expect(removed).toEqual(rowsRemoved);
   });
 });

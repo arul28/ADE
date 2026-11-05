@@ -10,6 +10,7 @@ import {
   type Agent37CreateMachineArgs,
   type Agent37CreateProgress,
   type Agent37MachineActionArgs,
+  type Agent37MachineActionKind,
   type Agent37MachineActionResult,
   type Agent37MachinesResult,
   type Agent37Status,
@@ -212,6 +213,8 @@ export function registerAgent37Ipc(args: {
   removeAccountMachine: (machineKey: string) => Promise<unknown>;
   /** One coarse product fact per finished create (analytics; never the box or the error). */
   recordMachineCreate?: (outcome: "completed" | "partial" | "cancelled" | "failed") => void;
+  /** One coarse product fact per box action that worked (analytics; never the box). */
+  recordMachineAction?: (action: Agent37MachineActionKind) => void;
   logger: Logger;
 }): void {
   const { logger } = args;
@@ -334,8 +337,11 @@ export function registerAgent37Ipc(args: {
   ipcMain.handle(IPC.agent37MachineAction, async (event, arg: Agent37MachineActionArgs): Promise<Agent37MachineActionResult | null> => {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.agent37MachineAction)) return null;
     const result = await machines.run(arg);
-    // The wallet and the box count moved: Settings and the picker read again.
-    if (result.ok) sendToAllWindows(IPC.agent37StatusChanged);
+    if (result.ok) {
+      args.recordMachineAction?.(arg.action);
+      // The wallet and the box count moved: Settings and the picker read again.
+      sendToAllWindows(IPC.agent37StatusChanged);
+    }
     return result;
   });
 

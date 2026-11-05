@@ -180,7 +180,11 @@ export function createAgent37Machines(deps: Agent37MachinesDeps) {
       return { ok: false, blocker: "key", message: errorText(error) };
     }
     if (code === "instance_limit_reached") {
-      const billing = await client.billing().catch(() => null);
+      const billing = await client.billing().catch((error: unknown) => {
+        // The sentence then leaves the tier out.
+        logger.warn?.("agent37.limit_billing_read_failed", { error: errorText(error) });
+        return null;
+      });
       return {
         ok: false,
         blocker: "limit",

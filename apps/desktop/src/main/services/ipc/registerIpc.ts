@@ -12382,6 +12382,19 @@ export function registerIpc({
         minimumIntervalMs: 6 * 60 * 60 * 1_000,
       });
     },
+    // Which box actions people take from ADE. One prefixed outcome per action
+    // and a six-hour dedupe each: at most 20 accepted events a day.
+    recordMachineAction: (action) => {
+      const outcome = `box_${action}`;
+      productAnalyticsService?.capture({
+        event: "ade_feature_used",
+        surface: "desktop",
+        properties: { feature: "connections", action: "agent37_machine_action", outcome },
+        projectId: null,
+        dedupeKey: `agent37_machine_action:${outcome}`,
+        minimumIntervalMs: 6 * 60 * 60 * 1_000,
+      });
+    },
     logger: { info: (event, meta) => getCtx().logger.info(event, meta), warn: (event, meta) => getCtx().logger.warn(event, meta) },
   });
 
