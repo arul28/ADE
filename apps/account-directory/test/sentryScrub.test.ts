@@ -31,9 +31,11 @@ describe("admitEvent", () => {
     expect(more).toEqual([true, true, true, false]);
   });
 
-  // Every kind seen in production (ADE-WORKERS-G, H, J, K, M, N, P, Q, R) is one issue, whatever its reference.
+  // Every kind seen in production (ADE-WORKERS-G, H, J, K, M, N, P, Q, R, T) is one issue, whatever its reference.
   it.each([
     ["D1_ERROR: Internal error in D1 DB storage caused object to be reset; reference = 1tmblod67", "d1-storage-reset"],
+    // ADE-WORKERS-T, V, W, X, Y, Z: the same reset, worded with its timeout.
+    ["D1_ERROR: D1 DB storage operation exceeded timeout which caused object to be reset.", "d1-storage-reset"],
     ["D1_ERROR: D1 DB is overloaded. Requests queued for too long.", "d1-overloaded"],
     ["D1_ERROR: Connection closed: this Durable Object instance is no longer active. Reconnect or retry the request.", "d1-connection-closed"],
     ["Connection closed: this Durable Object instance is no longer active. Reconnect or retry the request.", "durable-object-inactive"],

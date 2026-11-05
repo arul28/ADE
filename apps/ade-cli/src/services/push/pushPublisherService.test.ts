@@ -578,6 +578,35 @@ describe("createPushPublisherService flush", () => {
     publisher.dispose();
   });
 
+  it("stops retrying an alert the relay keeps failing, and says so once", async () => {
+    const { publisher, publish, emit, publisherLogger } = makeHarness();
+    publish.mockResolvedValue({
+      ok: true,
+      delivered: 0,
+      suppressed: 0,
+      failed: 1,
+      outcomes: [{ deviceId: "dev-1", kind: "alert", delivered: false, suppressed: false, skipped: null }],
+    });
+
+    await publisher.start();
+    emit(approval);
+    await vi.advanceTimersByTimeAsync(200);
+    for (let retry = 0; retry < 40; retry += 1) await vi.advanceTimersByTimeAsync(30_000);
+
+    // Bounded: a dead phone is not retried every 30 s forever.
+    const sends = publish.mock.calls.filter((call) =>
+      (call[0].notifications ?? []).some((item: { dedupeKey?: string }) =>
+        item.dedupeKey === alertDedupeKey("alert:s-1:approval:i-1", "dev-1")));
+    expect(sends.length).toBeGreaterThan(1);
+    expect(sends.length).toBeLessThanOrEqual(20);
+    const undelivered = publisherLogger.warn.mock.calls.filter(([event]) => event === "push.publish_undelivered");
+    // The first failure and the give-up warn; the repeats in between do not.
+    expect(undelivered).toHaveLength(2);
+    expect(undelivered.at(-1)?.[1]).toMatchObject({ droppedAlerts: 1 });
+
+    publisher.dispose();
+  });
+
   it("publishes one account-wide Attention item with exact project and approval actions", async () => {
     const { publisher, publishAttention, emit } = makeHarness();
     publishAttention.mockResolvedValue({ ok: true, revision: 1 });
