@@ -45,6 +45,7 @@ import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff"
 import type { Agent37Client, Agent37Instance } from "./agent37Client";
 import { agent37ReadyMachinesFor, agent37ReadyStateOf, patchAgent37Metadata } from "./agent37ReadyClaim";
 import { AGENT37_MACHINE_KEY_METADATA } from "./agent37Machines";
+import type { Agent37Vault } from "./agent37Credential";
 import { deleteAgent37InstanceConfirmed } from "./agent37PendingCreates";
 
 type Logger = {
@@ -136,6 +137,10 @@ export function buildAgent37ReadySetupScript(settings: Pick<Agent37ReadyProjectS
     "fi",
     'cd "$dir"',
     'ade projects add "$dir" >/dev/null',
+    // Docker starts in the background at boot (VMs only); give it a moment before the setup needs it.
+    'if command -v docker >/dev/null 2>&1 && [ "$(uname -r)" != "4.4.0" ]; then',
+    '  i=0; until docker info >/dev/null 2>&1 || [ $i -ge 30 ]; do sleep 1; i=$((i+1)); done',
+    "fi",
     settings.setup.trim(),
     'echo "ADE_READY_DONE"',
   ].filter(Boolean).join("\n");
@@ -412,7 +417,8 @@ export function createAgent37ReadyKeeper(deps: Agent37ReadyKeeperDeps) {
       publish({ projects: last.projects, error: `ADE couldn't read which projects keep a machine ready: ${errorText(error)}` });
       return;
     }
-    const client = projects.length || local.size ? await deps.client().catch(() => null) : null;
+    // Read even with nothing on: a project just turned off still has a machine to delete.
+    const client = await deps.client().catch(() => null);
     if (!client) {
       publish({ projects: projects.map((settings) => statusFor(settings, null)), error: projects.length ? "Connect Agent 37 first." : null });
       return;
@@ -568,4 +574,45 @@ export function parseAgent37ReadySettings(raw: string | null | undefined, logger
 
 export function serializeAgent37ReadySettings(projects: Agent37ReadyProjectSettings[]): string {
   return JSON.stringify({ v: 1, projects });
+}
+
+/** This computer's copy, in the credential file the app, brain and CLI share. */
+export const AGENT37_READY_MACHINE_CREDENTIAL_KEY = "agent37.ready.v1";
+
+/**
+ * The choice per project: the account vault when it answers (every computer
+ * reads the same), else this computer's copy, the same fallback the Agent37
+ * key itself has. Every write also lands in this computer's copy, so a vault
+ * that stops answering still reads the latest choice made here.
+ */
+export function createAgent37ReadySettingsStore(deps: {
+  vault: () => Agent37Vault | null;
+  machineStore: () => { getSync(key: string): string | null; setSync(key: string, value: string): void } | null;
+  logger?: Logger;
+}): Agent37ReadySettingsStore {
+  const local = () => {
+    try {
+      return deps.machineStore();
+    } catch (error) {
+      deps.logger?.warn?.("agent37.ready_settings_local_unavailable", { error: errorText(error) });
+      return null;
+    }
+  };
+  return {
+    async read() {
+      const vault = deps.vault();
+      const got = vault ? await vault.get().catch(() => ({ ok: false as const })) : { ok: false as const };
+      if (got.ok) return parseAgent37ReadySettings(got.value, deps.logger);
+      return parseAgent37ReadySettings(local()?.getSync(AGENT37_READY_MACHINE_CREDENTIAL_KEY) ?? null, deps.logger);
+    },
+    async write(projects) {
+      const raw = serializeAgent37ReadySettings(projects);
+      const store = local();
+      if (store) store.setSync(AGENT37_READY_MACHINE_CREDENTIAL_KEY, raw);
+      const vault = deps.vault();
+      const saved = vault ? await vault.set(raw).catch(() => false) : false;
+      if (!saved && !store) throw new Error("ADE couldn't save that to your account or this computer. Try again.");
+      if (!saved) deps.logger?.warn?.("agent37.ready_settings_saved_locally", {});
+    },
+  };
 }

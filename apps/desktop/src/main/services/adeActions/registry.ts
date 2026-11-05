@@ -301,7 +301,11 @@ import { requestProjectSecretFromUser } from "../secrets/projectSecretRequest";
 import { buildIntegrationConnectAdapters } from "../integrations/integrationConnectAdapters";
 import { agent37VaultFromStore, buildAgent37ConnectAdapter, type Agent37CredentialDeps } from "../agent37/agent37Credential";
 import { buildAgent37ReadyActions } from "../agent37/agent37ReadyActions";
-import { AGENT37_READY_VAULT_KEY, parseAgent37ReadySettings } from "../agent37/agent37ReadyMachines";
+import {
+  AGENT37_READY_MACHINE_CREDENTIAL_KEY,
+  AGENT37_READY_VAULT_KEY,
+  parseAgent37ReadySettings,
+} from "../agent37/agent37ReadyMachines";
 import { ACCOUNT_SCOPE_ALL } from "../../../shared/accountSettingsScope";
 import { EncryptedFileCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
 import { listIntegrationConnections, requestIntegrationConnect } from "../integrations/integrationConnectRequest";
@@ -4036,12 +4040,21 @@ function integrationConnectAdapters(runtime: AdeRuntime) {
 function buildAgent37DomainService(runtime: AdeRuntime): OpaqueService {
   return buildAgent37ReadyActions({
     credentials: agent37CredentialDeps(runtime),
+    // The account's choice, else this computer's copy (see createAgent37ReadySettingsStore).
     readSettings: () => {
-      if (runtime.accountAuthService?.getStatus().signedIn !== true) return [];
-      return parseAgent37ReadySettings(
-        runtime.accountVaultStore?.get(ACCOUNT_SCOPE_ALL, "integration", AGENT37_READY_VAULT_KEY) ?? null,
-        runtime.logger,
-      );
+      const signedIn = runtime.accountAuthService?.getStatus().signedIn === true;
+      const fromAccount = signedIn
+        ? runtime.accountVaultStore?.get(ACCOUNT_SCOPE_ALL, "integration", AGENT37_READY_VAULT_KEY) ?? null
+        : null;
+      let raw = fromAccount;
+      if (raw == null) {
+        try {
+          raw = agent37MachineStore().getSync(AGENT37_READY_MACHINE_CREDENTIAL_KEY);
+        } catch {
+          raw = null;
+        }
+      }
+      return parseAgent37ReadySettings(raw, runtime.logger);
     },
     logger: runtime.logger,
   });

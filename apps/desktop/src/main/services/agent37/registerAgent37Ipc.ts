@@ -50,8 +50,7 @@ import {
   AGENT37_READY_VAULT_KEY,
   agent37ReadyIdentity,
   createAgent37ReadyKeeper,
-  parseAgent37ReadySettings,
-  serializeAgent37ReadySettings,
+  createAgent37ReadySettingsStore,
 } from "./agent37ReadyMachines";
 import {
   createAgent37PendingCreateStore,
@@ -312,24 +311,13 @@ export function registerAgent37Ipc(args: {
 
   // Ready machines: prepared here (the sign-in needs this app's window),
   // claimed here or by any brain. The choice is the account's.
-  const readySettingsVault = () => {
-    if (!credentials.signedIn()) throw new Error("Sign in to ADE first. A ready machine joins your account.");
-    return agent37VaultFromBridge(args.vaultBridge, AGENT37_READY_VAULT_KEY);
-  };
   const readyKeeper = createAgent37ReadyKeeper({
     client: savedClient,
-    settings: {
-      async read() {
-        const got = await readySettingsVault().get();
-        if (!got.ok) throw new Error("your ADE account couldn't be reached");
-        return parseAgent37ReadySettings(got.value, logger);
-      },
-      async write(projects) {
-        if (!(await readySettingsVault().set(serializeAgent37ReadySettings(projects)))) {
-          throw new Error("ADE couldn't save that to your account. Try again.");
-        }
-      },
-    },
+    settings: createAgent37ReadySettingsStore({
+      vault: () => (credentials.signedIn() ? agent37VaultFromBridge(args.vaultBridge, AGENT37_READY_VAULT_KEY) : null),
+      machineStore: getMachineStore,
+      logger,
+    }),
     createMachine: (requestId, machine, onProgress, signal, metadata) =>
       createAgent37Machine(machineCreatorDeps, requestId, machine, onProgress, signal, metadata),
     removeAccountMachine: args.removeAccountMachine,

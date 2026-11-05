@@ -38,7 +38,7 @@ RUN install -m 0755 -d /etc/apt/keyrings \
       > /etc/apt/sources.list.d/docker.list \
  && apt-get update && apt-get install -y --no-install-recommends \
       docker-ce docker-ce-cli containerd.io docker-compose-plugin docker-buildx-plugin \
-      iptables sudo \
+      iptables kmod sudo \
  && rm -rf /var/lib/apt/lists/* \
  && usermod -aG docker node \
  && echo 'node ALL=(root) NOPASSWD: /usr/local/bin/ade-entrypoint.sh --start-dockerd' > /etc/sudoers.d/ade-dockerd \
