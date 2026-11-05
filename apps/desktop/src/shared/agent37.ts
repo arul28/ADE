@@ -360,6 +360,9 @@ export const AGENT37_WAKE_PORT_LABEL = "ADE wake";
 /** Minutes of nothing running before a box sleeps, as ADE offers them (Agent 37 allows 5 minutes to a day). */
 export const AGENT37_SLEEP_AFTER_CHOICES = [5, 10, 30, 60] as const;
 export const AGENT37_DEFAULT_SLEEP_AFTER_MINUTES = 10;
+/** The chat whose agent made a machine (create, copy, move): only that chat's unattended agent may delete it. */
+export const AGENT37_MADE_BY_CHAT_METADATA = "ade_made_by_chat";
+
 /** Where ADE notes a person's "Never sleep" on the box, so turning sleep on for older boxes leaves it alone. */
 export const AGENT37_SLEEP_METADATA = "ade_sleep";
 

@@ -4080,6 +4080,7 @@ function buildAgent37DomainService(runtime: AdeRuntime): OpaqueService {
   const ready = buildAgent37ReadyActions({
     credentials,
     readSettings: async () => (await settings.read()).projects,
+    spending: () => machines.spending(),
     // A six-hour dedupe, as on the desktop: claims are frequent in a benchmark loop.
     onClaimed: () => runtime.productAnalyticsService?.capture({
       event: "ade_feature_used",

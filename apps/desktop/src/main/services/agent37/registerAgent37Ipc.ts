@@ -7,6 +7,7 @@ import {
   AGENT37_DEFAULT_TEMPLATE,
   agent37StillStartingMessage,
   describeAgent37TemplateStatus,
+  AGENT37_MADE_BY_CHAT_METADATA,
   agent37CapReachedMessage,
   type Agent37Budget,
   type Agent37ShapeId,
@@ -345,6 +346,8 @@ export function registerAgent37Ipc(args: {
       const template = builder.status();
       return template.template === templateName() && template.state === "ready" ? template.adeVersion : null;
     },
+    // Declared below; first called after the startup delay.
+    spending: () => machines.spending(),
     onStatus: (status) => sendToAllWindows(IPC.agent37ReadyStatusChanged, status),
     onPrepared: (outcome) => args.recordReady?.(outcome),
     logger,
@@ -508,7 +511,7 @@ export function registerAgent37Ipc(args: {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.agent37ReadyClaim)) return null;
     const identity = normalizeGitRemoteIdentity(typeof arg?.originUrl === "string" ? arg.originUrl : null);
     if (!identity) throw new Error("This project has no git origin, so it has no ready machine.");
-    const claim = await claimAgent37ReadyMachine(await requireAgent37Client(credentials), identity, { logger });
+    const claim = await claimAgent37ReadyMachine(await requireAgent37Client(credentials), identity, { logger, spending: () => machines.spending() });
     args.recordReady?.("ready_picker");
     // The pool is one short: make the next one.
     void readyKeeper.refresh();
@@ -541,7 +544,7 @@ export function registerAgent37Ipc(args: {
       if (month?.capReached) throw new Error(agent37CapReachedMessage(month));
       const { madeByChat, ...shape } = machine;
       const result = await createAgent37Machine(machineCreatorDeps, randomUUID(), shape, () => undefined, {
-        ...(madeByChat ? { metadata: { ade_made_by_chat: madeByChat } } : {}),
+        ...(madeByChat ? { metadata: { [AGENT37_MADE_BY_CHAT_METADATA]: madeByChat } } : {}),
       });
       args.recordMachineCreate?.(result.joined ? "completed" : "partial");
       sendToAllWindows(IPC.agent37StatusChanged);

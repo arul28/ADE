@@ -367,12 +367,13 @@ machine on. The RPC server stamps who asks (never the arguments):
   5 minutes ("nobody answered, so nothing was done");
 - a full-auto chat or an automation run: nobody is watching, so ADE answers
   on the spot and leaves a line in the chat: yes to spending (the monthly cap
-  still applies), no to deleting a machine that chat didn't make (machines an
-  agent makes carry `ade_made_by_chat`). Plan mode says no to everything;
+  still applies), no to raising or removing the cap, no to deleting a machine
+  that chat didn't make (machines an agent makes carry `ade_made_by_chat`,
+  which a copy does not inherit). Plan mode says no to everything;
 - a shell with no chat: refused, with where to do it instead.
 
 Wake is not asked: it is what using the machine does anyway, and the cap
-bounds it. Remote MCP callers reach only the reads.
+bounds it. At the cap ADE also prepares and hands out no ready machine. Remote MCP callers reach only the reads.
 
 ## Ready machines
 

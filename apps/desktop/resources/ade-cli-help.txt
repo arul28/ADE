@@ -496,14 +496,6 @@ Files
     $ ade files quick-open --workspace <lane> -q src --include-directories
                                                     Also offer folders; they print with a trailing slash
 
-  On another machine (this chat's work copy there, the one ade shell start
-  --machine uses; paths there are relative to it, / or \ both work):
-    $ ade files push --machine <name> ./fixture.bin test/fixtures/   Copy a file there (made at your commit if missing)
-    $ ade files pull --machine <name> build/out.log ./logs/          Copy a file back here
-  Up to 256 MiB per file, sent in chunks and checked by sha256. Use these, not
-  base64 in shell commands. A pushed file is a change made there, so the next
-  ade shell start --machine needs --no-sync (keep it) or --discard (drop it).
-
 ## ade search --help
 ADE Search
 
@@ -639,8 +631,6 @@ Shell sessions
   Each call opens a new shell there and syncs the copy again, so put all the
   steps in one call: --wait -- sh -c "npm ci && npm test", or one script.
   The shell runs in the background there; no list on that machine shows it.
-  To move a file, use ade files push|pull --machine <name> (see ade files
-  --help), never base64 or echo inside a shell command.
 
   Provider CLI launches accept --instance for Claude/Codex accounts and
   --preset or --credential for saved harness brains.

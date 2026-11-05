@@ -32,6 +32,7 @@
 import { randomUUID } from "node:crypto";
 import {
   AGENT37_READY_METADATA,
+  agent37CapReachedMessage,
   agent37ReadyRetryAt,
   agent37Shape,
   type Agent37ReadyFailure,
@@ -41,6 +42,7 @@ import {
   type Agent37ReadyProjectSettings,
   type Agent37ReadyProjectStatus,
   type Agent37ReadyStatus,
+  type Agent37Spending,
 } from "../../../shared/agent37";
 import type { Agent37Client, Agent37Instance, Agent37Logger } from "./agent37Client";
 import { getErrorMessage } from "../shared/utils";
@@ -79,6 +81,8 @@ export type Agent37ReadyKeeperDeps = {
    * is replaced, so a ready machine runs the same ADE as the desktop that keeps it.
    */
   templateAdeVersion?: () => string | null;
+  /** This month against the cap: at the cap no machine is prepared. */
+  spending?: () => Promise<Agent37Spending | null>;
   onStatus?: (status: Agent37ReadyStatus) => void;
   /** A prepare ended: the machine is ready, or it failed (a cancel is neither). */
   onPrepared?: (outcome: "completed" | "failed") => void;
@@ -552,19 +556,22 @@ export function createAgent37ReadyKeeper(deps: Agent37ReadyKeeperDeps) {
       if (!wanted.has(identity)) entry.controller.abort();
     }
     await reconcilePool(client, instances, wanted, authoritative);
-    for (const settings of projects) {
+    const missing = projects.filter((settings) => {
       const pool = agent37ReadyMachinesFor(instances, settings.identity)
         .filter((instance) => agent37ReadyStateOf(instance) !== "claimed" && instance.status !== "failed");
-      if (!pool.length && !local.has(settings.identity) && !blockedByFailure(settings)) {
-        void prepare(settings);
-      }
+      return !pool.length && !local.has(settings.identity) && !blockedByFailure(settings);
+    });
+    // At the monthly cap ADE makes nothing new; the next pass after it is raised prepares.
+    const month = missing.length ? await deps.spending?.().catch(() => null) ?? null : null;
+    if (!month?.capReached) {
+      for (const settings of missing) void prepare(settings);
     }
     publish({
       projects: projects.map((settings) => statusFor(
         settings,
         agent37ReadyMachinesFor(instances, settings.identity).filter((instance) => instance.status !== "failed"),
       )),
-      error: null,
+      error: month?.capReached ? agent37CapReachedMessage(month) : null,
     });
   };
 

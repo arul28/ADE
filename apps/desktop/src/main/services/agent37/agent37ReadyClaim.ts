@@ -17,9 +17,11 @@
 import { randomUUID } from "node:crypto";
 import {
   AGENT37_READY_METADATA,
+  agent37CapReachedMessage,
   readAgent37ReadyMachineState,
   type Agent37ReadyClaim,
   type Agent37ReadyMachineState,
+  type Agent37Spending,
 } from "../../../shared/agent37";
 import { Agent37Error, type Agent37Client, type Agent37Instance, type Agent37Logger } from "./agent37Client";
 import { getErrorMessage } from "../shared/utils";
@@ -94,10 +96,13 @@ export async function wakeThroughTransition(client: Agent37Client, instanceId: s
 export async function claimAgent37ReadyMachine(
   client: Agent37Client,
   identity: string,
-  options: { logger?: Agent37Logger; now?: () => number } = {},
+  options: { logger?: Agent37Logger; now?: () => number; spending?: () => Promise<Agent37Spending | null> } = {},
 ): Promise<Agent37ReadyClaim> {
   const now = options.now ?? (() => Date.now());
   const logger = options.logger ?? {};
+  // A claim wakes a sleeping machine, and at the cap ADE wakes nothing.
+  const month = await options.spending?.().catch(() => null) ?? null;
+  if (month?.capReached) throw new Error(agent37CapReachedMessage(month));
   const pool = agent37ReadyMachinesFor(await client.listInstances(), identity);
   const ready = pool.filter((instance) => agent37ReadyStateOf(instance) === "ready" && instance.status !== "failed");
   // Without its ADE machine recorded, no caller can tell which computer it is:

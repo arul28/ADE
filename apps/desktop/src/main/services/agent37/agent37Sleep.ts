@@ -186,8 +186,11 @@ export async function wakeAgent37MachineForUse(
   }
   const instance = agent37InstanceForMachine(instances, machine.machineKey, machine.hostname);
   if (!instance) return { state: "not_agent37" };
-  if (instance.status === "running" || instance.status === "starting" || instance.status === "waking") {
-    return { state: "awake", instanceId: instance.id };
+  if (instance.status === "running") return { state: "awake", instanceId: instance.id };
+  // Already coming up (another wake, or Agent 37's own): its ADE answers in a
+  // few seconds, so the caller waits for it the same as after our wake.
+  if (instance.status === "starting" || instance.status === "waking") {
+    return { state: "woken", instanceId: instance.id, wakeMs: 0 };
   }
   if (instance.pastDue) {
     return { state: "refused", message: "Your Agent 37 wallet is empty, so Agent 37 suspended its machines. Top it up to wake this one." };

@@ -19,6 +19,7 @@
  */
 
 import {
+  AGENT37_MADE_BY_CHAT_METADATA,
   AGENT37_SHAPES,
   agent37CapReachedMessage,
   agent37HourlyUsd,
@@ -93,8 +94,6 @@ export type Agent37AgentActionDeps = {
 
 /** An approval card that gives up: nobody watching must never hold an agent. */
 const APPROVAL_TIMEOUT_MS = 5 * 60_000;
-/** Who made a machine through an agent, so its own full-auto chat may delete it. */
-export const AGENT37_MADE_BY_CHAT_METADATA = "ade_made_by_chat";
 
 /** The chat to credit a machine to: an agent's own chat, never a person's. */
 function madeByChat(approval: Agent37Approval): string | null {
@@ -162,7 +161,14 @@ export function buildAgent37AgentActions(deps: Agent37AgentActionDeps) {
    */
   const approve = async (
     approval: Agent37Approval,
-    card: { action: "spend" | "delete"; title: string; body: string; confirm: string; madeByThisChat?: boolean },
+    card: {
+      /** `cap`: raising or removing the cap, the one limit on unattended spending; only a person answers it. */
+      action: "spend" | "delete" | "cap";
+      title: string;
+      body: string;
+      confirm: string;
+      madeByThisChat?: boolean;
+    },
   ): Promise<void> => {
     if (approval.by === "person") return;
     const chatSessionId = approval.chatSessionId;
@@ -178,6 +184,10 @@ export function buildAgent37AgentActions(deps: Agent37AgentActionDeps) {
     }
     if (automation || level === "full-auto") {
       const where = automation ? "this automation run" : "this full-auto chat";
+      if (card.action === "cap") {
+        approvals.notice(chatSessionId, `ADE said no to "${card.title}" in ${where}: the cap is what bounds unattended spending, so only you can raise it.`);
+        throw new Agent37Declined(`${card.title}: declined. The cap bounds what ${where} may spend, so only the person can raise it (Settings › Integrations › Agent 37).`);
+      }
       if (card.action === "delete" && !card.madeByThisChat) {
         approvals.notice(chatSessionId, `ADE said no to "${card.title}" in ${where}: nobody is here to approve deleting a machine this chat didn't make.`);
         throw new Agent37Declined(`${card.title}: declined. Nobody is watching ${where} to approve deleting a machine it didn't make; ask the person to delete it from its card.`);
@@ -402,7 +412,7 @@ export function buildAgent37AgentActions(deps: Agent37AgentActionDeps) {
       const raising = cap === null || (current.monthlyCapUsd != null && cap > current.monthlyCapUsd);
       if (raising) {
         await approve(readApproval(args), {
-          action: "spend",
+          action: "cap",
           title: cap === null ? "Turn off the Agent 37 monthly cap" : `Raise the Agent 37 monthly cap to ${formatAgent37Usd(cap)}`,
           body: cap === null
             ? "With no cap, agents can keep making and waking machines for as long as the wallet pays."

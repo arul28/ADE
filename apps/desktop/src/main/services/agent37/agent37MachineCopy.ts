@@ -35,7 +35,7 @@ import {
   type Agent37ShapeId,
   type Agent37Spending,
 } from "../../../shared/agent37";
-import { AGENT37_READY_METADATA } from "../../../shared/agent37";
+import { AGENT37_MADE_BY_CHAT_METADATA, AGENT37_READY_METADATA } from "../../../shared/agent37";
 import { getErrorMessage } from "../shared/utils";
 import { Agent37Error, type Agent37Client, type Agent37Instance, type Agent37Logger } from "./agent37Client";
 import {
@@ -65,6 +65,7 @@ const MOVE_SERVE_PORT = 7338;
 /** Metadata a copy must not carry: it is a new machine, not the source's ready machine or row. */
 const NOT_COPIED_METADATA = new Set<string>([
   AGENT37_MACHINE_KEY_METADATA,
+  AGENT37_MADE_BY_CHAT_METADATA,
   "ade_request_id",
   ...Object.values(AGENT37_READY_METADATA),
 ]);
@@ -136,7 +137,7 @@ export async function copyAgent37Machine(
       ...(shape ? { resources: { cpu: shape.cpu, memory: shape.memoryGb, disk: Math.max(shape.diskGb, source.resources?.disk ?? 0) } } : {}),
       metadata: copyMetadata(source, requestId, {
         ade_copied_from: source.id,
-        ...(args.madeByChat ? { ade_made_by_chat: args.madeByChat } : {}),
+        ...(args.madeByChat ? { [AGENT37_MADE_BY_CHAT_METADATA]: args.madeByChat } : {}),
       }),
     }, options.signal);
   } catch (error) {
@@ -267,7 +268,7 @@ export async function moveAgent37Machine(
     name: normalizeAgent37MachineName(`${sourceName} (${args.to === "vm" ? "VM" : "box"})`),
   }, onProgress, {
     signal: options.signal,
-    metadata: { ade_moved_from: source.id, ...(args.madeByChat ? { ade_made_by_chat: args.madeByChat } : {}) },
+    metadata: { ade_moved_from: source.id, ...(args.madeByChat ? { [AGENT37_MADE_BY_CHAT_METADATA]: args.madeByChat } : {}) },
   });
 
   let transferMs = 0;
@@ -330,6 +331,11 @@ export async function moveAgent37Machine(
   } catch (error) {
     if (error instanceof Agent37Error && error.status === 404) sourceDeleted = true;
     else logger.warn?.("agent37.machine_move_source_left", { sourceId: source.id, error: getErrorMessage(error) });
+  }
+  if (!sourceDeleted) {
+    // The old box stays: let its ADE start again.
+    await client.exec(source.id, 'pkill -f "python3 /tmp/ade-move-serve[.]py"; rm -f "$ADE_HOME/brain.paused"', { timeoutMs: 30_000 })
+      .catch((error: unknown) => logger.warn?.("agent37.machine_move_unpause_failed", { sourceId: source.id, error: getErrorMessage(error) }));
   }
   const sourceKey = args.machineKey ?? source.metadata[AGENT37_MACHINE_KEY_METADATA] ?? null;
   if (sourceDeleted && sourceKey) await deps.removeAccountMachine(sourceKey).catch(() => null);
