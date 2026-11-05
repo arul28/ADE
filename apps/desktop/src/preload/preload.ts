@@ -13015,7 +13015,7 @@ const adeBridge = {
     signOut: (args: { server: string }): Promise<McpRegistryResult<null>> =>
       ipcRenderer.invoke(IPC.mcpRegistrySignOut, args),
     /**
-     * Registry servers a chat's running agent did not start with, read on the
+     * Registry servers a chat's running agent lacks or still has after a removal, read on the
      * chat's machine (`pin`, else the tab's runtime). Nothing without a runtime.
      */
     chatStatus: (args: { chatSessionId: string }, pin?: OpenProjectBinding | null): Promise<McpRegistryChatStatus> =>

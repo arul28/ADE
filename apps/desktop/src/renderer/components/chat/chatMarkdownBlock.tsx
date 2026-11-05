@@ -3,6 +3,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import { remarkCachedParse } from "./remarkCachedParse";
+import { remarkBareAdeLinks } from "./remarkBareAdeLinks";
 import { remarkBareLinkSuffix } from "./remarkBareLinkSuffix";
 import { FileCode } from "@phosphor-icons/react";
 
@@ -344,7 +345,7 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
   const remarkPlugins = useMemo(
     // Single-dollar math stays off: `normalizeMathDelimiters` decides which `$`
     // are math (money is not) and rewrites those to `$$`.
-    () => [remarkCachedParse, remarkGfm, remarkBareLinkSuffix, [remarkMath, { singleDollarTextMath: false }], [remarkThreadEntities, { lookup: entityLookup, filePathOf: workspaceFilePathOf }]] as React.ComponentProps<typeof ReactMarkdown>["remarkPlugins"],
+    () => [remarkCachedParse, remarkGfm, remarkBareLinkSuffix, remarkBareAdeLinks, [remarkMath, { singleDollarTextMath: false }], [remarkThreadEntities, { lookup: entityLookup, filePathOf: workspaceFilePathOf }]] as React.ComponentProps<typeof ReactMarkdown>["remarkPlugins"],
     [entityLookup],
   );
   // The growing tail is new text on every reveal frame and is never read

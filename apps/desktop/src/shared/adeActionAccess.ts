@@ -346,7 +346,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
   },
   mcp_registry: {
     read: ["list", "chatStatus"],
-    write: ["request"],
+    write: ["request", "remove"],
   },
   account_settings: {
     read: [

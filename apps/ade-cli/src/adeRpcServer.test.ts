@@ -6616,6 +6616,12 @@ describe("adeRpcServer", () => {
         expect(stepped?.error?.code, `${action} decoy`).toBe(JsonRpcErrorCode.policyDenied);
       }
     }
+    // A terminal with no chat that claims `--role cto` is not a user client:
+    // an agent's shell can claim the role too.
+    const chatlessCto = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(chatlessCto, { callerId: "ade-cli:4242", role: "cto" });
+    const claimed = await callTool(chatlessCto, "run_ade_action", { domain: "chat", action: "respondToInput", args: answer("consent-card") });
+    expect(claimed?.error?.code).toBe(JsonRpcErrorCode.policyDenied);
     expect(respondToInput).not.toHaveBeenCalled();
     expect(approveToolUse).not.toHaveBeenCalled();
 

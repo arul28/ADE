@@ -1,41 +1,23 @@
-import React, { useId, useRef, useState } from "react";
 import { COLORS, SANS_FONT } from "../../lanes/laneDesignTokens";
-import { AnchoredTooltip } from "../../ui/AnchoredTooltip";
+import { HelpHint as BaseHelpHint } from "../../ui/HelpHint";
 
 /**
- * A "?" beside a title, with one short sentence behind it.
+ * A "?" beside a settings title, with one short sentence behind it.
  *
  * Settings pages kept explaining themselves in a paragraph under the heading.
  * Two sentences of prose at the top of a page is the first thing the eye lands
  * on and the last thing anyone reads twice — and once a page has one, every
  * page grows one. The explanation still exists; it just waits to be asked for.
- *
- * Hover and focus both open it, so it is reachable without a mouse, and it
- * closes on Escape. It portals to the body so a scrolling settings pane cannot
- * clip it, and flips above the "?" near the bottom of the window.
+ * The behavior is `ui/HelpHint`; this is its settings look.
  */
 export function HelpHint({ text, label = "What is this?" }: { text: string; label?: string }) {
-  const id = useId();
-  const [open, setOpen] = useState(false);
-  const triggerRef = useRef<HTMLButtonElement | null>(null);
-
   return (
     <span style={{ display: "inline-flex" }}>
-      <button
-        ref={triggerRef}
-        type="button"
-        aria-label={label}
-        aria-describedby={open ? id : undefined}
-        aria-expanded={open}
-        onMouseEnter={() => setOpen(true)}
-        onMouseLeave={() => setOpen(false)}
-        onFocus={() => setOpen(true)}
-        onBlur={() => setOpen(false)}
-        onClick={() => setOpen((prev) => !prev)}
-        onKeyDown={(event) => {
-          if (event.key === "Escape") setOpen(false);
-        }}
-        style={{
+      <BaseHelpHint
+        text={text}
+        label={label}
+        side="bottom"
+        triggerStyle={(open) => ({
           display: "inline-flex",
           alignItems: "center",
           justifyContent: "center",
@@ -51,35 +33,20 @@ export function HelpHint({ text, label = "What is this?" }: { text: string; labe
           fontWeight: 700,
           lineHeight: 1,
           cursor: "help",
+        })}
+        tooltipStyle={{
+          width: 248,
+          padding: "7px 9px",
+          borderRadius: 8,
+          border: `1px solid ${COLORS.outlineBorder}`,
+          background: "var(--color-surface-raised, var(--color-card))",
+          boxShadow: "0 8px 24px rgba(0,0,0,0.32)",
+          fontFamily: SANS_FONT,
+          fontSize: 11,
+          lineHeight: 1.5,
+          color: COLORS.textSecondary,
         }}
-      >
-        ?
-      </button>
-      {open ? (
-        <AnchoredTooltip
-          open
-          triggerRef={triggerRef}
-          side="bottom"
-          remeasureKey={text}
-          onDismiss={() => setOpen(false)}
-          id={id}
-          style={{
-            pointerEvents: "none",
-            width: 248,
-            padding: "7px 9px",
-            borderRadius: 8,
-            border: `1px solid ${COLORS.outlineBorder}`,
-            background: "var(--color-surface-raised, var(--color-card))",
-            boxShadow: "0 8px 24px rgba(0,0,0,0.32)",
-            fontFamily: SANS_FONT,
-            fontSize: 11,
-            lineHeight: 1.5,
-            color: COLORS.textSecondary,
-          }}
-        >
-          {text}
-        </AnchoredTooltip>
-      ) : null}
+      />
     </span>
   );
 }

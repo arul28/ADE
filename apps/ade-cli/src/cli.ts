@@ -878,6 +878,7 @@ export type FormatterId =
   | "integrations"
   | "agent37-ready"
   | "mcp-servers"
+  | "mcp-servers-remove"
   | "history-list"
   | "history-commits"
   | "history-show"
@@ -1468,7 +1469,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
                                                     Manage local subscription sign-ins
     $ ade secrets list | get | set | request | delete  Manage encrypted ADE project secrets (account or device)
     $ ade integrations status | connect <provider>    See and connect GitHub, Linear, Jira and Agent 37
-    $ ade mcp servers | servers add <name>          Read the MCP servers your agents get; ask to add one
+    $ ade mcp servers | servers add|remove <name>   Read the MCP servers your agents get; ask to add or remove one
     $ ade settings find <words>                     Where an ADE setting or page is, as a link the chat shows as a chip
     $ ade update status | check | install | dismiss Read auto-update state and drive install
     $ ade tools status | ensure | gc                Inspect and populate the pinned agent-CLI cache
@@ -4346,7 +4347,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                                                     ordinary machine of yours, and ADE prepares the next one.
 `,
   "mcp servers": `${ADE_BANNER}
-  ADE MCP servers (Settings › Integrations › MCP servers)
+  ADE MCP servers (ade://settings/mcp.servers)
 
   The MCP servers every agent ADE launches gets, defined once for the
   person's account. Values (tokens, keys) live in the account vault and are
@@ -4374,10 +4375,23 @@ export const HELP_BY_COMMAND: Record<string, string> = {
       Prints {name, added: true, missing, next} | {name, already: true, existing, next} | {name, declined: true}
         | {name, integration, connected, next} (github, linear, atlassian)
 
+  Never guess a server's address. If you do not know the server, say so and
+  ask the person for its link, or offer to search for it; raise the card only
+  with a real URL or command.
+
+  Asking the person to remove one (only when they asked):
+
+    $ ade mcp servers remove stripe --reason "You asked to disconnect Stripe"
+      A card asks them; on yes it leaves their account on every machine, with
+      its saved values and sign-in.
+      Prints {name, removed: true, next} | {name, removed: false, declined: true}
+      GitHub, Linear and Jira are ADE integrations: link
+      ade://settings/integrations.github (or .linear, .jira) instead.
+
   When to ask: if the person named the server ("add the GitHub MCP"), raise
   the card at once. If it was your own idea, ask in words first and raise the
-  card only after they say yes. Once added, your own chat gets the tools only
-  after the person presses Refresh chat; ask them to.
+  card only after they say yes. Your own chat picks up an added or removed
+  server only after the person presses Refresh chat; ask them to.
 `,
   linear: `${ADE_BANNER}
   Linear workflows
@@ -20065,7 +20079,28 @@ function buildMcpServersPlan(args: string[]): CliPlan {
       progressNotice: `Asked the user to add the MCP server ${name} in the chat. Waiting for them to add it or decline…`,
     };
   }
-  throw new CliUsageError(`Unknown 'ade mcp servers' command "${sub}". Use list or add.`);
+  if (sub === "remove" || sub === "rm" || sub === "delete") {
+    const reason = readValue(args, ["--reason", "--why", "--message"]);
+    const timeoutValue = readValue(args, ["--timeout"]);
+    const sessionId = readValue(args, ["--session", "--session-id"]);
+    const name = (readValue(args, ["--name"]) ?? firstPositional(args) ?? "").trim();
+    if (!name) throw new CliUsageError("Name the server: ade mcp servers remove <name>");
+    const timeoutMs = timeoutValue ? parseSnoozeDurationMs(timeoutValue) : CARD_REQUEST_DEFAULT_TIMEOUT_MS;
+    return {
+      kind: "execute",
+      label: "mcp servers remove",
+      formatter: "mcp-servers-remove",
+      steps: [actionStep("result", "mcp_registry", "remove", {
+        name,
+        ...(reason?.trim() ? { reason: reason.trim() } : {}),
+        timeoutMs,
+        ...(sessionId ? { chatSessionId: sessionId } : {}),
+      })],
+      minTimeoutMs: timeoutMs + 30_000,
+      progressNotice: `Asked the user to remove the MCP server ${name} in the chat. Waiting for them to answer…`,
+    };
+  }
+  throw new CliUsageError(`Unknown 'ade mcp servers' command "${sub}". Use list, add or remove.`);
 }
 
 function buildSecretsPlan(args: string[]): CliPlan {
@@ -35277,7 +35312,7 @@ function formatMcpServers(value: unknown): string {
   }
   if (record.added === true) {
     const missing = Array.isArray(record.missing) && record.missing.length
-      ? ` Not set yet (the person can add them in Settings › Integrations › MCP servers): ${record.missing.join(", ")}.`
+      ? ` Not set yet (the person can add them at ade://settings/mcp.servers): ${record.missing.join(", ")}.`
       : "";
     const next = typeof record.next === "string" && record.next ? record.next : `Added ${cell(record.name)}.`;
     return `${next}${missing}`;
@@ -35285,6 +35320,13 @@ function formatMcpServers(value: unknown): string {
   if (record.already === true) return typeof record.next === "string" ? record.next : `${cell(record.name)} is already in ADE.`;
   if (typeof record.integration === "string" && typeof record.next === "string") return record.next;
   if (record.declined === true) return `The user declined to add the MCP server ${cell(record.name)}.`;
+  return JSON.stringify(value, null, 2);
+}
+
+function formatMcpServerRemove(value: unknown): string {
+  const record = isRecord(value) ? value : {};
+  if (record.removed === true) return typeof record.next === "string" ? record.next : `Removed ${cell(record.name)}.`;
+  if (record.declined === true) return `The user kept the MCP server ${cell(record.name)}.`;
   return JSON.stringify(value, null, 2);
 }
 
@@ -36244,6 +36286,8 @@ function formatTextOutput(
       return formatAgent37Ready(value);
     case "mcp-servers":
       return formatMcpServers(value);
+    case "mcp-servers-remove":
+      return formatMcpServerRemove(value);
     case "harness-env":
       return formatHarnessEnv(value);
     case "harness-routes":

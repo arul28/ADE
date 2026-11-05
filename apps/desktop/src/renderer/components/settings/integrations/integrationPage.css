@@ -824,3 +824,9 @@
   .ade-ig-field { grid-template-columns: minmax(0, 1fr); gap: 6px; }
   .ade-ig-field[data-align="top"] > .ade-ig-field-label { padding-top: 0; }
 }
+
+/* A settings-search group on the Integrations home: no box of its own, so the
+   section lays its children out as before; a search hides it whole. */
+.ade-ix-group {
+  display: contents;
+}

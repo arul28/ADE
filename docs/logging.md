@@ -660,6 +660,7 @@ raise a ceiling. The taxonomy is closed at the producer and again by
 | `chat` | `secret_requested` | `completed` (saved), `kept`, `cancelled` (declined), `failed` (unanswered in time or the request failed) | omitted; never the secret's name, value, reason, or chat |
 | `chat` | `connect_requested` | `completed` (connected), `kept` (already connected), `cancelled` (declined), `failed` (unanswered in time or the request failed) | omitted; never the integration's account, the key, or the chat |
 | `chat` | `mcp_server_requested` | `completed` (added), `kept` (already in ADE), `cancelled` (declined), `failed` (unanswered in time or the request failed) | omitted; never the server's name, its command or URL, a key, or the chat |
+| `chat` | `mcp_server_remove_requested` | `completed` (removed), `cancelled` (kept), `failed` (unanswered in time or the request failed) | omitted; never the server's name, its command or URL, or the chat |
 | `home` | `tab_opened` | `tab_browser`, `tab_music` | omitted; never a URL, tab, song, or page |
 | `home` | `widget_added` | `widget_<type>` (one per home widget type) | omitted; never the layout, a preset name, or a widget's settings |
 | `home` | `music_connected` | `completed`, `cancelled`, `failed` | omitted; never the Apple account, storefront, or token |
@@ -704,8 +705,9 @@ the URL is made: the desktop's IPC handler (`desktop`) or the
 (`api`, the CLI and agents). An agent's private secret card records
 `chat/secret_requested` once, when `project_secret.request` returns or fails,
 at the brain action that owns it. The connect card and the MCP server card do
-the same: `chat/connect_requested` at `integration_connect.request`, and
-`chat/mcp_server_requested` at `mcp_registry.request`. When an MCP server name
+the same: `chat/connect_requested` at `integration_connect.request`,
+`chat/mcp_server_requested` at `mcp_registry.request`, and
+`chat/mcp_server_remove_requested` at `mcp_registry.remove`. When an MCP server name
 is a built-in integration, the connect card runs instead and records only
 `connect_requested`. Neither carries a name, URL, value, or id;
 both are rare user decisions inside the existing `ade_feature_used` 140-per-day

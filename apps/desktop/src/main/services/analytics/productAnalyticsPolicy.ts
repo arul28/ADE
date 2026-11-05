@@ -370,6 +370,7 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // the server's name, its command or URL, or the chat.
   "connect_requested",
   "mcp_server_requested",
+  "mcp_server_remove_requested",
   // A person started a safe or live test of an automation. Never the rule or event.
   "safe_test_started",
   "live_test_started",
