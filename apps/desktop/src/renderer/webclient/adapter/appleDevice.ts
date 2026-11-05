@@ -1,5 +1,15 @@
 import type { AdeSyncClient } from "../sync";
 import type { AdeNamespace } from "./types";
+import {
+  createStreamTicketBook,
+  resolveAppleStreamUrl,
+  unavailable,
+  withStreamTicketToken,
+  type StreamTicket,
+} from "./streamTicket";
+
+/** Kept here for the existing importers; the helpers live in `streamTicket.ts`. */
+export { APPLE_STREAM_PIPE_KIND, resolveAppleStreamUrl } from "./streamTicket";
 
 /**
  * The `iosSimulator` namespace for the hosted web client.
@@ -22,8 +32,6 @@ import type { AdeNamespace } from "./types";
  *    dialing.
  */
 
-export const APPLE_STREAM_PIPE_KIND = "apple-stream";
-
 type AppleCall = <T>(
   action: string,
   args: unknown,
@@ -31,71 +39,14 @@ type AppleCall = <T>(
   idempotent?: boolean,
 ) => Promise<T>;
 
-type AppleStreamTicketResult = {
-  url: string | null;
-  path: string;
-  token: string;
-  codec: string | null;
-  width: number | null;
-  height: number | null;
-  expiresAt: string;
-};
-
-function unavailable(message: string): () => never {
-  return () => {
-    throw new Error(message);
-  };
-}
-
 const NO_HOST = "The Apple device environment isn't available on the connected ADE host.";
-
-/**
- * Absolute stream URL for this tab's route.
- *
- * Exported and pure so the relay branch — the one a test can never reach by
- * standing up a real tunnel — is covered by a unit test rather than by hope.
- */
-export function resolveAppleStreamUrl(
-  endpoint: string | null,
-  ticketPath: string,
-): { url: string | null; forwarded: boolean; error: string | null } {
-  if (!ticketPath) {
-    return { url: null, forwarded: false, error: "The live view returned no address." };
-  }
-  if (!endpoint) {
-    return {
-      url: null,
-      forwarded: false,
-      error: "The live view needs a connection to the ADE machine that owns the device.",
-    };
-  }
-  let base: URL;
-  try {
-    base = new URL(endpoint);
-  } catch {
-    return { url: null, forwarded: false, error: "The ADE connection has no usable address." };
-  }
-  // A relay endpoint pairs this tab with a brain-side pipe socket; the pipe,
-  // not the tab, decides which local path to dial, so the path rides as a
-  // parameter instead of being appended to the relay's own URL.
-  if (/\/connect\/[^/]+$/.test(base.pathname)) {
-    const relay = new URL(base.toString());
-    relay.searchParams.set("kind", APPLE_STREAM_PIPE_KIND);
-    relay.searchParams.set("path", ticketPath);
-    return { url: relay.toString(), forwarded: true, error: null };
-  }
-  const [path, query] = ticketPath.split("?");
-  const direct = new URL(path ?? "", base);
-  direct.search = query ? `?${query}` : "";
-  return { url: direct.toString(), forwarded: false, error: null };
-}
 
 export function createAppleDeviceNamespace(
   call: AppleCall,
   getEndpoint: () => string | null,
 ): AdeNamespace<"iosSimulator"> {
-  /** The most recent ticket, so `resolveStreamUrl` can find its path again. */
-  let lastTicket: AppleStreamTicketResult | null = null;
+  /** The tickets this tab was handed, so `resolveStreamUrl` finds the one behind each URL. */
+  const tickets = createStreamTicketBook();
 
   const laneOf = (args: unknown): string | null => {
     const record = (args ?? {}) as { laneId?: unknown };
@@ -135,13 +86,13 @@ export function createAppleDeviceNamespace(
     startStream: (async (args?: unknown) => {
       const laneId = laneOf(args);
       if (!laneId) throw new Error("The Apple live view needs a lane on the web client.");
-      const ticket = await call<AppleStreamTicketResult>(
+      const ticket = await call<StreamTicket>(
         "apple.streamTicket",
         { laneId, chatSessionId: chatOf(args) },
         unavailable(NO_HOST),
         false,
       );
-      lastTicket = ticket;
+      tickets.add(laneId, ticket);
       return {
         running: true,
         deviceUdid: null,
@@ -160,27 +111,16 @@ export function createAppleDeviceNamespace(
 
     // `(pin, args)` on the desktop; only the args matter here.
     stopStream: (async (_pin?: unknown, args?: unknown) => {
-      lastTicket = null;
+      tickets.forgetLane(laneOf(args));
       return invoke("stopStream", args ?? {}, false);
     }) as never,
     getStreamStatus: (async (_pin?: unknown, args?: unknown) =>
       invoke("getStreamStatus", args ?? {}, true)) as never,
 
     resolveStreamUrl: (async (streamUrl: string | null) => {
-      const ticketPath = lastTicket?.path
-        ?? (typeof streamUrl === "string" ? streamUrl : "");
-      const resolved = resolveAppleStreamUrl(getEndpoint(), ticketPath);
-      if (!resolved.url || !lastTicket) return resolved;
-      // The token cannot ride a WebSocket header from a browser, so it rides
-      // the query the brain also accepts. `H264StreamView` still passes the
-      // token separately for the loopback transport; this is the other one.
-      const withToken = new URL(resolved.url);
-      if (!withToken.searchParams.get("kind")) {
-        withToken.searchParams.set("token", lastTicket.token);
-      } else {
-        withToken.searchParams.set("path", `${lastTicket.path}?token=${lastTicket.token}`);
-      }
-      return { ...resolved, url: withToken.toString() };
+      const ticket = tickets.find(streamUrl);
+      const ticketPath = ticket?.path ?? (typeof streamUrl === "string" ? streamUrl : "");
+      return withStreamTicketToken(resolveAppleStreamUrl(getEndpoint(), ticketPath), ticket);
     }) as never,
 
     deviceList: (async (args?: unknown) => call(

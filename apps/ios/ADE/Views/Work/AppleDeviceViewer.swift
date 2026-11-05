@@ -55,18 +55,13 @@ struct AppleDeviceViewer: View {
 
   @StateObject private var model = AppleDeviceViewerModel()
   @State private var hint: String?
-  @State private var hintTask: Task<Void, Never>?
   @ObservedObject private var turns = LiveStageTurns.shared
   @State private var menuOpen = false
   /// A finger held on the picture while watching, filling toward Control.
   @State private var holdLocation: CGPoint?
   @State private var holdProgress: CGFloat = 0
-  @State private var holdTask: Task<Void, Never>?
-  @State private var holdFired = false
-  @State private var holdCancelled = false
-  @State private var gesture: AppleDeviceGesture?
-  @State private var gestureIgnored = false
   @State private var touchMarks: [AppleTouchMark] = []
+  @State private var tracker = LiveStageTouchTracker()
   @State private var showsKeyboard = false
   @State private var typed = ""
   @FocusState private var keyboardFocused: Bool
@@ -75,10 +70,6 @@ struct AppleDeviceViewer: View {
   /// stream.
   @State private var inspect: LiveInspectMarkupModel?
 
-  /// Long enough that a thumb resting on the picture does not take control.
-  private static let holdToControl: Double = 0.6
-  /// How long a finger rests before the ring shows: a tap never flashes it.
-  private static let holdRingDelay: Double = 0.15
   private static let keyboardBarHeight: CGFloat = 60
 
   var body: some View {
@@ -91,6 +82,20 @@ struct AppleDeviceViewer: View {
   /// The person's own quarter turn, on top of the guest's, remembered per place.
   private var userTurn: AppleDisplayRotation { turns.isTurned(turnKey) ? .clockwise : .upright }
   private var showsKeyboardBar: Bool { showsKeyboard && controlling }
+
+  /// The hold-to-control, tap-for-menu rules and the passing hint, shared
+  /// with the emulator's viewer.
+  private var stageTouch: LiveStageTouch {
+    LiveStageTouch(
+      hint: $hint,
+      holdLocation: $holdLocation,
+      holdProgress: $holdProgress,
+      touchMarks: $touchMarks,
+      menuOpen: $menuOpen,
+      tracker: tracker,
+      model: model
+    )
+  }
 
   /// The picture's shape as drawn, turned included.
   private var drawnAspect: CGFloat? {
@@ -119,7 +124,13 @@ struct AppleDeviceViewer: View {
           .frame(width: stageSize.width, height: stageSize.height)
         overlays(size: proxy.size, insets: insets, drawsHint: !hintBesideButton)
         if showsKeyboardBar {
-          keyboardBar
+          LiveStageKeyboardBar(
+            placeholder: "Type on the simulator",
+            text: $typed,
+            shown: $showsKeyboard,
+            focused: $keyboardFocused,
+            onType: { model.type($0) }
+          )
             .frame(width: proxy.size.width, height: Self.keyboardBarHeight)
             .position(x: proxy.size.width / 2, y: proxy.size.height - insets.bottom - Self.keyboardBarHeight / 2)
             .transition(.move(edge: .bottom).combined(with: .opacity))
@@ -204,7 +215,7 @@ struct AppleDeviceViewer: View {
         }
       }
       .onAppear {
-        flashHint("Tap for the menu · Hold to control", haptic: nil, seconds: 2.6)
+        stageTouch.flashHint("Tap for the menu · Hold to control", haptic: nil, seconds: 2.6)
         updateIdleTimer()
       }
       .onChange(of: scenePhase) { _, phase in
@@ -222,10 +233,10 @@ struct AppleDeviceViewer: View {
           showsKeyboard = false
           keyboardFocused = false
           // Control ended under a held finger: lift it, never leave it down.
-          if let held = gesture, held.isLive {
+          if let held = tracker.gesture, held.isLive {
             model.touch(.end, at: held.last)
           }
-          gesture = nil
+          tracker.gesture = nil
         } else if let target = foldTarget {
           model.mirrorFold(target)
         }
@@ -243,11 +254,10 @@ struct AppleDeviceViewer: View {
         if folds, let target = foldTarget { model.mirrorFold(target) }
       }
       .onChange(of: model.notice) { _, notice in
-        if let notice { flashHint(notice, haptic: .warning) }
+        if let notice { stageTouch.flashHint(notice, haptic: .warning) }
       }
       .onDisappear {
-        hintTask?.cancel()
-        holdTask?.cancel()
+        tracker.cancelTasks()
         model.stop()
         UIApplication.shared.isIdleTimerDisabled = false
       }
@@ -327,7 +337,7 @@ struct AppleDeviceViewer: View {
     .accessibilityHint(controlling ? "" : "Double-tap for the menu.")
     .accessibilityAddTraits(controlling ? .allowsDirectInteraction : .isButton)
     .accessibilityAction { if !controlling { menuOpen = true } }
-    .accessibilityAction(named: "Take control") { takeControl() }
+    .accessibilityAction(named: "Take control") { stageTouch.takeControl() }
   }
 
   /// The layer, laid out at the picture's own (unturned) size and turned
@@ -363,53 +373,49 @@ struct AppleDeviceViewer: View {
   private func stageGesture(picture rect: CGRect?, rotation: AppleDisplayRotation) -> some Gesture {
     DragGesture(minimumDistance: 0, coordinateSpace: .local)
       .onChanged { value in
-        guard !holdFired else { return }
+        guard !tracker.holdFired else { return }
         guard model.mode == .controlling else {
-          watchingChanged(value)
+          stageTouch.watchingChanged(value)
           return
         }
-        guard let rect, !gestureIgnored else { return }
-        if gesture == nil {
+        guard let rect, !tracker.gestureIgnored else { return }
+        if tracker.gesture == nil {
           // A touch that starts outside the picture is a touch on the black
           // bars, not on the device: the whole gesture is ignored rather
           // than clamped onto the screen's edge.
           guard rect.contains(value.startLocation),
                 let start = model.devicePoint(for: value.startLocation, in: rect, rotation: rotation)
           else {
-            gestureIgnored = true
+            tracker.gestureIgnored = true
             return
           }
-          gesture = AppleDeviceGesture(start: start, at: Date())
-          addTouchMark(at: value.startLocation)
+          tracker.gesture = AppleDeviceGesture(start: start, at: Date())
+          stageTouch.addTouchMark(at: value.startLocation)
           // A host that takes a live finger gets it as it lands, so the
           // device moves under the finger instead of once it lifts.
           if model.usesLiveTouch {
-            gesture?.isLive = true
+            tracker.gesture?.isLive = true
             model.touch(.begin, at: start)
           }
         }
         if let point = model.devicePoint(for: value.location, in: rect, rotation: rotation),
-           point != gesture?.last {
-          gesture?.move(to: point)
-          if gesture?.isLive == true { model.touch(.move, at: point) }
+           point != tracker.gesture?.last {
+          tracker.gesture?.move(to: point)
+          if tracker.gesture?.isLive == true { model.touch(.move, at: point) }
         }
       }
       .onEnded { value in
         defer {
-          gesture = nil
-          gestureIgnored = false
+          tracker.gesture = nil
+          tracker.gestureIgnored = false
         }
         // The finger that took control lifts: it is not a touch on the device.
-        if holdFired {
-          holdFired = false
-          holdCancelled = false
-          return
-        }
+        if stageTouch.liftAfterHold() { return }
         guard model.mode == .controlling else {
-          watchingEnded(value)
+          stageTouch.watchingEnded(value)
           return
         }
-        guard let started = gesture else { return }
+        guard let started = tracker.gesture else { return }
         let end = rect.flatMap { model.devicePoint(for: value.location, in: $0, rotation: rotation) }
         if started.isLive {
           // Even with nothing left to map against (a reconnect mid-gesture),
@@ -421,86 +427,6 @@ struct AppleDeviceViewer: View {
       }
   }
 
-  /// A finger on the picture while watching: held still, it takes control
-  /// after `holdToControl`; moved, it is nothing.
-  private func watchingChanged(_ value: DragGesture.Value) {
-    let travel = hypot(value.translation.width, value.translation.height)
-    if holdTask == nil, !holdCancelled {
-      guard model.controlBlocker == nil else {
-        holdCancelled = true
-        return
-      }
-      let location = value.startLocation
-      holdTask = Task { @MainActor in
-        try? await Task.sleep(for: .seconds(Self.holdRingDelay))
-        guard !Task.isCancelled else { return }
-        ADEHaptics.light()
-        holdProgress = 0
-        withAnimation(.easeOut(duration: 0.12)) { holdLocation = location }
-        withAnimation(.linear(duration: Self.holdToControl - Self.holdRingDelay)) { holdProgress = 1 }
-        try? await Task.sleep(for: .seconds(Self.holdToControl - Self.holdRingDelay))
-        guard !Task.isCancelled else { return }
-        holdFired = true
-        withAnimation(.easeOut(duration: 0.15)) { holdLocation = nil }
-        takeControl()
-      }
-    } else if travel > 20, !holdCancelled {
-      cancelHold()
-    }
-  }
-
-  private func watchingEnded(_ value: DragGesture.Value) {
-    let travel = hypot(value.translation.width, value.translation.height)
-    let wasCancelled = holdCancelled
-    let ringShown = holdLocation != nil
-    cancelHold()
-    holdCancelled = false
-    guard travel < 12, !wasCancelled || model.controlBlocker != nil else { return }
-    // Let go while the ring was filling: they meant to take control.
-    if ringShown {
-      flashHint("Hold a little longer to take control", haptic: nil)
-      return
-    }
-    // A tap: the menu, which also says why Control is unavailable.
-    ADEHaptics.light()
-    withAnimation(.spring(response: 0.3, dampingFraction: 0.82)) { menuOpen.toggle() }
-  }
-
-  private func cancelHold() {
-    holdTask?.cancel()
-    holdTask = nil
-    holdCancelled = true
-    if holdLocation != nil {
-      withAnimation(.easeOut(duration: 0.15)) {
-        holdLocation = nil
-        holdProgress = 0
-      }
-    }
-  }
-
-  private func takeControl() {
-    guard !controlling else { return }
-    if let blocker = model.controlBlocker {
-      flashHint(blocker, haptic: .warning)
-      return
-    }
-    ADEHaptics.success()
-    model.beginControl()
-    if controlling {
-      menuOpen = false
-      flashHint("Controlling. The orange button hands it back.", haptic: nil)
-    }
-  }
-
-  private func addTouchMark(at location: CGPoint) {
-    let mark = AppleTouchMark(location: location)
-    withAnimation(.easeOut(duration: 0.12)) { touchMarks.append(mark) }
-    Task { @MainActor in
-      try? await Task.sleep(for: .milliseconds(380))
-      withAnimation(.easeOut(duration: 0.2)) { touchMarks.removeAll { $0.id == mark.id } }
-    }
-  }
-
   // MARK: - Overlays
 
   /// The few things ever drawn on the picture: the speed readout when asked
@@ -509,7 +435,7 @@ struct AppleDeviceViewer: View {
     ZStack {
       VStack(spacing: 0) {
         if showsSpeed {
-          speedReadout
+          LiveStageSpeedReadout(speed: model.speed)
             .padding(.top, insets.top + 10)
             .transition(.opacity)
         }
@@ -566,7 +492,7 @@ struct AppleDeviceViewer: View {
           tint: ADEColor.warning,
           disabled: model.controlBlocker != nil
         ) {
-          takeControl()
+          stageTouch.takeControl()
         }
         .accessibilityIdentifier("AppleViewer.TakeControl")
         if let blocker = model.controlBlocker {
@@ -678,122 +604,10 @@ struct AppleDeviceViewer: View {
     }
   }
 
-  private func hideKeyboard() {
-    keyboardFocused = false
-    showsKeyboard = false
-  }
-
-  private var keyboardBar: some View {
-    HStack(spacing: 8) {
-      TextField("Type on the simulator", text: $typed)
-        .textInputAutocapitalization(.never)
-        .autocorrectionDisabled()
-        .focused($keyboardFocused)
-        .submitLabel(.send)
-        .onSubmit {
-          model.type(typed)
-          typed = ""
-          keyboardFocused = true
-        }
-        .padding(.horizontal, 14)
-        .frame(minHeight: 42)
-        .background(Color.white.opacity(0.12), in: Capsule())
-        .foregroundStyle(.white)
-      roundButton(systemName: "return", label: "Return") {
-        model.type("\n")
-      }
-      roundButton(systemName: "keyboard.chevron.compact.down", label: "Hide keyboard") {
-        hideKeyboard()
-      }
-    }
-    .padding(.horizontal, 14)
-    .frame(maxWidth: 560)
-    .frame(maxWidth: .infinity)
-    .toolbar {
-      ToolbarItemGroup(placement: .keyboard) {
-        Spacer()
-        Button("Done") { hideKeyboard() }
-      }
-    }
-  }
-
-  private var speedReadout: some View {
-    let speed = model.speed
-    return HStack(spacing: 12) {
-      speedCell("fps", speed.fps.map { "\($0)" })
-      speedCell("video", speed.kbps.map { appleStreamBitrateLabel(kbps: $0) })
-      speedCell("round trip", speed.rttMs.map { "\(Int($0.rounded())) ms" })
-      speedCell("tap → screen", speed.tapToFrameMs.map { "\(Int($0.rounded())) ms" })
-      if let skipped = speed.skipped, skipped > 0 {
-        speedCell("skipped", "\(skipped)")
-      }
-    }
-    .padding(.horizontal, 12)
-    .padding(.vertical, 6)
-    .background(.black.opacity(0.6), in: Capsule())
-    .allowsHitTesting(false)
-    .accessibilityElement(children: .combine)
-  }
-
-  private func speedCell(_ label: String, _ value: String?) -> some View {
-    VStack(spacing: 1) {
-      Text(value ?? "–")
-        .font(.caption.monospacedDigit().weight(.semibold))
-        .foregroundStyle(.white)
-      Text(label)
-        .font(.system(size: 9))
-        .foregroundStyle(.white.opacity(0.6))
-    }
-  }
-
-  private func roundButton(
-    systemName: String,
-    label: String,
-    action: @escaping () -> Void
-  ) -> some View {
-    Button {
-      ADEHaptics.light()
-      action()
-    } label: {
-      Image(systemName: systemName)
-        .font(.system(size: 15, weight: .semibold))
-        .foregroundStyle(.white)
-        .frame(width: 42, height: 42)
-        .background(Color.white.opacity(0.12), in: Circle())
-    }
-    .buttonStyle(.plain)
-    .accessibilityLabel(label)
-  }
-
   private func statusOverlay(_ message: String) -> some View {
-    VStack(spacing: 12) {
-      if model.health.phase == .connecting || model.health.phase == .requestingTicket
-        || model.health.phase == .reconnecting {
-        ProgressView().tint(.white)
-      }
-      Text(message)
-        .font(.footnote)
-        .foregroundStyle(.white.opacity(0.85))
-        .multilineTextAlignment(.center)
-        .padding(.horizontal, 32)
-      if model.health.offersReconnect {
-        Button {
-          ADEHaptics.light()
-          Task { await model.reconnect() }
-        } label: {
-          Text("Reconnect")
-            .font(.footnote.weight(.semibold))
-            .foregroundStyle(.white)
-            .padding(.horizontal, 18)
-            .padding(.vertical, 9)
-            .background(Color.white.opacity(0.16), in: Capsule())
-        }
-        .buttonStyle(.plain)
-      }
+    LiveStageStatusCard(message: message, health: model.health, onReconnect: { Task { await model.reconnect() } }) {
+      EmptyView()
     }
-    .padding(.vertical, 18)
-    .background(.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-    .padding(.horizontal, 24)
   }
 
   /// "Watching · owned by <chat>" — the one sentence that stops a viewer from
@@ -812,31 +626,7 @@ struct AppleDeviceViewer: View {
     }
     return parts.joined(separator: " · ")
   }
-
-  private enum HintHaptic { case warning }
-
-  /// One line at a time, restarted on each call rather than queued, so
-  /// hammering the screen does not stack timers.
-  private func flashHint(_ text: String, haptic: HintHaptic?, seconds: Double = 2) {
-    if haptic == .warning { ADEHaptics.warning() }
-    hint = text
-    hintTask?.cancel()
-    hintTask = Task { @MainActor in
-      try? await Task.sleep(for: .seconds(seconds))
-      guard !Task.isCancelled else { return }
-      hint = nil
-      model.clearNotice()
-    }
-  }
 }
-
-/// Where a finger touched the picture, drawn for a moment so the person sees
-/// the touch land before the Mac's frame comes back.
-struct AppleTouchMark: Identifiable, Equatable {
-  let id = UUID()
-  let location: CGPoint
-}
-
 
 #if DEBUG
 /// What the fixture screen seeds the viewer with.

@@ -162,11 +162,11 @@ const ANDROID_VERB_FLAGS: Readonly<Record<string, readonly string[]>> = {
   help: [],
   actions: [],
   status: [],
-  show: [],
+  show: ["--floating", "--float"],
   devices: ["--profiles"],
   "device-create": ["--profile", "--catalog", "--color", "--image", "--name", "--no-start"],
   "device-attach": ["--avd", "--no-start"],
-  start: [],
+  start: ["--force"],
   stop: [],
   "device-detach": ["--keep"],
   screenshot: ["--out", "--caption"],
@@ -274,6 +274,8 @@ const ANDROID_ERROR_HINTS: Record<AndroidErrorCode, string> = {
   ANDROID_SDK_INSTALL_FAILED:
     "hint: Run `ade android sdk status` to see what is missing. The user installs again from the setup card; finished parts stay.",
   ANDROID_SDK_PATH_INVALID: "hint: Pick the folder that holds platform-tools, emulator or system-images.",
+  ANDROID_LOW_MEMORY:
+    "hint: close apps or stop an emulator you do not need, then try again. Ask the user before you run `ade android start --force`: it boots anyway, and the machine can swap.",
   // P1 agent suite.
   ANDROID_ELEMENT_NOT_FOUND:
     "hint: run `ade android snapshot --text` to see the screen's elements, then aim with --ref, --identifier, --label or --text.",
@@ -395,8 +397,11 @@ export function buildAndroidPlan(args: string[], options: { remote?: boolean } =
   if (sub === "status")
     return androidAction("android status", "getStatus", laneClaim(), "android-status");
   // Same verb as `ade ui show android`, spelled where an agent driving the
-  // emulator looks for it.
-  if (sub === "show") return workToolShowPlan(claimArgs, "android");
+  // emulator looks for it. `--floating` asks for the floating player instead.
+  if (sub === "show") {
+    const floating = readFlag(args, ["--floating", "--float"]);
+    return workToolShowPlan(claimArgs, floating ? "floating-android" : "android");
+  }
   if (sub === "devices") {
     const showProfiles = readFlag(args, ["--profiles"]);
     return androidAction("android devices", "listDevices", laneClaim(), showProfiles ? "android-devices-profiles" : "android-devices");
@@ -435,8 +440,11 @@ export function buildAndroidPlan(args: string[], options: { remote?: boolean } =
       ...(noStart ? { start: false } : {}),
     }, "android-device", noStart ? {} : { progressNotice: bootNotice });
   }
-  if (sub === "start")
-    return androidAction("android start", "start", laneClaim(), "android-device", { progressNotice: bootNotice });
+  if (sub === "start") {
+    // --force boots past the RAM guard (ANDROID_LOW_MEMORY).
+    const force = readFlag(args, ["--force"]);
+    return androidAction("android start", "start", { ...laneClaim(), ...(force ? { force: true } : {}) }, "android-device", { progressNotice: bootNotice });
+  }
   if (sub === "stop")
     return androidAction("android stop", "stop", laneClaim(), "android-device");
   if (sub === "device-detach") {

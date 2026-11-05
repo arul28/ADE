@@ -1,4 +1,5 @@
 import type { AndroidEmulatorEvent, AndroidEmulatorServiceApi, AndroidStreamStatus } from "../../../shared/types/androidEmulator";
+import type { AppleRemoteViewerProbe, AppleStreamOwningService } from "../ios/appleStreamRelayForService";
 import type { Logger } from "../logging/logger";
 import { getErrorMessage } from "../shared/utils";
 import type { BootedDevice } from "./androidDeviceShell";
@@ -6,9 +7,16 @@ import { requireLaneId } from "./androidEmulatorErrors";
 import { asStreamFailure, type AndroidStreamHub } from "./androidStream";
 
 /*
- * The lane's live stream: who holds it (a viewer, a recording, or both),
- * when it starts and when it stops. The stream hub (`androidStream.ts`) runs
- * one scrcpy stream per emulator; this file keeps the lane's side of it.
+ * The lane's live stream: who holds it (a viewer on this machine, a remote
+ * viewer through the relay, a recording), when it starts and when it stops.
+ * The stream hub (`androidStream.ts`) runs one scrcpy stream per emulator;
+ * this file keeps the lane's side of it.
+ *
+ * A phone or a web tab watches through the brain's stream relay
+ * (`appleStreamRelayForService.ts`, the same relay as Apple's). The relay
+ * stops only the streams it started. `relaySource` is its view of the lane:
+ * a relay start never marks the local viewer, and a local stop or the end of
+ * a recording hands the stop to the relay while a remote viewer still reads.
  *
  * Node built-ins and relative imports only, so it runs under `tsx`.
  */
@@ -38,12 +46,23 @@ export type AndroidLaneStreamsDeps<S extends AndroidLaneStreamState> = {
   onStreamEnding: (laneId: string) => Promise<void>;
   /** True while a recording holds the lane's stream. */
   isRecording: (laneId: string) => boolean;
+  /** The relay started the stream for a phone or a web tab. */
+  onRemoteViewerStarted?: () => void;
 };
 
 const NO_STREAM = { running: false, backend: null, transport: null, fps: null } as const;
 
 export function createAndroidLaneStreams<S extends AndroidLaneStreamState>(deps: AndroidLaneStreamsDeps<S>) {
   const { streams, logger } = deps;
+  /** The relay's answer to "does a remote viewer still read this lane?". */
+  let remoteViewers: AppleRemoteViewerProbe | null = null;
+
+  /** A remote viewer reads the lane's stream: the relay takes over its stop. */
+  const handStopToRelay = (laneId: string): boolean => {
+    if (!remoteViewers?.watching(laneId)) return false;
+    remoteViewers.adopt(laneId);
+    return true;
+  };
 
   /** Stops the lane's stream, whoever holds it, and says so. */
   const stopRunning = async (state: S): Promise<void> => {
@@ -105,8 +124,9 @@ export function createAndroidLaneStreams<S extends AndroidLaneStreamState>(deps:
     async stopStream(args) {
       const laneId = requireLaneId(args.laneId);
       const state = deps.laneState(laneId);
-      if (deps.isRecording(laneId)) {
-        // A recording still reads the stream: the viewer goes, the stream stays.
+      if (deps.isRecording(laneId) || handStopToRelay(laneId)) {
+        // A recording or a remote viewer still reads the stream: the viewer
+        // goes, the stream stays.
         state.streamViewer = false;
         return { laneId, ...NO_STREAM };
       }
@@ -134,8 +154,37 @@ export function createAndroidLaneStreams<S extends AndroidLaneStreamState>(deps:
     /** The recording is done with the stream; it stops unless a viewer still watches. */
     async releaseForRecording(laneId: string): Promise<void> {
       const state = deps.peekLane(laneId);
-      if (!state || state.streamViewer) return;
+      if (!state || state.streamViewer || handStopToRelay(laneId)) return;
       await stopRunning(state);
     },
+
+    /**
+     * The lane's stream as the relay drives it, for a phone or a web tab.
+     * Watching never boots: a lane whose emulator is off refuses with
+     * `ANDROID_NOT_RUNNING`, which the viewer shows.
+     */
+    relaySource: {
+      getStreamStatus: ({ laneId }) => ({ running: Boolean(laneId && liveStreamSerial(laneId)) }),
+      async startStream({ laneId }) {
+        deps.assertLive();
+        const lane = requireLaneId(laneId);
+        deps.assertWorkCopyLive(lane);
+        // One encode serves every viewer (see `ANDROID_STREAM_DEFAULTS`), so
+        // the relay's bitrate cap is not applied: a cap would restart the
+        // encoder under the local view.
+        const { transport } = await startLaneStream(lane);
+        deps.onRemoteViewerStarted?.();
+        return { transport };
+      },
+      async stopStream({ laneId }) {
+        const state = laneId ? deps.peekLane(laneId) : undefined;
+        if (!state || state.streamViewer || deps.isRecording(state.laneId)) return;
+        await stopRunning(state);
+      },
+      hasLocalViewer: (laneId) => deps.peekLane(laneId)?.streamViewer === true,
+      setRemoteViewerProbe: (probe) => {
+        remoteViewers = probe;
+      },
+    } satisfies AppleStreamOwningService,
   };
 }

@@ -8,3 +8,6 @@ export const DEVICE_LOCATION_PRESETS = [
 ] as const;
 
 export type DeviceLocationPresetLabel = (typeof DEVICE_LOCATION_PRESETS)[number]["label"];
+
+/** The battery levels the device drawers and the quick chips offer, in percent. */
+export const DEVICE_BATTERY_LEVELS = [100, 80, 50, 20, 5] as const;

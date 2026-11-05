@@ -53,6 +53,15 @@ function intOrNull(value: string | undefined): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+/** `hw.ramSize` from `config.ini`: `2048`, `2048M`, `2048MB` or `2G`. */
+export function parseAndroidRamSizeMb(value: string | undefined | null): number | null {
+  const match = /^\s*(\d+(?:\.\d+)?)\s*([mg])?b?\s*$/i.exec(value ?? "");
+  if (!match) return null;
+  const amount = Number(match[1]);
+  if (!Number.isFinite(amount) || amount <= 0) return null;
+  return Math.round(match[2]?.toLowerCase() === "g" ? amount * 1024 : amount);
+}
+
 /**
  * An AVD folder's bytes on disk, without blocking: the folder can be many GB
  * on a slow drive, and the brain must keep answering while it is walked.
@@ -98,6 +107,7 @@ export function readAndroidAvd(
     lcdWidth: intOrNull(config.get("hw.lcd.width")),
     lcdHeight: intOrNull(config.get("hw.lcd.height")),
     density: intOrNull(config.get("hw.lcd.density")),
+    ramMb: parseAndroidRamSizeMb(config.get("hw.ramSize")),
     path: folder,
     sizeBytes: null,
     adeCreated: config.get(ADE_AVD_CREATED_KEY) === "true",

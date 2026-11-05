@@ -189,6 +189,9 @@
 		E1000000000000000000AB01 /* AppleDeviceStream.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000AB01 /* AppleDeviceStream.swift */; };
 		E1000000000000000000AB02 /* AppleDeviceViewer.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000AB02 /* AppleDeviceViewer.swift */; };
 		E1000000000000000000AB0E /* AppleDeviceViewerModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000AB0E /* AppleDeviceViewerModel.swift */; };
+		E2000000000000000000AD01 /* AndroidDeviceViewer.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000AD01 /* AndroidDeviceViewer.swift */; };
+		E2000000000000000000AD02 /* AndroidDeviceViewerModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000AD02 /* AndroidDeviceViewerModel.swift */; };
+		E2000000000000000000AD1A /* AppleStreamSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000AD1A /* AppleStreamSession.swift */; };
 		E1000000000000000000AB0C /* AppleDeviceControl.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000AB0C /* AppleDeviceControl.swift */; };
 		E1000000000000000000FE01 /* LiveStage.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000FE01 /* LiveStage.swift */; };
 		E1000000000000000000FE03 /* MacDesktopViewerSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000FE03 /* MacDesktopViewerSupport.swift */; };
@@ -457,6 +460,7 @@
 		7C0FFEE0000000000000A004 /* SyncService+ThreadComments.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7C0FFEE0000000000000A003 /* SyncService+ThreadComments.swift */; };
 		E20000000000000000000F10 /* SyncService+RemoteLanes.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F10 /* SyncService+RemoteLanes.swift */; };
 		E1000000000000000000AB0D /* SyncService+AppleDevice.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000AB0D /* SyncService+AppleDevice.swift */; };
+		E2000000000000000000AD03 /* SyncService+AndroidDevice.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000AD03 /* SyncService+AndroidDevice.swift */; };
 		E20000000000000000000F02 /* MachineFleet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F02 /* MachineFleet.swift */; };
 		E20000000000000000000F03 /* HubMachineSections.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F03 /* HubMachineSections.swift */; };
 		E20000000000000000000F04 /* WorkRemoteMachineRows.swift in Sources */ = {isa = PBXBuildFile; fileRef = D20000000000000000000F04 /* WorkRemoteMachineRows.swift */; };
@@ -639,6 +643,9 @@
 		D1000000000000000000AB01 /* AppleDeviceStream.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AppleDeviceStream.swift; path = ADE/Views/Work/AppleDeviceStream.swift; sourceTree = "<group>"; };
 		D1000000000000000000AB02 /* AppleDeviceViewer.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AppleDeviceViewer.swift; path = ADE/Views/Work/AppleDeviceViewer.swift; sourceTree = "<group>"; };
 		D1000000000000000000AB0E /* AppleDeviceViewerModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AppleDeviceViewerModel.swift; path = ADE/Views/Work/AppleDeviceViewerModel.swift; sourceTree = "<group>"; };
+		D2000000000000000000AD01 /* AndroidDeviceViewer.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AndroidDeviceViewer.swift; path = ADE/Views/Work/AndroidDeviceViewer.swift; sourceTree = "<group>"; };
+		D2000000000000000000AD02 /* AndroidDeviceViewerModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AndroidDeviceViewerModel.swift; path = ADE/Views/Work/AndroidDeviceViewerModel.swift; sourceTree = "<group>"; };
+		D2000000000000000000AD1A /* AppleStreamSession.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AppleStreamSession.swift; path = ADE/Views/Work/AppleStreamSession.swift; sourceTree = "<group>"; };
 		D1000000000000000000AB0C /* AppleDeviceControl.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AppleDeviceControl.swift; path = ADE/Views/Work/AppleDeviceControl.swift; sourceTree = "<group>"; };
 		D1000000000000000000FE01 /* LiveStage.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LiveStage.swift; path = ADE/Views/Work/LiveStage.swift; sourceTree = "<group>"; };
 		D1000000000000000000FE03 /* MacDesktopViewerSupport.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MacDesktopViewerSupport.swift; path = ADE/Views/Work/MacDesktopViewerSupport.swift; sourceTree = "<group>"; };
@@ -945,6 +952,7 @@
 		7C0FFEE0000000000000A003 /* SyncService+ThreadComments.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "SyncService+ThreadComments.swift"; path = "ADE/Services/SyncService+ThreadComments.swift"; sourceTree = "<group>"; };
 		D20000000000000000000F10 /* SyncService+RemoteLanes.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "SyncService+RemoteLanes.swift"; path = "ADE/Services/SyncService+RemoteLanes.swift"; sourceTree = "<group>"; };
 		D1000000000000000000AB0D /* SyncService+AppleDevice.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "SyncService+AppleDevice.swift"; path = "ADE/Services/SyncService+AppleDevice.swift"; sourceTree = "<group>"; };
+		D2000000000000000000AD03 /* SyncService+AndroidDevice.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "SyncService+AndroidDevice.swift"; path = "ADE/Services/SyncService+AndroidDevice.swift"; sourceTree = "<group>"; };
 		D20000000000000000000F02 /* MachineFleet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MachineFleet.swift; path = ADE/Services/MachineFleet.swift; sourceTree = "<group>"; };
 		D20000000000000000000F03 /* HubMachineSections.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = HubMachineSections.swift; path = ADE/Views/Hub/HubMachineSections.swift; sourceTree = "<group>"; };
 		D20000000000000000000F04 /* WorkRemoteMachineRows.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkRemoteMachineRows.swift; path = ADE/Views/Work/WorkRemoteMachineRows.swift; sourceTree = "<group>"; };
@@ -1327,6 +1335,9 @@
 				D1000000000000000000AB01 /* AppleDeviceStream.swift */,
 				D1000000000000000000AB02 /* AppleDeviceViewer.swift */,
 				D1000000000000000000AB0E /* AppleDeviceViewerModel.swift */,
+				D2000000000000000000AD01 /* AndroidDeviceViewer.swift */,
+				D2000000000000000000AD02 /* AndroidDeviceViewerModel.swift */,
+				D2000000000000000000AD1A /* AppleStreamSession.swift */,
 				D1000000000000000000AB0C /* AppleDeviceControl.swift */,
 				D1000000000000000000FE01 /* LiveStage.swift */,
 				D1000000000000000000FE03 /* MacDesktopViewerSupport.swift */,
@@ -1443,6 +1454,7 @@
 				7C0FFEE0000000000000A003 /* SyncService+ThreadComments.swift */,
 				D20000000000000000000F10 /* SyncService+RemoteLanes.swift */,
 				D1000000000000000000AB0D /* SyncService+AppleDevice.swift */,
+				D2000000000000000000AD03 /* SyncService+AndroidDevice.swift */,
 				D20000000000000000000F33 /* SyncService+CtoHome.swift */,
 				B70000000000000000000001 /* SyncRecoveryPolicy.swift */,
 				B7000000000000000000009A /* PendingSessionSettleStates.swift */,
@@ -2088,6 +2100,7 @@
 				7C0FFEE0000000000000A004 /* SyncService+ThreadComments.swift in Sources */,
 				E20000000000000000000F10 /* SyncService+RemoteLanes.swift in Sources */,
 				E1000000000000000000AB0D /* SyncService+AppleDevice.swift in Sources */,
+				E2000000000000000000AD03 /* SyncService+AndroidDevice.swift in Sources */,
 				E20000000000000000000F33 /* SyncService+CtoHome.swift in Sources */,
 				F10000000000000000000101 /* ChatToolResultCache.swift in Sources */,
 				C5B000000000000000000001 /* MobileTrustResetPolicy.swift in Sources */,
@@ -2296,6 +2309,9 @@
 				E1000000000000000000AB01 /* AppleDeviceStream.swift in Sources */,
 				E1000000000000000000AB02 /* AppleDeviceViewer.swift in Sources */,
 				E1000000000000000000AB0E /* AppleDeviceViewerModel.swift in Sources */,
+				E2000000000000000000AD01 /* AndroidDeviceViewer.swift in Sources */,
+				E2000000000000000000AD02 /* AndroidDeviceViewerModel.swift in Sources */,
+				E2000000000000000000AD1A /* AppleStreamSession.swift in Sources */,
 				E1000000000000000000AB0C /* AppleDeviceControl.swift in Sources */,
 				E1000000000000000000FE01 /* LiveStage.swift in Sources */,
 				E1000000000000000000FE03 /* MacDesktopViewerSupport.swift in Sources */,

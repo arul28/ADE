@@ -23,6 +23,9 @@ enum WorkToolChipKind: Equatable {
   /// `MacDesktopViewer`. `streamLive`: frames flow at full rate.
   /// `agentDriving`: an agent holds the screen's input lease.
   case macDesktop(streamLive: Bool, agentDriving: Bool)
+  /// The lane's Android emulator. Opens `AndroidDeviceViewer` on the live
+  /// stage. `live`: the emulator is booted.
+  case android(name: String, live: Bool)
 
   /// The SF Symbol on the chip. A simulator's follows its device family, so
   /// an Apple Watch does not show as an iPhone.
@@ -32,6 +35,7 @@ enum WorkToolChipKind: Equatable {
     case .browser: return "globe"
     case .appControl: return "macwindow"
     case .macDesktop: return "desktopcomputer"
+    case .android: return "smartphone"
     }
   }
 }
@@ -47,6 +51,7 @@ struct WorkToolChip: Equatable, Identifiable {
     case .browser(let tabCount, _): return workBrowserChipLabel(tabCount: tabCount)
     case .appControl: return appControlTagLabel
     case .macDesktop: return desktopPlatformLabel ?? "macOS"
+    case .android(let name, _): return name
     }
   }
 
@@ -71,16 +76,19 @@ struct WorkToolChip: Equatable, Identifiable {
     case .browser: return "browser"
     case .appControl: return "app-control"
     case .macDesktop: return "mac-desktop"
+    case .android: return "android"
     }
   }
 }
 
 /// The lane's tool chips for the chat's floating badge row, in order:
-/// simulator, macOS (the lane's Mac Desktop), browser, App Control. The two screens the phone can
-/// watch lead.
+/// simulator, Android, macOS (the lane's Mac Desktop), browser, App Control.
+/// The screens the phone can watch lead.
 ///
 /// - Simulator: only while the lane's own device is up (`appleDeviceRunningName`).
 ///   A device the lane keeps after Shut down is not advertised.
+/// - Android: while the lane has an emulator (`androidToolChip`), also when
+///   it is off, so the viewer can offer Start. Live dot while it is booted.
 /// - Mac Desktop: only while the lane holds a display on a host that can host
 ///   one. Live dot while frames flow at full rate; accent while an agent
 ///   drives it.
@@ -89,10 +97,17 @@ struct WorkToolChip: Equatable, Identifiable {
 ///   browser was always reason enough to surface it.
 /// - App Control: "App" while an app is attached. Live dot while it is
 ///   attached and sending frames.
-func workToolChips(state: WorkToolsLaneState?, appleDevice: AppleDeviceStatus?) -> [WorkToolChip] {
+func workToolChips(
+  state: WorkToolsLaneState?,
+  appleDevice: AppleDeviceStatus?,
+  android: AndroidDeviceStatus? = nil
+) -> [WorkToolChip] {
   var chips: [WorkToolChip] = []
   if let name = appleDeviceRunningName(appleDevice) {
     chips.append(WorkToolChip(kind: .simulator(name: name, family: appleDevice?.device?.family)))
+  }
+  if let chip = androidToolChip(android) {
+    chips.append(chip)
   }
   if let chip = macDesktopToolChip(state?.macDesktop) {
     chips.append(chip)
@@ -119,6 +134,16 @@ func macDesktopToolChip(_ macDesktop: WorkToolsMacDesktopState?) -> WorkToolChip
     streamLive: stream?.running == true && stream?.idle != true,
     agentDriving: macDesktop.lease?.holder == "agent"
   ), desktopPlatformLabel: macDesktop.windowsDesktop == nil ? nil : "Windows")
+}
+
+/// The Android chip, or nil when the lane has no emulator to open: no status
+/// (the host does not advertise Android), a machine that cannot run it, or a
+/// lane with no AVD set up.
+func androidToolChip(_ status: AndroidDeviceStatus?) -> WorkToolChip? {
+  guard let status, status.unavailable?.isEmpty != false,
+        let state = androidDeviceState(status), state != "none"
+  else { return nil }
+  return WorkToolChip(kind: .android(name: androidDeviceDisplayName(status), live: state == "booted"))
 }
 
 /// The SF Symbol for a Windows host's screen: four panes, the shape of the
@@ -240,6 +265,7 @@ final class WorkLaneToolsModel: ObservableObject {
   /// The surface a chip opened.
   enum Surface: Equatable {
     case appleDevice
+    case androidDevice
     case macDesktop
     /// A sheet for one tool.
     case toolSheet(WorkToolsSheet.Tool)
@@ -251,6 +277,8 @@ final class WorkLaneToolsModel: ObservableObject {
   @Published var presented: Surface?
   /// Handed to `AppleDeviceViewer` as its first frame of state. Not published.
   private(set) var appleStatus: AppleDeviceStatus?
+  /// Handed to `AndroidDeviceViewer` the same way. Not published.
+  private(set) var androidStatus: AndroidDeviceStatus?
   /// Handed to `MacDesktopViewer` the same way. Not published.
   private(set) var macDesktopState: WorkToolsMacDesktopState?
   /// Handed to `AppControlViewer` the same way. Not published.
@@ -274,6 +302,7 @@ final class WorkLaneToolsModel: ObservableObject {
   func open(_ chip: WorkToolChip, macDesktopStream: Bool) {
     switch chip.kind {
     case .simulator: presented = .appleDevice
+    case .android: presented = .androidDevice
     case .macDesktop: presented = macDesktopStream ? .macDesktop : .toolSheet(.macDesktop)
     case .browser: presented = .toolSheet(.browser)
     case .appControl: presented = appControlStream ? .appControl : .toolSheet(.appControl)
@@ -290,6 +319,7 @@ final class WorkLaneToolsModel: ObservableObject {
   func run(laneId: String, syncService: SyncService) async {
     chips = []
     appleStatus = nil
+    androidStatus = nil
     macDesktopState = nil
     appControlState = nil
     lastTools = nil
@@ -304,40 +334,51 @@ final class WorkLaneToolsModel: ObservableObject {
     }
   }
 
-  /// Both reads at once, each gated on its own action: a Mac with the pane
-  /// state but no Apple support keeps the chips it always could show, and
-  /// neither read goes on the wire unadvertised.
+  /// All reads at once, each gated on its own action: a Mac with the pane
+  /// state but no Apple or Android support keeps the chips it always could
+  /// show, and no read goes on the wire unadvertised.
   func refresh(laneId: String, syncService: SyncService) async {
     let readTools = syncService.supportsWorkToolsState
     // Asked of the lane's own machine: a lane on another Mac answers there.
     let readApple = syncService.supportsAppleDeviceStatus(laneId: laneId)
+    // Android is offered only where the host can also mint a stream ticket.
+    let readAndroid = syncService.supportsAndroidDevice(laneId: laneId)
     async let nextState: WorkToolsLaneState? = readTools
       ? (try? await syncService.fetchWorkToolsLaneState(laneId: laneId))
       : nil
     async let nextApple: AppleDeviceStatus? = readApple
       ? (try? await syncService.fetchAppleDeviceStatus(laneId: laneId))
       : nil
-    let (fetched, apple) = await (nextState, nextApple)
+    async let nextAndroid: AndroidDeviceStatus? = readAndroid
+      ? (try? await syncService.fetchAndroidDeviceStatus(laneId: laneId))
+      : nil
+    let (fetched, apple, android) = await (nextState, nextApple, nextAndroid)
     guard !Task.isCancelled else { return }
     let tools = workToolsStateAfterRead(fetched: fetched, previous: lastTools, supported: readTools)
     lastTools = tools
     appleStatus = apple
+    androidStatus = android
     macDesktopState = tools?.macDesktop
     appControlState = tools?.appControl
     appControlStream = syncService.supportsAppControlStream
-    let next = workToolChips(state: tools, appleDevice: apple)
+    let next = workToolChips(state: tools, appleDevice: apple, android: android)
     if next != chips { chips = next }
   }
 
   #if DEBUG
   /// Fixture seam for previews and simulator screenshots.
-  func installPreview(state: WorkToolsLaneState?, appleStatus: AppleDeviceStatus?) {
+  func installPreview(
+    state: WorkToolsLaneState?,
+    appleStatus: AppleDeviceStatus?,
+    androidStatus: AndroidDeviceStatus? = nil
+  ) {
     self.appleStatus = appleStatus
+    self.androidStatus = androidStatus
     macDesktopState = state?.macDesktop
     appControlState = state?.appControl
     // The fixture's app streams from a drawn stand-in, as a streaming host's would.
     appControlStream = state?.appControl != nil
-    chips = workToolChips(state: state, appleDevice: appleStatus)
+    chips = workToolChips(state: state, appleDevice: appleStatus, android: androidStatus)
   }
   #endif
 }
@@ -347,6 +388,7 @@ final class WorkLaneToolsModel: ObservableObject {
 struct WorkLaneToolsPreview {
   var state: WorkToolsLaneState?
   var appleStatus: AppleDeviceStatus?
+  var androidStatus: AndroidDeviceStatus?
 }
 #endif
 
@@ -394,7 +436,7 @@ struct WorkLaneToolsPresenter: ViewModifier {
       .task(id: laneId) {
         #if DEBUG
         if let preview {
-          model.installPreview(state: preview.state, appleStatus: preview.appleStatus)
+          model.installPreview(state: preview.state, appleStatus: preview.appleStatus, androidStatus: preview.androidStatus)
           return
         }
         #endif
@@ -420,7 +462,8 @@ struct WorkLaneToolsPresenter: ViewModifier {
           macDesktop: model.macDesktopState,
           appControl: model.appControlState,
           appControlStream: model.appControlStream,
-          macDesktopStream: syncService.supportsMacDesktopStream
+          macDesktopStream: syncService.supportsMacDesktopStream,
+          androidStatus: model.androidStatus
         )
         #if DEBUG
         // A fixture chat's screens stream from a drawn stand-in, so they open
@@ -441,14 +484,15 @@ struct WorkLaneToolsPresenter: ViewModifier {
       .sheet(isPresented: model.isPresented(.toolSheet(.macDesktop))) {
         toolSheet(.macDesktop)
       }
-      // A live stream (the simulator, the lane's screen, App Control frames)
-      // goes on stage, full screen over the whole app, seeded with the last
+      // A live stream (the simulator, the Android emulator, the lane's
+      // screen, App Control frames) goes on stage, full screen over the whole app, seeded with the last
       // state so the first frame is not an empty viewer. The stage outlives
       // this chat's layout, so folding the phone keeps it.
       .onChange(of: model.presented) { _, surface in
         let seed: LiveStage.Seed
         switch surface {
         case .appleDevice: seed = .simulator(model.appleStatus)
+        case .androidDevice: seed = .android(model.androidStatus)
         case .macDesktop: seed = .macDesktop(model.macDesktopState)
         case .appControl: seed = .appControl(model.appControlState)
         case .toolSheet, nil: return
@@ -519,6 +563,7 @@ struct WorkLaneToolChipView: View {
     case .simulator: return true
     case .macDesktop(let streamLive, _): return streamLive
     case .appControl(_, let live): return live
+    case .android(_, let live): return live
     case .browser: return false
     }
   }
@@ -555,5 +600,9 @@ func workToolChipAccessibilityText(_ chip: WorkToolChip) -> String {
     if streamLive { text += ", live" }
     if agentDriving { text += ". An agent is driving it" }
     return text + ". Tap to watch."
+  case .android(_, let live):
+    return live
+      ? "\(chip.label), Android emulator, running. Tap to watch."
+      : "\(chip.label), Android emulator, not running. Tap to open it."
   }
 }

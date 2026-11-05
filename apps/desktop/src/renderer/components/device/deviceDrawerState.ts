@@ -175,6 +175,20 @@ export function useDeviceDrawerGroup<G extends string>({
   return { open, toggle };
 }
 
+/**
+ * Open a drawer at one group the next time it mounts: a shortcut outside the
+ * drawer (a quick chip's "More in Tools") that lands on the controls it
+ * stands for. The same record the drawer's own toggle writes.
+ */
+export function presetDeviceDrawerGroup(
+  storageKey: DeviceDrawerGroupKey,
+  chatSessionId: string | null,
+  group: string,
+): void {
+  if (chatSessionId) patchChatCompanionUiState(chatSessionId, { [storageKey]: group });
+  else sessionGroups.set(storageKey, group);
+}
+
 /** Test seam: a chatless surface's remembered group must not leak between tests. */
 export function resetDeviceDrawerGroupsForTests(): void {
   sessionGroups.clear();

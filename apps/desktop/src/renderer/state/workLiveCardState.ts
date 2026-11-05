@@ -10,7 +10,7 @@
  */
 
 /** The tools that have something to *look at*. Git and Files do not. */
-export type WorkLiveScreenTool = "browser" | "app-control" | "ios" | "mac-desktop";
+export type WorkLiveScreenTool = "browser" | "app-control" | "ios" | "mac-desktop" | "android";
 
 export const WORK_LIVE_SCREEN_TOOLS: readonly WorkLiveScreenTool[] = [
   "browser",
@@ -21,6 +21,10 @@ export const WORK_LIVE_SCREEN_TOOLS: readonly WorkLiveScreenTool[] = [
   // the frame is already in `macDesktopFrameStore`, kept by whichever surface
   // last held the decoder, so the card adds no capture of its own.
   "mac-desktop",
+  // The lane's Android emulator. It floats in its own player, as the Apple
+  // device does; it is here for the per-chat "Show preview when minimized"
+  // marker that player and the tool header share.
+  "android",
 ];
 
 export function isWorkLiveScreenTool(tool: string | null | undefined): tool is WorkLiveScreenTool {

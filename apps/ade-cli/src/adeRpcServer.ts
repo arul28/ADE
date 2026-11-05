@@ -5126,6 +5126,28 @@ const APPLE_AGENT_DRIVING_ACTIONS = new Set([
 ]);
 
 /**
+ * `android_emulator` actions that mean an agent is driving the lane's
+ * emulator, so the desktop may float it over that agent's chat (see
+ * `work_tools.noteAgentAndroidActivity`). Reads are not driving.
+ */
+const ANDROID_AGENT_DRIVING_ACTIONS = new Set([
+  "start",
+  "tap",
+  "swipe",
+  "longPress",
+  "drag",
+  "scroll",
+  "sendKey",
+  "sendText",
+  "rotate",
+  "openUrl",
+  "launchApp",
+  "tapElement",
+  "fillElement",
+  "recordStart",
+]);
+
+/**
  * `mac_desktop` actions an agent can call that do NOT drive the lane's display:
  * the reads, stopping or releasing what it holds, observing and waiting, and
  * asking for the input lease (the real input that follows it is what counts).
@@ -7158,7 +7180,9 @@ async function runTool(args: {
           ? "mac-desktop"
           : domain === "app_control" && APP_CONTROL_AGENT_DRIVING_ACTIONS.has(action)
             ? "app-control"
-            : null;
+            : domain === "android_emulator" && ANDROID_AGENT_DRIVING_ACTIONS.has(action)
+              ? "android"
+              : null;
     if (domain === "app_control") {
       // Coarse usage facts only: the outcome, never the lane, chat or app. A
       // recording counts once it was filed as proof.
@@ -7176,6 +7200,7 @@ async function runTool(args: {
         const activity = { chatSessionId, laneId: resolveChatSessionLaneId(runtime, session) ?? null };
         if (drivenDevice === "apple") runtime.workToolsStateService?.noteAgentAppleActivity?.(activity);
         else if (drivenDevice === "app-control") runtime.workToolsStateService?.noteAgentAppControlActivity?.(activity);
+        else if (drivenDevice === "android") runtime.workToolsStateService?.noteAgentAndroidActivity?.(activity);
         else runtime.workToolsStateService?.noteAgentMacDesktopActivity?.(activity);
       }
     }

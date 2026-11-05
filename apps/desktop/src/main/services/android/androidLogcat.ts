@@ -43,8 +43,11 @@ export function logcatArgs(options: {
   uid?: number | null;
   /** Stream new lines instead of dumping the buffer and exiting. */
   follow?: boolean;
+  /** P2 crash pin: read the crash buffer (`-b crash`) instead of the main ones. */
+  crashBuffer?: boolean;
 }): string[] {
   const args = ["logcat", "-v", "epoch"];
+  if (options.crashBuffer) args.push("-b", "crash");
   if (!options.follow) args.push("-d");
   if (options.since) {
     // `-t <time>` implies `-d`; `-T <time>` keeps following.
@@ -61,7 +64,7 @@ export function logcatArgs(options: {
  * main` dividers, a wrapped continuation):
  * `  1730000000.123  1234  1250 I ActivityManager: Start proc …`.
  */
-function parseLogcatLine(line: string): AndroidLogLine | null {
+export function parseLogcatLine(line: string): AndroidLogLine | null {
   const match = /^\s*(\d+\.\d+)\s+(\d+)\s+(\d+)\s+([VDIWEFS])\s+(.*?)\s*:\s?(.*)$/u.exec(line);
   if (!match) return null;
   return {

@@ -34,6 +34,7 @@ import {
   useAppleLaneDeviceCard,
   type AppleLaneDeviceCard,
 } from "../apple/useAppleLaneDeviceCard";
+import { useAndroidLaneDeviceCard, type AndroidLaneDeviceCard } from "../android/useAndroidLaneDeviceCard";
 import { issueTabsScopeKey, useIssueTabs } from "../issues/issueTabsStore";
 import { useActiveProjectRoot } from "../../state/appStore";
 import { useNativeToolFeedHandlers, useNativeToolFeeds } from "./NativeToolFeedsContext";
@@ -365,6 +366,26 @@ export function iosStatusLine(device: AppleLaneDeviceCard | null): WorkToolStatu
 }
 
 /**
+ * The Android card's subtitle, as Apple's: `No device` | `{name} · Starting` |
+ * `{name} · Running` | `{name} · Stopping` | `{name} · Off` | `{name} · Stopped`
+ * (the emulator quit on its own). Green only while the emulator is booted.
+ */
+export function androidStatusLine(device: AndroidLaneDeviceCard | null): WorkToolStatus {
+  if (!device) return statusLine("No device", false);
+  const suffix = {
+    starting: "Starting",
+    booted: "Running",
+    stopping: "Stopping",
+    off: "Off",
+    crashed: "Stopped",
+  }[device.state];
+  return statusLine(`${device.name} · ${suffix}`, device.state === "booted", {
+    attention: device.state === "starting" || device.state === "stopping",
+    errored: device.state === "crashed",
+  });
+}
+
+/**
  * App Control's dot, in three states rather than one.
  *
  * The dot used to be green for any session that had not been stopped, which
@@ -619,6 +640,8 @@ export function useWorkToolStatuses(args: {
     enabled: enabled && !offline && appleHostPossible,
     refreshKey: appleDeviceRefreshKey,
   });
+  // The lane's Android emulator: every host can run one, so no platform gate.
+  const androidDevice = useAndroidLaneDeviceCard({ laneId, runtimePin, enabled: enabled && !offline });
 
   useEffect(() => {
     if (!enabled || offline || !canBrowser) setBrowserErrors(EMPTY_WORK_TOOL_ERRORS);
@@ -706,6 +729,7 @@ export function useWorkToolStatuses(args: {
       git: gitStatusLine(lane, laneStatusStale),
       files: filesStatusLine(lane),
       ios: offline ? IDLE : iosStatusLine(appleDevice),
+      android: offline ? IDLE : androidStatusLine(androidDevice),
       "app-control": offline ? IDLE : appControlStatusLine(appControlSession),
       // No `offline ? IDLE` arm: an unreachable machine leaves the last known
       // answer standing rather than claiming the lane has no screen, and the
@@ -719,6 +743,7 @@ export function useWorkToolStatuses(args: {
     appControlSession,
     macDesktopStatus,
     appleDevice,
+    androidDevice,
     browserErrors,
     browserStatus,
     devServerPorts,

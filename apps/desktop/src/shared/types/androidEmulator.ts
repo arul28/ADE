@@ -8,7 +8,7 @@
  */
 
 import type { OpenProjectBinding } from "./core";
-import type { AndroidCapabilities, AndroidEmulatorAgentServiceApi, AndroidRecording } from "./androidEmulatorAgent";
+import type { AndroidAppCrash, AndroidCapabilities, AndroidEmulatorAgentServiceApi, AndroidRecording } from "./androidEmulatorAgent";
 import type { AndroidEmulatorToolsPreloadApi } from "./androidEmulatorDrawer";
 import type { AndroidEmulatorLookPreloadApi, AndroidEmulatorLookServiceApi, AndroidRenderRequestEvent } from "./androidEmulatorLook";
 import type { AndroidEmulatorSetupPreloadApi, AndroidEmulatorSetupServiceApi, AndroidSdkInstallState } from "./androidEmulatorSetup";
@@ -16,7 +16,8 @@ import type { RuntimeDisposeReason } from "./runtimeLifecycle";
 
 /**
  * The Android panel's product facts (`ade_feature_used`, `action: "android_device"`):
- * whether the guided SDK install, app installs, renders and agent leases are used at all.
+ * whether the guided SDK install, app installs, renders, agent leases, the phone and web
+ * viewers, and starts past the RAM guard are used at all.
  * Closed: a spelling not listed here is dropped by the analytics policy, not widened.
  */
 export const ANDROID_DEVICE_ANALYTICS_OUTCOMES = [
@@ -24,6 +25,8 @@ export const ANDROID_DEVICE_ANALYTICS_OUTCOMES = [
   "app_installed",
   "device_rendered",
   "device_leased",
+  "remote_viewed",
+  "start_forced",
 ] as const;
 export type AndroidDeviceAnalyticsOutcome = (typeof ANDROID_DEVICE_ANALYTICS_OUTCOMES)[number];
 
@@ -106,6 +109,8 @@ export type AndroidAvd = {
   lcdWidth: number | null;
   lcdHeight: number | null;
   density: number | null;
+  /** P2 RAM guard: the guest RAM in MB (`hw.ramSize`), when `config.ini` says. */
+  ramMb: number | null;
   /** The AVD folder (`<avdHome>/<name>.avd`). */
   path: string;
   /** Bytes on disk, when measured. */
@@ -159,6 +164,8 @@ export type AndroidLaneDeviceStatus = {
   state: "none" | "off" | "starting" | "booted" | "stopping" | "crashed";
   /** Set when `state` is `crashed` or a start failed. */
   error: AndroidEmulatorError | null;
+  /** P2 crash pin: the lane's app's last crash while the emulator runs. Absent from a brain before P2. */
+  appCrash?: AndroidAppCrash | null;
 };
 
 /**
@@ -236,6 +243,8 @@ export const ANDROID_EMULATOR_ERROR_CODES = [
   "ANDROID_SDK_INSTALL_FAILED",
   /** "Use mine…" named a folder that is not an Android SDK, or the install folder is not usable. */
   "ANDROID_SDK_PATH_INVALID",
+  /** P2 RAM guard: the start would push the machine into swap. `start` with `force` starts it anyway. */
+  "ANDROID_LOW_MEMORY",
 ] as const;
 export type AndroidEmulatorErrorCode = (typeof ANDROID_EMULATOR_ERROR_CODES)[number];
 
@@ -293,6 +302,9 @@ export type AndroidDeviceInventory = {
 };
 
 export type AndroidLaneArgs = { laneId: string };
+
+/** `start`. `force` boots even when the RAM guard says the machine has too little free memory. */
+export type AndroidStartArgs = AndroidLaneArgs & { force?: boolean };
 
 /** `listDevices`. `measureSizes` (P1 look, Storage) walks each AVD folder for `sizeBytes`. */
 export type AndroidListDevicesArgs = { laneId?: string | null; measureSizes?: boolean };
@@ -381,6 +393,8 @@ export type AndroidEmulatorEvent =
   | { type: "android.sdk.install"; install: AndroidSdkInstallState }
   /** A recording started or ended; `recording.active` says which. */
   | { type: "android.recording.state"; laneId: string; recording: AndroidRecording }
+  /** P2 crash pin: the lane's app crashed. */
+  | { type: "android.app.crashed"; laneId: string; crash: AndroidAppCrash }
   | AndroidRenderRequestEvent;
 
 export type AndroidEmulatorServiceApi = {
@@ -391,7 +405,7 @@ export type AndroidEmulatorServiceApi = {
   /** Hold an existing (user or free ADE) AVD for the lane. */
   attachDevice(args: AndroidAttachDeviceArgs): Promise<AndroidLaneDeviceStatus>;
   /** Boot the lane's AVD (no-op when already booted). */
-  start(args: AndroidLaneArgs): Promise<AndroidLaneDeviceStatus>;
+  start(args: AndroidStartArgs): Promise<AndroidLaneDeviceStatus>;
   /** Stop the lane's emulator if ADE started it. */
   stop(args: AndroidLaneArgs): Promise<AndroidLaneDeviceStatus>;
   releaseDevice(args: AndroidReleaseDeviceArgs): Promise<{ released: boolean; deletedAvd: string | null }>;
@@ -551,7 +565,7 @@ export type AndroidEmulatorPreloadApi = {
   listDevices(args?: AndroidListDevicesArgs, pin?: Pin): Promise<AndroidDeviceInventory>;
   createDevice(args: AndroidCreateDeviceArgs, pin?: Pin): Promise<AndroidLaneDeviceStatus>;
   attachDevice(args: AndroidAttachDeviceArgs, pin?: Pin): Promise<AndroidLaneDeviceStatus>;
-  start(args: AndroidLaneArgs, pin?: Pin): Promise<AndroidLaneDeviceStatus>;
+  start(args: AndroidStartArgs, pin?: Pin): Promise<AndroidLaneDeviceStatus>;
   stop(args: AndroidLaneArgs, pin?: Pin): Promise<AndroidLaneDeviceStatus>;
   releaseDevice(args: AndroidReleaseDeviceArgs, pin?: Pin): Promise<{ released: boolean; deletedAvd: string | null }>;
   deleteDevice(args: { avdName: string }, pin?: Pin): Promise<{ deleted: boolean }>;

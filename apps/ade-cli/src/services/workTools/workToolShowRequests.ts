@@ -72,6 +72,7 @@ const WORK_TOOL_SHOW_SURFACE_LABELS: Record<WorkToolShowSurface, string> = {
   "app-control": "App Control in the tools pane",
   "floating-app-control": "floating App Control",
   android: "Android emulator in the tools pane",
+  "floating-android": "floating Android emulator",
 };
 
 type HeldAnswer = { desktopLabel: string | null; opened: boolean };
@@ -119,6 +120,8 @@ export type WorkToolShowRequests = {
   noteAgentMacDesktopActivity(input: AgentDeviceActivity): boolean;
   /** The same for the lane's App Control app: an `auto` floating-card offer. */
   noteAgentAppControlActivity(input: AgentDeviceActivity): boolean;
+  /** The same for the lane's Android emulator: an `auto` floating-player offer. */
+  noteAgentAndroidActivity(input: AgentDeviceActivity): boolean;
   dispose(): void;
 };
 
@@ -223,7 +226,7 @@ export function createWorkToolShowRequests(args: {
   };
 
   const noteAgentActivity = (
-    surface: "floating-apple" | "floating-mac-desktop" | "floating-app-control",
+    surface: "floating-apple" | "floating-mac-desktop" | "floating-app-control" | "floating-android",
     input: AgentDeviceActivity,
   ): boolean => {
     const chatSessionId = trimmedOrNull(input.chatSessionId);
@@ -327,6 +330,10 @@ export function createWorkToolShowRequests(args: {
 
     noteAgentAppControlActivity(input) {
       return noteAgentActivity("floating-app-control", input);
+    },
+
+    noteAgentAndroidActivity(input) {
+      return noteAgentActivity("floating-android", input);
     },
 
     dispose() {

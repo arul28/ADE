@@ -143,5 +143,19 @@ export function createMockAndroidTools({ fail }: { fail: boolean }): AndroidEmul
       }
       return read(laneId);
     }),
+    // The Logs group: a few new lines on each read after the cursor.
+    readLog: async ({ laneId, packageName, since }) => {
+      const start = since ? Number(since) : Date.now() / 1000 - 30;
+      const tags = ["MainActivity", "OkHttp", "SignInViewModel"] as const;
+      const lines = Array.from({ length: since ? 2 : 12 }, (_, index) => ({
+        time: (start + (index + 1) * 0.25).toFixed(3),
+        pid: 4321,
+        tid: 4321 + (index % 3),
+        level: (["D", "I", "W", "E"] as const)[index % 4]!,
+        tag: tags[index % tags.length]!,
+        message: index % 4 === 3 ? "Sign-in failed: HTTP 401" : `Step ${index + 1} done`,
+      }));
+      return delay({ laneId, packageName: packageName ?? null, pids: [4321], lines, truncated: false, cursor: lines.at(-1)?.time ?? since ?? null }, 120);
+    },
   };
 }

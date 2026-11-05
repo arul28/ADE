@@ -261,6 +261,7 @@ export function WorkLiveCornerCard({
     "app-control": 0,
     ios: 0,
     "mac-desktop": 0,
+    android: 0,
   });
   /** Only used when there is no project to persist into (a projectless Work surface). */
   const [localPosition, setLocalPosition] = useState<WorkLiveCardPosition | null>(null);
@@ -346,6 +347,7 @@ export function WorkLiveCornerCard({
     "app-control": 0,
     ios: 0,
     "mac-desktop": 0,
+    android: 0,
   });
   const activityCommitRef = useRef<number | null>(null);
   /** Resize gesture state: where the pointer started and how wide the card was. */
@@ -496,6 +498,7 @@ export function WorkLiveCornerCard({
     "app-control": workLiveSource("app-control", sourceState),
     ios: workLiveSource("ios", sourceState),
     "mac-desktop": workLiveSource("mac-desktop", sourceState),
+    android: workLiveSource("android", sourceState),
   }), [sourceState]);
 
   /**

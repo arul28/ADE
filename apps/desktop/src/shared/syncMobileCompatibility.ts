@@ -308,9 +308,11 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   "apple.recordList",
   "apple.recordStart",
   "apple.recordStop",
-  // The lane's Android emulator (P1): optional the same way, so a phone or a
-  // web tab hides the Android tool on an older brain.
+  // The lane's Android emulator: optional the same way, so a phone or a web
+  // tab hides the Android tool on an older brain. Without `streamTicket` (a
+  // P1 brain) the viewer shows screenshots in place of the live picture.
   "android.status",
+  "android.streamTicket",
   "android.input",
   "android.invoke",
   "android.deviceList",

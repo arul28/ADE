@@ -6,6 +6,7 @@
  *   suggestion card in the bottom-right corner (rendered by the toast viewport)
  * - `showToast` (components/app/toast/toastStore) + `ToastCard`: bottom-right toasts
  * - `StatusStrip` + `StatusChip`: one row of small status chips on a composer's edge
+ * - `NoticePopover`: the card a one-line notice opens (`InlineErrorNotice`, a crash pin)
  * - `noticeTone`: the shared tone palette
  */
 export { Banner, type BannerDismiss, type BannerLayout, type BannerModel } from "./Banner";
@@ -18,6 +19,7 @@ export {
   type AppBannerOptions,
   type AppBannerPlacement,
 } from "./appBannerStore";
+export { NoticePopover } from "./NoticePopover";
 export { ToastCard, type ToastCardAction, type ToastCardModel, type ToastChip } from "./ToastCard";
 export {
   NoticeActions,

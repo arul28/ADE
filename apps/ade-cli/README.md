@@ -809,6 +809,7 @@ ade android device-create --profile medium_phone --text  # make an AVD for this 
 ade android device-create --catalog galaxy-s25 --color navy --text  # a brand device (stock Android): Pixel, Galaxy, OnePlus, Nothing
 ade android device-attach --avd <name> --text         # hold an AVD no other lane holds, and boot it
 ade android start --text                              # also: stop; device-detach [--keep] (an ADE-made AVD is deleted unless --keep)
+                                                      # start refuses ANDROID_LOW_MEMORY when the machine would swap; --force boots anyway (ask the user first)
 ade android screenshot --out shot.png --text          # PNG on the emulator's machine
 ade android tap 540 1200 --text                       # device pixels; also: swipe x1 y1 x2 y2 --duration-ms 300, button back, type "hi"
 ade android rotate landscape --text                   # lock the screen to portrait or landscape; apps that fix their orientation keep it

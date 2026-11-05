@@ -5,8 +5,8 @@ Development** tool and from `ade android`. It makes a new AVD for the lane, or
 attaches one the user names. It boots the AVD headless, streams the screen into
 the pane through a bundled scrcpy server, and sends touch, keys and text to it.
 
-This page describes phase P0 as built on the `ade/android-emulator-suite`
-lane. The plan, with the decisions and the later phases, is
+This page describes phases P0, P1 and P2 as built. The plan, with the
+decisions and the later phases, is
 [docs/plans/android-emulator.md](../../plans/android-emulator.md).
 
 Scope:
@@ -271,6 +271,7 @@ group reads from the device.
 | App | The app in front (read every 2 s while the group is open), **Build & run** (Gradle), **Relaunch**, **Stop**, **Uninstall**, **Start an app**, **Open** a link, **Install** an APK, and Permissions. |
 | Capture | The lane's recordings, newest first: **Open in proof**, and a ⋯ menu with Show in Finder (not for another machine's files) and Delete. A running recording shows as one line at the top. |
 | Emulator | Appearance, Location (presets or a typed point), Battery level and Charging, Airplane mode, Wi-Fi, Mobile data. |
+| Logs | Logcat for the lane's app (P2): the newest package ADE installed for the lane, else the app in front, or **Whole device**. A level filter (All, Info, Warn, Error), a text filter, **Pause**, **Clear**, **Copy** and **Send to chat** (the newest 80 lines into the chat's draft). |
 
 Each change is one call to the lane's machine, and the drawer shows the value
 the device reports after the change. It never shows a value it has not read.
@@ -291,6 +292,56 @@ The settings come from `androidDeviceSettings.ts`, in one `sh -c` read
 - The app in front: the first `mFocusedApp` line of `dumpsys window`. The
   home app reads as "Home screen".
 
+### Logs, quick chips and the crash pin (P2)
+
+The **Logs** group reads `readLog` (the same bounded read as `ade android
+log`) every 2 s with the last line's cursor, so each read carries only new
+lines. It reads only while the group is open and the window is in front, and
+it keeps the newest 500 lines. The time column shows only where the drawer is
+wide; each row's tooltip has the time and the pid.
+
+**Quick chips** sit at the top left of a live picture: Location, Battery,
+Network and dark mode. They are shortcuts to the Emulator group's own calls
+and settings read, and each menu ends with **More in Tools**. They hide while
+the drawer or Inspect is open, and in a pane under 420 px.
+
+**The crash pin.** When the lane's app crashes, a red pin shows under the
+chips: "{package} crashed". It opens a card with the exception, the stack,
+**Send to chat**, **Copy** and **Open Logs**. × hides that crash in this
+window until the next one. The source is the brain, not the pane
+(`androidCrashWatch.ts`):
+
+- Each booted lane emulator gets one `adb logcat -b crash` reader. The crash
+  buffer holds only crash lines, so the reader is idle until an app crashes.
+  The buffer's older crashes are skipped.
+- A crash is a Java `FATAL EXCEPTION` block (`AndroidRuntime`) or a native
+  crash dump (`DEBUG`). The lines of one crash come from one writer; a quiet
+  gap of 250 ms ends it.
+- Only the lane's app counts: the packages ADE installed for the lane, or,
+  when it installed none, any app outside `android`, `com.android.*` and
+  `com.google.android.*`.
+- The brain emits `android.app.crashed` and puts the crash on the lane status
+  (`appCrash`), so every viewer on every machine sees it. `ade android status`
+  prints it with the next `ade android log` command. The pin ends when the
+  emulator stops.
+
+### The RAM guard (P2)
+
+Before a boot, the brain compares what the emulator needs with the memory the
+machine can give without swapping (`androidMemoryGuard.ts`):
+
+- Need: the AVD's `hw.ramSize` (2 GB when it does not say) plus about 900 MB
+  for the emulator process.
+- Free: on macOS, `kern.memorystatus_level` (the percent that
+  `memory_pressure` prints) times the total. `os.freemem()` leaves out the file
+  cache there and reads far too low. On Windows and Linux, `os.freemem()`
+  (available memory).
+- A start that would leave less than 1 GB free fails with
+  `ANDROID_LOW_MEMORY`: "{device} needs about X GB of memory, and this machine
+  has Y GB free." The pane shows a warning strip with **Start anyway**, the
+  floating player's Start becomes **Start anyway**, and the CLI takes `ade
+  android start --force`. An emulator that already runs is never checked.
+
 ### States
 
 | State | What the pane shows |
@@ -302,6 +353,7 @@ The settings come from `androidDeviceSettings.ts`, in one `sh -c` read
 | Video stopped | The picture dims. The strip says "Video stopped." with **Reconnect**. |
 | Off | "{name} is off." with **Start** and **Choose another device**. |
 | Crashed | Why the emulator stopped (often the last error line of its log), with **Restart**, **Open log** and **Choose another device**. |
+| Low memory | A warning strip with the numbers and **Start anyway** (the RAM guard). |
 | Unsupported | "This machine can't run the Android emulator." with the host's reason. |
 
 A failed status read shows an inline banner with **Retry**. When the
@@ -324,9 +376,36 @@ A tap, key or swipe that fails shows one error toast per stall
 
 ### Closing the tab
 
-Closing the tab, or moving to another tool, gives back the pane's hold on the
-stream. The last viewer of a lane stops the stream. The emulator keeps
-running. P0 has no floating player.
+Closing the tab with ×, or moving to another tool, gives back the pane's hold
+on the stream. The last viewer of a lane stops the stream. The emulator keeps
+running.
+
+### The floating player (P2)
+
+One Apple device and one Android emulator can float over the chat at the same
+time, each in its own player (`AndroidDeviceMiniPlayer.tsx`,
+`androidMiniPlayerStore.ts`). The shared floating-player slots keep them from
+covering each other. The rules are Apple's:
+
+- **Float over chat** in the rail's More menu opens it. So does closing the
+  tools pane (or switching tool) while the picture is live, unless the chat's
+  "Show preview when minimized" is off.
+- `ade android show --floating` (or `ade ui show floating-android`) asks for
+  it. With the Android tool on screen, the answer is "shown" and nothing more
+  opens.
+- An agent that drives the emulator (tap, key, type, launch, record) floats
+  it when the chat is in front, the Android tool is not on screen and the
+  chat's preview is on. It never replaces a player that is up.
+- × closes it and turns the chat's preview off. **Open in pane** moves it back
+  into the Android tool. Closing the Android tab for real floats nothing.
+- It shows only over a surface of the same lane on the same machine, and it
+  is not offered for another machine's work copy.
+- The stream lease waits 1 s before the last viewer's stop, so the pane and the
+  player share one stream across the handover.
+
+The tools pane's Android card reads "{device} · Running" (or Starting,
+Stopping, Off, Stopped) from one status read and the lane's Android events,
+with no poll (`useAndroidLaneDeviceCard.ts`).
 
 ## Lanes and devices
 
@@ -544,7 +623,34 @@ and `android.recordList` (viewer-allowed) and `android.input`,
 (controller-only) on every host that builds the emulator service.
 `android.invoke` reaches the action allowlist through the `android_emulator`
 action domain (its argument checks too), except the stream calls and the SDK
-writes. The remote live view (`android.streamTicket`) is P2.
+writes.
+
+P2 adds the remote live view. `android.streamTicket` (viewer-allowed) issues a
+ticket on the brain's stream relay (the Apple relay, with a second router for
+Android on the same `/apple/stream/<ticket>` path). It never boots the
+emulator: an emulator that is not booted answers `ANDROID_NOT_RUNNING`. The
+relay starts the stream when the viewer's socket attaches and stops only the
+streams it started. A local stop while a remote viewer watches hands the
+stream to the relay. `android.input` takes kind `touch` (down, move and up
+events in device pixels, at most 64 a call) for the viewer's live finger.
+`android.status` carries `liveView` (the brain serves tickets) and `appCrash`.
+
+The hosted web client's `androidEmulator` namespace
+(`webclient/adapter/androidDevice.ts`) uses these commands. Reads go through
+`android.invoke`; the SDK writes refuse with "Set up Android in the ADE
+desktop app on that computer." Its events come from a status read every 3 s,
+only while the pane listens and the tab is visible.
+
+The iOS app's viewer (`AndroidDeviceViewer.swift` on the live stage, the
+`android` kind of `LiveStage`) uses the same commands and the same video
+socket as its Simulator viewer. It shows only where the lane's machine
+advertises both `android.status` and `android.streamTicket`. The chat's tool
+chips show the emulator while the lane has one, also when it is off, so the
+viewer can offer **Start**. Start and input need `android.invoke` and
+`android.input` at the controller role; a phone at the viewer role can only
+watch. The emulator sends no frames while its screen is still, so the viewer
+does not treat a still picture as a dead stream. Fold mirroring waits for a
+host posture API (P3).
 
 ## Another machine
 
@@ -591,7 +697,7 @@ pane, behind the tab on screen. This is the same for the iOS Simulator
 each use, and ADE remembers the uses across reloads, so a tab that the user
 closes does not come back. ADE does not open a closed pane.
 
-Phone and web viewers (`android.*` sync commands and a stream ticket) are P2.
+The phone and web viewers (P2) are in **Remote surfaces** above.
 
 ## Live view
 
@@ -647,6 +753,7 @@ goes with it. `docs/logging.md` holds the contract.
 |---|---|
 | `apps/desktop/src/shared/types/androidEmulator.ts` | The contract: SDK, AVD and lane types, error codes, the service API, the action lists (`ANDROID_AGENT_ACTIONS`, `ANDROID_USER_ONLY_ACTIONS`, `ANDROID_PERSON_ONLY_ACTIONS`, `ANDROID_LANE_FREE_ACTIONS`, `ANDROID_CODE_SYNC_ACTIONS`), and the preload API. It re-exports its siblings: `androidEmulatorAgent.ts` (the agent suite, `ANDROID_PERMISSIONS`), `androidEmulatorSetup.ts` (the SDK install), `androidEmulatorLook.ts` (colour and render) and `androidEmulatorDrawer.ts` (the Tools drawer, `ANDROID_TEXT_SIZES`, `ANDROID_DISPLAY_SIZES`). |
 | `apps/desktop/src/main/services/android/androidEmulatorService.ts` | The service: lane queue, start, stop, input, screenshot, the work-copy lanes, the start-up cleanup, and the hand-off. |
+| `apps/desktop/src/main/services/android/androidHandedOffEmulators.ts` | The state file of the emulators ADE started, and the stops that use it: on dispose, and when a project is removed after a hand-off. |
 | `apps/desktop/src/main/services/android/androidDeviceInventory.ts` | The lane's AVD: the device list, create, attach, release, delete and colour, and the work copy's borrow rule. |
 | `apps/desktop/src/main/services/android/androidSdk.ts` | SDK detection, tools and acceleration. |
 | `apps/desktop/src/main/services/android/androidSdkSetup.ts`, `androidSdkInstall.ts`, `androidSdkRepository.ts`, `androidZipExtract.ts`, `androidCli.ts` | The guided install: the plan, licence checks, the SDK setting, the installer job, Google's repository manifests, the zip reader, and the Android CLI. |
@@ -658,6 +765,7 @@ goes with it. `docs/logging.md` holds the contract.
 | `apps/desktop/src/main/services/android/androidStream.ts`, `androidStreamServer.ts`, `androidLaneStreams.ts` | Streams by adb serial, the defaults, restarts, and the loopback stream server; the lane's side of its stream (a viewer, a recording). |
 | `apps/desktop/src/main/services/android/scrcpyServer.ts`, `scrcpyVideo.ts`, `scrcpyControl.ts` | The scrcpy session, video records and control messages. |
 | `apps/desktop/src/main/services/android/androidActionDomain.ts` | The `android_emulator` action domain. |
+| `apps/desktop/src/main/services/android/androidMemoryGuard.ts`, `androidCrashWatch.ts` | P2: the RAM guard (with the machine-wide count of boots in flight), and the crash-buffer reader behind the crash pin. |
 | `apps/desktop/src/main/services/android/androidAgentSuite.ts`, `androidJdk.ts` | The agent verbs (elements, apps, logcat, proof, lease), and the JDK that Gradle runs with. |
 | `apps/desktop/src/main/services/android/androidUiSnapshot.ts`, `androidUiTree.ts` | The UI tree (the Android CLI, or uiautomator), its cache, and the element queries. |
 | `apps/desktop/src/main/services/android/androidRecordingSession.ts`, `androidRecording.ts` | The lane's recording sessions, and the MP4 writer and store. |
@@ -665,6 +773,7 @@ goes with it. `docs/logging.md` holds the contract.
 | `apps/desktop/src/main/services/android/androidDeviceShell.ts`, `androidProof.ts` | Device shell, adb and emulator console helpers, and the proof filer. |
 | `apps/desktop/src/main/services/android/adb.ts`, `androidEmulatorErrors.ts` | The adb runner and the coded errors. |
 | `apps/desktop/src/renderer/components/android/AndroidDevicePane.tsx` | The pane: picker, stage, rail, drawer, strips and live line. |
+| `apps/desktop/src/renderer/components/android/useAndroidPaneFloat.ts`, `useAndroidStorageActions.ts` | The pane's half of the floating player (the cache and "Float over chat"), and the picker's Storage actions. |
 | `apps/desktop/src/renderer/components/android/drawer/` | The Tools drawer: `AndroidToolsDrawer.tsx`, the four group sections, and `androidDrawerState.ts`. The open group, the one serialized change and the settings come from the shared `device/deviceDrawerState.ts`; the frame, the Location rows and the recording rows from `device/DeviceToolsDrawerShell.tsx`, `device/DeviceLocationRows.tsx` and `shared/RecordingRow.tsx`. |
 | `apps/desktop/src/renderer/components/android/useAndroidInspect.tsx`, `useAndroidRecording.ts` | Inspect (on the shared `device/useDeviceInspect.ts` and `device/DeviceInspectOverlay.tsx`) and the rail's Record. |
 | `apps/desktop/src/renderer/components/android/androidDeviceState.ts` | The pane state, stock profiles, menu rules and error sentences. The 3D-or-flat choice is kept by the shared `device/deviceViewMode.ts`. |
@@ -676,6 +785,11 @@ goes with it. `docs/logging.md` holds the contract.
 | `apps/desktop/src/renderer/components/android/AndroidRenderSheet.tsx`, `androidRender.ts`, `useAndroidRenderRequests.ts` | The Render sheet (on the shared `device/DeviceRenderSheet.tsx`), the drawing and filing of renders (on `device/deviceRenderProof.ts` and `device/deviceRenderPass.ts`), and the pane's answer to `ade android render`. |
 | `apps/desktop/src/renderer/components/android/useAndroidDeviceStream.ts`, `useAndroidDeviceInput.ts`, `androidStreamLease.ts` | The stream (on the shared `device/useStreamRecovery.ts` and `device/useGracefulStreamLease.ts`), input, and the per-lane stream lease (a `device/streamLease.ts` table of its own). |
 | `apps/desktop/src/renderer/components/terminals/workToolPanels.tsx` | The Android tool's targets (This lane, Android · `<machine>`). |
+| `apps/desktop/src/renderer/components/android/AndroidDeviceMiniPlayer.tsx`, `androidMiniPlayerStore.ts`, `apps/desktop/src/renderer/components/device/miniPlayerSurface.ts` | P2: the floating player, which emulator floats, and the surface rules it shares with the Apple player. |
+| `apps/desktop/src/renderer/components/android/AndroidQuickChips.tsx`, `AndroidCrashPin.tsx`, `drawer/AndroidLogsSection.tsx`, `androidTextDraft.ts` | P2: the quick chips, the crash pin, the Logs group, and the chat draft and copy they share. |
+| `apps/desktop/src/renderer/components/android/useAndroidLaneDeviceCard.ts` | P2: the tools pane card's line. |
+| `apps/desktop/src/renderer/webclient/adapter/androidDevice.ts`, `streamTicket.ts` | P2: the hosted web client's `androidEmulator` namespace, and the relay ticket helpers it shares with `appleDevice.ts` (one ticket for each stream URL). |
+| `apps/ios/ADE/Views/Work/AndroidDeviceViewer.swift`, `AndroidDeviceViewerModel.swift`, `apps/ios/ADE/Services/SyncService+AndroidDevice.swift` | P2: the phone viewer, its control model, and the `android.*` commands it sends. The stream itself is `AppleStreamSession.swift`, and the touch rules are `LiveStageTouch` in `LiveStageChrome.swift`, both shared with the simulator viewer. |
 | `apps/desktop/src/renderer/components/terminals/useRemoteDeviceTabs.ts` | The tab that joins the open pane for a remote device use (iOS and Android). |
 | `apps/ade-cli/src/cliAndroid.ts`, `cliAndroidFormat.ts` | `ade android` plans and error hints, and its text formatters. The help page is in `cli.ts`. |
 | `apps/ade-cli/src/services/sync/androidRemoteCommands.ts` | The `android.*` remote commands a phone or a web tab sends. |
@@ -692,7 +806,7 @@ P0 does not have:
 - Inspect, Record on the rail and the Tools drawer (P1, now built);
 - phone and web viewers, the phone's full-screen view, quick chips, the Logs
   drawer, the RAM guard, and two floating players, one for each device kind
-  (P2);
+  (P2, now built; see the sections above);
 - fold by drag, Compose preview render, a system image manager and
   instrumentation tests (P3).
 

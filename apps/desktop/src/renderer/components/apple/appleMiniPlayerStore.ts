@@ -17,6 +17,11 @@ import {
   type AppleStreamLeaseKey,
 } from "./appleStreamLease";
 import { laneDeviceBooted } from "./appleDeviceState";
+import {
+  miniPlayerBelongsToSurface,
+  miniPlayerPreviewSuppressed,
+  type MiniPlayerSurface,
+} from "../device/miniPlayerSurface";
 
 /**
  * Which device is floating over the chat, if any.
@@ -38,47 +43,14 @@ export type AppleMiniPlayerTarget = {
   runtimePin: OpenProjectBinding | null;
 };
 
-/**
- * The Work surface in front of the player: the session the page is showing,
- * reduced to what decides whether the floating device belongs over it.
- *
- * Null is the new-chat / empty composer screen. That screen may have a lane
- * picked in its composer, but it is not a surface OF that lane yet — nothing
- * has been started there — and it is exactly where the owner saw a lane's
- * simulator float uninvited (2026-09-23, "it shouldn't have done that").
- */
-export type AppleMiniPlayerSurface = {
-  /** The session's lane; null for a lane-less (projectless) session. */
-  laneId: string | null;
-  /** The session's own pin, as `resolveSessionRuntimePin` answers it. */
-  runtimePin: OpenProjectBinding | null;
-  /** The machine this window is bound to, which a null pin means. */
-  boundBinding: OpenProjectBinding | null;
-};
+/** The Work surface in front of the player (`device/miniPlayerSurface.ts`). */
+export type AppleMiniPlayerSurface = MiniPlayerSurface;
 
-/**
- * Does the floating device belong over this surface?
- *
- * Only over a session of the SAME lane on the SAME machine. The device is a
- * lane's simulator; over another lane's chat it is someone else's picture, and
- * a lane id alone is not an identity — two machines can each have a lane
- * called the same thing, so the machine is compared too, through the same
- * `workRuntimeScopeKey` the Work tools key themselves on. Both sides resolve a
- * null pin against the window's CURRENT binding, which is what a null pin
- * means to the stream as well.
- *
- * A lane-less target (a projectless chat's device) belongs only on lane-less
- * surfaces, by the same rule: null lane equals null lane.
- */
-export function appleMiniPlayerBelongsToSurface(
-  target: AppleMiniPlayerTarget,
+/** Only over a session of the same lane on the same machine (`miniPlayerBelongsToSurface`). */
+export const appleMiniPlayerBelongsToSurface: (
+  target: Pick<AppleMiniPlayerTarget, "laneId" | "runtimePin">,
   surface: AppleMiniPlayerSurface | null,
-): boolean {
-  if (!surface) return false;
-  if ((target.laneId || null) !== (surface.laneId || null)) return false;
-  return workRuntimeScopeKey(target.runtimePin, surface.boundBinding)
-    === workRuntimeScopeKey(surface.runtimePin, surface.boundBinding);
-}
+) => boolean = miniPlayerBelongsToSurface;
 
 /** The machine this window is bound to, which a null pin means. */
 function boundBinding(): OpenProjectBinding | null {
@@ -112,14 +84,20 @@ let dismissed = new Set<string>();
  * handoff's `deviceList` read could still answer "Booted" and float a device
  * that was on its way down, leaving a player showing a frozen last frame.
  *
- * Cleared by the first handoff that sees it, so it can never outlive the close
- * that set it and suppress a later, legitimate minimize.
+ * Cleared by the first handoff that sees it, and one task after the close in
+ * any case (a closed tab that was not on screen has no unmount), so it can
+ * never outlive the close that set it and suppress a later, legitimate minimize.
  */
 let closingForReal = false;
 
 /** A tab close is stopping the tool: the next handoff is not a minimize. */
 export function suppressAppleMiniPlayerHandoff(): void {
   closingForReal = true;
+  // The unmount this close causes runs in the same task; a close of a tab that
+  // was not on screen has no unmount, and must not suppress a later minimize.
+  setTimeout(() => {
+    closingForReal = false;
+  }, 0);
   // A close-for-real stops the stream itself; a hold left over from an earlier
   // minimize would be a second, later stop aimed at a device already off.
   releaseAppleMiniPlayerHandoverHold();
@@ -127,8 +105,7 @@ export function suppressAppleMiniPlayerHandoff(): void {
 
 /** True when this chat (or, chatless, this device) wants no floating player. */
 function previewSuppressed(chatSessionId: string | null, udid: string): boolean {
-  if (!chatSessionId) return dismissed.has(udid);
-  return !isWorkLivePreviewEnabled(readChatCompanionUiState(chatSessionId), "ios");
+  return miniPlayerPreviewSuppressed({ chatSessionId, tool: "ios", deviceKey: udid, dismissed });
 }
 
 function emit(): void {

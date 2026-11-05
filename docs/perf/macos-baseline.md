@@ -2463,10 +2463,57 @@ The Tools drawer (2026-11-05, head `90b615dee`, the same mock and method, a
 Work chat open with the Tools pane; load average 5–11). The App group reads
 the app in front every 2 s while it is open and the window is visible:
 
-| Metric | Live flat, drawer closed | Live flat, drawer open on App | Ceiling |
+| Metric | Live 3D, drawer closed | Live 3D, drawer open on App | Ceiling |
 |---|---:|---:|---:|
 | Main-thread work | 32.7 (32.3–32.8) ms/s | 34.5 (32.4–35.9) ms/s | +25% over the closed drawer |
 | Renderer JS heap | 103 MB | 104 MB | 220 MB |
 
-The open drawer adds about 1.8 ms/s. The page itself costs more than the
-flat row above (19.8 ms/s) because the mock now opens a chat beside the pane.
+The open drawer adds about 1.8 ms/s. Correction (2026-11-05, P2 pass): these
+two columns first said "flat". The script's view toggle looked for the wrong
+label, so the stage stayed in 3D. The numbers match the 3D row above, not the
+flat row.
+
+### Android P2: Logs group, floating player (2026-11-05)
+
+Browser mock, the same machine and method as the Tools drawer rows: head
+`0ffa36786` plus the uncommitted P2 work, headless Chrome 155 at 1600×1000,
+the Codex chat open with the Tools pane beside it, one warm-up run, then 3
+runs of 20 s after a 6 s settle. The load average was 5–10. The mock page also
+shows its App Control floating player in every column. The Logs group reads
+`readLog` every 2 s with a cursor while it is open and the window is visible
+(38 mock lines on screen).
+
+| Metric | Live 3D, drawer closed | Live 3D, Logs open | Live flat, drawer closed | Live flat, Logs open | Ceiling |
+|---|---:|---:|---:|---:|---:|
+| Main-thread work | 35.6 (34.0–37.3) ms/s | 37.0 (36.0–37.9) ms/s | 27.1 (25.9–27.2) ms/s | 28.2 (27.9–28.7) ms/s | +25% over the closed drawer |
+| Renderer JS heap | 104 MB | 105 MB | 102 MB | 103 MB | 220 MB |
+
+The Logs group adds 1.1–1.4 ms/s, less than the App group (1.8 ms/s). Live 3D
+with the drawer closed is 9% over the P1 row (32.7 ms/s), inside the 25%
+budget, at a higher load average.
+
+The floating Android player ("Float over chat"):
+
+| Metric | Player over the chat, Tools pane closed | Player and the pane together (3D) | Ceiling |
+|---|---:|---:|---:|
+| Main-thread work | 24.2 (24.1–24.8) ms/s | 52.1 (46.4–52.1) ms/s | none set; the pane-closed column must stay under the flat pane |
+| Renderer JS heap | 104 MB | 104 MB | 220 MB |
+
+The player alone costs less than the flat pane (27.1 ms/s). With the pane
+open too, the window decodes two pictures, which is the same design as
+Apple's "Float over chat" (the pane stays open). The cost goes away when the
+pane closes or the player is closed.
+
+Not measured as rows:
+
+- **The quick chips.** At 1600×1000 the pane body is under the chips'
+  420 px minimum, so they do not show. They make one settings read when they
+  show and run no timer or poll.
+- **The crash pin.** It renders only while the lane's app has a crash, and
+  reads nothing. The pane's status read after an Android event already
+  carries `appCrash`.
+- **The tools card line** ("Galaxy S25 · Running"). It makes one status read,
+  then one read 400 ms after each Android event for the lane. It has no poll.
+- **The brain's crash watch.** One `adb logcat -b crash` reader for each
+  booted lane emulator, started from the status read. It blocks on the
+  device, so it costs no CPU while the app does not crash.

@@ -683,6 +683,8 @@ type SyncRemoteCommandServiceArgs = {
    * `android.*` is not registered and a remote client hides the Android tool.
    */
   androidDeviceService?: AndroidDeviceRemoteService | null;
+  /** The brain's stream relay for Android; absent, a remote viewer gets screenshots only. */
+  androidStreamRelay?: AppleStreamTicketIssuer | null;
   /**
    * Deterministic stamp of the sync host's in-memory lane presence
    * (`devicesOpen`). The host decorates lane list/detail payloads with
@@ -6662,7 +6664,7 @@ function registerAppleRemoteCommands({ args, register }: RemoteCommandRegistrati
 function registerAndroidRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
   const service = args.androidDeviceService;
   if (!service) return;
-  for (const entry of createAndroidRemoteCommandHandlers({ service })) {
+  for (const entry of createAndroidRemoteCommandHandlers({ service, streamRelay: args.androidStreamRelay ?? null })) {
     register(entry.action, entry.policy, async (payload) => entry.handler(payload));
   }
 }

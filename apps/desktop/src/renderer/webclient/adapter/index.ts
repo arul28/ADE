@@ -155,6 +155,8 @@ export function createAdeWebAdapter(
     cto: misc.cto,
     computerUse: misc.computerUse,
     iosSimulator: misc.iosSimulator,
+    // The same Android pane as the desktop, over `android.*` and the relay.
+    androidEmulator: misc.androidEmulator,
     // Watch-only App Control: status and live frames from the host.
     appControl: createAppControlNamespace(infra) as unknown as Window["ade"]["appControl"],
     // Live, read-only Mac Desktop view. The Electron namespace carries the

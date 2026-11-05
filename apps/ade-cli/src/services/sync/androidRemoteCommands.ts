@@ -1,7 +1,12 @@
 import type { SyncRemoteCommandAction, SyncRemoteCommandPolicy } from "../../../../desktop/src/shared/types/sync";
 import { isAllowedAdeAction, isSecretBearingAdeAction } from "../../../../desktop/src/main/services/adeActions/actionPolicy";
 import { buildAndroidDomainService } from "../../../../desktop/src/main/services/android/androidActionDomain";
-import type { AndroidEmulatorServiceApi, AndroidHardwareKey } from "../../../../desktop/src/shared/types/androidEmulator";
+import type {
+  AndroidEmulatorServiceApi,
+  AndroidHardwareKey,
+  AndroidTouchEvent,
+} from "../../../../desktop/src/shared/types/androidEmulator";
+import type { AppleStreamTicketIssuer } from "./appleRemoteCommands";
 import {
   ANDROID_HARDWARE_KEYS,
   ANDROID_LANE_FREE_ACTIONS,
@@ -20,8 +25,8 @@ import {
  *   owner's phone and a hosted web tab may drive the emulator; a desktop
  *   pairing at viewer role may not.
  * - **Status carries no secret.** The stream token stays out of every answer
- *   here. P2 adds `android.streamTicket` (a single-use relay ticket, as
- *   `apple.streamTicket`); until then a remote viewer reads screenshots.
+ *   here. A remote viewer gets the picture through `android.streamTicket`, a
+ *   single-use relay ticket, as `apple.streamTicket`.
  * - **No licence from afar.** `android.invoke` refuses the SDK install, its
  *   cancel and the SDK folder: the setup card on the machine is where a
  *   person reads and accepts Google's licences.
@@ -49,9 +54,11 @@ export type AndroidStatusPayload = {
     height: number | null;
   } | null;
   error: { code: string | null; message: string | null } | null;
+  /** P2 crash pin: the lane's app's last crash while the emulator runs (no stack: `android.invoke readLog` has it). */
+  appCrash: { id: string; packageName: string | null; summary: string | null } | null;
   /** What the machine can do now (record, UI tree, Gradle); null from an older brain. */
   capabilities: unknown;
-  /** P2: true once this brain serves `android.streamTicket`. */
+  /** True when this brain serves `android.streamTicket` (it has the stream relay). */
   liveView: boolean;
   raw?: unknown;
 };
@@ -81,7 +88,7 @@ function requireFiniteNumber(value: unknown, field: string): number {
 }
 
 /** `AndroidEmulatorStatus` reduced to what a viewer draws: no SDK paths, no tool list. */
-export function buildAndroidStatusPayload(laneId: string, status: unknown): AndroidStatusPayload {
+export function buildAndroidStatusPayload(laneId: string, status: unknown, liveView = false): AndroidStatusPayload {
   const source = isRecord(status) ? status : {};
   const sdk = isRecord(source.sdk) ? source.sdk : {};
   const lane = isRecord(source.lane) ? source.lane : null;
@@ -89,6 +96,8 @@ export function buildAndroidStatusPayload(laneId: string, status: unknown): Andr
   const avd = lane && isRecord(lane.avd) ? lane.avd : null;
   const running = avd && isRecord(avd.running) ? avd.running : null;
   const error = lane && isRecord(lane.error) ? lane.error : null;
+  const crash = lane && isRecord(lane.appCrash) ? lane.appCrash : null;
+  const crashId = asString(crash?.id);
   const avdName = asString(device?.avdName) ?? asString(avd?.name);
   return {
     laneId,
@@ -108,8 +117,9 @@ export function buildAndroidStatusPayload(laneId: string, status: unknown): Andr
       }
       : null,
     error: error ? { code: asString(error.code), message: asString(error.message) } : null,
+    appCrash: crashId ? { id: crashId, packageName: asString(crash?.packageName), summary: asString(crash?.summary) } : null,
     capabilities: source.capabilities ?? null,
-    liveView: false,
+    liveView,
   };
 }
 
@@ -119,7 +129,8 @@ export function buildAndroidStatusPayload(laneId: string, status: unknown): Andr
  */
 const ANDROID_INVOKE_REFUSED: ReadonlySet<string> = new Set([
   ...ANDROID_SDK_PERSON_ONLY_ACTIONS,
-  // P2: the remote live view goes through a relay ticket, never the local token.
+  // The remote live view goes through a relay ticket, never the local token,
+  // and its finger through `android.input` kind `touch`.
   "startStream",
   "stopStream",
   "sendTouch",
@@ -138,8 +149,32 @@ export type AndroidRemoteCommandEntry = {
   handler: AndroidRemoteCommandHandler;
 };
 
-export function createAndroidRemoteCommandHandlers(deps: { service: AndroidDeviceRemoteService }): AndroidRemoteCommandEntry[] {
+/** One finger event of a live touch, from a phone or a web tab. */
+function touchEvent(value: unknown): AndroidTouchEvent {
+  const event = isRecord(value) ? value : {};
+  const action = event.action;
+  if (action !== "down" && action !== "move" && action !== "up") {
+    throw new Error("android.input touch events need an action of down, move or up.");
+  }
+  const pointerId = asNumber(event.pointerId);
+  return {
+    action,
+    x: requireFiniteNumber(event.x, "x"),
+    y: requireFiniteNumber(event.y, "y"),
+    ...(pointerId !== null && pointerId >= 0 ? { pointerId: Math.trunc(pointerId) } : {}),
+  };
+}
+
+/** Most finger events one `android.input touch` call may carry. */
+const MAX_TOUCH_EVENTS = 64;
+
+export function createAndroidRemoteCommandHandlers(deps: {
+  service: AndroidDeviceRemoteService;
+  /** The brain's stream relay for Android; null hides the live view (screenshots only). */
+  streamRelay?: AppleStreamTicketIssuer | null;
+}): AndroidRemoteCommandEntry[] {
   const { service } = deps;
+  const streamRelay = deps.streamRelay ?? null;
   // The same argument readers as `ade actions run android_emulator.*`.
   const domain = buildAndroidDomainService({ androidEmulatorService: service });
   const laneOf = (payload: Record<string, unknown>, action: string): string =>
@@ -159,8 +194,40 @@ export function createAndroidRemoteCommandHandlers(deps: { service: AndroidDevic
       handler: async (payload) => {
         const laneId = laneOf(payload, "android.status");
         const raw = await service.getStatus({ laneId });
-        const status = buildAndroidStatusPayload(laneId, raw);
+        const status = buildAndroidStatusPayload(laneId, raw, streamRelay !== null);
         return payload.full === true ? { ...status, raw } : status;
+      },
+    },
+    {
+      action: "android.streamTicket",
+      policy: { viewerAllowed: true },
+      handler: async (payload) => {
+        const laneId = laneOf(payload, "android.streamTicket");
+        if (!streamRelay) throw new Error("The Android stream relay is not available in this runtime.");
+        // The relay starts the stream when the viewer's socket attaches; a
+        // start here would mark a viewer on this machine and keep the stream
+        // up after the phone leaves. Watching never boots the emulator.
+        const status = await service.getStatus({ laneId });
+        const lane = isRecord(status.lane) ? status.lane : null;
+        const state = asString(lane?.state) ?? "none";
+        if (state !== "booted") {
+          throw new Error(`ANDROID_NOT_RUNNING: the lane's emulator is ${state === "none" ? "not set up" : state}.`);
+        }
+        // Touch goes in device pixels. The point size is the portrait screen;
+        // a viewer turns it when the picture is landscape. The picture's own
+        // size comes with its first config record.
+        const avd = isRecord(lane?.avd) ? lane.avd : null;
+        const lcdWidth = asNumber(avd?.lcdWidth);
+        const lcdHeight = asNumber(avd?.lcdHeight);
+        const sized = lcdWidth !== null && lcdHeight !== null;
+        const ticket = streamRelay.issue({
+          laneId,
+          codec: "h264",
+          pointWidth: sized ? Math.min(lcdWidth, lcdHeight) : null,
+          pointHeight: sized ? Math.max(lcdWidth, lcdHeight) : null,
+        });
+        // The viewer may send a live finger (`android.input` kind `touch`).
+        return { ...ticket, liveTouch: true };
       },
     },
     {
@@ -170,6 +237,17 @@ export function createAndroidRemoteCommandHandlers(deps: { service: AndroidDevic
         const laneId = laneOf(payload, "android.input");
         const kind = requireString(payload.kind, "android.input requires a kind.");
         switch (kind) {
+          case "touch": {
+            // A live finger: down, moves, up, in device pixels. Needs the
+            // lane's stream (the viewer that sends it is reading it).
+            const events = Array.isArray(payload.events) ? payload.events : [];
+            if (events.length === 0) throw new Error("android.input touch requires events.");
+            if (events.length > MAX_TOUCH_EVENTS) {
+              throw new Error(`android.input touch takes at most ${MAX_TOUCH_EVENTS} events.`);
+            }
+            await service.sendTouch({ laneId, events: events.map(touchEvent) });
+            return { ok: true };
+          }
           case "tap":
             await service.tap({ laneId, x: requireFiniteNumber(payload.x, "x"), y: requireFiniteNumber(payload.y, "y") });
             return { ok: true };

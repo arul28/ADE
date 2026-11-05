@@ -185,6 +185,8 @@ type SyncServiceArgs = {
   appleDeviceService?: AppleDeviceRemoteService | null;
   /** The lanes' Android emulators for remote surfaces; every host. */
   androidDeviceService?: AndroidDeviceRemoteService | null;
+  /** The brain's stream relay for Android (phone and web live view). */
+  androidStreamRelay?: AppleStreamTicketIssuer | null;
   /** Webhook automations for remote surfaces (read-only). */
   getWebhookAutomations?: () => WebhookRemoteSource | null;
   /** Auto-handoff rules for the phone's session menu; null when automations are off. */
@@ -1002,6 +1004,7 @@ export function createSyncService(args: SyncServiceArgs) {
     appleStreamRelay: args.appleStreamRelay,
     getAppleRemoteBitrateKbpsCap: args.getAppleRemoteBitrateKbpsCap,
     androidDeviceService: args.androidDeviceService,
+    androidStreamRelay: args.androidStreamRelay,
     getWebhookAutomations: args.getWebhookAutomations,
     getAutomationRules: args.getAutomationRules,
     projectConfigService: args.projectConfigService,
@@ -1221,6 +1224,7 @@ export function createSyncService(args: SyncServiceArgs) {
       appleStreamRelay: args.appleStreamRelay,
       getAppleRemoteBitrateKbpsCap: args.getAppleRemoteBitrateKbpsCap,
       androidDeviceService: args.androidDeviceService,
+      androidStreamRelay: args.androidStreamRelay,
       projectConfigService: args.projectConfigService,
       portAllocationService: args.portAllocationService,
       laneEnvironmentService: args.laneEnvironmentService,

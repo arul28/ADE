@@ -23,6 +23,7 @@ import { APP_CONTROL_CARD_ON_SCREEN_KEY, grantAppControlCardForChat } from "../w
 import { useMacDesktopSupport } from "./useMacDesktopSupport";
 import { hostDesktopTool, type DesktopWorkTool } from "./workTools";
 import { isAddressedToThisDesktop } from "../../lib/desktopClient";
+import { floatAndroidMiniPlayerForChat } from "../android/androidMiniPlayerStore";
 
 const WORK_PAGE_SHOW_SURFACES: readonly WorkToolShowSurface[] = [
   "apple",
@@ -33,12 +34,13 @@ const WORK_PAGE_SHOW_SURFACES: readonly WorkToolShowSurface[] = [
   "app-control",
   "floating-app-control",
   "android",
+  "floating-android",
 ];
 
 /** How a surface that lives in the tools pane is shown there. */
 type PaneSurfaceRoute = {
   /** The tools-pane tab that shows this surface on this host. */
-  tool: "ios" | DesktopWorkTool | "app-control";
+  tool: "ios" | "android" | DesktopWorkTool | "app-control";
   /** The floating surface the brain names when this one floats instead. */
   floating: WorkToolShowSurface;
   showFloating: (
@@ -54,7 +56,7 @@ function showPaneTool({
   setTool,
 }: {
   chatSessionId: string;
-  tool: "ios" | DesktopWorkTool | "app-control";
+  tool: "ios" | "android" | DesktopWorkTool | "app-control";
   scopeKey: string;
   activeLaneId: string | null;
   /**
@@ -156,6 +158,7 @@ export function useWorkShowRequests({
 
   const scopeKey = workRuntimeScopeKey(runtimePin, projectBinding);
   const appleToolOpening = workSidebarVisible && workSidebarTool === "ios";
+  const androidToolOpening = workSidebarVisible && workSidebarTool === "android";
   /*
    * `mac-desktop` is the surface name on every host; the pane tool that shows
    * it is the host's own (`hostDesktopTool`, the rule the tools pane uses).
@@ -276,6 +279,24 @@ export function useWorkShowRequests({
     });
   }, [activeLaneId, activeWorkSession, appleToolOpening, runtimePin, scopeKey]);
 
+  /** The lane's Android emulator as the floating player: the same rules as Apple's. */
+  const showFloatingAndroid = useCallback((
+    request: WorkToolShowRequest,
+  ): WorkToolShowOutcome | Promise<WorkToolShowOutcome> => {
+    if (isWorkSurfaceOnScreen(workSurfaceKey("android", scopeKey, activeLaneId))) return "shown";
+    if (!activeWorkSession?.laneId) return "declined";
+    if (request.auto && androidToolOpening) return "declined";
+    return floatAndroidMiniPlayerForChat({
+      laneId: activeLaneId,
+      chatSessionId: request.chatSessionId,
+      runtimePin,
+      auto: request.auto,
+    }).then((floated): WorkToolShowOutcome => {
+      if (!floated) return "declined";
+      return isDocumentVisible() ? "shown" : "opened";
+    });
+  }, [activeLaneId, activeWorkSession, androidToolOpening, runtimePin, scopeKey]);
+
   /**
    * The three surfaces that live in the tools pane, and the floating surface
    * each one becomes when the person has the pane closed.
@@ -286,6 +307,7 @@ export function useWorkShowRequests({
    */
   const paneSurfaces = useMemo<Partial<Record<WorkToolShowSurface, PaneSurfaceRoute>>>(() => ({
     apple: { tool: "ios", floating: "floating-apple", showFloating: showFloatingApple },
+    android: { tool: "android", floating: "floating-android", showFloating: showFloatingAndroid },
     "mac-desktop": {
       tool: desktopTool,
       floating: "floating-mac-desktop",
@@ -296,7 +318,7 @@ export function useWorkShowRequests({
       floating: "floating-app-control",
       showFloating: showFloatingAppControl,
     },
-  }), [desktopTool, showFloatingAppControl, showFloatingApple, showFloatingMacDesktop]);
+  }), [desktopTool, showFloatingAndroid, showFloatingAppControl, showFloatingApple, showFloatingMacDesktop]);
 
   const showWorkSurface = useCallback((
     request: WorkToolShowRequest,
@@ -324,14 +346,6 @@ export function useWorkShowRequests({
     if (request.surface === "browser") {
       setWorkSidebarTool("browser");
       return showOutcomeWhenOnScreen(workSurfaceKey("browser", scopeKey, activeLaneId));
-    }
-    // Android has no floating player yet (plan P2), so the pane is its only
-    // surface. An open pane switches to it; a closed one opens only for a
-    // request someone made, never for an automatic offer.
-    if (request.surface === "android") {
-      if (!workSidebarVisible && request.auto) return "declined";
-      (workSidebarVisible ? showWorkSidebarTool : setWorkSidebarTool)("android");
-      return showOutcomeWhenOnScreen(workSurfaceKey("android", scopeKey, activeLaneId));
     }
     const pane = paneSurfaces[request.surface];
     if (pane) {
@@ -369,6 +383,7 @@ export function useWorkShowRequests({
     }
     if (request.surface === "floating-mac-desktop") return showFloatingMacDesktop(request);
     if (request.surface === "floating-app-control") return showFloatingAppControl(request);
+    if (request.surface === "floating-android") return showFloatingAndroid(request);
     if (request.surface !== "floating-apple") return "declined";
     return showFloatingApple(request);
   }, [
@@ -378,6 +393,7 @@ export function useWorkShowRequests({
     paneSurfaces,
     scopeKey,
     setWorkSidebarTool,
+    showFloatingAndroid,
     showFloatingAppControl,
     showFloatingApple,
     showFloatingMacDesktop,

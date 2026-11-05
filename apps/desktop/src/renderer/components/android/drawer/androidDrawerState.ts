@@ -9,8 +9,8 @@ import { useDeviceDrawerActions, useDeviceDrawerGroup, type DeviceDrawerActions 
  * `androidEmulator.getDeviceSettings`.
  */
 
-/** The groups, in the order the drawer stacks them (plan §5). Logs comes in P2. */
-export const ANDROID_DRAWER_GROUPS = ["device", "app", "capture", "emulator"] as const;
+/** The groups, in the order the drawer stacks them (plan §5). */
+export const ANDROID_DRAWER_GROUPS = ["device", "app", "capture", "emulator", "logs"] as const;
 export type AndroidDrawerGroupId = (typeof ANDROID_DRAWER_GROUPS)[number];
 
 /** Which group is open: per chat, or for the session on a chatless surface. */
@@ -48,4 +48,8 @@ export type AndroidDrawerContext = {
   actions: AndroidDrawerActions;
   /** The machine that runs the emulator, when it is not this one. Files there cannot be revealed here. */
   remoteMachineName: string | null;
+  /** The packages ADE installed for the lane, oldest first: the Logs group's "lane's app". */
+  lanePackages: readonly string[];
+  /** Writes text into the chat's draft; absent where there is no chat. */
+  onInsertDraft?: ((text: string) => void) | undefined;
 };

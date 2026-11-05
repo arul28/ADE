@@ -36,6 +36,7 @@ import {
   releaseAppleMiniPlayerHandoverHold,
   retakeAppleMiniPlayer,
 } from "../apple/appleMiniPlayerStore";
+import { handoffAndroidMiniPlayer, retakeAndroidMiniPlayer } from "../android/androidMiniPlayerStore";
 import { ChatTerminalDrawer } from "../chat/ChatTerminalDrawer";
 import { FilesTab } from "../files/FilesTab";
 import { LaneGitActionsPane } from "../lanes/LaneGitActionsPane";
@@ -601,8 +602,9 @@ function WorkIosDevice({
  * there is no start control for the other machine's emulator, because the
  * agent starts it and the tool only shows it.
  *
- * There is no floating player yet (plan P2), so closing the tab or switching
- * tools only gives the stream's lease back; the emulator keeps running.
+ * Closing the tools pane or switching tools on a live emulator floats it over
+ * the chat (`androidMiniPlayerStore.ts`); closing the tab does not. The
+ * emulator keeps running either way.
  */
 function WorkAndroidTool(props: WorkToolPanelProps) {
   const { activeSession, laneId, runtimePin, toolContext } = props;
@@ -714,6 +716,26 @@ function WorkAndroidDevice({
   onInsertDraft,
 }: WorkToolPanelProps & { laneName: string | null; noPicker?: string | null }) {
   const mountScope = useWorkToolMountScope(runtimePin);
+  const sessionRef = useRef(panelSessionId);
+  sessionRef.current = panelSessionId;
+  const pinRef = useRef(runtimePin);
+  pinRef.current = runtimePin;
+  /*
+   * The pane is showing the emulator again, so a floating copy of this lane's
+   * goes back in;
+   * when the pane closes (or the tools pane switches tool) on a live
+   * emulator, it floats over the chat. Not for another machine's work copy:
+   * the player shows only over this chat's own lane. A tab close says first
+   * that it is not a minimize (`closeWorkToolForReal`).
+   */
+  const floats = !pinnedMachineName;
+  useLayoutEffect(() => {
+    if (!laneId || !floats) return undefined;
+    retakeAndroidMiniPlayer({ laneId, runtimePin: pinRef.current });
+    return () => {
+      handoffAndroidMiniPlayer({ laneId, chatSessionId: sessionRef.current, runtimePin: pinRef.current });
+    };
+  }, [floats, laneId]);
   if (!laneId) return <NoLaneEmptyLine />;
   return (
     <AndroidDevicePane

@@ -1,5 +1,4 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowsInSimple, ArrowsOutSimple } from "@phosphor-icons/react";
 import type { OpenProjectBinding } from "../../../shared/types";
 import type {
   AndroidDeviceInventory,
@@ -19,13 +18,12 @@ import { Button } from "../ui/Button";
 import { RecordingPill, RecordingSavedRow } from "../shared/RecordingReceipt";
 import { revealProofArtifactRow } from "../shared/recordingFormat";
 import { useTicker } from "../../lib/ticker";
-import { WorkToolChromeButton } from "../terminals/workToolChrome";
-import { useWorkToolsMaximize } from "../terminals/workToolsMaximize";
-import { WORK_TOOL_MAXIMIZE_PANE_LABEL, WORK_TOOL_RESTORE_PANE_LABEL } from "../terminals/workToolPreviewControls";
+import { WorkToolPreviewControls } from "../terminals/workToolPreviewControls";
 import {
   androidAvdSpecLine,
   androidDevicePixelSize,
   androidInputAllowed,
+  ANDROID_LOW_MEMORY_RISK,
   androidLaneDeviceName,
   androidRailVisible,
   describeAndroidError,
@@ -63,6 +61,15 @@ import { useAndroidBootScreen } from "./useAndroidBootScreen";
 import { useAndroidRenderRequests } from "./useAndroidRenderRequests";
 import { useAndroidInspect } from "./useAndroidInspect";
 import { useAndroidRecording } from "./useAndroidRecording";
+import { useAndroidPaneFloat } from "./useAndroidPaneFloat";
+import { useAndroidStorageActions } from "./useAndroidStorageActions";
+import { AndroidQuickChips } from "./AndroidQuickChips";
+import { AndroidCrashPin } from "./AndroidCrashPin";
+import type { AndroidDrawerGroupId } from "./drawer/androidDrawerState";
+import { presetDeviceDrawerGroup } from "../device/deviceDrawerState";
+
+/** Below this pane width the chips would crowd the picture; the drawer still has every control. */
+const ANDROID_QUICK_CHIPS_MIN_WIDTH = 420;
 
 /** The drawer loads on first open: most sessions never open it. */
 const AndroidToolsDrawer = lazy(async () => {
@@ -474,6 +481,12 @@ export function AndroidDevicePane({
     void runStart({ kind: "start" }, () => api.start({ laneId }, runtimePinRef.current));
   }, [api, laneId, runStart]);
 
+  /** Past the RAM guard, after its warning: the person accepts the swap. */
+  const startAnyway = useCallback(() => {
+    if (!api) return;
+    void runStart({ kind: "start" }, () => api.start({ laneId, force: true }, runtimePinRef.current));
+  }, [api, laneId, runStart]);
+
   const powerOff = useCallback(() => {
     if (!api) return;
     forgetStream();
@@ -494,41 +507,7 @@ export function AndroidDevicePane({
       });
   }, [api, forgetStream, laneId, readInventory, readStatus]);
 
-  /** Storage: every AVD with its size on disk, on the lane's machine. */
-  const readSizes = useCallback(async () => {
-    if (!api) return [];
-    const measured = await api.listDevices({ laneId, measureSizes: true }, runtimePinRef.current);
-    return measured.avds;
-  }, [api, laneId]);
-
-  /** Storage › Clean up: one delete at a time (each takes the AVD's lock), one toast. */
-  const cleanUp = useCallback((names: string[]) => {
-    if (!api || names.length === 0) return;
-    const pin = runtimePinRef.current;
-    void (async () => {
-      let deleted = 0;
-      for (const name of names) {
-        try {
-          const result = await api.deleteDevice({ avdName: name }, pin);
-          if (result.deleted) deleted += 1;
-        } catch (caught: unknown) {
-          setError(describeAndroidError(caught));
-        }
-      }
-      if (deleted > 0) showToast({ id: "android-avd-cleanup", tone: "success", title: `Deleted ${deleted} device${deleted === 1 ? "" : "s"}` });
-      void readInventory();
-    })();
-  }, [api, readInventory]);
-
-  const deleteAvd = useCallback((name: string) => {
-    if (!api) return;
-    void api.deleteDevice({ avdName: name }, runtimePinRef.current)
-      .then((result) => {
-        if (result.deleted) showToast({ id: "android-avd-delete", tone: "success", title: `Deleted ${name}` });
-      })
-      .catch((caught: unknown) => setError(describeAndroidError(caught)))
-      .finally(() => void readInventory());
-  }, [api, readInventory]);
+  const { readSizes, cleanUp, deleteAvd } = useAndroidStorageActions({ api, laneId, runtimePinRef, readInventory, onError: setError });
 
   const openLaneDevice = useCallback(() => {
     setPickerRequested(false);
@@ -593,7 +572,7 @@ export function AndroidDevicePane({
 
   const deviceName = androidLaneDeviceName(lane);
   const deviceSpec = lane?.avd ? androidAvdSpecLine(lane.avd, inventory?.profiles ?? []) : null;
-  const maximize = useWorkToolsMaximize();
+  const floatOverChat = useAndroidPaneFloat({ lane, laneId, sessionId, machineName, runtimePinRef });
   const accel = status?.sdk.acceleration ?? null;
 
   /* ── P1 look: the body, the colour, boot on the model, renders ─────────── */
@@ -651,7 +630,24 @@ export function AndroidDevicePane({
       });
   }, [api, applyLane, laneId]);
 
+  /** Opens the Tools drawer at one group: the chips' "More in Tools", the crash pin's "Open Logs". */
+  const openToolsAt = (group: AndroidDrawerGroupId) => {
+    presetDeviceDrawerGroup("androidToolsGroup", sessionId, group);
+    setToolsOpen(true);
+  };
+
   const strip = (() => {
+    if (error?.code === "ANDROID_LOW_MEMORY") {
+      // The RAM guard: a warning with the numbers, and the person's way past it.
+      return (
+        <AndroidDeviceNoticeStrip
+          tone="warning"
+          sentence={`${error.sentence} ${ANDROID_LOW_MEMORY_RISK}`}
+          actions={[{ label: "Start anyway", onClick: startAnyway }]}
+          onDismiss={() => setError(null)}
+        />
+      );
+    }
     if (error) {
       return <DeviceErrorStrip tool="android" sentence={error.sentence} detail={error.detail} onDismiss={() => setError(null)} />;
     }
@@ -901,17 +897,25 @@ export function AndroidDevicePane({
                 onToggleRecording={recording.toggleRecording}
                 toolsOpen={toolsOpen}
                 onToggleTools={() => setToolsOpen((open) => !open)}
-                extraControls={maximize ? (
-                  <WorkToolChromeButton
-                    label={maximize.maximized ? WORK_TOOL_RESTORE_PANE_LABEL : WORK_TOOL_MAXIMIZE_PANE_LABEL}
-                    onClick={() => maximize.setMaximized(!maximize.maximized)}
-                    active={maximize.maximized}
-                    testId="work-tool-maximize"
-                  >
-                    {maximize.maximized ? <ArrowsInSimple size={16} /> : <ArrowsOutSimple size={16} />}
-                  </WorkToolChromeButton>
-                ) : null}
+                onFloat={floatOverChat}
+                // The per-chat "Show preview when minimized" toggle and
+                // Maximize, shared with every screen tool.
+                extraControls={<WorkToolPreviewControls tool="android" chatSessionId={sessionId} />}
               />
+              <div className="pointer-events-none absolute left-3 top-3 z-[3] flex flex-col items-start gap-1.5">
+                {/* Quick chips: shortcuts to the drawer's Emulator group, hidden while the drawer itself shows. */}
+                {deviceLive && !toolsOpen && !inspect.inspectOn && bodyWidth >= ANDROID_QUICK_CHIPS_MIN_WIDTH ? (
+                  <AndroidQuickChips
+                    laneId={laneId}
+                    pinRef={runtimePinRef}
+                    visible={!hidden}
+                    onOpenTools={() => openToolsAt("emulator")}
+                  />
+                ) : null}
+                {deviceLive ? (
+                  <AndroidCrashPin crash={lane?.appCrash ?? null} onSendToChat={onInsertDraft} onOpenLogs={() => openToolsAt("logs")} />
+                ) : null}
+              </div>
               {/* The recording pill takes the live line's place at the bottom while the picture is live. */}
               {recording.active && deviceLive ? null : (
                 <AndroidLiveLine
@@ -955,6 +959,8 @@ export function AndroidDevicePane({
                 visible={toolsOpen && !hidden}
                 onClose={() => setToolsOpen(false)}
                 remoteMachineName={remoteMachine ? machineName : null}
+                lanePackages={lane?.device?.adeInstalledPackages}
+                onInsertDraft={onInsertDraft}
               />
             </Suspense>
           </div>

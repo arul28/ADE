@@ -408,6 +408,13 @@ on 2026-11-03 (`51c6eabf6`). This lane is updated to that commit, and §4 and
   (including the iPhone Duo inner screen), cross-machine viewing
   (Windows-hosted emulator on a Mac), two floating players (one per device
   kind), the RAM guard, quick chips, the Logs drawer with the crash pin.
+  - Built on 2026-11-05 as one PR (branch `ade/android-suite-p2`): the
+    brain's stream relay serves the emulator to the web client and the phone
+    (`android.streamTicket`, touch input), the phone viewer on the live stage
+    (a fourth `LiveStage` kind), two floating players, the RAM guard with
+    "Start anyway" (`--force` in the CLI), quick chips, the Logs group and
+    the crash pin with "Send to chat", and the tools card line. Phone fold
+    mirroring waits for a host posture API (P3 fold).
 - **P3 — extras.** Fold by dragging the hinge (the Duo posture code), Compose
   preview render (Android CLI), a system image manager (like Runtimes),
   instrumentation tests (`connectedAndroidTest`).

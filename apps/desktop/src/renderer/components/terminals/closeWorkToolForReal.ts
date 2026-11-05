@@ -5,6 +5,7 @@ import {
   suppressAppleMiniPlayerHandoff,
 } from "../apple/appleMiniPlayerStore";
 import { forgetAppleStreamLeasesForLane } from "../apple/appleStreamLease";
+import { retakeAndroidMiniPlayer, suppressAndroidMiniPlayerHandoff } from "../android/androidMiniPlayerStore";
 import { stopMacDesktopLane } from "../chat/macDesktopStatusStore";
 
 /**
@@ -75,6 +76,14 @@ export function closeWorkToolForReal(
       // names no lane is refused.
       void appControl.stop({ laneId, chatSessionId }, pin)
         .catch((error) => logCloseFailure(tool, error));
+      return;
+    }
+    case "android": {
+      // The emulator keeps running after its tab closes (it is the lane's,
+      // and booting one is slow), but a tab close is not a minimize: nothing
+      // floats, and a player already floating goes with the tab.
+      suppressAndroidMiniPlayerHandoff();
+      retakeAndroidMiniPlayer({ laneId, runtimePin });
       return;
     }
     case "ios": {

@@ -1,9 +1,7 @@
 import { useState, type CSSProperties } from "react";
-import * as Popover from "@radix-ui/react-popover";
 import { WarningCircle, X } from "@phosphor-icons/react";
-import { usePortalContainer } from "../portalContainer";
-import { Z_LAYERS } from "../zLayers";
 import { NoticeButton } from "./NoticeParts";
+import { NoticePopover } from "./NoticePopover";
 import { useNoticeFailure, type NoticeReport } from "./NoticeReport";
 import { noticeTone } from "./noticeTones";
 
@@ -42,7 +40,6 @@ export function InlineErrorNotice({
   style?: CSSProperties;
 }): JSX.Element {
   const [open, setOpen] = useState(false);
-  const portalContainer = usePortalContainer();
   // The panel shows the whole message itself, so the body is only the send result.
   const failure = useNoticeFailure({
     report: report === false ? false : { surface: id, technicalDetail: message, ...report },
@@ -61,8 +58,12 @@ export function InlineErrorNotice({
       className="inline-flex min-w-0 items-center gap-1"
       style={{ fontSize: size, color, maxWidth, ...style }}
     >
-      <Popover.Root open={open} onOpenChange={setOpen}>
-        <Popover.Trigger asChild>
+      <NoticePopover
+        open={open}
+        onOpenChange={setOpen}
+        width={320}
+        unmask
+        trigger={(
           <button
             type="button"
             className="inline-flex min-w-0 items-center gap-1 rounded px-0.5 text-left hover:bg-fg/[0.06]"
@@ -72,36 +73,23 @@ export function InlineErrorNotice({
             <WarningCircle size={size - 1} weight="fill" className="shrink-0" />
             <span className="truncate">{label ?? message}</span>
           </button>
-        </Popover.Trigger>
-        <Popover.Portal container={portalContainer ?? undefined}>
-          <Popover.Content
-            side="bottom"
-            align="start"
-            sideOffset={6}
-            collisionPadding={8}
-            avoidCollisions
-            className="outline-none"
-            style={{ zIndex: Z_LAYERS.popover }}
-          >
-            <div data-ph-unmask="" className="flex w-[320px] flex-col gap-2 rounded-xl border border-fg/[0.08] bg-(color:--work-popover-bg) p-3 shadow-[0_18px_48px_rgba(0,0,0,0.58)] backdrop-blur-md">
-              <div className="flex items-start gap-1.5">
-                <WarningCircle size={13} weight="fill" className="mt-[2px] shrink-0" style={{ color }} />
-                <span className="text-[12px] font-semibold leading-snug text-fg">{failure.report?.headline ?? message}</span>
-              </div>
-              {/* With no report the message is the headline; it is not repeated. */}
-              {failure.report ? <pre className="m-0 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-md bg-fg/[0.04] px-2 py-1.5 font-mono text-[10.5px] leading-relaxed text-fg/70 select-text">
-                {message}
-              </pre> : null}
-              {failure.action || failure.body ? (
-                <div className="flex items-center gap-2">
-                  <div className="min-w-0 flex-1">{failure.body}</div>
-                  {failure.action ? <NoticeButton action={failure.action} tone="error" /> : null}
-                </div>
-              ) : null}
-            </div>
-          </Popover.Content>
-        </Popover.Portal>
-      </Popover.Root>
+        )}
+      >
+        <div className="flex items-start gap-1.5">
+          <WarningCircle size={13} weight="fill" className="mt-[2px] shrink-0" style={{ color }} />
+          <span className="text-[12px] font-semibold leading-snug text-fg">{failure.report?.headline ?? message}</span>
+        </div>
+        {/* With no report the message is the headline; it is not repeated. */}
+        {failure.report ? <pre className="m-0 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-md bg-fg/[0.04] px-2 py-1.5 font-mono text-[10.5px] leading-relaxed text-fg/70 select-text">
+          {message}
+        </pre> : null}
+        {failure.action || failure.body ? (
+          <div className="flex items-center gap-2">
+            <div className="min-w-0 flex-1">{failure.body}</div>
+            {failure.action ? <NoticeButton action={failure.action} tone="error" /> : null}
+          </div>
+        ) : null}
+      </NoticePopover>
       {onDismiss ? (
         <button
           type="button"

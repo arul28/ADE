@@ -150,6 +150,7 @@ export function createAndroidEmulatorBridge(deps: AndroidEmulatorBridgeDeps): An
     setPermission: runtimeOnly("setPermission"),
     getDeviceSettings: runtimeOnly("getDeviceSettings"),
     setDeviceSetting: runtimeOnly("setDeviceSetting"),
+    readLog: runtimeOnly("readLog"),
     /**
      * Turn the host's loopback stream URL into one this desktop can open. Not a
      * routed action: the forward is built by this process.

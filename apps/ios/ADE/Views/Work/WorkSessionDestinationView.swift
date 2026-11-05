@@ -868,6 +868,8 @@ struct WorkSessionDestinationView: View {
     switch tab {
     case .simulator:
       duoLiveStageSlot(.simulator(seed.appleStatus))
+    case .android:
+      duoLiveStageSlot(.android(seed.androidStatus))
     case .macDesktop:
       if seed.macDesktopStream {
         duoLiveStageSlot(.macDesktop(seed.macDesktop))
@@ -903,8 +905,8 @@ struct WorkSessionDestinationView: View {
     WorkToolsSheet(laneId: duoToolLaneId, tool: tool, embedded: true)
   }
 
-  /// A live stream (the simulator, the lane's screen, App Control frames)
-  /// puts itself on stage over the pane, seeded with the state the chip was
+  /// A live stream (the simulator, the Android emulator, the lane's screen,
+  /// App Control frames) puts itself on stage over the pane, seeded with the state the chip was
   /// already showing; the pane only holds its place. Watching stays the
   /// default, and Control is the viewer's own deliberate act.
   private func duoLiveStageSlot(_ seed: LiveStage.Seed) -> some View {
@@ -937,6 +939,8 @@ struct WorkSessionDestinationView: View {
       return .macDesktop(.watching)
     case .appControl:
       return .appControl(AppControlViewerPreview())
+    case .android:
+      return .android(.running)
     }
   }
   #endif
@@ -1248,7 +1252,7 @@ struct WorkSessionDestinationView: View {
       showProof()
     case .ctoSettings:
       duoPane?.open(.ctoSettings, origin: origin)
-    case .simulator, .macDesktop, .appControl, .browser:
+    case .simulator, .android, .macDesktop, .appControl, .browser:
       if let duoPane {
         duoPane.open(tab, origin: origin)
       } else if let chip = toolsRelay.chips.first(where: { $0.duoToolTab == tab }) {

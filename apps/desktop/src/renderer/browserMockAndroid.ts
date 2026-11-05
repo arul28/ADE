@@ -168,6 +168,7 @@ function avd(partial: Partial<AndroidAvdListing> & Pick<AndroidAvdListing, "name
     lcdWidth: LCD.width,
     lcdHeight: LCD.height,
     density: 420,
+    ramMb: 2_048,
     path: `/Users/mock/.android/avd/${partial.name}.avd`,
     sizeBytes: 2.1e9,
     adeCreated: false,
