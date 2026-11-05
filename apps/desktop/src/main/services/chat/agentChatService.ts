@@ -36676,10 +36676,13 @@ export function createAgentChatService(args: {
         // ACP takes no mid-turn message, so this one runs next, from the
         // queue the running turn drains when it ends. Failed here, it was lost,
         // and the setup failure below marked the running turn's chat idle.
-        if (validation.reason === TURN_ALREADY_ACTIVE_REASON && runtime.busy && managed.runtime === runtime) {
+        // The busy runtime is the live one, which a recycle during the wait
+        // may have replaced; the queue that is drained belongs to it.
+        const live = managed.runtime;
+        if (validation.reason === TURN_ALREADY_ACTIVE_REASON && live?.kind === "acp" && live.busy) {
           const queued = enqueueSteerOrDrop(
             managed,
-            runtime,
+            live,
             managed.session.id,
             randomUUID(),
             args.userText?.trim() || args.promptText,
