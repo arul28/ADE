@@ -611,7 +611,9 @@ export function createMachineConnectionPool(options: MachineConnectionPoolOption
       // On a miss, the fresh read's own failure (signed out, directory down) is the answer.
       throw error;
     }
-    const fresh = pick(machines);
+    // An offline exact hit is rechecked exactly: a loose match on the fresh
+    // list could name another machine than the one the cache found.
+    const fresh = pick(machines, cached !== null);
     if (fresh) return fresh;
     if (cached) return cached;
     const known = machines.map((candidate) => `${machineName(candidate)} (${candidate.machineKey})`);
