@@ -155,7 +155,7 @@ export function Agent37AgentLimitsCard() {
         </div>
         <div className="ade-ig-limit-row">
           <div><b>Monthly cap</b><small>Optional. Your Agent 37 wallet is prepaid, so it already caps what you can spend.</small></div>
-          <div className="kit-seg" role="radiogroup" aria-label="Monthly cap">
+          <div className="kit-seg" data-case="sentence" role="radiogroup" aria-label="Monthly cap">
             {[null, ...AGENT37_CAP_CHOICES_USD].map((usd) => (
               <button key={usd ?? "off"} type="button" role="radio" aria-checked={cap === usd} disabled={disabled}
                 onClick={() => { if (cap !== usd) void save({ monthlyCapUsd: usd }); }}>

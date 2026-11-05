@@ -829,6 +829,13 @@ apps/ios/
 │   │   │                            #   (github.* remote commands, menu shown only
 │   │   │                            #   when the repo has open issues; see
 │   │   │                            #   docs/features/issues).
+│   │   ├── Agent37/                  # Agent 37 page (Work ⋯ menu, shown once the
+│   │   │                            #   account has Agent 37): machines and their
+│   │   │                            #   actions, spending, ready machines, a new
+│   │   │                            #   machine approved here, what agents may
+│   │   │                            #   spend; Duo book and laptop layouts. Over
+│   │   │                            #   agent37.read / agent37.write (see
+│   │   │                            #   docs/features/remote-runtime/agent37.md).
 │   │   ├── CursorCloud/              # Cursor Cloud fleet pane: CursorCloudPaneSheet
 │   │   │                            #   (full-screen sheet mirroring the Linear
 │   │   │                            #   pane's presentation) +
