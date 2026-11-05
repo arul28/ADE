@@ -2192,6 +2192,26 @@ export function createMultiProjectRpcRequestHandler(
     throw syncServiceUnavailable();
   };
 
+  /**
+   * `withSyncService` for a read. The scope that hosts sync, or most recently
+   * tried to, answers as it is when it is ready; only with no such scope does
+   * the read go through `withSyncService`. Re-entering host activation for a
+   * read answered the Phone tab with "Another ADE brain is already hosting
+   * mobile sync" whenever activation was blocked or backed off.
+   */
+  const readSyncService = async <TService, TFallback>(
+    run: (syncService: ActiveSyncService) => TService | Promise<TService>,
+    machineFallback: (controls: ProjectlessSyncControls) => TFallback | Promise<TFallback>,
+  ): Promise<TFallback | TService> => {
+    const hostProjectId = scopeRegistry.getActiveSyncHostProjectId?.()
+      ?? scopeRegistry.getMostRecentFailingSyncHostProjectId?.();
+    const readySyncService = hostProjectId
+      ? scopeRegistry.getIfReady?.(hostProjectId)?.runtime.syncService ?? null
+      : null;
+    if (readySyncService) return await run(readySyncService);
+    return await withSyncService(run, machineFallback);
+  };
+
   const getAccountDirectoryHealth = (): SyncAccountDirectoryHealth => {
     try {
       return options.getAccountDirectoryHealth?.() ?? createSyncAccountDirectoryHealth(
@@ -3615,17 +3635,7 @@ export function createMultiProjectRpcRequestHandler(
     }
 
     if (method === "sync.listDevices") {
-      // A read. The scope that hosts sync, or last tried to, lists its devices
-      // as it is; re-entering host activation here answered the Phone tab
-      // with "Another ADE brain is already hosting mobile sync" whenever
-      // activation was blocked or backed off.
-      const hostProjectId = scopeRegistry.getActiveSyncHostProjectId?.()
-        ?? scopeRegistry.getMostRecentFailingSyncHostProjectId?.();
-      const readySyncService = hostProjectId
-        ? scopeRegistry.getIfReady?.(hostProjectId)?.runtime.syncService ?? null
-        : null;
-      if (readySyncService) return await readySyncService.listDevices();
-      return await withSyncService(
+      return await readSyncService(
         (syncService) => syncService.listDevices(),
         // The machine pairing file is keyed by device id with no listing API,
         // and the runtime state that fills this list comes from a project's
@@ -3682,7 +3692,7 @@ export function createMultiProjectRpcRequestHandler(
     }
 
     if (method === "sync.getPin") {
-      return await withSyncService(
+      return await readSyncService(
         (syncService) => ({ pin: syncService.getPin() }),
         (controls) => ({ pin: controls.getPin() }),
       );
@@ -3724,7 +3734,7 @@ export function createMultiProjectRpcRequestHandler(
     }
 
     if (method === "sync.getRuntimeName") {
-      return await withSyncService(
+      return await readSyncService(
         (syncService) => ({ runtimeName: syncService.getRuntimeName() }),
         // The runtime name is a per-project setting. A machine with no project
         // has none, which is what the projectless snapshot already reports.
@@ -3758,14 +3768,14 @@ export function createMultiProjectRpcRequestHandler(
     }
 
     if (method === "sync.getCloudRelayStatus") {
-      return await withSyncService(
+      return await readSyncService(
         (syncService) => syncService.getCloudRelayStatus(),
         (controls) => controls.getCloudRelayStatus(),
       );
     }
 
     if (method === "sync.getRequireDpop") {
-      return await withSyncService(
+      return await readSyncService(
         (syncService) => syncService.getRequireDpop(),
         (controls) => controls.getRequireDpop(),
       );

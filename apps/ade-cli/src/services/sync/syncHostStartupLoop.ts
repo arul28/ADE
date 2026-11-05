@@ -367,7 +367,8 @@ export async function runSyncHostStartupLoop(deps: SyncHostStartupLoopDeps): Pro
   // The owner the previous pass took over from. The same owner again on the
   // very next pass gets the ordinary wait, never a second takeover at once:
   // retrying straight after a takeover with nothing to wait on spun this
-  // loop 7,000 times on 2026-11-04 and held the brain's event loop for 14s.
+  // loop 19,503 times in 58s on 2026-11-04 and stalled the brain's event
+  // loop for up to 27s.
   let tookOverPid: number | null = null;
   // The attempt that is still running, when the previous wait on it timed out.
   // Awaited again rather than replaced, so two starts never race for the lease.
@@ -416,7 +417,7 @@ export async function runSyncHostStartupLoop(deps: SyncHostStartupLoopDeps): Pro
       return;
     } catch (error) {
       attempt += 1;
-      const justTookOverPid = tookOverPid;
+      const justTookOverPid: number | null = tookOverPid;
       tookOverPid = null;
       if (error instanceof SyncHostStartTimeoutError) {
         // Still running: no sleep, the next pass waits on the same attempt.
@@ -527,11 +528,7 @@ export async function runSyncHostStartupLoop(deps: SyncHostStartupLoopDeps): Pro
             logEvent("sync.host_takeover_unverified", { attempt, ownerPid: owner.pid });
           }
           tookOverPid = owner.pid;
-          try {
-            deps.clearHeldFailures?.();
-          } catch {
-            // The next pass then meets the held failure and waits it out.
-          }
+          deps.clearHeldFailures?.();
           continue;
         }
       }

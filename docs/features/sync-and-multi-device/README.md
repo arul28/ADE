@@ -2432,10 +2432,12 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   the re-host into 19,503 attempts in 58 s with nothing to wait on: the
   brain's event loop stalled for up to 27 s and the phone dropped three times.
 
-  `sync.listDevices` is a read and never re-enters host activation: it lists
-  the devices of the scope that hosts sync, or most recently tried to, when
-  that scope is ready, so a blocked or backed-off activation no longer turns
-  the Phone tab into "Another ADE brain is already hosting mobile sync".
+  The brain's sync reads (`sync.listDevices`, `getPin`, `getRuntimeName`,
+  `getCloudRelayStatus`, `getRequireDpop`) go through `readSyncService` in
+  `multiProjectRpcServer.ts`. When the scope that hosts sync, or most recently
+  tried to, is ready, it answers as it is and host activation is not re-entered.
+  A blocked or backed-off activation therefore no longer turns the Phone tab
+  into "Another ADE brain is already hosting mobile sync".
 
   The loop also classifies what it caught rather than retrying everything the
   same way. Each failure goes through `classifyStorageFault`
