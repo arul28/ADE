@@ -12,10 +12,10 @@ export type ProjectRootResolution = {
 type RealpathEntry = { value: string; checkedAt: number; checking: boolean };
 
 /**
- * Real paths of existing folders, kept for the life of the process and
- * checked again off the event loop. The project registry normalizes every root
- * every few seconds, and on Windows one `realpathSync` of a project root held
- * the brain 19.7 s while the disk stalled (2026-11-04). Only the first lookup
+ * Real paths of existing files and folders, kept for the life of the process
+ * and checked again off the event loop. The project registry normalizes every
+ * root every few seconds, and on Windows one `realpathSync` of a project root
+ * held the brain 19.7 s while the disk stalled (2026-11-04). Only the first lookup
  * of a path is synchronous. Later ones answer from memory and start one
  * asynchronous `realpath` (one per path, at most two at once, at most every
  * `REALPATH_RECHECK_MS` per path), which the next lookup then uses. A path

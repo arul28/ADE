@@ -12,7 +12,9 @@
  *
  * Main and the brain both register it (`shared/sentry/diagnostics.ts`): the
  * `brain_service` context on every event (a few small file reads), and the
- * service's logs as `brain-service-logs.txt` on the events that get files.
+ * service's logs as `brain-service-logs.txt` on the events that get files. The
+ * desktop app's logs (`desktopLogsAttachment`) go only on a restart loop
+ * report (`brainRestartLoop.ts`).
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -85,6 +87,8 @@ function brainServiceContext(env: NodeJS.ProcessEnv = process.env, nowMs = Date.
   return context;
 }
 
+type LogTailFile = { label: string; filePath: string; maxBytes: number };
+
 /** The service's own logs, newest part of each, as one file. Null when there are none. */
 function brainServiceLogsAttachment(env: NodeJS.ProcessEnv = process.env): DiagnosticAttachment | null {
   const { runtimeDir } = resolveMachineAdeLayout(env);
@@ -129,8 +133,6 @@ export function desktopLogsAttachment(env: NodeJS.ProcessEnv = process.env): Dia
   files.push({ label: "Desktop machine log", filePath: path.join(runtimeDir, MACHINE_MAIN_LOG_FILE_NAME), maxBytes: 64_000 });
   return logTailsAttachment("desktop-logs.txt", files);
 }
-
-type LogTailFile = { label: string; filePath: string; maxBytes: number };
 
 /** The newest part of each file under its own heading, as one file. Null when every file is absent or empty. */
 function logTailsAttachment(filename: string, files: readonly LogTailFile[]): DiagnosticAttachment | null {

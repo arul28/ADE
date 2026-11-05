@@ -32,7 +32,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { captureProblem, flushSentry, isSentryActive } from "../../../desktop/src/shared/sentry/capture";
-import { registerSentryDiagnosticAttachment } from "../../../desktop/src/shared/sentry/diagnostics";
+import { registerSentryDiagnosticAttachment, type DiagnosticEvent } from "../../../desktop/src/shared/sentry/diagnostics";
 import { isPidAlive } from "../serviceManager/common";
 import { desktopLogsAttachment } from "./brainServiceDiagnostics";
 import { writeJsonAtomic } from "../services/runtime/atomicJson";
@@ -85,14 +85,15 @@ export function startBrainRestartLoopWatch(options: { runtimeDir: string; build:
   current = { startsPath, pid: process.pid, at: new Date(nowMs).toISOString() };
   writeStartsFile(startsPath, state);
   if (loopFoundAtMs === null) return;
-  registerSentryDiagnosticAttachment("desktop-logs", (event) =>
-    (event.fingerprint?.[0] === RESTART_LOOP_FINGERPRINT[0] && event.fingerprint[1] === RESTART_LOOP_FINGERPRINT[1]
-      ? desktopLogsAttachment()
-      : null));
+  registerSentryDiagnosticAttachment("desktop-logs", (event) => (isRestartLoopEvent(event) ? desktopLogsAttachment() : null));
   // This brain sends the report if it lives long enough; if it dies first,
   // the next one finds `loopFoundAt` and takes over.
   const delayMs = Math.max(0, Math.min(LOOP_QUIET_MS, loopFoundAtMs + LOOP_REPORT_MAX_DELAY_MS - nowMs));
   setTimeout(() => sendLoopReport(startsPath), delayMs).unref();
+}
+
+function isRestartLoopEvent(event: DiagnosticEvent): boolean {
+  return RESTART_LOOP_FINGERPRINT.every((part, index) => event.fingerprint?.[index] === part);
 }
 
 /** This brain is stopping in an orderly way: its start does not count as a crash for the next one. */

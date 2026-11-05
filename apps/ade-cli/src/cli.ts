@@ -28212,9 +28212,15 @@ async function runServe(
   if (!syncCapableHome && syncRequested) {
     process.stderr.write("ADE: sync disabled because ADE_HOME is neither the machine's default home nor a packaged channel's home.\n");
   }
-  const serviceBrainPid = syncRequested && syncCapableHome
-    ? (await import("./serviceManager")).serviceBrainPidBesideHandRunBrain()
-    : null;
+  let serviceBrainPid: number | null = null;
+  if (syncRequested && syncCapableHome) {
+    const [{ isDevTestMachineProcess }, { serviceBrainPidBesideHandRunBrain }] = await Promise.all([
+      import("./services/sync/devTestMachine"),
+      import("./serviceManager"),
+    ]);
+    // A dev test machine is its own machine, with its own home and sync lease.
+    if (!isDevTestMachineProcess()) serviceBrainPid = serviceBrainPidBesideHandRunBrain();
+  }
   if (serviceBrainPid != null) {
     process.stderr.write(`ADE: sync disabled because the installed ADE brain (pid ${serviceBrainPid}) hosts phone sync on this computer. Pass --no-sync to silence this.\n`);
     headlessProjectLogger.info("sync.host_left_to_service_brain", { servicePid: serviceBrainPid });

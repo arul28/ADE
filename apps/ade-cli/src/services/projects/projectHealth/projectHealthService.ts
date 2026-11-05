@@ -156,10 +156,18 @@ function exists(target: string): boolean {
  * A Windows project root reached over a share: `\\wsl.localhost\…` or
  * `\\wsl$\…` (a WSL distro), or any other `\\server\share`. SQLite's
  * file locks are unreliable there; on 2026-11-04 a WSL project's desktop and
- * brain both hit "database is locked" opening its database together.
+ * brain both hit "database is locked" opening its database together. A mapped
+ * drive (`Z:\…`) is a share too: its real path is the `\\server\share` path.
  */
-function windowsNetworkShareKind(root: string): "wsl" | "network" | null {
+async function windowsNetworkShareKind(root: string): Promise<"wsl" | "network" | null> {
   if (process.platform !== "win32") return null;
+  // A root that does not resolve (moved, unmounted) is classified as written;
+  // other checks report a missing root.
+  const real = await fs.promises.realpath(root).catch(() => root);
+  return uncShareKind(real) ?? uncShareKind(root);
+}
+
+function uncShareKind(root: string): "wsl" | "network" | null {
   const unc = root.replace(/\//g, "\\").replace(/^\\\\\?\\UNC\\/i, "\\\\");
   if (!unc.startsWith("\\\\") || unc.startsWith("\\\\?\\") || unc.startsWith("\\\\.\\")) return null;
   return /^\\\\wsl(?:\.localhost|\$)\\/i.test(unc) ? "wsl" : "network";
@@ -885,8 +893,8 @@ export function createProjectHealthService(deps: ProjectHealthServiceDeps) {
           detail: `${record.originalBytes ? `${formatBytes(record.originalBytes)} you can free. ` : ""}Delete it from Settings → Location once the project works here.`,
         }));
       }),
-      run("network-share", "The project is on this computer's own drive", () => {
-        const share = windowsNetworkShareKind(projectRoot);
+      run("network-share", "The project is on this computer's own drive", async () => {
+        const share = await windowsNetworkShareKind(projectRoot);
         if (!share) return [];
         return [{
           id: "network-share",

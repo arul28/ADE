@@ -66,13 +66,17 @@ export function isStartedByRuntimeService(): boolean | null {
  * the service did not start (an agent's or a test's `ade serve`), else null.
  * Such a brain leaves phone sync to the service brain: on 2026-11-04 four of
  * them took the machine-wide sync lock in turn, and the phone dropped each
- * time the installed brain took it back. Null where the service cannot tell
- * (Linux), when no service brain runs, and in the service brain itself.
+ * time the installed brain took it back. Null when no service brain runs and
+ * in the service brain itself.
  */
 export function serviceBrainPidBesideHandRunBrain(): number | null {
-  if (isStartedByRuntimeService() !== false) return null;
+  const startedByService = isStartedByRuntimeService();
+  if (startedByService === true) return null;
   const servicePid = getRuntimeServiceMainPid();
   if (servicePid == null || servicePid === process.pid || !isPidAlive(servicePid)) return null;
+  // Where the parent says nothing (Linux), the service's pid is this brain's
+  // own, or its parent's when the unit starts it through a wrapper.
+  if (startedByService === null && servicePid === process.ppid) return null;
   return servicePid;
 }
 
