@@ -302,7 +302,7 @@ export function captureAppleDeviceAnalytics(args: {
 /**
  * One coarse fact for the Android panel (`ANDROID_DEVICE_ANALYTICS_OUTCOMES`),
  * per outcome per installation per UTC day, the same way as the Apple panel.
- * Worst case four accepted events a day. No ceiling was raised.
+ * Worst case six accepted events a day. No ceiling was raised.
  */
 export function captureAndroidDeviceAnalytics(args: {
   analytics: AgentTurnAnalytics;

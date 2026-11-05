@@ -16,7 +16,8 @@ import type { RuntimeDisposeReason } from "./runtimeLifecycle";
 
 /**
  * The Android panel's product facts (`ade_feature_used`, `action: "android_device"`):
- * whether the guided SDK install, app installs, renders and agent leases are used at all.
+ * whether the guided SDK install, app installs, renders, agent leases, the phone and web
+ * viewers, and starts past the RAM guard are used at all.
  * Closed: a spelling not listed here is dropped by the analytics policy, not widened.
  */
 export const ANDROID_DEVICE_ANALYTICS_OUTCOMES = [
@@ -24,6 +25,8 @@ export const ANDROID_DEVICE_ANALYTICS_OUTCOMES = [
   "app_installed",
   "device_rendered",
   "device_leased",
+  "remote_viewed",
+  "start_forced",
 ] as const;
 export type AndroidDeviceAnalyticsOutcome = (typeof ANDROID_DEVICE_ANALYTICS_OUTCOMES)[number];
 

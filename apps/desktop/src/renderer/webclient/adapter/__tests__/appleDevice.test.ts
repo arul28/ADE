@@ -82,6 +82,30 @@ describe("createAppleDeviceNamespace", () => {
     expect(url.searchParams.get("token")).toBe("tok-xyz");
   });
 
+  it("gives each viewer the single-use ticket behind its own url, and a stop forgets only its lane's", async () => {
+    const tickets = [
+      { ...TICKET, path: "/apple/stream/pane", token: "tok-pane" },
+      { ...TICKET, path: "/apple/stream/floater", token: "tok-floater" },
+      { ...TICKET, path: "/apple/stream/other-lane", token: "tok-other" },
+    ];
+    let minted = 0;
+    // The host mints a new ticket per start and answers the stop.
+    const call = (async (action: string) => (action === "apple.streamTicket" ? tickets[minted++] : {})) as never;
+    const ns = createAppleDeviceNamespace(call, () => "ws://10.0.0.4:8787/") as Record<string, (...args: never[]) => Promise<unknown>>;
+    const tokenFor = async (streamUrl: string) =>
+      new URL(((await ns.resolveStreamUrl!(streamUrl as never)) as { url: string }).url).searchParams.get("token");
+
+    // The pane and the floating player start at once on lane-a; another lane after them.
+    const pane = await ns.startStream!({ laneId: "lane-a" } as never) as { streamUrl: string };
+    const floater = await ns.startStream!({ laneId: "lane-a" } as never) as { streamUrl: string };
+    await ns.startStream!({ laneId: "lane-b" } as never);
+    expect(await tokenFor(pane.streamUrl)).toBe("tok-pane");
+    expect(await tokenFor(floater.streamUrl)).toBe("tok-floater");
+
+    await ns.stopStream!(undefined as never, { laneId: "lane-b" } as never);
+    expect(await tokenFor(pane.streamUrl)).toBe("tok-pane");
+  });
+
   it("carries the token inside the pipe path when the route is the relay", async () => {
     const { ns } = namespaceFor(
       { "apple.streamTicket": TICKET },

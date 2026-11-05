@@ -33,6 +33,7 @@ its own folder. Do not build a one-off version in a feature folder.
 | A modal with its own content: a form or a picker | `<Dialog open onOpenChange title ...>` |
 | One thing to read beside the page you are on (an issue) | `<Dialog placement="right" ...>`, the side sheet |
 | A dropdown that hangs off the top bar | `<HeaderSheet>` |
+| The full text behind a one-line notice: an error's detail, a crash's stack | `<NoticePopover open onOpenChange trigger width>` (the card `InlineErrorNotice` and the Android crash pin open) |
 
 Rules of thumb. A banner describes a **state**: it stays while the state
 holds and goes away when the state clears. A toast describes an **event**: it

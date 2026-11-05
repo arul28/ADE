@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from "react";
 import type { OpenProjectBinding } from "../../../shared/types";
 import { effectiveRuntimeBinding, laneOnMachineKey } from "../../lib/chatMachineRouting";
+import { logRendererDebugEvent } from "../../lib/debugLog";
 import { useAppStore } from "../../state/appStore";
 import {
   isWorkLivePreviewEnabled,
@@ -230,7 +231,11 @@ export async function floatAndroidMiniPlayerForChat(args: {
   if (!device) {
     const api = window.ade?.androidEmulator;
     if (!api?.getStatus) return false;
-    const status = await api.getStatus({ laneId }, args.runtimePin).catch(() => null);
+    const status = await api.getStatus({ laneId }, args.runtimePin).catch((cause: unknown) => {
+      // Nothing floats: the pane went, and the emulator's state is unknown.
+      logRendererDebugEvent("android.mini_player_status_failed", { error: cause instanceof Error ? cause.message : String(cause) });
+      return null;
+    });
     const lane = status?.lane ?? null;
     const avdName = lane?.device?.avdName ?? null;
     if (!lane || !avdName) return false;

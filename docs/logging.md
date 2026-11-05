@@ -1350,12 +1350,16 @@ service in the brain (through an injected `captureAnalytics`), with
 `ANDROID_DEVICE_ANALYTICS_OUTCOMES`: `sdk_installed` (the guided SDK install
 finished and put at least one part in place), `app_installed` (an APK or a
 Gradle build installed on a lane's emulator), `device_rendered` (a 3D render
-was filed as proof), or `device_leased` (an agent took a new lease with
-`ade android lease`; a renewal or a busy answer is not one). A failed, refused
-or no-op call emits nothing. Nothing finer crosses: no SDK path, AVD,
-package, APK, angle, lane, chat, or image. A per-outcome
+was filed as proof), `device_leased` (an agent took a new lease with
+`ade android lease`; a renewal or a busy answer is not one), `remote_viewed`
+(the stream relay started a lane's stream for a phone or a web tab), or
+`start_forced` (a start past the RAM guard, "Start anyway" or
+`ade android start --force`, booted the emulator). A failed, refused
+or no-op call emits nothing; the guard's own refusal is not an event. Nothing
+finer crosses: no SDK path, AVD, package, APK, angle, lane, chat, machine,
+memory size, or image. A per-outcome
 `work_android_device:<outcome>` key with a 24-hour minimum interval bounds this
-to at most four accepted events per installation per UTC day, inside the same
+to at most six accepted events per installation per UTC day, inside the same
 `ade_feature_used` limits; no ceiling was raised. The dashboard spec is
 untouched.
 

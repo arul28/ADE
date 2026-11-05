@@ -807,8 +807,9 @@ minimized" for that chat.
 | `apps/ade-cli/src/services/sync/appleRemoteCommands.ts` | `apple.*` remote commands for the phone and the web client, including `apple.invoke`. |
 | `apps/ade-cli/src/services/workTools/workToolShowRequests.ts` | `ade apple show` / `ade ui show` on the brain side. |
 | `apps/desktop/resources/agent-skills/ade-apple/SKILL.md` | Agent skill for the verbs below. |
-| `apps/ios/ADE/Views/Work/AppleDeviceViewer.swift`, `AppleDeviceViewerModel.swift` | The phone's simulator viewer on the live stage (watch, hold to control, the menu, fold mirroring) and the model that owns its ticket, socket, decoder, posture and mode. |
-| `apps/ios/ADE/Views/Work/LiveStage.swift`, `LiveStageChrome.swift` | The phone's live stage: placement and Turn per context and the root host that draws the stream full screen or over the Duo's pane, with the pane slot (`LiveStage.swift`); the aspect-fit rule, the screen viewers' shared frame, and the floating menu button and its panel (`LiveStageChrome.swift`). |
+| `apps/ios/ADE/Views/Work/AppleDeviceViewer.swift`, `AppleDeviceViewerModel.swift` | The phone's simulator viewer on the live stage (watch, hold to control, the menu, fold mirroring) and the model that owns its ticket, posture and mode. |
+| `apps/ios/ADE/Views/Work/AppleStreamSession.swift` | The live stream both phone viewers share (simulator and emulator): the socket, the decoder, the health clock, the speed readout and the automatic redial. |
+| `apps/ios/ADE/Views/Work/LiveStage.swift`, `LiveStageChrome.swift` | The phone's live stage: placement and Turn per context and the root host that draws the stream full screen or over the Duo's pane, with the pane slot (`LiveStage.swift`); the aspect-fit rule, the screen viewers' shared frame, the floating menu button and its panel, and the device viewers' shared touch rules, status card, speed readout and keyboard bar (`LiveStageChrome.swift`). |
 | `apps/ios/ADE/Views/Work/AppleDeviceControl.swift` | The phone's touch mapping, gesture rule, input commands, Control blockers and the tap→screen probe. |
 | `apps/ios/ADE/Views/Work/AppleDeviceStream.swift` | The phone's ticket, record parser, health clock, decoder layer and the acking stream socket. |
 | `apps/ios/ADE/Services/SyncService+AppleDevice.swift` | The phone's `apple.*` calls, asked of the machine that owns the lane. |

@@ -46,6 +46,8 @@ export type AndroidLaneStreamsDeps<S extends AndroidLaneStreamState> = {
   onStreamEnding: (laneId: string) => Promise<void>;
   /** True while a recording holds the lane's stream. */
   isRecording: (laneId: string) => boolean;
+  /** The relay started the stream for a phone or a web tab. */
+  onRemoteViewerStarted?: () => void;
 };
 
 const NO_STREAM = { running: false, backend: null, transport: null, fps: null } as const;
@@ -171,6 +173,7 @@ export function createAndroidLaneStreams<S extends AndroidLaneStreamState>(deps:
         // the relay's bitrate cap is not applied: a cap would restart the
         // encoder under the local view.
         const { transport } = await startLaneStream(lane);
+        deps.onRemoteViewerStarted?.();
         return { transport };
       },
       async stopStream({ laneId }) {

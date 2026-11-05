@@ -378,6 +378,7 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
     logger,
     onStreamEnding: (laneId) => agent.onStreamEnding(laneId),
     isRecording: (laneId) => agent.isRecording(laneId),
+    onRemoteViewerStarted: () => deps.captureAnalytics?.("remote_viewed"),
   });
   const { stopLaneStream, liveStreamSerial } = laneStreams;
 
@@ -518,9 +519,13 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
     // Already running (a start from before a brain restart, or the user's own
     // emulator for an attached AVD): use it as it is.
     if (runningFor(device.avdName)) return laneStatus(laneId, ready.sdk);
-    const reservation = await reserveMemoryForStart(laneId, avd, options.force === true);
+    const force = options.force === true;
+    const reservation = await reserveMemoryForStart(laneId, avd, force);
     try {
-      return await bootLocked(state, device, ready);
+      const status = await bootLocked(state, device, ready);
+      // Started past the RAM guard: how often the guard's answer is overruled.
+      if (force && status.state === "booted") deps.captureAnalytics?.("start_forced");
+      return status;
     } finally {
       reservation.release();
     }
