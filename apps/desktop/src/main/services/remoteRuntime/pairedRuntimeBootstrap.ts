@@ -31,7 +31,9 @@ import {
   dominantPairedRuntimeFailure,
   orderPairedCandidates,
   pairedRuntimeFailureMessage,
+  pairedRouteConnectTimeoutMs,
   pairedRuntimeRouteHost,
+  recordPairedRouteFailure,
   type PairedRuntimeAccountHelloCode,
   type PairedRuntimeEndpointCandidate,
 } from "./pairedRuntimeRoutes";
@@ -61,13 +63,6 @@ type PairedRuntimeBootstrapOptions = {
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
-
-/** Failures where the address gave no answer at all. Demotion is for these only. */
-const ROUTE_SILENT_FAILURES = new Set<RemoteRuntimeConnectionAttemptFailure>([
-  "timeout",
-  "unreachable",
-  "unknown",
-]);
 
 function pairedArch(
   target: RemoteRuntimeTarget,
@@ -100,23 +95,6 @@ function compatibilityError(error: unknown): PairedRuntimeCompatibilityError {
     error,
   );
 }
-
-/**
- * How long a local-network route gets to open while another route is still
- * waiting behind it. A socket on the same network opens in milliseconds; the
- * default 10 s is for a route that is the last hope. A paired box in a data
- * centre advertises private addresses nobody else can reach, and each of
- * them used to hold the relay back by the full 10 s.
- */
-const LAN_CONNECT_TIMEOUT_WITH_FALLBACK_MS = 3_000;
-/**
- * The same for a tailnet route. Tailscale answers in well under a second once
- * its path is up, and a few seconds when it first has to go through a DERP
- * relay; while the far brain restarts, `tailscale serve` still accepts the
- * socket and the handshake hangs, which used to hold every later route back
- * by the full 10 s.
- */
-const TAILNET_CONNECT_TIMEOUT_WITH_FALLBACK_MS = 5_000;
 
 export async function bootstrapPairedRuntime(args: {
   target: RemoteRuntimeTarget;
@@ -156,26 +134,12 @@ export async function bootstrapPairedRuntime(args: {
   const markEndpointFailed = (
     candidate: PairedRuntimeEndpointCandidate,
     failure: RemoteRuntimeConnectionAttemptFailure,
-  ): void => {
-    if (failure === "identity") {
-      // A different machine answered here. Demotion clears on any answer, and a
-      // neighbour can answer too, so the address is forgotten, not demoted.
-      args.pairedStore.forgetEndpoint(
-        credentials.hostIdentity.deviceId,
-        candidate.endpoint,
-      );
-      return;
-    }
-    // Only a route that never answered is evidence against the address. Every
-    // other failure came from a host that did answer (a rejected pairing or
-    // account, a superseded or too-old peer), and demoting that route teaches
-    // the dial order nothing about whether the address is alive.
-    if (!ROUTE_SILENT_FAILURES.has(failure)) return;
-    args.pairedStore.markEndpointFailed(
-      credentials.hostIdentity.deviceId,
-      candidate.endpoint,
-    );
-  };
+  ): void => recordPairedRouteFailure(
+    args.pairedStore,
+    credentials.hostIdentity.deviceId,
+    candidate.endpoint,
+    failure,
+  );
   for (const [candidateIndex, candidate] of orderedCandidates.entries()) {
     const attemptStartedAt = Date.now();
     const hasFallback = candidateIndex < orderedCandidates.length - 1;
@@ -204,6 +168,7 @@ export async function bootstrapPairedRuntime(args: {
       relayAccountOwnerUserId = proof.userId;
     }
     let transport: SyncRuntimeTransport;
+    const directConnectTimeoutMs = pairedRouteConnectTimeoutMs(candidate.kind, hasFallback);
     try {
       transport = await openTransport({
         credentials,
@@ -211,11 +176,7 @@ export async function bootstrapPairedRuntime(args: {
         appVersion: args.appVersion,
         relayAccountToken,
         ...(candidate.kind === "relay" ? { correlationId } : {}),
-        ...(candidate.kind === "lan" && hasFallback
-          ? { connectTimeoutMs: LAN_CONNECT_TIMEOUT_WITH_FALLBACK_MS }
-          : candidate.kind === "tailnet" && hasFallback
-            ? { connectTimeoutMs: TAILNET_CONNECT_TIMEOUT_WITH_FALLBACK_MS }
-            : {}),
+        ...(directConnectTimeoutMs != null ? { connectTimeoutMs: directConnectTimeoutMs } : {}),
       });
     } catch (error) {
       if (error instanceof PairedRuntimeRelayAuthRequiredError) {

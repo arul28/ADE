@@ -580,7 +580,9 @@ export function createMachineConnectionPool(options: MachineConnectionPoolOption
 
   /**
    * Resolve an id or a display name. A miss on a cached directory read looks
-   * once more, fresh, in case the machine was renamed since.
+   * once more, fresh, in case the machine was renamed since. So does a hit
+   * that says offline: a machine woken on demand (an Agent 37 box) is back
+   * seconds after the wake, long before the cache would notice.
    */
   const selectMachine = async (query: string): Promise<AdeAccountMachine> => {
     const trimmed = query.trim();
@@ -596,11 +598,19 @@ export function createMachineConnectionPool(options: MachineConnectionPoolOption
       }
     };
     const cached = pick(await listAccountMachines());
-    if (cached) return cached;
-    // The fresh read's own failure (signed out, directory down) is the answer.
-    const machines = await listAccountMachines(true);
+    if (cached?.online) return cached;
+    let machines: AdeAccountMachine[];
+    try {
+      machines = await listAccountMachines(true);
+    } catch (error) {
+      // Offline from the cache stays the answer when the recheck can't run.
+      if (cached) return cached;
+      // On a miss, the fresh read's own failure (signed out, directory down) is the answer.
+      throw error;
+    }
     const fresh = pick(machines);
     if (fresh) return fresh;
+    if (cached) return cached;
     const known = machines.map((candidate) => `${machineName(candidate)} (${candidate.machineKey})`);
     throw new Error(
       `No machine on your ADE account matches "${trimmed}".${known.length ? ` Machines: ${known.join(", ")}.` : ""}`,
