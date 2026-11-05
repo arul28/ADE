@@ -4825,11 +4825,16 @@ const ANDROID_LANE_FREE = new Set<string>(ANDROID_LANE_FREE_ACTIONS);
 const ANDROID_SDK_PERSON_ONLY = new Set<string>(ANDROID_SDK_PERSON_ONLY_ACTIONS);
 
 /**
- * The `android_emulator` actions that may give a chat's work copy its first
- * device, so `--machine` makes the copy for them. Every other action needs a
- * device the copy already has, so it never makes one.
+ * The `android_emulator` actions that may need a chat's work copy before it
+ * exists (for its first device, or for the code to build), so `--machine`
+ * makes the copy for them. Every other action needs a device the copy
+ * already has, so it never makes one.
  */
-const ANDROID_COPY_MAKING_ACTIONS = new Set<string>(["createDevice", "attachDevice", "start", "installApp", "launchApp"]);
+const ANDROID_COPY_MAKING_ACTIONS = new Set<string>([
+  "createDevice", "attachDevice", "start", "installApp", "launchApp", "runInstrumentationTests",
+  // P3: a Compose preview needs the code there, not a device.
+  "listComposePreviews", "renderComposePreviews",
+]);
 
 /**
  * The `android_emulator` actions that build or install from the lane's
@@ -5131,6 +5136,7 @@ const ANDROID_AGENT_DRIVING_ACTIONS = new Set([
   "sendKey",
   "sendText",
   "rotate",
+  "setPosture",
   "openUrl",
   "launchApp",
   "tapElement",

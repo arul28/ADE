@@ -71,6 +71,21 @@ export function assertPackageName(value: unknown, what = "packageName"): string 
   return trimmed;
 }
 
+/**
+ * A Gradle module and variant, checked: module `app` and variant `debug` by
+ * default, a nested module as `a:b`. Only letters, digits, `-` and `_` pass,
+ * so nothing reaches `cmd.exe` or the shell as syntax.
+ */
+export function readAndroidGradleTarget(target: AndroidGradleTarget | null | undefined): { segments: string[]; variant: string } {
+  const moduleName = target?.module?.trim() || "app";
+  const variant = target?.variant?.trim() || "debug";
+  const segments = moduleName.replace(/^:/u, "").split(":");
+  if (!segments.every((segment) => GRADLE_NAME.test(segment)) || !GRADLE_NAME.test(variant)) {
+    throw new Error("--module and --variant take letters, digits, '-' and '_' only (a nested module as a:b).");
+  }
+  return { segments, variant };
+}
+
 function tail(text: string, lines = OUTPUT_TAIL_LINES): string[] {
   return text.split(/\r?\n/u).map((line) => line.trimEnd()).filter(Boolean).slice(-lines);
 }
@@ -260,8 +275,18 @@ export function createAndroidApps(deps: AndroidAppsDeps) {
     return tail(text);
   };
 
-  /** Runs the project's Gradle wrapper with the lane's emulator as the only target. */
-  const runGradle = async (laneId: string, root: string, task: string): Promise<string[]> => {
+  /**
+   * Runs the project's Gradle wrapper with the lane's emulator as the only
+   * target, and answers with its exit code and output (the last 128-256 KB).
+   * It throws when Gradle cannot run, runs too long, or ADE shuts down; a
+   * failing build is the caller's to read.
+   */
+  const runGradleProcess = async (
+    laneId: string,
+    root: string,
+    task: string,
+    extraArgs: readonly string[] = [],
+  ): Promise<{ exitCode: number | null; output: string; jdk: { home: string; source: string } }> => {
     const wrapperName = platform === "win32" ? "gradlew.bat" : "gradlew";
     const wrapper = path.join(root, wrapperName);
     if (!fs.existsSync(wrapper)) {
@@ -275,7 +300,7 @@ export function createAndroidApps(deps: AndroidAppsDeps) {
     // ADE can start without JAVA_HOME, and a Mac can have only the `java` stub.
     const { jdk, looked } = await locateAndroidJdk({ env: deps.env, platform });
     if (!jdk) throw new AndroidEmulatorFailure("ANDROID_BUILD_FAILED", androidJdkMissingMessage(looked));
-    const args = [task, "--console=plain"];
+    const args = [task, "--console=plain", ...extraArgs];
     // A checkout can lose the execute bit (a zip, a Windows copy); `sh` runs it anyway.
     const posixExecutable = platform !== "win32" && (fs.statSync(wrapper).mode & 0o111) !== 0;
     const invocation = platform === "win32"
@@ -299,7 +324,7 @@ export function createAndroidApps(deps: AndroidAppsDeps) {
     Object.assign(env, overrides);
     const startedAt = Date.now();
     logger?.info("android.gradle_started", { laneId, task, root, jdk: jdk.home, jdkSource: jdk.source, jdkVersion: jdk.version });
-    return new Promise<string[]>((resolve, reject) => {
+    return new Promise((resolve, reject) => {
       const child = spawn(invocation.command, invocation.args, {
         cwd: root,
         env,
@@ -338,17 +363,25 @@ export function createAndroidApps(deps: AndroidAppsDeps) {
         if (ended) return;
         ended = true;
         logger?.info("android.gradle_finished", { laneId, task, exitCode: code, durationMs: Date.now() - startedAt });
-        if (code === 0) {
-          resolve(tail(output));
-          return;
-        }
-        const javaMissing = /JAVA_HOME|no java|Unable to locate a Java Runtime/iu.test(output);
-        reject(new AndroidEmulatorFailure(
-          "ANDROID_BUILD_FAILED",
-          `Gradle ${task} failed (exit ${code ?? "none"}).${javaMissing ? ` Gradle could not run the JDK at ${jdk.home} (${jdk.source}): install Android Studio or a JDK 17+, or set JAVA_HOME for ADE.` : ""}\n${tail(output, 25).join("\n")}`,
-        ));
+        resolve({ exitCode: code, output, jdk: { home: jdk.home, source: jdk.source } });
       });
     });
+  };
+
+  /** The refusal for a Gradle run that ended with a non-zero exit. */
+  const gradleFailure = (task: string, run: { exitCode: number | null; output: string; jdk: { home: string; source: string } }) => {
+    const javaMissing = /JAVA_HOME|no java|Unable to locate a Java Runtime/iu.test(run.output);
+    return new AndroidEmulatorFailure(
+      "ANDROID_BUILD_FAILED",
+      `Gradle ${task} failed (exit ${run.exitCode ?? "none"}).${javaMissing ? ` Gradle could not run the JDK at ${run.jdk.home} (${run.jdk.source}): install Android Studio or a JDK 17+, or set JAVA_HOME for ADE.` : ""}\n${tail(run.output, 25).join("\n")}`,
+    );
+  };
+
+  /** Runs one Gradle task and answers with the tail of its output; a non-zero exit throws. */
+  const runGradle = async (laneId: string, root: string, task: string): Promise<string[]> => {
+    const run = await runGradleProcess(laneId, root, task);
+    if (run.exitCode !== 0) throw gradleFailure(task, run);
+    return tail(run.output);
   };
 
   const install = async (laneId: string, input: { apkPath?: string | null; gradle?: AndroidGradleTarget | null }): Promise<AndroidInstallResult> => {
@@ -376,12 +409,7 @@ export function createAndroidApps(deps: AndroidAppsDeps) {
       if (packageName) deps.rememberInstalled(laneId, packageName);
       return { laneId, packageName, method: "apk", apkPath, gradleTask: null, durationMs: Date.now() - startedAt, outputTail };
     }
-    const moduleName = input.gradle?.module?.trim() || "app";
-    const variant = input.gradle?.variant?.trim() || "debug";
-    const segments = moduleName.replace(/^:/u, "").split(":");
-    if (!segments.every((segment) => GRADLE_NAME.test(segment)) || !GRADLE_NAME.test(variant)) {
-      throw new Error("--module and --variant take letters, digits, '-' and '_' only (a nested module as a:b).");
-    }
+    const { segments, variant } = readAndroidGradleTarget(input.gradle);
     const root = laneRootOrRefuse(laneId, "a Gradle build");
     const task = `:${segments.join(":")}:install${variant.charAt(0).toUpperCase()}${variant.slice(1)}`;
     const outputTail = await runGradle(laneId, root, task);
@@ -402,6 +430,10 @@ export function createAndroidApps(deps: AndroidAppsDeps) {
     install,
     isInstalled,
     resolveLaunchActivity,
+    /** P3 instrumentation tests: the same runner, with the exit code and output left to the caller. */
+    runGradleProcess,
+    gradleFailure,
+    laneRootOrRefuse,
 
     async listApps(laneId: string): Promise<AndroidAppInfo[]> {
       const [packages, launchers] = await Promise.all([

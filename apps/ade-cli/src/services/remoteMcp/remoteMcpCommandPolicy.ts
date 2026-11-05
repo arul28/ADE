@@ -249,12 +249,12 @@ const SERVICE_SIGN_IN_REASON =
 const GITHUB_AUTH_GROUPS: ReadonlySet<string> = new Set(["app-auth", "app", "auth"]);
 /** Spellings of `ade github app-auth login` and `clear`. */
 const GITHUB_AUTH_CHANGES: ReadonlySet<string> = new Set(["login", "authorize", "start", "clear", "logout", "sign-out"]);
-/** `ade android sdk` verbs that install the SDK, stop an install, or pick the SDK folder. */
-const ANDROID_SDK_WRITE_VERBS: ReadonlySet<string> = new Set(["install", "use", "cancel"]);
+/** `ade android sdk` verbs that install the SDK or a system image, remove an image, stop an install, or pick the SDK folder. */
+const ANDROID_SDK_WRITE_VERBS: ReadonlySet<string> = new Set(["install", "use", "cancel", "remove"]);
 const ANDROID_SDK_PERSON_ONLY: ReadonlySet<string> = new Set(ANDROID_SDK_PERSON_ONLY_ACTIONS);
 const ANDROID_SDK_REASON =
   "Only the user installs the Android SDK and accepts Google's licences, in the ADE desktop app on that computer: "
-  + "the setup card in the Android tool, or Settings › Android devices.";
+  + "the setup card in the Android tool, or Settings › Android devices. System images: the device picker's System images.";
 /**
  * Service credential actions, by domain; `true` means every action. The CLI
  * runs full access as `cto`, which these actions otherwise allow.

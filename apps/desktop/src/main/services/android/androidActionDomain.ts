@@ -16,6 +16,7 @@
  */
 
 import {
+  ANDROID_FOLD_POSES,
   ANDROID_HARDWARE_KEYS,
   ANDROID_LOG_LEVELS,
   ANDROID_ORIENTATIONS,
@@ -65,6 +66,16 @@ function optionalLaneId(args: unknown): { laneId: string | null } {
 /** Omitted stays omitted: the service applies its own default (true for `start`). */
 function optionalBoolean(args: unknown, key: string): boolean | undefined {
   return readBoolean(args, key) ?? undefined;
+}
+
+/** `fqns`: a list of strings, or omitted (every preview). */
+function previewFqns(args: unknown): string[] | null {
+  const raw = objectArgs(args).fqns;
+  if (raw == null) return null;
+  if (!Array.isArray(raw) || raw.some((entry) => typeof entry !== "string")) {
+    throw new Error("androidEmulator.renderComposePreviews: fqns must be a list of strings.");
+  }
+  return raw as string[];
 }
 
 function touchEvents(args: unknown): AndroidTouchEvent[] {
@@ -180,6 +191,29 @@ export function buildAndroidDomainService(runtime: AndroidActionRuntime): Opaque
       if (value !== null && typeof value !== "string") throw new Error("androidEmulator.setSdkPath requires path (a folder, or null).");
       return service.setSdkPath({ path: value });
     },
+    // P3 system images. An agent may read the list. Install and remove are
+    // the person's (`ANDROID_SDK_PERSON_ONLY_ACTIONS`): a licence to accept,
+    // gigabytes on disk, and AVDs that can lose the image they boot.
+    listSystemImages: (args?: unknown) => service.listSystemImages({
+      ...optionalLaneId(args),
+      ...(objectArgs(args).includeAvailable === false ? { includeAvailable: false } : {}),
+    }),
+    installSystemImage: (args?: unknown) => {
+      const raw = objectArgs(args).acceptedLicenseIds;
+      if (!Array.isArray(raw) || raw.some((id) => typeof id !== "string")) {
+        throw new Error("androidEmulator.installSystemImage requires acceptedLicenseIds (a list of licence ids).");
+      }
+      return service.installSystemImage({
+        ...optionalLaneId(args),
+        id: requiredString(args, "id", "installSystemImage"),
+        acceptedLicenseIds: raw as string[],
+      });
+    },
+    removeSystemImage: (args?: unknown) => service.removeSystemImage({
+      ...optionalLaneId(args),
+      id: requiredString(args, "id", "removeSystemImage"),
+      confirmedInUse: readBoolean(args, "confirmedInUse") === true,
+    }),
     // User-only and secret-bearing: the one call that mints the loopback
     // stream token. An agent reads the redacted `getStreamStatus`.
     startStream: (args?: unknown) => service.startStream({
@@ -248,6 +282,13 @@ export function buildAndroidDomainService(runtime: AndroidActionRuntime): Opaque
     uninstallApp: (args?: unknown) => service.uninstallApp({
       ...laneArgs(args, "uninstallApp"),
       packageName: requiredString(args, "packageName", "uninstallApp"),
+    }),
+    // P3: `ade android test`. The Gradle target reads as the install's does.
+    runInstrumentationTests: (args?: unknown) => service.runInstrumentationTests({
+      ...laneArgs(args, "runInstrumentationTests"),
+      gradle: gradleTarget(args) ?? {},
+      className: optionalString(args, "className"),
+      method: optionalString(args, "method"),
     }),
     openUrl: (args?: unknown) => service.openUrl({ ...laneArgs(args, "openUrl"), url: requiredString(args, "url", "openUrl") }),
     longPress: (args?: unknown) => service.longPress({
@@ -360,6 +401,30 @@ export function buildAndroidDomainService(runtime: AndroidActionRuntime): Opaque
       action: enumOf(optionalString(args, "action"), "action", ["grant", "revoke"] as const, "setPermission"),
       packageName: requiredString(args, "packageName", "setPermission"),
       permission: requiredString(args, "permission", "setPermission"),
+    }),
+    // P3 fold.
+    getPosture: (args?: unknown) => service.getPosture(laneArgs(args, "getPosture")),
+    setPosture: (args?: unknown) => {
+      const pose = optionalString(args, "pose");
+      return service.setPosture({
+        ...laneArgs(args, "setPosture"),
+        angle: optionalNumber(args, "angle"),
+        pose: pose ? enumOf(pose, "pose", ANDROID_FOLD_POSES, "setPosture") : null,
+      });
+    },
+    // P3 Compose previews.
+    listComposePreviews: (args?: unknown) => service.listComposePreviews({
+      ...laneArgs(args, "listComposePreviews"),
+      module: optionalString(args, "module"),
+      all: optionalBoolean(args, "all"),
+    }),
+    renderComposePreviews: (args?: unknown) => service.renderComposePreviews({
+      ...laneArgs(args, "renderComposePreviews"),
+      module: optionalString(args, "module"),
+      fqns: previewFqns(args),
+      chatSessionId: optionalString(args, "chatSessionId"),
+      proof: optionalBoolean(args, "proof"),
+      inline: optionalBoolean(args, "inline"),
     }),
     captureProofBundle: (args?: unknown) => service.captureProofBundle({
       ...laneArgs(args, "captureProofBundle"),

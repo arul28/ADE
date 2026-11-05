@@ -16,6 +16,7 @@ import path from "node:path";
 import { ANDROID_CATALOG_IDS } from "../../desktop/src/shared/androidDeviceCatalog";
 import {
   ANDROID_EMULATOR_DOMAIN,
+  ANDROID_FOLD_POSES,
   ANDROID_HARDWARE_KEYS,
   ANDROID_ORIENTATIONS,
   ANDROID_RENDER_ANGLE_IDS,
@@ -92,12 +93,16 @@ export const ANDROID_VALUE_FLAGS: readonly string[] = [
   "--caption",
   "--catalog",
   "--charging",
+  // `test --class <fqcn>`.
+  "--class",
   "--color",
   "--data",
   "--direction",
   "--display-size",
   "--duration-ms",
   "--folder",
+  // `preview --fqn <name>`, repeatable.
+  "--fqn",
   "--hold-ms",
   "--holder",
   "--id",
@@ -113,6 +118,7 @@ export const ANDROID_VALUE_FLAGS: readonly string[] = [
   "--lines",
   "--longitude",
   "--max-seconds",
+  "--method",
   "--module",
   "--name",
   "--out",
@@ -201,20 +207,30 @@ const ANDROID_VERB_FLAGS: Readonly<Record<string, readonly string[]>> = {
   lease: ["--wait", "--ttl", "--holder", "--token"],
   location: ["--latitude", "--longitude"],
   appearance: [],
+  // P3 fold.
+  fold: ["--angle"],
+  posture: [],
   settings: [...ANDROID_SETTINGS_FLAGS],
   permission: ["--package"],
   "proof-bundle": ["--out", "--caption", "--package", "--no-elements"],
+  // P3 Compose previews: `preview list` and `preview` (render).
+  preview: ["--module", "--fqn", "--all", "--no-proof"],
+  // P3 instrumentation tests: the install's Gradle flags, then one class or one method.
+  test: ["--module", "--variant", "--class", "--method"],
   // P1 setup: each `sdk` verb's own flags are checked again below.
-  sdk: ["--folder", "--with-cli", "--accept-license", "--wait", "--id", "--clear"],
+  sdk: ["--folder", "--with-cli", "--accept-license", "--wait", "--id", "--clear", "--image", "--installed"],
 };
 
 /** `ade android sdk <verb>`: the only flags each takes. */
 const ANDROID_SDK_VERB_FLAGS: Readonly<Record<string, readonly string[]>> = {
   status: ["--folder", "--with-cli"],
   licenses: ["--folder", "--with-cli", "--id"],
-  install: ["--folder", "--with-cli", "--accept-license", "--wait"],
+  install: ["--folder", "--with-cli", "--accept-license", "--wait", "--image"],
   use: ["--clear"],
   cancel: [],
+  // P3 system images.
+  images: ["--installed"],
+  remove: ["--image"],
 };
 
 /** `ade apple`'s button names (hyphens), each to the service's key. */
@@ -291,6 +307,10 @@ const ANDROID_ERROR_HINTS: Record<AndroidErrorCode, string> = {
     "hint: this lane uses an AVD it did not make, and ADE did not install this app, so ADE leaves it. Uninstall it in the emulator yourself.",
   ANDROID_RECORDING_ACTIVE: "hint: stop it first: `ade android record-stop --text`.",
   ANDROID_RECORDING_NOT_FOUND: "hint: `ade android record-list --text` lists this lane's recordings.",
+  // P3.
+  ANDROID_SYSTEM_IMAGE_IN_USE:
+    "hint: an AVD uses that system image. Stop the emulator first; `ade android sdk images --text` shows which AVDs use each image.",
+  ANDROID_TESTS_RUNNING: "hint: this lane's instrumentation tests already run. Wait for that run to finish, then try again.",
 };
 
 const ANDROID_ERROR_HINT_ENTRIES = Object.entries(ANDROID_ERROR_HINTS) as Array<[AndroidErrorCode, string]>;
@@ -308,6 +328,10 @@ const ANDROID_PERSON_ONLY_SDK = new RegExp(
 export function androidEmulatorErrorHint(message: string): string | null {
   const personOnly = ANDROID_PERSON_ONLY_SDK.exec(message);
   if (personOnly) {
+    if (personOnly[1] === "installSystemImage" || personOnly[1] === "removeSystemImage") {
+      return "Only the user installs or removes Android system images, in the ADE desktop app: the device picker's System images. "
+        + "Ask the user. `ade android sdk images --text` shows what is installed and what is available.";
+    }
     return personOnly[1] === "setSdkPath"
       ? "Only the user picks this machine's Android SDK folder, in the ADE desktop app: Settings › Android devices. Ask the user."
       : "Only the user installs the Android SDK and accepts Google's licences, in the ADE desktop app: "
@@ -783,6 +807,17 @@ function buildAndroidSuitePlan(
       shapeResult: withAsked({ action: "appearance", appearance }),
     });
   }
+  // `ade apple fold`'s words: a pose, or `--angle` in degrees (0 shut, 180 flat).
+  if (sub === "posture") return androidAction("android posture", "getPosture", laneClaim(), "android-posture");
+  if (sub === "fold") {
+    const word = (readValue(args, ["--angle"]) ?? positionals()[0] ?? "").toLowerCase();
+    const pose = (ANDROID_FOLD_POSES as readonly string[]).includes(word) ? word : null;
+    const angle = pose ? null : Number(word);
+    if (!pose && (!/^\d+(\.\d+)?$/u.test(word) || angle! > 180)) {
+      throw usage(`say ${ANDROID_FOLD_POSES.join(", ")} or an angle from 0 (shut) to 180 (flat).`);
+    }
+    return androidAction("android fold", "setPosture", { ...laneClaim(), ...(pose ? { pose } : { angle }) }, "android-posture");
+  }
   if (sub === "settings") {
     const onOff = (flag: string): boolean | null => {
       const raw = readValue(args, [flag]);
@@ -854,6 +889,52 @@ function buildAndroidSuitePlan(
       ...(packageName ? { packageName } : {}),
       ...(noElements ? { includeElements: false } : {}),
     }, "android-proof-bundle");
+  }
+  if (sub === "preview") {
+    // A Gradle build of the module, so `--machine` syncs this checkout first (cliRemoteWork).
+    const listing = positionals()[0] === "list";
+    if (!listing && positionals().length > 0) throw usage(`unknown word '${positionals()[0]}'. Use \`preview list\`, or \`preview\` to render.`);
+    const moduleName = readValue(args, ["--module"]);
+    const fqns = readRepeatedValues(args, ["--fqn"]);
+    const all = readFlag(args, ["--all"]);
+    const noProof = readFlag(args, ["--no-proof"]);
+    if (listing && (fqns.length || noProof)) throw usage("preview list takes --module and --all only.");
+    if (!listing && all) throw usage("--all goes with `preview list`.");
+    const moduleArg = moduleName ? { module: moduleName } : {};
+    const notice = `Building the module with Gradle${listing ? " to list" : " and rendering"} its previews; the first run also downloads the preview pack…`;
+    return listing
+      ? androidAction("android preview list", "listComposePreviews", { ...laneClaim(), ...moduleArg, ...(all ? { all: true } : {}) }, "android-previews", { progressNotice: notice })
+      : {
+        ...androidAction("android preview", "renderComposePreviews", {
+          ...laneClaim(),
+          ...moduleArg,
+          ...(fqns.length ? { fqns } : {}),
+          ...(noProof ? { proof: false } : {}),
+        }, "android-previews", { progressNotice: notice }),
+        // A preview with no image exits 1, so `ade android preview && …` stops there.
+        exitCodeFromResult: (result: unknown) => {
+          const images = record(result).images;
+          return Array.isArray(images) && images.some((image) => !isRecord(image) || !asString(image.path)) ? 1 : 0;
+        },
+      };
+  }
+  if (sub === "test") {
+    // Always a Gradle run, so `--machine` syncs this checkout first (cliRemoteWork).
+    const moduleName = readValue(args, ["--module"]);
+    const variant = readValue(args, ["--variant"]);
+    const className = readValue(args, ["--class"]);
+    const method = readValue(args, ["--method"]);
+    if (method && !className) throw usage("--method needs --class <fully qualified class name>.");
+    return {
+      ...androidAction("android test", "runInstrumentationTests", {
+        ...laneClaim(),
+        gradle: { ...(moduleName ? { module: moduleName } : {}), ...(variant ? { variant } : {}) },
+        ...(className ? { className } : {}),
+        ...(method ? { method } : {}),
+      }, "android-test", { progressNotice: "Building the lane's app and its tests with Gradle, then running them on the emulator; this can take a few minutes…" }),
+      // A failed test exits 1, so `ade android test && …` stops there.
+      exitCodeFromResult: (result: unknown) => (record(result).ok === false ? 1 : 0),
+    };
   }
   if (sub === "sdk") return buildAndroidSdkPlan(args, ctx);
   return null;
@@ -935,7 +1016,7 @@ function buildAndroidSdkPlan(
   const [verbRaw, folderPositional] = ctx.positionals();
   const verb = verbRaw ?? "status";
   const allowed = ANDROID_SDK_VERB_FLAGS[verb];
-  if (!allowed) throw new CliUsageError(`android sdk: unknown verb '${verb}'. Use status, licenses, install, use or cancel.`);
+  if (!allowed) throw new CliUsageError(`android sdk: unknown verb '${verb}'. Use status, licenses, install, use, cancel, images or remove.`);
   const unknown = androidFlagNames(args, ctx.carriers).find((name) => name !== "--lane" && !allowed.includes(name));
   if (unknown) throw new CliUsageError(`android sdk ${verb} does not take ${unknown}. Run 'ade android --help'.`);
   const setupArgs = (): JsonObject => {
@@ -961,18 +1042,37 @@ function buildAndroidSdkPlan(
       },
     });
   }
+  if (verb === "images") {
+    const installedOnly = readFlag(args, ["--installed"]);
+    return ctx.androidAction("android sdk images", "listSystemImages", installedOnly ? { includeAvailable: false } : {}, "android-sdk-images");
+  }
+  if (verb === "remove") {
+    // User-only: the brain refuses an agent and a terminal, and the hint says to ask the user.
+    const id = requireValue(readValue(args, ["--image"]), "--image <system image id>");
+    return ctx.androidAction("android sdk remove", "removeSystemImage", { id }, "android-action", {
+      shapeResult: (values) => ({ ...record(values.result), action: "sdk remove" }),
+    });
+  }
   if (verb === "install") {
     const accepted = readRepeatedValues(args, ["--accept-license"]).map((value) => value.trim()).filter(Boolean);
     const wait = readFlag(args, ["--wait"]);
+    const image = readValue(args, ["--image"]);
+    if (image && (readValue(args, ["--folder"]) || readFlag(args, ["--with-cli"]))) {
+      throw new CliUsageError("android sdk install --image installs into this machine's SDK; leave out --folder and --with-cli.");
+    }
     const payload = setupArgs();
     if (!accepted.length) {
       // ADE never accepts a licence for the caller: the person names each one.
       throw new CliUsageError(
         "android sdk install needs --accept-license <id> for each licence the parts need. "
-          + "Run `ade android sdk status` to see them and `ade android sdk licenses` to read them.",
+          + (image
+            ? "Run `ade android sdk images --text` to see each image's licence."
+            : "Run `ade android sdk status` to see them and `ade android sdk licenses` to read them."),
       );
     }
-    const plan = ctx.androidAction("android sdk install", "installSdk", { ...payload, acceptedLicenseIds: accepted }, "android-sdk-install");
+    const plan = image
+      ? ctx.androidAction("android sdk install", "installSystemImage", { id: image, acceptedLicenseIds: accepted }, "android-sdk-install")
+      : ctx.androidAction("android sdk install", "installSdk", { ...payload, acceptedLicenseIds: accepted }, "android-sdk-install");
     if (!wait) return plan;
     const poll = ctx.androidAction("android sdk install state", "getSdkInstallState", {}, "android-sdk-install");
     return {

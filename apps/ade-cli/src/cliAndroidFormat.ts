@@ -214,6 +214,7 @@ const ANDROID_ACTION_DETAIL: Readonly<Record<string, (result: JsonObject) => str
   appearance: (result) => String(result.appearance),
   permission: (result) => `${String(result.grant)} ${String(result.permission ?? "")} for ${String(result.packageName)}`,
   "record-delete": (result) => String(result.id),
+  "sdk remove": (result) => `${String(result.id)}${formatBytes(result.freedBytes) ? ` (${formatBytes(result.freedBytes)} freed)` : ""}`,
 };
 
 export function formatAndroidAction(value: unknown): string {
@@ -246,6 +247,50 @@ export function formatAndroidSettings(value: unknown): string {
     ["airplane", onOff(network.airplane)],
     ["in front", settings.foregroundPackage ?? "home screen"],
   ]);
+}
+
+/** `fold` and `posture`: the hinge, what Android made of it, and the screen in front. */
+export function formatAndroidPosture(value: unknown): string {
+  const posture = record(value);
+  if (posture.supported === false) return "android posture: this emulator has no hinge (fold works on a foldable AVD).";
+  const screen = record(posture.screen);
+  return renderKeyValues("ADE Android emulator posture", [
+    ["hinge", typeof posture.angle === "number" ? `${posture.angle}°` : null],
+    ["state", posture.state ?? "changing"],
+    ["screen", typeof screen.width === "number" ? `${screen.width}x${screen.height}` : null],
+    ["settled", posture.settled === false ? "no: Android was still changing; read posture again" : null],
+  ]);
+}
+
+/** `preview list` (a table of previews) and `preview` (a line per image, and whether it is filed as proof). */
+export function formatAndroidPreviews(value: unknown): string {
+  const result = record(value);
+  if (Array.isArray(result.previews)) {
+    const previews = result.previews.filter(isRecord);
+    if (previews.length === 0) return `android preview list: ${asString(result.module) ?? "the module"} has no @Preview functions.`;
+    return [
+      `ADE Compose previews in ${asString(result.module) ?? "the module"} (${previews.length})`,
+      // The fqn is what `--fqn` takes: never shortened.
+      renderTable(["name", "fqn"], previews.map((preview) => [preview.name, preview.fqn]), "No previews.", { fullColumns: ["fqn"] }),
+    ].join("\n");
+  }
+  const images = Array.isArray(result.images) ? result.images.filter(isRecord) : [];
+  const drawn = images.filter((image) => asString(image.path));
+  const seconds = typeof result.durationMs === "number" ? `${(result.durationMs / 1000).toFixed(1)} s` : null;
+  return [
+    renderKeyValues("ADE Compose preview render", [
+      ["module", result.module],
+      ["rendered", `${drawn.length} of ${images.length}${seconds ? ` in ${seconds}` : ""}`],
+      ["skipped", typeof result.skipped === "number" && result.skipped > 0 ? `${result.skipped} more (name them with --fqn)` : null],
+      ["folder", result.outDir],
+    ]),
+    ...images.map((image) => {
+      const label = asString(image.name) ?? asString(image.fqn) ?? "preview";
+      if (!asString(image.path)) return `failed: ${label}: ${asString(image.error) ?? "no image"}`;
+      // Raw, not a table cell: agents Read this path back.
+      return `image: ${label}: ${asString(image.path)}${asString(image.proofArtifactId) ? " (filed as proof)" : ""}`;
+    }),
+  ].join("\n");
 }
 
 /** `render`: how many files, where they went, and a citation per proof row. */
@@ -568,4 +613,85 @@ export function formatAndroidSdkLicenses(value: unknown): string {
       String(license.text ?? ""),
     ].join("\n"))
     .join("\n\n");
+}
+
+/* ── P3 system images and instrumentation tests ──────────────────────────── */
+
+/** `sdk images`: the installed images, then the ones Google publishes for this ABI. */
+export function formatAndroidSdkImages(value: unknown): string {
+  const inventory = record(value);
+  const images = records(inventory.images);
+  const installed = images.filter((image) => image.installed === true);
+  const available = images.filter((image) => image.installed !== true);
+  const avdNames = (image: JsonObject) => records(image.avds).map((avd) => String(avd.name)).join(", ") || "none";
+  const lines = [
+    `system images in ${asString(inventory.sdkRoot) ?? "?"} (host ABI ${asString(inventory.hostAbi) ?? "?"}, free ${formatBytes(inventory.diskBytesFree) ?? "unknown"})`,
+    "",
+    "installed:",
+    renderTable(
+      ["image", "api", "size", "note", "avds", "id"],
+      installed.map((image) => [
+        image.name,
+        image.apiLevel,
+        formatBytes(image.sizeBytes) ?? "?",
+        [image.newest === true ? "newest" : null, image.updateAvailable === true ? "update" : null].filter(Boolean).join(", ") || null,
+        avdNames(image),
+        image.id,
+      ]),
+      "No system images are installed.",
+      { fullColumns: ["id", "image"] },
+    ),
+  ];
+  if (asString(inventory.repositoryError)) {
+    lines.push("", `repository: ${asString(inventory.repositoryError)} (the available list is missing)`);
+  } else if (available.length) {
+    lines.push(
+      "",
+      "available:",
+      renderTable(
+        ["image", "api", "download", "licence", "id"],
+        available.map((image) => {
+          const offer = record(image.available);
+          return [
+            `${String(image.name)}${image.emulatorTooOld === true ? " (needs a newer emulator)" : ""}`,
+            image.apiLevel,
+            formatBytes(offer.downloadBytes) ?? "?",
+            offer.licenseId,
+            image.id,
+          ];
+        }),
+        "None.",
+        { fullColumns: ["id", "image", "licence"] },
+      ),
+    );
+  }
+  const install = record(inventory.install);
+  if (install.state === "running") lines.push("", `install running: ${formatAndroidSdkInstallLine(install) ?? ""}`);
+  lines.push(
+    "",
+    "Only the user installs or removes system images, in the ADE desktop app: the device picker's System images.",
+  );
+  return lines.join("\n");
+}
+
+/** `test`: the counts, then each failure with the first lines of its message. */
+export function formatAndroidTest(value: unknown): string {
+  const result = record(value);
+  const failures = records(result.failures);
+  const counts = `${String(result.total ?? 0)} tests: ${String(result.passed ?? 0)} passed, ${String(result.failed ?? 0)} failed, ${String(result.skipped ?? 0)} skipped`;
+  const lines = [
+    `${result.ok === true ? "PASSED" : "FAILED"} ${asString(result.gradleTask) ?? ""}${asString(result.filter) ? ` (${asString(result.filter)})` : ""}`.replace(/\s+$/u, ""),
+    `${counts} in ${seconds(result.durationMs) ?? "?"}${result.source === "gradle-output" ? " (read from Gradle's output)" : ""}.`,
+  ];
+  for (const failure of failures) {
+    lines.push("", `FAIL ${String(failure.className)}#${String(failure.name)}`);
+    const message = Array.isArray(failure.message) ? failure.message.map(String) : [];
+    lines.push(...message.map((line) => `  ${line}`));
+  }
+  if (typeof result.failed === "number" && result.failed > failures.length) {
+    const more = result.failed - failures.length;
+    lines.push("", `${more} more ${more === 1 ? "failure is" : "failures are"} not shown.`);
+  }
+  if (asString(result.reportPath)) lines.push("", `report: ${asString(result.reportPath)}`);
+  return lines.join("\n");
 }

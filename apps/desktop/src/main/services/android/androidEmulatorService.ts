@@ -49,6 +49,7 @@ import { takeAndroidScreenshot } from "./androidScreenshot";
 import type { AndroidArtifactFiler } from "./androidProof";
 import { createAndroidRenderBroker } from "./androidRender";
 import { createAndroidSdkSetup, createAndroidSdkSettingStore } from "./androidSdkSetup";
+import { createAndroidSystemImages } from "./androidSystemImages";
 import {
   androidSdkPaths,
   locateAndroidSdk,
@@ -57,6 +58,8 @@ import {
   type AndroidEnv,
   type ReadyAndroidSdk,
 } from "./androidSdk";
+import { createAndroidPosture } from "./androidPosture";
+import { createAndroidComposePreviews } from "./androidComposePreviews";
 import { createAndroidStreamHub, type AndroidStreamHub } from "./androidStream";
 import { isRemoteWorkLaneId } from "../remoteWork/remoteWorkCopyService";
 import { createAndroidLaneScope } from "./androidWorkCopy";
@@ -671,6 +674,31 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
     signal: lifetime.signal,
   });
 
+  /* ---------- P3 fold: the hinge of a foldable (`androidPosture.ts`) ---------- */
+
+  const posture = createAndroidPosture({
+    requireBooted,
+    onScreenChanged: (laneId) => agent.invalidateUi(laneId),
+    onPostureChanged: (laneId, next) => emit({ type: "android.device.posture", laneId, posture: next }),
+    signal: lifetime.signal,
+    now: () => now().getTime(),
+  });
+
+  /* ---------- P3 Compose previews, with no emulator (`androidComposePreviews.ts`) ---------- */
+
+  const composePreviews = createAndroidComposePreviews({
+    laneRoot,
+    sdkRoot: async () => (await readSdk()).root,
+    env,
+    platform,
+    dataDir: deps.dataDir,
+    artifactFiler: deps.artifactFiler ?? null,
+    callerRoot: deps.projectRoot ?? null,
+    signal: lifetime.signal,
+    logger,
+    now,
+  });
+
   /** P0 input, each call also ending the lane's cached UI tree (the screen changes). */
   const input: typeof rawInput = {
     sendTouch: async (args) => { agent.invalidateUi(args.laneId); await rawInput.sendTouch(args); },
@@ -805,6 +833,18 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
     onInstalled: () => deps.captureAnalytics?.("sdk_installed"),
   });
 
+  // P3: the system image manager (`androidSystemImages.ts`), on the guided install's job.
+  const systemImages = createAndroidSystemImages({
+    readSdk: () => readSdk(),
+    listAvds: async () => (await inventory.api.listDevices({})).avds,
+    emit,
+    logger,
+    platform,
+    env,
+    home,
+    onInstalled: () => deps.captureAnalytics?.("image_installed"),
+  });
+
   const service: AndroidEmulatorService = {
     streamRelaySource: laneStreams.relaySource,
 
@@ -813,6 +853,9 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
     cancelSdkInstall: setup.cancelSdkInstall,
     getSdkInstallState: setup.getSdkInstallState,
     setSdkPath: setup.setSdkPath,
+    listSystemImages: systemImages.listSystemImages,
+    installSystemImage: systemImages.installSystemImage,
+    removeSystemImage: systemImages.removeSystemImage,
 
     async getStatus(args) {
       const sdk = await readSdk();
@@ -874,7 +917,10 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
     },
 
     ...agent.api,
+    runInstrumentationTests: (args) => agent.runInstrumentationTests(args),
     ...deviceSettings.verbs,
+    ...posture,
+    ...composePreviews,
     getDeviceSettings: (args) => deviceSettings.getDeviceSettings(requireLaneId(args.laneId), args.fields === "foreground" ? "foreground" : "all"),
     setDeviceSetting: async (args) => {
       const laneId = requireLaneId(args.laneId);

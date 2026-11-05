@@ -104,20 +104,6 @@ export function appleDuoStanceFor(input: {
   return input.held === "portrait" ? "book" : "laptop";
 }
 
-/**
- * How far each half rotates about the hinge, in degrees.
- *
- * Positive upper rotation and negative lower rotation both bring the panels'
- * faces toward the viewer (+Z), so at 90° each the two halves meet and the
- * device is shut. The drawn hinge is the angle alone: every posture folds
- * both halves the same way.
- */
-export function appleDuoPanelRotationsDeg(pose: AppleDuoPose): { upper: number; lower: number } {
-  const angle = clampAppleDuoAngle(pose.angle);
-  const fold = (APPLE_DUO_MAX_ANGLE - angle) / 2;
-  return { upper: fold, lower: fold === 0 ? 0 : -fold };
-}
-
 /** The texture v-range each half samples in the continuous inner canvas. */
 export const APPLE_DUO_PANEL_V_RANGES = {
   upper: { min: 0.5, max: 1 },

@@ -20,7 +20,8 @@ export function AndroidLicenseDialog({
   onAccept,
 }: {
   licenses: AndroidSdkLicense[];
-  parts: AndroidSdkSetupPart[];
+  /** Only the names are read: the system image manager passes its one image. */
+  parts: ReadonlyArray<Pick<AndroidSdkSetupPart, "id" | "label">>;
   downloadBytes: number;
   sdkRoot: string;
   machineName: string | null;

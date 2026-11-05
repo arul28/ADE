@@ -151,6 +151,15 @@ export function createAndroidEmulatorBridge(deps: AndroidEmulatorBridgeDeps): An
     getDeviceSettings: runtimeOnly("getDeviceSettings"),
     setDeviceSetting: runtimeOnly("setDeviceSetting"),
     readLog: runtimeOnly("readLog"),
+    getPosture: runtimeOnly("getPosture"),
+    setPosture: runtimeOnly("setPosture"),
+    // P3: System images (machine-wide, but on the lane's machine: the pin) and instrumentation tests.
+    listSystemImages: runtimeOnly("listSystemImages"),
+    installSystemImage: runtimeOnly("installSystemImage"),
+    removeSystemImage: runtimeOnly("removeSystemImage"),
+    runInstrumentationTests: runtimeOnly("runInstrumentationTests"),
+    listComposePreviews: runtimeOnly("listComposePreviews"),
+    renderComposePreviews: runtimeOnly("renderComposePreviews"),
     /**
      * Turn the host's loopback stream URL into one this desktop can open. Not a
      * routed action: the forward is built by this process.

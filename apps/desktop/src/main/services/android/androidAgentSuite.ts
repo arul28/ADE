@@ -25,6 +25,7 @@ import type { Logger } from "../logging/logger";
 import { getErrorMessage, sleep } from "../shared/utils";
 import { runAdb } from "./adb";
 import { assertPackageName, createAndroidApps } from "./androidApps";
+import { createAndroidInstrumentationTests } from "./androidInstrumentationTests";
 import { locateAndroidJdk } from "./androidJdk";
 import { runAdbOutput, runDeviceScript, runDeviceShell, type BootedDevice } from "./androidDeviceShell";
 import { AndroidEmulatorFailure, requireLaneId } from "./androidEmulatorErrors";
@@ -96,7 +97,7 @@ export type AndroidAgentSuiteDeps = {
   /** A recording started or ended (by anyone): the panes read their Record button again. */
   onRecordingChanged?: (laneId: string, recording: AndroidRecording) => void;
   /** One coarse product fact for an app installed or a new lease. */
-  captureAnalytics?: (outcome: "app_installed" | "device_leased") => void;
+  captureAnalytics?: (outcome: "app_installed" | "device_leased" | "tests_run") => void;
 };
 
 function finiteNumber(value: unknown, name: string): number {
@@ -142,6 +143,17 @@ export function createAndroidAgentSuite(deps: AndroidAgentSuiteDeps) {
     env: deps.env,
     signal,
     logger,
+  });
+
+  // P3: instrumentation tests, on the same Gradle runner as `install --gradle`.
+  const instrumentation = createAndroidInstrumentationTests({
+    requireBooted: deps.requireBooted,
+    assertWorkCopyLive: deps.assertWorkCopyLive,
+    laneRootOrRefuse: apps.laneRootOrRefuse,
+    runGradleProcess: apps.runGradleProcess,
+    gradleFailure: apps.gradleFailure,
+    logger,
+    captureAnalytics: deps.captureAnalytics,
   });
 
   const ui = createAndroidUiSnapshots({
@@ -630,6 +642,15 @@ export function createAndroidAgentSuite(deps: AndroidAgentSuiteDeps) {
   return {
     api,
     invalidateUi: ui.invalidate,
+
+    /** P3: `ade android test`. The run leaves the screen changed, so the UI tree is read again after it. */
+    async runInstrumentationTests(args: Parameters<typeof instrumentation.runInstrumentationTests>[0]) {
+      try {
+        return await instrumentation.runInstrumentationTests(args);
+      } finally {
+        if (typeof args?.laneId === "string") ui.invalidate(args.laneId.trim());
+      }
+    },
 
     /** Files a screenshot into the calling chat's proof drawer; null without a drawer. */
     fileScreenshot(laneId: string, shot: AndroidScreenshot, chatSessionId: string | null, caption: string | null): string | null {

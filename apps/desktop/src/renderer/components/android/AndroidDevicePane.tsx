@@ -32,6 +32,7 @@ import {
 } from "./androidDeviceState";
 import { androidStreamLeaseKey, androidStreamLeases } from "./androidStreamLease";
 import { AndroidDevicePicker } from "./AndroidDevicePicker";
+import { AndroidSystemImagesSection } from "./AndroidSystemImagesSection";
 import type { AndroidCatalogCreateOptions } from "./AndroidCatalogGrid";
 import { AndroidDeviceRail } from "./AndroidDeviceRail";
 import { DEVICE_RAIL_WIDTH } from "../device/DeviceRail";
@@ -61,6 +62,8 @@ import { useAndroidBootScreen } from "./useAndroidBootScreen";
 import { useAndroidRenderRequests } from "./useAndroidRenderRequests";
 import { useAndroidInspect } from "./useAndroidInspect";
 import { useAndroidRecording } from "./useAndroidRecording";
+import { useAndroidPosture } from "./useAndroidPosture";
+import { AndroidFoldDock } from "./AndroidFoldDock";
 import { useAndroidPaneFloat } from "./useAndroidPaneFloat";
 import { useAndroidStorageActions } from "./useAndroidStorageActions";
 import { AndroidQuickChips } from "./AndroidQuickChips";
@@ -598,6 +601,9 @@ export function AndroidDevicePane({
   const screenAspect = pendingLook
     ? Math.min(pendingLook.entry.screen.widthPx, pendingLook.entry.screen.heightPx) / Math.max(pendingLook.entry.screen.widthPx, pendingLook.entry.screen.heightPx)
     : androidScreenAspect(laneAvd);
+  // P3 fold: a foldable's hinge, once it runs.
+  const foldable = (bodySpec?.entry?.formFactor ?? bodySpec?.profile?.formFactor) === "foldable";
+  const posture = useAndroidPosture({ laneId, enabled: deviceLive && foldable, runtimePinRef, onError: onToolError });
   const booting = pending != null || laneState !== "booted";
   const bootOnModel = threeD && bodySpec !== null && (paneState === "starting" || (booting && paneState !== "picker"));
   const boot = useAndroidBootScreen({
@@ -802,6 +808,7 @@ export function AndroidDevicePane({
             onDelete={deleteAvd}
             onRefresh={refreshAll}
             playing={!hidden}
+            systemImages={<AndroidSystemImagesSection pin={runtimePin} machineName={machineName} />}
           />
         );
       case "stopped":
@@ -843,6 +850,7 @@ export function AndroidDevicePane({
             screenAspect={screenAspect}
             boot={bootOnModel ? boot : null}
             viewNonce={viewNonce}
+            fold={posture.stageFold}
             rendererRef={renders.rendererRef}
             onThreeUnavailable={handleThreeUnavailable}
             className={cn("bg-transparent", paneState === "video-lost" && "opacity-40")}
@@ -867,6 +875,8 @@ export function AndroidDevicePane({
       {strip}
       <div ref={bodyRef} className="@container relative flex min-h-0 min-w-0 flex-1">
         <div className="ade-tool-picker-static relative flex min-h-0 min-w-0 flex-1 flex-col">
+          {/* The stage and what floats on it; a foldable's hinge dock sits below. */}
+          <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
           {renderBody()}
           {androidRailVisible(paneState) ? (
             <>
@@ -942,6 +952,17 @@ export function AndroidDevicePane({
               bytes={savedRecording.bytes}
               onOpen={openSavedRecording}
               onDismiss={() => setSavedDismissedId(savedRecording.id)}
+            />
+          ) : null}
+          </div>
+          {posture.posture ? (
+            <AndroidFoldDock
+              mode={threeD ? "3d" : "flat"}
+              angle={posture.angle}
+              posture={posture.posture}
+              busy={posture.busy}
+              onPreview={posture.preview}
+              onCommit={posture.commit}
             />
           ) : null}
         </div>

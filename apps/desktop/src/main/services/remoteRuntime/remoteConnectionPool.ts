@@ -293,6 +293,14 @@ const LONG_RUNNING_REMOTE_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> =
   // the emulator's machine; see ANDROID_EMULATOR_BUILD_TIMEOUT_MS.
   ["android_emulator.installApp", ANDROID_EMULATOR_BUILD_REMOTE_TRANSPORT_TIMEOUT_MS],
   ["android_emulator.launchApp", ANDROID_EMULATOR_BUILD_REMOTE_TRANSPORT_TIMEOUT_MS],
+  // P3: see the same rows in localRuntimeTimeoutPolicy.ts.
+  ["android_emulator.runInstrumentationTests", ANDROID_EMULATOR_BUILD_REMOTE_TRANSPORT_TIMEOUT_MS],
+  // P3: a Compose preview builds the module (the first one also downloads the preview pack).
+  ["android_emulator.listComposePreviews", ANDROID_EMULATOR_BUILD_REMOTE_TRANSPORT_TIMEOUT_MS],
+  ["android_emulator.renderComposePreviews", ANDROID_EMULATOR_BUILD_REMOTE_TRANSPORT_TIMEOUT_MS],
+  ["android_emulator.listSystemImages", ANDROID_EMULATOR_LIFECYCLE_REMOTE_TRANSPORT_TIMEOUT_MS],
+  ["android_emulator.removeSystemImage", ANDROID_EMULATOR_LIFECYCLE_REMOTE_TRANSPORT_TIMEOUT_MS],
+  ["android_emulator.installSystemImage", ANDROID_EMULATOR_LIFECYCLE_REMOTE_TRANSPORT_TIMEOUT_MS],
   ["android_emulator.getScreenSnapshot", ANDROID_EMULATOR_UI_REMOTE_TRANSPORT_TIMEOUT_MS],
   ["android_emulator.findElement", ANDROID_EMULATOR_UI_REMOTE_TRANSPORT_TIMEOUT_MS],
   ["android_emulator.tapElement", ANDROID_EMULATOR_UI_REMOTE_TRANSPORT_TIMEOUT_MS],

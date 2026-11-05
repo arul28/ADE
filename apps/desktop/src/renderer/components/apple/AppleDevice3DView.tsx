@@ -13,8 +13,8 @@ import { loadDeviceModelInstance } from "../device/deviceModelLoader";
 import { createImportedBody, disposeImportedSubtree, type DeviceBody } from "../device/deviceScene";
 import { appleDeviceModel, type AppleDeviceBodyModelId } from "./appleDeviceModels";
 import { appleDuoHingeAfterPinch } from "./appleDuo";
-import { createProceduralDuoBody } from "./appleDuoScene";
 import { createV68DuoBody } from "./appleV68DuoBody";
+import { createProceduralFoldBody } from "../device/proceduralFoldBody";
 import type { AppleFrameFeed } from "./useAppleDeviceStream";
 
 /*
@@ -122,11 +122,12 @@ export function AppleDevice3DView({
               // A changed Xcode model: the drawn body below still works.
             }
           }
-          return createProceduralDuoBody(THREE, {
+          return createProceduralFoldBody(THREE, {
             innerAspect: layout.aspect,
             texture,
             layout,
-            pose: { angle: duoAngle },
+            angle: duoAngle,
+            modelId: DUO_MODEL_KEY,
           });
         },
         update: (body: DeviceBody) => {

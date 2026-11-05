@@ -418,6 +418,14 @@ on 2026-11-03 (`51c6eabf6`). This lane is updated to that commit, and §4 and
 - **P3 — extras.** Fold by dragging the hinge (the Duo posture code), Compose
   preview render (Android CLI), a system image manager (like Runtimes),
   instrumentation tests (`connectedAndroidTest`).
+  - Built on 2026-11-05 as one PR (branch `ade/android-suite-p3`): the
+    hinge (`ade android fold|posture`, the emulator console's
+    `hinge-angle0`) with the Duo's two-panel body and hinge slider moved to
+    `renderer/components/device/`, the cover body below 30°, and pinch;
+    Compose previews (`ade android preview`, the Tools drawer's Previews
+    group); the picker's System images (`ade android sdk images`); and
+    `ade android test` with the App group's Run tests. The phone viewer
+    does not fold yet.
 
 ## 7. 3D models
 

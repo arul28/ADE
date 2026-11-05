@@ -36,6 +36,9 @@ const EXPECTED_KIND: Partial<Record<AndroidErrorCode, "user" | "environment">> =
   ANDROID_PACKAGE_NOT_ADE_INSTALLED: "user",
   ANDROID_RECORDING_ACTIVE: "user",
   ANDROID_RECORDING_NOT_FOUND: "user",
+  // P3: an image AVDs use, or a test run that already runs, is the person's state.
+  ANDROID_SYSTEM_IMAGE_IN_USE: "user",
+  ANDROID_TESTS_RUNNING: "user",
 };
 
 export class AndroidEmulatorFailure extends Error {

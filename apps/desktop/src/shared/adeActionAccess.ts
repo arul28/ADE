@@ -614,8 +614,12 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       // P1 agent suite: reads that change nothing on the device.
       "listApps", "getScreenSnapshot", "findElement", "waitForElement", "assertVisible",
       "readLog", "recordList", "deviceLeaseStatus", "getDeviceSettings",
+      // P3 fold and the Compose preview list.
+      "getPosture", "listComposePreviews",
       // P1 setup: the plan and the install's progress.
       "getSdkSetupPlan", "getSdkInstallState",
+      // P3: the system image list.
+      "listSystemImages",
     ],
     write: [
       "createDevice", "attachDevice", "start", "stop", "releaseDevice", "deleteDevice",
@@ -628,8 +632,12 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "scroll", "tapElement", "fillElement", "recordStart", "recordStop", "recordDelete",
       "deviceLease", "deviceLeaseRelease", "setLocation", "setAppearance", "setPermission",
       "captureProofBundle", "setDeviceSetting",
+      // P3 fold and Compose previews (a render writes images and files proof).
+      "setPosture", "renderComposePreviews",
       // P1 setup (user-only: the licences and the SDK folder are the person's).
       "installSdk", "cancelSdkInstall", "setSdkPath",
+      // P3: system images (user-only, as the SDK install) and instrumentation tests.
+      "installSystemImage", "removeSystemImage", "runInstrumentationTests",
     ],
   },
   app_control: {

@@ -124,7 +124,11 @@ export async function takeAndroidScreenshot(input: TakeAndroidScreenshotInput): 
     timeoutMs: SCREENSHOT_TIMEOUT_MS,
     signal: input.signal,
   });
-  const png = result.stdout;
+  // `exec-out` has one stream for stdout and stderr, and on a device with two
+  // displays (a foldable) `screencap` writes a "Multiple displays" warning
+  // there before the PNG. The PNG starts at its signature.
+  const start = result.stdout.indexOf(PNG_SIGNATURE);
+  const png = start > 0 ? result.stdout.subarray(start) : result.stdout;
   const size = readPngSize(png);
   if (!size) throw new Error(`The emulator ${serial} did not return a PNG (${png.length} bytes).`);
   const capturedAt = input.now();

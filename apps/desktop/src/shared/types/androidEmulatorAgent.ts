@@ -42,6 +42,10 @@ export const ANDROID_AGENT_ERROR_CODES = [
   "ANDROID_RECORDING_ACTIVE",
   /** No recording runs (stop), or none has that id (delete). */
   "ANDROID_RECORDING_NOT_FOUND",
+  /** P3: AVDs use the system image (a removal the person did not confirm), or one of them runs now. */
+  "ANDROID_SYSTEM_IMAGE_IN_USE",
+  /** P3: an instrumentation test run already runs for this lane. */
+  "ANDROID_TESTS_RUNNING",
 ] as const;
 export type AndroidAgentErrorCode = (typeof ANDROID_AGENT_ERROR_CODES)[number];
 /** Every code the backend refuses with. */
