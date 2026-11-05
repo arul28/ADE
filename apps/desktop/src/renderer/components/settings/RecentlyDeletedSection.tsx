@@ -1,26 +1,18 @@
 import React from "react";
-import {
-  ArrowClockwise,
-  ArrowCounterClockwise,
-  CircleNotch,
-  ClockCounterClockwise,
-  MagnifyingGlass,
-} from "@phosphor-icons/react";
+import { ArrowCounterClockwise, CircleNotch, ClockCounterClockwise, MagnifyingGlass, X } from "@phosphor-icons/react";
 import type { DeletedChat, ExternalSessionProvider, LaneSummary, OpenProjectBinding } from "../../../shared/types";
 import { importProviderLabel } from "../../../shared/externalSessionPolicy";
-import { ipcErrorMessage, relativeWhen } from "../../lib/format";
 import { isUnsupportedAdeActionError } from "../../../shared/codedError";
+import { ipcErrorMessage, relativeWhen } from "../../lib/format";
 import { navigateToAppTarget } from "../../lib/openExternal";
-import { isImeComposing } from "../../lib/imeComposition";
 import { showToast } from "../app/toast/toastStore";
 import { Banner } from "../ui/notice";
-import { confirmDialog } from "../ui/dialog";
+import { Dialog, confirmDialog } from "../ui/dialog";
+import { LaneChip } from "../terminals/LaneChip";
 import { LaneCombobox } from "../terminals/LaneCombobox";
 import { ToolLogo } from "../terminals/ToolLogos";
 import { PROVIDER_TOOL_TYPE } from "../terminals/importSessions/contract";
-import { ImportProviderFilter, SkeletonRows } from "../terminals/importSessions/ImportSessionList";
 import { modelDisplayName } from "../terminals/importSessions/importBrowserModel";
-import { LaneDot, MetaSeparator } from "../terminals/importSessions/ImportSessionParts";
 import { SessionTranscriptPane } from "../terminals/importSessions/ImportSessionPreview";
 import { sessionDateGroup } from "../terminals/importSessions/sessionPresentation";
 import { useSettingsMachineScope } from "./SettingsMachineScope";
@@ -28,12 +20,13 @@ import { SettingsColumn } from "./primitives";
 import { useDeletedChatTranscript } from "./useDeletedChatTranscript";
 import "../terminals/importSessions/importSessions.css";
 import "./primitives/settingsModern.css";
+import "./machineSettings.css";
 import "./recentlyDeleted.css";
 
 /**
  * Settings › Recently deleted: chats you deleted that can still be opened
- * again, with their history. Built like the Import window — a list on the
- * left, the conversation on the right, one Reopen button under it.
+ * again, with their history. A plain settings list, like Archive beside it;
+ * a row opens the conversation in a dialog, and Reopen brings the chat back.
  *
  * ADE keeps only a note of each deleted chat. The conversation itself is the
  * agent's own copy, which ADE never deletes, so a chat leaves this list when
@@ -42,6 +35,8 @@ import "./recentlyDeleted.css";
 
 export const RECENTLY_DELETED_SETTINGS_ANCHOR = "recently-deleted";
 const TOAST_ID = "settings-recently-deleted";
+/** Rows drawn before "Show more"; the rest wait for the click. */
+const PAGE_ROWS = 25;
 
 type ProviderFilter = "all" | ExternalSessionProvider;
 
@@ -72,54 +67,89 @@ function openInWork(result: { chatSessionId: string; laneId: string }, pin: Open
 
 function LanePlace({ chat }: { chat: DeletedChat }) {
   if (!chat.laneExists) {
-    return (
-      <span className="inline-flex min-w-0 items-center gap-1.5">
-        <LaneDot color={null} className="opacity-40" />
-        <span className="truncate">{chat.laneName ? `${chat.laneName} (lane deleted)` : "Lane deleted"}</span>
-      </span>
-    );
+    return <span className="ade-rd-gone">{chat.laneName ? `${chat.laneName} · lane deleted` : "Lane deleted"}</span>;
   }
+  return <LaneChip laneName={chat.laneName ?? "Its lane"} laneColor={chat.laneColor} maxWidth={180} />;
+}
+
+function ChatMeta({ chat, model }: { chat: DeletedChat; model?: string | null }) {
   return (
-    <span className="inline-flex min-w-0 items-center gap-1.5">
-      <LaneDot color={chat.laneColor} />
-      <span className="truncate">{chat.laneName ?? "Its lane"}</span>
-    </span>
+    <>
+      <LanePlace chat={chat} />
+      <span aria-hidden className="ade-rd-sep">·</span>
+      <span className="kit-num ade-rd-nowrap">Deleted {relativeWhen(chat.deletedAt)}</span>
+      {model ? (
+        <>
+          <span aria-hidden className="ade-rd-sep">·</span>
+          <span className="ade-rd-nowrap">{model}</span>
+        </>
+      ) : null}
+    </>
   );
 }
 
 const DeletedChatRow = React.memo(function DeletedChatRow({
   chat,
-  active,
-  onSelect,
+  busy,
+  reopening,
+  onOpen,
+  onReopen,
+  onRemove,
 }: {
   chat: DeletedChat;
-  active: boolean;
-  onSelect: (id: string) => void;
+  busy: boolean;
+  reopening: boolean;
+  onOpen: (chat: DeletedChat) => void;
+  onReopen: (chat: DeletedChat) => void;
+  onRemove: (chat: DeletedChat) => void;
 }) {
+  const model = modelDisplayName(chat.modelId);
   return (
-    <button
-      type="button"
-      role="option"
-      aria-selected={active}
-      tabIndex={active ? 0 : -1}
-      data-deleted-chat-row={chat.id}
-      onClick={() => onSelect(chat.id)}
-      className="import-row"
-    >
-      <ToolLogo toolType={PROVIDER_TOOL_TYPE[chat.sourceProvider]} size={16} className="mt-[1px] shrink-0" />
-      <span className="min-w-0 flex-1">
-        <span className="import-row-title block">{chatTitle(chat)}</span>
-        <span className="import-meta mt-0.5">
-          <LanePlace chat={chat} />
-          <MetaSeparator />
-          <span className="kit-num shrink-0">{relativeWhen(chat.deletedAt)}</span>
+    <div role="listitem" className="ade-ar-row ade-rd-row" data-reopening={reopening || undefined}>
+      <button
+        type="button"
+        className="ade-rd-open"
+        onClick={() => onOpen(chat)}
+        aria-label={`Open ${chatTitle(chat)}`}
+        data-deleted-chat-row={chat.id}
+      >
+        <span className="ade-ar-mark">
+          <ToolLogo toolType={PROVIDER_TOOL_TYPE[chat.sourceProvider]} size={15} />
         </span>
-      </span>
-    </button>
+        <span className="ade-rd-text">
+          <span className="ade-ar-title">{chatTitle(chat)}</span>
+          <span className="ade-ar-meta"><ChatMeta chat={chat} model={model} /></span>
+        </span>
+      </button>
+      <div className="ade-rd-actions">
+        <button
+          type="button"
+          aria-label="Remove from list"
+          title="Remove from list"
+          disabled={busy}
+          onClick={() => onRemove(chat)}
+          className="ade-ar-icon-btn ade-rd-hover"
+        >
+          <X size={14} />
+        </button>
+        <button
+          type="button"
+          className="ade-modern-btn"
+          data-size="sm"
+          disabled={busy}
+          // A chat whose lane is gone needs a lane first: the dialog asks.
+          onClick={() => (chat.laneExists ? onReopen(chat) : onOpen(chat))}
+        >
+          {reopening ? <CircleNotch size={12} className="animate-spin" /> : <ArrowCounterClockwise size={12} />}
+          {reopening ? "Reopening…" : chat.laneExists ? "Reopen" : "Reopen…"}
+        </button>
+      </div>
+    </div>
   );
 });
 
-function DeletedChatPreview({
+/** The conversation, read-only, with Reopen under it. */
+function DeletedChatDialog({
   chat,
   pin,
   lanes,
@@ -129,6 +159,7 @@ function DeletedChatPreview({
   reopening,
   removing,
   error,
+  onClose,
   onReopen,
   onRemove,
 }: {
@@ -141,6 +172,7 @@ function DeletedChatPreview({
   reopening: boolean;
   removing: boolean;
   error: string | null;
+  onClose: () => void;
   onReopen: () => void;
   onRemove: () => void;
 }) {
@@ -155,27 +187,25 @@ function DeletedChatPreview({
   const canReopen = !busy && (!needsLane || Boolean(targetLaneId));
 
   return (
-    <>
-      <header className="import-preview-head">
-        <div className="import-preview-title">
-          <ToolLogo toolType={PROVIDER_TOOL_TYPE[chat.sourceProvider]} size={18} className="shrink-0" />
-          <h3 title={chatTitle(chat)}>{chatTitle(chat)}</h3>
-        </div>
-        <div className="import-meta">
-          <span className="max-w-[220px] text-(--kit-text-2)"><LanePlace chat={chat} /></span>
-          <MetaSeparator />
-          <span>Deleted {relativeWhen(chat.deletedAt)}</span>
-          <MetaSeparator />
-          <span>{importProviderLabel(chat.sourceProvider)}</span>
-          {model ? <><MetaSeparator /><span className="max-w-[160px] truncate">{model}</span></> : null}
-        </div>
-      </header>
-      <SessionTranscriptPane transcript={transcript} />
-      <footer className="import-actions">
-        <div className="import-actions-row">
+    <Dialog
+      open
+      onOpenChange={(next) => { if (!next && !busy) onClose(); }}
+      title={chatTitle(chat)}
+      icon={<ToolLogo toolType={PROVIDER_TOOL_TYPE[chat.sourceProvider]} size={18} />}
+      description={<span className="ade-rd-dialog-meta"><ChatMeta chat={chat} model={model} /></span>}
+      width="min(960px, calc(100vw - 4rem))"
+      height="min(780px, calc(100dvh - 4rem))"
+      scrollBody={false}
+      bodyPadding={false}
+      // Opaque, like a side sheet: the settings rows behind would ghost
+      // through the modal's 98% material around a long conversation.
+      panelStyle={{ background: "var(--color-card)" }}
+      dismissible={!busy}
+      footerStart={(
+        <div className="ade-rd-footer-start">
           {needsLane ? (
             <>
-              <span className="import-actions-label">Reopen in</span>
+              <span>Reopen in</span>
               <LaneCombobox
                 lanes={laneOptions}
                 value={targetLaneId}
@@ -183,38 +213,37 @@ function DeletedChatPreview({
                 placeholder={lanes ? "Pick a lane" : "Loading lanes…"}
                 aria-label="Reopen in lane"
               />
+              {lanesError ? <span className="ade-rd-error">{lanesError}</span> : null}
             </>
           ) : (
-            <span className="import-actions-label">Picks up where it left off, in {chat.laneName ?? "its lane"}.</span>
+            <span>Picks up where it left off, in {chat.laneName ?? "its lane"}.</span>
           )}
-          <div className="import-actions-end">
-            <button type="button" className="kit-btn kit-btn-ghost" disabled={busy} onClick={onRemove}>
-              {removing ? <CircleNotch size={13} className="animate-spin" /> : null}
-              Remove from list
-            </button>
-            <button type="button" className="kit-btn kit-btn-primary" disabled={!canReopen} onClick={onReopen}>
-              {reopening ? <CircleNotch size={13} className="animate-spin" /> : <ArrowCounterClockwise size={13} />}
-              {reopening ? "Reopening…" : "Reopen"}
-              {reopening ? null : <kbd className="import-kbd" aria-hidden="true">⏎</kbd>}
-            </button>
-          </div>
         </div>
-        {needsLane ? (
-          <p className="import-actions-note">
-            {lanesError
-              ? `Couldn't load this machine's lanes: ${lanesError}`
-              : "Its lane was deleted, so it opens as a copy in the lane you pick."}
-          </p>
-        ) : null}
+      )}
+      footer={(
+        <>
+          <button type="button" className="kit-btn kit-btn-ghost" disabled={busy} onClick={onRemove}>
+            {removing ? <CircleNotch size={13} className="animate-spin" /> : null}
+            Remove from list
+          </button>
+          <button type="button" className="kit-btn kit-btn-primary" disabled={!canReopen} onClick={onReopen}>
+            {reopening ? <CircleNotch size={13} className="animate-spin" /> : <ArrowCounterClockwise size={13} />}
+            {reopening ? "Reopening…" : needsLane ? "Reopen as a copy" : "Reopen"}
+          </button>
+        </>
+      )}
+    >
+      <div className="ade-rd-dialog-body">
         {error ? (
           <Banner
             layout="inline"
-            style={{ marginTop: 10 }}
+            style={{ margin: "12px 20px 0", flexShrink: 0 }}
             model={{ id: "recently-deleted-reopen-error", tone: "error", title: "Couldn't reopen this chat", detail: error }}
           />
         ) : null}
-      </footer>
-    </>
+        <SessionTranscriptPane transcript={transcript} />
+      </div>
+    </Dialog>
   );
 }
 
@@ -225,12 +254,11 @@ export function RecentlyDeletedSection() {
   pinRef.current = pin;
 
   const [chats, setChats] = React.useState<DeletedChat[] | null>(null);
-  const [loading, setLoading] = React.useState(false);
   const [loadError, setLoadError] = React.useState<string | null>(null);
   const [query, setQuery] = React.useState("");
   const [providerFilter, setProviderFilter] = React.useState<ProviderFilter>("all");
-  const [selectedId, setSelectedId] = React.useState<string | null>(null);
-  const [selectionTouched, setSelectionTouched] = React.useState(false);
+  const [shownRows, setShownRows] = React.useState(PAGE_ROWS);
+  const [openId, setOpenId] = React.useState<string | null>(null);
   const [lanes, setLanes] = React.useState<LaneSummary[] | null>(null);
   const [lanesError, setLanesError] = React.useState<string | null>(null);
   const [targetLaneId, setTargetLaneId] = React.useState("");
@@ -240,41 +268,35 @@ export function RecentlyDeletedSection() {
 
   const load = React.useCallback(async () => {
     const seq = ++requestSeq.current;
-    setLoading(true);
     setLoadError(null);
     try {
       const result = await window.ade.agentChat.listDeleted({}, pinRef.current);
-      if (seq !== requestSeq.current) return;
-      setChats(result.chats);
+      if (seq === requestSeq.current) setChats(result.chats);
     } catch (error) {
       if (seq !== requestSeq.current) return;
       setLoadError(isUnsupportedAdeActionError(error)
         ? "This computer runs an older ADE. Update it to see its recently deleted chats."
         : errorText(error));
-    } finally {
-      if (seq === requestSeq.current) setLoading(false);
     }
   }, []);
 
   // A different machine is a different list: nothing from the old one may be
-  // shown, selected, or sent to the new one.
+  // shown, opened, or sent to the new one.
   React.useEffect(() => {
     setChats(null);
-    setSelectedId(null);
-    setSelectionTouched(false);
+    setOpenId(null);
     setLanes(null);
     setLanesError(null);
     setTargetLaneId("");
     setActionError(null);
+    setShownRows(PAGE_ROWS);
     void load();
   }, [load, pinKey]);
 
   const providerChips = React.useMemo(() => {
     const counts = new Map<ExternalSessionProvider, number>();
     for (const chat of chats ?? []) counts.set(chat.sourceProvider, (counts.get(chat.sourceProvider) ?? 0) + 1);
-    return [...counts.entries()]
-      .sort((a, b) => b[1] - a[1])
-      .map(([provider, count]) => ({ provider, count }));
+    return [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([provider, count]) => ({ provider, count }));
   }, [chats]);
   const effectiveProvider: ProviderFilter = providerFilter !== "all" && providerChips.some((chip) => chip.provider === providerFilter)
     ? providerFilter
@@ -292,20 +314,19 @@ export function RecentlyDeletedSection() {
 
   const groups = React.useMemo(() => {
     const out: Array<{ label: string; rows: DeletedChat[] }> = [];
-    for (const chat of visible) {
+    for (const chat of visible.slice(0, shownRows)) {
       const label = sessionDateGroup(deletedAtMs(chat));
       const last = out[out.length - 1];
       if (last?.label === label) last.rows.push(chat);
       else out.push({ label, rows: [chat] });
     }
     return out;
-  }, [visible]);
+  }, [shownRows, visible]);
 
-  const active = visible.find((chat) => chat.id === selectedId) ?? visible[0] ?? null;
-  const activeId = active?.id ?? null;
+  const openChat = (chats ?? []).find((chat) => chat.id === openId) ?? null;
 
   // Lanes are needed only to reopen a chat whose lane was deleted.
-  const needsLanes = Boolean(active && !active.laneExists);
+  const needsLanes = Boolean(openChat && !openChat.laneExists);
   React.useEffect(() => {
     if (!needsLanes || lanes) return;
     let cancelled = false;
@@ -316,17 +337,16 @@ export function RecentlyDeletedSection() {
       .catch((error: unknown) => {
         if (cancelled) return;
         setLanes([]);
-        setLanesError(errorText(error));
+        setLanesError(`Couldn't load this computer's lanes: ${errorText(error)}`);
       });
     return () => {
       cancelled = true;
     };
   }, [lanes, needsLanes, pinKey]);
 
-  const select = React.useCallback((id: string) => {
-    setSelectedId(id);
-    setSelectionTouched(true);
+  const open = React.useCallback((chat: DeletedChat) => {
     setActionError(null);
+    setOpenId(chat.id);
   }, []);
 
   const reopen = React.useCallback(async (chat: DeletedChat) => {
@@ -338,6 +358,7 @@ export function RecentlyDeletedSection() {
     try {
       const result = await window.ade.agentChat.reopenDeleted({ id: chat.id, ...(laneId ? { laneId } : {}) }, pinRef.current);
       setChats((prev) => prev?.filter((entry) => entry.id !== chat.id) ?? prev);
+      setOpenId(null);
       showToast({
         id: TOAST_ID,
         tone: "success",
@@ -348,6 +369,8 @@ export function RecentlyDeletedSection() {
       openInWork(result, pinRef.current);
     } catch (error) {
       setActionError({ id: chat.id, message: errorText(error) });
+      // Reopened from the list without the dialog: open it to show why.
+      setOpenId(chat.id);
     } finally {
       setRunning(null);
     }
@@ -363,10 +386,10 @@ export function RecentlyDeletedSection() {
     });
     if (!ok) return;
     setRunning({ id: chat.id, kind: "remove" });
-    setActionError(null);
     try {
       await window.ade.agentChat.removeDeleted({ ids: [chat.id] }, pinRef.current);
       setChats((prev) => prev?.filter((entry) => entry.id !== chat.id) ?? prev);
+      setOpenId((current) => (current === chat.id ? null : current));
     } catch (error) {
       showToast({ id: TOAST_ID, tone: "error", title: "Couldn't remove that chat", message: errorText(error) });
     } finally {
@@ -374,37 +397,8 @@ export function RecentlyDeletedSection() {
     }
   }, [running]);
 
-  const onKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
-    if (isImeComposing(event)) return;
-    const target = event.target as HTMLElement;
-    const inSearch = target.dataset.deletedChatSearch != null;
-    const inRow = target.dataset.deletedChatRow != null;
-    if ((event.key === "ArrowDown" || event.key === "ArrowUp") && (inSearch || inRow) && visible.length) {
-      event.preventDefault();
-      const index = Math.max(0, visible.findIndex((chat) => chat.id === activeId));
-      const next = visible[Math.min(visible.length - 1, Math.max(0, index + (event.key === "ArrowDown" ? 1 : -1)))];
-      if (next) select(next.id);
-      return;
-    }
-    if (event.key === "Enter" && active && (inRow || (inSearch && selectionTouched))) {
-      event.preventDefault();
-      void reopen(active);
-    }
-  };
-
-  // Keep the selected row in view as the keyboard moves it.
-  const listRef = React.useRef<HTMLDivElement | null>(null);
-  React.useEffect(() => {
-    if (!activeId) return;
-    const row = listRef.current?.querySelector<HTMLElement>(`[data-deleted-chat-row="${CSS.escape(activeId)}"]`);
-    if (row && typeof row.scrollIntoView === "function") row.scrollIntoView({ block: "nearest" });
-    const focused = document.activeElement;
-    if (row && focused instanceof HTMLElement && focused !== row && focused.dataset.deletedChatRow != null) {
-      row.focus({ preventScroll: true });
-    }
-  }, [activeId]);
-
   const total = chats?.length ?? 0;
+  const hidden = Math.max(0, visible.length - shownRows);
 
   return (
     <SettingsColumn wide>
@@ -414,12 +408,49 @@ export function RecentlyDeletedSection() {
         className="ade-modern-page"
       >
         <div className="ade-ap-section">
-          <header className="ade-ap-head">
+          <header className="ade-ap-head" style={{ alignItems: "center" }}>
             <div style={{ minWidth: 0 }}>
               <h2>Recently deleted</h2>
-              <p>Chats you deleted, ready to open again with their history.</p>
+              <p>Chats you deleted. Open one to read it, or bring it back with Reopen.</p>
             </div>
+            {total > 0 ? (
+              <label className="ade-rd-search">
+                <MagnifyingGlass size={13} aria-hidden="true" />
+                <input
+                  className="kit-input"
+                  value={query}
+                  onChange={(event) => {
+                    setQuery(event.target.value);
+                    setShownRows(PAGE_ROWS);
+                  }}
+                  placeholder="Search"
+                  aria-label="Search deleted chats"
+                />
+              </label>
+            ) : null}
           </header>
+
+          {providerChips.length > 1 ? (
+            <div role="radiogroup" aria-label="Agent" className="kit-seg" data-case="sentence" style={{ alignSelf: "flex-start" }}>
+              {[{ provider: "all" as const, count: total }, ...providerChips].map((chip) => (
+                <button
+                  key={chip.provider}
+                  type="button"
+                  role="radio"
+                  aria-checked={effectiveProvider === chip.provider}
+                  onClick={() => setProviderFilter(chip.provider)}
+                >
+                  {chip.provider === "all" ? "All" : (
+                    <>
+                      <ToolLogo toolType={PROVIDER_TOOL_TYPE[chip.provider]} size={12} />
+                      {importProviderLabel(chip.provider)}
+                    </>
+                  )}
+                  <span className="kit-num ade-rd-count">{chip.count}</span>
+                </button>
+              ))}
+            </div>
+          ) : null}
 
           {loadError && !chats ? (
             <Banner
@@ -433,104 +464,71 @@ export function RecentlyDeletedSection() {
                 report: { surface: "recently_deleted_load", technicalDetail: loadError },
               }}
             />
-          ) : chats && total === 0 ? (
+          ) : !chats ? (
+            <p className="ade-modern-muted">Looking for deleted chats…</p>
+          ) : total === 0 ? (
             <div className="ade-ar-empty">
               <ClockCounterClockwise size={22} weight="light" />
               <div className="ade-ap-rowtitle">Nothing deleted recently</div>
               <p className="ade-modern-muted">Chats you delete show up here, so you can bring them back.</p>
             </div>
+          ) : visible.length === 0 ? (
+            <p className="ade-modern-muted">No deleted chats match “{query.trim()}”.</p>
           ) : (
-            <div className="kit-card ade-rd-browser" onKeyDown={onKeyDown}>
-              <div className="import-toolbar">
-                <label className="import-search">
-                  <MagnifyingGlass size={12} aria-hidden="true" />
-                  <input
-                    value={query}
-                    onChange={(event) => {
-                      setQuery(event.target.value);
-                      setSelectionTouched(true);
-                    }}
-                    placeholder="Search deleted chats"
-                    aria-label="Search deleted chats"
-                    data-deleted-chat-search=""
-                  />
-                </label>
+            <div className="ade-ar-table">
+              {groups.map((group) => (
+                <div key={group.label} className="ade-ar-block">
+                  <div className="ade-ar-group">
+                    <span className="kit-eyebrow">{group.label}</span>
+                    <span className="ade-ar-group-count kit-num">{group.rows.length}</span>
+                  </div>
+                  <div role="list" aria-label={group.label} className="ade-modern-rows ade-ar-list">
+                    {group.rows.map((chat) => (
+                      <DeletedChatRow
+                        key={chat.id}
+                        chat={chat}
+                        busy={running != null}
+                        reopening={running?.id === chat.id && running.kind === "reopen"}
+                        onOpen={open}
+                        onReopen={(entry) => void reopen(entry)}
+                        onRemove={(entry) => void remove(entry)}
+                      />
+                    ))}
+                  </div>
+                </div>
+              ))}
+              {hidden > 0 ? (
                 <button
                   type="button"
-                  className="kit-icon-btn"
-                  aria-label="Refresh"
-                  title="Refresh"
-                  disabled={loading}
-                  onClick={() => void load()}
+                  className="ade-modern-btn"
+                  data-size="sm"
+                  style={{ alignSelf: "center" }}
+                  onClick={() => setShownRows((count) => count + PAGE_ROWS)}
                 >
-                  <ArrowClockwise size={13} className={loading ? "animate-spin" : undefined} />
+                  Show {Math.min(hidden, PAGE_ROWS)} more
                 </button>
-              </div>
-              <div className="import-split">
-                <aside className="import-list-col">
-                  {providerChips.length > 1 ? (
-                    <ImportProviderFilter
-                      providerChips={providerChips}
-                      totalCount={total}
-                      providerFilter={effectiveProvider}
-                      onProviderFilterChange={setProviderFilter}
-                    />
-                  ) : null}
-                  <div
-                    ref={listRef}
-                    className="min-h-0 flex-1 overflow-y-auto overscroll-contain pb-2"
-                    data-scroll-lock-scrollable=""
-                  >
-                    {!chats ? (
-                      <>
-                        <span role="status" className="sr-only">Looking for deleted chats…</span>
-                        <SkeletonRows count={5} />
-                      </>
-                    ) : groups.length ? (
-                      <div role="listbox" aria-label="Deleted chats">
-                        {groups.map((group) => (
-                          <div key={group.label} role="group" aria-label={group.label}>
-                            <div aria-hidden="true" className="kit-eyebrow import-group-label">{group.label}</div>
-                            <div className="flex flex-col gap-px px-2">
-                              {group.rows.map((chat) => (
-                                <DeletedChatRow key={chat.id} chat={chat} active={chat.id === activeId} onSelect={select} />
-                              ))}
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <div className="import-center text-[12px] text-(--kit-text-3)">No deleted chats match.</div>
-                    )}
-                  </div>
-                </aside>
-                <section className="import-preview-col" aria-label="Deleted chat preview">
-                  {active ? (
-                    <DeletedChatPreview
-                      key={active.id}
-                      chat={active}
-                      pin={pin}
-                      lanes={lanes}
-                      lanesError={lanesError}
-                      targetLaneId={targetLaneId}
-                      onTargetLaneChange={setTargetLaneId}
-                      reopening={running?.id === active.id && running.kind === "reopen"}
-                      removing={running?.id === active.id && running.kind === "remove"}
-                      error={actionError?.id === active.id ? actionError.message : null}
-                      onReopen={() => void reopen(active)}
-                      onRemove={() => void remove(active)}
-                    />
-                  ) : chats ? (
-                    <div className="import-center text-[12px] text-(--kit-text-3)">
-                      Pick a chat to see its conversation.
-                    </div>
-                  ) : null}
-                </section>
-              </div>
+              ) : null}
             </div>
           )}
         </div>
       </section>
+      {openChat ? (
+        <DeletedChatDialog
+          key={openChat.id}
+          chat={openChat}
+          pin={pin}
+          lanes={lanes}
+          lanesError={lanesError}
+          targetLaneId={targetLaneId}
+          onTargetLaneChange={setTargetLaneId}
+          reopening={running?.id === openChat.id && running.kind === "reopen"}
+          removing={running?.id === openChat.id && running.kind === "remove"}
+          error={actionError?.id === openChat.id ? actionError.message : null}
+          onClose={() => setOpenId(null)}
+          onReopen={() => void reopen(openChat)}
+          onRemove={() => void remove(openChat)}
+        />
+      ) : null}
     </SettingsColumn>
   );
 }

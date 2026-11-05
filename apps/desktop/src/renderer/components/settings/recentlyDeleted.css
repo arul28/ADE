@@ -1,22 +1,65 @@
 /*
- * Settings › Recently deleted. The Import window's list and preview
- * (`importSessions.css`), set inside one kit card on the settings page.
+ * Settings › Recently deleted. The rows are Archive's (`machineSettings.css`
+ * `.ade-ar-*`); this file only adds the whole-row open button, the search
+ * field in the section head, and the conversation dialog's body.
  */
 
-.ade-rd-browser {
+.ade-rd-search {
+  position: relative;
   display: flex;
+  align-items: center;
+  flex: none;
+  width: min(260px, 40%);
+}
+.ade-rd-search > svg {
+  position: absolute;
+  left: 9px;
+  color: var(--kit-text-3);
+  pointer-events: none;
+}
+.ade-rd-search > .kit-input { width: 100%; padding-left: 28px; }
+
+.ade-rd-row { padding: 0 8px 0 0; }
+.ade-rd-open {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.ade-rd-open:focus-visible { outline: 2px solid var(--color-accent); outline-offset: -2px; }
+.ade-rd-text { display: flex; flex-direction: column; min-width: 0; }
+.ade-rd-sep { opacity: 0.5; }
+.ade-rd-nowrap { flex: none; white-space: nowrap; }
+.ade-rd-gone { flex: none; white-space: nowrap; color: var(--kit-text-3); }
+
+.ade-rd-actions { display: flex; align-items: center; gap: 4px; flex: none; }
+.ade-rd-hover { opacity: 0; transition: opacity 100ms ease; }
+.ade-rd-row:hover .ade-rd-hover, .ade-rd-row:focus-within .ade-rd-hover { opacity: 1; }
+.ade-rd-count { margin-left: 6px; opacity: 0.6; font-size: 10.5px; }
+
+.ade-rd-dialog-meta { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.ade-rd-dialog-body {
+  display: flex;
+  flex: 1;
   flex-direction: column;
-  height: clamp(420px, calc(100vh - 260px), 680px);
   min-height: 0;
-  overflow: hidden;
+  height: 100%;
 }
-
-.ade-rd-browser .import-split { flex: 1; min-height: 0; }
-.ade-rd-browser .import-list-col { width: 320px; }
-
-/* Sticky date labels sit on the card, not the import dialog's surface. */
-.ade-rd-browser .import-group-label { background: var(--color-card); }
-
-@container modernpage (max-width: 720px) {
-  .ade-rd-browser .import-list-col { width: 240px; }
+.ade-rd-footer-start {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--kit-text-3);
 }
+.ade-rd-error { color: var(--kit-crit); }
