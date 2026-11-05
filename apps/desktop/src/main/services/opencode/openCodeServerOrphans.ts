@@ -9,7 +9,7 @@ import {
   resolveAdeOpenCodeRuntimeRoot,
 } from "../../../shared/opencodeDataHome";
 import { execFileOffThread, offThreadSpawnEnabled } from "../shared/offThreadSpawn";
-import { killWindowsProcessTree, windowsPowerShellCommand } from "../shared/processExecution";
+import { killWindowsProcessTreeAsync, windowsPowerShellCommand } from "../shared/processExecution";
 import { parseProcessRows, terminateOrphanProcess as terminateProcessOrphan } from "../shared/processOrphans";
 import { signalProcessGroup } from "../shared/utils";
 
@@ -40,7 +40,8 @@ type OpenCodeProcessController = {
   listListeningPids(port: number): number[];
   isProcessAlive(pid: number): boolean;
   killProcess(pid: number, signal: NodeJS.Signals): void;
-  killProcessTree(pid: number): boolean;
+  /** Async on Windows, where the `taskkill` runs off the event loop; settled at once elsewhere. */
+  killProcessTree(pid: number): Promise<boolean>;
   waitForMs(ms: number): Promise<void>;
 };
 
@@ -308,12 +309,13 @@ const openCodeProcesses: OpenCodeProcessController = {
       // ignore
     }
   },
-  killProcessTree(pid: number): boolean {
+  async killProcessTree(pid: number): Promise<boolean> {
     if (!Number.isInteger(pid) || pid <= 0) return false;
     if (process.platform === "win32") {
       // The trusted System32 `taskkill /T /F`, so a poisoned PATH cannot
-      // answer the kill.
-      return killWindowsProcessTree(pid, (detail) => {
+      // answer the kill. Asynchronous: run synchronously it held the brain
+      // for seconds every time a server closed.
+      return await killWindowsProcessTreeAsync(pid, (detail) => {
         console.error("opencode.kill_process_tree_taskkill_failed", detail);
       });
     }
@@ -358,7 +360,7 @@ let orphanRecoveryCompleted = false;
  * sees the exit and reports the signal to the agent, which a delete of the
  * shell record would not.
  */
-export function killOpenCodeShellProcessTree(pid: number): boolean {
+export function killOpenCodeShellProcessTree(pid: number): Promise<boolean> {
   return openCodeProcesses.killProcessTree(pid);
 }
 
@@ -373,7 +375,11 @@ export function isOpenCodeProcessAlive(pid: number): boolean {
 
 export function stopChildProcess(proc: ChildProcess): void {
   if (proc.exitCode !== null || proc.signalCode !== null) return;
-  if (process.platform === "win32" && proc.pid && openCodeProcesses.killProcessTree(proc.pid)) {
+  if (process.platform === "win32" && proc.pid) {
+    // The tree kill first; the direct kill only when `taskkill` failed.
+    void openCodeProcesses.killProcessTree(proc.pid).then((killed) => {
+      if (!killed && proc.exitCode === null && proc.signalCode === null) proc.kill();
+    });
     return;
   }
   proc.kill();
@@ -409,12 +415,31 @@ export function resolveOpenCodeListenerPid(port: number): number | null {
     return managed?.pid ?? listeningPids[0]!;
   }
 
+  return pickOpenCodeListenerPid(openCodeProcesses.listProcesses(), port, buildManagedConfigMarkers());
+}
+
+/**
+ * {@link resolveOpenCodeListenerPid} for the server start, which runs on the
+ * brain's event loop. Windows has no `lsof`, so the answer there always comes
+ * from a full WMIC/PowerShell process listing; this one runs it off the event
+ * loop (a synchronous listing held the brain 3 s). Elsewhere it is the same
+ * call.
+ */
+export async function resolveOpenCodeListenerPidAsync(port: number): Promise<number | null> {
+  if (process.platform !== "win32") return resolveOpenCodeListenerPid(port);
   const configMarkers = buildManagedConfigMarkers();
-  const matching = openCodeProcesses.listProcesses()
-    .filter((proc) =>
-      commandHasPort(proc.command, port)
-      && isManagedOpenCodeServeCommand(proc.command, configMarkers)
-    );
+  return pickOpenCodeListenerPid(await openCodeProcesses.listProcessesAsync(), port, configMarkers);
+}
+
+function pickOpenCodeListenerPid(
+  processes: OpenCodeProcessSnapshot[],
+  port: number,
+  configMarkers: ReturnType<typeof buildManagedConfigMarkers>,
+): number | null {
+  const matching = processes.filter((proc) =>
+    commandHasPort(proc.command, port)
+    && isManagedOpenCodeServeCommand(proc.command, configMarkers)
+  );
   if (matching.length === 0) return null;
   const nonNode = matching.find((proc) => !/\bnode(?:\.exe)?\b/i.test(proc.command));
   return (nonNode ?? matching[0]!).pid;
@@ -424,7 +449,7 @@ export function terminateOpenCodeServerProcesses(proc: ChildProcess, listenerPid
   const listenerHandled = listenerPid !== null && openCodeProcesses.isProcessAlive(listenerPid);
   if (listenerHandled) {
     if (process.platform === "win32") {
-      openCodeProcesses.killProcessTree(listenerPid);
+      void openCodeProcesses.killProcessTree(listenerPid);
     } else {
       openCodeProcesses.killProcess(listenerPid, "SIGTERM");
     }

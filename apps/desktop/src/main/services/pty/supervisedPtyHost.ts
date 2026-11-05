@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import type { IPty, IWindowsPtyForkOptions } from "node-pty";
 import type * as ptyNs from "node-pty";
 import type { Logger } from "../logging/logger";
-import { killWindowsProcessTree } from "../shared/processExecution";
+import { killWindowsProcessTreeAsync } from "../shared/processExecution";
 
 type SpawnRequest = {
   type: "spawn";
@@ -612,7 +612,9 @@ class SupervisedPtyHost {
       const remote = this.ptys.get(ptyId);
       this.ptys.delete(ptyId);
       if (process.platform === "win32" && remote && remote.pid > 0) {
-        killWindowsProcessTree(remote.pid, (detail) => {
+        // Off the event loop: a synchronous taskkill per orphaned terminal
+        // held the brain for seconds while the host restarted.
+        void killWindowsProcessTreeAsync(remote.pid, (detail) => {
           this.logger.warn("pty.host_orphan_tree_cleanup_failed", {
             ptyId,
             pid: detail.pid,

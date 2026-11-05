@@ -102,7 +102,7 @@ import {
   type SyncRosterProvider,
 } from "./syncRosterFanout";
 import {
-  diagnoseSyncHostReadiness,
+  diagnoseSyncHostReadinessAsync,
   hostUnavailableErrorPayload,
   redactSyncHostReadinessSnapshot,
   recoverSyncHostConnection,
@@ -1066,7 +1066,7 @@ export function createBrainProjectActionsSyncHandler(
               // An explicit diagnose request is the one caller that pays for
               // the full listener scan.
               const snapshot = redactSyncHostReadinessSnapshot(
-                diagnoseSyncHostReadiness(),
+                await diagnoseSyncHostReadinessAsync(),
                 authorized,
               );
               if (!isCurrent()) return;
@@ -1202,8 +1202,9 @@ export function createBrainProjectActionsSyncHandler(
           error: hostUnavailableErrorPayload(
             redactSyncHostReadinessSnapshot(
               // Every failing command lands here while the host is down. A
-              // synchronous listener scan per command would wedge the brain.
-              diagnoseSyncHostReadiness({ skipListenerScan: true }),
+              // synchronous listener scan per command would wedge the brain,
+              // and on Windows so would the lock owner's PowerShell probe.
+              await diagnoseSyncHostReadinessAsync({ skipListenerScan: true }),
               canManageSyncHost(peer),
             ),
           ),
@@ -1844,7 +1845,7 @@ export function createBrainProjectActionsSyncHandler(
             projectHost: redactSyncHostReadinessSnapshot(
               // Hello runs for every reconnect, including the reconnect storm a
               // down host causes. Keep it off the synchronous scan.
-              diagnoseSyncHostReadiness({ skipListenerScan: true }),
+              await diagnoseSyncHostReadinessAsync({ skipListenerScan: true }),
               syncHostRecoveryAuthorized,
             ),
             knownCommandRoutingDigest: hello.commandRoutingDigest ?? null,

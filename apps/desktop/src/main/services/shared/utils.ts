@@ -5,12 +5,12 @@
  * Import from here instead of re-declaring locally.
  */
 
-import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import { nonAsarFs } from "./nonAsarFs";
 import path from "node:path";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { isWindowsCmdCommandNotFound, resolveCliSpawnInvocation, windowsTaskkillCommand } from "./processExecution";
+import { isWindowsCmdCommandNotFound, killWindowsProcessTreeAsync, resolveCliSpawnInvocation } from "./processExecution";
 import { AdeExpectedError } from "../../../shared/expectedError";
 import { containsSecretToken, redactSecretTokens } from "../../../shared/secretTokenShapes";
 import { writeFileAtomic } from "../state/durableFile";
@@ -179,26 +179,20 @@ export function signalChildProcessTree(child: KillableChildProcess, signal: Node
   const pid = child.pid ?? null;
 
   if (process.platform === "win32") {
-    let treeSignaled = false;
-    if (isValidPid(pid)) {
-      const taskkillArgs = ["/PID", String(pid), "/T", "/F"];
+    const signalChild = (): boolean => {
       try {
-        const result = spawnSync(windowsTaskkillCommand(), taskkillArgs, {
-          stdio: "ignore",
-          windowsHide: true,
-        });
-        treeSignaled = !result.error && result.status === 0;
+        return child.kill(signal);
       } catch {
-        // taskkill may be unavailable; the direct child signal below still runs.
+        return false;
       }
-    }
-    let childSignaled = false;
-    try {
-      childSignaled = child.kill(signal);
-    } catch {
-      childSignaled = false;
-    }
-    return treeSignaled || childSignaled;
+    };
+    if (!isValidPid(pid)) return signalChild();
+    // The tree first, the child once `taskkill` is done (it cannot find the
+    // descendants after the leader is gone), and without blocking the event
+    // loop: the synchronous `taskkill` held the brain for seconds per kill. A
+    // `taskkill` that could not run still ends with the direct child signal.
+    void killWindowsProcessTreeAsync(pid).then(signalChild);
+    return true;
   }
 
   if (isValidPid(pid)) {

@@ -29845,7 +29845,7 @@ async function runServe(
     // here", so like the relay tunnel it belongs to whichever brain actually
     // holds the machine-wide sync host lease. A second brain publishing its own
     // endpoints points phones at a runtime that does not host sync.
-    const [{ holdsSyncHostSingleton, onSyncHostSingletonAuthorityChanged, detectSyncHostSingletonConflict }, { SYNC_HOST_AUTHORITY_RELEASE_GRACE_MS }] =
+    const [{ holdsSyncHostSingleton, onSyncHostSingletonAuthorityChanged, detectSyncHostSingletonConflict, detectSyncHostSingletonConflictAsync }, { SYNC_HOST_AUTHORITY_RELEASE_GRACE_MS }] =
       await Promise.all([
         import("./services/sync/syncHostSingleton"),
         import("./services/sync/relayTunnelAuthorityGate"),
@@ -29860,15 +29860,32 @@ async function runServe(
       value: null,
       at: 0,
     };
+    const ownerOf = (conflict: { owner: { appName: string | null; pid: number } } | null): CompetingSyncHostOwner | null =>
+      conflict ? { appName: conflict.owner.appName, pid: conflict.owner.pid } : null;
+    let competingSyncHostOwnerRefresh: Promise<void> | null = null;
     readCompetingSyncHostOwner = (): CompetingSyncHostOwner | null => {
       const at = Date.now();
       if (competingSyncHostOwnerCache.at > 0 && at - competingSyncHostOwnerCache.at < 10_000) {
         return competingSyncHostOwnerCache.value;
       }
+      if (process.platform === "win32") {
+        // There the owner's identity is a PowerShell start (up to 2 s), so it
+        // is refreshed in the background and this read answers with the last
+        // known owner.
+        competingSyncHostOwnerRefresh ??= detectSyncHostSingletonConflictAsync({ skipListenerScan: true })
+          .then(ownerOf, () => null)
+          .then((owner) => {
+            competingSyncHostOwnerCache.value = owner;
+            competingSyncHostOwnerCache.at = Date.now();
+          })
+          .finally(() => {
+            competingSyncHostOwnerRefresh = null;
+          });
+        return competingSyncHostOwnerCache.value;
+      }
       let owner: CompetingSyncHostOwner | null = null;
       try {
-        const conflict = detectSyncHostSingletonConflict({ skipListenerScan: true });
-        owner = conflict ? { appName: conflict.owner.appName, pid: conflict.owner.pid } : null;
+        owner = ownerOf(detectSyncHostSingletonConflict({ skipListenerScan: true }));
       } catch {
         owner = null;
       }

@@ -23,7 +23,7 @@ import {
   recoverManagedOpenCodeOrphans as recoverOrphans,
   removeManagedServerRecord,
   removeProfileConfig,
-  resolveOpenCodeListenerPid,
+  resolveOpenCodeListenerPidAsync,
   stopChildProcess,
   terminateOpenCodeServerProcesses,
   writeManagedServerRecord,
@@ -500,6 +500,8 @@ async function launchOpenCodeServer(args: OpenCodeServerLaunchArgs): Promise<Ope
   let output = "";
   let resolved = false;
   const exitHandlers: Array<(error: Error) => void> = [];
+  /** Set when the server exits after it started, for a handler added later. */
+  let exitError: Error | null = null;
 
   return await new Promise<OpenCodeServerInstance>((resolve, reject) => {
     const cleanupStartup = (): void => {
@@ -537,18 +539,30 @@ async function launchOpenCodeServer(args: OpenCodeServerLaunchArgs): Promise<Ope
         // Keep draining the pipes: a full stdout buffer blocks the server.
         proc.stdout?.resume();
         proc.stderr?.resume();
-        const listenerPid = resolveOpenCodeListenerPid(args.port) ?? proc.pid ?? null;
-        resolve({
-          url,
-          pid: listenerPid,
-          close() {
-            terminateOpenCodeServerProcesses(proc, listenerPid);
-            if (proc.pid) removeManagedServerRecord(proc.pid);
-          },
-          onExit(handler) {
-            exitHandlers.push(handler);
-          },
-        });
+        // On Windows the listener lookup is a full process listing, run off
+        // the event loop; the server can exit meanwhile, which `onExit`
+        // then reports to a handler added after the fact.
+        void resolveOpenCodeListenerPidAsync(args.port)
+          .catch(() => null)
+          .then((found) => {
+            const listenerPid = found ?? proc.pid ?? null;
+            resolve({
+              url,
+              pid: listenerPid,
+              close() {
+                terminateOpenCodeServerProcesses(proc, listenerPid);
+                if (proc.pid) removeManagedServerRecord(proc.pid);
+              },
+              onExit(handler) {
+                if (exitError) {
+                  const error = exitError;
+                  queueMicrotask(() => handler(error));
+                  return;
+                }
+                exitHandlers.push(handler);
+              },
+            });
+          });
         return;
       }
     };
@@ -568,6 +582,7 @@ async function launchOpenCodeServer(args: OpenCodeServerLaunchArgs): Promise<Ope
         return;
       }
       const error = new Error(`OpenCode server exited (code ${code ?? "null"}, signal ${signal ?? "none"}).`);
+      exitError = error;
       for (const handler of exitHandlers.splice(0)) handler(error);
     });
 

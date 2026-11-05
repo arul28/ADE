@@ -18,6 +18,7 @@ import {
 } from "../../../../desktop/src/shared/types/syncHostRecovery";
 import {
   detectSyncHostSingletonConflict,
+  detectSyncHostSingletonConflictAsync,
   holdsSyncHostSingleton,
   isSameChannelSyncHostOwner,
   ownerMatchesWindowsProcess,
@@ -224,6 +225,21 @@ export function diagnoseSyncHostReadiness(deps: SyncHostRecoveryDeps = {}): Sync
 }
 
 /**
+ * `diagnoseSyncHostReadiness` without blocking the event loop: on Windows the
+ * conflict check is one or two PowerShell starts (the lock owner's identity,
+ * the listener scan), awaited here instead of run with `execFileSync`. An
+ * injected `detectConflict` is used as is.
+ */
+export async function diagnoseSyncHostReadinessAsync(
+  deps: SyncHostRecoveryDeps = {},
+): Promise<SyncHostReadinessSnapshot> {
+  if (deps.detectConflict ?? configured.detectConflict) return diagnoseSyncHostReadiness(deps);
+  const skipListenerScan = deps.skipListenerScan ?? configured.skipListenerScan ?? false;
+  const conflict = await detectSyncHostSingletonConflictAsync({ skipListenerScan });
+  return diagnoseSyncHostReadiness({ ...deps, detectConflict: () => conflict });
+}
+
+/**
  * The brain can tell an authenticated but unprivileged peer that its project
  * host is unavailable without disclosing PID, socket, command-line, or lane
  * information. Recovery callers receive the full snapshot only after the
@@ -339,14 +355,14 @@ function raceWithDeadline(
   let deadlineTimer: NodeJS.Timeout | null = null;
   const deadline = new Promise<SyncHostRecoveryResult>((resolve) => {
     deadlineTimer = setTimeout(() => {
-      resolve({
+      void diagnoseSyncHostReadinessAsync({ ...configured, ...args }).then((snapshot) => resolve({
         operationId: "",
         ok: false,
         status: "failed",
-        snapshot: diagnoseSyncHostReadiness({ ...configured, ...args }),
+        snapshot,
         steps: [],
         message: "Fixing the connection took too long. Try again.",
-      });
+      }));
     }, deadlineMs);
     deadlineTimer.unref?.();
   });
@@ -374,7 +390,10 @@ async function runSyncHostRecovery(
   }
 
   const operationId = existingId || randomUUID();
-  const detect = deps.detectConflict ?? detectSyncHostSingletonConflict;
+  const injectedDetect = deps.detectConflict;
+  // Off the event loop on Windows, where each probe is a PowerShell start.
+  const detect = async (options: { skipListenerScan: boolean }): Promise<SyncHostSingletonConflict | null> =>
+    injectedDetect ? injectedDetect(options) : await detectSyncHostSingletonConflictAsync(options);
   // The listener scan spawns `lsof` — or, on Windows, a full-machine
   // `Get-NetTCPConnection` + `Get-CimInstance` on a 15s budget — SYNCHRONOUSLY
   // on the brain's event loop. It is the only way to see a blocker holding the
@@ -418,7 +437,7 @@ async function runSyncHostRecovery(
   // One observation, used twice: it decides whether there is anything to stop,
   // and the same conflict becomes the client-facing snapshot. Detecting twice
   // would pay for a second listener scan and could disagree with itself.
-  const firstConflict = detect(scanOptions);
+  const firstConflict = await detect(scanOptions);
   const snapshot0 = diagnoseSyncHostReadiness({ ...deps, detectConflict: () => firstConflict });
   let result: SyncHostRecoveryResult = store({
     operationId,
@@ -474,7 +493,7 @@ async function runSyncHostRecovery(
         abort: "ineligible",
       };
     }
-    const rechecked = detect(scanOptions);
+    const rechecked = await detect(scanOptions);
     if (
       !rechecked
       || (await processMatchesOwner(rechecked.owner)) !== true
@@ -517,7 +536,7 @@ async function runSyncHostRecovery(
         "failed",
         false,
         "Couldn't stop the blocking runtime.",
-        diagnoseSyncHostReadiness(deps),
+        await diagnoseSyncHostReadinessAsync(deps),
       );
     }
   } else {
@@ -527,7 +546,7 @@ async function runSyncHostRecovery(
   setStep("wait", "active");
   const deadline = now() + waitMs;
   while (now() < deadline) {
-    if (!detect(lockOnlyOptions) && holds()) break;
+    if (!(await detect(lockOnlyOptions)) && holds()) break;
     await sleep(250);
   }
   setStep("wait", "done");
@@ -562,7 +581,7 @@ async function runSyncHostRecovery(
           "restarting",
           false,
           "Restarting this machine's ADE brain. Reconnect if this screen drops.",
-          diagnoseSyncHostReadiness(deps),
+          await diagnoseSyncHostReadinessAsync(deps),
         );
       } catch (error) {
         setStep("restart", "failed", error instanceof Error ? error.message : String(error));
@@ -583,7 +602,7 @@ async function runSyncHostRecovery(
       proved = false;
     }
   }
-  const snapshot = diagnoseSyncHostReadiness(deps);
+  const snapshot = await diagnoseSyncHostReadinessAsync(deps);
   if (proved && snapshot.state === "ready") {
     setStep("prove", "done");
     return finish("succeeded", true, "Project connection is ready.", snapshot);

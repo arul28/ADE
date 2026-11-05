@@ -1,4 +1,3 @@
-import fs from "node:fs";
 import path from "node:path";
 import {
   createSyncAccountDirectoryHealth,
@@ -7,6 +6,7 @@ import {
   type SyncRoleSnapshot,
 } from "../../../../desktop/src/shared/types";
 import { localSyncDeviceDefaults } from "./deviceRegistryService";
+import { readMachineIdFile } from "./machineIdFile";
 import { buildPairingConnectInfo } from "./syncPairingConnectInfo";
 import { buildRelayRouteHealth, deriveListenerHealth } from "./syncRouteHealth";
 import type { SyncLoopbackValidationStatus } from "./syncLoopbackProbe";
@@ -85,11 +85,7 @@ const NO_SCOPE_REASON = "No active sync project scope.";
 
 /** Device identity the brain persists per machine; readable without a project DB. */
 function readMachineSyncIdentity(secretsDir: string, fileName: string): string {
-  try {
-    return fs.readFileSync(path.join(secretsDir, fileName), "utf8").trim();
-  } catch {
-    return "";
-  }
+  return readMachineIdFile(path.join(secretsDir, fileName)) ?? "";
 }
 
 export function buildProjectlessSyncSnapshot(

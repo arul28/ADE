@@ -836,14 +836,30 @@ export function accountSessionRetainsMachineOwnership(
   return status.sessionState === "expired" || status.sessionState === "unreadable";
 }
 
+/**
+ * How long an unchanged sign-in state skips the analytics identity sync. Each
+ * sync is synchronous file work in `~/.ade/secrets` (a lock file and a state
+ * read, or an existence check), and `account.status` runs it on every read: on
+ * Windows one such call can wait seconds behind an antivirus scan. Re-running
+ * it once a minute still retries an attempt that found the state file locked.
+ */
+const ANALYTICS_IDENTITY_RECHECK_MS = 60_000;
+const lastAnalyticsIdentitySync = new WeakMap<AccountAnalyticsIdentity, { key: string; at: number }>();
+
 export function syncAccountAnalyticsIdentity(
   status: AccountAuthStatus,
   analytics?: AccountAnalyticsIdentity,
 ): AccountAuthStatus {
+  if (!analytics) return status;
+  const key = status.signedIn ? `user:${status.userId ?? ""}` : "signed-out";
+  const last = lastAnalyticsIdentitySync.get(analytics);
+  const now = Date.now();
+  if (last && last.key === key && now - last.at < ANALYTICS_IDENTITY_RECHECK_MS) return status;
+  lastAnalyticsIdentitySync.set(analytics, { key, at: now });
   if (status.signedIn) {
-    analytics?.identifyAccount(status.userId);
+    analytics.identifyAccount(status.userId);
   } else {
-    analytics?.resetAccountIdentity();
+    analytics.resetAccountIdentity();
   }
   return status;
 }

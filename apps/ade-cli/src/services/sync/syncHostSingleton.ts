@@ -778,13 +778,16 @@ export type SyncHostProbeRunner = (
 
 /**
  * `detectSyncHostSingletonConflict` for a caller that must not block its event
- * loop: the packaged desktop launch gate, which runs before first paint.
+ * loop: the brain (diagnosis, one-tap recovery, the readiness status) and the
+ * packaged desktop launch gate, which runs before first paint.
  *
- * On Windows with `skipListenerScan` (the gate's only mode there), the one probe
- * the lock check needs is the live owner's identity, which rejects a reused PID.
- * It is awaited through `runProbe` instead of `execFileSync`, and its verdict
- * feeds the same lock logic, so the answer does not change. An owner that
- * `ignoreOwner` accepts gets no wait: the verdict is no conflict at once, and its
+ * On Windows each probe is a PowerShell start: the live lock owner's identity,
+ * which rejects a reused PID (killed at 2 s), and unless `skipListenerScan` the
+ * machine-wide listener scan (up to 15 s; 8.4 s seen in the field). Run with
+ * `execFileSync` they held the brain for the whole wait. Here they run through
+ * `runProbe`, in parallel, and their answers feed the same synchronous lock
+ * logic, so the verdict does not change. An owner that `ignoreOwner` accepts
+ * (lock-only mode) gets no wait: the verdict is no conflict at once, and its
  * identity is checked in the background, which unlinks a stale lock as the
  * synchronous check did. Everywhere else, and when the caller injects its own
  * probes, this is `detectSyncHostSingletonConflict`.
@@ -800,29 +803,59 @@ export async function detectSyncHostSingletonConflictAsync(
   const injected = Boolean(deps.processMatchesOwner || deps.scanListeners || deps.scanListenersReadText);
   // Same test-mode gate as `detectSyncHostSingletonConflict`: a test that opts in runs this path.
   const testRun = isTestProcess() && process.env.ADE_SYNC_HOST_SINGLETON_TEST_MODE !== "1";
-  if (platform !== "win32" || !deps.skipListenerScan || injected || testRun) {
+  if (platform !== "win32" || injected || testRun) {
     return detectSyncHostSingletonConflict(deps);
   }
   const lockPath = deps.lockPath ?? syncHostSingletonLockPath();
   const pidAlive = deps.pidAlive ?? defaultPidAlive;
   const lockOwner = safeReadLock(lockPath, platform)?.owner ?? null;
   const checkOwner = lockOwner && lockOwner.pid !== process.pid && pidAlive(lockOwner.pid) ? lockOwner : null;
-  if (!checkOwner) return detectSyncHostSingletonConflict(deps);
+  // The same conditions `scanNativeSyncHostListeners` and the detector apply
+  // before they would spawn anything.
+  const scanWanted = !deps.skipListenerScan
+    && !isDevTestMachineProcess()
+    && !(isTestProcess() && process.env.ADE_SYNC_HOST_LEGACY_SCAN !== "1");
+  if (!checkOwner && !scanWanted) return detectSyncHostSingletonConflict(deps);
   const runProbe = options.runProbe ?? execFileText;
-  if (options.ignoreOwner?.(checkOwner)) {
+  if (checkOwner && deps.skipListenerScan && options.ignoreOwner?.(checkOwner)) {
     // Detached on purpose: the launch answers now, and recheckIgnoredOwner never rejects.
     void recheckIgnoredOwner(lockPath, checkOwner, platform, runProbe);
     return null;
   }
-  const ownerVerdict = await probeWindowsOwnerIdentity(checkOwner, runProbe);
+  const [ownerVerdict, listeners] = await Promise.all([
+    checkOwner ? probeWindowsOwnerIdentity(checkOwner, runProbe) : null,
+    scanWanted ? scanWindowsSyncHostListenersAsync(runProbe) : null,
+  ]);
   return detectSyncHostSingletonConflict({
     ...deps,
     // The lock may have changed hands while the probe ran; any other owner gets
     // the synchronous check, as before.
-    processMatchesOwner: (owner) => owner.id === checkOwner.id && owner.pid === checkOwner.pid
+    processMatchesOwner: (owner) => checkOwner && owner.id === checkOwner.id && owner.pid === checkOwner.pid
       ? ownerVerdict
       : defaultProcessMatchesOwner(owner, platform),
+    ...(listeners ? { scanListeners: () => listeners } : {}),
   });
+}
+
+/**
+ * `scanWindowsSyncHostListeners` with its PowerShell run through `runProbe`.
+ * A failed or timed-out scan reads its partial output, as `defaultScanText` does.
+ */
+async function scanWindowsSyncHostListenersAsync(
+  runProbe: SyncHostProbeRunner,
+): Promise<SyncHostSingletonOwner[]> {
+  let powershell: string;
+  let args: string[];
+  try {
+    powershell = resolveTrustedWindowsTool("powershell");
+    args = buildWindowsListeningPortHolderQueryArgs(DEFAULT_SYNC_HOST_PORT, SYNC_HOST_MAX_PORT);
+  } catch {
+    return [];
+  }
+  const output = await runProbe(powershell, args, WINDOWS_LISTENER_SCAN_TIMEOUT_MS, 4 * 1024 * 1024)
+    .then((result) => result.stdout)
+    .catch(() => "");
+  return scanWindowsSyncHostListeners(() => output);
 }
 
 /** The owner's identity from one PowerShell probe; `null` when unknown. Never throws. */

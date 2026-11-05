@@ -20,6 +20,7 @@ import { copiedProjectHostMarkerPath } from "./hostInstanceGuard";
 import type { AdeDb } from "../../../../desktop/src/main/services/state/kvDb";
 import { nowIso, safeJsonParse, toOptionalString, uniqueStrings } from "../../../../desktop/src/main/services/shared/utils";
 import { execFileOffThread, offThreadSpawnEnabled } from "../../../../desktop/src/main/services/shared/offThreadSpawn";
+import { rememberMachineIdFile } from "./machineIdFile";
 
 type DeviceRegistryServiceArgs = {
   db: AdeDb;
@@ -76,6 +77,7 @@ export function readOrCreateLocalDeviceId(deviceIdPath: string, legacyPath?: str
   const candidate = legacy || randomUUID();
   try {
     fs.writeFileSync(deviceIdPath, `${candidate}\n`, { flag: "wx" });
+    rememberMachineIdFile(deviceIdPath, candidate);
     return candidate;
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;

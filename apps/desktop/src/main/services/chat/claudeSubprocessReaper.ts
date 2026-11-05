@@ -5,7 +5,7 @@ import path from "node:path";
 import type { Readable, Writable } from "node:stream";
 import type { SpawnOptions, SpawnedProcess } from "@anthropic-ai/claude-agent-sdk";
 import type { Logger } from "../logging/logger";
-import { killWindowsProcessTree, killWindowsProcessTreeAsync, resolveCliSpawnInvocation } from "../shared/processExecution";
+import { killWindowsProcessTreeAsync, resolveCliSpawnInvocation } from "../shared/processExecution";
 import { signalProcessGroup } from "../shared/utils";
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import { moveClaudeMcpConfigOffArgv, pruneStaleClaudeMcpConfigFiles, removeClaudeMcpConfigFiles } from "./claudeMcpConfigFile";
@@ -407,7 +407,7 @@ export function createClaudeSubprocessReaper(args: {
       // TerminateProcess of that one PID — it leaves the Claude binary's own
       // children (ripgrep, MCP servers, node) orphaned. There is no graceful
       // stage to escalate from, so kill the whole tree in one step.
-      killWindowsProcessTree(record.pid, (detail) => {
+      void killWindowsProcessTreeAsync(record.pid, (detail) => {
         logger.warn("agent_chat.claude_subprocess_taskkill_failed", { ...detail, sessionId: record.sessionId });
       });
       removeRegistryPid(record.pid);
