@@ -402,7 +402,8 @@ export function resolveHarnessRoute(args: {
   }
   // The proxy translates any client protocol to any upstream protocol, so the
   // harness uses its preferred one and the model keeps its own.
-  const upstreamProtocol = PROXY_UPSTREAM_PREFERENCE.find((protocol) => protocols.includes(protocol))!;
+  const preference = PROXY_UPSTREAM_PREFERENCE_BY_PROVIDER[canonicalSourceProvider(sourceProvider)] ?? PROXY_UPSTREAM_PREFERENCE;
+  const upstreamProtocol = preference.find((protocol) => protocols.includes(protocol))!;
   return {
     kind: "proxy",
     harnessProtocol: HARNESS_ROUTE_PROTOCOLS[harness][0]!,
@@ -413,6 +414,16 @@ export function resolveHarnessRoute(args: {
 
 /** Upstream protocols the proxy speaks, best first (chat translates most faithfully). */
 const PROXY_UPSTREAM_PREFERENCE: readonly RouteProtocol[] = ["openai-chat", "anthropic", "openai-responses"];
+
+/**
+ * Sources whose own API wants another order. OpenAI's reasoning models
+ * (gpt-5.x) refuse the `max_tokens` the proxy's chat translation sends
+ * ("Unsupported parameter: 'max_tokens'"); its Responses API takes the limit
+ * as `max_output_tokens`, so OpenAI goes through Responses.
+ */
+const PROXY_UPSTREAM_PREFERENCE_BY_PROVIDER: Readonly<Record<string, readonly RouteProtocol[]>> = {
+  openai: ["openai-responses", "openai-chat", "anthropic"],
+};
 
 
 // ---------------------------------------------------------------------------

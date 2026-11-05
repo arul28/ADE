@@ -1137,6 +1137,11 @@ export const IPC = {
   agent37ReadyClaim: "ade.agent37.readyClaim",
   agent37ReadyRelease: "ade.agent37.readyRelease",
   agent37ReadyStatusChanged: "agent37:readyStatusChanged",
+  agent37GetBudget: "ade.agent37.getBudget",
+  agent37SetBudget: "ade.agent37.setBudget",
+  agent37WakeMachine: "ade.agent37.wakeMachine",
+  agent37CopyMachine: "ade.agent37.copyMachine",
+  agent37MoveMachine: "ade.agent37.moveMachine",
 
   /**
    * The account settings store, reached through the brain's `account_settings`

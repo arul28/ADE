@@ -41,6 +41,10 @@ describe("checkRemoteAdeCommand", () => {
     ["read", "`--help` swallowed as a flag's value", ["chat", "send", "x", "--project-root", "--help"]],
     ["read", "arming a chat wait", ["chat", "wait", "x", "--async"]],
     ["read", "cancelling a chat wait", ["chat", "wait", "--cancel", "w1"]],
+    ["read", "turning a billed Agent 37 ready machine on", ["agent37", "ready", "on", "--kind", "vm"]],
+    ["read", "turning the ready machine off (deletes it)", ["agent37", "ready", "--json", "off"]],
+    ["read", "retrying a ready prepare", ["agent37", "ready", "retry"]],
+    ["read", "making an Agent 37 machine", ["agent37", "create", "--kind", "box"]],
     ["write", "a stdin-reading command without stdin", ["files", "write", "--workspace", "l", "a.txt", "--stdin"]],
     ["write", "a body read from stdin without stdin", ["prs", "create", "--body-file", "-"]],
   ] as const)("%s access refuses %s", (scope, _label, args) => {
@@ -61,6 +65,9 @@ describe("checkRemoteAdeCommand", () => {
     ["read", ["skills", "list"], ["skills", "list"]],
     ["read", ["integrations", "status", "--text"], ["integrations", "status", "--text"]],
     ["read", ["settings", "find", "providers"], ["settings", "find", "providers"]],
+    ["read", ["agent37", "ready"], ["agent37", "ready"]],
+    ["read", ["agent37", "ready", "status", "--text"], ["agent37", "ready", "status", "--text"]],
+    ["read", ["agent37", "spending", "--text"], ["agent37", "spending", "--text"]],
     ["write", ["lanes", "create", "--name", "fix-login"], ["lanes", "create", "--name", "fix-login"]],
     ["write", ["action", "run", "lane.create", "--arg", "name=x"], ["action", "run", "lane.create", "--arg", "name=x"]],
   ] as const)("%s access runs %j", (scope, input, expected) => {

@@ -7,6 +7,10 @@ import {
   AGENT37_DEFAULT_TEMPLATE,
   agent37StillStartingMessage,
   describeAgent37TemplateStatus,
+  AGENT37_MADE_BY_CHAT_METADATA,
+  agent37CapReachedMessage,
+  type Agent37Budget,
+  type Agent37ShapeId,
   isAgent37InstanceId,
   type Agent37CreateMachineArgs,
   type Agent37CreateProgress,
@@ -48,6 +52,15 @@ import { createAgent37Client } from "./agent37Client";
 import { createAgent37Machines } from "./agent37Machines";
 import { claimAgent37ReadyMachine, releaseAgent37ReadyMachine } from "./agent37ReadyClaim";
 import { createAgent37ReadyKeeper } from "./agent37ReadyMachines";
+import { setAgent37WakeForUse } from "./agent37WakeHook";
+import { startAgent37MoneyWatch } from "./agent37MoneyWatch";
+import { setAgent37DesktopActions } from "./agent37DesktopActions";
+import { copyAgent37Machine, moveAgent37Machine, type Agent37CopyDeps } from "./agent37MachineCopy";
+import {
+  AGENT37_BUDGET_VAULT_KEY,
+  createAgent37BudgetStore,
+  wakeAgent37MachineForUse,
+} from "./agent37Sleep";
 import { AGENT37_READY_VAULT_KEY, createAgent37ReadySettingsStore } from "./agent37ReadySettings";
 import { normalizeGitRemoteIdentity } from "../../../shared/crossMachineHandoff";
 import {
@@ -224,7 +237,7 @@ export function registerAgent37Ipc(args: {
   /** One coarse product fact per finished create (analytics; never the box or the error). */
   recordMachineCreate?: (outcome: "completed" | "partial" | "cancelled" | "failed") => void;
   /** One coarse product fact per box action that worked (analytics; never the box). */
-  recordMachineAction?: (action: Agent37MachineActionKind) => void;
+  recordMachineAction?: (action: Agent37MachineActionKind | "copy" | "move") => void;
   logger: Logger;
 }): void {
   const { logger } = args;
@@ -304,6 +317,12 @@ export function registerAgent37Ipc(args: {
     logger,
   };
 
+  const budget = createAgent37BudgetStore({
+    vault: () => (credentials.signedIn() ? agent37VaultFromBridge(args.vaultBridge, AGENT37_BUDGET_VAULT_KEY) : null),
+    machineStore: getMachineStore,
+    logger,
+  });
+
   const savedClient = async () => {
     const saved = await readAgent37Key(credentials);
     return saved ? createAgent37Client({ apiKey: saved.key }) : null;
@@ -327,6 +346,8 @@ export function registerAgent37Ipc(args: {
       const template = builder.status();
       return template.template === templateName() && template.state === "ready" ? template.adeVersion : null;
     },
+    // Declared below; first called after the startup delay.
+    spending: () => machines.spending(),
     onStatus: (status) => sendToAllWindows(IPC.agent37ReadyStatusChanged, status),
     onPrepared: (outcome) => args.recordReady?.(outcome),
     logger,
@@ -340,7 +361,29 @@ export function registerAgent37Ipc(args: {
   const machines = createAgent37Machines({
     client: savedClient,
     removeAccountMachine: args.removeAccountMachine,
+    readBudget: () => budget.read(),
     logger,
+  });
+  startAgent37MoneyWatch({ client: savedClient, machines, logger, firstPassDelayMs: STARTUP_CHECK_DELAY_MS + 30_000 });
+  // Remote connections wake a sleeping box the person is about to use. Only a
+  // machine the machine list showed as an Agent 37 box is looked up, so a
+  // Connect to a laptop never waits on Agent 37.
+  setAgent37WakeForUse(async (target) => {
+    const machineKey = target.pairedMachine?.machineKey?.trim();
+    if (!machineKey || !machines.isKnownBox(machineKey)) return false;
+    const client = await savedClient().catch(() => null);
+    if (!client) return false;
+    const result = await wakeAgent37MachineForUse(client, { machineKey, hostname: target.hostname }, {
+      spending: () => machines.spending(),
+      logger,
+    }).catch((error: unknown) => {
+      logger.warn("agent37.wake_for_use_failed", { error: error instanceof Error ? error.message : String(error) });
+      return null;
+    });
+    if (!result) return false;
+    if (result.state === "refused") throw new Error(result.message);
+    if (result.state === "woken") sendToAllWindows(IPC.agent37StatusChanged);
+    return result.state === "woken";
   });
 
   ipcMain.handle(IPC.agent37GetStatus, async (event): Promise<Agent37Status | null> => {
@@ -404,6 +447,34 @@ export function registerAgent37Ipc(args: {
     return result;
   });
 
+  ipcMain.handle(IPC.agent37GetBudget, async (event): Promise<Agent37Budget | null> => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.agent37GetBudget)) return null;
+    return await budget.read();
+  });
+
+  ipcMain.handle(IPC.agent37SetBudget, async (event, arg: { budget?: Agent37Budget }): Promise<Agent37Budget | null> => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.agent37SetBudget)) return null;
+    const raw = arg?.budget?.monthlyCapUsd;
+    const saved = await budget.write({ monthlyCapUsd: typeof raw === "number" ? raw : null });
+    logger.info("agent37.budget_set", { capped: saved.monthlyCapUsd != null });
+    sendToAllWindows(IPC.agent37StatusChanged);
+    return saved;
+  });
+
+  ipcMain.handle(IPC.agent37WakeMachine, async (event, arg: { machineKey?: unknown; hostname?: unknown }) => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.agent37WakeMachine)) return null;
+    const machineKey = typeof arg?.machineKey === "string" ? arg.machineKey.trim() : "";
+    if (!machineKey) return { state: "not_agent37" as const };
+    const client = await savedClient();
+    if (!client) return { state: "not_agent37" as const };
+    const result = await wakeAgent37MachineForUse(client, {
+      machineKey,
+      hostname: typeof arg?.hostname === "string" ? arg.hostname : null,
+    }, { spending: () => machines.spending(), logger });
+    if (result.state === "woken") sendToAllWindows(IPC.agent37StatusChanged);
+    return result;
+  });
+
   /** A project's identity from the renderer, normalized like every stored one. */
   const requireReadyIdentity = (value: unknown): string => {
     const identity = normalizeGitRemoteIdentity(typeof value === "string" ? value : null);
@@ -440,7 +511,7 @@ export function registerAgent37Ipc(args: {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.agent37ReadyClaim)) return null;
     const identity = normalizeGitRemoteIdentity(typeof arg?.originUrl === "string" ? arg.originUrl : null);
     if (!identity) throw new Error("This project has no git origin, so it has no ready machine.");
-    const claim = await claimAgent37ReadyMachine(await requireAgent37Client(credentials), identity, { logger });
+    const claim = await claimAgent37ReadyMachine(await requireAgent37Client(credentials), identity, { logger, spending: () => machines.spending() });
     args.recordReady?.("ready_picker");
     // The pool is one short: make the next one.
     void readyKeeper.refresh();
@@ -459,6 +530,119 @@ export function registerAgent37Ipc(args: {
   });
 
   const creates = new Map<string, AbortController>();
+
+  const copyDeps: Agent37CopyDeps = {
+    ...machineCreatorDeps,
+    spending: () => machines.spending(),
+    removeAccountMachine: args.removeAccountMachine,
+  };
+  // The CLI and agents make, copy and move machines through this app (the
+  // new machine signs in through its approval window), over the desktop bridge.
+  setAgent37DesktopActions({
+    create: async (machine) => {
+      const month = await machines.spending().catch(() => null);
+      if (month?.capReached) throw new Error(agent37CapReachedMessage(month));
+      const { madeByChat, ...shape } = machine;
+      const result = await createAgent37Machine(machineCreatorDeps, randomUUID(), shape, () => undefined, {
+        ...(madeByChat ? { metadata: { [AGENT37_MADE_BY_CHAT_METADATA]: madeByChat } } : {}),
+      });
+      args.recordMachineCreate?.(result.joined ? "completed" : "partial");
+      sendToAllWindows(IPC.agent37StatusChanged);
+      return result;
+    },
+    copy: async (input) => {
+      const result = await copyAgent37Machine(copyDeps, input, () => undefined);
+      sendToAllWindows(IPC.agent37StatusChanged);
+      return result;
+    },
+    move: async (input) => {
+      const result = await moveAgent37Machine(copyDeps, input, () => undefined);
+      sendToAllWindows(IPC.agent37StatusChanged);
+      return result;
+    },
+    readyRefresh: () => readyKeeper.refresh(),
+  });
+
+  /**
+   * A copy or move from the machine card: answers at once and reports like a
+   * create (`agent37CreateProgress`, ending in done or failed), since a fork
+   * or a move runs for minutes. Stopped when the window that asked goes away.
+   */
+  const startLongAction = (
+    event: Electron.IpcMainInvokeEvent,
+    requestId: string,
+    run: (signal: AbortSignal, send: (progress: Agent37CreateProgress) => void) => Promise<{ message: string; result?: Agent37CreateProgress["result"] }>,
+  ) => {
+    if (creates.has(requestId)) return { started: true };
+    const sender = event.sender;
+    const controller = new AbortController();
+    creates.set(requestId, controller);
+    const onSenderGone = () => controller.abort();
+    sender.once("destroyed", onSenderGone);
+    const send = (progress: Agent37CreateProgress) => {
+      if (sender.isDestroyed()) return;
+      try {
+        sender.send(IPC.agent37CreateProgress, { ...progress, requestId });
+      } catch {
+        // The window closed mid-action.
+      }
+    };
+    void run(controller.signal, send).then(
+      (done) => send({ requestId, stage: "done", message: done.message, ...(done.result ? { result: done.result } : {}) }),
+      (error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        logger.warn("agent37.long_action_failed", { error: message });
+        send({ requestId, stage: "failed", message, error: message });
+      },
+    ).finally(() => {
+      creates.delete(requestId);
+      if (!sender.isDestroyed()) sender.removeListener("destroyed", onSenderGone);
+      sendToAllWindows(IPC.agent37StatusChanged);
+    });
+    return { started: true };
+  };
+
+  ipcMain.handle(IPC.agent37CopyMachine, async (event, arg: { requestId?: unknown; instanceId?: unknown; name?: unknown; shape?: unknown }) => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.agent37CopyMachine)) return { started: false };
+    const instanceId = typeof arg?.instanceId === "string" ? arg.instanceId.trim() : "";
+    if (!isAgent37InstanceId(instanceId)) throw new Error("ADE doesn't know that box.");
+    const requestId = typeof arg?.requestId === "string" && arg.requestId ? arg.requestId : randomUUID();
+    return startLongAction(event, requestId, async (signal, send) => {
+      const result = await copyAgent37Machine(copyDeps, {
+        instanceId,
+        requestId,
+        name: typeof arg?.name === "string" ? arg.name : null,
+        shape: typeof arg?.shape === "string" ? arg.shape as Agent37ShapeId : null,
+      }, send, { signal });
+      args.recordMachineAction?.("copy");
+      return { message: `${result.name} is ready: a copy with the same files.`, result };
+    });
+  });
+
+  ipcMain.handle(IPC.agent37MoveMachine, async (event, arg: { requestId?: unknown; instanceId?: unknown; machineKey?: unknown; to?: unknown; shape?: unknown }) => {
+    if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.agent37MoveMachine)) return { started: false };
+    const instanceId = typeof arg?.instanceId === "string" ? arg.instanceId.trim() : "";
+    if (!isAgent37InstanceId(instanceId)) throw new Error("ADE doesn't know that box.");
+    if (arg?.to !== "vm" && arg?.to !== "box") throw new Error("Move it to a box or a VM.");
+    const to = arg.to;
+    const requestId = typeof arg?.requestId === "string" && arg.requestId ? arg.requestId : randomUUID();
+    return startLongAction(event, requestId, async (signal, send) => {
+      const result = await moveAgent37Machine(copyDeps, {
+        instanceId,
+        requestId,
+        to,
+        machineKey: typeof arg?.machineKey === "string" ? arg.machineKey : null,
+        shape: typeof arg?.shape === "string" ? arg.shape as Agent37ShapeId : null,
+      }, send, { signal });
+      args.recordMachineAction?.("move");
+      return {
+        message: result.sourceDeleted
+          ? `${result.name} is now a ${to === "vm" ? "VM" : "box"}, with all its files.`
+          : `${result.name} has all its files on the new ${to === "vm" ? "VM" : "box"}. ADE couldn't delete the old one; delete it from its card.`,
+        result,
+      };
+    });
+  });
 
   ipcMain.handle(IPC.agent37CancelCreate, async (event, arg: { requestId?: unknown }): Promise<{ cancelled: boolean }> => {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.agent37CancelCreate)) return { cancelled: false };

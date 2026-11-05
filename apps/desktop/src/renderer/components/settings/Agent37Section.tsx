@@ -18,6 +18,7 @@ import {
 import { Banner } from "../ui/notice";
 import { ipcErrorMessage } from "../../lib/format";
 import { Agent37ReadyMachinesCard } from "./Agent37ReadyMachinesCard";
+import { Agent37SpendingCard } from "./Agent37SpendingCard";
 import { Agent37Mark, AGENT37_NAME } from "../remoteTargets/agent37Brand";
 import { agent37RetryLabel, useAgent37Template } from "../remoteTargets/useAgent37Template";
 import { openConnectionsPanel } from "../../lib/connectionsPanel";
@@ -241,6 +242,7 @@ export function Agent37Section() {
           <>
             {!status?.error ? <Agent37TemplateCard status={template.status} loadError={template.loadError} onRetry={template.retry} /> : null}
             {!status?.error ? <Agent37ReadyMachinesCard status={status} /> : null}
+            {!status?.error ? <Agent37SpendingCard /> : null}
           </>
         ) : (
           <IntegrationCard

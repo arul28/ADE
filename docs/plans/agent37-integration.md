@@ -254,10 +254,19 @@ does nothing, so a renamed laptop is never mistaken for a copy.
   [docs/features/remote-runtime/agent37.md](../features/remote-runtime/agent37.md).
   A box finds its account row by the `ade_machine_key` metadata the creator
   writes at join, else by hostname (= instance id).
-- **A3 — ADE-owned sleep.** Idle detection, wake on use, caps, savings.
-- **A4 — fork and move.** Warm box per lane; box ↔ VM move.
-- **A5 — agent primitives.** `ade` verbs, runtime actions, skill, approval
-  cards for cost-changing actions.
+- **A3 — ADE-owned sleep.** Built (2026-11-05, `ade/agent37-everything-left`):
+  Agent 37's auto-sleep does the sleeping, and the box's brain keeps it awake
+  while work runs by requesting its own wake URL; wake on use from the
+  desktop, `--machine` calls and the CLI; the monthly cap; saved-by-sleeping;
+  low-wallet notifications. §4.3's "auto-sleep stays off" is reversed: see
+  "Sleep and spending" in docs/features/remote-runtime/agent37.md for why.
+- **A4 — fork and move.** Built: Copy (fork + new-machine sign-in) and Move
+  (box ↔ VM by streaming the home folder). Fork refill of the ready pool was
+  measured slower than a fresh prepare (170 s vs 101 s on supabase-stack), so
+  the pool stays fresh.
+- **A5 — agent primitives.** Built: `ade agent37 …` verbs, the `agent37`
+  action domain, the `ade-agent37` skill, approval cards with an unattended
+  answer.
 - **A6 — Android on VM lanes** with the Android emulator lane (PR #2045). Its
   needs from a VM, as that lane stated them (2026-11-04):
   1. `/dev/kvm` usable by the brain's user (group `kvm`); without it ADE
@@ -277,6 +286,12 @@ does nothing, so a renamed laptop is never mistaken for a copy.
   5. 4 vCPU / 8 GB runs one emulator; 4/16 if Gradle builds run there too.
   When this lane merges, that lane tests `ade android … --machine <vm>` end to
   end on one Agent37 VM and deletes the VM afterwards.
+
+  Built (2026-11-05): the template carries the SDK at `/opt/android-sdk` with
+  the API 34 image, the entrypoint sets `ANDROID_HOME`, and the root step
+  opens `/dev/kvm` to the brain's group. On a 4/8 VM, `ade android status`
+  showed KVM usable and every tool present, and `device-create` made and
+  booted a Pixel-sized Android 14 phone in 35 s (screenshot and tap worked).
 
 ## 7. Founder asks
 

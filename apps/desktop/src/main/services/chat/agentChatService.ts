@@ -19999,6 +19999,41 @@ export function createAgentChatService(args: {
    * applies — a person, the CTO, or an unparented chat from an agent that has
    * no chat of its own. A parent or caller chat ADE cannot load caps at `ask`.
    */
+  /**
+   * A chat's permission level as this brain knows it, and whether it knows the
+   * chat at all. An unknown chat reads as `ask`, the safe level.
+   */
+  const readChatPermissionLevel = (
+    sessionId: string,
+    trackedCliLevel: (sessionId: string) => PermissionLevel | null,
+  ): { level: PermissionLevel; known: boolean } => {
+    try {
+      return { level: sessionPermissionLevel(ensureManagedSession(sessionId).session, "ask"), known: true };
+    } catch {
+      // A chat in another project, the personal scope, or on another
+      // machine: the brain recorded its level when it asked for this child.
+      const recorded = externalChatContext(sessionId)?.permissionLevel ?? trackedCliLevel(sessionId);
+      return recorded ? { level: recorded, known: true } : { level: "ask", known: false };
+    }
+  };
+
+  /**
+   * Whether the agent that started a chat named a calling chat this brain
+   * can't find (it lives on another ADE on this computer, say a dev brain
+   * beside the installed one). Its level then reads as `ask`, and the notice
+   * says why instead of blaming the agent's own access.
+   */
+  const callerChatUnknown = (actor: AgentChatRuntimeActor | null | undefined): boolean => {
+    const callerId = actor?.kind === "agent" ? actor.chatSessionId?.trim() : null;
+    if (!callerId) return false;
+    try {
+      ensureManagedSession(callerId);
+      return false;
+    } catch {
+      return externalChatContext(callerId)?.permissionLevel == null && sessionService.get(callerId) == null;
+    }
+  };
+
   const resolvePermissionCeiling = (args: {
     parentSessionId?: string | null;
     actor?: AgentChatRuntimeActor | null;
@@ -20022,17 +20057,7 @@ export function createAgentChatService(args: {
       if (!resume?.launch) return null;
       return sessionPermissionLevel({ provider: resume.provider, ...resume.launch }, "ask");
     };
-    const levelOf = (sessionId: string): PermissionLevel => {
-      try {
-        return sessionPermissionLevel(ensureManagedSession(sessionId).session, "ask");
-      } catch {
-        // A chat in another project, the personal scope, or on another
-        // machine: the brain recorded its level when it asked for this child.
-        return externalChatContext(sessionId)?.permissionLevel
-          ?? trackedCliLevel(sessionId)
-          ?? "ask";
-      }
-    };
+    const levelOf = (sessionId: string): PermissionLevel => readChatPermissionLevel(sessionId, trackedCliLevel).level;
     const parentId = args.parentSessionId?.trim();
     const callerId = args.actor?.kind === "agent" ? args.actor.chatSessionId?.trim() : null;
     return lowerPermissionCeiling(parentId ? levelOf(parentId) : null, callerId ? levelOf(callerId) : null);
@@ -51165,12 +51190,16 @@ export function createAgentChatService(args: {
       // name whichever one set it.
       const cappedByParent = normalizedParentSessionId != null
         && resolvePermissionCeiling({ parentSessionId: normalizedParentSessionId }) === parentPermissionCeiling.level;
+      const unknownCaller = !cappedByParent && callerChatUnknown(runtimeActor);
+      const label = permissionLevelLabel(parentPermissionCeiling.level);
       emitChatEvent(managed, {
         type: "system_notice",
         noticeKind: "info",
         message: cappedByParent
-          ? `Permissions capped at "${permissionLevelLabel(parentPermissionCeiling.level)}" to match the chat that started this one.`
-          : `Permissions capped at "${permissionLevelLabel(parentPermissionCeiling.level)}": an agent can't start a chat with more access than its own.`,
+          ? `Permissions capped at "${label}" to match the chat that started this one.`
+          : unknownCaller
+            ? `Permissions capped at "${label}": the chat that ran this command isn't on this ADE, so ADE can't tell how much access it has. Start the chat from the desktop, or from a chat on the same ADE as the command.`
+            : `Permissions capped at "${label}": an agent can't start a chat with more access than its own.`,
       });
       logger.info("agent_chat.parent_permission_ceiling", {
         sessionId,
@@ -77657,6 +77686,20 @@ export function createAgentChatService(args: {
         status: USER_NOTIFIED_NOTICE_STATUS,
         message: `Notified you: ${args.title.trim()}`,
         ...(body ? { detail: body } : {}),
+      });
+    },
+    /**
+     * A plain info line in a chat's transcript, for something ADE did on the
+     * chat's behalf (an approval it answered itself in a full-auto chat).
+     */
+    recordSystemNotice(args: { sessionId: string; message: string; detail?: string | null }): void {
+      const managed = ensureManagedSession(args.sessionId);
+      const detail = args.detail?.trim() || null;
+      emitChatEvent(managed, {
+        type: "system_notice",
+        noticeKind: "info",
+        message: args.message.trim(),
+        ...(detail ? { detail } : {}),
       });
     },
     getSessionIdentityKey,

@@ -96,7 +96,7 @@ Agent-focused command-line interface for ADE.
                                                     Manage local subscription sign-ins
     $ ade secrets list | get | set | request | delete  Manage encrypted ADE project secrets (account or device)
     $ ade integrations status | connect <provider>    See and connect GitHub, Linear, Jira and Agent 37
-    $ ade mcp servers | servers add <name>          Read the MCP servers your agents get; ask to add one
+    $ ade mcp servers | servers add|remove <name>   Read the MCP servers your agents get; ask to add or remove one
     $ ade settings find <words>                     Where an ADE setting or page is, as a link the chat shows as a chip
     $ ade update status | check | install | dismiss Read auto-update state and drive install
     $ ade tools status | ensure | gc                Inspect and populate the pinned agent-CLI cache
@@ -262,7 +262,7 @@ Agent-focused command-line interface for ADE.
                                                     Manage local subscription sign-ins
     $ ade secrets list | get | set | request | delete  Manage encrypted ADE project secrets (account or device)
     $ ade integrations status | connect <provider>    See and connect GitHub, Linear, Jira and Agent 37
-    $ ade mcp servers | servers add <name>          Read the MCP servers your agents get; ask to add one
+    $ ade mcp servers | servers add|remove <name>   Read the MCP servers your agents get; ask to add or remove one
     $ ade settings find <words>                     Where an ADE setting or page is, as a link the chat shows as a chip
     $ ade update status | check | install | dismiss Read auto-update state and drive install
     $ ade tools status | ensure | gc                Inspect and populate the pinned agent-CLI cache
@@ -768,6 +768,8 @@ Work chats
                                                     (--session <subagent>), never one the user raised.
                                                     Clear it when you asked and then kept working anyway, so the
                                                     row stops saying "Needs you" about a question nobody is on.
+    $ ade chat deleted list --text                  Recently deleted chats this machine can still reopen (--query <text>)
+    $ ade chat deleted reopen <id> [--lane <lane>]  Reopen one with its history; a chat whose lane is gone needs --lane
     $ ade chat inbox --text                         Every chat in the project that waits on you, each with its question
                                                     or approval inline and the exact 'chat respond' that answers it
                                                     (--all-machines: every machine on your account)
@@ -1067,7 +1069,7 @@ Agent-focused command-line interface for ADE.
                                                     Manage local subscription sign-ins
     $ ade secrets list | get | set | request | delete  Manage encrypted ADE project secrets (account or device)
     $ ade integrations status | connect <provider>    See and connect GitHub, Linear, Jira and Agent 37
-    $ ade mcp servers | servers add <name>          Read the MCP servers your agents get; ask to add one
+    $ ade mcp servers | servers add|remove <name>   Read the MCP servers your agents get; ask to add or remove one
     $ ade settings find <words>                     Where an ADE setting or page is, as a link the chat shows as a chip
     $ ade update status | check | install | dismiss Read auto-update state and drive install
     $ ade tools status | ensure | gc                Inspect and populate the pinned agent-CLI cache
@@ -1337,7 +1339,7 @@ Agent-focused command-line interface for ADE.
                                                     Manage local subscription sign-ins
     $ ade secrets list | get | set | request | delete  Manage encrypted ADE project secrets (account or device)
     $ ade integrations status | connect <provider>    See and connect GitHub, Linear, Jira and Agent 37
-    $ ade mcp servers | servers add <name>          Read the MCP servers your agents get; ask to add one
+    $ ade mcp servers | servers add|remove <name>   Read the MCP servers your agents get; ask to add or remove one
     $ ade settings find <words>                     Where an ADE setting or page is, as a link the chat shows as a chip
     $ ade update status | check | install | dismiss Read auto-update state and drive install
     $ ade tools status | ensure | gc                Inspect and populate the pinned agent-CLI cache
@@ -2193,7 +2195,7 @@ Agent-focused command-line interface for ADE.
                                                     Manage local subscription sign-ins
     $ ade secrets list | get | set | request | delete  Manage encrypted ADE project secrets (account or device)
     $ ade integrations status | connect <provider>    See and connect GitHub, Linear, Jira and Agent 37
-    $ ade mcp servers | servers add <name>          Read the MCP servers your agents get; ask to add one
+    $ ade mcp servers | servers add|remove <name>   Read the MCP servers your agents get; ask to add or remove one
     $ ade settings find <words>                     Where an ADE setting or page is, as a link the chat shows as a chip
     $ ade update status | check | install | dismiss Read auto-update state and drive install
     $ ade tools status | ensure | gc                Inspect and populate the pinned agent-CLI cache

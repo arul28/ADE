@@ -136,7 +136,12 @@ export function upsertCliProxyApiUpstream(
     const section = SECTION_FOR_PROTOCOL[upstream.protocol];
     const entries = Array.isArray(config[section]) ? [...(config[section] as unknown[])] : [];
     const index = entries.findIndex((entry) => entryId(entry) === upstream.id);
-    const next = renderEntry(upstream, index >= 0 ? existingModelNames(entries[index]) : []);
+    // A source whose protocol changed keeps the models earlier launches added
+    // under the old one, so a running chat on one of them still resolves.
+    const moved = index >= 0 ? [] : CLI_PROXY_API_UPSTREAM_SECTIONS
+      .filter((other) => other !== section && Array.isArray(config[other]))
+      .flatMap((other) => (config[other] as unknown[]).filter((entry) => entryId(entry) === upstream.id).flatMap(existingModelNames));
+    const next = renderEntry(upstream, index >= 0 ? existingModelNames(entries[index]) : moved);
     if (index >= 0 && JSON.stringify(entries[index]) === JSON.stringify(next)) return true;
     if (index >= 0) entries[index] = next;
     else entries.push(next);

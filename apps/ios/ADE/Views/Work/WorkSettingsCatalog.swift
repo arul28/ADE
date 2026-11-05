@@ -190,6 +190,7 @@ enum WorkSettingsCatalog {
     "integrations.jira": Setting(path: "App › Integrations › Jira", locked: true),
     "integrations.agent37": Setting(path: "App › Integrations › Agent 37", locked: true),
     "integrations.agent37-ready": Setting(path: "App › Integrations › Agent 37 ready machine", locked: true),
+    "integrations.agent37-spending": Setting(path: "App › Integrations › Agent 37 spending cap", locked: true),
     "integrations.jira-projects": Setting(path: "App › Integrations › Jira projects for this project", locked: false),
     "integrations.jira-top-bar": Setting(path: "App › Integrations › Show Jira in the top bar", locked: false),
     "integrations.linear-top-bar": Setting(path: "App › Integrations › Show Linear in the top bar", locked: false),

@@ -1,7 +1,9 @@
 import { useCallback, useState, type ReactNode } from "react";
-import { ArrowsOutSimple, CloudArrowUp, Moon, Sun, Trash, UserMinus } from "@phosphor-icons/react";
+import { ArrowsOutSimple, ArrowsLeftRight, CloudArrowUp, Copy, Moon, MoonStars, Sun, Trash, UserMinus } from "@phosphor-icons/react";
 import {
+  AGENT37_DEFAULT_SLEEP_AFTER_MINUTES,
   AGENT37_SHAPES,
+  AGENT37_SLEEP_AFTER_CHOICES,
   agent37RunningHourlyUsd,
   formatAgent37HourlyPrice,
   type Agent37Machine,
@@ -20,7 +22,7 @@ import { describeAgent37Rate, type Agent37BoxWork } from "./agent37MachineModel"
 import type { MachineAction } from "./MachineActionsMenu";
 
 /** What one box is doing in the list right now, shown on its card. */
-export type Agent37BoxPending = Agent37MachineActionKind | "remove";
+export type Agent37BoxPending = Agent37MachineActionKind | "remove" | "copy" | "move";
 
 export type Agent37BoxActionError = {
   message: string;
@@ -45,6 +47,9 @@ const PENDING_LABELS: Record<Agent37BoxPending, string> = {
   backup: "Backing up. On a big disk this takes a few minutes…",
   delete: "Deleting the box…",
   remove: "Removing it from ADE…",
+  set_sleep: "Changing how it sleeps…",
+  copy: "Copying it into a new machine. A big disk takes a few minutes…",
+  move: "Moving it: a new machine, then every file copied over…",
 };
 
 export function agent37PendingLabel(pending: Agent37BoxPending): string {
@@ -77,6 +82,7 @@ export function useAgent37BoxActions(args: {
   const [pendingById, setPendingById] = useState<Record<string, Agent37BoxPending>>({});
   const [errorById, setErrorById] = useState<Record<string, Agent37BoxActionError>>({});
   const [resizing, setResizing] = useState<Agent37BoxContext | null>(null);
+  const [sleepSetting, setSleepSetting] = useState<Agent37BoxContext | null>(null);
 
   const setPending = useCallback((instanceId: string, pending: Agent37BoxPending | null) => {
     setPendingById((current) => {
@@ -99,7 +105,7 @@ export function useAgent37BoxActions(args: {
   const run = useCallback(async (
     ctx: Agent37BoxContext,
     action: Agent37MachineActionKind,
-    extra: { shape?: Agent37ShapeId } = {},
+    extra: { shape?: Agent37ShapeId; sleepAfterMinutes?: number | null } = {},
   ): Promise<Agent37MachineActionResult | null> => {
     const machineAction = window.ade?.agent37?.machineAction;
     if (!machineAction) return null;
@@ -214,6 +220,73 @@ export function useAgent37BoxActions(args: {
     }
   }, [forgetTarget, onAccountChanged, refresh, setPending]);
 
+  /**
+   * Copy and Move run for minutes in the main process and report like a
+   * create; the card shows the step meanwhile and a toast says how it ended.
+   */
+  const runLong = useCallback(async (ctx: Agent37BoxContext, kind: "copy" | "move", start: (requestId: string) => Promise<{ started: boolean }>) => {
+    const bridge = window.ade?.agent37;
+    if (!bridge?.onCreateProgress) return;
+    const requestId = `${kind}-${ctx.box.instanceId}-${Date.now()}`;
+    const { instanceId } = ctx.box;
+    setPending(instanceId, kind);
+    setError(instanceId, null);
+    const off = bridge.onCreateProgress((progress) => {
+      if (progress.requestId !== requestId) return;
+      if (progress.stage === "done") {
+        off();
+        setPending(instanceId, null);
+        showToast({ tone: "success", title: kind === "copy" ? `Copied ${ctx.name}` : `Moved ${ctx.name}`, message: progress.message, replayMask: { title: true } });
+        refresh();
+        onAccountChanged?.();
+      } else if (progress.stage === "failed") {
+        off();
+        setPending(instanceId, null);
+        setError(instanceId, { message: progress.error ?? progress.message, blocker: null });
+        refresh();
+      }
+    });
+    try {
+      const started = await start(requestId);
+      if (!started.started) throw new Error("ADE couldn't start that.");
+    } catch (error) {
+      off();
+      setPending(instanceId, null);
+      setError(instanceId, { message: extractError(error), blocker: null });
+    }
+  }, [onAccountChanged, refresh, setError, setPending]);
+
+  const copyBox = useCallback(async (ctx: Agent37BoxContext) => {
+    const rate = describeAgent37Rate({ ...ctx.box, state: "running" });
+    const ok = await confirmDialog({
+      title: `Copy ${ctx.name}?`,
+      message: `ADE makes a new machine with the same files (repos, lanes, installed dependencies) and signs it in as a new computer${rate ? `. It bills ${rate} while awake` : ""}. A big disk takes a few minutes.`,
+      confirmLabel: "Copy",
+    });
+    if (!ok) return;
+    await runLong(ctx, "copy", (requestId) => window.ade.agent37!.copyMachine!({ requestId, instanceId: ctx.box.instanceId, name: `${ctx.name} copy` }));
+  }, [runLong]);
+
+  const moveBox = useCallback(async (ctx: Agent37BoxContext) => {
+    const to = ctx.box.type === "vm" ? "box" : "vm";
+    const ok = await confirmDialog({
+      title: `Move ${ctx.name} to a ${to === "vm" ? "VM" : "box"}?`,
+      message: to === "vm"
+        ? `ADE makes a VM (Docker and Android, about 2.5 times the price), copies every repo, lane and chat on ${ctx.name} into it, then deletes ${ctx.name}. Running processes stop.`
+        : `ADE makes a box, copies every repo, lane and chat on ${ctx.name} into it, then deletes ${ctx.name}. Docker images and volumes stay behind, and running processes stop.`,
+      confirmLabel: "Move",
+      destructive: true,
+      size: "md",
+    });
+    if (!ok) return;
+    await runLong(ctx, "move", (requestId) => window.ade.agent37!.moveMachine!({
+      requestId,
+      instanceId: ctx.box.instanceId,
+      machineKey: ctx.accountMachine?.machineKey ?? null,
+      to,
+    }));
+  }, [runLong]);
+
   /** The ⋯ menu items for a box, after the row's own (Rename, Test…). */
   const actionsFor = useCallback((ctx: Agent37BoxContext, onAccountError: (message: string) => void): MachineAction[] => {
     const { box } = ctx;
@@ -234,6 +307,19 @@ export function useAgent37BoxActions(args: {
     }
     if (box.state === "running" && box.resources) {
       items.push({ key: "a37-resize", label: "Resize…", icon: <ArrowsOutSimple size={14} />, disabled: busy, onSelect: () => setResizing(ctx) });
+    }
+    if (box.madeByAde && box.machineKey && (box.state === "running" || box.state === "asleep" || box.state === "stopped")) {
+      items.push({ key: "a37-copy", label: "Copy…", icon: <Copy size={14} />, disabled: busy, onSelect: () => void copyBox(ctx) });
+      items.push({
+        key: "a37-move",
+        label: box.type === "vm" ? "Move to a box…" : "Move to a VM…",
+        icon: <ArrowsLeftRight size={14} />,
+        disabled: busy,
+        onSelect: () => void moveBox(ctx),
+      });
+    }
+    if (box.madeByAde && (box.state === "running" || box.state === "asleep")) {
+      items.push({ key: "a37-sleep-after", label: "Sleep when idle…", icon: <MoonStars size={14} />, disabled: busy, onSelect: () => setSleepSetting(ctx) });
     }
     if (box.state === "running" || box.state === "asleep" || box.state === "stopped") {
       items.push({ key: "a37-backup", label: "Back up now", icon: <CloudArrowUp size={14} />, disabled: busy, onSelect: () => void run(ctx, "backup") });
@@ -260,7 +346,7 @@ export function useAgent37BoxActions(args: {
       onSelect: () => void deleteBox(ctx),
     });
     return items;
-  }, [deleteBox, pendingById, removeFromAde, run, sleep]);
+  }, [copyBox, deleteBox, moveBox, pendingById, removeFromAde, run, sleep]);
 
   const dialog: ReactNode = resizing ? (
     <Agent37ResizeDialog
@@ -271,6 +357,16 @@ export function useAgent37BoxActions(args: {
         const ctx = resizing;
         setResizing(null);
         void run(ctx, "resize", { shape });
+      }}
+    />
+  ) : sleepSetting ? (
+    <Agent37SleepDialog
+      ctx={sleepSetting}
+      onCancel={() => setSleepSetting(null)}
+      onSave={(minutes) => {
+        const ctx = sleepSetting;
+        setSleepSetting(null);
+        void run(ctx, "set_sleep", { sleepAfterMinutes: minutes });
       }}
     />
   ) : null;
@@ -298,7 +394,72 @@ function toastTitle(action: Agent37MachineActionKind, name: string): string {
       return `Backed up ${name}`;
     case "delete":
       return `Deleted ${name}`;
+    case "set_sleep":
+      return `${name}'s sleep changed`;
   }
+}
+
+/**
+ * How long a box waits with nothing running before Agent 37 puts it to sleep.
+ * ADE on the box keeps it awake while a chat, a command or a setup runs, so a
+ * short wait costs nothing in interruptions; opening a lane or sending to a
+ * chat there wakes it in about a second.
+ */
+function Agent37SleepDialog({
+  ctx,
+  onCancel,
+  onSave,
+}: {
+  ctx: Agent37BoxContext;
+  onCancel: () => void;
+  onSave: (minutes: number | null) => void;
+}) {
+  const { box, name } = ctx;
+  const current = box.sleep.state === "auto" ? box.sleep.afterMinutes : box.sleep.state === "never" ? null : undefined;
+  const [picked, setPicked] = useState<number | null | undefined>(current ?? AGENT37_DEFAULT_SLEEP_AFTER_MINUTES);
+  const choices: Array<{ value: number | null; label: string }> = [
+    ...AGENT37_SLEEP_AFTER_CHOICES.map((minutes) => ({ value: minutes as number | null, label: minutes < 60 ? `${minutes} min` : "1 hour" })),
+    { value: null, label: "Never" },
+  ];
+  const hourly = box.runningHourlyUsd != null ? formatAgent37HourlyPrice(box.runningHourlyUsd) : null;
+  return (
+    <Dialog
+      open
+      onOpenChange={(open) => { if (!open) onCancel(); }}
+      title={`Sleep ${name} when idle`}
+      description="It sleeps once nothing has run on it for this long. A running chat, command or setup keeps it awake, and opening one of its lanes wakes it in about a second."
+      size="sm"
+      actions={[
+        { label: "Save", onClick: () => { if (picked !== undefined) onSave(picked); }, disabled: picked === undefined || picked === current, autoFocus: true },
+        { label: "Cancel", onClick: onCancel, variant: "secondary" },
+      ]}
+    >
+      <div style={{ display: "grid", gap: 10 }}>
+        <div role="radiogroup" aria-label="Sleep after" className="ade-cx-a37-shapes">
+          {choices.map((choice) => (
+            <button
+              key={choice.label}
+              type="button"
+              role="radio"
+              aria-checked={choice.value === picked}
+              className="ade-cx-a37-shape"
+              data-current={choice.value === current ? "true" : undefined}
+              onClick={() => setPicked(choice.value)}
+            >
+              <span className="ade-cx-a37-shape-size kit-num">{choice.label}</span>
+              {choice.value === current ? <span className="kit-tag">Now</span> : null}
+            </button>
+          ))}
+        </div>
+        {picked === null && hourly ? (
+          <p className="ade-cx-a37-note">It bills {hourly} around the clock until you sleep it.</p>
+        ) : null}
+        {box.sleep.state === "pending" ? (
+          <p className="ade-cx-a37-note">ADE wakes it for a moment to set this up.</p>
+        ) : null}
+      </div>
+    </Dialog>
+  );
 }
 
 /**
