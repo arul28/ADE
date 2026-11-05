@@ -58,8 +58,9 @@ These ask the person in your chat first: `create`, `resize`, `copy`, `move`,
   command then fails with "nobody answered". Don't retry it in a loop: say what
   you wanted and why, and let the person decide.
 - In a full-auto chat or an automation run, ADE answers for the person: yes to
-  spending within the monthly cap, no to raising or removing the cap, no to
-  deleting a machine your chat didn't make. A line in the chat records the
+  spending within the monthly cap, no to raising or removing the cap or
+  keeping a machine awake for good, no to deleting a machine your chat didn't
+  make. A line in the chat records the
   answer.
 - At the monthly cap ADE makes, wakes and resizes nothing. Running work carries
   on. Don't look for a way around the cap; tell the person.

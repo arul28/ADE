@@ -95,7 +95,7 @@ import {
   describeLinkHeldByOtherAdeApp,
   type HostWentAwayRecovery,
 } from "../../../shared/connectionDiagnosis";
-import { adeActionAccess } from "../../../shared/adeActionAccess";
+import { adeActionAccess, isReplaySafeAdeAction } from "../../../shared/adeActionAccess";
 
 type StatusPatch = Partial<Omit<RemoteRuntimeConnectionStatus, "target">>;
 
@@ -1479,11 +1479,14 @@ export class RemoteConnectionService {
       try {
         result = await this.pool.callActionForTarget(target, projectId, request);
       } catch (error) {
-        // A connection that looked open to a box that is asleep: the call never
-        // ran there (the box was frozen), so wake it and send it once more.
+        // A connection that looked open to a box that is asleep: wake it. The
+        // call is sent once more only when sending it twice is safe, or when
+        // it never went out; otherwise its unknown outcome stands, and the
+        // person's retry reaches the woken machine.
         if (adeActionAccess(request.domain, request.action) !== "write" || !(await this.wakeForUse(target))) throw error;
         this.clearAutomaticReconnectState(targetId);
         await this.connectWokenMachine(target);
+        if (error instanceof RemoteActionOutcomeUnknownError && !isReplaySafeAdeAction(request.domain, request.action)) throw error;
         result = await this.pool.callActionForTarget(target, projectId, request);
       }
       this.mergeStatus(targetId, {
@@ -1916,6 +1919,8 @@ export class RemoteConnectionService {
       try {
         return await this.pool.connect(target, { bypassFailureBackoff: true });
       } catch (error) {
+        // Waiting fixes a relay that isn't up yet, not a sign-in or a pairing.
+        if (error instanceof PairedRuntimeRelayAuthRequiredError || this.pool.needsUserAction(target.id)) throw error;
         if (Date.now() + WOKEN_MACHINE_RETRY_MS > deadline) throw error;
         await new Promise((resolve) => setTimeout(resolve, WOKEN_MACHINE_RETRY_MS));
       }

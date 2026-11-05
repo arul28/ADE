@@ -162,8 +162,12 @@ export function buildAgent37AgentActions(deps: Agent37AgentActionDeps) {
   const approve = async (
     approval: Agent37Approval,
     card: {
-      /** `cap`: raising or removing the cap, the one limit on unattended spending; only a person answers it. */
-      action: "spend" | "delete" | "cap";
+      /**
+       * `uncapped`: what can spend past the monthly cap, the one limit on
+       * unattended spending (raising or removing it, keeping a machine awake);
+       * only a person answers it.
+       */
+      action: "spend" | "delete" | "uncapped";
       title: string;
       body: string;
       confirm: string;
@@ -184,9 +188,9 @@ export function buildAgent37AgentActions(deps: Agent37AgentActionDeps) {
     }
     if (automation || level === "full-auto") {
       const where = automation ? "this automation run" : "this full-auto chat";
-      if (card.action === "cap") {
-        approvals.notice(chatSessionId, `ADE said no to "${card.title}" in ${where}: the cap is what bounds unattended spending, so only you can raise it.`);
-        throw new Agent37Declined(`${card.title}: declined. The cap bounds what ${where} may spend, so only the person can raise it (Settings › Integrations › Agent 37).`);
+      if (card.action === "uncapped") {
+        approvals.notice(chatSessionId, `ADE said no to "${card.title}" in ${where}: it could spend past your monthly cap, so only you can decide it.`);
+        throw new Agent37Declined(`${card.title}: declined. It could spend past the monthly cap, so only the person can decide it (Settings › Integrations › Agent 37).`);
       }
       if (card.action === "delete" && !card.madeByThisChat) {
         approvals.notice(chatSessionId, `ADE said no to "${card.title}" in ${where}: nobody is here to approve deleting a machine this chat didn't make.`);
@@ -386,8 +390,9 @@ export function buildAgent37AgentActions(deps: Agent37AgentActionDeps) {
       if (minutes !== null && !Number.isFinite(minutes)) throw new Error("Pass minutes (5 to 1440) or never.");
       // Never sleeping bills around the clock: that asks first.
       if (minutes === null) {
+        // Running boxes aren't slept at the cap, so this bills past it.
         await approve(readApproval(args), {
-          action: "spend",
+          action: "uncapped",
           title: `Keep "${box.name ?? box.instanceId}" awake`,
           body: `It won't sleep on its own, so it bills ${box.runningHourlyUsd != null ? formatAgent37HourlyPrice(box.runningHourlyUsd) : "its full rate"} around the clock until someone sleeps it.`,
           confirm: "Keep it awake",
@@ -412,7 +417,7 @@ export function buildAgent37AgentActions(deps: Agent37AgentActionDeps) {
       const raising = cap === null || (current.monthlyCapUsd != null && cap > current.monthlyCapUsd);
       if (raising) {
         await approve(readApproval(args), {
-          action: "cap",
+          action: "uncapped",
           title: cap === null ? "Turn off the Agent 37 monthly cap" : `Raise the Agent 37 monthly cap to ${formatAgent37Usd(cap)}`,
           body: cap === null
             ? "With no cap, agents can keep making and waking machines for as long as the wallet pays."

@@ -55,6 +55,8 @@ describe("Agent 37 agent actions: approvals", () => {
     ["the person raises the cap", person, {}, "set_cap", { monthlyCapUsd: 50 }, "cap:50", 0],
     ["a full-auto agent may not raise the cap", agent, { level: "full-auto" }, "set_cap", { monthlyCapUsd: 50 }, null, 0],
     ["an automation run may not turn the cap off", agent, { automation: true }, "set_cap", { monthlyCapUsd: null }, null, 0],
+    ["a full-auto agent may not keep a machine awake past the cap", agent, { level: "full-auto" }, "set_sleep", { machine: "lane box", minutes: "never" }, null, 0],
+    ["a full-auto agent may let a machine sleep sooner", agent, { level: "full-auto" }, "set_sleep", { machine: "lane box", minutes: 5 }, "set_sleep", 0],
     ["any agent may lower the cap", agent, { level: "full-auto" }, "set_cap", { monthlyCapUsd: 5 }, "cap:5", 0],
     ["a full-auto agent resizes within the cap", agent, { level: "full-auto" }, "resize", { machine: "lane box", shape: "4x8" }, "resize", 0],
     ["a full-auto agent may not delete a machine it didn't make", agent, { level: "full-auto", madeBy: "chat_other" }, "delete", { machine: "inst_1" }, null, 0],
