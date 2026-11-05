@@ -1,4 +1,5 @@
 #include "engineLane.h"
+#include "background.h"
 #include <algorithm>
 
 namespace ade {
@@ -86,12 +87,19 @@ Json Engine::input(const Json& req) {
   auto lane = requireLane(laneId);
   touch(*lane);
   Json result;
+  // The service's retry after WINDOWS_DESKTOP_BACKGROUND_UNAVAILABLE for an
+  // action with no real-input path: post it anyway and say it is unverified.
+  BackgroundOverride override(payload["forceBackground"].asBool());
   if (command == "wait") {
     result = waitFor(laneId, payload);
   } else if (mode == "real") {
     result = realInput(*lane, command, payload, req);
   } else {
     result = accessibilityInput(*lane, command, payload);
+  }
+  if (override.used()) {
+    if (!result.isObject()) result = Json::object();
+    result["backgroundUnverified"] = true;
   }
   touch(*lane);
   return result;
@@ -104,10 +112,10 @@ Json Engine::accessibilityInput(Lane& lane, const std::string& command, const Js
   if (command == "click") {
     UiaElement e = resolveTarget(lane.laneId, payload);
     out["resolvedIndex"] = e.index;
-    if (priv) {
-      failIfElevatedWindow(e.window, false);
-      raiseOnPrivateSeat(e.window);
-    }
+    // Windows blocks UI Automation and posted input from an un-elevated
+    // driver to an administrator window on either seat; say so up front.
+    failIfElevatedWindow(e.window, false);
+    if (priv) raiseOnPrivateSeat(e.window);
     if (uia_.invoke(e)) return out;
     POINT c = centerOf(e.frame);
     int count = static_cast<int>(payload["count"].asInt(1));
@@ -116,6 +124,7 @@ Json Engine::accessibilityInput(Lane& lane, const std::string& command, const Js
       failIfElevatedWindow(WindowFromPoint(c), false);
       if (!sendClick(c.x, c.y, button, count)) failLocked();
     } else {
+      failIfBackgroundDropped(e.window, PostedInput::Click);
       postClick(e.window, c.x, c.y, button, count);
     }
     return out;
@@ -192,6 +201,7 @@ Json Engine::accessibilityInput(Lane& lane, const std::string& command, const Js
       window = windows.front().hwnd;
     }
     if (clear) fail(code::kInputLeaseRequired, "Clearing this control requires real input under the input lease.");
+    failIfBackgroundDropped(window, PostedInput::Text);
     if (!postText(window, text)) fail(code::kNoWindow, "No focused control in this lane window accepted text.");
     return out;
   }
@@ -235,7 +245,15 @@ Json Engine::accessibilityInput(Lane& lane, const std::string& command, const Js
       if (!sendKeys(key, modifiers)) failLocked();
       return out;
     }
-    fail(code::kInputLeaseRequired, "Sending a key on the main desktop needs mode real and an input lease.");
+    // The main desktop posts a plain key to the window without bringing it
+    // forward. A chord cannot be posted: the app reads modifiers from the
+    // keyboard state, which posting leaves alone. Either refusal is
+    // WINDOWS_DESKTOP_BACKGROUND_UNAVAILABLE, which the service answers by
+    // sending the key as real input.
+    if (!modifiers.empty())
+      fail(code::kBackgroundUnavailable, "A key chord on the main desktop needs real input (--real); a key posted in the background cannot hold a modifier.");
+    failIfBackgroundDropped(window, PostedInput::Key);
+    postKey(window, key);
     return out;
   }
   if (command == "scroll") {
@@ -250,6 +268,7 @@ Json Engine::accessibilityInput(Lane& lane, const std::string& command, const Js
       if (priv) {
         if (!sendScroll(c.x, c.y, direction, amount)) failLocked();
       } else {
+        failIfBackgroundDropped(e.window, PostedInput::Scroll);
         postScroll(e.window, c.x, c.y, direction, amount);
       }
       return out;
@@ -278,6 +297,7 @@ Json Engine::accessibilityInput(Lane& lane, const std::string& command, const Js
       for (int i = 0; i < 25 && GetAncestor(WindowFromPoint(c), GA_ROOT) != top; ++i) Sleep(20);
       if (!sendScroll(c.x, c.y, direction, amount)) failLocked();
     } else {
+      failIfBackgroundDropped(scrollWindow, PostedInput::Scroll);
       postScroll(scrollWindow, c.x, c.y, direction, amount);
     }
     return out;
@@ -329,7 +349,9 @@ Json Engine::realInput(Lane& lane, const std::string& command, const Json& paylo
       failIfElevatedWindow(WindowFromPoint(p), false);
       ok = sendClick(p.x, p.y, button, count);
     } else {
-      ok = postClick(windowAt(p), p.x, p.y, button, count);
+      HWND w = windowAt(p);
+      failIfBackgroundDropped(w, PostedInput::Click);
+      ok = postClick(w, p.x, p.y, button, count);
     }
   } else if (command == "drag") {
     POINT from = point("from");
@@ -342,6 +364,7 @@ Json Engine::realInput(Lane& lane, const std::string& command, const Json& paylo
       ok = sendDrag(from.x, from.y, to.x, to.y, duration);
     } else {
       HWND w = windowAt(from);
+      failIfBackgroundDropped(w, PostedInput::Drag);
       POINT c = from;
       ScreenToClient(w, &c);
       PostMessageW(w, WM_LBUTTONDOWN, MK_LBUTTON, MAKELPARAM(c.x, c.y));
@@ -363,7 +386,9 @@ Json Engine::realInput(Lane& lane, const std::string& command, const Json& paylo
       failIfElevatedWindow(WindowFromPoint(p), false);
       ok = sendScroll(p.x, p.y, direction, amount);
     } else {
-      ok = postScroll(windowAt(p), p.x, p.y, direction, amount);
+      HWND w = windowAt(p);
+      failIfBackgroundDropped(w, PostedInput::Scroll);
+      ok = postScroll(w, p.x, p.y, direction, amount);
     }
   } else if (command == "press" || command == "type") {
     auto windows = laneWindows(lane);

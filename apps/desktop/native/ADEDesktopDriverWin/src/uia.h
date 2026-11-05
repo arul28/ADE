@@ -57,6 +57,9 @@ class Uia {
  public:
   // Must run on a thread with COM initialized (MTA recommended).
   bool init(std::string* error);
+  // The shared seat: element actions run under a ForegroundShield so an app
+  // that activates itself while handling one stays behind the user's window.
+  void setShieldForeground(bool on) { shieldForeground_ = on; }
   UiaObservation observe(const std::vector<WinInfo>& windows, int limit, int budgetMs);
   // Stores the observation for later handle lookups. Keeps the last few.
   void remember(const std::string& laneId, const UiaObservation& obs);
@@ -92,6 +95,7 @@ class Uia {
             int64_t deadline, int depth);
   Microsoft::WRL::ComPtr<IUIAutomation> uia_;
   Microsoft::WRL::ComPtr<IUIAutomationCacheRequest> cache_;
+  bool shieldForeground_ = false;
   std::mutex mutex_;
   std::map<std::string, UiaObservation> byId_;
   std::map<std::string, std::deque<std::string>> byLane_;

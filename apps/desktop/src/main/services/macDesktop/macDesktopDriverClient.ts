@@ -240,12 +240,15 @@ function privateDriverCopy(source: string, slot: string, logger: Logger): string
 
 export class MacDesktopDriverError extends Error {
   readonly code: string;
+  /** The refusal's other fields (`app`, `windowClass`, `input` on a background refusal). */
+  readonly details: Record<string, unknown> | null;
 
-  constructor(code: string, message: string) {
+  constructor(code: string, message: string, details: Record<string, unknown> | null = null) {
     // See `MacDesktopError`: the code prefix is what reaches the CLI's hints.
     super(message.startsWith(`${code}:`) ? message : `${code}: ${message}`);
     this.name = "MacDesktopDriverError";
     this.code = code;
+    this.details = details;
     if (MAC_DESKTOP_ANSWER_CODES.has(code)) markExpected(this, "user");
   }
 }
@@ -547,7 +550,8 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
     const message = typeof error.message === "string" && error.message.length
       ? error.message
       : `The desktop driver refused ${entry.op}.`;
-    entry.reject(new MacDesktopDriverError(code, message));
+    const { code: _code, message: _message, ...details } = error;
+    entry.reject(new MacDesktopDriverError(code, message, Object.keys(details).length ? details : null));
   };
 
   const consumeStdout = (chunk: string): void => {

@@ -693,6 +693,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
 
   const input = createMacDesktopInput({
     now,
+    logger: deps.logger,
     platform: seatPlatform,
     takeSharedSeatLease: windowsOps.takeSharedSeatLease,
     emit,

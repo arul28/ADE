@@ -25,6 +25,7 @@ streaming and proof files are in the [Mac Desktop map](../mac-desktop/README.md#
 | `.../src/engine.cpp/.h`, `engineLane.h`, `engineInput.cpp`, `engineLaunch.cpp`, `engineMedia.cpp` | The per-lane op table for one session (Mode A private, Mode B shared): lifecycle, input, app launch (including apps that hand a second launch to a running instance), and capture/recording. |
 | `.../src/desk.cpp/.h` | Top-level windows, processes, app launch and `SendInput` for the session the process runs in. |
 | `.../src/uia.cpp/.h` | UI Automation: the cached element walk behind `observe`, and element actions. |
+| `.../src/background.cpp/.h` | Background input on the shared seat: which app frameworks drop posted input (refused with `WINDOWS_DESKTOP_BACKGROUND_UNAVAILABLE`), the focused-control walk, posted keys, and the foreground shield around UI Automation actions. Follows trycua/cua's cua-driver (MIT). |
 | `.../src/capture.cpp/.h`, `video.cpp/.h` | GDI `BitBlt` (private) and `PrintWindow` (shared) frames; Media Foundation H.264 for the live view and the MP4 recording. |
 | `.../src/credentials.cpp/.h`, `setup.cpp` | The saved Windows password in Credential Manager (never on the wire), and the bounded admin prompt that starts `setup-elevated`. |
 | `.../src/common.cpp/.h`, `json.cpp/.h` | Error codes, logging, the line writer, and the JSON value. |
@@ -46,7 +47,7 @@ streaming and proof files are in the [Mac Desktop map](../mac-desktop/README.md#
 | Seat | When | What the agent gets | Effect on the user |
 |---|---|---|---|
 | **Private** (default) | A Windows host in the console session, set up, with a free holder | A second Windows desktop of the user's own account (a Remote Desktop child session). Its own pointer, keyboard and foreground. | None while the PC is unlocked |
-| **Shared** (Mode B) | The user consents, and the private seat is out or unwanted | Windows windows parked off-screen, driven by UI Automation first and real input under the lease. | Takes the foreground on most actions |
+| **Shared** (Mode B) | The user consents, and the private seat is out or unwanted | Windows windows parked off-screen, driven by UI Automation and background (posted) input first, real input under the lease when an app needs it. | Real keys and typing take the foreground for a moment; element actions and posted input do not |
 
 Only one private child session exists per PC, so one lane holds it at a time.
 Shared seats are independent of it and can run in other lanes.
@@ -78,11 +79,10 @@ be a service they need.
   control in the pane still wins. An agent cannot claim that holder: the RPC
   scope strips `holderId` from every agent caller. Any other caller with no
   chat (a plain `ade` shell, which may be an agent's) is refused with
-  `MAC_DESKTOP_INPUT_LEASE_REQUIRED`. Keys on the shared seat are always real
-  input. Two shared lanes share one pointer and foreground, so every action
-  that takes the foreground on a shared seat — Accessibility (UI Automation)
-  clicks and typing as well as real input, opening an app, closing a window —
-  takes the lane's lease, and a lane is refused with
+  `MAC_DESKTOP_INPUT_LEASE_REQUIRED`. Two shared lanes share one pointer and
+  foreground, so every action on a shared seat — Accessibility (UI Automation)
+  and background input as well as real input, opening an app, closing a
+  window — takes the lane's lease, and a lane is refused with
   `MAC_DESKTOP_LEASE_HELD_BY_OTHER`, naming the other lane, while another
   shared lane's lease is live (about a minute after its last action). Focus
   and minimize raise without activating there, so they need no lease.
@@ -117,6 +117,46 @@ it. The user's answer is the consent:
 
 A chat the user allowed is not asked again for that lane until the chat closes.
 A caller with no chat is refused with `WINDOWS_DESKTOP_CONSENT_REQUIRED`.
+
+### Background input on the shared seat
+
+The shared seat acts on a parked window without bringing it forward wherever
+it can:
+
+- **Element actions** (click, set value, toggle, select, expand, scroll by
+  handle) go through UI Automation. UWP, WinUI and Chromium/Electron apps
+  activate themselves while handling one, so the driver disables the window's
+  root for the call (`ForegroundShield`); the pattern still lands and the
+  user's window stays in front. A host that hits its hard deadline re-enables
+  any shielded window before it ends.
+- **Clicks, scrolls and drags at a point**, and the fallback for an element
+  with no pattern, are posted to the window (`WM_*BUTTON*`, `WM_MOUSEWHEEL`).
+- **Keys** (`press`, `type --submit`) are posted (`WM_KEYDOWN`/`WM_KEYUP`) to
+  the focused control, and **text** that no Value pattern takes is posted as
+  characters, with a line break sent as an Enter key. The focused control is
+  found across every UI thread of the window, so a WebView2 editor is reached.
+- Posting reports success whether or not the app acts on it, so the driver
+  refuses, with `WINDOWS_DESKTOP_BACKGROUND_UNAVAILABLE`, input that the
+  window's framework is known to drop: everything for Chromium and Electron;
+  clicks, drags and (when not in front) keys for WPF; clicks and drags for
+  WinUI 3; keys and text for UWP/XAML hosts (Windows 11 Notepad among them);
+  clicks, keys and text for Tk; clicks for GTK; keys for LibreOffice; and the
+  wheel and drags for a WebView2 inside a native frame. A key chord or a key
+  that needs Shift cannot be posted either. An administrator window is refused
+  with `WINDOWS_DESKTOP_ELEVATED_WINDOW`.
+- The service answers every refusal so nothing that worked before stops
+  working. With no mode named, a refused key or text is sent again as real
+  input (the window comes forward for it and the user's goes back). A refused
+  click, scroll or drag has no real path on a parked window, and an explicit
+  mode is kept as asked, so those are posted anyway (`forceBackground`), as
+  before the table existed. Only a chord or a Shift key under an explicit
+  accessibility mode stays refused.
+- The table comes from cua's measurements, not this PC's, so every refusal is
+  reported: a `windows_desktop.background_unavailable` log line and a Sentry
+  Log on the signal budget (`forwardSignalToSentry`, a couple per app, input
+  and fallback an hour), with the exe and window class, the fallback taken and
+  whether the screen then changed. A `posted` row whose outcome is `changed`
+  is a row that refuses input the app takes.
 
 ## Setup (once per PC, by the user)
 
@@ -188,6 +228,11 @@ CLI and the pane unchanged:
   the user resolves it on the lane screen.
 - `WINDOWS_DESKTOP_WINDOW_ACTION_FAILED` — Windows could not focus or minimize
   the requested window, and it is not known to be elevated.
+- `WINDOWS_DESKTOP_BACKGROUND_UNAVAILABLE` — the shared seat would post input
+  that the window's app ignores (see [Background input](#background-input-on-the-shared-seat)).
+  The service retries keys and text as real input, and posts a click, scroll
+  or drag anyway, on its own; a caller sees it only for a key chord or a Shift
+  key sent with an explicit accessibility mode.
 
 Each code prints a one-line next step in the CLI (`macDesktopErrorHint`). The
 private-seat availability and consent next steps come from

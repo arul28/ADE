@@ -27,6 +27,7 @@ import {
   MAC_DESKTOP_INPUT_LEASE_REQUIRED_CODE,
   MAC_DESKTOP_OBSERVATION_ELEMENT_LIMIT,
   MAC_DESKTOP_USER_HAS_CONTROL_CODE,
+  WINDOWS_DESKTOP_BACKGROUND_UNAVAILABLE_CODE,
   isMacDesktopInputMode,
   WINDOWS_DESKTOP_MAX_TYPED_CHARS,
   desktopSeatKind,
@@ -61,6 +62,8 @@ import {
 } from "../../../shared/agentObservation";
 import type { ComputerUseActionEffect } from "../../../shared/types/agentObservation";
 import { sleep } from "../shared/utils";
+import { forwardSignalToSentry } from "../../../shared/sentry/logBridge";
+import type { Logger } from "../logging/logger";
 import { MAC_DESKTOP_GESTURE_IN_FLIGHT_CODE } from "./macDesktopDriverClient";
 import type { MacDesktopLeaseRegistry } from "./macDesktopLease";
 import type { MacDesktopObservations } from "./macDesktopObservations";
@@ -140,6 +143,7 @@ export function macDesktopActionEffect(
 
 export type MacDesktopInputDeps = {
   now: () => number;
+  logger?: Logger | null;
   /**
    * The seat's host. A Windows private seat is a separate session with its own
    * pointer and keyboard, so real input there needs no lease; a Mac display and
@@ -174,6 +178,10 @@ export type MacDesktopInputDeps = {
    */
   onAgentActed?: (() => void) | null;
 };
+
+type BackgroundRefusal = { app: string | null; windowClass: string | null; input: string | null };
+/** `real`: sent again as real input. `posted`: posted anyway. `none`: refused. */
+type BackgroundFallback = BackgroundRefusal & { fallback: "real" | "posted" | "none" };
 
 export function createMacDesktopInput(deps: MacDesktopInputDeps) {
   const { observations, ownership, leases } = deps;
@@ -487,8 +495,46 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
     assertRealInputAllowed(laneId, holderId);
   };
 
-  /** A Windows shared seat sends keys only as real input (the driver's rule). */
   const isSharedSeat = (laneId: string): boolean => seatOf(laneId) === "windows-shared";
+
+  /**
+   * Keys and text on the Windows main desktop go in the background first:
+   * posted to the lane window, which stays behind the user's. Apps that drop
+   * posted keys, and key chords, are refused with
+   * WINDOWS_DESKTOP_BACKGROUND_UNAVAILABLE, and the action is sent again as
+   * real input (the window comes forward for it and the user's goes back).
+   * Only when the caller named no mode: an explicit one is kept as asked.
+   */
+  const offersRealFallback = (laneId: string, requested: MacDesktopInputMode | null | undefined): boolean =>
+    isSharedSeat(laneId) && requested !== "real" && requested !== "accessibility";
+
+  /**
+   * A driver refusal of background input on the Windows main desktop, with the
+   * app and input it named (absent for a chord or a Shift key, which no app
+   * could take posted).
+   */
+  const backgroundRefusal = (laneId: string, error: unknown): BackgroundRefusal | null => {
+    if (!isSharedSeat(laneId)) return null;
+    const failure = error as { code?: unknown; details?: unknown } | null;
+    if (failure?.code !== WINDOWS_DESKTOP_BACKGROUND_UNAVAILABLE_CODE) return null;
+    const details = asRecord(failure.details) ?? {};
+    const text = (value: unknown): string | null => (typeof value === "string" && value ? value.slice(0, 80) : null);
+    return { app: text(details.app), windowClass: text(details.windowClass), input: text(details.input) };
+  };
+
+  /**
+   * What the background table decided and how it ended, for the table's
+   * owners: the rows come from another project's measurements, so a row that
+   * refuses input the app would have taken (`posted` that then `changed`) or
+   * a fallback that fails is what to fix. A Sentry Log, never an issue, on the
+   * signal budget (a couple per app and input an hour), keyed so one busy app
+   * cannot use up another's. Exe and class names only, never a window title.
+   */
+  const reportBackgroundRefusal = (action: string, refusal: BackgroundFallback, outcome: string | null): void => {
+    const meta = { action, app: refusal.app, windowClass: refusal.windowClass, input: refusal.input, fallback: refusal.fallback, outcome };
+    deps.logger?.info("windows_desktop.background_unavailable", meta);
+    forwardSignalToSentry("windows_desktop.background_unavailable", meta, `${refusal.app ?? "chord"}:${refusal.input ?? action}:${refusal.fallback}`);
+  };
 
   const runAction = async (args: {
     laneId: string;
@@ -518,6 +564,12 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
     timeoutMs?: number;
     /** The error to throw instead when that budget runs out. */
     timeoutError?: () => Error;
+    /**
+     * Send the action again as real input when the driver refuses it with
+     * WINDOWS_DESKTOP_BACKGROUND_UNAVAILABLE (see `offersRealFallback`), with
+     * this budget for the real attempt.
+     */
+    realFallback?: { timeoutMs?: number };
   }): Promise<MacDesktopInputResult> => {
     const laneId = args.laneId;
     const display = deps.requireDisplay(laneId);
@@ -557,6 +609,7 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
     // with no press action, or a right or double click, is delivered as
     // background input at the element's centre and says so.
     let deliveredMode: MacDesktopInputMode = args.mode;
+    let backgroundFallback: BackgroundFallback | null = null;
     let failure: Error | null = null;
     try {
       // A silent takeover posts `CGEvent`s at virtual-display coordinates,
@@ -566,17 +619,42 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
       // it. Gated on `controllerId` as well as `silent`: `move` is silent by
       // construction even for a caller that is not a takeover.
       const restoreCursor = Boolean(args.silent && args.controllerId?.trim());
-      const reply = await seat.input({
+      const payload = restoreCursor ? { ...args.payload, restoreCursor: true } : args.payload;
+      const send = (mode: MacDesktopInputMode, timeoutMs: number | undefined, extra?: Record<string, unknown>) => seat.input({
         laneId,
         command: args.command,
-        mode: args.mode,
-        payload: restoreCursor ? { ...args.payload, restoreCursor: true } : args.payload,
+        mode,
+        payload: extra ? { ...payload, ...extra } : payload,
         // The helper keeps its own lease and refuses a `CGEvent` post rather
         // than trusting its caller. Telling it which holder this process just
         // authorized is what lets the two agree instead of racing.
-        ...(args.mode === "real" ? { lease: { holderId } } : {}),
-        ...(args.timeoutMs ? { timeoutMs: args.timeoutMs } : {}),
+        ...(mode === "real" ? { lease: { holderId } } : {}),
+        ...(timeoutMs ? { timeoutMs } : {}),
       });
+      let reply: Awaited<ReturnType<typeof send>>;
+      try {
+        reply = await send(args.mode, args.timeoutMs);
+      } catch (error) {
+        const refused = backgroundRefusal(laneId, error);
+        if (!refused) throw error;
+        if (args.realFallback) {
+          backgroundFallback = { ...refused, fallback: "real" };
+          await authorizeRealInput(laneId, display, holderId, args.controllerId);
+          reply = await send("real", args.realFallback.timeoutMs);
+          deliveredMode = "real";
+        } else if (refused.app) {
+          // A framework row with no real-input path to take instead (a click,
+          // scroll or drag on a parked window; a caller's explicit mode): post
+          // it as before the table existed, so what worked keeps working while
+          // the table is measured on real machines.
+          backgroundFallback = { ...refused, fallback: "posted" };
+          reply = await send(args.mode, args.timeoutMs, { forceBackground: true });
+        } else {
+          // A chord or a Shift key: posting cannot carry it, so the refusal stands.
+          reportBackgroundRefusal(args.action, { ...refused, fallback: "none" }, null);
+          throw error;
+        }
+      }
       resolvedIndex = typeof reply.resolvedIndex === "number" ? reply.resolvedIndex : null;
       if (isMacDesktopInputMode(reply.deliveredMode)) deliveredMode = reply.deliveredMode;
     } catch (error) {
@@ -586,6 +664,7 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
     }
     deps.noteStreamActivity(laneId);
     ownership.touchDisplay(laneId);
+    if (failure && backgroundFallback) reportBackgroundRefusal(args.action, backgroundFallback, "failed");
     if (failure) {
       // A point off the lane's display: say where the display is, in the
       // global points the call takes, even before the driver says so itself.
@@ -639,6 +718,7 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
     // capture, the AX walk, the `observation` event and the caption that would
     // have narrated the user's own keystroke back at them.
     if (args.silent || args.skipObservation) {
+      if (backgroundFallback) reportBackgroundRefusal(args.action, backgroundFallback, "not_observed");
       return { ok: true, action: args.action, mode: deliveredMode, silent: true, resolved: null, observation: null, trace: null };
     }
     const observation = await observeInternal({
@@ -652,6 +732,7 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
         ? resolvedAgainst?.elements.find((element) => element.index === resolvedIndex) ?? null
         : null);
     const compared = macDesktopActionEffect(resolvedAgainst, observation);
+    if (backgroundFallback) reportBackgroundRefusal(args.action, backgroundFallback, compared.status);
     const next = macDesktopNextStep({
       action: args.action,
       mode: deliveredMode,
@@ -827,6 +908,12 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
         );
       }
       const typeTimeoutMs = perCharacter ? windowsDesktopTypeTimeoutMs(args.text.length) : undefined;
+      // Background typing on the main desktop falls back to real keystrokes,
+      // which carry the same per-character budget and cap.
+      const realFallback = mode === "accessibility" && offersRealFallback(laneId, args.mode)
+        && args.text.length <= WINDOWS_DESKTOP_MAX_TYPED_CHARS;
+      const fallbackTimeoutMs = realFallback ? windowsDesktopTypeTimeoutMs(args.text.length) : undefined;
+      const budgetMs = typeTimeoutMs ?? fallbackTimeoutMs;
       const silent = isSilent(args, mode);
       const submit = args.submit === true;
       const caption = `type · ${args.text.slice(0, 40)}`;
@@ -846,11 +933,12 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
         // overwritten by them. The driver reads `text` as the words only when
         // `typeText` is absent (an older service), and then never as a label.
         payload: { ...target.payload, typeText: args.text, clear: args.clear === true, ...(pace ? { typePaceMs: pace.paceMs } : {}) },
-        ...(typeTimeoutMs ? {
-          timeoutMs: typeTimeoutMs,
+        ...(typeTimeoutMs ? { timeoutMs: typeTimeoutMs } : {}),
+        ...(realFallback ? { realFallback: { timeoutMs: fallbackTimeoutMs } } : {}),
+        ...(budgetMs ? {
           timeoutError: () => deps.serviceError(
             "MAC_DESKTOP_DRIVER_UNAVAILABLE",
-            `Windows Desktop did not finish typing ${args.text.length} characters within ${Math.round(typeTimeoutMs / 1000)} s. It may still be typing: observe the screen before typing again.`,
+            `Windows Desktop did not finish typing ${args.text.length} characters within ${Math.round(budgetMs / 1000)} s. It may still be typing: observe the screen before typing again.`,
           ),
         } : {}),
         resolved: target.element,
@@ -898,6 +986,7 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
         silent,
         caption: `${caption} · return`,
         target: { ...target.payload, key: "return" },
+        ...(mode === "accessibility" && offersRealFallback(laneId, args.mode) ? { realFallback: {} } : {}),
       });
     },
 
@@ -906,9 +995,9 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
       if (deps.platform !== "win32" && (args.modifiers ?? []).includes("win")) {
         throw new Error("A Mac has no Windows key. Use --cmd, --ctrl, --alt or --shift.");
       }
-      // The Windows main desktop takes keys only as real input; asking for
-      // accessibility there was a refusal with no way forward.
-      const mode = keyMode(args.mode, isSharedSeat(laneId) ? "real" : "accessibility");
+      // On the Windows main desktop a key is posted in the background first,
+      // and sent as real input when the app or the chord needs it.
+      const mode = keyMode(args.mode, "accessibility");
       return await runAction({
         laneId,
         action: "press",
@@ -921,6 +1010,7 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
         holderId: args.holderId ?? null,
         silent: isSilent(args, mode),
         caption: `press · ${[...(args.modifiers ?? []), args.key].join("+")}`,
+        ...(offersRealFallback(laneId, args.mode) ? { realFallback: {} } : {}),
         demo: { kind: "key", label: [...(args.modifiers ?? []), args.key].join("+") },
         target: { key: args.key, modifiers: args.modifiers ?? [] },
       });

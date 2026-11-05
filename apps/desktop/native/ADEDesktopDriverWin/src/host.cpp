@@ -1,5 +1,6 @@
 // Console-session lifecycle and the NDJSON bridge. The RDP control lives on
 // the STA thread; pipe I/O and engine requests never block its message pump.
+#include "background.h"
 #include "engine.h"
 #include "modes.h"
 #include "rdp.h"
@@ -397,6 +398,9 @@ class Host {
       const DWORD child = cleanupSession_.load();
       if (child) spawnCleanupHelper(child);
       setSignInWaiting(false);
+      // A UI Automation call stuck inside a foreground shield would leave
+      // that app disabled once this process ends.
+      releaseForegroundShields();
       // A shared seat's parked windows (the user's own among them) go back
       // before the process ends: only if the record is free right now, never
       // by waiting on the stuck worker. Otherwise the next host puts them back.

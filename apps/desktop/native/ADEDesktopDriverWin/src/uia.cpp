@@ -1,5 +1,7 @@
 #include "uia.h"
 
+#include "background.h"
+
 #include <algorithm>
 #include <cstdio>
 
@@ -325,6 +327,7 @@ bool Uia::newestFocused(const std::string& laneId, UiaElement& out, HWND preferW
 
 bool Uia::invoke(const UiaElement& e) {
   if (!e.element) return false;
+  ForegroundShield shield(shieldForeground_ ? e.window : nullptr);
   if (e.hasInvoke) {
     ComPtr<IUIAutomationInvokePattern> p;
     if (SUCCEEDED(e.element->GetCurrentPatternAs(UIA_InvokePatternId, IID_PPV_ARGS(&p))) && p &&
@@ -360,6 +363,7 @@ bool Uia::invoke(const UiaElement& e) {
 
 bool Uia::setValue(const UiaElement& e, const std::wstring& value) {
   if (!e.element || !e.hasValue) return false;
+  ForegroundShield shield(shieldForeground_ ? e.window : nullptr);
   ComPtr<IUIAutomationValuePattern> p;
   if (FAILED(e.element->GetCurrentPatternAs(UIA_ValuePatternId, IID_PPV_ARGS(&p))) || !p) return false;
   BSTR b = SysAllocStringLen(value.data(), static_cast<UINT>(value.size()));
@@ -370,6 +374,7 @@ bool Uia::setValue(const UiaElement& e, const std::wstring& value) {
 
 bool Uia::appendValue(const UiaElement& e, const std::wstring& text, bool clear) {
   if (!e.element || !e.hasValue) return false;
+  ForegroundShield shield(shieldForeground_ ? e.window : nullptr);
   ComPtr<IUIAutomationValuePattern> p;
   if (FAILED(e.element->GetCurrentPatternAs(UIA_ValuePatternId, IID_PPV_ARGS(&p))) || !p) return false;
   std::wstring next = text;
@@ -401,6 +406,7 @@ bool Uia::focus(const UiaElement& e) { return e.element && SUCCEEDED(e.element->
 
 bool Uia::scroll(const UiaElement& e, const std::string& direction, int amount) {
   if (!e.element || !e.hasScroll) return false;
+  ForegroundShield shield(shieldForeground_ ? e.window : nullptr);
   ComPtr<IUIAutomationScrollPattern> p;
   if (FAILED(e.element->GetCurrentPatternAs(UIA_ScrollPatternId, IID_PPV_ARGS(&p))) || !p) return false;
   ScrollAmount h = ScrollAmount_NoAmount, v = ScrollAmount_NoAmount;

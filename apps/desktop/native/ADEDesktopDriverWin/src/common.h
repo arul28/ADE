@@ -50,6 +50,7 @@ constexpr const char* kNotConsoleSession = "WINDOWS_DESKTOP_NOT_CONSOLE_SESSION"
 constexpr const char* kCancelled = "WINDOWS_DESKTOP_CANCELLED";
 constexpr const char* kElevatedWindow = "WINDOWS_DESKTOP_ELEVATED_WINDOW";
 constexpr const char* kWindowActionFailed = "WINDOWS_DESKTOP_WINDOW_ACTION_FAILED";
+constexpr const char* kBackgroundUnavailable = "WINDOWS_DESKTOP_BACKGROUND_UNAVAILABLE";
 // Driver-local faults.
 constexpr const char* kUnknownOp = "unknown_op";
 constexpr const char* kProtocolError = "protocol_error";

@@ -1,5 +1,7 @@
 #include "desk.h"
 
+#include "background.h"
+
 #include <dwmapi.h>
 #include <shellapi.h>
 #include <tlhelp32.h>
@@ -659,15 +661,22 @@ bool postScroll(HWND hwnd, int screenX, int screenY, const std::string& directio
 }
 
 bool postText(HWND hwnd, const std::wstring& text) {
-  HWND target = hwnd;
-  GUITHREADINFO gti = {sizeof(gti)};
-  if (!GetGUIThreadInfo(GetWindowThreadProcessId(hwnd, nullptr), &gti) || !gti.hwndFocus) return false;
-  target = gti.hwndFocus;
-  if (target != hwnd && !IsChild(hwnd, target)) return false;
+  // The focused control may sit on another UI thread than the frame (a
+  // WebView2 does), so look across all of them.
+  HWND target = focusedTarget(hwnd);
+  if (!target) return false;
   for (size_t i = 0; i < text.size(); ++i) {
     wchar_t c = text[i];
-    if (c == L'\r' && i + 1 < text.size() && text[i + 1] == L'\n') ++i;
-    if (!PostMessageW(target, WM_CHAR, c == L'\n' ? L'\r' : c, 1)) return false;
+    if (c == L'\r' || c == L'\n') {
+      if (c == L'\r' && i + 1 < text.size() && text[i + 1] == L'\n') ++i;
+      // A line break is an Enter key, not a character: rich editors
+      // (RichEdit, Scintilla, LibreOffice) drop WM_CHAR 0x0A and some drop
+      // 0x0D, but every one takes VK_RETURN. Give the new paragraph a moment.
+      postKey(target, "return");
+      Sleep(20);
+      continue;
+    }
+    if (!PostMessageW(target, WM_CHAR, c, 1)) return false;
   }
   return true;
 }

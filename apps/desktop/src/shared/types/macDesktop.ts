@@ -79,6 +79,15 @@ export const WINDOWS_DESKTOP_CANCELLED_CODE = "WINDOWS_DESKTOP_CANCELLED" as con
 export const WINDOWS_DESKTOP_ELEVATED_WINDOW_CODE = "WINDOWS_DESKTOP_ELEVATED_WINDOW" as const;
 export const WINDOWS_DESKTOP_WINDOW_ACTION_FAILED_CODE = "WINDOWS_DESKTOP_WINDOW_ACTION_FAILED" as const;
 /**
+ * The main desktop posts input to a parked lane window in the background, and
+ * the window's app is known to ignore that kind of posted input (Chromium and
+ * Electron, WPF, WinUI, Tk, GTK, LibreOffice), or a key needs a modifier. The
+ * service answers it for keys and text by sending them as real input, and for
+ * a click, scroll or drag (no real path on a parked window) by posting it
+ * anyway, as before the table existed.
+ */
+export const WINDOWS_DESKTOP_BACKGROUND_UNAVAILABLE_CODE = "WINDOWS_DESKTOP_BACKGROUND_UNAVAILABLE" as const;
+/**
  * Service-enforced, not driver-produced: a `shared` seat was asked for without
  * the user's consent. The driver also refuses it, but the service is the
  * boundary that must not let an agent turn the user's own desktop into a lane
@@ -112,6 +121,7 @@ export type MacDesktopErrorCode =
   | typeof WINDOWS_DESKTOP_CANCELLED_CODE
   | typeof WINDOWS_DESKTOP_ELEVATED_WINDOW_CODE
   | typeof WINDOWS_DESKTOP_WINDOW_ACTION_FAILED_CODE
+  | typeof WINDOWS_DESKTOP_BACKGROUND_UNAVAILABLE_CODE
   | typeof WINDOWS_DESKTOP_CONSENT_REQUIRED_CODE;
 
 /**
@@ -137,6 +147,7 @@ export const MAC_DESKTOP_ANSWER_CODES: ReadonlySet<string> = new Set<string>([
   MAC_DESKTOP_LEASE_HELD_BY_OTHER_CODE,
   MAC_DESKTOP_OUT_PATH_OUTSIDE_ROOT_CODE,
   MAC_DESKTOP_RECORDING_NOT_RUNNING_CODE,
+  WINDOWS_DESKTOP_BACKGROUND_UNAVAILABLE_CODE,
 ]);
 
 /** The one sentence every non-macOS rejection carries. */
