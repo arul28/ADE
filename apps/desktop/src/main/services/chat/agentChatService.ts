@@ -402,6 +402,7 @@ import {
 } from "./threadPointerLedger";
 import type { createFileService } from "../files/fileService";
 import type { createPtyService } from "../pty/ptyService";
+import { takeCliSessionsToReopen } from "../pty/cliReopenAfterRestart";
 import type { DiskPressureMonitor, DiskPressureState } from "../storage/diskPressure";
 import {
   MAX_TRANSPARENT_HISTORY_BYTES,
@@ -1261,7 +1262,7 @@ import {
 } from "../../../shared/chatScheduledWork";
 import type { MachinePowerSource } from "../../../../../ade-cli/src/services/power/machinePowerMonitor";
 import { createHostSleepChipTracker, sessionTurnInFlight } from "./hostSleepChipTracker";
-import { createChatWaitRegistry, type ChatWaitRegistry } from "./chatWaitRegistry";
+import { ChatWakeDeferredError, createChatWaitRegistry, type ChatWaitRegistry } from "./chatWaitRegistry";
 import { GOAL_BLOCKED_NOTICE_STATUS, GOAL_REACHED_NOTICE_STATUS, parseClaudeGoalCommand } from "../../../shared/chatGoals";
 import {
   CHAT_EVENT_HISTORY_PAGE_DEFAULT_BYTES,
@@ -11675,7 +11676,9 @@ export function createAgentChatService(args: {
     // `dispose` + `isSessionOwnedByLivePeerRuntime` let chat delete stop the
     // shells that chat owns (see the shell cleanup below); without them the
     // rows are still archived, only the processes are left alone.
-    & Partial<Pick<ReturnType<typeof createPtyService>, "listTerminals" | "previewTerminal" | "onExit" | "waitForResumeTargetBackfill" | "dispose" | "isSessionOwnedByLivePeerRuntime">>
+    // `resumeSession` + `hasLivePty` reopen the agent CLIs a stopped runtime
+    // left open (`reopenCliSessionsAfterRestart`).
+    & Partial<Pick<ReturnType<typeof createPtyService>, "listTerminals" | "previewTerminal" | "onExit" | "waitForResumeTargetBackfill" | "dispose" | "isSessionOwnedByLivePeerRuntime" | "resumeSession" | "hasLivePty">>
   ) | null;
   getAutomationService?: () => AgentChatAutomationService | null;
   /**
@@ -13000,7 +13003,7 @@ export function createAgentChatService(args: {
       ...(() => {
         const parentId = managed.session.orchestrationParentSessionId?.trim();
         if (!parentId) return {};
-        if (parentChatStillExists(parentId)) {
+        if (parentSessionReachableHere(parentId)) {
           return { ADE_PARENT_CHAT_SESSION_ID: parentId, ADE_SPAWN_KIND: managed.session.spawnKind ?? "" };
         }
         // A parent in another project or on another machine still hears back
@@ -21555,7 +21558,7 @@ export function createAgentChatService(args: {
       parentChatExists: (parentSessionId: string): boolean => {
         let present = parentsPresent.get(parentSessionId);
         if (present === undefined) {
-          present = parentChatStillExists(parentSessionId);
+          present = parentSessionReachableHere(parentSessionId);
           parentsPresent.set(parentSessionId, present);
         }
         return present;
@@ -49001,6 +49004,16 @@ export function createAgentChatService(args: {
     return Boolean(row && isChatToolType(row.toolType));
   };
 
+  /** A tracked agent CLI terminal (Claude Code, Codex, ...): it can take wakes typed at its prompt. */
+  const isTrackedAgentCliSession = (sessionId: string): boolean => {
+    const row = sessionService.get(sessionId.trim());
+    return Boolean(row?.tracked && isTrackedAgentCliToolType(row.toolType));
+  };
+
+  /** A parent this service can report to: a chat here, or a tracked agent CLI here. */
+  const parentSessionReachableHere = (parentSessionId: string): boolean =>
+    parentChatStillExists(parentSessionId) || isTrackedAgentCliSession(parentSessionId);
+
   /** A parent outside this service that the brain's router knows how to reach. */
   const externalParentReachable = (parentSessionId: string): boolean =>
     getExternalParentRouter() !== null && externalChatContext(parentSessionId) !== null;
@@ -49010,7 +49023,7 @@ export function createAgentChatService(args: {
   ): SpawnSelfReportGuidanceOpts => {
     const parentId = session.orchestrationParentSessionId?.trim();
     return {
-      parentReachable: !parentId || parentChatStillExists(parentId) || externalParentReachable(parentId),
+      parentReachable: !parentId || parentSessionReachableHere(parentId) || externalParentReachable(parentId),
     };
   };
 
@@ -49110,7 +49123,7 @@ export function createAgentChatService(args: {
     if (!parentSessionId || parentSessionId === sessionId) {
       throw new Error("This chat is not a child of another chat.");
     }
-    if (spawnKind === "subagent" && source !== "parent_dispatch" && !parentChatStillExists(parentSessionId)) {
+    if (spawnKind === "subagent" && source !== "parent_dispatch" && !parentSessionReachableHere(parentSessionId)) {
       throw new Error("The parent chat is gone, so this chat cannot report back.");
     }
     const previous = managed.session.spawnKind;
@@ -49139,7 +49152,7 @@ export function createAgentChatService(args: {
     const parentSessionId = managed.session.orchestrationParentSessionId?.trim() || "";
     if (!parentSessionId || parentSessionId === managed.session.id) return;
     if (managed.session.spawnKind !== "subagent") return;
-    if (parentChatStillExists(parentSessionId)) return;
+    if (parentSessionReachableHere(parentSessionId)) return;
     // A parent in another project or on another machine is not an orphan's
     // parent: the brain's router still reaches it (`externalChats`).
     if (externalParentReachable(parentSessionId)) return;
@@ -49183,7 +49196,7 @@ export function createAgentChatService(args: {
     if (parentSessionId === undefined) throw new Error("parentSessionId is required (null detaches the chat).");
     const nextParent = typeof parentSessionId === "string" ? parentSessionId.trim() : "";
     const previousParentLive = previousParent !== null
-      && (parentChatStillExists(previousParent) || externalParentReachable(previousParent));
+      && (parentSessionReachableHere(previousParent) || externalParentReachable(previousParent));
     // An agent acting on another chat may only release a chat that reports to
     // it, or adopt one that has no live parent (never take another
     // coordinator's child).
@@ -49204,7 +49217,7 @@ export function createAgentChatService(args: {
       delete managed.session.subagentTakeoverPromptShownAt;
     } else {
       if (nextParent === childId) throw new Error("A chat cannot be its own parent.");
-      if (!parentChatStillExists(nextParent) && !externalParentReachable(nextParent)) {
+      if (!parentSessionReachableHere(nextParent) && !externalParentReachable(nextParent)) {
         throw new Error(
           `Chat '${nextParent}' was not found here. A parent must be a chat in this project, or one this machine already reports to.`,
         );
@@ -49289,6 +49302,120 @@ export function createAgentChatService(args: {
     onDelivered?: () => void;
   };
 
+  // --- Wakes for tracked agent CLIs -----------------------------------------
+  //
+  // A tracked agent CLI (Claude Code, Codex, ... in a terminal) starts child
+  // chats and arms waits as a chat does, but it has no chat to message. Its
+  // wakes are typed at its prompt instead, the way scheduled work reaches it,
+  // and only at a turn boundary: never into a turn that is still running.
+
+  const CLI_PARENT_WAKE_RETRY_MS = 5_000;
+  const CLI_PARENT_WAKE_GIVE_UP_MS = 24 * 60 * 60_000;
+
+  /** True while a tracked agent CLI cannot take a wake: mid-turn, or run by another live ADE runtime. */
+  const agentCliWakeDeferred = (sessionId: string): boolean =>
+    isTrackedAgentCliSession(sessionId) && ptyService?.canAcceptScheduledTurn(sessionId.trim()) !== true;
+
+  /** Whether another live ADE runtime runs this tracked agent CLI's terminal. */
+  const agentCliOwnedByAnotherRuntime = (sessionId: string): boolean => {
+    const row = sessionService.get(sessionId.trim());
+    return Boolean(
+      row?.tracked
+        && isTrackedAgentCliToolType(row.toolType)
+        && ptyService?.isSessionOwnedByLivePeerRuntime?.(row),
+    );
+  };
+
+  const typeWakeIntoAgentCli = async (sessionId: string, text: string): Promise<"delivered" | "deferred"> => {
+    if (sessionService.get(sessionId)?.archivedAt) {
+      throw new Error(`Terminal session '${sessionId}' is archived, so it cannot be woken.`);
+    }
+    // Checked again here, inside the per-CLI queue: an earlier wake may have
+    // just started a turn.
+    if (!ptyService || ptyService.canAcceptScheduledTurn(sessionId) !== true) return "deferred";
+    try {
+      const sent = await ptyService.sendToSession({ sessionId, text });
+      // sendToSession relaunches an ended CLI, as for scheduled work; its own
+      // parent's card closed when that process exited and reopens here.
+      if (sent.resumed) {
+        try {
+          notifyParentOfCliChildSpawn(sent.sessionId, { resumed: true });
+        } catch (notifyError) {
+          logger.warn("agent_chat.cli_wake_resume_parent_notify_failed", {
+            sessionId: sent.sessionId,
+            error: notifyError instanceof Error ? notifyError.message : String(notifyError),
+          });
+        }
+      }
+      return "delivered";
+    } catch (error) {
+      // Nothing was typed. Keep the wake only while the CLI still cannot take
+      // a turn (it started one, or another runtime took it). An ended CLI
+      // that cannot be reopened (no resume target) fails now instead of
+      // retrying a resume that cannot work.
+      if (isPtySendPreDeliveryError(error) && ptyService.canAcceptScheduledTurn(sessionId) !== true) {
+        logger.info("agent_chat.cli_wake_deferred", {
+          sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return "deferred";
+      }
+      throw error;
+    }
+  };
+
+  const cliWakeFlights = new Map<string, Promise<"delivered" | "deferred">>();
+
+  /**
+   * Deliver a wake ADE wrote (a finished wait, a subagent's report, a queued
+   * prompt) to the session it is for. An agent chat takes it as a message. A
+   * tracked agent CLI gets the text typed at its prompt once it can take a
+   * turn; "deferred" means nothing was typed and the caller keeps the wake.
+   * Wakes to one CLI run one at a time, so two never land in one turn.
+   */
+  const deliverWakeToSession = async (
+    args: AgentChatMessageSessionArgs,
+    options?: { trustedSpawnCompletion?: boolean },
+  ): Promise<"delivered" | "deferred"> => {
+    const sessionId = args.sessionId.trim();
+    if (!isTrackedAgentCliSession(sessionId)) {
+      await messageSession(args, options);
+      return "delivered";
+    }
+    const previous = cliWakeFlights.get(sessionId) ?? Promise.resolve("delivered" as const);
+    const flight = previous
+      .catch(() => "deferred" as const)
+      .then(() => typeWakeIntoAgentCli(sessionId, args.text));
+    cliWakeFlights.set(sessionId, flight);
+    try {
+      return await flight;
+    } finally {
+      if (cliWakeFlights.get(sessionId) === flight) cliWakeFlights.delete(sessionId);
+    }
+  };
+
+  /**
+   * Wake a tracked agent CLI parent with a subagent's report, retrying until
+   * the CLI reaches a turn boundary. Gives up after a day, when the CLI is
+   * gone, or when the service shuts down. Nothing here is durable: like a
+   * chat parent's held wake, a brain restart drops it, and never repeats it.
+   */
+  const wakeAgentCliParent = async (parentSessionId: string, text: string): Promise<void> => {
+    const giveUpAt = Date.now() + CLI_PARENT_WAKE_GIVE_UP_MS;
+    for (;;) {
+      if (serviceDisposed) throw new Error("Chat service is shutting down.");
+      if (!isTrackedAgentCliSession(parentSessionId)) throw new Error("Parent session was deleted.");
+      if (await deliverWakeToSession({ sessionId: parentSessionId, kind: "wake", text }) === "delivered") return;
+      if (Date.now() >= giveUpAt) {
+        throw new Error(`Agent CLI session '${parentSessionId}' did not reach a turn boundary within a day.`);
+      }
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, CLI_PARENT_WAKE_RETRY_MS);
+        timer.unref?.();
+      });
+    }
+  };
+
   const parentWakes = createParentWakeBatcher({
     isParentBusy: (parentSessionId) => {
       const parent = managedSessions.get(parentSessionId);
@@ -49304,6 +49431,10 @@ export function createAgentChatService(args: {
       return false;
     },
     deliverWake: async (parentSessionId, text, lead) => {
+      if (!parentChatStillExists(parentSessionId) && isTrackedAgentCliSession(parentSessionId)) {
+        await wakeAgentCliParent(parentSessionId, text);
+        return;
+      }
       await messageSession({
         sessionId: parentSessionId,
         kind: "wake",
@@ -49312,6 +49443,8 @@ export function createAgentChatService(args: {
       }, { trustedSpawnCompletion: true });
     },
     recordBatchedCompletion: (parentSessionId, completion) => {
+      // A CLI parent has no transcript to write the row into.
+      if (!parentChatStillExists(parentSessionId) && isTrackedAgentCliSession(parentSessionId)) return;
       emitChatEvent(ensureManagedSession(parentSessionId), {
         type: "system_notice",
         noticeKind: "info",
@@ -49350,6 +49483,53 @@ export function createAgentChatService(args: {
     const deliveryKey = spawnDeliveryKey(parentSessionId, childSessionId, childTurnId);
     if (spawnCompletionDeliveriesInFlight.has(deliveryKey)) return;
     const parentShouldWake = spawnKind === "subagent" && delivery.routeQuietly !== true;
+
+    // A tracked agent CLI parent has no transcript: no card to close and no
+    // quiet line to leave. A subagent's finished turn is typed at its prompt
+    // at its next turn boundary; a peer's, or one found again after a
+    // restart, stays quiet, as it would for a chat parent.
+    if (!parentChatStillExists(parentSessionId) && isTrackedAgentCliSession(parentSessionId)) {
+      if (!parentShouldWake) {
+        logger.info("agent_chat.spawn_completion_routed", {
+          childSessionId,
+          parentSessionId,
+          childTurnId,
+          spawnKind,
+          status: resultStatus,
+          routedTo: "cli_parent_quiet",
+        });
+        delivery.onDelivered?.();
+        return;
+      }
+      spawnCompletionDeliveriesInFlight.add(deliveryKey);
+      void parentWakes.wake(parentSessionId, childSessionId, delivery.wakeText, spawnCompletion)
+        .then(() => {
+          logger.info("agent_chat.spawn_completion_routed", {
+            childSessionId,
+            parentSessionId,
+            childTurnId,
+            spawnKind,
+            status: resultStatus,
+            routedTo: "cli_wake",
+          });
+          delivery.onDelivered?.();
+        })
+        .catch((error: unknown) => {
+          logger.warn("agent_chat.spawn_completion_delivery_failed", {
+            childSessionId,
+            childTurnId,
+            parentSessionId,
+            spawnKind,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          if (isMissingParentError(error, parentSessionId)) delivery.onParentGone("parent_missing_during_delivery");
+          else delivery.onDeliveryFailed(error);
+        })
+        .finally(() => {
+          spawnCompletionDeliveriesInFlight.delete(deliveryKey);
+        });
+      return;
+    }
 
     const parentAlreadyHasCompletion = (parent: ManagedChatSession): boolean =>
       mergeEnvelopeStreams(
@@ -49707,7 +49887,7 @@ export function createAgentChatService(args: {
     // A parent outside this chat service (another project, the personal
     // scope, another machine) is the brain's router's to reach, when one is
     // installed. Without one it is gone, as before.
-    const parentIsExternal = !parentChatStillExists(parentSessionId);
+    const parentIsExternal = !parentSessionReachableHere(parentSessionId);
     if (parentIsExternal && !getExternalParentRouter()) {
       noteUnreachableParent(child, parentSessionId, "parent_missing");
       return;
@@ -50023,7 +50203,7 @@ export function createAgentChatService(args: {
     const { row } = tracked;
     const endStatus = cliChildResultStatus(row);
     if (!endStatus) return;
-    if (!parentChatStillExists(lineage.parentSessionId)) {
+    if (!parentSessionReachableHere(lineage.parentSessionId)) {
       logger.info("agent_chat.cli_child_completion_parent_gone", {
         childSessionId: row.id,
         parentSessionId: lineage.parentSessionId,
@@ -67657,7 +67837,7 @@ export function createAgentChatService(args: {
         continue;
       }
       const { parentId, spawnKind } = lineage;
-      if (spawnKind !== "subagent" || !parentId || parentId === row.id || parentChatStillExists(parentId)) continue;
+      if (spawnKind !== "subagent" || !parentId || parentId === row.id || parentSessionReachableHere(parentId)) continue;
       try {
         reconcileOrphanedSubagent(ensureManagedSession(row.id));
       } catch {
@@ -67871,10 +68051,29 @@ export function createAgentChatService(args: {
       return `- "${title}" (${sessionId}): ${status}${tail ? ` — ${tail.replace(/\s+/g, " ").slice(0, 240)}` : ""}`;
     },
     sessionExists: (sessionId) => Boolean(sessionService.get(sessionId)),
-    messageSession: (args) => messageSession(args),
-    ownedByAnotherBrain: (sessionId) => liveForeignChatRuntimeOwner(sessionId) != null,
+    // A tracked agent CLI takes its wake typed at its prompt (see
+    // `deliverWakeToSession`); a chat takes it as a message.
+    messageSession: async (args) => {
+      if (await deliverWakeToSession(args) === "deferred") throw new ChatWakeDeferredError(args.sessionId);
+    },
+    canReceiveWake: (sessionId) => {
+      const row = sessionService.get(sessionId);
+      if (!row) return false;
+      if (isChatToolType(row.toolType)) return true;
+      return row.tracked && isTrackedAgentCliToolType(row.toolType) && !row.archivedAt;
+    },
+    wakeDeferred: (sessionId) => agentCliWakeDeferred(sessionId),
+    // A CLI's terminal is claimed by the runtime that runs its PTY, not by a
+    // chat runtime claim.
+    ownedByAnotherBrain: (sessionId) =>
+      liveForeignChatRuntimeOwner(sessionId) != null || agentCliOwnedByAnotherRuntime(sessionId),
     getMovedAwayTarget: (sessionId) => getCrossMachineMoveLock(sessionId, "chat_wait"),
-    assertDeliverableHere: (sessionId) => assertChatRuntimeOwnedHere(sessionId, "arm a wait that wakes"),
+    assertDeliverableHere: (sessionId) => {
+      assertChatRuntimeOwnedHere(sessionId, "arm a wait that wakes");
+      if (agentCliOwnedByAnotherRuntime(sessionId)) {
+        throw new Error(`Terminal session '${sessionId}' runs under another live ADE runtime; arm the wait from there.`);
+      }
+    },
     whenReady: () => scheduledWorkReady,
     // A subagent tells its own parent (`relayChildAwaitingUserToParent`), so a
     // waiter would repeat it. A peer's relay is a quiet line that does not
@@ -67882,16 +68081,19 @@ export function createAgentChatService(args: {
     // still speak. `pendingInputUserOnly` only exists for a chat this brain
     // manages (see `isUserOnlyPendingInput`), so `managedSessions` is the whole
     // set the relay can have told.
+    // The relay only reaches a chat parent, so a CLI caller is told here.
     callerToldOfUserWait: (targetSessionId, callerSessionId) => {
       const target = managedSessions.get(targetSessionId);
       return target?.session.spawnKind === "subagent"
-        && target.session.orchestrationParentSessionId?.trim() === callerSessionId;
+        && target.session.orchestrationParentSessionId?.trim() === callerSessionId
+        && parentChatStillExists(callerSessionId);
     },
     // A queued send's wait runs on the brain that owns the chat it sends to,
     // which may not be its caller's; only a caller this brain runs can be told.
     callerIsLiveHere: (sessionId) => {
       const session = managedSessions.get(sessionId);
-      return Boolean(session && !session.deleted);
+      if (session) return !session.deleted;
+      return isTrackedAgentCliSession(sessionId) && !agentCliOwnedByAnotherRuntime(sessionId);
     },
   });
   chatWaits = chatWaitRegistry;
@@ -68249,6 +68451,70 @@ export function createAgentChatService(args: {
     }
   };
 
+  /**
+   * Reopens the agent CLIs this project's previous runtime had open when it
+   * stopped on purpose (an update, a reboot; `cliReopenAfterRestart.ts`), as a
+   * chat comes back after a restart. The same rule as chats: only with
+   * Continue chats after restarts on, never an archived one, and only for a
+   * stop in the last few hours. A CLI whose turn was running gets the same
+   * durable "continue" row a chat does, which reopens it with that prompt; any
+   * other reopens at its prompt. One already open (a person or another
+   * runtime got there first) is left alone.
+   */
+  const reopenCliSessionsAfterRestart = async (): Promise<void> => {
+    await scheduledWorkReady;
+    if (serviceDisposed || !ptyService?.resumeSession) return;
+    let entries: ReturnType<typeof takeCliSessionsToReopen>;
+    try {
+      entries = takeCliSessionsToReopen(projectRoot, RESTART_RESUME_MAX_AGE_MS);
+    } catch (error) {
+      logger.warn("agent_chat.cli_reopen_read_failed", { error: error instanceof Error ? error.message : String(error) });
+      return;
+    }
+    if (entries.length === 0) return;
+    if (!continueAfterRestartEnabled()) {
+      logger.info("agent_chat.cli_reopen_skipped", { reason: "disabled", sessions: entries.length });
+      return;
+    }
+    // One at a time: each reopen starts a CLI process.
+    for (const entry of entries) {
+      if (serviceDisposed) return;
+      const row = sessionService.get(entry.sessionId);
+      if (!row?.tracked || !isTrackedAgentCliToolType(row.toolType) || row.archivedAt) continue;
+      if (ptyService.hasLivePty?.(row.id) || ptyService.isSessionOwnedByLivePeerRuntime?.(row)) continue;
+      try {
+        if (entry.midTurn && scheduledWorkScheduler) {
+          const createdAt = Date.now();
+          await scheduledWorkScheduler.upsert({
+            id: updateResumeScheduleId(row.id),
+            sessionId: row.id,
+            kind: "wakeup",
+            prompt: RESTART_RESUME_PROMPT,
+            reason: RESTART_RESUME_REASON,
+            fireAt: createdAt,
+            createdAt,
+            status: "scheduled",
+            lateFlag: false,
+            durable: true,
+            source: UPDATE_RESUME_SCHEDULED_WORK_SOURCE,
+            restartResumeStreak: 0,
+          });
+          logger.info("agent_chat.cli_reopen_armed", { sessionId: row.id, midTurn: true });
+          continue;
+        }
+        const reopened = await ptyService.resumeSession({ sessionId: row.id });
+        // A CLI child's card closed with its process; reopening it reopens the card.
+        if (reopened.resumed) notifyParentOfCliChildSpawn(row.id, { resumed: true });
+        logger.info("agent_chat.cli_reopened", { sessionId: row.id, midTurn: false });
+      } catch (error) {
+        // No resume target, a deleted lane: it stays ended, as before.
+        logger.warn("agent_chat.cli_reopen_failed", {
+          sessionId: row.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+  };
   const listScheduledWork = async ({
     sessionId,
     includeTerminal = false,
@@ -76462,6 +76728,10 @@ export function createAgentChatService(args: {
     });
   }).finally(() => {
     scheduledWorkLoaded = true;
+  });
+  // After the scheduler starts: a mid-turn CLI's reopen is a scheduled row.
+  void reopenCliSessionsAfterRestart().catch((error: unknown) => {
+    logger.warn("agent_chat.cli_reopen_failed", { error: error instanceof Error ? error.message : String(error) });
   });
 
   /**

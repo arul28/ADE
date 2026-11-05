@@ -99,7 +99,7 @@ export function ContinueAfterRestartSection() {
           title="Continue chats after restarts"
           hint={failed
             ? "Unavailable right now."
-            : "After an update, a crash or a reboot, a chat picks up where it stopped. One waiting for your answer waits."}
+            : "After an update, a crash or a reboot, a chat picks up where it stopped. One waiting for your answer waits. CLI sessions that were open reopen after an update or a reboot."}
           control={(
             <SettingsToggle
               label="Continue chats after restarts"

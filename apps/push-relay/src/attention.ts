@@ -15,6 +15,7 @@ import {
   accountChangeMarks,
   apnsConfig,
   boundedText,
+  decodePathSegment,
   isActivityBoardColumn,
   isActivityWaitingReason,
   isRecord,
@@ -65,6 +66,8 @@ type AttentionDeviceOwnershipRow = {
   user_id: string;
   ownership_epoch: number;
   apns_token: string | null;
+  device_key_hash: string | null;
+  pending_device_key_hash: string | null;
 };
 
 const MAX_BODY_BYTES = 256 * 1024;
@@ -99,6 +102,8 @@ const DESKTOP_ESCALATION_DELAY_SECONDS_BEFORE_V3 = 30;
 const DESKTOP_PRESENCE_WINDOW_MS = 45_000;
 const TOMBSTONE_RETENTION_MS = 24 * 60 * 60 * 1_000;
 const MAX_OWNERSHIP_EPOCH_FUTURE_MS = 5 * 60 * 1_000;
+/** 32 random bytes, base64url without padding: the only shape the relay mints. */
+const DEVICE_KEY_PATTERN = /^[A-Za-z0-9_-]{43}$/;
 const NOTIFICATION_DELIVERY_CLAIM_TTL_MS = 60_000;
 const MAX_ALERT_AGE_MS = 15 * 60_000;
 const ATTENTION_DELIVERY_RECEIPT_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
@@ -2008,12 +2013,14 @@ async function attentionDeviceOwnershipRows(
 ): Promise<AttentionDeviceOwnershipRow[]> {
   const result = apnsToken
     ? await env.DB.prepare(`
-        select device_id, user_id, ownership_epoch, apns_token
+        select device_id, user_id, ownership_epoch, apns_token, device_key_hash,
+          pending_device_key_hash
         from attention_device_ownership
         where device_id = ? or apns_token = ?
       `).bind(deviceId, apnsToken).all<AttentionDeviceOwnershipRow>()
     : await env.DB.prepare(`
-        select device_id, user_id, ownership_epoch, apns_token
+        select device_id, user_id, ownership_epoch, apns_token, device_key_hash,
+          pending_device_key_hash
         from attention_device_ownership
         where device_id = ?
       `).bind(deviceId).all<AttentionDeviceOwnershipRow>();
@@ -2045,6 +2052,126 @@ function attentionDeviceOwnershipConflict(ownershipEpoch: number): Response {
   }, { status: 409 });
 }
 
+/**
+ * The answer when a request cannot prove it comes from the install that owns
+ * the device. It keeps the error every client already treats as final, but
+ * leaves out the owner's epoch so a caller learns nothing it could outbid.
+ */
+function attentionDeviceOwnershipUnproven(): Response {
+  return json({ ok: false, error: "stale device ownership" }, { status: 409 });
+}
+
+function constantTimeEqual(left: string, right: string): boolean {
+  if (left.length !== right.length) return false;
+  let difference = 0;
+  for (let index = 0; index < left.length; index += 1) {
+    difference |= left.charCodeAt(index) ^ right.charCodeAt(index);
+  }
+  return difference === 0;
+}
+
+async function sha256Hex(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function mintDeviceKey(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(32));
+  return btoa(String.fromCharCode(...bytes))
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+}
+
+/**
+ * The device-key fields of an account device PUT/DELETE. A client that sends
+ * `deviceKeySupported: true` can store a key the relay returns; app versions
+ * that predate keys never send it, so the relay never mints a key they would
+ * then fail to present. A malformed key counts as no key.
+ */
+async function parsedDeviceKeyRequest(payload: Record<string, unknown>): Promise<{
+  supported: boolean;
+  presentedKeyHash: string | null;
+}> {
+  const presented = typeof payload.deviceKey === "string"
+    && DEVICE_KEY_PATTERN.test(payload.deviceKey)
+    ? payload.deviceKey
+    : null;
+  return {
+    supported: payload.deviceKeySupported === true,
+    presentedKeyHash: presented ? await sha256Hex(presented) : null,
+  };
+}
+
+function deviceKeyHashMatches(
+  storedHash: string | null | undefined,
+  presentedKeyHash: string | null,
+): boolean {
+  return Boolean(storedHash && presentedKeyHash && constantTimeEqual(storedHash, presentedKeyHash));
+}
+
+/**
+ * Whether a request may act on a device id whose row another account owns.
+ * The epoch alone is client-chosen, so a different account must also show
+ * that it is the same install: a key the relay issued for this device id
+ * (confirmed or still pending), else, while no key is confirmed, the APNs
+ * token the row stores. A row with neither (an app version before keys with
+ * push turned off) keeps the epoch rule alone until its install confirms a key.
+ */
+function attentionDeviceOwnershipProven(
+  row: AttentionDeviceOwnershipRow | undefined,
+  userId: string,
+  presentedKeyHash: string | null,
+  presentedApnsToken: string | null,
+): boolean {
+  if (!row || row.user_id === userId) return true;
+  if (
+    deviceKeyHashMatches(row.device_key_hash, presentedKeyHash)
+    || deviceKeyHashMatches(row.pending_device_key_hash, presentedKeyHash)
+  ) {
+    return true;
+  }
+  if (row.device_key_hash) return false;
+  if (row.apns_token) {
+    return presentedApnsToken !== null
+      && constantTimeEqual(row.apns_token, presentedApnsToken);
+  }
+  return true;
+}
+
+/**
+ * What a proven request does to the device key. Presenting the pending key
+ * confirms it. A key-capable client without the confirmed key gets a new
+ * pending one: the same account may always rotate, which also repairs a lost
+ * response, and an account that took over an old row gets its first key. A
+ * request with the confirmed key changes nothing, so an install that moves
+ * between accounts keeps its key.
+ */
+async function attentionDeviceKeyChange(
+  row: AttentionDeviceOwnershipRow | undefined,
+  deviceKey: { supported: boolean; presentedKeyHash: string | null },
+): Promise<AttentionDeviceKeyChange | null> {
+  const matchesConfirmed = deviceKeyHashMatches(row?.device_key_hash, deviceKey.presentedKeyHash);
+  if (
+    !matchesConfirmed
+    && deviceKey.presentedKeyHash
+    && deviceKeyHashMatches(row?.pending_device_key_hash, deviceKey.presentedKeyHash)
+  ) {
+    return { confirmedHash: deviceKey.presentedKeyHash, pendingHash: null, mintedKey: null };
+  }
+  if (matchesConfirmed || !deviceKey.supported) return null;
+  const mintedKey = mintDeviceKey();
+  return { confirmedHash: null, pendingHash: await sha256Hex(mintedKey), mintedKey };
+}
+
+type AttentionDeviceKeyChange = {
+  /** A hash that becomes the confirmed key; null keeps the confirmed one. */
+  confirmedHash: string | null;
+  /** The new pending hash; null clears it. */
+  pendingHash: string | null;
+  mintedKey: string | null;
+};
+
 function attentionDeviceOwnershipUpsertStatement(
   env: AttentionRelayEnv,
   args: {
@@ -2054,23 +2181,62 @@ function attentionDeviceOwnershipUpsertStatement(
     apnsToken: string | null;
     active: boolean;
     updatedAt: string;
+    /**
+     * Applied only while both key columns still hold what the request read,
+     * so of two racing key changes exactly one is kept.
+     */
+    keyChange: AttentionDeviceKeyChange | null;
+    /** The row the proof check read, so a row changed since then is not taken over. */
+    observed: AttentionDeviceOwnershipRow | undefined;
   },
 ): D1PreparedStatement {
+  const keysUnchangedSinceRead = `
+    ? = 1
+    and attention_device_ownership.device_key_hash is ?
+    and attention_device_ownership.pending_device_key_hash is ?
+  `;
+  const observedKeys = [
+    args.keyChange ? 1 : 0,
+    args.observed?.device_key_hash ?? null,
+    args.observed?.pending_device_key_hash ?? null,
+  ];
   return env.DB.prepare(`
     insert into attention_device_ownership(
-      device_id, user_id, ownership_epoch, apns_token, active, updated_at
-    ) values (?, ?, ?, ?, ?, ?)
+      device_id, user_id, ownership_epoch, apns_token, active, updated_at,
+      device_key_hash, pending_device_key_hash
+    ) values (?, ?, ?, ?, ?, ?, ?, ?)
     on conflict(device_id) do update set
       user_id = excluded.user_id,
       ownership_epoch = excluded.ownership_epoch,
       apns_token = coalesce(excluded.apns_token, attention_device_ownership.apns_token),
       active = excluded.active,
-      updated_at = excluded.updated_at
-    where excluded.ownership_epoch > attention_device_ownership.ownership_epoch
-      or (
-        excluded.ownership_epoch = attention_device_ownership.ownership_epoch
-        and excluded.user_id = attention_device_ownership.user_id
+      updated_at = excluded.updated_at,
+      device_key_hash = case
+        when ${keysUnchangedSinceRead}
+          then coalesce(excluded.device_key_hash, attention_device_ownership.device_key_hash)
+        else attention_device_ownership.device_key_hash
+      end,
+      pending_device_key_hash = case
+        when ${keysUnchangedSinceRead}
+          then excluded.pending_device_key_hash
+        else attention_device_ownership.pending_device_key_hash
+      end
+    where (
+        excluded.ownership_epoch > attention_device_ownership.ownership_epoch
+        or (
+          excluded.ownership_epoch = attention_device_ownership.ownership_epoch
+          and excluded.user_id = attention_device_ownership.user_id
+        )
       )
+      and (
+        excluded.user_id = attention_device_ownership.user_id
+        or (
+          attention_device_ownership.user_id is ?
+          and attention_device_ownership.device_key_hash is ?
+          and attention_device_ownership.apns_token is ?
+        )
+      )
+    returning pending_device_key_hash
   `).bind(
     args.deviceId,
     args.userId,
@@ -2078,7 +2244,52 @@ function attentionDeviceOwnershipUpsertStatement(
     args.apnsToken,
     args.active ? 1 : 0,
     args.updatedAt,
+    args.keyChange?.confirmedHash ?? null,
+    args.keyChange?.pendingHash ?? null,
+    ...observedKeys,
+    ...observedKeys,
+    args.observed?.user_id ?? null,
+    args.observed?.device_key_hash ?? null,
+    args.observed?.apns_token ?? null,
   );
+}
+
+/**
+ * Aborts the batch unless the upsert above left the row with this account and
+ * epoch. The upsert skips (without an error) a cross-account takeover whose
+ * proof went stale between the check and the batch; SQLite has no RAISE
+ * outside triggers, so this update breaks the `ownership_epoch > 0` check
+ * instead, and the whole transfer rolls back.
+ */
+function attentionDeviceOwnershipAssertStatement(
+  env: AttentionRelayEnv,
+  deviceId: string,
+  userId: string,
+  ownershipEpoch: number,
+): D1PreparedStatement {
+  return env.DB.prepare(`
+    update attention_device_ownership
+    set ownership_epoch = 0
+    where device_id = ?
+      and not (user_id = ? and ownership_epoch = ?)
+  `).bind(deviceId, userId, ownershipEpoch);
+}
+
+/** The minted key, only when the batch stored its hash (a racing change may have won). */
+function issuedDeviceKey(
+  keyChange: AttentionDeviceKeyChange | null,
+  upsertResult: D1Result<{ pending_device_key_hash: string | null }> | undefined,
+): string | null {
+  const storedHash = upsertResult?.results?.[0]?.pending_device_key_hash ?? null;
+  return keyChange?.mintedKey && keyChange.pendingHash && storedHash === keyChange.pendingHash
+    ? keyChange.mintedKey
+    : null;
+}
+
+function isAttentionDeviceOwnershipAssertError(error: unknown): boolean {
+  return error instanceof Error
+    && error.message.includes("CHECK constraint failed")
+    && error.message.includes("ownership_epoch");
 }
 
 function releasePriorApnsOwnershipStatement(
@@ -3784,8 +3995,20 @@ async function handleDeviceRegistration(
   ) {
     return json({ ok: false, error: "invalid device routing" }, { status: 400 });
   }
+  const deviceKey = await parsedDeviceKeyRequest(payload);
   if (request.method === "DELETE") {
     const deviceOwnership = await attentionDeviceOwnershipRows(env, deviceId, null);
+    const observedOwnership = deviceOwnership.find((row) => row.device_id === deviceId);
+    // The proof is the APNs token this request sent, never the stored one.
+    if (!attentionDeviceOwnershipProven(
+      observedOwnership,
+      userId,
+      deviceKey.presentedKeyHash,
+      rawApnsToken,
+    )) {
+      return attentionDeviceOwnershipUnproven();
+    }
+    const keyChange = await attentionDeviceKeyChange(observedOwnership, deviceKey);
     const registeredDevice = await env.DB.prepare(`
       select apns_token
       from attention_devices
@@ -3829,6 +4052,7 @@ async function handleDeviceRegistration(
         updatedAt: now,
       }));
     }
+    const upsertIndex = statements.length;
     statements.push(attentionDeviceOwnershipUpsertStatement(env, {
       deviceId,
       userId,
@@ -3836,13 +4060,21 @@ async function handleDeviceRegistration(
       apnsToken,
       active: false,
       updatedAt: now,
+      keyChange,
+      observed: observedOwnership,
     }));
+    statements.push(attentionDeviceOwnershipAssertStatement(env, deviceId, userId, ownershipEpoch));
     statements.push(...conflicts.results.flatMap((conflict) =>
       attentionDeviceOwnershipDeleteStatements(env, conflict.user_id, conflict.device_id)
     ));
+    let issuedKey: string | null;
     try {
-      await env.DB.batch(statements);
+      const results = await env.DB.batch<{ pending_device_key_hash: string | null }>(statements);
+      issuedKey = issuedDeviceKey(keyChange, results[upsertIndex]);
     } catch (error) {
+      if (isAttentionDeviceOwnershipAssertError(error)) {
+        return attentionDeviceOwnershipUnproven();
+      }
       if (isStaleAttentionDeviceOwnershipError(error)) {
         return attentionDeviceOwnershipConflict(
           await latestAttentionDeviceOwnershipEpoch(
@@ -3855,7 +4087,12 @@ async function handleDeviceRegistration(
       }
       throw error;
     }
-    return json({ ok: true, deviceId, ownershipEpoch });
+    return json({
+      ok: true,
+      deviceId,
+      ownershipEpoch,
+      ...(issuedKey ? { deviceKey: issuedKey } : {}),
+    });
   }
   const bundleId = requiredString(payload.bundleId, 200);
   const apsEnvironment = payload.apsEnvironment;
@@ -3877,6 +4114,15 @@ async function handleDeviceRegistration(
     return json({ ok: false, error: "invalid device routing" }, { status: 400 });
   }
   const ownershipRows = await attentionDeviceOwnershipRows(env, deviceId, apnsToken);
+  const observedOwnership = ownershipRows.find((row) => row.device_id === deviceId);
+  if (!attentionDeviceOwnershipProven(
+    observedOwnership,
+    userId,
+    deviceKey.presentedKeyHash,
+    apnsToken,
+  )) {
+    return attentionDeviceOwnershipUnproven();
+  }
   const staleEpoch = staleAttentionDeviceOwnershipEpoch(
     ownershipRows,
     userId,
@@ -3885,6 +4131,7 @@ async function handleDeviceRegistration(
   if (staleEpoch !== null) {
     return attentionDeviceOwnershipConflict(staleEpoch);
   }
+  const keyChange = await attentionDeviceKeyChange(observedOwnership, deviceKey);
   // A physical installation/APNs token belongs to exactly one authenticated
   // account stream at a time.
   const conflicts = apnsToken
@@ -3943,6 +4190,7 @@ async function handleDeviceRegistration(
       updatedAt: now,
     }));
   }
+  const upsertIndex = transferStatements.length;
   transferStatements.push(attentionDeviceOwnershipUpsertStatement(env, {
     deviceId,
     userId,
@@ -3950,7 +4198,12 @@ async function handleDeviceRegistration(
     apnsToken,
     active: true,
     updatedAt: now,
+    keyChange,
+    observed: observedOwnership,
   }));
+  transferStatements.push(
+    attentionDeviceOwnershipAssertStatement(env, deviceId, userId, ownershipEpoch),
+  );
   transferStatements.push(...conflicts.results.flatMap((conflict) =>
     attentionDeviceOwnershipDeleteStatements(env, conflict.user_id, conflict.device_id)
   ));
@@ -4032,11 +4285,18 @@ async function handleDeviceRegistration(
   // D1 batches are transactional: a failed destination insert rolls back all
   // ownership and Live Activity mutations, so a transfer cannot orphan the
   // previous account and an explicit token clear cannot leave stale state.
+  let issuedKey: string | null;
   try {
-    await env.DB.batch(transferStatements);
+    const results = await env.DB.batch<{ pending_device_key_hash: string | null }>(
+      transferStatements,
+    );
+    issuedKey = issuedDeviceKey(keyChange, results[upsertIndex]);
   } catch (error) {
     if (isAttentionDeviceLimitError(error)) {
       return json({ ok: false, error: "account device limit reached" }, { status: 409 });
+    }
+    if (isAttentionDeviceOwnershipAssertError(error)) {
+      return attentionDeviceOwnershipUnproven();
     }
     if (isStaleAttentionDeviceOwnershipError(error)) {
       return attentionDeviceOwnershipConflict(
@@ -4051,7 +4311,13 @@ async function handleDeviceRegistration(
     throw error;
   }
   await deliverAccountLiveActivity(env, userId);
-  return json({ ok: true, deviceId, ownershipEpoch, updatedAt: now });
+  return json({
+    ok: true,
+    deviceId,
+    ownershipEpoch,
+    updatedAt: now,
+    ...(issuedKey ? { deviceKey: issuedKey } : {}),
+  });
 }
 
 async function handleActivityTokenRegistration(
@@ -4218,11 +4484,13 @@ async function handleAuthorizedAttentionAccountRequest(
     && route[1] === "devices"
     && request.method === "PATCH"
   ) {
+    const deviceId = decodePathSegment(route[2]);
+    if (deviceId === null) return attentionRouteNotFound();
     return await handleDevicePreferences(
       request,
       env,
       userId,
-      decodeURIComponent(route[2] ?? ""),
+      deviceId,
     );
   }
   if (
@@ -4231,11 +4499,13 @@ async function handleAuthorizedAttentionAccountRequest(
     && route[1] === "sessions"
     && request.method === "PATCH"
   ) {
+    const sessionId = decodePathSegment(route[2]);
+    if (sessionId === null) return attentionRouteNotFound();
     return await handleSessionMutePreference(
       request,
       env,
       userId,
-      decodeURIComponent(route[2] ?? ""),
+      sessionId,
     );
   }
   if (
@@ -4244,11 +4514,13 @@ async function handleAuthorizedAttentionAccountRequest(
     && route[1] === "machines"
     && request.method === "PATCH"
   ) {
+    const machineKey = decodePathSegment(route[2]);
+    if (machineKey === null) return attentionRouteNotFound();
     return await handleActivityMachinePreferences(
       request,
       env,
       userId,
-      decodeURIComponent(route[2] ?? ""),
+      machineKey,
     );
   }
   if (
@@ -4256,10 +4528,12 @@ async function handleAuthorizedAttentionAccountRequest(
     && route[0] === "machines"
     && request.method === "DELETE"
   ) {
+    const machineKey = decodePathSegment(route[1]);
+    if (machineKey === null) return attentionRouteNotFound();
     return await handleAccountMachineRemoval(
       env,
       userId,
-      decodeURIComponent(route[1] ?? ""),
+      machineKey,
     );
   }
   if (
@@ -4268,11 +4542,13 @@ async function handleAuthorizedAttentionAccountRequest(
     && route[2] === "pairing"
     && request.method === "POST"
   ) {
+    const machineKey = decodePathSegment(route[1]);
+    if (machineKey === null) return attentionRouteNotFound();
     return await handleAccountMachinePairingRestore(
       request,
       env,
       userId,
-      decodeURIComponent(route[1] ?? ""),
+      machineKey,
     );
   }
   if (
@@ -4280,11 +4556,13 @@ async function handleAuthorizedAttentionAccountRequest(
     && route[0] === "devices"
     && (request.method === "PUT" || request.method === "DELETE")
   ) {
+    const deviceId = decodePathSegment(route[1]);
+    if (deviceId === null) return attentionRouteNotFound();
     return await handleDeviceRegistration(
       request,
       env,
       userId,
-      decodeURIComponent(route[1] ?? ""),
+      deviceId,
     );
   }
   if (
@@ -4293,14 +4571,23 @@ async function handleAuthorizedAttentionAccountRequest(
     && route[2] === "activities"
     && (request.method === "PUT" || request.method === "DELETE")
   ) {
+    const deviceId = decodePathSegment(route[1]);
+    if (deviceId === null) return attentionRouteNotFound();
+    const activityId = decodePathSegment(route[3]);
+    if (activityId === null) return attentionRouteNotFound();
     return await handleActivityTokenRegistration(
       request,
       env,
       userId,
-      decodeURIComponent(route[1] ?? ""),
-      decodeURIComponent(route[3] ?? ""),
+      deviceId,
+      activityId,
     );
   }
+  return attentionRouteNotFound();
+}
+
+/** A malformed escape in a path segment is a route that does not exist, not a 500. */
+function attentionRouteNotFound(): Response {
   return json({ ok: false, error: "not found" }, { status: 404 });
 }
 

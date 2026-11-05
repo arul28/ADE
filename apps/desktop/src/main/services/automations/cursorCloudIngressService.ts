@@ -10,9 +10,12 @@ import {
   clearCursorCloudWebhookSecret,
   persistCursorCloudRelayRegistration,
   persistCursorCloudWebhookSecret,
+  persistCursorCloudWebhookSecretId,
   readCursorCloudRelayPersistedState,
+  readCursorCloudRegisteredSecretId,
   readCursorCloudWebhookBinding,
   readCursorCloudWebhookSecret,
+  readCursorCloudWebhookSecretId,
   resolveCursorCloudRelayBaseUrl,
   type CursorCloudRelayCredentialStore,
 } from "./cursorCloudRelayConfig";
@@ -82,6 +85,8 @@ type CursorCloudRelayEventsResponse = {
   events: CursorCloudRelayEvent[];
   nextCursor: string | null;
   cursorExpired: boolean;
+  /** False when a signed-in poll sent a secret the relay no longer holds. */
+  secretKnown: boolean;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -176,6 +181,7 @@ function parseRelayEventsResponse(value: unknown): CursorCloudRelayEventsRespons
     events,
     nextCursor: typeof value.nextCursor === "string" && value.nextCursor.trim() ? value.nextCursor.trim() : null,
     cursorExpired: value.cursorExpired === true,
+    secretKnown: value.secretKnown !== false,
   };
 }
 
@@ -187,6 +193,8 @@ export function createCursorCloudIngressService(deps: CursorCloudIngressServiceD
   // A poll already running when the service stops can finish after the
   // database is closed. Its failure is then expected and must not be written.
   let stopped = false;
+  // Registrations made before the relay answered an id get one per run.
+  let secretIdBackfillTried = false;
 
   const setLastError = (message: string | null): void => {
     deps.db.setJson(CURSOR_CLOUD_RELAY_LAST_ERROR_REF, message);
@@ -224,10 +232,11 @@ export function createCursorCloudIngressService(deps: CursorCloudIngressServiceD
       : null;
   };
 
+  /** Registers the secret; resolves with the relay's id for it, when the relay answers one. */
   const registerSecret = async (args: {
     relayBaseUrl: string;
     secret: string;
-  }): Promise<void> => {
+  }): Promise<string | null> => {
     const accountAccessToken = await readAccountAccessToken();
     const response = await fetchImpl(`${args.relayBaseUrl}/cursor/register`, {
       method: "POST",
@@ -243,6 +252,7 @@ export function createCursorCloudIngressService(deps: CursorCloudIngressServiceD
       const detail = isRecord(payload) ? readString(payload, "error") : null;
       throw new Error(detail ?? `Cursor Cloud relay registration failed (HTTP ${response.status}).`);
     }
+    return readCursorCloudRegisteredSecretId(payload);
   };
 
   const setup = async (): Promise<CursorCloudIngressStatus> => {
@@ -252,8 +262,9 @@ export function createCursorCloudIngressService(deps: CursorCloudIngressServiceD
       const secret = storedSecret && storedSecret.length >= MIN_CURSOR_WEBHOOK_SECRET_LENGTH
         ? storedSecret
         : randomBytes(32).toString("hex");
-      await registerSecret({ relayBaseUrl, secret });
+      const secretId = await registerSecret({ relayBaseUrl, secret });
       persistCursorCloudWebhookSecret(deps.credentialStore, secret);
+      persistCursorCloudWebhookSecretId(deps.credentialStore, secretId);
       persistCursorCloudRelayRegistration(deps.db);
       deps.logger.info("automations.cursor_cloud_relay_configured", {
         webhookId: CURSOR_CLOUD_WEBHOOK_ID,
@@ -334,6 +345,17 @@ export function createCursorCloudIngressService(deps: CursorCloudIngressServiceD
     if (!binding?.secret && !accountAccessToken) {
       throw new Error("Cursor Cloud webhook secret is unavailable.");
     }
+    // Registering again is idempotent. It gives this computer's secret its own
+    // relay row and id, so another computer on the account cannot replace it.
+    if (binding?.secret && !secretIdBackfillTried && !readCursorCloudWebhookSecretId(deps.credentialStore)) {
+      secretIdBackfillTried = true;
+      try {
+        const secretId = await registerSecret({ relayBaseUrl: status.relayBaseUrl, secret: binding.secret });
+        persistCursorCloudWebhookSecretId(deps.credentialStore, secretId);
+      } catch (error: unknown) {
+        deps.logger.warn("automations.cursor_cloud_relay_secret_id_backfill_failed", { error: errorMessage(error) });
+      }
+    }
 
     for (let page = 0; page < CURSOR_CLOUD_RELAY_MAX_PAGES_PER_POLL; page += 1) {
       const cursor = deps.cursorStore.get("cursor-relay");
@@ -352,13 +374,22 @@ export function createCursorCloudIngressService(deps: CursorCloudIngressServiceD
         // The relay sweeps unowned secrets it has not heard from in weeks.
         // Re-registering the stored secret is idempotent and restores access.
         if (response.status === 401 && binding?.secret) {
-          await registerSecret({ relayBaseUrl: status.relayBaseUrl, secret: binding.secret });
+          const secretId = await registerSecret({ relayBaseUrl: status.relayBaseUrl, secret: binding.secret });
+          persistCursorCloudWebhookSecretId(deps.credentialStore, secretId);
           return;
         }
         const detail = isRecord(rawPayload) ? readString(rawPayload, "error") : null;
         throw new Error(detail ?? `Cursor Cloud relay poll failed (HTTP ${response.status}).`);
       }
       const payload = parseRelayEventsResponse(rawPayload);
+      // Signed in, the poll still works without the secret, but webhooks
+      // signed with it would be refused. Register it again; the events below
+      // are still valid.
+      if (page === 0 && !payload.secretKnown && binding?.secret) {
+        const secretId = await registerSecret({ relayBaseUrl: status.relayBaseUrl, secret: binding.secret });
+        persistCursorCloudWebhookSecretId(deps.credentialStore, secretId);
+        deps.logger.info("automations.cursor_cloud_relay_secret_reregistered", { webhookId: CURSOR_CLOUD_WEBHOOK_ID });
+      }
       if (payload.cursorExpired) {
         deps.cursorStore.set({ source: "cursor-relay", cursor: payload.nextCursor });
         setLastError(null);

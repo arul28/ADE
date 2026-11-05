@@ -12,6 +12,7 @@ import {
 } from "./sessionStatusPresentation";
 import type { TerminalSessionSummary } from "./types/sessions";
 import { pluralCount } from "./formatting";
+import { parseForeignCallerSessionId } from "./runtimeClientNames";
 
 /**
  * Same-lane `spawnKind: "subagent"` chats (and tracked CLI `--type subagent`
@@ -307,6 +308,13 @@ export function buildWorkNesting<T extends SpawnNestingSession>(
   const excludedTopLevelIds = new Set(index.nestedChildIds);
   for (const list of attachedShellsByParentId.values()) {
     for (const child of list) excludedTopLevelIds.add(child.id);
+  }
+  // A shell a chat on another machine runs here (`remote:<device>:<chat>`)
+  // belongs to that chat, which lists it on its own machine. Its chat is never
+  // a row of this machine's list, so it would otherwise stand alone in the
+  // primary lane, one row per command.
+  for (const session of sessions) {
+    if (parseForeignCallerSessionId(session.chatSessionId)) excludedTopLevelIds.add(session.id);
   }
   return {
     subagentsByParentId: index.childrenByRootParentId,

@@ -229,6 +229,8 @@ class SqliteD1Database {
         "../migrations/0008_account_settings.sql",
         "../migrations/0009_account_vault.sql",
         "../migrations/0010_heartbeat_write_costs.sql",
+        "../migrations/0011_live_activity_token_retention.sql",
+        "../migrations/0012_attention_device_key.sql",
       ]) {
         this.native.exec(readFileSync(new URL(migration, import.meta.url), "utf8"));
       }

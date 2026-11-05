@@ -511,8 +511,17 @@ export type RuntimeActivitySummary = RuntimeActivityCounts & {
 export type RuntimeUpdateImpact = {
   /** Chats with a live turn right now. */
   chats: UpdateInterruptedChat[];
-  /** Agent CLI sessions (Claude Code, Codex, …) that are open; a restart closes them. */
+  /**
+   * Agent CLI sessions (Claude Code, Codex, …) that are open; a restart closes
+   * them, and a brain that sets `cliSessionsReopen` reopens them after.
+   */
   cliSessions: number;
+  /**
+   * True from a brain that reopens its open agent CLIs after a restart (with
+   * Continue chats after restarts on). Absent from an older brain, whose CLIs
+   * stay closed.
+   */
+  cliSessionsReopen?: boolean;
   /** Other terminals that are open, busy or quiet; a restart closes them too. */
   terminals: number;
   /**

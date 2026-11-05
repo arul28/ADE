@@ -61,6 +61,7 @@ import { detectDevServersInChunk, devServerRegistry } from "../devServers/devSer
 import { noteSessionInputOrigin } from "../chat/sessionInputOrigins";
 import type { ResourceAttributionRoot, ResourceAttributionRootKind } from "./resourceUsageSampling";
 import { isPtyOutputHeld, onPtyOutputHoldChange } from "./ptyOutputFlowControl";
+import { recordCliSessionsToReopen, type CliReopenEntry } from "./cliReopenAfterRestart";
 import {
   augmentProcessPathWithShellAndKnownCliDirs,
   setPathEnvValue,
@@ -9390,7 +9391,42 @@ export function createPtyService({
       return { disposed: true, reason: "disposed" };
     },
 
-    disposeAll(): void {
+    /**
+     * Stop every terminal. With `reopenAfterRestart` (the runtime itself is
+     * stopping, as for an update) the tracked agent CLIs still open here are
+     * saved first, so the project's next runtime reopens them
+     * (`cliReopenAfterRestart.ts`). A failed save never blocks the stop.
+     */
+    disposeAll(options?: { reopenAfterRestart?: boolean }): void {
+      if (options?.reopenAfterRestart) {
+        try {
+          const entries: CliReopenEntry[] = [];
+          for (const entry of ptys.values()) {
+            if (entry.disposed || !entry.tracked || !isTrackedAgentCliToolType(entry.toolTypeHint)) continue;
+            const session = sessionService.get(entry.sessionId);
+            if (!session || session.archivedAt || !isTrackedAgentCliToolType(session.toolType)) continue;
+            const provider = session.resumeMetadata?.provider ?? providerFromTool(session.toolType);
+            // Mid-turn: still printing and not at its prompt. Waiting on the
+            // person (a permission prompt) is not a turn to continue. When in
+            // doubt it only reopens: a "continue" typed into an idle CLI would
+            // start work nobody asked for.
+            const midTurn = provider != null
+              && !session.attentionRequestedAt
+              && runtimeStates.get(entry.sessionId)?.state === "running"
+              && !agentCliInputReadyNow(entry.sessionId, provider);
+            entries.push({ sessionId: entry.sessionId, midTurn });
+          }
+          recordCliSessionsToReopen(projectRoot, entries);
+          if (entries.length > 0) {
+            logger.info("pty.cli_reopen_recorded", {
+              sessions: entries.length,
+              midTurn: entries.filter((entry) => entry.midTurn).length,
+            });
+          }
+        } catch (error) {
+          logger.warn("pty.cli_reopen_record_failed", { error: error instanceof Error ? error.message : String(error) });
+        }
+      }
       unsubscribeOutputHold();
       sessionService.agentShells.stop();
       for (const ptyId of [...ptys.keys()]) {

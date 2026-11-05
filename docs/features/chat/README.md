@@ -1648,6 +1648,20 @@ accepted update alike, and the update dialog shows its answer per chat:
   the same durable row with `BACKGROUND_WORK_LOST_RESUME_PROMPT`, so it re-runs
   what it still needs instead of waiting for a report that cannot come.
 - Only recent chats are continued or woken (`RESTART_RESUME_MAX_AGE_MS`, 6 h).
+- Tracked agent CLIs (Claude Code, Codex, … in a terminal) follow the same
+  setting. When a runtime stops on purpose (an update, a reboot, the brain
+  quitting), `ptyService.disposeAll({ reopenAfterRestart: true })` saves the
+  CLIs it still has open to `.ade/cache/reopen-cli-after-restart.json`
+  (`apps/desktop/src/main/services/pty/cliReopenAfterRestart.ts`), and marks
+  one that is still printing and not at its prompt as mid-turn. The project's
+  next runtime reads the file once and deletes it
+  (`reopenCliSessionsAfterRestart`). A CLI is reopened at its prompt
+  (`ptyService.resumeSession`), and a mid-turn one gets the durable "continue"
+  row instead, which reopens it with `RESTART_RESUME_PROMPT`. Archived CLIs, ones
+  already open, ones another runtime owns, and lists older than 6 h are
+  skipped. A crash writes no list, so a crash never reopens a CLI. A brain
+  that does this reports `cliSessionsReopen: true` in `runtime.updateImpact`,
+  and the update dialog then says CLI sessions reopen.
   A cut-off turn counts by its row's end time (none counts as now: the dead
   owner was only just found). A chat at rest must also have gone quiet within
   that time, by its idle time or, when a graceful shutdown cleared that, by its

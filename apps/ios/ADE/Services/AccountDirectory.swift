@@ -833,6 +833,10 @@ struct AccountAttentionRelayClient {
     }
   }
 
+  /// Returns the device key Relay issued with this registration, if any. The
+  /// caller stores it: Relay keeps only its hash and asks for it when this
+  /// install later moves to another account.
+  @discardableResult
   func registerDevice(
     baseURL: URL,
     token: String,
@@ -845,8 +849,9 @@ struct AccountAttentionRelayClient {
     apsEnvironment: String,
     deviceName: String,
     preferences: [String: Any],
+    deviceKey: String? = nil,
     refreshToken: (() async -> String?)? = nil
-  ) async throws {
+  ) async throws -> String? {
     guard !deviceId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
           ownershipEpoch > 0,
           ownershipEpoch <= AccountDeviceOwnershipState.maximumSafeEpoch,
@@ -868,14 +873,18 @@ struct AccountAttentionRelayClient {
     if clearPushToStartToken {
       payload["clearPushToStartToken"] = true
     }
+    // Registrations run one at a time, so only they ask Relay for a key.
+    payload["deviceKeySupported"] = true
+    if let deviceKey, !deviceKey.isEmpty { payload["deviceKey"] = deviceKey }
     let body = try JSONSerialization.data(withJSONObject: payload)
-    _ = try await perform(
+    let data = try await perform(
       url: endpoint(baseURL, "devices").appendingPathComponent(deviceId),
       method: "PUT",
       token: token,
       body: body,
       refreshToken: refreshToken
     )
+    return Self.issuedDeviceKey(fromResponse: data)
   }
 
   func unregisterDevice(
@@ -883,6 +892,7 @@ struct AccountAttentionRelayClient {
     token: String,
     deviceId: String,
     ownershipEpoch: Int,
+    deviceKey: String? = nil,
     timeoutInterval: TimeInterval = 2
   ) async throws {
     let normalizedDeviceId = deviceId.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -891,9 +901,13 @@ struct AccountAttentionRelayClient {
           ownershipEpoch <= AccountDeviceOwnershipState.maximumSafeEpoch else {
       throw RelayError.transport
     }
-    let body = try JSONSerialization.data(
-      withJSONObject: ["ownershipEpoch": ownershipEpoch]
-    )
+    // The key proves this install; `deviceKeySupported` is left out on
+    // purpose. A sign-out DELETE can run while a registration is still in
+    // flight, and two requests that both get a new key could leave this phone
+    // holding the one Relay did not keep.
+    var payload: [String: Any] = ["ownershipEpoch": ownershipEpoch]
+    if let deviceKey, !deviceKey.isEmpty { payload["deviceKey"] = deviceKey }
+    let body = try JSONSerialization.data(withJSONObject: payload)
     _ = try await perform(
       url: endpoint(baseURL, "devices").appendingPathComponent(normalizedDeviceId),
       method: "DELETE",
@@ -932,6 +946,17 @@ struct AccountAttentionRelayClient {
       body: body,
       refreshToken: refreshToken
     )
+  }
+
+  /// Relay mints 32 random bytes as unpadded base64url; anything else is ignored.
+  private static func issuedDeviceKey(fromResponse data: Data) -> String? {
+    guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          let key = object["deviceKey"] as? String,
+          key.count == 43,
+          key.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-" || $0 == "_") }) else {
+      return nil
+    }
+    return key
   }
 
   private func endpoint(_ baseURL: URL, _ leaf: String) -> URL {

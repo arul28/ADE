@@ -64,64 +64,147 @@ function parseCursorWebhookTimestamp(payload: Record<string, unknown>): number |
   return null;
 }
 
-// Secrets in use: owned by an account, or polled at least once (a client
-// polls right after registering). Never-used registrations are skipped so an
-// unauthenticated webhook POST cannot force a read of every row; the partial
-// index idx_cursor_webhook_secrets_active serves exactly this predicate.
-async function listActiveCursorWebhookSecrets(env: RelayEnv): Promise<CursorWebhookSecretRow[]> {
-  const rows = (await env.DB
+/**
+ * How many never-signed-in registrations the legacy scan still tries. Anyone
+ * can register one of those, so they are the part of the scan an attacker could
+ * grow. The most recently polled ones are the installs that are running now.
+ */
+const MAX_LEGACY_UNOWNED_SECRETS_SCANNED = 100;
+/**
+ * How many signed-in registrations the legacy scan tries, most recently used
+ * first. Current desktops name their secret, so only old addresses need it.
+ */
+const MAX_LEGACY_OWNED_SECRETS_SCANNED = 200;
+/**
+ * Registrations one account keeps: one for each computer (each has its own
+ * secret). Past this the least recently used (last poll or registration) is
+ * dropped; if that computer is still running, its next poll learns the secret
+ * is gone and registers again.
+ */
+const MAX_CURSOR_SECRETS_PER_ACCOUNT = 32;
+/**
+ * Each scanned secret hashes the whole body once, so the legacy scan also takes
+ * a smaller body. A Cursor status payload is a few KB.
+ */
+const MAX_LEGACY_CURSOR_WEBHOOK_BODY_BYTES = 64 * 1024;
+
+// The legacy path, for webhook addresses created before they named their
+// secret (`?sid=`). Secrets in use: owned by an account, or polled recently.
+// Never-used registrations are skipped so an unauthenticated webhook POST
+// cannot force a read of every row. Nothing is deleted: an install that falls
+// outside the window still receives events again once its next Cursor agent
+// uses the new address.
+async function listLegacyCursorWebhookSecrets(env: RelayEnv): Promise<CursorWebhookSecretRow[]> {
+  const owned = (await env.DB
     .prepare(`
       select id, webhook_secret, account_id
         from cursor_webhook_secrets
-       where account_id is not null or last_polled_at is not null
+       where account_id is not null
+       order by max(updated_at, coalesce(last_polled_at, updated_at)) desc
+       limit ?
     `)
+    .bind(MAX_LEGACY_OWNED_SECRETS_SCANNED)
     .all<CursorWebhookSecretRow>()).results ?? [];
-  return rows;
+  const unowned = (await env.DB
+    .prepare(`
+      select id, webhook_secret, account_id
+        from cursor_webhook_secrets
+       where account_id is null and last_polled_at is not null
+       order by last_polled_at desc
+       limit ?
+    `)
+    .bind(MAX_LEGACY_UNOWNED_SECRETS_SCANNED)
+    .all<CursorWebhookSecretRow>()).results ?? [];
+  return [...owned, ...unowned];
 }
 
+/**
+ * The secret a delivery was signed with.
+ *
+ * A webhook address that names its secret (`?sid=<secretId>`, which current
+ * desktops put on every Cursor agent they start) is checked against that one
+ * row and nothing else. A wrong sid is a mismatch; it never falls back to the
+ * scan, so naming a secret can only make a request cheaper.
+ */
 async function matchCursorWebhookSecret(
   env: RelayEnv,
   body: ArrayBuffer,
   signature: string,
+  secretId: string | null,
 ): Promise<CursorWebhookSecretRow | null> {
   const envSecret = env.CURSOR_WEBHOOK_SECRET?.trim() || "";
+  if (secretId === CURSOR_ENV_SECRET_ID) {
+    return envSecret && await verifyGitHubSignature(envSecret, body, signature)
+      ? { id: CURSOR_ENV_SECRET_ID, webhook_secret: envSecret, account_id: null }
+      : null;
+  }
+  if (secretId) {
+    const row = await env.DB
+      .prepare("select id, webhook_secret, account_id from cursor_webhook_secrets where id = ? limit 1")
+      .bind(secretId)
+      .first<CursorWebhookSecretRow>();
+    return row && await verifyGitHubSignature(row.webhook_secret, body, signature) ? row : null;
+  }
   if (envSecret && await verifyGitHubSignature(envSecret, body, signature)) {
     return { id: CURSOR_ENV_SECRET_ID, webhook_secret: envSecret, account_id: null };
   }
-  const registered = await listActiveCursorWebhookSecrets(env);
+  const registered = await listLegacyCursorWebhookSecrets(env);
   for (const row of registered) {
     if (await verifyGitHubSignature(row.webhook_secret, body, signature)) return row;
   }
   return null;
 }
 
+/** The registration a poll's bearer secret names, stamped as in use; null when none. */
+async function findPolledCursorSecret(
+  env: RelayEnv,
+  bearer: string,
+): Promise<CursorWebhookSecretRow | null> {
+  // Indexed point lookup. Reading every registered secret here, once per
+  // client poll, was the relay's largest D1 bill line.
+  const match = await env.DB
+    .prepare("select id, webhook_secret, account_id, last_polled_at from cursor_webhook_secrets where webhook_secret = ? limit 1")
+    .bind(bearer)
+    .first<CursorWebhookSecretRow & { last_polled_at: string | null }>();
+  if (!match || !constantTimeEqual(bearer, match.webhook_secret)) return null;
+  try {
+    await touchCursorWebhookSecret(env, match.id, match.last_polled_at);
+  } catch {
+    // Bookkeeping only; a failed stamp must not fail a valid poll.
+  }
+  return match;
+}
+
 async function authorizeCursorEventsRead(
   request: Request,
   env: RelayEnv,
-): Promise<{ accountId: string | null; secretId: string | null } | Response> {
+): Promise<{ accountId: string | null; secretId: string | null; secretKnown: boolean } | Response> {
   const accountId = await authenticateAccount(request, env);
   const bearer = readBearerToken(request);
-  if (accountId) return { accountId, secretId: null };
-
   const envSecret = env.CURSOR_WEBHOOK_SECRET?.trim() || "";
-  if (bearer && envSecret && constantTimeEqual(bearer, envSecret)) {
-    return { accountId: null, secretId: CURSOR_ENV_SECRET_ID };
+  const bearerIsEnvSecret = Boolean(bearer && envSecret && constantTimeEqual(bearer, envSecret));
+
+  if (accountId) {
+    // A signed-in poll still sends its computer's secret. Stamping it keeps the
+    // per-account cap dropping only idle computers, and a secret the relay no
+    // longer holds tells that computer to register it again. A failed lookup
+    // counts as known: it must not fail the poll or start a re-registration.
+    let secretKnown = true;
+    if (bearer && !bearerIsEnvSecret) {
+      try {
+        secretKnown = Boolean(await findPolledCursorSecret(env, bearer));
+      } catch {
+        secretKnown = true;
+      }
+    }
+    return { accountId, secretId: null, secretKnown };
+  }
+  if (bearerIsEnvSecret) {
+    return { accountId: null, secretId: CURSOR_ENV_SECRET_ID, secretKnown: true };
   }
   if (bearer) {
-    // Indexed point lookup. Reading every registered secret here, once per
-    // client poll, was the relay's largest D1 bill line.
-    const match = await env.DB
-      .prepare("select id, webhook_secret, account_id, last_polled_at from cursor_webhook_secrets where webhook_secret = ? limit 1")
-      .bind(bearer)
-      .first<CursorWebhookSecretRow & { last_polled_at: string | null }>();
-    if (match && constantTimeEqual(bearer, match.webhook_secret)) {
-      try {
-        await touchCursorWebhookSecret(env, match.id, match.last_polled_at);
-      } catch {
-        // Bookkeeping only; a failed stamp must not fail a valid poll.
-      }
-      return { accountId: match.account_id, secretId: match.id };
-    }
+    const match = await findPolledCursorSecret(env, bearer);
+    if (match) return { accountId: match.account_id, secretId: match.id, secretKnown: true };
   }
   return json({ ok: false, error: "unauthorized" }, { status: 401 });
 }
@@ -191,9 +274,15 @@ export async function handleCursorRegister(request: Request, env: RelayEnv): Pro
   }
 
   const now = new Date().toISOString();
-  const id = accountId && accountId.trim()
-    ? `account:${accountId.trim()}`
-    : `secret:${await sha256Hex(secret)}`;
+  // One row per secret, so each computer on an account keeps its own. A row
+  // that already holds this secret keeps its id: that is a computer
+  // registering again, or an `account:<id>` row from before rows were per
+  // secret, whose webhook addresses and events still name it.
+  const existing = await env.DB
+    .prepare("select id from cursor_webhook_secrets where webhook_secret = ? limit 1")
+    .bind(secret)
+    .first<{ id: string }>();
+  const id = existing?.id ?? `secret:${await sha256Hex(secret)}`;
   await env.DB
     .prepare(`
       insert into cursor_webhook_secrets(id, webhook_secret, account_id, registered_at, updated_at, unlinked_account_id)
@@ -225,6 +314,19 @@ export async function handleCursorRegister(request: Request, env: RelayEnv): Pro
            and account_id is null
       `)
       .bind(accountId, id)
+      .run();
+    await env.DB
+      .prepare(`
+        delete from cursor_webhook_secrets
+         where account_id = ?
+           and id not in (
+             select id from cursor_webhook_secrets
+              where account_id = ?
+              order by max(updated_at, coalesce(last_polled_at, updated_at)) desc, id desc
+              limit ?
+           )
+      `)
+      .bind(accountId, accountId, MAX_CURSOR_SECRETS_PER_ACCOUNT)
       .run();
   }
   try {
@@ -260,7 +362,11 @@ export async function handleCursorWebhook(request: Request, env: RelayEnv): Prom
   if (!hasValidGitHubSignatureShape(signature)) {
     return json({ ok: false, error: "signature mismatch" }, { status: 401 });
   }
-  const matchedSecret = await matchCursorWebhookSecret(env, body, signature);
+  const secretId = new URL(request.url).searchParams.get("sid")?.trim() || null;
+  if (!secretId && body.byteLength > MAX_LEGACY_CURSOR_WEBHOOK_BODY_BYTES) {
+    return json({ ok: false, error: "payload too large" }, { status: 413 });
+  }
+  const matchedSecret = await matchCursorWebhookSecret(env, body, signature, secretId);
   if (!matchedSecret) {
     return json({ ok: false, error: "signature mismatch" }, { status: 401 });
   }
@@ -289,9 +395,11 @@ export async function handleCursorWebhook(request: Request, env: RelayEnv): Prom
     return json({ ok: false, error: "id and status are required" }, { status: 400 });
   }
   const eventId = request.headers.get("x-webhook-id")?.trim() || `sha256:${await sha256Hex(body)}`;
+  // Per secret: two tenants can receive the same delivery id, and one must not
+  // turn the other's real event into a duplicate.
   const existing = await env.DB
-    .prepare("select event_id from cursor_events where event_id = ? limit 1")
-    .bind(eventId)
+    .prepare("select event_id from cursor_events where secret_id = ? and event_id = ? limit 1")
+    .bind(matchedSecret.id, eventId)
     .first<{ event_id: string }>();
   if (existing) return json({ ok: true, duplicate: true, eventId });
 
@@ -407,5 +515,6 @@ export async function handleListCursorEvents(request: Request, env: RelayEnv): P
     events: rows.map(cursorRowToEvent),
     nextCursor: nextCursorCloudCursor(rows, after),
     cursorExpired,
+    ...(auth.secretKnown ? {} : { secretKnown: false }),
   });
 }

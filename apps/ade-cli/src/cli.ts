@@ -2516,6 +2516,9 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade shell start --machine <name> --no-sync -- git status   Run in the copy as it is
     $ ade shell start --machine <name> --discard --wait -- npm test   Throw away unpushed work there first
     $ ade shell clean --machine <name>               Delete this chat's work copy there
+  Each call opens a new shell there and syncs the copy again, so put all the
+  steps in one call: --wait -- sh -c "npm ci && npm test", or one script.
+  The shell runs in the background there; no list on that machine shows it.
 
   Provider CLI launches accept --instance for Claude/Codex accounts and
   --preset or --credential for saved harness brains.

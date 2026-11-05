@@ -220,34 +220,37 @@ function rewriteOg(template: string, target: OpenTarget, url: string): string {
   const escDesc = escapeHtmlAttr(description);
   const escUrl = escapeHtmlAttr(url);
 
+  // Each replacement is a function, so a `$&`, `$'` or `$`` in a title or a
+  // description stays literal text instead of a replacement pattern.
+
   return template
     // <title> element — match any whitespace/text inside, single-line only.
-    .replace(/<title>[^<]*<\/title>/i, `<title>${escTitle}</title>`)
+    .replace(/<title>[^<]*<\/title>/i, () => `<title>${escTitle}</title>`)
     // <meta name="description"> — attribute order may vary; tolerate single
     // OR double quotes, and self-closing OR open-ended form.
     .replace(
       /<meta\s+name=["']description["']\s+content=["'][^"']*["']\s*\/?>/i,
-      `<meta name="description" content="${escDesc}" />`,
+      () => `<meta name="description" content="${escDesc}" />`,
     )
     .replace(
       /<meta\s+property=["']og:title["']\s+content=["'][^"']*["']\s*\/?>/i,
-      `<meta property="og:title" content="${escTitle}" />`,
+      () => `<meta property="og:title" content="${escTitle}" />`,
     )
     .replace(
       /<meta\s+property=["']og:description["']\s+content=["'][^"']*["']\s*\/?>/i,
-      `<meta property="og:description" content="${escDesc}" />`,
+      () => `<meta property="og:description" content="${escDesc}" />`,
     )
     .replace(
       /<meta\s+property=["']og:url["']\s+content=["'][^"']*["']\s*\/?>/i,
-      `<meta property="og:url" content="${escUrl}" />`,
+      () => `<meta property="og:url" content="${escUrl}" />`,
     )
     .replace(
       /<meta\s+name=["']twitter:title["']\s+content=["'][^"']*["']\s*\/?>/i,
-      `<meta name="twitter:title" content="${escTitle}" />`,
+      () => `<meta name="twitter:title" content="${escTitle}" />`,
     )
     .replace(
       /<meta\s+name=["']twitter:description["']\s+content=["'][^"']*["']\s*\/?>/i,
-      `<meta name="twitter:description" content="${escDesc}" />`,
+      () => `<meta name="twitter:description" content="${escDesc}" />`,
     );
 }
 

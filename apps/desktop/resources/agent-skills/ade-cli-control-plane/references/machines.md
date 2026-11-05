@@ -15,6 +15,11 @@ ade terminal list --machine "Windows PC" --text   # this chat's shells there
 ade shell clean --machine "Windows PC"            # delete the work copy when done
 ```
 
+- Put all the steps in one call: `--wait -- sh -c "npm ci && npm test"`, or
+  write a script and run it once. Each call opens a new shell there and syncs
+  the work copy again, so one call per command is slow. Do not do that.
+- The shell runs in the background there: no list on that machine shows it
+  (it is archived from the start). Read it with `ade terminal read --machine …`.
 - The command uses that machine's shell (PowerShell on Windows).
 - The simulator works the same way: `ade apple launch --machine "Mac Studio"`
   with no `--lane` builds this chat's work copy there and runs it on a free

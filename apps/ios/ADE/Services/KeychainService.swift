@@ -27,6 +27,7 @@ final class KeychainService {
   private let tokenAccount = "connection-token"
   private let deviceIdAccount = "device-id"
   private let accountDeviceOwnershipEpochPrefix = "attention-ownership-epoch:"
+  private let accountDeviceKeyPrefix = "attention-device-key:"
 
   private func tokenAccount(for hostKey: String?) -> String {
     guard let hostKey, !hostKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -170,8 +171,29 @@ final class KeychainService {
     return "\(accountDeviceOwnershipEpochPrefix)\(normalized)"
   }
 
+  /// The secret Relay issued to this installation's device id. It proves to
+  /// Relay that a later account on this phone is the same install, so it lives
+  /// exactly as long as the device id and its ownership epoch.
+  func saveAccountDeviceKey(_ key: String, deviceId: String) {
+    guard !key.isEmpty, let account = accountDeviceKeyAccount(deviceId: deviceId) else {
+      return
+    }
+    saveString(key, account: account)
+  }
+
+  func loadAccountDeviceKey(deviceId: String) -> String? {
+    guard let account = accountDeviceKeyAccount(deviceId: deviceId) else { return nil }
+    return loadString(account: account)
+  }
+
+  private func accountDeviceKeyAccount(deviceId: String) -> String? {
+    let normalized = deviceId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !normalized.isEmpty else { return nil }
+    return "\(accountDeviceKeyPrefix)\(normalized)"
+  }
+
   /// Removes every saved machine pairing secret while preserving this
-  /// installation's device identity and ownership epoch. Used by the versioned
+  /// installation's device identity, ownership epoch and device key. Used by the versioned
   /// trust reset: ADE must not accidentally revive a pre-reset machine through
   /// a keyed or legacy token alias.
   @discardableResult

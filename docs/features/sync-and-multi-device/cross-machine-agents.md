@@ -84,6 +84,14 @@ with the chat's uncommitted changes applied as one binary patch. It is created
 on the first command; nothing is installed in advance, and ignored files
 (installed deps, build output) survive between runs.
 
+- **Background work.** The shell is archived as soon as `pty.create` returns
+  (`adeRpcServer.ts`, the `remoteWork` branch of `pty.create`), so no list on
+  that machine shows it: not the Work tab, the lane counts, or iOS. It still
+  runs, and its owner chat still reads, lists (`terminal.list` adds the
+  caller's own archived shells) and closes it. The Work tab also never shows a
+  shell owned by a `remote:` chat at the top level (`buildWorkNesting`). Agents
+  are told to put all their steps in one call: each call is a new shell and a
+  new sync.
 - **Git moves code.** The CLI (`cliRemoteWork.ts`, `readLocalWorkSource`)
   sends the commit, the remote branch that holds it, and the patch as bytes
   (base64, 16 MiB at most), made with fixed diff options so the user's diff

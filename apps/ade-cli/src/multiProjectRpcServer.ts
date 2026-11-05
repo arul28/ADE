@@ -512,6 +512,8 @@ export async function readMachineUpdateImpact(args: BootedRuntimeSources & {
     cliSessions: parts.reduce((total, part) => total + part.cliSessions, 0),
     terminals: parts.reduce((total, part) => total + part.terminals, 0),
     ...(typeof continueAfterRestart === "boolean" ? { continueAfterRestart } : {}),
+    // This brain reopens its agent CLIs after a restart (`cliReopenAfterRestart.ts`).
+    cliSessionsReopen: true,
   };
 }
 

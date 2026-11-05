@@ -295,12 +295,11 @@ export async function handleLinearWebhook(request: Request, env: RelayEnv, ctx?:
       appSecretFingerprints: await Promise.all(appSecrets.map(async (candidate) => (await sha256Hex(candidate)).slice(0, 8))),
       eventType: request.headers.get("linear-event"),
     });
-    if (!organization) {
-      // Indistinguishable from an accepted delivery so unauthenticated callers
-      // cannot probe which organizations have registered ADE ingestion. Nothing
-      // is stored; the registration status endpoint is the debugging surface.
-      return json({ ok: true });
-    }
+    // The same answer whether or not the organization is registered, so an
+    // unauthenticated caller cannot use the status code to learn which
+    // organizations use ADE. Nothing is stored. Linear lists failed deliveries
+    // to the workspace admin, and the registration status endpoint is the
+    // debugging surface.
     return json({ ok: false, error: "signature mismatch" }, { status: 401 });
   }
 

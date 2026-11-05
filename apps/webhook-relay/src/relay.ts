@@ -2093,11 +2093,25 @@ async function handleAccountIntegrations(request: Request, env: RelayEnv): Promi
   });
 }
 
+/**
+ * Every route decodes its path segments. A segment with a broken escape names
+ * nothing, so it is a 404 here, once, instead of a URIError in each route.
+ */
+function hasMalformedEscape(pathname: string): boolean {
+  try {
+    for (const segment of pathname.split("/")) decodeURIComponent(segment);
+    return false;
+  } catch {
+    return true;
+  }
+}
+
 export async function handleRequest(request: Request, env: RelayEnv, ctx?: ExecutionContext): Promise<Response> {
   const url = new URL(request.url);
   if (url.pathname === "/health") {
     return json({ ok: true });
   }
+  if (hasMalformedEscape(url.pathname)) return json({ ok: false, error: "not found" }, { status: 404 });
 
   if (url.pathname === "/account/integrations") return await handleAccountIntegrations(request, env);
   if (url.pathname === "/hooks/register") return await handleCustomHookRegister(request, env);

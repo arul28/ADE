@@ -30,6 +30,7 @@ import {
   retryD1Reads,
   transientUnavailableResponse,
 } from "./cloudflareTransient";
+import { boundedText, decodePathSegment } from "./attentionShared";
 import { scrubString } from "./sentryScrub";
 
 export { resetSpendGuardsForTests } from "./spendGuards";
@@ -166,6 +167,20 @@ const SIGNATURE_TIMESTAMP_SKEW_SECONDS = 5 * 60;
 const SUPPRESSION_RETENTION_HOURS = 48;
 const DEFAULT_REGISTRATION_RETENTION_DAYS = 120;
 const DEFAULT_MAX_DEVICES_PER_MACHINE = 16;
+// Every stored field has a size. An ActivityKit id is a UUID and a bundle id is
+// a short reverse-DNS name, so the id caps are slack. Display text is cut, never
+// refused, so an odd device name never blocks a registration.
+const MAX_ACTIVITY_ID_CHARS = 128;
+const MAX_BUNDLE_ID_CHARS = 255;
+const MAX_DEDUPE_KEY_CHARS = 256;
+const MAX_DEVICE_NAME_CHARS = 120;
+const MAX_PLATFORM_CHARS = 32;
+// A phone holds a few Live Activities at a time; the cap only bounds a machine
+// that reports tokens for made-up activity ids. The oldest row goes first.
+const MAX_ACTIVITY_TOKENS_PER_MACHINE = 256;
+// iOS ends a Live Activity after at most 12 hours (8 active, 4 more on the Lock
+// Screen), so a token not refreshed for a day targets nothing.
+const ACTIVITY_TOKEN_RETENTION_HOURS = 24;
 
 const MACHINE_LAST_SEEN_STAMP_INTERVAL_MS = 60 * 60 * 1000;
 const RATE_COUNTER_RETENTION_MINUTES = 15;
@@ -210,6 +225,15 @@ function readString(source: Record<string, unknown> | null | undefined, key: str
 function readOptionalString(source: Record<string, unknown> | null | undefined, key: string): string | null {
   const value = readString(source, key);
   return value ? value : null;
+}
+
+/**
+ * An over-long dedupe key is dropped, not refused: the item is still delivered,
+ * just without suppression, and no oversized key is stored.
+ */
+function readDedupeKey(source: Record<string, unknown>): string | null {
+  const value = readOptionalString(source, "dedupeKey");
+  return value && value.length <= MAX_DEDUPE_KEY_CHARS ? value : null;
 }
 
 function readNumber(source: Record<string, unknown> | null | undefined, key: string): number | null {
@@ -401,7 +425,7 @@ function parseAlertItems(raw: unknown): AlertPublishItem[] {
           ? interruption
           : null,
       collapseId: readOptionalString(entry, "collapseId"),
-      dedupeKey: readOptionalString(entry, "dedupeKey"),
+      dedupeKey: readDedupeKey(entry),
       phase: normalizePhase(readString(entry, "phase")),
       sessionId: readOptionalString(entry, "sessionId"),
       itemId: readOptionalString(entry, "itemId"),
@@ -421,6 +445,7 @@ function parseLiveActivityItems(raw: unknown): LiveActivityPublishItem[] {
     const activityId = readString(entry, "activityId");
     const contentState = isRecord(entry.contentState) ? entry.contentState : null;
     if ((event !== "start" && event !== "update" && event !== "end") || !activityId || !contentState) continue;
+    if (activityId.length > MAX_ACTIVITY_ID_CHARS) continue;
     const alert = isRecord(entry.alert) && readString(entry.alert, "title")
       ? { title: readString(entry.alert, "title"), body: readOptionalString(entry.alert, "body") }
       : null;
@@ -435,7 +460,7 @@ function parseLiveActivityItems(raw: unknown): LiveActivityPublishItem[] {
       dismissalDate: readNumber(entry, "dismissalDate"),
       relevanceScore: readNumber(entry, "relevanceScore"),
       alert,
-      dedupeKey: readOptionalString(entry, "dedupeKey"),
+      dedupeKey: readDedupeKey(entry),
       phase: normalizePhase(readString(entry, "phase")),
     });
   }
@@ -580,6 +605,11 @@ export async function pruneRelayState(env: PushRelayEnv): Promise<void> {
   await env.DB
     .prepare("delete from device_registrations where updated_at < ?")
     .bind(registrationCutoff)
+    .run();
+  const activityTokenCutoff = new Date(Date.now() - ACTIVITY_TOKEN_RETENTION_HOURS * 60 * 60 * 1000).toISOString();
+  await env.DB
+    .prepare("delete from live_activity_tokens where updated_at < ?")
+    .bind(activityTokenCutoff)
     .run();
   // Rate-limit windows are ephemeral; drop stale ones. Budget rows (bucket
   // `budget:<day>`) are kept a couple of days so a quiet period mid-day can
@@ -845,6 +875,9 @@ async function handleDeviceUpsert(
   if (!bundleId || !environment) {
     return json({ ok: false, error: "bundleId and apsEnvironment (sandbox|production) are required" }, { status: 400 });
   }
+  if (bundleId.length > MAX_BUNDLE_ID_CHARS) {
+    return json({ ok: false, error: "bundleId is too long" }, { status: 400 });
+  }
   const apnsToken = readOptionalString(payload, "apnsToken");
   const pushToStartToken = readOptionalString(payload, "pushToStartToken");
   const clearPushToStartToken = payload.clearPushToStartToken === true;
@@ -897,8 +930,8 @@ async function handleDeviceUpsert(
       pushToStartToken,
       bundleId,
       environment,
-      readOptionalString(payload, "platform"),
-      readOptionalString(payload, "deviceName"),
+      boundedText(payload.platform, MAX_PLATFORM_CHARS),
+      boundedText(payload.deviceName, MAX_DEVICE_NAME_CHARS),
       now,
       now,
       generation,
@@ -934,6 +967,10 @@ async function handleDeviceDelete(
   }
   const auth = await assertMachineAuthorized(request, env, machineKey, body);
   if ("response" in auth) return auth.response;
+  // A removed machine may not read or change the owner's phones. The account
+  // purge already dropped them; the owner's own devices re-register.
+  const revokedAt = await machineKeyRevokedAt(env, machineKey);
+  if (revokedAt) return machineRevokedResponse(revokedAt);
   await env.DB
     .prepare("delete from device_registrations where machine_key = ? and device_id = ?")
     .bind(machineKey, deviceId)
@@ -952,6 +989,8 @@ async function handleDeviceList(request: Request, env: PushRelayEnv, machineKey:
   }
   const auth = await assertMachineAuthorized(request, env, machineKey, body);
   if ("response" in auth) return auth.response;
+  const revokedAt = await machineKeyRevokedAt(env, machineKey);
+  if (revokedAt) return machineRevokedResponse(revokedAt);
   const devices = await listMachineDevices(env, machineKey);
   return json({
     ok: true,
@@ -1004,6 +1043,9 @@ async function handleActivityTokenUpsert(request: Request, env: PushRelayEnv, ma
   if (!DEVICE_ID_PATTERN.test(deviceId) || !activityId) {
     return json({ ok: false, error: "deviceId and activityId are required" }, { status: 400 });
   }
+  if (activityId.length > MAX_ACTIVITY_ID_CHARS) {
+    return json({ ok: false, error: "activityId is too long" }, { status: 400 });
+  }
   if (!token) {
     await deleteActivityToken(env, machineKey, deviceId, activityId);
     return json({ ok: true, removed: true });
@@ -1020,6 +1062,20 @@ async function handleActivityTokenUpsert(request: Request, env: PushRelayEnv, ma
         updated_at = excluded.updated_at
     `)
     .bind(machineKey, deviceId, activityId, token, new Date().toISOString())
+    .run();
+  // Keep the newest rows. The row just written is the newest, so it stays.
+  await env.DB
+    .prepare(`
+      delete from live_activity_tokens
+       where machine_key = ?
+         and rowid not in (
+           select rowid from live_activity_tokens
+            where machine_key = ?
+            order by updated_at desc
+            limit ?
+         )
+    `)
+    .bind(machineKey, machineKey, MAX_ACTIVITY_TOKENS_PER_MACHINE)
     .run();
   return json({ ok: true, removed: false });
 }
@@ -1097,7 +1153,8 @@ async function handlePublish(request: Request, env: PushRelayEnv, machineKey: st
 function routeMachine(pathname: string): { machineKey: string; rest: string[] } | null {
   const parts = pathname.split("/").filter(Boolean);
   if (parts.length >= 2 && parts[0] === "machines") {
-    return { machineKey: decodeURIComponent(parts[1] ?? ""), rest: parts.slice(2) };
+    const machineKey = decodePathSegment(parts[1]);
+    return machineKey === null ? null : { machineKey, rest: parts.slice(2) };
   }
   return null;
 }
@@ -1267,7 +1324,8 @@ async function routeRequest(request: Request, env: PushRelayEnv): Promise<Respon
     return await handleDeviceList(request, env, machineKey);
   }
   if (rest.length === 2 && rest[0] === "devices") {
-    const deviceId = decodeURIComponent(rest[1] ?? "");
+    const deviceId = decodePathSegment(rest[1]);
+    if (deviceId === null) return text("not found", 404);
     if (request.method === "PUT" || request.method === "POST") {
       return await handleDeviceUpsert(request, env, machineKey, deviceId);
     }

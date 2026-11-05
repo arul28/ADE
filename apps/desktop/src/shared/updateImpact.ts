@@ -40,5 +40,6 @@ export function parseRuntimeUpdateImpact(raw: unknown): RuntimeUpdateImpact | nu
     cliSessions: Number(reply.cliSessions) || 0,
     terminals: Number(reply.terminals) || 0,
     ...(typeof reply.continueAfterRestart === "boolean" ? { continueAfterRestart: reply.continueAfterRestart } : {}),
+    ...(reply.cliSessionsReopen === true ? { cliSessionsReopen: true } : {}),
   };
 }

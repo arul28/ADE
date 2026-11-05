@@ -16,6 +16,7 @@ import { subscribeLinearTopic } from "./linearAgent";
 import { notifyLinearTopic, runAfterResponse } from "./linearAgentCore";
 import {
   base64Encode,
+  claimPeriodicRun,
   constantTimeEqual,
   contentLengthExceedsLimit,
   isRecord,
@@ -134,6 +135,9 @@ async function readBodyWithinLimit(request: Request, maxBytes: number): Promise<
 }
 
 async function pruneExpiredHookEvents(env: RelayEnv): Promise<void> {
+  // At most once per isolate every ten minutes, like the other event sweeps: a
+  // delivery is a public request, and each one must not cost a table sweep.
+  if (!claimPeriodicRun(env.DB, "prune-hook-events", 10 * 60 * 1000)) return;
   const cutoff = new Date(Date.now() - HOOK_HOLD_DAYS * 24 * 60 * 60 * 1000).toISOString();
   await env.DB.prepare("delete from custom_hook_events where received_at < ?").bind(cutoff).run();
 }
@@ -303,21 +307,37 @@ export async function handleListCustomHookEvents(request: Request, env: RelayEnv
   const limit = parseLimit(url);
   const hookIds = parseHookIds(url.searchParams.get("hooks"));
   if (!hookIds.length) return json({ events: [], hasMore: false });
-  const placeholders = hookIds.map(() => "?").join(", ");
-  const rows = (await env.DB
-    .prepare(`
-      select seq as event_seq, event_id, hook_id, method, query, headers_json, body, body_encoding, received_at
-        from custom_hook_events
-       where account_id = ? and hook_id in (${placeholders})
-       order by seq asc
-       limit ?
-    `)
-    .bind(accountId, ...hookIds, limit + 1)
-    .all<CustomHookEventRow>()).results ?? [];
+  // D1 binds at most 100 values per statement, so a long hook list is read in
+  // groups. Each group returns its own first `limit + 1` rows in `seq` order, so
+  // the merged first `limit + 1` are exactly what one query would return.
+  const groups = await Promise.all(chunk(hookIds, MAX_BOUND_IDS_PER_STATEMENT).map(async (group) => {
+    const placeholders = group.map(() => "?").join(", ");
+    return (await env.DB
+      .prepare(`
+        select seq as event_seq, event_id, hook_id, method, query, headers_json, body, body_encoding, received_at
+          from custom_hook_events
+         where account_id = ? and hook_id in (${placeholders})
+         order by seq asc
+         limit ?
+      `)
+      .bind(accountId, ...group, limit + 1)
+      .all<CustomHookEventRow>()).results ?? [];
+  }));
+  const rows = groups.flat()
+    .sort((left, right) => Number(left.event_seq) - Number(right.event_seq))
+    .slice(0, limit + 1);
   return json({ events: rows.slice(0, limit).map(hookRowToEvent), hasMore: rows.length > limit });
 }
 
 const MAX_ACK_IDS = 500;
+/** D1 allows 100 bound values per statement; the account id takes one more. */
+const MAX_BOUND_IDS_PER_STATEMENT = 90;
+
+function chunk<T>(values: T[], size: number): T[][] {
+  const groups: T[][] = [];
+  for (let index = 0; index < values.length; index += size) groups.push(values.slice(index, index + size));
+  return groups;
+}
 
 /** `POST /hooks/ack {eventIds}`: ADE has processed these; the relay forgets them. */
 export async function handleAckCustomHookEvents(request: Request, env: RelayEnv): Promise<Response> {
@@ -337,12 +357,18 @@ export async function handleAckCustomHookEvents(request: Request, env: RelayEnv)
   }
   if (!eventIds.length) return json({ ok: true, acknowledged: 0 });
   if (eventIds.length > MAX_ACK_IDS) return json({ ok: false, error: `at most ${MAX_ACK_IDS} ids per call` }, { status: 400 });
-  const placeholders = eventIds.map(() => "?").join(", ");
-  const result = await env.DB
-    .prepare(`delete from custom_hook_events where account_id = ? and event_id in (${placeholders})`)
-    .bind(accountId, ...eventIds)
-    .run();
-  return json({ ok: true, acknowledged: Number(result.meta?.changes ?? 0) });
+  // In groups that stay under D1's limit of 100 bound values per statement.
+  // ADE acknowledges only ids it has processed, so if a later group fails, the
+  // ids already deleted were done, and the client's retry deletes the rest.
+  let acknowledged = 0;
+  for (const group of chunk(eventIds, MAX_BOUND_IDS_PER_STATEMENT)) {
+    const result = await env.DB
+      .prepare(`delete from custom_hook_events where account_id = ? and event_id in (${group.map(() => "?").join(", ")})`)
+      .bind(accountId, ...group)
+      .run();
+    acknowledged += Number(result.meta?.changes ?? 0);
+  }
+  return json({ ok: true, acknowledged });
 }
 
 function parseHookIds(raw: string | null): string[] {
