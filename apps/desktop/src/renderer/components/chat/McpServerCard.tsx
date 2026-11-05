@@ -110,16 +110,19 @@ export function McpServerRequestComposer({
     void window.ade?.mcpRegistry?.cancelSignIn({ server: server.name });
   }, [server.name]);
 
-  // The MCP servers page of the machine that runs this chat.
+  // A quick setup opens its own add dialog; any other server, the MCP servers
+  // page of the machine that runs this chat.
+  const settingsEntryId = entry && !entry.native ? `integrations.mcp-${entry.id}` : "mcp.servers";
   const openSettings = useCallback(() => {
-    navigateToAppTarget({ kind: "settings", entryId: "mcp.servers", machineId: chatSettingsMachineId(scope) });
-  }, [scope]);
+    navigateToAppTarget({ kind: "settings", entryId: settingsEntryId, machineId: chatSettingsMachineId(scope) });
+  }, [scope, settingsEntryId]);
 
   const onKeyDown = cardEscapeHandler({ signingIn, cancelSignIn, responding, onDecline });
 
   const askerFamily = cardAskerFamily(request.source, chatProvider);
   const asker = providerDisplayName(askerFamily);
-  const title = entry?.name ?? server.name;
+  // A second PostHog (`posthog-2`) says so, so it does not read as a duplicate.
+  const title = entry ? (server.name === entry.id ? entry.name : `${entry.name} (${server.name})`) : server.name;
   const savedTitle = `Saved to your account, on all your machines.${card.secrets.length ? " Values are never shown to the agent." : ""}`;
   const shownError = signInError ?? error;
   // The catalogue's name for a value ("API key"); otherwise the variable or header name.
@@ -230,7 +233,7 @@ export function McpServerRequestComposer({
             ) : (
               <LockKey size={12} weight="bold" />
             )}
-            {signingIn ? "Waiting for the browser…" : responding ? "Adding…" : signsIn ? `Continue with ${title}` : "Add server"}
+            {signingIn ? "Waiting for the browser…" : responding ? "Adding…" : signsIn ? `Continue with ${entry?.name ?? title}` : "Add server"}
           </button>
         </div>
 

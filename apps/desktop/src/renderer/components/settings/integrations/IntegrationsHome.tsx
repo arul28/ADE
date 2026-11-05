@@ -13,11 +13,14 @@
  * through this desktop's brain with no pin, as Settings › Integrations › MCP servers does.
  */
 import React, { useEffect, useMemo, useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import { CaretRight, DownloadSimple, MagnifyingGlass, Plugs, Plus } from "@phosphor-icons/react";
 import type { OpenProjectBinding } from "../../../../shared/types";
 import { captureError } from "../../../../shared/sentry/capture";
 import { connectProviderSpec } from "../../../../shared/integrationConnect";
-import { MCP_CATALOGUE, matchMcpCatalogue, type McpCatalogueEntry } from "../../../../shared/mcpCatalogue";
+import { MCP_CATALOGUE, matchMcpCatalogue, mcpCatalogueEntry, type McpCatalogueEntry } from "../../../../shared/mcpCatalogue";
+import { MCP_CATALOGUE_ANCHOR_PREFIX, mcpCatalogueIdFromAnchor } from "../../../../shared/settingsManifest";
+import { decodeSettingsHash } from "../settingsHash";
 import type { McpRegistryServer } from "../../../../shared/mcpRegistry";
 import { INTEGRATION_IDS, integrationBrand, integrationThemeVars, type IntegrationId } from "./integrationBrand";
 import type { IntegrationTone } from "./IntegrationChrome";
@@ -208,6 +211,24 @@ export function IntegrationsHome({
   const builtIn = INTEGRATION_IDS.filter((id) => matches(needle, integrationBrand(id).label, DESCRIPTIONS[id]));
   const canAdd = registry.phase === "ready";
 
+  // `#add-mcp-<id>` (a settings search result, a chat card's gear) opens that
+  // server's add dialog, or its row once it is added. The link is used once.
+  const location = useLocation();
+  const navigate = useNavigate();
+  const linkedEntry = mcpCatalogueEntry(mcpCatalogueIdFromAnchor(decodeSettingsHash(location.hash)));
+  useEffect(() => {
+    if (!linkedEntry || linkedEntry.native || !canAdd) return;
+    const added = servers.find((server) => server.name === linkedEntry.id || matchMcpCatalogue(server)?.id === linkedEntry.id);
+    if (added) {
+      onOpen("mcp", added.name);
+      return;
+    }
+    navigate({ pathname: location.pathname, search: location.search, hash: "" }, { replace: true });
+    setAdding(linkedEntry);
+    // Runs when the link arrives or the registry first loads, not on every server change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [linkedEntry?.id, canAdd]);
+
   return (
     <div className="ade-ig-home ade-ix-home">
       {connectedIntegrations.length || servers.length ? (
@@ -346,6 +367,8 @@ export function IntegrationsHome({
             return (
               <button
                 key={entry.id}
+                id={`${MCP_CATALOGUE_ANCHOR_PREFIX}${entry.id}`}
+                data-settings-anchor={`${MCP_CATALOGUE_ANCHOR_PREFIX}${entry.id}`}
                 type="button"
                 className="ade-ix-tile"
                 style={integrationThemeVars(brand.accent)}

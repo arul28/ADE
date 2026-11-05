@@ -245,9 +245,9 @@ const SERVICE_SIGN_IN_ACTIONS: ReadonlyMap<string, ReadonlySet<string> | true> =
   ["linear_credentials", true],
   ["linear_oauth", true],
   ["jira", new Set(["connect", "disconnect"])],
-  // The connect card and the MCP server card store what the person gives in the account.
+  // The connect card and the MCP server cards change what the account holds.
   ["integration_connect", new Set(["request"])],
-  ["mcp_registry", new Set(["request"])],
+  ["mcp_registry", new Set(["request", "remove"])],
   // Installing the ADE agent in Linear runs an OAuth consent and stores its token.
   ["linear_agent", new Set(["startInstall", "uninstall"])],
   ["ai", new Set([

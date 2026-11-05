@@ -3781,14 +3781,15 @@ function crossMachineRequesterTitle(
 }
 
 /**
- * The domains whose `request` raises a card in a chat (the private secret
- * card, the connect card, the MCP server card), each with the command that
- * raises it, for the "needs a chat" error.
+ * The actions that raise a card in a chat (the private secret card, the
+ * connect card, the MCP server cards), each with the command that raises it,
+ * for the "needs a chat" error.
  */
 const REQUEST_CARD_COMMAND: Readonly<Record<string, string>> = {
-  project_secret: "ade secrets request",
-  integration_connect: "ade integrations connect",
-  mcp_registry: "ade mcp servers add",
+  "project_secret.request": "ade secrets request",
+  "integration_connect.request": "ade integrations connect",
+  "mcp_registry.request": "ade mcp servers add",
+  "mcp_registry.remove": "ade mcp servers remove",
 };
 
 /**
@@ -6389,7 +6390,8 @@ async function runTool(args: {
         );
       }
     }
-    if (Object.hasOwn(REQUEST_CARD_COMMAND, domain) && action === "request") {
+    const cardCommand = REQUEST_CARD_COMMAND[`${domain}.${action}`];
+    if (cardCommand) {
       // The private secret card, the connect card and the MCP server card are
       // raised in a chat, and a session-bound agent may raise one only in its
       // OWN chat — the person answering must be
@@ -6397,7 +6399,7 @@ async function runTool(args: {
       // chat explicitly. It shares ask_user's rate limit: both put a blocking
       // card in front of the person.
       if (argsList || hasScalarArg) {
-        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `${domain}.request requires object arguments.`);
+        throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `${domain}.${action} requires object arguments.`);
       }
       const boundChatSessionId = asOptionalTrimmedString(callerCtx.chatSessionId)
         ?? asOptionalTrimmedString(session.identity.chatSessionId);
@@ -6411,7 +6413,7 @@ async function runTool(args: {
       if (boundChatSessionId && requestedSessionId && requestedSessionId !== boundChatSessionId && !mayNameChat) {
         throw new JsonRpcError(
           JsonRpcErrorCode.policyDenied,
-          `${domain}.request asks in your own chat only.`,
+          `${domain}.${action} asks in your own chat only.`,
         );
       }
       const targetChatSessionId = requestedSessionId && mayNameChat
@@ -6420,7 +6422,7 @@ async function runTool(args: {
       if (!targetChatSessionId) {
         throw new JsonRpcError(
           JsonRpcErrorCode.invalidParams,
-          `${domain}.request needs a chat to ask in. Run \`${REQUEST_CARD_COMMAND[domain]}\` from inside an ADE chat, or pass --session <chat id>.`,
+          `${domain}.${action} needs a chat to ask in. Run \`${cardCommand}\` from inside an ADE chat, or pass --session <chat id>.`,
         );
       }
       ensureAskUserAllowed(session);

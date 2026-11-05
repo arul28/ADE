@@ -13,6 +13,7 @@
  * once. `settingsManifest.test.ts` asserts the anchors and aliases stay live.
  */
 
+import { MCP_CATALOGUE } from "./mcpCatalogue";
 import { PROVIDER_DISPLAY_NAME } from "./providers";
 
 /**
@@ -270,6 +271,15 @@ export type SettingEntry = {
   macOnly?: true;
 };
 
+/** A catalogue tile's anchor on the Integrations home: `#add-mcp-<entry id>`. */
+export const MCP_CATALOGUE_ANCHOR_PREFIX = "add-mcp-";
+
+/** The catalogue entry id an anchor or hash names, or null. */
+export function mcpCatalogueIdFromAnchor(anchorOrHash: string): string | null {
+  const anchor = anchorOrHash.replace(/^#/, "");
+  return anchor.startsWith(MCP_CATALOGUE_ANCHOR_PREFIX) ? anchor.slice(MCP_CATALOGUE_ANCHOR_PREFIX.length) || null : null;
+}
+
 /**
  * Every setting ADE exposes. Order within a tab is the render order.
  */
@@ -330,6 +340,19 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     web: "hidden",
     group: "Found on this computer",
   },
+  // One per quick setup on the Integrations home, so "posthog" finds PostHog.
+  // Its tile carries the anchor; landing on it opens the server's add dialog
+  // (or its row, once added). GitHub, Linear and Jira are their own entries.
+  ...MCP_CATALOGUE.filter((entry) => !entry.native).map((entry): SettingEntry => ({
+    id: `integrations.mcp-${entry.id}`,
+    label: `${entry.name} MCP server`,
+    keywords: [entry.publisher, entry.category, entry.description],
+    tab: "integrations",
+    anchor: `${MCP_CATALOGUE_ANCHOR_PREFIX}${entry.id}`,
+    scope: "account",
+    web: "hidden",
+    group: "MCP servers",
+  })),
 
   // ── General ──────────────────────────────────────────────────────────────
   // Settings opens here. Its cards read this computer over plain IPC and the

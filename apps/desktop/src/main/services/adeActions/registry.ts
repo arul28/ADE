@@ -306,7 +306,7 @@ import { EncryptedFileCredentialStore } from "../../../../../ade-cli/src/service
 import { listIntegrationConnections, requestIntegrationConnect } from "../integrations/integrationConnectRequest";
 import { createMcpRegistryService } from "../mcp/mcpRegistryService";
 import { scanProviderMcpConfigs } from "../mcp/mcpProviderConfigScan";
-import { listMcpRegistry, mcpRegistryVaultFromStore, requestMcpServer, type McpServerRequestDeps } from "../mcp/mcpServerRequest";
+import { listMcpRegistry, mcpRegistryVaultFromStore, requestMcpServer, requestMcpServerRemoval, type McpServerRequestDeps } from "../mcp/mcpServerRequest";
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import { machineSecretTempFiles } from "../secrets/secretTempFiles";
 import { isClaudePromptCacheTtl } from "../../../shared/claudePromptCache";
@@ -4118,8 +4118,8 @@ function mcpRegistryDeps(runtime: AdeRuntime): McpServerRequestDeps {
  * this machine (names and set/not-set only, never a value). `request` raises
  * the MCP server card in the caller's own chat and saves the server the way
  * Settings › Integrations › MCP servers does, on the machine that runs the chat.
- * `chatStatus` says which registry servers a chat's running agent lacks
- * (the "Refresh chat" chip).
+ * `remove` asks the same way before it takes one out. `chatStatus` says which
+ * servers a chat's running agent lacks or still has (the "Refresh chat" chip).
  */
 function buildMcpRegistryDomainService(runtime: AdeRuntime): OpaqueService {
   const agentChatService = runtime.agentChatService;
@@ -4146,10 +4146,14 @@ function buildMcpRegistryDomainService(runtime: AdeRuntime): OpaqueService {
               throw error;
             }
           },
+          remove: (args?: unknown) => requestMcpServerRemoval({
+            ...mcpRegistryDeps(runtime),
+            requestChatInput: (input) => agentChatService.requestChatInput(input),
+          }, args),
           chatStatus: (args?: { chatSessionId?: unknown; sessionId?: unknown }) => {
             const raw = args?.chatSessionId ?? args?.sessionId;
             const sessionId = typeof raw === "string" ? raw.trim() : "";
-            return sessionId ? agentChatService.mcpRegistryChatStatus(sessionId) : { missing: [] };
+            return sessionId ? agentChatService.mcpRegistryChatStatus(sessionId) : { missing: [], removed: [] };
           },
         }
       : {}),

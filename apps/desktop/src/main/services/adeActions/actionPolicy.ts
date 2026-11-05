@@ -1036,9 +1036,10 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   agent37: ["ready_status", "claim_ready", "release_ready"],
   // `list` reads the MCP setup (names and set/not-set, never a value).
   // `request` raises the MCP server card in the caller's own chat; the person
-  // approves and types any value, and the host saves it. `chatStatus` names
-  // the registry servers a chat's agent lacks. None is secret-bearing.
-  mcp_registry: ["list", "request", "chatStatus"],
+  // approves and types any value, and the host saves it. `remove` asks the
+  // same way before it takes one out. `chatStatus` names the servers a chat's
+  // agent lacks or still has after a removal. None is secret-bearing.
+  mcp_registry: ["list", "request", "remove", "chatStatus"],
   // Reads and writes of the user's own account-scoped settings. No secret
   // values pass through here — the vault is a separate domain with its own
   // approval rules, precisely so "change my theme" and "read my API key"

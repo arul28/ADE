@@ -65,6 +65,7 @@ import { useSettingsMachineScope } from "./SettingsMachineScope";
 import {
   SETTINGS_ENTRIES,
   SETTINGS_TAB_IDS,
+  mcpCatalogueIdFromAnchor,
   sectionHasAvailableEntries,
   type SettingsTabId,
 } from "./settingsManifest";
@@ -200,6 +201,8 @@ export function integrationPageForAnchor(anchorOrHash: string): IntegrationsPage
  * `integration=` from the page open before it must not override its target.
  */
 export function openIntegrationFromUrl(searchParams: URLSearchParams, hash: string): IntegrationsPageId | null {
+  // A quick setup's tile is on the home grid.
+  if (mcpCatalogueIdFromAnchor(decodeSettingsHash(hash))) return null;
   const param = searchParams.get("integration")?.trim().toLowerCase();
   return integrationPageForAnchor(hash) ?? (isIntegrationsPageId(param) ? param : null);
 }

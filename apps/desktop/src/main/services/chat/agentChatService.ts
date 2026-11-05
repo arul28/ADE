@@ -12076,7 +12076,12 @@ export function createAgentChatService(args: {
    * In memory only: a chat with no live runtime gets every server on its next
    * launch anyway. Read by `mcpRegistryChatStatus` (the "Refresh chat" chip).
    */
-  const mcpRegistryLaunchedBySession = new WeakMap<ManagedChatSession, { epoch: number; targets: ReadonlyMap<string, string> }>();
+  const mcpRegistryLaunchedBySession = new WeakMap<ManagedChatSession, {
+    epoch: number;
+    targets: ReadonlyMap<string, string>;
+    /** The ones ADE handed to the provider (not left to its own config): what a removal takes away on refresh. */
+    passed: ReadonlySet<string>;
+  }>();
 
   /** What a registry server reaches (its URL, or its command line), never its env or header values. */
   const mcpRegistryTarget = (server: CallerMcpServers[string]): string => JSON.stringify(
@@ -12102,6 +12107,7 @@ export function createAgentChatService(args: {
       provider: managed.session.provider,
       readSecret: (vaultKey) => args.readAccountSecret?.(vaultKey) ?? null,
     });
+    const passed = registry.servers ? chatUserMcp.registryServers(chatMcpTarget(managed), registry.servers) : null;
     // The first read in a runtime's life is its launch; later reads in the
     // same epoch (redaction, status lookups) see what it already runs.
     const epoch = runtimeTeardownEpoch(managed);
@@ -12109,6 +12115,7 @@ export function createAgentChatService(args: {
       mcpRegistryLaunchedBySession.set(managed, {
         epoch,
         targets: new Map(Object.entries(registry.servers ?? {}).map(([name, server]) => [name, mcpRegistryTarget(server)])),
+        passed: new Set(Object.keys(passed ?? {})),
       });
     }
     const gaps = mcpRegistryLaunchNotices(registry);
@@ -12121,35 +12128,39 @@ export function createAgentChatService(args: {
         emitChatEvent(managed, { type: "system_notice", noticeKind: "warning", severity: "warning", message });
       }
     }
-    return registry.servers ? chatUserMcp.registryServers(chatMcpTarget(managed), registry.servers) : null;
+    return passed;
   };
 
   /**
    * Registry servers on for this chat now that its running agent did not
    * start with (new, or edited to reach another URL or command), minus the
-   * ones the provider's own config already runs. Empty
-   * when the chat has no live agent (its next launch gets everything) or is a
-   * chat the registry does not reach. Reads files only; never restarts.
+   * ones the provider's own config already runs (`missing`); and the ones ADE
+   * started it with that are no longer on for it, removed or turned off
+   * (`removed`). Empty when the chat has no live agent (its next launch gets
+   * the list as it is) or is a chat the registry does not reach. Reads files
+   * only; never restarts.
    */
-  const mcpRegistryChatStatus = (sessionId: string): { missing: string[] } => {
+  const mcpRegistryChatStatus = (sessionId: string): { missing: string[]; removed: string[] } => {
+    const none = { missing: [], removed: [] };
     const managed = managedSessions.get(sessionId);
     const adeHome = args.machineAdeHome?.trim();
-    if (!managed || !managed.runtime || !adeHome) return { missing: [] };
+    if (!managed || !managed.runtime || !adeHome) return none;
     const launched = mcpRegistryLaunchedBySession.get(managed);
-    if (!launched || launched.epoch !== runtimeTeardownEpoch(managed)) return { missing: [] };
+    if (!launched || launched.epoch !== runtimeTeardownEpoch(managed)) return none;
     const current = resolveMcpRegistryForLaunch({
       adeHome,
       projectRoot: args.projectRoot,
       provider: managed.session.provider,
       readSecret: () => null,
     }).servers ?? {};
+    const removed = [...launched.passed].filter((name) => !Object.hasOwn(current, name)).sort();
     const added: CallerMcpServers = {};
     for (const [name, server] of Object.entries(current)) {
       if (launched.targets.get(name) !== mcpRegistryTarget(server)) added[name] = server;
     }
-    if (!Object.keys(added).length) return { missing: [] };
+    if (!Object.keys(added).length) return { missing: [], removed };
     const leftOut = chatUserMcp.registryServersLeftToProvider(chatMcpTarget(managed), added);
-    return { missing: Object.keys(added).filter((name) => !leftOut.has(name)).sort() };
+    return { missing: Object.keys(added).filter((name) => !leftOut.has(name)).sort(), removed };
   };
 
   /** The caller's servers on top of the registry's: a caller that names a server keeps its own definition. */
@@ -65460,8 +65471,8 @@ export function createAgentChatService(args: {
       type: "system_notice",
       noticeKind: "info",
       message: hadRuntime
-        ? "Agent session restarted. Your next message starts a fresh process that picks up new skills, plugins, and MCP servers; the conversation is kept."
-        : "Agent session reset. Your next message starts a fresh process that picks up new skills, plugins, and MCP servers.",
+        ? "Session restarted. Conversation kept; new tools load on your next message."
+        : "Session reset. New tools load on your next message.",
     });
     persistChatState(managed);
     logger.info("agent_chat.session_restarted", {

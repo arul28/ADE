@@ -48,6 +48,7 @@ import {
   mcpServerSecretQuestionId,
   type McpRegistryListing,
   type McpServerRequestCard,
+  type McpServerRemoveResult,
   type McpServerRequestResult,
   type McpServerRequestSecret,
   type McpServerRequestSource,
@@ -65,6 +66,13 @@ import {
 import type { McpConfigProvider } from "../../../shared/types/mcpRegistry";
 import type { createMcpRegistryService, McpRegistryVault } from "./mcpRegistryService";
 import type { ProviderMcpScan } from "./mcpProviderConfigScan";
+
+/** What the agent is told once the server is out. */
+const MCP_SERVER_REMOVED_NEXT = "Removed from the person's account. This chat still has its tools until the person presses Refresh chat; ask them to.";
+
+const MCP_SERVER_REMOVE_QUESTION_ID = "mcp_server_remove";
+const MCP_SERVER_REMOVE_VALUE = "remove";
+const MCP_SERVER_KEEP_VALUE = "keep";
 
 /** What the agent is told once the server is in. */
 const MCP_SERVER_ADDED_NEXT = "Added. Ask the person to press Refresh chat to load its tools.";
@@ -348,6 +356,23 @@ function proposeImported(deps: McpServerRequestDeps, name: string): Proposal {
   };
 }
 
+/**
+ * A host a remote server can live at: a domain with a dot, localhost, or an IP.
+ * `https://blurb/mcp` is an agent's guess at an address, not one.
+ */
+function isRealHost(url: string): boolean {
+  let host: string;
+  try {
+    host = new URL(url).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  if (host === "localhost" || host.endsWith(".localhost")) return true;
+  if (host.startsWith("[")) return true; // IPv6
+  const labels = host.split(".");
+  return labels.length >= 2 && labels.every(Boolean);
+}
+
 function proposeAgent(args: Record<string, unknown>, name: string): Proposal {
   const command = typeof args.command === "string" ? args.command.trim() : "";
   const url = typeof args.url === "string" ? args.url.trim() : "";
@@ -364,6 +389,9 @@ function proposeAgent(args: Record<string, unknown>, name: string): Proposal {
     if (headerNames.length) throw new Error("Headers belong to an http or sse server. A local server reads env variables (--env).");
   } else {
     if (!/^https?:\/\//i.test(url)) throw new Error("A remote server needs its URL, starting with https:// (--url).");
+    if (!isRealHost(url)) {
+      throw new Error(`"${url}" has no real host. Never guess a server's address: ask the person for the link from its docs, or offer to search for it.`);
+    }
     if (envNames.length) throw new Error("Env variables belong to a local server. A remote server sends headers (--header).");
   }
   const server = normalizeMcpRegistryServer({
@@ -441,7 +469,7 @@ export async function requestMcpServer(
   if (native) return await connectNative(deps, args, name, native);
   // The connect card above stores on the device; an MCP server lives in the account.
   if (!deps.settings || !deps.vault) {
-    throw new Error("This machine is not signed in to an ADE account, or its sync is off, so it cannot add MCP servers. The person can add one in Settings › Integrations › MCP servers.");
+    throw new Error("This machine is not signed in to an ADE account, or its sync is off, so it cannot add MCP servers. The person can add one at ade://settings/mcp.servers.");
   }
   const match = findSameMcpServer(readRegistry(deps).servers, proposal.server);
   if (match) return already(match, name);
@@ -509,10 +537,10 @@ async function askToAdd(
     // the account must not write one.
     const synced = await deps.settings?.sync?.().catch(() => "failed" as const);
     if ((synced === "failed" || synced === "unavailable") && deps.settings?.get(ACCOUNT_SCOPE_ALL, MCP_SERVERS_SETTING_KEY) === undefined) {
-      throw new Error("ADE could not load your MCP servers from your account. Try again in a moment, or add the server in Settings › Integrations › MCP servers.");
+      throw new Error("ADE could not load your MCP servers from your account. Try again in a moment, or add the server at ade://settings/mcp.servers.");
     }
     const current = readRegistry(deps);
-    if (!current.live || !deps.settings) throw new Error("This machine lost its ADE account connection. Try again, or add the server in Settings › Integrations › MCP servers.");
+    if (!current.live || !deps.settings) throw new Error("This machine lost its ADE account connection. Try again, or add the server at ade://settings/mcp.servers.");
     // Another machine may have added it while the card was open.
     const raced = findSameMcpServer(current.servers, server);
     if (raced) {
@@ -542,7 +570,7 @@ async function askToAdd(
     const next = addMcpRegistryServer(current.servers, saved);
     if (typeof next === "string") throw new Error(next);
     if (!deps.settings.set(ACCOUNT_SCOPE_ALL, MCP_SERVERS_SETTING_KEY, next)) {
-      throw new Error("Your ADE account did not take the change. Try again, or add the server in Settings › Integrations › MCP servers.");
+      throw new Error("Your ADE account did not take the change. Try again, or add the server at ade://settings/mcp.servers.");
     }
     // Values the server does not name. A failure leaves an unused value, not a broken server.
     await deps.registry.pruneSecrets(saved.name, saved).catch((error: unknown) => {
@@ -579,4 +607,113 @@ async function askToAdd(
   }
   if (cardWasDeclined(response) || !settled) return { name: server.name, added: false, declined: true };
   return settled;
+}
+
+/**
+ * `mcp_registry.remove` — propose removing one MCP server from the person's
+ * account; they approve it in this chat, in every permission mode. On yes the
+ * server leaves the list, both off lists, and the vault (its values and
+ * sign-in), the way Settings › Integrations › MCP servers removes one.
+ * GitHub, Linear and Jira are ADE integrations, not servers: the agent links
+ * their settings page instead.
+ */
+export async function requestMcpServerRemoval(
+  deps: McpServerRequestDeps & { requestChatInput: CardRequestChatInput },
+  rawArgs: unknown,
+): Promise<McpServerRemoveResult> {
+  const args = readCardArgs(rawArgs);
+  const chatSessionId = typeof args.chatSessionId === "string" ? args.chatSessionId.trim() : "";
+  if (!chatSessionId) {
+    throw new Error("Removing an MCP server needs a chat to ask in. Run `ade mcp servers remove` from inside an ADE chat.");
+  }
+  const name = typeof args.name === "string" ? args.name.trim() : "";
+  if (!isValidMcpRegistryName(name)) throw new Error("Name the server to remove, as `ade mcp servers` lists it.");
+  if (!deps.settings || !deps.vault) {
+    throw new Error("This machine is not signed in to an ADE account, or its sync is off, so it cannot change MCP servers. Send the person ade://settings/mcp.servers.");
+  }
+  await deps.settings.sync?.().catch(() => "failed" as const);
+  const server = readRegistry(deps).servers.find((entry) => entry.name === name);
+  if (!server) {
+    const native = mcpCatalogueEntry(name)?.native;
+    if (native) {
+      throw new Error(`${name} is an ADE integration, not an MCP server. To disconnect it, send the person ade://settings/integrations.${native} and let them press Disconnect there.`);
+    }
+    throw new Error(`The person has no MCP server named "${name}" in ADE. Run \`ade mcp servers\` for the names. A server only another tool's config has is removed in that tool.`);
+  }
+  const reason = (typeof args.reason === "string" ? args.reason.trim() : "").slice(0, MCP_SERVER_REQUEST_REASON_MAX_CHARS);
+  const label = mcpCatalogueEntry(matchMcpCatalogue(server)?.id)?.name ?? name;
+  return await joinInFlight(removeInFlight, `${chatSessionId}\u0000${name}`, () => askToRemove(deps, args, chatSessionId, server, label, reason));
+}
+
+/** Removals still waiting on the person, by chat and server name. */
+const removeInFlight = new Map<string, Promise<McpServerRemoveResult>>();
+
+async function askToRemove(
+  deps: McpServerRequestDeps & { requestChatInput: CardRequestChatInput },
+  args: Record<string, unknown>,
+  chatSessionId: string,
+  server: McpRegistryServer,
+  label: string,
+  reason: string,
+): Promise<McpServerRemoveResult> {
+  let outcome: McpServerRemoveResult | null = null;
+  const beforeAccept = async (answers: Record<string, string[]>): Promise<void> => {
+    if (firstAnswer(answers, MCP_SERVER_REMOVE_QUESTION_ID) !== MCP_SERVER_REMOVE_VALUE) {
+      outcome = { name: server.name, removed: false, declined: true };
+      return;
+    }
+    const synced = await deps.settings?.sync?.().catch(() => "failed" as const);
+    if ((synced === "failed" || synced === "unavailable") && deps.settings?.get(ACCOUNT_SCOPE_ALL, MCP_SERVERS_SETTING_KEY) === undefined) {
+      throw new Error("ADE could not load your MCP servers from your account. Try again in a moment.");
+    }
+    const current = readRegistry(deps);
+    if (!current.live || !deps.settings) throw new Error("This machine lost its ADE account connection. Try again in a moment.");
+    // Another machine may have removed it while the card was open.
+    if (current.servers.some((entry) => entry.name === server.name)) {
+      const next = current.servers.filter((entry) => entry.name !== server.name);
+      if (!deps.settings.set(ACCOUNT_SCOPE_ALL, MCP_SERVERS_SETTING_KEY, next)) {
+        throw new Error("Your ADE account did not take the change. Try again in a moment.");
+      }
+    }
+    // A later server of the same name must not start out switched off.
+    const context = deps.registry.context(deps.projectRoot);
+    if (context.deviceOffKey && current.off.machine.includes(server.name)) {
+      deps.settings.set(ACCOUNT_SCOPE_ALL, context.deviceOffKey, current.off.machine.filter((entry) => entry !== server.name));
+    }
+    if (context.repoScope && current.off.project.includes(server.name)) {
+      deps.settings.set(context.repoScope, MCP_OFF_SETTING_KEY, current.off.project.filter((entry) => entry !== server.name));
+    }
+    // A value left behind is unused, not a broken server: report it, do not fail.
+    await deps.registry.pruneSecrets(server.name, null).catch((error: unknown) => {
+      captureError(error, { fingerprint: ["mcp_registry", "remove_prune_secrets"] });
+    });
+    outcome = { name: server.name, removed: true, next: MCP_SERVER_REMOVED_NEXT };
+  };
+
+  const response = await deps.requestChatInput({
+    beforeAccept,
+    chatSessionId,
+    title: `Remove MCP server ${server.name}`,
+    body: reason,
+    timeoutMs: cardTimeoutMs(args),
+    allowsFreeform: false,
+    eventDescription: `Remove MCP server ${server.name}`,
+    questions: [{
+      id: MCP_SERVER_REMOVE_QUESTION_ID,
+      header: server.name,
+      question: `Remove ${label} from your account? Every machine loses it, with its saved keys and sign-in.`,
+      allowsFreeform: false,
+      options: [
+        { label: "Remove", value: MCP_SERVER_REMOVE_VALUE },
+        { label: "Keep", value: MCP_SERVER_KEEP_VALUE },
+      ],
+    }],
+  });
+
+  const settled = outcome as McpServerRemoveResult | null;
+  if (settled?.removed) return settled;
+  if (response.timedOut) {
+    throw new Error(`Nobody answered the request to remove ${server.name} in time. Ask again when the person is around.`);
+  }
+  return { name: server.name, removed: false, declined: true };
 }

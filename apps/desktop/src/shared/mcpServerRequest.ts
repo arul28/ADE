@@ -74,6 +74,11 @@ export type McpServerRequestResult =
   /** A catalogue name that is an ADE integration: the connect card ran instead. */
   | { name: string; added: false; integration: ConnectProviderId; connected: boolean; next: string };
 
+/** What `mcp_registry.remove` answers. */
+export type McpServerRemoveResult =
+  | { name: string; removed: true; next: string }
+  | { name: string; removed: false; declined: true };
+
 /** One registry server as `mcp_registry.list` reports it. */
 export type McpRegistryListEntry = {
   name: string;
@@ -107,6 +112,8 @@ export type McpRegistryListing = {
 export type McpRegistryChatStatus = {
   /** Registry servers on here that this chat's running agent did not start with. */
   missing: string[];
+  /** Servers it started with that are no longer on for it. Absent from an older brain. */
+  removed?: string[];
 };
 
 export function mcpServerSecretQuestionId(field: McpSecretField, name: string): string {

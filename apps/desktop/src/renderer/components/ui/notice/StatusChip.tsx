@@ -1,5 +1,6 @@
-import type { CSSProperties, ReactNode } from "react";
+import { useId, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { X } from "@phosphor-icons/react";
+import { AnchoredTooltip } from "../AnchoredTooltip";
 import { cn } from "../cn";
 import { noticeTone, type NoticeTone } from "./noticeTones";
 
@@ -102,16 +103,7 @@ export function StatusChip({
           {action.label}
         </button>
       ))}
-      {help ? (
-        <button
-          type="button"
-          aria-label={help}
-          title={help}
-          className="grid h-[16px] w-[16px] shrink-0 cursor-help place-items-center rounded-full text-[9px] font-semibold leading-none text-fg/45 shadow-[inset_0_0_0_1px_currentColor] transition-colors hover:text-fg/80 focus-visible:text-fg/80 focus-visible:outline-none"
-        >
-          ?
-        </button>
-      ) : null}
+      {help ? <ChipHelp text={help} /> : null}
       {onDismiss ? (
         <button
           type="button"
@@ -123,5 +115,53 @@ export function StatusChip({
         </button>
       ) : null}
     </div>
+  );
+}
+
+/**
+ * The chip's "?": its explanation on hover or focus. A native `title` showed
+ * nothing in the composer's status row, so it is an anchored tooltip, which
+ * no clipping parent can cut off.
+ */
+function ChipHelp({ text }: { text: string }) {
+  const id = useId();
+  const [open, setOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  return (
+    <>
+      <button
+        ref={triggerRef}
+        type="button"
+        aria-label="What is this?"
+        aria-describedby={open ? id : undefined}
+        onMouseEnter={() => setOpen(true)}
+        onMouseLeave={() => setOpen(false)}
+        onFocus={() => setOpen(true)}
+        onBlur={() => setOpen(false)}
+        onClick={() => setOpen((prev) => !prev)}
+        onKeyDown={(event) => {
+          if (event.key === "Escape") setOpen(false);
+        }}
+        className={cn(
+          "grid h-[16px] w-[16px] shrink-0 cursor-help place-items-center rounded-full text-[9px] font-semibold leading-none shadow-[inset_0_0_0_1px_currentColor] transition-colors hover:text-fg/80 focus-visible:text-fg/80 focus-visible:outline-none",
+          open ? "text-fg/80" : "text-fg/45",
+        )}
+      >
+        ?
+      </button>
+      {open ? (
+        <AnchoredTooltip
+          open
+          triggerRef={triggerRef}
+          side="top"
+          remeasureKey={text}
+          onDismiss={() => setOpen(false)}
+          id={id}
+          className="pointer-events-none w-[260px] rounded-lg border border-[var(--color-border)] bg-[var(--color-popup-bg,var(--color-card))] px-2.5 py-2 font-sans text-[11px] leading-[1.5] text-fg/75 shadow-[0_8px_24px_rgba(0,0,0,0.32)]"
+        >
+          {text}
+        </AnchoredTooltip>
+      ) : null}
+    </>
   );
 }
