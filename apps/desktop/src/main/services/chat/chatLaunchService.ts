@@ -764,6 +764,42 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
     }
   };
 
+  /** A failed chat launch whose chat exists but whose agent never started through it. */
+  const isStrandedChatLaunch = (record: LaunchRecord): boolean =>
+    record.snapshot.kind === "chat"
+    && record.snapshot.phase === "failed"
+    && !record.snapshot.agentStarted
+    && record.snapshot.sessionCreated
+    && Boolean(record.snapshot.sessionId);
+
+  /**
+   * The agent stage failed (a sign-in hiccup, say), then a plain send to the
+   * chat started the agent anyway. The launch is done: mark it so. Left
+   * failed, it shows "Setup failed" and keeps catching the chat's sends in a
+   * queue that only a started launch delivers, so they never arrive.
+   */
+  const adoptStartedChat = (record: LaunchRecord): void => {
+    if (!isStrandedChatLaunch(record)) return;
+    record.messageSent = true;
+    record.snapshot.agentStarted = true;
+    record.snapshot.error = null;
+    setStage(record, "agent", "done");
+    record.snapshot.phase = "completed";
+    record.snapshot.endedAt = nowIso();
+    logger.info("chat_launch.adopted_started_chat", {
+      launchId: record.snapshot.launchId,
+      queued: record.snapshot.queuedMessages.length,
+    });
+    publish(record);
+    void deliverQueuedMessages(record);
+  };
+
+  /** Adopt the chat if its agent has replied (see `openingMessageLanded`). */
+  const adoptIfChatStarted = async (record: LaunchRecord): Promise<void> => {
+    if (!isStrandedChatLaunch(record)) return;
+    if (await openingMessageLanded(record.snapshot.sessionId!)) adoptStartedChat(record);
+  };
+
   const runChatAgentStage = async (record: LaunchRecord): Promise<void> => {
     const chat = record.chat;
     if (!chat) throw new Error("Chat launch is missing its chat arguments.");
@@ -1117,6 +1153,8 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
     const text = String(args.text ?? "");
     if (!text.trim() && !args.attachments?.length) throw new Error("A queued message needs text or an attachment.");
     if (record.snapshot.phase === "cancelled") throw new Error("This launch was cancelled.");
+    // A client that still sees the failed launch routes the chat's sends here.
+    await adoptIfChatStarted(record);
     const delivering = record.snapshot.agentStarted && Boolean(record.snapshot.sessionId);
     if (delivering && record.snapshot.queuedMessages.length === 0) {
       // Too late to queue here and nothing waits ahead of it: a normal send.
@@ -1171,6 +1209,7 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
 
   const dispose = (): void => {
     disposed = true;
+    unsubscribeChatEvents();
     for (const [launchId, runtime] of runtimes) {
       runtime.abort.abort();
       disposeRuntime(launchId);
@@ -1186,7 +1225,16 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
     }
     // A completed launch reloaded with undelivered queued messages resumes delivery.
     if (record.snapshot.phase === "completed") void deliverQueuedMessages(record);
+    // Its chat may have started some other way since the launch failed.
+    else void adoptIfChatStarted(record);
   }
+
+  // Reply text in a stranded launch's chat proves its agent runs (a plain send started it).
+  const unsubscribeChatEvents = deps.agentChatService.subscribeToEvents((envelope) => {
+    if (envelope.event.type !== "text") return;
+    const record = records.get(envelope.sessionId);
+    if (record?.snapshot.sessionId === envelope.sessionId) adoptStartedChat(record);
+  });
 
   const subscribe = (listener: (event: ChatLaunchEvent) => void): (() => void) => {
     listeners.add(listener);
