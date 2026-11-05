@@ -36653,7 +36653,7 @@ export function createAgentChatService(args: {
       onDispatched?: () => void;
       onBackendDispatched?: () => void;
     },
-  ): Promise<void> => {
+  ): Promise<"queued" | void> => {
     const turnId = randomUUID();
     const provider = managed.session.provider;
     if (!isAcpChatProvider(provider)) {
@@ -36668,6 +36668,7 @@ export function createAgentChatService(args: {
     managed.acpLastExitStderrTail = undefined;
 
     let runtime: AcpRuntime;
+    let behindActiveTurn: "queued" | "dropped" | null = null;
     try {
       runtime = await ensureAcpSessionRuntime(managed);
       const validation = validateSessionReadyForTurn(managed);
@@ -36692,16 +36693,12 @@ export function createAgentChatService(args: {
             args.metadata,
             args.displayText !== undefined ? { displayText: args.displayText } : undefined,
           );
-          // Accepted either way: queued, or dropped with the queue-full notice.
-          // Thrown, it would reach the setup failure below and end the running
-          // turn's chat. A waiter on dispatch is released here; nothing else
-          // would ever release it.
-          if (queued) logger.info("agent_chat.acp_send_queued_behind_active_turn", { sessionId: managed.session.id });
-          args.onDispatched?.();
-          args.onBackendDispatched?.();
-          return;
+          // Settled below, past the setup failure: that path would end the
+          // running turn's chat.
+          behindActiveTurn = queued ? "queued" : "dropped";
+        } else {
+          throw new Error(validation.reason);
         }
-        throw new Error(validation.reason);
       }
     } catch (error) {
       // Setup failure. One visible error, then the terminal markers that
@@ -36722,6 +36719,20 @@ export function createAgentChatService(args: {
       emitChatEvent(managed, { type: "done", turnId, status: "failed", ...doneModel });
       persistChatState(managed);
       return;
+    }
+    // Accepted: the message runs as the next turn, so a waiter on dispatch is
+    // released now; nothing else would release it. Its prompt was not sent, so
+    // the caller leaves the directives it carried undelivered. A full queue
+    // dropped it (with its notice): the send fails as busy, which leaves the
+    // running turn alone.
+    if (behindActiveTurn === "queued") {
+      logger.info("agent_chat.acp_send_queued_behind_active_turn", { sessionId: managed.session.id });
+      args.onDispatched?.();
+      args.onBackendDispatched?.();
+      return "queued";
+    }
+    if (behindActiveTurn === "dropped") {
+      throw new Error("A turn is already active and the message queue is full. Wait for the current turn to finish.");
     }
 
     emitAcpDegradationNotes(managed, runtime.dialect, runtime.permissionMode);
@@ -39329,7 +39340,8 @@ export function createAgentChatService(args: {
       return runPiTurn(managed, args);
     }
     if (runtimeKind === "acp" || isAcpChatProvider(managed.session.provider)) {
-      return runAcpTurn(managed, args);
+      await runAcpTurn(managed, args);
+      return;
     }
     if (runtimeKind === "muse" || managed.session.provider === "muse") {
       return runMuseTurn(managed, args);
@@ -62201,7 +62213,7 @@ export function createAgentChatService(args: {
       // A slash command is ordinary prompt text for every ACP dialect: the
       // agent advertises the list, ADE offers it, and the chosen text is sent
       // unchanged. There is no dispatch verb to translate it into.
-      await runAcpTurn(managed, {
+      const outcome = await runAcpTurn(managed, {
         promptText,
         userText: submittedText,
         displayText: visibleText,
@@ -62214,7 +62226,7 @@ export function createAgentChatService(args: {
         onDispatched,
         onBackendDispatched,
       });
-      markEpochDirectivesDelivered();
+      if (outcome !== "queued") markEpochDirectivesDelivered();
       return;
     }
 

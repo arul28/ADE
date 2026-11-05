@@ -109,6 +109,21 @@ function readNested(source: Record<string, unknown> | null | undefined, key: str
   return isRecord(value) ? value : null;
 }
 
+/**
+ * The account a token names (its JWT `sub`), read without verifying it: only
+ * to tell a new sign-in from a refreshed token for the same account.
+ */
+function accountTokenSubject(token: string | null): string | null {
+  const payload = token?.split(".")[1];
+  if (!payload) return null;
+  try {
+    const claims = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as unknown;
+    return isRecord(claims) ? readString(claims, "sub") : null;
+  } catch {
+    return null;
+  }
+}
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -207,14 +222,22 @@ export function createCursorCloudIngressService(deps: CursorCloudIngressServiceD
   // A refused poll is retried once, after registering the secret again. Past
   // that the credentials are wrong in a way another poll cannot fix, so polling
   // pauses, longer each time, until a pause ends or setup runs again.
+  // Signing in to another account (or at all) ends the pause: the refusal was
+  // about the credentials polling had then.
   let unauthorizedPausedUntil = 0;
   let unauthorizedPauseMs = UNAUTHORIZED_FIRST_PAUSE_MS;
+  let unauthorizedPausedAccount: string | null = null;
   const clearUnauthorizedPause = (): void => {
     unauthorizedPausedUntil = 0;
     unauthorizedPauseMs = UNAUTHORIZED_FIRST_PAUSE_MS;
+    unauthorizedPausedAccount = null;
   };
-  const pauseAfterUnauthorized = (credentials: { hasSecret: boolean; hasAccountToken: boolean }): void => {
+  const pauseAfterUnauthorized = (
+    accountAccessToken: string | null,
+    credentials: { hasSecret: boolean; hasAccountToken: boolean },
+  ): void => {
     unauthorizedPausedUntil = Date.now() + unauthorizedPauseMs;
+    unauthorizedPausedAccount = accountTokenSubject(accountAccessToken);
     deps.logger.warn("automations.cursor_cloud_relay_unauthorized", {
       pausedUntil: new Date(unauthorizedPausedUntil).toISOString(),
       ...credentials,
@@ -361,7 +384,10 @@ export function createCursorCloudIngressService(deps: CursorCloudIngressServiceD
 
   const poll = async (): Promise<void> => {
     if (deps.wantsEvents && !deps.wantsEvents()) return;
-    if (Date.now() < unauthorizedPausedUntil) return;
+    if (Date.now() < unauthorizedPausedUntil) {
+      if (accountTokenSubject(await readAccountAccessToken()) === unauthorizedPausedAccount) return;
+      clearUnauthorizedPause();
+    }
     let status = getStatus();
     if (status.state === "unconfigured" || (status.state === "error" && !status.webhookId)) {
       try {
@@ -422,13 +448,13 @@ export function createCursorCloudIngressService(deps: CursorCloudIngressServiceD
             try {
               await reregisterSecret({ relayBaseUrl: status.relayBaseUrl, secret: binding.secret });
             } catch (error: unknown) {
-              pauseAfterUnauthorized(credentials);
+              pauseAfterUnauthorized(accountAccessToken, credentials);
               throw error;
             }
             page -= 1;
             continue;
           }
-          pauseAfterUnauthorized(credentials);
+          pauseAfterUnauthorized(accountAccessToken, credentials);
           throw new Error(CURSOR_CLOUD_RELAY_UNAUTHORIZED_MESSAGE);
         }
         const detail = isRecord(rawPayload) ? readString(rawPayload, "error") : null;
