@@ -5,14 +5,22 @@ import { buildAgent37AgentActions, type Agent37AgentActionDeps, type Agent37Appr
 
 /**
  * Who may let an agent spend Agent 37 money or delete a machine. The person
- * decides; an unattended agent gets ADE's answer: spending within the cap
- * yes, raising the cap no, deleting a machine it didn't make no.
+ * decides; an unattended agent gets ADE's answer from the person's limits:
+ * within them yes, past them (a bigger size, the day's count, the cap, never
+ * sleeping) no, deleting a machine it didn't make no.
  */
 describe("Agent 37 agent actions: approvals", () => {
-  function setup(options: { level?: PermissionLevel | null; automation?: boolean; madeBy?: string; answer?: "yes" | "no" } = {}) {
+  function setup(options: {
+    level?: PermissionLevel | null;
+    automation?: boolean;
+    madeBy?: string;
+    answer?: "yes" | "no";
+    unattendedSpend?: boolean;
+    madeToday?: number;
+  } = {}) {
     const ran: string[] = [];
     const cards: string[] = [];
-    let budget: Agent37Budget = { monthlyCapUsd: 20, agents: { unattendedSpend: true, machinesPerDay: 3, maxShape: "4x16" } };
+    let budget: Agent37Budget = { monthlyCapUsd: 20, agents: { unattendedSpend: options.unattendedSpend ?? true, machinesPerDay: 3, maxShape: "4x16" } };
     const box = { instanceId: "inst_1", name: "lane box", machineKey: "mk_1", type: "box", runningHourlyUsd: 0.008 };
     const deps = {
       machines: {
@@ -23,6 +31,7 @@ describe("Agent 37 agent actions: approvals", () => {
           return { ok: true };
         },
         instanceMetadata: async () => (options.madeBy ? { ade_made_by_chat: options.madeBy } : {}),
+        agentMadeToday: async () => options.madeToday ?? 0,
       },
       budget: {
         read: async () => budget,
@@ -33,7 +42,12 @@ describe("Agent 37 agent actions: approvals", () => {
         },
       },
       readySettings: { read: async () => ({ projects: [], authoritative: true }), write: async () => undefined },
-      desktop: () => null,
+      desktop: () => ({
+        create: async () => {
+          ran.push("create");
+          return { instanceId: "inst_new" };
+        },
+      }),
       approvals: {
         requestChatInput: async (card: { title: string }) => {
           cards.push(card.title);
@@ -65,6 +79,14 @@ describe("Agent 37 agent actions: approvals", () => {
     ["a shell with no chat is refused", shell, {}, "delete", { machine: "inst_1" }, null, 0],
     ["an attended agent asks, and no stops it", agent, { level: "ask", answer: "no" }, "delete", { machine: "inst_1" }, null, 1],
     ["an attended agent asks, and yes runs it", agent, { level: "ask", answer: "yes" }, "resize", { machine: "lane box", shape: "4x8" }, "resize", 1],
+    // What the person lets unattended agents spend (balanced: 3 a day, up to 4x16).
+    ["with unattended spending off, a full-auto agent resizes nothing", agent, { level: "full-auto", unattendedSpend: false }, "resize", { machine: "lane box", shape: "4x8" }, null, 0],
+    ["a full-auto agent may not pick a size over the limit", agent, { level: "full-auto" }, "resize", { machine: "lane box", shape: "4x32" }, null, 0],
+    ["a full-auto agent makes a machine within the day's limit", agent, { level: "full-auto", madeToday: 2 }, "create", { kind: "box", shape: "2x4" }, "create", 0],
+    ["at the day's limit a full-auto agent makes no machine", agent, { automation: true, madeToday: 3 }, "create", { kind: "box", shape: "2x4" }, null, 0],
+    ["an attended agent asks even past the limits", agent, { level: "ask", answer: "yes", madeToday: 9 }, "create", { kind: "vm", shape: "4x32" }, "create", 1],
+    ["a full-auto agent may not loosen the limits", agent, { level: "full-auto" }, "set_limits", { preset: "hands_off" }, null, 0],
+    ["any agent may tighten the limits", agent, { level: "full-auto" }, "set_limits", { preset: "ask" }, "cap:20", 0],
   ] as const)("%s", async (_label, approval, options, verb, args, expectedRun, expectedCards) => {
     const { actions, ran, cards } = setup(options);
     const call = (actions as unknown as Record<string, (args: unknown) => Promise<unknown>>)[verb]!({ ...args, approval });

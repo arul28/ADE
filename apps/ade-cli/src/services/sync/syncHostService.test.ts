@@ -6663,6 +6663,9 @@ describe("CTO-gated Linear sync commands", () => {
         "chat.continueUsageLimitOnAlternate",
         // Switching accounts changes which login pays for the next turn.
         "chat.switchAccount",
+        // Making, waking, resizing or deleting an Agent 37 machine spends or
+        // deletes: the phone's controller only, never a read-only viewer.
+        "agent37.write",
         // An MCP App request runs a tool or reads a resource on the host, so a
         // read-only viewer never sends one.
         "chat.mcpAppRequest",
@@ -6706,6 +6709,7 @@ describe("CTO-gated Linear sync commands", () => {
         "chat.mcpAppRequest",
         // The phone's Chat Info account row moves a chat to another account.
         "chat.switchAccount",
+        "agent37.write",
       ]);
 
       // Provider-account changes, and a running sign-in's status, are for a
@@ -6731,6 +6735,9 @@ describe("CTO-gated Linear sync commands", () => {
         const RUNTIME_SCOPED_OPTIONAL_ACTIONS = new Set([
           "chat.resolveSourceFavicons",
           "account.getMachineInventory",
+          // Agent 37 is the account's, so any brain answers the phone's page.
+          "agent37.read",
+          "agent37.write",
         ]);
         // Provider accounts are machine-wide config homes, never a project's.
         const scope = RUNTIME_SCOPED_OPTIONAL_ACTIONS.has(action) || action.startsWith("providerAccounts.")
