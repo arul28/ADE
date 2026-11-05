@@ -55,15 +55,19 @@ function ipcTimeoutLimitMs(error: unknown): number | null {
   return limitMs > 0 ? limitMs : null;
 }
 
-/** How late a timeout's deadline timer fired, before any grace. */
-function timerLateMs(error: unknown, limitMs: number, startedAt: number): number {
-  return error instanceof IpcHandlerTimeoutError ? error.timerLateMs : Date.now() - startedAt - limitMs;
-}
+/** An IPC timeout: its deadline, how late its timer fired, and the CPU spent meanwhile. */
+type IpcTimeout = { limitMs: number; lateMs: number; cpuMs: number };
 
-/** CPU this process spent since `startedCpu`, in ms (all threads). */
-function cpuMsSince(startedCpu: NodeJS.CpuUsage): number {
+function readIpcTimeout(error: unknown, startedAt: number, startedCpu: NodeJS.CpuUsage): IpcTimeout | null {
+  const limitMs = ipcTimeoutLimitMs(error);
+  if (limitMs == null) return null;
   const used = process.cpuUsage(startedCpu);
-  return Math.round((used.user + used.system) / 1000);
+  return {
+    limitMs,
+    // The timer's own lateness, before the grace (`shared/deadlineTimer.ts`).
+    lateMs: error instanceof IpcHandlerTimeoutError ? error.timerLateMs : Date.now() - startedAt - limitMs,
+    cpuMs: Math.round((used.user + used.system) / 1000),
+  };
 }
 
 /**
@@ -83,19 +87,13 @@ function cpuMsSince(startedCpu: NodeJS.CpuUsage): number {
  * covers that and App Nap alike: the timer fired late while the process
  * spent almost no CPU, so it was not running, not busy.
  */
-function sleptThroughTimeout(
-  error: unknown,
-  startedAt: number,
-  startedMono: number,
-  startedCpu: NodeJS.CpuUsage,
-): boolean {
-  const limitMs = ipcTimeoutLimitMs(error);
-  if (limitMs == null) return false;
-  if (lastResumeAt >= startedAt + limitMs) return true;
+function sleptThroughTimeout(timeout: IpcTimeout | null, startedAt: number, startedMono: number): boolean {
+  if (!timeout) return false;
+  if (lastResumeAt >= startedAt + timeout.limitMs) return true;
   if (lastSuspendAt >= startedAt) return true;
   const asleepMs = (Date.now() - startedAt) - (performance.now() - startedMono);
   if (asleepMs >= SLEPT_DURING_CALL_MS) return true;
-  return ipcTimerFiredWhilePaused(timerLateMs(error, limitMs, startedAt), cpuMsSince(startedCpu));
+  return ipcTimerFiredWhilePaused(timeout.lateMs, timeout.cpuMs);
 }
 
 /**
@@ -104,13 +102,7 @@ function sleptThroughTimeout(
  * process did not run, or its main thread was blocked), the sleep signals,
  * and whether anyone was looking at ADE (macOS throttles a hidden app).
  */
-function timeoutDiagnostics(
-  error: unknown,
-  limitMs: number,
-  startedAt: number,
-  startedMono: number,
-  startedCpu: NodeJS.CpuUsage,
-): Record<string, unknown> {
+function timeoutDiagnostics(timeout: IpcTimeout, startedAt: number, startedMono: number): Record<string, unknown> {
   const now = Date.now();
   const elapsedMs = now - startedAt;
   let systemIdleSec: number | null = null;
@@ -122,9 +114,7 @@ function timeoutDiagnostics(
     // Diagnostics only.
   }
   return {
-    limitMs,
-    lateMs: timerLateMs(error, limitMs, startedAt),
-    cpuMs: cpuMsSince(startedCpu),
+    ...timeout,
     monotonicGapMs: Math.round(elapsedMs - (performance.now() - startedMono)),
     sinceSuspendSec: lastSuspendAt ? Math.round((now - lastSuspendAt) / 1000) : null,
     sinceResumeSec: lastResumeAt ? Math.round((now - lastResumeAt) / 1000) : null,
@@ -179,24 +169,19 @@ export function installIpcErrorCapture(labelFor: (channel: string, args: readonl
       } catch (error) {
         const label = labelFor(channel, args);
         const durationMs = Date.now() - startedAt;
-        const timeoutLimitMs = ipcTimeoutLimitMs(error);
-        if (isExpectedOutcome(error) || sleptThroughTimeout(error, startedAt, startedMono, startedCpu)) {
+        const timeout = readIpcTimeout(error, startedAt, startedCpu);
+        if (isExpectedOutcome(error) || sleptThroughTimeout(timeout, startedAt, startedMono)) {
           // An answer ("Lane not found", "Can't reach …"), or a timer that ran
           // out while ADE was not running: a Sentry Log, not an issue.
           forwardLogToSentry("warn", `ipc.expected.${label}`, {
             message: error instanceof Error ? error.message : String(error),
             durationMs,
-            ...(timeoutLimitMs != null
-              ? {
-                  lateMs: timerLateMs(error, timeoutLimitMs, startedAt),
-                  cpuMs: cpuMsSince(startedCpu),
-                }
-              : {}),
+            ...(timeout ? { lateMs: timeout.lateMs, cpuMs: timeout.cpuMs } : {}),
           });
           throw error;
         }
         addSentryBreadcrumb("ipc", label, { durationMs, ok: false }, "error");
-        if (timeoutLimitMs != null && isTimeoutBurstRepeat(label, Date.now())) {
+        if (timeout && isTimeoutBurstRepeat(label, Date.now())) {
           forwardLogToSentry("warn", `ipc.timeout_repeat.${label}`, { durationMs });
           throw error;
         }
@@ -212,9 +197,7 @@ export function installIpcErrorCapture(labelFor: (channel: string, args: readonl
             },
             extra: {
               durationMs,
-              ...(timeoutLimitMs != null
-                ? timeoutDiagnostics(error, timeoutLimitMs, startedAt, startedMono, startedCpu)
-                : {}),
+              ...(timeout ? timeoutDiagnostics(timeout, startedAt, startedMono) : {}),
             },
             // A runtime action's failure is rebuilt from the brain's reply and
             // has no stack of its own: group it by what failed, not by which

@@ -191,7 +191,7 @@ import type { ProductAnalyticsService } from "../analytics/productAnalyticsServi
 import { createAccountSignInAnalytics } from "../analytics/accountSignInAnalytics";
 import { sendSentryUserFeedback } from "../../sentry/userFeedback";
 import { IpcHandlerTimeoutError } from "../../sentry/ipcHandlerTimeout";
-import { armDeadline, type DeadlineTimer } from "../../../shared/deadlineTimer";
+import { armDeadline } from "../../../shared/deadlineTimer";
 import {
   brainActionErrorCode,
   createMachineRegisterRefusalObserver,
@@ -2504,20 +2504,19 @@ export function registerIpc({
           });
         }
         const IPC_TIMEOUT_MS = ipcInvokeTimeoutMs(channel, args);
-        let deadline: DeadlineTimer | null = null;
         let didTimeout = false;
+        let rejectTimedOut: (error: Error) => void = () => {};
+        const timedOut = new Promise<never>((_, reject) => {
+          rejectTimedOut = reject;
+        });
+        // A timer that fires late (the Mac slept) gets one short grace, so a
+        // reply already waiting on the brain's socket still lands.
+        const deadline = armDeadline(IPC_TIMEOUT_MS, (timerLateMs) => {
+          didTimeout = true;
+          rejectTimedOut(new IpcHandlerTimeoutError(channel, IPC_TIMEOUT_MS, callId, timerLateMs));
+        });
         try {
-          const result = await Promise.race([
-            listener(event, ...args),
-            new Promise<never>((_, reject) => {
-              // A timer that fires late (the Mac slept) gets one short grace,
-              // so a reply already waiting on the brain's socket still lands.
-              deadline = armDeadline(IPC_TIMEOUT_MS, (timerLateMs) => {
-                didTimeout = true;
-                reject(new IpcHandlerTimeoutError(channel, IPC_TIMEOUT_MS, callId, timerLateMs));
-              });
-            }),
-          ]);
+          const result = await Promise.race([listener(event, ...args), timedOut]);
           const durationMs = Date.now() - startedAt;
           recordIpcInvokeAggregate({ channel: perfChannelLabel(channel, args), winId, durationMs, failed: false });
           const usageAction = usageActionFromIpcChannel(channel);
@@ -2633,7 +2632,7 @@ export function registerIpc({
           }
           throw error;
         } finally {
-          deadline?.cancel();
+          deadline.cancel();
         }
       })) as typeof ipcMain.handle;
     tracedIpcMain.__adeTraceWrapped = true;
