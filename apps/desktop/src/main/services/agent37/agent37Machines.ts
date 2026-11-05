@@ -9,6 +9,9 @@
  */
 
 import {
+  AGENT37_READY_METADATA,
+  isAgent37InstanceId,
+  readAgent37ReadyMachineState,
   agent37IdleHourlyUsd,
   agent37MachineLimitMessage,
   agent37MachineState,
@@ -95,6 +98,17 @@ export function toAgent37Machine(
     machineKey: instance.metadata[AGENT37_MACHINE_KEY_METADATA] ?? null,
     createdAtMs,
     madeByAde: agent37InstanceMadeByAde(instance),
+    ready: readyOf(instance),
+  };
+}
+
+/** A project's ready machine (see agent37ReadyMachines.ts), or null for any other box. */
+function readyOf(instance: Agent37Instance): Agent37Machine["ready"] {
+  const state = readAgent37ReadyMachineState(instance.metadata[AGENT37_READY_METADATA.state]);
+  if (!state || !instance.metadata[AGENT37_READY_METADATA.project]) return null;
+  return {
+    projectName: instance.metadata[AGENT37_READY_METADATA.projectName] || instance.metadata[AGENT37_READY_METADATA.project]!,
+    state,
   };
 }
 
@@ -218,7 +232,7 @@ export function createAgent37Machines(deps: Agent37MachinesDeps) {
     const client = await deps.client();
     if (!client) return { ok: false, blocker: "key", message: "Connect Agent 37 first: Settings › Integrations › Agent 37." };
     const instanceId = typeof args?.instanceId === "string" ? args.instanceId.trim() : "";
-    if (!/^[a-z0-9]{4,40}$/.test(instanceId)) return { ok: false, blocker: null, message: "ADE doesn't know that box." };
+    if (!isAgent37InstanceId(instanceId)) return { ok: false, blocker: null, message: "ADE doesn't know that box." };
     const action = args.action;
     logger.info?.("agent37.machine_action", { instanceId, action, shape: args.shape ?? null });
     try {

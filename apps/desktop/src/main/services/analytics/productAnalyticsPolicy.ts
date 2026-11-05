@@ -247,6 +247,12 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   // box_wake | box_resize | box_backup | box_delete), only when it worked.
   // Never the box, its size, price, workspace, or a refusal.
   "agent37_machine_action",
+  // Ready machines (feature "connections"): whether people keep a cloud
+  // machine ready for a project, how often preparing one fails, and where the
+  // chats that take one start. enabled | disabled (the per-project switch),
+  // completed | failed (a prepare), ready_picker | ready_cli (a claim). Never
+  // the project, repository, machine, size, setup commands, or an error.
+  "agent37_ready",
   // One coarse fact per automatic diagnostic send: whether it went, was refused
   // by the client budget, or failed. Never the failure code that triggered it,
   // never the surface, never the report or its upload reference — those are the
@@ -601,6 +607,8 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     "mode_focus", "mode_focus_grid",
     // The Agent 37 box actions, prefixed like the tool ids.
     "box_sleep", "box_wake", "box_resize", "box_backup", "box_delete",
+    // Where a chat that took a ready machine started, prefixed the same way.
+    "ready_picker", "ready_cli",
     // The two iOS live-view backends, prefixed for the same reason the tool ids
     // are. `backend_window` captures the Simulator window on this Mac;
     // `backend_host_encoded` encodes on the machine that owns the simulator and

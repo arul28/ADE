@@ -1030,6 +1030,10 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   // types the key, and the host saves it. `status` reports connected or not,
   // never a credential. Neither is secret-bearing.
   integration_connect: ["request", "status"],
+  // Ready machines (Agent 37): read the pool, take a project's ready machine
+  // (marks it claimed and wakes it; the chat then goes to it like any
+  // machine), or give an unused claim back. Never the key.
+  agent37: ["ready_status", "claim_ready", "release_ready"],
   // `list` reads the MCP setup (names and set/not-set, never a value).
   // `request` raises the MCP server card in the caller's own chat; the person
   // approves and types any value, and the host saves it. `chatStatus` names

@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { withRemoteAndroidArgs, withRemoteAppleArgs, withRemoteShellArgs } from "./cliRemoteWork";
 import { THIS_MACHINE_NAME } from "../../desktop/src/shared/machineIdentity";
+import { AGENT37_READY_WAKE_WAIT_MS, isAgent37ReadyMachineSelector } from "../../desktop/src/shared/agent37";
 import { pickLiveCheckout } from "../../desktop/src/shared/crossMachineHandoff";
 import { gitRemoteIdentity } from "../../desktop/src/main/services/github/githubSshAlias";
 import { samePathOnPlatform } from "../../desktop/src/shared/pathContainment";
@@ -873,6 +874,139 @@ async function executePlanOnMachines(
   return { machineFanOut: rows };
 }
 
+const READY_MACHINE_POLL_MS = 1_000;
+/** One reachability check on the woken machine; the overall wait is AGENT37_READY_WAKE_WAIT_MS. */
+const READY_MACHINE_PROBE_TIMEOUT_MS = 15_000;
+
+/**
+ * The plan with `laneId` in its chat create when the command named no lane:
+ * lane ids are per machine, so a ready machine says which lane is its
+ * project's primary one.
+ */
+function withDefaultChatLane<T extends CliPlan & { kind: "execute" }>(plan: T, laneId: string): T {
+  return {
+    ...plan,
+    steps: plan.steps.map((step) => {
+      const params = step.params;
+      if (!isRecord(params) || params.name !== "run_ade_action" || !isRecord(params.arguments)) return step;
+      const call = params.arguments;
+      if (call.domain !== "chat" || call.action !== "createSession" || !isRecord(call.args) || asString(call.args.laneId)) return step;
+      return { ...step, params: { ...params, arguments: { ...call, args: { ...call.args, laneId } } } };
+    }),
+  };
+}
+
+/** An `agent37` action on this machine's brain, in the project the CLI runs in; its `result`. */
+async function runAgent37Action(options: GlobalOptions, projectRoot: string, action: string, args: JsonObject): Promise<unknown> {
+  return await withMachineBrain(options, async (client) => {
+    const registered = await client.request("projects.add", automaticProjectRegistrationParams(projectRoot));
+    const projectId = isRecord(registered) ? asString(registered.projectId) : null;
+    if (!projectId) throw new Error("This machine's brain did not register the project.");
+    const answer = unwrapToolResult(await client.request("ade/actions/call", withProjectId({
+      name: "run_ade_action",
+      arguments: { domain: "agent37", action, args },
+    }, projectId)));
+    return isRecord(answer) && isRecord(answer.result) ? answer.result : answer;
+  });
+}
+
+/**
+ * Waits until the woken machine takes a request: online in the account, then
+ * one harmless call through it (`projects.list`), retried while it sends
+ * nothing. Only after this does the chat go, once, so a flapping presence
+ * can never start a second chat.
+ */
+async function waitForReadyMachine(options: GlobalOptions, machineKey: string, name: string, deadline: number): Promise<void> {
+  const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+  let lastError: unknown = null;
+  const timedOut = () => new CliExecutionError(
+    `${name} woke on Agent 37 but its ADE didn't answer within ${AGENT37_READY_WAKE_WAIT_MS / 1000} s`
+      + `${lastError ? ` (${failureCause(lastError)})` : ""}. Nothing was sent; ADE put it back to sleep for the next chat.`,
+    {},
+  );
+  for (;;) {
+    const roster = await withMachineBrain(options, (client) => client.request("machines.list", { includeProjects: false }))
+      .catch(() => null);
+    const row = isRecord(roster) && Array.isArray(roster.machines)
+      ? roster.machines.find((machine) => isRecord(machine) && machine.machineKey === machineKey)
+      : null;
+    if (isRecord(row) && row.online === true) break;
+    if (Date.now() > deadline) throw timedOut();
+    await sleep(READY_MACHINE_POLL_MS);
+  }
+  for (;;) {
+    try {
+      await withMachineBrain(options, (client) => client.request("machines.call", {
+        machine: machineKey,
+        scope: { kind: "machine" },
+        request: { method: "projects.list", params: {} },
+        timeoutMs: READY_MACHINE_PROBE_TIMEOUT_MS,
+      }));
+      return;
+    } catch (error) {
+      // Right after a wake the brain may still be starting, refuse, or drop the
+      // connection; `projects.list` is harmless to repeat, so any error waits.
+      lastError = error;
+      if (Date.now() > deadline) throw timedOut();
+      await sleep(READY_MACHINE_POLL_MS);
+    }
+  }
+}
+
+/**
+ * `ade chat create --machine agent37:ready`: take this project's ready Agent 37
+ * machine (prepared and asleep), wake it, wait until it takes requests, then
+ * start the chat there like on any machine. A machine ADE still shows offline
+ * refuses work at once ("Nothing was sent"), so all the waiting comes before
+ * the send. If nothing was sent, the claim is given back (ready again,
+ * asleep); once the chat create went out, the machine is the caller's.
+ */
+async function executePlanOnAgent37ReadyMachine(
+  plan: CliPlan & { kind: "execute" },
+  options: GlobalOptions,
+): Promise<unknown> {
+  if (!plan.machineFanOut) {
+    throw new CliUsageError("--machine agent37:ready starts a new chat: use it with `ade chat create`.");
+  }
+  const roots = resolveRoots(options);
+  const originUrl = getGitRemote(roots.projectRoot);
+  if (!originUrl) {
+    throw new CliUsageError("--machine agent37:ready needs a project with a git origin: the ready machine is the one kept for that repository.");
+  }
+  const say = (line: string) => {
+    if (!options.json) process.stderr.write(`ade: ${line}\n`);
+  };
+  const startedAt = Date.now();
+  const claim = await runAgent37Action(options, roots.projectRoot, "claim_ready", { originUrl });
+  const field = (key: string) => (isRecord(claim) ? asString(claim[key]) : null);
+  const instanceId = field("instanceId");
+  const machineKey = field("machineKey");
+  const laneId = field("laneId");
+  const claimToken = field("claimToken");
+  const name = field("name") ?? "the ready machine";
+  const wakeMs = isRecord(claim) && typeof claim.wakeMs === "number" ? claim.wakeMs : null;
+  let sending = false;
+  try {
+    if (!machineKey) throw new CliExecutionError("Agent 37 answered the claim without a machine. Try again.", {});
+    say(`Woke ${name} on Agent 37 (${Math.round(wakeMs ?? 0)} ms). Waiting for its ADE…`);
+    await waitForReadyMachine(options, machineKey, name, startedAt + AGENT37_READY_WAKE_WAIT_MS);
+    const onlineMs = Date.now() - startedAt;
+    say(`${name} is online (${(onlineMs / 1000).toFixed(1)} s). Starting the chat…`);
+    // From here a request may reach the machine: never repeated, never given back.
+    sending = true;
+    const result = await executePlan(laneId ? withDefaultChatLane(plan, laneId) : plan, { ...options, machine: machineKey });
+    // Which machine took it, for a caller (a benchmark harness) that reads it there next.
+    const readyMachine = { name, machineKey, instanceId, laneId, wakeMs, onlineMs, sentMs: Date.now() - startedAt };
+    return isRecord(result) ? { ...result, readyMachine } : { result, readyMachine };
+  } finally {
+    if (!sending && instanceId && claimToken) {
+      await runAgent37Action(options, roots.projectRoot, "release_ready", { instanceId, claimToken }).catch((error: unknown) => {
+        say(`couldn't put ${name} back to sleep (${error instanceof Error ? error.message : String(error)}). Sleep it from its row under Your computers.`);
+      });
+    }
+  }
+}
+
 /**
  * The machine routing `executePlan` applies first: `--all-machines`, or a
  * comma list of machines. Null for a plan that runs once, here or on one
@@ -883,6 +1017,7 @@ export async function executePlanAcrossMachines(
   options: GlobalOptions,
 ): Promise<{ value: unknown } | null> {
   if (options.allMachines) return { value: await executePlanOnAllMachines(plan, options) };
+  if (isAgent37ReadyMachineSelector(options.machine)) return { value: await executePlanOnAgent37ReadyMachine(plan, options) };
   const machineList = [...new Set((options.machine ?? "").split(",").map((entry) => entry.trim()).filter(Boolean))];
   if (machineList.length > 1) return { value: await executePlanOnMachines(plan, options, machineList) };
   if (options.machine && plan.steps.some((step) => step.injectProjectRootIntoArgs)) {

@@ -9,6 +9,7 @@ import { pendingCliDelegation } from "./lib/cliDelegationEntry";
 import { isCliMainArgv } from "./lib/cliDelegation";
 import type { CrossMachineHandoffTransport } from "../../desktop/src/main/services/chat/crossMachineHandoffOrchestrator";
 import type { AccountRollupFetcher } from "../../desktop/src/main/services/usage/usageTrackingService";
+import type { Agent37ReadyPool } from "../../desktop/src/shared/agent37";
 import {
   setSharedAccountLiveQuotaFetcher,
   setSharedAccountRollupFetcher,
@@ -872,6 +873,7 @@ export type FormatterId =
   | "terminal-read"
   | "project-secrets"
   | "integrations"
+  | "agent37-ready"
   | "mcp-servers"
   | "history-list"
   | "history-commits"
@@ -2637,6 +2639,10 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                                                     Start a child on another machine; it wakes you when done.
                                                     --project <name|path|id> picks the project there, --clone
                                                     sets a missing GitHub repo up, "a,b" starts one per machine.
+    $ ade chat create --machine agent37:ready --prompt "…"
+                                                    Start on this project's ready Agent 37 machine (prepared and
+                                                    asleep): ADE wakes it, waits until it is online, then sends.
+                                                    No --lane needed; --json adds readyMachine. See ade agent37 ready.
     $ ade chat actions --personal --text            List machine personal-chat actions
     $ ade chat action --personal models --input-json '{"provider":"codex"}'
     $ ade chat list --include-automation --text
@@ -4320,6 +4326,20 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   When to ask: if the person named the integration ("use Linear"), raise the
   card at once. If it was your own idea, ask in words first and raise the
   card only after they say yes.
+`,
+  agent37: `${ADE_BANNER}
+  Agent 37 ready machines
+
+  A ready machine is a cloud machine ADE keeps prepared for one project (the
+  repository cloned, its setup run, its services started, signed in) and
+  asleep, so a new chat on it is working in seconds. Asleep it bills only its
+  disk. Turn it on per project in Settings › Integrations › Agent 37.
+
+    $ ade agent37 ready --text                       Projects kept ready and their machines
+    $ ade chat create --machine agent37:ready --prompt "…"
+                                                    Start the chat on this project's ready machine: ADE wakes it,
+                                                    waits until it is online, then sends. The machine is then an
+                                                    ordinary machine of yours, and ADE prepares the next one.
 `,
   "mcp servers": `${ADE_BANNER}
   ADE MCP servers (Settings › Integrations › MCP servers)
@@ -19895,6 +19915,43 @@ function buildIntegrationsPlan(args: string[]): CliPlan {
   throw new CliUsageError(`Unknown integrations command "${sub}". Use status or connect.`);
 }
 
+function buildAgent37Plan(args: string[]): CliPlan {
+  if (hasHelpFlag(args)) {
+    return { kind: "help", text: HELP_BY_COMMAND.agent37 ?? topLevelHelpText() };
+  }
+  const sub = firstPositional(args) ?? "ready";
+  if (sub === "ready" || sub === "status") {
+    return {
+      kind: "execute",
+      label: "agent37 ready",
+      formatter: "agent37-ready",
+      steps: [actionStep("result", "agent37", "ready_status", {})],
+    };
+  }
+  throw new CliUsageError(`Unknown agent37 command "${sub}". Use: ade agent37 ready.`);
+}
+
+function formatAgent37Ready(value: unknown): string {
+  const raw = isRecord(value) && isRecord(value.result) ? value.result : value;
+  const pool = isRecord(raw) && Array.isArray(raw.projects) ? raw as unknown as Agent37ReadyPool : { projects: [] };
+  if (!pool.projects.length) {
+    return "No project keeps an Agent 37 machine ready. Turn it on in Settings › Integrations › Agent 37.";
+  }
+  const lines: string[] = [];
+  for (const project of pool.projects) {
+    const summary = [
+      project.ready ? `${project.ready} ready` : project.preparing ? "being prepared" : project.keptReady ? "none ready yet" : "turned off",
+      ...(project.inUse ? [`${project.inUse} in use`] : []),
+      ...(project.failure ? [`last prepare failed: ${project.failure}`] : []),
+    ].join(", ");
+    lines.push(`${project.projectName} (${project.identity}): ${summary}`);
+    for (const machine of project.machines) {
+      lines.push(`  ${machine.name ?? machine.instanceId}  ${machine.state}  (${machine.status}, ${machine.instanceId})`);
+    }
+  }
+  return lines.join("\n");
+}
+
 /** `ade mcp servers …`: the MCP registry. `args` are the words after `servers`. */
 function buildMcpServersPlan(args: string[]): CliPlan {
   if (hasHelpFlag(args)) {
@@ -22642,6 +22699,7 @@ function buildCliPlan(
     return buildSecretsPlan(args);
   if (primary === "integrations" || primary === "integration")
     return buildIntegrationsPlan(args);
+  if (primary === "agent37") return buildAgent37Plan(args);
   if (primary === "proxy") return buildProxyPlan(args);
   if (primary === "harness" || primary === "harnesses") return buildHarnessPlan(args);
   if (primary === "providers" || primary === "provider")
@@ -36137,6 +36195,8 @@ function formatTextOutput(
       return formatProjectSecrets(value);
     case "integrations":
       return formatIntegrations(value);
+    case "agent37-ready":
+      return formatAgent37Ready(value);
     case "mcp-servers":
       return formatMcpServers(value);
     case "harness-env":

@@ -185,8 +185,14 @@ export async function createAgent37Machine(
   requestId: string,
   rawArgs: Agent37CreateMachineArgs,
   onProgress: (progress: Agent37CreateProgress) => void,
-  signal?: AbortSignal,
+  options: {
+    /** Cancels the create (the dialog closed); a box that never signed in is deleted. */
+    signal?: AbortSignal;
+    /** More tags for the box (a ready machine's project and state); ADE's own tags win. */
+    metadata?: Record<string, string>;
+  } = {},
 ): Promise<Agent37CreateMachineResult> {
+  const { signal } = options;
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const fetcher: FetchLike = deps.fetch ?? ((input, init) => fetch(input, init));
   if (!isAgent37MachineKind(rawArgs?.kind)) throw new Error("Pick a box or a VM.");
@@ -233,7 +239,7 @@ export async function createAgent37Machine(
       name,
       type: agent37InstanceType(rawArgs.kind),
       resources: { cpu: shape.cpu, memory: shape.memoryGb, disk: shape.diskGb },
-      metadata: { created_by: "ade", ade_request_id: requestId },
+      metadata: { ...options.metadata, created_by: "ade", ade_request_id: requestId },
     }, signal);
   } catch (error) {
     // A create that timed out or broke mid-way may still have made a box.

@@ -340,6 +340,10 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
     read: ["status"],
     write: ["request"],
   },
+  agent37: {
+    read: ["ready_status"],
+    write: ["claim_ready", "release_ready"],
+  },
   mcp_registry: {
     read: ["list", "chatStatus"],
     write: ["request"],

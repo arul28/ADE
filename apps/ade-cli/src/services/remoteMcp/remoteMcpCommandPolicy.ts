@@ -46,7 +46,7 @@ const BLOCKED_COMMANDS: ReadonlyMap<string, string> = new Map([
  * access runs these; read-only runs the subset in READ_ONLY_COMMANDS.
  */
 const FULL_ACCESS_COMMANDS: ReadonlySet<string> = new Set([
-  "action", "actions", "ade-browser", "android", "app", "app-control", "apple", "apps", "archive", "archived", "artifact",
+  "action", "actions", "ade-browser", "agent37", "android", "app", "app-control", "apple", "apps", "archive", "archived", "artifact",
   "artifacts", "auth", "auto-update", "automation", "automations", "browser", "built-in-browser",
   "builtin-browser", "chat", "chats", "computer", "computer-use", "config", "cursor", "desk", "diff", "diffs",
   "disk", "doctor", "drafts", "electron", "file", "files", "gh", "git", "github", "harness", "harnesses",
@@ -76,6 +76,8 @@ const READ_ONLY_COMMANDS: ReadonlyMap<string, ReadonlySet<string> | true> = new 
   // Connected or not, and as whom; never a credential.
   ["integrations", new Set(["status"])],
   ["integration", new Set(["status"])],
+  // The ready-machine pool: names and states, never the key.
+  ["agent37", new Set(["ready", "status"])],
   ["machines", new Set(["list", "show"])],
   ["projects", new Set(["list"])],
   // `defaults` reads the new-lane defaults; `defaults set` is refused below.

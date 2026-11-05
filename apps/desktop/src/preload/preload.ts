@@ -80,7 +80,7 @@ import { machineNameForBinding } from "../shared/machineIdentity";
 import type { DeeplinkOwnership } from "../shared/deeplinks";
 import type { MachineInventoryDetail } from "../shared/types/machineInventory";
 import type { MachineConnectionRoutes } from "../shared/types/account";
-import type { Agent37CreateMachineArgs, Agent37CreateProgress, Agent37MachineActionArgs, Agent37MachineActionResult, Agent37MachinesResult, Agent37Status, Agent37TemplateStatus } from "../shared/agent37";
+import type { Agent37CreateMachineArgs, Agent37CreateProgress, Agent37MachineActionArgs, Agent37MachineActionResult, Agent37MachinesResult, Agent37ReadyClaim, Agent37ReadyProjectSettings, Agent37ReadyStatus, Agent37Status, Agent37TemplateStatus } from "../shared/agent37";
 import {
   loopbackOriginLabel,
   parseLoopbackUrl,
@@ -12951,6 +12951,20 @@ const adeBridge = {
       const listener = (_event: Electron.IpcRendererEvent, status: Agent37TemplateStatus) => cb(status);
       ipcRenderer.on(IPC.agent37TemplateStatus, listener);
       return () => ipcRenderer.removeListener(IPC.agent37TemplateStatus, listener);
+    },
+    readyStatus: (): Promise<Agent37ReadyStatus | null> => ipcRenderer.invoke(IPC.agent37ReadyStatus),
+    readySetProject: (settings: Partial<Agent37ReadyProjectSettings>): Promise<Agent37ReadyStatus | null> =>
+      ipcRenderer.invoke(IPC.agent37ReadySetProject, { settings }),
+    readyRemoveProject: (identity: string): Promise<Agent37ReadyStatus | null> =>
+      ipcRenderer.invoke(IPC.agent37ReadyRemoveProject, { identity }),
+    readyRetry: (identity: string): Promise<Agent37ReadyStatus | null> => ipcRenderer.invoke(IPC.agent37ReadyRetry, { identity }),
+    readyClaim: (originUrl: string): Promise<Agent37ReadyClaim | null> => ipcRenderer.invoke(IPC.agent37ReadyClaim, { originUrl }),
+    readyRelease: (instanceId: string, claimToken: string): Promise<{ released: boolean } | null> =>
+      ipcRenderer.invoke(IPC.agent37ReadyRelease, { instanceId, claimToken }),
+    onReadyStatus: (cb: (status: Agent37ReadyStatus) => void): (() => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, status: Agent37ReadyStatus) => cb(status);
+      ipcRenderer.on(IPC.agent37ReadyStatusChanged, listener);
+      return () => ipcRenderer.removeListener(IPC.agent37ReadyStatusChanged, listener);
     },
   },
   /**

@@ -299,7 +299,9 @@ import { createSessionBoardMoveActions } from "./sessionBoardMove";
 import { noteSessionInputOrigin } from "../chat/sessionInputOrigins";
 import { requestProjectSecretFromUser } from "../secrets/projectSecretRequest";
 import { buildIntegrationConnectAdapters } from "../integrations/integrationConnectAdapters";
-import { agent37VaultFromStore, buildAgent37ConnectAdapter } from "../agent37/agent37Credential";
+import { agent37VaultFromStore, buildAgent37ConnectAdapter, type Agent37CredentialDeps } from "../agent37/agent37Credential";
+import { buildAgent37ReadyActions } from "../agent37/agent37ReadyActions";
+import { AGENT37_READY_VAULT_KEY, createAgent37ReadySettingsStore } from "../agent37/agent37ReadySettings";
 import { EncryptedFileCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
 import { listIntegrationConnections, requestIntegrationConnect } from "../integrations/integrationConnectRequest";
 import { createMcpRegistryService } from "../mcp/mcpRegistryService";
@@ -4004,6 +4006,15 @@ function agent37MachineStore(): EncryptedFileCredentialStore {
   return agent37MachineCredentialStore;
 }
 
+function agent37CredentialDeps(runtime: AdeRuntime): Agent37CredentialDeps {
+  return {
+    vault: () => (runtime.accountVaultStore ? agent37VaultFromStore(runtime.accountVaultStore) : null),
+    machineStore: () => agent37MachineStore(),
+    signedIn: () => runtime.accountAuthService?.getStatus().signedIn === true,
+    logger: runtime.logger,
+  };
+}
+
 /**
  * The connect card. `status` lists every integration this runtime knows and
  * whether it is connected, never a credential. `request` asks the person in a
@@ -4016,12 +4027,32 @@ function integrationConnectAdapters(runtime: AdeRuntime) {
     linearCredentialService: runtime.linearCredentialService ?? null,
     linearStatus: runtime.linearCredentialService ? () => buildRuntimeLinearConnectionStatus(runtime) : null,
     jiraService: runtime.jiraService ?? null,
-    agent37: buildAgent37ConnectAdapter({
-      vault: () => (runtime.accountVaultStore ? agent37VaultFromStore(runtime.accountVaultStore) : null),
-      machineStore: () => agent37MachineStore(),
-      signedIn: () => runtime.accountAuthService?.getStatus().signedIn === true,
-      logger: runtime.logger,
+    agent37: buildAgent37ConnectAdapter(agent37CredentialDeps(runtime)),
+  });
+}
+
+/** Ready machines for the CLI and agents; the choice is read through the same store the desktop writes. */
+function buildAgent37DomainService(runtime: AdeRuntime): OpaqueService {
+  const settings = createAgent37ReadySettingsStore({
+    vault: () => (runtime.accountAuthService?.getStatus().signedIn === true && runtime.accountVaultStore
+      ? agent37VaultFromStore(runtime.accountVaultStore, AGENT37_READY_VAULT_KEY)
+      : null),
+    machineStore: () => agent37MachineStore(),
+    logger: runtime.logger,
+  });
+  return buildAgent37ReadyActions({
+    credentials: agent37CredentialDeps(runtime),
+    readSettings: async () => (await settings.read()).projects,
+    // A six-hour dedupe, as on the desktop: claims are frequent in a benchmark loop.
+    onClaimed: () => runtime.productAnalyticsService?.capture({
+      event: "ade_feature_used",
+      surface: "api",
+      properties: { feature: "connections", action: "agent37_ready", outcome: "ready_cli" },
+      projectId: null,
+      dedupeKey: "agent37_ready:ready_cli",
+      minimumIntervalMs: 6 * 60 * 60 * 1_000,
     }),
+    logger: runtime.logger,
   });
 }
 
@@ -4225,6 +4256,7 @@ export function getAdeActionDomainServices(
     project_config: toService(runtime.projectConfigService),
     project_secret: toService(buildProjectSecretDomainService(runtime)),
     integration_connect: buildIntegrationConnectDomainService(runtime),
+    agent37: buildAgent37DomainService(runtime),
     mcp_registry: buildMcpRegistryDomainService(runtime),
     account_settings: buildAccountSettingsDomainService(runtime),
     account_vault: buildAccountVaultDomainService(runtime),

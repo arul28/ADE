@@ -2312,7 +2312,7 @@ describe("product analytics producers", () => {
     })).toEqual({ feature: "work", action: "focus_mode" });
   });
 
-  it("keeps the Agent 37 box actions through the sanitizer and nothing about the box", () => {
+  it("keeps the Agent 37 box actions and ready-machine outcomes through the sanitizer and nothing about the box", () => {
     for (const outcome of ["box_sleep", "box_wake", "box_resize", "box_backup", "box_delete"]) {
       expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
         feature: "connections",
@@ -2321,6 +2321,15 @@ describe("product analytics producers", () => {
         instance_id: "zodqsue74s",
         price: "0.8¢ an hour",
       })).toEqual({ feature: "connections", action: "agent37_machine_action", outcome });
+    }
+    for (const outcome of ["enabled", "disabled", "completed", "failed", "ready_picker", "ready_cli"]) {
+      expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
+        feature: "connections",
+        action: "agent37_ready",
+        outcome,
+        repository: "github.com/acme/app",
+        setup: "npm ci",
+      })).toEqual({ feature: "connections", action: "agent37_ready", outcome });
     }
     // An action that is not a box action does not cross as an outcome.
     expect(sanitizeProductAnalyticsProperties("ade_feature_used", {

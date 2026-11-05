@@ -73,21 +73,21 @@ export function agent37VaultFromBridge(bridge: Agent37VaultBridge, key: string =
   };
 }
 
-/** The brain: its own vault store. */
+/** The brain: one account-wide Agent37 item in its own vault store. */
 export function agent37VaultFromStore(store: {
   get(scope: string, kind: "integration", key: string): string | null;
   set(scope: string, kind: "integration", key: string, value: string): boolean;
   remove(scope: string, kind: "integration", key: string): boolean;
-}): Agent37Vault {
+}, key: string = AGENT37_VAULT_KEY): Agent37Vault {
   return {
     async get() {
-      return { ok: true, value: store.get(ACCOUNT_SCOPE_ALL, AGENT37_VAULT_KIND, AGENT37_VAULT_KEY) };
+      return { ok: true, value: store.get(ACCOUNT_SCOPE_ALL, AGENT37_VAULT_KIND, key) };
     },
     async set(value) {
-      return store.set(ACCOUNT_SCOPE_ALL, AGENT37_VAULT_KIND, AGENT37_VAULT_KEY, value);
+      return store.set(ACCOUNT_SCOPE_ALL, AGENT37_VAULT_KIND, key, value);
     },
     async remove() {
-      return store.remove(ACCOUNT_SCOPE_ALL, AGENT37_VAULT_KIND, AGENT37_VAULT_KEY);
+      return store.remove(ACCOUNT_SCOPE_ALL, AGENT37_VAULT_KIND, key);
     },
   };
 }
