@@ -27828,8 +27828,16 @@ async function runServe(
   // not this machine's brain, a runtime on another endpoint is someone's
   // manual run, and a brain the desktop app started is killed outright each
   // time the app quits (`taskkill /F` on Windows), which would read as a
-  // crash; the app records its own brain's exits.
-  if (!embedded && readRuntimeParentPid() == null && isMachineEndpointName(serveSocketPath, machineRuntimeNames)) {
+  // crash; the app records its own brain's exits. A hand-run `ade serve` on
+  // the machine endpoint is not the service either: on 2026-11-04 five of
+  // them, started minutes apart while no supervisor ran, were reported as a
+  // restart loop.
+  if (
+    !embedded
+    && readRuntimeParentPid() == null
+    && isMachineEndpointName(serveSocketPath, machineRuntimeNames)
+    && (await import("./serviceManager")).isStartedByRuntimeService() !== false
+  ) {
     const bundlePath = typeof __filename === "string" ? __filename : process.argv[1] ?? "";
     startBrainRestartLoopWatch({
       runtimeDir: path.dirname(lastFailurePathForMachine()),
@@ -29651,6 +29659,8 @@ async function runServe(
           });
         },
         getServiceMainPid: getRuntimeServiceMainPid,
+        // A takeover just stopped the brain the held failure names.
+        clearHeldFailures: () => scopeRegistry.clearSyncHostPhaseBackoff(),
         // Auto-diagnostics driven off the FAILURE rather than off the account
         // publisher. The publisher only exists once this brain holds the
         // sync-host lease, which it only takes once the sync host starts — so

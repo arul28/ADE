@@ -2422,6 +2422,23 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   permanently giving up and stranding paired phones on the ingress
   fallback.
 
+  A takeover is followed by one immediate attempt, and the brain first drops
+  the failures the project scope registry is holding back
+  (`clearHeldFailures` → `clearSyncHostPhaseBackoff`), because a backed-off
+  attempt is answered at once with the recorded conflict, which names the
+  brain just stopped. If that attempt meets the same owner again, the loop
+  waits its normal retry delay before it acts on that owner again. Without
+  both rules, on 2026-11-04 a run of short-lived stray brains on one Mac sent
+  the re-host into 19,503 attempts in 58 s with nothing to wait on: the
+  brain's event loop stalled for up to 27 s and the phone dropped three times.
+
+  The brain's sync reads (`sync.listDevices`, `getPin`, `getRuntimeName`,
+  `getCloudRelayStatus`, `getRequireDpop`) go through `readSyncService` in
+  `multiProjectRpcServer.ts`. When the scope that hosts sync, or most recently
+  tried to, is ready, it answers as it is and host activation is not re-entered.
+  A blocked or backed-off activation therefore no longer turns the Phone tab
+  into "Another ADE brain is already hosting mobile sync".
+
   The loop also classifies what it caught rather than retrying everything the
   same way. Each failure goes through `classifyStorageFault`
   (`storage/storageErrnoClassifier.ts`, shared with the database open — see
