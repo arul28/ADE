@@ -3173,6 +3173,8 @@ export type SyncRemoteCommandAction =
   | "ai.openCursorCloudChat"
   | "ai.watchCursorCloudMirror"
   | "ai.cursorCloudFleet"
+  | "agent37.read"
+  | "agent37.write"
   | "ai.getCursorCloudFleet"
   | "ai.cursorCloudResolveLane"
   | "ai.cursorCloudPullIntoLane"
