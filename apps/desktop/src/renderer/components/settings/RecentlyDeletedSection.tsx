@@ -8,7 +8,8 @@ import {
 } from "@phosphor-icons/react";
 import type { DeletedChat, ExternalSessionProvider, LaneSummary, OpenProjectBinding } from "../../../shared/types";
 import { importProviderLabel } from "../../../shared/externalSessionPolicy";
-import { relativeWhen } from "../../lib/format";
+import { ipcErrorMessage, relativeWhen } from "../../lib/format";
+import { isUnsupportedAdeActionError } from "../../../shared/codedError";
 import { navigateToAppTarget } from "../../lib/openExternal";
 import { isImeComposing } from "../../lib/imeComposition";
 import { showToast } from "../app/toast/toastStore";
@@ -17,6 +18,7 @@ import { confirmDialog } from "../ui/dialog";
 import { LaneCombobox } from "../terminals/LaneCombobox";
 import { ToolLogo } from "../terminals/ToolLogos";
 import { PROVIDER_TOOL_TYPE } from "../terminals/importSessions/contract";
+import { ImportProviderFilter, SkeletonRows } from "../terminals/importSessions/ImportSessionList";
 import { modelDisplayName } from "../terminals/importSessions/importBrowserModel";
 import { LaneDot, MetaSeparator } from "../terminals/importSessions/ImportSessionParts";
 import { SessionTranscriptPane } from "../terminals/importSessions/ImportSessionPreview";
@@ -53,9 +55,7 @@ function deletedAtMs(chat: DeletedChat): number | null {
 }
 
 function errorText(error: unknown): string {
-  const raw = error instanceof Error ? error.message : String(error);
-  // Runtime action errors arrive wrapped ("Error invoking remote method …: Error: <text>").
-  return raw.replace(/^Error invoking remote method '[^']+': (?:Error: )?/u, "").trim() || "Something went wrong.";
+  return ipcErrorMessage(error) || "Something went wrong.";
 }
 
 /**
@@ -123,6 +123,7 @@ function DeletedChatPreview({
   chat,
   pin,
   lanes,
+  lanesError,
   targetLaneId,
   onTargetLaneChange,
   reopening,
@@ -134,6 +135,7 @@ function DeletedChatPreview({
   chat: DeletedChat;
   pin: OpenProjectBinding | null;
   lanes: LaneSummary[] | null;
+  lanesError: string | null;
   targetLaneId: string;
   onTargetLaneChange: (laneId: string) => void;
   reopening: boolean;
@@ -198,7 +200,11 @@ function DeletedChatPreview({
           </div>
         </div>
         {needsLane ? (
-          <p className="import-actions-note">Its lane was deleted, so it opens as a copy in the lane you pick.</p>
+          <p className="import-actions-note">
+            {lanesError
+              ? `Couldn't load this machine's lanes: ${lanesError}`
+              : "Its lane was deleted, so it opens as a copy in the lane you pick."}
+          </p>
         ) : null}
         {error ? (
           <Banner
@@ -226,6 +232,7 @@ export function RecentlyDeletedSection() {
   const [selectedId, setSelectedId] = React.useState<string | null>(null);
   const [selectionTouched, setSelectionTouched] = React.useState(false);
   const [lanes, setLanes] = React.useState<LaneSummary[] | null>(null);
+  const [lanesError, setLanesError] = React.useState<string | null>(null);
   const [targetLaneId, setTargetLaneId] = React.useState("");
   const [running, setRunning] = React.useState<{ id: string; kind: "reopen" | "remove" } | null>(null);
   const [actionError, setActionError] = React.useState<{ id: string; message: string } | null>(null);
@@ -241,7 +248,9 @@ export function RecentlyDeletedSection() {
       setChats(result.chats);
     } catch (error) {
       if (seq !== requestSeq.current) return;
-      setLoadError(errorText(error));
+      setLoadError(isUnsupportedAdeActionError(error)
+        ? "This computer runs an older ADE. Update it to see its recently deleted chats."
+        : errorText(error));
     } finally {
       if (seq === requestSeq.current) setLoading(false);
     }
@@ -254,17 +263,20 @@ export function RecentlyDeletedSection() {
     setSelectedId(null);
     setSelectionTouched(false);
     setLanes(null);
+    setLanesError(null);
     setTargetLaneId("");
     setActionError(null);
     void load();
   }, [load, pinKey]);
 
-  const providerCounts = React.useMemo(() => {
+  const providerChips = React.useMemo(() => {
     const counts = new Map<ExternalSessionProvider, number>();
     for (const chat of chats ?? []) counts.set(chat.sourceProvider, (counts.get(chat.sourceProvider) ?? 0) + 1);
-    return [...counts.entries()].sort((a, b) => b[1] - a[1]);
+    return [...counts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([provider, count]) => ({ provider, count }));
   }, [chats]);
-  const effectiveProvider: ProviderFilter = providerFilter !== "all" && providerCounts.some(([provider]) => provider === providerFilter)
+  const effectiveProvider: ProviderFilter = providerFilter !== "all" && providerChips.some((chip) => chip.provider === providerFilter)
     ? providerFilter
     : "all";
 
@@ -301,8 +313,10 @@ export function RecentlyDeletedSection() {
       .then((list) => {
         if (!cancelled) setLanes(list.filter((lane) => !lane.archivedAt));
       })
-      .catch(() => {
-        if (!cancelled) setLanes([]);
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        setLanes([]);
+        setLanesError(errorText(error));
       });
     return () => {
       cancelled = true;
@@ -454,27 +468,13 @@ export function RecentlyDeletedSection() {
               </div>
               <div className="import-split">
                 <aside className="import-list-col">
-                  {providerCounts.length > 1 ? (
-                    <div className="import-providers">
-                      <div className="kit-seg" data-case="sentence" role="group" aria-label="Agent">
-                        <button type="button" aria-pressed={effectiveProvider === "all"} onClick={() => setProviderFilter("all")}>
-                          All
-                          <span className="kit-num">{total}</span>
-                        </button>
-                        {providerCounts.map(([provider, count]) => (
-                          <button
-                            key={provider}
-                            type="button"
-                            aria-pressed={effectiveProvider === provider}
-                            onClick={() => setProviderFilter(provider)}
-                          >
-                            <ToolLogo toolType={PROVIDER_TOOL_TYPE[provider]} size={13} />
-                            {importProviderLabel(provider)}
-                            <span className="kit-num">{count}</span>
-                          </button>
-                        ))}
-                      </div>
-                    </div>
+                  {providerChips.length > 1 ? (
+                    <ImportProviderFilter
+                      providerChips={providerChips}
+                      totalCount={total}
+                      providerFilter={effectiveProvider}
+                      onProviderFilterChange={setProviderFilter}
+                    />
                   ) : null}
                   <div
                     ref={listRef}
@@ -482,18 +482,10 @@ export function RecentlyDeletedSection() {
                     data-scroll-lock-scrollable=""
                   >
                     {!chats ? (
-                      <div className="flex flex-col gap-1 px-2 pt-2" aria-busy="true">
-                        {[0, 1, 2, 3, 4].map((index) => (
-                          <div key={index} className="flex items-start gap-2.5 px-2.5 py-2" aria-hidden="true">
-                            <div className="h-4 w-4 shrink-0 animate-pulse rounded bg-(--kit-track)" />
-                            <div className="min-w-0 flex-1">
-                              <div className="h-3 animate-pulse rounded bg-(--kit-track)" style={{ width: `${78 - index * 9}%` }} />
-                              <div className="mt-1.5 h-2.5 w-2/5 animate-pulse rounded bg-(--kit-hover)" />
-                            </div>
-                          </div>
-                        ))}
+                      <>
                         <span role="status" className="sr-only">Looking for deleted chats…</span>
-                      </div>
+                        <SkeletonRows count={5} />
+                      </>
                     ) : groups.length ? (
                       <div role="listbox" aria-label="Deleted chats">
                         {groups.map((group) => (
@@ -519,6 +511,7 @@ export function RecentlyDeletedSection() {
                       chat={active}
                       pin={pin}
                       lanes={lanes}
+                      lanesError={lanesError}
                       targetLaneId={targetLaneId}
                       onTargetLaneChange={setTargetLaneId}
                       reopening={running?.id === active.id && running.kind === "reopen"}

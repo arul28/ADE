@@ -30,18 +30,11 @@ import { findCodexRolloutPathBySessionId } from "../externalSessions/discoverCod
 import { loadExternalSessionEvents } from "../externalSessions/events";
 import { loadExternalSessionDetail } from "../externalSessions/externalSessionDetail";
 import {
-  backfillClaudeDeletedChats,
-  createDeletedChatLocator,
-  getDeletedChatRow,
-  hideDeletedChats,
-  listDeletedChatRows,
-  mapWithLimit,
+  createDeletedChatsService,
   readPersistedChatRecord,
-  recordDeletedChat,
-  toDeletedChat,
-  type DeletedChatRow,
-  type DeletedChatSource,
+  type DeletedChatReopenSource,
 } from "./deletedChats";
+import { chatImportedRefsProvider } from "../externalSessions/liveChatProviderRefs";
 import {
   EXTERNAL_SESSION_PROVIDER_LABELS,
   isExternalSessionProvider,
@@ -796,12 +789,8 @@ import type {
 import type {
   DeletedChatDetailArgs,
   DeletedChatListArgs,
-  DeletedChatListResult,
   DeletedChatRemoveArgs,
-  DeletedChatRemoveResult,
   DeletedChatReopenArgs,
-  DeletedChatReopenResult,
-  ExternalSessionDetail,
   TerminalSessionSummary,
 } from "../../../shared/types";
 import { PROOF_LISTING_ARTIFACT_FILTER } from "../../../shared/types";
@@ -54536,14 +54525,8 @@ export function createAgentChatService(args: {
    * converter registry. Written under a placeholder chat id; the caller
    * re-keys the envelopes onto the chat it creates.
    */
-  /** Where Recently deleted found a deleted chat's conversation (see reopenDeletedChat). */
-  type ImportReopenSource = {
-    adeOwned: true;
-    /** The account that holds the conversation, so the chat reopens on it. */
-    instanceId: string | null;
-    configHome: string | null;
-    env: NodeJS.ProcessEnv | undefined;
-  };
+  /** Where Recently deleted found a deleted chat's conversation (deletedChats.ts). */
+  type ImportReopenSource = DeletedChatReopenSource;
 
   /** A reopened chat says where it came back from, not "imported from … CLI". */
   const labelReopenedEvents = (
@@ -71435,165 +71418,74 @@ export function createAgentChatService(args: {
   };
 
   // ── Recently deleted ────────────────────────────────────────────────────
-  // A deleted chat's agent keeps its own copy of the conversation; these read
-  // it back. See deletedChats.ts.
+  // A deleted chat's agent keeps its own copy of the conversation; Settings ›
+  // Recently deleted reads it back and reopens it through the import. See
+  // deletedChats.ts.
+  const deletedChats = createDeletedChatsService({
+    db: () => (db?.get && db.all && db.run ? { get: db.get, all: db.all, run: db.run } : null),
+    logger,
+    getLane: (laneId) => laneService.getSummary(laneId, { includeStatus: false }),
+    // Archived chats count: reopening a session one of them holds would run it twice.
+    listLiveProviderRefs: chatImportedRefsProvider({
+      listSessions: (laneId, options) => listSessions(laneId, { ...options, includeArchived: true }),
+    }),
+    instanceIdForHome: (provider, configHome) => (isProviderInstanceProvider(provider)
+      ? getMachineProviderInstanceStore().list(provider)
+        .find((instance) => pathsEqual(instance.configHome, configHome))?.id ?? null
+      : null),
+    importSession: (importArgs, reopen) => importExternalChatSession(importArgs, reopen),
+    loadDetail: (detailArgs, options) => loadExternalSessionDetail(detailArgs, options),
+  });
 
-  const deletedChatLocator = createDeletedChatLocator();
-  let deletedChatsBackfilled = false;
-
-  const deletedChatsDb = () => {
-    if (!db?.get || !db.all || !db.run) return null;
-    return { get: db.get, all: db.all, run: db.run } as Parameters<typeof listDeletedChatRows>[0];
-  };
-
+  /** Records a deleted chat; `remember` false keeps it hidden (ADE's own cleanups). */
   const rememberDeletedChat = (
     row: TerminalSessionSummary,
     managed: ManagedChatSession | null,
     metadataPath: string,
     remember: boolean,
   ): void => {
-    const store = deletedChatsDb();
-    if (!store) return;
     try {
-      const fromFile = readPersistedChatRecord(metadataPath);
-      // The file can trail the live session by a write; the live pointers fill any gap.
-      const record: Record<string, unknown> = { ...(managed?.session as unknown as Record<string, unknown> ?? {}), ...(fromFile ?? {}) };
-      if (!fromFile && !managed) return;
-      const lane = store.get<{ name: string | null; worktreePath: string | null }>(
-        "select name, worktree_path as worktreePath from lanes where id = ? limit 1",
-        [row.laneId],
-      );
-      recordDeletedChat(store, {
-        id: row.id,
-        laneId: row.laneId,
-        laneName: lane?.name ?? row.laneName ?? null,
-        title: row.title?.trim() || null,
-        provider: String(record.provider ?? row.toolType ?? ""),
-        modelId: null,
-        reasoningEffort: null,
-        instanceId: null,
-        configHome: managed ? sessionConfigHome(managed) : null,
-        cwd: managed?.laneWorktreePath ?? lane?.worktreePath ?? null,
-        createdAt: row.startedAt ?? null,
-        lastActiveAt: row.lastActivityAt ?? row.endedAt ?? null,
-        origin: "delete",
-        record,
-        hidden: !remember || record.spawnKind === "subagent" || Boolean(record.sideChatParentSessionId),
-      });
+      recordDeletedChatFor(row, managed, metadataPath, remember);
     } catch (error) {
-      // Never let the list block the delete it records.
-      logger.warn("agent_chat.deleted_chat_record_failed", {
-        sessionId: row.id,
-        error: getErrorMessage(error),
-      });
+      // Remembering a chat never fails the delete the person asked for.
+      logger.warn("agent_chat.deleted_chat_record_failed", { sessionId: row.id, error: getErrorMessage(error) });
     }
   };
 
-  const requireDeletedChatsDb = () => {
-    const store = deletedChatsDb();
-    if (!store) throw new Error("Recently deleted chats aren't available here.");
-    if (!deletedChatsBackfilled) {
-      deletedChatsBackfilled = true;
-      try {
-        backfillClaudeDeletedChats(store);
-      } catch (error) {
-        logger.warn("agent_chat.deleted_chats_backfill_failed", { error: getErrorMessage(error) });
-      }
-    }
-    return store;
-  };
-
-  const requireDeletedChat = async (rawId: unknown): Promise<{ row: DeletedChatRow; source: DeletedChatSource }> => {
-    const id = typeof rawId === "string" ? rawId.trim() : "";
-    if (!id) throw new Error("Deleted chat id is required.");
-    const row = getDeletedChatRow(requireDeletedChatsDb(), id);
-    if (!row) throw new Error("That chat isn't in Recently deleted anymore.");
-    const source = await deletedChatLocator.locate(row);
-    if (!source) {
-      throw new Error(`${importProviderLabel(row.externalProvider)} no longer has this conversation, so it can't be reopened.`);
-    }
-    return { row, source };
-  };
-
-  const listDeletedChats = async (args: DeletedChatListArgs = {}): Promise<DeletedChatListResult> => {
-    const store = requireDeletedChatsDb();
-    const rows = listDeletedChatRows(store);
-    const present = await mapWithLimit(rows, 6, async (row) => (await deletedChatLocator.locate(row)) != null);
-    const kept = rows.filter((_, index) => present[index]);
-    const laneIds = [...new Set(kept.map((row) => row.laneId).filter((id): id is string => Boolean(id)))];
-    const lanes = new Map<string, { name: string | null; color: string | null; live: boolean }>();
-    if (laneIds.length) {
-      const laneRows = store.all<{ id: string; name: string | null; color: string | null; archivedAt: string | null }>(
-        `select id, name, color, archived_at as archivedAt from lanes where id in (${laneIds.map(() => "?").join(", ")})`,
-        laneIds,
-      );
-      for (const lane of laneRows) lanes.set(lane.id, { name: lane.name, color: lane.color, live: !lane.archivedAt });
-    }
-    const query = typeof args.query === "string" ? args.query.trim().toLowerCase() : "";
-    const chats = kept
-      .map((row) => toDeletedChat(row, row.laneId ? lanes.get(row.laneId) ?? null : null))
-      .filter((chat) => !query
-        || (chat.title ?? "").toLowerCase().includes(query)
-        || (chat.laneName ?? "").toLowerCase().includes(query));
-    return { chats };
-  };
-
-  const getDeletedChatDetail = async (args: DeletedChatDetailArgs): Promise<ExternalSessionDetail> => {
-    const { row, source } = await requireDeletedChat(args?.id);
-    const before = typeof args?.before === "string" && args.before.trim() ? args.before.trim() : null;
-    return loadExternalSessionDetail(
-      { provider: row.externalProvider, sessionId: row.externalId, ...(before ? { before } : {}) },
-      { includeAdeOwned: true, ...(source.env ? { env: source.env } : {}) },
-    );
-  };
-
-  const reopenDeletedChat = async (args: DeletedChatReopenArgs): Promise<DeletedChatReopenResult> => {
-    const { row, source } = await requireDeletedChat(args?.id);
-    const requestedLaneId = typeof args?.laneId === "string" ? args.laneId.trim() : "";
-    const targetLaneId = requestedLaneId || row.laneId || "";
-    const targetLane = targetLaneId
-      ? await laneService.getSummary(targetLaneId, { includeStatus: false }).catch(() => null)
-      : null;
-    if (!targetLane || targetLane.archivedAt) {
-      throw new Error(requestedLaneId
-        ? "That lane isn't available. Pick another lane to reopen this chat in."
-        : "This chat's lane was deleted. Pick a lane to reopen it in.");
-    }
-    // Same lane: pick the conversation up where it stopped. Another lane: a
-    // copy, because the agent's session is tied to the folder it ran in.
-    const sameLane = targetLane.id === row.laneId;
-    const instanceId = source.configHome && isProviderInstanceProvider(row.externalProvider)
-      ? getMachineProviderInstanceStore().list(row.externalProvider)
-        .find((instance) => pathsEqual(instance.configHome, source.configHome!))?.id ?? null
-      : null;
-    const result = await importExternalChatSession({
-      provider: row.externalProvider,
-      externalSessionId: row.externalId,
-      laneId: targetLane.id,
-      cwd: sameLane ? row.cwd ?? targetLane.worktreePath ?? null : row.cwd,
-      fork: !sameLane,
-      ...(row.title ? { title: row.title } : {}),
-      ...(row.modelId ? { sourceModel: row.modelId } : {}),
-      ...(row.reasoningEffort ? { sourceReasoningEffort: row.reasoningEffort } : {}),
-    }, {
-      adeOwned: true,
-      instanceId,
-      configHome: source.configHome,
-      env: source.env,
-    });
-    hideDeletedChats(requireDeletedChatsDb(), [row.id], "reopened", result.chatSessionId);
-    deletedChatLocator.invalidate();
-    return {
-      chatSessionId: result.chatSessionId,
-      laneId: targetLane.id,
-      mode: sameLane ? "continue" : "copy",
-      chatSummary: result.chatSummary,
+  const recordDeletedChatFor = (
+    row: TerminalSessionSummary,
+    managed: ManagedChatSession | null,
+    metadataPath: string,
+    remember: boolean,
+  ): void => {
+    const fromFile = readPersistedChatRecord(metadataPath);
+    if (!fromFile && !managed) return;
+    // The file can trail the live session by a write; the live pointers fill any gap.
+    const record: Record<string, unknown> = {
+      ...(managed?.session as unknown as Record<string, unknown> | undefined),
+      ...fromFile,
     };
-  };
-
-  const removeDeletedChats = (args: DeletedChatRemoveArgs): DeletedChatRemoveResult => {
-    const ids = Array.isArray(args?.ids) ? args.ids.filter((id): id is string => typeof id === "string") : [];
-    return { removed: hideDeletedChats(requireDeletedChatsDb(), ids, "removed") };
+    const lane = db?.get?.<{ name: string | null; worktreePath: string | null }>(
+      "select name, worktree_path as worktreePath from lanes where id = ? limit 1",
+      [row.laneId],
+    ) ?? null;
+    deletedChats.remember({
+      id: row.id,
+      laneId: row.laneId,
+      laneName: lane?.name ?? row.laneName ?? null,
+      title: row.title?.trim() || null,
+      provider: String(record.provider ?? row.toolType ?? ""),
+      modelId: null,
+      reasoningEffort: null,
+      instanceId: null,
+      configHome: managed ? sessionConfigHome(managed) : null,
+      cwd: managed?.laneWorktreePath ?? lane?.worktreePath ?? null,
+      createdAt: row.startedAt ?? null,
+      lastActiveAt: row.lastActivityAt ?? row.endedAt ?? null,
+      origin: "delete",
+      record,
+      hidden: !remember || record.spawnKind === "subagent" || Boolean(record.sideChatParentSessionId),
+    });
   };
 
   /**
@@ -77622,10 +77514,10 @@ export function createAgentChatService(args: {
     codexFuzzyFileSearch,
     dispose,
     deleteSession: (deleteArgs: AgentChatDeleteArgs) => deleteSession(deleteArgs, { remember: true }),
-    listDeletedChats,
-    getDeletedChatDetail,
-    reopenDeletedChat,
-    removeDeletedChats,
+    listDeletedChats: (listArgs?: DeletedChatListArgs) => deletedChats.list(listArgs),
+    getDeletedChatDetail: (detailArgs: DeletedChatDetailArgs) => deletedChats.detail(detailArgs),
+    reopenDeletedChat: (reopenArgs: DeletedChatReopenArgs) => deletedChats.reopen(reopenArgs),
+    removeDeletedChats: (removeArgs: DeletedChatRemoveArgs) => deletedChats.remove(removeArgs),
     archiveSession,
     unarchiveSession,
     noteRemoteWork,

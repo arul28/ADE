@@ -1286,7 +1286,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "Archive",
   },
   {
-    id: "chats.recentlyDeleted",
+    id: "storage.recentlyDeleted",
     label: "Recently deleted chats",
     keywords: [
       "deleted chats", "recently deleted", "recover chat", "restore chat", "undo delete", "undelete",

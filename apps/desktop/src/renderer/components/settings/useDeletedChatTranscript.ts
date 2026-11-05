@@ -1,20 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AgentChatEventEnvelope } from "../../../shared/types/chat";
 import type { ExternalSessionDetail, OpenProjectBinding } from "../../../shared/types";
-import { eventsFromMessages } from "../terminals/importSessions/importBrowserModel";
 import type { SessionTranscriptState } from "../terminals/importSessions/ImportSessionPreview";
+import { pageCursor, pageEvents } from "../terminals/importSessions/useExternalSessionDetail";
 
 /** Short settle delay before loading, so holding ↓ through the list stays cheap. */
 const PREVIEW_SETTLE_MS = 90;
-
-function pageEvents(detail: ExternalSessionDetail, transcriptKey: string): AgentChatEventEnvelope[] {
-  if (Array.isArray(detail.events)) return detail.events;
-  return eventsFromMessages(detail.messages ?? [], transcriptKey);
-}
-
-function pageCursor(detail: ExternalSessionDetail): string | null {
-  return detail.hasOlder && detail.olderCursor ? detail.olderCursor : null;
-}
 
 type State = {
   detail: ExternalSessionDetail | null;

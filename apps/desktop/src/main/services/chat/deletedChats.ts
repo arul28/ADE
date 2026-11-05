@@ -1,6 +1,18 @@
 import fs from "node:fs";
 import path from "node:path";
-import type { DeletedChat } from "../../../shared/types/deletedChats";
+import type {
+  DeletedChat,
+  DeletedChatDetailArgs,
+  DeletedChatListArgs,
+  DeletedChatListResult,
+  DeletedChatRemoveArgs,
+  DeletedChatRemoveResult,
+  DeletedChatReopenArgs,
+  DeletedChatReopenResult,
+} from "../../../shared/types/deletedChats";
+import type { AgentChatImportExternalSessionArgs, AgentChatImportExternalSessionResult } from "../../../shared/types/chat";
+import type { ExternalSessionDetail } from "../../../shared/types/externalSessionDetail";
+import { importProviderLabel } from "../../../shared/externalSessionPolicy";
 import {
   EXTERNAL_SESSION_PROVIDERS,
   type ExternalSessionProvider,
@@ -27,10 +39,10 @@ import { providerThreadIsInHome } from "./providerThreadMove";
 
 type DeletedChatsDb = Pick<AdeDb, "get" | "all" | "run">;
 
-export type DeletedChatOrigin = "delete" | "lane_delete" | "backfill";
+type DeletedChatOrigin = "delete" | "lane_delete" | "backfill";
 type HiddenReason = "reopened" | "removed" | "internal";
 
-export type DeletedChatRow = {
+type DeletedChatRow = {
   id: string;
   laneId: string | null;
   laneName: string | null;
@@ -86,7 +98,7 @@ function isExternalProvider(value: string): value is ExternalSessionProvider {
  * chat's own provider first (a Claude chat's Claude session), else the first
  * one it holds. Null when the chat never reached its agent.
  */
-export function deletedChatSourceFromRecord(raw: unknown): { provider: ExternalSessionProvider; externalId: string } | null {
+function deletedChatSourceFromRecord(raw: unknown): { provider: ExternalSessionProvider; externalId: string } | null {
   const pointers = providerPointersFromChatRecord(raw);
   if (!pointers.length) return null;
   const record = raw && typeof raw === "object" ? raw as Record<string, unknown> : {};
@@ -116,7 +128,7 @@ export type RecordDeletedChatInput = Omit<DeletedChatRow, "deletedAt" | "origin"
 };
 
 /** Saves one deleted chat. A chat that never reached its agent has nothing to reopen and is skipped. */
-export function recordDeletedChat(db: DeletedChatsDb, input: RecordDeletedChatInput): boolean {
+function recordDeletedChat(db: DeletedChatsDb, input: RecordDeletedChatInput): boolean {
   const source = deletedChatSourceFromRecord(input.record);
   if (!source) return false;
   const record = input.record ?? {};
@@ -220,7 +232,7 @@ export function recordChatsDeletedWithLane(db: DeletedChatsDb, args: {
  * pointer outlives the chat row. `insert or ignore` keeps every row already
  * here (hidden ones included), so a reopened or removed chat never returns.
  */
-export function backfillClaudeDeletedChats(db: DeletedChatsDb): void {
+function backfillClaudeDeletedChats(db: DeletedChatsDb): void {
   db.run(
     `insert or ignore into deleted_chats(
        id, lane_id, lane_name, title, provider, external_provider, external_id,
@@ -235,22 +247,30 @@ export function backfillClaudeDeletedChats(db: DeletedChatsDb): void {
   );
 }
 
-export function listDeletedChatRows(db: DeletedChatsDb): DeletedChatRow[] {
+/**
+ * A row is written just before the chat's own row goes. If that delete then
+ * failed, the chat is still live and must not be offered for reopening.
+ */
+const CHAT_GONE_SQL = "not exists (select 1 from terminal_sessions t where t.id = d.id)";
+
+function listDeletedChatRows(db: DeletedChatsDb): DeletedChatRow[] {
   return db.all<DeletedChatRow>(
-    `select ${ROW_COLUMNS} from deleted_chats where hidden_at is null order by deleted_at desc limit ?`,
+    `select ${ROW_COLUMNS} from deleted_chats d
+      where d.hidden_at is null and ${CHAT_GONE_SQL}
+      order by d.deleted_at desc limit ?`,
     [LIST_LIMIT],
   ).filter((row) => isExternalProvider(row.externalProvider));
 }
 
-export function getDeletedChatRow(db: DeletedChatsDb, id: string): DeletedChatRow | null {
+function getDeletedChatRow(db: DeletedChatsDb, id: string): DeletedChatRow | null {
   const row = db.get<DeletedChatRow>(
-    `select ${ROW_COLUMNS} from deleted_chats where id = ? and hidden_at is null limit 1`,
+    `select ${ROW_COLUMNS} from deleted_chats d where d.id = ? and d.hidden_at is null and ${CHAT_GONE_SQL} limit 1`,
     [id],
   );
   return row && isExternalProvider(row.externalProvider) ? row : null;
 }
 
-export function hideDeletedChats(
+function hideDeletedChats(
   db: DeletedChatsDb,
   ids: readonly string[],
   reason: HiddenReason,
@@ -277,7 +297,7 @@ export function hideDeletedChats(
 
 // ── Where the agent's copy is ─────────────────────────────────────────────
 
-export type DeletedChatSource = {
+type DeletedChatSource = {
   /** The account folder holding the copy (Claude / Codex); null for the others. */
   configHome: string | null;
   /** The env the session readers need to look in that folder. */
@@ -327,8 +347,10 @@ function accountEnv(provider: ExternalSessionProvider, configHome: string | null
   return { ...process.env, [PROVIDER_INSTANCE_ENV_KEY[provider]]: configHome };
 }
 
+type LoggerLike = { warn: (message: string, fields?: Record<string, unknown>) => void };
+
 /** Rows whose copy no agent folder holds still exist; this reports them as gone. */
-export function createDeletedChatLocator() {
+function createDeletedChatLocator(logger: LoggerLike) {
   let claudeIndex: { builtAt: number; index: Promise<ClaudeIndex> } | null = null;
   const CLAUDE_INDEX_TTL_MS = 5_000;
   const otherCache = new Map<string, { at: number; found: boolean }>();
@@ -364,7 +386,15 @@ export function createDeletedChatLocator() {
       return cached.found ? { configHome: null, env: undefined } : null;
     }
     const record = await discoverExternalSessionRecord(row.externalProvider, row.externalId, { includeAdeOwned: true })
-      .catch(() => null);
+      .catch((error: unknown) => {
+        // Reported as gone (the row stays hidden), but said, so a reader
+        // failure is not mistaken for the agent clearing its copy.
+        logger.warn("deleted_chats.locate_failed", {
+          provider: row.externalProvider,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return null;
+      });
     otherCache.set(key, { at: Date.now(), found: record != null });
     return record ? { configHome: null, env: undefined } : null;
   };
@@ -379,10 +409,8 @@ export function createDeletedChatLocator() {
   };
 }
 
-export type DeletedChatLocator = ReturnType<typeof createDeletedChatLocator>;
-
 /** Runs `fn` over `items` at most `limit` at a time, keeping order. */
-export async function mapWithLimit<T, R>(items: readonly T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+async function mapWithLimit<T, R>(items: readonly T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
   const out = new Array<R>(items.length);
   let next = 0;
   const worker = async () => {
@@ -395,7 +423,7 @@ export async function mapWithLimit<T, R>(items: readonly T[], limit: number, fn:
   return out;
 }
 
-export function toDeletedChat(
+function toDeletedChat(
   row: DeletedChatRow,
   lane: { name: string | null; color: string | null; live: boolean } | null,
 ): DeletedChat {
@@ -414,3 +442,177 @@ export function toDeletedChat(
     deletedAt: row.deletedAt,
   };
 }
+
+// ── The service ───────────────────────────────────────────────────────────
+
+/** Where Reopen found the conversation, handed to the import. */
+export type DeletedChatReopenSource = {
+  adeOwned: true;
+  /** The account that holds the conversation, so the chat reopens on it. */
+  instanceId: string | null;
+  configHome: string | null;
+  env: NodeJS.ProcessEnv | undefined;
+};
+
+export type DeletedChatsServiceDeps = {
+  /** The project database; null in a runtime without one. */
+  db: () => DeletedChatsDb | null;
+  logger: LoggerLike;
+  getLane: (laneId: string) => Promise<{ id: string; archivedAt?: string | null; worktreePath?: string | null } | null>;
+  /** Every provider session a live chat holds, so one is never opened twice. */
+  listLiveProviderRefs: () => Promise<ReadonlyArray<{ provider: string; externalId: string }>>;
+  /** The account id whose config home is `configHome`, or null. */
+  instanceIdForHome: (provider: ExternalSessionProvider, configHome: string) => string | null;
+  importSession: (args: AgentChatImportExternalSessionArgs, reopen: DeletedChatReopenSource) => Promise<AgentChatImportExternalSessionResult>;
+  loadDetail: (
+    args: { provider: ExternalSessionProvider; sessionId: string; before?: string },
+    options: { includeAdeOwned: true; env?: NodeJS.ProcessEnv },
+  ) => Promise<ExternalSessionDetail>;
+};
+
+const LOCATE_CONCURRENCY = 6;
+
+export function createDeletedChatsService(deps: DeletedChatsServiceDeps) {
+  const locator = createDeletedChatLocator(deps.logger);
+  let backfilled = false;
+  /** One reopen per deleted chat at a time: two would open the session twice. */
+  const reopening = new Set<string>();
+
+  const requireDb = (): DeletedChatsDb => {
+    const db = deps.db();
+    if (!db) throw new Error("Recently deleted chats aren't available here.");
+    if (!backfilled) {
+      backfilled = true;
+      try {
+        backfillClaudeDeletedChats(db);
+      } catch (error) {
+        deps.logger.warn("deleted_chats.backfill_failed", { error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+    return db;
+  };
+
+  const liveRefKeys = async (): Promise<Set<string>> =>
+    new Set((await deps.listLiveProviderRefs()).map((ref) => `${ref.provider}:${ref.externalId}`));
+
+  const requireRow = async (rawId: unknown): Promise<{ row: DeletedChatRow; source: DeletedChatSource }> => {
+    const id = typeof rawId === "string" ? rawId.trim() : "";
+    if (!id) throw new Error("Deleted chat id is required.");
+    const row = getDeletedChatRow(requireDb(), id);
+    if (!row) throw new Error("That chat isn't in Recently deleted anymore.");
+    const source = await locator.locate(row);
+    if (!source) {
+      throw new Error(`${importProviderLabel(row.externalProvider)} no longer has this conversation, so it can't be reopened.`);
+    }
+    return { row, source };
+  };
+
+  /**
+   * Saves one deleted chat. Never throws: a failure to remember it must not
+   * fail the delete the person asked for.
+   */
+  const remember = (input: RecordDeletedChatInput): void => {
+    const db = deps.db();
+    if (!db) return;
+    try {
+      recordDeletedChat(db, input);
+    } catch (error) {
+      deps.logger.warn("deleted_chats.record_failed", {
+        sessionId: input.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  const list = async (args: DeletedChatListArgs = {}): Promise<DeletedChatListResult> => {
+    const db = requireDb();
+    const live = await liveRefKeys();
+    const rows = listDeletedChatRows(db)
+      // Opened again some other way (an import, another reopen): already a live chat.
+      .filter((row) => !live.has(`${row.externalProvider}:${row.externalId}`));
+    const present = await mapWithLimit(rows, LOCATE_CONCURRENCY, async (row) => (await locator.locate(row)) != null);
+    const kept = rows.filter((_, index) => present[index]);
+    const laneIds = [...new Set(kept.map((row) => row.laneId).filter((laneId): laneId is string => Boolean(laneId)))];
+    const lanes = new Map<string, { name: string | null; color: string | null; live: boolean }>();
+    if (laneIds.length) {
+      const laneRows = db.all<{ id: string; name: string | null; color: string | null; archivedAt: string | null }>(
+        `select id, name, color, archived_at as archivedAt from lanes where id in (${laneIds.map(() => "?").join(", ")})`,
+        laneIds,
+      );
+      for (const lane of laneRows) lanes.set(lane.id, { name: lane.name, color: lane.color, live: !lane.archivedAt });
+    }
+    const query = typeof args?.query === "string" ? args.query.trim().toLowerCase() : "";
+    const chats = kept
+      .map((row) => toDeletedChat(row, row.laneId ? lanes.get(row.laneId) ?? null : null))
+      .filter((chat) => !query
+        || (chat.title ?? "").toLowerCase().includes(query)
+        || (chat.laneName ?? "").toLowerCase().includes(query));
+    return { chats };
+  };
+
+  const detail = async (args: DeletedChatDetailArgs): Promise<ExternalSessionDetail> => {
+    const { row, source } = await requireRow(args?.id);
+    const before = typeof args?.before === "string" && args.before.trim() ? args.before.trim() : null;
+    return deps.loadDetail(
+      { provider: row.externalProvider, sessionId: row.externalId, ...(before ? { before } : {}) },
+      { includeAdeOwned: true, ...(source.env ? { env: source.env } : {}) },
+    );
+  };
+
+  const reopen = async (args: DeletedChatReopenArgs): Promise<DeletedChatReopenResult> => {
+    const { row, source } = await requireRow(args?.id);
+    if (reopening.has(row.id)) throw new Error("This chat is already being reopened.");
+    reopening.add(row.id);
+    try {
+      if ((await liveRefKeys()).has(`${row.externalProvider}:${row.externalId}`)) {
+        hideDeletedChats(requireDb(), [row.id], "reopened");
+        throw new Error("This conversation is already open in another chat.");
+      }
+      const requestedLaneId = typeof args?.laneId === "string" ? args.laneId.trim() : "";
+      const targetLaneId = requestedLaneId || row.laneId || "";
+      const lane = targetLaneId ? await deps.getLane(targetLaneId).catch(() => null) : null;
+      if (!lane || lane.archivedAt) {
+        throw new Error(requestedLaneId
+          ? "That lane isn't available. Pick another lane to reopen this chat in."
+          : "This chat's lane was deleted. Pick a lane to reopen it in.");
+      }
+      // Same lane: pick the conversation up where it stopped. Another lane: a
+      // copy, because the agent's session is tied to the folder it ran in.
+      const sameLane = lane.id === row.laneId;
+      const result = await deps.importSession({
+        provider: row.externalProvider,
+        externalSessionId: row.externalId,
+        laneId: lane.id,
+        cwd: sameLane ? row.cwd ?? lane.worktreePath ?? null : row.cwd,
+        fork: !sameLane,
+        ...(row.title ? { title: row.title } : {}),
+        ...(row.modelId ? { sourceModel: row.modelId } : {}),
+        ...(row.reasoningEffort ? { sourceReasoningEffort: row.reasoningEffort } : {}),
+      }, {
+        adeOwned: true,
+        instanceId: source.configHome ? deps.instanceIdForHome(row.externalProvider, source.configHome) : null,
+        configHome: source.configHome,
+        env: source.env,
+      });
+      hideDeletedChats(requireDb(), [row.id], "reopened", result.chatSessionId);
+      locator.invalidate();
+      return {
+        chatSessionId: result.chatSessionId,
+        laneId: lane.id,
+        mode: sameLane ? "continue" : "copy",
+        chatSummary: result.chatSummary,
+      };
+    } finally {
+      reopening.delete(row.id);
+    }
+  };
+
+  const remove = (args: DeletedChatRemoveArgs): DeletedChatRemoveResult => {
+    const ids = Array.isArray(args?.ids) ? args.ids.filter((id): id is string => typeof id === "string") : [];
+    return { removed: hideDeletedChats(requireDb(), ids, "removed") };
+  };
+
+  return { remember, list, detail, reopen, remove };
+}
+
+export type DeletedChatsService = ReturnType<typeof createDeletedChatsService>;

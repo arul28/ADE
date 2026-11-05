@@ -104,7 +104,7 @@ const ImportSessionRow = memo(function ImportSessionRow({
   );
 });
 
-function SkeletonRows({ count }: { count: number }) {
+export function SkeletonRows({ count }: { count: number }) {
   return (
     <div className="flex flex-col gap-1 px-2 pt-1" aria-hidden="true">
       {Array.from({ length: count }, (_, index) => (

@@ -719,7 +719,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       };
       const openRecentlyDeleted = () => navigateToAppTarget({
         kind: "settings",
-        entryId: "chats.recentlyDeleted",
+        entryId: "storage.recentlyDeleted",
         ...(pin ? { machineId: machineIdForBinding(pin) } : {}),
       });
       showToast({

@@ -24,12 +24,14 @@ let watchSeq = 0;
 /** Short settle delay before loading a preview, so fast keyboard moves stay cheap. */
 const PREVIEW_SETTLE_MS = 90;
 
-function pageEvents(detail: ExternalSessionDetail, transcriptKey: string): AgentChatEventEnvelope[] {
+/** One detail page's events (older hosts send only `messages`). */
+export function pageEvents(detail: ExternalSessionDetail, transcriptKey: string): AgentChatEventEnvelope[] {
   if (Array.isArray(detail.events)) return detail.events;
   return eventsFromMessages(detail.messages ?? [], transcriptKey);
 }
 
-function pageCursor(detail: ExternalSessionDetail): string | null {
+/** The cursor for the page before this one; null when nothing older exists. */
+export function pageCursor(detail: ExternalSessionDetail): string | null {
   return detail.hasOlder && detail.olderCursor ? detail.olderCursor : null;
 }
 

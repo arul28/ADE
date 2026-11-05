@@ -91,6 +91,8 @@ const READ_ONLY_COMMANDS: ReadonlyMap<string, ReadonlySet<string> | true> = new 
     "list", "inbox", "pending", "read", "show", "status", "launches", "launch-status", "waits", "subagents", "models",
     "linear-issues", "actions", "wait",
   ])],
+  // `ade chat deleted list` reads Recently deleted; `reopen` creates a chat.
+  ["chat deleted", new Set(["list", "ls"])],
   ["terminal", new Set(["list", "read", "active"])],
   ["history", new Set(["list", "show", "commits"])],
   ["drafts", new Set(["list", "show"])],
@@ -127,6 +129,7 @@ const READ_ONLY_COMMANDS: ReadonlyMap<string, ReadonlySet<string> | true> = new 
 /** Commands whose `<command> <word>` names a nested group, not a subcommand. */
 const NESTED_GROUPS: ReadonlySet<string> = new Set([
   "prs stacks", "github issue", "github app-auth", "automations webhook", "usage budget", "providers accounts",
+  "chat deleted",
 ]);
 
 type RemoteCommandVerdict =
