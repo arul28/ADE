@@ -15,23 +15,10 @@
  * service is always stopped before the services it depends on.
  */
 
-/**
- * Why a runtime is going away, for the services whose teardown depends on it.
- *
- * - `"exit"`: this process is stopping (a brain restart, an update, a signal).
- *   The next brain runs the same project, so a device service hands its
- *   devices off instead of stopping them.
- * - `"close"`: this process stays up but lets the project's runtime go for a
- *   reason that is not the user's (a repair, a superseded boot). The next
- *   runtime for the project re-adopts what was handed off, so this hands off
- *   too.
- * - `"unregister"`: the project was removed from this machine. Nothing will
- *   adopt its devices, so they are stopped.
- *
- * A caller that does not know (`undefined`) keeps each service's configured
- * default.
- */
-export type RuntimeDisposeReason = "exit" | "close" | "unregister";
+import type { RuntimeDisposeReason } from "../../../../desktop/src/shared/types/runtimeLifecycle";
+
+/** Why a runtime is going away; owned by the shared types so the device services can name it. */
+export type { RuntimeDisposeReason };
 
 /** A release; it may read the dispose reason, and may return a promise. */
 export type TeardownRelease = (reason?: RuntimeDisposeReason) => unknown;
@@ -68,18 +55,16 @@ export interface TeardownStack {
    * shutdown path: a device stop or a final write must finish before the
    * database below it closes.
    *
-   * Each wait is capped (`stepTimeoutMs`) and so is the whole drain
-   * (`totalTimeoutMs`): a stuck disposer must not hold a brain exit. Once the
-   * overall cap is spent the remaining releases still run, in order, but are
-   * no longer waited on, so the database still closes. A release that throws,
-   * rejects or times out is reported and never stops the drain; the returned
-   * promise never rejects. A second call while a drain runs joins it.
+   * Each wait is capped (`TEARDOWN_STEP_TIMEOUT_MS`) and so is the whole
+   * drain (`TEARDOWN_TOTAL_TIMEOUT_MS`): a stuck disposer must not hold a
+   * brain exit. Once the overall cap is spent the remaining releases still
+   * run, in order, but are no longer waited on, so the database still closes.
+   * A release that throws, rejects or times out is reported and never stops
+   * the drain; the returned promise never rejects. A second call while a drain runs joins it; if it
+   * names a stronger reason (see {@link strongerDisposeReason}), the releases
+   * that have not started yet get that reason instead.
    */
-  drainAsync: (options?: {
-    reason?: RuntimeDisposeReason;
-    stepTimeoutMs?: number;
-    totalTimeoutMs?: number;
-  }) => Promise<void>;
+  drainAsync: (reason?: RuntimeDisposeReason) => Promise<void>;
   /** The number of releases still registered. Intended for tests. */
   size: () => number;
 }
@@ -112,6 +97,8 @@ export function createTeardownStack(
     }
   };
   let asyncDrain: Promise<void> | null = null;
+  /** The reason the running drain hands to the releases it has not started. */
+  let drainReason: RuntimeDisposeReason | undefined;
   return {
     push(release: TeardownRelease): void {
       releases.push(release);
@@ -123,18 +110,22 @@ export function createTeardownStack(
         start(release, undefined);
       }
     },
-    drainAsync(options = {}): Promise<void> {
-      if (asyncDrain) return asyncDrain;
-      const stepTimeoutMs = options.stepTimeoutMs ?? TEARDOWN_STEP_TIMEOUT_MS;
-      const totalTimeoutMs = options.totalTimeoutMs ?? TEARDOWN_TOTAL_TIMEOUT_MS;
-      const deadline = Date.now() + totalTimeoutMs;
+    drainAsync(reason?: RuntimeDisposeReason): Promise<void> {
+      if (asyncDrain) {
+        // A project removed while a repair's "close" drains: the device
+        // releases still to come must stop their devices, not hand them off.
+        drainReason = strongerDisposeReason(drainReason, reason);
+        return asyncDrain;
+      }
+      drainReason = reason;
+      const deadline = Date.now() + TEARDOWN_TOTAL_TIMEOUT_MS;
       asyncDrain = (async () => {
         while (releases.length > 0) {
           const release = releases.pop();
           if (!release) continue;
-          const pending = start(release, options.reason);
+          const pending = start(release, drainReason);
           if (!pending) continue;
-          const waitMs = Math.min(stepTimeoutMs, deadline - Date.now());
+          const waitMs = Math.min(TEARDOWN_STEP_TIMEOUT_MS, deadline - Date.now());
           // The overall cap is spent: run the rest without waiting.
           if (waitMs <= 0) continue;
           const settled = await settleWithin(pending, waitMs);
@@ -149,6 +140,20 @@ export function createTeardownStack(
       return releases.length;
     },
   };
+}
+
+/**
+ * The stronger of two dispose reasons: `"unregister"` (stop the devices) beats
+ * `"close"`, which beats `"exit"` and `undefined` (equal: both keep a service's
+ * hand-off). On a tie the first one stays.
+ */
+function strongerDisposeReason(
+  current: RuntimeDisposeReason | undefined,
+  next: RuntimeDisposeReason | undefined,
+): RuntimeDisposeReason | undefined {
+  const rank = (reason: RuntimeDisposeReason | undefined): number =>
+    reason === "unregister" ? 2 : reason === "close" ? 1 : 0;
+  return rank(next) > rank(current) ? next : current;
 }
 
 /** True when `pending` settled (either way) within `timeoutMs`. */

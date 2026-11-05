@@ -40,7 +40,7 @@ import { createRemoteLaunchBudget } from "../../lib/remoteLaunchBudget";
 import { resolveMachineAdeLayout } from "../projects/machineLayout";
 import { SYNC_REMOTE_COMMAND_RESULT_MAX_BYTES } from "../sync/syncProtocol";
 import { codedError } from "../../../../desktop/src/shared/codedError";
-import { hasRecentTraffic, RPC_LIVENESS_PROBE_TIMEOUT_MS } from "../../../../desktop/src/shared/rpcLiveness";
+import { probeRpcLiveness, type RpcLivenessClient } from "../../../../desktop/src/shared/rpcLiveness";
 import { isRuntimeTransportTimeoutError } from "../../../../desktop/src/shared/runtimeErrors";
 import { AccountMachineDirectoryService } from "./accountMachineDirectoryService";
 import {
@@ -93,10 +93,11 @@ export type PooledConnection = {
   /** Calls in flight on this connection; the idle timer only runs at zero. */
   inFlight: number;
   /** Pings the connection while it is quiet; a missed ping drops it. */
-  heartbeat?: ReturnType<typeof setInterval> | null;
-  /** The `ping` in flight, shared by every check that runs meanwhile. */
-  liveness?: Promise<boolean> | null;
+  heartbeat: ReturnType<typeof setInterval> | null;
 };
+
+/** The liveness `ping` in flight per client, shared by every check that runs meanwhile. */
+const livenessProbes = new WeakMap<RpcLivenessClient, Promise<boolean>>();
 
 type AccountDirectory = Pick<AccountMachineDirectoryService, "listMachines" | "pairListedMachine">;
 
@@ -273,19 +274,8 @@ export function createMachineConnectionPool(options: MachineConnectionPoolOption
    * reply from an older brain included). A busy host still answers `ping` from
    * its event loop; a half-open socket answers nothing.
    */
-  const stillAnswers = (entry: PooledConnection): Promise<boolean> => {
-    if (entry.client.isClosed()) return Promise.resolve(false);
-    if (hasRecentTraffic(entry.client.lastInboundAt())) return Promise.resolve(true);
-    if (entry.liveness) return entry.liveness;
-    const probe = entry.client
-      .call("ping", {}, { timeoutMs: RPC_LIVENESS_PROBE_TIMEOUT_MS })
-      .then(() => true, (error: unknown) => !entry.client.isClosed() && !isRuntimeTransportTimeoutError(error))
-      .finally(() => {
-        if (entry.liveness === probe) entry.liveness = null;
-      });
-    entry.liveness = probe;
-    return probe;
-  };
+  const stillAnswers = (entry: PooledConnection): Promise<boolean> =>
+    probeRpcLiveness(entry.client, livenessProbes);
 
   /**
    * Drop the connection unless it still answers, so the next call redials
@@ -515,7 +505,6 @@ export function createMachineConnectionPool(options: MachineConnectionPoolOption
       idleTimer: null,
       inFlight: 0,
       heartbeat: null,
-      liveness: null,
     };
     client.onDisconnect(() => dropConnection(hostDeviceId, entry));
     state.open.set(machine.machineKey, entry);

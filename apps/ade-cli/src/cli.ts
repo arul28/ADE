@@ -205,6 +205,7 @@ import {
   machineStatusLine,
 } from "../../desktop/src/shared/machinePresence";
 import { SEARCH_DOC_KINDS } from "../../desktop/src/shared/types/search";
+import { isRemoteWorkLaneId } from "../../desktop/src/shared/types/remoteWork";
 import { pathsEqual } from "../../desktop/src/main/services/shared/pathCompare";
 import { stripHostRuntimeEnv } from "../../desktop/src/main/services/shared/hostRuntimeEnv";
 import { trackPtyOutputBacklog } from "../../desktop/src/main/services/pty/ptyOutputFlowControl";
@@ -5175,6 +5176,23 @@ export function collectGenericObjectArgs(
   return input;
 }
 
+/**
+ * The lane this shell runs in, as a default for a command without --lane.
+ * A shell that a chat on another machine started in its work copy here
+ * carries the copy's `remote-work-…` id, which names no ADE lane: a lane
+ * command defaulted to it would fail as "Lane not found", so it says why.
+ */
+function envLaneIdForLaneCommand(): string | null {
+  const laneId = process.env.ADE_LANE_ID?.trim() || null;
+  if (isRemoteWorkLaneId(laneId)) {
+    throw new CliUsageError(
+      "This shell runs in a work copy that a chat on another machine uses here, so it has no ADE lane. "
+      + "Pass --lane <lane> to act on a lane of this machine.",
+    );
+  }
+  return laneId;
+}
+
 function readLaneId(args: string[]): string | null {
   return readValue(args, ["--lane", "--lane-id"]) ?? null;
 }
@@ -7493,7 +7511,7 @@ function resolveNewChatLaneArgs(args: string[], prompt: string | null): {
     readFlag(args, ["--auto-create-lane", "--create-lane", "--new-lane"]) ||
     isAutoLaneSelector(laneValue);
   if (!autoCreateLane) {
-    const laneId = laneValue ?? process.env.ADE_LANE_ID ?? null;
+    const laneId = laneValue ?? envLaneIdForLaneCommand();
     if (!laneId) {
       throw new CliUsageError("Provide --lane <lane> or --auto-create-lane.");
     }
@@ -9751,7 +9769,7 @@ function buildShellPlan(args: string[], inWorkCopy = false): CliPlan {
     // app or script can run a command in a project without making a lane.
     // With --machine and no --lane the command runs in this chat's work copy
     // there instead (cliMachineTargeting.ts replaces the lane).
-    const ownLane = laneId ?? (process.env.ADE_LANE_ID?.trim() || null);
+    const ownLane = laneId ?? (inWorkCopy ? null : envLaneIdForLaneCommand());
     const followPlan = wait
       ? {
           followShell: true,
@@ -13881,7 +13899,7 @@ function buildFilesPlan(args: string[], machine: string | null = null): CliPlan 
   const laneId = readLaneId(args);
   const workspaceId = readValue(args, ["--workspace", "--workspace-id"])
     ?? laneId
-    ?? (process.env.ADE_LANE_ID?.trim() || null);
+    ?? envLaneIdForLaneCommand();
   const withWorkspace = (base: JsonObject = {}) =>
     collectGenericObjectArgs(args, {
       ...base,
@@ -17437,7 +17455,7 @@ function buildWorkToolsPlan(args: string[]): CliPlan {
     // ADE_LANE_ID) is for the human at a terminal, who is a user client and is
     // therefore the only caller allowed to name another lane.
     const laneId = asString(
-      readValue(args, ["--lane", "--lane-id"]) ?? process.env.ADE_LANE_ID,
+      readValue(args, ["--lane", "--lane-id"]) ?? envLaneIdForLaneCommand(),
     );
     return {
       kind: "execute",
@@ -23957,7 +23975,7 @@ class InProcessJsonRpcClient {
 
   constructor(
     private readonly handler: JsonRpcHandler & { dispose?: () => void },
-    private readonly runtime: { dispose: () => void | Promise<void> },
+    private readonly runtime: Pick<AdeRuntime, "dispose">,
     private readonly previousRole: string | undefined,
   ) {}
 
@@ -23979,7 +23997,7 @@ class InProcessJsonRpcClient {
     } catch {}
     let disposed: Promise<void> = Promise.resolve();
     try {
-      disposed = Promise.resolve(this.runtime.dispose()).catch(() => undefined);
+      disposed = this.runtime.dispose().catch(() => undefined);
     } catch {}
     if (this.previousRole == null) delete process.env.ADE_DEFAULT_ROLE;
     else process.env.ADE_DEFAULT_ROLE = this.previousRole;
@@ -28038,7 +28056,7 @@ async function runServe(
     }
     projectRegistry.remove(record.projectId);
     const disposeTimer = setImmediate(() => {
-      void scopeRegistry.dispose(record.projectId, "unregister").then(() => {
+      void scopeRegistry.dispose(record.projectId, "unregister", { rootPath: record.rootPath }).then(() => {
         // The stop just saved its open CLIs to reopen; a removed project keeps none.
         forgetCliSessionsToReopen(record.rootPath);
       }).catch((error) => {
@@ -28587,6 +28605,12 @@ async function runServe(
   scopeRegistry = new ProjectScopeRegistry(projectRegistry, {
     runtimeSocketPath: socketPath,
     ...(keepAwakeService ? { keepAwakeService } : {}),
+    // A project removed during a repair's teardown: that teardown already
+    // handed its emulators off, and nothing will re-adopt them.
+    onUnregisterAfterHandOff: async (projectRoot) => {
+      const { stopHandedOffAndroidEmulators } = await import("../../desktop/src/main/services/android/androidEmulatorService");
+      await stopHandedOffAndroidEmulators({ projectRoot, logger: headlessProjectLogger });
+    },
     // An embedded guest can't reach other machines, so it owns no moves (and
     // its chat services never sweep any).
     ...(embedded ? {} : { crossMachineHandoffTransport: () => crossMachineHandoffTransport }),

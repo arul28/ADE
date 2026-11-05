@@ -2584,12 +2584,24 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     },
   });
 
-  // A work copy's simulator in use (an app session, a launch, a stream, a
-  // device hub) keeps the copy through the idle and low-disk cleanups.
+  // A work copy's simulator in use keeps the copy through the idle and
+  // low-disk cleanups. Only live activity counts: an app session, an open
+  // device session, a launch, a live view, or a recording. The hub itself does
+  // not: any hub call (one screenshot) creates it and only dispose clears it,
+  // so counting it would pin the copy for the brain's whole life. An event log
+  // is not counted on its own (the hub keeps it private); it normally runs
+  // beside the app or device session that started it.
   const offWorkCopyDeviceCheck = registerRemoteWorkDeviceCheck(args.projectRoot, (laneId) => {
     if (!isRemoteWorkLaneId(laneId)) return false;
     const runtime = runtimes.get(laneKey(laneId));
-    return Boolean(runtime && (runtime.activeSession || runtime.activeLaunchId || runtime.hub || runtime.streamStatus.running));
+    if (!runtime) return false;
+    return Boolean(
+      runtime.activeSession
+      || runtime.activeLaunchId
+      || runtime.hub?.getDeviceSession()
+      || runtime.streamStatus.running
+      || recordings.active({ laneId: runtime.key }),
+    );
   });
 
   const runtimeForKey = (key: string): LaneRuntime => {

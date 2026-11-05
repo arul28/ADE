@@ -576,7 +576,7 @@ export type AdeRuntime = {
    * before the process exits or the project database is opened again: the
    * database closes only after the async disposers settle (each capped).
    */
-  dispose: (reason?: RuntimeDisposeReason) => void | Promise<void>;
+  dispose: (reason?: RuntimeDisposeReason) => Promise<void>;
 };
 
 export function ensureAdePaths(projectRoot: string): AdeRuntimePaths {
@@ -4045,7 +4045,7 @@ export async function createAdeRuntime(args: {
       // failure path and the shutdown path cannot drift apart. Unlike the
       // failure path it waits for each async disposer (capped per step and in
       // total), so a device stop or a final write lands before the store closes.
-      dispose: (reason?: RuntimeDisposeReason) => teardown.drainAsync({ reason }),
+      dispose: (reason?: RuntimeDisposeReason) => teardown.drainAsync(reason),
     };
 
     automationService?.bindAdeActionRegistry(

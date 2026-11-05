@@ -51,6 +51,7 @@ import {
 import {
   resolveCliSpawnInvocation,
   shouldUseWindowsCmdWrapper,
+  windowsCommandLineOverLimitMessage,
   windowsTaskkillInvocation,
 } from "../shared/processExecution";
 import { pathKey, pathsEqual } from "../shared/pathCompare";
@@ -1277,52 +1278,6 @@ export function remoteRunOnceShellLaunch(
     command: shellPath,
     args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")],
   };
-}
-
-/** Windows' limit on one process's command line, in UTF-16 characters (CreateProcessW). */
-export const WINDOWS_COMMAND_LINE_MAX_CHARS = 32_767;
-
-/**
- * The length of the command line Windows gets for `file` and `args`, built
- * the way node-pty builds it (`argsToCommandLine`: MSVCRT quoting, so quotes
- * and the backslashes before them are escaped). A string `args` is used as
- * written (verbatim arguments).
- */
-export function windowsCommandLineLength(file: string, args: readonly string[] | string): number {
-  const quotedLength = (arg: string): number => {
-    const enclosed = arg.length > 1 && arg.startsWith('"') && arg.endsWith('"');
-    const quote = arg === "" || (/[ \t]/.test(arg) && !enclosed);
-    let length = quote ? 2 : 0;
-    let backslashes = 0;
-    for (const char of arg) {
-      if (char === "\\") {
-        backslashes += 1;
-      } else if (char === '"') {
-        length += backslashes * 2 + 2;
-        backslashes = 0;
-      } else {
-        length += backslashes + char.length;
-        backslashes = 0;
-      }
-    }
-    return length + (quote ? backslashes * 2 : backslashes);
-  };
-  if (typeof args === "string") return quotedLength(file) + (args.length ? 1 + args.length : 0);
-  return [file, ...args].reduce((total, arg, index) => total + (index > 0 ? 1 : 0) + quotedLength(arg), 0);
-}
-
-/**
- * Why Windows cannot start this command line, or null when it fits. A bare
- * program name leaves room for the full path the spawn resolves it to.
- * Checked before spawning: an over-long line never errors there, it hangs.
- */
-export function windowsCommandLineOverLimitMessage(file: string, args: readonly string[] | string): string | null {
-  const length = windowsCommandLineLength(file, args) + (path.win32.isAbsolute(file) ? 0 : 260);
-  if (length <= WINDOWS_COMMAND_LINE_MAX_CHARS) return null;
-  return `This command is about ${length.toLocaleString("en-US")} characters as Windows builds its command line, `
-    + `over Windows' limit of ${WINDOWS_COMMAND_LINE_MAX_CHARS.toLocaleString("en-US")}. A PowerShell command run once is sent `
-    + "as -EncodedCommand, which takes about 2.7 times the script's length. Put the script in a file in the work copy "
-    + "and run that file (for example `powershell -NoProfile -File script.ps1`), or pipe it to the command on stdin.";
 }
 
 /**
@@ -6937,11 +6892,15 @@ export function createPtyService({
         ? effectiveArgs.args.filter((value): value is string => typeof value === "string")
         : [];
 
-      // A shell a chat on another machine runs in its work copy here
-      // (`pty.create` with `remoteWork`, owned by `remote:<device>:<chat>`).
-      // Its row sits in the primary lane, but the primary lane's ports and
-      // host name are not the copy's.
-      const workCopyShell = Boolean(args.allowExternalCwd && parseForeignCallerSessionId(chatSessionId)?.chatSessionId);
+      // A shell a chat or terminal on another machine runs in its work copy
+      // here (`pty.create` with `remoteWork`, owned by `remote:<device>:<chat>`
+      // or `remote:<device>:terminal`). Its row sits in the primary lane, but
+      // the primary lane's ports and host name are not the copy's. The copy is
+      // keyed by the whole owner id, as the work copy service keys it.
+      const workCopyOwnerId = args.allowExternalCwd && chatSessionId && parseForeignCallerSessionId(chatSessionId)
+        ? chatSessionId
+        : null;
+      const workCopyShell = workCopyOwnerId != null;
       const laneRuntimeEnv = workCopyShell ? {} : (await getLaneRuntimeEnv?.(laneId)) ?? {};
       const sessionLinearEnv = getSessionLinearEnv?.({ sessionId, chatSessionId }) ?? {};
       const explicitNoColor = hasEnvKey(effectiveArgs.env ?? {}, "NO_COLOR") || hasEnvKey(laneRuntimeEnv, "NO_COLOR");
@@ -6978,7 +6937,7 @@ export function createPtyService({
         chatSessionId,
         ownerSessionId: isTrackedAgentCliToolType(toolTypeHint) ? sessionId : null,
         spawnLineage: effectiveSpawnLineage,
-        workCopy: workCopyShell ? { laneId: remoteWorkLaneIdFor(chatSessionId!), path: cwd } : null,
+        workCopy: workCopyOwnerId ? { laneId: remoteWorkLaneIdFor(workCopyOwnerId), path: cwd } : null,
       });
       let launchEnv = withInteractiveTerminalColorEnv(
         getAdeCliAgentEnv?.(contextLaunchEnv) ?? contextLaunchEnv,
@@ -7363,19 +7322,15 @@ export function createPtyService({
           // Windows cannot start a command line past its limit, and conpty
           // does not say so: the spawn hangs, then the fallback below would
           // type the same line into a shell. Refused here, with the reason.
+          const invocation = resolveCliSpawnInvocation(directCommand, directArgs, launchEnv);
+          const ptyArgs = invocation.windowsVerbatimArguments
+            ? invocation.args.join(" ")
+            : invocation.args;
           if (process.platform === "win32") {
-            const invocation = resolveCliSpawnInvocation(directCommand, directArgs, launchEnv);
-            const tooLong = windowsCommandLineOverLimitMessage(
-              invocation.command,
-              invocation.windowsVerbatimArguments ? invocation.args.join(" ") : invocation.args,
-            );
+            const tooLong = windowsCommandLineOverLimitMessage(invocation.command, ptyArgs);
             if (tooLong) throw new AdeExpectedError(tooLong, "user");
           }
           try {
-            const invocation = resolveCliSpawnInvocation(directCommand, directArgs, launchEnv);
-            const ptyArgs = invocation.windowsVerbatimArguments
-              ? invocation.args.join(" ")
-              : invocation.args;
             created = ptyLib.spawn(invocation.command, ptyArgs, opts);
             const hostReady = getPtyHostReadyPromise(created);
             if (hostReady) await hostReady;

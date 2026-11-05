@@ -2468,11 +2468,13 @@ function ensureAuthStatusRelayBridges(runtime: AdeRuntime): void {
   const unsubscribePi = addPiAuthStatusListener((event) => push("piAuthStatus", event));
   const unsubscribeCursor = addCursorSdkAuthStatusListener((event) => push("cursorAuthStatus", event));
   const dispose = runtime.dispose;
-  runtime.dispose = () => {
+  // Pass the reason on and return the teardown, so a brain exit still waits
+  // for it and a removed project's devices still stop.
+  runtime.dispose = (reason) => {
     unsubscribeOpenCode();
     unsubscribePi();
     unsubscribeCursor();
-    dispose();
+    return dispose(reason);
   };
 }
 

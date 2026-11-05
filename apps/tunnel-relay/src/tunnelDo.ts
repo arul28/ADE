@@ -991,8 +991,12 @@ export class TunnelDurableObject implements DurableObject {
 
   private touch(ws: WebSocket, att: SocketAttachment): void {
     const now = Date.now();
-    if (now - att.ts < ACTIVITY_WRITE_THROTTLE_MS) return;
-    this.writeAttachment(ws, { ...att, ts: now } satisfies SocketAttachment);
+    // Re-read: the caller's copy can be stale after an await (an `mcp_state`
+    // frame writes the MCP account fields first), and writing it back would
+    // drop them.
+    const current = this.normalizedAttachment(ws) ?? att;
+    if (now - current.ts < ACTIVITY_WRITE_THROTTLE_MS) return;
+    this.writeAttachment(ws, { ...current, ts: now } satisfies SocketAttachment);
   }
 
   async webSocketClose(ws: WebSocket, code: number, reason: string, _wasClean: boolean): Promise<void> {

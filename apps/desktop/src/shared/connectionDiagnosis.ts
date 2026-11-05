@@ -3,6 +3,7 @@ import type {
   SyncHostStorageWait,
   SyncRouteHealth,
 } from "./types/sync";
+import type { RemoteRuntimeConnectionRecovery } from "./types/remoteRuntime";
 
 /**
  * Plain-language answers to "why can't my devices reach that computer?".
@@ -171,6 +172,9 @@ export const RELAY_HELD_BY_OTHER_ADE_APP = {
   fix: "Quit the other ADE app on this computer (a beta, alpha or dev build), then restart ADE.",
 } as const;
 
+/** What a link that dropped because its host went away is waiting on. */
+export type HostWentAwayRecovery = Exclude<RemoteRuntimeConnectionRecovery, "held_elsewhere">;
+
 /**
  * A link this app had open dropped because ADE on that machine went away (it
  * restarted, quit, or lost its network). `reconnecting` when this app brings
@@ -179,7 +183,7 @@ export const RELAY_HELD_BY_OTHER_ADE_APP = {
  */
 export function describeHostWentAway(
   machineName: string | null | undefined,
-  recovery: "reconnecting" | "waiting_for_user",
+  recovery: HostWentAwayRecovery,
 ): string {
   const machine = machineLabel(machineName, "that machine");
   return recovery === "reconnecting"

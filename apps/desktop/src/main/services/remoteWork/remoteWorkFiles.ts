@@ -2,6 +2,13 @@ import { createHash, randomUUID, type Hash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { isPathInside } from "../shared/pathCompare";
+import { isPathEscapeError, notADirectoryPath, resolvePathWithinRoot, secureMkdirWithinRoot } from "../shared/utils";
+import {
+  REMOTE_WORK_FILE_CHUNK_BYTES,
+  REMOTE_WORK_FILE_MAX_BYTES,
+  remoteWorkFileTooLargeMessage,
+} from "../../../shared/types/remoteWork";
+import { onRemoteWorkCopyReleased, remoteWorkLaneIdFor } from "./remoteWorkCopyService";
 
 /* ──────────────────────────────────────────────────────────────────────────
    FILES IN A CHAT'S WORK COPY — `ade files push|pull --machine <name>`.
@@ -17,16 +24,10 @@ import { isPathInside } from "../shared/pathCompare";
    Pull: stat (size, sha256) → chunks by offset; the caller checks the hash.
    ────────────────────────────────────────────────────────────────────────── */
 
-/** The largest file either way. A bigger one belongs in git, or a release asset. */
-export const REMOTE_WORK_FILE_MAX_BYTES = 256 * 1024 * 1024;
-/**
- * One chunk, before base64. A reply is capped at 12 MiB
- * (SYNC_REMOTE_COMMAND_RESULT_MAX_BYTES) and a request carries a work copy's
- * 16 MiB patch already, so 4 MiB (5.4 MiB as base64) fits both ways.
- */
-export const REMOTE_WORK_FILE_CHUNK_BYTES = 4 * 1024 * 1024;
 /** A push with no chunk this long is given up and its temp file removed. */
 const PUSH_IDLE_MS = 10 * 60_000;
+/** How often idle pushes are looked for, while any push is open. */
+const PUSH_EXPIRY_CHECK_MS = 60_000;
 /** A temp file left by a brain that exited mid-push is removed after this. */
 const STALE_TEMP_MS = 60 * 60_000;
 /** Pushes one chat may have open at once. */
@@ -43,17 +44,15 @@ export class RemoteWorkFileError extends Error {
   }
 }
 
-const tooLarge = (bytes: number): RemoteWorkFileError => new RemoteWorkFileError(
-  "file_too_large",
-  `The file is ${bytes} bytes, over the ${REMOTE_WORK_FILE_MAX_BYTES / (1024 * 1024)} MiB limit for ade files push and pull. `
-  + "Commit it (or put it where both machines can download it) instead.",
-);
+const tooLarge = (bytes: number): RemoteWorkFileError => new RemoteWorkFileError("file_too_large", remoteWorkFileTooLargeMessage(bytes));
 
 /**
  * The caller's path as segments inside the copy. `/` and `\` both separate
  * (a caller on Windows or not), and anything that could leave the copy or
  * reach its git metadata is refused: an absolute path, a drive or UNC root,
- * `..`, a `:` (a drive or an NTFS stream), or `.git` as the first segment.
+ * `..`, a `:` (a drive or an NTFS stream), a name ending in a dot or a space
+ * (Windows drops those, so `.git.` would reach `.git`), or `.git` as the
+ * first segment.
  */
 export function workCopyRelativeSegments(requested: unknown): string[] {
   const raw = typeof requested === "string" ? requested.trim() : "";
@@ -74,6 +73,10 @@ export function workCopyRelativeSegments(requested: unknown): string[] {
   if (segments.some((segment) => segment === ".." || segment.includes(":"))) {
     throw new RemoteWorkFileError("invalid_path", `${raw} leaves this chat's work copy there; use a path inside it.`);
   }
+  // Refused on every OS, so a path means the same file whichever machine it is sent to.
+  if (segments.some((segment) => /[. ]$/.test(segment))) {
+    throw new RemoteWorkFileError("invalid_path", `${raw} has a name ending in a dot or a space, which Windows drops; pick another name.`);
+  }
   // A Windows device name opens the device, not a file; refused everywhere so
   // a path works the same whichever machine it is sent to.
   if (segments.some((segment) => /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i.test(segment))) {
@@ -85,19 +88,17 @@ export function workCopyRelativeSegments(requested: unknown): string[] {
   return segments;
 }
 
+/** The copy's real folder; a missing copy is said as such, not as a bad path. */
 function realRootOf(copyRoot: string): string {
   try {
-    return fs.realpathSync(copyRoot);
+    return fs.realpathSync.native(copyRoot);
   } catch {
     throw new RemoteWorkFileError("copy_missing", "This chat's work copy here is gone. Run `ade shell start --machine <this machine>` to make it again.");
   }
 }
 
-function assertInside(realRoot: string, candidate: string, shown: string): void {
-  if (!isPathInside(candidate, realRoot)) {
-    throw new RemoteWorkFileError("invalid_path", `${shown} leads outside this chat's work copy there (a link); it was refused.`);
-  }
-}
+const leadsOutside = (shown: string): RemoteWorkFileError =>
+  new RemoteWorkFileError("invalid_path", `${shown} leads outside this chat's work copy there (a link); it was refused.`);
 
 /**
  * The file `requested` names in the copy, for reading: it must exist, be a
@@ -109,11 +110,11 @@ function resolveForRead(copyRoot: string, requested: unknown): { absolute: strin
   const realRoot = realRootOf(copyRoot);
   let real: string;
   try {
-    real = fs.realpathSync(path.join(realRoot, ...segments));
-  } catch {
+    real = resolvePathWithinRoot(realRoot, path.join(...segments), { allowMissing: false });
+  } catch (error) {
+    if (isPathEscapeError(error)) throw leadsOutside(relative);
     throw new RemoteWorkFileError("not_found", `${relative} is not in this chat's work copy there.`);
   }
-  assertInside(realRoot, real, relative);
   if (!fs.statSync(real).isFile()) {
     throw new RemoteWorkFileError("not_a_file", `${relative} is not a file in this chat's work copy there.`);
   }
@@ -129,22 +130,21 @@ function resolveForWrite(copyRoot: string, requested: unknown): { absolute: stri
   const segments = workCopyRelativeSegments(requested);
   const relative = segments.join("/");
   const realRoot = realRootOf(copyRoot);
-  let folder = realRoot;
-  for (const segment of segments.slice(0, -1)) {
-    const next = path.join(folder, segment);
-    let stat: fs.Stats | null = null;
-    try {
-      stat = fs.statSync(next);
-    } catch {
-      // Missing: made below.
-    }
-    if (stat && !stat.isDirectory()) {
+  let folder: string;
+  try {
+    folder = secureMkdirWithinRoot(realRoot, path.join(...segments.slice(0, -1)));
+  } catch (error) {
+    if (isPathEscapeError(error)) throw leadsOutside(relative);
+    const fileInTheWay = notADirectoryPath(error);
+    if (fileInTheWay != null) {
+      const segment = path.basename(fileInTheWay);
       throw new RemoteWorkFileError("not_a_folder", `${relative}: ${segment} is a file there, not a folder.`);
     }
-    if (!stat) fs.mkdirSync(next);
-    folder = fs.realpathSync(next);
-    assertInside(realRoot, folder, relative);
+    throw error;
   }
+  // The folder walk lets a step land on a folder above the copy (it walks down
+  // from the disk's root); the folder it ends on must still be in the copy.
+  if (!isPathInside(folder, realRoot)) throw leadsOutside(relative);
   const absolute = path.join(folder, segments[segments.length - 1]!);
   let existing: fs.Stats | null = null;
   try {
@@ -171,8 +171,11 @@ function removeStaleTemps(folder: string, now: number): void {
     const file = path.join(folder, name);
     try {
       if (now - fs.statSync(file).mtimeMs > STALE_TEMP_MS) fs.rmSync(file, { force: true });
-    } catch {
-      // Gone already, or held open on Windows: the next push tries again.
+    } catch (error) {
+      // Gone already is fine. Held open on Windows (or unreadable): the next push tries again.
+      if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") {
+        console.warn(`[remote_work] could not remove the stale push temp file ${file}: ${error instanceof Error ? error.message : String(error)}`);
+      }
     }
   }
 }
@@ -196,30 +199,74 @@ type OpenPush = {
   size: number;
   sha256: string;
   received: number;
+  /** The sha256 of what arrived so far; the temp file is opened per chunk, never held. */
   hash: Hash;
-  fd: number;
   touchedAt: number;
 };
 
+/** Opened for each chunk and closed again, so an abandoned push holds nothing open in the copy (Windows cannot remove a folder with an open file). */
+function writeAt(file: string, bytes: Buffer, offset: number): void {
+  const noFollow = typeof fs.constants.O_NOFOLLOW === "number" ? fs.constants.O_NOFOLLOW : 0;
+  const fd = fs.openSync(file, fs.constants.O_WRONLY | noFollow);
+  try {
+    let written = 0;
+    while (written < bytes.length) {
+      written += fs.writeSync(fd, bytes, written, bytes.length - written, offset + written);
+    }
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
 export type RemoteWorkFilePushBegin = { owner: string; copyRoot: string; path: unknown; size: unknown; sha256: unknown };
 
-export function createRemoteWorkFiles(options: { now?: () => number } = {}) {
+/**
+ * Open pushes for one project's work copies. With `projectRoot`, a push into
+ * a copy that is deleted (`ade shell clean`, the sweep) is dropped with it.
+ */
+export function createRemoteWorkFiles(options: { now?: () => number; projectRoot?: string } = {}) {
   const now = options.now ?? Date.now;
   const pushes = new Map<string, OpenPush>();
+  // Both run only while a push is open, so an idle registry holds no timer or listener.
+  let expiryTimer: ReturnType<typeof setInterval> | null = null;
+  let stopWatchingReleases: (() => void) | null = null;
+
+  const removeTemp = (push: OpenPush): void => {
+    try {
+      fs.rmSync(push.tempPath, { force: true });
+    } catch (error) {
+      console.warn(`[remote_work] could not remove the push temp file ${push.tempPath}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
 
   const drop = (id: string, push: OpenPush): void => {
     pushes.delete(id);
-    try {
-      fs.closeSync(push.fd);
-    } catch {
-      // Closed already.
-    }
-    fs.rmSync(push.tempPath, { force: true });
+    removeTemp(push);
+    watchWhileOpen();
   };
 
   const expire = (): void => {
     const cutoff = now() - PUSH_IDLE_MS;
     for (const [id, push] of pushes) if (push.touchedAt < cutoff) drop(id, push);
+  };
+
+  const watchWhileOpen = (): void => {
+    if (pushes.size > 0) {
+      if (!expiryTimer) {
+        expiryTimer = setInterval(expire, PUSH_EXPIRY_CHECK_MS);
+        expiryTimer.unref?.();
+      }
+      if (!stopWatchingReleases && options.projectRoot) {
+        stopWatchingReleases = onRemoteWorkCopyReleased(options.projectRoot, (laneId) => {
+          for (const [id, push] of pushes) if (remoteWorkLaneIdFor(push.owner) === laneId) drop(id, push);
+        });
+      }
+      return;
+    }
+    if (expiryTimer) clearInterval(expiryTimer);
+    expiryTimer = null;
+    stopWatchingReleases?.();
+    stopWatchingReleases = null;
   };
 
   /** The caller's own open push; another chat's id reads as unknown. */
@@ -249,7 +296,7 @@ export function createRemoteWorkFiles(options: { now?: () => number } = {}) {
       const id = randomUUID();
       // In the target's own folder, so the rename at the end never crosses a disk.
       const tempPath = path.join(folder, `${TEMP_PREFIX}${id}${TEMP_SUFFIX}`);
-      const fd = fs.openSync(tempPath, "wx");
+      fs.closeSync(fs.openSync(tempPath, "wx"));
       pushes.set(id, {
         owner: input.owner,
         tempPath,
@@ -259,9 +306,9 @@ export function createRemoteWorkFiles(options: { now?: () => number } = {}) {
         sha256,
         received: 0,
         hash: createHash("sha256"),
-        fd,
         touchedAt: now(),
       });
+      watchWhileOpen();
       return { transferId: id, path: target.relative, chunkBytes: REMOTE_WORK_FILE_CHUNK_BYTES };
     },
 
@@ -279,7 +326,7 @@ export function createRemoteWorkFiles(options: { now?: () => number } = {}) {
         throw new RemoteWorkFileError("size_mismatch", `The push sent more than the ${push.size} bytes it announced.`);
       }
       try {
-        fs.writeSync(push.fd, bytes, 0, bytes.length, push.received);
+        writeAt(push.tempPath, bytes, push.received);
       } catch (error) {
         drop(id, push);
         throw new RemoteWorkFileError("write_failed", `Could not write ${push.relative} there: ${error instanceof Error ? error.message : String(error)}`);
@@ -295,9 +342,8 @@ export function createRemoteWorkFiles(options: { now?: () => number } = {}) {
       expire();
       const [id, push] = ownPush(owner, transferId);
       pushes.delete(id);
+      watchWhileOpen();
       try {
-        // Closed before the rename: Windows refuses to move an open file.
-        fs.closeSync(push.fd);
         const sha256 = push.hash.digest("hex");
         if (push.received !== push.size || sha256 !== push.sha256) {
           throw new RemoteWorkFileError(
@@ -308,7 +354,7 @@ export function createRemoteWorkFiles(options: { now?: () => number } = {}) {
         fs.renameSync(push.tempPath, push.finalPath);
         return { path: push.relative, bytes: push.size, sha256 };
       } catch (error) {
-        fs.rmSync(push.tempPath, { force: true });
+        removeTemp(push);
         if (error instanceof RemoteWorkFileError) throw error;
         throw new RemoteWorkFileError("write_failed", `Could not put ${push.relative} in place there: ${error instanceof Error ? error.message : String(error)}`);
       }

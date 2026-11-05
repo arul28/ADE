@@ -33,7 +33,7 @@ import type { RuntimeRpcClient } from "./runtimeRpcClient";
 import { bootstrapRemoteRuntime, ensureRemoteProject } from "./remoteBootstrap";
 import type { RemoteTargetRegistry } from "./remoteTargetRegistry";
 import { isReplaySafeAdeAction } from "../../../shared/adeActionAccess";
-import { hasRecentTraffic, RPC_LIVENESS_PROBE_TIMEOUT_MS } from "../../../shared/rpcLiveness";
+import { probeRpcLiveness, type RpcLivenessClient } from "../../../shared/rpcLiveness";
 import { FILE_DELETE_TIMEOUT_MS } from "../../../shared/removeTreeTimeouts";
 import {
   IOS_SIMULATOR_LAUNCH_REMOTE_TRANSPORT_TIMEOUT_MS,
@@ -510,7 +510,7 @@ export class RemoteConnectionPool {
   private readonly hostAcceptsProbesByTargetId = new Map<string, boolean>();
   /** How each target's latest resolved connection reached it. */
   private readonly resolvedTransportByTargetId = new Map<string, PoolEntry["transport"]>();
-  private readonly livenessProbes = new WeakMap<PoolEntry, Promise<boolean>>();
+  private readonly livenessProbes = new WeakMap<RpcLivenessClient, Promise<boolean>>();
   private readonly evictionListeners = new Set<
     (targetId: string, error: Error) => void
   >();
@@ -1510,18 +1510,7 @@ export class RemoteConnectionPool {
    * gone, one probe later.
    */
   private connectionStillAnswers(entry: PoolEntry): Promise<boolean> {
-    if (entry.client.isClosed()) return Promise.resolve(false);
-    if (hasRecentTraffic(entry.client.lastInboundAt())) return Promise.resolve(true);
-    const pending = this.livenessProbes.get(entry);
-    if (pending) return pending;
-    const probe = entry.client
-      .call("ping", {}, { timeoutMs: RPC_LIVENESS_PROBE_TIMEOUT_MS })
-      .then(() => true, (error: unknown) => !entry.client.isClosed() && !isRuntimeTransportTimeoutError(error))
-      .finally(() => {
-        this.livenessProbes.delete(entry);
-      });
-    this.livenessProbes.set(entry, probe);
-    return probe;
+    return probeRpcLiveness(entry.client, this.livenessProbes);
   }
 
   private attachEntryLifecycle(

@@ -2645,14 +2645,12 @@ export function registerIpc({
   };
 
   const ensureIosSimulator = (): NonNullable<AppContext["iosSimulatorService"]> => {
-    const ctx = getCtx();
-    const service = ctx.iosSimulatorService;
+    const service = getCtx().iosSimulatorService;
     if (!service) {
-      const message = "iOS Simulator service is not available.";
-      // Expected only in the no-project window, which has no simulator
-      // service. A project context without one is a wiring bug: report it.
-      if (!ctx.projectId) throw new AdeExpectedError(message, "environment");
-      throw new Error(message);
+      // Expected, not a wiring bug: the no-project window has no simulator
+      // service, and a project's simulator runs in its ADE brain, so this
+      // window builds none. The text is matched by EXPECTED_OUTCOME_PATTERNS.
+      throw new AdeExpectedError("iOS Simulator service is not available.", "environment");
     }
     return service;
   };
@@ -2688,7 +2686,10 @@ export function registerIpc({
   const ensureMacDesktop = (): MacDesktopServiceApi => {
     const service = getCtx().macDesktopService;
     if (!service) {
-      throw new Error("Mac Desktop is not available on this machine.");
+      // Expected, not a wiring bug: off macOS there is no Mac Desktop, and a
+      // project's runs in its ADE brain, so this window builds none. The text
+      // is matched by EXPECTED_OUTCOME_PATTERNS.
+      throw new AdeExpectedError("Mac Desktop is not available on this machine.", "environment");
     }
     return service;
   };

@@ -5625,6 +5625,8 @@ app.whenReady().then(async () => {
         provider,
       }),
     });
+    // The brain owns the device services; this context builds them only when it is the runtime (tests).
+    const inProcessDeviceServices = shouldUseInProcessProjectRuntime();
     /**
      * The lane's Apple simulators, only when THIS process is the project's
      * runtime (tests). Otherwise the brain (`bootstrap.ts`) owns them, for the
@@ -5635,7 +5637,7 @@ app.whenReady().then(async () => {
      * The renderer reaches the brain's service through the `ios_simulator`
      * action domain either way.
      */
-    const iosSimulatorService = !shouldUseInProcessProjectRuntime() ? null : createIosSimulatorService({
+    const iosSimulatorService = !inProcessDeviceServices ? null : createIosSimulatorService({
       projectRoot,
       logger,
       captureAnalytics: (outcome) => captureAppleDeviceAnalytics({ analytics: productAnalyticsService, outcome }),
@@ -5737,7 +5739,7 @@ app.whenReady().then(async () => {
      * brain's service through the `mac_desktop` action domain.
      */
     const macDesktopLogger = createMacDesktopLogger(logger, getMachineMainLogger());
-    const macDesktopService = !shouldUseInProcessProjectRuntime() ? null : createMacDesktopService({
+    const macDesktopService = !inProcessDeviceServices ? null : createMacDesktopService({
       projectRoot,
       // Also `desktop-main.jsonl`: see `macDesktopLogger.ts`.
       logger: macDesktopLogger,
@@ -5814,7 +5816,7 @@ app.whenReady().then(async () => {
      * and Linux, and `getStatus` is how a host without an SDK shows the setup
      * card instead of an error.
      */
-    const androidEmulatorService = !shouldUseInProcessProjectRuntime() ? null : createAndroidEmulatorService({
+    const androidEmulatorService = !inProcessDeviceServices ? null : createAndroidEmulatorService({
       laneDevices: sqlAndroidLaneDeviceRepo(db),
       // Per project, like `lane_android_devices`: the started-emulators state
       // file, emulator logs and default screenshots.
@@ -6542,7 +6544,7 @@ app.whenReady().then(async () => {
         },
       },
       eventBuffer: rpcEventBuffer,
-      dispose: () => {}, // desktop manages service lifecycle
+      dispose: async () => {}, // desktop manages service lifecycle
     };
 
     const activeRpcConnections = new Set<net.Socket>();

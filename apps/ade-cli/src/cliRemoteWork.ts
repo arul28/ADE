@@ -3,9 +3,15 @@ import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { REMOTE_WORK_MAX_PATCH_BYTES } from "../../desktop/src/shared/types/remoteWork";
-import { REMOTE_WORK_FILE_CHUNK_BYTES, REMOTE_WORK_FILE_MAX_BYTES } from "../../desktop/src/main/services/remoteWork/remoteWorkFiles";
+import {
+  REMOTE_WORK_FILE_CHUNK_BYTES,
+  REMOTE_WORK_FILE_MAX_BYTES,
+  REMOTE_WORK_MAX_PATCH_BYTES,
+  remoteWorkFileTooLargeMessage,
+  type RemoteWorkFileOp,
+} from "../../desktop/src/shared/types/remoteWork";
 import { CliUsageError, asString, isRecord, type JsonObject } from "./cli";
+import { fileSha256 } from "./services/tools/download";
 
 /* ──────────────────────────────────────────────────────────────────────────
    THIS CHAT'S WORK COPY ON ANOTHER MACHINE — `ade shell start --machine`,
@@ -202,7 +208,7 @@ function readLocalWorkSource(cwd: string): JsonObject {
    ────────────────────────────────────────────────────────────────────────── */
 
 /** One `work_copy_file` step on the other machine, its tool result unwrapped. */
-export type WorkCopyFileCall = (args: JsonObject) => Promise<unknown>;
+export type WorkCopyFileCall = (args: JsonObject & { op: RemoteWorkFileOp }) => Promise<unknown>;
 
 export type WorkCopyFileResult = {
   direction: "push" | "pull";
@@ -212,18 +218,7 @@ export type WorkCopyFileResult = {
   sha256: string;
 };
 
-const fileTooLarge = (file: string, bytes: number): CliUsageError => new CliUsageError(
-  `${file} is ${bytes} bytes, over the ${REMOTE_WORK_FILE_MAX_BYTES / (1024 * 1024)} MiB limit for ade files push and pull. `
-  + "Commit it (or put it where both machines can download it) instead.",
-);
-
-async function sha256OfLocalFile(file: string): Promise<string> {
-  const hash = createHash("sha256");
-  await new Promise<void>((resolve, reject) => {
-    fs.createReadStream(file).on("data", (chunk) => hash.update(chunk)).on("error", reject).on("end", () => resolve());
-  });
-  return hash.digest("hex");
-}
+const fileTooLarge = (file: string, bytes: number): CliUsageError => new CliUsageError(remoteWorkFileTooLargeMessage(bytes, file));
 
 function answerRecord(value: unknown, step: string): JsonObject {
   if (!isRecord(value)) throw new Error(`The other machine gave no answer to ${step}.`);
@@ -248,7 +243,7 @@ export async function pushFileToWorkCopy(
   }
   if (!stat.isFile()) throw new CliUsageError(`${localPath} is not a file. ade files push copies one file; pack a folder first (tar or zip).`);
   if (stat.size > REMOTE_WORK_FILE_MAX_BYTES) throw fileTooLarge(localPath, stat.size);
-  const sha256 = await sha256OfLocalFile(localPath);
+  const sha256 = await fileSha256(localPath);
   const begun = answerRecord(await call({
     op: "push_begin",
     path: remoteTargetPath(input.remotePath, localPath),

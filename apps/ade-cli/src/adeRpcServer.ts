@@ -33,13 +33,16 @@ import {
   remoteWorkLaneIdFor,
   RemoteWorkError,
   type RemoteWorkPrepareResult,
+  type RemoteWorkPrepareWithinResult,
 } from "../../desktop/src/main/services/remoteWork/remoteWorkCopyService";
 import {
   createRemoteWorkFiles,
   RemoteWorkFileError,
   type RemoteWorkFiles,
 } from "../../desktop/src/main/services/remoteWork/remoteWorkFiles";
-import { remoteRunOnceShellLaunch, windowsCommandLineOverLimitMessage } from "../../desktop/src/main/services/pty/ptyService";
+import { isRemoteWorkFileOp, type RemoteWorkFileOp } from "../../desktop/src/shared/types/remoteWork";
+import { remoteRunOnceShellLaunch } from "../../desktop/src/main/services/pty/ptyService";
+import { windowsCommandLineOverLimitMessage } from "../../desktop/src/main/services/shared/processExecution";
 import { externalChatContext } from "../../desktop/src/main/services/chat/externalChats";
 import path from "node:path";
 import { EXTERNAL_SESSION_PROVIDERS } from "../../desktop/src/shared/types/externalSessions";
@@ -2999,22 +3002,6 @@ function workCopyOwner(session: SessionState): string {
   return owner;
 }
 
-/**
- * How long a call waits for a NEW work copy before it answers "still being
- * made". The first copy is a git fetch plus a worktree (minutes on Windows),
- * and the caller's machine gives a call 30 s by default; an answer has to get
- * back before that, or the caller only sees a timeout.
- */
-const FIRST_WORK_COPY_ANSWER_MS = 20_000;
-
-/**
- * Work copies being made for a call that already answered "still being made",
- * by project and owner. The make goes on under its own git budgets; the next
- * call waits for it (again within FIRST_WORK_COPY_ANSWER_MS). A make that
- * failed after its call answered keeps its error for the next call.
- */
-const workCopiesBeingMade = new Map<string, { done: Promise<void>; failure: unknown | null }>();
-
 function workCopyPreparingError(machineName: string | null): JsonRpcError {
   return new JsonRpcError(
     JsonRpcErrorCode.invalidRequest,
@@ -3029,10 +3016,9 @@ function workCopyPreparingError(machineName: string | null): JsonRpcError {
  * --machine`, a lane-less `ade apple … --machine`). Only a chat on another
  * machine has one. The copy stays busy until `done` is called.
  *
- * A copy that does not exist yet is made under its own budget: when it takes
- * longer than FIRST_WORK_COPY_ANSWER_MS, the call answers `work_copy_preparing`
- * (retryable) and the copy is finished in the background, so the next call
- * finds it.
+ * A new copy that takes too long to make answers `work_copy_preparing`
+ * (retryable) and is finished in the background (`prepareWithin`), so the
+ * next call finds it.
  */
 async function prepareCallerWorkCopy(
   runtime: AdeRuntime,
@@ -3042,81 +3028,21 @@ async function prepareCallerWorkCopy(
   const owner = workCopyOwner(session);
   const laneId = remoteWorkLaneIdFor(owner);
   const machineName = externalChatContext(owner)?.machineName ?? null;
-  const makingKey = `${runtime.projectRoot}\u0000${owner}`;
-  const asRpcError = (error: unknown): unknown => (error instanceof RemoteWorkError
-    ? new JsonRpcError(JsonRpcErrorCode.invalidParams, error.message, { code: error.code })
-    : error);
-  const prepare = () => workCopiesFor(runtime).prepare(owner, {
-    head: asOptionalTrimmedString(remoteWork.head) ?? "",
-    fetchRef: asOptionalTrimmedString(remoteWork.fetchRef),
-    patchBase64: typeof remoteWork.patchBase64 === "string" ? remoteWork.patchBase64 : null,
-    branch: asOptionalTrimmedString(remoteWork.branch),
-    machineName,
-  }, isRemoteWorkSyncMode(remoteWork.sync) ? remoteWork.sync : "sync");
-  const waitAtMost = async <T>(work: Promise<T>): Promise<{ value: T } | null> => {
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    try {
-      return await Promise.race([
-        work.then((value) => ({ value })),
-        new Promise<null>((resolve) => {
-          timer = setTimeout(() => resolve(null), FIRST_WORK_COPY_ANSWER_MS);
-          timer.unref?.();
-        }),
-      ]);
-    } finally {
-      if (timer) clearTimeout(timer);
-    }
-  };
-
-  // A make an earlier call left running: wait for it, then sync as usual.
-  const making = workCopiesBeingMade.get(makingKey);
-  if (making) {
-    if (!(await waitAtMost(making.done))) throw workCopyPreparingError(machineName);
-    if (workCopiesBeingMade.get(makingKey) === making) workCopiesBeingMade.delete(makingKey);
-    if (making.failure) throw asRpcError(making.failure);
-  }
-
-  if (findRemoteWorkCopyForLane(runtime.projectRoot, laneId) !== null) {
-    try {
-      return { owner, laneId, prepared: await prepare() };
-    } catch (error) {
-      throw asRpcError(error);
-    }
-  }
-
-  // No copy yet: make it, and answer in time either way.
-  const work = prepare();
-  let answered: { value: RemoteWorkPrepareResult } | null;
+  let answer: RemoteWorkPrepareWithinResult;
   try {
-    answered = await waitAtMost(work);
+    answer = await workCopiesFor(runtime).prepareWithin(owner, {
+      head: asOptionalTrimmedString(remoteWork.head) ?? "",
+      fetchRef: asOptionalTrimmedString(remoteWork.fetchRef),
+      patchBase64: typeof remoteWork.patchBase64 === "string" ? remoteWork.patchBase64 : null,
+      branch: asOptionalTrimmedString(remoteWork.branch),
+      machineName,
+    }, isRemoteWorkSyncMode(remoteWork.sync) ? remoteWork.sync : "sync");
   } catch (error) {
-    throw asRpcError(error);
+    if (error instanceof RemoteWorkError) throw new JsonRpcError(JsonRpcErrorCode.invalidParams, error.message, { code: error.code });
+    throw error;
   }
-  if (answered) return { owner, laneId, prepared: answered.value };
-  const entry: { done: Promise<void>; failure: unknown | null } = { done: Promise.resolve(), failure: null };
-  entry.done = work.then(
-    (prepared) => {
-      // Nobody runs a command for this make: the copy is not busy.
-      prepared.done();
-      runtime.logger.info("remote_work.copy_made_after_answer", { owner, laneId });
-      if (workCopiesBeingMade.get(makingKey) === entry) workCopiesBeingMade.delete(makingKey);
-    },
-    (error: unknown) => {
-      entry.failure = error;
-      runtime.logger.warn("remote_work.copy_make_failed_after_answer", {
-        owner,
-        laneId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      // Kept for the next call for a while, then forgotten so a later call tries again.
-      setTimeout(() => {
-        if (workCopiesBeingMade.get(makingKey) === entry) workCopiesBeingMade.delete(makingKey);
-      }, 10 * 60_000).unref?.();
-    },
-  );
-  workCopiesBeingMade.set(makingKey, entry);
-  runtime.logger.info("remote_work.copy_still_being_made", { owner, laneId, waitedMs: FIRST_WORK_COPY_ANSWER_MS });
-  throw workCopyPreparingError(machineName);
+  if ("preparing" in answer) throw workCopyPreparingError(machineName);
+  return { owner, laneId, prepared: answer.prepared };
 }
 
 /**
@@ -3216,7 +3142,7 @@ const remoteWorkFileRegistries = new WeakMap<AdeRuntime, RemoteWorkFiles>();
 function remoteWorkFilesFor(runtime: AdeRuntime): RemoteWorkFiles {
   let files = remoteWorkFileRegistries.get(runtime);
   if (!files) {
-    files = createRemoteWorkFiles();
+    files = createRemoteWorkFiles({ projectRoot: runtime.projectRoot });
     remoteWorkFileRegistries.set(runtime, files);
   }
   return files;
@@ -8113,7 +8039,7 @@ async function runTool(args: {
       throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported tool: ${name}`);
     }
     const files = remoteWorkFilesFor(runtime);
-    const op = asOptionalTrimmedString(toolArgs.op);
+    const op: RemoteWorkFileOp | null = isRemoteWorkFileOp(toolArgs.op) ? toolArgs.op : null;
     try {
       switch (op) {
         case "push_begin": {
@@ -8138,7 +8064,7 @@ async function runTool(args: {
         case "pull_chunk":
           return files.readChunk(existingCallerWorkCopyPath(runtime, owner), toolArgs.path, toolArgs.offset);
         default:
-          throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `work_copy_file has no step '${op ?? ""}'.`);
+          throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `work_copy_file has no step '${asOptionalTrimmedString(toolArgs.op) ?? ""}'.`);
       }
     } catch (error) {
       if (error instanceof RemoteWorkFileError) {

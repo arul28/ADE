@@ -8,6 +8,7 @@
  */
 
 import type { OpenProjectBinding } from "./core";
+import type { RuntimeDisposeReason } from "./runtimeLifecycle";
 
 /** Where an SDK path came from, in the order the brain tries them. */
 export type AndroidSdkSource = "ANDROID_HOME" | "ANDROID_SDK_ROOT" | "default" | "setting";
@@ -360,7 +361,7 @@ export type AndroidEmulatorServiceApi = {
    * was removed from this machine, so nothing will re-adopt them) stops them
    * even on a hand-off service. Not an action.
    */
-  dispose(options?: { reason?: "exit" | "close" | "unregister" }): Promise<void>;
+  dispose(options?: { reason?: RuntimeDisposeReason }): Promise<void>;
   onEvent(listener: (event: AndroidEmulatorEvent) => void): () => void;
 };
 

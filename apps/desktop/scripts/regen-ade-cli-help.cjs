@@ -77,6 +77,24 @@ function buildDigest() {
   return { parts, content: parts.join("\n") };
 }
 
+/** Where the committed digest and a fresh one part, so a failed check says what changed. */
+function firstDifference(committed, fresh) {
+  const a = committed.split("\n");
+  const b = fresh.split("\n");
+  let i = 0;
+  while (i < a.length && i < b.length && a[i] === b[i]) i += 1;
+  let section = "";
+  for (let j = Math.min(i, b.length - 1); j >= 0; j -= 1) {
+    if (b[j]?.startsWith("## ")) {
+      section = b[j];
+      break;
+    }
+  }
+  const show = (lines) => lines.slice(i, i + 4).map((line) => `    ${line}`).join("\n");
+  return `  first difference at line ${i + 1}${section ? ` (${section})` : ""}:\n` +
+    `  committed:\n${show(a)}\n  generated:\n${show(b)}\n`;
+}
+
 function main() {
   const check = process.argv.includes("--check");
   const { parts, content } = buildDigest();
@@ -87,7 +105,8 @@ function main() {
     if (current !== content) {
       process.stderr.write(
         `[regen-ade-cli-help] ${path.relative(repoRoot, outPath)} is stale. ` +
-          "Run `npm --prefix apps/desktop run regen-cli-help` and commit the result.\n",
+          "Run `npm --prefix apps/desktop run regen-cli-help` and commit the result.\n" +
+          firstDifference(current ?? "", content),
       );
       process.exitCode = 1;
       return;
