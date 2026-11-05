@@ -166,7 +166,7 @@ const ANDROID_VERB_FLAGS: Readonly<Record<string, readonly string[]>> = {
   devices: ["--profiles"],
   "device-create": ["--profile", "--catalog", "--color", "--image", "--name", "--no-start"],
   "device-attach": ["--avd", "--no-start"],
-  start: [],
+  start: ["--force"],
   stop: [],
   "device-detach": ["--keep"],
   screenshot: ["--out", "--caption"],

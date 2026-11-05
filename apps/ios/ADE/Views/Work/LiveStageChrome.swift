@@ -659,3 +659,322 @@ struct LiveStageBackdrop: View {
       .environment(\.colorScheme, presentation.isPane ? (hostScheme ?? scheme) : scheme)
   }
 }
+
+// MARK: - A device viewer's finger
+
+/// What a device viewer's touch rules need of its model: the simulator's and
+/// the emulator's both fit.
+@MainActor
+protocol LiveStageControlModel: AnyObject {
+  var mode: AppleDeviceViewerMode { get }
+  /// Why Control cannot be offered, or nil when it can.
+  var controlBlocker: String? { get }
+  func beginControl()
+  func clearNotice()
+}
+
+extension AppleDeviceViewerModel: LiveStageControlModel {}
+extension AndroidDeviceViewerModel: LiveStageControlModel {}
+
+/// Where a finger touched the picture, drawn for a moment so the person sees
+/// the touch land before the device's frame comes back.
+struct AppleTouchMark: Identifiable, Equatable {
+  let id = UUID()
+  let location: CGPoint
+}
+
+enum LiveStageHintHaptic { case warning }
+
+/// A device viewer's finger bookkeeping that nothing draws. A reference held
+/// in `@State`, so a finger moving over the picture never re-runs the body.
+final class LiveStageTouchTracker {
+  var hintTask: Task<Void, Never>?
+  var holdTask: Task<Void, Never>?
+  /// The hold took control: the finger's lift is not a touch on the device.
+  var holdFired = false
+  var holdCancelled = false
+  /// The gesture on the device while controlling.
+  var gesture: AppleDeviceGesture?
+  /// A touch that started off the picture: ignored until it lifts.
+  var gestureIgnored = false
+
+  func cancelTasks() {
+    hintTask?.cancel()
+    holdTask?.cancel()
+  }
+}
+
+/// A device viewer's touch rules while watching, shared by the simulator and
+/// the emulator: a tap opens the menu, holding the picture fills a ring and
+/// takes control, a moved finger is nothing. Also the passing hint and the
+/// touch marks.
+///
+/// Built per use from the viewer's own `@State` (each value its own state,
+/// so each change keeps its own animation) and its tracker.
+@MainActor
+struct LiveStageTouch {
+  @Binding var hint: String?
+  /// A finger held on the picture while watching, filling toward Control.
+  @Binding var holdLocation: CGPoint?
+  @Binding var holdProgress: CGFloat
+  @Binding var touchMarks: [AppleTouchMark]
+  @Binding var menuOpen: Bool
+  let tracker: LiveStageTouchTracker
+  let model: any LiveStageControlModel
+
+  /// Long enough that a thumb resting on the picture does not take control.
+  static let holdToControl: Double = 0.6
+  /// How long a finger rests before the ring shows: a tap never flashes it.
+  static let holdRingDelay: Double = 0.15
+
+  /// A finger on the picture while watching: held still, it takes control
+  /// after `holdToControl`; moved, it is nothing.
+  func watchingChanged(_ value: DragGesture.Value) {
+    let travel = hypot(value.translation.width, value.translation.height)
+    if tracker.holdTask == nil, !tracker.holdCancelled {
+      guard model.controlBlocker == nil else {
+        tracker.holdCancelled = true
+        return
+      }
+      let location = value.startLocation
+      tracker.holdTask = Task { @MainActor in
+        try? await Task.sleep(for: .seconds(Self.holdRingDelay))
+        guard !Task.isCancelled else { return }
+        ADEHaptics.light()
+        holdProgress = 0
+        withAnimation(.easeOut(duration: 0.12)) { holdLocation = location }
+        withAnimation(.linear(duration: Self.holdToControl - Self.holdRingDelay)) { holdProgress = 1 }
+        try? await Task.sleep(for: .seconds(Self.holdToControl - Self.holdRingDelay))
+        guard !Task.isCancelled else { return }
+        tracker.holdFired = true
+        withAnimation(.easeOut(duration: 0.15)) { holdLocation = nil }
+        takeControl()
+      }
+    } else if travel > 20, !tracker.holdCancelled {
+      cancelHold()
+    }
+  }
+
+  func watchingEnded(_ value: DragGesture.Value) {
+    let travel = hypot(value.translation.width, value.translation.height)
+    let wasCancelled = tracker.holdCancelled
+    let ringShown = holdLocation != nil
+    cancelHold()
+    tracker.holdCancelled = false
+    guard travel < 12, !wasCancelled || model.controlBlocker != nil else { return }
+    // Let go while the ring was filling: they meant to take control.
+    if ringShown {
+      flashHint("Hold a little longer to take control", haptic: nil)
+      return
+    }
+    // A tap: the menu, which also says why Control is unavailable.
+    ADEHaptics.light()
+    withAnimation(.spring(response: 0.3, dampingFraction: 0.82)) { menuOpen.toggle() }
+  }
+
+  /// The finger that took control lifts: true when this lift was it, which
+  /// is not a touch on the device.
+  func liftAfterHold() -> Bool {
+    guard tracker.holdFired else { return false }
+    tracker.holdFired = false
+    tracker.holdCancelled = false
+    return true
+  }
+
+  func cancelHold() {
+    tracker.holdTask?.cancel()
+    tracker.holdTask = nil
+    tracker.holdCancelled = true
+    if holdLocation != nil {
+      withAnimation(.easeOut(duration: 0.15)) {
+        holdLocation = nil
+        holdProgress = 0
+      }
+    }
+  }
+
+  func takeControl() {
+    guard model.mode != .controlling else { return }
+    if let blocker = model.controlBlocker {
+      flashHint(blocker, haptic: .warning)
+      return
+    }
+    ADEHaptics.success()
+    model.beginControl()
+    if model.mode == .controlling {
+      menuOpen = false
+      flashHint("Controlling. The orange button hands it back.", haptic: nil)
+    }
+  }
+
+  func addTouchMark(at location: CGPoint) {
+    let mark = AppleTouchMark(location: location)
+    withAnimation(.easeOut(duration: 0.12)) { touchMarks.append(mark) }
+    Task { @MainActor in
+      try? await Task.sleep(for: .milliseconds(380))
+      withAnimation(.easeOut(duration: 0.2)) { touchMarks.removeAll { $0.id == mark.id } }
+    }
+  }
+
+  /// One line at a time, restarted on each call rather than queued, so
+  /// hammering the screen does not stack timers.
+  func flashHint(_ text: String, haptic: LiveStageHintHaptic?, seconds: Double = 2) {
+    if haptic == .warning { ADEHaptics.warning() }
+    hint = text
+    tracker.hintTask?.cancel()
+    tracker.hintTask = Task { @MainActor in
+      try? await Task.sleep(for: .seconds(seconds))
+      guard !Task.isCancelled else { return }
+      hint = nil
+      model.clearNotice()
+    }
+  }
+}
+
+// MARK: - A device viewer's overlays
+
+/// The speed readout's one line: frames, bitrate, round trip, tap to screen.
+struct LiveStageSpeedReadout: View {
+  let speed: AppleViewerSpeed
+
+  var body: some View {
+    HStack(spacing: 12) {
+      speedCell("fps", speed.fps.map { "\($0)" })
+      speedCell("video", speed.kbps.map { appleStreamBitrateLabel(kbps: $0) })
+      speedCell("round trip", speed.rttMs.map { "\(Int($0.rounded())) ms" })
+      speedCell("tap → screen", speed.tapToFrameMs.map { "\(Int($0.rounded())) ms" })
+      if let skipped = speed.skipped, skipped > 0 {
+        speedCell("skipped", "\(skipped)")
+      }
+    }
+    .padding(.horizontal, 12)
+    .padding(.vertical, 6)
+    .background(.black.opacity(0.6), in: Capsule())
+    .allowsHitTesting(false)
+    .accessibilityElement(children: .combine)
+  }
+
+  private func speedCell(_ label: String, _ value: String?) -> some View {
+    VStack(spacing: 1) {
+      Text(value ?? "–")
+        .font(.caption.monospacedDigit().weight(.semibold))
+        .foregroundStyle(.white)
+      Text(label)
+        .font(.system(size: 9))
+        .foregroundStyle(.white.opacity(0.6))
+    }
+  }
+}
+
+/// The stream's status while it is not live, with Reconnect when that can
+/// help. `detail` goes under the sentence.
+struct LiveStageStatusCard<Detail: View>: View {
+  let message: String
+  let health: AppleStreamHealth
+  let onReconnect: () -> Void
+  @ViewBuilder var detail: () -> Detail
+
+  var body: some View {
+    VStack(spacing: 12) {
+      if health.phase == .connecting || health.phase == .requestingTicket
+        || health.phase == .reconnecting {
+        ProgressView().tint(.white)
+      }
+      Text(message)
+        .font(.footnote)
+        .foregroundStyle(.white.opacity(0.85))
+        .multilineTextAlignment(.center)
+        .padding(.horizontal, 32)
+      detail()
+      if health.offersReconnect {
+        Button {
+          ADEHaptics.light()
+          onReconnect()
+        } label: {
+          Text("Reconnect")
+            .font(.footnote.weight(.semibold))
+            .foregroundStyle(.white)
+            .padding(.horizontal, 18)
+            .padding(.vertical, 9)
+            .background(Color.white.opacity(0.16), in: Capsule())
+        }
+        .buttonStyle(.plain)
+      }
+    }
+    .padding(.vertical, 18)
+    .background(.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+    .padding(.horizontal, 24)
+  }
+}
+
+/// The bar a device viewer types through while controlling: the field, then
+/// Return and Hide.
+struct LiveStageKeyboardBar: View {
+  let placeholder: LocalizedStringKey
+  @Binding var text: String
+  /// The bar is up (the viewer's own switch).
+  @Binding var shown: Bool
+  let focused: FocusState<Bool>.Binding
+  let onType: (String) -> Void
+
+  var body: some View {
+    HStack(spacing: 8) {
+      TextField(placeholder, text: $text)
+        .textInputAutocapitalization(.never)
+        .autocorrectionDisabled()
+        .focused(focused)
+        .submitLabel(.send)
+        .onSubmit {
+          onType(text)
+          text = ""
+          focused.wrappedValue = true
+        }
+        .padding(.horizontal, 14)
+        .frame(minHeight: 42)
+        .background(Color.white.opacity(0.12), in: Capsule())
+        .foregroundStyle(.white)
+      LiveStageRoundButton(systemName: "return", label: "Return") {
+        onType("\n")
+      }
+      LiveStageRoundButton(systemName: "keyboard.chevron.compact.down", label: "Hide keyboard") {
+        hide()
+      }
+    }
+    .padding(.horizontal, 14)
+    .frame(maxWidth: 560)
+    .frame(maxWidth: .infinity)
+    .toolbar {
+      ToolbarItemGroup(placement: .keyboard) {
+        Spacer()
+        Button("Done") { hide() }
+      }
+    }
+  }
+
+  private func hide() {
+    focused.wrappedValue = false
+    shown = false
+  }
+}
+
+/// A round glass button on the keyboard bar.
+struct LiveStageRoundButton: View {
+  let systemName: String
+  let label: String
+  let action: () -> Void
+
+  var body: some View {
+    Button {
+      ADEHaptics.light()
+      action()
+    } label: {
+      Image(systemName: systemName)
+        .font(.system(size: 15, weight: .semibold))
+        .foregroundStyle(.white)
+        .frame(width: 42, height: 42)
+        .background(Color.white.opacity(0.12), in: Circle())
+    }
+    .buttonStyle(.plain)
+    .accessibilityLabel(label)
+  }
+}

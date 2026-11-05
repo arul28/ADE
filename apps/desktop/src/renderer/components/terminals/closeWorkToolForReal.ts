@@ -83,7 +83,7 @@ export function closeWorkToolForReal(
       // and booting one is slow), but a tab close is not a minimize: nothing
       // floats, and a player already floating goes with the tab.
       suppressAndroidMiniPlayerHandoff();
-      retakeAndroidMiniPlayer();
+      retakeAndroidMiniPlayer({ laneId, runtimePin });
       return;
     }
     case "ios": {

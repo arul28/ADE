@@ -9,9 +9,15 @@ import {
 import { floatingPlayerSourceSize } from "../shared/floatingPlayerLayout";
 import { isWorkLivePictureInPictureSupported } from "../work/workLiveIosPictureInPicture";
 import { Banner } from "../ui/notice";
-import type { AppleMiniPlayerSurface } from "../apple/appleMiniPlayerStore";
+import { Button } from "../ui/Button";
+import type { MiniPlayerSurface } from "../device/miniPlayerSurface";
 import { AndroidDeviceStage } from "./AndroidDeviceStage";
-import { androidDevicePixelSize, describeAndroidError, type AndroidErrorDescription } from "./androidDeviceState";
+import {
+  ANDROID_LOW_MEMORY_RISK,
+  androidDevicePixelSize,
+  describeAndroidError,
+  type AndroidErrorDescription,
+} from "./androidDeviceState";
 import {
   androidMiniPlayerBelongsToSurface,
   closeAndroidMiniPlayer,
@@ -49,7 +55,7 @@ export function AndroidDeviceMiniPlayer({
   /** Brings the emulator back into the Android pane. */
   onOpenInPane: (target: AndroidMiniPlayerTarget) => void;
   /** The Work surface in front, or null on the new-chat screen. */
-  surface: AppleMiniPlayerSurface | null;
+  surface: MiniPlayerSurface | null;
 }) {
   const target = useAndroidMiniPlayerTarget();
   if (!target) return null;
@@ -218,21 +224,16 @@ function AndroidMiniPlayerFrameView({
           className="absolute inset-0 z-[1] flex flex-col items-center justify-center gap-2 bg-surface px-4 text-center"
         >
           <p className="font-sans text-[12px] text-fg/85">{target.deviceName} is off</p>
-          <button
-            type="button"
-            disabled={starting}
-            className="rounded-full border border-border px-3 py-0.5 font-sans text-[11px] text-fg/85 hover:bg-fg/[0.07] hover:text-fg disabled:opacity-50"
-            onClick={startDevice}
-          >
+          <Button size="sm" casing="sentence" disabled={starting} onClick={startDevice}>
             {starting ? "Starting…" : lowMemory ? "Start anyway" : "Start"}
-          </button>
+          </Button>
           {startError ? (
             <Banner
               layout="inline"
               model={{
                 id: "android-device-mini-start-error",
                 tone: lowMemory ? "warning" : "error",
-                title: startError.sentence,
+                title: lowMemory ? `${startError.sentence} ${ANDROID_LOW_MEMORY_RISK}` : startError.sentence,
                 report: lowMemory ? false : { surface: "android_device_mini_player_start" },
                 dismiss: { onDismiss: () => setStartError(null) },
               }}

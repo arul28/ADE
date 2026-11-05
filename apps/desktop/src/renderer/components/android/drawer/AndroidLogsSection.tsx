@@ -11,7 +11,9 @@ import {
   DrawerSegmented,
   type DrawerMenuOption,
 } from "../../ui/drawerPrimitives";
+import { logRendererDebugEvent } from "../../../lib/debugLog";
 import { describeAndroidError } from "../androidDeviceState";
+import { androidTextDraft, copyAndroidText } from "../androidTextDraft";
 import type { AndroidDrawerContext } from "./androidDrawerState";
 
 /*
@@ -82,8 +84,9 @@ export function AndroidLogsSection({ ctx }: { ctx: AndroidDrawerContext }) {
     let cancelled = false;
     window.ade.androidEmulator.getDeviceSettings({ laneId, fields: "foreground" }, pinRef.current)
       .then((answer) => { if (!cancelled) setForeground(answer.foregroundPackage); })
-      .catch(() => {
+      .catch((cause: unknown) => {
         // No answer: the menu offers the whole device.
+        logRendererDebugEvent("android.logs_foreground_failed", { error: cause instanceof Error ? cause.message : String(cause) });
       });
     return () => { cancelled = true; };
   }, [laneId, lanePackage, pinRef, visible]);
@@ -158,7 +161,7 @@ export function AndroidLogsSection({ ctx }: { ctx: AndroidDrawerContext }) {
   const sendToChat = () => {
     if (!onInsertDraft || shown.length === 0) return;
     const text = shown.slice(-ANDROID_LOG_DRAFT_LINES).map(lineText).join("\n");
-    onInsertDraft(`Logcat for ${packageName ?? "the whole device"} on the lane's Android emulator:\n\n\`\`\`text\n${text}\n\`\`\`\n`);
+    onInsertDraft(androidTextDraft(`Logcat for ${packageName ?? "the whole device"} on the lane's Android emulator:`, text));
   };
 
   return (
@@ -246,7 +249,7 @@ export function AndroidLogsSection({ ctx }: { ctx: AndroidDrawerContext }) {
           type="button"
           className={DRAWER_BUTTON}
           disabled={shown.length === 0}
-          onClick={() => { void window.ade?.app?.writeClipboardText?.(shown.map(lineText).join("\n")); }}
+          onClick={() => copyAndroidText(shown.map(lineText).join("\n"))}
         >
           <Copy size={13} />
           Copy

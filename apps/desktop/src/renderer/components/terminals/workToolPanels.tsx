@@ -721,7 +721,8 @@ function WorkAndroidDevice({
   const pinRef = useRef(runtimePin);
   pinRef.current = runtimePin;
   /*
-   * The pane is showing the emulator again, so a floating copy goes back in;
+   * The pane is showing the emulator again, so a floating copy of this lane's
+   * goes back in;
    * when the pane closes (or the tools pane switches tool) on a live
    * emulator, it floats over the chat. Not for another machine's work copy:
    * the player shows only over this chat's own lane. A tab close says first
@@ -730,7 +731,7 @@ function WorkAndroidDevice({
   const floats = !pinnedMachineName;
   useLayoutEffect(() => {
     if (!laneId || !floats) return undefined;
-    retakeAndroidMiniPlayer();
+    retakeAndroidMiniPlayer({ laneId, runtimePin: pinRef.current });
     return () => {
       handoffAndroidMiniPlayer({ laneId, chatSessionId: sessionRef.current, runtimePin: pinRef.current });
     };

@@ -3,7 +3,6 @@ import path from "node:path";
 import type { AndroidAvd, AndroidRunningEmulator, AndroidSystemImage } from "../../../shared/types/androidEmulator";
 import { AndroidEmulatorFailure } from "./androidEmulatorErrors";
 import { androidHardwareConfig, type AndroidDeviceDefinition } from "./androidHardwareProfiles";
-import { parseAndroidRamSizeMb } from "./androidMemoryGuard";
 import { readAndroidIniFile } from "./androidSdk";
 import { REMOTE_WORK_LANE_PREFIX } from "../remoteWork/remoteWorkCopyService";
 
@@ -52,6 +51,15 @@ function intOrNull(value: string | undefined): number | null {
   if (value === undefined || value === "") return null;
   const parsed = Number.parseInt(value, 10);
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+/** `hw.ramSize` from `config.ini`: `2048`, `2048M`, `2048MB` or `2G`. */
+export function parseAndroidRamSizeMb(value: string | undefined | null): number | null {
+  const match = /^\s*(\d+(?:\.\d+)?)\s*([mg])?b?\s*$/i.exec(value ?? "");
+  if (!match) return null;
+  const amount = Number(match[1]);
+  if (!Number.isFinite(amount) || amount <= 0) return null;
+  return Math.round(match[2]?.toLowerCase() === "g" ? amount * 1024 : amount);
 }
 
 /**

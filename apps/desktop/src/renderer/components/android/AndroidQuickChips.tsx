@@ -17,7 +17,7 @@ import {
 } from "@phosphor-icons/react";
 import type { OpenProjectBinding } from "../../../shared/types";
 import type { AndroidDeviceSetting, AndroidDeviceSettings } from "../../../shared/types/androidEmulator";
-import { DEVICE_LOCATION_PRESETS } from "../device/locationPresets";
+import { DEVICE_BATTERY_LEVELS, DEVICE_LOCATION_PRESETS } from "../device/locationPresets";
 import { cn } from "../ui/cn";
 import { MENU_CONTENT_CLASS, MENU_ITEM_CLASS, MENU_LABEL_CLASS, MENU_SEPARATOR_CLASS } from "../ui/paneMenuTokens";
 import { showToast } from "../app/toast/toastStore";
@@ -33,8 +33,6 @@ import { useAndroidDrawerActions } from "./drawer/androidDrawerState";
  * One settings read when the picture goes live (the drawer's own read, only
  * while the chips show) and one after each change; nothing polls.
  */
-
-const BATTERY_LEVELS = [100, 80, 50, 20, 5] as const;
 
 const CHIP_CLASS = cn(
   "inline-flex h-6 items-center gap-1 rounded-full border border-border/70 bg-surface/85 px-2",
@@ -164,7 +162,7 @@ export function AndroidQuickChips({
         testId="battery"
       >
         <div className={MENU_LABEL_CLASS}>Battery level</div>
-        {BATTERY_LEVELS.map((level) => (
+        {DEVICE_BATTERY_LEVELS.map((level) => (
           <DropdownMenu.Item key={level} className={MENU_ITEM_CLASS} onSelect={() => { void set({ kind: "battery", level }); }}>
             <span className="min-w-0 flex-1 tabular-nums">{level}%</span>
             {battery.level === level ? <Check size={12} /> : null}

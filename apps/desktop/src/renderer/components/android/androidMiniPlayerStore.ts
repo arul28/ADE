@@ -7,7 +7,7 @@ import {
   readChatCompanionUiState,
   setWorkLivePreviewEnabledForChat,
 } from "../chat/chatCompanionUiState";
-import { appleMiniPlayerBelongsToSurface, type AppleMiniPlayerSurface } from "../apple/appleMiniPlayerStore";
+import { miniPlayerBelongsToSurface, miniPlayerPreviewSuppressed, type MiniPlayerSurface } from "../device/miniPlayerSurface";
 import { androidLaneDeviceName } from "./androidDeviceState";
 import { androidStreamLeaseKey, androidStreamLeases } from "./androidStreamLease";
 
@@ -82,16 +82,15 @@ function laneDeviceKey(where: AndroidMiniPlayerLaneRef): string | null {
 
 /** True when this chat (or, chatless, this emulator) wants no floating player. */
 function previewSuppressed(chatSessionId: string | null, avdName: string): boolean {
-  if (!chatSessionId) return dismissed.has(avdName);
-  return !isWorkLivePreviewEnabled(readChatCompanionUiState(chatSessionId), "android");
+  return miniPlayerPreviewSuppressed({ chatSessionId, tool: "android", deviceKey: avdName, dismissed });
 }
 
 /** Does the floating emulator belong over this surface? Same lane, same machine. */
 export function androidMiniPlayerBelongsToSurface(
   target: AndroidMiniPlayerTarget,
-  surface: AppleMiniPlayerSurface | null,
+  surface: MiniPlayerSurface | null,
 ): boolean {
-  return appleMiniPlayerBelongsToSurface(target, surface);
+  return miniPlayerBelongsToSurface(target, surface);
 }
 
 export function openAndroidMiniPlayer(target: AndroidMiniPlayerTarget): void {
@@ -114,16 +113,29 @@ export function closeAndroidMiniPlayer(avdName?: string): void {
   emit();
 }
 
-/** The emulator moved back into the pane. Not a dismissal. */
-export function retakeAndroidMiniPlayer(): void {
+/**
+ * The emulator moved back into the pane, or its tab closed. Not a dismissal.
+ * With `where`, only a player of that lane on that machine goes: closing one
+ * lane's tab leaves another lane's floating emulator alone.
+ */
+export function retakeAndroidMiniPlayer(where?: AndroidMiniPlayerLaneRef): void {
   if (!current) return;
+  if (where && laneDeviceKey(where) !== laneDeviceKey(current)) return;
   current = null;
   emit();
 }
 
-/** A tab close stops the tool: the next handoff floats nothing. */
+/**
+ * A tab close stops the tool: the handoff of the unmount it causes floats
+ * nothing. That unmount runs in the same task, so the flag clears after it; a
+ * close of a tab that was not on screen (no unmount) cannot leave it set for
+ * a later, real minimize.
+ */
 export function suppressAndroidMiniPlayerHandoff(): void {
   closingForReal = true;
+  setTimeout(() => {
+    closingForReal = false;
+  }, 0);
 }
 
 /** The pane's cache write, one per status read. A null device forgets the lane. */

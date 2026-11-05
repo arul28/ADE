@@ -33,15 +33,6 @@ export function androidEmulatorMemoryNeedMb(guestRamMb: number | null): number {
   return guest + ANDROID_EMULATOR_OVERHEAD_MB;
 }
 
-/** `hw.ramSize` from `config.ini`: `2048`, `2048M`, `2048MB` or `2G`. */
-export function parseAndroidRamSizeMb(value: string | undefined | null): number | null {
-  const match = /^\s*(\d+(?:\.\d+)?)\s*([mg])?b?\s*$/i.exec(value ?? "");
-  if (!match) return null;
-  const amount = Number(match[1]);
-  if (!Number.isFinite(amount) || amount <= 0) return null;
-  return Math.round(match[2]?.toLowerCase() === "g" ? amount * 1024 : amount);
-}
-
 function readMemorystatusLevel(timeoutMs: number): Promise<number | null> {
   return new Promise((resolve) => {
     execFile("/usr/sbin/sysctl", ["-n", "kern.memorystatus_level"], { timeout: timeoutMs }, (error, stdout) => {
@@ -55,21 +46,54 @@ function readMemorystatusLevel(timeoutMs: number): Promise<number | null> {
   });
 }
 
-/** The memory the machine can give without swapping, in MB. */
+/**
+ * The memory the machine can give without swapping, in MB. Null on macOS when
+ * the kernel's gauge cannot be read: `os.freemem()` there would refuse starts
+ * that fit, so the caller skips the guard instead.
+ */
 export async function readHostAvailableMemoryMb(options: {
   platform?: NodeJS.Platform;
   totalBytes?: number;
   freeBytes?: number;
   readLevel?: (timeoutMs: number) => Promise<number | null>;
-} = {}): Promise<number> {
+} = {}): Promise<number | null> {
   const platform = options.platform ?? process.platform;
-  const total = options.totalBytes ?? os.totalmem();
-  const free = options.freeBytes ?? os.freemem();
   if (platform === "darwin") {
     const level = await (options.readLevel ?? readMemorystatusLevel)(2_000);
-    if (level !== null) return Math.round((total * level) / 100 / MB);
+    return level === null ? null : Math.round(((options.totalBytes ?? os.totalmem()) * level) / 100 / MB);
   }
-  return Math.round(free / MB);
+  return Math.round((options.freeBytes ?? os.freemem()) / MB);
+}
+
+/**
+ * Boots in flight on this machine, every project's. Their emulators have not
+ * taken their memory yet, so a start subtracts the ones that began before it;
+ * two lanes that start together cannot both fit into the same free memory.
+ */
+const bootsInFlight = new Map<number, number>();
+let nextBootId = 1;
+
+export type AndroidBootReservation = {
+  /** The memory of the boots that began before this one, in MB. */
+  earlierMb: () => number;
+  /** The boot ended (booted, failed or refused). Safe to call twice. */
+  release: () => void;
+};
+
+/** Holds `needMb` for one boot until `release`. */
+export function reserveAndroidBootMemory(needMb: number): AndroidBootReservation {
+  const id = nextBootId++;
+  bootsInFlight.set(id, needMb);
+  return {
+    earlierMb: () => {
+      let total = 0;
+      for (const [other, mb] of bootsInFlight) if (other < id) total += mb;
+      return total;
+    },
+    release: () => {
+      bootsInFlight.delete(id);
+    },
+  };
 }
 
 export type AndroidMemoryShortfall = { needMb: number; availableMb: number };

@@ -6,7 +6,13 @@ import {
   type AndroidLaneDeviceStatus,
   type AndroidStreamStatus,
 } from "../../../shared/types/androidEmulator";
-import { resolveAppleStreamUrl, withStreamTicketToken, type StreamTicket } from "./appleDevice";
+import {
+  createStreamTicketBook,
+  resolveAppleStreamUrl,
+  unavailable,
+  withStreamTicketToken,
+  type StreamTicket,
+} from "./streamTicket";
 import type { AdeNamespace } from "./types";
 
 /**
@@ -30,13 +36,19 @@ import type { AdeNamespace } from "./types";
  *   machine itself, so the setup writes refuse here with a plain message.
  * - **Events come from a status read.** The brain's Android events are not on
  *   the sync bus. While the pane listens and the tab is visible, the lanes it
- *   read are re-read every few seconds, and a changed state (or a new app
- *   crash) becomes the `android.device.state` event the pane already handles:
- *   it reads the full status again.
+ *   read most recently are re-read every few seconds, and a changed state (or
+ *   a new app crash) becomes the `android.device.state` event the pane already
+ *   handles: it reads the full status again.
  */
 
 /** How often a listening, visible tab re-reads its lanes' state. */
 export const ANDROID_WEB_STATE_POLL_MS = 3_000;
+/**
+ * The lanes a tab keeps re-reading, newest first: the lane on screen and a few
+ * the person just left. A lane read again moves to the front, so a long visit
+ * across many lanes does not add a status read per lane to every tick.
+ */
+const ANDROID_WEB_POLLED_LANES_MAX = 4;
 
 type AndroidCall = <T>(
   action: string,
@@ -49,12 +61,6 @@ type AndroidMethod = (args?: unknown, pin?: unknown) => Promise<unknown>;
 
 const NO_HOST = "The Android emulator isn't available on the connected ADE host.";
 const SETUP_ON_MACHINE = "Set up Android in the ADE desktop app on that computer.";
-
-function unavailable(message: string): () => never {
-  return () => {
-    throw new Error(message);
-  };
-}
 
 function record(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
@@ -73,9 +79,9 @@ export function createAndroidDeviceNamespace(
   call: AndroidCall,
   getEndpoint: () => string | null,
 ): AdeNamespace<"androidEmulator"> {
-  /** The most recent ticket, so `resolveStreamUrl` can find its path and token again. */
-  let lastTicket: StreamTicket | null = null;
-  /** Each lane the pane read, with the state (and the app crash) it last saw. */
+  /** The tickets this tab was handed, so `resolveStreamUrl` finds the one behind each URL. */
+  const tickets = createStreamTicketBook();
+  /** The lanes the pane read most recently (oldest first), with the state and app crash each last showed. */
   const laneStates = new Map<string, { state: AndroidLaneDeviceStatus["state"] | null; crashId: string | null }>();
   const listeners = new Set<(event: AndroidEmulatorEvent) => void>();
   let pollTimer: ReturnType<typeof setInterval> | null = null;
@@ -84,8 +90,10 @@ export function createAndroidDeviceNamespace(
   const noteLaneState = (laneId: string, state: unknown, crashId: string | null = null): void => {
     const next = (typeof state === "string" ? state : null) as AndroidLaneDeviceStatus["state"] | null;
     const previous = laneStates.get(laneId);
+    // Only `getStatus` adds a lane: a poll that ends after the lane left the set does not bring it back.
+    if (!previous) return;
     laneStates.set(laneId, { state: next, crashId });
-    if (!previous || next === null || (previous.state === next && previous.crashId === crashId)) return;
+    if (next === null || (previous.state === next && previous.crashId === crashId)) return;
     const event: AndroidEmulatorEvent = { type: "android.device.state", laneId, state: next };
     for (const listener of listeners) listener(event);
   };
@@ -138,10 +146,15 @@ export function createAndroidDeviceNamespace(
       if (!laneId) return invoke("getStatus", args);
       const status = record(await call("android.status", { laneId, full: true }, unavailable(NO_HOST), true));
       // Remembered without an event: the pane asked, so it already knows.
+      laneStates.delete(laneId);
       laneStates.set(laneId, {
         state: (text(record(status.device).state) ?? "none") as AndroidLaneDeviceStatus["state"],
         crashId: text(record(status.appCrash).id),
       });
+      for (const oldest of laneStates.keys()) {
+        if (laneStates.size <= ANDROID_WEB_POLLED_LANES_MAX) break;
+        laneStates.delete(oldest);
+      }
       return status.raw ?? status;
     },
     listDevices: (args) => call("android.deviceList", { laneId: text(record(args).laneId) }, unavailable(NO_HOST), true),
@@ -155,7 +168,7 @@ export function createAndroidDeviceNamespace(
         unavailable(NO_HOST),
         false,
       );
-      lastTicket = ticket;
+      tickets.add(laneId, ticket);
       return {
         laneId,
         running: true,
@@ -172,7 +185,7 @@ export function createAndroidDeviceNamespace(
     },
     // The relay stops the stream when this tab's socket closes.
     async stopStream(args): Promise<AndroidStreamStatus> {
-      lastTicket = null;
+      tickets.forgetLane(text(record(args).laneId));
       return { laneId: text(record(args).laneId) ?? "", running: false, backend: null, transport: null, fps: null };
     },
     sendTouch: (args) => input("touch", args, { events: record(args).events }),
@@ -189,8 +202,9 @@ export function createAndroidDeviceNamespace(
     ...namespace,
     ...overrides,
     resolveStreamUrl: async (streamUrl: string | null) => {
-      const ticketPath = lastTicket?.path ?? (typeof streamUrl === "string" ? streamUrl : "");
-      return withStreamTicketToken(resolveAppleStreamUrl(getEndpoint(), ticketPath), lastTicket);
+      const ticket = tickets.find(streamUrl);
+      const ticketPath = ticket?.path ?? (typeof streamUrl === "string" ? streamUrl : "");
+      return withStreamTicketToken(resolveAppleStreamUrl(getEndpoint(), ticketPath), ticket);
     },
     onEvent: (listener: (event: AndroidEmulatorEvent) => void) => {
       listeners.add(listener);

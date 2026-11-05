@@ -9,6 +9,7 @@ import {
 import { DeviceLocationRows } from "../../device/DeviceLocationRows";
 import { deviceSettingSetter } from "./AndroidDeviceSection";
 import type { AndroidDrawerContext } from "./androidDrawerState";
+import { DEVICE_BATTERY_LEVELS } from "../../device/locationPresets";
 
 /*
  * The **Emulator** group: what the emulator pretends about the world around
@@ -16,8 +17,8 @@ import type { AndroidDrawerContext } from "./androidDrawerState";
  * P3). The quick chips over the stage (P2) are shortcuts to these controls.
  */
 
-const BATTERY_LEVELS = ["100", "80", "50", "20", "5"] as const;
-type BatteryLevel = (typeof BATTERY_LEVELS)[number];
+/** The drawer menu keys its options by string. */
+const BATTERY_LEVELS = DEVICE_BATTERY_LEVELS.map(String);
 
 export function AndroidEmulatorSection({ ctx }: { ctx: AndroidDrawerContext }) {
   const { laneId, pinRef, actions } = ctx;
@@ -52,7 +53,7 @@ export function AndroidEmulatorSection({ ctx }: { ctx: AndroidDrawerContext }) {
 
       <Subhead label="Battery" />
       <Row label="Level">
-        <DrawerMenu<BatteryLevel>
+        <DrawerMenu<string>
           ariaLabel="Battery level"
           value={BATTERY_LEVELS.find((candidate) => Number(candidate) === level) ?? null}
           placeholder={level === null ? "Unknown" : `${level}%`}

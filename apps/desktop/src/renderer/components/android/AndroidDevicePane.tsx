@@ -23,6 +23,7 @@ import {
   androidAvdSpecLine,
   androidDevicePixelSize,
   androidInputAllowed,
+  ANDROID_LOW_MEMORY_RISK,
   androidLaneDeviceName,
   androidRailVisible,
   describeAndroidError,
@@ -60,7 +61,8 @@ import { useAndroidBootScreen } from "./useAndroidBootScreen";
 import { useAndroidRenderRequests } from "./useAndroidRenderRequests";
 import { useAndroidInspect } from "./useAndroidInspect";
 import { useAndroidRecording } from "./useAndroidRecording";
-import { noteAndroidMiniPlayerLaneDevice, openAndroidMiniPlayer } from "./androidMiniPlayerStore";
+import { useAndroidPaneFloat } from "./useAndroidPaneFloat";
+import { useAndroidStorageActions } from "./useAndroidStorageActions";
 import { AndroidQuickChips } from "./AndroidQuickChips";
 import { AndroidCrashPin } from "./AndroidCrashPin";
 import type { AndroidDrawerGroupId } from "./drawer/androidDrawerState";
@@ -272,21 +274,6 @@ export function AndroidDevicePane({
   }, [laneId, pinKey, readStatus]);
 
   const laneState = status?.lane?.state ?? "none";
-  // The floating player's cache: the handoff on unmount is synchronous, so the
-  // emulator's name and size have to be here before the pane goes.
-  const cachedLane = status?.lane ?? null;
-  useEffect(() => {
-    const avdName = cachedLane?.device?.avdName ?? null;
-    noteAndroidMiniPlayerLaneDevice({ laneId, runtimePin: runtimePinRef.current }, avdName && cachedLane
-      ? {
-        avdName,
-        deviceName: androidLaneDeviceName(cachedLane),
-        lcdWidth: cachedLane.avd?.lcdWidth ?? null,
-        lcdHeight: cachedLane.avd?.lcdHeight ?? null,
-        booted: cachedLane.state === "booted",
-      }
-      : null);
-  }, [cachedLane, laneId]);
   const pickerShownRef = useRef(false);
   /** `ade android render` events go to the render hook (set below, read through this ref). */
   const renderRequestRef = useRef<(event: AndroidRenderRequestEvent) => void>(() => undefined);
@@ -489,10 +476,15 @@ export function AndroidDevicePane({
     });
   }, [api, laneId, releaseCurrent, runStart]);
 
-  const start = useCallback((options?: { force?: boolean }) => {
+  const start = useCallback(() => {
     if (!api) return;
-    const force = options?.force === true;
-    void runStart({ kind: "start" }, () => api.start({ laneId, ...(force ? { force } : {}) }, runtimePinRef.current));
+    void runStart({ kind: "start" }, () => api.start({ laneId }, runtimePinRef.current));
+  }, [api, laneId, runStart]);
+
+  /** Past the RAM guard, after its warning: the person accepts the swap. */
+  const startAnyway = useCallback(() => {
+    if (!api) return;
+    void runStart({ kind: "start" }, () => api.start({ laneId, force: true }, runtimePinRef.current));
   }, [api, laneId, runStart]);
 
   const powerOff = useCallback(() => {
@@ -515,41 +507,7 @@ export function AndroidDevicePane({
       });
   }, [api, forgetStream, laneId, readInventory, readStatus]);
 
-  /** Storage: every AVD with its size on disk, on the lane's machine. */
-  const readSizes = useCallback(async () => {
-    if (!api) return [];
-    const measured = await api.listDevices({ laneId, measureSizes: true }, runtimePinRef.current);
-    return measured.avds;
-  }, [api, laneId]);
-
-  /** Storage › Clean up: one delete at a time (each takes the AVD's lock), one toast. */
-  const cleanUp = useCallback((names: string[]) => {
-    if (!api || names.length === 0) return;
-    const pin = runtimePinRef.current;
-    void (async () => {
-      let deleted = 0;
-      for (const name of names) {
-        try {
-          const result = await api.deleteDevice({ avdName: name }, pin);
-          if (result.deleted) deleted += 1;
-        } catch (caught: unknown) {
-          setError(describeAndroidError(caught));
-        }
-      }
-      if (deleted > 0) showToast({ id: "android-avd-cleanup", tone: "success", title: `Deleted ${deleted} device${deleted === 1 ? "" : "s"}` });
-      void readInventory();
-    })();
-  }, [api, readInventory]);
-
-  const deleteAvd = useCallback((name: string) => {
-    if (!api) return;
-    void api.deleteDevice({ avdName: name }, runtimePinRef.current)
-      .then((result) => {
-        if (result.deleted) showToast({ id: "android-avd-delete", tone: "success", title: `Deleted ${name}` });
-      })
-      .catch((caught: unknown) => setError(describeAndroidError(caught)))
-      .finally(() => void readInventory());
-  }, [api, readInventory]);
+  const { readSizes, cleanUp, deleteAvd } = useAndroidStorageActions({ api, laneId, runtimePinRef, readInventory, onError: setError });
 
   const openLaneDevice = useCallback(() => {
     setPickerRequested(false);
@@ -614,23 +572,7 @@ export function AndroidDevicePane({
 
   const deviceName = androidLaneDeviceName(lane);
   const deviceSpec = lane?.avd ? androidAvdSpecLine(lane.avd, inventory?.profiles ?? []) : null;
-  /*
-   * "Float over chat": the Android slot of the floating players. Only for this
-   * window's own lanes; another machine's work copy shows in the pane only.
-   */
-  const floatOverChat = useMemo(() => {
-    const avdName = lane?.device?.avdName ?? null;
-    if (machineName || !avdName) return undefined;
-    return () => openAndroidMiniPlayer({
-      laneId,
-      chatSessionId: sessionId,
-      avdName,
-      deviceName,
-      lcdWidth: lane?.avd?.lcdWidth ?? null,
-      lcdHeight: lane?.avd?.lcdHeight ?? null,
-      runtimePin: runtimePinRef.current,
-    });
-  }, [deviceName, lane?.avd?.lcdHeight, lane?.avd?.lcdWidth, lane?.device?.avdName, laneId, machineName, sessionId]);
+  const floatOverChat = useAndroidPaneFloat({ lane, laneId, sessionId, machineName, runtimePinRef });
   const accel = status?.sdk.acceleration ?? null;
 
   /* ── P1 look: the body, the colour, boot on the model, renders ─────────── */
@@ -700,8 +642,8 @@ export function AndroidDevicePane({
       return (
         <AndroidDeviceNoticeStrip
           tone="warning"
-          sentence={`${error.sentence} A start now can slow the machine down while it swaps.`}
-          actions={[{ label: "Start anyway", onClick: () => start({ force: true }) }]}
+          sentence={`${error.sentence} ${ANDROID_LOW_MEMORY_RISK}`}
+          actions={[{ label: "Start anyway", onClick: startAnyway }]}
           onDismiss={() => setError(null)}
         />
       );

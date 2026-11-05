@@ -191,6 +191,7 @@
 		E1000000000000000000AB0E /* AppleDeviceViewerModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000AB0E /* AppleDeviceViewerModel.swift */; };
 		E2000000000000000000AD01 /* AndroidDeviceViewer.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000AD01 /* AndroidDeviceViewer.swift */; };
 		E2000000000000000000AD02 /* AndroidDeviceViewerModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000AD02 /* AndroidDeviceViewerModel.swift */; };
+		E2000000000000000000AD1A /* AppleStreamSession.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000AD1A /* AppleStreamSession.swift */; };
 		E1000000000000000000AB0C /* AppleDeviceControl.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000AB0C /* AppleDeviceControl.swift */; };
 		E1000000000000000000FE01 /* LiveStage.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000FE01 /* LiveStage.swift */; };
 		E1000000000000000000FE03 /* MacDesktopViewerSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000FE03 /* MacDesktopViewerSupport.swift */; };
@@ -644,6 +645,7 @@
 		D1000000000000000000AB0E /* AppleDeviceViewerModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AppleDeviceViewerModel.swift; path = ADE/Views/Work/AppleDeviceViewerModel.swift; sourceTree = "<group>"; };
 		D2000000000000000000AD01 /* AndroidDeviceViewer.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AndroidDeviceViewer.swift; path = ADE/Views/Work/AndroidDeviceViewer.swift; sourceTree = "<group>"; };
 		D2000000000000000000AD02 /* AndroidDeviceViewerModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AndroidDeviceViewerModel.swift; path = ADE/Views/Work/AndroidDeviceViewerModel.swift; sourceTree = "<group>"; };
+		D2000000000000000000AD1A /* AppleStreamSession.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AppleStreamSession.swift; path = ADE/Views/Work/AppleStreamSession.swift; sourceTree = "<group>"; };
 		D1000000000000000000AB0C /* AppleDeviceControl.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AppleDeviceControl.swift; path = ADE/Views/Work/AppleDeviceControl.swift; sourceTree = "<group>"; };
 		D1000000000000000000FE01 /* LiveStage.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LiveStage.swift; path = ADE/Views/Work/LiveStage.swift; sourceTree = "<group>"; };
 		D1000000000000000000FE03 /* MacDesktopViewerSupport.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MacDesktopViewerSupport.swift; path = ADE/Views/Work/MacDesktopViewerSupport.swift; sourceTree = "<group>"; };
@@ -1335,6 +1337,7 @@
 				D1000000000000000000AB0E /* AppleDeviceViewerModel.swift */,
 				D2000000000000000000AD01 /* AndroidDeviceViewer.swift */,
 				D2000000000000000000AD02 /* AndroidDeviceViewerModel.swift */,
+				D2000000000000000000AD1A /* AppleStreamSession.swift */,
 				D1000000000000000000AB0C /* AppleDeviceControl.swift */,
 				D1000000000000000000FE01 /* LiveStage.swift */,
 				D1000000000000000000FE03 /* MacDesktopViewerSupport.swift */,
@@ -2308,6 +2311,7 @@
 				E1000000000000000000AB0E /* AppleDeviceViewerModel.swift in Sources */,
 				E2000000000000000000AD01 /* AndroidDeviceViewer.swift in Sources */,
 				E2000000000000000000AD02 /* AndroidDeviceViewerModel.swift in Sources */,
+				E2000000000000000000AD1A /* AppleStreamSession.swift in Sources */,
 				E1000000000000000000AB0C /* AppleDeviceControl.swift in Sources */,
 				E1000000000000000000FE01 /* LiveStage.swift in Sources */,
 				E1000000000000000000FE03 /* MacDesktopViewerSupport.swift in Sources */,

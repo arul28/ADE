@@ -13,13 +13,11 @@ import type {
   AndroidRunningEmulator,
   AndroidSdkStatus,
 } from "../../../shared/types/androidEmulator";
-import { resolveAdeLayout } from "../../../shared/adeLayout";
 import type { Logger } from "../logging/logger";
 import { getErrorMessage } from "../shared/utils";
 import { readAndroidAvd, sameAvdName } from "./androidAvds";
 import { AndroidEmulatorFailure, requireLaneId } from "./androidEmulatorErrors";
 import {
-  AdeStartedEmulators,
   androidDiscoveryDirs,
   launchAndroidEmulator,
   readAndroidBootCompleted,
@@ -36,11 +34,14 @@ import { createAndroidDeviceSettings } from "./androidDeviceSettings";
 import { createAndroidInput } from "./androidInput";
 import { createAndroidCrashWatch } from "./androidCrashWatch";
 import { createAndroidLaneStreams } from "./androidLaneStreams";
+import { openStartedEmulators, stopAdeStartedEmulators } from "./androidHandedOffEmulators";
 import {
   androidEmulatorMemoryNeedMb,
   androidMemoryShortfall,
   formatAndroidMemoryGb,
   readHostAvailableMemoryMb,
+  reserveAndroidBootMemory,
+  type AndroidBootReservation,
 } from "./androidMemoryGuard";
 import type { AppleStreamOwningService } from "../ios/appleStreamRelayForService";
 import type { AndroidLaneDeviceRepo } from "./androidLaneRelease";
@@ -59,6 +60,9 @@ import {
 import { createAndroidStreamHub, type AndroidStreamHub } from "./androidStream";
 import { isRemoteWorkLaneId } from "../remoteWork/remoteWorkCopyService";
 import { createAndroidLaneScope } from "./androidWorkCopy";
+
+/** The project-removal stop moved with the state file; the CLI keeps importing it from here. */
+export { stopHandedOffAndroidEmulators } from "./androidHandedOffEmulators";
 
 /*
  * The lane's Android emulator: one per brain, composing the phase A modules
@@ -167,92 +171,6 @@ type LaneState = {
   /** A viewer asked for the stream (`startStream`); a recording may hold it too. */
   streamViewer: boolean;
 };
-
-/** The started-emulators state file in a service's data folder, warning once per kind of file failure. */
-function openStartedEmulators(dataDir: string, logger: Logger | null): AdeStartedEmulators {
-  const warned = new Set<string>();
-  const file = path.join(dataDir, "started-emulators.json");
-  return new AdeStartedEmulators(file, (op, error) => {
-    const code = (error as NodeJS.ErrnoException)?.code ?? "parse";
-    if (warned.has(`${op}:${code}`)) return;
-    warned.add(`${op}:${code}`);
-    logger?.warn("android.started_emulators_file_failed", { op, file, error: getErrorMessage(error) });
-  });
-}
-
-/**
- * Stops every running emulator the state file lists as ADE's, and nothing
- * else; each stop forgets its emulator in the file. A failed stop is logged
- * and the rest still run.
- */
-async function stopAdeStartedEmulators(args: {
-  registry: AdeStartedEmulators;
-  adbPath: string;
-  discoveryDirs: readonly string[];
-  logger: Logger | null;
-  /** The launcher process this run kept for an emulator, if any. */
-  launcherPidFor?: (emulator: AndroidDiscoveredEmulator) => number | null;
-}): Promise<void> {
-  for (const emulator of readAndroidDiscoveryFiles(args.discoveryDirs)) {
-    if (!args.registry.owns(emulator)) continue;
-    await stopAndroidEmulator({
-      adbPath: args.adbPath,
-      serial: emulator.serial,
-      consolePort: emulator.consolePort,
-      avdName: emulator.avdName,
-      pid: emulator.pid,
-      launcherPid: args.launcherPidFor?.(emulator) ?? null,
-      registry: args.registry,
-      discoveryDirs: args.discoveryDirs,
-    }).catch((error: unknown) => {
-      args.logger?.warn("android.dispose_stop_failed", { serial: emulator.serial, error: getErrorMessage(error) });
-    });
-  }
-}
-
-/**
- * Stops the emulators a project's service handed off, once the project is
- * removed from this machine and no next service will re-adopt them.
- *
- * The brain calls it when a removal joined a teardown that had already handed
- * the devices off (a repair's `"close"` drain). It reads the same state file
- * the project's service uses (`<project>/.ade/android`), stops only the
- * emulators listed there, and does nothing without an SDK or a state file.
- * It never throws.
- */
-export async function stopHandedOffAndroidEmulators(args: {
-  projectRoot: string;
-  logger?: Logger | null;
-  env?: AndroidEnv;
-  platform?: NodeJS.Platform;
-  home?: string;
-}): Promise<void> {
-  const logger = args.logger ?? null;
-  try {
-    const platform = args.platform ?? process.platform;
-    if (platform !== "darwin" && platform !== "win32" && platform !== "linux") return;
-    const dataDir = path.join(resolveAdeLayout(args.projectRoot).adeDir, "android");
-    if (!fs.existsSync(path.join(dataDir, "started-emulators.json"))) return;
-    const env = args.env ?? process.env;
-    const home = args.home ?? os.homedir();
-    const sdk = await readAndroidSdkStatus({ settingPath: null, env, platform, home });
-    let adbPath: string;
-    try {
-      adbPath = requireAndroidSdkTools(sdk, platform, { emulator: false }).adbPath;
-    } catch {
-      // No SDK or no adb: nothing ADE could have started is reachable here.
-      return;
-    }
-    await stopAdeStartedEmulators({
-      registry: openStartedEmulators(dataDir, logger),
-      adbPath,
-      discoveryDirs: androidDiscoveryDirs(platform, env, home),
-      logger,
-    });
-  } catch (error) {
-    logger?.warn("android.unregister_stop_failed", { projectRoot: args.projectRoot, error: getErrorMessage(error) });
-  }
-}
 
 /** The service, plus the lane streams as the brain's stream relay drives them (phone and web viewers). */
 export type AndroidEmulatorService = AndroidEmulatorServiceApi & {
@@ -553,12 +471,25 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
     });
   };
 
-  /** The RAM guard (plan §5): refuse a boot that would push the machine into swap. */
-  const assertMemoryForStart = async (laneId: string, avd: AndroidAvd): Promise<void> => {
+  /**
+   * The RAM guard (plan §5): refuse a boot that would push the machine into
+   * swap, counting the boots already in flight. The answer holds this boot's
+   * memory until the caller releases it; a forced start holds it too, so the
+   * next start counts it.
+   */
+  const reserveMemoryForStart = async (laneId: string, avd: AndroidAvd, force: boolean): Promise<AndroidBootReservation> => {
     const needMb = androidEmulatorMemoryNeedMb(avd.ramMb);
-    const availableMb = await readHostAvailableMemoryMb({ platform });
+    const reservation = reserveAndroidBootMemory(needMb);
+    if (force) return reservation;
+    const freeMb = await readHostAvailableMemoryMb({ platform });
+    if (freeMb === null) {
+      logger?.warn("android.start_memory_unread", { laneId });
+      return reservation;
+    }
+    const availableMb = freeMb - reservation.earlierMb();
     const shortfall = androidMemoryShortfall({ needMb, availableMb });
-    if (!shortfall) return;
+    if (!shortfall) return reservation;
+    reservation.release();
     logger?.info("android.start_low_memory", { laneId, needMb, availableMb });
     throw new AndroidEmulatorFailure(
       "ANDROID_LOW_MEMORY",
@@ -587,8 +518,17 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
     // Already running (a start from before a brain restart, or the user's own
     // emulator for an attached AVD): use it as it is.
     if (runningFor(device.avdName)) return laneStatus(laneId, ready.sdk);
-    if (!options.force) await assertMemoryForStart(laneId, avd);
+    const reservation = await reserveMemoryForStart(laneId, avd, options.force === true);
+    try {
+      return await bootLocked(state, device, ready);
+    } finally {
+      reservation.release();
+    }
+  };
 
+  /** The launch and the boot wait of `startLocked`, once the start may go ahead. */
+  const bootLocked = async (state: LaneState, device: AndroidLaneDevice, ready: ReadyAndroidSdk): Promise<AndroidLaneDeviceStatus> => {
+    const laneId = state.laneId;
     const logPath = path.join(deps.dataDir, "logs", `${device.avdName}.log`);
     fs.mkdirSync(path.dirname(logPath), { recursive: true });
     // One log per AVD, from this start only, so "Open log" and the crash
@@ -630,6 +570,7 @@ export function createAndroidEmulatorService(deps: AndroidEmulatorServiceDeps): 
       });
       state.transient = null;
       watchExit(state, launch);
+      crashWatch.ensure(laneId, { serial: launch.serial, adbPath: ready.adbPath });
       return await emitDeviceState(laneId);
     } catch (error) {
       const stoppedByUser = state.stopRequested;

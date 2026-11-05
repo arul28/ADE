@@ -277,6 +277,9 @@ const ANDROID_ERROR_SENTENCE: Record<AndroidEmulatorErrorCode, string> = {
   ANDROID_LOW_MEMORY: "This machine has too little free memory to start the device.",
 };
 
+/** After the RAM guard's own sentence, wherever "Start anyway" is offered. */
+export const ANDROID_LOW_MEMORY_RISK = "A start now can slow the machine down while it swaps.";
+
 const IPC_PREFIX = /^Error invoking remote method '[^']*':\s*(?:[A-Za-z]*Error:\s*)?/;
 
 function errorText(error: unknown): string {

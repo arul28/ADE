@@ -103,6 +103,10 @@ struct AndroidTouchEvent: Equatable {
 /// not booted. Watching never boots it.
 let androidNotRunningCode = "ANDROID_NOT_RUNNING"
 
+/// The code the host puts on a Start it refused because the machine has too
+/// little free memory. A Start with `force` goes past it.
+let androidLowMemoryCode = "ANDROID_LOW_MEMORY"
+
 /// The sentence for a host that does not advertise the Android commands.
 let androidDeviceHostUnsupportedMessage = "Update ADE on the computer to watch its Android emulator from here."
 
@@ -291,14 +295,18 @@ extension SyncService {
 
   /// Boots the lane's emulator. The host waits for the boot, which can take a
   /// minute or more, so the timeout is long. The viewer reads the status
-  /// meanwhile and connects once the emulator is booted.
-  func startAndroidDevice(laneId: String, chatSessionId: String?) async throws {
+  /// meanwhile and connects once the emulator is booted. `force` starts past
+  /// the host's memory guard (`ANDROID_LOW_MEMORY`), as the desktop's Start
+  /// anyway does.
+  func startAndroidDevice(laneId: String, chatSessionId: String?, force: Bool = false) async throws {
     let trimmed = laneId.trimmingCharacters(in: .whitespacesAndNewlines)
     try requireAndroidControl(laneId: trimmed)
     // The top-level `laneId` is the one the host uses; `sendCommand` strips
     // its machine. The nested copy gets the plain id for the same reason.
     let plainLaneId = workParseRemoteLaneId(trimmed)?.laneId ?? trimmed
-    var args: [String: Any] = ["laneId": trimmed, "method": "start", "args": ["laneId": plainLaneId]]
+    var startArgs: [String: Any] = ["laneId": plainLaneId]
+    if force { startArgs["force"] = true }
+    var args: [String: Any] = ["laneId": trimmed, "method": "start", "args": startArgs]
     if let chatSessionId { args["chatSessionId"] = chatSessionId }
     _ = try await sendCommand(
       action: "android.invoke",

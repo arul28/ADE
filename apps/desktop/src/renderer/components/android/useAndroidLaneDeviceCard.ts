@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { OpenProjectBinding } from "../../../shared/types";
 import type { AndroidLaneDeviceStatus } from "../../../shared/types/androidEmulator";
+import { logRendererDebugEvent } from "../../lib/debugLog";
 import { androidLaneDeviceName } from "./androidDeviceState";
 
 /**
@@ -48,9 +49,16 @@ export function useAndroidLaneDeviceCard(args: {
     let cancelled = false;
     let timer: number | null = null;
     const read = async () => {
-      const status = await api.getStatus({ laneId }, pinRef.current).catch(() => null);
+      let status: Awaited<ReturnType<typeof api.getStatus>>;
+      try {
+        status = await api.getStatus({ laneId }, pinRef.current);
+      } catch (cause: unknown) {
+        // A failed read is not "no device": the card keeps what it last read.
+        logRendererDebugEvent("android.card_status_failed", { error: cause instanceof Error ? cause.message : String(cause) });
+        return;
+      }
       if (cancelled) return;
-      const lane = status?.lane ?? null;
+      const lane = status.lane;
       setCard(lane?.device && lane.state !== "none"
         ? { laneId, name: androidLaneDeviceName(lane), state: lane.state }
         : null);

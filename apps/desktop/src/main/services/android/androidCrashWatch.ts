@@ -16,7 +16,7 @@ import { logcatArgs, parseLogcatDump, parseLogcatLine } from "./androidLogcat";
  *   crashes are skipped (the last line's time is the start cursor).
  * - It ends with the emulator (adb exits when the device goes), on `stop`,
  *   and on dispose. A watch that ended starts again on the next booted read,
- *   at most once per `RETRY_GAP_MS`.
+ *   at most once per `RETRY_GAP_MS`, longer after quick exits in a row.
  * - Only the lane's app counts (`isLaneCrash`).
  */
 
@@ -24,6 +24,10 @@ import { logcatArgs, parseLogcatDump, parseLogcatLine } from "./androidLogcat";
 const CRASH_QUIET_MS = 250;
 /** The shortest gap between two watch starts for one lane. */
 const RETRY_GAP_MS = 10_000;
+/** A watch that ends sooner than this after its start counts as a quick exit. */
+const QUICK_EXIT_MS = 30_000;
+/** Each quick exit in a row doubles the gap, up to this. */
+const RETRY_GAP_MAX_MS = 300_000;
 /** The most lines one crash keeps. */
 const CRASH_MAX_LINES = 160;
 
@@ -155,6 +159,12 @@ export function createAndroidCrashWatch(deps: {
   const latest = new Map<string, AndroidAppCrash>();
   /** When each lane's watch last started, so a watch that keeps ending does not respawn adb on every read. */
   const lastStart = new Map<string, number>();
+  /** Quick exits in a row for each lane: a logcat that dies at once waits longer each time. */
+  const quickExits = new Map<string, number>();
+  let disposed = false;
+
+  const retryGap = (laneId: string) =>
+    Math.min(RETRY_GAP_MS * 2 ** (quickExits.get(laneId) ?? 0), RETRY_GAP_MAX_MS);
 
   const end = (laneId: string, watch: LaneWatch) => {
     watch.ended = true;
@@ -175,7 +185,7 @@ export function createAndroidCrashWatch(deps: {
       signal: deps.signal,
       allowFailure: true,
     });
-    if (watch.ended) return;
+    if (watch.ended || disposed) return;
     const since = parseLogcatDump(dump.stdout.toString("utf8")).at(-1)?.time ?? null;
     const assembler = createCrashAssembler({
       onCrash: (crash) => {
@@ -204,21 +214,28 @@ export function createAndroidCrashWatch(deps: {
       deps.logger?.warn("android.crash_watch_failed", { laneId, error: getErrorMessage(error) });
       end(laneId, watch);
     });
-    child.once("close", () => {
+    const startedAt = now();
+    child.once("close", (code) => {
       assembler.flushAll();
+      const wanted = watch.ended;
       end(laneId, watch);
+      if (wanted) return;
+      // adb ended the watch on its own (the device went away, adb restarted).
+      const quick = now() - startedAt < QUICK_EXIT_MS;
+      quickExits.set(laneId, quick ? (quickExits.get(laneId) ?? 0) + 1 : 0);
+      deps.logger?.warn("android.crash_watch_ended", { laneId, code, quick, retryInMs: retryGap(laneId) });
     });
   };
 
   return {
     /** The lane reads as booted on `serial`: watch it, once. */
     ensure(laneId: string, target: { serial: string; adbPath: string }): void {
-      if (deps.signal.aborted) return;
+      if (disposed || deps.signal.aborted) return;
       const current = watches.get(laneId);
       if (current && current.serial === target.serial) return;
       if (current) end(laneId, current);
       const last = lastStart.get(laneId) ?? 0;
-      if (now() - last < RETRY_GAP_MS) return;
+      if (now() - last < retryGap(laneId)) return;
       lastStart.set(laneId, now());
       const watch: LaneWatch = { serial: target.serial, child: null, ended: false };
       watches.set(laneId, watch);
@@ -237,11 +254,15 @@ export function createAndroidCrashWatch(deps: {
       if (watch) end(laneId, watch);
       latest.delete(laneId);
       lastStart.delete(laneId);
+      quickExits.delete(laneId);
     },
+    /** For good: a status read after this starts no watch. */
     dispose(): void {
+      disposed = true;
       for (const [laneId, watch] of [...watches]) end(laneId, watch);
       latest.clear();
       lastStart.clear();
+      quickExits.clear();
     },
   };
 }
