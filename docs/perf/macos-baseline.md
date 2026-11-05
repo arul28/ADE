@@ -2458,3 +2458,15 @@ Most of the 4.2 s is the dev page loading. Cold, the stills land about
 turn reuses the one tile renderer (no second context) and stops on
 pointer leave. After that, the page goes back to its own background work.
 That work was noisy here (3–6 ms/s with spikes) because of the load.
+
+The Tools drawer (2026-11-05, head `90b615dee`, the same mock and method, a
+Work chat open with the Tools pane; load average 5–11). The App group reads
+the app in front every 2 s while it is open and the window is visible:
+
+| Metric | Live flat, drawer closed | Live flat, drawer open on App | Ceiling |
+|---|---:|---:|---:|
+| Main-thread work | 32.7 (32.3–32.8) ms/s | 34.5 (32.4–35.9) ms/s | +25% over the closed drawer |
+| Renderer JS heap | 103 MB | 104 MB | 220 MB |
+
+The open drawer adds about 1.8 ms/s. The page itself costs more than the
+flat row above (19.8 ms/s) because the mock now opens a chat beside the pane.
