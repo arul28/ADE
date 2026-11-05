@@ -277,6 +277,13 @@ export function agent37MachineState(status: string): Agent37MachineState {
   }
 }
 
+const AGENT37_AWAKE_STATUSES = new Set(["provisioning", "running", "starting", "restarting", "updating", "waking"]);
+
+/** What Agent37 counts toward the limit after the first top-up: everything not asleep or stopped. */
+export function agent37StatusAwake(status: string): boolean {
+  return AGENT37_AWAKE_STATUSES.has(status);
+}
+
 /** Whether Agent37 is moving the box between states (worth a quick re-read). */
 export function agent37MachineSettling(state: Agent37MachineState): boolean {
   return state === "starting" || state === "stopping" || state === "deleting";

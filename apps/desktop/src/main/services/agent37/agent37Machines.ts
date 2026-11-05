@@ -17,6 +17,7 @@ import {
   agent37RunningHourlyUsd,
   agent37Shape,
   agent37ShapeFor,
+  agent37StatusAwake,
   type Agent37Machine,
   type Agent37MachineActionArgs,
   type Agent37MachineActionResult,
@@ -112,20 +113,21 @@ function emptyResult(state: Agent37MachinesResult["state"], message: string | nu
   };
 }
 
-const AWAKE = new Set(["provisioning", "running", "starting", "restarting", "updating", "waking"]);
-
 export function createAgent37Machines(deps: Agent37MachinesDeps) {
   const logger = deps.logger ?? {};
   const now = deps.now ?? (() => Date.now());
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   let usageCache: { at: number; usage: Agent37Usage } | null = null;
+  // Bumped by a key change, so a read under the old key can't refill the cache.
+  let usageGeneration = 0;
 
   async function readUsage(client: Agent37Client): Promise<Agent37Usage | null> {
     const at = now();
     if (usageCache && at - usageCache.at < USAGE_CACHE_MS) return usageCache.usage;
+    const generation = usageGeneration;
     try {
       const usage = await client.usage({ from: agent37UsageDay(at - (USAGE_WINDOW_DAYS - 1) * DAY_MS) });
-      usageCache = { at, usage };
+      if (generation === usageGeneration) usageCache = { at, usage };
       return usage;
     } catch (error) {
       // The boxes still show without their spend.
@@ -160,7 +162,7 @@ export function createAgent37Machines(deps: Agent37MachinesDeps) {
       tier: billing.tier,
       instanceLimit: billing.instanceLimit,
       instanceCount: live.filter((instance) => instance.status !== "failed").length,
-      runningCount: live.filter((instance) => AWAKE.has(instance.status)).length,
+      runningCount: live.filter((instance) => agent37StatusAwake(instance.status)).length,
       pastDue: billing.pastDue,
       usageAvailable: usage != null,
       message: null,
@@ -185,12 +187,15 @@ export function createAgent37Machines(deps: Agent37MachinesDeps) {
         message: agent37MachineLimitMessage({ tier: billing?.tier ?? null, instanceLimit: billing?.instanceLimit ?? null }, "wake"),
       };
     }
-    if (code === "insufficient_balance" || code === "instance_suspended") {
+    if (code === "instance_suspended") {
       return {
         ok: false,
         blocker: "suspended",
         message: "Your Agent 37 wallet is empty, so Agent 37 suspended its machines. Top it up, then wake this box. Its files are safe for 30 days.",
       };
+    }
+    if (code === "insufficient_balance") {
+      return { ok: false, blocker: "wallet", message: "Your Agent 37 wallet can't pay for this. Top it up, then try again." };
     }
     if (code === "rate_limited" && action === "backup") {
       return {
@@ -292,7 +297,15 @@ export function createAgent37Machines(deps: Agent37MachinesDeps) {
     }
   }
 
-  return { list, run };
+  return {
+    list,
+    run,
+    /** Forgets the spend read with the last key; a new key may be another workspace. */
+    resetUsage: () => {
+      usageCache = null;
+      usageGeneration += 1;
+    },
+  };
 }
 
 /**

@@ -104,6 +104,15 @@ const CREATE_TIMEOUT_MS = 5 * 60_000;
  */
 const LIFECYCLE_TIMEOUT_MS = 3 * 60_000;
 const BACKUP_TIMEOUT_MS = 15 * 60_000;
+
+/**
+ * How long the renderer waits for one box action: the longest call (a backup)
+ * plus a minute for the reads around it. On the 30 s IPC default a resize or
+ * backup showed a timeout while Agent37 was still doing it.
+ */
+export const AGENT37_MACHINE_ACTION_IPC_TIMEOUT_MS = BACKUP_TIMEOUT_MS + 60_000;
+/** The machine list reads billing and the boxes together, then the usage: two request budgets. */
+export const AGENT37_LIST_MACHINES_IPC_TIMEOUT_MS = 2 * REQUEST_TIMEOUT_MS + 10_000;
 /** The template context is a few kilobytes; this only bounds a stalled upload. */
 const UPLOAD_TIMEOUT_MS = 2 * 60_000;
 
@@ -119,7 +128,7 @@ export function agent37ErrorMessage(code: string, status: number, upstream: stri
     case "instance_suspended":
       return "Your Agent 37 wallet is past due, so its machines are suspended. Top it up to use them again.";
     case "instance_limit_reached":
-      return "Your Agent 37 workspace is at its machine limit. Put a machine to sleep or delete one, or top up to raise the limit.";
+      return "Your Agent 37 workspace is at its machine limit. Delete a machine, or top up to raise the limit. After the first top-up, sleeping machines no longer count.";
     case "tier_limit":
       return "Agent 37 unlocks VMs and bigger sizes after your first top-up.";
     case "no_capacity":

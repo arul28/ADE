@@ -16,7 +16,7 @@
 
 import type { SyncCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
 import { ACCOUNT_SCOPE_ALL } from "../../../shared/accountSettingsScope";
-import type { Agent37Status } from "../../../shared/agent37";
+import { agent37StatusAwake, type Agent37Status } from "../../../shared/agent37";
 import { CONNECT_FIELD_IDS } from "../../../shared/integrationConnect";
 import type { AccountVaultResult } from "../../../shared/types/accountVault";
 import { describeIntegrationCredentialStorage, type IntegrationCredentialStorage } from "../account/integrationCredentialStorage";
@@ -262,9 +262,6 @@ export async function removeAgent37Key(
   return await readAgent37Status(deps);
 }
 
-/** What Agent37 counts toward the limit after the first top-up: everything not asleep or stopped. */
-const AWAKE_STATUSES = new Set(["provisioning", "running", "starting", "restarting", "updating", "waking"]);
-
 export async function readAgent37Status(deps: Agent37CredentialDeps): Promise<Agent37Status> {
   const saved = await readAgent37Key(deps);
   const empty: Agent37Status = {
@@ -289,7 +286,7 @@ export async function readAgent37Status(deps: Agent37CredentialDeps): Promise<Ag
       tier: billing.tier,
       instanceLimit: billing.instanceLimit,
       instanceCount: instances.filter((instance) => instance.status !== "deleted" && instance.status !== "failed").length,
-      runningCount: instances.filter((instance) => AWAKE_STATUSES.has(instance.status)).length,
+      runningCount: instances.filter((instance) => agent37StatusAwake(instance.status)).length,
       pastDue: billing.pastDue,
       error: null,
     };

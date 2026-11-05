@@ -55,11 +55,12 @@ person is using.
   `useAgent37Template.ts`, `agent37Brand.tsx` — the create form in Add a
   computer, its template status, and Agent 37's real logo (monochrome; never
   invented art).
-- `Agent37MachineGroup.tsx`, `agent37MachineModel.ts`, `useAgent37Machines.ts`,
-  `useAgent37BoxActions.tsx` — the Agent 37 group in the machine list
-  (`RemoteTargetList.tsx`): its head and banners, the fact line on each card,
-  which account row is which box, and the box menu with its confirmations and
-  the resize picker.
+- `useAgent37MachineGroup.tsx`, `Agent37MachineGroup.tsx`,
+  `agent37MachineModel.ts`, `useAgent37Machines.ts`, `useAgent37BoxActions.tsx`
+  — the Agent 37 group in the machine list (`RemoteTargetList.tsx` draws its
+  rows): which rows move to the group, its head and banners, the fact line on
+  each card, which account row is which box, and the box menu with its
+  confirmations and the resize picker.
 - `infra/agent37/` — the template's Dockerfile and entrypoint (shipped in the
   app as the `agent37-template` resource) and a manual build script.
 - `apps/ade-cli/src/services/sync/hostInstanceGuard.ts` — the copied-home
@@ -189,8 +190,15 @@ one "in 90 days".
 | Delete box | deletes on Agent 37, waits until it is gone, then removes the account row | always; names the box and says its files are gone |
 
 Every machine on the account, Agent 37 or not, has **Remove from ADE**. ADE
-never calls it "sign out". When the box is gone but the account row can't be
-removed, the card says so and offers Remove from ADE.
+never calls it "sign out". On a box's row it replaces "Remove from this
+computer" (it removes the saved connection too); a saved box with no account
+row keeps "Remove from this computer". When the box is gone but the account
+row can't be removed, the card says so and offers Remove from ADE.
+
+A box action answers once Agent 37 is done, which for a resize that moves
+hosts or a backup of a big disk takes minutes. The two IPC channels have their
+own budgets in `ipcTimeouts.ts` (the longest call plus a minute), so the card
+never shows a timeout for an action that is still running.
 
 **Agent 37's refusals** become a sentence and a next step: the machine limit
 (on tier 0 every box counts; after the first top-up only awake ones), an empty

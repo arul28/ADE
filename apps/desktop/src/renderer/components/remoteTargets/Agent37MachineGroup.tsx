@@ -11,6 +11,7 @@ import {
   type Agent37Machine,
   type Agent37MachinesResult,
 } from "../../../shared/agent37";
+import { openExternalUrl } from "../../lib/openExternal";
 import { Banner } from "../ui/notice";
 import type { NoticeAction } from "../ui/notice/NoticeParts";
 import { Agent37Mark, AGENT37_NAME } from "./agent37Brand";
@@ -126,10 +127,11 @@ export function Agent37GroupBanners({
       />,
     );
   } else if (result?.state === "ok") {
-    const warning = agent37WalletWarning(result.balanceUsd, agent37GroupTotals(boxes).hourlyUsd);
+    // Every box in the workspace bills, also the ones the group does not show.
+    const warning = agent37WalletWarning(result.balanceUsd, agent37GroupTotals(result.machines).hourlyUsd);
     if (warning) {
       banners.push(
-        <Banner key="wallet" layout="inline" model={{ id: "agent37-wallet-low", tone: "warning", icon: <Agent37Mark size={15} />, title: "Your Agent 37 wallet is running low", detail: warning, actions: [TOP_UP] }} />,
+        <Banner key="wallet" layout="inline" model={{ id: "agent37-wallet-low", tone: "warning", icon: <Agent37Mark size={15} />, title: result.balanceUsd != null && result.balanceUsd <= 0 ? "Your Agent 37 wallet is empty" : "Your Agent 37 wallet is running low", detail: warning, actions: [TOP_UP] }} />,
       );
     }
     if (agent37AtMachineLimit(result) && boxes.some((box) => box.state === "asleep" || box.state === "stopped")) {
@@ -313,9 +315,9 @@ export function agent37ParkedRow(
     return {
       label: `Suspended on ${AGENT37_NAME}. Top up to wake it.`,
       action: (
-        <a href={AGENT37_BILLING_URL} target="_blank" rel="noreferrer" style={{ ...connectButtonStyle, marginRight: 4, textDecoration: "none" }}>
+        <button type="button" onClick={() => openExternalUrl(AGENT37_BILLING_URL)} style={{ ...connectButtonStyle, marginRight: 4 }}>
           Top up
-        </a>
+        </button>
       ),
     };
   }

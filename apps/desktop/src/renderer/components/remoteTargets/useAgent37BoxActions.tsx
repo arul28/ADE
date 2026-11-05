@@ -10,6 +10,7 @@ import {
   type Agent37ShapeId,
 } from "../../../shared/agent37";
 import { accountMachineRemovalConfirmBody } from "../../../shared/accountDirectory";
+import { captureError } from "../../../shared/sentry/capture";
 import type { AdeAccountMachine } from "../../../shared/types/account";
 import { showToast } from "../app/toast/toastStore";
 import { confirmDialog, Dialog } from "../ui/dialog";
@@ -111,7 +112,7 @@ export function useAgent37BoxActions(args: {
         instanceId,
         action,
         ...extra,
-        ...(action === "delete" ? { machineKey: ctx.accountMachine?.machineKey ?? ctx.box.machineKey } : {}),
+        ...(action === "delete" ? { machineKey: ctx.accountMachine?.machineKey ?? null } : {}),
       });
     } catch (error) {
       result = { ok: false, blocker: null, message: extractError(error) };
@@ -154,7 +155,10 @@ export function useAgent37BoxActions(args: {
     if (!ok) return;
     const result = await run(ctx, "delete");
     if (result?.ok) {
-      if (ctx.targetId) await forgetTarget(ctx.targetId).catch(() => undefined);
+      if (ctx.targetId) {
+        await forgetTarget(ctx.targetId).catch((error: unknown) =>
+          captureError(error, { fingerprint: ["agent37", "forget_deleted_target"], handled: true }));
+      }
       onAccountChanged?.();
     }
   }, [forgetTarget, onAccountChanged, run]);
@@ -171,9 +175,9 @@ export function useAgent37BoxActions(args: {
     box: Agent37Machine | null;
     onError: (message: string) => void;
   }) => {
-    const rate = input.box ? describeAgent37Rate(input.box) : null;
+    const rate = input.box && !input.box.pastDue ? describeAgent37Rate(input.box) : null;
     const message = input.box
-      ? `${input.name} leaves your computers on every device. The box keeps running on Agent 37 and keeps billing${rate ? ` (${rate})` : ""}. To stop the bill, use Delete box instead.`
+      ? `${input.name} leaves your computers on every device. The box stays on Agent 37 and keeps billing${rate ? ` (${rate})` : ""}. To stop the bill, use Delete box instead.`
       : `${input.name} leaves your computers on every device.\n\n${accountMachineRemovalConfirmBody(input.machine)}`;
     const ok = await confirmDialog({
       title: `Remove ${input.name} from ADE?`,
@@ -188,7 +192,10 @@ export function useAgent37BoxActions(args: {
     if (input.box) setPending(input.box.instanceId, "remove");
     try {
       await removeMachine(input.machine.machineKey);
-      if (input.targetId) await forgetTarget(input.targetId).catch(() => undefined);
+      if (input.targetId) {
+        await forgetTarget(input.targetId).catch((error: unknown) =>
+          captureError(error, { fingerprint: ["agent37", "forget_removed_target"], handled: true }));
+      }
       showToast({
         tone: "success",
         title: `Removed ${input.name} from ADE`,

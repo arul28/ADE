@@ -131,7 +131,7 @@ export function agent37GroupTotals(boxes: readonly Agent37Machine[]): Agent37Gro
  */
 export function agent37WalletWarning(balanceUsd: number | null, hourlyUsd: number): string | null {
   if (balanceUsd == null || hourlyUsd <= 0) return null;
-  if (balanceUsd <= 0) return "Your Agent 37 wallet is empty. Agent 37 suspends its machines at the next hourly settle unless you top it up.";
+  if (balanceUsd <= 0) return "Agent 37 suspends these machines at the next hourly settle unless you top it up.";
   const hours = balanceUsd / hourlyUsd;
   if (hours > 72) return null;
   const left = hours < 2 ? "about an hour" : hours < 48 ? `about ${Math.floor(hours)} hours` : `about ${Math.floor(hours / 24)} days`;

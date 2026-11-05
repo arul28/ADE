@@ -272,6 +272,15 @@ export function registerAgent37Ipc(args: {
   }, STARTUP_CHECK_DELAY_MS);
   startupTimer.unref?.();
 
+  const machines = createAgent37Machines({
+    client: async () => {
+      const saved = await readAgent37Key(credentials);
+      return saved ? createAgent37Client({ apiKey: saved.key }) : null;
+    },
+    removeAccountMachine: args.removeAccountMachine,
+    logger,
+  });
+
   ipcMain.handle(IPC.agent37GetStatus, async (event): Promise<Agent37Status | null> => {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.agent37GetStatus)) return null;
     return await readAgent37Status(credentials);
@@ -282,6 +291,7 @@ export function registerAgent37Ipc(args: {
     const status = await saveAgent37Key(credentials, typeof arg?.apiKey === "string" ? arg.apiKey : "");
     // A new key may be a new workspace: forget what the old one said, then check.
     builder.reset();
+    machines.resetUsage();
     void builder.ensure();
     sendToAllWindows(IPC.agent37StatusChanged);
     return status;
@@ -298,6 +308,7 @@ export function registerAgent37Ipc(args: {
       throw error;
     }
     builder.reset();
+    machines.resetUsage();
     sendToAllWindows(IPC.agent37StatusChanged);
     return status;
   });
@@ -313,15 +324,6 @@ export function registerAgent37Ipc(args: {
     if (!isTrustedAdeRendererSenderOrWarn(event, logger, IPC.agent37RetryTemplate)) return null;
     void builder.retry();
     return builder.status();
-  });
-
-  const machines = createAgent37Machines({
-    client: async () => {
-      const saved = await readAgent37Key(credentials);
-      return saved ? createAgent37Client({ apiKey: saved.key }) : null;
-    },
-    removeAccountMachine: args.removeAccountMachine,
-    logger,
   });
 
   ipcMain.handle(IPC.agent37ListMachines, async (event): Promise<Agent37MachinesResult | null> => {

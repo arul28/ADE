@@ -20,6 +20,7 @@ import { Banner } from "../ui/notice";
 import { Agent37Mark, AGENT37_NAME } from "../remoteTargets/agent37Brand";
 import { agent37RetryLabel, useAgent37Template } from "../remoteTargets/useAgent37Template";
 import { openConnectionsPanel } from "../../lib/connectionsPanel";
+import { openExternalUrl } from "../../lib/openExternal";
 import "./IntegrationsSettings.css";
 
 function errorText(error: unknown, fallback: string): string {
@@ -251,9 +252,9 @@ export function Agent37Section() {
                 <button type="button" className="ade-modern-btn" onClick={() => openConnectionsPanel("machines")}>
                   Open your computers
                 </button>
-                <a className="ade-modern-btn" href={AGENT37_BILLING_URL} target="_blank" rel="noreferrer" style={{ textDecoration: "none" }}>
+                <button type="button" className="ade-modern-btn" onClick={() => openExternalUrl(AGENT37_BILLING_URL)}>
                   <ArrowSquareOut size={12} /> {AGENT37_NAME} wallet
-                </a>
+                </button>
               </div>
             </IntegrationCard>
           </>
@@ -272,9 +273,9 @@ export function Agent37Section() {
                   <div className="ade-ig-step-head"><b>Create an API key</b></div>
                   <p className="ade-ig-note">In your {AGENT37_NAME} dashboard, under API keys. It starts with sk_live_.</p>
                   <div className="ade-ig-step-actions">
-                    <a className="ade-modern-btn" href={AGENT37_API_KEYS_URL} target="_blank" rel="noreferrer" style={{ textDecoration: "none" }}>
+                    <button type="button" className="ade-modern-btn" onClick={() => openExternalUrl(AGENT37_API_KEYS_URL)}>
                       <ArrowSquareOut size={12} /> Open {AGENT37_NAME}
-                    </a>
+                    </button>
                   </div>
                 </div>
               </li>
